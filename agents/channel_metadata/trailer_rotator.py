@@ -270,9 +270,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = _parse_args(argv)
 
-    from shared.youtube_api_client import YouTubeApiClient
+    from shared.youtube_api_client import WRITE_SCOPES, YouTubeApiClient
 
-    client = YouTubeApiClient()
+    # `channels.update brandingSettings.channel.unsubscribedTrailer` requires
+    # the youtube.force-ssl scope — see shared/youtube_api_client.py + the
+    # bootstrap recipe in systemd/units/hapax-channel-trailer.service.
+    # YouTubeApiClient.__init__ logs "client DISABLED" + sets _yt=None when
+    # credentials are absent (credential_blocked operating mode), which the
+    # rotator's _call_channels_update gates on via getattr(client, 'enabled').
+    client = YouTubeApiClient(scopes=WRITE_SCOPES)
     rotator = TrailerRotator(client=client, dry_run=args.dry_run)
 
     if args.once:
