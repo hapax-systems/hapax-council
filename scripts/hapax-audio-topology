@@ -342,7 +342,23 @@ def _classify_live_extra_edge(
     declared_by_name: dict[str, Node],
     live_by_name: dict[str, Node],
 ) -> str | None:
-    """Classify live edges that are known runtime fallback artifacts."""
+    """Classify live edges that are known runtime fallback artifacts.
+
+    Architectural compliance edges (Option C, 2026-05-02 spec amendment):
+
+    - `private-track-fenced-via-s4-out-1` covers the Option C private
+      monitor route. Edges from a `private_monitor_bridge=true` source
+      to a `private_monitor_endpoint=true` target whose `option_c_route`
+      param is `private-track-fenced-via-s4-out-1` belong to the
+      track-fenced S-4 path. The runtime edge from the bridge to the
+      S-4 USB IN sink is the privacy-preserving path: the S-4 internal
+      scene then routes Track 1 input → analog OUT 1/2 (operator-side
+      monitor patch). This classification keeps the topology audit
+      from flagging the new edge as unclassified `+ edges only in right`.
+    - `private-monitor-runtime-output-binding` is retained for the
+      legacy Yeti pin (only active when the operator has reverted to
+      `56-hapax-private-pin-yeti.conf.disabled-2026-05-02-option-c`).
+    """
     source = declared_by_name.get(source_name)
     target = declared_by_name.get(target_name)
     if (
@@ -352,6 +368,9 @@ def _classify_live_extra_edge(
         and target.params.get("private_monitor_endpoint") is True
         and source.target_object == target_name
     ):
+        # Option C — track-fenced route via S-4 OUT 1.
+        if target.params.get("option_c_route") == "private-track-fenced-via-s4-out-1":
+            return "private-track-fenced-via-s4-out-1"
         return "private-monitor-runtime-output-binding"
 
     if (
