@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -13,6 +14,8 @@ from shared.broadcast_audio_health import (
     resolve_broadcast_audio_health,
     write_broadcast_audio_health_state,
 )
+
+log = logging.getLogger(__name__)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -53,7 +56,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Exit non-zero when the resolved state is not safe.",
     )
+    parser.add_argument(
+        "--skip-l12-scene-probe",
+        action="store_true",
+        help=(
+            "Audit-A#6: disable the L-12 BROADCAST scene unloaded probe "
+            "(useful for tests + dev workstations without an L-12 attached)."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
     paths = BroadcastAudioHealthPaths(
         state_path=args.state_path or BroadcastAudioHealthPaths.state_path,
@@ -68,6 +84,27 @@ def main(argv: list[str] | None = None) -> int:
     if args.print:
         payload = {"audio_safe_for_broadcast": health.model_dump(mode="json")}
         print(json.dumps(payload, indent=2, sort_keys=True))
+
+    if not args.skip_l12_scene_probe:
+        # Audit A#6: L-12 BROADCAST scene unloaded detector.
+        # Wired here (not as a separate daemon) so the existing 30s
+        # broadcast-audio-health timer drives both the safety envelope
+        # and the scene-unloaded probe under one cadence.
+        try:
+            from agents.broadcast_audio_health.l12_broadcast_scene_probe import (
+                probe_l12_broadcast_scene,
+            )
+
+            outcome = probe_l12_broadcast_scene()
+            log.info(
+                "l12-scene-probe aux5_dbfs=%.2f music_running=%s silent_for_s=%.1f fired=%s",
+                outcome.aux5_dbfs,
+                outcome.music_running,
+                outcome.silent_for_s,
+                outcome.fired,
+            )
+        except Exception:  # noqa: BLE001 — never let probe failure break the safety envelope
+            log.warning("l12-scene-probe failed", exc_info=True)
 
     if args.fail_on_unsafe and not health.safe:
         return 1
