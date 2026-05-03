@@ -120,6 +120,7 @@ status=0
 
 system_installs=(
     "$REPO_DIR/config/udev/rules.d/50-hapax-usb-audio-video-noautosuspend.rules|$(system_path /etc/udev/rules.d/50-hapax-usb-audio-video-noautosuspend.rules)|0644"
+    "$REPO_DIR/config/udev/rules.d/53-hapax-suppress-camera-audio.rules|$(system_path /etc/udev/rules.d/53-hapax-suppress-camera-audio.rules)|0644"
     "$REPO_DIR/config/udev/rules.d/90-hapax-s4-composite.rules|$(system_path /etc/udev/rules.d/90-hapax-s4-composite.rules)|0644"
     "$REPO_DIR/config/NetworkManager/conf.d/90-hapax-s4-unmanaged.conf|$(system_path /etc/NetworkManager/conf.d/90-hapax-s4-unmanaged.conf)|0644"
     "$REPO_DIR/config/modprobe.d/99-hapax-usb-reliability-override.conf|$(system_path /etc/modprobe.d/99-hapax-usb-reliability-override.conf)|0644"
