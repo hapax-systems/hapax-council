@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Director moves — surfaces the goal-defining metrics that let the operator tell at a glance whether director moves are happening. Cc-task: director-moves-grafana-panel. Pairs with the H3 audio-recovery dashboard (#2340), per-stage RMS dashboard (#2357), and the cadence-bump stale-intent timer (#2367). Some panels render empty until upstream consumers ship: u4-micromove-advance-tick-consumer (panel 3), u5-verb-prometheus-counter-and-consumer (panel 4), u8-compositor-preset-bias-consumer (no metric directly — surfaces via random_mode_transition picks). Folder routing is operator-managed in Grafana DB; tags route to Hapax/Director.",
+  "description": "Director moves — surfaces the goal-defining metrics that let the operator tell at a glance whether director moves are happening. Cc-task: director-moves-grafana-panel. Pairs with the H3 audio-recovery dashboard (#2340), per-stage RMS dashboard (#2357), and the cadence-bump stale-intent timer (#2367). All 5 panels active post-merge of u4-micromove-advance-tick-consumer (#2368), u5-verb-prometheus-counter-and-consumer (#2371), u8-compositor-preset-bias-consumer (panel 1 surfaces the bias indirectly via random_mode_transition picks). Folder routing is operator-managed in Grafana DB; tags route to Hapax/Director.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -107,7 +107,7 @@
           "refId": "A"
         }
       ],
-      "title": "micromove advances (5m rate, per slot — pending u4)",
+      "title": "micromove advances (5m rate, per slot)",
       "type": "timeseries"
     },
     {
@@ -136,7 +136,7 @@
           "refId": "A"
         }
       ],
-      "title": "semantic verb consumption (5m rate — pending u5)",
+      "title": "semantic verb consumption (5m rate)",
       "type": "timeseries"
     },
     {
