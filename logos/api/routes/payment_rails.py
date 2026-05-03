@@ -132,6 +132,20 @@ router = APIRouter(prefix="/api/payment-rails", tags=["payment-rails"])
 _stripe_payment_link_idempotency_store: StripePaymentLinkIdempotencyStore | None = None
 _patreon_idempotency_store: _RailIdempotencyStore | None = None
 _ko_fi_idempotency_store: _RailIdempotencyStore | None = None
+_buy_me_a_coffee_idempotency_store: _RailIdempotencyStore | None = None
+
+
+def _get_buy_me_a_coffee_idempotency_store() -> _RailIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for Buy Me a Coffee.
+
+    Keyed on top-level ``event_id`` (BMaC's per-delivery UUID).
+    """
+    global _buy_me_a_coffee_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _buy_me_a_coffee_idempotency_store is None:
+        _buy_me_a_coffee_idempotency_store = _RailIdempotencyStore(
+            db_path=default_idempotency_db_path("buy-me-a-coffee"),
+        )
+    return _buy_me_a_coffee_idempotency_store
 
 
 def _get_ko_fi_idempotency_store() -> _RailIdempotencyStore:
@@ -700,7 +714,9 @@ async def receive_buy_me_a_coffee_webhook(request: Request) -> JSONResponse:
 
     signature = request.headers.get(BUY_ME_A_COFFEE_SIGNATURE_HEADER)
 
-    receiver = BuyMeACoffeeRailReceiver()
+    receiver = BuyMeACoffeeRailReceiver(
+        idempotency_store=_get_buy_me_a_coffee_idempotency_store(),
+    )
     try:
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
     except BuyMeACoffeeReceiveOnlyRailError as exc:
@@ -708,6 +724,11 @@ async def receive_buy_me_a_coffee_webhook(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        # Either heartbeat ping or duplicate event_id — both 200 OK.
+        event_id = payload.get("event_id") if payload else None
+        if payload and isinstance(event_id, str) and event_id:
+            log.info("buy_me_a_coffee webhook duplicate: %s", event_id)
+            return JSONResponse({"status": "duplicate", "event_id": event_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = BuyMeACoffeePublisher()

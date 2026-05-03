@@ -1814,13 +1814,14 @@ def _bmac_payload(
     amount: str = "5.00",
     currency: str = "USD",
     occurred_at: str = "2026-05-03T00:00:00Z",
+    event_id: str = "11111111-1111-1111-1111-111111111111",
 ) -> dict:
     return {
         "type": kind,
         "live_mode": True,
         "attempt": 1,
         "created": occurred_at,
-        "event_id": "11111111-1111-1111-1111-111111111111",
+        "event_id": event_id,
         "data": {
             "id": "donation-id-1",
             "supporter_name": supporter,
@@ -1845,11 +1846,24 @@ def bmac_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
     return _BMAC_VALID_SECRET
 
 
+@pytest.fixture
+def bmac_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's BMaC idempotency singleton + point at tmp db."""
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._buy_me_a_coffee_idempotency_store = None
+    yield tmp_path / "buy-me-a-coffee" / "idempotency.db"
+    routes_mod._buy_me_a_coffee_idempotency_store = None
+
+
 @pytest.mark.asyncio
 async def test_bmac_signed_donation_writes_manifest(
-    bmac_output_dir: Path, bmac_secret_env: str
+    bmac_output_dir: Path,
+    bmac_secret_env: str,
+    bmac_idempotency_isolated: Path,
 ) -> None:
-    payload = _bmac_payload(kind="donation")
+    payload = _bmac_payload(kind="donation", event_id="evt-bmac-donation-test")
     raw = json.dumps(payload).encode("utf-8")
     sig = hmac.new(bmac_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
 
@@ -1875,10 +1889,16 @@ async def test_bmac_signed_donation_writes_manifest(
 
 @pytest.mark.asyncio
 async def test_bmac_membership_started_dotted_form(
-    bmac_output_dir: Path, bmac_secret_env: str
+    bmac_output_dir: Path,
+    bmac_secret_env: str,
+    bmac_idempotency_isolated: Path,
 ) -> None:
     """BMaC membership.started uses dotted form (not underscored)."""
-    payload = _bmac_payload(kind="membership.started", supporter="bob-member")
+    payload = _bmac_payload(
+        kind="membership.started",
+        supporter="bob-member",
+        event_id="evt-bmac-mship-started",
+    )
     raw = json.dumps(payload).encode("utf-8")
     sig = hmac.new(bmac_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
 
@@ -1898,8 +1918,13 @@ async def test_bmac_membership_cancelled_appends_to_refusal_log(
     bmac_output_dir: Path,
     bmac_secret_env: str,
     refusal_log_dir: Path,
+    bmac_idempotency_isolated: Path,
 ) -> None:
-    payload = _bmac_payload(kind="membership.cancelled", supporter="charlie-cancelled")
+    payload = _bmac_payload(
+        kind="membership.cancelled",
+        supporter="charlie-cancelled",
+        event_id="evt-bmac-mship-cancelled",
+    )
     raw = json.dumps(payload).encode("utf-8")
     sig = hmac.new(bmac_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
 
@@ -1997,6 +2022,99 @@ def test_bmac_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# BMaC — idempotency hard pin (cc-task jr-buy-me-a-coffee-rail-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_bmac_route_replays_same_event_id_returns_duplicate(
+    bmac_output_dir: Path,
+    bmac_secret_env: str,
+    bmac_idempotency_isolated: Path,
+) -> None:
+    """Two POSTs of identical signed payload → second returns status=duplicate."""
+    payload = _bmac_payload(kind="donation", event_id="evt-bmac-replay-001")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(bmac_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post(
+            "/api/payment-rails/buy-me-a-coffee",
+            content=raw,
+            headers={"X-Signature-Sha256": sig},
+        )
+        second = await client.post(
+            "/api/payment-rails/buy-me-a-coffee",
+            content=raw,
+            headers={"X-Signature-Sha256": sig},
+        )
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["event_id"] == "evt-bmac-replay-001"
+
+    files = list(bmac_output_dir.glob("event-donation-*.md"))
+    assert len(files) == 1, f"expected 1 manifest, got {files}"
+
+
+@pytest.mark.asyncio
+async def test_bmac_route_distinct_event_ids_both_processed(
+    bmac_output_dir: Path,
+    bmac_secret_env: str,
+    bmac_idempotency_isolated: Path,
+) -> None:
+    """Distinct event_ids → both deliveries write manifests."""
+    payload_a = _bmac_payload(kind="donation", event_id="evt-bmac-a")
+    payload_b = _bmac_payload(kind="donation", supporter="bob", event_id="evt-bmac-b")
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+    sig_a = hmac.new(bmac_secret_env.encode("utf-8"), raw_a, hashlib.sha256).hexdigest()
+    sig_b = hmac.new(bmac_secret_env.encode("utf-8"), raw_b, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post(
+            "/api/payment-rails/buy-me-a-coffee",
+            content=raw_a,
+            headers={"X-Signature-Sha256": sig_a},
+        )
+        r_b = await client.post(
+            "/api/payment-rails/buy-me-a-coffee",
+            content=raw_b,
+            headers={"X-Signature-Sha256": sig_b},
+        )
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(bmac_output_dir.glob("event-donation-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_bmac_route_missing_event_id_returns_400(
+    bmac_output_dir: Path,
+    bmac_secret_env: str,
+    bmac_idempotency_isolated: Path,
+) -> None:
+    """Idempotency store provided + payload missing event_id → 400."""
+    payload = _bmac_payload(kind="donation")
+    del payload["event_id"]
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(bmac_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/buy-me-a-coffee",
+            content=raw,
+            headers={"X-Signature-Sha256": sig},
+        )
+
+    assert response.status_code == 400
+    assert "event_id" in response.json()["detail"]
 
 
 # ===========================================================================
