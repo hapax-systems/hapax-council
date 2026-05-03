@@ -139,7 +139,6 @@ import hmac
 import json
 import os
 import re
-import sqlite3
 import time
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -147,6 +146,16 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from shared._rail_idempotency import (
+    IdempotencyError as _SharedIdempotencyError,
+)
+from shared._rail_idempotency import (
+    IdempotencyStore as _SharedIdempotencyStore,
+)
+from shared._rail_idempotency import (
+    default_idempotency_db_path as _shared_default_db_path,
+)
 
 STRIPE_PAYMENT_LINK_WEBHOOK_SECRET_ENV = "STRIPE_PAYMENT_LINK_WEBHOOK_SECRET"
 
@@ -282,84 +291,49 @@ def _is_thin_event_object(obj: dict[str, Any]) -> bool:
     return keys.issubset(_THIN_EVENT_KEYS) or (keys == _THIN_EVENT_KEYS)
 
 
-class IdempotencyStore:
+class IdempotencyStore(_SharedIdempotencyStore):
     """sqlite-backed event-id seen-set for Stripe webhook idempotency.
 
-    Stripe's at-least-once delivery semantics permit the *same* event
-    id (``evt_...``) to arrive twice within the 300s replay window —
-    e.g. a network retry between Stripe's edge and our receiver. This
-    store keys on ``event.id`` with a UNIQUE constraint and exposes
-    :meth:`record_or_skip` returning ``True`` on first insert, ``False``
-    on collision. The receiver wraps this so a duplicate delivery
-    short-circuits to a no-op (caller returns 200 OK).
+    Migrated to wrap :class:`shared._rail_idempotency.IdempotencyStore`
+    while preserving the rail's no-arg constructor signature
+    ``IdempotencyStore()`` and the ``IdempotencyStore(db_path=...)``
+    keyword form. The default db path resolves to the shared
+    ``stripe-payment-link`` rail subdirectory (``~/hapax-state/
+    stripe-payment-link/idempotency.db``).
 
-    The default DB path lives under ``$HAPAX_HOME`` (or
-    ``~/hapax-state``) — local disk only, no network. Construction
-    creates the parent directory + table on demand. Concurrent
-    receivers are safe via sqlite's serialized writes (per-connection
-    BEGIN IMMEDIATE on insert); the workload is one-row INSERT per
-    delivery so contention is negligible.
+    Schema migration note: pre-migration deployments stored entries in
+    the table ``stripe_webhook_events``. The shared store creates a
+    new table ``rail_webhook_events`` in the same db file on first
+    use; old entries are forgotten. This is safe because Stripe's
+    300s replay window has long since elapsed for any historical
+    entries — duplicate-fulfillment risk is bounded by the timestamp
+    tolerance, not the idempotency horizon.
     """
 
-    _SCHEMA_SQL = (
-        "CREATE TABLE IF NOT EXISTS stripe_webhook_events ("
-        "  event_id TEXT PRIMARY KEY,"
-        "  first_seen_at_iso TEXT NOT NULL"
-        ")"
-    )
-
     def __init__(self, *, db_path: Path | None = None) -> None:
-        self._db_path = db_path if db_path is not None else _default_idempotency_db_path()
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
-            conn.execute(self._SCHEMA_SQL)
+        super().__init__(
+            db_path=db_path if db_path is not None else _default_idempotency_db_path(),
+        )
 
-    def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(str(self._db_path), isolation_level=None, timeout=5.0)
+    def record_or_skip(  # type: ignore[override]
+        self, event_id: str, *, first_seen_at: datetime | None = None
+    ) -> bool:
+        """Same semantics as the shared store, but raise the rail's error type.
 
-    @property
-    def db_path(self) -> Path:
-        return self._db_path
-
-    def record_or_skip(self, event_id: str, *, first_seen_at: datetime | None = None) -> bool:
-        """Insert ``event_id`` into the seen-set or report a duplicate.
-
-        Returns ``True`` if this is the first time we have seen the
-        event id (caller should proceed with downstream processing) or
-        ``False`` if the id was already in the table (caller should
-        short-circuit to a no-op). Does not raise on collision; collision
-        is the explicit signal.
+        The shared store raises :class:`shared._rail_idempotency.IdempotencyError`
+        on misuse (empty/non-string id). The rail's external contract
+        is that all rail-rejection paths surface as
+        :class:`ReceiveOnlyRailError`, so we translate here.
         """
-        if not event_id or not isinstance(event_id, str):
-            raise ReceiveOnlyRailError(
-                f"event_id must be a non-empty string, got {type(event_id).__name__}"
-            )
-        first_seen_iso = (first_seen_at or datetime.now(tz=UTC)).isoformat()
         try:
-            with self._connect() as conn:
-                conn.execute(
-                    "INSERT INTO stripe_webhook_events(event_id, first_seen_at_iso) VALUES (?, ?)",
-                    (event_id, first_seen_iso),
-                )
-            return True
-        except sqlite3.IntegrityError:
-            return False
-
-    def has_seen(self, event_id: str) -> bool:
-        """Read-only existence probe — ``True`` if the id is recorded."""
-        with self._connect() as conn:
-            cursor = conn.execute(
-                "SELECT 1 FROM stripe_webhook_events WHERE event_id = ? LIMIT 1",
-                (event_id,),
-            )
-            return cursor.fetchone() is not None
+            return super().record_or_skip(event_id, first_seen_at=first_seen_at)
+        except _SharedIdempotencyError as exc:
+            raise ReceiveOnlyRailError(str(exc)) from exc
 
 
 def _default_idempotency_db_path() -> Path:
-    base = os.environ.get("HAPAX_HOME")
-    if base:
-        return Path(base) / "stripe-payment-link" / "idempotency.db"
-    return Path.home() / "hapax-state" / "stripe-payment-link" / "idempotency.db"
+    """Backwards-compat shim; defers to the shared registry's path resolver."""
+    return _shared_default_db_path("stripe-payment-link")
 
 
 def _parse_stripe_signature_header(signature: str) -> tuple[int, list[str]]:

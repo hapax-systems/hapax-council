@@ -111,9 +111,6 @@ from shared.patreon_receive_only_rail import (
     ReceiveOnlyRailError as PatreonReceiveOnlyRailError,
 )
 from shared.stripe_payment_link_receive_only_rail import (
-    IdempotencyStore as StripePaymentLinkIdempotencyStore,
-)
-from shared.stripe_payment_link_receive_only_rail import (
     ReceiveOnlyRailError as StripePaymentLinkReceiveOnlyRailError,
 )
 from shared.stripe_payment_link_receive_only_rail import (
@@ -162,26 +159,10 @@ def _resolve_liberapay_delivery_id(headers) -> str | None:
     return None
 
 
-# Stripe is the one rail that still uses its own IdempotencyStore class
-# (preserves the rail's existing 138 tests + sqlite table-name shape).
-# A future cc-task can migrate it to the shared registry.
-_stripe_payment_link_idempotency_store: StripePaymentLinkIdempotencyStore | None = None
-
-
-def _get_stripe_payment_link_idempotency_store() -> StripePaymentLinkIdempotencyStore:
-    """Lazy singleton sqlite-backed idempotency store for Stripe Payment Link.
-
-    Stripe pre-dates the shared registry and uses its own
-    :class:`StripePaymentLinkIdempotencyStore` class with a distinct
-    table schema (``stripe_webhook_events`` vs. shared
-    ``rail_webhook_events``). Migrating Stripe is a separate cc-task —
-    keeping the singleton here for now preserves the rail's existing
-    test surface.
-    """
-    global _stripe_payment_link_idempotency_store  # noqa: PLW0603 — module-level singleton
-    if _stripe_payment_link_idempotency_store is None:
-        _stripe_payment_link_idempotency_store = StripePaymentLinkIdempotencyStore()
-    return _stripe_payment_link_idempotency_store
+# Stripe Payment Link migrated to the shared idempotency registry —
+# its `IdempotencyStore` class now wraps `shared._rail_idempotency.IdempotencyStore`,
+# so the route uses `_get_idempotency_store("stripe-payment-link")` like
+# every other rail.
 
 
 GITHUB_SPONSORS_SIGNATURE_HEADER: str = "X-Hub-Signature-256"
@@ -524,7 +505,7 @@ async def receive_stripe_payment_link_webhook(request: Request) -> JSONResponse:
     signature = request.headers.get(STRIPE_PAYMENT_LINK_SIGNATURE_HEADER)
 
     receiver = StripePaymentLinkRailReceiver(
-        idempotency_store=_get_stripe_payment_link_idempotency_store(),
+        idempotency_store=_get_idempotency_store("stripe-payment-link"),
     )
     try:
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
