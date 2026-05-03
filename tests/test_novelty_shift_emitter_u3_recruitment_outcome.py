@@ -181,14 +181,14 @@ class TestStateRoundtrip:
             absorbed_total=2,
             pending_dispatches=[10.5, 20.7, 30.9],
         )
-        prev, dispatched, absorbed, pending = _load_prev_state(state_file)
+        prev, dispatched, absorbed, pending, _ = _load_prev_state(state_file)
         assert prev == pytest.approx(0.85)
         assert dispatched == 3
         assert absorbed == 2
         assert pending == [10.5, 20.7, 30.9]
 
     def test_load_missing_returns_defaults(self, tmp_path: Path) -> None:
-        prev, dispatched, absorbed, pending = _load_prev_state(tmp_path / "nope.json")
+        prev, dispatched, absorbed, pending, _ = _load_prev_state(tmp_path / "nope.json")
         assert prev is None
         assert dispatched == 0
         assert absorbed == 0
@@ -197,7 +197,7 @@ class TestStateRoundtrip:
     def test_load_malformed_returns_defaults(self, tmp_path: Path) -> None:
         p = tmp_path / "bad.json"
         p.write_text("{not valid")
-        prev, dispatched, absorbed, pending = _load_prev_state(p)
+        prev, dispatched, absorbed, pending, _ = _load_prev_state(p)
         assert prev is None
         assert pending == []
 
@@ -206,7 +206,7 @@ class TestStateRoundtrip:
         Loading must default cleanly so a redeploy doesn't crash."""
         p = tmp_path / "old.json"
         p.write_text(json.dumps({"prev_gqi": 0.5, "dispatched_total": 7}))
-        prev, dispatched, absorbed, pending = _load_prev_state(p)
+        prev, dispatched, absorbed, pending, _ = _load_prev_state(p)
         assert prev == pytest.approx(0.5)
         assert dispatched == 7
         assert absorbed == 0  # default
@@ -225,7 +225,7 @@ class TestStateRoundtrip:
                 }
             )
         )
-        _, _, _, pending = _load_prev_state(p)
+        _, _, _, pending, _ = _load_prev_state(p)
         assert pending == [10.0, 20.0]
 
 
