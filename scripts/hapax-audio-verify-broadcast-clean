@@ -1,0 +1,310 @@
+#!/usr/bin/env bash
+# hapax-audio-verify-broadcast-clean — single-purpose post-restart probe.
+#
+# Part of H2 (pre-flight gate + atomic rollback) per
+# docs/research/2026-05-03-audio-config-hardening-unthought-of-solutions.md.
+#
+# Captures 2s of audio at each broadcast stage, classifies each capture
+# as one of {clean, silent, noise, clipping}, and exits with a code the
+# wrapper can act on:
+#
+#   0 = clean         — every probed stage produces real-looking audio
+#                       (or the stage is intentionally silent)
+#   1 = silent        — at least one broadcast stage is steady-state silent
+#                       (RMS < SILENT_FLOOR_DBFS for the whole probe window)
+#   2 = noise/clipping — at least one stage is degraded into noise or
+#                       clipping (crest factor in NOISE_BAND or RMS above
+#                       CLIP_CEILING_DBFS)
+#   3 = topology drift — pactl/pw-link topology changed in a way the
+#                       previous snapshot did not predict (a stage's
+#                       monitor source disappeared)
+#   4 = probe failure — measurement infrastructure unavailable
+#                       (parecord missing, /dev/shm not writable, etc.)
+#
+# This is the H1-classifier-shaped probe inside the H2 wrapper. If the
+# H1 signal-flow daemon ships first, it should subsume the classifier
+# implementation here; until then, we ship the minimal RMS+crest version
+# inline so H2 doesn't block on H1.
+#
+# Usage:
+#   hapax-audio-verify-broadcast-clean --service NAME [--snapshot PATH]
+#                                       [--duration N] [--format json|text]
+#
+#   --service NAME       Used purely for log/JSON tagging.
+#   --snapshot PATH      Pre-restart snapshot JSON; if a stage is missing
+#                        from the live graph but was present in the
+#                        snapshot, exit 3 (topology drift).
+#   --duration N         Probe duration in seconds per stage (default 2).
+#   --format json|text   Output format (default json).
+#
+# Stages probed (canonical broadcast chain, matches H1 + audit-B):
+#   - hapax-livestream-tap.monitor       (optional: silent if no music)
+#   - hapax-broadcast-master             (Audio/Source — must be clean)
+#   - hapax-broadcast-normalized         (Audio/Source — must be clean)
+#   - hapax-obs-broadcast-remap.monitor  (must be clean)
+#
+# The two broadcast Audio/Source endpoints are deliberately unsuffixed
+# (no `.monitor`) per the 2026-05-03 monitor-port semantics research:
+# their `.monitor` aliases carry PRE-chain audio, while the source
+# itself is the post-process tap we want to assert against.
+#
+# Reuses parecord per the project README's note that pw-cat against
+# .monitor sources has a known artefact (PR #2353 monitor-port semantics).
+set -uo pipefail
+
+SERVICE="<unspecified>"
+SNAPSHOT=""
+DURATION=2
+FORMAT="json"
+
+# Classifier thresholds — keep in sync with the H1 signal-flow daemon.
+SILENT_FLOOR_DBFS=-75.0
+CLIP_CEILING_DBFS=-1.0
+NOISE_BAND_LOW=2.5
+NOISE_BAND_HIGH=5.0
+
+# Broadcast stages: name : expected ("audio" | "silent" | "either")
+# "either" = pass regardless of energy presence; we still classify but
+# only fail on noise/clipping, not on silence.
+STAGES=(
+  "hapax-livestream-tap.monitor:either"
+  "hapax-broadcast-master:audio"
+  "hapax-broadcast-normalized:audio"
+  "hapax-obs-broadcast-remap.monitor:audio"
+)
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --service=*)   SERVICE="${1#*=}" ;;
+    --service)     shift; SERVICE="${1:-$SERVICE}" ;;
+    --snapshot=*)  SNAPSHOT="${1#*=}" ;;
+    --snapshot)    shift; SNAPSHOT="${1:-$SNAPSHOT}" ;;
+    --duration=*)  DURATION="${1#*=}" ;;
+    --duration)    shift; DURATION="${1:-$DURATION}" ;;
+    --format=*)    FORMAT="${1#*=}" ;;
+    --format)      shift; FORMAT="${1:-$FORMAT}" ;;
+    -h|--help)
+      sed -n '2,/^set -uo pipefail/p' "$0" | sed 's/^# \?//' | head -n -1
+      exit 0
+      ;;
+    *)
+      echo "verify-broadcast-clean: unknown arg: $1" >&2
+      exit 4
+      ;;
+  esac
+  shift
+done
+
+if ! command -v parecord >/dev/null 2>&1; then
+  echo "verify-broadcast-clean: parecord missing; install pulseaudio-utils" >&2
+  echo '{"ok":false,"reason":"parecord-missing"}'
+  exit 4
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "verify-broadcast-clean: python3 missing" >&2
+  echo '{"ok":false,"reason":"python3-missing"}'
+  exit 4
+fi
+if ! command -v pactl >/dev/null 2>&1; then
+  echo "verify-broadcast-clean: pactl missing; install pulseaudio-utils" >&2
+  echo '{"ok":false,"reason":"pactl-missing"}'
+  exit 4
+fi
+
+# Build a list of currently-present source names so we can detect drift.
+present_sources=$(pactl list sources short 2>/dev/null | awk '{print $2}')
+
+declare -a results
+overall_status="clean"
+exit_code=0
+
+# If a snapshot is given, parse out the broadcast monitor names it
+# claimed were present pre-restart. Then if any of those monitors
+# disappeared we surface that as topology drift (exit 3) rather than
+# letting it fall through as a silent reading.
+declare -A snapshot_present
+if [ -n "$SNAPSHOT" ] && [ -r "$SNAPSHOT" ]; then
+  while IFS= read -r monitor; do
+    [ -n "$monitor" ] && snapshot_present["$monitor"]=1
+  done < <(python3 - "$SNAPSHOT" <<'PY' 2>/dev/null
+import json
+import sys
+
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+except Exception:
+    sys.exit(0)
+
+for source in data.get("sources", []):
+    name = source.get("name", "")
+    # Both the .monitor aliases (livestream-tap, obs-broadcast-remap)
+    # and the unsuffixed Audio/Source endpoints (broadcast-master,
+    # broadcast-normalized) participate in drift detection.
+    if name:
+        print(name)
+PY
+)
+fi
+
+probe_one_stage() {
+  local monitor="$1"
+  local expected="$2"
+  local tmpwav
+  tmpwav=$(mktemp --suffix=.wav 2>/dev/null) || {
+    echo "verify-broadcast-clean: mktemp failed" >&2
+    return 4
+  }
+
+  # Topology drift check: if the snapshot said the source was there and
+  # it isn't now, that's a structural failure regardless of measurement.
+  if [ -n "${snapshot_present["$monitor"]:-}" ]; then
+    if ! echo "$present_sources" | grep -q "^${monitor}$"; then
+      rm -f "$tmpwav"
+      printf '{"monitor":"%s","expected":"%s","status":"topology-drift","measured_dbfs":null,"crest":null}' \
+        "$monitor" "$expected"
+      return 3
+    fi
+  fi
+
+  # If the source isn't present and wasn't in the snapshot, we treat it
+  # as "no probe possible" — not necessarily a failure (e.g. when no
+  # snapshot is provided). The wrapper decides via its own policy.
+  if ! echo "$present_sources" | grep -q "^${monitor}$"; then
+    rm -f "$tmpwav"
+    printf '{"monitor":"%s","expected":"%s","status":"missing","measured_dbfs":null,"crest":null}' \
+      "$monitor" "$expected"
+    return 0
+  fi
+
+  # parecord, NOT pw-cat — see config/pipewire/README.md monitor-port
+  # artefact (silent reads against .monitor regardless of real signal).
+  # parecord lacks a --duration flag in current pulseaudio-utils builds,
+  # so we bound it with `timeout`. Add 1s of grace so the file is
+  # finalised before SIGTERM lands.
+  timeout "$((DURATION + 1))" parecord --device="$monitor" \
+           --rate=48000 --channels=1 --format=s16le \
+           --file-format=wav "$tmpwav" >/dev/null 2>&1 || true
+
+  if [ ! -s "$tmpwav" ]; then
+    rm -f "$tmpwav"
+    printf '{"monitor":"%s","expected":"%s","status":"capture-failed","measured_dbfs":null,"crest":null}' \
+      "$monitor" "$expected"
+    return 4
+  fi
+
+  # Compute RMS dBFS + crest factor. Crest = peak/rms (a noise/format-
+  # conversion artefact has a tight crest near 3.5–4.5; real broadcast
+  # is 5.5+; compressed/limited content is 8+; clipping is variable
+  # but usually paired with peak == 1.0).
+  local stats
+  stats=$(python3 - "$tmpwav" <<'PY' 2>/dev/null
+import array
+import math
+import sys
+import wave
+
+try:
+    with wave.open(sys.argv[1], "rb") as wf:
+        raw = wf.readframes(wf.getnframes())
+except Exception:
+    print("err\terr\terr")
+    sys.exit(0)
+
+samples = array.array("h", raw)
+if not samples:
+    # Use -120 as the floor for "no samples" (canonical -inf placeholder
+    # for JSON-clean numeric output; downstream sees < SILENT_FLOOR_DBFS
+    # and classifies as silent).
+    print("-120.00\t0.000\t-120.00")
+    sys.exit(0)
+
+n = len(samples)
+sum_sq = sum(s * s for s in samples) / n
+rms = math.sqrt(sum_sq)
+peak = max(abs(s) for s in samples)
+peak_dbfs = 20.0 * math.log10(peak / 32767.0) if peak > 0 else -120.0
+rms_dbfs = 20.0 * math.log10(rms / 32767.0) if rms > 0 else -120.0
+crest = (peak / rms) if rms > 0 else 0.0
+print(f"{rms_dbfs:.2f}\t{crest:.3f}\t{peak_dbfs:.2f}")
+PY
+)
+  rm -f "$tmpwav"
+
+  local rms_dbfs crest peak_dbfs
+  IFS=$'\t' read -r rms_dbfs crest peak_dbfs <<< "$stats"
+
+  if [ "$rms_dbfs" = "err" ] || [ -z "$rms_dbfs" ]; then
+    printf '{"monitor":"%s","expected":"%s","status":"measure-failed","measured_dbfs":null,"crest":null}' \
+      "$monitor" "$expected"
+    return 4
+  fi
+
+  # Classify.
+  local status
+  local rc=0
+  local is_silent is_noise is_clipping
+  is_silent=$(python3 -c "import sys; sys.exit(0 if float('${rms_dbfs}') < ${SILENT_FLOOR_DBFS} else 1)" \
+              && echo true || echo false)
+  is_clipping=$(python3 -c "import sys; sys.exit(0 if float('${rms_dbfs}') > ${CLIP_CEILING_DBFS} else 1)" \
+                && echo true || echo false)
+  is_noise=$(python3 -c "
+import sys
+crest = float('${crest}')
+sys.exit(0 if ${NOISE_BAND_LOW} <= crest <= ${NOISE_BAND_HIGH} else 1)
+" && echo true || echo false)
+
+  if [ "$is_silent" = "true" ]; then
+    if [ "$expected" = "audio" ]; then
+      status="silent"; rc=1
+    else
+      status="silent-ok"; rc=0
+    fi
+  elif [ "$is_clipping" = "true" ]; then
+    status="clipping"; rc=2
+  elif [ "$is_noise" = "true" ]; then
+    status="noise"; rc=2
+  else
+    status="clean"; rc=0
+  fi
+
+  printf '{"monitor":"%s","expected":"%s","status":"%s","measured_dbfs":%s,"crest":%s,"peak_dbfs":%s}' \
+    "$monitor" "$expected" "$status" "$rms_dbfs" "$crest" "$peak_dbfs"
+  return $rc
+}
+
+for entry in "${STAGES[@]}"; do
+  monitor="${entry%%:*}"
+  expected="${entry##*:}"
+  out=$(probe_one_stage "$monitor" "$expected") || rc=$?
+  rc=${rc:-0}
+  results+=("$out")
+  # Aggregate worst-case status; the wrapper trusts the exit code.
+  case $rc in
+    1) [ "$exit_code" -lt 1 ] && exit_code=1; overall_status="silent" ;;
+    2) [ "$exit_code" -lt 2 ] && exit_code=2; overall_status="noise-or-clipping" ;;
+    3) exit_code=3; overall_status="topology-drift" ;;
+    4) [ "$exit_code" -lt 4 ] && exit_code=4; overall_status="probe-failure" ;;
+  esac
+  rc=0
+done
+
+# Emit.
+if [ "$FORMAT" = "json" ]; then
+  printf '{"service":"%s","exit_code":%d,"overall_status":"%s","stages":[' \
+    "$SERVICE" "$exit_code" "$overall_status"
+  first=1
+  for r in "${results[@]}"; do
+    [ "$first" -eq 1 ] || printf ','
+    printf '%s' "$r"
+    first=0
+  done
+  printf ']}\n'
+else
+  echo "service=$SERVICE overall=$overall_status exit=$exit_code"
+  for r in "${results[@]}"; do
+    echo "  $r"
+  done
+fi
+
+exit "$exit_code"
