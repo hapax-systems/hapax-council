@@ -139,6 +139,13 @@ COMP_GLFEEDBACK_ACCUM_CLEAR_TOTAL: Any = None
 # R9 (2026-05-02): dynamic compositor-layout switching. See
 # layout_switcher.py for the trigger vocabulary.
 HAPAX_COMPOSITOR_LAYOUT_SWITCH_TOTAL: Any = None
+# U6 (cc-task u6-four-layouts-switching-followup, 2026-05-03):
+# which layout is currently active. Single 1.0 entry at any time
+# (the active one); dashboards can sum-by-layout to compute the
+# 10-min reachability check the U6 acceptance asked for, OR
+# instant-query to confirm the current selection. Set on every
+# LayoutStore.set_active call.
+HAPAX_COMPOSITOR_LAYOUT_ACTIVE: Any = None
 # FINDING-R diagnostics (2026-04-21 wiring audit): per-ward blit
 # accounting on the post-FX cairooverlay. WARD_BLIT_TOTAL counts every
 # successful blit_scaled call labeled by ward; WARD_BLIT_SKIPPED_TOTAL
@@ -510,6 +517,21 @@ def _init_metrics() -> None:
         "labelled by from_layout, to_layout, and the input trigger that "
         "named the new layout.",
         ["from_layout", "to_layout", "trigger"],
+        registry=REGISTRY,
+    )
+
+    # U6 (cc-task u6-four-layouts-switching-followup, 2026-05-03):
+    # which layout is currently active. Always exactly one label set
+    # has value 1.0 (the active layout); all others are 0. Updated on
+    # every LayoutStore.set_active() call. Operators query
+    # ``hapax_compositor_layout_active{layout="default"}`` to confirm
+    # the current selection without scraping the switch counter.
+    global HAPAX_COMPOSITOR_LAYOUT_ACTIVE
+    HAPAX_COMPOSITOR_LAYOUT_ACTIVE = Gauge(
+        "hapax_compositor_layout_active",
+        "1 when this layout is the currently active compositor layout, 0 otherwise. "
+        "Sum over labels = 1 at all times (modulo a microsecond gap during the swap).",
+        ["layout"],
         registry=REGISTRY,
     )
 
