@@ -45,6 +45,7 @@ from agents.publication_bus.github_sponsors_publisher import (
 )
 from agents.publication_bus.ko_fi_publisher import KoFiPublisher
 from agents.publication_bus.liberapay_publisher import LiberapayPublisher
+from agents.publication_bus.mercury_publisher import MercuryPublisher
 from agents.publication_bus.open_collective_publisher import (
     OpenCollectivePublisher,
 )
@@ -75,6 +76,12 @@ from shared.liberapay_receive_only_rail import (
 )
 from shared.liberapay_receive_only_rail import (
     ReceiveOnlyRailError as LiberapayReceiveOnlyRailError,
+)
+from shared.mercury_receive_only_rail import (
+    MercuryRailReceiver,
+)
+from shared.mercury_receive_only_rail import (
+    ReceiveOnlyRailError as MercuryReceiveOnlyRailError,
 )
 from shared.open_collective_receive_only_rail import (
     OpenCollectiveRailReceiver,
@@ -133,6 +140,15 @@ BUY_ME_A_COFFEE_SIGNATURE_HEADER: str = "X-Signature-Sha256"
 """Buy Me a Coffee webhook signature header — hex-encoded HMAC SHA-256
 digest of the raw body. Both bare hex digest and ``sha256=<hex>``
 prefixed forms are accepted by the receiver."""
+
+MERCURY_SIGNATURE_HEADER: str = "X-Mercury-Signature"
+"""Mercury canonical webhook signature header — HMAC SHA-256 over
+raw body."""
+
+MERCURY_LEGACY_SIGNATURE_HEADER: str = "X-Hook-Signature"
+"""Mercury legacy webhook signature header — some older Mercury
+integrations may still emit this name; the route accepts either
+header (canonical X-Mercury-Signature takes precedence)."""
 
 
 @router.post("/github-sponsors")
@@ -615,10 +631,83 @@ async def receive_buy_me_a_coffee_webhook(request: Request) -> JSONResponse:
     )
 
 
+@router.post("/mercury")
+async def receive_mercury_webhook(request: Request) -> JSONResponse:
+    """Receive a Mercury webhook delivery and dispatch.
+
+    Mercury signs deliveries with HMAC SHA-256 over raw body in the
+    ``X-Mercury-Signature`` header. Some legacy integrations may
+    still emit the older ``X-Hook-Signature`` header; the route
+    accepts either (canonical takes precedence). The rail's
+    direction filter rejects outgoing transaction kinds at the
+    receiver boundary.
+    """
+    raw_body = await request.body()
+
+    if not raw_body:
+        receiver = MercuryRailReceiver()
+        result = receiver.ingest_webhook({}, None)
+        if result is None:
+            return JSONResponse({"status": "ping_ok"})
+        raise HTTPException(status_code=500, detail="unexpected non-None result from heartbeat")
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        log.warning("mercury webhook: malformed JSON")
+        raise HTTPException(status_code=400, detail=f"malformed JSON: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be a JSON object")
+
+    # Canonical header takes precedence; fall back to legacy.
+    signature = request.headers.get(MERCURY_SIGNATURE_HEADER) or request.headers.get(
+        MERCURY_LEGACY_SIGNATURE_HEADER
+    )
+
+    receiver = MercuryRailReceiver()
+    try:
+        event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
+    except MercuryReceiveOnlyRailError as exc:
+        log.warning("mercury webhook rejected: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if event is None:
+        return JSONResponse({"status": "ping_ok"})
+
+    publisher = MercuryPublisher()
+    publish_result = publisher.publish_event(event)
+
+    if publish_result.refused:
+        log.info("mercury publish refused: %s", publish_result.detail)
+        return JSONResponse(
+            {"status": "refused", "detail": publish_result.detail},
+            status_code=200,
+        )
+    if publish_result.error:
+        log.error("mercury publish error: %s", publish_result.detail)
+        raise HTTPException(
+            status_code=500,
+            detail=f"publisher transport error: {publish_result.detail}",
+        )
+
+    return JSONResponse(
+        {
+            "status": "received",
+            "event_kind": event.event_kind.value,
+            "direction": event.direction.value,
+            "publish_detail": publish_result.detail,
+            "raw_payload_sha256": event.raw_payload_sha256,
+        }
+    )
+
+
 __all__ = [
     "BUY_ME_A_COFFEE_SIGNATURE_HEADER",
     "GITHUB_SPONSORS_SIGNATURE_HEADER",
     "LIBERAPAY_SIGNATURE_HEADER",
+    "MERCURY_LEGACY_SIGNATURE_HEADER",
+    "MERCURY_SIGNATURE_HEADER",
     "OPEN_COLLECTIVE_SIGNATURE_HEADER",
     "PATREON_EVENT_HEADER",
     "PATREON_SIGNATURE_HEADER",

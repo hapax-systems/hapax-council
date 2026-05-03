@@ -133,6 +133,23 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "IsObsoletedBy) ships with the publisher."
         ),
     ),
+    "agents.publication_bus.mercury_publisher": WireEntry(
+        module="agents.publication_bus.mercury_publisher",
+        surface_slug="mercury-receiver",
+        status="WIRED",
+        pass_key_required="mercury/webhook-secret",
+        rationale=(
+            "Eighth wired monetization rail (cc-task mercury-end-to-end-wiring). "
+            "First bank rail wired e2e. Wired via logos/api/routes/payment_rails.py "
+            "POST /api/payment-rails/mercury. HMAC SHA-256 over raw body via "
+            "X-Mercury-Signature (canonical) with X-Hook-Signature (legacy) "
+            "fallback + MERCURY_WEBHOOK_SECRET env var. Rail's "
+            "MercuryTransactionDirection filter rejects outgoing kinds (ach_outgoing, "
+            "wire_outgoing, etc.) at the receiver boundary; publisher writes "
+            "manifest entries only (no cancellation auto-link — Mercury's 2 "
+            "event kinds are lifecycle states)."
+        ),
+    ),
     "agents.publication_bus.buy_me_a_coffee_publisher": WireEntry(
         module="agents.publication_bus.buy_me_a_coffee_publisher",
         surface_slug="buy-me-a-coffee-receiver",
