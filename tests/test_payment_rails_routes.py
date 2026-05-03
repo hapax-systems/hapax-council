@@ -1818,3 +1818,183 @@ def test_mercury_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# Modern Treasury rail integration tests (cc-task modern-treasury-end-to-end-wiring)
+# ===========================================================================
+
+from shared.modern_treasury_receive_only_rail import (
+    MODERN_TREASURY_WEBHOOK_SECRET_ENV,
+)
+
+_MT_VALID_SECRET = "modern-treasury-webhook-secret-XYZ"
+
+
+def _modern_treasury_payload(
+    *,
+    event: str = "incoming_payment_detail.created",
+    originating_party_name: str = "Foundation Trust",
+    amount: object = 10000,
+    currency: str = "USD",
+    payment_type: str = "ach",
+    created_at: str = "2026-05-03T00:00:00Z",
+) -> dict:
+    return {
+        "event": event,
+        "data": {
+            "id": "ipd-uuid-1111",
+            "object": "incoming_payment_detail",
+            "amount": amount,
+            "currency": currency,
+            "type": payment_type,
+            "status": "completed",
+            "originating_party_name": originating_party_name,
+            "originating_account_number": "999111888777",  # PII
+            "originating_routing_number": "021000089",  # PII
+            "description": "thank you Q2 retainer",  # PII
+            "vendor_id": "mt-vendor-001",  # PII
+            "created_at": created_at,
+            "updated_at": created_at,
+        },
+    }
+
+
+@pytest.fixture
+def mt_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    return tmp_path / "hapax-state" / "publications" / "modern-treasury"
+
+
+@pytest.fixture
+def mt_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
+    monkeypatch.setenv(MODERN_TREASURY_WEBHOOK_SECRET_ENV, _MT_VALID_SECRET)
+    return _MT_VALID_SECRET
+
+
+@pytest.mark.asyncio
+async def test_modern_treasury_signed_ach_created_writes_manifest(
+    mt_output_dir: Path, mt_secret_env: str
+) -> None:
+    payload = _modern_treasury_payload()
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(mt_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/modern-treasury",
+            content=raw,
+            headers={"X-Signature": sig},
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "received"
+    assert body["event_kind"] == "incoming_payment_detail.created"
+    assert body["payment_method"] == "ach"
+    files = list(mt_output_dir.glob("event-incoming_payment_detail_created-*.md"))
+    assert len(files) == 1
+    contents = files[0].read_text()
+    assert "Foundation Trust" in contents
+    # Banking-PII negative pin
+    assert "021000089" not in contents
+    assert "999111888777" not in contents
+    assert "Q2 retainer" not in contents
+    assert "mt-vendor-001" not in contents
+
+
+@pytest.mark.asyncio
+async def test_modern_treasury_outgoing_event_rejected(
+    mt_output_dir: Path, mt_secret_env: str
+) -> None:
+    """Event-name-level direction filter rejects payment_order.*."""
+    payload = _modern_treasury_payload(event="payment_order.created")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(mt_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/modern-treasury",
+            content=raw,
+            headers={"X-Signature": sig},
+        )
+
+    assert response.status_code == 400
+    assert "refusing outgoing" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_modern_treasury_wire_payment_method(mt_output_dir: Path, mt_secret_env: str) -> None:
+    payload = _modern_treasury_payload(payment_type="wire")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(mt_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/modern-treasury",
+            content=raw,
+            headers={"X-Signature": sig},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["payment_method"] == "wire"
+
+
+@pytest.mark.asyncio
+async def test_modern_treasury_completed_event(mt_output_dir: Path, mt_secret_env: str) -> None:
+    payload = _modern_treasury_payload(event="incoming_payment_detail.completed")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(mt_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/modern-treasury",
+            content=raw,
+            headers={"X-Signature": sig},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["event_kind"] == "incoming_payment_detail.completed"
+
+
+@pytest.mark.asyncio
+async def test_modern_treasury_bad_signature_returns_400(
+    mt_output_dir: Path, mt_secret_env: str
+) -> None:
+    payload = _modern_treasury_payload()
+    raw = json.dumps(payload).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/modern-treasury",
+            content=raw,
+            headers={"X-Signature": "0" * 64},
+        )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_modern_treasury_empty_body_returns_ping_ok() -> None:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/payment-rails/modern-treasury", content=b"")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ping_ok"
+
+
+def test_modern_treasury_publisher_module_carries_no_send_path() -> None:
+    import inspect
+
+    import agents.publication_bus.modern_treasury_publisher as mod
+
+    src = inspect.getsource(mod).lower()
+    forbidden_verbs = (
+        "def send",
+        "def initiate",
+        "def payout",
+        "def transfer",
+        "def origination",
+    )
+    for token in forbidden_verbs:
+        assert token not in src, f"unexpected send-path: {token!r}"
