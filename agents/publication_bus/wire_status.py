@@ -133,6 +133,21 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "IsObsoletedBy) ships with the publisher."
         ),
     ),
+    "agents.publication_bus.stripe_payment_link_publisher": WireEntry(
+        module="agents.publication_bus.stripe_payment_link_publisher",
+        surface_slug="stripe-payment-link-receiver",
+        status="WIRED",
+        pass_key_required="stripe-payment-link/webhook-secret",
+        rationale=(
+            "Fourth wired monetization rail (cc-task stripe-payment-link-end-to-end-wiring). "
+            "Wired via logos/api/routes/payment_rails.py POST "
+            "/api/payment-rails/stripe-payment-link. Stripe-Signature header carries "
+            "timestamped HMAC SHA-256 (t=<unix>,v1=<hex>) with replay-tolerance "
+            "verified internally by the rail. Subscription-deletion events emit a "
+            "RefusalEvent under axiom full_auto_or_nothing to the canonical refusal "
+            "log for the refusal_annex_renderer to aggregate."
+        ),
+    ),
     "agents.publication_bus.open_collective_publisher": WireEntry(
         module="agents.publication_bus.open_collective_publisher",
         surface_slug="open-collective-receiver",

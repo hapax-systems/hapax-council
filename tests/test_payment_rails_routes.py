@@ -801,3 +801,238 @@ def test_open_collective_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# Stripe Payment Link rail integration tests (cc-task
+# stripe-payment-link-end-to-end-wiring)
+# ===========================================================================
+
+import time as _time
+
+from agents.publication_bus.stripe_payment_link_publisher import (
+    CANCELLATION_REFUSAL_AXIOM as STRIPE_REFUSAL_AXIOM,
+)
+from agents.publication_bus.stripe_payment_link_publisher import (
+    CANCELLATION_REFUSAL_SURFACE as STRIPE_REFUSAL_SURFACE,
+)
+from shared.stripe_payment_link_receive_only_rail import (
+    STRIPE_PAYMENT_LINK_WEBHOOK_SECRET_ENV,
+)
+
+
+def _stripe_signature(payload_bytes: bytes, secret: str, ts: int) -> str:
+    """Build a Stripe `Stripe-Signature` header value: t=<ts>,v1=<hex>."""
+    signed = f"{ts}.".encode() + payload_bytes
+    digest = hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).hexdigest()
+    return f"t={ts},v1={digest}"
+
+
+def _stripe_payload(
+    *,
+    event_type: str = "payment_intent.succeeded",
+    customer_id: str = "cus_NwAVkkPDUrPaTC",
+    amount: int = 5000,
+    currency: str = "usd",
+    occurred_at_unix: int | None = None,
+) -> dict:
+    """Realistic Stripe webhook envelope for a payment_intent.succeeded."""
+    if occurred_at_unix is None:
+        occurred_at_unix = int(_time.time())
+    return {
+        "id": "evt_3NqVe0LAuO3KjPaT0SgXLnX5",
+        "type": event_type,
+        "created": occurred_at_unix,
+        "api_version": "2024-04-10",
+        "data": {
+            "object": {
+                "id": "pi_3NqVe0LAuO3KjPaT0vKP6yYS",
+                "object": "payment_intent",
+                "amount": amount,
+                "currency": currency,
+                "customer": customer_id,
+                "status": "succeeded",
+                "receipt_email": "leak@example.com",  # PII; rail must NOT extract
+                "billing_details": {
+                    "name": "Alice Q. Customer",  # PII
+                    "email": "leak2@example.com",
+                },
+            }
+        },
+    }
+
+
+_STRIPE_VALID_SECRET = "whsec_stripe-test-XYZ-test-secret-1234567890"
+
+
+@pytest.fixture
+def stripe_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    return tmp_path / "hapax-state" / "publications" / "stripe-payment-link"
+
+
+@pytest.fixture
+def stripe_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
+    monkeypatch.setenv(STRIPE_PAYMENT_LINK_WEBHOOK_SECRET_ENV, _STRIPE_VALID_SECRET)
+    return _STRIPE_VALID_SECRET
+
+
+@pytest.mark.asyncio
+async def test_stripe_signed_payment_intent_succeeded_writes_manifest(
+    stripe_output_dir: Path, stripe_secret_env: str
+) -> None:
+    ts = int(_time.time())
+    payload = _stripe_payload(occurred_at_unix=ts)
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _stripe_signature(raw, stripe_secret_env, ts)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/stripe-payment-link",
+            content=raw,
+            headers={"Stripe-Signature": sig},
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "received"
+    assert body["event_kind"] == "payment_intent_succeeded"
+    files = list(stripe_output_dir.glob("event-payment_intent_succeeded-*.md"))
+    assert len(files) == 1, f"expected 1 manifest, got {files}"
+    contents = files[0].read_text()
+    assert "cus_NwAVkkPDUrPaTC" in contents
+    assert "USD" in contents
+    # PII must not leak
+    assert "leak@example.com" not in contents
+    assert "leak2@example.com" not in contents
+    assert "Alice Q. Customer" not in contents
+
+
+@pytest.mark.asyncio
+async def test_stripe_subscription_deleted_appends_to_refusal_log(
+    stripe_output_dir: Path,
+    stripe_secret_env: str,
+    refusal_log_dir: Path,
+) -> None:
+    ts = int(_time.time())
+    payload = {
+        "id": "evt_subscription_deleted",
+        "type": "customer.subscription.deleted",
+        "created": ts,
+        "data": {
+            "object": {
+                "id": "sub_1234ABCD",
+                "object": "subscription",
+                "customer": "cus_NwAVkkPDUrPaTC",
+                "currency": "usd",
+                "items": {"data": [{"price": {"unit_amount": 1500, "currency": "usd"}}]},
+            }
+        },
+    }
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _stripe_signature(raw, stripe_secret_env, ts)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/stripe-payment-link",
+            content=raw,
+            headers={"Stripe-Signature": sig},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["event_kind"] == "customer_subscription_deleted"
+
+    log_file = refusal_log_dir / "log.jsonl"
+    assert log_file.exists()
+    rows = [json.loads(line) for line in log_file.read_text().splitlines() if line]
+    cancellations = [r for r in rows if r.get("surface") == STRIPE_REFUSAL_SURFACE]
+    assert cancellations
+    assert cancellations[0]["axiom"] == STRIPE_REFUSAL_AXIOM
+
+
+@pytest.mark.asyncio
+async def test_stripe_bad_signature_returns_400(
+    stripe_output_dir: Path, stripe_secret_env: str
+) -> None:
+    ts = int(_time.time())
+    payload = _stripe_payload(occurred_at_unix=ts)
+    raw = json.dumps(payload).encode("utf-8")
+    bad_sig = f"t={ts},v1={'0' * 64}"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/stripe-payment-link",
+            content=raw,
+            headers={"Stripe-Signature": bad_sig},
+        )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_stripe_replay_protection_rejects_old_timestamp(
+    stripe_output_dir: Path, stripe_secret_env: str
+) -> None:
+    """Stripe rail enforces replay-tolerance window."""
+    old_ts = int(_time.time()) - 3600  # 1 hour ago, well past tolerance
+    payload = _stripe_payload(occurred_at_unix=old_ts)
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _stripe_signature(raw, stripe_secret_env, old_ts)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/stripe-payment-link",
+            content=raw,
+            headers={"Stripe-Signature": sig},
+        )
+
+    assert response.status_code == 400
+    assert "replay" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_stripe_unaccepted_event_type_returns_400(
+    stripe_output_dir: Path, stripe_secret_env: str
+) -> None:
+    ts = int(_time.time())
+    payload = _stripe_payload(event_type="charge.refunded", occurred_at_unix=ts)
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _stripe_signature(raw, stripe_secret_env, ts)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/stripe-payment-link",
+            content=raw,
+            headers={"Stripe-Signature": sig},
+        )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_stripe_empty_body_returns_ping_ok() -> None:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/stripe-payment-link",
+            content=b"",
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ping_ok"
+
+
+def test_stripe_payment_link_publisher_module_carries_no_send_path() -> None:
+    import inspect
+
+    import agents.publication_bus.stripe_payment_link_publisher as mod
+
+    src = inspect.getsource(mod).lower()
+    forbidden_verbs = (
+        "def send",
+        "def initiate",
+        "def payout",
+        "def transfer",
+        "def origination",
+    )
+    for token in forbidden_verbs:
+        assert token not in src, f"unexpected send-path: {token!r}"
