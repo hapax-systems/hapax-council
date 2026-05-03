@@ -111,6 +111,127 @@ def test_dmn_read_all_includes_sensors(tmp_path):
     assert isinstance(result["sensors"], dict)
 
 
+def test_dmn_read_all_includes_perceptual_field(tmp_path):
+    """read_all() exposes the full PerceptualField under 'perceptual_field'.
+
+    Closes meta-architectural Bayesian audit Fix #2 (2026-05-03): the
+    imagination-narrative recruitment cosine-similarity query was being
+    born from a 4-key text snippet. With ``perceptual_field`` in the
+    snapshot, ``assemble_context`` widens its prompt to embed every
+    typed sub-field (audio/visual/ir/album/chat/context/stimmung/
+    presence/stream_health/tendency/homage/camera_classifications), so
+    the LLM-produced narrative — and therefore the cosine-similarity
+    retrieval text — can distinguish compositionally distinct world
+    states instead of collapsing them into the same thin query.
+    """
+    from unittest.mock import patch
+
+    from agents.dmn.sensor import SensorConfig, read_all
+
+    config = SensorConfig(
+        stimmung_state=tmp_path / "stimmung.json",
+        fortress_state=tmp_path / "fortress.json",
+        watch_dir=tmp_path / "watch",
+        voice_perception=tmp_path / "perception.json",
+        visual_frame=tmp_path / "frame.jpg",
+        imagination_current=tmp_path / "imagination.json",
+    )
+    fake_pfield_dump = {
+        "audio": {"contact_mic": {"desk_activity": "typing"}},
+        "visual": {"detected_action": "scratching"},
+        "ir": {"ir_hand_zone": "turntable"},
+        "album": {"artist": "Test Artist"},
+        "chat": {"recent_message_count": 0, "unique_authors": 0},
+        "context": {"stream_live": False},
+        "stimmung": {"dimensions": {}},
+        "presence": {"state": "PRESENT"},
+        "tendency": {},
+        "homage": {"consent_safe_active": False},
+        "camera_classifications": {},
+    }
+
+    class _FakePF:
+        def model_dump(self, exclude_none: bool = False) -> dict:
+            return fake_pfield_dump
+
+    with (
+        patch("agents.dmn.sensor.read_sensors", return_value={}),
+        patch(
+            "agents.dmn.sensor.read_visual_surface",
+            return_value={"source": "visual_surface", "age_s": 999.0, "stale": True},
+        ),
+        patch(
+            "shared.perceptual_field.build_perceptual_field",
+            return_value=_FakePF(),
+        ),
+    ):
+        result = read_all(config)
+    assert "perceptual_field" in result
+    pf = result["perceptual_field"]
+    assert isinstance(pf, dict)
+    # ≥5 of the 13 sub-fields must round-trip through read_all so the
+    # downstream imagination-context can widen the prompt as the audit
+    # specifies. The slim-snapshot bottleneck (4 scalars) has regressed
+    # if this drops below 5.
+    sub_fields_present = sum(
+        1
+        for marker in (
+            "audio",
+            "visual",
+            "ir",
+            "album",
+            "chat",
+            "context",
+            "stimmung",
+            "presence",
+            "stream_health",
+            "tendency",
+            "homage",
+            "camera_classifications",
+        )
+        if marker in pf
+    )
+    assert sub_fields_present >= 5, (
+        f"Expected ≥5 PerceptualField sub-fields in read_all output, "
+        f"saw {sub_fields_present}. Slim-snapshot regression."
+    )
+
+
+def test_dmn_read_all_omits_perceptual_field_on_build_failure(tmp_path):
+    """If PerceptualField build raises, read_all degrades to slim layout
+    rather than crashing the snapshot publish.
+    """
+    from unittest.mock import patch
+
+    from agents.dmn.sensor import SensorConfig, read_all
+
+    config = SensorConfig(
+        stimmung_state=tmp_path / "stimmung.json",
+        fortress_state=tmp_path / "fortress.json",
+        watch_dir=tmp_path / "watch",
+        voice_perception=tmp_path / "perception.json",
+        visual_frame=tmp_path / "frame.jpg",
+        imagination_current=tmp_path / "imagination.json",
+    )
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("simulated SHM read crash")
+
+    with (
+        patch("agents.dmn.sensor.read_sensors", return_value={}),
+        patch(
+            "agents.dmn.sensor.read_visual_surface",
+            return_value={"source": "visual_surface", "age_s": 999.0, "stale": True},
+        ),
+        patch("shared.perceptual_field.build_perceptual_field", side_effect=_raise),
+    ):
+        result = read_all(config)
+    # Legacy slim keys still present; perceptual_field absent.
+    assert "perceptual_field" not in result
+    assert "perception" in result
+    assert "stimmung" in result
+
+
 # ── Stimmung sync integration ───────────────────────────────────────────
 
 

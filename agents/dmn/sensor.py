@@ -179,7 +179,27 @@ def publish_snapshot(snapshot: dict, *, path: Path = SNAPSHOT_PATH) -> None:
 
 
 def read_all(config: SensorConfig | None = None) -> dict:
-    """Read all sensor sources. Returns a unified snapshot."""
+    """Read all sensor sources. Returns a unified snapshot.
+
+    The ``perceptual_field`` key carries the full structured PerceptualField
+    Pydantic dump — every typed sub-field aggregated by
+    ``shared.perceptual_field.build_perceptual_field`` (audio, visual, ir,
+    album, chat, context, stimmung, presence, stream_health, tendency,
+    homage, camera_classifications). The imagination loop's
+    ``assemble_context`` widens its narrative prompt by embedding this
+    block so the cosine-similarity recruitment query stops being born from
+    a 4-key text snippet (meta-architectural Bayesian audit Fix #2,
+    2026-05-03 — the fix that closes the "imagination-narrative born from
+    8 scalars" bottleneck).
+
+    The legacy slim keys (``perception`` / ``stimmung`` / ``watch`` /
+    ``visual_surface`` / ``sensors`` / ``time`` / ``music`` / ``goals`` /
+    ``fortress``) remain for backwards compatibility — chronicle,
+    exploration, and the imagination context's legacy sections continue
+    to read them. The PerceptualField build is wrapped so any sub-read
+    failure degrades to an absent ``perceptual_field`` key, signalling
+    "fall back to slim layout only" to ``assemble_context``.
+    """
     result: dict = {
         "timestamp": time.time(),
         "perception": read_perception(config),
@@ -189,6 +209,23 @@ def read_all(config: SensorConfig | None = None) -> dict:
         "visual_surface": read_visual_surface(),
         "sensors": read_sensors(),
     }
+
+    # Full PerceptualField — 13 typed sub-fields aggregated from every
+    # classifier/detector in the system. The director already reads this
+    # via ``shared.perceptual_field.build_perceptual_field``; widening the
+    # imagination snapshot to include it lets the imagination-narrative
+    # recruitment cosine-similarity query draw from the same rich surface.
+    # ``exclude_none=True`` drops null fields so the published payload
+    # tracks the director's prompt-rendering convention. Failure is
+    # non-fatal: a missing ``perceptual_field`` key signals "fall back to
+    # the legacy slim layout" to ``assemble_context``.
+    try:
+        from shared.perceptual_field import build_perceptual_field
+
+        pfield = build_perceptual_field()
+        result["perceptual_field"] = pfield.model_dump(exclude_none=True)
+    except Exception:
+        log.debug("PerceptualField build failed — slim sensor snapshot only", exc_info=True)
 
     # Promote key sensors to top-level for imagination context
     sensors_dict = result.get("sensors", {})
