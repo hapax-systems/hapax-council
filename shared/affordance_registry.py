@@ -1071,6 +1071,100 @@ SHADER_NODE_AFFORDANCES = [
         daemon="reverie",
         operational=_public_operational(latency_class="realtime", medium="visual"),
     ),
+    # cc-task wgsl-node-affordance-coverage-batch-3 (Phase 3 of audit U7,
+    # 2026-05-03): raise SHADER_NODE_AFFORDANCES coverage 35 → 45 by
+    # registering 10 more nodes. Same description convention as prior
+    # batches.
+    CapabilityRecord(
+        name="node.blend",
+        description=(
+            "Mix two visual sources via configurable blend mode for compositing "
+            "layered content with multiply screen overlay or additive register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.diff",
+        description=(
+            "Compute the absolute difference between two visual sources to surface "
+            "motion-edge change-detection register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.thermal",
+        description=(
+            "Map luminance to thermal infrared palette for body-heat surveillance "
+            "and predator-vision register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.tunnel",
+        description=(
+            "Project the visual field through radial tunnel perspective for "
+            "vortex motion-toward-center hypnotic register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.posterize",
+        description=(
+            "Quantize the visual field into flat tonal regions for screen-print "
+            "poster-art and pop-graphic register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.slitscan",
+        description=(
+            "Smear the visual field along the temporal axis for time-displacement "
+            "scanline-trail and motion-stretch register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.waveform_render",
+        description=(
+            "Trace audio amplitude as oscillographic waveform overlay for "
+            "music-visualization and signal-monitoring register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.particle_system",
+        description=(
+            "Emit and animate particle agents across the visual field for "
+            "ember-spark sparkle-flow and dust-cloud register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.invert",
+        description=(
+            "Negate the visual field to its color complement for darkroom-negative "
+            "and inversion-photography register"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
+    CapabilityRecord(
+        name="node.strobe",
+        description=(
+            "Pulse the visual field at high frequency for nightclub-flash and "
+            "warning-signal seizure-adjacent register (use sparingly)"
+        ),
+        daemon="reverie",
+        operational=_public_operational(latency_class="realtime", medium="visual"),
+    ),
 ]
 
 # ---------------------------------------------------------------------------
