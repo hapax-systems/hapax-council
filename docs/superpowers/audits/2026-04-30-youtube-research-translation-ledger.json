@@ -267,10 +267,12 @@
       "current_status": "legacy_live_unverified",
       "public_event_inputs": [
         "cuepoint.candidate",
+        "chapter.marker",
         "programme.boundary"
       ],
       "content_substrate_refs": [
-        "programme_cuepoints"
+        "programme_cuepoints",
+        "cuepoint_chapter_inband"
       ],
       "existing_task_anchors": [
         "ytb-004-programme-boundary-cuepoints",
@@ -284,19 +286,23 @@
           "rights_provenance_token",
           "privacy_class_public_safe",
           "youtube_broadcast_actively_streaming",
-          "operator_supervised_live_player_smoke"
+          "operator_supervised_live_player_smoke",
+          "cuepoint_substrate_adapter_candidate"
         ],
         "freshness_refs": [
           "/dev/shm/hapax-broadcast/events.jsonl",
           "live_cuepoint_cursor",
-          "youtube_live_player_smoke"
+          "youtube_live_player_smoke",
+          "cuepoint_substrate_adapter.candidate.generated_at"
         ],
         "public_blockers": [
           "producer_absent",
           "live_smoke_missing",
           "egress_blocked",
           "quota_blocked",
-          "source_stale"
+          "source_stale",
+          "adapter_rejection_stale",
+          "adapter_rejection_format_refused"
         ]
       },
       "claim_policy": {
@@ -326,9 +332,9 @@
       },
       "fallback": {
         "mode": "chapter_only",
-        "reason": "VOD chapter fallback is allowed when live cuepoints are blocked, dry-run, quota-blocked, or not smoke-tested."
+        "reason": "VOD chapter fallback is allowed when live cuepoints are blocked, dry-run, quota-blocked, or not smoke-tested. The cuepoint-substrate adapter (shared/cuepoint_substrate_adapter.py) preserves the live_cuepoint_distinct_from_vod_chapter invariant: live_cuepoint.candidate PBEs project to cuepoint kind, chapter.boundary PBEs project to chapter kind, and a refusal in the inner format adapter (private_mode, dry_run_mode, egress_blocked, etc.) becomes a substrate rejection so no live or VOD claim leaks through."
       },
-      "notes": "Official live cuepoint docs require an actively streaming broadcast and cueTypeAd; current quota table does not expose a cuepoint row."
+      "notes": "Official live cuepoint docs require an actively streaming broadcast and cueTypeAd; current quota table does not expose a cuepoint row. PBE producer wired by programme_outcome_log (Phase 9 Critical #5 / B3 audit). Substrate adapter shipped by cuepoint-substrate-adapter (shared/cuepoint_substrate_adapter.py) — a stateless gate over the existing format_public_event_adapter. Surface remains legacy_live_unverified until the per-show JSONL multi-file walker lands AND operator-supervised live-player smoke runs against the production broadcast. The per-call cuepoint cost remains unresolved (gates documented but no live-write PR uses this row's quota_policy yet)."
     },
     {
       "surface_id": "youtube_vod_chapters",
