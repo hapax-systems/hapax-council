@@ -1,0 +1,341 @@
+#!/usr/bin/env bash
+# hapax-audio-snapshot — capture the live PipeWire/Pulse topology + signal
+# baseline so a downstream tool can diff or roll back to it.
+#
+# Part of H2 (pre-flight gate + atomic rollback) per
+# docs/research/2026-05-03-audio-config-hardening-unthought-of-solutions.md.
+#
+# Output: a single JSON document on stdout (or to --output PATH) with
+# fields:
+#   {
+#     "timestamp": "<iso8601>",
+#     "service": "<name>",
+#     "phase": "pre" | "post",
+#     "sinks":   [{name, driver, state, default}, ...],
+#     "sources": [{name, driver, state}, ...],
+#     "modules": [{id, name, argument}, ...],
+#     "links":   [{from_node, from_port, to_node, to_port}, ...],
+#     "loudness_baseline": [{stage, rms_dbfs, crest, peak_dbfs}, ...]
+#   }
+#
+# The captured `pactl load-module ... <argument>` strings are exactly
+# what `hapax-audio-safe-restart`'s rollback path replays via
+# `pactl load-module`.
+#
+# The signal baseline is captured cheaply (1s parecord per stage) so a
+# pre/post diff can detect "broadcast was clean before, broken after" —
+# the steady-state-bad failure mode the operator cannot tolerate
+# (+20dB clipping / absolute silence at OBS).
+#
+# Usage:
+#   hapax-audio-snapshot --service NAME --phase pre [--output PATH]
+#
+# Exit codes:
+#   0 = snapshot written
+#   1 = pactl/pw-link unavailable; partial snapshot written if possible
+#   2 = output path not writable
+set -uo pipefail
+
+SERVICE="<unspecified>"
+PHASE="pre"
+OUTPUT=""
+PROBE_DURATION=1
+INCLUDE_LOUDNESS_BASELINE=1
+
+# Audit-anchored signal baseline stages — same canonical chain as the
+# verify probe, but we only require sane reads for the post snapshot
+# downstream comparison. Pre-snapshot just records what's there.
+BASELINE_STAGES=(
+  "hapax-livestream-tap.monitor"
+  "hapax-broadcast-master"
+  "hapax-broadcast-normalized"
+  "hapax-obs-broadcast-remap.monitor"
+)
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --service=*)        SERVICE="${1#*=}" ;;
+    --service)          shift; SERVICE="${1:-$SERVICE}" ;;
+    --phase=*)          PHASE="${1#*=}" ;;
+    --phase)            shift; PHASE="${1:-$PHASE}" ;;
+    --output=*)         OUTPUT="${1#*=}" ;;
+    --output)           shift; OUTPUT="${1:-$OUTPUT}" ;;
+    --probe-duration=*) PROBE_DURATION="${1#*=}" ;;
+    --probe-duration)   shift; PROBE_DURATION="${1:-$PROBE_DURATION}" ;;
+    --no-loudness-baseline) INCLUDE_LOUDNESS_BASELINE=0 ;;
+    -h|--help)
+      sed -n '2,/^set -uo pipefail/p' "$0" | sed 's/^# \?//' | head -n -1
+      exit 0
+      ;;
+    *)
+      echo "audio-snapshot: unknown arg: $1" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [ "$PHASE" != "pre" ] && [ "$PHASE" != "post" ]; then
+  echo "audio-snapshot: --phase must be 'pre' or 'post' (got '$PHASE')" >&2
+  exit 2
+fi
+
+timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# Stage helper python scripts to a tmpdir so we can pipe pactl/pw-link
+# stdout in cleanly without the heredoc-eats-stdin problem. The bug
+# was: `pactl ... | python3 - <<'PY' ... PY` — the heredoc IS python's
+# stdin, so the pipe from pactl was closed before python read it.
+SNAPDIR=$(mktemp -d -t hapax-audio-snapshot.XXXXXX)
+trap 'rm -rf "$SNAPDIR"' EXIT
+
+cat > "$SNAPDIR/parse_sinks.py" <<'PY'
+import json
+import sys
+
+default = sys.argv[1] if len(sys.argv) > 1 else ""
+out = []
+for line in sys.stdin:
+    parts = line.rstrip("\n").split("\t")
+    if len(parts) < 5:
+        continue
+    idx, name, driver, fmt, state = parts[:5]
+    out.append({
+        "id": int(idx) if idx.isdigit() else None,
+        "name": name,
+        "driver": driver,
+        "state": state,
+        "default": name == default,
+    })
+print(json.dumps(out))
+PY
+
+cat > "$SNAPDIR/parse_sources.py" <<'PY'
+import json
+import sys
+
+out = []
+for line in sys.stdin:
+    parts = line.rstrip("\n").split("\t")
+    if len(parts) < 5:
+        continue
+    idx, name, driver, fmt, state = parts[:5]
+    out.append({
+        "id": int(idx) if idx.isdigit() else None,
+        "name": name,
+        "driver": driver,
+        "state": state,
+    })
+print(json.dumps(out))
+PY
+
+cat > "$SNAPDIR/parse_modules.py" <<'PY'
+import json
+import re
+import sys
+
+text = sys.stdin.read()
+modules = []
+current = None
+for line in text.splitlines():
+    m = re.match(r"^Module #(\d+)$", line)
+    if m:
+        if current is not None:
+            modules.append(current)
+        current = {"id": int(m.group(1)), "name": "", "argument": ""}
+        continue
+    if current is None:
+        continue
+    if line.startswith("\tName: "):
+        current["name"] = line[len("\tName: "):]
+    elif line.startswith("\tArgument: "):
+        current["argument"] = line[len("\tArgument: "):]
+if current is not None:
+    modules.append(current)
+print(json.dumps(modules))
+PY
+
+cat > "$SNAPDIR/parse_links.py" <<'PY'
+import json
+import sys
+
+out = []
+current_from = None
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if not line:
+        continue
+    if line.startswith(" "):
+        s = line.strip()
+        if s.startswith("|->"):
+            target = s[3:].strip()
+            if current_from and ":" in target:
+                tn, tp = target.split(":", 1)
+                if ":" in current_from:
+                    fn, fp = current_from.split(":", 1)
+                else:
+                    fn, fp = current_from, ""
+                out.append({
+                    "from_node": fn,
+                    "from_port": fp,
+                    "to_node": tn,
+                    "to_port": tp,
+                })
+        # |<- direction is the inverse view of the same link, skip.
+    else:
+        current_from = line.strip()
+print(json.dumps(out))
+PY
+
+cat > "$SNAPDIR/measure_wav.py" <<'PY'
+import array
+import math
+import sys
+import wave
+
+try:
+    with wave.open(sys.argv[1], "rb") as wf:
+        raw = wf.readframes(wf.getnframes())
+except Exception:
+    print("null\tnull\tnull")
+    sys.exit(0)
+
+samples = array.array("h", raw)
+if not samples:
+    # -120 floor instead of "null" so downstream JSON parses cleanly.
+    print("-120.00\t0.000\t-120.00")
+    sys.exit(0)
+
+n = len(samples)
+sum_sq = sum(s * s for s in samples) / n
+rms = math.sqrt(sum_sq)
+peak = max(abs(s) for s in samples)
+rms_dbfs = 20.0 * math.log10(rms / 32767.0) if rms > 0 else -120.0
+peak_dbfs = 20.0 * math.log10(peak / 32767.0) if peak > 0 else -120.0
+crest = (peak / rms) if rms > 0 else 0.0
+print(f"{rms_dbfs:.2f}\t{crest:.3f}\t{peak_dbfs:.2f}")
+PY
+
+cat > "$SNAPDIR/compose.py" <<'PY'
+import json
+import os
+import sys
+
+doc = {
+    "timestamp": os.environ["HAPAX_SNAP_TS"],
+    "service": os.environ["HAPAX_SNAP_SERVICE"],
+    "phase": os.environ["HAPAX_SNAP_PHASE"],
+    "have_pactl": os.environ.get("HAPAX_SNAP_HAVE_PACTL", "0") == "1",
+    "have_pwlink": os.environ.get("HAPAX_SNAP_HAVE_PWLINK", "0") == "1",
+    "sinks": json.loads(open(sys.argv[1]).read() or "[]"),
+    "sources": json.loads(open(sys.argv[2]).read() or "[]"),
+    "modules": json.loads(open(sys.argv[3]).read() or "[]"),
+    "links": json.loads(open(sys.argv[4]).read() or "[]"),
+    "loudness_baseline": json.loads(open(sys.argv[5]).read() or "[]"),
+}
+print(json.dumps(doc, indent=2))
+PY
+
+# Write empty defaults so compose.py always has something to read.
+echo "[]" > "$SNAPDIR/sinks.json"
+echo "[]" > "$SNAPDIR/sources.json"
+echo "[]" > "$SNAPDIR/modules.json"
+echo "[]" > "$SNAPDIR/links.json"
+echo "[]" > "$SNAPDIR/loudness.json"
+
+have_pactl=0
+have_pwlink=0
+
+if command -v pactl >/dev/null 2>&1; then
+  have_pactl=1
+  default_sink=$(pactl get-default-sink 2>/dev/null || echo "")
+  pactl list sinks short 2>/dev/null \
+    | python3 "$SNAPDIR/parse_sinks.py" "$default_sink" \
+    > "$SNAPDIR/sinks.json"
+  pactl list sources short 2>/dev/null \
+    | python3 "$SNAPDIR/parse_sources.py" \
+    > "$SNAPDIR/sources.json"
+  pactl list modules 2>/dev/null \
+    | python3 "$SNAPDIR/parse_modules.py" \
+    > "$SNAPDIR/modules.json"
+fi
+
+if command -v pw-link >/dev/null 2>&1; then
+  have_pwlink=1
+  pw-link -l 2>/dev/null \
+    | python3 "$SNAPDIR/parse_links.py" \
+    > "$SNAPDIR/links.json"
+fi
+
+# Loudness baseline: 1s parecord per stage. Best-effort; missing
+# parecord just leaves baseline empty.
+if [ "$INCLUDE_LOUDNESS_BASELINE" -eq 1 ] \
+   && command -v parecord >/dev/null 2>&1 \
+   && command -v python3 >/dev/null 2>&1; then
+  per_stage=()
+  for monitor in "${BASELINE_STAGES[@]}"; do
+    if ! pactl list sources short 2>/dev/null | awk '{print $2}' | grep -q "^${monitor}$"; then
+      per_stage+=("{\"stage\":\"$monitor\",\"present\":false}")
+      continue
+    fi
+    tmpwav=$(mktemp --suffix=.wav 2>/dev/null) || continue
+    timeout "$((PROBE_DURATION + 1))" parecord --device="$monitor" \
+             --rate=48000 --channels=1 --format=s16le \
+             --file-format=wav "$tmpwav" >/dev/null 2>&1 || true
+    if [ -s "$tmpwav" ]; then
+      stats=$(python3 "$SNAPDIR/measure_wav.py" "$tmpwav" 2>/dev/null)
+      IFS=$'\t' read -r rms_dbfs crest peak_dbfs <<< "$stats"
+      per_stage+=("{\"stage\":\"$monitor\",\"present\":true,\"rms_dbfs\":${rms_dbfs:-null},\"crest\":${crest:-null},\"peak_dbfs\":${peak_dbfs:-null}}")
+    else
+      per_stage+=("{\"stage\":\"$monitor\",\"present\":true,\"rms_dbfs\":null,\"crest\":null,\"peak_dbfs\":null}")
+    fi
+    rm -f "$tmpwav"
+  done
+  if [ "${#per_stage[@]}" -gt 0 ]; then
+    {
+      printf '['
+      first=1
+      for entry in "${per_stage[@]}"; do
+        [ "$first" -eq 1 ] || printf ','
+        printf '%s' "$entry"
+        first=0
+      done
+      printf ']\n'
+    } > "$SNAPDIR/loudness.json"
+  fi
+fi
+
+# Compose final JSON.
+HAPAX_SNAP_TS="$timestamp" \
+HAPAX_SNAP_SERVICE="$SERVICE" \
+HAPAX_SNAP_PHASE="$PHASE" \
+HAPAX_SNAP_HAVE_PACTL="$have_pactl" \
+HAPAX_SNAP_HAVE_PWLINK="$have_pwlink" \
+python3 "$SNAPDIR/compose.py" \
+  "$SNAPDIR/sinks.json" \
+  "$SNAPDIR/sources.json" \
+  "$SNAPDIR/modules.json" \
+  "$SNAPDIR/links.json" \
+  "$SNAPDIR/loudness.json" \
+  > "$SNAPDIR/final.json" 2>/dev/null
+
+if [ ! -s "$SNAPDIR/final.json" ]; then
+  echo "audio-snapshot: compose failed" >&2
+  exit 2
+fi
+
+if [ -n "$OUTPUT" ]; then
+  outdir=$(dirname "$OUTPUT")
+  mkdir -p "$outdir" 2>/dev/null || {
+    echo "audio-snapshot: cannot create $outdir" >&2
+    exit 2
+  }
+  cp "$SNAPDIR/final.json" "$OUTPUT" || {
+    echo "audio-snapshot: cannot write $OUTPUT" >&2
+    exit 2
+  }
+else
+  cat "$SNAPDIR/final.json"
+fi
+
+exit 0
