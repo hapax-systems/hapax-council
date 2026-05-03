@@ -138,6 +138,15 @@ jobs:
       - name: Anti-personification linter
         if: needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv run python scripts/lint_personification.py
+      # audit-F — audio yaml ↔ conf consistency. Fails when a yaml-
+      # declared LADSPA chain has no corresponding hapax-*.conf on
+      # disk (or vice-versa, unless allowlisted in
+      # config/audio-conf-allowlist.yaml). Catches the "configured a
+      # chain but forgot the conf" drift class that silently breaks
+      # the live audio graph.
+      - name: Audio yaml conf consistency verify
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        run: uv run python scripts/check-audio-conf-consistency.py
       # ytb-AUTH1 — aesthetic library integrity. Verifies _manifest.yaml
       # and _NOTICES.md match on-disk bytes and every asset's SHA-256
       # still agrees with its manifest entry. Fail-loud if a regenerated
