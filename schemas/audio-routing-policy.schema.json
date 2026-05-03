@@ -37,7 +37,7 @@
           "type": "string",
           "const": "config/pipewire/generated/audio-routing-policy.manifest.json"
         },
-        "generated_conf_writes_allowed": {"type": "boolean", "const": false},
+        "generated_conf_writes_allowed": {"type": "boolean"},
         "live_reload_allowed": {"type": "boolean", "const": false},
         "dry_run_only": {"type": "boolean", "const": true}
       }

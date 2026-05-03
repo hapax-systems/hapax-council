@@ -28,7 +28,9 @@ def test_canonical_descriptor_parses() -> None:
         "config/audio-topology.yaml missing - canonical descriptor deleted?"
     )
     d = _descriptor()
-    assert d.schema_version == 2
+    # Schema v3 (audit F#8): typed filter-chain template params for the
+    # generator's LADSPA loudnorm / duck / usb-bias chains.
+    assert d.schema_version == 3
 
 
 def test_canonical_has_current_livestream_node_ids() -> None:

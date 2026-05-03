@@ -99,6 +99,9 @@ class TestEdge:
 
 class TestTopologyDescriptor:
     def _minimal(self) -> TopologyDescriptor:
+        # schema_version=2 — minimum still accepted post-F#8. The v1 →
+        # v2 symbolic ALSA card-id migration is complete; v1 is now
+        # explicitly rejected at the parser front.
         return TopologyDescriptor(
             schema_version=2,
             description="minimal",
@@ -182,6 +185,7 @@ class TestTopologyDescriptor:
         reloaded = TopologyDescriptor.from_yaml(text)
         assert reloaded.nodes == d.nodes
         assert reloaded.edges == d.edges
+        # _minimal() declares schema_version=2 (the back-compat baseline).
         assert reloaded.schema_version == 2
 
     def test_yaml_captures_filter_chain(self) -> None:
@@ -245,8 +249,44 @@ class TestTopologyDescriptor:
         assert reloaded == d
 
     def test_schema_version_pinned(self) -> None:
+        # Schema v3 (audit F#8) is current; v2 still parses for back-compat.
+        # v1 is no longer accepted — the v1 → v2 symbolic ALSA card-id
+        # migration must complete before parsing succeeds.
         with pytest.raises(ValidationError):
             TopologyDescriptor(
-                schema_version=3,  # future; not yet supported
+                schema_version=4,  # future; not yet supported
                 nodes=[Node(id="a", kind=NodeKind.TAP, pipewire_name="x")],
             )
+
+    def test_schema_version_v3_accepted(self) -> None:
+        d = TopologyDescriptor(
+            schema_version=3,
+            nodes=[Node(id="a", kind=NodeKind.TAP, pipewire_name="x")],
+        )
+        assert d.schema_version == 3
+
+    def test_schema_version_v2_accepted_for_back_compat(self) -> None:
+        d = TopologyDescriptor(
+            schema_version=2,
+            nodes=[Node(id="a", kind=NodeKind.TAP, pipewire_name="x")],
+        )
+        assert d.schema_version == 2
+
+    def test_schema_version_v1_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            TopologyDescriptor(
+                schema_version=1,
+                nodes=[Node(id="a", kind=NodeKind.TAP, pipewire_name="x")],
+            )
+
+    def test_from_yaml_rejects_unknown_schema_version(self) -> None:
+        # Parser-front guard: explicit error message, not deeply-nested
+        # pydantic Literal-mismatch noise.
+        bad = "schema_version: 99\nnodes: []\n"
+        with pytest.raises(ValueError, match="unknown schema_version"):
+            TopologyDescriptor.from_yaml(bad)
+
+    def test_from_yaml_rejects_v1(self) -> None:
+        bad = "schema_version: 1\nnodes:\n  - id: a\n    kind: tap\n    pipewire_name: x\n"
+        with pytest.raises(ValueError, match="unknown schema_version"):
+            TopologyDescriptor.from_yaml(bad)

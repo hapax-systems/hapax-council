@@ -47,7 +47,12 @@ def test_generated_output_contract_is_dry_run_only() -> None:
     assert output["manifest_path"]["const"] == (
         "config/pipewire/generated/audio-routing-policy.manifest.json"
     )
-    assert policy_output["generated_conf_writes_allowed"] is False
+    # Audit F#8 (2026-05-02): generated_conf_writes_allowed is now a free
+    # boolean (no `const`) — the generator gained LADSPA chain templates
+    # so writes are supported. The other two flags stay locked to keep
+    # PipeWire host-reload operator-driven.
+    assert "const" not in output["generated_conf_writes_allowed"]
+    assert isinstance(policy_output["generated_conf_writes_allowed"], bool)
     assert policy_output["live_reload_allowed"] is False
     assert policy_output["dry_run_only"] is True
 
