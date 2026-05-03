@@ -733,3 +733,109 @@ def test_anonymous_supporter_handle_passthrough():
         event = receiver.ingest_webhook(payload, sig, raw_body=raw)
     assert event is not None
     assert event.supporter_handle == "Anonymous"
+
+
+# ---------------------------------------------------------------------------
+# jr-buy-me-a-coffee-rail-idempotency-pin regression pins
+# ---------------------------------------------------------------------------
+
+
+def test_idempotency_store_rejects_duplicate_event_id(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "bmac-idem.db")
+    receiver = BuyMeACoffeeRailReceiver(idempotency_store=store)
+    payload = _donation_payload()
+    payload["event_id"] = "evt-bmac-test-001"
+    raw = _canonical(payload)
+    sig = _sign(raw)
+
+    with mock.patch.dict(
+        "os.environ", {BUY_ME_A_COFFEE_WEBHOOK_SECRET_ENV: _VALID_SECRET}, clear=False
+    ):
+        first = receiver.ingest_webhook(payload, sig, raw_body=raw)
+        second = receiver.ingest_webhook(payload, sig, raw_body=raw)
+
+    assert first is not None
+    assert second is None  # short-circuit
+
+
+def test_idempotency_store_distinct_event_ids_both_processed(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "bmac-idem.db")
+    receiver = BuyMeACoffeeRailReceiver(idempotency_store=store)
+
+    payload_a = _donation_payload()
+    payload_a["event_id"] = "evt-a"
+    raw_a = _canonical(payload_a)
+    sig_a = _sign(raw_a)
+
+    payload_b = _donation_payload(supporter_name="Bob")
+    payload_b["event_id"] = "evt-b"
+    raw_b = _canonical(payload_b)
+    sig_b = _sign(raw_b)
+
+    with mock.patch.dict(
+        "os.environ", {BUY_ME_A_COFFEE_WEBHOOK_SECRET_ENV: _VALID_SECRET}, clear=False
+    ):
+        first = receiver.ingest_webhook(payload_a, sig_a, raw_body=raw_a)
+        second = receiver.ingest_webhook(payload_b, sig_b, raw_body=raw_b)
+
+    assert first is not None
+    assert second is not None
+
+
+def test_idempotency_store_provided_but_event_id_missing_raises(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "bmac-idem.db")
+    receiver = BuyMeACoffeeRailReceiver(idempotency_store=store)
+    payload = _donation_payload()
+    del payload["event_id"]
+    raw = _canonical(payload)
+    sig = _sign(raw)
+
+    with mock.patch.dict(
+        "os.environ", {BUY_ME_A_COFFEE_WEBHOOK_SECRET_ENV: _VALID_SECRET}, clear=False
+    ):
+        with pytest.raises(ReceiveOnlyRailError, match="event_id"):
+            receiver.ingest_webhook(payload, sig, raw_body=raw)
+
+
+def test_no_idempotency_store_means_no_idempotency_check():
+    payload = _donation_payload()
+    payload["event_id"] = "ignored-without-store"
+    raw = _canonical(payload)
+    sig = _sign(raw)
+
+    with mock.patch.dict(
+        "os.environ", {BUY_ME_A_COFFEE_WEBHOOK_SECRET_ENV: _VALID_SECRET}, clear=False
+    ):
+        receiver = BuyMeACoffeeRailReceiver()
+        a = receiver.ingest_webhook(payload, sig, raw_body=raw)
+        b = receiver.ingest_webhook(payload, sig, raw_body=raw)
+
+    assert a is not None
+    assert b is not None  # no short-circuit
+
+
+def test_idempotency_store_persists_across_receivers(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    db = tmp_path / "bmac-idem.db"
+    payload = _donation_payload()
+    payload["event_id"] = "evt-persist"
+    raw = _canonical(payload)
+    sig = _sign(raw)
+
+    with mock.patch.dict(
+        "os.environ", {BUY_ME_A_COFFEE_WEBHOOK_SECRET_ENV: _VALID_SECRET}, clear=False
+    ):
+        a = BuyMeACoffeeRailReceiver(idempotency_store=IdempotencyStore(db_path=db))
+        first = a.ingest_webhook(payload, sig, raw_body=raw)
+        b = BuyMeACoffeeRailReceiver(idempotency_store=IdempotencyStore(db_path=db))
+        second = b.ingest_webhook(payload, sig, raw_body=raw)
+
+    assert first is not None
+    assert second is None

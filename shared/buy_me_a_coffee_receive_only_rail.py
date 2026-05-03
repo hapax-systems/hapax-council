@@ -133,6 +133,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from shared._rail_idempotency import (
+    IdempotencyError as _SharedIdempotencyError,
+)
+from shared._rail_idempotency import (
+    IdempotencyStore,
+)
+
 BUY_ME_A_COFFEE_WEBHOOK_SECRET_ENV = "BUY_ME_A_COFFEE_WEBHOOK_SECRET"
 
 _ISO_4217_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
@@ -392,8 +399,10 @@ class BuyMeACoffeeRailReceiver:
         self,
         *,
         secret_env_var: str = BUY_ME_A_COFFEE_WEBHOOK_SECRET_ENV,
+        idempotency_store: IdempotencyStore | None = None,
     ) -> None:
         self._secret_env_var = secret_env_var
+        self._idempotency_store = idempotency_store
 
     def _resolve_secret(self) -> str:
         return os.environ.get(self._secret_env_var, "")
@@ -446,6 +455,19 @@ class BuyMeACoffeeRailReceiver:
         amount_cents, currency = _extract_amount_and_currency(payer)
         occurred_at = _extract_occurred_at(payload, payer)
 
+        if self._idempotency_store is not None:
+            event_id = payload.get("event_id")
+            if not isinstance(event_id, str) or not event_id:
+                raise ReceiveOnlyRailError(
+                    "idempotency_store provided but payload missing top-level 'event_id' "
+                    "(BMaC's per-delivery UUID; required for dedup keying)"
+                )
+            try:
+                if not self._idempotency_store.record_or_skip(event_id):
+                    return None
+            except _SharedIdempotencyError as exc:
+                raise ReceiveOnlyRailError(str(exc)) from exc
+
         try:
             return CoffeeEvent(
                 supporter_handle=supporter_handle,
@@ -464,5 +486,6 @@ __all__ = [
     "BuyMeACoffeeRailReceiver",
     "CoffeeEvent",
     "CoffeeEventKind",
+    "IdempotencyStore",
     "ReceiveOnlyRailError",
 ]
