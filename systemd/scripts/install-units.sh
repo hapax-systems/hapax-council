@@ -20,6 +20,37 @@ DECOMMISSIONED_UNITS=(
     logos-dev.service
     tabbyapi-hermes8b.service
     hapax-discord-webhook.service
+    # Superseded 2026-05-02 by hapax-parametric-modulation-heartbeat.service.
+    # Per memory `feedback_no_presets_use_parametric_modulation`: preset-pulse
+    # heartbeats (PR #2239) are the wrong unit. Parametric modulation at the
+    # node-graph level (cc-task ``parametric-modulation-heartbeat``) replaces
+    # them. Listing here ensures the unit is disabled+masked on the next
+    # install run, even on operator workstations where it was previously
+    # enabled. See ``docs/superpowers/specs/2026-05-02-parametric-modulation-heartbeat.md``
+    # §"Migration" and the 24h auditor batch 2026-05-02 finding #13.
+)
+
+# Services that must be auto-enabled (and started) on install.
+#
+# Per ``feedback_features_on_by_default`` + ``feedback_always_activate_features``
+# (memory): shipping a unit file is not the same as shipping a feature. The
+# 24h auditor batch 2026-05-02 finding #13 caught five recently-shipped
+# services living dormant in the repo because the installer only auto-enabled
+# *.timer units (via the sweep + new_timers paths above) — never *.service
+# units. Adding a service here flips it ON by default at install time so the
+# operator does not have to remember a manual ``systemctl --user enable --now``
+# step per shipped unit.
+#
+# Membership criteria: the unit is a persistent always-on daemon (or a
+# oneshot whose first run is desirable at install time) and shipped without
+# operator-facing opt-in semantics. Timer-driven units do NOT belong here —
+# the existing timer sweep covers them.
+AUTO_ENABLE_SERVICES=(
+    hapax-bt-firmware-watchdog.service               # PR #2223
+    hapax-xhci-death-watchdog.service                # PR #2220
+    hapax-private-broadcast-leak-guard.service       # PR #2221 (also has .timer; kicking the oneshot once at install fires the first protection cycle immediately)
+    hapax-broadcast-egress-loopback-producer.service # PR #2235
+    hapax-parametric-modulation-heartbeat.service    # PR #2252 (supersedes hapax-preset-bias-heartbeat above)
 )
 # Privacy / safety-critical timers that MUST be enabled. The script's
 # sweep loop also enables every linked-but-not-enabled timer, so this
@@ -184,6 +215,50 @@ elif [ "${#new_timers[@]}" -gt 0 ]; then
     echo "skipped enabling ${#new_timers[@]} new timer(s) (SKIP_TIMER_ENABLE=1)"
 fi
 
+# Auto-enable persistent daemon services listed in AUTO_ENABLE_SERVICES.
+#
+# 24h auditor batch 2026-05-02 finding #13: shipped-but-dormant services
+# violate the operator's standing directive that features ship live, not
+# behind a manual enable step (memory: ``feedback_features_on_by_default``
+# + ``feedback_always_activate_features``). The timer paths above only
+# touch *.timer units; these *.service units need a parallel sweep.
+#
+# ``enable --now`` is idempotent: already-enabled and already-running
+# units are no-ops, so re-running the installer is safe. Honors the
+# same ``SKIP_TIMER_ENABLE`` escape hatch as the timer sweep — there's
+# no separate ``SKIP_SERVICE_ENABLE`` because both paths exist for the
+# same reason (operator may want a quiet install during incident response).
+if [ "${SKIP_TIMER_ENABLE:-0}" != "1" ]; then
+    services_enabled=0
+    for service_name in "${AUTO_ENABLE_SERVICES[@]}"; do
+        # Skip if the unit isn't on disk in the repo (defense-in-depth: the
+        # symlink loop above won't have linked it, so enabling would fail
+        # noisily). Surface as a WARN so the operator notices a stale entry
+        # in AUTO_ENABLE_SERVICES vs. a renamed/removed unit.
+        if [ ! -f "$REPO_DIR/$service_name" ]; then
+            echo "WARN: AUTO_ENABLE_SERVICES entry $service_name not found in $REPO_DIR (skip)" >&2
+            continue
+        fi
+        # Skip if decommissioned — covers the case where someone moved a
+        # unit name into both lists by mistake.
+        if is_decommissioned_unit "$service_name"; then
+            echo "WARN: $service_name is in DECOMMISSIONED_UNITS; not auto-enabling" >&2
+            continue
+        fi
+        if systemctl --user enable --now "$service_name" 2>/dev/null; then
+            echo "auto-enabled: $service_name"
+            services_enabled=$((services_enabled + 1))
+        else
+            echo "WARN: failed to auto-enable $service_name (run manually)" >&2
+        fi
+    done
+    if [ "$services_enabled" -gt 0 ]; then
+        echo "auto-enabled $services_enabled persistent service(s)"
+    fi
+elif [ "${#AUTO_ENABLE_SERVICES[@]}" -gt 0 ]; then
+    echo "skipped auto-enabling ${#AUTO_ENABLE_SERVICES[@]} service(s) (SKIP_TIMER_ENABLE=1)"
+fi
+
 # LRR Phase 3 item 1: walk ``systemd/units/*.service.d/`` directories
 # and install each drop-in as a real symlink under
 # ``~/.config/systemd/user/<service>.service.d/<name>.conf``. Previously
@@ -223,7 +298,7 @@ if [ "$dropin_changed" -gt 0 ]; then
     echo "daemon-reload done ($dropin_changed drop-in conf(s) linked)"
 fi
 
-if [ "$changed" -eq 0 ] && [ "${enabled_in_sweep:-0}" -eq 0 ] && [ "$dropin_changed" -eq 0 ]; then
+if [ "$changed" -eq 0 ] && [ "${enabled_in_sweep:-0}" -eq 0 ] && [ "${services_enabled:-0}" -eq 0 ] && [ "$dropin_changed" -eq 0 ]; then
     echo "all units up to date"
 fi
 
