@@ -729,6 +729,27 @@ OperatorVADGate.decide
 OperatorVADGate.match_threshold
 OperatorVADDecision.should_duck
 
+# MixerGainWriter Protocol + writer impls (cc-task audio-audit-C Phase 0):
+# substrate ships ahead of the ducker swap PR. Phase 1 will inject the writer
+# into agents.audio_ducker.__main__ and swap the in-place subprocess.run for
+# self._writer.write. Until then the protocol + Subprocess impl + Native
+# placeholder are exercised by tests only.
+from agents.audio_ducker.pw_writer import (
+    MIXER_WRITE_LATENCY_SECONDS,
+    MixerGainWriter,
+    MixerWriteOutcome,
+    NativePWWriter,
+    SubprocessPWWriter,
+)
+
+MixerGainWriter
+SubprocessPWWriter
+SubprocessPWWriter.write
+NativePWWriter
+NativePWWriter.write
+MixerWriteOutcome.succeeded
+MIXER_WRITE_LATENCY_SECONDS
+
 # PerceptualField grounding key registry: registry rows + helpers expose a
 # public API for downstream director / autonomous-narration / public-broadcast
 # consumers. Tests + downstream phases call these dynamically.
