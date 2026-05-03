@@ -1,0 +1,14 @@
+[Unit]
+Description=Hapax OBS broadcast → iLoud Micro Monitor BT loopback
+After=pipewire.service pipewire-pulse.service
+Requires=pipewire.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=%h/.local/bin/hapax-obs-monitor-load
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=pipewire.service default.target
