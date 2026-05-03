@@ -201,3 +201,105 @@ def apply_layout_switch(
     layout_state.mutate(lambda _previous: new_layout)  # type: ignore[attr-defined]
     switcher.record_switch(selection, now=now)
     return True
+
+
+# u6-periodic-tick-driver — periodic driver wrapping apply_layout_switch.
+# The compositor's layout selector previously needed a callsite (director-
+# loop tick or dedicated timer) to drive it; this is that timer. Runs in
+# a thread until stop_event is set; per-iteration cost is one state read
+# + (at most) one layout-load + mutate. Cooldown enforcement on the
+# switcher prevents storms even if state oscillates rapidly.
+DEFAULT_DRIVER_INTERVAL_S: float = 30.0
+MIN_DRIVER_INTERVAL_S: float = 10.0
+
+
+def run_layout_switch_loop(
+    *,
+    layout_state: object,
+    loader: object,
+    switcher: LayoutSwitcher,
+    state_provider: Callable[[], dict[str, object]],
+    interval_s: float = DEFAULT_DRIVER_INTERVAL_S,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    stop_event: object | None = None,
+    now_fn: Callable[[], float] = time.time,
+    iterations: int | None = None,
+) -> int:
+    """Tick `apply_layout_switch` every `interval_s` until `stop_event.is_set()`.
+
+    Parameters
+    ----------
+    layout_state, loader, switcher:
+        Same as `apply_layout_switch` — the targets of each tick's
+        recommendation + cooldown gate + observability counter.
+    state_provider:
+        Zero-arg callable returning a dict with keys:
+        ``consent_safe_active`` (bool), ``vinyl_playing`` (bool),
+        ``director_activity`` (str | None), ``stream_mode`` (str | None).
+        Each tick re-reads via this callable so live state-file
+        changes propagate at the next interval. Missing keys default
+        to safe values per `apply_layout_switch`.
+    interval_s:
+        Minimum seconds between ticks. Defaults to 30s
+        (`DEFAULT_DRIVER_INTERVAL_S`); MIN_DRIVER_INTERVAL_S = 10s
+        floor matches the cooldown debounce so we cannot tick faster
+        than the switch can apply.
+    sleep_fn:
+        Override for tests so they don't have to wait the wall-clock
+        interval. Defaults to `time.sleep`.
+    stop_event:
+        Optional `threading.Event`-shape object with `is_set()`. When
+        the event is set the loop exits cleanly at the start of the
+        next iteration. None means "never stop" (caller must
+        terminate via `iterations`).
+    now_fn:
+        Override for tests; defaults to `time.time`. Passed through
+        to `apply_layout_switch` as the cooldown clock.
+    iterations:
+        If set, run at most N iterations then return. Useful for
+        bounded test runs.
+
+    Returns
+    -------
+    Count of `apply_layout_switch` calls that returned True (a real
+    switch was applied — same-layout no-ops + cooldown-blocks don't
+    count). Useful for test assertions.
+
+    Cc-task: ``u6-periodic-tick-driver``.
+    """
+    if interval_s < MIN_DRIVER_INTERVAL_S:
+        interval_s = MIN_DRIVER_INTERVAL_S
+    switches = 0
+    iter_count = 0
+    while True:
+        if stop_event is not None:
+            try:
+                if stop_event.is_set():  # type: ignore[attr-defined]
+                    break
+            except Exception:
+                log.debug("stop_event.is_set() failed; continuing loop", exc_info=True)
+        if iterations is not None and iter_count >= iterations:
+            break
+        try:
+            state = state_provider() or {}
+        except Exception:
+            log.warning("layout_switch state_provider failed; skipping tick", exc_info=True)
+            state = {}
+        try:
+            applied = apply_layout_switch(
+                layout_state,
+                loader,
+                switcher,
+                consent_safe_active=bool(state.get("consent_safe_active", False)),
+                vinyl_playing=bool(state.get("vinyl_playing", False)),
+                director_activity=state.get("director_activity"),  # type: ignore[arg-type]
+                stream_mode=state.get("stream_mode"),  # type: ignore[arg-type]
+                now=now_fn(),
+            )
+            if applied:
+                switches += 1
+        except Exception:
+            log.warning("apply_layout_switch tick raised; loop continues", exc_info=True)
+        iter_count += 1
+        sleep_fn(interval_s)
+    return switches
