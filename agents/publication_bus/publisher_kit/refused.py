@@ -174,6 +174,41 @@ class AlphaXivCommentsRefusedPublisher(RefusedPublisher):
     )
 
 
+class WiseDirectDebitRefusedPublisher(RefusedPublisher):
+    """Wise Direct Debit (active reception) — receive-only invariant precludes.
+
+    Per the Wise design spike (`docs/research/2026-05-03-wise-ach-receive-
+    only-rail-design.md` § Open questions #5): Wise's 2026 Direct Debit
+    API allows platforms to PULL funds from external bank accounts. The
+    receive-only rail invariant forbids initiating outbound monetary
+    movement, even when the movement collects funds toward the operator
+    rather than dispersing them.
+
+    The distinction matters: receive-only means we never INITIATE money
+    movement on third-party accounts. A pull-payment is operator-
+    initiated debit against a payer's account; consent-wise it is the
+    inverse direction of a passive deposit. Treating "we collect, so
+    it's incoming" as receive-only would erode the invariant for every
+    rail (every push payment also "collects"). The bright line is who
+    initiates the debit instruction, not where the money lands.
+
+    The passive Wise reception path (virtual USD account details +
+    `account-details-payment#state-change` webhook) remains acceptable
+    and is the design spike's recommended Phase-0 implementation. Only
+    the active Direct Debit path is REFUSED.
+    """
+
+    surface_name = "wise-direct-debit-active-reception"
+    refusal_reason = (
+        "Wise Direct Debit pulls funds from payer bank accounts via "
+        "operator-initiated debit instructions. Even though funds land on "
+        "the operator side, initiating the movement violates the receive-"
+        "only rail invariant. The passive virtual-USD-account path "
+        "(account-details-payment#state-change webhook) is the "
+        "constitutional alternative."
+    )
+
+
 # Registry of refused-publisher classes for module-load auditing.
 REFUSED_PUBLISHER_CLASSES: list[type[RefusedPublisher]] = [
     BandcampRefusedPublisher,
@@ -182,6 +217,7 @@ REFUSED_PUBLISHER_CLASSES: list[type[RefusedPublisher]] = [
     RymRefusedPublisher,
     CrossrefEventDataRefusedPublisher,
     AlphaXivCommentsRefusedPublisher,
+    WiseDirectDebitRefusedPublisher,
 ]
 
 
@@ -191,6 +227,8 @@ __all__ = [
     "BandcampRefusedPublisher",
     "CrossrefEventDataRefusedPublisher",
     "DiscogsRefusedPublisher",
+    "DiscordWebhookRefusedPublisher",
     "RefusedPublisher",
     "RymRefusedPublisher",
+    "WiseDirectDebitRefusedPublisher",
 ]

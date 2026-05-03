@@ -44,9 +44,11 @@ class TestRegisteredRefusedClasses:
         publishers (bandcamp / discogs / rym / crossref-event-data); cc-task
         `cold-contact-alphaxiv-comments` adds the 5th (alphaxiv-comments);
         cc-task `discord-public-event-activation-or-retire` (2026-05-01
-        retirement) adds the 6th (discord-webhook).
+        retirement) adds the 6th (discord-webhook); the Wise design spike's
+        `direct-debit-active-reception-refusal-brief` follow-up adds the
+        7th (wise-direct-debit-active-reception).
         """
-        assert len(REFUSED_PUBLISHER_CLASSES) == 6
+        assert len(REFUSED_PUBLISHER_CLASSES) == 7
 
     def test_all_refused_classes_subclass_refused_publisher(self) -> None:
         for cls in REFUSED_PUBLISHER_CLASSES:

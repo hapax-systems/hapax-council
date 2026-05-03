@@ -31,3 +31,8 @@ refusals:
     cc_task: crossref-event-data
     publisher_class: agents.publication_bus.publisher_kit.refused.CrossrefEventDataRefusedPublisher
     lifecycle_probe: crossref-event-data-restored
+  wise-direct-debit-active-reception:
+    brief: docs/refusal-briefs/wise-direct-debit-active-reception.md
+    cc_task: direct-debit-active-reception-refusal-brief
+    publisher_class: agents.publication_bus.publisher_kit.refused.WiseDirectDebitRefusedPublisher
+    lifecycle_probe: wise-direct-debit-payer-mandate-shape
