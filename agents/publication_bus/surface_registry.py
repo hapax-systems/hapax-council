@@ -114,6 +114,19 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "to the canonical refusal log under axiom full_auto_or_nothing."
         ),
     ),
+    "treasury-prime-receiver": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="webhook",
+        dispatch_entry="logos.api.routes.payment_rails:receive_treasury_prime_webhook",
+        activation_path="agents.publication_bus.treasury_prime_publisher.TreasuryPrimePublisher",
+        scope_note=(
+            "Tenth (final) wired monetization rail. POST "
+            "/api/payment-rails/treasury-prime on logos :8051; HMAC SHA-256 "
+            "over raw body via X-Signature + TREASURY_PRIME_WEBHOOK_SECRET "
+            "env var. Phase 0: incoming_ach.create only. No cancellation "
+            "auto-link."
+        ),
+    ),
     "modern-treasury-receiver": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="webhook",
