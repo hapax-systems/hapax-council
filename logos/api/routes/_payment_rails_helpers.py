@@ -13,8 +13,10 @@ idempotency check.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+from collections.abc import Iterator
 from typing import Any, Protocol
 
 from fastapi import HTTPException, Request
@@ -139,8 +141,30 @@ def dispatch_publish_result(
     return JSONResponse(body)
 
 
+@contextlib.contextmanager
+def wrap_rail_error_to_400(error_class: type[Exception], *, log_label: str) -> Iterator[None]:
+    """Translate a rail's ``ReceiveOnlyRailError`` into HTTP 400.
+
+    Each rail's ``ingest_webhook`` raises its own per-rail subclass of
+    ``ReceiveOnlyRailError``. The route's responsibility is uniform:
+    log a warning, raise HTTPException(400, detail=str(exc)). This
+    context manager DRYs the try/except pattern across 10 rails.
+
+    Usage::
+
+        with wrap_rail_error_to_400(MyRailError, log_label="my_rail"):
+            event = receiver.ingest_webhook(...)
+    """
+    try:
+        yield
+    except error_class as exc:
+        log.warning("%s webhook rejected: %s", log_label, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 __all__ = [
     "dispatch_publish_result",
     "parse_webhook_request_body",
     "render_null_event_response",
+    "wrap_rail_error_to_400",
 ]
