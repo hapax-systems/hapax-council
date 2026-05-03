@@ -1770,3 +1770,26 @@ from shared.audio_duck_compose import (
 _audit_C_max_total_atten_db
 _audit_C_amplitude_from_db
 _audit_C_compose_attenuations
+
+# Perceptual dB-domain ramp (cc-task audio-audit-C-perceptual-db-ramp Phase 0):
+# pure interpolator + amplitude conversion ship ahead of the call-site swap.
+# Phase 1 will replace the ducker's linear amplitude lerp with
+# perceptual_ramp_amplitude(start_db, end_db, t). Until then, only the test
+# suite exercises these symbols.
+from shared.audio_perceptual_ramp import (
+    DUCK_FLOOR_DB as _audit_C_db_floor,
+)
+from shared.audio_perceptual_ramp import (
+    amplitude_from_db as _audit_C_perceptual_amplitude_from_db,
+)
+from shared.audio_perceptual_ramp import (
+    lerp_db as _audit_C_lerp_db,
+)
+from shared.audio_perceptual_ramp import (
+    perceptual_ramp_amplitude as _audit_C_perceptual_ramp_amplitude,
+)
+
+_audit_C_db_floor
+_audit_C_perceptual_amplitude_from_db
+_audit_C_lerp_db
+_audit_C_perceptual_ramp_amplitude
