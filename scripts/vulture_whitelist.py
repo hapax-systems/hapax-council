@@ -2098,3 +2098,53 @@ from agents.reverie._satellites import (
 )
 
 _u8_effective_recruitment_threshold
+
+# Audio format/rate compat helpers (cc-task jr-broadcast-chain-integration-
+# tier1-rate-format Phase 0): pure-Python sine generator + RMS dBFS calc +
+# format conversion + linear resample + 3 assertion helpers. Phase 1 fixture
+# spawns ephemeral PipeWire null sinks and pushes through the live chain.
+from shared.audio_format_compat_helpers import (
+    DEFAULT_BIT_DEPTH as _tier1_default_bit_depth,
+)
+from shared.audio_format_compat_helpers import (
+    DEFAULT_SAMPLE_RATE_HZ as _tier1_default_sample_rate_hz,
+)
+from shared.audio_format_compat_helpers import (
+    SILENCE_FLOOR_DBFS as _tier1_silence_floor_dbfs,
+)
+from shared.audio_format_compat_helpers import (
+    assert_format_conversion_did_not_silence as _tier1_assert_format_conversion_did_not_silence,
+)
+from shared.audio_format_compat_helpers import (
+    assert_resample_did_not_silence as _tier1_assert_resample_did_not_silence,
+)
+from shared.audio_format_compat_helpers import (
+    assert_rms_within_attenuation as _tier1_assert_rms_within_attenuation,
+)
+from shared.audio_format_compat_helpers import (
+    float32_to_int16 as _tier1_float32_to_int16,
+)
+from shared.audio_format_compat_helpers import (
+    generate_sine_int16 as _tier1_generate_sine_int16,
+)
+from shared.audio_format_compat_helpers import (
+    int16_to_float32 as _tier1_int16_to_float32,
+)
+from shared.audio_format_compat_helpers import (
+    linear_resample_int16 as _tier1_linear_resample_int16,
+)
+from shared.audio_format_compat_helpers import (
+    rms_dbfs_int16 as _tier1_rms_dbfs_int16,
+)
+
+_tier1_default_bit_depth
+_tier1_default_sample_rate_hz
+_tier1_silence_floor_dbfs
+_tier1_assert_format_conversion_did_not_silence
+_tier1_assert_resample_did_not_silence
+_tier1_assert_rms_within_attenuation
+_tier1_float32_to_int16
+_tier1_generate_sine_int16
+_tier1_int16_to_float32
+_tier1_linear_resample_int16
+_tier1_rms_dbfs_int16
