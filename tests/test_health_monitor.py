@@ -886,6 +886,7 @@ class TestRegistry:
             "sync",
             "perception",
             "m8",
+            "audio",
         }
         assert expected == set(CHECK_REGISTRY.keys())
 

@@ -10,7 +10,12 @@ when you swap presets — only the filter graph does.
 | File | Character |
 |---|---|
 | `voice-fx-chain.conf` | Studio vocal chain: HP 80 Hz, low-mid cut 350 Hz, presence 3 kHz, air 10 kHz. Neutral-leaning clarity. |
-| `voice-fx-radio.conf` | Telephone / AM-radio: bandpass 400–3400 Hz, 6 dB peak at 1.8 kHz. Transmitted/in-world treatment. |
+
+> Note: a `voice-fx-radio.conf` (telephone / AM-radio bandpass) preset was
+> removed 2026-05-03 along with the PreSonus Studio 24c retirement — its
+> hardcoded `target.object` pointed at a non-existent 24c sink. If a
+> radio-style preset is needed, fork `voice-fx-chain.conf` and replace
+> the `filter.graph` nodes; do NOT pin a hardware target.
 
 Add new presets by dropping another `voice-fx-*.conf` next to these, keeping
 the capture sink name `hapax-voice-fx-capture`.
@@ -95,7 +100,7 @@ state-machine driver; the sink stays at unity gain until then.
 
 See `docs/runbooks/audio-topology.md § 5` for the full ducking matrix.
 
-## Vinyl-on-stream routing (HOMAGE Phase D1 verification)
+## Vinyl-on-stream routing
 
 Historical (PreSonus Studio 24c was decommissioned 2026-05): vinyl audio
 reached the broadcast via the 24c analog mix — turntable line-out →

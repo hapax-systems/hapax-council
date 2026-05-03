@@ -173,7 +173,7 @@ Live `jq 'keys | length' /dev/shm/hapax-imagination/uniforms.json` should be ≥
 
 ## Voice FX Chain
 
-Hapax TTS output (Kokoro 82M CPU) can be routed through a user-configurable PipeWire `filter-chain` before hitting the Studio 24c analog output. Presets at `config/pipewire/voice-fx-*.conf`; install into `~/.config/pipewire/pipewire.conf.d/`, restart pipewire, export `HAPAX_TTS_TARGET=hapax-voice-fx-capture` before starting `hapax-daimonion.service`. Unset falls through to default wireplumber routing. All presets share the same sink name so swapping does not require restarting daimonion. Details: `config/pipewire/README.md`.
+Hapax TTS output (Kokoro 82M CPU) can be routed through a user-configurable PipeWire `filter-chain` before being normalised by `hapax-loudnorm-capture` and reaching the L-12 → Evil Pet → broadcast path. (Historical: prior to the 24c retirement 2026-05-03, the chain terminated at the PreSonus Studio 24c analog output.) Presets at `config/pipewire/voice-fx-*.conf`; install into `~/.config/pipewire/pipewire.conf.d/`, restart pipewire, export `HAPAX_TTS_TARGET=hapax-voice-fx-capture` before starting `hapax-daimonion.service`. Unset falls through to default wireplumber routing. All presets share the same sink name so swapping does not require restarting daimonion. Details: `config/pipewire/README.md`.
 
 ## CC Task Tracking (Obsidian SSOT — D-30)
 
@@ -309,7 +309,7 @@ Destructive command detection strips quoted strings before matching to prevent f
 
 **Keyboard input:** `EvdevInputBackend` reads `/dev/input/event*` directly (Keychron, Logitech USB Receiver), filtering virtual devices (RustDesk UInput, mouce-library-fake-mouse, ydotoold) by name. Replaces logind-based detection which was polluted by Claude Code subprocess activity.
 
-**Contact mic:** Cortado MKIII on PreSonus Studio 24c Input 2 (48V phantom). Captured via `pw-cat --record --target "Contact Microphone"` at 16kHz mono int16. DSP: RMS energy, onset detection, spectral centroid, autocorrelation, gesture classification. Provides `desk_activity` (idle/typing/tapping/drumming/active), `desk_energy`, `desk_onset_rate`, `desk_tap_gesture`.
+**Contact mic:** Cortado MKIII on the L-12 mixer XLR input (CH2, AUX1; 48V phantom). Captured via `pw-cat --record --target "Contact Microphone"` at 16kHz mono int16. DSP: RMS energy, onset detection, spectral centroid, autocorrelation, gesture classification. Provides `desk_activity` (idle/typing/tapping/drumming/active), `desk_energy`, `desk_onset_rate`, `desk_tap_gesture`. (Historical: prior to the 24c retirement 2026-05-03, the contact mic landed on PreSonus Studio 24c Input 2.)
 
 **Prediction monitor:** `agents/reverie_prediction_monitor.py` (1-min systemd timer) tracks 6 behavioral predictions + live operational metrics. Grafana dashboard at `localhost:3001/d/reverie-predictions/`. Prometheus scrape at 30s. Metrics at `/api/predictions/metrics`.
 
