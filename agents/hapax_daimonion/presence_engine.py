@@ -25,6 +25,7 @@ from typing import Any
 
 from agents.hapax_daimonion.perception import PerceptionTier
 from agents.hapax_daimonion.primitives import Behavior
+from shared.bayesian_impingement_emitter import emit_state_transition_impingement
 from shared.claim import ClaimEngine, ClaimState, LRDerivation, TemporalProfile
 
 log = logging.getLogger(__name__)
@@ -217,6 +218,24 @@ class PresenceEngine:
                         "signals": {k: v for k, v in signal_observations.items() if v is not None},
                     },
                 )
+            # Audit 3 fix #1: broadcast the transition on the impingement
+            # bus so the cosine-similarity recruiter sees a richly-narrated
+            # "operator-presence transitioned" event with the actual
+            # measured posterior + delta + active signal fingerprint. This
+            # is what drives diverse capability recruitment instead of
+            # collapsing the posterior to a scalar at the JSON boundary.
+            try:
+                emit_state_transition_impingement(
+                    source="presence_engine",
+                    claim_name="operator-presence",
+                    from_state=old_state,
+                    to_state=self._state,
+                    posterior=posterior,
+                    prev_posterior=self._last_posterior,
+                    active_signals={k: v for k, v in signal_observations.items() if v is not None},
+                )
+            except Exception:
+                log.debug("presence impingement emit failed", exc_info=True)
         else:
             log.debug(
                 "PRESENCE tick: state=%s posterior=%.3f signals=%s",
