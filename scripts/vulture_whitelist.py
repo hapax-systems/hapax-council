@@ -1778,8 +1778,12 @@ receive_treasury_prime_webhook
 # caller; whitelisted until director-loop / systemd-timer wiring lands
 # in a 3rd-slice PR.
 from agents.studio_compositor.layout_switcher import apply_layout_switch as _r9_apply_layout_switch
+from agents.studio_compositor.layout_switcher import (
+    apply_layout_switch_via_store as _r9_apply_layout_switch_via_store,
+)
 
 _r9_apply_layout_switch
+_r9_apply_layout_switch_via_store
 
 # u6-periodic-tick-driver (cc-task u6-periodic-tick-driver, this PR):
 # the periodic driver wrapper for apply_layout_switch. Ships ahead of

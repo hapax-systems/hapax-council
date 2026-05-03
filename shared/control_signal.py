@@ -11,6 +11,7 @@ Published to /dev/shm/hapax-{component}/health.json for mesh-wide aggregation.
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +44,6 @@ def publish_health(signal: ControlSignal, *, path: Path | None = None) -> None:
     if path is None:
         path = Path(f"/dev/shm/hapax-{signal.component}/health.json")
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
     tmp.write_text(json.dumps(signal.to_dict()), encoding="utf-8")
-    tmp.rename(path)
+    tmp.replace(path)
