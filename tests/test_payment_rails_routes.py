@@ -1209,11 +1209,13 @@ def _ko_fi_payload(
     currency: str = "USD",
     occurred_at: str = "2026-05-03T00:00:00Z",
     token: str | None = _KO_FI_TOKEN,
+    kofi_transaction_id: str = "ko-fi-tx-test-001",
 ) -> dict:
     """Realistic Ko-fi webhook envelope (Ko-fi sends straight JSON)."""
     payload = {
         "verification_token": token,
         "message_id": "fff-ddd-eee-aaa",
+        "kofi_transaction_id": kofi_transaction_id,
         "timestamp": occurred_at,
         "type": kind,
         "from_name": sender,
@@ -1240,9 +1242,24 @@ def ko_fi_token_env(monkeypatch: pytest.MonkeyPatch) -> str:
     return _KO_FI_TOKEN
 
 
+@pytest.fixture
+def ko_fi_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's Ko-fi idempotency singleton + point at tmp db."""
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._ko_fi_idempotency_store = None
+    yield tmp_path / "ko-fi" / "idempotency.db"
+    routes_mod._ko_fi_idempotency_store = None
+
+
 @pytest.mark.asyncio
-async def test_ko_fi_donation_writes_manifest(ko_fi_output_dir: Path, ko_fi_token_env: str) -> None:
-    payload = _ko_fi_payload(kind="Donation")
+async def test_ko_fi_donation_writes_manifest(
+    ko_fi_output_dir: Path,
+    ko_fi_token_env: str,
+    ko_fi_idempotency_isolated: Path,
+) -> None:
+    payload = _ko_fi_payload(kind="Donation", kofi_transaction_id="tx-donation-test")
     raw = json.dumps(payload).encode("utf-8")
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -1263,9 +1280,13 @@ async def test_ko_fi_donation_writes_manifest(ko_fi_output_dir: Path, ko_fi_toke
 
 @pytest.mark.asyncio
 async def test_ko_fi_subscription_writes_manifest(
-    ko_fi_output_dir: Path, ko_fi_token_env: str
+    ko_fi_output_dir: Path,
+    ko_fi_token_env: str,
+    ko_fi_idempotency_isolated: Path,
 ) -> None:
-    payload = _ko_fi_payload(kind="Subscription", sender="bob-patron")
+    payload = _ko_fi_payload(
+        kind="Subscription", sender="bob-patron", kofi_transaction_id="tx-sub-test"
+    )
     raw = json.dumps(payload).encode("utf-8")
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -1339,6 +1360,77 @@ def test_ko_fi_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# Ko-fi — idempotency hard pin (cc-task jr-ko-fi-rail-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_ko_fi_route_replays_same_transaction_id_returns_duplicate(
+    ko_fi_output_dir: Path,
+    ko_fi_token_env: str,
+    ko_fi_idempotency_isolated: Path,
+) -> None:
+    """Two POSTs of identical Ko-fi payload + transaction id → 2nd is duplicate."""
+    payload = _ko_fi_payload(kind="Donation", kofi_transaction_id="tx-replay-001")
+    raw = json.dumps(payload).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post("/api/payment-rails/ko-fi", content=raw)
+        second = await client.post("/api/payment-rails/ko-fi", content=raw)
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["kofi_transaction_id"] == "tx-replay-001"
+
+    files = list(ko_fi_output_dir.glob("event-donation-*.md"))
+    assert len(files) == 1, f"expected 1 manifest, got {files}"
+
+
+@pytest.mark.asyncio
+async def test_ko_fi_route_distinct_transaction_ids_both_processed(
+    ko_fi_output_dir: Path,
+    ko_fi_token_env: str,
+    ko_fi_idempotency_isolated: Path,
+) -> None:
+    """Two payloads with distinct kofi_transaction_id → both write manifests."""
+    payload_a = _ko_fi_payload(kind="Donation", kofi_transaction_id="tx-distinct-a")
+    payload_b = _ko_fi_payload(
+        kind="Donation", sender="bob-supporter", kofi_transaction_id="tx-distinct-b"
+    )
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post("/api/payment-rails/ko-fi", content=raw_a)
+        r_b = await client.post("/api/payment-rails/ko-fi", content=raw_b)
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(ko_fi_output_dir.glob("event-donation-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_ko_fi_route_missing_transaction_id_returns_400(
+    ko_fi_output_dir: Path,
+    ko_fi_token_env: str,
+    ko_fi_idempotency_isolated: Path,
+) -> None:
+    """Idempotency store provided + payload missing kofi_transaction_id → 400."""
+    payload = _ko_fi_payload(kind="Donation")
+    del payload["kofi_transaction_id"]
+    raw = json.dumps(payload).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/payment-rails/ko-fi", content=raw)
+
+    assert response.status_code == 400
+    assert "kofi_transaction_id" in response.json()["detail"]
 
 
 # ===========================================================================

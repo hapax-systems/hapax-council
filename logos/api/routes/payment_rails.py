@@ -131,6 +131,22 @@ router = APIRouter(prefix="/api/payment-rails", tags=["payment-rails"])
 
 _stripe_payment_link_idempotency_store: StripePaymentLinkIdempotencyStore | None = None
 _patreon_idempotency_store: _RailIdempotencyStore | None = None
+_ko_fi_idempotency_store: _RailIdempotencyStore | None = None
+
+
+def _get_ko_fi_idempotency_store() -> _RailIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for Ko-fi.
+
+    Keyed on ``kofi_transaction_id`` (in-payload UUID per delivery).
+    Tests can swap the singleton by assigning to
+    ``_ko_fi_idempotency_store`` directly.
+    """
+    global _ko_fi_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _ko_fi_idempotency_store is None:
+        _ko_fi_idempotency_store = _RailIdempotencyStore(
+            db_path=default_idempotency_db_path("ko-fi"),
+        )
+    return _ko_fi_idempotency_store
 
 
 def _get_patreon_idempotency_store() -> _RailIdempotencyStore:
@@ -538,7 +554,7 @@ async def receive_ko_fi_webhook(request: Request) -> JSONResponse:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="payload must be a JSON object")
 
-    receiver = KoFiRailReceiver()
+    receiver = KoFiRailReceiver(idempotency_store=_get_ko_fi_idempotency_store())
     try:
         event = receiver.ingest_webhook(payload, verify_token=True)
     except KoFiReceiveOnlyRailError as exc:
@@ -546,6 +562,11 @@ async def receive_ko_fi_webhook(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        # Either heartbeat ping or duplicate kofi_transaction_id — both 200 OK.
+        transaction_id = payload.get("kofi_transaction_id") if payload else None
+        if payload and isinstance(transaction_id, str) and transaction_id:
+            log.info("ko_fi webhook duplicate: %s", transaction_id)
+            return JSONResponse({"status": "duplicate", "kofi_transaction_id": transaction_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = KoFiPublisher()
