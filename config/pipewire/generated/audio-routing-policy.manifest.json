@@ -12,7 +12,7 @@
     "config/pipewire/hapax-tts-duck.conf",
     "config/pipewire/s4-usb-sink.conf",
     "config/pipewire/voice-fx-chain.conf",
-    "config/pipewire/voice-fx-loudnorm.conf",
+    "config/pipewire/hapax-voice-fx-loudnorm.conf",
     "config/pipewire/hapax-yt-loudnorm.conf",
     "config/pipewire/hapax-yt-over-24c-duck.conf",
     "config/pipewire/ytube-over-24c-duck.conf",

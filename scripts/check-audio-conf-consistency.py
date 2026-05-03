@@ -109,7 +109,7 @@ def load_allowlist(path: Path) -> tuple[set[str], set[str]]:
 
         orphans:
           - 10-contact-mic.conf
-          - voice-fx-loudnorm.conf
+          - hapax-voice-fx-loudnorm.conf
         known_missing:
           - hapax-tts-loudnorm.conf
 
