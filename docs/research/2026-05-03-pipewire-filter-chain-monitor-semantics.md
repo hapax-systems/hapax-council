@@ -110,27 +110,28 @@ silence WAS the bug's symptom, not a contradiction of the semantics.
 ### `shared/broadcast_audio_health.py::_evaluate_loudness`
 
 The evaluator runs `scripts/audio-measure.sh 5 hapax-broadcast-normalized`,
-which captures from `hapax-broadcast-normalized.monitor`. Per the
-pre-chain answer, **this measures the audio entering
-`hapax-broadcast-normalized`'s input, NOT the post-loudnorm output.**
+which captures from `hapax-broadcast-normalized.monitor`. The original
+draft of this section flagged the probe target as ambiguous pending
+operator confirmation of the node's media.class.
 
-Two possibilities:
+**Resolved 2026-05-03T11:14Z** by non-destructive `pw-dump` inspection
+on the live workstation:
 
-(A) `hapax-broadcast-normalized` is a *capture* node (Audio/Source) that
-forwards filter-chain output, in which case its monitor port would
-indeed be post-process. (Audio/Source nodes have no separate "input"
-side; their monitor IS their output stream.)
+```
+id=92 name='hapax-broadcast-normalized'
+  media.class: Audio/Source
+  node.description: Hapax Broadcast Safety-Net Limiter
+```
 
-(B) `hapax-broadcast-normalized` is a sink (Audio/Sink) — in which case
-the monitor probe is reading the wrong stage, and the loudness number
-the evaluator publishes is whatever's being SUMMED INTO the
-master-loudnorm stage, not what the loudnorm chain outputs.
+`hapax-broadcast-normalized` is **`Audio/Source`** — the post-LADSPA
+output of the safety-net limiter chain. Capturing from this node (or
+its PulseAudio `.monitor` alias) gets the post-process audio. The
+probe target is correct.
 
-**Action item for follow-up:** verify which media.class
-`hapax-broadcast-normalized` declares in `config/audio-topology.yaml`
-and the corresponding `*.conf`. If Audio/Sink, the broadcast-egress
-LUFS probe is mis-targeted and should capture from the loudnorm
-chain's PLAYBACK side (or a downstream Audio/Source) instead.
+The pre-chain semantics finding still applies as a general invariant:
+any future probe wiring against a filter-chain `capture.props`
+(Audio/Sink) monitor port must remember input-side semantics. Every
+existing council probe verified at this time is correctly aimed.
 
 ### `agents/broadcast_audio_health_producer/`
 
