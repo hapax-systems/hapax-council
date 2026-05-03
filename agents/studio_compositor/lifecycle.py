@@ -372,6 +372,34 @@ def start_compositor(compositor: Any) -> None:
         )
         compositor._state_reader_thread.start()
 
+    # u6-periodic-tick-driver (cc-task u6-periodic-tick-driver, 2026-05-03):
+    # start the layout-tick daemon thread that periodically calls
+    # apply_layout_switch with live state. Without this driver the
+    # ``hapax_compositor_layout_active`` gauge stays pinned at
+    # ``garage-door`` (the LayoutStore default) and the surface never
+    # cycles. Env-flag ``HAPAX_LAYOUT_TICK_DISABLED=1`` disables. See
+    # ``agents/studio_compositor/layout_tick_driver.py``.
+    try:
+        from .layout_tick_driver import start_layout_tick_driver
+
+        start_layout_tick_driver(compositor)
+    except Exception:
+        log.exception("layout-tick driver startup failed (non-fatal)")
+
+    # u4 micromove + u5 semantic-verb consumers (cc-tasks u4 + u5,
+    # 2026-05-03): start daemon drivers that fire the substrates
+    # shipped via PRs #2368/#2371 so their Prometheus counters
+    # (``hapax_micromove_advance_total``, ``hapax_semantic_verb_consumed_total``)
+    # actually move. Env-flags ``HAPAX_U4_MICROMOVE_DISABLED=1`` /
+    # ``HAPAX_U5_VERB_DISABLED=1`` disable independently. See
+    # ``agents/studio_compositor/u_series_drivers.py``.
+    try:
+        from .u_series_drivers import start_u_series_drivers
+
+        start_u_series_drivers(compositor)
+    except Exception:
+        log.exception("u4/u5 drivers startup failed (non-fatal)")
+
     # FINDING-B remediation (alpha wiring audit 2026-04-19):
     # HomageChoreographer was defined but never instantiated — `grep -r` of
     # the agents/ and shared/ trees returns zero import/construction sites.

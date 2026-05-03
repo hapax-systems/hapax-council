@@ -1,0 +1,341 @@
+"""Tests for the u6-periodic-tick-driver layout-tick driver.
+
+cc-task: u6-periodic-tick-driver. Verifies that the periodic driver
+- builds a state_provider from /dev/shm + ~/.cache files,
+- adapts LayoutStore for apply_layout_switch,
+- emits hapax_layout_switch_dispatched_total{layout, reason} per tick,
+- honors HAPAX_LAYOUT_TICK_DISABLED env-flag.
+"""
+
+from __future__ import annotations
+
+import threading
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from agents.studio_compositor import layout_tick_driver
+from agents.studio_compositor.layout_switcher import LayoutSwitcher
+from agents.studio_compositor.layout_tick_driver import (
+    _LayoutStoreAdapter,
+    build_state_provider,
+    run_layout_tick_loop,
+    start_layout_tick_driver,
+)
+
+# ── env-flag gate ──────────────────────────────────────────────────
+
+
+def test_disabled_env_flag_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(layout_tick_driver.ENV_DISABLE, "1")
+
+    class _Stub:
+        _layout_store = object()
+
+    result = start_layout_tick_driver(_Stub())
+    assert result is None
+
+
+def test_enabled_starts_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(layout_tick_driver.ENV_DISABLE, raising=False)
+
+    @dataclass
+    class _FakeStore:
+        _name: str | None = "garage-door"
+
+        def active_name(self) -> str | None:
+            return self._name
+
+        def get(self, name: str) -> Any:
+            return None
+
+        def get_active(self) -> Any:
+            return None
+
+        def reload_changed(self) -> list[str]:
+            return []
+
+        def set_active(self, name: str) -> bool:
+            return True
+
+    class _Compositor:
+        _layout_store = _FakeStore()
+
+    compositor = _Compositor()
+    # Patch the daemon thread loop so it doesn't actually spin forever.
+    monkeypatch.setattr(
+        layout_tick_driver,
+        "run_layout_tick_loop",
+        lambda **kwargs: 0,
+    )
+    thread = start_layout_tick_driver(compositor)
+    assert thread is not None
+    thread.join(timeout=2.0)
+
+
+def test_no_layout_store_returns_none() -> None:
+    class _Compositor:
+        pass
+
+    compositor = _Compositor()
+    result = start_layout_tick_driver(compositor)
+    assert result is None
+
+
+# ── state provider ─────────────────────────────────────────────────
+
+
+def test_state_provider_returns_safe_defaults_with_no_signals(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No state files → safe defaults (consent_safe=False, vinyl=False, etc)."""
+    monkeypatch.delenv("HAPAX_CONSENT_EGRESS_GATE", raising=False)
+    monkeypatch.setattr(layout_tick_driver, "ALBUM_STATE_FILE", tmp_path / "missing.json")
+    monkeypatch.setattr(
+        layout_tick_driver,
+        "VINYL_OPERATOR_OVERRIDE_FLAG",
+        tmp_path / "missing.flag",
+    )
+    monkeypatch.setattr(layout_tick_driver, "DIRECTOR_INTENT_JSONL", tmp_path / "missing.jsonl")
+
+    state = build_state_provider()()
+    assert state["consent_safe_active"] is False
+    assert state["vinyl_playing"] is False
+    assert state["director_activity"] is None
+
+
+def test_state_provider_reads_vinyl_override_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    flag = tmp_path / "vinyl-operator-active.flag"
+    flag.write_text("")
+    monkeypatch.setattr(layout_tick_driver, "VINYL_OPERATOR_OVERRIDE_FLAG", flag)
+    monkeypatch.setattr(layout_tick_driver, "ALBUM_STATE_FILE", tmp_path / "missing.json")
+    monkeypatch.setattr(layout_tick_driver, "DIRECTOR_INTENT_JSONL", tmp_path / "missing.jsonl")
+    monkeypatch.delenv("HAPAX_CONSENT_EGRESS_GATE", raising=False)
+
+    state = build_state_provider()()
+    assert state["vinyl_playing"] is True
+
+
+def test_state_provider_reads_director_activity_tail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    intent = tmp_path / "director-intent.jsonl"
+    intent.write_text(
+        '{"activity": "react", "ts": 1234567890.0}\n{"activity": "vinyl", "ts": 1234567891.0}\n'
+    )
+    monkeypatch.setattr(layout_tick_driver, "DIRECTOR_INTENT_JSONL", intent)
+    monkeypatch.setattr(layout_tick_driver, "ALBUM_STATE_FILE", tmp_path / "missing.json")
+    monkeypatch.setattr(
+        layout_tick_driver,
+        "VINYL_OPERATOR_OVERRIDE_FLAG",
+        tmp_path / "missing.flag",
+    )
+    monkeypatch.delenv("HAPAX_CONSENT_EGRESS_GATE", raising=False)
+
+    state = build_state_provider()()
+    assert state["director_activity"] == "vinyl"
+
+
+def test_state_provider_consent_safe_env_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAPAX_CONSENT_EGRESS_GATE", "1")
+
+    state = build_state_provider()()
+    assert state["consent_safe_active"] is True
+
+
+# ── adapter contract ───────────────────────────────────────────────
+
+
+@dataclass
+class _FakeLayout:
+    name: str
+
+
+@dataclass
+class _FakeStore:
+    """Minimal LayoutStore-shape for adapter tests."""
+
+    layouts: dict[str, _FakeLayout] = field(default_factory=dict)
+    _active: str | None = None
+    set_active_calls: list[str] = field(default_factory=list)
+    reload_calls: int = 0
+
+    def get(self, name: str) -> Any:
+        return self.layouts.get(name)
+
+    def get_active(self) -> Any:
+        if self._active is None:
+            return None
+        return self.layouts.get(self._active)
+
+    def set_active(self, name: str) -> bool:
+        self.set_active_calls.append(name)
+        if name not in self.layouts:
+            return False
+        self._active = name
+        return True
+
+    def reload_changed(self) -> list[str]:
+        self.reload_calls += 1
+        return []
+
+    def active_name(self) -> str | None:
+        return self._active
+
+
+def test_adapter_load_returns_layout() -> None:
+    store = _FakeStore(layouts={"default": _FakeLayout("default")})
+    adapter = _LayoutStoreAdapter(store)
+    layout = adapter.load("default")
+    assert layout.name == "default"
+
+
+def test_adapter_load_triggers_reload_on_miss() -> None:
+    store = _FakeStore()
+    adapter = _LayoutStoreAdapter(store)
+    with pytest.raises(KeyError):
+        adapter.load("missing")
+    assert store.reload_calls >= 1
+
+
+def test_adapter_mutate_drives_set_active() -> None:
+    store = _FakeStore(
+        layouts={
+            "default": _FakeLayout("default"),
+            "vinyl-focus": _FakeLayout("vinyl-focus"),
+        }
+    )
+    adapter = _LayoutStoreAdapter(store)
+    adapter.mutate(lambda _previous: store.layouts["vinyl-focus"])
+    assert store.set_active_calls == ["vinyl-focus"]
+
+
+# ── periodic loop semantics ────────────────────────────────────────
+
+
+def test_run_layout_tick_loop_emits_dispatch_counter_per_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Counter increments every tick, regardless of whether a switch applies."""
+    increments: list[tuple[str, str]] = []
+
+    def _fake_increment(layout_name: str, reason: str) -> None:
+        increments.append((layout_name, reason))
+
+    monkeypatch.setattr(layout_tick_driver, "_emit_dispatch_counter", _fake_increment)
+
+    store = _FakeStore(
+        layouts={
+            "default": _FakeLayout("default"),
+            "vinyl-focus": _FakeLayout("vinyl-focus"),
+        }
+    )
+    store._active = "default"
+    adapter = _LayoutStoreAdapter(store)
+    switcher = LayoutSwitcher(initial_layout="default")
+    state_provider = lambda: {  # noqa: E731
+        "consent_safe_active": False,
+        "vinyl_playing": True,
+        "director_activity": None,
+        "stream_mode": None,
+    }
+
+    iter_count = run_layout_tick_loop(
+        layout_state=adapter,
+        loader=adapter,
+        switcher=switcher,
+        state_provider=state_provider,
+        interval_s=0.0,
+        sleep_fn=lambda _s: None,
+        iterations=3,
+    )
+    assert iter_count == 3
+    assert len(increments) == 3
+    # Each iteration recommends vinyl-focus (vinyl_playing=True).
+    assert all(name == "vinyl-focus" for name, _ in increments)
+    assert all(reason == "vinyl_playing" for _, reason in increments)
+
+
+def test_run_layout_tick_loop_handles_missing_layout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """KeyError from loader is logged + swallowed; counter still increments."""
+    increments: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        layout_tick_driver,
+        "_emit_dispatch_counter",
+        lambda l, r: increments.append((l, r)),
+    )
+
+    store = _FakeStore()
+    # Empty store — loader.load("default") raises KeyError.
+    adapter = _LayoutStoreAdapter(store)
+    switcher = LayoutSwitcher(initial_layout=None)
+    state_provider = lambda: {  # noqa: E731
+        "consent_safe_active": False,
+        "vinyl_playing": False,
+        "director_activity": None,
+        "stream_mode": None,
+    }
+
+    iter_count = run_layout_tick_loop(
+        layout_state=adapter,
+        loader=adapter,
+        switcher=switcher,
+        state_provider=state_provider,
+        interval_s=0.0,
+        sleep_fn=lambda _s: None,
+        iterations=2,
+    )
+    assert iter_count == 2
+    # Counter still emitted both times — driver alive even with no layouts loaded.
+    assert len(increments) == 2
+
+
+def test_stop_event_breaks_loop() -> None:
+    stop_event = threading.Event()
+    stop_event.set()  # already set — first iteration check breaks
+    store = _FakeStore()
+    adapter = _LayoutStoreAdapter(store)
+    switcher = LayoutSwitcher(initial_layout=None)
+    state_provider = lambda: {  # noqa: E731
+        "consent_safe_active": False,
+        "vinyl_playing": False,
+        "director_activity": None,
+        "stream_mode": None,
+    }
+
+    iter_count = run_layout_tick_loop(
+        layout_state=adapter,
+        loader=adapter,
+        switcher=switcher,
+        state_provider=state_provider,
+        interval_s=0.0,
+        sleep_fn=lambda _s: None,
+        stop_event=stop_event,
+    )
+    assert iter_count == 0
+
+
+# ── metric registration ────────────────────────────────────────────
+
+
+def test_dispatched_counter_registered_in_compositor_registry() -> None:
+    """Counter must be on REGISTRY so :9482 scrape exposes it."""
+    from agents.studio_compositor import metrics
+
+    metrics._init_metrics()
+    assert metrics.HAPAX_LAYOUT_SWITCH_DISPATCHED_TOTAL is not None
+    # Verify registry membership via collect.
+    found = False
+    if metrics.REGISTRY is not None:
+        for collector in metrics.REGISTRY._collector_to_names:  # type: ignore[attr-defined]
+            for name in metrics.REGISTRY._collector_to_names[collector]:  # type: ignore[attr-defined]
+                if name == "hapax_layout_switch_dispatched_total":
+                    found = True
+                    break
+    assert found, "counter not registered on compositor REGISTRY"
