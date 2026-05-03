@@ -24,6 +24,8 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from shared.bayesian_impingement_emitter import emit_prediction_miss_impingement
+
 log = logging.getLogger(__name__)
 
 ACTIVATION_STATE = Path.home() / ".cache" / "hapax" / "affordance-activation-state.json"
@@ -736,8 +738,40 @@ def sample() -> MonitorSample:
     # Send ntfy alerts
     if result.alert_count > 0:
         _send_alerts(predictions)
+        # Audit 3 fix #1: every prediction miss is an "I expected X but
+        # observed Y" signal that should drive recruitment. Emit one
+        # impingement per missed prediction so the cosine-similarity
+        # recruiter sees the actual measurement deltas — frozen alert
+        # templates would just collapse the diversity again.
+        _emit_prediction_miss_impingements(predictions)
 
     return result
+
+
+def _emit_prediction_miss_impingements(predictions: list[PredictionResult]) -> None:
+    """Broadcast each unhealthy prediction as a unique impingement.
+
+    Iterates the prediction list; for each ``PredictionResult`` carrying
+    an ``alert``, publishes an impingement with the engine's expected
+    string + observed scalar + alert text. The narrative variation comes
+    from those three values, not a frozen template.
+
+    Failures are logged at debug; the monitor's tick MUST NOT crash on
+    bus write failure.
+    """
+    for p in predictions:
+        if not p.alert:
+            continue
+        try:
+            emit_prediction_miss_impingement(
+                prediction_name=p.name,
+                expected=p.expected,
+                observed=float(p.actual),
+                alert=p.alert,
+                detail=p.detail,
+            )
+        except Exception:
+            log.debug("prediction-miss impingement emit failed", exc_info=True)
 
 
 def _send_alerts(predictions: list[PredictionResult]) -> None:
