@@ -173,6 +173,17 @@ def _register_builtins() -> None:
     from agents.studio_compositor.programme_state_ward import ProgrammeStateCairoSource
 
     register("ProgrammeStateCairoSource", ProgrammeStateCairoSource)
+    # programme-banner-ward (PR #2366, 2026-05-03) — Cairo lower-third
+    # surfacing the active programme's role + narrative_beat + residual
+    # time. Per /tmp/wsjf-path-content-programming.md §3 G1: the planner
+    # is emitting role + narrative_beat per programme but the livestream
+    # had no surface naming the active programme. Registered here so it
+    # can be declared from layout JSON; default-layout assignment is a
+    # separate operator-owned decision (anchors bottom-left, would
+    # collide with album cover on default layout).
+    from agents.studio_compositor.programme_banner_ward import ProgrammeBannerWard
+
+    register("ProgrammeBannerWard", ProgrammeBannerWard)
     # DURF (Display Under Reflective Frame) — 2026-04-24T23:10Z operator
     # directive. First full-frame HOMAGE ward. Text-only tmux-capture of
     # the 4-session Claude-Code coordination setup. Design:
