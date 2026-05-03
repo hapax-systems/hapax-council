@@ -37,15 +37,16 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install minimal dependencies
+      - name: Install minimal dependencies in venv
         run: |
-          uv pip install --system 'pydantic>=2.12.5' 'pyyaml>=6.0'
+          uv venv .venv-audio-graph
+          uv pip install --python .venv-audio-graph/bin/python 'pydantic>=2.12.5' 'pyyaml>=6.0'
 
       - name: Run validator on fixture confs
         run: |
           set -euo pipefail
           mkdir -p audio-graph-validate-output
-          python scripts/hapax-audio-graph-validate \
+          .venv-audio-graph/bin/python scripts/hapax-audio-graph-validate \
               --source tests/audio_graph/fixtures/real-confs/ \
               --json-output audio-graph-validate-output/report.json \
               | tee audio-graph-validate-output/run.log
