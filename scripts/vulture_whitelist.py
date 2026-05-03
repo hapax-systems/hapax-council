@@ -18,6 +18,23 @@ from shared.aperture_registry import (
 )
 from shared.audio_topology_inspector import check_l12_forward_invariant
 from shared.audio_world_surface_fixtures import AudioSurfaceFixture, AudioWorldSurfaceFixtureSet
+from shared.bayesian_camera_salience_world_surface import (
+    CameraEvidenceRow,
+    CameraFreshness,
+    CameraObservationEnvelope,
+    CameraSalienceBroker,
+    CameraSalienceBundle,
+    CameraSalienceFixtureSet,
+    CameraTemporalWindow,
+    ImageAttachmentPolicy,
+    ObservationAperture,
+    PublicClaimPolicy,
+    ValueOfInformation,
+    adapt_cross_camera_tracklet,
+    adapt_ir_presence_observation,
+    adapt_vision_backend_observation,
+    load_camera_salience_fixtures,
+)
 from shared.capability_classification_inventory import (
     AvailabilityProbe,
     CapabilityClassificationInventory,
@@ -606,6 +623,31 @@ MediaApertureRecord._validate_media_aperture_contract
 MediaApertureFixtureSet._validate_fixture_coverage
 MediaApertureFixtureSet.require_record
 MediaApertureFixtureSet.records_for_state
+
+# Bayesian camera salience broker validators are invoked dynamically by
+# Pydantic while validating WCS-backed perception envelopes. The adapter and
+# projection helpers are the public contract for future director, archive,
+# visual-variance, and runtime wiring tasks; this slice intentionally avoids
+# wiring those consumers directly.
+CameraFreshness._validate_freshness_contract
+ObservationAperture._validate_aperture_contract
+CameraTemporalWindow._archive_windows_need_bounds
+CameraEvidenceRow._validate_evidence_refs
+CameraObservationEnvelope._validate_observation_contract
+ValueOfInformation._validate_selection
+ImageAttachmentPolicy._validate_attachment_bounds
+CameraSalienceBundle._validate_bundle_contract
+CameraSalienceBundle.to_director_world_surface_projection
+CameraSalienceBundle.to_wcs_projection_payload
+CameraSalienceBroker.evaluate
+CameraSalienceFixtureSet._validate_fixture_contract
+CameraSalienceFixtureSet.broker
+CameraSalienceFixtureSet.query_by_id
+PublicClaimPolicy
+adapt_vision_backend_observation
+adapt_cross_camera_tracklet
+adapt_ir_presence_observation
+load_camera_salience_fixtures
 
 # Narration triad validators are invoked dynamically by Pydantic while the
 # autonomous narration ledger validates open/closed semantic-outcome policy.
@@ -1736,8 +1778,12 @@ receive_treasury_prime_webhook
 # caller; whitelisted until director-loop / systemd-timer wiring lands
 # in a 3rd-slice PR.
 from agents.studio_compositor.layout_switcher import apply_layout_switch as _r9_apply_layout_switch
+from agents.studio_compositor.layout_switcher import (
+    apply_layout_switch_via_store as _r9_apply_layout_switch_via_store,
+)
 
 _r9_apply_layout_switch
+_r9_apply_layout_switch_via_store
 
 # u6-periodic-tick-driver (cc-task u6-periodic-tick-driver, this PR):
 # the periodic driver wrapper for apply_layout_switch. Ships ahead of

@@ -79,6 +79,20 @@ class TestPublishHealth:
         data = json.loads(target.read_text())
         assert abs(data["error"] - 1.0) < 1e-9
 
+    def test_publish_does_not_use_shared_temp_path(self, tmp_path: Path) -> None:
+        """Parallel workers must not collide on a fixed health.tmp path."""
+        target = tmp_path / "health.json"
+        fixed_tmp = target.with_suffix(".tmp")
+        fixed_tmp.write_text("occupied", encoding="utf-8")
+
+        signal = ControlSignal(component="x", reference=0.5, perception=0.25)
+        publish_health(signal, path=target)
+
+        assert fixed_tmp.read_text(encoding="utf-8") == "occupied"
+        data = json.loads(target.read_text(encoding="utf-8"))
+        assert data["component"] == "x"
+        assert data["perception"] == 0.25
+
     def test_overwrites_existing_target(self, tmp_path: Path) -> None:
         target = tmp_path / "health.json"
         target.write_text("{}")

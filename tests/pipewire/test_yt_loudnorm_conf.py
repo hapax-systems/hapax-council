@@ -50,20 +50,27 @@ def test_uses_sc4m_compressor(raw_config: str) -> None:
     assert '"sc4m"' in raw_config  # label
 
 
-def test_uses_hard_limiter(raw_config: str) -> None:
-    """Mono hard limiter — same per-channel pattern reason as sc4m.
-    fast_lookahead_limiter_1913 is stereo-only ('Input 1'/'Input 2'/
-    'Output 1'/'Output 2') and won't link inside the per-channel
-    graph topology."""
-    assert "hard_limiter_1413" in raw_config
-    assert '"hardLimiter"' in raw_config
+def test_uses_fast_lookahead_limiter(raw_config: str) -> None:
+    """Audit B #10 (2026-05-02): YT loudnorm migrated from sample-clipper
+    hard_limiter_1413 to stereo fast_lookahead_limiter_1913. The mono
+    sc4m compressors stay (they shape per-channel), but the limiter is
+    now a single stereo instance — same shape as music + voice-fx +
+    pc-loudnorm chains. Comments still document the migration so we
+    strip them before checking the dead plugin name is gone."""
+    body = _strip_comments(raw_config)
+    assert "fast_lookahead_limiter_1913" in body
+    assert '"fastLookaheadLimiter"' in body
+    # Belt-and-braces: the sample-clipper must be GONE from the active
+    # config (comments may still mention it for documentation).
+    assert "hard_limiter_1413" not in body
+    assert '"hardLimiter"' not in body
 
 
 def test_stereo_pair_present(raw_config: str) -> None:
-    """Stereo bed needs both _l + _r instances (SC4m + hardLimiter
-    are both mono so per-channel duplication is mandatory)."""
-    for stage in ("comp_l", "comp_r", "limit_l", "limit_r"):
-        assert stage in raw_config, f"missing stereo stage {stage}"
+    """Stereo bed needs both per-channel sc4m compressors AND a single
+    stereo fast_lookahead_limiter named yt_limiter."""
+    for stage in ("comp_l", "comp_r", "yt_limiter"):
+        assert stage in raw_config, f"missing stage {stage}"
 
 
 def test_threshold_pinned_at_minus_12db(raw_config: str) -> None:
@@ -79,13 +86,11 @@ def test_ratio_pinned_at_4_to_1(raw_config: str) -> None:
 
 
 def test_true_peak_ceiling_pinned_at_minus_1_0_dbtp(raw_config: str) -> None:
-    """Audit spec §3.4 target. Matches voice ceiling (-1.0 dB) post
-    PR #1144 audio remediation — earlier -1.5 dB target was lifted to
-    -1.0 to reduce duck-induced level dips on quiet YT segments.
-
-    Control name is 'dB limit' on hard_limiter_1413 (NOT 'Limit (dB)'
-    which is the fast_lookahead_limiter_1913 control name)."""
-    assert '"dB limit" = -1.0' in raw_config
+    """Audit spec §3.4 target + audit B #10 alignment with voice and
+    master ceilings (-1.0 dBTP). Control name on
+    fast_lookahead_limiter_1913 is 'Limit (dB)' (NOT 'dB limit' which
+    was the hard_limiter_1413 control name we migrated away from)."""
+    assert '"Limit (dB)"       = -1.0' in raw_config or '"Limit (dB)" = -1.0' in raw_config
 
 
 def test_audio_rate_48k(raw_config: str) -> None:

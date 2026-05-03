@@ -1,12 +1,16 @@
-"""Config-lint regression pin for the YT → 24c reverse ducker — YT bundle Phase 3 (#145).
+"""Config-lint regression pin for the backing-mix sidechain reverse ducker — YT bundle Phase 3 (#145).
 
 Spec: docs/superpowers/specs/2026-04-18-youtube-broadcast-bundle-design.md §3.
 Plan: docs/superpowers/plans/2026-04-20-youtube-broadcast-bundle-plan.md Phase 3.
 
 The conf file installs into ``~/.config/pipewire/pipewire.conf.d/`` and
-declares the ``hapax-24c-ducked`` virtual sink. These tests pin the
+declares the ``hapax-backing-ducked`` virtual sink. These tests pin the
 file structure so an accidental edit (e.g. dropping the sink name,
 changing the ducker direction) trips immediately.
+
+Historical: previously named ``ytube-over-24c-duck.conf`` and exposed
+``hapax-24c-ducked`` — renamed 2026-05 with the PreSonus Studio 24c
+hardware retirement.
 
 The "module-loaded assertion via pw-cli ls Module" path from the plan
 is OPERATOR-WALKED (requires running PipeWire), not a unit test —
@@ -17,18 +21,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
-CONF_PATH = Path(__file__).resolve().parents[2] / "config" / "pipewire" / "ytube-over-24c-duck.conf"
+CONF_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "config"
+    / "pipewire"
+    / "hapax-backing-ducked-sidechain.conf"
+)
 
 
 def test_conf_file_exists() -> None:
-    assert CONF_PATH.exists(), f"YT-over-24c duck conf missing at {CONF_PATH}"
+    assert CONF_PATH.exists(), f"backing-ducked sidechain conf missing at {CONF_PATH}"
 
 
-def test_conf_declares_24c_ducked_sink() -> None:
-    """The sink name `hapax-24c-ducked` is the routing fixed point that
-    L6 capture binds to. Renaming it breaks the route silently."""
+def test_conf_declares_backing_ducked_sink() -> None:
+    """The sink name `hapax-backing-ducked` is the routing fixed point
+    that backing capture binds to. Renaming it breaks the route silently."""
     text = CONF_PATH.read_text()
-    assert "hapax-24c-ducked" in text
+    assert "hapax-backing-ducked" in text
 
 
 def test_conf_uses_filter_chain_module() -> None:
