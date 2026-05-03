@@ -1374,6 +1374,20 @@ from shared.visual_mode_bias import VisualModeBias, get_visual_mode_bias
 get_visual_mode_bias
 VisualModeBias.family_weight
 
+# cc-task u5-semantic-verbs-consumer (Phase 0 substrate): the vocabulary
+# accessors are the API consumers (preset_recruitment_consumer, future
+# verb-to-shader-uniform wiring) will hit at Phase 1. Whitelisted until
+# Phase 1 lands.
+from shared.director_semantic_verbs import (
+    consumer_for,
+    no_orphan_verbs,
+    registered_verbs,
+)
+
+registered_verbs
+consumer_for
+no_orphan_verbs
+
 # Activity-family visibility-window tracker — singleton accessors used
 # by the recruitment-bias bridge. Per cc-task
 # `p3-governance-recruitment-bias-replacement`: the prior
