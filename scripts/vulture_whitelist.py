@@ -1919,3 +1919,61 @@ _audit_E_validate_value
 # dynamically at model construction.
 _audit_E_param_bridge._bool_no_range_default_in_range
 _audit_E_param_bridge_registry._no_duplicate_chain_param_pairs
+
+# Egress loopback witness assertions (cc-task jr-broadcast-chain-integration-
+# tier4-loopback-witness Phase 0): pure-function derivations + assertion
+# helpers ship ahead of the Phase 1 pytest fixture that runs pw-cat playback
+# against hapax-broadcast-normalized.
+from shared.egress_loopback_witness_assertions import (
+    DEFAULT_WITNESS_MAX_AGE_S as _tier4_default_witness_max_age_s,
+)
+from shared.egress_loopback_witness_assertions import (
+    PLAYBACK_PRESENT_MAX_SILENCE_RATIO as _tier4_playback_present_max_silence_ratio,
+)
+from shared.egress_loopback_witness_assertions import (
+    PLAYBACK_PRESENT_RMS_DBFS_THRESHOLD as _tier4_playback_present_rms_dbfs_threshold,
+)
+from shared.egress_loopback_witness_assertions import (
+    StaleWitnessError as _tier4_stale_witness_error,
+)
+from shared.egress_loopback_witness_assertions import (
+    WitnessAssertionError as _tier4_witness_assertion_error,
+)
+from shared.egress_loopback_witness_assertions import (
+    WitnessIndicatesProducerErrorError as _tier4_witness_indicates_producer_error_error,
+)
+from shared.egress_loopback_witness_assertions import (
+    WitnessIndicatesSilenceError as _tier4_witness_indicates_silence_error,
+)
+from shared.egress_loopback_witness_assertions import (
+    assert_witness_fresh as _tier4_assert_witness_fresh,
+)
+from shared.egress_loopback_witness_assertions import (
+    assert_witness_indicates_no_playback as _tier4_assert_witness_indicates_no_playback,
+)
+from shared.egress_loopback_witness_assertions import (
+    assert_witness_indicates_playback as _tier4_assert_witness_indicates_playback,
+)
+from shared.egress_loopback_witness_assertions import (
+    is_playback_present as _tier4_is_playback_present,
+)
+from shared.egress_loopback_witness_assertions import (
+    is_playback_present_with as _tier4_is_playback_present_with,
+)
+from shared.egress_loopback_witness_assertions import (
+    witness_age_s as _tier4_witness_age_s,
+)
+
+_tier4_default_witness_max_age_s
+_tier4_playback_present_max_silence_ratio
+_tier4_playback_present_rms_dbfs_threshold
+_tier4_stale_witness_error
+_tier4_witness_assertion_error
+_tier4_witness_indicates_producer_error_error
+_tier4_witness_indicates_silence_error
+_tier4_assert_witness_fresh
+_tier4_assert_witness_indicates_no_playback
+_tier4_assert_witness_indicates_playback
+_tier4_is_playback_present
+_tier4_is_playback_present_with
+_tier4_witness_age_s
