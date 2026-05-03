@@ -1,0 +1,68 @@
+name: Audio Graph Validate
+
+# Per spec §5 P1 — passive validator gate. Decomposes every conf in
+# tests/audio_graph/fixtures/real-confs/ into an AudioGraph and fails
+# CI when any conf does not decompose cleanly. The fixture directory
+# is a snapshot of the operator's live PipeWire conf.d at the time
+# the schema lands.
+#
+# Refresh procedure: when operator confs change in a way that the
+# schema doesn't yet handle, regenerate the fixture by running
+# `cp ~/.config/pipewire/pipewire.conf.d/*.conf tests/audio_graph/fixtures/real-confs/`
+# and either (a) extend the schema/validator, or (b) document the
+# new gap in the PR body.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audio-graph-validate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audio_graph_validate:
+    name: audio-graph-validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up uv + Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install minimal dependencies
+        run: |
+          uv pip install --system 'pydantic>=2.12.5' 'pyyaml>=6.0'
+
+      - name: Run validator on fixture confs
+        run: |
+          set -euo pipefail
+          mkdir -p audio-graph-validate-output
+          python scripts/hapax-audio-graph-validate \
+              --source tests/audio_graph/fixtures/real-confs/ \
+              --json-output audio-graph-validate-output/report.json \
+              | tee audio-graph-validate-output/run.log
+
+      - name: Show report (always, even on failure)
+        if: always()
+        run: |
+          if [ -f audio-graph-validate-output/report.json ]; then
+            echo "::group::Report JSON"
+            cat audio-graph-validate-output/report.json
+            echo "::endgroup::"
+          fi
+
+      - name: Upload report as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audio-graph-validate-report
+          path: audio-graph-validate-output/
+          retention-days: 30
