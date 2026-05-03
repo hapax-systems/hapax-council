@@ -248,3 +248,120 @@ class TestPhase3DropInsPresent:
             "tabbyapi.service TimeoutStartSec must be 180 s as substrate-swap "
             "headroom (Qwen 9B fits under this; longer-loading substrates need it)"
         )
+
+
+class TestServiceAutoEnableList:
+    """24h auditor batch 2026-05-02 finding #13 regression pins.
+
+    Five service units shipped without auto-enable (PRs #2220, #2221, #2223,
+    #2235, #2252) lived dormant on the operator workstation because the
+    installer only auto-enabled timer units. ``hapax-preset-bias-heartbeat.service``
+    (PR #2239) was superseded by the parametric-modulation heartbeat per memory
+    ``feedback_no_presets_use_parametric_modulation`` and must be disabled+masked
+    on subsequent installs.
+
+    These pins lock in the AUTO_ENABLE_SERVICES array and the
+    DECOMMISSIONED_UNITS membership so a future refactor that drops either
+    is caught in CI.
+    """
+
+    EXPECTED_AUTO_ENABLE = (
+        "hapax-bt-firmware-watchdog.service",
+        "hapax-xhci-death-watchdog.service",
+        "hapax-private-broadcast-leak-guard.service",
+        "hapax-broadcast-egress-loopback-producer.service",
+        "hapax-parametric-modulation-heartbeat.service",
+    )
+
+    def test_auto_enable_array_declared(self) -> None:
+        body = INSTALL_SCRIPT.read_text(encoding="utf-8")
+        assert "AUTO_ENABLE_SERVICES=(" in body, (
+            "install-units.sh must declare the AUTO_ENABLE_SERVICES bash array "
+            "so persistent-daemon services ship enabled by default"
+        )
+
+    def test_each_audit_service_in_auto_enable(self) -> None:
+        body = INSTALL_SCRIPT.read_text(encoding="utf-8")
+        for svc in self.EXPECTED_AUTO_ENABLE:
+            assert svc in body, (
+                f"AUTO_ENABLE_SERVICES must include {svc} per 24h audit batch "
+                f"2026-05-02 finding #13 (feedback_features_on_by_default)"
+            )
+
+    def test_auto_enable_loop_uses_enable_now(self) -> None:
+        body = INSTALL_SCRIPT.read_text(encoding="utf-8")
+        # The auto-enable loop must use ``enable --now`` (so the daemon starts
+        # immediately, not just on next boot). Look for the loop body.
+        lines = body.splitlines()
+        loop_started = False
+        loop_uses_enable_now = False
+        for line in lines:
+            if "AUTO_ENABLE_SERVICES" in line and "for " in line:
+                loop_started = True
+                continue
+            if loop_started and "systemctl --user enable --now" in line:
+                if "$service_name" in line:
+                    loop_uses_enable_now = True
+                    break
+            # Stop scanning if we hit the next top-level block before finding it
+            if loop_started and line.startswith("# ") and "AUTO_ENABLE" not in line:
+                break
+        assert loop_uses_enable_now, (
+            "AUTO_ENABLE_SERVICES loop must call ``systemctl --user enable --now "
+            "<service>`` so shipped services start immediately, not on next boot"
+        )
+
+    def test_auto_enable_honors_skip_env_var(self) -> None:
+        body = INSTALL_SCRIPT.read_text(encoding="utf-8")
+        # The auto-enable block must respect SKIP_TIMER_ENABLE (shared escape
+        # hatch) so operators have a quiet-install option during incident
+        # response.
+        assert "${SKIP_TIMER_ENABLE:-0}" in body
+        # The skip path should at minimum mention auto-enabling
+        assert "skipped auto-enabling" in body, (
+            "SKIP_TIMER_ENABLE branch must announce that auto-enable was skipped "
+            "so the operator notices the deferred work"
+        )
+
+    def test_auto_enable_skips_missing_units(self) -> None:
+        body = INSTALL_SCRIPT.read_text(encoding="utf-8")
+        # Defense-in-depth: auto-enable loop must skip + WARN if a listed unit
+        # isn't on disk (covers the 'renamed unit but forgot to update array'
+        # case). Look for the file-existence guard inside the loop.
+        assert 'if [ ! -f "$REPO_DIR/$service_name" ]' in body, (
+            "auto-enable loop must guard against missing unit files with a WARN, not a hard failure"
+        )
+
+    def test_auto_enable_skips_decommissioned_units(self) -> None:
+        body = INSTALL_SCRIPT.read_text(encoding="utf-8")
+        # If somebody puts a unit in both lists by mistake, prefer the
+        # decommissioned semantics (disabled+masked). The loop must check.
+        assert 'if is_decommissioned_unit "$service_name"' in body, (
+            "auto-enable loop must defer to DECOMMISSIONED_UNITS to prevent "
+            "double-bookkeeping mistakes"
+        )
+
+
+class TestAuditedUnitsExist:
+    """Sanity pins: the unit files referenced by AUTO_ENABLE_SERVICES must
+    exist in the repo. Catches the case where the array lists a unit that
+    has been renamed or moved without updating the installer."""
+
+    UNITS_DIR = REPO_ROOT / "systemd" / "units"
+    EXPECTED_UNITS = (
+        "hapax-bt-firmware-watchdog.service",
+        "hapax-xhci-death-watchdog.service",
+        "hapax-private-broadcast-leak-guard.service",
+        "hapax-broadcast-egress-loopback-producer.service",
+        "hapax-parametric-modulation-heartbeat.service",
+        # Decommissioned but file must still be present so the disable+mask
+        # path has something to act on.
+    )
+
+    def test_each_unit_file_present(self) -> None:
+        for unit in self.EXPECTED_UNITS:
+            path = self.UNITS_DIR / unit
+            assert path.is_file(), (
+                f"Expected unit file {path} to exist — install-units.sh "
+                f"AUTO_ENABLE_SERVICES / DECOMMISSIONED_UNITS references it"
+            )
