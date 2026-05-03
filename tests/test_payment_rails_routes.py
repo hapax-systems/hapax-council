@@ -85,6 +85,17 @@ def secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 @pytest.fixture
+def gh_sponsors_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's GitHub Sponsors idempotency singleton + tmp db."""
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._github_sponsors_idempotency_store = None
+    yield tmp_path / "github-sponsors" / "idempotency.db"
+    routes_mod._github_sponsors_idempotency_store = None
+
+
+@pytest.fixture
 def refusal_log_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Override the refusal-brief log path so cancellation rows go to the test dir.
 
@@ -108,7 +119,9 @@ def refusal_log_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.mark.asyncio
 async def test_signed_created_event_returns_200_and_writes_manifest(
-    output_dir: Path, secret_env: str
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
 ) -> None:
     payload = _sponsorship_payload(action="created", sponsor_login="alice")
     raw = json.dumps(payload).encode("utf-8")
@@ -120,6 +133,7 @@ async def test_signed_created_event_returns_200_and_writes_manifest(
             content=raw,
             headers={
                 "X-Hub-Signature-256": sig,
+                "X-GitHub-Delivery": "gh-delivery-created-test",
                 "Content-Type": "application/json",
             },
         )
@@ -139,7 +153,11 @@ async def test_signed_created_event_returns_200_and_writes_manifest(
 
 
 @pytest.mark.asyncio
-async def test_signed_tier_changed_event_writes_manifest(output_dir: Path, secret_env: str) -> None:
+async def test_signed_tier_changed_event_writes_manifest(
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
+) -> None:
     payload = _sponsorship_payload(action="tier_changed", sponsor_login="bob")
     raw = json.dumps(payload).encode("utf-8")
     sig = _sign(raw)
@@ -148,7 +166,10 @@ async def test_signed_tier_changed_event_writes_manifest(output_dir: Path, secre
         response = await client.post(
             "/api/payment-rails/github-sponsors",
             content=raw,
-            headers={"X-Hub-Signature-256": sig},
+            headers={
+                "X-Hub-Signature-256": sig,
+                "X-GitHub-Delivery": "gh-delivery-tier-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -158,7 +179,9 @@ async def test_signed_tier_changed_event_writes_manifest(output_dir: Path, secre
 
 @pytest.mark.asyncio
 async def test_signed_pending_cancellation_event_writes_manifest(
-    output_dir: Path, secret_env: str
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
 ) -> None:
     payload = _sponsorship_payload(action="pending_cancellation")
     raw = json.dumps(payload).encode("utf-8")
@@ -168,7 +191,10 @@ async def test_signed_pending_cancellation_event_writes_manifest(
         response = await client.post(
             "/api/payment-rails/github-sponsors",
             content=raw,
-            headers={"X-Hub-Signature-256": sig},
+            headers={
+                "X-Hub-Signature-256": sig,
+                "X-GitHub-Delivery": "gh-delivery-pending-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -185,6 +211,7 @@ async def test_cancelled_event_appends_to_refusal_log(
     output_dir: Path,
     secret_env: str,
     refusal_log_dir: Path,
+    gh_sponsors_idempotency_isolated: Path,
 ) -> None:
     """End-to-end auto-link: cancelled event → publisher → refusal log row."""
     payload = _sponsorship_payload(action="cancelled", sponsor_login="charlie")
@@ -195,7 +222,10 @@ async def test_cancelled_event_appends_to_refusal_log(
         response = await client.post(
             "/api/payment-rails/github-sponsors",
             content=raw,
-            headers={"X-Hub-Signature-256": sig},
+            headers={
+                "X-Hub-Signature-256": sig,
+                "X-GitHub-Delivery": "gh-delivery-cancel-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -219,6 +249,7 @@ async def test_non_cancellation_does_not_append_to_refusal_log(
     output_dir: Path,
     secret_env: str,
     refusal_log_dir: Path,
+    gh_sponsors_idempotency_isolated: Path,
 ) -> None:
     """Created/tier_changed/pending_cancellation events do NOT auto-link."""
     payload = _sponsorship_payload(action="created")
@@ -229,7 +260,10 @@ async def test_non_cancellation_does_not_append_to_refusal_log(
         response = await client.post(
             "/api/payment-rails/github-sponsors",
             content=raw,
-            headers={"X-Hub-Signature-256": sig},
+            headers={
+                "X-Hub-Signature-256": sig,
+                "X-GitHub-Delivery": "gh-delivery-noncancel-test",
+            },
         )
 
     assert response.status_code == 200
@@ -394,6 +428,95 @@ def test_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# GitHub Sponsors — idempotency hard pin (cc-task jr-github-sponsors-rail-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_github_sponsors_route_replays_same_delivery_id_returns_duplicate(
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
+) -> None:
+    payload = _sponsorship_payload(action="created", sponsor_login="alice")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _sign(raw)
+    headers = {"X-Hub-Signature-256": sig, "X-GitHub-Delivery": "gh-replay-001"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post(
+            "/api/payment-rails/github-sponsors", content=raw, headers=headers
+        )
+        second = await client.post(
+            "/api/payment-rails/github-sponsors", content=raw, headers=headers
+        )
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["delivery_id"] == "gh-replay-001"
+    files = list(output_dir.glob("event-created-*.md"))
+    assert len(files) == 1
+
+
+@pytest.mark.asyncio
+async def test_github_sponsors_route_distinct_delivery_ids_both_processed(
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
+) -> None:
+    payload_a = _sponsorship_payload(action="created", sponsor_login="alice")
+    payload_b = _sponsorship_payload(action="created", sponsor_login="bob")
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post(
+            "/api/payment-rails/github-sponsors",
+            content=raw_a,
+            headers={
+                "X-Hub-Signature-256": _sign(raw_a),
+                "X-GitHub-Delivery": "gh-delivery-a",
+            },
+        )
+        r_b = await client.post(
+            "/api/payment-rails/github-sponsors",
+            content=raw_b,
+            headers={
+                "X-Hub-Signature-256": _sign(raw_b),
+                "X-GitHub-Delivery": "gh-delivery-b",
+            },
+        )
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(output_dir.glob("event-created-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_github_sponsors_route_missing_delivery_id_returns_400(
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
+) -> None:
+    payload = _sponsorship_payload()
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _sign(raw)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/github-sponsors",
+            content=raw,
+            headers={"X-Hub-Signature-256": sig},  # NO X-GitHub-Delivery
+        )
+
+    assert response.status_code == 400
+    assert "delivery_id" in response.json()["detail"]
 
 
 # ===========================================================================

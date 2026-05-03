@@ -138,6 +138,7 @@ _open_collective_idempotency_store: _RailIdempotencyStore | None = None
 _mercury_idempotency_store: _RailIdempotencyStore | None = None
 _modern_treasury_idempotency_store: _RailIdempotencyStore | None = None
 _treasury_prime_idempotency_store: _RailIdempotencyStore | None = None
+_github_sponsors_idempotency_store: _RailIdempotencyStore | None = None
 
 
 def _get_treasury_prime_idempotency_store() -> _RailIdempotencyStore:
@@ -151,6 +152,23 @@ def _get_treasury_prime_idempotency_store() -> _RailIdempotencyStore:
             db_path=default_idempotency_db_path("treasury-prime"),
         )
     return _treasury_prime_idempotency_store
+
+
+def _get_github_sponsors_idempotency_store() -> _RailIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for GitHub Sponsors.
+
+    Keyed on ``X-GitHub-Delivery`` header (per-delivery UUID).
+    """
+    global _github_sponsors_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _github_sponsors_idempotency_store is None:
+        _github_sponsors_idempotency_store = _RailIdempotencyStore(
+            db_path=default_idempotency_db_path("github-sponsors"),
+        )
+    return _github_sponsors_idempotency_store
+
+
+GITHUB_SPONSORS_DELIVERY_ID_HEADER: str = "X-GitHub-Delivery"
+"""GitHub webhook per-delivery identifier header (UUID per delivery)."""
 
 
 def _get_modern_treasury_idempotency_store() -> _RailIdempotencyStore:
@@ -386,15 +404,26 @@ async def receive_github_sponsors_webhook(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail="payload must be a JSON object")
 
     signature = request.headers.get(GITHUB_SPONSORS_SIGNATURE_HEADER)
+    delivery_id = request.headers.get(GITHUB_SPONSORS_DELIVERY_ID_HEADER)
 
-    receiver = GitHubSponsorsRailReceiver()
+    receiver = GitHubSponsorsRailReceiver(
+        idempotency_store=_get_github_sponsors_idempotency_store(),
+    )
     try:
-        event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
+        event = receiver.ingest_webhook(
+            payload,
+            signature,
+            raw_body=raw_body,
+            delivery_id=delivery_id,
+        )
     except GitHubSponsorsReceiveOnlyRailError as exc:
         log.warning("github_sponsors webhook rejected: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        if payload and isinstance(delivery_id, str) and delivery_id:
+            log.info("github_sponsors webhook duplicate: %s", delivery_id)
+            return JSONResponse({"status": "duplicate", "delivery_id": delivery_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = GitHubSponsorsPublisher()
