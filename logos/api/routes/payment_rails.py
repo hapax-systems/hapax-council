@@ -46,6 +46,9 @@ from agents.publication_bus.github_sponsors_publisher import (
 from agents.publication_bus.ko_fi_publisher import KoFiPublisher
 from agents.publication_bus.liberapay_publisher import LiberapayPublisher
 from agents.publication_bus.mercury_publisher import MercuryPublisher
+from agents.publication_bus.modern_treasury_publisher import (
+    ModernTreasuryPublisher,
+)
 from agents.publication_bus.open_collective_publisher import (
     OpenCollectivePublisher,
 )
@@ -82,6 +85,12 @@ from shared.mercury_receive_only_rail import (
 )
 from shared.mercury_receive_only_rail import (
     ReceiveOnlyRailError as MercuryReceiveOnlyRailError,
+)
+from shared.modern_treasury_receive_only_rail import (
+    ModernTreasuryRailReceiver,
+)
+from shared.modern_treasury_receive_only_rail import (
+    ReceiveOnlyRailError as ModernTreasuryReceiveOnlyRailError,
 )
 from shared.open_collective_receive_only_rail import (
     OpenCollectiveRailReceiver,
@@ -149,6 +158,10 @@ MERCURY_LEGACY_SIGNATURE_HEADER: str = "X-Hook-Signature"
 """Mercury legacy webhook signature header — some older Mercury
 integrations may still emit this name; the route accepts either
 header (canonical X-Mercury-Signature takes precedence)."""
+
+MODERN_TREASURY_SIGNATURE_HEADER: str = "X-Signature"
+"""Modern Treasury webhook signature header — HMAC SHA-256 over raw
+body. Bare hex digest; ``sha256=<hex>`` prefix also accepted."""
 
 
 @router.post("/github-sponsors")
@@ -702,12 +715,80 @@ async def receive_mercury_webhook(request: Request) -> JSONResponse:
     )
 
 
+@router.post("/modern-treasury")
+async def receive_modern_treasury_webhook(request: Request) -> JSONResponse:
+    """Receive a Modern Treasury webhook delivery and dispatch.
+
+    Modern Treasury signs deliveries with HMAC SHA-256 over raw body
+    in ``X-Signature``. Direction is filtered at the event-name level
+    (only ``incoming_payment_detail.*`` events accepted; outgoing
+    ``payment_order.*`` rejected). Same X-Signature header name as
+    Treasury Prime — disambiguated by URL path.
+    """
+    raw_body = await request.body()
+
+    if not raw_body:
+        receiver = ModernTreasuryRailReceiver()
+        result = receiver.ingest_webhook({}, None)
+        if result is None:
+            return JSONResponse({"status": "ping_ok"})
+        raise HTTPException(status_code=500, detail="unexpected non-None result from heartbeat")
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        log.warning("modern_treasury webhook: malformed JSON")
+        raise HTTPException(status_code=400, detail=f"malformed JSON: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be a JSON object")
+
+    signature = request.headers.get(MODERN_TREASURY_SIGNATURE_HEADER)
+
+    receiver = ModernTreasuryRailReceiver()
+    try:
+        event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
+    except ModernTreasuryReceiveOnlyRailError as exc:
+        log.warning("modern_treasury webhook rejected: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if event is None:
+        return JSONResponse({"status": "ping_ok"})
+
+    publisher = ModernTreasuryPublisher()
+    publish_result = publisher.publish_event(event)
+
+    if publish_result.refused:
+        log.info("modern_treasury publish refused: %s", publish_result.detail)
+        return JSONResponse(
+            {"status": "refused", "detail": publish_result.detail},
+            status_code=200,
+        )
+    if publish_result.error:
+        log.error("modern_treasury publish error: %s", publish_result.detail)
+        raise HTTPException(
+            status_code=500,
+            detail=f"publisher transport error: {publish_result.detail}",
+        )
+
+    return JSONResponse(
+        {
+            "status": "received",
+            "event_kind": event.event_kind.value,
+            "payment_method": event.payment_method.value,
+            "publish_detail": publish_result.detail,
+            "raw_payload_sha256": event.raw_payload_sha256,
+        }
+    )
+
+
 __all__ = [
     "BUY_ME_A_COFFEE_SIGNATURE_HEADER",
     "GITHUB_SPONSORS_SIGNATURE_HEADER",
     "LIBERAPAY_SIGNATURE_HEADER",
     "MERCURY_LEGACY_SIGNATURE_HEADER",
     "MERCURY_SIGNATURE_HEADER",
+    "MODERN_TREASURY_SIGNATURE_HEADER",
     "OPEN_COLLECTIVE_SIGNATURE_HEADER",
     "PATREON_EVENT_HEADER",
     "PATREON_SIGNATURE_HEADER",
