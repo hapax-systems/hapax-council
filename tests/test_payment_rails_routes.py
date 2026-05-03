@@ -2684,11 +2684,12 @@ def _modern_treasury_payload(
     currency: str = "USD",
     payment_type: str = "ach",
     created_at: str = "2026-05-03T00:00:00Z",
+    payment_id: str = "ipd-uuid-1111",
 ) -> dict:
     return {
         "event": event,
         "data": {
-            "id": "ipd-uuid-1111",
+            "id": payment_id,
             "object": "incoming_payment_detail",
             "amount": amount,
             "currency": currency,
@@ -2715,6 +2716,17 @@ def mt_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def mt_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setenv(MODERN_TREASURY_WEBHOOK_SECRET_ENV, _MT_VALID_SECRET)
     return _MT_VALID_SECRET
+
+
+@pytest.fixture
+def mt_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's Modern Treasury idempotency singleton + tmp db."""
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._modern_treasury_idempotency_store = None
+    yield tmp_path / "modern-treasury" / "idempotency.db"
+    routes_mod._modern_treasury_idempotency_store = None
 
 
 @pytest.mark.asyncio
@@ -2769,8 +2781,12 @@ async def test_modern_treasury_outgoing_event_rejected(
 
 
 @pytest.mark.asyncio
-async def test_modern_treasury_wire_payment_method(mt_output_dir: Path, mt_secret_env: str) -> None:
-    payload = _modern_treasury_payload(payment_type="wire")
+async def test_modern_treasury_wire_payment_method(
+    mt_output_dir: Path,
+    mt_secret_env: str,
+    mt_idempotency_isolated: Path,
+) -> None:
+    payload = _modern_treasury_payload(payment_type="wire", payment_id="ipd-wire-test")
     raw = json.dumps(payload).encode("utf-8")
     sig = hmac.new(mt_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
 
@@ -2786,8 +2802,14 @@ async def test_modern_treasury_wire_payment_method(mt_output_dir: Path, mt_secre
 
 
 @pytest.mark.asyncio
-async def test_modern_treasury_completed_event(mt_output_dir: Path, mt_secret_env: str) -> None:
-    payload = _modern_treasury_payload(event="incoming_payment_detail.completed")
+async def test_modern_treasury_completed_event(
+    mt_output_dir: Path,
+    mt_secret_env: str,
+    mt_idempotency_isolated: Path,
+) -> None:
+    payload = _modern_treasury_payload(
+        event="incoming_payment_detail.completed", payment_id="ipd-completed-test"
+    )
     raw = json.dumps(payload).encode("utf-8")
     sig = hmac.new(mt_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
 
@@ -2843,6 +2865,92 @@ def test_modern_treasury_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# Modern Treasury — idempotency hard pin (cc-task jr-modern-treasury-rail-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_modern_treasury_route_replays_same_payment_id_returns_duplicate(
+    mt_output_dir: Path,
+    mt_secret_env: str,
+    mt_idempotency_isolated: Path,
+) -> None:
+    payload = _modern_treasury_payload(payment_id="ipd-replay-001")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(mt_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    headers = {"X-Signature": sig}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post(
+            "/api/payment-rails/modern-treasury", content=raw, headers=headers
+        )
+        second = await client.post(
+            "/api/payment-rails/modern-treasury", content=raw, headers=headers
+        )
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["payment_id"] == "ipd-replay-001"
+    files = list(mt_output_dir.glob("event-incoming_payment_detail_created-*.md"))
+    assert len(files) == 1
+
+
+@pytest.mark.asyncio
+async def test_modern_treasury_route_distinct_payment_ids_both_processed(
+    mt_output_dir: Path,
+    mt_secret_env: str,
+    mt_idempotency_isolated: Path,
+) -> None:
+    payload_a = _modern_treasury_payload(payment_id="ipd-a")
+    payload_b = _modern_treasury_payload(payment_id="ipd-b")
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+    sig_a = hmac.new(mt_secret_env.encode("utf-8"), raw_a, hashlib.sha256).hexdigest()
+    sig_b = hmac.new(mt_secret_env.encode("utf-8"), raw_b, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post(
+            "/api/payment-rails/modern-treasury",
+            content=raw_a,
+            headers={"X-Signature": sig_a},
+        )
+        r_b = await client.post(
+            "/api/payment-rails/modern-treasury",
+            content=raw_b,
+            headers={"X-Signature": sig_b},
+        )
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(mt_output_dir.glob("event-incoming_payment_detail_created-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_modern_treasury_route_missing_data_id_returns_400(
+    mt_output_dir: Path,
+    mt_secret_env: str,
+    mt_idempotency_isolated: Path,
+) -> None:
+    payload = _modern_treasury_payload()
+    del payload["data"]["id"]
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(mt_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/modern-treasury",
+            content=raw,
+            headers={"X-Signature": sig},
+        )
+
+    assert response.status_code == 400
+    assert "data.id" in response.json()["detail"]
 
 
 # ===========================================================================

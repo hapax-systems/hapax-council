@@ -136,6 +136,20 @@ _buy_me_a_coffee_idempotency_store: _RailIdempotencyStore | None = None
 _liberapay_idempotency_store: _RailIdempotencyStore | None = None
 _open_collective_idempotency_store: _RailIdempotencyStore | None = None
 _mercury_idempotency_store: _RailIdempotencyStore | None = None
+_modern_treasury_idempotency_store: _RailIdempotencyStore | None = None
+
+
+def _get_modern_treasury_idempotency_store() -> _RailIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for Modern Treasury.
+
+    Keyed on the in-payload ``data.id`` (IPD payment_id).
+    """
+    global _modern_treasury_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _modern_treasury_idempotency_store is None:
+        _modern_treasury_idempotency_store = _RailIdempotencyStore(
+            db_path=default_idempotency_db_path("modern-treasury"),
+        )
+    return _modern_treasury_idempotency_store
 
 
 def _get_mercury_idempotency_store() -> _RailIdempotencyStore:
@@ -956,7 +970,9 @@ async def receive_modern_treasury_webhook(request: Request) -> JSONResponse:
 
     signature = request.headers.get(MODERN_TREASURY_SIGNATURE_HEADER)
 
-    receiver = ModernTreasuryRailReceiver()
+    receiver = ModernTreasuryRailReceiver(
+        idempotency_store=_get_modern_treasury_idempotency_store(),
+    )
     try:
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
     except ModernTreasuryReceiveOnlyRailError as exc:
@@ -964,6 +980,11 @@ async def receive_modern_treasury_webhook(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        # Either heartbeat ping or duplicate payment id — both 200 OK.
+        payment_id = (payload.get("data") or {}).get("id") if isinstance(payload, dict) else None
+        if payload and isinstance(payment_id, str) and payment_id:
+            log.info("modern_treasury webhook duplicate: %s", payment_id)
+            return JSONResponse({"status": "duplicate", "payment_id": payment_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = ModernTreasuryPublisher()

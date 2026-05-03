@@ -146,6 +146,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from shared._rail_idempotency import (
+    IdempotencyError as _SharedIdempotencyError,
+)
+from shared._rail_idempotency import (
+    IdempotencyStore,
+)
+
 MODERN_TREASURY_WEBHOOK_SECRET_ENV = "MODERN_TREASURY_WEBHOOK_SECRET"
 
 _ISO_4217_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
@@ -436,8 +443,10 @@ class ModernTreasuryRailReceiver:
         self,
         *,
         secret_env_var: str = MODERN_TREASURY_WEBHOOK_SECRET_ENV,
+        idempotency_store: IdempotencyStore | None = None,
     ) -> None:
         self._secret_env_var = secret_env_var
+        self._idempotency_store = idempotency_store
 
     def _resolve_secret(self) -> str:
         return os.environ.get(self._secret_env_var, "")
@@ -494,6 +503,20 @@ class ModernTreasuryRailReceiver:
         amount_cents, currency = _extract_amount_and_currency(payment)
         occurred_at = _extract_occurred_at(payload, payment)
 
+        if self._idempotency_store is not None:
+            payment_id = payment.get("id")
+            if not isinstance(payment_id, str) or not payment_id:
+                raise ReceiveOnlyRailError(
+                    "idempotency_store provided but data.id missing — "
+                    "Modern Treasury IPD payloads carry the per-delivery "
+                    "identifier in data.id"
+                )
+            try:
+                if not self._idempotency_store.record_or_skip(payment_id):
+                    return None
+            except _SharedIdempotencyError as exc:
+                raise ReceiveOnlyRailError(str(exc)) from exc
+
         try:
             return IncomingPaymentEvent(
                 originating_party_handle=originating_party_handle,
@@ -510,6 +533,7 @@ class ModernTreasuryRailReceiver:
 
 __all__ = [
     "MODERN_TREASURY_WEBHOOK_SECRET_ENV",
+    "IdempotencyStore",
     "IncomingPaymentEvent",
     "IncomingPaymentEventKind",
     "ModernTreasuryRailReceiver",
