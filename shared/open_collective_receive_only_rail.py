@@ -375,7 +375,11 @@ class OpenCollectiveRailReceiver:
         return os.environ.get(self._secret_env_var, "")
 
     def ingest_webhook(
-        self, payload: dict[str, Any], signature: str | None
+        self,
+        payload: dict[str, Any],
+        signature: str | None,
+        *,
+        raw_body: bytes | None = None,
     ) -> CollectiveEvent | None:
         """Validate + normalize a single Open Collective webhook delivery.
 
@@ -385,6 +389,14 @@ class OpenCollectiveRailReceiver:
         Returns ``None`` only when the caller passes ``payload={}``
         *and* ``signature=None``, which is treated as a no-op heartbeat
         ping from a pre-flight ping delivery.
+
+        ``raw_body`` is the raw HTTP body bytes Open Collective signed
+        (the FastAPI handler captures these before JSON parsing).
+        When provided, signature verification uses the raw bytes —
+        the only correct shape against live deliveries.  When omitted,
+        the receiver falls back to canonical-encoding the parsed
+        payload (preserves prior behavior used by the rail's own unit
+        tests).
         """
         if not isinstance(payload, dict):
             raise ReceiveOnlyRailError(f"payload must be a dict, got {type(payload).__name__}")
@@ -392,7 +404,8 @@ class OpenCollectiveRailReceiver:
         if not payload and signature is None:
             return None
 
-        payload_bytes = _canonical_bytes(payload)
+        canonical = _canonical_bytes(payload)
+        payload_bytes = raw_body if raw_body is not None else canonical
 
         if signature is not None:
             secret = self._resolve_secret()
