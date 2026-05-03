@@ -1,0 +1,83 @@
+# Audio param-bridge schema (cc-task audio-audit-E-runtime-param-bridge).
+#
+# Declares which LADSPA filter-chain parameters are exposed for live
+# tweaking by the param-bridge daemon (Phase 1). Each entry maps a
+# (chain, param) pair to a typed control endpoint with bounds.
+#
+# Phase 0 (this PR): the schema YAML + Pydantic loader + tests. Phase 1
+# wires the inotify-driven HTTP daemon at /audio/param/<chain>/<param>
+# (GET = current, POST = set) and the pw-cli set-param backend.
+#
+# Edit policy: only the operator changes this file. Adding a param here
+# widens the surface a runtime daemon can mutate; verify the LADSPA
+# control-input range matches the declared range_min/range_max before
+# adding.
+
+schema_version: 1
+
+# Each entry:
+#   chain: filter-chain conf basename (without .conf), matches a unit name
+#          fragment (e.g., "hapax-music-loudnorm" -> hapax-music-loudnorm.service)
+#   param: LADSPA control-input name (verbatim, including spaces + caps)
+#   type: int | float | bool
+#   range_min / range_max: inclusive bounds (omitted = unbounded)
+#   default: value the chain ships with; bridge POSTs that reset to default
+#            should use this value
+#   description: what the param controls, in operator terms
+
+bridges:
+  - chain: hapax-music-loudnorm
+    param: "Limit (dB)"
+    type: float
+    range_min: -30.0
+    range_max: 0.0
+    default: -1.5
+    description: >-
+      Loudnorm output ceiling. Lowering gives more headroom for the duck
+      stage but reduces music loudness. Operator-tuned during livestream
+      mix sessions.
+
+  - chain: hapax-music-loudnorm
+    param: "Release time (s)"
+    type: float
+    range_min: 0.05
+    range_max: 5.0
+    default: 0.5
+    description: >-
+      Loudnorm release window. Faster (< 0.3 s) keeps music tight but can
+      sound pumpy under heavy compression. Slower (> 1 s) feels natural but
+      may overshoot transient peaks.
+
+  - chain: hapax-music-duck
+    param: "Input gain (dB)"
+    type: float
+    range_min: -30.0
+    range_max: 0.0
+    default: 0.0
+    description: >-
+      Pre-duck input trim. Effectively the music bed level. Negative
+      values reduce the music bed under speech without engaging the
+      duck FSM.
+
+  - chain: hapax-music-duck
+    param: "Limit (dB)"
+    type: float
+    range_min: -30.0
+    range_max: 0.0
+    default: -12.0
+    description: >-
+      Duck depth — how much the music dips under operator speech.
+      Audit C target band: -8 to -16 dB. Deeper = clearer speech but
+      more abrupt mix; shallower = less obvious but speech may compete
+      with music.
+
+  - chain: hapax-broadcast-master
+    param: "Limit (dB)"
+    type: float
+    range_min: -3.0
+    range_max: 0.0
+    default: -0.5
+    description: >-
+      Final broadcast limiter ceiling. EBU R128 spec for streaming
+      platforms is -1 dBTP; -0.5 dBFS leaves a 0.5 dB margin for
+      true-peak overshoot in lossy encoders. DO NOT raise above 0.0.

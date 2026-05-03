@@ -1889,3 +1889,33 @@ _audit_E_load_conf_ownership
 # invoked dynamically by pydantic at model construction.
 _audit_E_conf_ownership._unit_must_have_systemd_suffix
 _audit_E_conf_ownership_registry._no_duplicate_paths
+
+# Audio param-bridge schema (cc-task audio-audit-E-runtime-param-bridge Phase 0):
+# Phase 1 wires HTTP daemon at /audio/param/<chain>/<param> + pw-cli backend +
+# JSON persistence. Until then the schema models + lookup helpers + value
+# validator are exercised by tests only.
+from shared.audio_param_bridge_schema import (
+    ParamBridge as _audit_E_param_bridge,
+)
+from shared.audio_param_bridge_schema import (
+    ParamBridgeRegistry as _audit_E_param_bridge_registry,
+)
+from shared.audio_param_bridge_schema import (
+    load_param_bridge_schema as _audit_E_load_param_bridge_schema,
+)
+from shared.audio_param_bridge_schema import (
+    validate_value as _audit_E_validate_value,
+)
+
+_audit_E_param_bridge
+_audit_E_param_bridge_registry
+_audit_E_param_bridge_registry.get
+_audit_E_param_bridge_registry.list_chains
+_audit_E_param_bridge_registry.list_params_for_chain
+_audit_E_load_param_bridge_schema
+_audit_E_validate_value
+
+# Pydantic validators on ParamBridge / ParamBridgeRegistry are invoked
+# dynamically at model construction.
+_audit_E_param_bridge._bool_no_range_default_in_range
+_audit_E_param_bridge_registry._no_duplicate_chain_param_pairs
