@@ -11,7 +11,7 @@ Current workstation confs the generator has to match:
   for +12 dB makeup gain on the L6 Main Mix AUX10+11 tap
 - ``hapax-stream-split.conf`` — loopback pair (hapax-livestream +
   hapax-private) → Ryzen
-- ``voice-fx-chain.conf`` — biquad-chain filter-chain targeting Ryzen
+- ``hapax-voice-fx-chain.conf`` — biquad-chain filter-chain targeting Ryzen
 
 LADSPA chain templates (schema v3, audit F#8):
 

@@ -51,7 +51,7 @@ orphans:
 
   # voice-fx variants — operator-curated voice-FX presets, not
   # yaml-modeled (the yaml has a single `voice-fx` chain stub).
-  - voice-fx-chain.conf
+  - hapax-voice-fx-chain.conf  # renamed 2026-05-03 (audit-E slice 4)
   - hapax-voice-fx-loudnorm.conf  # renamed 2026-05-03 (audit-E slice 3)
   - voice-fx-radio.conf
 
