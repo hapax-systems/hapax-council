@@ -1,0 +1,54 @@
+{
+  "name": "Dub Echo Spatial",
+  "description": "Dub-spectral lineage (1/2): heavy echo + trail + spatial mirror. Channels the dub-reggae echo-chamber aesthetic where sound becomes spatial architecture. Lineage: dub-spectral.",
+  "lineage": "dub-spectral",
+  "transition_ms": 2600,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 1.02,
+        "contrast": 1.1,
+        "saturation": 1.18,
+        "hue_rotate": -12
+      }
+    },
+    "echo_dub": {
+      "type": "echo",
+      "params": {
+        "delay": 0.42,
+        "feedback": 0.55,
+        "wet": 0.4
+      }
+    },
+    "trail_long": {
+      "type": "trail",
+      "params": {
+        "decay": 0.93,
+        "amount": 0.35
+      }
+    },
+    "mirror_spatial": {
+      "type": "mirror",
+      "params": {
+        "axis": "vertical",
+        "amount": 0.18
+      }
+    },
+    "vignette": {
+      "type": "vignette",
+      "params": {
+        "intensity": 0.32,
+        "radius": 0.72
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}
