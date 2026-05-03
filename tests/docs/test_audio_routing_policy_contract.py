@@ -100,7 +100,7 @@ def test_policy_maps_current_policy_bearing_artifacts() -> None:
         "config/pipewire/hapax-notification-private.conf",
         "config/wireplumber/50-hapax-voice-duck.conf",
         "config/pipewire/hapax-l12-evilpet-capture.conf",
-        "config/pipewire/voice-fx-chain.conf",
+        "config/pipewire/hapax-voice-fx-chain.conf",
         "config/pipewire/hapax-music-loudnorm.conf",
         "config/pipewire/hapax-yt-loudnorm.conf",
         "config/pipewire/hapax-s4-loopback.conf",

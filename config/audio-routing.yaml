@@ -149,7 +149,7 @@ routes:
     generated_artifact_owner: hand_mirrored
     artifact_refs:
       - config/wireplumber/50-hapax-voice-duck.conf
-      - config/pipewire/voice-fx-chain.conf
+      - config/pipewire/hapax-voice-fx-chain.conf
       - config/pipewire/hapax-voice-fx-loudnorm.conf
       - config/pipewire/hapax-tts-duck.conf
 
@@ -370,7 +370,7 @@ artifacts:
     status: hand_mirrored
     owner: config/audio-routing.yaml#m8-instrument
     reason: M8 autolink policy is route-policy owned but hardware-optional.
-  - path: config/pipewire/voice-fx-chain.conf
+  - path: config/pipewire/hapax-voice-fx-chain.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#broadcast-tts
     reason: Broadcast voice FX chain mirrors role.broadcast policy.
