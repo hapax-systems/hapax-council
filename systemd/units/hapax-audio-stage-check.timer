@@ -1,0 +1,23 @@
+[Unit]
+Description=Hapax periodic audio stage RMS check (continuous emitter)
+Documentation=cc-task audio-stage-check-continuous-emitter
+# Pairs with hapax-audio-stage-check.service. The service emits
+# hapax_audio_stage_rms_dbfs{stage=...} to the node_exporter textfile
+# collector each run; without this timer the dashboard goes stale
+# immediately after boot. 60s cadence is a balance between visibility
+# (operator wants near-live RMS readout on the audio-stage-rms.json
+# Grafana panel) and audio-pipeline overhead (each run injects a 5s
+# tone through hapax-music-loudnorm).
+
+[Timer]
+# Boot-time first fire: 30s after boot (let pipewire settle).
+OnBootSec=30s
+# Subsequent fires: every 60s after the previous run completes.
+OnUnitActiveSec=60s
+# Persist trigger across reboots so missed runs aren't double-counted.
+Persistent=true
+Unit=hapax-audio-stage-check.service
+RandomizedDelaySec=5s
+
+[Install]
+WantedBy=timers.target
