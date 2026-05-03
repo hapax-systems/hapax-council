@@ -48,3 +48,39 @@ stages:
       Final broadcast egress. EGRESS_TARGET_LUFS_I = -14 LUFS-I per
       shared/audio_loudness.py. This is the master limiter output and
       what reaches OBS / YouTube.
+
+  # Audit-B-grafana-per-stage-rms-dashboard extension (cc-task
+  # 2026-05-03): four additional stages the boot-time check also
+  # measures, surfaced for the per-stage RMS dashboard.
+  - monitor: hapax-l12-mixed.monitor
+    expected_dbfs: -16.0
+    tolerance_db: 3.0
+    description: >-
+      L-12 mixed-bus capture monitor. The L-12 master analog mix
+      lands at roughly mid-band level after the deck's onboard
+      mixer; this is the bus the broadcast tap consumes. Operator
+      adjusts the L-12 master fader to land here.
+  - monitor: hapax-broadcast-master.monitor
+    expected_dbfs: -16.0
+    tolerance_db: 3.0
+    description: >-
+      Broadcast master sink monitor — pre-loudnorm. Per the
+      2026-05-03 PipeWire monitor-port semantics research (PR #2353),
+      this monitor carries pre-process audio (what's being summed
+      INTO the master), so the level here reflects the L-12
+      mixed-bus output arriving at the safety-net limiter's input.
+  - monitor: hapax-broadcast-normalized.monitor
+    expected_dbfs: -14.0
+    tolerance_db: 3.0
+    description: >-
+      Post-loudnorm broadcast egress source (Audio/Source per the
+      2026-05-03 pw-dump verification, PR #2355). Capturing here
+      gets the post-LADSPA limiter output. Should equal
+      EGRESS_TARGET_LUFS_I = -14 dBFS RMS on the canonical sine.
+  - monitor: hapax-private-monitor.monitor
+    expected_dbfs: -23.0
+    tolerance_db: 3.0
+    description: >-
+      Private monitor (operator-only feedback path). Lower target
+      because the private monitor is for the operator's headphone
+      mix, not the broadcast egress.

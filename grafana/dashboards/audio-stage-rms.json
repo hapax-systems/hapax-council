@@ -1,0 +1,384 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Per-stage broadcast audio RMS dBFS over time (8 stages). Source: scripts/audio-stage-check.sh emits hapax_audio_stage_rms_dbfs{stage=...} to /var/lib/node_exporter/textfile_collector/hapax_audio_stage_check.prom. Expected levels + tolerances source-of-truth: config/audio-stage-expected-levels.yaml. Cc-task: audio-audit-B-grafana-per-stage-rms-dashboard. Pairs with H3 dashboard (hapax-audio-recovery.json) for broadcast-master LUFS + true-peak gauges. The Hapax/Audio folder routing is operator-managed (Grafana stores folder assignment in its own DB, not in dashboard JSON).",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Loudnorm output stage. Expected -20 dBFS RMS on canonical -14 LUFS sine (PRE_NORM_TARGET_LUFS_I = -18 LUFS-I per shared/audio_loudness.py). ±3 dB tolerance.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": -23 },
+              { "color": "green", "value": -22 },
+              { "color": "yellow", "value": -18 },
+              { "color": "red", "value": -17 }
+            ]
+          },
+          "unit": "none"
+        }
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hapax_audio_stage_rms_dbfs{stage=\"hapax-music-loudnorm.monitor\"}",
+          "legendFormat": "music-loudnorm dBFS",
+          "refId": "A"
+        }
+      ],
+      "title": "music-loudnorm — RMS dBFS (target -20 ±3)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Post-ducker monitor. Bypass-level when no operator-VAD trigger; matches loudnorm output. Expected -20 dBFS RMS ±3 dB.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": -23 },
+              { "color": "green", "value": -22 },
+              { "color": "yellow", "value": -18 },
+              { "color": "red", "value": -17 }
+            ]
+          },
+          "unit": "none"
+        }
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hapax_audio_stage_rms_dbfs{stage=\"hapax-music-duck.monitor\"}",
+          "legendFormat": "music-duck dBFS",
+          "refId": "A"
+        }
+      ],
+      "title": "music-duck — RMS dBFS (target -20 ±3)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "USB line-driver to S-4 / L-12. ~+2 dB make-up gain on the canonical analog-LINE-out path. Expected -18 dBFS RMS ±3 dB.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": -21 },
+              { "color": "green", "value": -20 },
+              { "color": "yellow", "value": -16 },
+              { "color": "red", "value": -15 }
+            ]
+          },
+          "unit": "none"
+        }
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 6 },
+      "id": 3,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hapax_audio_stage_rms_dbfs{stage=\"hapax-usb-line-driver.monitor\"}",
+          "legendFormat": "usb-line-driver dBFS",
+          "refId": "A"
+        }
+      ],
+      "title": "usb-line-driver — RMS dBFS (target -18 ±3)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "L-12 mixed-bus capture monitor. Operator-managed L-12 master fader lands here. Expected -16 dBFS RMS ±3 dB.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": -19 },
+              { "color": "green", "value": -18 },
+              { "color": "yellow", "value": -14 },
+              { "color": "red", "value": -13 }
+            ]
+          },
+          "unit": "none"
+        }
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 6 },
+      "id": 4,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hapax_audio_stage_rms_dbfs{stage=\"hapax-l12-mixed.monitor\"}",
+          "legendFormat": "l12-mixed dBFS",
+          "refId": "A"
+        }
+      ],
+      "title": "l12-mixed — RMS dBFS (target -16 ±3)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Broadcast master sink monitor — pre-loudnorm. Per #2353 PipeWire monitor pre-chain semantics, this monitor carries audio entering the master (not post-loudnorm). Expected -16 dBFS RMS ±3 dB.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": -19 },
+              { "color": "green", "value": -18 },
+              { "color": "yellow", "value": -14 },
+              { "color": "red", "value": -13 }
+            ]
+          },
+          "unit": "none"
+        }
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 12 },
+      "id": 5,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hapax_audio_stage_rms_dbfs{stage=\"hapax-broadcast-master.monitor\"}",
+          "legendFormat": "broadcast-master dBFS (pre-loudnorm)",
+          "refId": "A"
+        }
+      ],
+      "title": "broadcast-master — RMS dBFS pre-loudnorm (target -16 ±3)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Post-loudnorm broadcast egress (Audio/Source per #2355 pw-dump verification). EGRESS_TARGET_LUFS_I = -14 LUFS-I. Expected -14 dBFS RMS ±3 dB. This is the same stage as hapax_audio_egress_lufs_dbfs from the H3 dashboard but as RMS rather than integrated LUFS.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": -17 },
+              { "color": "green", "value": -16 },
+              { "color": "yellow", "value": -12 },
+              { "color": "red", "value": -11 }
+            ]
+          },
+          "unit": "none"
+        }
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 12 },
+      "id": 6,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hapax_audio_stage_rms_dbfs{stage=\"hapax-broadcast-normalized.monitor\"}",
+          "legendFormat": "broadcast-normalized RMS dBFS",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hapax_audio_egress_lufs_dbfs{stage=\"broadcast-master\"}",
+          "legendFormat": "(H3) integrated LUFS-I",
+          "refId": "B"
+        }
+      ],
+      "title": "broadcast-normalized — RMS dBFS post-loudnorm (target -14 ±3) + H3 LUFS-I",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Final broadcast egress to OBS / YouTube. EGRESS_TARGET_LUFS_I = -14 LUFS-I. Expected -14 dBFS RMS ±3 dB.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": -17 },
+              { "color": "green", "value": -16 },
+              { "color": "yellow", "value": -12 },
+              { "color": "red", "value": -11 }
+            ]
+          },
+          "unit": "none"
+        }
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 18 },
+      "id": 7,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hapax_audio_stage_rms_dbfs{stage=\"hapax-obs-broadcast-remap.monitor\"}",
+          "legendFormat": "obs-broadcast-remap dBFS",
+          "refId": "A"
+        }
+      ],
+      "title": "obs-broadcast-remap — RMS dBFS final egress (target -14 ±3)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Private monitor — operator-only headphone mix. Lower target since not part of broadcast egress. Expected -23 dBFS RMS ±3 dB.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": -26 },
+              { "color": "green", "value": -25 },
+              { "color": "yellow", "value": -21 },
+              { "color": "red", "value": -20 }
+            ]
+          },
+          "unit": "none"
+        }
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 18 },
+      "id": 8,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hapax_audio_stage_rms_dbfs{stage=\"hapax-private-monitor.monitor\"}",
+          "legendFormat": "private-monitor dBFS",
+          "refId": "A"
+        }
+      ],
+      "title": "private-monitor — RMS dBFS operator headphones (target -23 ±3)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Stages currently divergent (>tolerance from expected) per the most recent boot-time check. Source: scripts/audio-stage-check.sh writes hapax_audio_stage_divergent_total. A non-zero value means at least one stage in audio-stage-expected-levels.yaml is outside its tolerance band.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "lineWidth": 3, "fillOpacity": 20 },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 2 }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 24 },
+      "id": 9,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hapax_audio_stage_divergent_total",
+          "legendFormat": "stages diverged",
+          "refId": "A"
+        }
+      ],
+      "title": "Divergent stages count (alert source: > 0 sustained)",
+      "type": "timeseries"
+    }
+  ],
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["hapax", "audio", "stage-rms", "audit-b", "observability"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Hapax / Audio / Per-Stage RMS",
+  "uid": "hapax-audio-stage-rms",
+  "version": 1,
+  "weekStart": ""
+}
