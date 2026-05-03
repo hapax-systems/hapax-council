@@ -1,0 +1,50 @@
+# Canonical per-stage expected RMS levels for the boot-time audio
+# stage check (cc-task audio-audit-B-startup-stage-check, Auditor B).
+#
+# The boot-time oneshot plays a known -14 LUFS test tone through
+# hapax-music-loudnorm.playback for 5 seconds, captures monitor RMS
+# at each of the 4 stages below, and compares to expected_dbfs.
+# Divergence > tolerance_db triggers an ntfy alert.
+#
+# Schema (each stage entry):
+#   monitor: PipeWire monitor source name
+#   expected_dbfs: target RMS in dBFS at the operator's canonical
+#                  -14 LUFS reference tone (negative number)
+#   tolerance_db: ± window for "in range" (positive number)
+#   description: human-readable purpose
+#
+# Edit policy: only the operator changes these values. Each change
+# should be committed with the calibration session log (date + which
+# tone + measured value + new expected_dbfs) so a future regression
+# investigation can recover the rationale.
+
+schema_version: 1
+
+stages:
+  - monitor: hapax-music-loudnorm.monitor
+    expected_dbfs: -20.0
+    tolerance_db: 3.0
+    description: >-
+      Loudnorm output stage. EBU R128 normalisation lands at the
+      pre-norm target (PRE_NORM_TARGET_LUFS_I = -18 LUFS-I per
+      shared/audio_loudness.py) which corresponds to ~-20 dBFS RMS
+      on the canonical sine reference.
+  - monitor: hapax-music-duck.monitor
+    expected_dbfs: -20.0
+    tolerance_db: 3.0
+    description: >-
+      Post-ducker monitor. With no operator-VAD trigger active the
+      ducker is bypass; the level matches loudnorm output.
+  - monitor: hapax-usb-line-driver.monitor
+    expected_dbfs: -18.0
+    tolerance_db: 3.0
+    description: >-
+      USB line-driver to S-4 / L-12. Adds ~+2 dB make-up gain on
+      the canonical analog-LINE-out path.
+  - monitor: hapax-obs-broadcast-remap.monitor
+    expected_dbfs: -14.0
+    tolerance_db: 3.0
+    description: >-
+      Final broadcast egress. EGRESS_TARGET_LUFS_I = -14 LUFS-I per
+      shared/audio_loudness.py. This is the master limiter output and
+      what reaches OBS / YouTube.

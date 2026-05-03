@@ -1,0 +1,14 @@
+[Unit]
+Description=Hapax boot-time audio stage level check (Auditor B)
+Documentation=https://github.com/ryanklee/hapax-council/blob/main/config/audio-stage-expected-levels.yaml
+After=pipewire.service wireplumber.service hapax-private-broadcast-leak-guard.service
+Wants=hapax-private-broadcast-leak-guard.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/hapax/projects/hapax-council/scripts/audio-stage-check.sh --execute
+TimeoutStartSec=30
+SuccessExitStatus=0 2
+
+[Install]
+WantedBy=default.target
