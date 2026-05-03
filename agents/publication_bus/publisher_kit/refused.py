@@ -275,6 +275,58 @@ class RedditRefusedPublisher(RefusedPublisher):
     )
 
 
+class GitHubDiscussionsRefusedPublisher(RefusedPublisher):
+    """GitHub Discussions — Q&A surface requires operator-mediated answers.
+
+    Per cc-task ``leverage-REFUSED-github-discussions-enabled`` (PR
+    #1567, 2026-04-26): GitHub Discussions creates a Q&A surface
+    where the operator is expected to answer questions, mark
+    answers as accepted, and moderate community discussion.
+    Daemon-side enable would advertise an operator-attention
+    affordance the daemon cannot honor.
+
+    Distinction from Issues: Issues are bug-reports / feature-
+    requests with a triage workflow; Discussions are open-ended
+    community Q&A. The Hapax repos use Issues for actionable items
+    and refuse Discussions to avoid the operator-Q&A debt.
+    """
+
+    surface_name = "github-discussions"
+    refusal_reason = (
+        "GitHub Discussions creates a Q&A surface where the operator is "
+        "expected to answer questions, mark accepted answers, and moderate "
+        "community discussion. Daemon-side enable advertises an operator-"
+        "attention affordance the daemon cannot honor; violates single_user "
+        "(multi-asker community) and full-automation-or-no-engagement."
+    )
+
+
+class WikipediaAutoEditRefusedPublisher(RefusedPublisher):
+    """Wikipedia auto-edit — ToS forbids unflagged automation; multi-editor platform.
+
+    Per cc-task ``leverage-REFUSED-wikipedia-auto-edit`` (PR #1570,
+    2026-04-26): Wikipedia's policy explicitly forbids unflagged
+    automated editing — bot accounts must register, comply with
+    bot-policy, and seek community approval per the Bot Approvals
+    Group. Even flagged bots are subject to community oversight
+    that contradicts daemon-tractable operation. Wikipedia is also
+    a multi-editor authority — every article is community-mediated,
+    violating ``single_user``.
+
+    The "double-barrier" constitutional refusal: ToS-forbidden +
+    multi-user-platform. Either alone would be sufficient.
+    """
+
+    surface_name = "wikipedia-auto-edit"
+    refusal_reason = (
+        "Wikipedia ToS forbids unflagged automated editing; the Bot Approvals "
+        "Group requires per-bot community approval and ongoing human oversight. "
+        "Wikipedia is also a multi-editor authority — every article is "
+        "community-mediated. Double constitutional barrier: ToS-forbidden + "
+        "single_user violation (multi-editor platform)."
+    )
+
+
 class WiseDirectDebitRefusedPublisher(RefusedPublisher):
     """Wise Direct Debit (active reception) — receive-only invariant precludes.
 
@@ -315,6 +367,7 @@ REFUSED_PUBLISHER_CLASSES: list[type[RefusedPublisher]] = [
     BandcampRefusedPublisher,
     DiscogsRefusedPublisher,
     DiscordWebhookRefusedPublisher,
+    GitHubDiscussionsRefusedPublisher,
     LinkedInRefusedPublisher,
     RedditRefusedPublisher,
     RymRefusedPublisher,
@@ -322,6 +375,7 @@ REFUSED_PUBLISHER_CLASSES: list[type[RefusedPublisher]] = [
     AlphaXivCommentsRefusedPublisher,
     SubstackRefusedPublisher,
     TwitterRefusedPublisher,
+    WikipediaAutoEditRefusedPublisher,
     WiseDirectDebitRefusedPublisher,
 ]
 
@@ -333,11 +387,13 @@ __all__ = [
     "CrossrefEventDataRefusedPublisher",
     "DiscogsRefusedPublisher",
     "DiscordWebhookRefusedPublisher",
+    "GitHubDiscussionsRefusedPublisher",
     "LinkedInRefusedPublisher",
     "RedditRefusedPublisher",
     "RefusedPublisher",
     "RymRefusedPublisher",
     "SubstackRefusedPublisher",
     "TwitterRefusedPublisher",
+    "WikipediaAutoEditRefusedPublisher",
     "WiseDirectDebitRefusedPublisher",
 ]
