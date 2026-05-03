@@ -133,6 +133,21 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "IsObsoletedBy) ships with the publisher."
         ),
     ),
+    "agents.publication_bus.buy_me_a_coffee_publisher": WireEntry(
+        module="agents.publication_bus.buy_me_a_coffee_publisher",
+        surface_slug="buy-me-a-coffee-receiver",
+        status="WIRED",
+        pass_key_required="buy-me-a-coffee/webhook-secret",
+        rationale=(
+            "Seventh wired monetization rail (cc-task buy-me-a-coffee-end-to-end-wiring). "
+            "Wired via logos/api/routes/payment_rails.py POST "
+            "/api/payment-rails/buy-me-a-coffee. HMAC SHA-256 over raw body via "
+            "X-Signature-Sha256 + BUY_ME_A_COFFEE_WEBHOOK_SECRET env var "
+            "(hapax-secrets.service from pass `buy-me-a-coffee/webhook-secret`). "
+            "Membership-cancellation events emit a RefusalEvent under axiom "
+            "full_auto_or_nothing for the refusal_annex_renderer to aggregate."
+        ),
+    ),
     "agents.publication_bus.patreon_publisher": WireEntry(
         module="agents.publication_bus.patreon_publisher",
         surface_slug="patreon-receiver",

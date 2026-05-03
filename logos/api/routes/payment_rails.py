@@ -37,6 +37,9 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from agents.publication_bus.buy_me_a_coffee_publisher import (
+    BuyMeACoffeePublisher,
+)
 from agents.publication_bus.github_sponsors_publisher import (
     GitHubSponsorsPublisher,
 )
@@ -48,6 +51,12 @@ from agents.publication_bus.open_collective_publisher import (
 from agents.publication_bus.patreon_publisher import PatreonPublisher
 from agents.publication_bus.stripe_payment_link_publisher import (
     StripePaymentLinkPublisher,
+)
+from shared.buy_me_a_coffee_receive_only_rail import (
+    BuyMeACoffeeRailReceiver,
+)
+from shared.buy_me_a_coffee_receive_only_rail import (
+    ReceiveOnlyRailError as BuyMeACoffeeReceiveOnlyRailError,
 )
 from shared.github_sponsors_receive_only_rail import (
     GitHubSponsorsRailReceiver,
@@ -119,6 +128,11 @@ PATREON_EVENT_HEADER: str = "X-Patreon-Event"
 """Patreon event-kind header — separate from the signature header.
 Carries the colon-delimited event name (e.g. ``members:create``,
 ``members:pledge:delete``)."""
+
+BUY_ME_A_COFFEE_SIGNATURE_HEADER: str = "X-Signature-Sha256"
+"""Buy Me a Coffee webhook signature header — hex-encoded HMAC SHA-256
+digest of the raw body. Both bare hex digest and ``sha256=<hex>``
+prefixed forms are accepted by the receiver."""
 
 
 @router.post("/github-sponsors")
@@ -537,7 +551,72 @@ async def receive_patreon_webhook(request: Request) -> JSONResponse:
     )
 
 
+@router.post("/buy-me-a-coffee")
+async def receive_buy_me_a_coffee_webhook(request: Request) -> JSONResponse:
+    """Receive a Buy Me a Coffee webhook delivery and dispatch.
+
+    BMaC signs deliveries with HMAC SHA-256 over the raw body in the
+    ``X-Signature-Sha256`` header. Both bare hex digest and
+    ``sha256=<hex>`` prefixed forms are accepted.
+    """
+    raw_body = await request.body()
+
+    if not raw_body:
+        receiver = BuyMeACoffeeRailReceiver()
+        result = receiver.ingest_webhook({}, None)
+        if result is None:
+            return JSONResponse({"status": "ping_ok"})
+        raise HTTPException(status_code=500, detail="unexpected non-None result from heartbeat")
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        log.warning("buy_me_a_coffee webhook: malformed JSON")
+        raise HTTPException(status_code=400, detail=f"malformed JSON: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be a JSON object")
+
+    signature = request.headers.get(BUY_ME_A_COFFEE_SIGNATURE_HEADER)
+
+    receiver = BuyMeACoffeeRailReceiver()
+    try:
+        event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
+    except BuyMeACoffeeReceiveOnlyRailError as exc:
+        log.warning("buy_me_a_coffee webhook rejected: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if event is None:
+        return JSONResponse({"status": "ping_ok"})
+
+    publisher = BuyMeACoffeePublisher()
+    publish_result = publisher.publish_event(event)
+
+    if publish_result.refused:
+        log.info("buy_me_a_coffee publish refused: %s", publish_result.detail)
+        return JSONResponse(
+            {"status": "refused", "detail": publish_result.detail},
+            status_code=200,
+        )
+    if publish_result.error:
+        log.error("buy_me_a_coffee publish error: %s", publish_result.detail)
+        raise HTTPException(
+            status_code=500,
+            detail=f"publisher transport error: {publish_result.detail}",
+        )
+
+    return JSONResponse(
+        {
+            "status": "received",
+            "event_kind": event.event_kind.value,
+            "publish_detail": publish_result.detail,
+            "raw_payload_sha256": event.raw_payload_sha256,
+        }
+    )
+
+
 __all__ = [
+    "BUY_ME_A_COFFEE_SIGNATURE_HEADER",
     "GITHUB_SPONSORS_SIGNATURE_HEADER",
     "LIBERAPAY_SIGNATURE_HEADER",
     "OPEN_COLLECTIVE_SIGNATURE_HEADER",
