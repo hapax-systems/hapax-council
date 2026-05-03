@@ -83,9 +83,16 @@ def test_timer_unit_parses_cleanly() -> None:
     parsed = _read_unit(timer)
     assert "Timer" in parsed.sections()
     assert "Install" in parsed.sections()
-    # Audit A#5 cadence pin: 60s after boot, every 120s
+    # Cadence pin: 60s after boot, every 30s.
+    # Audit A#5 originally specified 120s; cc-task
+    # audio-audit-E-topology-prometheus-metrics (Auditor E, 2026-05-03)
+    # tightened to 30s so Grafana drift trends + alerts on
+    # `hapax_audio_topology_live_links_total{state="extra"} > 0` catch a
+    # mid-run topology mutation within the same window the operator
+    # uses to investigate. Single source of truth for the new value
+    # also lives in tests/test_audio_topology_prometheus_metrics.py.
     assert parsed.get("Timer", "OnBootSec") == "60s"
-    assert parsed.get("Timer", "OnUnitActiveSec") == "120s"
+    assert parsed.get("Timer", "OnUnitActiveSec") == "30s"
     assert parsed.get("Timer", "Unit") == "hapax-audio-topology-verify.service"
     assert parsed.get("Install", "WantedBy") == "timers.target"
 
