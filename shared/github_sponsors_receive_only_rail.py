@@ -198,7 +198,11 @@ class GitHubSponsorsRailReceiver:
         return os.environ.get(self._secret_env_var, "")
 
     def ingest_webhook(
-        self, payload: dict[str, Any], signature: str | None
+        self,
+        payload: dict[str, Any],
+        signature: str | None,
+        *,
+        raw_body: bytes | None = None,
     ) -> SponsorshipEvent | None:
         """Validate + normalize a single GitHub Sponsors webhook delivery.
 
@@ -208,6 +212,14 @@ class GitHubSponsorsRailReceiver:
         ``None`` only when the caller passes ``payload={}`` *and*
         ``signature=None``, which is treated as a no-op heartbeat ping
         from a pre-flight ping delivery.
+
+        ``raw_body`` is the raw HTTP body bytes GitHub signed (the
+        FastAPI handler captures these before JSON parsing).  When
+        provided, signature verification uses the raw bytes — this is
+        the only correct shape against live GitHub deliveries.  When
+        omitted, the receiver falls back to canonical-encoding the
+        parsed payload, which works for round-trip test fixtures but
+        will spuriously fail against real wire deliveries.
         """
         if not isinstance(payload, dict):
             raise ReceiveOnlyRailError(f"payload must be a dict, got {type(payload).__name__}")
@@ -215,18 +227,13 @@ class GitHubSponsorsRailReceiver:
         if not payload and signature is None:
             return None
 
+        canonical_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        payload_bytes = raw_body if raw_body is not None else canonical_bytes
+        payload_sha256 = _sha256_hex(payload_bytes)
+
         if signature is not None:
             secret = self._resolve_secret()
-            payload_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode(
-                "utf-8"
-            )
             _verify_signature(payload_bytes, signature, secret)
-            payload_sha256 = _sha256_hex(payload_bytes)
-        else:
-            payload_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode(
-                "utf-8"
-            )
-            payload_sha256 = _sha256_hex(payload_bytes)
 
         action = _coerce_action(payload.get("action"))
         sponsor_login = _extract_sponsor_login(payload)
