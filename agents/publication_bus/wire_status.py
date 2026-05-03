@@ -133,6 +133,26 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "IsObsoletedBy) ships with the publisher."
         ),
     ),
+    "agents.publication_bus.github_sponsors_publisher": WireEntry(
+        module="agents.publication_bus.github_sponsors_publisher",
+        surface_slug="github-sponsors-receiver",
+        status="WIRED",
+        pass_key_required="github-sponsors/webhook-secret",
+        rationale=(
+            "First wired monetization rail (cc-task github-sponsors-end-to-end-wiring). "
+            "Wired via logos/api/routes/payment_rails.py POST "
+            "/api/payment-rails/github-sponsors which captures the raw body + "
+            "X-Hub-Signature-256 header and dispatches accepted events through "
+            "GitHubSponsorsPublisher.publish_event(). Webhook secret from "
+            "GITHUB_SPONSORS_WEBHOOK_SECRET env var (hapax-secrets.service from "
+            "pass `github-sponsors/webhook-secret`). Cancellation events emit a "
+            "RefusalEvent to the canonical refusal log under axiom "
+            "full_auto_or_nothing for the existing refusal_annex_renderer to "
+            "aggregate. Tier setup on github.com is operator-action gated by "
+            "the legal-entity bootstrap (Wyoming LLC + EIN); the wire itself "
+            "is live regardless."
+        ),
+    ),
     "agents.attribution.crossref_depositor": WireEntry(
         module="agents.attribution.crossref_depositor",
         surface_slug="crossref-doi-deposit",

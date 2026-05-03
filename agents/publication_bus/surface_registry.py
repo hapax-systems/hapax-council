@@ -102,6 +102,18 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
         activation_path="agents.marketing.refusal_annex_publisher.RefusalAnnexPublisher",
         scope_note="renders refusal annex markdown to ~/hapax-state/publications/",
     ),
+    "github-sponsors-receiver": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="webhook",
+        dispatch_entry="logos.api.routes.payment_rails:receive_github_sponsors_webhook",
+        activation_path="agents.publication_bus.github_sponsors_publisher.GitHubSponsorsPublisher",
+        scope_note=(
+            "First wired monetization rail. POST /api/payment-rails/github-sponsors "
+            "on logos :8051; HMAC SHA-256 over raw body via X-Hub-Signature-256 + "
+            "GITHUB_SPONSORS_WEBHOOK_SECRET env var. Cancellation events auto-link "
+            "to the canonical refusal log under axiom full_auto_or_nothing."
+        ),
+    ),
     "arena-post": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="REST",
