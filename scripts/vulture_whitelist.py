@@ -1510,6 +1510,28 @@ _stripe_manifest_path_for_event
 STRIPE_PAYMENT_LINK_SIGNATURE_HEADER
 receive_stripe_payment_link_webhook
 
+# Ko-fi V5 publisher + FastAPI route — cc-task ko-fi-end-to-end-wiring
+# (5th live monetization rail). Ko-fi uses token-in-payload verification
+# (NOT HMAC); no cancellation event in canonical 4 so no auto-link.
+from agents.publication_bus.ko_fi_publisher import (
+    KoFiPublisher,
+)
+from agents.publication_bus.ko_fi_publisher import (
+    event_to_manifest_record as _kofi_event_to_manifest_record,
+)
+from agents.publication_bus.ko_fi_publisher import (
+    manifest_path_for_event as _kofi_manifest_path_for_event,
+)
+from logos.api.routes.payment_rails import (
+    receive_ko_fi_webhook,
+)
+
+KoFiPublisher.publish_event
+KoFiPublisher._render_manifest_body
+_kofi_event_to_manifest_record
+_kofi_manifest_path_for_event
+receive_ko_fi_webhook
+
 # R9 follow-up: apply_layout_switch adapter (cc-task
 # dynamic-compositor-layout-switching-followup). Ships ahead of any
 # caller; whitelisted until director-loop / systemd-timer wiring lands
