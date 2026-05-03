@@ -55,6 +55,10 @@ REQUIRED_CLAIM_BLOCKER_CASES = frozenset(
         "inferred",
         "selected_only",
         "commanded_only",
+        "wrong_route",
+        "leak",
+        "unsupported_claim",
+        "false_monetization",
     }
 )
 
@@ -275,6 +279,10 @@ class FixtureCase(StrEnum):
     INFERRED = "inferred"
     SELECTED_ONLY = "selected_only"
     COMMANDED_ONLY = "commanded_only"
+    WRONG_ROUTE = "wrong_route"
+    LEAK = "leak"
+    UNSUPPORTED_CLAIM = "unsupported_claim"
+    FALSE_MONETIZATION = "false_monetization"
 
 
 class FallbackMode(StrEnum):
@@ -714,6 +722,10 @@ class WorldSurfaceHealthFixtureSet(BaseModel):
             "stale_source_allows_public_live": False,
             "missing_source_allows_claim": False,
             "monetization_without_public_health": False,
+            "wrong_route_satisfies_action": False,
+            "leak_allows_public_claim": False,
+            "unsupported_claim_allows_grounded_success": False,
+            "false_monetization_allows_monetized_success": False,
         }:
             raise ValueError("fail_closed_policy must pin all no-false-grounding gates false")
 

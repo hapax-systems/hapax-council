@@ -88,6 +88,10 @@ def test_fixture_catalog_covers_required_statuses_families_and_blockers() -> Non
         "inferred",
         "selected_only",
         "commanded_only",
+        "wrong_route",
+        "leak",
+        "unsupported_claim",
+        "false_monetization",
     ],
 )
 def test_schema_rejects_claimability_on_false_grounding_cases(fixture_case: str) -> None:
