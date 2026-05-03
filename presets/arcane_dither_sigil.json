@@ -1,0 +1,45 @@
+{
+  "name": "Arcane Dither Sigil",
+  "description": "Arcane-glyph lineage (2/2): heavy dither + edge_detect + invert at low intensity creates a sigil-on-vellum aesthetic — image becomes ritual mark. Lineage: arcane-glyph.",
+  "lineage": "arcane-glyph",
+  "transition_ms": 1400,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 0.94,
+        "contrast": 1.45,
+        "saturation": 0.15,
+        "hue_rotate": 0
+      }
+    },
+    "dither_heavy": {
+      "type": "dither",
+      "params": {
+        "amount": 0.55,
+        "palette_size": 4
+      }
+    },
+    "edge_sigil": {
+      "type": "edge_detect",
+      "params": {
+        "threshold": 0.18,
+        "amount": 0.65
+      }
+    },
+    "invert_partial": {
+      "type": "invert",
+      "params": {
+        "amount": 0.28
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}
