@@ -114,6 +114,17 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "to the canonical refusal log under axiom full_auto_or_nothing."
         ),
     ),
+    "ko-fi-receiver": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="webhook",
+        dispatch_entry="logos.api.routes.payment_rails:receive_ko_fi_webhook",
+        activation_path="agents.publication_bus.ko_fi_publisher.KoFiPublisher",
+        scope_note=(
+            "Fifth wired monetization rail. POST /api/payment-rails/ko-fi on "
+            "logos :8051; token-in-payload verification (NOT HMAC) via "
+            "KO_FI_WEBHOOK_VERIFICATION_TOKEN env var. No cancellation auto-link."
+        ),
+    ),
     "stripe-payment-link-receiver": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="webhook",

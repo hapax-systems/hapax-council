@@ -38,7 +38,7 @@ WGSL_NODE_DIR = REPO_ROOT / "agents" / "shaders" / "nodes"
 # raised by cc-task wgsl-node-affordance-coverage-batch-2 (PR #2281 follow-up).
 # Bump this number in the same PR that adds new shader-node affordance
 # registrations; the bump is the contract that the new entries are real.
-MIN_REGISTERED_NODES = 35
+MIN_REGISTERED_NODES = 45
 
 
 def _wgsl_stems() -> set[str]:
@@ -134,7 +134,7 @@ class TestCoverageVisibility:
         "node.dither",
         "node.palette_remap",
         "node.edge_detect",
-        # Batch 2 — cc-task wgsl-node-affordance-coverage-batch-2 (this PR).
+        # Batch 2 — cc-task wgsl-node-affordance-coverage-batch-2 (PR #2295).
         "node.chroma_key",
         "node.chromatic_aberration",
         "node.circular_mask",
@@ -145,6 +145,17 @@ class TestCoverageVisibility:
         "node.emboss",
         "node.fisheye",
         "node.mirror",
+        # Batch 3 — cc-task wgsl-node-affordance-coverage-batch-3 (this PR).
+        "node.blend",
+        "node.diff",
+        "node.thermal",
+        "node.tunnel",
+        "node.posterize",
+        "node.slitscan",
+        "node.waveform_render",
+        "node.particle_system",
+        "node.invert",
+        "node.strobe",
     ],
 )
 def test_phase0_added_node_is_registered(name: str) -> None:
