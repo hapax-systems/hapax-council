@@ -16,7 +16,50 @@ def _env(tmp_path: Path) -> dict[str, str]:
     env["HAPAX_GEMINI_JR_ROOT"] = str(tmp_path / "jr")
     env["HAPAX_GEMINI_JR_RELAY"] = str(tmp_path / "relay" / "gemini-jr.yaml")
     env["HAPAX_GEMINI_JR_DASHBOARD"] = str(tmp_path / "dashboard" / "gemini-jr-team.md")
+    env["HAPAX_GEMINI_JR_LEVERAGE_DASHBOARD"] = str(tmp_path / "dashboard" / "jr-spark-leverage.md")
     return env
+
+
+def _write_fake_packet(
+    packets_dir: Path,
+    *,
+    role: str = "jr-reviewer",
+    task_id: str = "fake-task",
+    status: str = "ready_for_senior_review",
+    senior_required: str = "true",
+    timestamp: str = "20260503T120000Z",
+) -> Path:
+    """Synthesize a packet with a stable filename for state-machine tests."""
+    packets_dir.mkdir(parents=True, exist_ok=True)
+    path = packets_dir / f"{timestamp}-{role}-{task_id}.md"
+    path.write_text(
+        "\n".join(
+            [
+                "---",
+                "type: gemini-jr-packet",
+                "created_at: 2026-05-03T12:00:00Z",
+                f"jr_role: {role}",
+                f"task_id: {task_id}",
+                'title: "Fake task"',
+                f"status: {status}",
+                "model: gemini-3.1-pro-preview",
+                "strict_latest_model: true",
+                "prompt_sha256: deadbeef",
+                "sidecar_exit_code: 0",
+                f"senior_review_required: {senior_required}",
+                "---",
+                "",
+                "# Fake task",
+                "",
+                "## Gemini Output",
+                "",
+                "Synthetic body for state-machine tests.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 def test_jr_team_script_compiles() -> None:
@@ -129,3 +172,193 @@ printf '%s\\n' 'Hook execution for SessionEnd: 2 hooks executed successfully'
     assert "--strict-model" in call_line
     assert "gemini-3.1-pro-preview" in call_line
     assert "gemini-3-flash-preview" not in call_line
+
+
+# --- consume / supersede / triage state-machine tests --------------------
+
+
+def test_consume_rewrites_frontmatter_and_clears_review_required(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    packets = tmp_path / "jr" / "packets"
+    packet = _write_fake_packet(packets, task_id="consume-target")
+
+    result = subprocess.run(
+        [
+            str(RUNNER),
+            "consume",
+            packet.name,
+            "--by",
+            "alpha",
+            "--artefact",
+            "pr/9999",
+            "--note",
+            "hand-graduated to PR #9999",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+
+    text = packet.read_text()
+    assert "status: consumed" in text
+    assert "consumed_by: alpha" in text
+    assert "consumption_artefact: pr/9999" in text
+    assert "senior_review_required: false" in text
+    assert "consumption_note:" in text
+    # Body preserved
+    assert "Synthetic body for state-machine tests." in text
+
+
+def test_supersede_records_reason_and_clears_review_required(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    packets = tmp_path / "jr" / "packets"
+    packet = _write_fake_packet(packets, task_id="supersede-target")
+
+    result = subprocess.run(
+        [
+            str(RUNNER),
+            "supersede",
+            packet.name,
+            "--by",
+            "beta",
+            "--reason",
+            "covered by cc-task X already",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+
+    text = packet.read_text()
+    assert "status: superseded" in text
+    assert "consumed_by: beta" in text
+    assert "superseded_reason:" in text
+    assert "covered by cc-task X already" in text
+    assert "senior_review_required: false" in text
+
+
+def test_triage_lists_pending_and_excludes_consumed(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    packets = tmp_path / "jr" / "packets"
+    pending = _write_fake_packet(packets, task_id="still-pending", timestamp="20260503T100000Z")
+    _write_fake_packet(
+        packets,
+        task_id="already-consumed",
+        timestamp="20260503T100100Z",
+        senior_required="false",
+    )
+
+    result = subprocess.run(
+        [str(RUNNER), "triage", "--json"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    fnames = [p["filename"] for p in parsed]
+    assert pending.name in fnames
+    # The senior_review_required=false packet must be excluded
+    assert all("already-consumed" not in n for n in fnames)
+
+
+def test_triage_role_filter_narrows_results(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    packets = tmp_path / "jr" / "packets"
+    _write_fake_packet(
+        packets, role="jr-reviewer", task_id="reviewer-only", timestamp="20260503T100000Z"
+    )
+    _write_fake_packet(
+        packets, role="jr-test-scout", task_id="test-scout-only", timestamp="20260503T100100Z"
+    )
+
+    result = subprocess.run(
+        [str(RUNNER), "triage", "--role", "jr-test-scout", "--json"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    parsed = json.loads(result.stdout)
+    assert len(parsed) == 1
+    assert parsed[0]["role"] == "jr-test-scout"
+    assert parsed[0]["task_id"] == "test-scout-only"
+
+
+def test_consume_updates_leverage_dashboard(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    packets = tmp_path / "jr" / "packets"
+    packet = _write_fake_packet(packets, task_id="dashboard-target")
+    leverage = tmp_path / "dashboard" / "jr-spark-leverage.md"
+
+    subprocess.run(
+        [
+            str(RUNNER),
+            "consume",
+            packet.name,
+            "--by",
+            "alpha",
+            "--artefact",
+            "cc-task/some-task",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+        check=True,
+    )
+
+    assert leverage.exists()
+    body = leverage.read_text()
+    assert "Pending senior review: **0**" in body
+    assert "Consumed (lifetime): **1**" in body
+    assert "cc-task/some-task" in body
+
+
+def test_status_subcommand_emits_both_dashboards(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    # Force at least one packet on disk so dashboards have content
+    _write_fake_packet(tmp_path / "jr" / "packets", task_id="status-test")
+    result = subprocess.run(
+        [str(RUNNER), "status"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    # Activity dashboard + leverage dashboard
+    assert "gemini-jr-team.md" in result.stdout
+    assert "jr-spark-leverage.md" in result.stdout
+    activity = tmp_path / "dashboard" / "gemini-jr-team.md"
+    leverage = tmp_path / "dashboard" / "jr-spark-leverage.md"
+    assert activity.exists()
+    assert leverage.exists()
+
+
+def test_consume_rejects_missing_packet(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    (tmp_path / "jr" / "packets").mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        [
+            str(RUNNER),
+            "consume",
+            "does-not-exist.md",
+            "--by",
+            "alpha",
+            "--artefact",
+            "pr/0",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+    assert result.returncode != 0
+    assert "packet not found" in result.stderr
