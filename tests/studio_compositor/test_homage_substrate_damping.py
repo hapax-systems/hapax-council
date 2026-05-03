@@ -267,6 +267,11 @@ def test_write_uniforms_no_damping_without_bitchx_broadcast(tmp_path: Path) -> N
         mock.patch.object(_uniforms, "UNIFORMS_FILE", uniforms_file),
         mock.patch.object(_uniforms, "HOMAGE_SUBSTRATE_PACKAGE_FILE", missing_substrate),
         mock.patch.object(_uniforms.time, "time", return_value=FAKE_NOW),
+        # u8-imagination-mode-tint added a per-tick mode-palette write to
+        # color.hue_rotate via _apply_mode_palette_tint. This pin tests
+        # the no-bitchx homage pathway only — short-circuit mode tint so
+        # the pin stays focused on homage damping.
+        mock.patch.object(_uniforms, "_apply_mode_palette_tint", lambda u, **kw: None),
     ):
         _uniforms.write_uniforms(
             fake_imagination,
@@ -280,7 +285,7 @@ def test_write_uniforms_no_damping_without_bitchx_broadcast(tmp_path: Path) -> N
     result = json.loads(uniforms_file.read_text())
     # Plan default 1.0 + chain delta 0.1 = 1.1; silence=1.0 since imagination fresh.
     assert result["color.saturation"] == pytest.approx(1.1)
-    # Hue rotate stays at plan default (0.0).
+    # Hue rotate stays at plan default (0.0) — mode tint mocked above.
     assert result["color.hue_rotate"] == pytest.approx(0.0)
 
 
@@ -316,6 +321,10 @@ def test_write_uniforms_consent_safe_variant_leaves_saturation_undamped(
         mock.patch.object(_uniforms, "UNIFORMS_FILE", uniforms_file),
         mock.patch.object(_uniforms, "HOMAGE_SUBSTRATE_PACKAGE_FILE", substrate_file),
         mock.patch.object(_uniforms.time, "time", return_value=FAKE_NOW),
+        # u8-imagination-mode-tint added a per-tick mode-palette write to
+        # color.hue_rotate. This pin tests the consent-safe homage pathway
+        # only — short-circuit mode tint to keep the pin focused.
+        mock.patch.object(_uniforms, "_apply_mode_palette_tint", lambda u, **kw: None),
     ):
         _uniforms.write_uniforms(
             fake_imagination,
