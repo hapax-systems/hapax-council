@@ -18,7 +18,7 @@ LADSPA chain templates (schema v3, audit F#8):
 - ``loudnorm`` — single ``fast_lookahead_limiter_1913`` LADSPA stage
   with ``Input gain (dB) = 0``, configurable ``Limit (dB)`` and
   ``Release time (s)``. Matches the live shape of
-  ``hapax-music-loudnorm.conf`` / ``voice-fx-loudnorm.conf``.
+  ``hapax-music-loudnorm.conf`` / ``hapax-voice-fx-loudnorm.conf``.
 - ``duck`` — paired-mono ``builtin mixer`` (``duck_l`` / ``duck_r``)
   with ``Gain 1 = 1.0`` default. The audio-ducker daemon writes
   runtime gain via ``pw-cli``. Matches ``hapax-music-duck.conf`` /
@@ -267,7 +267,7 @@ def _format_loudnorm_chain(node: Node, _incoming: list[Edge]) -> str:
     Output ceiling = ``node.limit_db`` (required for ``loudnorm``
     chains). Release time defaults to 0.20 s when ``node.release_s``
     is None — matches the live ``hapax-music-loudnorm.conf`` /
-    ``voice-fx-loudnorm.conf`` values.
+    ``hapax-voice-fx-loudnorm.conf`` values.
 
     Input gain is hard-coded to 0 dB on this template — loudnorm is a
     pure ceiling stage; non-zero input gain is the ``usb-bias`` chain

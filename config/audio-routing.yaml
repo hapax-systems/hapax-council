@@ -150,7 +150,7 @@ routes:
     artifact_refs:
       - config/wireplumber/50-hapax-voice-duck.conf
       - config/pipewire/voice-fx-chain.conf
-      - config/pipewire/voice-fx-loudnorm.conf
+      - config/pipewire/hapax-voice-fx-loudnorm.conf
       - config/pipewire/hapax-tts-duck.conf
 
   - source_id: multimedia-default
@@ -374,7 +374,7 @@ artifacts:
     status: hand_mirrored
     owner: config/audio-routing.yaml#broadcast-tts
     reason: Broadcast voice FX chain mirrors role.broadcast policy.
-  - path: config/pipewire/voice-fx-loudnorm.conf
+  - path: config/pipewire/hapax-voice-fx-loudnorm.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#broadcast-tts
     reason: TTS loudnorm constants must cite shared/audio_loudness.py.
