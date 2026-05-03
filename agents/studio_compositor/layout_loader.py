@@ -137,9 +137,25 @@ class LayoutStore:
                     list(self._layouts.keys()),
                 )
                 return False
+            previous = self._active_name
             self._active_name = name
             log.info("Active layout: %s", name)
-            return True
+        # Update the U6 active-layout gauge outside the lock so the
+        # metrics module's own lock doesn't compose with ours. Best-effort:
+        # the gauge is unimportant if metrics aren't initialised (CI / unit
+        # tests without prometheus_client) and we never let a metrics fault
+        # break the layout switch.
+        try:
+            from agents.studio_compositor import metrics as _metrics
+
+            gauge = getattr(_metrics, "HAPAX_COMPOSITOR_LAYOUT_ACTIVE", None)
+            if gauge is not None:
+                if previous is not None:
+                    gauge.labels(layout=previous).set(0.0)
+                gauge.labels(layout=name).set(1.0)
+        except Exception:
+            log.debug("HAPAX_COMPOSITOR_LAYOUT_ACTIVE update failed", exc_info=True)
+        return True
 
     def active_name(self) -> str | None:
         """Return the name of the active layout, or None."""
