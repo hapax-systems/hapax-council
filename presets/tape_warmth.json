@@ -1,0 +1,47 @@
+{
+  "name": "Tape Warmth",
+  "description": "Tape-saturation lineage (1/4): gentle compression, warm chromatic shift, soft saturation feedback. Lineage: tape-saturation. The 9-dim envelope drives feedback amount via coherence; drift modulates the warp slow-flutter; intensity modulates the colorgrade warm tilt.",
+  "lineage": "tape-saturation",
+  "transition_ms": 2800,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 1.05,
+        "contrast": 1.08,
+        "saturation": 1.15,
+        "hue_rotate": -6
+      }
+    },
+    "warp_flutter": {
+      "type": "warp",
+      "params": {
+        "amplitude": 0.012,
+        "frequency": 0.4,
+        "speed": 0.18
+      }
+    },
+    "feedback_warm": {
+      "type": "feedback",
+      "params": {
+        "amount": 0.18,
+        "decay": 0.94
+      }
+    },
+    "vignette": {
+      "type": "vignette",
+      "params": {
+        "intensity": 0.3,
+        "radius": 0.78
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}
