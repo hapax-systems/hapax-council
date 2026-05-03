@@ -172,3 +172,38 @@ def test_l12_capture_position_matches_expected_set() -> None:
         f"audio.position drifted from the post-PR-#1471 narrowed set "
         f"{EXPECTED_AUX_POSITIONS}; got {positions}"
     )
+
+
+def test_l12_capture_pins_dont_remix_flag() -> None:
+    """``stream.dont-remix = true`` MUST be set in capture.props.
+
+    Per RCA #2441 (`docs/research/2026-05-03-l12-evilpet-channelmix-rca.md`),
+    omitting this flag causes PipeWire's audioconvert adapter to apply a
+    14→4 surround channelmix matrix when reducing the L-12's native
+    14-channel USB-IN down to the 4 declared AUX positions. The matrix
+    mapped CH3 USB-IN content (AUX2 — operator-declared "reserve") into
+    the AUX5 capture slot at gain ~0.4, masquerading as Evil Pet return
+    on the broadcast bus.
+
+    Empirical evidence from the OBS-noise incident: AUX2 cross-correlation
+    +0.998 vs AUX5 +0.386 against the broadcast-master signal — the
+    AUX5 broadcast slot was carrying primarily AUX2 content, not Evil
+    Pet return.
+
+    Setting ``stream.dont-remix = true`` pins each declared AUX position
+    1:1 to its corresponding USB-IN channel (no remix matrix), matching
+    the working reference pattern in
+    ``~/.config/pipewire/pipewire.conf.d/10-contact-mic.conf``.
+
+    If this flag goes missing in any future revision, the channelmix
+    leak reappears and OBS broadcast carries phantom signal again.
+    """
+    text = L12_CAPTURE_CONF.read_text(encoding="utf-8")
+    capture_match = re.search(r"capture\.props\s*=\s*\{(.*?)\}", text, re.DOTALL)
+    assert capture_match, "could not locate capture.props block in L-12 capture conf"
+    capture_body = capture_match.group(1)
+    assert re.search(r"stream\.dont-remix\s*=\s*true", capture_body), (
+        "capture.props must declare `stream.dont-remix = true` to disable "
+        "the PipeWire 14→4 channelmix matrix that leaks AUX2 into AUX5 "
+        "(per RCA #2441 / cc-task audio-l12-evilpet-channelmix-stride-fix)"
+    )
