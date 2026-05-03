@@ -350,6 +350,17 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
         refusal_link="docs/refusal-briefs/crossref-event-data-sunset.md",
         scope_note="superseded by DataCite Commons GraphQL surface",
     ),
+    "wise-direct-debit-active-reception": SurfaceSpec(
+        automation_status=AutomationStatus.REFUSED,
+        refusal_link="docs/refusal-briefs/wise-direct-debit-active-reception.md",
+        scope_note=(
+            "Wise Direct Debit pulls funds from payer bank accounts via "
+            "operator-initiated debit instructions. Even though funds land "
+            "on the operator side, initiating the movement violates the "
+            "receive-only rail invariant. Passive virtual-USD-account "
+            "reception remains acceptable (separate Phase-0 implementation)."
+        ),
+    ),
 }
 
 
