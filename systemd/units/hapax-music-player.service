@@ -1,8 +1,8 @@
 [Unit]
 Description=Local music player — plays operator-selected tracks via pw-cat (content-source-registry Phase 4a)
 Documentation=file:///home/hapax/projects/hapax-council/docs/superpowers/plans/2026-04-23-content-source-registry-plan.md
-After=hapax-secrets.service pipewire.service
-Wants=pipewire.service
+After=hapax-secrets.service pipewire.service hapax-private-broadcast-leak-guard.service
+Wants=pipewire.service hapax-private-broadcast-leak-guard.service
 OnFailure=notify-failure@%n.service
 
 [Service]
