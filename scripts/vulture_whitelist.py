@@ -1432,3 +1432,29 @@ _r9_select_layout
 _r9_LayoutSwitcher.current_layout
 _r9_LayoutSwitcher.should_switch
 _r9_LayoutSwitcher.record_switch
+
+# Liberapay V5 publisher + FastAPI route — cc-task
+# liberapay-end-to-end-wiring (2nd live monetization rail; sister of #2280
+# github-sponsors-end-to-end-wiring). Same pattern; vulture cannot follow
+# the import-string dispatch through router.include.
+from agents.publication_bus.liberapay_publisher import (
+    LiberapayPublisher,
+)
+from agents.publication_bus.liberapay_publisher import (
+    event_to_manifest_record as _lp_event_to_manifest_record,
+)
+from agents.publication_bus.liberapay_publisher import (
+    manifest_path_for_event as _lp_manifest_path_for_event,
+)
+from logos.api.routes.payment_rails import (
+    LIBERAPAY_SIGNATURE_HEADER,
+    receive_liberapay_webhook,
+)
+
+LiberapayPublisher.publish_event
+LiberapayPublisher._render_manifest_body
+LiberapayPublisher._auto_link_cancellation_to_refusal_log
+_lp_event_to_manifest_record
+_lp_manifest_path_for_event
+LIBERAPAY_SIGNATURE_HEADER
+receive_liberapay_webhook
