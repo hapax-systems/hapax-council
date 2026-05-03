@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 import textwrap
 import types
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -340,6 +342,180 @@ def test_run_once_clean_graph_returns_ok(guard: types.ModuleType, tmp_path: Path
     status = guard.run_once(runner=runner, status_path=tmp_path / "status.json")
     assert status["ok"] is True
     assert status["leak_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# fail-CLOSED on pw-link unreachable
+# ---------------------------------------------------------------------------
+#
+# REGRESSION PIN — 2026-05-02 audit finding (D, B1).
+#
+# Before this fix, `PwLinkRunner.list_links()` ran `pw-link -l` with
+# `check=False` and returned `proc.stdout` unconditionally. If `pw-link`
+# was missing, exited non-zero, or PipeWire was restarting, `parse_pw_link("")`
+# returned `[]` and the guard wrote `{"ok": true, "leak_count": 0}` and
+# exited 0 — silent fail-OPEN of the privacy invariant
+# `feedback_l12_equals_livestream_invariant`. These tests pin the
+# fail-CLOSED behaviour: PwLinkUnavailableError raised by the runner, witness
+# JSON `ok=false`/`unavailable=true`, and `main()` exit code 2 distinct
+# from "leak detected" (exit 1).
+
+
+class _RaisingRunner:
+    """Runner whose `list_links` always raises PwLinkUnavailableError."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+        self.disconnect_calls: list[tuple[str, str]] = []
+
+    def list_links(self) -> str:
+        raise self._exc
+
+    def disconnect(self, src: str, dst: str) -> tuple[bool, str]:
+        self.disconnect_calls.append((src, dst))
+        return True, ""
+
+
+def test_pw_link_runner_raises_on_nonzero_exit(guard: types.ModuleType) -> None:
+    """Real PwLinkRunner.list_links must raise on non-zero pw-link exit."""
+    fake_proc = subprocess.CompletedProcess(
+        args=["pw-link", "-l"],
+        returncode=2,
+        stdout="",
+        stderr="Connection refused",
+    )
+    runner = guard.PwLinkRunner()
+    with mock.patch.object(guard.subprocess, "run", return_value=fake_proc):
+        with pytest.raises(guard.PwLinkUnavailableError) as excinfo:
+            runner.list_links()
+    assert "Connection refused" in excinfo.value.stderr
+    assert excinfo.value.returncode == 2
+
+
+def test_pw_link_runner_raises_on_missing_binary(guard: types.ModuleType) -> None:
+    """Real PwLinkRunner.list_links must raise if `pw-link` is not on PATH."""
+    runner = guard.PwLinkRunner()
+    with mock.patch.object(
+        guard.subprocess, "run", side_effect=FileNotFoundError("no such file: pw-link")
+    ):
+        with pytest.raises(guard.PwLinkUnavailableError) as excinfo:
+            runner.list_links()
+    assert "not found" in str(excinfo.value).lower()
+
+
+def test_pw_link_runner_returns_empty_string_when_graph_is_empty(
+    guard: types.ModuleType,
+) -> None:
+    """Empty stdout with returncode 0 IS a legitimate state (early boot)."""
+    fake_proc = subprocess.CompletedProcess(
+        args=["pw-link", "-l"], returncode=0, stdout="", stderr=""
+    )
+    runner = guard.PwLinkRunner()
+    with mock.patch.object(guard.subprocess, "run", return_value=fake_proc):
+        out = runner.list_links()
+    assert out == ""
+
+
+def test_run_once_writes_unavailable_witness_when_pw_link_fails(
+    guard: types.ModuleType, tmp_path: Path
+) -> None:
+    """run_once must catch PwLinkUnavailableError and write fail-CLOSED witness."""
+    runner = _RaisingRunner(
+        guard.PwLinkUnavailableError(
+            "pw-link -l exited 2",
+            stderr="Connection refused",
+            returncode=2,
+        )
+    )
+    status_path = tmp_path / "status.json"
+    metrics_path = tmp_path / "metrics.prom"
+    status = guard.run_once(
+        runner=runner,
+        status_path=status_path,
+        metrics_path=metrics_path,
+    )
+    assert status["ok"] is False
+    assert status["unavailable"] is True
+    assert status["leak_count"] == 0
+    assert status["leaks"] == []
+    assert "Connection refused" in status["error"]
+    assert "pw-link unreachable" in status["error"]
+    # Witness JSON persisted on disk for the operator + observability.
+    persisted = json.loads(status_path.read_text(encoding="utf-8"))
+    assert persisted["ok"] is False
+    assert persisted["unavailable"] is True
+    assert "Connection refused" in persisted["error"]
+    # No repair attempts when the graph couldn't even be read.
+    assert runner.disconnect_calls == []
+    # Stale prom file MUST NOT be overwritten with zeroed counters during
+    # a transient pw-link outage — the witness JSON carries the signal.
+    assert not metrics_path.exists()
+
+
+def test_main_exits_2_when_pw_link_unreachable(
+    guard: types.ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """main() must exit 2 (guard cannot evaluate) — distinct from exit 1 (leak)."""
+    fake_proc = subprocess.CompletedProcess(
+        args=["pw-link", "-l"],
+        returncode=2,
+        stdout="",
+        stderr="Connection refused",
+    )
+    monkeypatch.setattr(guard.subprocess, "run", lambda *a, **kw: fake_proc)
+    status_path = tmp_path / "status.json"
+    rc = guard.main(
+        [
+            "--status-path",
+            str(status_path),
+            "--no-repair",
+        ]
+    )
+    assert rc == 2, "guard cannot evaluate must exit 2 (distinct from leak-detected exit 1)"
+    persisted = json.loads(status_path.read_text(encoding="utf-8"))
+    assert persisted["ok"] is False
+    assert persisted["unavailable"] is True
+    assert "Connection refused" in persisted["error"]
+
+
+def test_main_exits_1_when_leak_detected(guard: types.ModuleType, tmp_path: Path) -> None:
+    """main() must exit 1 on leak detection — distinct from fail-CLOSED exit 2."""
+    fixture = tmp_path / "pw-link.txt"
+    fixture.write_text(
+        "hapax-private-playback:output_FL\n  |-> hapax-livestream-tap:playback_FL\n",
+        encoding="utf-8",
+    )
+    status_path = tmp_path / "status.json"
+    rc = guard.main(
+        [
+            "--status-path",
+            str(status_path),
+            "--fixture",
+            str(fixture),
+            "--no-repair",
+        ]
+    )
+    assert rc == 1, "leak-detected must exit 1 (distinct from guard-broken exit 2)"
+    persisted = json.loads(status_path.read_text(encoding="utf-8"))
+    assert persisted["ok"] is False
+    assert persisted.get("unavailable") is not True
+    assert persisted["leak_count"] == 1
+
+
+def test_main_exits_0_on_clean_graph(guard: types.ModuleType, tmp_path: Path) -> None:
+    """main() must exit 0 when no forbidden links observed."""
+    fixture = tmp_path / "pw-link.txt"
+    fixture.write_text("", encoding="utf-8")
+    status_path = tmp_path / "status.json"
+    rc = guard.main(
+        [
+            "--status-path",
+            str(status_path),
+            "--fixture",
+            str(fixture),
+        ]
+    )
+    assert rc == 0
 
 
 # ---------------------------------------------------------------------------
