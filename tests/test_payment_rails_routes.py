@@ -1187,3 +1187,238 @@ def test_ko_fi_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# Patreon rail integration tests (cc-task patreon-end-to-end-wiring)
+# ===========================================================================
+
+from agents.publication_bus.patreon_publisher import (
+    CANCELLATION_REFUSAL_AXIOM as PATREON_REFUSAL_AXIOM,
+)
+from agents.publication_bus.patreon_publisher import (
+    CANCELLATION_REFUSAL_SURFACE as PATREON_REFUSAL_SURFACE,
+)
+from shared.patreon_receive_only_rail import (
+    PATREON_WEBHOOK_SECRET_ENV,
+)
+
+_PATREON_VALID_SECRET = "patreon-webhook-secret-XYZ"
+
+
+def _patreon_md5_signature(payload_bytes: bytes, secret: str = _PATREON_VALID_SECRET) -> str:
+    """Compute Patreon's HMAC MD5 hex digest (NOT SHA-256, per Patreon spec)."""
+    import hashlib as _hashlib
+
+    return hmac.new(secret.encode("utf-8"), payload_bytes, _hashlib.md5).hexdigest()
+
+
+def _patreon_payload(
+    *,
+    patron_vanity: str = "alice-patron",
+    amount_cents: int = 1500,
+    currency: str = "USD",
+    occurred_at: str = "2026-05-03T00:00:00Z",
+) -> dict:
+    """Realistic Patreon JSON:API webhook envelope."""
+    return {
+        "data": {
+            "id": "1234567",
+            "type": "member",
+            "attributes": {
+                "currently_entitled_amount_cents": amount_cents,
+                "lifetime_support_cents": amount_cents,
+                "patron_status": "active_patron",
+                "last_charge_date": occurred_at,
+                "pledge_relationship_start": occurred_at,
+                "email": "leak@example.com",  # PII; rail must NOT extract
+                "full_name": "Alice Q. Patron",  # PII
+                "note": "thanks for the work",  # PII
+            },
+            "relationships": {
+                "user": {"data": {"id": "9999", "type": "user"}},
+                "campaign": {
+                    "data": {"id": "555", "type": "campaign"},
+                },
+            },
+        },
+        "included": [
+            {
+                "id": "9999",
+                "type": "user",
+                "attributes": {
+                    "vanity": patron_vanity,
+                    "email": "leak2@example.com",  # PII
+                },
+            },
+            {
+                "id": "555",
+                "type": "campaign",
+                "attributes": {
+                    "currency": currency,
+                },
+            },
+        ],
+    }
+
+
+@pytest.fixture
+def patreon_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    return tmp_path / "hapax-state" / "publications" / "patreon"
+
+
+@pytest.fixture
+def patreon_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
+    monkeypatch.setenv(PATREON_WEBHOOK_SECRET_ENV, _PATREON_VALID_SECRET)
+    return _PATREON_VALID_SECRET
+
+
+@pytest.mark.asyncio
+async def test_patreon_signed_pledge_create_writes_manifest(
+    patreon_output_dir: Path, patreon_secret_env: str
+) -> None:
+    payload = _patreon_payload(patron_vanity="alice-patron")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _patreon_md5_signature(raw)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/patreon",
+            content=raw,
+            headers={
+                "X-Patreon-Signature": sig,
+                "X-Patreon-Event": "members:pledge:create",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "received"
+    assert body["event_kind"] == "members_pledge_create"
+    files = list(patreon_output_dir.glob("event-members_pledge_create-*.md"))
+    assert len(files) == 1, f"expected 1 manifest, got {files}"
+    contents = files[0].read_text()
+    assert "alice-patron" in contents
+    # PII must not leak
+    assert "leak@example.com" not in contents
+    assert "leak2@example.com" not in contents
+    assert "Alice Q. Patron" not in contents
+    assert "thanks for the work" not in contents
+
+
+@pytest.mark.asyncio
+async def test_patreon_pledge_delete_appends_to_refusal_log(
+    patreon_output_dir: Path,
+    patreon_secret_env: str,
+    refusal_log_dir: Path,
+) -> None:
+    payload = _patreon_payload(patron_vanity="bob-patron")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _patreon_md5_signature(raw)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/patreon",
+            content=raw,
+            headers={
+                "X-Patreon-Signature": sig,
+                "X-Patreon-Event": "members:pledge:delete",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["event_kind"] == "members_pledge_delete"
+
+    log_file = refusal_log_dir / "log.jsonl"
+    assert log_file.exists()
+    rows = [json.loads(line) for line in log_file.read_text().splitlines() if line]
+    cancellations = [r for r in rows if r.get("surface") == PATREON_REFUSAL_SURFACE]
+    assert cancellations
+    assert cancellations[0]["axiom"] == PATREON_REFUSAL_AXIOM
+
+
+@pytest.mark.asyncio
+async def test_patreon_bad_signature_returns_400(
+    patreon_output_dir: Path, patreon_secret_env: str
+) -> None:
+    payload = _patreon_payload()
+    raw = json.dumps(payload).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/patreon",
+            content=raw,
+            headers={
+                "X-Patreon-Signature": "0" * 32,  # MD5 hex is 32 chars
+                "X-Patreon-Event": "members:pledge:create",
+            },
+        )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_patreon_missing_event_header_returns_400(
+    patreon_output_dir: Path, patreon_secret_env: str
+) -> None:
+    payload = _patreon_payload()
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _patreon_md5_signature(raw)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/patreon",
+            content=raw,
+            headers={"X-Patreon-Signature": sig},  # no X-Patreon-Event
+        )
+
+    assert response.status_code == 400
+    assert "X-Patreon-Event" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_patreon_unaccepted_event_kind_returns_400(
+    patreon_output_dir: Path, patreon_secret_env: str
+) -> None:
+    payload = _patreon_payload()
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _patreon_md5_signature(raw)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/patreon",
+            content=raw,
+            headers={
+                "X-Patreon-Signature": sig,
+                "X-Patreon-Event": "campaign:update",
+            },
+        )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_patreon_empty_body_returns_ping_ok() -> None:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/payment-rails/patreon", content=b"")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ping_ok"
+
+
+def test_patreon_publisher_module_carries_no_send_path() -> None:
+    import inspect
+
+    import agents.publication_bus.patreon_publisher as mod
+
+    src = inspect.getsource(mod).lower()
+    forbidden_verbs = (
+        "def send",
+        "def initiate",
+        "def payout",
+        "def transfer",
+        "def origination",
+    )
+    for token in forbidden_verbs:
+        assert token not in src, f"unexpected send-path: {token!r}"
