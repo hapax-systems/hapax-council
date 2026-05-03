@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""hapax-audio-graph-validate — CI-gate validator CLI.
+
+Walks a PipeWire ``conf.d`` directory and reports whether every active
+``*.conf`` decomposes cleanly into the ``AudioGraph`` schema. Exits
+non-zero when any gap is surfaced — the CI gate
+(``audio-graph-validate.yml``) uses this exit code as its pass/fail
+signal.
+
+Usage:
+
+    hapax-audio-graph-validate                       # default: ~/.config/pipewire/pipewire.conf.d/
+    hapax-audio-graph-validate --source <dir>        # a fixture or alternate dir
+    hapax-audio-graph-validate --json-output <path>  # write report JSON
+    hapax-audio-graph-validate --quiet               # suppress per-file decomposed output
+
+The full report is always printed to stderr in human-readable form.
+The JSON report (when requested) carries the structured findings:
+
+* ``decomposed_files`` — paths that decomposed cleanly
+* ``skipped_files`` — backup/disabled variants
+* ``gaps`` — per-file validation findings, each with ``kind``,
+  ``source_path``, ``message``, ``suggested_schema_change``
+* ``summary`` — counts only
+
+This script has NO runtime side-effects on PipeWire. It only reads
+files. Per the P1 spec constraint, no live audio probes, no service
+restarts, no PipeWire mutation are permitted.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+# Allow running the script from a checked-out repo without install.
+_repo_root = Path(__file__).resolve().parent.parent
+if str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
+
+from shared.audio_graph import AudioGraphValidator, ValidationReport  # noqa: E402
+
+
+def _default_source() -> Path:
+    """The operator's live PipeWire conf.d directory."""
+    return Path.home() / ".config" / "pipewire" / "pipewire.conf.d"
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Decompose every active *.conf in a PipeWire conf.d directory "
+            "into an AudioGraph; report gaps."
+        )
+    )
+    parser.add_argument(
+        "--source",
+        type=Path,
+        default=None,
+        help="conf.d directory to validate (default: ~/.config/pipewire/pipewire.conf.d/)",
+    )
+    parser.add_argument(
+        "--json-output",
+        type=Path,
+        default=None,
+        help="Write structured JSON report to this path",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress per-file decomposed output",
+    )
+    return parser.parse_args(argv)
+
+
+def _print_report(report: ValidationReport, quiet: bool) -> None:
+    """Print human-readable report to stderr."""
+    n_decomp = len(report.decomposed_files)
+    n_skip = len(report.skipped_files)
+    n_gaps = len(report.gaps)
+    print(
+        f"audio-graph-validate: decomposed={n_decomp}, skipped={n_skip}, gaps={n_gaps}",
+        file=sys.stderr,
+    )
+    if not quiet:
+        for f in report.decomposed_files:
+            print(f"  OK   {f}", file=sys.stderr)
+    if report.gaps:
+        print("", file=sys.stderr)
+        print("Gaps:", file=sys.stderr)
+        for gap in report.gaps:
+            line_part = f":{gap.line}" if gap.line else ""
+            print(
+                f"  GAP  [{gap.kind}] {gap.source_path}{line_part}: {gap.message}",
+                file=sys.stderr,
+            )
+            if gap.suggested_schema_change:
+                print(
+                    f"        suggestion: {gap.suggested_schema_change}",
+                    file=sys.stderr,
+                )
+
+
+def _emit_json(report: ValidationReport, path: Path) -> None:
+    """Serialise the report to JSON."""
+    payload = {
+        "decomposed_files": list(report.decomposed_files),
+        "skipped_files": list(report.skipped_files),
+        "gaps": [g.model_dump() for g in report.gaps],
+        "summary": {
+            "decomposed": len(report.decomposed_files),
+            "skipped": len(report.skipped_files),
+            "gaps": len(report.gaps),
+            "graph_nodes": len(report.graph.nodes),
+            "graph_links": len(report.graph.links),
+            "graph_loopbacks": len(report.graph.loopbacks),
+        },
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv if argv is not None else sys.argv[1:])
+    source: Path = args.source if args.source is not None else _default_source()
+    if not source.is_dir():
+        print(
+            f"audio-graph-validate: source directory not found: {source}",
+            file=sys.stderr,
+        )
+        return 2
+
+    validator = AudioGraphValidator()
+    report = validator.decompose(source)
+
+    if args.json_output is not None:
+        _emit_json(report, args.json_output)
+
+    _print_report(report, quiet=args.quiet)
+
+    return 0 if not report.gaps else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
