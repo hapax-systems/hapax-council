@@ -1998,3 +1998,162 @@ def test_modern_treasury_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# Treasury Prime rail integration tests (cc-task treasury-prime-end-to-end-wiring)
+# ===========================================================================
+
+from shared.treasury_prime_receive_only_rail import (
+    TREASURY_PRIME_WEBHOOK_SECRET_ENV,
+)
+
+_TP_VALID_SECRET = "treasury-prime-webhook-secret-XYZ"
+
+
+def _treasury_prime_payload(
+    *,
+    event: str = "incoming_ach.create",
+    originating_party_name: str = "Acme Foundation",
+    amount: object = 10000,
+    currency: str = "USD",
+    created_at: str = "2026-05-03T00:00:00Z",
+) -> dict:
+    return {
+        "event": event,
+        "data": {
+            "id": "tp-incoming-ach-uuid",
+            "amount": amount,
+            "currency": currency,
+            "originating_party_name": originating_party_name,
+            "originating_account_number": "999111888777",  # PII
+            "originating_routing_number": "021000089",  # PII
+            "originating_address": "1 Main St",  # PII
+            "trace_number": "TRACE-12345",  # PII
+            "company_entry_description": "PAYROLL-Q2",  # PII
+            "ledger_account_id": "la-uuid-1234",
+            "created_at": created_at,
+        },
+    }
+
+
+@pytest.fixture
+def tp_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    return tmp_path / "hapax-state" / "publications" / "treasury-prime"
+
+
+@pytest.fixture
+def tp_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
+    monkeypatch.setenv(TREASURY_PRIME_WEBHOOK_SECRET_ENV, _TP_VALID_SECRET)
+    return _TP_VALID_SECRET
+
+
+@pytest.mark.asyncio
+async def test_treasury_prime_signed_incoming_ach_writes_manifest(
+    tp_output_dir: Path, tp_secret_env: str
+) -> None:
+    payload = _treasury_prime_payload()
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(tp_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/treasury-prime",
+            content=raw,
+            headers={"X-Signature": sig},
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "received"
+    assert body["event_kind"] == "incoming_ach.create"
+    files = list(tp_output_dir.glob("event-incoming_ach_create-*.md"))
+    assert len(files) == 1
+    contents = files[0].read_text()
+    assert "Acme Foundation" in contents
+    # Banking-PII negative pin
+    assert "021000089" not in contents
+    assert "999111888777" not in contents
+    assert "TRACE-12345" not in contents
+    assert "PAYROLL-Q2" not in contents
+
+
+@pytest.mark.asyncio
+async def test_treasury_prime_phase_1_event_rejected(
+    tp_output_dir: Path, tp_secret_env: str
+) -> None:
+    """Phase 0 rejects core-direct-account events (Phase 1 scope)."""
+    payload = _treasury_prime_payload(event="transaction.create")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(tp_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/treasury-prime",
+            content=raw,
+            headers={"X-Signature": sig},
+        )
+
+    assert response.status_code == 400
+    assert "out of Phase 0 scope" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_treasury_prime_outgoing_rejected(tp_output_dir: Path, tp_secret_env: str) -> None:
+    payload = _treasury_prime_payload(event="ach_origination.create")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(tp_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/treasury-prime",
+            content=raw,
+            headers={"X-Signature": sig},
+        )
+
+    assert response.status_code == 400
+    assert "refusing outgoing" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_treasury_prime_bad_signature_returns_400(
+    tp_output_dir: Path, tp_secret_env: str
+) -> None:
+    payload = _treasury_prime_payload()
+    raw = json.dumps(payload).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/treasury-prime",
+            content=raw,
+            headers={"X-Signature": "0" * 64},
+        )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_treasury_prime_empty_body_returns_ping_ok() -> None:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/payment-rails/treasury-prime", content=b"")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ping_ok"
+
+
+def test_treasury_prime_publisher_module_carries_no_send_path() -> None:
+    import inspect
+
+    import agents.publication_bus.treasury_prime_publisher as mod
+
+    src = inspect.getsource(mod).lower()
+    forbidden_verbs = (
+        "def send",
+        "def initiate",
+        "def payout",
+        "def transfer",
+        "def origination",
+    )
+    for token in forbidden_verbs:
+        assert token not in src, f"unexpected send-path: {token!r}"
