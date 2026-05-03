@@ -123,3 +123,40 @@ def test_m8_loudnorm_routes_through_l12_not_direct_to_stream() -> None:
         "M8 loudnorm must NOT terminate at hapax-livestream-tap directly; "
         "nothing goes straight to stream (operator directive 2026-05-02)"
     )
+
+
+def test_evilpet_capture_has_stream_dont_remix() -> None:
+    """RCA #2441: hapax-l12-evilpet-capture.conf capture.props must declare
+    stream.dont-remix = true to disable PipeWire's audioconvert channelmix
+    matrix. Without this, the 14→4 surround downmix maps AUX2 content into
+    the AUX5 slot (cross-corr 0.998 vs intended AUX5 at 0.386), causing
+    the broadcast chain to carry reserve-channel content instead of Evil
+    Pet return audio. Reference: docs/research/2026-05-03-l12-evilpet-
+    stride-leakage-rca.md, cc-task audio-l12-evilpet-channelmix-stride-fix."""
+    conf = _read_conf(PIPEWIRE_DIR / "hapax-l12-evilpet-capture.conf")
+    # Find the capture.props block (must be before playback.props).
+    start = conf.index('node.name = "hapax-l12-evilpet-capture"')
+    end = conf.index('node.name = "hapax-l12-evilpet-playback"')
+    capture_block = conf[start:end]
+    assert "stream.dont-remix = true" in capture_block, (
+        "hapax-l12-evilpet-capture capture.props must declare "
+        "stream.dont-remix = true to prevent audioconvert channelmix "
+        "AUX2→AUX5 stride leakage (RCA #2441)"
+    )
+
+
+def test_evilpet_capture_narrow_4ch_preserved() -> None:
+    """Constitutional invariant: the L-12 evilpet capture must stay at
+    4 channels [AUX1 AUX3 AUX4 AUX5]. Widening to 14 was tried in PR
+    #2422 and broke the anti-feedback invariant. This test pins the narrow
+    design as canonical."""
+    conf = _read_conf(PIPEWIRE_DIR / "hapax-l12-evilpet-capture.conf")
+    start = conf.index('node.name = "hapax-l12-evilpet-capture"')
+    end = conf.index('node.name = "hapax-l12-evilpet-playback"')
+    capture_block = conf[start:end]
+    assert "audio.channels = 4" in capture_block, (
+        "L-12 evilpet capture must stay at audio.channels = 4 (narrow design)"
+    )
+    assert "AUX1" in capture_block and "AUX5" in capture_block, (
+        "L-12 evilpet capture must include AUX1 and AUX5 in audio.position"
+    )
