@@ -243,8 +243,8 @@ routes:
     generated_artifact_owner: hand_mirrored
     artifact_refs:
       - config/pipewire/hapax-yt-loudnorm.conf
-      - config/pipewire/ytube-over-24c-duck.conf
-      - config/pipewire/hapax-yt-over-24c-duck.conf
+      - config/pipewire/hapax-backing-ducked-sidechain.conf
+      - config/pipewire/hapax-backing-ducked.conf
 
   - source_id: l12-evilpet-capture
     producer: l12-aux-capture
@@ -398,14 +398,14 @@ artifacts:
     status: hand_mirrored
     owner: config/audio-routing.yaml#youtube-bed
     reason: YouTube bed remains blocked from broadcast eligibility until real-content smoke and provenance pass.
-  - path: config/pipewire/ytube-over-24c-duck.conf
+  - path: config/pipewire/hapax-backing-ducked-sidechain.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#youtube-bed
-    reason: YouTube duck chain is policy-covered but not broadcast-eligible by default.
-  - path: config/pipewire/hapax-yt-over-24c-duck.conf
+    reason: Backing-mix sidechain duck chain is policy-covered but not broadcast-eligible by default.
+  - path: config/pipewire/hapax-backing-ducked.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#youtube-bed
-    reason: Legacy YouTube duck artifact remains policy-covered while migration settles.
+    reason: Controller-driven backing-mix duck artifact remains policy-covered while migration settles.
   - path: config/pipewire/hapax-l12-evilpet-capture.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#l12-evilpet-capture

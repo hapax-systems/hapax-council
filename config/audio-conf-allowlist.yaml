@@ -64,10 +64,10 @@ orphans:
   - hapax-voice-fx-loudnorm.conf  # renamed 2026-05-03 (audit-E slice 3)
   - voice-fx-radio.conf
 
-  # YouTube + tube-over-24c rate-routing helpers.
-  - hapax-yt-over-24c-duck.conf  # renamed 2026-05-03 (audit-E slice 2)
+  # YouTube + backing-mix rate-routing helpers (24c hardware retired).
+  - hapax-backing-ducked.conf  # renamed 2026-05-03 from hapax-yt-over-24c-duck.conf (24c retirement)
+  - hapax-backing-ducked-sidechain.conf  # renamed 2026-05-03 from ytube-over-24c-duck.conf (24c retirement)
   - voice-over-ytube-duck.conf
-  - ytube-over-24c-duck.conf
 
 known_missing:
   # tts-loudnorm + ytube-ducked are declared in audio-topology.yaml
