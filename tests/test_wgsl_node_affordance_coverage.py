@@ -34,10 +34,11 @@ from shared.affordance_registry import SHADER_NODE_AFFORDANCES
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WGSL_NODE_DIR = REPO_ROOT / "agents" / "shaders" / "nodes"
 
-# Floor pinned 2026-05-03 by cc-task wgsl-node-recruitment-investigation.
+# Floor pinned 2026-05-03 by cc-task wgsl-node-recruitment-investigation,
+# raised by cc-task wgsl-node-affordance-coverage-batch-2 (PR #2281 follow-up).
 # Bump this number in the same PR that adds new shader-node affordance
 # registrations; the bump is the contract that the new entries are real.
-MIN_REGISTERED_NODES = 25
+MIN_REGISTERED_NODES = 45
 
 
 def _wgsl_stems() -> set[str]:
@@ -120,8 +121,7 @@ class TestCoverageVisibility:
 @pytest.mark.parametrize(
     "name",
     [
-        # The 12 entries added by this PR — pin them by name so a future
-        # refactor that renames or drops one is caught.
+        # Batch 1 — cc-task wgsl-node-recruitment-investigation (PR #2281).
         "node.bloom",
         "node.vhs",
         "node.halftone",
@@ -134,12 +134,34 @@ class TestCoverageVisibility:
         "node.dither",
         "node.palette_remap",
         "node.edge_detect",
+        # Batch 2 — cc-task wgsl-node-affordance-coverage-batch-2 (PR #2295).
+        "node.chroma_key",
+        "node.chromatic_aberration",
+        "node.circular_mask",
+        "node.color_map",
+        "node.crossfade",
+        "node.displacement_map",
+        "node.droste",
+        "node.emboss",
+        "node.fisheye",
+        "node.mirror",
+        # Batch 3 — cc-task wgsl-node-affordance-coverage-batch-3 (this PR).
+        "node.blend",
+        "node.diff",
+        "node.thermal",
+        "node.tunnel",
+        "node.posterize",
+        "node.slitscan",
+        "node.waveform_render",
+        "node.particle_system",
+        "node.invert",
+        "node.strobe",
     ],
 )
 def test_phase0_added_node_is_registered(name: str) -> None:
     registered = {r.name for r in SHADER_NODE_AFFORDANCES}
     assert name in registered, (
-        f"{name} was added by cc-task wgsl-node-recruitment-investigation "
+        f"{name} was added by a wgsl-node-affordance-coverage cc-task "
         f"and must remain registered; if it is intentionally removed, "
         f"drop the corresponding entry in this test's parametrize list "
         f"AND lower MIN_REGISTERED_NODES in the same commit."
