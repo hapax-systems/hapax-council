@@ -136,6 +136,9 @@ HAPAX_AUDIO_DUCKING_STATE: Any = None
 HAPAX_IMAGINATION_SHADER_ROLLBACK_TOTAL: Any = None
 COMP_GLFEEDBACK_RECOMPILE_TOTAL: Any = None
 COMP_GLFEEDBACK_ACCUM_CLEAR_TOTAL: Any = None
+# R9 (2026-05-02): dynamic compositor-layout switching. See
+# layout_switcher.py for the trigger vocabulary.
+HAPAX_COMPOSITOR_LAYOUT_SWITCH_TOTAL: Any = None
 # FINDING-R diagnostics (2026-04-21 wiring audit): per-ward blit
 # accounting on the post-FX cairooverlay. WARD_BLIT_TOTAL counts every
 # successful blit_scaled call labeled by ward; WARD_BLIT_SKIPPED_TOTAL
@@ -489,6 +492,24 @@ def _init_metrics() -> None:
         "Number of times activate_plan triggered an accumulation-buffer clear "
         "(paired with recompile_total: every real shader change clears both "
         "accum FBOs in the Rust plugin).",
+        registry=REGISTRY,
+    )
+
+    # R9 (2026-05-02 effect+cam orchestration audit): dynamic
+    # compositor-layout switching. Records every applied switch by
+    # ``from_layout`` / ``to_layout`` / ``trigger`` (see
+    # ``layout_switcher.LayoutSelection.trigger`` for the trigger
+    # vocabulary — currently consent_safe, vinyl_playing,
+    # director_activity_<name>, stream_mode_deep, default_fallback).
+    # Until this counter started populating, the surface had been
+    # running ``default`` exclusively post-boot.
+    global HAPAX_COMPOSITOR_LAYOUT_SWITCH_TOTAL
+    HAPAX_COMPOSITOR_LAYOUT_SWITCH_TOTAL = Counter(
+        "hapax_compositor_layout_switch_total",
+        "Compositor layout swaps applied via the R9 dynamic switcher, "
+        "labelled by from_layout, to_layout, and the input trigger that "
+        "named the new layout.",
+        ["from_layout", "to_layout", "trigger"],
         registry=REGISTRY,
     )
 
