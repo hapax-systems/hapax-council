@@ -1,0 +1,48 @@
+{
+  "name": "Water Ripple Caustic",
+  "description": "Water-ripple lineage (2/2): fluid_sim + bloom + chromatic_aberration creates underwater-caustic aesthetic — light refracted through moving water. Lineage: water-ripple.",
+  "lineage": "water-ripple",
+  "transition_ms": 3400,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 1.05,
+        "contrast": 1.06,
+        "saturation": 1.25,
+        "hue_rotate": -14
+      }
+    },
+    "fluid_caustic": {
+      "type": "fluid_sim",
+      "params": {
+        "viscosity": 0.55,
+        "speed": 0.22,
+        "amount": 0.38
+      }
+    },
+    "bloom_caustic": {
+      "type": "bloom",
+      "params": {
+        "intensity": 0.42,
+        "threshold": 0.6,
+        "radius": 0.12
+      }
+    },
+    "chroma_caustic": {
+      "type": "chromatic_aberration",
+      "params": {
+        "offset_x": 2,
+        "offset_y": 1
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}
