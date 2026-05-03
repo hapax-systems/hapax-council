@@ -73,7 +73,12 @@ def test_affordance_registration_includes_shader_nodes():
         SHADER_NODE_AFFORDANCES,
     )
 
-    assert len(SHADER_NODE_AFFORDANCES) == 13
+    # Lower bound — cc-task wgsl-node-recruitment-investigation (audit U7,
+    # 2026-05-03) raised the floor from 13 → 25 by registering 12 dormant
+    # shader nodes. Future bumps land in the same way: the registration
+    # PR pins the new floor here. See tests/test_wgsl_node_affordance_coverage.py
+    # for the canonical floor (MIN_REGISTERED_NODES) + no-orphan pin.
+    assert len(SHADER_NODE_AFFORDANCES) >= 25
     assert len(ALL_CONTENT_AFFORDANCES) == 3
     assert len(LEGACY_AFFORDANCES) == 3
     # All shader nodes start with "node."

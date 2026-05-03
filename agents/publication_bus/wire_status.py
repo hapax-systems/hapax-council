@@ -133,6 +133,80 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "IsObsoletedBy) ships with the publisher."
         ),
     ),
+    "agents.publication_bus.stripe_payment_link_publisher": WireEntry(
+        module="agents.publication_bus.stripe_payment_link_publisher",
+        surface_slug="stripe-payment-link-receiver",
+        status="WIRED",
+        pass_key_required="stripe-payment-link/webhook-secret",
+        rationale=(
+            "Fourth wired monetization rail (cc-task stripe-payment-link-end-to-end-wiring). "
+            "Wired via logos/api/routes/payment_rails.py POST "
+            "/api/payment-rails/stripe-payment-link. Stripe-Signature header carries "
+            "timestamped HMAC SHA-256 (t=<unix>,v1=<hex>) with replay-tolerance "
+            "verified internally by the rail. Subscription-deletion events emit a "
+            "RefusalEvent under axiom full_auto_or_nothing to the canonical refusal "
+            "log for the refusal_annex_renderer to aggregate."
+        ),
+    ),
+    "agents.publication_bus.open_collective_publisher": WireEntry(
+        module="agents.publication_bus.open_collective_publisher",
+        surface_slug="open-collective-receiver",
+        status="WIRED",
+        pass_key_required="open-collective/webhook-secret",
+        rationale=(
+            "Third wired monetization rail (cc-task open-collective-end-to-end-wiring). "
+            "Wired via logos/api/routes/payment_rails.py POST "
+            "/api/payment-rails/open-collective. HMAC SHA-256 over raw body via "
+            "X-Open-Collective-Signature + OPEN_COLLECTIVE_WEBHOOK_SECRET env var "
+            "(hapax-secrets.service from pass `open-collective/webhook-secret`). "
+            "Multi-currency-native; no cancellation event in the canonical 4 "
+            "(collective_transaction_created / order_processed / member_created / "
+            "expense_paid), so no auto-link path. Operator-action gated on the "
+            "Wyoming-LLC bootstrap (Open Source Collective fiscal-sponsor "
+            "application requires a payout entity)."
+        ),
+    ),
+    "agents.publication_bus.liberapay_publisher": WireEntry(
+        module="agents.publication_bus.liberapay_publisher",
+        surface_slug="liberapay-receiver",
+        status="WIRED",
+        pass_key_required="liberapay/webhook-secret",
+        rationale=(
+            "Second wired monetization rail (cc-task liberapay-end-to-end-wiring). "
+            "Wired via logos/api/routes/payment_rails.py POST "
+            "/api/payment-rails/liberapay which captures the raw body + "
+            "X-Liberapay-Signature header and dispatches accepted events through "
+            "LiberapayPublisher.publish_event(). Liberapay does not natively ship "
+            "webhooks (per liberapay/liberapay.com#688); upstream bridge "
+            "(cloudmailin / mailgun / n8n) parses Liberapay outbound emails or "
+            "CSV exports and POSTs to this endpoint. Webhook secret from "
+            "LIBERAPAY_WEBHOOK_SECRET env var (hapax-secrets.service from pass "
+            "`liberapay/webhook-secret`); IP allowlist gate via "
+            "LIBERAPAY_REQUIRE_IP_ALLOWLIST=1. Tip-cancellation events emit a "
+            "RefusalEvent to the canonical refusal log under axiom "
+            "full_auto_or_nothing for the refusal_annex_renderer to aggregate."
+        ),
+    ),
+    "agents.publication_bus.github_sponsors_publisher": WireEntry(
+        module="agents.publication_bus.github_sponsors_publisher",
+        surface_slug="github-sponsors-receiver",
+        status="WIRED",
+        pass_key_required="github-sponsors/webhook-secret",
+        rationale=(
+            "First wired monetization rail (cc-task github-sponsors-end-to-end-wiring). "
+            "Wired via logos/api/routes/payment_rails.py POST "
+            "/api/payment-rails/github-sponsors which captures the raw body + "
+            "X-Hub-Signature-256 header and dispatches accepted events through "
+            "GitHubSponsorsPublisher.publish_event(). Webhook secret from "
+            "GITHUB_SPONSORS_WEBHOOK_SECRET env var (hapax-secrets.service from "
+            "pass `github-sponsors/webhook-secret`). Cancellation events emit a "
+            "RefusalEvent to the canonical refusal log under axiom "
+            "full_auto_or_nothing for the existing refusal_annex_renderer to "
+            "aggregate. Tier setup on github.com is operator-action gated by "
+            "the legal-entity bootstrap (Wyoming LLC + EIN); the wire itself "
+            "is live regardless."
+        ),
+    ),
     "agents.attribution.crossref_depositor": WireEntry(
         module="agents.attribution.crossref_depositor",
         surface_slug="crossref-doi-deposit",

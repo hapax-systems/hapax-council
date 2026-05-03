@@ -297,7 +297,11 @@ class LiberapayRailReceiver:
         return os.environ.get(self._require_ip_env_var, "") == "1"
 
     def ingest_webhook(
-        self, payload: dict[str, Any], signature: str | None
+        self,
+        payload: dict[str, Any],
+        signature: str | None,
+        *,
+        raw_body: bytes | None = None,
     ) -> DonationEvent | None:
         """Validate + normalize a single Liberapay donation notification.
 
@@ -307,6 +311,15 @@ class LiberapayRailReceiver:
         IP claims when allowlist is required. Returns ``None`` only
         when the caller passes ``payload={}`` *and* ``signature=None``,
         which is treated as a no-op heartbeat ping.
+
+        ``raw_body`` is the raw HTTP body bytes the upstream bridge
+        signed (the FastAPI handler captures these before JSON
+        parsing).  When provided, signature verification uses the raw
+        bytes — the only correct shape against bridges that sign their
+        wire deliveries.  When omitted, the receiver falls back to
+        canonical-encoding the parsed payload (preserves prior
+        behavior used by the rail's own unit tests + bridges that
+        synthesize JSON in canonical form).
         """
         if not isinstance(payload, dict):
             raise ReceiveOnlyRailError(f"payload must be a dict, got {type(payload).__name__}")
@@ -314,7 +327,8 @@ class LiberapayRailReceiver:
         if not payload and signature is None:
             return None
 
-        payload_bytes = _canonical_bytes(payload)
+        canonical = _canonical_bytes(payload)
+        payload_bytes = raw_body if raw_body is not None else canonical
 
         if signature is not None:
             secret = self._resolve_secret()
