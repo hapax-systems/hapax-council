@@ -102,7 +102,7 @@ def test_policy_maps_current_policy_bearing_artifacts() -> None:
         "config/pipewire/hapax-l12-evilpet-capture.conf",
         "config/pipewire/voice-fx-chain.conf",
         "config/pipewire/hapax-music-loudnorm.conf",
-        "config/pipewire/yt-loudnorm.conf",
+        "config/pipewire/hapax-yt-loudnorm.conf",
         "config/pipewire/hapax-s4-loopback.conf",
         "config/pipewire/hapax-m8-loudnorm.conf",
     ):
