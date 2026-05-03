@@ -69,7 +69,7 @@ Depends on the `sc4m_1916` LADSPA plugin (``swh-plugins`` on Arch).
 
 ## YouTube → 24c backing ducker (CVS #145)
 
-`yt-over-24c-duck.conf` is the symmetric partner of
+`hapax-yt-over-24c-duck.conf` is the symmetric partner of
 `voice-over-ytube-duck.conf`: it creates a `hapax-24c-ducked` sink that
 the Python `AudioDuckingController` modulates when YouTube/React audio
 is active, so the 24c backing bed ducks under the YT content (operator
@@ -78,7 +78,7 @@ has said "pull the backing down while the video plays").
 Install + verify:
 
 ```fish
-cp config/pipewire/yt-over-24c-duck.conf ~/.config/pipewire/pipewire.conf.d/
+cp config/pipewire/hapax-yt-over-24c-duck.conf ~/.config/pipewire/pipewire.conf.d/
 systemctl --user restart pipewire pipewire-pulse wireplumber
 pactl list short sinks | grep hapax-24c-ducked
 ```
@@ -99,7 +99,7 @@ capture → RTMP egress. No dedicated vinyl filter-chain preset exists or
 is required; vinyl shares the 24c mix with DAW returns, synth strips, and
 MPC pads.
 
-When the YT-over-24c ducker is installed (`yt-over-24c-duck.conf`, CVS
+When the YT-over-24c ducker is installed (`hapax-yt-over-24c-duck.conf`, CVS
 #145), vinyl routes through `hapax-24c-ducked` so `AudioDuckingController`
 can pull the backing bed down while YouTube content plays. Install path:
 route the turntable return strip through **Hapax 24c Ducker** per-

@@ -244,7 +244,7 @@ routes:
     artifact_refs:
       - config/pipewire/hapax-yt-loudnorm.conf
       - config/pipewire/ytube-over-24c-duck.conf
-      - config/pipewire/yt-over-24c-duck.conf
+      - config/pipewire/hapax-yt-over-24c-duck.conf
 
   - source_id: l12-evilpet-capture
     producer: l12-aux-capture
@@ -402,7 +402,7 @@ artifacts:
     status: hand_mirrored
     owner: config/audio-routing.yaml#youtube-bed
     reason: YouTube duck chain is policy-covered but not broadcast-eligible by default.
-  - path: config/pipewire/yt-over-24c-duck.conf
+  - path: config/pipewire/hapax-yt-over-24c-duck.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#youtube-bed
     reason: Legacy YouTube duck artifact remains policy-covered while migration settles.

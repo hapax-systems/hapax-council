@@ -56,8 +56,8 @@ orphans:
   - voice-fx-radio.conf
 
   # YouTube + tube-over-24c rate-routing helpers.
+  - hapax-yt-over-24c-duck.conf  # renamed 2026-05-03 (audit-E slice 2)
   - voice-over-ytube-duck.conf
-  - yt-over-24c-duck.conf
   - ytube-over-24c-duck.conf
 
 known_missing:
