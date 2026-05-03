@@ -59,6 +59,8 @@ from agents.publication_bus.stripe_payment_link_publisher import (
 from agents.publication_bus.treasury_prime_publisher import (
     TreasuryPrimePublisher,
 )
+from shared._rail_idempotency import IdempotencyStore as _RailIdempotencyStore
+from shared._rail_idempotency import default_idempotency_db_path
 from shared.buy_me_a_coffee_receive_only_rail import (
     BuyMeACoffeeRailReceiver,
 )
@@ -128,6 +130,21 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/payment-rails", tags=["payment-rails"])
 
 _stripe_payment_link_idempotency_store: StripePaymentLinkIdempotencyStore | None = None
+_patreon_idempotency_store: _RailIdempotencyStore | None = None
+
+
+def _get_patreon_idempotency_store() -> _RailIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for Patreon.
+
+    First call materializes the store + parent dir. Tests can swap the
+    singleton by assigning to ``_patreon_idempotency_store`` directly.
+    """
+    global _patreon_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _patreon_idempotency_store is None:
+        _patreon_idempotency_store = _RailIdempotencyStore(
+            db_path=default_idempotency_db_path("patreon"),
+        )
+    return _patreon_idempotency_store
 
 
 def _get_stripe_payment_link_idempotency_store() -> StripePaymentLinkIdempotencyStore:
@@ -586,15 +603,26 @@ async def receive_patreon_webhook(request: Request) -> JSONResponse:
 
     signature = request.headers.get(PATREON_SIGNATURE_HEADER)
     event_header = request.headers.get(PATREON_EVENT_HEADER)
+    webhook_id = request.headers.get("X-Patreon-Webhook-Id")
 
-    receiver = PatreonRailReceiver()
+    receiver = PatreonRailReceiver(idempotency_store=_get_patreon_idempotency_store())
     try:
-        event = receiver.ingest_webhook(payload, signature, event_header, raw_body=raw_body)
+        event = receiver.ingest_webhook(
+            payload,
+            signature,
+            event_header,
+            raw_body=raw_body,
+            webhook_id=webhook_id,
+        )
     except PatreonReceiveOnlyRailError as exc:
         log.warning("patreon webhook rejected: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        # Either heartbeat ping or duplicate webhook id — both 200 OK.
+        if payload and webhook_id:
+            log.info("patreon webhook duplicate: %s", webhook_id)
+            return JSONResponse({"status": "duplicate", "webhook_id": webhook_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = PatreonPublisher()

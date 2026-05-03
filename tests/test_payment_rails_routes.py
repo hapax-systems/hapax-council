@@ -1426,9 +1426,27 @@ def patreon_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
     return _PATREON_VALID_SECRET
 
 
+@pytest.fixture
+def patreon_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's Patreon idempotency singleton + point at tmp db.
+
+    HAPAX_HOME is set so :func:`default_idempotency_db_path` lands in
+    a per-test scratch directory; the module-level singleton is reset
+    so the next call materializes a fresh sqlite db.
+    """
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._patreon_idempotency_store = None
+    yield tmp_path / "patreon" / "idempotency.db"
+    routes_mod._patreon_idempotency_store = None
+
+
 @pytest.mark.asyncio
 async def test_patreon_signed_pledge_create_writes_manifest(
-    patreon_output_dir: Path, patreon_secret_env: str
+    patreon_output_dir: Path,
+    patreon_secret_env: str,
+    patreon_idempotency_isolated: Path,
 ) -> None:
     payload = _patreon_payload(patron_vanity="alice-patron")
     raw = json.dumps(payload).encode("utf-8")
@@ -1441,6 +1459,7 @@ async def test_patreon_signed_pledge_create_writes_manifest(
             headers={
                 "X-Patreon-Signature": sig,
                 "X-Patreon-Event": "members:pledge:create",
+                "X-Patreon-Webhook-Id": "wh_test_create_001",
             },
         )
 
@@ -1464,6 +1483,7 @@ async def test_patreon_pledge_delete_appends_to_refusal_log(
     patreon_output_dir: Path,
     patreon_secret_env: str,
     refusal_log_dir: Path,
+    patreon_idempotency_isolated: Path,
 ) -> None:
     payload = _patreon_payload(patron_vanity="bob-patron")
     raw = json.dumps(payload).encode("utf-8")
@@ -1476,6 +1496,7 @@ async def test_patreon_pledge_delete_appends_to_refusal_log(
             headers={
                 "X-Patreon-Signature": sig,
                 "X-Patreon-Event": "members:pledge:delete",
+                "X-Patreon-Webhook-Id": "wh_test_delete_001",
             },
         )
 
@@ -1574,6 +1595,107 @@ def test_patreon_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# Patreon — idempotency hard pin (cc-task jr-patreon-rail-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_patreon_route_replays_same_webhook_id_returns_duplicate_status(
+    patreon_output_dir: Path,
+    patreon_secret_env: str,
+    patreon_idempotency_isolated: Path,
+) -> None:
+    """Two POSTs of identical signed payload + webhook_id → 2nd is duplicate."""
+    payload = _patreon_payload(patron_vanity="alice-patron")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _patreon_md5_signature(raw)
+    headers = {
+        "X-Patreon-Signature": sig,
+        "X-Patreon-Event": "members:pledge:create",
+        "X-Patreon-Webhook-Id": "wh_replay_test_001",
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post("/api/payment-rails/patreon", content=raw, headers=headers)
+        second = await client.post("/api/payment-rails/patreon", content=raw, headers=headers)
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["webhook_id"] == "wh_replay_test_001"
+
+    files = list(patreon_output_dir.glob("event-members_pledge_create-*.md"))
+    assert len(files) == 1, f"expected 1 manifest, got {files}"
+
+
+@pytest.mark.asyncio
+async def test_patreon_route_distinct_webhook_ids_both_processed(
+    patreon_output_dir: Path,
+    patreon_secret_env: str,
+    patreon_idempotency_isolated: Path,
+) -> None:
+    """Same payload but distinct X-Patreon-Webhook-Id → both write manifests."""
+    payload_a = _patreon_payload(patron_vanity="alice-patron")
+    payload_b = _patreon_payload(patron_vanity="bob-patron")
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+    sig_a = _patreon_md5_signature(raw_a)
+    sig_b = _patreon_md5_signature(raw_b)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post(
+            "/api/payment-rails/patreon",
+            content=raw_a,
+            headers={
+                "X-Patreon-Signature": sig_a,
+                "X-Patreon-Event": "members:pledge:create",
+                "X-Patreon-Webhook-Id": "wh_distinct_a",
+            },
+        )
+        r_b = await client.post(
+            "/api/payment-rails/patreon",
+            content=raw_b,
+            headers={
+                "X-Patreon-Signature": sig_b,
+                "X-Patreon-Event": "members:pledge:create",
+                "X-Patreon-Webhook-Id": "wh_distinct_b",
+            },
+        )
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(patreon_output_dir.glob("event-members_pledge_create-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_patreon_route_missing_webhook_id_returns_400(
+    patreon_output_dir: Path,
+    patreon_secret_env: str,
+    patreon_idempotency_isolated: Path,
+) -> None:
+    """Idempotency store provided but X-Patreon-Webhook-Id header missing → 400."""
+    payload = _patreon_payload()
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _patreon_md5_signature(raw)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/patreon",
+            content=raw,
+            headers={
+                "X-Patreon-Signature": sig,
+                "X-Patreon-Event": "members:pledge:create",
+                # NO X-Patreon-Webhook-Id
+            },
+        )
+
+    assert response.status_code == 400
+    assert "webhook_id" in response.json()["detail"]
 
 
 # ===========================================================================
