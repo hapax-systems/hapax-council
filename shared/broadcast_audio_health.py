@@ -29,6 +29,7 @@ from shared.audio_loudness import (
     TRUE_PEAK_TOLERANCE_DBTP,
 )
 from shared.audio_topology import TopologyDescriptor
+from shared.audio_working_mode_couplings import current_audio_constraints
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_STATE_PATH = Path("/dev/shm/hapax-broadcast/audio-safe-for-broadcast.json")
@@ -151,6 +152,13 @@ class BroadcastAudioHealthThresholds:
     loopback_max_age_s: float = 60.0
     silence_ratio_max: float = 0.85
     rms_dbfs_floor: float = -55.0
+    # Working-mode override: when fortress sets a tighter true-peak
+    # ceiling we honor it directly instead of widening with the
+    # nominal +TRUE_PEAK_TOLERANCE_DBTP cushion.
+    true_peak_dbtp_override: float | None = None
+    # Working-mode override: research mode can short-circuit the
+    # 5 s LUFS measurement (no broadcast intent → no signal).
+    skip_lufs_egress_check: bool = False
 
     @property
     def loudness_min_lufs_i(self) -> float:
@@ -162,6 +170,8 @@ class BroadcastAudioHealthThresholds:
 
     @property
     def true_peak_max_dbtp(self) -> float:
+        if self.true_peak_dbtp_override is not None:
+            return self.true_peak_dbtp_override
         return EGRESS_TRUE_PEAK_DBTP + TRUE_PEAK_TOLERANCE_DBTP
 
 
@@ -192,11 +202,20 @@ def resolve_broadcast_audio_health(
     now: float | None = None,
     command_runner: CommandRunner | None = None,
     service_status_probe: ServiceStatusProbe | None = None,
+    constraints: dict[str, object] | None = None,
 ) -> BroadcastAudioHealth:
-    """Resolve live broadcast audio safety from existing authorities."""
+    """Resolve live broadcast audio safety from existing authorities.
+
+    ``constraints`` is the working-mode coupling dict from
+    :func:`shared.audio_working_mode_couplings.current_audio_constraints`.
+    Defaults to a live read so consumers do not have to thread the
+    mode through their call sites; tests override it for isolation.
+    """
 
     p = paths or BroadcastAudioHealthPaths()
-    t = thresholds or BroadcastAudioHealthThresholds()
+    base_thresholds = thresholds or BroadcastAudioHealthThresholds()
+    active_constraints = constraints if constraints is not None else current_audio_constraints()
+    t = _apply_constraints(base_thresholds, active_constraints)
     current = now if now is not None else time.time()
     runner = command_runner or _run_command
     service_probe = service_status_probe or _systemd_service_status
@@ -204,6 +223,8 @@ def resolve_broadcast_audio_health(
     evidence: dict[str, Any] = {}
     blocking: list[AudioHealthReason] = []
     warnings: list[AudioHealthReason] = []
+    if active_constraints:
+        evidence["working_mode_constraints"] = dict(active_constraints)
 
     descriptor_ok = _evaluate_topology_descriptor(
         p.topology_descriptor,
@@ -260,12 +281,19 @@ def resolve_broadcast_audio_health(
         timeout_s=t.command_timeout_s,
     )
 
-    _evaluate_loudness(
-        evidence=evidence,
-        blocking=blocking,
-        runner=runner,
-        thresholds=t,
-    )
+    if t.skip_lufs_egress_check:
+        evidence["loudness"] = {
+            "stage": "hapax-broadcast-normalized.monitor",
+            "skipped_by_working_mode": True,
+            "reason": "lufs_egress_check_skipped",
+        }
+    else:
+        _evaluate_loudness(
+            evidence=evidence,
+            blocking=blocking,
+            runner=runner,
+            thresholds=t,
+        )
     _evaluate_egress_binding(evidence=evidence, blocking=blocking, runner=runner, thresholds=t)
     _evaluate_egress_loopback(
         p.egress_loopback_witness,
@@ -415,6 +443,31 @@ def write_broadcast_audio_health_state(
         encoding="utf-8",
     )
     tmp.replace(path)
+
+
+def _apply_constraints(
+    thresholds: BroadcastAudioHealthThresholds,
+    constraints: dict[str, object],
+) -> BroadcastAudioHealthThresholds:
+    """Override threshold fields from a working-mode constraint dict.
+
+    Only fields explicitly listed by the coupling layer are merged in;
+    unknown keys are ignored so the coupling module can grow without
+    breaking older threshold dataclasses.
+    """
+    if not constraints:
+        return thresholds
+    overrides: dict[str, Any] = {}
+    true_peak = constraints.get("broadcast_true_peak_dbtp")
+    if isinstance(true_peak, int | float):
+        overrides["true_peak_dbtp_override"] = float(true_peak)
+    if bool(constraints.get("lufs_egress_check_skipped", False)):
+        overrides["skip_lufs_egress_check"] = True
+    if not overrides:
+        return thresholds
+    from dataclasses import replace as _replace
+
+    return _replace(thresholds, **overrides)
 
 
 def _evaluate_topology_descriptor(
