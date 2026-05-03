@@ -48,7 +48,7 @@ def basic_yaml(tmp_path: Path) -> Path:
     return _write_yaml(
         tmp_path,
         """
-        schema_version: 1
+        schema_version: 2
         description: cli smoketest
         nodes:
           - id: l6-capture
@@ -113,7 +113,7 @@ class TestDiff:
         augmented = _write_yaml(
             tmp_path / "aug",
             """
-            schema_version: 1
+            schema_version: 2
             description: added voice-fx
             nodes:
               - id: l6-capture
@@ -142,7 +142,7 @@ class TestDiff:
         a = _write_yaml(
             tmp_path / "a",
             """
-            schema_version: 1
+            schema_version: 2
             nodes:
               - id: src
                 kind: alsa_source
@@ -160,7 +160,7 @@ class TestDiff:
         b = _write_yaml(
             tmp_path / "b",
             """
-            schema_version: 1
+            schema_version: 2
             nodes:
               - id: src
                 kind: alsa_source
@@ -184,7 +184,7 @@ class TestDiff:
         stripped = _write_yaml(
             tmp_path / "stripped",
             """
-            schema_version: 1
+            schema_version: 2
             nodes:
               - id: l6-capture
                 kind: alsa_source
@@ -206,7 +206,7 @@ class TestVerify:
         descriptor = _write_yaml(
             tmp_path / "d",
             """
-            schema_version: 1
+            schema_version: 2
             nodes:
               - id: hapax-tap
                 kind: tap
@@ -242,7 +242,7 @@ class TestVerify:
         descriptor = _write_yaml(
             tmp_path / "d",
             """
-            schema_version: 1
+            schema_version: 2
             nodes:
               - id: hapax-tap
                 kind: tap
@@ -294,7 +294,7 @@ class TestVerify:
         descriptor = _write_yaml(
             tmp_path / "d",
             """
-            schema_version: 1
+            schema_version: 2
             nodes:
               - id: l12-capture
                 kind: alsa_source
@@ -357,7 +357,7 @@ class TestVerify:
         descriptor = _write_yaml(
             tmp_path / "d",
             """
-            schema_version: 1
+            schema_version: 2
             nodes: []
             """,
         )
@@ -393,7 +393,7 @@ class TestVerify:
         descriptor = _write_yaml(
             tmp_path / "d",
             """
-            schema_version: 1
+            schema_version: 2
             nodes:
               - id: l12-capture
                 kind: alsa_source
@@ -466,7 +466,7 @@ class TestVerify:
         descriptor = _write_yaml(
             tmp_path / "d",
             """
-            schema_version: 1
+            schema_version: 2
             nodes:
               - id: l12-capture
                 kind: alsa_source
@@ -556,7 +556,7 @@ class TestVerify:
         descriptor = _write_yaml(
             tmp_path / "d",
             """
-            schema_version: 1
+            schema_version: 2
             nodes:
               - id: yeti-headphone-output
                 kind: alsa_sink
@@ -623,7 +623,7 @@ class TestAudit:
         descriptor = _write_yaml(
             tmp_path / "d",
             """
-            schema_version: 1
+            schema_version: 2
             nodes:
               - id: hapax-tap
                 kind: tap
@@ -900,7 +900,7 @@ class TestInvalidDescriptor:
         bad = _write_yaml(
             tmp_path,
             """
-            schema_version: 1
+            schema_version: 2
             nodes:
               - id: a
                 kind: tap

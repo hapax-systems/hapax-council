@@ -1,0 +1,29 @@
+# Suppress audio interfaces on the 6 studio cameras (audit finding A#9).
+#
+# All studio cameras are video-only by design — operator audio is captured
+# via dedicated mics (Yeti, Cortado MKIII contact mic, S-4 talkbox). The
+# 6 webcam audio interfaces (BRIO×3 + C920×3) appear in WirePlumber as
+# unused 16kHz mono sources, polluting the audio graph and giving
+# wireplumber accidental targets for default-source policy decisions.
+#
+# Detected on this host (2026-05-02 via lsusb):
+#   Logitech BRIO Ultra HD     vid=046d pid=085e   ×3 (desk + room + overhead)
+#   Logitech C920 PRO HD       vid=046d pid=08e5   ×2
+#   Logitech HD Pro Webcam C920 vid=046d pid=082d  ×1
+#
+# Strategy: deauthorize *only* the audio interfaces (bInterfaceClass=01).
+# Video interfaces (UVC, bInterfaceClass=0e) are left fully authorized,
+# so the cameras still stream video to GStreamer/V4L2.
+#
+# Reference: https://www.kernel.org/doc/html/latest/usb/authorization.html
+# (per-interface authorization via ATTR{authorized}="0" requires the
+# usb_interface subsystem, not usb_device — interface-level granularity.)
+
+# BRIO Ultra HD Webcam — audio interface
+SUBSYSTEM=="usb", ATTR{idVendor}=="046d", ATTR{idProduct}=="085e", ATTR{bInterfaceClass}=="01", ATTR{authorized}="0"
+
+# C920 PRO HD Webcam — audio interface
+SUBSYSTEM=="usb", ATTR{idVendor}=="046d", ATTR{idProduct}=="08e5", ATTR{bInterfaceClass}=="01", ATTR{authorized}="0"
+
+# HD Pro Webcam C920 (older C920 PID) — audio interface
+SUBSYSTEM=="usb", ATTR{idVendor}=="046d", ATTR{idProduct}=="082d", ATTR{bInterfaceClass}=="01", ATTR{authorized}="0"

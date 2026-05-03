@@ -100,7 +100,7 @@ class TestEdge:
 class TestTopologyDescriptor:
     def _minimal(self) -> TopologyDescriptor:
         return TopologyDescriptor(
-            schema_version=1,
+            schema_version=2,
             description="minimal",
             nodes=[
                 Node(
@@ -182,7 +182,7 @@ class TestTopologyDescriptor:
         reloaded = TopologyDescriptor.from_yaml(text)
         assert reloaded.nodes == d.nodes
         assert reloaded.edges == d.edges
-        assert reloaded.schema_version == 1
+        assert reloaded.schema_version == 2
 
     def test_yaml_captures_filter_chain(self) -> None:
         """Real-world descriptor round-trip with all node kinds."""

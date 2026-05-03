@@ -175,7 +175,7 @@ routes:
     generated_artifact_owner: hand_mirrored
     artifact_refs:
       - config/wireplumber/50-hapax-voice-duck.conf
-      - config/pipewire/pc-loudnorm.conf
+      - config/pipewire/hapax-pc-loudnorm.conf
 
   - source_id: music-bed
     producer: local-music-player
@@ -376,7 +376,7 @@ artifacts:
     status: hand_mirrored
     owner: config/audio-routing.yaml#broadcast-tts
     reason: TTS duck chain mirrors explicit broadcast voice route.
-  - path: config/pipewire/pc-loudnorm.conf
+  - path: config/pipewire/hapax-pc-loudnorm.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#multimedia-default
     reason: Multimedia default remains non-broadcast-eligible by policy even though topology reaches the L-12 return.

@@ -11,7 +11,7 @@ from shared.vinyl_chain_verify import (
 
 
 def _descriptor(nodes: list[Node]) -> TopologyDescriptor:
-    return TopologyDescriptor(schema_version=1, nodes=nodes, edges=[])
+    return TopologyDescriptor(schema_version=2, nodes=nodes, edges=[])
 
 
 def _l6_source() -> Node:
