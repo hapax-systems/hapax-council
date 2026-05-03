@@ -663,13 +663,21 @@ class TestRunbook:
     def test_runbook_has_required_anchors(self) -> None:
         text = RUNBOOK.read_text()
         # ntfy alerts cite these anchors; tests pin them so a typo
-        # in the runbook can't silently break the alert link.
+        # in the runbook can't silently break the alert link. The
+        # anchor is whatever GitHub's slugifier produces from a
+        # markdown header — for ``### `rollback-failed` `` that's
+        # ``#rollback-failed``.
         for anchor in ("rollback-failed",):
-            assert (
-                f"## {anchor}".lower() in text.lower()
-                or f"({anchor})" in text
-                or f"#{anchor}" in text
-            ), f"runbook missing anchor {anchor!r}"
+            patterns = (
+                f"### `{anchor}`",
+                f"## {anchor}",
+                f"### {anchor}",
+                f"#{anchor}",
+                f"({anchor})",
+            )
+            assert any(p in text for p in patterns), (
+                f"runbook missing anchor {anchor!r}; tried {patterns}"
+            )
 
     def test_runbook_documents_exit_codes(self) -> None:
         text = RUNBOOK.read_text()
