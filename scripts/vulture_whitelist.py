@@ -1739,6 +1739,17 @@ from agents.studio_compositor.layout_switcher import apply_layout_switch as _r9_
 
 _r9_apply_layout_switch
 
+# u6-periodic-tick-driver (cc-task u6-periodic-tick-driver, this PR):
+# the periodic driver wrapper for apply_layout_switch. Ships ahead of
+# the systemd-timer wiring (separate follow-up PR — needs the state-
+# provider implementations that read ~/.cache/hapax/* state files).
+# Whitelisted until that wiring lands.
+from agents.studio_compositor.layout_switcher import (
+    run_layout_switch_loop as _u6_run_layout_switch_loop,
+)
+
+_u6_run_layout_switch_loop
+
 # IdempotencyStore.has_seen is a read-only ops/debugging probe for the
 # Stripe Payment Link rail's idempotency table. record_or_skip is the
 # write path; has_seen exists for forensic queries (was this evt_ ever
