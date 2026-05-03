@@ -177,6 +177,55 @@ class TestReload:
         changed = store.reload_changed()
         assert changed == []
 
+    def test_reload_does_not_relog_unchanged_broken_file(self, tmp_path, caplog):
+        """A file that fails validation must not log on every subsequent
+        reload tick. Regression pin: mobile.json (vertical-mobile schema)
+        was emitting ~1620 validation warnings/hour at 1 Hz reload cadence
+        because _scan_directory continued on validation failure without
+        recording the mtime, so every tick re-validated and re-logged.
+        """
+        _write_minimal_layout(tmp_path / "good.json", name="good")
+        broken_path = tmp_path / "broken.json"
+        broken_path.write_text(
+            '{"name": "broken", "sources": [{"id": "x", "kind": "INVALID", '
+            '"backend": "v4l2"}], "surfaces": [], "assignments": []}'
+        )
+
+        # Construction logs the first failure.
+        with caplog.at_level("WARNING"):
+            store = LayoutStore(layout_dir=tmp_path)
+        first_warns = [r for r in caplog.records if "Failed to load layout" in r.message]
+        assert len(first_warns) == 1, f"expected 1 warning on construction, got {len(first_warns)}"
+
+        # Multiple reload ticks must NOT re-log: mtime is unchanged.
+        caplog.clear()
+        with caplog.at_level("WARNING"):
+            for _ in range(5):
+                changed = store.reload_changed()
+                assert "broken" not in changed
+        relogged = [r for r in caplog.records if "Failed to load layout" in r.message]
+        assert relogged == [], (
+            f"expected zero re-logs on unchanged broken file, got {len(relogged)}: "
+            f"{[r.message for r in relogged]}"
+        )
+
+        # The good layout is still there and unaffected.
+        assert "good" in store.list_available()
+        assert "broken" not in store.list_available()
+
+        # When the broken file IS modified (mtime changes), we re-log once.
+        import os as _os
+
+        new_mtime = broken_path.stat().st_mtime + 10.0
+        _os.utime(broken_path, (new_mtime, new_mtime))
+        caplog.clear()
+        with caplog.at_level("WARNING"):
+            store.reload_changed()
+        post_edit = [r for r in caplog.records if "Failed to load layout" in r.message]
+        assert len(post_edit) == 1, (
+            f"expected exactly 1 warning on post-edit reload, got {len(post_edit)}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Thread safety
