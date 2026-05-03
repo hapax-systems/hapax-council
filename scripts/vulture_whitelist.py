@@ -1405,7 +1405,6 @@ from logos.api.routes.payment_rails import (
 
 GitHubSponsorsPublisher.publish_event
 GitHubSponsorsPublisher._render_manifest_body
-GitHubSponsorsPublisher._auto_link_cancellation_to_refusal_log
 event_to_manifest_record
 manifest_path_for_event
 GITHUB_SPONSORS_SIGNATURE_HEADER
@@ -1453,7 +1452,6 @@ from logos.api.routes.payment_rails import (
 
 LiberapayPublisher.publish_event
 LiberapayPublisher._render_manifest_body
-LiberapayPublisher._auto_link_cancellation_to_refusal_log
 _lp_event_to_manifest_record
 _lp_manifest_path_for_event
 LIBERAPAY_SIGNATURE_HEADER
@@ -1504,7 +1502,6 @@ from logos.api.routes.payment_rails import (
 
 StripePaymentLinkPublisher.publish_event
 StripePaymentLinkPublisher._render_manifest_body
-StripePaymentLinkPublisher._auto_link_cancellation_to_refusal_log
 _stripe_event_to_manifest_record
 _stripe_manifest_path_for_event
 STRIPE_PAYMENT_LINK_SIGNATURE_HEADER
@@ -1553,7 +1550,6 @@ from logos.api.routes.payment_rails import (
 
 PatreonPublisher.publish_event
 PatreonPublisher._render_manifest_body
-PatreonPublisher._auto_link_cancellation_to_refusal_log
 _patreon_event_to_manifest_record
 _patreon_manifest_path_for_event
 PATREON_EVENT_HEADER
@@ -1580,7 +1576,6 @@ from logos.api.routes.payment_rails import (
 
 BuyMeACoffeePublisher.publish_event
 BuyMeACoffeePublisher._render_manifest_body
-BuyMeACoffeePublisher._auto_link_cancellation_to_refusal_log
 _bmac_event_to_manifest_record
 _bmac_manifest_path_for_event
 BUY_ME_A_COFFEE_SIGNATURE_HEADER

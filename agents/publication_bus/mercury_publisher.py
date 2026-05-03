@@ -34,10 +34,14 @@ cc-task: ``mercury-end-to-end-wiring``. Eighth Tier-1 rail.
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import ClassVar
 
+from agents.publication_bus._rail_publisher_helpers import (
+    default_output_dir,
+    safe_filename_for_event,
+    write_manifest_entry,
+)
 from agents.publication_bus.publisher_kit import (
     Publisher,
     PublisherPayload,
@@ -57,12 +61,6 @@ log = logging.getLogger(__name__)
 MERCURY_PUBLISHER_SURFACE: str = "mercury-receiver"
 
 
-def _default_output_dir() -> Path:
-    home_env = os.environ.get("HAPAX_HOME")
-    base = Path(home_env) if home_env else Path.home()
-    return base / "hapax-state" / "publications" / "mercury"
-
-
 DEFAULT_MERCURY_ALLOWLIST: AllowlistGate = load_allowlist(
     MERCURY_PUBLISHER_SURFACE,
     [k.value for k in MercuryEventKind],
@@ -77,7 +75,7 @@ class MercuryPublisher(Publisher):
     requires_legal_name: ClassVar[bool] = False
 
     def __init__(self, *, output_dir: Path | None = None) -> None:
-        self.output_dir = output_dir if output_dir is not None else _default_output_dir()
+        self.output_dir = output_dir if output_dir is not None else default_output_dir("mercury")
 
     def publish_event(self, event: MercuryTransactionEvent) -> PublisherResult:
         body = self._render_manifest_body(event)
@@ -111,17 +109,7 @@ class MercuryPublisher(Publisher):
         return "\n".join(lines)
 
     def _emit(self, payload: PublisherPayload) -> PublisherResult:
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        sha = str(payload.metadata.get("raw_payload_sha256", ""))[:16] or "unknown"
-        # Mercury event kinds are dotted (transaction.created); sanitize for filename.
-        safe_target = payload.target.replace(".", "_")
-        path = self.output_dir / f"event-{safe_target}-{sha}.md"
-        try:
-            path.write_text(payload.text, encoding="utf-8")
-        except OSError as exc:
-            log.warning("mercury manifest write failed: %s", exc)
-            return PublisherResult(error=True, detail=f"write failed: {exc}")
-        return PublisherResult(ok=True, detail=str(path))
+        return write_manifest_entry(self.output_dir, payload, log=log)
 
 
 def manifest_path_for_event(
@@ -129,10 +117,8 @@ def manifest_path_for_event(
     *,
     output_dir: Path | None = None,
 ) -> Path:
-    base = output_dir if output_dir is not None else _default_output_dir()
-    sha = event.raw_payload_sha256[:16]
-    safe_kind = event.event_kind.value.replace(".", "_")
-    return base / f"event-{safe_kind}-{sha}.md"
+    base = output_dir if output_dir is not None else default_output_dir("mercury")
+    return base / safe_filename_for_event(event.event_kind.value, event.raw_payload_sha256)
 
 
 def event_to_manifest_record(event: MercuryTransactionEvent) -> dict[str, object]:

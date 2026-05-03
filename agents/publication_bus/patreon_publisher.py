@@ -33,11 +33,16 @@ cc-task: ``patreon-end-to-end-wiring``. Sixth Tier-1 rail.
 from __future__ import annotations
 
 import logging
-import os
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
 
+from agents.publication_bus._rail_publisher_helpers import (
+    CANCELLATION_REFUSAL_AXIOM,
+    auto_link_cancellation_to_refusal_log,
+    default_output_dir,
+    safe_filename_for_event,
+    write_manifest_entry,
+)
 from agents.publication_bus.publisher_kit import (
     Publisher,
     PublisherPayload,
@@ -57,18 +62,11 @@ log = logging.getLogger(__name__)
 PATREON_PUBLISHER_SURFACE: str = "patreon-receiver"
 
 
-def _default_output_dir() -> Path:
-    home_env = os.environ.get("HAPAX_HOME")
-    base = Path(home_env) if home_env else Path.home()
-    return base / "hapax-state" / "publications" / "patreon"
-
-
 DEFAULT_PATREON_ALLOWLIST: AllowlistGate = load_allowlist(
     PATREON_PUBLISHER_SURFACE,
     [k.value for k in PledgeEventKind],
 )
 
-CANCELLATION_REFUSAL_AXIOM: str = "full_auto_or_nothing"
 CANCELLATION_REFUSAL_SURFACE: str = "publication_bus:patreon-receiver:members_pledge_delete"
 
 
@@ -80,7 +78,7 @@ class PatreonPublisher(Publisher):
     requires_legal_name: ClassVar[bool] = False
 
     def __init__(self, *, output_dir: Path | None = None) -> None:
-        self.output_dir = output_dir if output_dir is not None else _default_output_dir()
+        self.output_dir = output_dir if output_dir is not None else default_output_dir("patreon")
 
     def publish_event(self, event: PledgeEvent) -> PublisherResult:
         body = self._render_manifest_body(event)
@@ -112,44 +110,19 @@ class PatreonPublisher(Publisher):
         return "\n".join(lines)
 
     def _emit(self, payload: PublisherPayload) -> PublisherResult:
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        sha = str(payload.metadata.get("raw_payload_sha256", ""))[:16] or "unknown"
-        path = self.output_dir / f"event-{payload.target}-{sha}.md"
-        try:
-            path.write_text(payload.text, encoding="utf-8")
-        except OSError as exc:
-            log.warning("patreon manifest write failed: %s", exc)
-            return PublisherResult(error=True, detail=f"write failed: {exc}")
-
-        if payload.target == PledgeEventKind.MEMBERS_PLEDGE_DELETE.value:
-            self._auto_link_cancellation_to_refusal_log(payload)
-
-        return PublisherResult(ok=True, detail=str(path))
-
-    @staticmethod
-    def _auto_link_cancellation_to_refusal_log(payload: PublisherPayload) -> None:
-        try:
-            from pathlib import Path as _Path
-
-            from agents.refusal_brief import RefusalEvent, append
-
+        result = write_manifest_entry(self.output_dir, payload, log=log)
+        if result.ok and payload.target == PledgeEventKind.MEMBERS_PLEDGE_DELETE.value:
             sha = str(payload.metadata.get("raw_payload_sha256", ""))[:16] or "unknown"
             currency = payload.metadata.get("currency", "")
             cents = payload.metadata.get("amount_currency_cents", 0)
-            reason = f"patreon pledge delete: {currency}_cents={cents} sha16={sha}"
-            override_path = os.environ.get("HAPAX_REFUSALS_LOG_PATH")
-            event = RefusalEvent(
-                timestamp=datetime.now(UTC),
+            auto_link_cancellation_to_refusal_log(
+                payload,
                 axiom=CANCELLATION_REFUSAL_AXIOM,
                 surface=CANCELLATION_REFUSAL_SURFACE,
-                reason=reason[:160],
+                reason=f"patreon pledge delete: {currency}_cents={cents} sha16={sha}",
+                log=log,
             )
-            if override_path:
-                append(event, log_path=_Path(override_path))
-            else:
-                append(event)
-        except Exception:
-            log.debug("refusal_brief auto-link failed", exc_info=True)
+        return result
 
 
 def manifest_path_for_event(
@@ -157,9 +130,8 @@ def manifest_path_for_event(
     *,
     output_dir: Path | None = None,
 ) -> Path:
-    base = output_dir if output_dir is not None else _default_output_dir()
-    sha = event.raw_payload_sha256[:16]
-    return base / f"event-{event.event_kind.value}-{sha}.md"
+    base = output_dir if output_dir is not None else default_output_dir("patreon")
+    return base / safe_filename_for_event(event.event_kind.value, event.raw_payload_sha256)
 
 
 def event_to_manifest_record(event: PledgeEvent) -> dict[str, object]:
