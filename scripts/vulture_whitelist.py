@@ -1364,12 +1364,25 @@ IncomingAchEvent._currency_is_iso_4217
 TreasuryPrimeRailReceiver.ingest_webhook
 IncomingAchEventKind
 
-# Activity-router family-pool ceiling eviction order — used by P4 router
-# policy when the family pool is exhausted and a higher-priority ward
-# wants to enter. P3 (cc-task activity-reveal-ward-p3-governance) ships
-# the helper as observability scaffolding so P4 has the eviction
-# contract ready; the actual eviction call-site lands when P4's
-# mutex/priority/hysteresis algorithm replaces the classify-only logic.
-from agents.studio_compositor.activity_family_ceiling import FamilyCeilingTracker as _FCT
+# Activity-family visibility-window tracker — singleton accessors used
+# by the recruitment-bias bridge. Per cc-task
+# `p3-governance-recruitment-bias-replacement`: the prior
+# FamilyCeilingTracker (#2259) was deleted because its hardcoded
+# threshold table violated feedback_no_expert_system_rules. The
+# replacement is bias-only: the router writes via mark_visible_window
+# and the affordance pipeline reads via bias_score. Both paths go
+# through the singleton; vulture flags the accessors because the
+# affordance-pipeline read lives behind an import bridge.
+from agents.studio_compositor.activity_family_ceiling import (
+    get_default_tracker as _act_get_default_tracker,
+)
+from agents.studio_compositor.activity_family_ceiling import (
+    set_default_tracker as _act_set_default_tracker,
+)
+from agents.studio_compositor.activity_family_ceiling import (
+    visible_time_bias_score as _act_visible_time_bias_score,
+)
 
-_FCT.evictable_order
+_act_get_default_tracker
+_act_set_default_tracker
+_act_visible_time_bias_score
