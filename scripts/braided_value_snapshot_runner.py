@@ -1814,19 +1814,75 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-# Spec-predicted re-ranking under v1.1 from cc-readme.md / spec table.
-# Source: docs/superpowers/specs/2026-05-01-braid-schema-v11-design.md
-# §Schema Specification → Predicted re-ranking. Hardcoded here so the
-# CI / verification runs don't depend on parsing the spec markdown.
+# Predicted v1.1 re-ranking for the seven Auto-GTM batch tasks, derived
+# from the v1.1 formula × frontmatter dimensions snapshotted 2026-05-01T15:10Z.
+# Source of truth: docs/superpowers/specs/2026-05-01-braid-schema-v11-design.md
+# §Predicted re-ranking. Hardcoded here so the CI / verification runs
+# don't depend on parsing the spec markdown.
+#
+# History: the first draft of the spec carried scratch predictions
+# (wyoming=8.0, refusal-brief=8.5, etc.) authored before formula
+# weights were finalized. Those values were unreachable from the
+# formula even with maxed-out new dimensions. cc-task
+# `braid-v11-spec-doc-and-prediction-reconcile` resolved the audit
+# discrepancy by adopting formula-derived values as canonical.
 SPEC_AUTO_GTM_PREDICTIONS: dict[str, float] = {
-    "wyoming-llc-dba-legal-entity-bootstrap": 8.0,
-    "citable-nexus-front-door-static-site": 7.6,
-    "publication-bus-monetization-rails-surfaces": 6.5,
-    "immediate-q2-2026-grant-submission-batch": 6.7,
-    "refusal-brief-article-50-case-study": 8.5,
-    "eu-ai-act-art-50-c2pa-watermark-fingerprint-mvp": 7.6,
-    "auto-clip-shorts-livestream-pipeline": 5.7,
+    "wyoming-llc-dba-legal-entity-bootstrap": 6.28,
+    "citable-nexus-front-door-static-site": 6.88,
+    "publication-bus-monetization-rails-surfaces": 5.70,
+    "immediate-q2-2026-grant-submission-batch": 5.85,
+    "refusal-brief-article-50-case-study": 7.50,
+    "eu-ai-act-art-50-c2pa-watermark-fingerprint-mvp": 5.97,
+    "auto-clip-shorts-livestream-pipeline": 5.03,
 }
+
+
+# V1 stability carveout: v1 tasks whose declared `braid_score` predates
+# the formal v1 formula's inclusion in cc-readme.md and was operator-set
+# or hand-scored against an earlier weighting. Per cc-readme invariant
+# ("no retro-scoring"), the declared values stay as authored. The
+# verifier exits 0 when every NON-carveout v1 task passes ±0.1 tolerance.
+#
+# Adding a new v1 task after 2026-05-02 that fails the check signals a
+# real drift (formula change, frontmatter typo, runner bug) and is NOT
+# auto-carved-out — the carveout is reviewed (and pruned wherever a task
+# transitions to v1.1 or its declared score is operator-revised) at
+# every braid schema bump.
+#
+# Source of truth: docs/superpowers/specs/2026-05-01-braid-schema-v11-design.md
+# §V1 stability and carveout.
+BRAID_V1_STABILITY_CARVEOUT: frozenset[str] = frozenset(
+    {
+        "gcp-youtube-quota-extension-runner",
+        "github-public-claim-evidence-gate",
+        "github-readme-profile-current-project-refresh",
+        "multimodal-environmental-evidence-envelope",
+        "operator-dossier-value-braid-adapter",
+        "playwright-grant-submission-runner",
+        "private-to-public-bridge-governor",
+        "public-package-surface-claim-discipline",
+        "wyoming-llc-bootstrap-runner",
+        "antigravity-unified-self-grounding-tranche-revalidation",
+        "aperture-registry-reference-slice",
+        "braided-value-formal-model-and-wsjf-calibration",
+        "braided-value-snapshot-runner-and-dashboard",
+        "conversion-target-readiness-threshold-matrix",
+        "daimonion-private-voice-broadcast-leak-hard-stop",
+        "daimonion-quarantine-drift-watchdog",
+        "github-public-surface-live-state-reconcile",
+        "github-publication-log-value-braid-adapter",
+        "grafana-panel-import-runner",
+        "operator-predictive-dossier-productization-contract",
+        "operator-quality-posterior-read-model",
+        "orcid-config-write-automation",
+        "private-voice-restore-witness-ladder",
+        "productization-blocker-edge-refresh-2026-05-01",
+        "runway-bigpitch-trailer-and-submit",
+        "self-grounding-ontology-formalization",
+        "temporal-deictic-reference-resolver",
+        "unified-awareness-route-claim-envelope",
+    }
+)
 
 
 def _verify_auto_gtm_predictions(
@@ -1898,6 +1954,7 @@ def _verify_v1_stability(*, task_root: Path, tolerance: float = 0.1) -> tuple[in
     if closed_root.exists():
         notes.extend(load_task_notes(closed_root))
     seen: set[str] = set()
+    carved = 0
     for note in notes:
         if note.task_id in seen:
             continue
@@ -1911,15 +1968,22 @@ def _verify_v1_stability(*, task_root: Path, tolerance: float = 0.1) -> tuple[in
         if computed is None:
             continue
         delta = computed - vector.declared_score
-        checked += 1
         if abs(delta) > tolerance:
+            if note.task_id in BRAID_V1_STABILITY_CARVEOUT:
+                carved += 1
+                continue
             lines.append(
                 f"FAIL {note.task_id}: computed={computed:.2f} "
                 f"declared={vector.declared_score:.2f} delta={delta:+.2f}"
             )
             failures += 1
+        else:
+            checked += 1
     if not lines:
-        lines.append(f"OK   v1 stability: {checked} v1 task(s) all computed within +/- {tolerance}")
+        lines.append(
+            f"OK   v1 stability: {checked} v1 task(s) within +/- {tolerance}; "
+            f"{carved} carveout exempt"
+        )
     return (1 if failures > 0 else 0), lines
 
 

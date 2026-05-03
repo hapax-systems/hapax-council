@@ -415,7 +415,7 @@ def pw_dump_to_descriptor(pw_dump_json: str | list[dict[str, Any]]) -> TopologyD
 
     edges = _build_edges(pw_objects, node_by_pwid)
     return TopologyDescriptor(
-        schema_version=1,
+        schema_version=2,
         description="extracted from live pw-dump",
         nodes=nodes,
         edges=edges,

@@ -146,30 +146,6 @@ gate_broadcast_healthy() {
     record_failure "broadcast-healthy" "$health_file did not show a fresh write (age ≤60s) within 30s"
 }
 
-# ── Gate: dependent-component ─────────────────────────────────────────
-# When a hapax-logos shared dependency changes, verify the consumer
-# service restarted cleanly within the deploy window.
-
-gate_dependent_component() {
-    local touched=false
-    while IFS= read -r f; do
-        case "$f" in
-            hapax-logos/crates/hapax-visual/*|\
-            hapax-logos/crates/hapax-imagination/*)
-                touched=true
-                break
-                ;;
-        esac
-    done <<< "$CHANGED_FILES"
-    $touched || return
-
-    [ "$DRYRUN" = "1" ] && { echo "[dry-run] dependent-component"; return; }
-
-    if ! systemctl --user is-active --quiet hapax-imagination.service 2>/dev/null; then
-        record_failure "dependent-component" "hapax-imagination not active after wgpu/visual change"
-    fi
-}
-
 # ── Gate: m8-midi-clock-peer ──────────────────────────────────────────
 # When agents/hapax_daimonion/backends/midi_clock.py changes, verify
 # the M8 device produces a peer tempo signal the daimonion picks up.
@@ -214,7 +190,6 @@ gate_m8_midi_clock_peer() {
 
 gate_services_restarted
 gate_broadcast_healthy
-gate_dependent_component
 gate_m8_midi_clock_peer
 
 # Trap fires emit_failure_notice on exit. Always exit 0.

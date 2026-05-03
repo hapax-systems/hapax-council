@@ -378,6 +378,27 @@ try:
         ),
         ("intent_family",),
     )
+    # R8 (2026-05-02 effect+cam orchestration audit, §6 R8 / §4 F4):
+    # grounding-act gate on every impingement. LLM-emitted impingements
+    # that arrive with empty real grounding_provenance AND no
+    # synthetic_grounding_markers (i.e. NOT a deterministic-code fallback
+    # path) are rejected LOUDLY at the gate — counter increments,
+    # warn-level log fires, the impingement is dropped from the
+    # downstream list. Operator framing (2026-05-02): "currently silent
+    # dropping = the bug" — silent post-hoc synthesis (FINDING-X Phase 1)
+    # let downstream consumers treat ungrounded narratives as if they
+    # carried evidence. The R8 gate replaces synthesis with rejection
+    # so the LLM-compliance failure has surface-level consequence.
+    _ungrounded_rejection_total = Counter(
+        "hapax_director_ungrounded_rejection_total",
+        (
+            "LLM-emitted CompositionalImpingements rejected by the R8 "
+            "grounding-act gate because grounding_provenance was empty "
+            "and no deterministic-code fallback marker was set. The "
+            "rejected impingement is dropped from the downstream list."
+        ),
+        ("intent_family",),
+    )
     _synthetic_grounding_placeholder_total = Counter(
         "hapax_director_synthetic_grounding_placeholder_total",
         (
@@ -483,6 +504,24 @@ def emit_ungrounded_synth(intent_family: str) -> None:
         _ungrounded_synth_total.labels(intent_family=intent_family).inc()
     except Exception:
         log.debug("emit_ungrounded_synth failed", exc_info=True)
+
+
+def emit_ungrounded_rejection(intent_family: str) -> None:
+    """Record one R8 grounding-act-gate rejection (2026-05-02 effect+cam audit).
+
+    Called when an LLM-emitted ``CompositionalImpingement`` arrives with
+    empty real ``grounding_provenance`` AND no ``synthetic_grounding_markers``
+    set by a deterministic-code fallback path. The gate drops the
+    impingement from the downstream list and a warn-level log line fires
+    next to this counter increment. Fail-open: any exception is logged at
+    debug and swallowed.
+    """
+    if not _METRICS_AVAILABLE:
+        return
+    try:
+        _ungrounded_rejection_total.labels(intent_family=intent_family).inc()
+    except Exception:
+        log.debug("emit_ungrounded_rejection failed", exc_info=True)
 
 
 def emit_twitch_move(intent_family: str, condition_id: str) -> None:
@@ -909,6 +948,7 @@ __all__ = [
     "emit_random_mode_pick",
     "emit_transition_pick",
     "emit_ungrounded_audit",
+    "emit_ungrounded_rejection",
     "emit_ungrounded_synth",
     "emit_vacuum_prevented",
     "emit_structural_intent",

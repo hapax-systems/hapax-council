@@ -34,26 +34,17 @@ PGREP_CMD = [
     "-af",
     r"agents\.hapax_daimonion|hapax-daimonion\.service|rebuild-service\.sh.*hapax-daimonion",
 ]
+# Private-voice quarantine surface — see scripts/hapax-daimonion-quarantine-watchdog
+# module docstring for why broadcast-chain nodes were removed (2026-05-02 incident).
 SOURCES = (
-    "hapax-broadcast-master",
-    "hapax-broadcast-normalized",
-    "hapax-obs-broadcast-remap",
-    "hapax-livestream-tap.monitor",
-    "hapax-livestream.monitor",
-    "hapax-tts-duck.monitor",
-    "hapax-voice-fx-capture.monitor",
-    "hapax-loudnorm-capture.monitor",
+    "hapax-private-playback",
+    "hapax-notification-private-playback",
     "input.loopback.sink.role.assistant.monitor",
-    "input.loopback.sink.role.broadcast.monitor",
 )
 SINKS = (
-    "hapax-livestream",
-    "hapax-livestream-tap",
-    "hapax-tts-duck",
-    "hapax-voice-fx-capture",
-    "hapax-loudnorm-capture",
+    "hapax-private",
+    "hapax-notification-private",
     "input.loopback.sink.role.assistant",
-    "input.loopback.sink.role.broadcast",
 )
 
 
@@ -261,7 +252,7 @@ def test_dry_run_records_service_drift_without_correcting(tmp_path: Path) -> Non
 
 
 def test_enforce_mutes_unmuted_source(tmp_path: Path) -> None:
-    unmuted = "hapax-voice-fx-capture.monitor"
+    unmuted = "hapax-private-playback"
     commands = _base_commands(source_mutes={unmuted: False})
     commands.append(_entry(["pactl", "set-source-mute", unmuted, "1"]))
 
@@ -283,7 +274,7 @@ def test_enforce_mutes_unmuted_source(tmp_path: Path) -> None:
 
 
 def test_missing_node_is_distinct_blocker_not_muted_by_name(tmp_path: Path) -> None:
-    missing = "hapax-obs-broadcast-remap"
+    missing = "hapax-notification-private-playback"
     source_names = tuple(name for name in SOURCES if name != missing)
 
     result = _run(tmp_path, _base_commands(source_names=source_names), enforce=True)

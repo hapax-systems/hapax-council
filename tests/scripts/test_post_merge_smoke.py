@@ -1,12 +1,16 @@
 """Tests for scripts/hapax-post-merge-smoke.
 
 Per cc-task ``post-merge-smoke-runner`` (WSJF 6.5, 2026-05-02).
-Verifies the four initial gates:
+Verifies the active gates:
 
 - services-restarted (systemd/units/*.service in diff → unit must be active)
 - broadcast-healthy (audio-routing surface diff → world-surface row OK in 30s)
-- dependent-component (wgpu/visual diff → hapax-imagination active)
 - m8-midi-clock-peer (midi_clock.py diff → M8 tempo signal present, if M8 connected)
+
+The dependent-component gate (wgpu/visual diff → hapax-imagination active)
+was retired with the Tauri/WebKit hapax-logos decommission per cc-task
+``hapax-logos-decommission-cleanup``. The hapax-imagination binary's
+provenance is now covered by scripts/smoke-test.sh.
 
 Each gate is exercised via a per-test git fixture that constructs the
 diff shape that triggers it. systemctl / journalctl are stubbed on
@@ -186,36 +190,6 @@ class TestBroadcastHealthyGate:
         )
         result = _run(sha, cwd=repo, extra_env={"HAPAX_SMOKE_DRYRUN": "1"})
         assert "broadcast-healthy" in result.stdout
-
-
-# ── Gate: dependent-component ──────────────────────────────────────
-
-
-class TestDependentComponentGate:
-    def test_wgpu_diff_triggers_gate(self, tmp_path: Path) -> None:
-        repo = _make_repo(tmp_path)
-        sha = _commit_files(
-            repo,
-            {"hapax-logos/crates/hapax-visual/src/foo.rs": "fn x(){}\n"},
-        )
-        result = _run(sha, cwd=repo, extra_env={"HAPAX_SMOKE_DRYRUN": "1"})
-        assert "dependent-component" in result.stdout
-
-    def test_imagination_inactive_records_failure(self, tmp_path: Path) -> None:
-        repo = _make_repo(tmp_path)
-        sha = _commit_files(
-            repo,
-            {"hapax-logos/crates/hapax-visual/src/foo.rs": "fn x(){}\n"},
-        )
-        result = _run(sha, cwd=repo, stubs={"systemctl": "exit 3"})
-        assert "dependent-component" in result.stderr
-        assert "hapax-imagination" in result.stderr
-
-    def test_no_rust_diff_skips_gate(self, tmp_path: Path) -> None:
-        repo = _make_repo(tmp_path)
-        sha = _commit_files(repo, {"agents/foo.py": "x = 1\n"})
-        result = _run(sha, cwd=repo, extra_env={"HAPAX_SMOKE_DRYRUN": "1"})
-        assert "dependent-component" not in result.stdout
 
 
 # ── Gate: m8-midi-clock-peer ───────────────────────────────────────

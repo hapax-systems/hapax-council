@@ -23,6 +23,7 @@ from typing import Any
 
 from agents.studio_compositor import metrics
 from agents.studio_compositor.audio_control import SlotAudioControl
+from agents.studio_compositor.programme_context import ProgrammeProvider
 from agents.studio_compositor.tts_client import DaimonionTtsClient
 from shared.claim import Claim
 from shared.claim_prompt import SURFACE_FLOORS, render_envelope
@@ -208,56 +209,90 @@ def _ensure_impingement_grounded(
     imp: CompositionalImpingement,
     *,
     stance: Stance,
-) -> CompositionalImpingement:
-    """Constitutional-invariant guard (FINDING-X Phase 1).
+) -> CompositionalImpingement | None:
+    """Grounding-act gate (R8, 2026-05-02 effect+cam orchestration audit).
 
-    Every ``CompositionalImpingement`` downstream of the LLM parser should
-    carry real ``grounding_provenance``. LLM emissions sometimes omit the
-    field despite the prompt's mandate (empirically ~54% of live
-    impingements as of 2026-04-21). This hook records a deterministic
-    ``"inferred.<stance>.<family>"`` marker in ``synthetic_grounding_markers``
-    so the compliance failure stays visible without making downstream
-    gates believe real evidence exists. It increments
-    ``hapax_director_ungrounded_synth_total{intent_family}`` so the
-    LLM-compliance rate stays operator-visible separately from the raw
-    empty-rate counter (``hapax_director_ungrounded_total``).
+    Per the constitutional invariant in ``DirectorIntent``'s docstring,
+    every ``CompositionalImpingement`` reaching downstream consumers must
+    carry real ``grounding_provenance`` OR a deterministic-code fallback
+    marker in ``synthetic_grounding_markers``. The first branch is the
+    LLM happy path (real evidence). The second branch is fallback paths
+    like ``_silence_hold_impingement`` and ``_micromove_impingement``
+    that mark themselves with ``"fallback.<reason>"`` because they are
+    not LLM compliance failures — they are mechanical no-vacuum
+    invariants.
 
-    Fallback-path emitters (``_silence_hold_impingement``,
-    ``_micromove_impingement``, parser_* fallbacks) already populate
-    ``synthetic_grounding_markers`` eagerly, so this hook is a no-op on
-    their output. Only LLM emissions trigger the synthesis branch.
+    The third case — empty real grounding AND no fallback marker — is an
+    LLM-compliance failure: the model emitted a narrative that claims a
+    family without citing any evidence. Until 2026-05-02 we silently
+    synthesised an ``"inferred.<stance>.<family>"`` placeholder; the
+    effect+cam audit found this let downstream consumers treat ungrounded
+    narratives as evidence-bearing, hiding the failure. Operator
+    directive (2026-05-02 18:13Z) renamed that "the bug — silent
+    dropping". The R8 gate REJECTS the impingement loudly:
+
+    1. Increment ``hapax_director_ungrounded_rejection_total{intent_family}``.
+    2. Warn-log with the family + a narrative head so the failure shows
+       up in journalctl scrubbing.
+    3. Return ``None`` so the caller drops the impingement.
+
+    Callers must handle ``None`` — if filtering empties the impingement
+    list, ``_ensure_intent_grounded`` substitutes a silence-hold so the
+    no-vacuum invariant stays satisfied. The silence-hold itself is
+    deterministic-code fallback (carries ``synthetic_grounding_markers``)
+    and passes the gate.
     """
     if imp.grounding_provenance:
         return imp
     if imp.synthetic_grounding_markers:
         return imp
     try:
-        from shared.director_observability import emit_ungrounded_synth
+        from shared.director_observability import emit_ungrounded_rejection
 
-        emit_ungrounded_synth(imp.intent_family)
+        emit_ungrounded_rejection(imp.intent_family)
     except Exception:
-        log.debug("emit_ungrounded_synth failed", exc_info=True)
+        log.debug("emit_ungrounded_rejection failed", exc_info=True)
     stance_str = stance.value if hasattr(stance, "value") else str(stance)
-    synthetic = f"inferred.{stance_str.lower()}.{imp.intent_family}"
-    return imp.model_copy(update={"synthetic_grounding_markers": [synthetic]})
+    narrative_head = imp.narrative[:80] + ("..." if len(imp.narrative) > 80 else "")
+    log.warning(
+        "R8 grounding-act gate REJECTED ungrounded impingement: "
+        "intent_family=%s stance=%s salience=%.2f narrative=%r "
+        "(empty grounding_provenance and no synthetic fallback marker)",
+        imp.intent_family,
+        stance_str,
+        imp.salience,
+        narrative_head,
+    )
+    return None
 
 
 def _ensure_intent_grounded(intent: DirectorIntent) -> DirectorIntent:
     """Apply ``_ensure_impingement_grounded`` to every impingement.
 
-    Intent itself may also have empty real ``grounding_provenance``; that case
-    is the scope="intent" branch of ``emit_ungrounded_audit`` and is NOT
-    synthesized here. Reason: top-level intent provenance describes what
-    the director-as-whole grounds in; synthesizing a marker there would
-    hide the LLM compliance problem at the wrong layer. Per-impingement
-    synthesis preserves visibility at the right granularity.
+    Drops impingements rejected by the R8 grounding-act gate. If
+    filtering empties the list, substitutes a single
+    ``_silence_hold_impingement`` so ``DirectorIntent``'s no-vacuum
+    invariant (every tick must emit at least one
+    compositional_impingement) stays satisfied — the silence-hold is a
+    deterministic-code fallback (synthetic_grounding_markers prefilled
+    with ``"fallback.all_impingements_rejected_ungrounded"``) and is
+    exempt from the gate.
+
+    Intent itself may also have empty real ``grounding_provenance``; that
+    case is the scope="intent" branch of ``emit_ungrounded_audit`` and
+    is NOT acted on here. Top-level intent provenance describes what the
+    director-as-whole grounds in; surfacing it at the wrong layer would
+    hide the LLM compliance problem.
     """
     if not intent.compositional_impingements:
         return intent
-    patched = [
-        _ensure_impingement_grounded(imp, stance=intent.stance)
+    patched: list[CompositionalImpingement] = [
+        gated
         for imp in intent.compositional_impingements
+        if (gated := _ensure_impingement_grounded(imp, stance=intent.stance)) is not None
     ]
+    if not patched:
+        patched = [_silence_hold_impingement(reason="all_impingements_rejected_ungrounded")]
     if patched == list(intent.compositional_impingements):
         return intent
     return intent.model_copy(update={"compositional_impingements": patched})
@@ -1385,12 +1420,85 @@ ACTIVITY_CAPABILITIES = (
 )
 
 
+def _render_director_programme_context(
+    programme: Any | None,
+    programme_band: tuple[int, int] | None,
+) -> list[str]:
+    """Render active programme context for the narrative director prompt."""
+    if programme is None and programme_band is None:
+        return []
+
+    lines: list[str] = ["## Programme context"]
+    lines.append(
+        "AUDIT-18 programme context is soft-prior director context: it "
+        "biases activity, narrative, and compositional choices while "
+        "grounding provenance and live perceptual pressure stay authoritative."
+    )
+
+    if programme is not None:
+        role = programme.role.value if hasattr(programme.role, "value") else str(programme.role)
+        programme_id = str(getattr(programme, "programme_id", "unknown"))
+        lines.append(f"- active programme: `{programme_id}` with role `{role}`")
+
+        parent_show_id = getattr(programme, "parent_show_id", None)
+        if parent_show_id:
+            lines.append(f"- show ref: `{parent_show_id}`")
+
+        parent_condition_id = getattr(programme, "parent_condition_id", None)
+        if parent_condition_id:
+            lines.append(f"- condition ref: `{parent_condition_id}`")
+
+        beat = (getattr(getattr(programme, "content", None), "narrative_beat", "") or "").strip()
+        if beat:
+            lines.append(f"- programme direction: {beat}")
+
+        constraints = getattr(programme, "constraints", None)
+        if constraints is not None:
+            preset_priors = list(getattr(constraints, "preset_family_priors", []) or [])
+            if preset_priors:
+                lines.append(
+                    "- prefers preset families: "
+                    f"{', '.join(str(value) for value in preset_priors)} (soft prior)"
+                )
+            rotation_modes = list(getattr(constraints, "homage_rotation_modes", []) or [])
+            if rotation_modes:
+                lines.append(
+                    "- bias toward homage rotation modes: "
+                    f"{', '.join(str(value) for value in rotation_modes)} (soft prior)"
+                )
+            positive_bias = dict(getattr(constraints, "capability_bias_positive", {}) or {})
+            if positive_bias:
+                names = ", ".join(sorted(str(name) for name in positive_bias))
+                lines.append(f"- capability preference lift: {names} (soft prior)")
+            negative_bias = dict(getattr(constraints, "capability_bias_negative", {}) or {})
+            if negative_bias:
+                names = ", ".join(sorted(str(name) for name in negative_bias))
+                lines.append(f"- capability preference dampening: {names} (soft prior)")
+
+    if programme_band is not None:
+        low, high = programme_band
+        lines.append(f"- current programme voice tier band: {low}-{high} (soft prior)")
+
+    lines.append(
+        "- override posture: when live evidence points elsewhere, choose "
+        "the grounded move and keep programme state as context."
+    )
+    return lines
+
+
 class DirectorLoop:
     """Orchestrates Hapax's autonomous livestream behavior."""
 
-    def __init__(self, video_slots: list, reactor_overlay) -> None:
+    def __init__(
+        self,
+        video_slots: list,
+        reactor_overlay,
+        *,
+        programme_provider: ProgrammeProvider | None = None,
+    ) -> None:
         self._slots = video_slots
         self._reactor = reactor_overlay
+        self._programme_provider = programme_provider
         self._activity = "react"  # current activity
         self._activity_start = 0.0
         self._state = "IDLE"
@@ -1430,6 +1538,16 @@ class DirectorLoop:
         # referent per _build_unified_prompt call, sticky-per-utterance.
         self._referent_tick: int = 0
         self._load_memory()
+
+    def _active_programme(self) -> Any | None:
+        """Resolve the active Programme for prompt context, if wired."""
+        if self._programme_provider is None:
+            return None
+        try:
+            return self._programme_provider()
+        except Exception:
+            log.debug("director programme lookup failed", exc_info=True)
+            return None
 
     def _load_memory(self) -> None:
         """Load reaction history from SHM snapshot or Qdrant on startup."""
@@ -2448,6 +2566,20 @@ class DirectorLoop:
                     parts.append(f"→ {struct['long_horizon_direction']}")
         except Exception:
             log.debug("structural intent read failed", exc_info=True)
+
+        # AUDIT-18: programme context reaches the narrative director as
+        # soft-prior prompt context. Provider failure is non-fatal; a
+        # missing programme simply preserves legacy director behavior.
+        try:
+            programme_context = _render_director_programme_context(
+                self._active_programme(),
+                self._current_programme_band,
+            )
+            if programme_context:
+                parts.append("")
+                parts.extend(programme_context)
+        except Exception:
+            log.debug("programme context render failed", exc_info=True)
 
         # ─── Layer 2: System state (TOON ~150 tokens, 40% savings) ─
         try:

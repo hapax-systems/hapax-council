@@ -110,19 +110,18 @@ def _semantics_indicates_vinyl(semantics: object) -> bool:
 
 
 def _vinyl_probably_playing() -> bool:
-    """Mirror of director_loop._vinyl_is_playing — platter actually spinning?
+    """Legacy IR-zone-only fallback gate — kept only for engine-import failure.
 
-    Duplicated here (not imported) to keep album-identifier free of the
-    studio_compositor dependency. Override flag OR hand-zone=turntable
-    OR hand-activity=scratching OR VLM semantics indicate vinyl
-    handling. The same gate the director prompt uses to construct its
-    "is music playing" framing.
+    The active producer-side gate is :func:`_engine_says_playing`, which
+    delegates to :class:`agents.hapax_daimonion.vinyl_spinning_engine.VinylSpinningEngine`
+    (calibrated cross-modal Bayesian posterior with hysteresis). This
+    function is the no-engine fallback so a missing/broken engine
+    import does not crash the album-identifier daemon — it returns the
+    same shape of answer the producer used before the engine ship.
 
-    Phase 4 of ``ir-perception-replace-zones-with-vlm-classification``
-    adds the VLM-semantics check so the rich-vocabulary classifier
-    output participates in the gate alongside the legacy enum signals.
-    Either positive signal is enough — backward-compat ensured by
-    keeping the zone / activity checks intact.
+    Override flag OR hand-zone=turntable OR hand-activity=scratching
+    OR VLM semantics indicate vinyl handling. Either positive signal
+    is enough.
     """
     try:
         if _VINYL_OVERRIDE_FLAG.exists():
@@ -140,6 +139,75 @@ def _vinyl_probably_playing() -> bool:
     except Exception:
         pass
     return False
+
+
+# ── Bayesian engine integration (cc-task: album-identifier-playing-flag-periodic-engine-truth) ──
+#
+# The ``VinylSpinningEngine`` is the single calibrated truth source for
+# ``playing``. Director consumer (``director_loop``) and album-identifier
+# producer share the same engine implementation, so the producer side
+# stops drifting from the consumer side as new signals are added.
+#
+# Singleton: lazy-constructed on first ``_engine_says_playing()`` call.
+# The engine is stateful (holds the underlying ``ClaimEngine`` posterior
+# + hysteresis state machine), so it MUST persist across ticks within
+# the daemon process.
+#
+# Override short-circuit: ``k_enter=6`` would mean ~30s before
+# ``engine.is_spinning`` flips True after the operator hits the override.
+# The cc-task acceptance criterion requires immediate True on override,
+# so we OR the flag check with the engine state. The engine itself still
+# observes the override via its own ``_read_operator_override`` so its
+# posterior tracks reality; the OR is purely a latency shortcut for the
+# operator-asserted ground-truth signal.
+_vinyl_engine: object | None = None
+_vinyl_engine_init_failed: bool = False
+
+
+def _engine_says_playing() -> bool:
+    """Cross-modal posterior gate via :class:`VinylSpinningEngine`.
+
+    Replaces :func:`_vinyl_probably_playing` as the producer-side truth
+    source. Falls back to the legacy gate only if the engine import or
+    construction fails (degradation path; logs once).
+
+    Operator override is a hard short-circuit (immediate True) so the
+    cc-task acceptance ``override flag → playing flips True regardless
+    of IR/audio`` is satisfied without waiting on ``k_enter=6`` ticks.
+    """
+    global _vinyl_engine, _vinyl_engine_init_failed
+
+    # Hard short-circuit on operator override — immediate True.
+    if _VINYL_OVERRIDE_FLAG.exists():
+        # Tick the engine anyway so its posterior tracks the override.
+        if _vinyl_engine is not None:
+            try:
+                _vinyl_engine.tick()  # type: ignore[attr-defined]
+            except Exception:
+                log.debug("engine tick during override failed", exc_info=True)
+        return True
+
+    if _vinyl_engine is None and not _vinyl_engine_init_failed:
+        try:
+            from agents.hapax_daimonion.vinyl_spinning_engine import VinylSpinningEngine
+
+            _vinyl_engine = VinylSpinningEngine()
+        except Exception:
+            log.warning(
+                "VinylSpinningEngine unavailable — falling back to legacy IR-zone gate",
+                exc_info=True,
+            )
+            _vinyl_engine_init_failed = True
+
+    if _vinyl_engine is None:
+        return _vinyl_probably_playing()
+
+    try:
+        _vinyl_engine.tick()  # type: ignore[attr-defined]
+        return bool(_vinyl_engine.is_spinning)  # type: ignore[attr-defined]
+    except Exception:
+        log.debug("engine tick failed — using legacy fallback for this tick", exc_info=True)
+        return _vinyl_probably_playing()
 
 
 ATTRIBUTION_LOG = Path(
@@ -805,15 +873,15 @@ def write_state(album: dict, track: str) -> None:
     label = album.get("label", "")
 
     # Splattribution text for overlay. We gate the header + the Track line
-    # on `_vinyl_probably_playing()` because the LLM director reads this
-    # text visually off the composed surface. When the platter isn't
-    # spinning, a line like `Track: "Hoe Cakes"` is the strongest signal
-    # nudging the model into a present-tense "the track X is playing"
-    # claim — exactly the hallucination operators flagged 2026-04-24.
-    # The fix is upstream of the render: strip the track-specific claim
-    # and relabel the header so neither the LLM nor a viewer can read it
-    # as a now-playing indicator.
-    playing_now = _vinyl_probably_playing()
+    # on `_engine_says_playing()` (the Bayesian engine posterior) because
+    # the LLM director reads this text visually off the composed surface.
+    # When the platter isn't spinning, a line like `Track: "Hoe Cakes"`
+    # is the strongest signal nudging the model into a present-tense
+    # "the track X is playing" claim — exactly the hallucination
+    # operators flagged 2026-04-24. The fix is upstream of the render:
+    # strip the track-specific claim and relabel the header so neither
+    # the LLM nor a viewer can read it as a now-playing indicator.
+    playing_now = _engine_says_playing()
     model = album.get("model", "unknown LLM")
     confidence = album.get("confidence", "?")
     header = "SPLATTRIBUTION" if playing_now else "ALBUM CATALOG (not playing)"
@@ -915,17 +983,11 @@ def _refresh_playing_for_current_album() -> None:
     the same cover sat on the deck.
 
     Intent: at every poll tick, if we have a previously-identified
-    album, recompute ``playing`` via ``_vinyl_probably_playing()`` and
-    rewrite ``album-state.json`` with the current truth. The full
+    album, recompute ``playing`` via ``_engine_says_playing()`` (the
+    Bayesian engine posterior with hysteresis + override short-circuit)
+    and rewrite ``album-state.json`` with the current truth. The full
     write_state path also refreshes ``music-attribution.txt`` so the
     "ALBUM CATALOG (not playing)" header tracks reality.
-
-    Engine-with-hysteresis integration is Phase 2 (the
-    ``VinylSpinningEngine`` lives in ``agents/hapax_daimonion`` and
-    importing it from this scripts/-tier daemon is a larger refactor;
-    in practice, the IR-zone gate's binary off-transition gives
-    operator faster recovery — ~5 s — than the engine's slow-exit
-    hysteresis would).
     """
 
     if _current_album is None:

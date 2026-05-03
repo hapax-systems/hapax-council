@@ -902,6 +902,18 @@ from shared.audio_marker_probe_fft import (
 detect_marker_in_capture
 generate_marker_tone
 
+# Qdrant FlowEvent-instrumented factory — opt-in entry point for callers
+# that want Logos flow visibility on their qdrant ops. Whitelisted because
+# the wrapper class (InstrumentedQdrantClient) was correctly structured
+# but had no factory for 6 days post-#1660; this factory is the missing
+# wire path. Per the R-16 audit
+# (docs/research/2026-04-26-r16-langfuse-instrumented-qdrant-audit.md
+# § Disposition), migration is opt-in per caller — no bulk migration
+# required, so vulture flags it until the first caller adopts.
+from shared.config import get_qdrant_instrumented
+
+get_qdrant_instrumented
+
 # Voice output router (role-keyed API) — ``known_roles`` is the
 # operator-dashboard helper for the audio-routing blocker stack. Lands
 # ahead of the dashboard surface that will read it (separate cc-task);
@@ -1138,3 +1150,226 @@ AestheticConditionEditionsLedger.by_rights
 AestheticConditionEditionsLedger.by_condition
 auto_capture_edition_from_input
 evaluate_edition_eligibility_from_input
+
+# Payment aggregator v2 support normalizer — cc-task
+# payment-aggregator-v2-support-normalizer.
+# Pydantic model_validator hooks + public emit / render entrypoints called
+# by the downstream support-aggregation daemon (separate cc-task).
+from shared.payment_aggregator_v2_support_normalizer import (
+    NormalizedSupportReceipt,
+    PublicAggregateEmission,
+    PublicEmitDecision,
+    evaluate_public_emit,
+    render_public_aggregate_text,
+)
+
+NormalizedSupportReceipt._validate_rail_currency_match
+PublicAggregateEmission._validate_window
+PublicEmitDecision._exactly_emit_or_refuse
+evaluate_public_emit
+render_public_aggregate_text
+
+# GitHub Sponsors receive-only rail — cc-task
+# publication-bus-monetization-rails-surfaces (Phase 0).
+# Pydantic field_validator + the public ingest_webhook entrypoint are invoked
+# by the downstream publication_bus rail dispatcher (separate cc-task).
+from shared.github_sponsors_receive_only_rail import (
+    GitHubSponsorsRailReceiver,
+    SponsorshipEvent,
+)
+
+SponsorshipEvent._login_is_handle_only
+GitHubSponsorsRailReceiver.ingest_webhook
+
+# Liberapay receive-only rail — cc-task
+# publication-bus-monetization-rails-surfaces (Phase 0, Liberapay rail).
+# Pydantic field_validator hook invoked at construction; ingest_webhook is
+# the public receiver entry-point called by the downstream FastAPI handler
+# bridging email-to-webhook / CSV-export deliveries (separate cc-task).
+from shared.liberapay_receive_only_rail import (
+    DonationEvent,
+    LiberapayRailReceiver,
+)
+
+DonationEvent._handle_is_username_only
+LiberapayRailReceiver.ingest_webhook
+
+# Open Collective receive-only rail — cc-task
+# publication-bus-monetization-rails-surfaces (Phase 0, Open Collective rail).
+# Pydantic field_validator hooks (slug + ISO 4217 currency) invoked at
+# construction; ingest_webhook is the public receiver entry-point called by the
+# downstream FastAPI webhook handler bridging Open Collective deliveries
+# (separate cc-task). Multi-currency preservation is the new shape this rail
+# introduces vs the prior two.
+from shared.open_collective_receive_only_rail import (
+    CollectiveEvent,
+    OpenCollectiveRailReceiver,
+)
+
+CollectiveEvent._handle_is_slug_only
+CollectiveEvent._currency_is_iso_4217
+OpenCollectiveRailReceiver.ingest_webhook
+
+# Stripe Payment Link receive-only rail — cc-task
+# publication-bus-monetization-rails-surfaces (Phase 0, Stripe Payment Link rail).
+# Pydantic field_validator hooks (Stripe object-ID + ISO 4217 currency) invoked
+# at construction; ingest_webhook is the public receiver entry-point called by
+# the downstream FastAPI webhook handler bridging Stripe deliveries (separate
+# cc-task). Timestamped HMAC + 300s replay tolerance are the new shapes this
+# rail introduces vs the prior three.
+from shared.stripe_payment_link_receive_only_rail import (
+    PaymentEvent,
+    StripePaymentLinkRailReceiver,
+)
+
+PaymentEvent._handle_is_stripe_id
+PaymentEvent._currency_is_iso_4217
+StripePaymentLinkRailReceiver.ingest_webhook
+
+# Patreon receive-only rail — cc-task
+# publication-bus-monetization-rails-surfaces (Phase 0, Patreon rail).
+# Pydantic field_validator hooks (Patreon vanity slug + ISO 4217 currency)
+# invoked at construction; ingest_webhook is the public receiver entry-point
+# called by the downstream FastAPI webhook handler bridging Patreon deliveries
+# (separate cc-task). HMAC MD5 + JSON:API included[] resource walking are the
+# new shapes this rail introduces vs the prior four.
+from shared.patreon_receive_only_rail import (
+    PatreonRailReceiver,
+    PledgeEvent,
+)
+
+PledgeEvent._handle_is_vanity_only
+PledgeEvent._currency_is_iso_4217
+PatreonRailReceiver.ingest_webhook
+
+# Ko-fi receive-only rail — cc-task
+# publication-bus-monetization-rails-surfaces (Phase 0, Ko-fi rail).
+# Pydantic field_validator hooks (display-name + ISO 4217 currency) invoked at
+# construction; ingest_webhook is the public receiver entry-point called by the
+# downstream FastAPI webhook handler bridging Ko-fi form-encoded deliveries
+# (separate cc-task). Verification-token auth (in lieu of HMAC) is the new
+# shape this rail introduces vs the prior four.
+from shared.ko_fi_receive_only_rail import (
+    KoFiEvent,
+    KoFiRailReceiver,
+)
+
+KoFiEvent._handle_is_display_name_only
+KoFiEvent._currency_is_iso_4217
+KoFiRailReceiver.ingest_webhook
+
+# Buy Me a Coffee receive-only rail — cc-task
+# publication-bus-monetization-rails-surfaces (Phase 0, BMaC rail). Pydantic
+# field_validator hooks (display-name + ISO 4217 currency) invoked at
+# construction; ingest_webhook is the public receiver entry-point called by the
+# downstream FastAPI webhook handler bridging BMaC HMAC-SHA256-signed JSON
+# deliveries (separate cc-task). Restores HMAC SHA-256 over raw body (vs Ko-fi
+# verification-token + Patreon HMAC-MD5 divergences); 8th rail in the family.
+from shared.buy_me_a_coffee_receive_only_rail import (
+    BuyMeACoffeeRailReceiver,
+    CoffeeEvent,
+)
+
+CoffeeEvent._handle_is_display_name_only
+CoffeeEvent._currency_is_iso_4217
+BuyMeACoffeeRailReceiver.ingest_webhook
+
+# omg.lol support-directory composer — cc-task
+# omg-lol-support-directory-publisher. Pure typed composer that renders the
+# seven receive-only rails' canonical public URLs to deterministic markdown
+# suitable for an OmgLolWeblogPublisher.publish() call (which lives in a
+# separate downstream cc-task). Pydantic model_validator hooks
+# (entry/directory invariants) invoked at construction; render_directory_markdown
+# is the public renderer entry-point called by the downstream weblog-driver
+# script. RailId / SupportDirectory / SupportDirectoryEntry are exported as the
+# typed public schema.
+from shared.omg_lol_support_directory import (
+    RailId,
+    SupportDirectory,
+    SupportDirectoryEntry,
+    SupportDirectoryError,
+    render_directory_markdown,
+)
+
+SupportDirectoryEntry._validate_entry
+SupportDirectory._validate_directory
+render_directory_markdown
+RailId
+SupportDirectoryError
+
+# Mercury receive-only rail — cc-task mercury-receive-only-rail
+# (Phase 0, Mercury bank-rail). Pydantic field_validator hooks
+# (counterparty-display + ISO 4217 currency) invoked at construction;
+# ingest_webhook is the public receiver entry-point called by the
+# downstream FastAPI webhook handler bridging Mercury HMAC-SHA256-signed
+# JSON deliveries (separate cc-task). The first direct-bank rail in the
+# family — adds a direction filter (incoming-only) on the transaction
+# kind enum, alongside the standard HMAC-over-raw-body shape from
+# GitHub Sponsors / Stripe / BMaC.
+from shared.mercury_receive_only_rail import (
+    MercuryEventKind,
+    MercuryRailReceiver,
+    MercuryTransactionDirection,
+    MercuryTransactionEvent,
+)
+
+MercuryTransactionEvent._handle_is_display_name_only
+MercuryTransactionEvent._currency_is_iso_4217
+MercuryRailReceiver.ingest_webhook
+MercuryEventKind
+MercuryTransactionDirection
+
+# Modern Treasury receive-only rail — cc-task
+# modern-treasury-receive-only-rail (Phase 0). Pydantic field_validator
+# hooks (originating-party-display + ISO 4217 currency) invoked at
+# construction; ingest_webhook is the public receiver entry-point called
+# by the downstream FastAPI webhook handler bridging Modern Treasury
+# HMAC-SHA256-signed JSON deliveries (separate cc-task). Ninth rail in
+# the family — second direct-bank rail after Mercury (#2251). Direction
+# filter is promoted into the event-kind enum here (only accepts
+# ``incoming_payment_detail.created`` / ``.completed``); outgoing
+# ``payment_order.*`` events are rejected.
+from shared.modern_treasury_receive_only_rail import (
+    IncomingPaymentEvent,
+    IncomingPaymentEventKind,
+    ModernTreasuryRailReceiver,
+    PaymentMethod,
+)
+
+IncomingPaymentEvent._handle_is_display_name_only
+IncomingPaymentEvent._currency_is_iso_4217
+ModernTreasuryRailReceiver.ingest_webhook
+IncomingPaymentEventKind
+PaymentMethod
+
+# Treasury Prime receive-only rail (Phase 0, ledger accounts) — cc-task
+# treasury-prime-receive-only-rail. Pydantic field_validator hooks
+# (originating-party-display + ISO 4217 currency) invoked at construction;
+# ingest_webhook is the public receiver entry-point called by the
+# downstream FastAPI webhook handler bridging Treasury Prime
+# HMAC-SHA256-signed JSON deliveries (separate cc-task). Tenth rail in
+# the family — third direct-bank rail, closes the Jr packet's
+# Bank-as-API recommendation set. Phase 0 accepts only
+# ``incoming_ach.create`` (ledger accounts); Phase 1 will extend to
+# ``transaction.create`` (core direct accounts) with the data-level
+# direction filter from Mercury.
+from shared.treasury_prime_receive_only_rail import (
+    IncomingAchEvent,
+    IncomingAchEventKind,
+    TreasuryPrimeRailReceiver,
+)
+
+IncomingAchEvent._handle_is_display_name_only
+IncomingAchEvent._currency_is_iso_4217
+TreasuryPrimeRailReceiver.ingest_webhook
+IncomingAchEventKind
+
+# Activity-router family-pool ceiling eviction order — used by P4 router
+# policy when the family pool is exhausted and a higher-priority ward
+# wants to enter. P3 (cc-task activity-reveal-ward-p3-governance) ships
+# the helper as observability scaffolding so P4 has the eviction
+# contract ready; the actual eviction call-site lands when P4's
+# mutex/priority/hysteresis algorithm replaces the classify-only logic.
+from agents.studio_compositor.activity_family_ceiling import FamilyCeilingTracker as _FCT
+
+_FCT.evictable_order

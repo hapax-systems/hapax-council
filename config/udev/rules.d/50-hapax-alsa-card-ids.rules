@@ -1,0 +1,85 @@
+# Persistent ALSA card IDs by serial+vid:pid.
+#
+# Today's incident (2026-05-02): ALSA card numbers shifted between sessions.
+# BRIO became BRIO_1 then BRIO_2 across reboots, the L-12 ended up at card 12
+# vs whatever it was earlier, S-4 at card 15 vs card 14 earlier. Configs that
+# hardcode `hw:CARD=11` break.
+#
+# These rules pin every USB-Audio device to a stable symbolic name by
+# vendor:product (and serial where multiple instances of the same model are
+# present). After install, /proc/asound/cards shows `[L12]`, `[S4]`, `[Yeti]`,
+# etc. regardless of the order ALSA enumerated. Configs can then reference
+# `hw:CARD=L12` and never break across reboots.
+#
+# Install:
+#   sudo install -m 644 50-hapax-alsa-card-ids.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload
+#   sudo udevadm trigger --subsystem-match=sound
+#
+# Verify:
+#   cat /proc/asound/cards
+#   scripts/hapax-show-stable-card-ids
+#
+# Adding a new device:
+#   1. Plug it in; find the controlC<N> for it via `cat /proc/asound/cards`.
+#   2. Run `udevadm info /dev/snd/controlC<N>` to discover idVendor / idProduct
+#      / serial.
+#   3. Add a rule below using the same pattern. Pick a short alphanumeric id
+#      (max 15 chars, ALSA truncates beyond that).
+#
+# References:
+# - ALSA wiki — Changing card IDs with udev:
+#   https://www.alsa-project.org/wiki/Changing_card_IDs_with_udev
+# - tomtom215/usb-audio-mapper (similar pattern)
+# - docs/governance/persistent-alsa-card-ids.md (this repo)
+
+SUBSYSTEM!="sound", GOTO="hapax_card_ids_end"
+ACTION!="add|change", GOTO="hapax_card_ids_end"
+
+# --- Audio interfaces (single instance) ----------------------------------
+
+# L-12 — Zoom LiveTrak (1686:03d5, serial 8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF).
+# Constitutional broadcast device. id ASCII <=15 chars.
+ATTRS{idVendor}=="1686", ATTRS{idProduct}=="03d5", ATTR{id}="L12"
+
+# S-4 — Torso Electronics (1d6b:0104, Linux multifunction gadget signature,
+# serial fedcba9876543220-XX). The composite device serial includes the
+# function suffix; match by vid:pid+serial-prefix glob via wildcard.
+ATTRS{idVendor}=="1d6b", ATTRS{idProduct}=="0104", ATTRS{serial}=="fedcba9876543220*", ATTR{id}="S4"
+
+# Yeti — Blue Microphones (b58e:9e84, serial REV8). Single Yeti in inventory.
+ATTRS{idVendor}=="b58e", ATTRS{idProduct}=="9e84", ATTR{id}="Yeti"
+
+# M8 — Dirtywave (16c0:048a, serial 16558390). Class-compliant audio + CDC.
+ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="048a", ATTR{id}="M8"
+
+# Erica MIDI Dispatch (381a:1003, serial E6611C51E3331533). Single instance.
+ATTRS{idVendor}=="381a", ATTRS{idProduct}=="1003", ATTR{id}="Dispatch"
+
+# --- BRIO 4K webcams (multiple instances, distinguish by serial) ---------
+#
+# Logitech BRIO carries the same vid:pid (046d:085e). Three units in
+# inventory; pin each by ATTRS{serial}. The serial-suffix labels (Brio0/1/2)
+# are stable per-unit across replug — they ride the silicon, not the port.
+
+ATTRS{idVendor}=="046d", ATTRS{idProduct}=="085e", ATTRS{serial}=="43B0576A", ATTR{id}="Brio0"
+ATTRS{idVendor}=="046d", ATTRS{idProduct}=="085e", ATTRS{serial}=="5342C819", ATTR{id}="Brio1"
+ATTRS{idVendor}=="046d", ATTRS{idProduct}=="085e", ATTRS{serial}=="9726C031", ATTR{id}="Brio2"
+
+# --- C920 / C920 PRO webcams (multiple instances, distinguish by serial) -
+#
+# Logitech C920 plain is 046d:082d, C920 PRO is 046d:08e5. Three units in
+# inventory across both variants; pin each by ATTRS{serial}.
+#
+# Note: as of 2026-05-02 enumeration the operator's three webcam serials are
+# 2657DFCF, 7B88C71F, 86B6B75F. We match by serial across both vid:pid
+# variants so a unit replaced with the other variant keeps its symbolic id.
+
+ATTRS{idVendor}=="046d", ATTRS{idProduct}=="082d", ATTRS{serial}=="2657DFCF", ATTR{id}="C920a"
+ATTRS{idVendor}=="046d", ATTRS{idProduct}=="082d", ATTRS{serial}=="7B88C71F", ATTR{id}="C920b"
+ATTRS{idVendor}=="046d", ATTRS{idProduct}=="082d", ATTRS{serial}=="86B6B75F", ATTR{id}="C920c"
+ATTRS{idVendor}=="046d", ATTRS{idProduct}=="08e5", ATTRS{serial}=="2657DFCF", ATTR{id}="C920a"
+ATTRS{idVendor}=="046d", ATTRS{idProduct}=="08e5", ATTRS{serial}=="7B88C71F", ATTR{id}="C920b"
+ATTRS{idVendor}=="046d", ATTRS{idProduct}=="08e5", ATTRS{serial}=="86B6B75F", ATTR{id}="C920c"
+
+LABEL="hapax_card_ids_end"

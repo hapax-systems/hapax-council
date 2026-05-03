@@ -2,9 +2,53 @@
 """Enforce the private-voice Daimonion quarantine while the incident is active.
 
 This is an incident-containment watchdog, not a restore tool. It can stop/mask
-``hapax-daimonion.service`` and mute known broadcast/TTS/livestream PipeWire
-nodes when quarantine drifts. It never unmasks, restarts, unmutes, synthesizes,
-or probes live audio.
+``hapax-daimonion.service`` and mute the **private-voice surfaces only** when
+quarantine drifts. It never unmasks, restarts, unmutes, synthesizes, or probes
+live audio.
+
+Architecture
+============
+
+The quarantine surface is the operator's private-voice stack — null sinks
+and their loopback playback nodes that exist *only* so private TTS reaches
+the operator monitor and never the broadcast chain. Muting these during
+quarantine is correct: it severs the private-voice playback path while
+leaving every public-egress surface untouched.
+
+The **broadcast egress chain** (``hapax-broadcast-master``,
+``hapax-broadcast-normalized``, ``hapax-obs-broadcast-remap``,
+``hapax-livestream`` / ``hapax-livestream-tap``, ``hapax-tts-duck``,
+``hapax-voice-fx-capture``, ``hapax-loudnorm-capture``,
+``input.loopback.sink.role.broadcast``, and any ``*-loudnorm``,
+``*-duck``, ``*-master``, ``*-normalized``, ``*-remap``, ``*-tap``
+node) is **not** a quarantine surface. Those nodes are PUBLIC egress,
+downstream of the gating decision; muting them silences OBS broadcast
+egress entirely. The 2026-05-02 broadcast-chain-silence incident
+(cc-task ``broadcast-chain-monitor-zero-investigation``) was caused by
+this watchdog enforcing such mutes every 30s.
+
+The correct enforcement surface for the *inverse* invariant — ensuring
+private-voice never reaches broadcast — is split across two siblings:
+
+* ``scripts/audio-leak-guard.sh`` — static check that pipewire/wireplumber
+  configs do not link any private node into the broadcast chain.
+* ``scripts/hapax-private-broadcast-leak-guard`` — runtime witness that
+  fails closed if a live link is detected.
+
+Together they cover the static + dynamic surface of the private→broadcast
+invariant. This watchdog must never be tempted to expand its mute set
+into broadcast nodes again; the defensive validator below
+(:data:`_FORBIDDEN_NAME_PATTERNS`) catches any attempt to re-add one.
+
+Quarantine state file
+=====================
+
+``${XDG_RUNTIME_DIR}/hapax-daimonion/private-voice-quarantine.json`` is per
+session (``XDG_RUNTIME_DIR`` is on tmpfs and does not survive reboot). When
+the file is missing or malformed, :func:`quarantine_active` fails closed
+to ``True``. Operators who want quarantine-inactive as the default boot
+state should ship a tmpfiles.d snippet or a oneshot systemd unit that
+seeds the file at login; that is out of scope for this watchdog.
 """
 
 from __future__ import annotations
@@ -12,6 +56,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
@@ -25,27 +70,104 @@ RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
 DEFAULT_QUARANTINE_STATE_PATH = RUNTIME_DIR / "hapax-daimonion/private-voice-quarantine.json"
 DEFAULT_RESTORE_BYPASS_PATH = RUNTIME_DIR / "hapax-daimonion/authorized-restore.json"
 
+# Private-voice quarantine mute set.
+#
+# Every entry MUST be a private-voice surface that exists only on the
+# operator's TTS-private path. Broadcast egress nodes are explicitly
+# forbidden — see ``_FORBIDDEN_NAME_PATTERNS`` below for the regression
+# fence and the module docstring for the architectural rationale.
+
 REQUIRED_MUTED_SOURCES = (
-    "hapax-broadcast-master",
-    "hapax-broadcast-normalized",
-    "hapax-obs-broadcast-remap",
-    "hapax-livestream-tap.monitor",
-    "hapax-livestream.monitor",
-    "hapax-tts-duck.monitor",
-    "hapax-voice-fx-capture.monitor",
-    "hapax-loudnorm-capture.monitor",
+    # Loopback playback node fed by the ``hapax-private`` null sink monitor.
+    # Muting severs the operator-monitor egress for private TTS — the only
+    # surface the operator needs blocked when quarantine is active.
+    "hapax-private-playback",
+    # Loopback playback node fed by ``hapax-notification-private`` monitor.
+    # Same rationale: it carries notification audio classified as private.
+    "hapax-notification-private-playback",
+    # Role-based loopback for ``Assistant`` media-role streams. CPAL routes
+    # PRIVATE-class TTS through this role so muting the loopback's source
+    # side prevents private utterances from being captured by anything
+    # subscribed to the Assistant role bus.
     "input.loopback.sink.role.assistant.monitor",
-    "input.loopback.sink.role.broadcast.monitor",
 )
 REQUIRED_MUTED_SINKS = (
-    "hapax-livestream",
-    "hapax-livestream-tap",
-    "hapax-tts-duck",
-    "hapax-voice-fx-capture",
-    "hapax-loudnorm-capture",
+    # Private TTS null sink. PRIVATE-class utterances bind here; muting it
+    # is the canonical "stop private voice" lever.
+    "hapax-private",
+    # Notification-private null sink. Same role for notifications classified
+    # as private (debug/operator-only) per ``destination_channel.py``.
+    "hapax-notification-private",
+    # Role-based ``Assistant`` loopback sink. PRIVATE TTS lands here via
+    # ``role=Assistant`` before it reaches the private monitor bridge;
+    # muting closes the role-bus side of the same path the playback nodes
+    # close on the source side.
     "input.loopback.sink.role.assistant",
-    "input.loopback.sink.role.broadcast",
 )
+
+# Defensive validator. The 2026-05-02 broadcast-chain-silence incident was
+# caused by this list including broadcast egress nodes. Any future change
+# that re-adds a name matching one of these patterns must fail at module
+# import — which means tests, CI, and direct invocation all catch the
+# regression before the watchdog can touch a live PipeWire graph.
+_FORBIDDEN_NAME_PATTERNS = (
+    re.compile(r"broadcast", re.IGNORECASE),
+    re.compile(r"livestream", re.IGNORECASE),
+    re.compile(r"loudnorm", re.IGNORECASE),
+    re.compile(r"duck", re.IGNORECASE),
+    re.compile(r"master", re.IGNORECASE),
+    re.compile(r"normalized", re.IGNORECASE),
+    re.compile(r"remap", re.IGNORECASE),
+    # ``tap`` matches ``hapax-livestream-tap`` etc. We intentionally accept
+    # the small risk of a future legitimate ``*-tap`` private node by
+    # demanding it pass the private-pattern allowlist below.
+    re.compile(r"tap", re.IGNORECASE),
+    # ``role.broadcast`` should never be in a private-voice quarantine set.
+    re.compile(r"role\.broadcast", re.IGNORECASE),
+    # ``voice-fx-capture`` is the broadcast voice ingress (CPAL routes the
+    # ``Broadcast`` media-role here). Adding it to the quarantine mute set
+    # would silence broadcast TTS, which is the exact failure mode we're
+    # fencing against.
+    re.compile(r"voice-fx", re.IGNORECASE),
+    re.compile(r"fx-capture", re.IGNORECASE),
+)
+_PRIVATE_NAME_ALLOWLIST = (
+    re.compile(r"hapax-private(?:-|$)", re.IGNORECASE),
+    re.compile(r"hapax-notification-private(?:-|$)", re.IGNORECASE),
+    re.compile(r"role\.assistant", re.IGNORECASE),
+)
+
+
+def _validate_mute_set(names: tuple[str, ...], *, kind: str) -> None:
+    """Reject broadcast-chain names and demand each entry match private allowlist.
+
+    Raises
+    ------
+    ValueError
+        If any name matches a forbidden pattern (broadcast/livestream/etc.)
+        or fails to match the private-surface allowlist. Either case is a
+        regression of the 2026-05-02 incident.
+    """
+
+    for name in names:
+        for pattern in _FORBIDDEN_NAME_PATTERNS:
+            if pattern.search(name):
+                raise ValueError(
+                    f"quarantine watchdog {kind} list contains forbidden broadcast-chain "
+                    f"node {name!r}: matches /{pattern.pattern}/. The 2026-05-02 broadcast-"
+                    f"chain-silence incident was caused by muting broadcast egress nodes "
+                    f"during quarantine; see module docstring."
+                )
+        if not any(pattern.search(name) for pattern in _PRIVATE_NAME_ALLOWLIST):
+            raise ValueError(
+                f"quarantine watchdog {kind} list entry {name!r} does not match any "
+                f"private-surface allowlist pattern; only private-voice surfaces "
+                f"belong in this list."
+            )
+
+
+_validate_mute_set(REQUIRED_MUTED_SOURCES, kind="source")
+_validate_mute_set(REQUIRED_MUTED_SINKS, kind="sink")
 
 SYSTEMD_SHOW_CMD = (
     "systemctl",

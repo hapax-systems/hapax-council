@@ -131,8 +131,15 @@ class SierpinskiLoader:
                 slot.update_metadata()
 
             from agents.studio_compositor.director_loop import DirectorLoop
+            from agents.studio_compositor.programme_context import (
+                default_provider as programme_provider,
+            )
 
-            self._director = DirectorLoop(video_slots=self.video_slots, reactor_overlay=self)
+            self._director = DirectorLoop(
+                video_slots=self.video_slots,
+                reactor_overlay=self,
+                programme_provider=programme_provider,
+            )
             self._director.start()
             log.info("DirectorLoop started via SierpinskiLoader")
         except Exception:
@@ -163,9 +170,14 @@ class SierpinskiLoader:
             "no",
         }:
             try:
+                from agents.studio_compositor.programme_context import (
+                    default_provider as programme_provider,
+                )
                 from agents.studio_compositor.structural_director import StructuralDirector
 
-                self._structural_director = StructuralDirector()
+                self._structural_director = StructuralDirector(
+                    programme_provider=programme_provider,
+                )
                 self._structural_director.start()
                 log.info("StructuralDirector started (150s cadence)")
             except Exception:
