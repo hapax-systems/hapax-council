@@ -49,9 +49,10 @@ class TestRegisteredRefusedClasses:
         7th (wise-direct-debit-active-reception); cc-task
         `leverage-REFUSED-twitter-linkedin-substack-accounts` (PR #1560,
         first-class-graph promotion 2026-05-03) adds the 8th-10th
-        (twitter-x-account / linkedin-account / substack-account).
+        (twitter-x-account / linkedin-account / substack-account); cc-task
+        `reddit-refusal-brief` (2026-05-03) adds the 11th (reddit-account).
         """
-        assert len(REFUSED_PUBLISHER_CLASSES) == 10
+        assert len(REFUSED_PUBLISHER_CLASSES) == 11
 
     def test_all_refused_classes_subclass_refused_publisher(self) -> None:
         for cls in REFUSED_PUBLISHER_CLASSES:

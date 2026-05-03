@@ -243,6 +243,38 @@ class SubstackRefusedPublisher(RefusedPublisher):
     )
 
 
+class RedditRefusedPublisher(RefusedPublisher):
+    """Reddit — multi-user community-mediated platform, daemon engagement precluded.
+
+    Reddit is a community-moderation platform: posts surface to
+    subreddit feeds whose moderators apply per-community rules,
+    comments arrive from named accounts, and the platform's
+    karma/account-age signals encode reciprocal engagement. Daemon-
+    side posting violates both ``single_user`` (subreddits are
+    multi-moderator communities) and
+    ``feedback_full_automation_or_no_engagement`` (replies and
+    cross-post discussions surface back to the operator with
+    implicit response expectations).
+
+    Even broadcast-only modes would face platform-side rate limits +
+    shadowban risks for accounts that post but never engage —
+    Reddit's algorithm explicitly penalizes this pattern. Most
+    subreddits also have community rules forbidding bot-authored
+    content unless explicitly marked, and many ban LLM-generated
+    posts entirely.
+    """
+
+    surface_name = "reddit-account"
+    refusal_reason = (
+        "Reddit is a multi-moderator community platform — subreddits enforce "
+        "per-community rules including bot-content prohibitions; comments "
+        "arrive from named accounts with engagement-reciprocity expectations; "
+        "the platform algorithmically penalizes accounts that post without "
+        "engaging. Violates both single_user (community-moderator structure) "
+        "and full-automation-or-no-engagement constitutional postures."
+    )
+
+
 class WiseDirectDebitRefusedPublisher(RefusedPublisher):
     """Wise Direct Debit (active reception) — receive-only invariant precludes.
 
@@ -284,6 +316,7 @@ REFUSED_PUBLISHER_CLASSES: list[type[RefusedPublisher]] = [
     DiscogsRefusedPublisher,
     DiscordWebhookRefusedPublisher,
     LinkedInRefusedPublisher,
+    RedditRefusedPublisher,
     RymRefusedPublisher,
     CrossrefEventDataRefusedPublisher,
     AlphaXivCommentsRefusedPublisher,
@@ -301,6 +334,7 @@ __all__ = [
     "DiscogsRefusedPublisher",
     "DiscordWebhookRefusedPublisher",
     "LinkedInRefusedPublisher",
+    "RedditRefusedPublisher",
     "RefusedPublisher",
     "RymRefusedPublisher",
     "SubstackRefusedPublisher",
