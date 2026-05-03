@@ -77,6 +77,17 @@ FAMILY_PRESETS: dict[str, tuple[str, ...]] = {
         "neon",
         "mirror_rorschach",
         "tunnelvision",
+        # Audit pools 2026-05-03 (#2406/#2410/#2412/#2415/#2416)
+        "chamber_feedback_breathing",
+        "chamber_feedback_dense",
+        "diff_motion_thermal",
+        "diff_motion_trail",
+        "pixsort_glitch_horizontal",
+        "pixsort_glitch_vertical",
+        "electromag_thermal_field",
+        "electromag_rutt_etra",
+        "kaleido_fractal_dense",
+        "kaleido_fractal_mirror",
     ),
     # Slow field-like — chill, reflective, study contexts. Avoids
     # strong rhythm.
@@ -87,6 +98,17 @@ FAMILY_PRESETS: dict[str, tuple[str, ...]] = {
         "sculpture",
         "silhouette",
         "ghost",
+        # Audit pools 2026-05-03
+        "water_ripple_caustic",
+        "water_ripple_surface",
+        "paper_fold_origami",
+        "paper_fold_crumple",
+        "circular_lens_focus",
+        "circular_porthole_view",
+        "chrome_mirror_polished",
+        "chrome_mirror_brushed",
+        "cellular_kuwahara_paint",
+        "bloom_solar_flare",
     ),
     # High-entropy glitch — intense, seeking, curious stances. Heavy
     # procedural distortion.
@@ -97,6 +119,16 @@ FAMILY_PRESETS: dict[str, tuple[str, ...]] = {
         "pixsort_preset",
         "slitscan_preset",
         "trap",
+        # Audit pools 2026-05-03
+        "xerox_smudge_streak",
+        "xerox_photocopy_decay",
+        "chromakey_lift",
+        "chromakey_luma_split",
+        "arcane_dither_sigil",
+        "broadcast_static_carrier",
+        "broadcast_vhs_decay",
+        "cellular_reaction",
+        "arcane_ascii_glyph",
     ),
     # Warm minimal — sits quietly as backdrop for conversation /
     # focused work.
@@ -107,6 +139,16 @@ FAMILY_PRESETS: dict[str, tuple[str, ...]] = {
         "halftone_preset",
         "trails",
         "ascii_preset",
+        # Audit pools 2026-05-03
+        "mono_print_woodcut",
+        "mono_print_newsprint",
+        "arcade_8bit_pixel",
+        "arcade_palette_remap",
+        "bloom_neon_night",
+        "neon_grid_arcade",
+        "neon_grid_tunnel",
+        "sierpinski_line_overlay",
+        "sierpinski_recursive",
     ),
     # Neutral baseline — used as the default fallback when no family is
     # recruited. Avoids the "shuffle feel" of uniform random by keeping
@@ -118,6 +160,9 @@ FAMILY_PRESETS: dict[str, tuple[str, ...]] = {
         "nightvision",
         "screwed",
         "diff_preset",
+        # Audit pools 2026-05-03
+        "drone_static_drift",
+        "drone_dense_static",
     ),
 }
 
