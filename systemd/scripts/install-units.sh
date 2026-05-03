@@ -28,7 +28,6 @@ DECOMMISSIONED_UNITS=(
     # install run, even on operator workstations where it was previously
     # enabled. See ``docs/superpowers/specs/2026-05-02-parametric-modulation-heartbeat.md``
     # §"Migration" and the 24h auditor batch 2026-05-02 finding #13.
-    hapax-preset-bias-heartbeat.service
 )
 
 # Services that must be auto-enabled (and started) on install.
