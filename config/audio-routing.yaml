@@ -13,7 +13,13 @@ description: |
 generated_output:
   output_dir: config/pipewire/generated
   manifest_path: config/pipewire/generated/audio-routing-policy.manifest.json
-  generated_conf_writes_allowed: false
+  # Audit F#8 (2026-05-02): generator gained LADSPA loudnorm / duck /
+  # usb-bias chain templates so the descriptor can emit the load-bearing
+  # filter-chain shapes directly. Flipped on so `hapax-audio-topology
+  # generate` can write into config/pipewire/generated/ without operator
+  # override. Live reload + dry-run flags stay conservative — host-side
+  # PipeWire reload is still operator-driven, the generator is no longer.
+  generated_conf_writes_allowed: true
   live_reload_allowed: false
   dry_run_only: true
 

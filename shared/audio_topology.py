@@ -36,7 +36,7 @@ from __future__ import annotations
 import math
 from enum import StrEnum
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -117,6 +117,32 @@ class Node(BaseModel, frozen=True):
             as an opaque pass-through by the generator — each kind's
             template writes the keys it understands and ignores the
             rest.
+
+    Filter-chain template params (schema v3, audit F#8):
+        chain_kind: Selects a LADSPA / builtin filter-chain template
+            for ``filter_chain`` nodes. ``"loudnorm"`` emits a
+            single ``fast_lookahead_limiter_1913`` LADSPA stage.
+            ``"duck"`` emits a paired-mono ``builtin mixer`` ducker
+            (``duck_l`` / ``duck_r``) with default ``Gain 1 = 1.0``;
+            the daemon writes runtime gain via ``pw-cli``.
+            ``"usb-bias"`` emits a ``fast_lookahead_limiter_1913``
+            with non-zero ``Input gain`` (LADSPA-clamped to
+            ``[-20, +20]``) plus optional FL/FR → RL/RR remap.
+            ``None`` (the default) preserves the legacy generic
+            filter-chain behaviour.
+        limit_db: Output ceiling in dBFS for ``loudnorm`` /
+            ``usb-bias`` chains. Maps to LADSPA ``Limit (dB)``.
+        bias_db: USB-IN line-driver gain in dB for ``usb-bias``
+            chains. Maps to LADSPA ``Input gain (dB)``. Clamped to
+            ``[-20, +20]``; the generator raises ``ConfigError`` on
+            overshoot rather than silently truncating.
+        release_s: LADSPA ``Release time (s)`` for ``loudnorm`` /
+            ``usb-bias`` chains. Defaults to ``0.20`` for
+            ``loudnorm`` when omitted.
+        remap_to_rear: When ``True`` on a ``usb-bias`` chain, the
+            playback side advertises ``audio.position = [ RL RR ]``
+            so the L-12 surround40 sink picks up the bias-driven
+            stream on the rear pair (the L-12 USB return convention).
     """
 
     id: str
@@ -129,6 +155,11 @@ class Node(BaseModel, frozen=True):
         default_factory=lambda: ChannelMap(count=2, positions=["FL", "FR"])
     )
     params: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    chain_kind: Literal["loudnorm", "duck", "usb-bias"] | None = None
+    limit_db: float | None = None
+    bias_db: float | None = None
+    release_s: float | None = None
+    remap_to_rear: bool | None = None
 
     @field_validator("id")
     @classmethod
@@ -194,16 +225,17 @@ class TopologyDescriptor(BaseModel, frozen=True):
 
     Versioning: ``schema_version`` increments on breaking schema
     changes so older descriptors can be migrated explicitly. Current
-    = 2 (2026-05-02 — symbolic ALSA card-id migration: hw: fields use
-    ``hw:CARD=<id>`` pinned by udev rather than fragile numeric indices).
-    Schema 1 is retired (audit finding E#13, 2026-05-02). The Pydantic
-    field type and the ``from_yaml`` parser both fail on unknown versions
-    rather than silently accepting them.
+    = 3 (2026-05-02 — Node typed filter-chain template params
+    ``chain_kind`` / ``limit_db`` / ``bias_db`` / ``release_s`` /
+    ``remap_to_rear`` for the LADSPA loudnorm / duck / usb-bias
+    generator templates, audit F#8). Schema 2 still parses for
+    backward compatibility (typed chain params remain ``None`` on
+    nodes that omit them); new descriptors write 3. Schema 1 is
+    no longer accepted — the v1 → v2 symbolic ALSA card-id
+    migration must complete before parsing succeeds.
     """
 
-    SUPPORTED_SCHEMA_VERSIONS: ClassVar[frozenset[int]] = frozenset({2})
-
-    schema_version: Literal[2] = 2
+    schema_version: Literal[2, 3] = 3
     description: str = ""
     nodes: list[Node]
     edges: list[Edge] = Field(default_factory=list)
@@ -258,14 +290,12 @@ class TopologyDescriptor(BaseModel, frozen=True):
         else:
             raw = source
         data = yaml.safe_load(raw)
-        # Audit finding E#13 (2026-05-02): explicit-fail-on-unknown-version
-        # instead of silently dropping into the Literal validator with a
-        # confusing pydantic error. Surfaces forward-incompatibility (e.g.
-        # someone wrote schema_version: 4 by mistake) at the parser
-        # boundary so the caller knows to bump the descriptor or this code.
-        if isinstance(data, dict):
-            sv = data.get("schema_version")
-            if sv is not None and sv not in cls.SUPPORTED_SCHEMA_VERSIONS:
-                supported = ", ".join(str(v) for v in sorted(cls.SUPPORTED_SCHEMA_VERSIONS))
-                raise ValueError(f"unknown schema_version: {sv!r}; supported: {supported}")
+        # Parser-front guard: validate schema_version explicitly so older v1
+        # descriptors (or anything outside the supported window) fail with a
+        # message that mentions the version, not a deeply-nested pydantic
+        # Literal-mismatch error.
+        if isinstance(data, dict) and data.get("schema_version") not in (2, 3):
+            raise ValueError(
+                f"unknown schema_version: {data.get('schema_version')!r} (supported: 2, 3)"
+            )
         return cls.model_validate(data)

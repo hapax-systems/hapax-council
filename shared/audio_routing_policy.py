@@ -48,7 +48,12 @@ class PolicyModel(BaseModel):
 class GeneratedOutput(PolicyModel):
     output_dir: str
     manifest_path: str
-    generated_conf_writes_allowed: Literal[False]
+    # Audit F#8 (2026-05-02): generator gained LADSPA loudnorm / duck /
+    # usb-bias chain templates so generated_conf_writes_allowed = true
+    # is now a supported (and live) configuration. live_reload_allowed
+    # + dry_run_only stay locked — host-side PipeWire reload is still
+    # operator-driven, the generator is no longer.
+    generated_conf_writes_allowed: bool
     live_reload_allowed: Literal[False]
     dry_run_only: Literal[True]
 
