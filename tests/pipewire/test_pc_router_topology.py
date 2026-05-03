@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -90,8 +91,17 @@ class TestPcRouterTopologyDescriptor:
 
 
 @pytest.mark.live
+@pytest.mark.skipif(
+    shutil.which("pactl") is None or shutil.which("pw-link") is None,
+    reason="requires live PipeWire CLI tools",
+)
 class TestPcRouterLiveGraph:
     """Post-restart assertions against the live PipeWire graph."""
+
+    def setup_method(self) -> None:
+        sinks = self._pactl_short_sinks()
+        if ROUTER_PW_NAME not in sinks:
+            pytest.skip("hapax-pc-router graph is not deployed in this live PipeWire session")
 
     def _pactl_short_sinks(self) -> str:
         result = subprocess.run(

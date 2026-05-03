@@ -428,6 +428,7 @@ nodes:
       stream.dont-remix: true
       playback_target: alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40
       playback_positions: RL RR
+      allowed_l12_return_direction: broadcast
       ladspa_plugin: fast_lookahead_limiter_1913
       limit_db: -18.0
       dormant_until_pr_b: true
