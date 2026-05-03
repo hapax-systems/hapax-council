@@ -361,6 +361,34 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "reception remains acceptable (separate Phase-0 implementation)."
         ),
     ),
+    "twitter-x-account": SurfaceSpec(
+        automation_status=AutomationStatus.REFUSED,
+        refusal_link="docs/refusal-briefs/twitter-x-account.md",
+        scope_note=(
+            "Twitter/X is operator-mediated; @-mentions, replies, quote-"
+            "tweets, and DMs make daemon-only posting impossible without "
+            "creating bidirectional engagement expectations."
+        ),
+    ),
+    "linkedin-account": SurfaceSpec(
+        automation_status=AutomationStatus.REFUSED,
+        refusal_link="docs/refusal-briefs/linkedin-account.md",
+        scope_note=(
+            "LinkedIn requires connection-graph mediation; comments and "
+            "reactions arrive from named connections expecting reciprocal "
+            "engagement."
+        ),
+    ),
+    "substack-account": SurfaceSpec(
+        automation_status=AutomationStatus.REFUSED,
+        refusal_link="docs/refusal-briefs/substack-account.md",
+        scope_note=(
+            "Substack monetizes via subscriber-relationship management "
+            "(newsletter cadence, post-comment threads, direct subscriber "
+            "correspondence). Daemon-only publishing degrades the platform-"
+            "promised subscriber experience."
+        ),
+    ),
 }
 
 

@@ -174,6 +174,75 @@ class AlphaXivCommentsRefusedPublisher(RefusedPublisher):
     )
 
 
+class TwitterRefusedPublisher(RefusedPublisher):
+    """Twitter/X — operator-mediated social media; engagement violates axiom.
+
+    Per cc-task ``leverage-REFUSED-twitter-linkedin-substack-accounts``
+    (PR #1560, 2026-04-26): mainstream social-media surfaces are
+    operator-mediated by design. Twitter/X requires reply-thread
+    management, @-mention reply expectations, and quote-tweet
+    relationship dynamics that constitute bidirectional engagement
+    surfaces — incompatible with
+    ``feedback_full_automation_or_no_engagement``.
+
+    A daemon-side post-only mode would still surface @-mentions and
+    DMs back to the operator with implicit response expectations.
+    The ratchet from "post" to "engage" cannot be daemonised
+    constitutionally.
+    """
+
+    surface_name = "twitter-x-account"
+    refusal_reason = (
+        "Twitter/X is an operator-mediated social-media platform — daemon-side "
+        "posting still surfaces @-mentions, replies, quote-tweets, and DMs that "
+        "create bidirectional engagement expectations, violating the full-"
+        "automation-or-no-engagement constitutional posture."
+    )
+
+
+class LinkedInRefusedPublisher(RefusedPublisher):
+    """LinkedIn — connection-graph mediation precludes daemon engagement.
+
+    Per cc-task ``leverage-REFUSED-twitter-linkedin-substack-accounts``
+    (PR #1560, 2026-04-26): LinkedIn requires connection-graph
+    mediation. Posts surface to a curated-connection feed, comments
+    arrive from connections expecting reciprocal engagement, and the
+    platform's identity model is structurally bidirectional. No
+    daemon-tractable post-only mode exists.
+    """
+
+    surface_name = "linkedin-account"
+    refusal_reason = (
+        "LinkedIn requires connection-graph mediation; post-and-walk-away mode "
+        "is structurally unavailable. Comments and reactions arrive from named "
+        "connections with implicit reciprocal-engagement expectations. The "
+        "single-operator + full-automation-or-no-engagement constitutional "
+        "posture forbids the surface."
+    )
+
+
+class SubstackRefusedPublisher(RefusedPublisher):
+    """Substack — subscriber-relationship management precludes daemon engagement.
+
+    Per cc-task ``leverage-REFUSED-twitter-linkedin-substack-accounts``
+    (PR #1560, 2026-04-26): Substack monetizes via subscriber
+    relationships. Newsletter cadence, comment threads on posts, and
+    direct subscriber emails all expect operator-mediated engagement.
+    A daemon-side publishing mode without subscriber-relationship
+    management would degrade the surface for subscribers and
+    structurally violate the platform's product model.
+    """
+
+    surface_name = "substack-account"
+    refusal_reason = (
+        "Substack monetizes via subscriber-relationship management — newsletter "
+        "cadence, post-comment threads, and direct subscriber correspondence "
+        "all require operator-mediated engagement. Daemon-only publishing "
+        "would degrade the platform-promised subscriber experience and violates "
+        "the full-automation-or-no-engagement constitutional posture."
+    )
+
+
 class WiseDirectDebitRefusedPublisher(RefusedPublisher):
     """Wise Direct Debit (active reception) — receive-only invariant precludes.
 
@@ -214,9 +283,12 @@ REFUSED_PUBLISHER_CLASSES: list[type[RefusedPublisher]] = [
     BandcampRefusedPublisher,
     DiscogsRefusedPublisher,
     DiscordWebhookRefusedPublisher,
+    LinkedInRefusedPublisher,
     RymRefusedPublisher,
     CrossrefEventDataRefusedPublisher,
     AlphaXivCommentsRefusedPublisher,
+    SubstackRefusedPublisher,
+    TwitterRefusedPublisher,
     WiseDirectDebitRefusedPublisher,
 ]
 
@@ -228,7 +300,10 @@ __all__ = [
     "CrossrefEventDataRefusedPublisher",
     "DiscogsRefusedPublisher",
     "DiscordWebhookRefusedPublisher",
+    "LinkedInRefusedPublisher",
     "RefusedPublisher",
     "RymRefusedPublisher",
+    "SubstackRefusedPublisher",
+    "TwitterRefusedPublisher",
     "WiseDirectDebitRefusedPublisher",
 ]
