@@ -1,0 +1,32 @@
+[Unit]
+Description=Hapax audio signal-flow assertion daemon (H1 hardening)
+Documentation=file:///home/hapax/projects/hapax-council/docs/runbooks/audio-signal-assertion.md
+Documentation=file:///home/hapax/projects/hapax-council/docs/research/2026-05-03-audio-config-hardening-unthought-of-solutions.md
+# Probes hapax-broadcast-master, hapax-broadcast-normalized, and
+# hapax-obs-broadcast-remap monitor ports every 30s, classifies the
+# captured PCM (silent | tone | music | noise | clipping), and ntfys
+# the operator when the OBS-bound stage transitions into a bad steady
+# state. READ-ONLY: no module loads, no service restarts, no auto-mute.
+After=pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire.service pipewire-pulse.service wireplumber.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=-%h/.config/hapax/audio-signal-assertion.env
+ExecStart=%h/.local/bin/uv run python -m agents.audio_signal_assertion
+Restart=always
+RestartSec=15s
+WatchdogSec=120s
+# Sustain-window default is 5s for silence and 2s for clipping/noise;
+# 60s of probe + classification headroom is generous enough to avoid
+# WatchdogSec timeouts during bursty IO.
+TimeoutStartSec=30s
+TimeoutStopSec=10s
+Nice=10
+Slice=app.slice
+# Probe is bound by the operator's audio access; same uid as pipewire-pulse.
+
+[Install]
+WantedBy=default.target
