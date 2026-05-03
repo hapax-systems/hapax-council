@@ -1422,3 +1422,212 @@ def test_patreon_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# Buy Me a Coffee rail integration tests (cc-task buy-me-a-coffee-end-to-end-wiring)
+# ===========================================================================
+
+from agents.publication_bus.buy_me_a_coffee_publisher import (
+    CANCELLATION_REFUSAL_AXIOM as BMAC_REFUSAL_AXIOM,
+)
+from agents.publication_bus.buy_me_a_coffee_publisher import (
+    CANCELLATION_REFUSAL_SURFACE as BMAC_REFUSAL_SURFACE,
+)
+from shared.buy_me_a_coffee_receive_only_rail import (
+    BUY_ME_A_COFFEE_WEBHOOK_SECRET_ENV,
+)
+
+_BMAC_VALID_SECRET = "bmac-webhook-secret-XYZ"
+
+
+def _bmac_payload(
+    *,
+    kind: str = "donation",
+    supporter: str = "alice-supporter",
+    amount: str = "5.00",
+    currency: str = "USD",
+    occurred_at: str = "2026-05-03T00:00:00Z",
+) -> dict:
+    return {
+        "type": kind,
+        "live_mode": True,
+        "attempt": 1,
+        "created": occurred_at,
+        "event_id": "11111111-1111-1111-1111-111111111111",
+        "data": {
+            "id": "donation-id-1",
+            "supporter_name": supporter,
+            "amount": amount,
+            "currency": currency,
+            "created_at": occurred_at,
+            "support_note": "thanks for the work",  # PII; rail must NOT extract
+            "supporter_email": "leak@example.com",  # PII
+        },
+    }
+
+
+@pytest.fixture
+def bmac_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    return tmp_path / "hapax-state" / "publications" / "buy-me-a-coffee"
+
+
+@pytest.fixture
+def bmac_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
+    monkeypatch.setenv(BUY_ME_A_COFFEE_WEBHOOK_SECRET_ENV, _BMAC_VALID_SECRET)
+    return _BMAC_VALID_SECRET
+
+
+@pytest.mark.asyncio
+async def test_bmac_signed_donation_writes_manifest(
+    bmac_output_dir: Path, bmac_secret_env: str
+) -> None:
+    payload = _bmac_payload(kind="donation")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(bmac_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/buy-me-a-coffee",
+            content=raw,
+            headers={"X-Signature-Sha256": sig},
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "received"
+    assert body["event_kind"] == "donation"
+    files = list(bmac_output_dir.glob("event-donation-*.md"))
+    assert len(files) == 1, f"expected 1 manifest, got {files}"
+    contents = files[0].read_text()
+    assert "alice-supporter" in contents
+    # PII negative pin
+    assert "thanks for the work" not in contents
+    assert "leak@example.com" not in contents
+
+
+@pytest.mark.asyncio
+async def test_bmac_membership_started_dotted_form(
+    bmac_output_dir: Path, bmac_secret_env: str
+) -> None:
+    """BMaC membership.started uses dotted form (not underscored)."""
+    payload = _bmac_payload(kind="membership.started", supporter="bob-member")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(bmac_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/buy-me-a-coffee",
+            content=raw,
+            headers={"X-Signature-Sha256": sig},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["event_kind"] == "membership.started"
+
+
+@pytest.mark.asyncio
+async def test_bmac_membership_cancelled_appends_to_refusal_log(
+    bmac_output_dir: Path,
+    bmac_secret_env: str,
+    refusal_log_dir: Path,
+) -> None:
+    payload = _bmac_payload(kind="membership.cancelled", supporter="charlie-cancelled")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(bmac_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/buy-me-a-coffee",
+            content=raw,
+            headers={"X-Signature-Sha256": sig},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["event_kind"] == "membership.cancelled"
+
+    log_file = refusal_log_dir / "log.jsonl"
+    assert log_file.exists()
+    rows = [json.loads(line) for line in log_file.read_text().splitlines() if line]
+    cancellations = [r for r in rows if r.get("surface") == BMAC_REFUSAL_SURFACE]
+    assert cancellations
+    assert cancellations[0]["axiom"] == BMAC_REFUSAL_AXIOM
+
+
+@pytest.mark.asyncio
+async def test_bmac_bad_signature_returns_400(bmac_output_dir: Path, bmac_secret_env: str) -> None:
+    payload = _bmac_payload()
+    raw = json.dumps(payload).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/buy-me-a-coffee",
+            content=raw,
+            headers={"X-Signature-Sha256": "0" * 64},
+        )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_bmac_sha256_prefix_form_accepted(
+    bmac_output_dir: Path, bmac_secret_env: str
+) -> None:
+    """BMaC accepts both bare hex digest and ``sha256=<hex>`` prefixed."""
+    payload = _bmac_payload()
+    raw = json.dumps(payload).encode("utf-8")
+    sig = "sha256=" + hmac.new(bmac_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/buy-me-a-coffee",
+            content=raw,
+            headers={"X-Signature-Sha256": sig},
+        )
+
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.asyncio
+async def test_bmac_unaccepted_kind_returns_400(
+    bmac_output_dir: Path, bmac_secret_env: str
+) -> None:
+    payload = _bmac_payload(kind="contribution.refund")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(bmac_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/buy-me-a-coffee",
+            content=raw,
+            headers={"X-Signature-Sha256": sig},
+        )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_bmac_empty_body_returns_ping_ok() -> None:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/payment-rails/buy-me-a-coffee", content=b"")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ping_ok"
+
+
+def test_bmac_publisher_module_carries_no_send_path() -> None:
+    import inspect
+
+    import agents.publication_bus.buy_me_a_coffee_publisher as mod
+
+    src = inspect.getsource(mod).lower()
+    forbidden_verbs = (
+        "def send",
+        "def initiate",
+        "def payout",
+        "def transfer",
+        "def origination",
+    )
+    for token in forbidden_verbs:
+        assert token not in src, f"unexpected send-path: {token!r}"
