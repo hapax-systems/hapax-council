@@ -1560,6 +1560,32 @@ PATREON_EVENT_HEADER
 PATREON_SIGNATURE_HEADER
 receive_patreon_webhook
 
+# Buy Me a Coffee V5 publisher + FastAPI route — cc-task
+# buy-me-a-coffee-end-to-end-wiring (7th live monetization rail).
+# HMAC SHA-256 over raw body in X-Signature-Sha256; membership-
+# cancellation auto-link to refusal log.
+from agents.publication_bus.buy_me_a_coffee_publisher import (
+    BuyMeACoffeePublisher,
+)
+from agents.publication_bus.buy_me_a_coffee_publisher import (
+    event_to_manifest_record as _bmac_event_to_manifest_record,
+)
+from agents.publication_bus.buy_me_a_coffee_publisher import (
+    manifest_path_for_event as _bmac_manifest_path_for_event,
+)
+from logos.api.routes.payment_rails import (
+    BUY_ME_A_COFFEE_SIGNATURE_HEADER,
+    receive_buy_me_a_coffee_webhook,
+)
+
+BuyMeACoffeePublisher.publish_event
+BuyMeACoffeePublisher._render_manifest_body
+BuyMeACoffeePublisher._auto_link_cancellation_to_refusal_log
+_bmac_event_to_manifest_record
+_bmac_manifest_path_for_event
+BUY_ME_A_COFFEE_SIGNATURE_HEADER
+receive_buy_me_a_coffee_webhook
+
 # R9 follow-up: apply_layout_switch adapter (cc-task
 # dynamic-compositor-layout-switching-followup). Ships ahead of any
 # caller; whitelisted until director-loop / systemd-timer wiring lands

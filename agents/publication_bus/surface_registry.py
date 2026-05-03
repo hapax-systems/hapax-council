@@ -114,6 +114,18 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "to the canonical refusal log under axiom full_auto_or_nothing."
         ),
     ),
+    "buy-me-a-coffee-receiver": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="webhook",
+        dispatch_entry="logos.api.routes.payment_rails:receive_buy_me_a_coffee_webhook",
+        activation_path="agents.publication_bus.buy_me_a_coffee_publisher.BuyMeACoffeePublisher",
+        scope_note=(
+            "Seventh wired monetization rail. POST /api/payment-rails/buy-me-a-coffee "
+            "on logos :8051; HMAC SHA-256 over raw body via X-Signature-Sha256 + "
+            "BUY_ME_A_COFFEE_WEBHOOK_SECRET env var. Membership-cancellation "
+            "events auto-link to the canonical refusal log."
+        ),
+    ),
     "patreon-receiver": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="webhook",
