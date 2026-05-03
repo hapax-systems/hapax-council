@@ -114,6 +114,19 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "to the canonical refusal log under axiom full_auto_or_nothing."
         ),
     ),
+    "mercury-receiver": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="webhook",
+        dispatch_entry="logos.api.routes.payment_rails:receive_mercury_webhook",
+        activation_path="agents.publication_bus.mercury_publisher.MercuryPublisher",
+        scope_note=(
+            "Eighth wired monetization rail (1st bank rail). POST "
+            "/api/payment-rails/mercury on logos :8051; HMAC SHA-256 over raw "
+            "body via X-Mercury-Signature (canonical) + X-Hook-Signature "
+            "(legacy fallback) + MERCURY_WEBHOOK_SECRET env var. Direction "
+            "filter at receiver boundary; no cancellation auto-link."
+        ),
+    ),
     "buy-me-a-coffee-receiver": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="webhook",
