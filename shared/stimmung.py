@@ -15,6 +15,8 @@ dimensions use 0.3× weight, so system stance remains infrastructure-driven.
 from __future__ import annotations
 
 import logging
+import math
+import os
 import time
 from collections import deque
 from enum import StrEnum
@@ -59,6 +61,26 @@ class DimensionReading(BaseModel, frozen=True):
     freshness_s: float = 0.0  # seconds since last update
     sigma: float = 0.0  # posterior std-dev (0.0 = point estimate)
     n: int = 1  # sample count in the rolling window
+
+    def exceeds_with_confidence(self, threshold: float, *, confidence: float = 0.7) -> bool:
+        """Return True if P(value > threshold) >= confidence.
+
+        Uses the Gaussian CDF approximation when sigma > 0. Falls back
+        to simple comparison (value >= threshold) when sigma == 0 (point
+        estimate / legacy behavior).
+
+        This is the Phase C threshold gate: callers can replace
+        ``dim.value >= threshold`` with
+        ``dim.exceeds_with_confidence(threshold, confidence=0.7)``
+        to get sigma-aware probabilistic gating.
+        """
+        if self.sigma <= 0:
+            return self.value >= threshold
+        # P(value > threshold) = 1 - Φ((threshold - value) / sigma)
+        z = (threshold - self.value) / self.sigma
+        # Approximate Gaussian CDF via math.erfc
+        p_exceeds = 0.5 * math.erfc(z / math.sqrt(2.0))
+        return p_exceeds >= confidence
 
 
 # ── SystemStimmung ───────────────────────────────────────────────────────────
@@ -506,7 +528,11 @@ class StimmungCollector:
             pass  # Chronicle unavailable — non-fatal
 
         _prev_stance = self._last_stance
-        raw_stance = self._compute_stance(dimensions)
+        _use_posterior = os.environ.get("HAPAX_STIMMUNG_POSTERIOR_STANCE", "") == "1"
+        if _use_posterior:
+            raw_stance = self._compute_stance_posterior(dimensions)
+        else:
+            raw_stance = self._compute_stance(dimensions)
         stance = self._apply_hysteresis(raw_stance)
 
         # Chronicle: record stance transitions
@@ -727,6 +753,75 @@ class StimmungCollector:
         # variance modulation). DEGRADED+ continues to block SEEKING — those
         # signal real infrastructure problems where exploration would compete
         # with recovery.
+        if worst in (Stance.NOMINAL, Stance.CAUTIOUS):
+            exploration = dimensions.get("exploration_deficit", DimensionReading())
+            if exploration.freshness_s <= _STALE_THRESHOLD_S and exploration.value > 0.35:
+                return Stance.SEEKING
+
+        return worst
+
+    @staticmethod
+    def _compute_stance_posterior(
+        dimensions: dict[str, DimensionReading],
+    ) -> Stance:
+        """Posterior-aware stance aggregator (Phase C).
+
+        Instead of gating on ``effective >= threshold``, gates on
+        ``P(value > threshold) >= confidence_cutoff`` under a
+        Normal(value, sigma) model. When sigma=0, this is bit-identical
+        to the legacy ``_compute_stance``.
+
+        Confidence cutoffs per stance level:
+        - CAUTIOUS: P >= 0.7 (moderate confidence)
+        - DEGRADED: P >= 0.85 (high confidence)
+        - CRITICAL: P >= 0.95 (very high confidence)
+
+        A noisy single-sample spike (high mean, high sigma) will NOT
+        immediately escalate — Bayesian humility under measurement noise.
+
+        Activated only when ``HAPAX_STIMMUNG_POSTERIOR_STANCE=1``.
+        """
+        # Per-stance confidence cutoffs
+        _CONFIDENCE_CAUTIOUS = 0.7
+        _CONFIDENCE_DEGRADED = 0.85
+        _CONFIDENCE_CRITICAL = 0.95
+
+        worst = Stance.NOMINAL
+        for name, dim in dimensions.items():
+            if dim.freshness_s > _STALE_THRESHOLD_S:
+                continue
+            if name == "exploration_deficit":
+                continue
+
+            effective_value = dim.value
+            effective_sigma = dim.sigma
+            if name in _BIOMETRIC_DIMENSION_NAMES:
+                effective_value *= _BIOMETRIC_STANCE_WEIGHT
+                effective_sigma *= _BIOMETRIC_STANCE_WEIGHT
+                thresholds = _BIOMETRIC_THRESHOLDS
+            elif name in _COGNITIVE_DIMENSION_NAMES:
+                effective_value *= _COGNITIVE_STANCE_WEIGHT
+                effective_sigma *= _COGNITIVE_STANCE_WEIGHT
+                thresholds = _COGNITIVE_THRESHOLDS
+            else:
+                thresholds = _INFRA_THRESHOLDS
+
+            # Build a synthetic DimensionReading for the effective values
+            eff_dim = DimensionReading(value=effective_value, sigma=effective_sigma, n=dim.n)
+
+            if eff_dim.exceeds_with_confidence(thresholds[2], confidence=_CONFIDENCE_CRITICAL):
+                dim_stance = Stance.CRITICAL
+            elif eff_dim.exceeds_with_confidence(thresholds[1], confidence=_CONFIDENCE_DEGRADED):
+                dim_stance = Stance.DEGRADED
+            elif eff_dim.exceeds_with_confidence(thresholds[0], confidence=_CONFIDENCE_CAUTIOUS):
+                dim_stance = Stance.CAUTIOUS
+            else:
+                dim_stance = Stance.NOMINAL
+
+            if _STANCE_ORDER[dim_stance] > _STANCE_ORDER[worst]:
+                worst = dim_stance
+
+        # SEEKING: same logic as legacy (exploration_deficit gate)
         if worst in (Stance.NOMINAL, Stance.CAUTIOUS):
             exploration = dimensions.get("exploration_deficit", DimensionReading())
             if exploration.freshness_s <= _STALE_THRESHOLD_S and exploration.value > 0.35:
