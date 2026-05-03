@@ -1,0 +1,46 @@
+{
+  "name": "Glitch Y2K Chroma",
+  "description": "Early-2000s digital-glitch lineage (2/4): heavier chromatic aberration + slitscan + dither. References the 'first-decoder-on-low-bandwidth' aesthetic. Lineage: glitch-y2k.",
+  "lineage": "glitch-y2k",
+  "transition_ms": 800,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 1.05,
+        "contrast": 1.25,
+        "saturation": 1.3,
+        "hue_rotate": -8
+      }
+    },
+    "chroma_heavy": {
+      "type": "chromatic_aberration",
+      "params": {
+        "offset_x": 7,
+        "offset_y": 4
+      }
+    },
+    "slitscan_strip": {
+      "type": "slitscan",
+      "params": {
+        "amount": 0.22,
+        "frequency": 6
+      }
+    },
+    "dither_y2k": {
+      "type": "dither",
+      "params": {
+        "amount": 0.18,
+        "palette_size": 32
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}
