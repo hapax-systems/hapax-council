@@ -1,0 +1,346 @@
+#!/usr/bin/env python3
+"""Runtime backstop for the private→broadcast leak invariant.
+
+Layer C of the 3-layer defense (Layer A + B are WirePlumber config rules
+under `config/wireplumber/`). On every tick this script:
+
+  1. Scans `pw-link -l` for forbidden links from `hapax-private*` /
+     `hapax-notification-private*` source nodes to broadcast targets
+     (L-12, S-4, hapax-livestream*, hapax-broadcast*, ducks, loudnorms).
+  2. For each forbidden link, runs `pw-link -d <src> <dst>` to break it.
+  3. Logs the detection + repair action to journald via syslog.
+  4. Increments the Prometheus counter
+     `hapax_private_broadcast_leak_detected_total` (label `target=<dst>`)
+     and `hapax_private_broadcast_leak_repaired_total`.
+  5. Writes JSON status to `/dev/shm/hapax-private-broadcast/status.json`
+     for observability.
+
+CONSTITUTIONAL INVARIANT
+   The L-12 broadcast bus only carries broadcast-bound audio. Private
+   monitor streams MUST route to the Yeti headphone monitor and MUST
+   NEVER reach broadcast. (`feedback_l12_equals_livestream_invariant`)
+
+The guard is fail-loud: if `pw-link -d` returns non-zero, the leak is
+recorded as `repaired=false` so the operator can see (via the status
+file) which detection still requires manual attention.
+"""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import json
+import logging
+import logging.handlers
+import re
+import subprocess
+import sys
+from collections.abc import Iterable
+from pathlib import Path
+from typing import Any
+
+# --- forbidden link patterns ---------------------------------------------
+
+PRIVATE_SOURCE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^hapax-private(?:[-:]|$)"),
+    re.compile(r"^hapax-notification-private(?:[-:]|$)"),
+)
+
+FORBIDDEN_TARGET_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"ZOOM_Corporation_L-12"),
+    re.compile(r"Torso_Electronics_S-4"),
+    re.compile(r"^hapax-livestream(?:[-:]|$)"),
+    re.compile(r"^hapax-broadcast(?:[-:]|$)"),
+    re.compile(r"^hapax-music-duck(?:[-:]|$)"),
+    re.compile(r"^hapax-tts-duck(?:[-:]|$)"),
+    re.compile(r"^hapax-music-loudnorm(?:[-:]|$)"),
+    re.compile(r"^hapax-pc-loudnorm(?:[-:]|$)"),
+    # Voice FX chain is broadcast-bound — private must not reach it.
+    re.compile(r"^hapax-voice-fx-capture(?:[-:]|$)"),
+    re.compile(r"^hapax-loudnorm-capture(?:[-:]|$)"),
+    re.compile(r"^hapax-obs-broadcast-remap(?:[-:]|$)"),
+)
+
+STATUS_PATH_DEFAULT = Path("/dev/shm/hapax-private-broadcast/status.json")
+LOG_TAG = "hapax-private-broadcast-leak-guard"
+
+logger = logging.getLogger(LOG_TAG)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ForbiddenLink:
+    """One detected private→broadcast link, plus the source/dest port."""
+
+    source_port: str
+    target_port: str
+
+    @property
+    def source_node(self) -> str:
+        return self.source_port.split(":", 1)[0]
+
+    @property
+    def target_node(self) -> str:
+        return self.target_port.split(":", 1)[0]
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "source_port": self.source_port,
+            "target_port": self.target_port,
+            "source_node": self.source_node,
+            "target_node": self.target_node,
+        }
+
+
+# --- pw-link parsing -----------------------------------------------------
+
+
+def _is_link_continuation(line: str) -> bool:
+    """A `|->` or `|<-` line listing the peer port for the preceding header."""
+    stripped = line.lstrip()
+    return stripped.startswith("|->") or stripped.startswith("|<-")
+
+
+def parse_pw_link(text: str) -> list[tuple[str, str]]:
+    """Return a list of (source_port, target_port) tuples from `pw-link -l`.
+
+    `pw-link -l` prints, for every port that has links:
+
+        node-name:port-name              <-- header (output port, no leading ws)
+          |->  peer-node:peer-port       <-- forward link (header is output)
+          |<-  peer-node:peer-port       <-- backward link (header is input)
+
+    We normalise every link to the (output_port, input_port) direction.
+    """
+    edges: list[tuple[str, str]] = []
+    current_header: str | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        if not line:
+            continue
+        if not _is_link_continuation(line):
+            # New header. Strip leading whitespace for safety.
+            current_header = line.strip().split()[0] if line.strip() else None
+            continue
+        if current_header is None:
+            continue
+        body = line.strip()
+        if body.startswith("|->"):
+            peer = body[len("|->") :].strip()
+            edges.append((current_header, peer))
+        elif body.startswith("|<-"):
+            peer = body[len("|<-") :].strip()
+            edges.append((peer, current_header))
+    return edges
+
+
+# --- forbidden-edge detection -------------------------------------------
+
+
+def _matches_any(node: str, patterns: Iterable[re.Pattern[str]]) -> bool:
+    return any(p.search(node) for p in patterns)
+
+
+def detect_forbidden(edges: list[tuple[str, str]]) -> list[ForbiddenLink]:
+    """Return links whose source matches `hapax-(notification-)?private*`
+    AND whose target matches any FORBIDDEN_TARGET_PATTERN."""
+    leaks: list[ForbiddenLink] = []
+    seen: set[tuple[str, str]] = set()
+    for source_port, target_port in edges:
+        source_node = source_port.split(":", 1)[0]
+        target_node = target_port.split(":", 1)[0]
+        if not _matches_any(source_node, PRIVATE_SOURCE_PATTERNS):
+            continue
+        if not _matches_any(target_node, FORBIDDEN_TARGET_PATTERNS):
+            continue
+        key = (source_port, target_port)
+        if key in seen:
+            continue
+        seen.add(key)
+        leaks.append(ForbiddenLink(source_port=source_port, target_port=target_port))
+    return leaks
+
+
+# --- repair --------------------------------------------------------------
+
+
+def disconnect_link(leak: ForbiddenLink, runner: PwLinkRunner | None = None) -> tuple[bool, str]:
+    """Run `pw-link -d <source> <target>`. Returns (ok, stderr)."""
+    runner = runner or PwLinkRunner()
+    return runner.disconnect(leak.source_port, leak.target_port)
+
+
+class PwLinkRunner:
+    """Thin wrapper around `pw-link` so tests can inject fakes."""
+
+    def list_links(self) -> str:
+        proc = subprocess.run(["pw-link", "-l"], text=True, capture_output=True, check=False)
+        return proc.stdout
+
+    def disconnect(self, src: str, dst: str) -> tuple[bool, str]:
+        proc = subprocess.run(
+            ["pw-link", "-d", src, dst],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        return proc.returncode == 0, proc.stderr.strip()
+
+
+# --- prometheus counters -------------------------------------------------
+
+
+_PROM_DETECTED = "hapax_private_broadcast_leak_detected_total"
+_PROM_REPAIRED = "hapax_private_broadcast_leak_repaired_total"
+
+
+def _emit_prometheus(metrics_path: Path | None, leaks: list[dict[str, Any]]) -> None:
+    """Append-write a small textfile-collector compatible file.
+
+    Layout matches what node_exporter's textfile collector reads at
+    `/var/lib/node_exporter/textfile_collector/`. We avoid pulling
+    `prometheus_client` into this script's hot path — the format is
+    trivial and stable.
+    """
+    if metrics_path is None:
+        return
+    detected_count: dict[str, int] = {}
+    repaired_count: dict[str, int] = {}
+    for leak in leaks:
+        target = leak["target_node"]
+        detected_count[target] = detected_count.get(target, 0) + 1
+        if leak.get("repaired"):
+            repaired_count[target] = repaired_count.get(target, 0) + 1
+    lines: list[str] = [
+        f"# HELP {_PROM_DETECTED} Forbidden private->broadcast PipeWire links detected",
+        f"# TYPE {_PROM_DETECTED} counter",
+    ]
+    for target, count in sorted(detected_count.items()):
+        lines.append(f'{_PROM_DETECTED}{{target="{target}"}} {count}')
+    lines.append(f"# HELP {_PROM_REPAIRED} Forbidden links broken by `pw-link -d`")
+    lines.append(f"# TYPE {_PROM_REPAIRED} counter")
+    for target, count in sorted(repaired_count.items()):
+        lines.append(f'{_PROM_REPAIRED}{{target="{target}"}} {count}')
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    metrics_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# --- orchestration -------------------------------------------------------
+
+
+def _setup_logger() -> None:
+    """Wire stderr + syslog handlers (idempotent for repeated runs)."""
+    if logger.handlers:
+        return
+    logger.setLevel(logging.INFO)
+    stderr = logging.StreamHandler(sys.stderr)
+    stderr.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    logger.addHandler(stderr)
+    try:
+        syslog = logging.handlers.SysLogHandler(address="/dev/log")
+        syslog.setFormatter(logging.Formatter(LOG_TAG + ": %(message)s"))
+        logger.addHandler(syslog)
+    except (OSError, FileNotFoundError):
+        # Headless dev environments may not have /dev/log; skip.
+        pass
+
+
+def run_once(
+    runner: PwLinkRunner | None = None,
+    *,
+    repair: bool = True,
+    status_path: Path = STATUS_PATH_DEFAULT,
+    metrics_path: Path | None = None,
+    pw_link_text: str | None = None,
+) -> dict[str, Any]:
+    """One iteration of detect-and-repair. Returns the status dict written.
+
+    `pw_link_text` is for tests that supply a fixture directly; in
+    production the runner shells out.
+    """
+    runner = runner or PwLinkRunner()
+    text = pw_link_text if pw_link_text is not None else runner.list_links()
+    edges = parse_pw_link(text)
+    leaks = detect_forbidden(edges)
+
+    leak_records: list[dict[str, Any]] = []
+    for leak in leaks:
+        record = leak.as_dict()
+        record["repaired"] = False
+        record["error"] = ""
+        if repair:
+            ok, err = disconnect_link(leak, runner=runner)
+            record["repaired"] = ok
+            record["error"] = err
+            log_msg = f"forbidden_link={leak.source_port}->{leak.target_port} repaired={ok}"
+            if ok:
+                logger.warning(log_msg)
+            else:
+                logger.error(f"{log_msg} stderr={err!r}")
+        else:
+            logger.warning(f"detected_link={leak.source_port}->{leak.target_port} repair_disabled")
+        leak_records.append(record)
+
+    status: dict[str, Any] = {
+        "ok": not leaks,
+        "leak_count": len(leaks),
+        "leaks": leak_records,
+        "repair_enabled": repair,
+    }
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    status_path.write_text(json.dumps(status, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _emit_prometheus(metrics_path, leak_records)
+    return status
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--no-repair",
+        action="store_true",
+        help="Detect only; do not run pw-link -d.",
+    )
+    parser.add_argument(
+        "--status-path",
+        type=Path,
+        default=STATUS_PATH_DEFAULT,
+        help="Where to write the JSON status file.",
+    )
+    parser.add_argument(
+        "--metrics-path",
+        type=Path,
+        default=None,
+        help="Optional Prometheus textfile collector output path.",
+    )
+    parser.add_argument(
+        "--fixture",
+        type=Path,
+        default=None,
+        help="Read pw-link -l output from this file instead of running it.",
+    )
+    args = parser.parse_args(argv)
+
+    _setup_logger()
+
+    pw_link_text: str | None = None
+    if args.fixture is not None:
+        pw_link_text = args.fixture.read_text(encoding="utf-8")
+
+    status = run_once(
+        repair=not args.no_repair,
+        status_path=args.status_path,
+        metrics_path=args.metrics_path,
+        pw_link_text=pw_link_text,
+    )
+
+    if status["ok"]:
+        print("ok no_forbidden_links")
+        return 0
+    print(json.dumps(status, indent=2, sort_keys=True))
+    # Exit 0 if every leak was successfully repaired; non-zero otherwise.
+    if all(leak.get("repaired") for leak in status["leaks"]):
+        return 0
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

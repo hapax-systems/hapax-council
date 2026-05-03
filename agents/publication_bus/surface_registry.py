@@ -62,6 +62,12 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
         api="ATProto",
         dispatch_entry="agents.bluesky_atproto_adapter:publish_artifact",
     ),
+    "oudepode-bluesky-atproto": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="ATProto",
+        dispatch_entry="agents.bluesky_atproto_adapter:publish_artifact_oudepode",
+        scope_note="music-side bluesky identity (oudepode), per operator-referent-policy",
+    ),
     "bluesky-post": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="ATProto",

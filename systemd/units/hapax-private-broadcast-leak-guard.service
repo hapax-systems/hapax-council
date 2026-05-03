@@ -1,0 +1,15 @@
+[Unit]
+Description=Hapax private->broadcast leak runtime guard (Layer C)
+Documentation=file:///home/hapax/projects/hapax-council/docs/governance/private-broadcast-leak-guard.md
+Documentation=file:///home/hapax/projects/hapax-council/scripts/hapax-private-broadcast-leak-guard
+After=pipewire.service wireplumber.service pipewire-pulse.service
+Wants=pipewire.service wireplumber.service pipewire-pulse.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/hapax-private-broadcast-leak-guard \
+    --status-path=/dev/shm/hapax-private-broadcast/status.json \
+    --metrics-path=%h/.local/share/node_exporter/textfile_collector/hapax-private-broadcast-leak-guard.prom
+
+[Install]
+WantedBy=default.target

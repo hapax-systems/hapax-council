@@ -1,0 +1,28 @@
+[Unit]
+Description=Hapax BT firmware watchdog — auto-recover MT7921 wmt timeouts via USB rebind
+Documentation=file:///usr/local/bin/hapax-bt-firmware-watchdog
+Documentation=file:///home/hapax/projects/hapax-council/docs/governance/bt-firmware-watchdog.md
+After=systemd-journald.service bluetooth.service
+Wants=systemd-journald.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hapax-bt-firmware-watchdog
+Restart=always
+RestartSec=10
+# Needs root to write /sys/bus/usb/drivers/usb/{unbind,bind}
+User=root
+# Hardening — only needs journal read + USB driver sysfs write + state dir
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/sys/bus/usb /run/hapax-bt-firmware-watchdog
+StateDirectory=hapax-bt-firmware-watchdog
+RuntimeDirectory=hapax-bt-firmware-watchdog
+RuntimeDirectoryPreserve=yes
+StandardOutput=journal
+StandardError=journal
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target

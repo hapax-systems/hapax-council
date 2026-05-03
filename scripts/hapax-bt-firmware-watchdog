@@ -1,0 +1,581 @@
+#!/usr/bin/env python3
+"""Hapax Bluetooth firmware watchdog.
+
+Watches the kernel journal for the MediaTek MT7921 ``wmt`` firmware-load
+timeout pattern that hit the operator's workstation on 2026-05-02 after
+warm reboot:
+
+    Bluetooth: hci0: Execution of wmt command timed out
+    Bluetooth: hci0: Failed to send wmt patch dwnld (-110)
+    Bluetooth: hci0: Failed to set up firmware (-110)
+
+When matched, the watchdog rebinds the parent USB device of the failing
+HCI controller. Per LKML reports on the MT7921/MT7925 chip family, USB
+rebind recovers ~80% of these timeouts. The remaining 20% are silicon-
+state-machine wedges that only a full cold power-off clears — the
+watchdog escalates those by writing a status file the operator can read
+and wiring a clear ``operator action required`` log line.
+
+The watchdog never triggers cold-poweroff itself. It is a soft recovery
+layer; the operator owns the hardware reset.
+
+Cooldown is per-HCI (300s) because firmware-load failures are sticky and
+hammering them produces no recovery. Research:
+``/tmp/usb-hardening-research-2026-05-02.md`` §6.2 (BT watchdog) and §1
+(parallel xHCI death watchdog pattern).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from collections.abc import Callable, Iterable, Iterator
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+DEFAULT_STATE_DIR = Path("/run/hapax-bt-firmware-watchdog")
+DEFAULT_STATE_FILE = DEFAULT_STATE_DIR / "last-recovery.json"
+DEFAULT_FAILURE_FILE = DEFAULT_STATE_DIR / "last-failure.json"
+DEFAULT_COOLDOWN_SEC = 300
+
+# HCI device id, e.g. ``hci0`` / ``hci1`` — appears in the kernel log
+# as ``Bluetooth: hci0: ...``.
+_HCI_RE = re.compile(r"Bluetooth:\s+(?P<hci>hci\d+):")
+
+# The three canonical MT7921 firmware-load failure messages we react to.
+# Ordered by precedence: the first match on a line wins.
+_DEFAULT_PATTERNS = (
+    "Execution of wmt command timed out",
+    "Failed to send wmt patch dwnld",
+    "Failed to set up firmware",
+)
+
+# Pattern indicating the BT controller successfully reloaded firmware.
+# Used by the post-rebind verifier to decide success vs escalation.
+_SUCCESS_PATTERN = "HW/SW Version"
+
+# Best-effort post-recovery service restart (system unit).
+POST_RECOVERY_UNIT = "bluetooth.service"
+
+
+@dataclass(frozen=True)
+class JournalLine:
+    """A single line of journal/dmesg output we are scanning."""
+
+    text: str
+
+
+@dataclass(frozen=True)
+class FirmwareFailureEvent:
+    """An MT7921 firmware-load failure pattern matched against a journal line."""
+
+    hci: str
+    pattern: str
+    line: str
+
+
+@dataclass
+class RecoveryState:
+    """Per-HCI cooldown state, persisted across restarts.
+
+    Cooldown is on the HCI device id (``hci0``) rather than the USB BDF
+    because, after a USB rebind, the same chip may re-enumerate at a
+    different USB bus-port string while keeping the same HCI index. The
+    HCI id is the stable identity from the operator's point of view.
+    """
+
+    last_recovery: dict[str, float] = field(default_factory=dict)
+
+    @classmethod
+    def from_path(cls, path: Path) -> RecoveryState:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return cls()
+        last = payload.get("last_recovery", {})
+        if not isinstance(last, dict):
+            return cls()
+        cleaned: dict[str, float] = {}
+        for key, value in last.items():
+            if isinstance(key, str) and isinstance(value, (int, float)):
+                cleaned[key] = float(value)
+        return cls(last_recovery=cleaned)
+
+    def to_path(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps({"last_recovery": self.last_recovery}, sort_keys=True),
+            encoding="utf-8",
+        )
+        os.replace(tmp, path)
+
+    def in_cooldown(self, hci: str, *, now: float, cooldown_sec: int) -> bool:
+        last = self.last_recovery.get(hci)
+        if last is None:
+            return False
+        return (now - last) < cooldown_sec
+
+    def mark_recovery(self, hci: str, *, now: float) -> None:
+        self.last_recovery[hci] = now
+
+
+def detect_event(
+    line: str, *, patterns: Iterable[str] = _DEFAULT_PATTERNS
+) -> FirmwareFailureEvent | None:
+    """Return a FirmwareFailureEvent if the line matches a fw-load pattern."""
+
+    for pattern in patterns:
+        if pattern in line:
+            match = _HCI_RE.search(line)
+            if match is None:
+                continue
+            return FirmwareFailureEvent(hci=match.group("hci"), pattern=pattern, line=line)
+    return None
+
+
+def log(*parts: object, stream=sys.stdout) -> None:
+    """Single-line journal-friendly log helper."""
+
+    print(" ".join(str(part) for part in parts), file=stream, flush=True)
+
+
+def _runner_default(
+    argv: list[str], *, timeout_s: float = 10.0
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+        check=False,
+    )
+
+
+def _write_sysfs(path: Path, value: str) -> bool:
+    """Write ``value`` to ``path`` under /sys. Returns True on success."""
+
+    try:
+        path.write_text(value, encoding="utf-8")
+        return True
+    except OSError as exc:
+        log(f"sysfs write failed: {path}: {exc}", stream=sys.stderr)
+        return False
+
+
+def resolve_usb_bdf(
+    hci: str,
+    *,
+    sys_class_bluetooth: Path = Path("/sys/class/bluetooth"),
+    sys_bus_usb_devices: Path = Path("/sys/bus/usb/devices"),
+) -> str | None:
+    """Resolve the parent USB device bus-port string for ``hci``.
+
+    The kernel exposes a symlink at ``/sys/class/bluetooth/<hci>`` that
+    resolves into a path of the form
+
+        /sys/devices/.../usbN/<bus-port>/<bus-port>:cfg.iface/bluetooth/<hci>
+
+    We walk back from the symlink target to the first path component
+    that exists as a child of ``/sys/bus/usb/devices/`` — that is the
+    rebind target. Returns ``None`` if the HCI symlink does not exist
+    or no USB ancestor can be located.
+    """
+
+    hci_link = sys_class_bluetooth / hci
+    try:
+        target = hci_link.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+
+    # Walk parents looking for an entry that is a child of the
+    # /sys/bus/usb/devices namespace. The parent of the interface
+    # directory (e.g. ``1-11:1.0``) is the USB device (``1-11``).
+    for parent in target.parents:
+        candidate_name = parent.name
+        if not candidate_name:
+            continue
+        candidate = sys_bus_usb_devices / candidate_name
+        try:
+            if candidate.exists() and (candidate / "idVendor").exists():
+                return candidate_name
+        except OSError:
+            continue
+    return None
+
+
+def write_failure_status(
+    failure_path: Path,
+    *,
+    hci: str,
+    bus_port: str | None,
+    now: float,
+    pattern: str,
+    line: str,
+    rebind_attempted: bool,
+    rebind_succeeded: bool,
+    verify_pattern_seen: bool,
+    escalation: str,
+) -> None:
+    """Write the operator-facing escalation status file.
+
+    Written atomically (tmp+rename). The file is the operator's signal
+    that USB rebind was insufficient and a cold power-off is required.
+    """
+
+    failure_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "timestamp": now,
+        "timestamp_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+        "hci": hci,
+        "bus_port": bus_port,
+        "pattern": pattern,
+        "line": line,
+        "rebind_attempted": rebind_attempted,
+        "rebind_succeeded": rebind_succeeded,
+        "verify_pattern_seen": verify_pattern_seen,
+        "escalation": escalation,
+    }
+    tmp = failure_path.with_suffix(failure_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, failure_path)
+
+
+def verify_recovery(
+    *,
+    hci: str,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = _runner_default,
+    success_pattern: str = _SUCCESS_PATTERN,
+    timeout_s: float = 10.0,
+) -> bool:
+    """Tail the kernel journal for ``timeout_s`` seconds and look for success.
+
+    The success pattern is the canonical MT7921 firmware-OK line
+    (``Bluetooth: hci0: HW/SW Version: ...``). If we see that pattern
+    and do NOT see another timeout in the same window, recovery
+    succeeded. The runner is parameterized so tests can mock it.
+    """
+
+    completed = runner(
+        ["journalctl", "-k", "--no-pager", "--output=cat", "--since", f"-{int(timeout_s)}s"],
+        timeout_s=timeout_s + 5.0,
+    )
+    if completed.returncode != 0:
+        log(
+            f"verify: journalctl failed (rc={completed.returncode}): {completed.stderr.strip()}",
+            stream=sys.stderr,
+        )
+        return False
+
+    seen_success = False
+    seen_timeout = False
+    hci_marker = f"{hci}:"
+    for raw in completed.stdout.splitlines():
+        if hci_marker not in raw:
+            continue
+        if success_pattern in raw:
+            seen_success = True
+        for pattern in _DEFAULT_PATTERNS:
+            if pattern in raw:
+                seen_timeout = True
+                break
+    return seen_success and not seen_timeout
+
+
+def perform_recovery(
+    event: FirmwareFailureEvent,
+    *,
+    sys_class_bluetooth: Path = Path("/sys/class/bluetooth"),
+    sys_bus_usb_drivers: Path = Path("/sys/bus/usb/drivers/usb"),
+    sleep_fn: Callable[[float], None] = time.sleep,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = _runner_default,
+    sysfs_writer: Callable[[Path, str], bool] | None = None,
+    bdf_resolver: Callable[..., str | None] | None = None,
+    verifier: Callable[..., bool] | None = None,
+    failure_path: Path = DEFAULT_FAILURE_FILE,
+    now_fn: Callable[[], float] = time.time,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Run the USB rebind recovery for one HCI.
+
+    Returns a structured result dict for testability + journal logging.
+    On verify-failure, writes the operator-facing escalation status file
+    and does NOT restart bluetooth.service.
+    """
+
+    writer = sysfs_writer or _write_sysfs
+    resolver = bdf_resolver or resolve_usb_bdf
+    verify = verifier or verify_recovery
+
+    bus_port = resolver(event.hci, sys_class_bluetooth=sys_class_bluetooth)
+    result: dict[str, Any] = {
+        "hci": event.hci,
+        "bus_port": bus_port,
+        "pattern": event.pattern,
+        "dry_run": dry_run,
+        "unbind_attempted": False,
+        "unbind_succeeded": False,
+        "bind_attempted": False,
+        "bind_succeeded": False,
+        "verify_pattern_seen": False,
+        "post_recovery_restart": None,
+        "escalation": None,
+    }
+
+    if bus_port is None:
+        log(
+            f"BT firmware-load failure on {event.hci}: cannot resolve USB BDF — "
+            "operator action required (cold poweroff)",
+            stream=sys.stderr,
+        )
+        result["escalation"] = "no-usb-bdf"
+        if not dry_run:
+            write_failure_status(
+                failure_path,
+                hci=event.hci,
+                bus_port=None,
+                now=now_fn(),
+                pattern=event.pattern,
+                line=event.line,
+                rebind_attempted=False,
+                rebind_succeeded=False,
+                verify_pattern_seen=False,
+                escalation="no-usb-bdf",
+            )
+        return result
+
+    if dry_run:
+        log(
+            f"[dry-run] would echo {bus_port} > {sys_bus_usb_drivers}/unbind, sleep 2, "
+            f"echo {bus_port} > {sys_bus_usb_drivers}/bind, sleep 5, verify {event.hci}"
+        )
+        result["unbind_attempted"] = True
+        result["bind_attempted"] = True
+        return result
+
+    log(f"BT firmware-load failure detected on {event.hci} ({bus_port}), attempting USB rebind")
+
+    unbind_path = sys_bus_usb_drivers / "unbind"
+    bind_path = sys_bus_usb_drivers / "bind"
+
+    result["unbind_attempted"] = True
+    result["unbind_succeeded"] = writer(unbind_path, bus_port)
+    if not result["unbind_succeeded"]:
+        log(f"recovery aborted: unbind failed for {bus_port}", stream=sys.stderr)
+        write_failure_status(
+            failure_path,
+            hci=event.hci,
+            bus_port=bus_port,
+            now=now_fn(),
+            pattern=event.pattern,
+            line=event.line,
+            rebind_attempted=True,
+            rebind_succeeded=False,
+            verify_pattern_seen=False,
+            escalation="unbind-failed",
+        )
+        result["escalation"] = "unbind-failed"
+        return result
+
+    sleep_fn(2)
+
+    result["bind_attempted"] = True
+    result["bind_succeeded"] = writer(bind_path, bus_port)
+    if not result["bind_succeeded"]:
+        log(f"recovery aborted: bind failed for {bus_port}", stream=sys.stderr)
+        write_failure_status(
+            failure_path,
+            hci=event.hci,
+            bus_port=bus_port,
+            now=now_fn(),
+            pattern=event.pattern,
+            line=event.line,
+            rebind_attempted=True,
+            rebind_succeeded=False,
+            verify_pattern_seen=False,
+            escalation="bind-failed",
+        )
+        result["escalation"] = "bind-failed"
+        return result
+
+    sleep_fn(5)
+
+    # Tail the kernel log for the next few seconds and decide success vs
+    # escalation. verify_recovery covers the journalctl call so tests can
+    # inject success / failure outcomes deterministically.
+    result["verify_pattern_seen"] = verify(hci=event.hci, runner=runner)
+    if result["verify_pattern_seen"]:
+        log(f"{event.hci} firmware reloaded OK after USB rebind")
+        completed = runner(["systemctl", "restart", POST_RECOVERY_UNIT], timeout_s=10.0)
+        ok = completed.returncode == 0
+        result["post_recovery_restart"] = {
+            "unit": POST_RECOVERY_UNIT,
+            "succeeded": ok,
+        }
+        if not ok:
+            log(
+                f"post-recovery restart of {POST_RECOVERY_UNIT} failed "
+                f"(rc={completed.returncode}): {completed.stderr.strip()}",
+                stream=sys.stderr,
+            )
+        return result
+
+    log(
+        f"USB rebind insufficient for {event.hci} — operator action required (cold poweroff)",
+        stream=sys.stderr,
+    )
+    result["escalation"] = "rebind-insufficient"
+    write_failure_status(
+        failure_path,
+        hci=event.hci,
+        bus_port=bus_port,
+        now=now_fn(),
+        pattern=event.pattern,
+        line=event.line,
+        rebind_attempted=True,
+        rebind_succeeded=True,
+        verify_pattern_seen=False,
+        escalation="rebind-insufficient",
+    )
+    return result
+
+
+def journal_iterator(*, since_epoch: int | None = None) -> Iterator[JournalLine]:
+    """Tail kernel journal lines. Default mode: follow live."""
+
+    cmd = ["journalctl", "-k", "--no-pager", "--output=cat"]
+    if since_epoch is not None:
+        cmd.extend(["--since", f"@{since_epoch}"])
+    else:
+        cmd.append("--follow")
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if proc.stdout is None:
+        return
+    try:
+        for raw in proc.stdout:
+            yield JournalLine(text=raw.rstrip("\n"))
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+def watch_loop(
+    *,
+    state_path: Path,
+    failure_path: Path,
+    cooldown_sec: int,
+    dry_run: bool,
+    lines: Iterable[JournalLine],
+    patterns: Iterable[str] = _DEFAULT_PATTERNS,
+    now_fn: Callable[[], float] = time.time,
+    recovery_fn: Callable[..., dict[str, Any]] = perform_recovery,
+) -> int:
+    """Main loop. Reads ``lines``, detects events, runs recoveries.
+
+    Returns the count of recoveries actually run (useful in tests).
+    """
+
+    state = RecoveryState.from_path(state_path)
+    log(f"hapax-bt-firmware-watchdog starting (cooldown={cooldown_sec}s, dry_run={dry_run})")
+    recoveries = 0
+    for entry in lines:
+        event = detect_event(entry.text, patterns=patterns)
+        if event is None:
+            continue
+        now = now_fn()
+        if state.in_cooldown(event.hci, now=now, cooldown_sec=cooldown_sec):
+            log(f"skipping {event.hci} (cooldown active)")
+            continue
+        log(f"firmware-failure pattern '{event.pattern}' detected on {event.hci}: {event.line}")
+        outcome = recovery_fn(event, dry_run=dry_run, failure_path=failure_path, now_fn=now_fn)
+        recoveries += 1
+        # Mark cooldown even on partial failure: we don't want to retry-storm
+        # on a controller that genuinely cannot be revived without a poweroff.
+        state.mark_recovery(event.hci, now=now)
+        try:
+            state.to_path(state_path)
+        except OSError as exc:
+            log(f"state persist failed: {exc}", stream=sys.stderr)
+        log(f"recovery outcome for {event.hci}: {json.dumps(outcome)}")
+    return recoveries
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=("Watch for MT7921 BT firmware-load timeout and rebind the USB device."),
+    )
+    parser.add_argument(
+        "--state-file",
+        type=Path,
+        default=DEFAULT_STATE_FILE,
+        help=f"Per-HCI cooldown state file (default: {DEFAULT_STATE_FILE})",
+    )
+    parser.add_argument(
+        "--failure-file",
+        type=Path,
+        default=DEFAULT_FAILURE_FILE,
+        help=f"Operator-facing escalation status file (default: {DEFAULT_FAILURE_FILE})",
+    )
+    parser.add_argument(
+        "--cooldown-sec",
+        type=int,
+        default=DEFAULT_COOLDOWN_SEC,
+        help=f"Per-HCI cooldown in seconds (default: {DEFAULT_COOLDOWN_SEC})",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Detect and log but do not write to /sys or restart bluetooth.service",
+    )
+    parser.add_argument(
+        "--input-file",
+        type=Path,
+        default=None,
+        help="Read journal lines from a file instead of journalctl (for tests)",
+    )
+    return parser.parse_args(argv)
+
+
+def _file_iterator(path: Path) -> Iterator[JournalLine]:
+    with path.open("r", encoding="utf-8") as fh:
+        for raw in fh:
+            yield JournalLine(text=raw.rstrip("\n"))
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    state_path: Path = args.state_file
+    failure_path: Path = args.failure_file
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    failure_path.parent.mkdir(parents=True, exist_ok=True)
+    if args.input_file is not None:
+        lines: Iterable[JournalLine] = _file_iterator(args.input_file)
+    else:
+        lines = journal_iterator()
+    watch_loop(
+        state_path=state_path,
+        failure_path=failure_path,
+        cooldown_sec=args.cooldown_sec,
+        dry_run=args.dry_run,
+        lines=lines,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

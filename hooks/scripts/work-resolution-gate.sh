@@ -135,14 +135,30 @@ cache_ttl=60
 # git for-each-ref sees all branches across worktrees (shared refs/heads/).
 # Filter out branches checked out in OTHER worktrees so one session's PR
 # doesn't block another session.
+#
+# Use --porcelain because the human-readable output format
+# (`/path  sha [branch] locked`) appends `locked`/`prunable` annotations
+# AFTER the branch token, which broke prior `sed -n 's/.*\[//;s/\]//p'`
+# parsing — the captured branch token would be `branch] locked` and fail
+# to filter out branches checked out in other worktrees.
 _other_wt_branches=""
-while IFS= read -r _wt_line; do
-  _wt_path="$(echo "$_wt_line" | awk '{print $1}')"
-  _wt_branch="$(echo "$_wt_line" | sed -n 's/.*\[//;s/\]//p')"
-  if [[ "$_wt_path" != "$repo_root" && -n "$_wt_branch" ]]; then
+_wt_path=""
+_wt_branch=""
+_flush() {
+  if [[ -n "$_wt_path" && "$_wt_path" != "$repo_root" && -n "$_wt_branch" ]]; then
     _other_wt_branches="${_other_wt_branches}${_wt_branch}"$'\n'
   fi
-done < <(git worktree list 2>/dev/null)
+  _wt_path=""
+  _wt_branch=""
+}
+while IFS= read -r _wt_line; do
+  case "$_wt_line" in
+    "worktree "*) _flush; _wt_path="${_wt_line#worktree }" ;;
+    "branch refs/heads/"*) _wt_branch="${_wt_line#branch refs/heads/}" ;;
+    "") _flush ;;
+  esac
+done < <(git worktree list --porcelain 2>/dev/null)
+_flush
 
 local_branches="$(git for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null | grep -v "^${default_branch}$" || true)"
 # Remove branches checked out in other worktrees

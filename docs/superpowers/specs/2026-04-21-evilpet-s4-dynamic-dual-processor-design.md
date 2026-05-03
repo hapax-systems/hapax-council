@@ -14,6 +14,8 @@ related:
   - docs/research/2026-04-20-voice-transformation-tier-spectrum.md (T0..T6 tier ladder — preserved)
 supersedes:
   - docs/superpowers/specs/2026-04-20-evilpet-s4-routing-design.md (R1/R2/R3 siloed-routing model; its contracts are subsumed into the D1..D5 dual-engine classes below)
+superseded_by:
+  - docs/superpowers/specs/2026-05-02-hapax-private-monitor-track-fenced-via-s4.md (scoped: amends §3.1 row "Voice (TTS, Rode) — private bypass case" only; private TTS now routes to an S-4 track-fenced private-monitor path with wet S-4 character; broadcast contracts and the 12-class topology registry are unchanged)
 ---
 
 # Evil Pet + S-4 Dynamic Dual-Processor Routing — Formal Design

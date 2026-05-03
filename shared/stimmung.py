@@ -653,8 +653,19 @@ class StimmungCollector:
             if _STANCE_ORDER[dim_stance] > _STANCE_ORDER[worst]:
                 worst = dim_stance
 
-        # SEEKING: only when infrastructure is healthy AND exploration_deficit is high
-        if worst == Stance.NOMINAL:
+        # SEEKING: fires from NOMINAL or CAUTIOUS when exploration_deficit is high.
+        # Audit R6 (cc-task seeking-stance-gate-relax, 2026-05-02): the prior
+        # `worst == NOMINAL` gate was too strict — common operational noise
+        # (LLM cost pressure, transient resource pressure, slight perception
+        # confidence dips) leaves worst at CAUTIOUS for sustained periods,
+        # suppressing SEEKING entirely even when exploration_deficit is well
+        # above 0.35 with rising trend. CAUTIOUS represents tolerable
+        # degradation that does NOT signal infrastructure breakage; pursuing
+        # exploration during CAUTIOUS is safe (and the surface needs the
+        # variance modulation). DEGRADED+ continues to block SEEKING — those
+        # signal real infrastructure problems where exploration would compete
+        # with recovery.
+        if worst in (Stance.NOMINAL, Stance.CAUTIOUS):
             exploration = dimensions.get("exploration_deficit", DimensionReading())
             if exploration.freshness_s <= _STALE_THRESHOLD_S and exploration.value > 0.35:
                 return Stance.SEEKING

@@ -73,17 +73,29 @@ The 402 response should carry, at minimum:
 
 ## Components needed (separate PRs)
 
-| # | Component | Path | Effort | Dep |
-|---|---|---|---|---|
-| 0 | This architecture doc | `docs/research/2026-04-26-x402-receive-endpoint-architecture.md` | shipped here | none |
-| 1 | x402 spec research drop | `docs/research/2026-04-XX-x402-spec-current.md` | 1h research-agent dispatch | none |
-| 2 | Pydantic response model | `agents/payment_processors/x402_models.py` | 30 min | #1 |
-| 3 | License-class registry | `shared/x402_license_classes.yaml` + reader | 1-2h | #2 |
-| 4 | Endpoint composer (pure) | `agents/payment_processors/x402_endpoint.py` | 1-2h | #2, #3 |
-| 5 | FastAPI route | `logos/api/routes/x402.py` | 1h | #4 |
-| 6 | Integration tests | `tests/payment_processors/test_x402_endpoint.py` | 1-2h | #5 |
+| # | Component | Path | Effort | Dep | Status |
+|---|---|---|---|---|---|
+| 0 | This architecture doc | `docs/research/2026-04-26-x402-receive-endpoint-architecture.md` | shipped here | none | **SHIPPED** PR #1681 |
+| 1 | x402 spec research drop | `docs/research/2026-04-30-x402-v2-spec-current.md` | 1h research-agent dispatch | none | **SHIPPED** PR #1974 (Path A operator decision per `docs/governance/x402-facilitator-choice.md` PR #1987) |
+| 2 | Pydantic response model | `agents/payment_processors/x402/models.py` | 30 min | #1 | **SHIPPED** PR #1983 (`Accept` + `SettlementResponse` + `encode_payment_required` / `decode_payment_required` helpers) |
+| 3 | License-class registry | `shared/x402_license_classes.yaml` + reader | 1-2h | #2 | **SHIPPED** PR #1989 |
+| 4 | Endpoint composer (pure) | `agents/payment_processors/x402/...` | 1-2h | #2, #3 | **SHIPPED** PR #1990 (Path A composer = `payment_required_response()` helper in `logos/api/routes/x402.py`; pure-helper extraction is implicit per Path A's stateless refusal shape) |
+| 5 | FastAPI route | `logos/api/routes/x402.py` | 1h | #4 | **SHIPPED** PR #1990 (`APIRouter` at `/api/x402` with `GET /api/x402/demo` substrate self-test) |
+| 6 | Integration tests | `tests/test_x402_route.py` | 1-2h | #5 | **SHIPPED** PR #1990 (16 tests across `TestDemoRoute` / `TestPaymentRequiredResponseHelper` / `TestReadOnlyContract` — last includes a no-outbound-HTTP lexical pin so future regressions can't accidentally adopt Path B) |
 
-**Total:** ~6-8h across 6 PRs. Spec research (#1) is the critical-path blocker; the rest follows once the response shape is grounded.
+**Status (2026-05-02 reconcile by beta per cc-task `x402-receive-endpoint-implementation`):** all 7 components shipped. Total cycle time was ~5 days (2026-04-26 architecture → 2026-05-01 receive-endpoint handler). The original ~6-8h estimate was tight; actual was ~12h spread across 4 sessions (alpha + epsilon + gamma + alpha).
+
+## Path A semantics and reversal
+
+Per `docs/governance/x402-facilitator-choice.md` (PR #1987, alpha — operator decision): Hapax's x402 endpoint operates under **Path A (refusal-as-data)**. Every `payment_required_response()` returns HTTP 402 with `accepts: []`; standard x402 v2 clients interpret empty-accepts as a hard refusal and fail closed. The handler **NEVER** calls a facilitator's `/verify` or `/settle` endpoints. This invariant is lexically pinned by `tests/test_x402_route.py:TestReadOnlyContract.test_no_facilitator_call_imports`.
+
+**Reversal procedure (Path A → Path B):** documented in `docs/governance/x402-facilitator-choice.md` § "Reversal procedure". Three deliberate steps gate the reversal:
+
+1. `payment_required_response` extends to advertise per-network `Accept` entries (USDC on Base / Polygon / etc.).
+2. Facilitator-call follow-on endpoint ships under `x402-payment-rail-evm-stablecoin-receive` cc-task (NOT yet filed).
+3. `TestReadOnlyContract.test_no_facilitator_call_imports` will fail and must be updated to exempt the chosen HTTP client — the exemption update signals deliberately that Path B is being adopted.
+
+The cc-task `x402-receive-endpoint-implementation` closes here as **DONE under Path A**. Future Path B work files a new cc-task per the reversal procedure above.
 
 ## Constitutional posture
 

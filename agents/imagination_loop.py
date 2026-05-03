@@ -7,11 +7,14 @@ and sensor state, calls a reasoning model, and processes the resulting fragment
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
 import uuid
 from pathlib import Path
+
+from pydantic import ValidationError
 
 from agents._impingement import Impingement
 from agents.imagination import (
@@ -49,6 +52,85 @@ _DIMENSION_KEYS = (
     "diffusion",
 )
 _MATERIAL_CHOICES = ("water", "fire", "earth", "air", "void")
+
+
+def _strip_json_fence(text: str) -> str:
+    """Strip ``` / ```json fences from an LLM response.
+
+    Mirrors the canonical pattern at ``director_loop.py:305-309`` and
+    ``shared/ir_vlm_classifier.py:_strip_code_fence``. Command-R 35B
+    (the local model wired to the ``reasoning`` alias via TabbyAPI →
+    LiteLLM) wraps every JSON response in fences regardless of prompt
+    instructions, which causes ``pydantic_ai.Agent.run(...)`` with
+    ``output_type=ImaginationFragment`` to raise
+    ``UnexpectedModelBehavior`` on the JSON parse step. Stripping the
+    fence before validation lets the structured tick succeed.
+    """
+    s = text.strip()
+    if not s.startswith("```"):
+        return s
+    # Drop the opening fence (```json, ```, or ```<lang>) and the
+    # trailing closing fence. split("\n", 1) leaves the body intact
+    # even if it contains further "```" inside string literals.
+    parts = s.split("\n", 1)
+    if len(parts) > 1:
+        s = parts[1].rsplit("```", 1)[0].strip()
+    return s
+
+
+def _extract_fragment_from_json(text: str) -> ImaginationFragment | None:
+    """Parse ``ImaginationFragment`` from a model response that contains JSON.
+
+    Handles three Command-R response shapes seen in production:
+
+    1. Bare JSON object — ``{"dimensions": {...}, "salience": 0.6, ...}``
+    2. Fenced JSON — ``\\u0060\\u0060\\u0060json\\n{...}\\n\\u0060\\u0060\\u0060``
+       (the dominant Command-R behavior; pydantic-ai's structured-output
+       parser cannot handle this and raises ``UnexpectedModelBehavior``)
+    3. JSON embedded in prose — extracts the first ``{...}`` substring.
+
+    Returns ``None`` if no parseable / validatable JSON object can be
+    recovered, deferring to the prose-extraction fallback at
+    ``_extract_fragment_from_markdown``.
+    """
+    if not text or not text.strip():
+        return None
+
+    candidate = _strip_json_fence(text)
+    if not candidate:
+        return None
+
+    data: dict | None = None
+    if candidate.startswith("{"):
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                data = parsed
+        except json.JSONDecodeError:
+            data = None
+
+    if data is None:
+        # Prose with embedded JSON — find first balanced object.
+        start = candidate.find("{")
+        end = candidate.rfind("}") + 1
+        if start >= 0 and end > start:
+            try:
+                parsed = json.loads(candidate[start:end])
+                if isinstance(parsed, dict):
+                    data = parsed
+            except json.JSONDecodeError:
+                return None
+        else:
+            return None
+
+    if data is None:
+        return None
+
+    try:
+        return ImaginationFragment.model_validate(data)
+    except ValidationError:
+        log.debug("JSON-fence-strip parse: shape did not validate", exc_info=True)
+        return None
 
 
 def _extract_fragment_from_markdown(text: str) -> ImaginationFragment | None:
@@ -336,27 +418,53 @@ class ImaginationLoop:
             result = await agent.run(context)
             fragment = result.output
         except Exception as structured_exc:  # noqa: BLE001
+            # The structured pydantic-ai path raises UnexpectedModelBehavior
+            # roughly 50% of ticks because Command-R 35B (the local model
+            # wired to `reasoning` via TabbyAPI → LiteLLM) wraps its JSON
+            # response in ```json fences, which pydantic-ai cannot strip
+            # before its internal JSON parse. Run the unconstrained text
+            # agent and try two recovery paths in order:
+            #   1. JSON-with-fence-strip — the canonical fix; recovers the
+            #      structured fragment with full salience / dimension
+            #      fidelity (typically 0.4–0.7) instead of the prose
+            #      extractor's degenerate 0.20 floor.
+            #   2. Markdown-prose extraction — last-resort fallback for
+            #      genuine markdown-prose responses (e.g. when the model
+            #      ignores both the JSON instruction AND the fence shape).
             log.info(
-                "imagination: pydantic-ai structured output failed (%s); falling back to "
-                "markdown extraction",
+                "imagination: pydantic-ai structured output failed (%s); "
+                "trying JSON-fence-strip then markdown extraction",
                 type(structured_exc).__name__,
             )
             try:
                 text_agent = self._get_text_agent()
                 text_result = await text_agent.run(context)
                 raw_text = str(getattr(text_result, "output", text_result) or "")
-                fragment = _extract_fragment_from_markdown(raw_text)
-                if fragment is None:
-                    log.warning("Imagination tick failed: markdown fallback empty")
-                    self.freshness.mark_failed()
-                    return None
-                log.info(
-                    "imagination: recovered fragment via markdown fallback "
-                    "(salience=%.2f, material=%s, dims=%d)",
-                    fragment.salience,
-                    fragment.material,
-                    len(fragment.dimensions),
-                )
+                fragment = _extract_fragment_from_json(raw_text)
+                if fragment is not None:
+                    log.info(
+                        "imagination: recovered fragment via JSON-fence-strip "
+                        "(salience=%.2f, material=%s, dims=%d)",
+                        fragment.salience,
+                        fragment.material,
+                        len(fragment.dimensions),
+                    )
+                else:
+                    fragment = _extract_fragment_from_markdown(raw_text)
+                    if fragment is None:
+                        log.warning(
+                            "Imagination tick failed: both JSON-fence-strip and "
+                            "markdown fallback empty"
+                        )
+                        self.freshness.mark_failed()
+                        return None
+                    log.info(
+                        "imagination: recovered fragment via markdown fallback "
+                        "(salience=%.2f, material=%s, dims=%d)",
+                        fragment.salience,
+                        fragment.material,
+                        len(fragment.dimensions),
+                    )
             except Exception:
                 log.warning("Imagination tick failed", exc_info=True)
                 self.freshness.mark_failed()

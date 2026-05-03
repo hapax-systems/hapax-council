@@ -74,6 +74,7 @@ _NO_SUCCESS_WITNESS_POLICIES = {
     WitnessPolicy.INFERRED,
     WitnessPolicy.MISSING,
     WitnessPolicy.STALE,
+    WitnessPolicy.LEGACY_PUBLIC_EVENT,
     WitnessPolicy.FIXTURE_ONLY,
 }
 
