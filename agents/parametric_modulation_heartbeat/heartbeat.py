@@ -75,6 +75,133 @@ from shared.parameter_envelopes import (
 
 log = logging.getLogger(__name__)
 
+# Prometheus instrumentation. Per ``project_compositor_metrics_registry``
+# (memory): metrics MUST splat ``**_metric_kwargs`` carrying the
+# compositor's ``CollectorRegistry`` so they reach the ``:9482`` scrape
+# surface (the prometheus_client default registry is invisible to that
+# exporter). Without this splat the counters appear to register but never
+# show up on the Grafana / Prometheus surface — this was the audit
+# finding that motivated this PR.
+#
+# Outside the compositor process (officium, tests, one-off scripts) the
+# import falls back to ``None`` and the kwargs dict is empty, leaving the
+# metrics on the default registry — preserves importability everywhere.
+_METRICS_AVAILABLE = False
+
+try:
+    from prometheus_client import Counter
+
+    try:
+        from agents.studio_compositor.metrics import (
+            REGISTRY as _COMPOSITOR_REGISTRY,
+        )
+    except Exception:
+        _COMPOSITOR_REGISTRY = None
+
+    _metric_kwargs: dict = (
+        {"registry": _COMPOSITOR_REGISTRY} if _COMPOSITOR_REGISTRY is not None else {}
+    )
+
+    _TICK_COUNTER = Counter(
+        "hapax_parametric_heartbeat_tick_total",
+        "Parametric heartbeat tick attempts by outcome (success | error).",
+        ("outcome",),
+        **_metric_kwargs,
+    )
+    _ENVELOPE_BOUNDARY_COUNTER = Counter(
+        "hapax_parametric_heartbeat_envelope_boundary_total",
+        "Envelope boundary crossings detected, by parameter key + boundary side.",
+        ("param_key", "boundary"),
+        **_metric_kwargs,
+    )
+    _JOINT_CONSTRAINT_CLIP_COUNTER = Counter(
+        "hapax_parametric_heartbeat_joint_constraint_clip_total",
+        "Joint-constraint clip events (mean breached joint_max), by constraint name.",
+        ("constraint_name",),
+        **_metric_kwargs,
+    )
+    _TRANSITION_PRIMITIVE_COUNTER = Counter(
+        "hapax_parametric_heartbeat_transition_primitive_total",
+        "Transition primitive emissions, by primitive kind + trigger reason.",
+        ("primitive", "trigger"),
+        **_metric_kwargs,
+    )
+    _AFFORDANCE_RECRUITMENT_SHIFT_COUNTER = Counter(
+        "hapax_parametric_heartbeat_affordance_recruitment_shift_total",
+        "Affordance-recruitment set deltas between consecutive ticks, by shift kind.",
+        ("shift_kind",),
+        **_metric_kwargs,
+    )
+
+    _METRICS_AVAILABLE = True
+except ValueError:
+    # Already registered (test re-imports or duplicate module load).
+    # Leave _METRICS_AVAILABLE False — the caller's try/except wraps
+    # every emission, so the heartbeat keeps walking either way.
+    pass
+except Exception:  # pragma: no cover — prometheus_client missing at install time
+    log.info("prometheus_client unavailable — parametric heartbeat metrics are no-ops")
+
+
+def _emit_tick(outcome: str) -> None:
+    """Increment the tick counter. Never raises."""
+    try:
+        if _METRICS_AVAILABLE:
+            _TICK_COUNTER.labels(outcome=outcome).inc()
+    except Exception:
+        log.debug("metric emit failed (tick)", exc_info=True)
+
+
+def _emit_envelope_boundary(param_key: str, boundary: str) -> None:
+    """Increment the envelope-boundary counter. Never raises."""
+    try:
+        if _METRICS_AVAILABLE:
+            _ENVELOPE_BOUNDARY_COUNTER.labels(param_key=param_key, boundary=boundary).inc()
+    except Exception:
+        log.debug("metric emit failed (envelope boundary)", exc_info=True)
+
+
+def _emit_joint_constraint_clip(constraint_name: str) -> None:
+    """Increment the joint-constraint-clip counter. Never raises."""
+    try:
+        if _METRICS_AVAILABLE:
+            _JOINT_CONSTRAINT_CLIP_COUNTER.labels(constraint_name=constraint_name).inc()
+    except Exception:
+        log.debug("metric emit failed (joint constraint clip)", exc_info=True)
+
+
+def _emit_transition_primitive(primitive: str, trigger: str) -> None:
+    """Increment the transition-primitive counter. Never raises."""
+    try:
+        if _METRICS_AVAILABLE:
+            _TRANSITION_PRIMITIVE_COUNTER.labels(primitive=primitive, trigger=trigger).inc()
+    except Exception:
+        log.debug("metric emit failed (transition primitive)", exc_info=True)
+
+
+def _emit_affordance_recruitment_shift(shift_kind: str) -> None:
+    """Increment the affordance-recruitment-shift counter. Never raises."""
+    try:
+        if _METRICS_AVAILABLE:
+            _AFFORDANCE_RECRUITMENT_SHIFT_COUNTER.labels(shift_kind=shift_kind).inc()
+    except Exception:
+        log.debug("metric emit failed (affordance recruitment shift)", exc_info=True)
+
+
+def _derive_constraint_name(constraint: JointConstraint) -> str:
+    """Stable label value for a joint constraint.
+
+    Prefers the rationale text truncated to 30 chars (operator-readable);
+    falls back to ``"{a_key}+{b_key}"`` when rationale is empty. Keeps
+    label cardinality bounded — joint constraints are a small fixed set.
+    """
+
+    rationale = (getattr(constraint, "rationale", "") or "").strip()
+    if rationale:
+        return rationale[:30]
+    return f"{constraint.param_a_key}+{constraint.param_b_key}"
+
+
 # Canonical SHM paths. The uniforms surface is the per-frame override
 # bridge documented in CLAUDE.md § Reverie Vocabulary Integrity. The
 # recruitment surface is the same one the LLM-recruitment path writes to
@@ -252,6 +379,7 @@ class ParameterWalker:
             env_b = env_by_key[jc.param_b_key]
             self._values[jc.param_a_key] = env_a.clip_step(prev_snapshot[jc.param_a_key], new_a)
             self._values[jc.param_b_key] = env_b.clip_step(prev_snapshot[jc.param_b_key], new_b)
+            _emit_joint_constraint_clip(_derive_constraint_name(jc))
             log.info(
                 "parametric walker: joint constraint clipped %s+%s (mean=%.3f > %.3f) — %s",
                 jc.param_a_key,
@@ -286,6 +414,7 @@ class ParameterWalker:
                         value=value,
                     )
                 )
+                _emit_envelope_boundary(env.key, "min")
             elif value >= env.max_value - threshold:
                 events.append(
                     BoundaryEvent(
@@ -294,6 +423,7 @@ class ParameterWalker:
                         value=value,
                     )
                 )
+                _emit_envelope_boundary(env.key, "max")
         return events
 
     def tick(self, *, now: float | None = None) -> list[BoundaryEvent]:
@@ -501,8 +631,16 @@ def tick_once(
         last_emission_ts = {}
     if now is None:
         now = time.time()
-    events = walker.tick(now=now)
-    write_uniform_overrides(walker.values, path=uniforms_path)
+    try:
+        events = walker.tick(now=now)
+        write_uniform_overrides(walker.values, path=uniforms_path)
+    except Exception:
+        # Emit the error counter so the failure rate is observable, then
+        # re-raise — ``run_forever`` already has its own try/except that
+        # logs and continues. This preserves the daemon's "never die from
+        # one bad tick" invariant while still capturing the outcome.
+        _emit_tick("error")
+        raise
 
     # Detect affordance shifts. When the recruited affordance set changes
     # between ticks, dispatch a transition primitive — the chain mutates
@@ -515,6 +653,15 @@ def tick_once(
         # are written by THIS module (would cause reflexive triggers).
         relevant = {a for a in current_affordances if not a.startswith("transition.")}
         if last_affordances and relevant != last_affordances:
+            # Record add/remove deltas regardless of cooldown so the
+            # observability surface reflects every detected shift, even
+            # the ones the cooldown silently swallows.
+            added = relevant - last_affordances
+            removed = last_affordances - relevant
+            for _ in added:
+                _emit_affordance_recruitment_shift("add")
+            for _ in removed:
+                _emit_affordance_recruitment_shift("remove")
             shift_marker = "_affordance_shift"
             last_ts = last_emission_ts.get(shift_marker, 0.0)
             if (now - last_ts) >= emission_cooldown_s:
@@ -526,6 +673,7 @@ def tick_once(
                         path=recruitment_path,
                         now=now,
                     )
+                    _emit_transition_primitive(transition_name, "affordance_shift")
                     last_emission_ts[shift_marker] = now
                     log.info(
                         "parametric walker: affordance shift (prev=%s, curr=%s) — emitted %s",
@@ -560,6 +708,7 @@ def tick_once(
                 exc,
             )
             continue
+        _emit_transition_primitive(transition_name, "boundary_crossing")
         last_emission_ts[event.envelope_key] = now
         log.info(
             "parametric walker: boundary %s on %s (value=%.3f) — emitted %s",
@@ -569,6 +718,7 @@ def tick_once(
             transition_name,
         )
 
+    _emit_tick("success")
     return walker.values, events
 
 
