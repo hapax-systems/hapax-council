@@ -56,6 +56,9 @@ from agents.publication_bus.patreon_publisher import PatreonPublisher
 from agents.publication_bus.stripe_payment_link_publisher import (
     StripePaymentLinkPublisher,
 )
+from agents.publication_bus.treasury_prime_publisher import (
+    TreasuryPrimePublisher,
+)
 from shared.buy_me_a_coffee_receive_only_rail import (
     BuyMeACoffeeRailReceiver,
 )
@@ -110,6 +113,12 @@ from shared.stripe_payment_link_receive_only_rail import (
 from shared.stripe_payment_link_receive_only_rail import (
     StripePaymentLinkRailReceiver,
 )
+from shared.treasury_prime_receive_only_rail import (
+    ReceiveOnlyRailError as TreasuryPrimeReceiveOnlyRailError,
+)
+from shared.treasury_prime_receive_only_rail import (
+    TreasuryPrimeRailReceiver,
+)
 
 log = logging.getLogger(__name__)
 
@@ -162,6 +171,12 @@ header (canonical X-Mercury-Signature takes precedence)."""
 MODERN_TREASURY_SIGNATURE_HEADER: str = "X-Signature"
 """Modern Treasury webhook signature header — HMAC SHA-256 over raw
 body. Bare hex digest; ``sha256=<hex>`` prefix also accepted."""
+
+TREASURY_PRIME_SIGNATURE_HEADER: str = "X-Signature"
+"""Treasury Prime webhook signature header — HMAC SHA-256 over raw
+body. Same name as Modern Treasury; the URL path
+(/api/payment-rails/treasury-prime vs /api/payment-rails/modern-treasury)
+disambiguates the two rails."""
 
 
 @router.post("/github-sponsors")
@@ -782,6 +797,72 @@ async def receive_modern_treasury_webhook(request: Request) -> JSONResponse:
     )
 
 
+@router.post("/treasury-prime")
+async def receive_treasury_prime_webhook(request: Request) -> JSONResponse:
+    """Receive a Treasury Prime webhook delivery and dispatch.
+
+    Treasury Prime signs deliveries with HMAC SHA-256 over raw body
+    in ``X-Signature``. Phase 0 accepts only ``incoming_ach.create``
+    (ledger-account events); Phase 1 will extend to ``transaction.create``
+    (core direct accounts) with the data-level direction filter from
+    Mercury.
+    """
+    raw_body = await request.body()
+
+    if not raw_body:
+        receiver = TreasuryPrimeRailReceiver()
+        result = receiver.ingest_webhook({}, None)
+        if result is None:
+            return JSONResponse({"status": "ping_ok"})
+        raise HTTPException(status_code=500, detail="unexpected non-None result from heartbeat")
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        log.warning("treasury_prime webhook: malformed JSON")
+        raise HTTPException(status_code=400, detail=f"malformed JSON: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be a JSON object")
+
+    signature = request.headers.get(TREASURY_PRIME_SIGNATURE_HEADER)
+
+    receiver = TreasuryPrimeRailReceiver()
+    try:
+        event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
+    except TreasuryPrimeReceiveOnlyRailError as exc:
+        log.warning("treasury_prime webhook rejected: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if event is None:
+        return JSONResponse({"status": "ping_ok"})
+
+    publisher = TreasuryPrimePublisher()
+    publish_result = publisher.publish_event(event)
+
+    if publish_result.refused:
+        log.info("treasury_prime publish refused: %s", publish_result.detail)
+        return JSONResponse(
+            {"status": "refused", "detail": publish_result.detail},
+            status_code=200,
+        )
+    if publish_result.error:
+        log.error("treasury_prime publish error: %s", publish_result.detail)
+        raise HTTPException(
+            status_code=500,
+            detail=f"publisher transport error: {publish_result.detail}",
+        )
+
+    return JSONResponse(
+        {
+            "status": "received",
+            "event_kind": event.event_kind.value,
+            "publish_detail": publish_result.detail,
+            "raw_payload_sha256": event.raw_payload_sha256,
+        }
+    )
+
+
 __all__ = [
     "BUY_ME_A_COFFEE_SIGNATURE_HEADER",
     "GITHUB_SPONSORS_SIGNATURE_HEADER",
@@ -793,5 +874,6 @@ __all__ = [
     "PATREON_EVENT_HEADER",
     "PATREON_SIGNATURE_HEADER",
     "STRIPE_PAYMENT_LINK_SIGNATURE_HEADER",
+    "TREASURY_PRIME_SIGNATURE_HEADER",
     "router",
 ]

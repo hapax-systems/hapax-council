@@ -133,6 +133,23 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "IsObsoletedBy) ships with the publisher."
         ),
     ),
+    "agents.publication_bus.treasury_prime_publisher": WireEntry(
+        module="agents.publication_bus.treasury_prime_publisher",
+        surface_slug="treasury-prime-receiver",
+        status="WIRED",
+        pass_key_required="treasury-prime/webhook-secret",
+        rationale=(
+            "Tenth (and final) wired monetization rail (cc-task "
+            "treasury-prime-end-to-end-wiring). Third bank rail wired e2e. "
+            "Wired via logos/api/routes/payment_rails.py POST "
+            "/api/payment-rails/treasury-prime. HMAC SHA-256 over raw body via "
+            "X-Signature + TREASURY_PRIME_WEBHOOK_SECRET env var (same header "
+            "name as Modern Treasury — disambiguated by URL path). Phase 0 "
+            "accepts only incoming_ach.create; Phase 1 transaction.create for "
+            "core direct accounts is a separate downstream cc-task. No "
+            "cancellation auto-link."
+        ),
+    ),
     "agents.publication_bus.modern_treasury_publisher": WireEntry(
         module="agents.publication_bus.modern_treasury_publisher",
         surface_slug="modern-treasury-receiver",
