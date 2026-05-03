@@ -133,6 +133,20 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "IsObsoletedBy) ships with the publisher."
         ),
     ),
+    "agents.publication_bus.modern_treasury_publisher": WireEntry(
+        module="agents.publication_bus.modern_treasury_publisher",
+        surface_slug="modern-treasury-receiver",
+        status="WIRED",
+        pass_key_required="modern-treasury/webhook-secret",
+        rationale=(
+            "Ninth wired monetization rail (cc-task modern-treasury-end-to-end-wiring). "
+            "Second bank rail wired e2e. Wired via logos/api/routes/payment_rails.py "
+            "POST /api/payment-rails/modern-treasury. HMAC SHA-256 over raw body via "
+            "X-Signature + MODERN_TREASURY_WEBHOOK_SECRET env var. Direction filter "
+            "is event-name-level (only incoming_payment_detail.* accepted; "
+            "payment_order.* rejected). No cancellation auto-link."
+        ),
+    ),
     "agents.publication_bus.mercury_publisher": WireEntry(
         module="agents.publication_bus.mercury_publisher",
         surface_slug="mercury-receiver",

@@ -114,6 +114,18 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "to the canonical refusal log under axiom full_auto_or_nothing."
         ),
     ),
+    "modern-treasury-receiver": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="webhook",
+        dispatch_entry="logos.api.routes.payment_rails:receive_modern_treasury_webhook",
+        activation_path="agents.publication_bus.modern_treasury_publisher.ModernTreasuryPublisher",
+        scope_note=(
+            "Ninth wired monetization rail (2nd bank rail). POST "
+            "/api/payment-rails/modern-treasury on logos :8051; HMAC SHA-256 over "
+            "raw body via X-Signature + MODERN_TREASURY_WEBHOOK_SECRET env var. "
+            "Event-name-level direction filter; no cancellation auto-link."
+        ),
+    ),
     "mercury-receiver": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="webhook",
