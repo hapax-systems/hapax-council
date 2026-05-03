@@ -83,6 +83,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from shared._rail_idempotency import (
+    IdempotencyError as _SharedIdempotencyError,
+)
+from shared._rail_idempotency import (
+    IdempotencyStore,
+)
+
 OPEN_COLLECTIVE_WEBHOOK_SECRET_ENV = "OPEN_COLLECTIVE_WEBHOOK_SECRET"
 
 _ISO_4217_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
@@ -368,8 +375,14 @@ class OpenCollectiveRailReceiver:
     socket, writes to disk, or contacts any external system.
     """
 
-    def __init__(self, *, secret_env_var: str = OPEN_COLLECTIVE_WEBHOOK_SECRET_ENV) -> None:
+    def __init__(
+        self,
+        *,
+        secret_env_var: str = OPEN_COLLECTIVE_WEBHOOK_SECRET_ENV,
+        idempotency_store: IdempotencyStore | None = None,
+    ) -> None:
         self._secret_env_var = secret_env_var
+        self._idempotency_store = idempotency_store
 
     def _resolve_secret(self) -> str:
         return os.environ.get(self._secret_env_var, "")
@@ -380,6 +393,7 @@ class OpenCollectiveRailReceiver:
         signature: str | None,
         *,
         raw_body: bytes | None = None,
+        delivery_id: str | None = None,
     ) -> CollectiveEvent | None:
         """Validate + normalize a single Open Collective webhook delivery.
 
@@ -418,6 +432,19 @@ class OpenCollectiveRailReceiver:
         amount_cents, currency = _extract_amount_and_currency(payload)
         occurred_at = _extract_occurred_at(payload)
 
+        if self._idempotency_store is not None:
+            if not delivery_id:
+                raise ReceiveOnlyRailError(
+                    "idempotency_store provided but delivery_id missing — "
+                    "Open Collective webhooks ship a per-delivery identifier "
+                    "in the X-Open-Collective-Activity-Id header"
+                )
+            try:
+                if not self._idempotency_store.record_or_skip(delivery_id):
+                    return None
+            except _SharedIdempotencyError as exc:
+                raise ReceiveOnlyRailError(str(exc)) from exc
+
         try:
             return CollectiveEvent(
                 member_handle=member_handle,
@@ -435,6 +462,7 @@ __all__ = [
     "OPEN_COLLECTIVE_WEBHOOK_SECRET_ENV",
     "CollectiveEvent",
     "CollectiveEventKind",
+    "IdempotencyStore",
     "OpenCollectiveRailReceiver",
     "ReceiveOnlyRailError",
 ]

@@ -795,9 +795,22 @@ def open_collective_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
     return "oc-secret-XYZ"
 
 
+@pytest.fixture
+def open_collective_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's Open Collective idempotency singleton + tmp db."""
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._open_collective_idempotency_store = None
+    yield tmp_path / "open-collective" / "idempotency.db"
+    routes_mod._open_collective_idempotency_store = None
+
+
 @pytest.mark.asyncio
 async def test_open_collective_signed_order_processed_writes_manifest(
-    open_collective_output_dir: Path, open_collective_secret_env: str
+    open_collective_output_dir: Path,
+    open_collective_secret_env: str,
+    open_collective_idempotency_isolated: Path,
 ) -> None:
     payload = _open_collective_payload(activity="order_processed")
     raw = json.dumps(payload).encode("utf-8")
@@ -807,7 +820,10 @@ async def test_open_collective_signed_order_processed_writes_manifest(
         response = await client.post(
             "/api/payment-rails/open-collective",
             content=raw,
-            headers={"X-Open-Collective-Signature": sig},
+            headers={
+                "X-Open-Collective-Signature": sig,
+                "X-Open-Collective-Activity-Id": "oc-act-order-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -822,7 +838,9 @@ async def test_open_collective_signed_order_processed_writes_manifest(
 
 @pytest.mark.asyncio
 async def test_open_collective_dotted_form_alias_accepted(
-    open_collective_output_dir: Path, open_collective_secret_env: str
+    open_collective_output_dir: Path,
+    open_collective_secret_env: str,
+    open_collective_idempotency_isolated: Path,
 ) -> None:
     """OC bridges may forward the dotted form `order.processed`."""
     payload = _open_collective_payload(activity="order.processed")
@@ -833,7 +851,10 @@ async def test_open_collective_dotted_form_alias_accepted(
         response = await client.post(
             "/api/payment-rails/open-collective",
             content=raw,
-            headers={"X-Open-Collective-Signature": sig},
+            headers={
+                "X-Open-Collective-Signature": sig,
+                "X-Open-Collective-Activity-Id": "oc-act-dotted-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -842,7 +863,9 @@ async def test_open_collective_dotted_form_alias_accepted(
 
 @pytest.mark.asyncio
 async def test_open_collective_member_created(
-    open_collective_output_dir: Path, open_collective_secret_env: str
+    open_collective_output_dir: Path,
+    open_collective_secret_env: str,
+    open_collective_idempotency_isolated: Path,
 ) -> None:
     payload = _open_collective_payload(activity="member_created", member="bob-member")
     raw = json.dumps(payload).encode("utf-8")
@@ -852,7 +875,10 @@ async def test_open_collective_member_created(
         response = await client.post(
             "/api/payment-rails/open-collective",
             content=raw,
-            headers={"X-Open-Collective-Signature": sig},
+            headers={
+                "X-Open-Collective-Signature": sig,
+                "X-Open-Collective-Activity-Id": "oc-act-member-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -861,7 +887,9 @@ async def test_open_collective_member_created(
 
 @pytest.mark.asyncio
 async def test_open_collective_eur_currency(
-    open_collective_output_dir: Path, open_collective_secret_env: str
+    open_collective_output_dir: Path,
+    open_collective_secret_env: str,
+    open_collective_idempotency_isolated: Path,
 ) -> None:
     """Open Collective is multi-currency; EUR should pass."""
     payload = _open_collective_payload(currency="EUR", amount=2000)
@@ -872,7 +900,10 @@ async def test_open_collective_eur_currency(
         response = await client.post(
             "/api/payment-rails/open-collective",
             content=raw,
-            headers={"X-Open-Collective-Signature": sig},
+            headers={
+                "X-Open-Collective-Signature": sig,
+                "X-Open-Collective-Activity-Id": "oc-act-eur-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -943,6 +974,100 @@ def test_open_collective_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# Open Collective — idempotency hard pin (cc-task jr-open-collective-rail-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_open_collective_route_replays_same_activity_id_returns_duplicate(
+    open_collective_output_dir: Path,
+    open_collective_secret_env: str,
+    open_collective_idempotency_isolated: Path,
+) -> None:
+    payload = _open_collective_payload(activity="order_processed")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(open_collective_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    headers = {
+        "X-Open-Collective-Signature": sig,
+        "X-Open-Collective-Activity-Id": "oc-replay-001",
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post(
+            "/api/payment-rails/open-collective", content=raw, headers=headers
+        )
+        second = await client.post(
+            "/api/payment-rails/open-collective", content=raw, headers=headers
+        )
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["delivery_id"] == "oc-replay-001"
+    files = list(open_collective_output_dir.glob("event-order_processed-*.md"))
+    assert len(files) == 1
+
+
+@pytest.mark.asyncio
+async def test_open_collective_route_distinct_activity_ids_both_processed(
+    open_collective_output_dir: Path,
+    open_collective_secret_env: str,
+    open_collective_idempotency_isolated: Path,
+) -> None:
+    payload_a = _open_collective_payload(activity="order_processed")
+    payload_b = _open_collective_payload(activity="order_processed", member="bob-supporter")
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+    sig_a = hmac.new(open_collective_secret_env.encode("utf-8"), raw_a, hashlib.sha256).hexdigest()
+    sig_b = hmac.new(open_collective_secret_env.encode("utf-8"), raw_b, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post(
+            "/api/payment-rails/open-collective",
+            content=raw_a,
+            headers={
+                "X-Open-Collective-Signature": sig_a,
+                "X-Open-Collective-Activity-Id": "oc-act-a",
+            },
+        )
+        r_b = await client.post(
+            "/api/payment-rails/open-collective",
+            content=raw_b,
+            headers={
+                "X-Open-Collective-Signature": sig_b,
+                "X-Open-Collective-Activity-Id": "oc-act-b",
+            },
+        )
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(open_collective_output_dir.glob("event-order_processed-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_open_collective_route_missing_activity_id_returns_400(
+    open_collective_output_dir: Path,
+    open_collective_secret_env: str,
+    open_collective_idempotency_isolated: Path,
+) -> None:
+    payload = _open_collective_payload(activity="order_processed")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(open_collective_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/open-collective",
+            content=raw,
+            headers={"X-Open-Collective-Signature": sig},  # NO activity_id
+        )
+
+    assert response.status_code == 400
+    assert "delivery_id" in response.json()["detail"]
 
 
 # ===========================================================================

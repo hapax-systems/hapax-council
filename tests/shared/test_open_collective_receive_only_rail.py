@@ -485,3 +485,71 @@ def test_collective_event_is_frozen_no_pii_fields():
             raw_payload_sha256="a" * 64,
             email="leaked@example.com",  # type: ignore[call-arg]
         )
+
+
+# ---------------------------------------------------------------------------
+# jr-open-collective-rail-idempotency-pin regression pins
+# ---------------------------------------------------------------------------
+
+
+def test_idempotency_store_rejects_duplicate_delivery_id(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "oc-idem.db")
+    receiver = OpenCollectiveRailReceiver(idempotency_store=store)
+    payload = _txn_payload()
+
+    first = receiver.ingest_webhook(payload, signature=None, delivery_id="oc-001")
+    second = receiver.ingest_webhook(payload, signature=None, delivery_id="oc-001")
+
+    assert first is not None
+    assert second is None
+
+
+def test_idempotency_store_distinct_delivery_ids_both_processed(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "oc-idem.db")
+    receiver = OpenCollectiveRailReceiver(idempotency_store=store)
+    payload = _txn_payload()
+
+    first = receiver.ingest_webhook(payload, signature=None, delivery_id="oc-a")
+    second = receiver.ingest_webhook(payload, signature=None, delivery_id="oc-b")
+
+    assert first is not None
+    assert second is not None
+
+
+def test_idempotency_store_provided_but_delivery_id_missing_raises(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "oc-idem.db")
+    receiver = OpenCollectiveRailReceiver(idempotency_store=store)
+    payload = _txn_payload()
+
+    with pytest.raises(ReceiveOnlyRailError, match="delivery_id"):
+        receiver.ingest_webhook(payload, signature=None)
+
+
+def test_no_idempotency_store_means_no_idempotency_check():
+    receiver = OpenCollectiveRailReceiver()
+    payload = _txn_payload()
+    a = receiver.ingest_webhook(payload, signature=None, delivery_id="ignored")
+    b = receiver.ingest_webhook(payload, signature=None, delivery_id="ignored")
+    assert a is not None
+    assert b is not None
+
+
+def test_idempotency_store_persists_across_receivers(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    db = tmp_path / "oc-idem.db"
+    payload = _txn_payload()
+
+    a = OpenCollectiveRailReceiver(idempotency_store=IdempotencyStore(db_path=db))
+    first = a.ingest_webhook(payload, signature=None, delivery_id="oc-persist")
+    b = OpenCollectiveRailReceiver(idempotency_store=IdempotencyStore(db_path=db))
+    second = b.ingest_webhook(payload, signature=None, delivery_id="oc-persist")
+
+    assert first is not None
+    assert second is None
