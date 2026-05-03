@@ -292,7 +292,32 @@ def watch_loop(
         except OSError as exc:
             log(f"state persist failed: {exc}", stream=sys.stderr)
         log(f"recovery outcome for {event.bdf}: {json.dumps(outcome)}")
+        if not dry_run:
+            _emit_recovery_counter(event.bdf)
     return recoveries
+
+
+def _emit_recovery_counter(bdf: str) -> None:
+    """Increment ``hapax_xhci_recovery_total{controller=<bdf>}`` for
+    node_exporter textfile collector. Errors are logged + swallowed —
+    a metric-write failure must never break recovery.
+
+    Cc-task: ``audio-audit-H3-prometheus-recovery-counters``.
+    """
+    try:
+        from shared.recovery_counter_textfile import increment_counter
+    except Exception as exc:
+        log(f"textfile counter import failed: {exc}", stream=sys.stderr)
+        return
+    try:
+        new_value = increment_counter(
+            metric_name="hapax_xhci_recovery_total",
+            labels={"controller": bdf},
+            help_text="xHCI controller recovery events (PCIe remove+rescan).",
+        )
+        log(f"hapax_xhci_recovery_total{{controller={bdf}}} = {new_value:g}")
+    except Exception as exc:
+        log(f"textfile counter increment failed: {exc}", stream=sys.stderr)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

@@ -536,6 +536,7 @@ def _evaluate_loudness(
         "stdout": _tail(result.stdout),
         "stderr": _tail(result.stderr),
     }
+    _emit_lufs_gauge(integrated, true_peak=true_peak)
     if result.returncode != 0:
         _block(
             blocking,
@@ -1266,6 +1267,40 @@ def _tail(text: str, *, max_chars: int = 1200) -> str:
     if len(stripped) <= max_chars:
         return stripped
     return stripped[-max_chars:]
+
+
+def _emit_lufs_gauge(integrated: float | None, *, true_peak: float | None = None) -> None:
+    """Publish ``hapax_audio_egress_lufs_dbfs{stage="broadcast-master"}``
+    to the node_exporter textfile collector. Errors are logged + swallowed
+    so a metric-write failure never affects the loudness evaluator's
+    own evidence pipeline.
+
+    Cc-task: ``audio-audit-H3-prometheus-recovery-counters``.
+    """
+    try:
+        from shared.recovery_counter_textfile import write_gauge
+    except Exception:
+        return
+    try:
+        if integrated is not None:
+            write_gauge(
+                metric_name="hapax_audio_egress_lufs_dbfs",
+                labels={"stage": "broadcast-master"},
+                help_text="Integrated loudness (LUFS-I) at the broadcast master stage.",
+                value=float(integrated),
+                file_basename="hapax_audio_recovery.prom",
+            )
+        if true_peak is not None:
+            write_gauge(
+                metric_name="hapax_audio_egress_true_peak_dbtp",
+                labels={"stage": "broadcast-master"},
+                help_text="True-peak (dBTP) at the broadcast master stage.",
+                value=float(true_peak),
+                file_basename="hapax_audio_recovery.prom",
+            )
+    except Exception:
+        # Metric publishing must not affect the evidence pipeline.
+        return
 
 
 __all__ = [
