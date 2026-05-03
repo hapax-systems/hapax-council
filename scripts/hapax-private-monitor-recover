@@ -40,11 +40,16 @@ SANITIZED_TARGET_REF = "audio.s4_private_monitor"
 ROUTE_REF = "route:private.s4_track_fenced"
 
 
+PIPEWIRE_RELOAD_UNITS = ("pipewire.service", "pipewire-pulse.service", "wireplumber.service")
+
+
 class BridgeStatus(TypedDict):
     installed: bool
     matches_repo: bool
     repaired: bool
     requires_pipewire_reload: bool
+    pipewire_reloaded: bool
+    pipewire_reload_error: str
 
 
 class PrivateMonitorStatus(TypedDict):
@@ -117,7 +122,45 @@ def _validate_repo_bridge(repo_bridge: Path) -> None:
         raise ValueError(f"repo bridge is missing required fail-closed pin(s): {missing}")
 
 
-def _install_bridge(repo_bridge: Path, install_path: Path, *, install: bool) -> BridgeStatus:
+def _restart_pipewire_stack() -> tuple[bool, str]:
+    """Force a user-systemd restart of the PipeWire stack.
+
+    `context.modules` blocks (where the private-monitor loopback is
+    declared) are evaluated at PipeWire daemon startup. Editing the
+    bridge conf alone does NOT cause an existing daemon to reload
+    those modules — the daemon must restart for `target.object` to
+    re-bind. Without this step the on-disk fix lingers but the live
+    PipeWire graph stays stale until the operator manually restarts
+    or reboots, which is the exact failure mode that produced the
+    Option C "pin failed to bind" incident on 2026-05-02.
+
+    Returns (success, error_message). systemctl is invoked with a
+    short timeout because the stack restart is normally <2s.
+    """
+    if shutil.which("systemctl") is None:
+        return False, "systemctl_not_in_path"
+    try:
+        subprocess.run(
+            ["systemctl", "--user", "restart", *PIPEWIRE_RELOAD_UNITS],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.CalledProcessError as exc:
+        return False, f"systemctl_failed: {exc.stderr.strip() or exc.stdout.strip()}"
+    except subprocess.TimeoutExpired:
+        return False, "systemctl_timeout"
+    return True, ""
+
+
+def _install_bridge(
+    repo_bridge: Path,
+    install_path: Path,
+    *,
+    install: bool,
+    auto_reload: bool = False,
+) -> BridgeStatus:
     installed_before = install_path.exists()
     matches_before = _bridge_matches_repo(repo_bridge, install_path)
     repaired = False
@@ -128,11 +171,23 @@ def _install_bridge(repo_bridge: Path, install_path: Path, *, install: bool) -> 
         tmp.replace(install_path)
         repaired = True
     matches_after = _bridge_matches_repo(repo_bridge, install_path)
+    requires_reload = repaired and installed_before
+    pipewire_reloaded = False
+    pipewire_reload_error = ""
+    if requires_reload and auto_reload:
+        ok, err = _restart_pipewire_stack()
+        pipewire_reloaded = ok
+        pipewire_reload_error = err
+        # If the restart succeeded the loopback nodes are about to
+        # come back via fresh module load; the witness-cycle on the
+        # next timer tick will observe them. We do not block here.
     return {
         "installed": install_path.exists(),
         "matches_repo": matches_after,
         "repaired": repaired,
-        "requires_pipewire_reload": repaired and installed_before,
+        "requires_pipewire_reload": requires_reload,
+        "pipewire_reloaded": pipewire_reloaded,
+        "pipewire_reload_error": pipewire_reload_error,
     }
 
 
@@ -214,17 +269,38 @@ def main(argv: list[str] | None = None) -> int:
         help="Install/repair the repo-managed bridge config before writing status.",
     )
     parser.add_argument(
+        "--auto-reload",
+        action="store_true",
+        help=(
+            "When the bridge is repaired in-place (was installed and now drifts),"
+            " also `systemctl --user restart pipewire pipewire-pulse wireplumber`"
+            " so the new context.modules definitions actually load. Without this"
+            " flag the on-disk file is updated but PipeWire keeps the old loopback"
+            " in memory and the pin will not bind until the operator restarts the"
+            " stack manually. Implies --install."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Print sanitized JSON status instead of a short summary.",
     )
     args = parser.parse_args(argv)
 
+    if args.auto_reload and not args.install:
+        # --auto-reload only makes sense when we may be writing files.
+        args.install = True
+
     repo_bridge = args.repo_root / BRIDGE_REPO_PATH
     try:
         _validate_repo_bridge(repo_bridge)
         dump = _load_dump(args.dump_file)
-        bridge = _install_bridge(repo_bridge, args.install_path, install=args.install)
+        bridge = _install_bridge(
+            repo_bridge,
+            args.install_path,
+            install=args.install,
+            auto_reload=args.auto_reload,
+        )
         status = _status(node_names=_node_names(dump), bridge=bridge)
         _write_status(args.status_path, status)
     except Exception as exc:

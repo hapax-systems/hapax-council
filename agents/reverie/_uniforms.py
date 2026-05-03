@@ -7,14 +7,43 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from agents.reverie.programme_context import ProgrammeProvider
 from agents.reverie.substrate_palette import compute_substrate_saturation
+from shared.visual_mode_bias import VisualModeBias, get_visual_mode_bias
 
 log = logging.getLogger("reverie.uniforms")
+
+
+def _sanitize_uniform_value(value: float | int | bool) -> float:
+    """Clamp NaN/Inf to 0.0; coerce bool to float; clip to safe range.
+
+    Rust ``serde_json`` silently crashes on NaN/Inf in input. The visual
+    chain must NEVER write a poison value into ``uniforms.json``: a
+    single NaN aggregate from ``compute_param_deltas()`` (e.g. from a
+    divide-by-zero in a per-tick mapping) would freeze the GPU bridge
+    until the file is hand-edited. This sanitizer is the last line of
+    defence — bad input → safe default → log warning, no retry/recovery.
+
+    Audit: 24h independent-auditor batch 2026-05-02 (E #9). The audit
+    found ``compute_param_deltas()`` aggregates without clamping, so
+    upstream NaN/Inf/bool propagation could land in the JSON dump.
+    """
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    f = float(value)
+    if math.isnan(f) or math.isinf(f):
+        return 0.0
+    # Clip to a generous sanity bound. Uniforms are usually [0, 1] or
+    # [-π, π]; allow [-1e6, 1e6] to catch the truly pathological without
+    # rejecting legitimate large modulation values (e.g. hue degrees,
+    # accumulated phase).
+    return max(-1e6, min(1e6, f))
+
 
 UNIFORMS_FILE = Path("/dev/shm/hapax-imagination/uniforms.json")
 PLAN_FILE = Path("/dev/shm/hapax-imagination/pipeline/plan.json")
@@ -39,6 +68,79 @@ MATERIAL_MAP = {"water": 0, "fire": 1, "earth": 2, "air": 3, "void": 4}
 _BITCHX_COLOR_SATURATION: float = 0.40
 _BITCHX_COLOR_HUE_ROTATE: float = 180.0
 _BITCHX_COLOR_BRIGHTNESS: float = 0.85
+
+
+# U8 Phase 1 — mode palette tint (cc-task u8-imagination-mode-tint).
+# `shared/visual_mode_bias.PALETTE_HINT` carries the per-mode dominant
+# RGB tuple. The colorgrade WGSL exposes `hue_rotate` (°, ±180), not
+# explicit tint_r/g/b channels (see `agents/shaders/nodes/colorgrade.wgsl`
+# Params struct). The smaller, ship-able move is to convert PALETTE_HINT
+# [mode][0] → HSV.h → colorgrade `hue_rotate` so the visual surface
+# pulls toward the mode-appropriate hue without needing a shader-side
+# Params struct change. Homage damping (`_apply_homage_package_damping`)
+# is called AFTER and stays authoritative when an active homage package
+# pins the keys.
+def _rgb_to_hsv_hue(r: int, g: int, b: int) -> float:
+    """Convert RGB (0-255) → HSV.h (0-360°). Pure stdlib; no colorsys
+    dep so testing stays deterministic across float precision."""
+    rn, gn, bn = r / 255.0, g / 255.0, b / 255.0
+    cmax = max(rn, gn, bn)
+    cmin = min(rn, gn, bn)
+    delta = cmax - cmin
+    if delta == 0:
+        return 0.0
+    if cmax == rn:
+        h = 60.0 * (((gn - bn) / delta) % 6.0)
+    elif cmax == gn:
+        h = 60.0 * (((bn - rn) / delta) + 2.0)
+    else:
+        h = 60.0 * (((rn - gn) / delta) + 4.0)
+    if h < 0:
+        h += 360.0
+    return h
+
+
+def _palette_hint_to_hue_rotate(palette_hint: tuple[tuple[int, int, int], ...]) -> float:
+    """Map PALETTE_HINT[mode][0] dominant RGB to a colorgrade `hue_rotate`
+    target in colorgrade's symmetric ±180° space.
+
+    Empty palette → 0.0 (no rotation, identity). Hues > 180° wrap to the
+    negative half so blues (≈205°) become -155° instead of +205°
+    (out-of-range for the WGSL Params struct's signed hue_rotate field).
+    """
+    if not palette_hint:
+        return 0.0
+    r, g, b = palette_hint[0]
+    h_deg = _rgb_to_hsv_hue(r, g, b)
+    if h_deg > 180.0:
+        return h_deg - 360.0
+    return h_deg
+
+
+def _apply_mode_palette_tint(
+    uniforms: dict[str, float],
+    bias_provider: Callable[[], VisualModeBias] = get_visual_mode_bias,
+) -> None:
+    """Write `color.hue_rotate` derived from `PALETTE_HINT[mode][0]`.
+
+    Closes the U8 visible-difference gap between research and rnd modes:
+    the research palette (Solarized blue, ≈205° → -155°) pulls the
+    colorgrade pass toward cool tones, the rnd palette (Gruvbox bright-
+    red, ≈5° → +5°) holds it in the warm register. Mode flips propagate
+    at the next `write_uniforms` tick because `get_visual_mode_bias()`
+    re-reads `~/.cache/hapax/working-mode` per call.
+
+    Called BEFORE `_apply_homage_package_damping` so an active homage
+    package overrides the mode tint when present (homage is per-package
+    and authoritative; mode tint is the default ground).
+    """
+    try:
+        bias = bias_provider()
+    except Exception:
+        log.debug("visual_mode_bias read failed; skipping mode tint", exc_info=True)
+        return
+    uniforms["color.hue_rotate"] = _palette_hint_to_hue_rotate(bias.palette_hint)
+
 
 _plan_defaults_cache: dict[str, float] | None = None
 _plan_defaults_mtime: float = 0.0
@@ -257,6 +359,12 @@ def write_uniforms(
                 worst_infra = max(worst_infra, dim_data.get("value", 0.0))
         uniforms["signal.color_warmth"] = worst_infra
 
+    # U8 Phase 1 — apply per-mode palette tint to colorgrade.hue_rotate
+    # BEFORE homage damping so an active homage package's hue rotation
+    # remains authoritative. Default ground (no homage) carries the
+    # mode-appropriate hue: research → cool (-155°), rnd → warm (+5°).
+    _apply_mode_palette_tint(uniforms)
+
     # HOMAGE Phase A6 — substrate invariant. Apply the active package's
     # colorgrade damping AFTER plan_defaults + chain deltas so the damped
     # saturation is authoritative (no chain amplification can override).
@@ -279,7 +387,22 @@ def write_uniforms(
     # as HashMap<String, f64> — non-scalar values (arrays) must be excluded or
     # the entire parse fails silently. Per-node overrides (node.param) and signal
     # overrides (signal.*) both flow through this file.
-    scalar_uniforms = {k: v for k, v in uniforms.items() if isinstance(v, (int, float))}
+    #
+    # NaN/Inf/bool sanitisation: Rust ``serde_json`` silently crashes on
+    # NaN/Inf input. ``compute_param_deltas()`` aggregates per-dimension
+    # mappings without clamping, so upstream propagation (divide-by-zero,
+    # bool-to-float coercion, runaway modulation) could land a poison
+    # value in this dict. ``_sanitize_uniform_value`` is the last line
+    # of defence — every value gets coerced/clamped before serialisation.
+    # Per-tick deltas don't need an additional per-key envelope clamp:
+    # they're applied to envelope-clipped base values (plan defaults +
+    # bounded chain modulation), so reaching ±1e6 indicates upstream
+    # corruption rather than legitimate modulation.
+    scalar_uniforms = {
+        k: _sanitize_uniform_value(v)
+        for k, v in uniforms.items()
+        if isinstance(v, (int, float, bool))
+    }
 
     try:
         UNIFORMS_FILE.parent.mkdir(parents=True, exist_ok=True)
