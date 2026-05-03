@@ -235,8 +235,13 @@ class TestPickAndLoadMutated:
         name, graph = hit
         assert name in pfs.presets_for_family("audio-reactive")
         assert isinstance(graph, dict)
+        # Two preset shapes are supported by mutate_preset (see
+        # agents/studio_compositor/preset_mutator.py:116-118): legacy
+        # ``{nodes: dict, edges: [...]}`` and modern audit-pool
+        # ``{nodes: dict, lineage: ...}`` (no edges, audit pools
+        # 2026-05-03). Accept either; the mutator iterates nodes either
+        # way.
         assert "nodes" in graph
-        assert "edges" in graph
 
     def test_returns_none_on_unknown_family(self):
         assert pfs.pick_and_load_mutated("nonexistent-family") is None

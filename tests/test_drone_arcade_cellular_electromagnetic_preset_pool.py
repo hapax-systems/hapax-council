@@ -190,3 +190,22 @@ class TestLineageDistinctness:
             primary = self.LINEAGE_PRIMARY_NODES[lineage]
             overlap = preset_types & primary
             assert overlap, f"preset {basename!r} (lineage {lineage!r}) has no signature node"
+
+
+class TestRecruitabilityViaFamilyPresets:
+    """Audit-pool fix 2026-05-03: every preset MUST be reachable via the
+    director's preset-family recruitment dispatcher (``FAMILY_PRESETS``).
+    Without this, presets exist as JSON files but no autonomous director
+    path can pick them — only the chat-keyword regex in chat_reactor.
+    """
+
+    def test_every_preset_in_family_presets(self) -> None:
+        from agents.studio_compositor.preset_family_selector import FAMILY_PRESETS
+
+        recruitable = {p for fam in FAMILY_PRESETS.values() for p in fam}
+        for name, _ in EXPECTED_PRESETS:
+            assert name in recruitable, (
+                f"preset {name!r} is not in FAMILY_PRESETS — "
+                "director recruitment cannot pick it. Add to a family "
+                "in agents/studio_compositor/preset_family_selector.py."
+            )
