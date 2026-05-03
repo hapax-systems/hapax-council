@@ -1386,3 +1386,27 @@ from agents.studio_compositor.activity_family_ceiling import (
 _act_get_default_tracker
 _act_set_default_tracker
 _act_visible_time_bias_score
+
+# GitHub Sponsors V5 publisher + FastAPI route — cc-task
+# github-sponsors-end-to-end-wiring (1st live monetization rail).
+# The Publisher subclass entry-points are invoked by the FastAPI
+# route handler; vulture cannot follow the import-string dispatch
+# through router.include. Pure helpers exported for tests + future
+# aggregator wiring.
+from agents.publication_bus.github_sponsors_publisher import (
+    GitHubSponsorsPublisher,
+    event_to_manifest_record,
+    manifest_path_for_event,
+)
+from logos.api.routes.payment_rails import (
+    GITHUB_SPONSORS_SIGNATURE_HEADER,
+    receive_github_sponsors_webhook,
+)
+
+GitHubSponsorsPublisher.publish_event
+GitHubSponsorsPublisher._render_manifest_body
+GitHubSponsorsPublisher._auto_link_cancellation_to_refusal_log
+event_to_manifest_record
+manifest_path_for_event
+GITHUB_SPONSORS_SIGNATURE_HEADER
+receive_github_sponsors_webhook
