@@ -77,7 +77,7 @@ def _replace_node(
 def _l12_contract_fixture() -> TopologyDescriptor:
     return _descriptor(
         """
-        schema_version: 1
+        schema_version: 2
         description: l12 invariant fixture
         nodes:
           - id: l12-capture
