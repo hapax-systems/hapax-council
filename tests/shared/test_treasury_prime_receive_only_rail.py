@@ -107,14 +107,15 @@ def test_payment_order_event_rejected_as_outgoing() -> None:
             receiver.ingest_webhook(payload, sig, raw_body=raw)
 
 
-def test_transaction_create_rejected_as_phase_1_scope() -> None:
-    """Phase 0 explicitly does not accept core-direct-account events."""
+def test_transaction_create_missing_direction_rejected() -> None:
+    """Phase 1 ``transaction.create`` requires ``data.direction`` for the filter."""
     payload = _ach_payload(event="transaction.create")
+    # _ach_payload doesn't include direction; rail must reject without one
     raw = _canonical(payload)
     sig = _sign(raw)
     receiver = TreasuryPrimeRailReceiver()
     with mock.patch.dict("os.environ", {TREASURY_PRIME_WEBHOOK_SECRET_ENV: _VALID_SECRET}):
-        with pytest.raises(ReceiveOnlyRailError, match=r"out of Phase 0 scope"):
+        with pytest.raises(ReceiveOnlyRailError, match=r"missing 'data.direction'"):
             receiver.ingest_webhook(payload, sig, raw_body=raw)
 
 
@@ -452,9 +453,129 @@ def test_secret_env_var_constant_is_canonical() -> None:
     assert TREASURY_PRIME_WEBHOOK_SECRET_ENV == "TREASURY_PRIME_WEBHOOK_SECRET"
 
 
-def test_event_kind_enum_only_accepts_phase_0_event() -> None:
-    """Phase 0 accepts ONLY incoming_ach.create."""
-    assert {k.value for k in IncomingAchEventKind} == {"incoming_ach.create"}
+def test_event_kind_enum_accepts_phase_0_and_phase_1() -> None:
+    """Phase 1 (this branch) adds transaction.create alongside incoming_ach.create."""
+    assert {k.value for k in IncomingAchEventKind} == {
+        "incoming_ach.create",
+        "transaction.create",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 — transaction.create with data-level direction filter
+# ---------------------------------------------------------------------------
+
+
+def _txn_create_payload(
+    *,
+    direction: str | None = "credit",
+    originating_party_name: str = "Acme Foundation",
+    amount: object = 10000,
+    currency: str = "USD",
+    created_at: str = "2026-05-02T12:00:00Z",
+) -> dict:
+    """Realistic Treasury Prime ``transaction.create`` for a core direct account."""
+    payload: dict = {
+        "event": "transaction.create",
+        "data": {
+            "id": "tp-txn-create-uuid",
+            "amount": amount,
+            "currency": currency,
+            "originating_party_name": originating_party_name,
+            "originating_account_number": "999111888777",  # banking PII
+            "originating_routing_number": "021000089",  # banking PII
+            "trace_number": "TRACE-67890",
+            "ledger_account_id": "la-uuid-9999",
+            "created_at": created_at,
+        },
+    }
+    if direction is not None:
+        payload["data"]["direction"] = direction
+    return payload
+
+
+def test_transaction_create_credit_direction_accepted() -> None:
+    """Phase 1: credit (incoming) direction normalizes successfully."""
+    payload = _txn_create_payload(direction="credit")
+    raw = _canonical(payload)
+    sig = _sign(raw)
+    receiver = TreasuryPrimeRailReceiver()
+    with mock.patch.dict("os.environ", {TREASURY_PRIME_WEBHOOK_SECRET_ENV: _VALID_SECRET}):
+        event = receiver.ingest_webhook(payload, sig, raw_body=raw)
+    assert event is not None
+    assert event.event_kind is IncomingAchEventKind.TRANSACTION_CREATE
+    assert event.originating_party_handle == "Acme Foundation"
+    assert event.amount_currency_cents == 10000
+    assert event.currency == "USD"
+
+
+def test_transaction_create_incoming_direction_accepted() -> None:
+    """``incoming`` is a synonym for ``credit`` (defensive for partner shapes)."""
+    payload = _txn_create_payload(direction="incoming")
+    raw = _canonical(payload)
+    sig = _sign(raw)
+    receiver = TreasuryPrimeRailReceiver()
+    with mock.patch.dict("os.environ", {TREASURY_PRIME_WEBHOOK_SECRET_ENV: _VALID_SECRET}):
+        event = receiver.ingest_webhook(payload, sig, raw_body=raw)
+    assert event is not None
+    assert event.event_kind is IncomingAchEventKind.TRANSACTION_CREATE
+
+
+def test_transaction_create_debit_direction_rejected() -> None:
+    """Outgoing-debit fails closed."""
+    payload = _txn_create_payload(direction="debit")
+    raw = _canonical(payload)
+    sig = _sign(raw)
+    receiver = TreasuryPrimeRailReceiver()
+    with mock.patch.dict("os.environ", {TREASURY_PRIME_WEBHOOK_SECRET_ENV: _VALID_SECRET}):
+        with pytest.raises(ReceiveOnlyRailError, match=r"refusing outgoing transaction direction"):
+            receiver.ingest_webhook(payload, sig, raw_body=raw)
+
+
+def test_transaction_create_outgoing_direction_rejected() -> None:
+    """``outgoing`` synonym also fails closed."""
+    payload = _txn_create_payload(direction="outgoing")
+    raw = _canonical(payload)
+    sig = _sign(raw)
+    receiver = TreasuryPrimeRailReceiver()
+    with mock.patch.dict("os.environ", {TREASURY_PRIME_WEBHOOK_SECRET_ENV: _VALID_SECRET}):
+        with pytest.raises(ReceiveOnlyRailError, match=r"refusing outgoing"):
+            receiver.ingest_webhook(payload, sig, raw_body=raw)
+
+
+def test_transaction_create_unknown_direction_rejected() -> None:
+    """Unknown direction values fail closed (no silent acceptance)."""
+    payload = _txn_create_payload(direction="sideways")
+    raw = _canonical(payload)
+    sig = _sign(raw)
+    receiver = TreasuryPrimeRailReceiver()
+    with mock.patch.dict("os.environ", {TREASURY_PRIME_WEBHOOK_SECRET_ENV: _VALID_SECRET}):
+        with pytest.raises(ReceiveOnlyRailError, match=r"unknown transaction direction"):
+            receiver.ingest_webhook(payload, sig, raw_body=raw)
+
+
+def test_transaction_create_direction_case_insensitive() -> None:
+    """Direction values are normalized via lower() — defensive for partner shapes."""
+    payload = _txn_create_payload(direction="CREDIT")
+    raw = _canonical(payload)
+    sig = _sign(raw)
+    receiver = TreasuryPrimeRailReceiver()
+    with mock.patch.dict("os.environ", {TREASURY_PRIME_WEBHOOK_SECRET_ENV: _VALID_SECRET}):
+        event = receiver.ingest_webhook(payload, sig, raw_body=raw)
+    assert event is not None
+
+
+def test_incoming_ach_create_does_not_require_direction_field() -> None:
+    """Phase 0 path: event-name-level filter; data.direction not required."""
+    payload = _ach_payload()  # no direction field
+    assert "direction" not in payload["data"]
+    raw = _canonical(payload)
+    sig = _sign(raw)
+    receiver = TreasuryPrimeRailReceiver()
+    with mock.patch.dict("os.environ", {TREASURY_PRIME_WEBHOOK_SECRET_ENV: _VALID_SECRET}):
+        event = receiver.ingest_webhook(payload, sig, raw_body=raw)
+    assert event is not None
+    assert event.event_kind is IncomingAchEventKind.INCOMING_ACH_CREATED
 
 
 def test_receive_only_error_subclasses_exception() -> None:

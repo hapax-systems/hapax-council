@@ -2190,3 +2190,22 @@ _tier1_generate_sine_int16
 _tier1_int16_to_float32
 _tier1_linear_resample_int16
 _tier1_rms_dbfs_int16
+
+# m8-remote-button-control-daemon (cc-task m8-remote-button-control-daemon, this PR):
+# the M8ControlClient + button/keyjazz/reset/theme methods are the in-process Python
+# wrapper. No static caller yet — the director-loop / recruitment-consumer integrations
+# are downstream cc-tasks (Gap 5 song queue, Gap 6 sample upload). The client + daemon
+# ship now so those integrations can land cleanly. Whitelisted until first caller.
+from agents.m8_control.client import M8ControlClient
+
+_M8ControlClient = M8ControlClient
+_M8ControlClient.button
+_M8ControlClient.keyjazz
+_M8ControlClient.reset
+_M8ControlClient.theme
+
+# Pydantic field_validator — vulture doesn't see Pydantic's reflection-based
+# call path. The classmethod IS invoked by pydantic.BaseModel validation.
+from agents.m8_control.daemon import M8ButtonRequest as _M8ButtonRequest
+
+_M8ButtonRequest._validate_button_names  # type: ignore[attr-defined]

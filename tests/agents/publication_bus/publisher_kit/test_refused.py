@@ -46,9 +46,17 @@ class TestRegisteredRefusedClasses:
         cc-task `discord-public-event-activation-or-retire` (2026-05-01
         retirement) adds the 6th (discord-webhook); the Wise design spike's
         `direct-debit-active-reception-refusal-brief` follow-up adds the
-        7th (wise-direct-debit-active-reception).
+        7th (wise-direct-debit-active-reception); cc-task
+        `leverage-REFUSED-twitter-linkedin-substack-accounts` (PR #1560,
+        first-class-graph promotion 2026-05-03) adds the 8th-10th
+        (twitter-x-account / linkedin-account / substack-account); cc-task
+        `reddit-refusal-brief` (2026-05-03) adds the 11th (reddit-account);
+        cc-tasks `leverage-REFUSED-github-discussions-enabled` (PR #1567)
+        and `leverage-REFUSED-wikipedia-auto-edit` (PR #1570),
+        first-class-graph promotion 2026-05-03, add the 12th-13th
+        (github-discussions / wikipedia-auto-edit).
         """
-        assert len(REFUSED_PUBLISHER_CLASSES) == 7
+        assert len(REFUSED_PUBLISHER_CLASSES) == 13
 
     def test_all_refused_classes_subclass_refused_publisher(self) -> None:
         for cls in REFUSED_PUBLISHER_CLASSES:

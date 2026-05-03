@@ -5,16 +5,16 @@ accounts. Normalizes inbound ``incoming_ach.create`` deliveries into
 a typed, payer-aggregate :class:`IncomingAchEvent` — *without* calls,
 outbound writes, CRM, or per-supporter relationship surfaces.
 
-**Phase 0 scope: ledger-account ACH only.** Treasury Prime emits
-webhooks for two account types: ledger accounts (event
-``incoming_ach.create``) and core direct accounts (event
-``transaction.create``). The ``transaction.create`` event includes
-BOTH incoming and outgoing transactions on core direct accounts and
-would require a data-level direction filter (Mercury shape). Phase 0
-ships only ``incoming_ach.create`` — incoming-by-name at the
-event-kind level (Modern Treasury shape). A separate Phase 1 cc-task
-can extend to ``transaction.create`` with the data-level direction
-filter if the operator opens a core direct account.
+**Phase 0 + Phase 1 scope: ledger-account ACH + core direct accounts.**
+Treasury Prime emits webhooks for two account types: ledger accounts
+(event ``incoming_ach.create``, Phase 0) and core direct accounts
+(event ``transaction.create``, Phase 1). Phase 0 ships
+``incoming_ach.create`` — incoming-by-name at the event-kind level
+(Modern Treasury shape). Phase 1 (this iteration) adds
+``transaction.create`` with the data-level direction filter (Mercury
+shape): ``data.direction`` must be ``"credit"`` or ``"incoming"``;
+``"debit"`` and ``"outgoing"`` are refused; missing or unknown values
+fail-closed.
 
 **Receive-only invariant.** This module never originates an outbound
 network call, never writes to an external system, and never persists
@@ -152,16 +152,21 @@ class ReceiveOnlyRailError(Exception):
 
 
 class IncomingAchEventKind(StrEnum):
-    """Canonical event kinds accepted by the receiver in Phase 0.
+    """Canonical event kinds accepted by the receiver.
 
-    Phase 0 accepts only ``incoming_ach.create`` — the ledger-account
-    incoming ACH event. Phase 1 will extend to ``transaction.create``
-    for core direct accounts; that event requires a data-level
-    direction filter (Mercury shape) and is intentionally out of
-    scope here.
+    Phase 0 added ``incoming_ach.create`` — the ledger-account incoming
+    ACH event (event-name-level direction filter; outgoing flows ride
+    on a different event name).
+
+    Phase 1 (this module) adds ``transaction.create`` — the core
+    direct-account event that includes BOTH incoming and outgoing
+    transactions. Direction filtering is applied at the data level via
+    :func:`_extract_direction` (Mercury shape): only ``data.direction
+    == "credit"`` is accepted; ``debit`` and unknown values fail-closed.
     """
 
     INCOMING_ACH_CREATED = "incoming_ach.create"
+    TRANSACTION_CREATE = "transaction.create"
 
 
 _ACCEPTED_KINDS: frozenset[str] = frozenset(k.value for k in IncomingAchEventKind)
@@ -242,11 +247,17 @@ def _verify_signature(raw_body: bytes, signature: str, secret: str) -> None:
 
 
 def _coerce_event_kind(payload: dict[str, Any]) -> IncomingAchEventKind:
-    """Map Treasury Prime's ``event`` string to the Phase 0 enum.
+    """Map Treasury Prime's ``event`` string to the rail's enum.
 
-    Outgoing event names (``ach_origination.*``) and Phase 1's
-    ``transaction.create`` are rejected with a direction-specific
-    message so the rejection is auditable.
+    Phase 0 accepts ``incoming_ach.create`` (ledger-account incoming);
+    Phase 1 adds ``transaction.create`` (core direct accounts) — the
+    latter requires the data-level direction filter applied below in
+    :meth:`TreasuryPrimeRailReceiver.ingest_webhook` via
+    :func:`_extract_direction`.
+
+    Outgoing event names (``ach_origination.*`` / ``payment_order.*``)
+    are rejected with a direction-specific message so the rejection
+    is auditable.
     """
     raw_event = payload.get("event")
     if not isinstance(raw_event, str):
@@ -257,12 +268,43 @@ def _coerce_event_kind(payload: dict[str, Any]) -> IncomingAchEventKind:
         return IncomingAchEventKind(raw_event)
     if raw_event.startswith("ach_origination.") or raw_event.startswith("payment_order."):
         raise ReceiveOnlyRailError(f"refusing outgoing event {raw_event!r} on receive-only rail")
-    if raw_event == "transaction.create":
-        raise ReceiveOnlyRailError(
-            "'transaction.create' (core direct account) is out of Phase 0 scope; "
-            "Phase 1 will add the data-level direction filter required to accept it"
-        )
     raise ReceiveOnlyRailError(f"unaccepted webhook event type {raw_event!r}")
+
+
+_INCOMING_DIRECTIONS: frozenset[str] = frozenset({"credit", "incoming"})
+_OUTGOING_DIRECTIONS: frozenset[str] = frozenset({"debit", "outgoing"})
+
+
+def _extract_direction(txn: dict[str, Any], event_kind: IncomingAchEventKind) -> None:
+    """Apply data-level direction filter for ``transaction.create`` events.
+
+    For Phase 0 ``incoming_ach.create`` the event-name itself is the
+    direction filter — this helper short-circuits and returns. For
+    Phase 1 ``transaction.create`` (core direct accounts), Treasury
+    Prime ships ``data.direction`` as ``"credit"`` (incoming to
+    operator) or ``"debit"`` (outgoing). Mirrors Mercury's data-level
+    direction filter.
+
+    Outgoing directions raise with a direction-specific message;
+    unknown values also fail closed (we do not silently accept
+    un-categorized flows).
+    """
+    if event_kind is IncomingAchEventKind.INCOMING_ACH_CREATED:
+        return  # event-name-level filter; no data-level check needed.
+    raw_direction = txn.get("direction")
+    if not isinstance(raw_direction, str) or not raw_direction:
+        raise ReceiveOnlyRailError(
+            "payload missing 'data.direction' on transaction.create "
+            "(required for Phase 1 direction filter)"
+        )
+    direction = raw_direction.strip().lower()
+    if direction in _INCOMING_DIRECTIONS:
+        return
+    if direction in _OUTGOING_DIRECTIONS:
+        raise ReceiveOnlyRailError(
+            f"refusing outgoing transaction direction {raw_direction!r} on receive-only rail"
+        )
+    raise ReceiveOnlyRailError(f"unknown transaction direction {raw_direction!r}")
 
 
 def _payment_object(payload: dict[str, Any]) -> dict[str, Any]:
@@ -421,6 +463,7 @@ class TreasuryPrimeRailReceiver:
 
         event_kind = _coerce_event_kind(payload)
         payment = _payment_object(payload)
+        _extract_direction(payment, event_kind)
         originating_party_handle = _extract_originating_party_handle(payment)
         amount_cents, currency = _extract_amount_and_currency(payment)
         occurred_at = _extract_occurred_at(payload, payment)

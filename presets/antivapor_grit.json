@@ -1,0 +1,46 @@
+{
+  "name": "Antivapor Grit",
+  "description": "Anti-vaporwave lineage (1/4): desaturated palette + high-contrast threshold + edge detection. Explicitly avoids the pink/teal vaporwave color signature. References gritty post-punk zine + early monochrome pen-and-ink aesthetics. Lineage: anti-vaporwave.",
+  "lineage": "anti-vaporwave",
+  "transition_ms": 1400,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 0.88,
+        "contrast": 1.45,
+        "saturation": 0.18,
+        "hue_rotate": 0
+      }
+    },
+    "edge": {
+      "type": "edge_detect",
+      "params": {
+        "threshold": 0.18,
+        "amount": 0.55
+      }
+    },
+    "grain_grit": {
+      "type": "grain_bump",
+      "params": {
+        "amount": 0.42,
+        "scale": 600
+      }
+    },
+    "vignette": {
+      "type": "vignette",
+      "params": {
+        "intensity": 0.55,
+        "radius": 0.6
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}

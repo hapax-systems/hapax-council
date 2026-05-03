@@ -36,3 +36,33 @@ refusals:
     cc_task: direct-debit-active-reception-refusal-brief
     publisher_class: agents.publication_bus.publisher_kit.refused.WiseDirectDebitRefusedPublisher
     lifecycle_probe: wise-direct-debit-payer-mandate-shape
+  twitter-x-account:
+    brief: docs/refusal-briefs/twitter-x-account.md
+    cc_task: leverage-REFUSED-twitter-linkedin-substack-accounts
+    publisher_class: agents.publication_bus.publisher_kit.refused.TwitterRefusedPublisher
+    lifecycle_probe: twitter-machine-author-broadcast-tier
+  linkedin-account:
+    brief: docs/refusal-briefs/linkedin-account.md
+    cc_task: leverage-REFUSED-twitter-linkedin-substack-accounts
+    publisher_class: agents.publication_bus.publisher_kit.refused.LinkedInRefusedPublisher
+    lifecycle_probe: linkedin-machine-author-broadcast-tier
+  substack-account:
+    brief: docs/refusal-briefs/substack-account.md
+    cc_task: leverage-REFUSED-twitter-linkedin-substack-accounts
+    publisher_class: agents.publication_bus.publisher_kit.refused.SubstackRefusedPublisher
+    lifecycle_probe: substack-automated-digest-tier
+  reddit-account:
+    brief: docs/refusal-briefs/reddit-account.md
+    cc_task: reddit-refusal-brief
+    publisher_class: agents.publication_bus.publisher_kit.refused.RedditRefusedPublisher
+    lifecycle_probe: reddit-machine-author-broadcast-tier
+  github-discussions:
+    brief: docs/refusal-briefs/github-discussions.md
+    cc_task: leverage-REFUSED-github-discussions-enabled
+    publisher_class: agents.publication_bus.publisher_kit.refused.GitHubDiscussionsRefusedPublisher
+    lifecycle_probe: github-discussions-machine-author-tier
+  wikipedia-auto-edit:
+    brief: docs/refusal-briefs/wikipedia-auto-edit.md
+    cc_task: leverage-REFUSED-wikipedia-auto-edit
+    publisher_class: agents.publication_bus.publisher_kit.refused.WikipediaAutoEditRefusedPublisher
+    lifecycle_probe: wikipedia-bot-policy-changes

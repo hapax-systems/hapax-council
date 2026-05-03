@@ -1,0 +1,47 @@
+{
+  "name": "Glitch Y2K Block",
+  "description": "Early-2000s digital-glitch lineage (1/4): sharp block-corruption, brief stutter, mild chromatic aberration. References the late-CRT / first-DVD-mpeg-block-error aesthetic. Lineage: glitch-y2k. Distinct from existing 'glitch_blocks_preset' by lower-intensity baseline + tape-warmth color tilt for retro grain.",
+  "lineage": "glitch-y2k",
+  "transition_ms": 600,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 1.08,
+        "contrast": 1.18,
+        "saturation": 1.22,
+        "hue_rotate": 4
+      }
+    },
+    "glitch_block": {
+      "type": "glitch_block",
+      "params": {
+        "intensity": 0.45,
+        "rgb_split": 0.3,
+        "block_size": 12
+      }
+    },
+    "stutter": {
+      "type": "stutter",
+      "params": {
+        "freeze_chance": 0.08,
+        "replay_frames": 2
+      }
+    },
+    "chroma": {
+      "type": "chromatic_aberration",
+      "params": {
+        "offset_x": 3,
+        "offset_y": 1
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}

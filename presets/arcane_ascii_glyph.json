@@ -1,0 +1,46 @@
+{
+  "name": "Arcane ASCII Glyph",
+  "description": "Arcane-glyph lineage (1/2): ASCII conversion + heavy dither — text-as-image aesthetic where every pixel becomes character. Lineage: arcane-glyph. Distinct from existing 'ascii_preset' by lower-density baseline + edge-detect overlay.",
+  "lineage": "arcane-glyph",
+  "transition_ms": 1100,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 0.98,
+        "contrast": 1.32,
+        "saturation": 0.4,
+        "hue_rotate": 0
+      }
+    },
+    "ascii_glyph": {
+      "type": "ascii",
+      "params": {
+        "scale": 0.02,
+        "char_set_size": 16
+      }
+    },
+    "dither_arcane": {
+      "type": "dither",
+      "params": {
+        "amount": 0.32,
+        "palette_size": 8
+      }
+    },
+    "edge_arcane": {
+      "type": "edge_detect",
+      "params": {
+        "threshold": 0.22,
+        "amount": 0.4
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}

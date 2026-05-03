@@ -1,0 +1,45 @@
+{
+  "name": "Mono Print Woodcut",
+  "description": "Monochrome-print lineage (1/2): high-contrast threshold + heavy halftone + sharpen creates a woodcut/linocut printmaking aesthetic. Lineage: monochrome-print.",
+  "lineage": "monochrome-print",
+  "transition_ms": 1300,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 0.92,
+        "contrast": 1.7,
+        "saturation": 0.0,
+        "hue_rotate": 0
+      }
+    },
+    "threshold_woodcut": {
+      "type": "threshold",
+      "params": {
+        "threshold": 0.45,
+        "smoothness": 0.04
+      }
+    },
+    "halftone_coarse": {
+      "type": "halftone",
+      "params": {
+        "scale": 0.018,
+        "angle": 30
+      }
+    },
+    "sharpen_edge": {
+      "type": "sharpen",
+      "params": {
+        "amount": 0.55
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}

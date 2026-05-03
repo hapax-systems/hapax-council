@@ -1,0 +1,54 @@
+{
+  "name": "Vinyl Pop Static",
+  "description": "Heavy vinyl-noise lineage: louder pops + scratches + occasional dropout via stutter. Lineage: vinyl-noise (2/4). Companion to vinyl_dust at higher intensity.",
+  "lineage": "vinyl-noise",
+  "transition_ms": 2200,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 0.92,
+        "contrast": 1.12,
+        "saturation": 0.78,
+        "hue_rotate": 10
+      }
+    },
+    "noise_static": {
+      "type": "noise_overlay",
+      "params": {
+        "intensity": 0.32,
+        "scale": 1400,
+        "speed": 0.55
+      }
+    },
+    "grain": {
+      "type": "grain_bump",
+      "params": {
+        "amount": 0.34,
+        "scale": 900
+      }
+    },
+    "stutter": {
+      "type": "stutter",
+      "params": {
+        "freeze_chance": 0.04,
+        "replay_frames": 1
+      }
+    },
+    "vignette": {
+      "type": "vignette",
+      "params": {
+        "intensity": 0.45,
+        "radius": 0.65
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}

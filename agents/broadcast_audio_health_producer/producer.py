@@ -169,11 +169,21 @@ def _default_inject(sink_name: str, samples: np.ndarray, sample_rate: int) -> No
         sink_name,
         "-",
     ]
+    # ``timeout`` is a fail-fast cap, not a budget. On a healthy sink
+    # pw-cat returns in ~tone_duration_s + ~0.2 s graphical overhead
+    # (≤1.5 s for the typical 1 s tone). The 15 s ceiling exists so a
+    # contended sink (e.g. L-12 USB sink-input scheduling stalling
+    # under filter-chain contention — root cause of the 2026-05-03
+    # livestream-dropout investigation) does NOT block the probe
+    # forever and pile pw-cat subprocesses across 60 s timer fires.
+    # Aligned with the capture-thread join timeout below so the probe
+    # surfaces contention as one ``error`` outcome per cycle rather
+    # than half-failing with the inject hung past the join window.
     completed = subprocess.run(  # noqa: S603 — args are an explicit list
         cmd,
         input=payload.tobytes(),
         capture_output=True,
-        timeout=5,
+        timeout=15,
         check=True,
     )
     if completed.returncode != 0:
@@ -278,11 +288,15 @@ class BroadcastAudioHealthProducer:
             cap_thread.start()
             time.sleep(CAPTURE_WARMUP_S)
             self._inject(route.sink_name, tone, self.sample_rate)
-            cap_thread.join(timeout=self.capture_duration_s + 5.0)
+            # Headroom of 15 s above the configured capture window
+            # absorbs transient parec startup jitter on contended ALSA
+            # monitor sources without piling probe runs. Aligned with
+            # the pw-cat inject ceiling in :func:`_default_inject`.
+            cap_thread.join(timeout=self.capture_duration_s + 15.0)
             if cap_thread.is_alive():
                 raise RuntimeError(
                     f"capture thread for {route.name} did not finish within "
-                    f"{self.capture_duration_s + 5.0}s"
+                    f"{self.capture_duration_s + 15.0}s"
                 )
             if "e" in error_holder:
                 raise error_holder["e"]

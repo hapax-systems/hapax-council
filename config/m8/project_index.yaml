@@ -1,0 +1,15 @@
+# M8 SD-card project index — operator-maintained.
+#
+# Each entry maps a symbolic project name to the M8 LOAD PROJECT button
+# sequence required to navigate from the LOAD PROJECT view's home position
+# to that project's row, then EDIT to queue it.
+#
+# REGENERATE this file via `scripts/m8-rescan-projects.py` after any SD
+# card reorganization (project rename, new project added, etc.). The
+# rescan script reads the SD card directly via cardreader (operator-
+# physical, M8 must be USB-disconnected during the scan).
+#
+# Schema: see agents/m8_control/song_queue.py::M8ProjectIndex.
+#
+# Initial scaffold — operator populates after first cardreader scan.
+projects: []

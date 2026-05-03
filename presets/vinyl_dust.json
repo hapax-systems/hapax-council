@@ -1,0 +1,47 @@
+{
+  "name": "Vinyl Dust",
+  "description": "Soft vinyl-noise lineage: subtle high-frequency crackle + warm color tilt + minimal saturation. Lineage: vinyl-noise (1/4). The 9-dim parametric envelope expects intensity to drive noise_overlay strength; coherence drives the grain anchor, drift drives the temporal motion.",
+  "lineage": "vinyl-noise",
+  "transition_ms": 2400,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 0.95,
+        "contrast": 1.05,
+        "saturation": 0.85,
+        "hue_rotate": 8
+      }
+    },
+    "noise_dust": {
+      "type": "noise_overlay",
+      "params": {
+        "intensity": 0.18,
+        "scale": 1200,
+        "speed": 0.4
+      }
+    },
+    "grain": {
+      "type": "grain_bump",
+      "params": {
+        "amount": 0.22,
+        "scale": 800
+      }
+    },
+    "vignette": {
+      "type": "vignette",
+      "params": {
+        "intensity": 0.35,
+        "radius": 0.7
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}
