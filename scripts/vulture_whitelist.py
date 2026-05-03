@@ -1637,6 +1637,31 @@ _mt_manifest_path_for_event
 MODERN_TREASURY_SIGNATURE_HEADER
 receive_modern_treasury_webhook
 
+# Treasury Prime V5 publisher + FastAPI route — cc-task
+# treasury-prime-end-to-end-wiring (10th and FINAL live monetization rail).
+# HMAC SHA-256 in X-Signature (same as Modern Treasury, disambiguated by URL path).
+# Phase 0 accepts only incoming_ach.create.
+from agents.publication_bus.treasury_prime_publisher import (
+    TreasuryPrimePublisher,
+)
+from agents.publication_bus.treasury_prime_publisher import (
+    event_to_manifest_record as _tp_event_to_manifest_record,
+)
+from agents.publication_bus.treasury_prime_publisher import (
+    manifest_path_for_event as _tp_manifest_path_for_event,
+)
+from logos.api.routes.payment_rails import (
+    TREASURY_PRIME_SIGNATURE_HEADER,
+    receive_treasury_prime_webhook,
+)
+
+TreasuryPrimePublisher.publish_event
+TreasuryPrimePublisher._render_manifest_body
+_tp_event_to_manifest_record
+_tp_manifest_path_for_event
+TREASURY_PRIME_SIGNATURE_HEADER
+receive_treasury_prime_webhook
+
 # R9 follow-up: apply_layout_switch adapter (cc-task
 # dynamic-compositor-layout-switching-followup). Ships ahead of any
 # caller; whitelisted until director-loop / systemd-timer wiring lands
