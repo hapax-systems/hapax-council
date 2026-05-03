@@ -114,6 +114,19 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "to the canonical refusal log under axiom full_auto_or_nothing."
         ),
     ),
+    "patreon-receiver": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="webhook",
+        dispatch_entry="logos.api.routes.payment_rails:receive_patreon_webhook",
+        activation_path="agents.publication_bus.patreon_publisher.PatreonPublisher",
+        scope_note=(
+            "Sixth wired monetization rail. POST /api/payment-rails/patreon on "
+            "logos :8051; HMAC MD5 (not SHA-256, per Patreon's documented wire "
+            "format) via X-Patreon-Signature + PATREON_WEBHOOK_SECRET env var. "
+            "Event-kind in X-Patreon-Event header. Pledge-deletion events "
+            "auto-link to the canonical refusal log."
+        ),
+    ),
     "ko-fi-receiver": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="webhook",
