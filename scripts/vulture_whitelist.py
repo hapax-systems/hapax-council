@@ -1816,3 +1816,22 @@ _audit_C_onset_latency_hist
 _audit_C_rms_window_legacy
 _audit_C_rms_window_target
 _audit_C_expected_rms_samples
+
+# Typed LADSPA param schema (cc-task audio-audit-E-topology-schema-v3 Phase 0):
+# Phase 1 will wire LADSPAParamSpec into shared/audio_topology.Node.params and
+# bump audio-topology.yaml schema_version. Until then, only the test suite
+# exercises these symbols.
+from shared.audio_topology_typed_params import (
+    LADSPAParamSpec as _audit_E_ladspa_param_spec,
+)
+from shared.audio_topology_typed_params import (
+    validate_param_value as _audit_E_validate_param_value,
+)
+
+_audit_E_ladspa_param_spec
+_audit_E_validate_param_value
+
+# Pydantic validator methods on LADSPAParamSpec are invoked dynamically by
+# pydantic at model construction (cc-task audio-audit-E Phase 0).
+_audit_E_ladspa_param_spec._name_no_internal_whitespace_collapse
+_audit_E_ladspa_param_spec._validate_range_consistency
