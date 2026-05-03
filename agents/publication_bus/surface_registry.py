@@ -102,6 +102,69 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
         activation_path="agents.marketing.refusal_annex_publisher.RefusalAnnexPublisher",
         scope_note="renders refusal annex markdown to ~/hapax-state/publications/",
     ),
+    "github-sponsors-receiver": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="webhook",
+        dispatch_entry="logos.api.routes.payment_rails:receive_github_sponsors_webhook",
+        activation_path="agents.publication_bus.github_sponsors_publisher.GitHubSponsorsPublisher",
+        scope_note=(
+            "First wired monetization rail. POST /api/payment-rails/github-sponsors "
+            "on logos :8051; HMAC SHA-256 over raw body via X-Hub-Signature-256 + "
+            "GITHUB_SPONSORS_WEBHOOK_SECRET env var. Cancellation events auto-link "
+            "to the canonical refusal log under axiom full_auto_or_nothing."
+        ),
+    ),
+    "ko-fi-receiver": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="webhook",
+        dispatch_entry="logos.api.routes.payment_rails:receive_ko_fi_webhook",
+        activation_path="agents.publication_bus.ko_fi_publisher.KoFiPublisher",
+        scope_note=(
+            "Fifth wired monetization rail. POST /api/payment-rails/ko-fi on "
+            "logos :8051; token-in-payload verification (NOT HMAC) via "
+            "KO_FI_WEBHOOK_VERIFICATION_TOKEN env var. No cancellation auto-link."
+        ),
+    ),
+    "stripe-payment-link-receiver": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="webhook",
+        dispatch_entry="logos.api.routes.payment_rails:receive_stripe_payment_link_webhook",
+        activation_path="agents.publication_bus.stripe_payment_link_publisher.StripePaymentLinkPublisher",
+        scope_note=(
+            "Fourth wired monetization rail. POST /api/payment-rails/stripe-payment-link "
+            "on logos :8051; timestamped HMAC SHA-256 via Stripe-Signature + "
+            "STRIPE_PAYMENT_LINK_WEBHOOK_SECRET env var. Subscription-deletion "
+            "events auto-link to the canonical refusal log."
+        ),
+    ),
+    "open-collective-receiver": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="webhook",
+        dispatch_entry="logos.api.routes.payment_rails:receive_open_collective_webhook",
+        activation_path="agents.publication_bus.open_collective_publisher.OpenCollectivePublisher",
+        scope_note=(
+            "Third wired monetization rail. POST /api/payment-rails/open-collective "
+            "on logos :8051; HMAC SHA-256 over raw body via X-Open-Collective-Signature "
+            "+ OPEN_COLLECTIVE_WEBHOOK_SECRET env var. Multi-currency-native; no "
+            "cancellation auto-link (no cancellation event in the canonical 4)."
+        ),
+    ),
+    "liberapay-receiver": SurfaceSpec(
+        automation_status=AutomationStatus.CONDITIONAL_ENGAGE,
+        api="webhook-via-bridge",
+        dispatch_entry="logos.api.routes.payment_rails:receive_liberapay_webhook",
+        activation_path="agents.publication_bus.liberapay_publisher.LiberapayPublisher",
+        scope_note=(
+            "Second wired monetization rail. POST /api/payment-rails/liberapay on "
+            "logos :8051. Liberapay does not natively ship webhooks — bridge "
+            "(cloudmailin/mailgun/n8n) forwards parsed deliveries with optional "
+            "HMAC SHA-256 via X-Liberapay-Signature + LIBERAPAY_WEBHOOK_SECRET env. "
+            "IP allowlist gate via LIBERAPAY_REQUIRE_IP_ALLOWLIST=1. CONDITIONAL_ENGAGE "
+            "until the bridge is bootstrapped (operator-action: configure email "
+            "forwarder + n8n parser flow). Tip-cancellation events auto-link to "
+            "the canonical refusal log."
+        ),
+    ),
     "arena-post": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="REST",

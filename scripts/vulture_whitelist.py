@@ -1386,3 +1386,156 @@ from agents.studio_compositor.activity_family_ceiling import (
 _act_get_default_tracker
 _act_set_default_tracker
 _act_visible_time_bias_score
+
+# GitHub Sponsors V5 publisher + FastAPI route — cc-task
+# github-sponsors-end-to-end-wiring (1st live monetization rail).
+# The Publisher subclass entry-points are invoked by the FastAPI
+# route handler; vulture cannot follow the import-string dispatch
+# through router.include. Pure helpers exported for tests + future
+# aggregator wiring.
+from agents.publication_bus.github_sponsors_publisher import (
+    GitHubSponsorsPublisher,
+    event_to_manifest_record,
+    manifest_path_for_event,
+)
+from logos.api.routes.payment_rails import (
+    GITHUB_SPONSORS_SIGNATURE_HEADER,
+    receive_github_sponsors_webhook,
+)
+
+GitHubSponsorsPublisher.publish_event
+GitHubSponsorsPublisher._render_manifest_body
+GitHubSponsorsPublisher._auto_link_cancellation_to_refusal_log
+event_to_manifest_record
+manifest_path_for_event
+GITHUB_SPONSORS_SIGNATURE_HEADER
+receive_github_sponsors_webhook
+
+# R9 dynamic compositor-layout switcher (cc-task
+# dynamic-compositor-layout-switching). Pure logic + cooldown wrapper
+# shipped in isolation; integration into the director loop / systemd
+# timer is a follow-up PR per the task scope. Whitelisted until that
+# integration lands.
+from agents.studio_compositor.layout_switcher import (
+    LayoutSelection as _r9_LayoutSelection,
+)
+from agents.studio_compositor.layout_switcher import (
+    LayoutSwitcher as _r9_LayoutSwitcher,
+)
+from agents.studio_compositor.layout_switcher import (
+    select_layout as _r9_select_layout,
+)
+
+_r9_LayoutSelection
+_r9_LayoutSwitcher
+_r9_select_layout
+_r9_LayoutSwitcher.current_layout
+_r9_LayoutSwitcher.should_switch
+_r9_LayoutSwitcher.record_switch
+
+# Liberapay V5 publisher + FastAPI route — cc-task
+# liberapay-end-to-end-wiring (2nd live monetization rail; sister of #2280
+# github-sponsors-end-to-end-wiring). Same pattern; vulture cannot follow
+# the import-string dispatch through router.include.
+from agents.publication_bus.liberapay_publisher import (
+    LiberapayPublisher,
+)
+from agents.publication_bus.liberapay_publisher import (
+    event_to_manifest_record as _lp_event_to_manifest_record,
+)
+from agents.publication_bus.liberapay_publisher import (
+    manifest_path_for_event as _lp_manifest_path_for_event,
+)
+from logos.api.routes.payment_rails import (
+    LIBERAPAY_SIGNATURE_HEADER,
+    receive_liberapay_webhook,
+)
+
+LiberapayPublisher.publish_event
+LiberapayPublisher._render_manifest_body
+LiberapayPublisher._auto_link_cancellation_to_refusal_log
+_lp_event_to_manifest_record
+_lp_manifest_path_for_event
+LIBERAPAY_SIGNATURE_HEADER
+receive_liberapay_webhook
+
+# Open Collective V5 publisher + FastAPI route — cc-task
+# open-collective-end-to-end-wiring (3rd live monetization rail).
+# Same pattern as Sponsors (#2280) + Liberapay (#2287); no cancellation
+# auto-link because the canonical 4 OC events do not include a
+# cancellation-equivalent.
+from agents.publication_bus.open_collective_publisher import (
+    OpenCollectivePublisher,
+)
+from agents.publication_bus.open_collective_publisher import (
+    event_to_manifest_record as _oc_event_to_manifest_record,
+)
+from agents.publication_bus.open_collective_publisher import (
+    manifest_path_for_event as _oc_manifest_path_for_event,
+)
+from logos.api.routes.payment_rails import (
+    OPEN_COLLECTIVE_SIGNATURE_HEADER,
+    receive_open_collective_webhook,
+)
+
+OpenCollectivePublisher.publish_event
+OpenCollectivePublisher._render_manifest_body
+_oc_event_to_manifest_record
+_oc_manifest_path_for_event
+OPEN_COLLECTIVE_SIGNATURE_HEADER
+receive_open_collective_webhook
+
+# Stripe Payment Link V5 publisher + FastAPI route — cc-task
+# stripe-payment-link-end-to-end-wiring (4th live monetization rail).
+# Same pattern; subscription-deletion auto-link to refusal log.
+from agents.publication_bus.stripe_payment_link_publisher import (
+    StripePaymentLinkPublisher,
+)
+from agents.publication_bus.stripe_payment_link_publisher import (
+    event_to_manifest_record as _stripe_event_to_manifest_record,
+)
+from agents.publication_bus.stripe_payment_link_publisher import (
+    manifest_path_for_event as _stripe_manifest_path_for_event,
+)
+from logos.api.routes.payment_rails import (
+    STRIPE_PAYMENT_LINK_SIGNATURE_HEADER,
+    receive_stripe_payment_link_webhook,
+)
+
+StripePaymentLinkPublisher.publish_event
+StripePaymentLinkPublisher._render_manifest_body
+StripePaymentLinkPublisher._auto_link_cancellation_to_refusal_log
+_stripe_event_to_manifest_record
+_stripe_manifest_path_for_event
+STRIPE_PAYMENT_LINK_SIGNATURE_HEADER
+receive_stripe_payment_link_webhook
+
+# Ko-fi V5 publisher + FastAPI route — cc-task ko-fi-end-to-end-wiring
+# (5th live monetization rail). Ko-fi uses token-in-payload verification
+# (NOT HMAC); no cancellation event in canonical 4 so no auto-link.
+from agents.publication_bus.ko_fi_publisher import (
+    KoFiPublisher,
+)
+from agents.publication_bus.ko_fi_publisher import (
+    event_to_manifest_record as _kofi_event_to_manifest_record,
+)
+from agents.publication_bus.ko_fi_publisher import (
+    manifest_path_for_event as _kofi_manifest_path_for_event,
+)
+from logos.api.routes.payment_rails import (
+    receive_ko_fi_webhook,
+)
+
+KoFiPublisher.publish_event
+KoFiPublisher._render_manifest_body
+_kofi_event_to_manifest_record
+_kofi_manifest_path_for_event
+receive_ko_fi_webhook
+
+# R9 follow-up: apply_layout_switch adapter (cc-task
+# dynamic-compositor-layout-switching-followup). Ships ahead of any
+# caller; whitelisted until director-loop / systemd-timer wiring lands
+# in a 3rd-slice PR.
+from agents.studio_compositor.layout_switcher import apply_layout_switch as _r9_apply_layout_switch
+
+_r9_apply_layout_switch

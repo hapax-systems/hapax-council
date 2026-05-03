@@ -21,6 +21,8 @@ CLAUDE.md rotation policy: `docs/superpowers/specs/2026-04-13-claude-md-excellen
 
 **Infrastructure**: Docker Compose for databases/proxies (13 containers), systemd user units for all application services. No process-compose in production. See `systemd/README.md` for boot sequence, resource isolation, and recovery chain. **Canonical path for new systemd units: `systemd/units/`** — `scripts/hapax-post-merge-deploy` matches `systemd/units/*.service|*.timer` only; files placed elsewhere (e.g., `systemd/user/`) are silently invisible to the deploy chain.
 
+> **Qdrant collection footnote (24h auditor finding #11, 2026-05-02):** The `operator-patterns` collection in the workspace Qdrant schema has zero upsert callers across the codebase (dead schema). Marked **pending retire decision** — do not add new writers; route operator-pattern facts through `profile-facts` or `operator-corrections` until a decommission PR lands.
+
 **Key services**: `hapax-secrets` (credentials) → `logos-api` (:8051) → `waybar` (GTK4 status bar) → `tabbyapi` (GPU, EXL3 inference :5000) → `hapax-daimonion` (GPU STT, CPU TTS) → `visual-layer-aggregator` → `studio-compositor` (GPU). Timers for sync, health, backups. Archival pipeline (audio/video recording, classification, RAG ingest) disabled — see `systemd/README.md § Disabled Services`.
 
 ## Design Language
@@ -104,7 +106,7 @@ Per-node shader params flow from Python visual chain → `uniforms.json` → Rus
 
 Everything that appears — visual content, tool invocation, vocal expression, destination routing — is recruited through a single `AffordancePipeline`. No bypass paths. Spec: `docs/superpowers/specs/2026-04-02-unified-semantic-recruitment-design.md`.
 
-**Mechanism:** Impingement → embed narrative → cosine similarity against Qdrant `affordances` collection → score (0.50×similarity + 0.20×base_level + 0.10×context_boost + 0.20×thompson) → governance veto → recruited capabilities activate. Thompson sampling (optimistic prior: Beta(2,1)) + Hebbian associations learn from outcomes across sessions. Activation state persisted every 60s via background thread + on shutdown.
+**Mechanism:** Impingement → embed narrative → cosine similarity against Qdrant `affordances` collection → score `(0.50×similarity + 0.20×base_level + 0.10×context_boost + 0.20×thompson + w_recency×recency_distance − exact_recency_penalty) × cost_weight` → governance veto → recruited capabilities activate. `cost_weight = 1.0 − cost×0.5` where `cost = 0.3` for GPU-required capabilities and `max(cost, 0.5)` for slow-latency-class capabilities (`shared/affordance_pipeline.py:756`). Thompson sampling (optimistic prior: Beta(2,1)) + Hebbian associations learn from outcomes across sessions; alpha/beta posterior parameters are clamped to `[1.0, 10.0]` via `_TS_FLOOR`/`_TS_CAP` to prevent saturation (geometric decay `α·γ + 1` with γ=0.99 would otherwise converge alpha→100 and produce deterministic Beta(100, ~0) samples — see `shared/affordance.py:109,129`). Activation state persisted every 60s via background thread + on shutdown.
 
 **Taxonomy (6 domains):** perception, expression, recall, action, communication, regulation. Each capability has a Gibson-verb affordance description (15-30 words, cognitive function not implementation). Three-level Rosch structure: Domain → Affordance (embedded in Qdrant) → Instance (metadata payload).
 
@@ -153,9 +155,13 @@ Test harness in `scripts/`: `studio-install-udev-rules.sh`, `studio-simulate-usb
 
 ## Reverie Vocabulary Integrity
 
+Effect-graph WGSL inventory: **64 shader nodes** in-tree (`find . -name '*.wgsl' | wc -l`, verified 2026-05-02 per 24h auditor finding #11; previously stated as 56 in user-memory `project_effect_graph` — refresh that index entry). 30 presets in `presets/`, glfeedback Rust plugin, SlotPipeline.
+
 The reverie mixer caches the vocabulary preset (`presets/reverie_vocabulary.json`) in memory via `SatelliteManager._core_vocab`. `SatelliteManager.maybe_rebuild()` reloads the preset from disk on `GraphValidationError`, so recovery is automatic at the next rebuild tick after any validation failure.
 
 Any Sierpinski or other satellite shader nodes in Reverie MUST be recruited dynamically via the affordance pipeline (prefix `sat_<node_type>`), NOT wired into the core vocabulary. If core-prefix nodes like `content: sierpinski_content` appear (instead of `sat_sierpinski_content`), restart the service.
+
+**WGSL node catalog (audit U7, 2026-05-03):** `agents/shaders/nodes/` carries 60 `.wgsl` files (legacy `hapax-logos/crates/hapax-visual/src/shaders` adds 4 more for a 64-file total; that path is decommissioned and not reachable at runtime). Of the 60 live nodes, 8 are the always-on permanent vocabulary (`noise → rd → color → drift → breath → feedback → content_layer → postprocess`); the remaining 52 are satellite-recruitable but only register-as-affordance get cosine-similarity-discovered by the AffordancePipeline. As of cc-task `wgsl-node-affordance-coverage-batch-3` the floor is **45 of 60 nodes registered** in `shared.affordance_registry.SHADER_NODE_AFFORDANCES`; the remaining 15 are still dormant and need entries before the director can recruit them. Regression pin: `tests/test_wgsl_node_affordance_coverage.py` (`MIN_REGISTERED_NODES`).
 
 **Intermediate texture pool:** `DynamicPipeline` allocates non-temporal intermediate textures through `TransientTexturePool<PoolTexture>`. Pool key is `hash(width, height, TEXTURE_FORMAT)`, recomputed on resize. External observability via `DynamicPipeline::pool_metrics()` (bucket count, total textures, acquires, allocations, reuse ratio).
 

@@ -99,9 +99,18 @@ def test_surface_specific_fail_closed_postures_are_pinned() -> None:
     rows = _rows()
 
     captions = rows["youtube_live_captions"]
-    assert captions["current_status"] == "unavailable"
+    # Producer (ytb-009-production-wire, PR #1901) and substrate adapter
+    # (caption-substrate-adapter) shipped — surface stays in dry_run until
+    # live smoke produces fresh, AV-aligned candidates per the adapter.
+    assert captions["current_status"] == "dry_run"
     assert captions["fallback"]["mode"] == "dry_run"
-    assert "producer_absent" in captions["evidence_requirements"]["public_blockers"]
+    blockers = captions["evidence_requirements"]["public_blockers"]
+    assert "producer_absent" in blockers
+    assert "av_offset_unavailable" in blockers
+    assert "adapter_rejection_stale" in blockers
+    assert (
+        "caption_substrate_adapter_candidate" in captions["evidence_requirements"]["required_refs"]
+    )
 
     cuepoints = rows["youtube_live_cuepoints"]
     assert cuepoints["current_status"] == "legacy_live_unverified"
