@@ -482,6 +482,7 @@ class StripePaymentLinkRailReceiver:
         signature: str | None,
         *,
         now: float | None = None,
+        raw_body: bytes | None = None,
     ) -> PaymentEvent | None:
         """Validate + normalize a single Stripe Payment Link webhook delivery.
 
@@ -496,6 +497,14 @@ class StripePaymentLinkRailReceiver:
         ``now`` is an optional injection point for the current time
         (seconds since epoch) used in replay-protection checks. Tests
         pass an explicit value; production callers leave it ``None``.
+
+        ``raw_body`` is the raw HTTP body bytes Stripe signed (Stripe
+        signs ``<timestamp>.<raw_body>``).  When provided, the
+        timestamped HMAC is verified against the raw bytes — the only
+        correct shape against live Stripe deliveries.  When omitted,
+        the receiver falls back to canonical-encoding the parsed
+        payload (preserves prior behavior used by the rail's own unit
+        tests + bridges that synthesize JSON in canonical form).
         """
         if not isinstance(payload, dict):
             raise ReceiveOnlyRailError(f"payload must be a dict, got {type(payload).__name__}")
@@ -503,7 +512,8 @@ class StripePaymentLinkRailReceiver:
         if not payload and signature is None:
             return None
 
-        payload_bytes = _canonical_bytes(payload)
+        canonical = _canonical_bytes(payload)
+        payload_bytes = raw_body if raw_body is not None else canonical
 
         if signature is not None:
             secret = self._resolve_secret()

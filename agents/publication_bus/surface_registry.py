@@ -114,6 +114,18 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "to the canonical refusal log under axiom full_auto_or_nothing."
         ),
     ),
+    "stripe-payment-link-receiver": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="webhook",
+        dispatch_entry="logos.api.routes.payment_rails:receive_stripe_payment_link_webhook",
+        activation_path="agents.publication_bus.stripe_payment_link_publisher.StripePaymentLinkPublisher",
+        scope_note=(
+            "Fourth wired monetization rail. POST /api/payment-rails/stripe-payment-link "
+            "on logos :8051; timestamped HMAC SHA-256 via Stripe-Signature + "
+            "STRIPE_PAYMENT_LINK_WEBHOOK_SECRET env var. Subscription-deletion "
+            "events auto-link to the canonical refusal log."
+        ),
+    ),
     "open-collective-receiver": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="webhook",
