@@ -316,6 +316,9 @@ class TestWriteUniformsProgrammeIntegration:
             mock.patch.object(_uniforms, "PLAN_FILE", plan_file),
             mock.patch.object(_uniforms, "UNIFORMS_FILE", uniforms_file),
             mock.patch.object(_uniforms, "HOMAGE_SUBSTRATE_PACKAGE_FILE", missing_substrate),
+            # U8 mode tint is orthogonal to programme saturation ownership;
+            # isolate it so this pin keeps asserting programme-vs-plan scope.
+            mock.patch.object(_uniforms, "_apply_mode_palette_tint", lambda u, **kw: None),
             mock.patch.object(_uniforms.time, "time", return_value=1776041528.0),
         ):
             _uniforms.write_uniforms(
