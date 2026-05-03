@@ -2089,3 +2089,12 @@ _u5_all_verbs
 _u5_hapax_semantic_verb_consumed_total
 _u5_route_for
 _u5_verbs_for_route
+
+# U8 reverie motion-factor (cc-task u8-reverie-mode-motion-factor): per-mode
+# motion-factor scales the satellite recruitment threshold. RND amplifies
+# (lower threshold), RESEARCH dampens (higher). Helper exposed for tests.
+from agents.reverie._satellites import (
+    _effective_recruitment_threshold as _u8_effective_recruitment_threshold,
+)
+
+_u8_effective_recruitment_threshold
