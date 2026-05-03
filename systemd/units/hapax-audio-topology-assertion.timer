@@ -1,0 +1,15 @@
+[Unit]
+Description=Run hapax-audio-topology-assertion at boot + every 2 minutes
+
+[Timer]
+# OnBootSec=60s lets PipeWire/WirePlumber settle before first assertion.
+# OnUnitActiveSec=120s keeps the assertion running for the rest of the
+# boot session — quick enough to catch a regression within ~2 min,
+# cheap enough to ignore (verify --strict is bound by pw-link + pw-dump).
+OnBootSec=60s
+OnUnitActiveSec=120s
+AccuracySec=10s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
