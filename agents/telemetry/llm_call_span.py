@@ -33,6 +33,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 from agents.telemetry.condition_metrics import (
+    record_llm_call_cost,
     record_llm_call_finish,
     record_llm_call_start,
 )
@@ -45,6 +46,7 @@ class LlmCallSpan:
     model: str
     route: str
     outcome: str = "success"
+    cost_dollars: float | None = None
 
     def set_outcome(self, outcome: str) -> None:
         """Override the default "success" outcome label before span exit.
@@ -53,13 +55,25 @@ class LlmCallSpan:
         """
         self.outcome = outcome
 
+    def set_cost(self, cost_dollars: float | None) -> None:
+        """Record per-call cost in USD; emitted to the cost counter on exit.
+
+        cc-task vision-cost-guard-prometheus-emitter. Callers that have
+        access to LiteLLM's `_hidden_params._response_cost` (or any other
+        per-call cost source) call this during the span block. None /
+        zero / negative values are no-ops at emission time (graceful for
+        proxies that don't return cost).
+        """
+        self.cost_dollars = cost_dollars
+
 
 @contextmanager
 def llm_call_span(*, model: str, route: str):
     """Context-managed per-LLM-call telemetry span.
 
     Yields a ``LlmCallSpan`` so the caller can override the outcome label
-    before exit. If the block raises, outcome defaults to "error".
+    + record cost before exit. If the block raises, outcome defaults to
+    "error".
     """
     span = LlmCallSpan(model=model, route=route)
     record_llm_call_start(model=model, route=route)
@@ -80,3 +94,9 @@ def llm_call_span(*, model: str, route: str):
             outcome=span.outcome,
             latency_seconds=latency,
         )
+        if span.cost_dollars is not None:
+            record_llm_call_cost(
+                model=model,
+                route=route,
+                cost_dollars=span.cost_dollars,
+            )
