@@ -157,6 +157,7 @@ def test_private_and_notification_sinks_are_fail_closed() -> None:
     notify_capture = d.node_by_id("notification-private-monitor-capture")
     notify_output = d.node_by_id("notification-private-monitor-output")
     yeti = d.node_by_id("yeti-headphone-output")
+    s4 = d.node_by_id("s4-output")
     role_assistant = d.node_by_id("role-assistant")
     role_notification = d.node_by_id("role-notification")
 
@@ -171,12 +172,13 @@ def test_private_and_notification_sinks_are_fail_closed() -> None:
     assert role_notification.target_object == "hapax-notification-private"
 
     assert yeti.params["private_monitor_endpoint"] is True
+    assert s4.params["private_monitor_endpoint"] is True
     assert private_capture.target_object == "hapax-private"
     assert private_capture.params["stream.capture.sink"] is True
-    assert private_output.target_object == yeti.pipewire_name
+    assert private_output.target_object == s4.pipewire_name
     assert notify_capture.target_object == "hapax-notification-private"
     assert notify_capture.params["stream.capture.sink"] is True
-    assert notify_output.target_object == yeti.pipewire_name
+    assert notify_output.target_object == s4.pipewire_name
 
     for bridge in (private_output, notify_output):
         assert bridge.params["node.dont-fallback"] is True

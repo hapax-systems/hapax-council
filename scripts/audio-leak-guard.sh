@@ -28,7 +28,14 @@ FAIL=0
 WP_CONF_DIR="${HAPAX_WIREPLUMBER_CONF_DIR:-${HOME}/.config/wireplumber/wireplumber.conf.d}"
 PW_CONF_DIR="${HAPAX_PIPEWIRE_CONF_DIR:-${HOME}/.config/pipewire/pipewire.conf.d}"
 FORBIDDEN_PRIVATE_TARGET_RE='alsa_output\.usb-ZOOM_Corporation_L-12|hapax-livestream|hapax-livestream-tap|hapax-voice-fx-capture|hapax-pc-loudnorm|input\.loopback\.sink\.role\.multimedia'
-PRIVATE_MONITOR_TARGET_RE='alsa_output\.usb-Blue_Microphones_Yeti_.*\.analog-stereo'
+# Option C (2026-05-02 spec amendment): the private-monitor target was
+# retargeted from the Blue Yeti to the S-4 USB IN sink (the S-4 internal
+# scene routes Track 1 input → analog OUT 1/2 to the operator's monitor
+# patch). Both targets are accepted here so the operator can revert
+# between the Option C wiring and the prior Yeti pin without the static
+# guard reporting a false-positive leak. See
+# `docs/superpowers/specs/2026-05-02-hapax-private-monitor-track-fenced-via-s4.md`.
+PRIVATE_MONITOR_TARGET_RE='alsa_output\.usb-Blue_Microphones_Yeti_.*\.analog-stereo|alsa_output\.usb-Torso_Electronics_S-4_.*\.multichannel-output'
 
 active_conf() {
     sed '/^[[:space:]]*#/d' "$1" 2>/dev/null || true
@@ -249,7 +256,13 @@ else
             echo "FAIL $playback_node static target is broadcast/default path: $playback_target"
             FAIL=1
         elif printf '%s\n' "$playback_target" | grep -Eq "$PRIVATE_MONITOR_TARGET_RE"; then
-            echo "OK  $playback_node static target is Blue Yeti headphone"
+            # Distinguish Yeti (legacy / revert path) from S-4 USB IN
+            # (Option C, 2026-05-02 spec amendment).
+            if printf '%s\n' "$playback_target" | grep -q 'Torso_Electronics_S-4'; then
+                echo "OK  $playback_node static target is S-4 USB IN (Option C track-fenced private monitor)"
+            else
+                echo "OK  $playback_node static target is Blue Yeti headphone (pre-Option C revert path)"
+            fi
         else
             echo "FAIL $playback_node static target is not the approved private monitor: $playback_target"
             FAIL=1
