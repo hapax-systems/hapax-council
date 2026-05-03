@@ -125,8 +125,52 @@ def default_idempotency_db_path(rail_subdir: str) -> Path:
     return Path.home() / "hapax-state" / rail_subdir / "idempotency.db"
 
 
+_RAIL_STORE_REGISTRY: dict[str, IdempotencyStore] = {}
+
+
+def get_idempotency_store(rail_subdir: str) -> IdempotencyStore:
+    """Return the process-singleton idempotency store for ``rail_subdir``.
+
+    Lazy-creates one :class:`IdempotencyStore` per rail name + caches.
+    All rail routes call this with their per-rail subdirectory name
+    (e.g. ``"patreon"``, ``"ko-fi"``, ``"github-sponsors"``); the
+    registry returns the same instance on subsequent calls within the
+    same process.
+
+    Replaces the per-rail ``_<rail>_idempotency_store`` module-level
+    singletons + ``_get_<rail>_idempotency_store()`` getters that each
+    rail introduced before this consolidation.
+
+    Tests reset state via :func:`reset_idempotency_store` (per-rail or
+    global). Combined with ``monkeypatch.setenv("HAPAX_HOME", str(tmp_path))``
+    the registry materializes a fresh sqlite db rooted in the test
+    scratch directory on the next call.
+    """
+    if rail_subdir not in _RAIL_STORE_REGISTRY:
+        _RAIL_STORE_REGISTRY[rail_subdir] = IdempotencyStore(
+            db_path=default_idempotency_db_path(rail_subdir),
+        )
+    return _RAIL_STORE_REGISTRY[rail_subdir]
+
+
+def reset_idempotency_store(rail_subdir: str | None = None) -> None:
+    """Test helper: drop the cached store for the named rail or all rails.
+
+    Pass ``rail_subdir=None`` to clear every rail (test-suite teardown).
+    Pass a specific rail name to drop just that one (per-test isolation).
+    The registry repopulates lazily on the next :func:`get_idempotency_store`
+    call.
+    """
+    if rail_subdir is None:
+        _RAIL_STORE_REGISTRY.clear()
+    else:
+        _RAIL_STORE_REGISTRY.pop(rail_subdir, None)
+
+
 __all__ = [
     "IdempotencyError",
     "IdempotencyStore",
     "default_idempotency_db_path",
+    "get_idempotency_store",
+    "reset_idempotency_store",
 ]
