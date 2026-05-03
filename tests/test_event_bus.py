@@ -145,24 +145,27 @@ class TestBuildExternalNodes:
 
 
 class TestInstrumentedQdrantClient:
-    def test_search_emits_event(self):
+    """MagicMock-based unit tests for the wrapper's event-emission
+    semantics. cc-task ``instrumented-qdrant-positional-fix`` adds
+    real-client integration tests below to catch signature-dispatch
+    bugs the MagicMock tests miss by construction."""
+
+    def test_query_points_emits_event(self):
         from shared.config import InstrumentedQdrantClient
 
         mock_client = MagicMock()
-        mock_client.search.return_value = [{"id": 1}]
+        mock_client.query_points.return_value = [{"id": 1}]
         bus = EventBus()
         wrapped = InstrumentedQdrantClient(mock_client, bus, agent_name="test-agent")
 
-        result = wrapped.search("my-collection", query_vector=[0.1, 0.2])
+        result = wrapped.query_points("my-collection", query=[0.1, 0.2])
         assert result == [{"id": 1}]
-        mock_client.search.assert_called_once_with(
-            collection_name="my-collection", query_vector=[0.1, 0.2]
-        )
+        mock_client.query_points.assert_called_once_with("my-collection", query=[0.1, 0.2])
         events = bus.recent()
         assert len(events) == 1
         assert events[0].kind == "qdrant.op"
         assert events[0].source == "test-agent"
-        assert events[0].label == "search/my-collection"
+        assert events[0].label == "query_points/my-collection"
 
     def test_upsert_emits_event(self):
         from shared.config import InstrumentedQdrantClient
@@ -175,6 +178,26 @@ class TestInstrumentedQdrantClient:
         assert len(events) == 1
         assert events[0].label == "upsert/docs"
 
+    def test_legacy_search_raises_attribute_error_with_migration_hint(self):
+        """Per cc-task ``instrumented-qdrant-positional-fix``: the
+        legacy ``search`` method is a deprecation stub that raises
+        AttributeError with a clear migration hint. Modern qdrant-client
+        has removed ``QdrantClient.search`` in favor of ``query_points``."""
+        from shared.config import InstrumentedQdrantClient
+
+        mock_client = MagicMock()
+        bus = EventBus()
+        wrapped = InstrumentedQdrantClient(mock_client, bus)
+        try:
+            wrapped.search("collection", query_vector=[0.1, 0.2])
+        except AttributeError as exc:
+            assert "query_points" in str(exc), "migration hint must name query_points"
+            assert "instrumented-qdrant-positional-fix" in str(exc), (
+                "error must reference cc-task for context"
+            )
+        else:
+            raise AssertionError("expected AttributeError from legacy search()")
+
     def test_passthrough_attribute(self):
         from shared.config import InstrumentedQdrantClient
 
@@ -183,6 +206,173 @@ class TestInstrumentedQdrantClient:
         bus = EventBus()
         wrapped = InstrumentedQdrantClient(mock_client, bus)
         assert wrapped.get_collections() == ["a", "b"]
+
+
+class TestInstrumentedQdrantClientPositionalArgs:
+    """cc-task ``instrumented-qdrant-positional-fix`` (audit Auditor D B3
+    finding #7): the wrapper's "drop-in replacement" claim is FALSE
+    when the wrapped methods reject positional args. These tests pin
+    the positional+keyword pass-through contract.
+    """
+
+    def test_query_points_accepts_positional_args(self):
+        """Positional args MUST pass through unchanged. Audit-flagged:
+        the prior shape `def search(self, collection_name: str, **kwargs)`
+        rejected positional `query_vector` calls; this test would have
+        caught that immediately."""
+        from shared.config import InstrumentedQdrantClient
+
+        mock_client = MagicMock()
+        bus = EventBus()
+        wrapped = InstrumentedQdrantClient(mock_client, bus)
+        # Underlying QdrantClient.query_points signature accepts
+        # (collection_name, query, ...). Test ALL positional.
+        wrapped.query_points("my-coll", [0.1, 0.2, 0.3])
+        mock_client.query_points.assert_called_once_with("my-coll", [0.1, 0.2, 0.3])
+
+    def test_upsert_accepts_positional_args(self):
+        from shared.config import InstrumentedQdrantClient
+
+        mock_client = MagicMock()
+        bus = EventBus()
+        wrapped = InstrumentedQdrantClient(mock_client, bus)
+        wrapped.upsert("docs", [{"id": 1, "vector": [0.0]}])
+        mock_client.upsert.assert_called_once_with("docs", [{"id": 1, "vector": [0.0]}])
+
+    def test_query_points_mixed_positional_and_kwargs(self):
+        from shared.config import InstrumentedQdrantClient
+
+        mock_client = MagicMock()
+        bus = EventBus()
+        wrapped = InstrumentedQdrantClient(mock_client, bus)
+        wrapped.query_points("my-coll", query=[0.1], limit=5)
+        mock_client.query_points.assert_called_once_with("my-coll", query=[0.1], limit=5)
+
+    def test_collection_label_resolution_from_positional(self):
+        """The FlowEvent label MUST resolve collection_name from the
+        first positional arg (matches QdrantClient API convention)."""
+        from shared.config import InstrumentedQdrantClient
+
+        mock_client = MagicMock()
+        bus = EventBus()
+        wrapped = InstrumentedQdrantClient(mock_client, bus)
+        wrapped.query_points("from-positional", [0.1])
+        events = bus.recent()
+        assert events[0].label == "query_points/from-positional"
+
+    def test_collection_label_resolution_from_kwarg(self):
+        """The FlowEvent label MUST also resolve collection_name from
+        the kwarg shape — both call shapes are valid on the
+        underlying client."""
+        from shared.config import InstrumentedQdrantClient
+
+        mock_client = MagicMock()
+        bus = EventBus()
+        wrapped = InstrumentedQdrantClient(mock_client, bus)
+        wrapped.query_points(collection_name="from-kwarg", query=[0.1])
+        events = bus.recent()
+        assert events[0].label == "query_points/from-kwarg"
+
+
+class TestInstrumentedQdrantClientRealClientIntegration:
+    """**Integration tests with a real QdrantClient** (NOT MagicMock) per
+    cc-task ``instrumented-qdrant-positional-fix`` acceptance criterion:
+    catches signature-dispatch errors the MagicMock-based tests miss
+    by construction.
+
+    Uses ``QdrantClient(":memory:")`` — same surface as the network
+    client but no Docker / no network dependency. The audit finding's
+    root cause was that MagicMock-based tests can't see
+    ``AttributeError`` on a method that doesn't exist on the real
+    client; these tests exercise the actual call path.
+    """
+
+    @pytest.fixture
+    def real_qdrant_in_memory(self):
+        """Yield a real in-memory QdrantClient + tear down after test.
+
+        ``:memory:`` mode runs an embedded Qdrant. Same surface as the
+        network client; no container required. Skips the whole class
+        if qdrant_client doesn't import (would only happen on a
+        deliberately-broken environment)."""
+        try:
+            from qdrant_client import QdrantClient
+        except ImportError:
+            pytest.skip("qdrant_client not importable")
+        client = QdrantClient(":memory:")
+        yield client
+        client.close()
+
+    def test_real_client_query_points_with_positional_args(self, real_qdrant_in_memory):
+        """The audit-flagged failure mode: a caller passes
+        ``collection_name`` + ``query`` positionally. With the prior
+        wrapper shape this raised TypeError on signature dispatch.
+        With the fixed shape it works."""
+        from qdrant_client.models import Distance, PointStruct, VectorParams
+
+        from shared.config import InstrumentedQdrantClient
+
+        client = real_qdrant_in_memory
+        client.create_collection(
+            collection_name="audit-fixture",
+            vectors_config=VectorParams(size=4, distance=Distance.COSINE),
+        )
+        client.upsert(
+            collection_name="audit-fixture",
+            points=[PointStruct(id=1, vector=[1.0, 0.0, 0.0, 0.0])],
+        )
+
+        bus = EventBus()
+        wrapped = InstrumentedQdrantClient(client, bus, agent_name="real-test")
+
+        # Call with collection_name positional + query positional —
+        # the audit-flagged shape that previously broke.
+        result = wrapped.query_points("audit-fixture", [1.0, 0.0, 0.0, 0.0])
+        # Real client returns a QueryResponse object with .points list.
+        assert hasattr(result, "points")
+        assert len(result.points) == 1
+        assert result.points[0].id == 1
+        # FlowEvent must have fired with the resolved collection label.
+        events = bus.recent()
+        assert any(e.label == "query_points/audit-fixture" for e in events)
+
+    def test_real_client_upsert_with_positional_points(self, real_qdrant_in_memory):
+        """Symmetric test for upsert positional pass-through."""
+        from qdrant_client.models import Distance, PointStruct, VectorParams
+
+        from shared.config import InstrumentedQdrantClient
+
+        client = real_qdrant_in_memory
+        client.create_collection(
+            collection_name="upsert-fixture",
+            vectors_config=VectorParams(size=2, distance=Distance.COSINE),
+        )
+        bus = EventBus()
+        wrapped = InstrumentedQdrantClient(client, bus, agent_name="upsert-test")
+
+        # Positional collection_name + positional points.
+        wrapped.upsert("upsert-fixture", [PointStruct(id=42, vector=[0.5, 0.5])])
+        # Verify the upsert actually landed on the real client.
+        retrieved = client.retrieve(collection_name="upsert-fixture", ids=[42])
+        assert len(retrieved) == 1
+        assert retrieved[0].id == 42
+        # FlowEvent fired.
+        events = bus.recent()
+        assert any(e.label == "upsert/upsert-fixture" for e in events)
+
+    def test_real_client_proxy_passthrough_to_undefined_methods(self, real_qdrant_in_memory):
+        """Methods not explicitly wrapped (like ``get_collections``)
+        must proxy through ``__getattr__`` to the real client. With a
+        real client this catches "method exists on QdrantClient but
+        not on the wrapped surface" issues."""
+        from shared.config import InstrumentedQdrantClient
+
+        client = real_qdrant_in_memory
+        bus = EventBus()
+        wrapped = InstrumentedQdrantClient(client, bus, agent_name="proxy-test")
+        # get_collections returns a CollectionsResponse on real client.
+        result = wrapped.get_collections()
+        assert hasattr(result, "collections")
 
 
 # ── get_qdrant_instrumented factory ──────────────────────────────────────────
@@ -219,13 +409,17 @@ class TestGetQdrantInstrumentedFactory:
         """With an event_bus, the factory composes
         InstrumentedQdrantClient(consent-gated-client, bus). The two
         __getattr__ layers (instrumentation outer, consent gate inner)
-        compose: instrumented ops route through the gate."""
+        compose: instrumented ops route through the gate.
+
+        Updated per cc-task ``instrumented-qdrant-positional-fix``:
+        exercises ``query_points`` (the modern API) instead of the
+        deprecated ``search`` method which now raises AttributeError."""
         from unittest.mock import MagicMock, patch
 
         from shared.config import InstrumentedQdrantClient
 
         mock_consent_gated = MagicMock()
-        mock_consent_gated.search.return_value = [{"id": 42}]
+        mock_consent_gated.query_points.return_value = [{"id": 42}]
         bus = EventBus()
         with patch("shared.config.get_qdrant", return_value=mock_consent_gated):
             from shared.config import get_qdrant_instrumented
@@ -234,15 +428,15 @@ class TestGetQdrantInstrumentedFactory:
 
         assert isinstance(wrapped, InstrumentedQdrantClient)
         # The instrumented op delegates through the consent-gated client.
-        result = wrapped.search("col", query_vector=[1.0])
+        result = wrapped.query_points("col", query=[1.0])
         assert result == [{"id": 42}]
-        mock_consent_gated.search.assert_called_once_with(collection_name="col", query_vector=[1.0])
+        mock_consent_gated.query_points.assert_called_once_with("col", query=[1.0])
         # And emits the FlowEvent.
         events = bus.recent()
         assert len(events) == 1
         assert events[0].kind == "qdrant.op"
         assert events[0].source == "test-with-bus"
-        assert events[0].label == "search/col"
+        assert events[0].label == "query_points/col"
 
     def test_passthrough_attribute_via_factory(self):
         """Non-instrumented attribute access proxies through the
