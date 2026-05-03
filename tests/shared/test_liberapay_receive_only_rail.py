@@ -378,3 +378,71 @@ def test_timestamp_field_is_accepted_when_occurred_at_absent():
     event = receiver.ingest_webhook(payload, signature=None)
     assert event is not None
     assert event.occurred_at == datetime(2026, 4, 1, 8, 30, tzinfo=UTC)
+
+
+# ---------------------------------------------------------------------------
+# jr-liberapay-rail-idempotency-pin regression pins
+# ---------------------------------------------------------------------------
+
+
+def test_idempotency_store_rejects_duplicate_delivery_id(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "lp-idem.db")
+    receiver = LiberapayRailReceiver(idempotency_store=store)
+    payload = _payload()
+
+    first = receiver.ingest_webhook(payload, signature=None, delivery_id="lp-001")
+    second = receiver.ingest_webhook(payload, signature=None, delivery_id="lp-001")
+
+    assert first is not None
+    assert second is None  # short-circuit
+
+
+def test_idempotency_store_distinct_delivery_ids_both_processed(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "lp-idem.db")
+    receiver = LiberapayRailReceiver(idempotency_store=store)
+    payload = _payload()
+
+    first = receiver.ingest_webhook(payload, signature=None, delivery_id="lp-a")
+    second = receiver.ingest_webhook(payload, signature=None, delivery_id="lp-b")
+
+    assert first is not None
+    assert second is not None
+
+
+def test_idempotency_store_provided_but_delivery_id_missing_raises(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "lp-idem.db")
+    receiver = LiberapayRailReceiver(idempotency_store=store)
+    payload = _payload()
+
+    with pytest.raises(ReceiveOnlyRailError, match="delivery_id"):
+        receiver.ingest_webhook(payload, signature=None)
+
+
+def test_no_idempotency_store_means_no_idempotency_check():
+    receiver = LiberapayRailReceiver()  # no store
+    payload = _payload()
+    a = receiver.ingest_webhook(payload, signature=None, delivery_id="ignored")
+    b = receiver.ingest_webhook(payload, signature=None, delivery_id="ignored")
+    assert a is not None
+    assert b is not None
+
+
+def test_idempotency_store_persists_across_receivers(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    db = tmp_path / "lp-idem.db"
+    payload = _payload()
+
+    a = LiberapayRailReceiver(idempotency_store=IdempotencyStore(db_path=db))
+    first = a.ingest_webhook(payload, signature=None, delivery_id="lp-persist")
+    b = LiberapayRailReceiver(idempotency_store=IdempotencyStore(db_path=db))
+    second = b.ingest_webhook(payload, signature=None, delivery_id="lp-persist")
+
+    assert first is not None
+    assert second is None
