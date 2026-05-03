@@ -1434,18 +1434,11 @@ def test_stripe_payment_link_publisher_module_carries_no_send_path() -> None:
 
 @pytest.fixture
 def stripe_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Reset the route's Stripe idempotency singleton + point at a tmp sqlite db.
-
-    Stripe still carries its own per-rail singleton (the rail
-    pre-dates the shared registry); reset it directly. HAPAX_HOME
-    setting routes the lazy-init's default db path into ``tmp_path``.
-    """
-    import logos.api.routes.payment_rails as routes_mod
-
+    """Reset the shared idempotency registry's Stripe entry + tmp db."""
     monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
-    routes_mod._stripe_payment_link_idempotency_store = None
+    reset_idempotency_store("stripe-payment-link")
     yield tmp_path / "stripe-payment-link" / "idempotency.db"
-    routes_mod._stripe_payment_link_idempotency_store = None
+    reset_idempotency_store("stripe-payment-link")
 
 
 @pytest.mark.asyncio

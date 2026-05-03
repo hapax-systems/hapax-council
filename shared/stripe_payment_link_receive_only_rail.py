@@ -60,6 +60,25 @@ are passed through as-is — the field is integer minor-units in the
 currency-specific minor-unit definition. Downstream consumers are
 responsible for any FX normalization.
 
+**Dahlia (2026-03-25) decimal-string forward-compat.** The Stripe
+``2026-03-25.dahlia`` API version introduces :class:`Stripe.Decimal`
+for monetary amounts. After the merchant account migrates, webhook
+payloads may ship ``amount`` as a decimal string ("12.34") or
+integer string ("1234") instead of an int. The receiver's
+:func:`_coerce_stripe_amount` accepts all three forms:
+
+- ``int`` → as-is (pre-Dahlia path; current production shape).
+- ``str`` without ``"."`` (e.g. ``"1234"``) → ``int(s)`` (Dahlia
+  integer-string minor units).
+- ``str`` with ``"."`` (e.g. ``"12.34"``) → ``Decimal(s) * 100`` (must
+  be exact integer cents; fractional-cent strings fail-closed).
+- ``bool`` (Python bool subclasses int) → fail-closed.
+- other types → fail-closed.
+
+This forward-compat shape ships before the Dahlia upgrade so the
+rail accepts deliveries from merchant accounts on the new API
+version without code change.
+
 **Stripe signature format & replay protection.** Stripe's
 ``Stripe-Signature`` header carries a timestamp and one or more
 versioned HMAC signatures, separated by commas:
@@ -139,7 +158,6 @@ import hmac
 import json
 import os
 import re
-import sqlite3
 import time
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -147,6 +165,16 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from shared._rail_idempotency import (
+    IdempotencyError as _SharedIdempotencyError,
+)
+from shared._rail_idempotency import (
+    IdempotencyStore as _SharedIdempotencyStore,
+)
+from shared._rail_idempotency import (
+    default_idempotency_db_path as _shared_default_db_path,
+)
 
 STRIPE_PAYMENT_LINK_WEBHOOK_SECRET_ENV = "STRIPE_PAYMENT_LINK_WEBHOOK_SECRET"
 
@@ -282,84 +310,49 @@ def _is_thin_event_object(obj: dict[str, Any]) -> bool:
     return keys.issubset(_THIN_EVENT_KEYS) or (keys == _THIN_EVENT_KEYS)
 
 
-class IdempotencyStore:
+class IdempotencyStore(_SharedIdempotencyStore):
     """sqlite-backed event-id seen-set for Stripe webhook idempotency.
 
-    Stripe's at-least-once delivery semantics permit the *same* event
-    id (``evt_...``) to arrive twice within the 300s replay window —
-    e.g. a network retry between Stripe's edge and our receiver. This
-    store keys on ``event.id`` with a UNIQUE constraint and exposes
-    :meth:`record_or_skip` returning ``True`` on first insert, ``False``
-    on collision. The receiver wraps this so a duplicate delivery
-    short-circuits to a no-op (caller returns 200 OK).
+    Migrated to wrap :class:`shared._rail_idempotency.IdempotencyStore`
+    while preserving the rail's no-arg constructor signature
+    ``IdempotencyStore()`` and the ``IdempotencyStore(db_path=...)``
+    keyword form. The default db path resolves to the shared
+    ``stripe-payment-link`` rail subdirectory (``~/hapax-state/
+    stripe-payment-link/idempotency.db``).
 
-    The default DB path lives under ``$HAPAX_HOME`` (or
-    ``~/hapax-state``) — local disk only, no network. Construction
-    creates the parent directory + table on demand. Concurrent
-    receivers are safe via sqlite's serialized writes (per-connection
-    BEGIN IMMEDIATE on insert); the workload is one-row INSERT per
-    delivery so contention is negligible.
+    Schema migration note: pre-migration deployments stored entries in
+    the table ``stripe_webhook_events``. The shared store creates a
+    new table ``rail_webhook_events`` in the same db file on first
+    use; old entries are forgotten. This is safe because Stripe's
+    300s replay window has long since elapsed for any historical
+    entries — duplicate-fulfillment risk is bounded by the timestamp
+    tolerance, not the idempotency horizon.
     """
 
-    _SCHEMA_SQL = (
-        "CREATE TABLE IF NOT EXISTS stripe_webhook_events ("
-        "  event_id TEXT PRIMARY KEY,"
-        "  first_seen_at_iso TEXT NOT NULL"
-        ")"
-    )
-
     def __init__(self, *, db_path: Path | None = None) -> None:
-        self._db_path = db_path if db_path is not None else _default_idempotency_db_path()
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
-            conn.execute(self._SCHEMA_SQL)
+        super().__init__(
+            db_path=db_path if db_path is not None else _default_idempotency_db_path(),
+        )
 
-    def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(str(self._db_path), isolation_level=None, timeout=5.0)
+    def record_or_skip(  # type: ignore[override]
+        self, event_id: str, *, first_seen_at: datetime | None = None
+    ) -> bool:
+        """Same semantics as the shared store, but raise the rail's error type.
 
-    @property
-    def db_path(self) -> Path:
-        return self._db_path
-
-    def record_or_skip(self, event_id: str, *, first_seen_at: datetime | None = None) -> bool:
-        """Insert ``event_id`` into the seen-set or report a duplicate.
-
-        Returns ``True`` if this is the first time we have seen the
-        event id (caller should proceed with downstream processing) or
-        ``False`` if the id was already in the table (caller should
-        short-circuit to a no-op). Does not raise on collision; collision
-        is the explicit signal.
+        The shared store raises :class:`shared._rail_idempotency.IdempotencyError`
+        on misuse (empty/non-string id). The rail's external contract
+        is that all rail-rejection paths surface as
+        :class:`ReceiveOnlyRailError`, so we translate here.
         """
-        if not event_id or not isinstance(event_id, str):
-            raise ReceiveOnlyRailError(
-                f"event_id must be a non-empty string, got {type(event_id).__name__}"
-            )
-        first_seen_iso = (first_seen_at or datetime.now(tz=UTC)).isoformat()
         try:
-            with self._connect() as conn:
-                conn.execute(
-                    "INSERT INTO stripe_webhook_events(event_id, first_seen_at_iso) VALUES (?, ?)",
-                    (event_id, first_seen_iso),
-                )
-            return True
-        except sqlite3.IntegrityError:
-            return False
-
-    def has_seen(self, event_id: str) -> bool:
-        """Read-only existence probe — ``True`` if the id is recorded."""
-        with self._connect() as conn:
-            cursor = conn.execute(
-                "SELECT 1 FROM stripe_webhook_events WHERE event_id = ? LIMIT 1",
-                (event_id,),
-            )
-            return cursor.fetchone() is not None
+            return super().record_or_skip(event_id, first_seen_at=first_seen_at)
+        except _SharedIdempotencyError as exc:
+            raise ReceiveOnlyRailError(str(exc)) from exc
 
 
 def _default_idempotency_db_path() -> Path:
-    base = os.environ.get("HAPAX_HOME")
-    if base:
-        return Path(base) / "stripe-payment-link" / "idempotency.db"
-    return Path.home() / "hapax-state" / "stripe-payment-link" / "idempotency.db"
+    """Backwards-compat shim; defers to the shared registry's path resolver."""
+    return _shared_default_db_path("stripe-payment-link")
 
 
 def _parse_stripe_signature_header(signature: str) -> tuple[int, list[str]]:
@@ -493,6 +486,66 @@ def _extract_customer_handle(obj: dict[str, Any], event_kind: PaymentEventKind) 
     )
 
 
+def _coerce_stripe_amount(amount_raw: Any) -> int:
+    """Coerce a Stripe webhook amount field to integer minor units.
+
+    Stripe API version ``2026-03-25.dahlia`` introduced
+    :class:`Stripe.Decimal` for monetary amounts; webhook payloads can
+    now ship amounts as decimal strings ("1234" or "12.34") instead of
+    only integers. The receiver continues to express amounts as integer
+    minor units internally, so we coerce decimal-string forms here:
+
+    - ``int``                                    → return as-is.
+    - ``str`` matching integer minor-units (e.g. "1234") → ``int(s)``.
+    - ``str`` matching major-units decimal (e.g. "12.34") → multiplied
+      by 100 *only* when the result is exact integer cents (fractional
+      cents fail-closed, mirroring the GH Sponsors cents-int policy).
+    - ``bool`` (Python bool subclasses int)      → fail-closed.
+    - other types                                → fail-closed.
+
+    Forward-compat shape — once we adopt Dahlia we may receive either
+    form depending on the merchant account's API version, so accept
+    both.
+    """
+    if isinstance(amount_raw, bool) or amount_raw is None:
+        raise ReceiveOnlyRailError(
+            f"amount must be an integer or decimal string, got {type(amount_raw).__name__}"
+        )
+    if isinstance(amount_raw, int):
+        return amount_raw
+    if isinstance(amount_raw, str):
+        stripped = amount_raw.strip()
+        if not stripped:
+            raise ReceiveOnlyRailError("amount string is empty")
+        if "." not in stripped:
+            try:
+                return int(stripped)
+            except ValueError as exc:
+                raise ReceiveOnlyRailError(
+                    f"amount string {amount_raw!r} is not a valid integer"
+                ) from exc
+        # Decimal-string form (Dahlia). Convert via Decimal to avoid
+        # float precision drift.
+        from decimal import Decimal, InvalidOperation
+
+        try:
+            major_units = Decimal(stripped)
+        except InvalidOperation as exc:
+            raise ReceiveOnlyRailError(
+                f"amount string {amount_raw!r} is not a valid decimal"
+            ) from exc
+        cents = major_units * 100
+        if cents != cents.to_integral_value():
+            raise ReceiveOnlyRailError(
+                f"amount {amount_raw!r} does not multiply to integer cents "
+                f"(got {cents}); fractional-cent amounts are not accepted"
+            )
+        return int(cents)
+    raise ReceiveOnlyRailError(
+        f"amount must be an integer or decimal string, got {type(amount_raw).__name__}"
+    )
+
+
 def _extract_amount_and_currency(
     obj: dict[str, Any], event_kind: PaymentEventKind
 ) -> tuple[int, str]:
@@ -562,25 +615,30 @@ def _extract_amount_and_currency(
                     if not isinstance(price, dict):
                         continue
                     unit_amount = price.get("unit_amount")
-                    if isinstance(unit_amount, int) and not isinstance(unit_amount, bool):
-                        total += unit_amount * int(quantity)
-                        any_amount = True
+                    if unit_amount is not None and not isinstance(unit_amount, bool):
+                        try:
+                            total += _coerce_stripe_amount(unit_amount) * int(quantity)
+                            any_amount = True
+                        except ReceiveOnlyRailError:
+                            # Skip items with malformed unit_amount; rail
+                            # raises later if no item produced an amount.
+                            continue
                 if any_amount:
                     amount_raw = total
         if amount_raw is None:
             plan = obj.get("plan")
             if isinstance(plan, dict):
                 plan_amount = plan.get("amount")
-                if isinstance(plan_amount, int) and not isinstance(plan_amount, bool):
-                    amount_raw = plan_amount
+                if plan_amount is not None and not isinstance(plan_amount, bool):
+                    try:
+                        amount_raw = _coerce_stripe_amount(plan_amount)
+                    except ReceiveOnlyRailError:
+                        amount_raw = None
         if amount_raw is None:
             # Subscription deletions may carry no pricing info; treat as 0.
             amount_raw = 0
 
-    if isinstance(amount_raw, bool) or not isinstance(amount_raw, int):
-        raise ReceiveOnlyRailError(
-            f"amount must be an integer (Stripe minor units), got {type(amount_raw).__name__}"
-        )
+    amount_raw = _coerce_stripe_amount(amount_raw)
 
     cents = abs(int(amount_raw))
     return cents, currency_raw.upper()
