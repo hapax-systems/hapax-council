@@ -1,0 +1,46 @@
+{
+  "name": "Chamber Feedback Breathing",
+  "description": "Chamber-feedback lineage (2/2): feedback + breathing + drift creates a respiratory feedback aesthetic — image inhales/exhales through delay loops. Lineage: chamber-feedback.",
+  "lineage": "chamber-feedback",
+  "transition_ms": 3800,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 1.0,
+        "contrast": 1.06,
+        "saturation": 1.22,
+        "hue_rotate": 2
+      }
+    },
+    "feedback_breath": {
+      "type": "feedback",
+      "params": {
+        "amount": 0.45,
+        "decay": 0.93
+      }
+    },
+    "breathing_chamber": {
+      "type": "breathing",
+      "params": {
+        "frequency": 0.22,
+        "depth": 0.32
+      }
+    },
+    "drift_chamber": {
+      "type": "drift",
+      "params": {
+        "amplitude": 0.014,
+        "frequency": 0.12
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}
