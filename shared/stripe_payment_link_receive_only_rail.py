@@ -83,12 +83,45 @@ The webhook signing secret is read from
 hardcoded). Validation, signature, replay, or unknown-event failures
 fail-closed via :class:`ReceiveOnlyRailError`.
 
+**Idempotency / replay-protection-at-rest.** The 300s timestamp
+window blocks replay of an old signed delivery, but Stripe's
+at-least-once delivery semantics mean the *same* event id (``evt_...``)
+can legitimately arrive twice within the 300s window — for example, a
+network-induced retry. To prevent duplicate fulfillment downstream,
+the receiver supports an optional sqlite-backed
+:class:`IdempotencyStore` keyed on ``event.id`` with a UNIQUE
+constraint. When the store is provided, second-arrival of a known
+event id is treated as a no-op (``ingest_webhook`` returns ``None``);
+the caller's webhook handler returns 200 OK without invoking
+downstream side-effects again. When no store is provided, the
+receiver behaves identically to its previous shape (no idempotency
+gate; suitable for unit tests + bridges that handle dedup elsewhere).
+
+**Thin-event rejection.** Stripe offers a "thin payload" delivery
+mode where ``data.object`` carries only ``id`` + ``object`` (the type
+discriminator), and the receiving system fetches the full object via
+:meth:`stripe.Event.retrieve`. The Stripe SDK pattern enables the
+fetch; this rail's receive-only invariant *forbids* outbound calls.
+Thin events are therefore rejected with
+:class:`ReceiveOnlyRailError`. Operators must keep their Stripe
+endpoint configured for the standard (non-thin) delivery mode for
+this rail.
+
+**Startup secret validation.** Empty / unset webhook secrets cause
+HMAC verification to silently accept any payload (the April 2026
+public-bug-bounty disclosure). :func:`validate_secret_or_raise` is a
+fail-fast assertion designed to be called from the FastAPI app's
+startup hook so a misconfigured deployment refuses to start rather
+than silently accepting unsigned events.
+
 **Governance constraint.** No PII, no outbound, multi-currency
 normalized to lowest-unit cents in the source currency, 300s
-timestamp tolerance for replay protection. This is the FIRST rail in
-the family to implement timestamped-HMAC + replay protection — prior
-rails (GitHub Sponsors, Liberapay, Open Collective) used a bare HMAC
-SHA-256 over the canonical-JSON payload bytes with no timestamp.
+timestamp tolerance for replay protection, sqlite idempotency
+locally on disk, fail-closed on thin events. This is the FIRST rail
+in the family to implement timestamped-HMAC + replay protection +
+event-id idempotency — prior rails (GitHub Sponsors, Liberapay, Open
+Collective) used a bare HMAC SHA-256 over the canonical-JSON payload
+bytes with no timestamp.
 
 cc-task: ``publication-bus-monetization-rails-surfaces`` (Phase 0,
 Stripe Payment Link rail). Sibling rails:
@@ -106,9 +139,11 @@ import hmac
 import json
 import os
 import re
+import sqlite3
 import time
 from datetime import UTC, datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -214,6 +249,117 @@ def _sha256_hex(payload: bytes) -> str:
 
 def _canonical_bytes(payload: dict[str, Any]) -> bytes:
     return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def validate_secret_or_raise(env_var: str = STRIPE_PAYMENT_LINK_WEBHOOK_SECRET_ENV) -> None:
+    """Fail-fast assertion that ``env_var`` carries a non-empty webhook secret.
+
+    Designed to be called from a FastAPI ``startup`` hook so a
+    misconfigured deployment refuses to start rather than silently
+    accepting unsigned events. Raises :class:`ReceiveOnlyRailError`
+    when the env var is unset or empty after stripping whitespace.
+    """
+    value = os.environ.get(env_var, "")
+    if not value or not value.strip():
+        raise ReceiveOnlyRailError(
+            f"{env_var} must be set to a non-empty Stripe webhook signing secret "
+            f"before the receiver accepts deliveries"
+        )
+
+
+_THIN_EVENT_KEYS: frozenset[str] = frozenset({"id", "object"})
+
+
+def _is_thin_event_object(obj: dict[str, Any]) -> bool:
+    """Detect Stripe's thin-payload mode (data.object has only ``id`` + ``object``).
+
+    Stripe's thin-payload webhook mode sends only the event-object
+    discriminator + identifier; the receiving system is expected to
+    fetch the full payload via the SDK. This rail's receive-only
+    invariant forbids outbound calls, so thin events must be refused.
+    """
+    keys = set(obj.keys())
+    return keys.issubset(_THIN_EVENT_KEYS) or (keys == _THIN_EVENT_KEYS)
+
+
+class IdempotencyStore:
+    """sqlite-backed event-id seen-set for Stripe webhook idempotency.
+
+    Stripe's at-least-once delivery semantics permit the *same* event
+    id (``evt_...``) to arrive twice within the 300s replay window —
+    e.g. a network retry between Stripe's edge and our receiver. This
+    store keys on ``event.id`` with a UNIQUE constraint and exposes
+    :meth:`record_or_skip` returning ``True`` on first insert, ``False``
+    on collision. The receiver wraps this so a duplicate delivery
+    short-circuits to a no-op (caller returns 200 OK).
+
+    The default DB path lives under ``$HAPAX_HOME`` (or
+    ``~/hapax-state``) — local disk only, no network. Construction
+    creates the parent directory + table on demand. Concurrent
+    receivers are safe via sqlite's serialized writes (per-connection
+    BEGIN IMMEDIATE on insert); the workload is one-row INSERT per
+    delivery so contention is negligible.
+    """
+
+    _SCHEMA_SQL = (
+        "CREATE TABLE IF NOT EXISTS stripe_webhook_events ("
+        "  event_id TEXT PRIMARY KEY,"
+        "  first_seen_at_iso TEXT NOT NULL"
+        ")"
+    )
+
+    def __init__(self, *, db_path: Path | None = None) -> None:
+        self._db_path = db_path if db_path is not None else _default_idempotency_db_path()
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as conn:
+            conn.execute(self._SCHEMA_SQL)
+
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(str(self._db_path), isolation_level=None, timeout=5.0)
+
+    @property
+    def db_path(self) -> Path:
+        return self._db_path
+
+    def record_or_skip(self, event_id: str, *, first_seen_at: datetime | None = None) -> bool:
+        """Insert ``event_id`` into the seen-set or report a duplicate.
+
+        Returns ``True`` if this is the first time we have seen the
+        event id (caller should proceed with downstream processing) or
+        ``False`` if the id was already in the table (caller should
+        short-circuit to a no-op). Does not raise on collision; collision
+        is the explicit signal.
+        """
+        if not event_id or not isinstance(event_id, str):
+            raise ReceiveOnlyRailError(
+                f"event_id must be a non-empty string, got {type(event_id).__name__}"
+            )
+        first_seen_iso = (first_seen_at or datetime.now(tz=UTC)).isoformat()
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO stripe_webhook_events(event_id, first_seen_at_iso) VALUES (?, ?)",
+                    (event_id, first_seen_iso),
+                )
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def has_seen(self, event_id: str) -> bool:
+        """Read-only existence probe — ``True`` if the id is recorded."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT 1 FROM stripe_webhook_events WHERE event_id = ? LIMIT 1",
+                (event_id,),
+            )
+            return cursor.fetchone() is not None
+
+
+def _default_idempotency_db_path() -> Path:
+    base = os.environ.get("HAPAX_HOME")
+    if base:
+        return Path(base) / "stripe-payment-link" / "idempotency.db"
+    return Path.home() / "hapax-state" / "stripe-payment-link" / "idempotency.db"
 
 
 def _parse_stripe_signature_header(signature: str) -> tuple[int, list[str]]:
@@ -469,9 +615,11 @@ class StripePaymentLinkRailReceiver:
         *,
         secret_env_var: str = STRIPE_PAYMENT_LINK_WEBHOOK_SECRET_ENV,
         tolerance_seconds: int = DEFAULT_TOLERANCE_SECONDS,
+        idempotency_store: IdempotencyStore | None = None,
     ) -> None:
         self._secret_env_var = secret_env_var
         self._tolerance_seconds = tolerance_seconds
+        self._idempotency_store = idempotency_store
 
     def _resolve_secret(self) -> str:
         return os.environ.get(self._secret_env_var, "")
@@ -529,9 +677,27 @@ class StripePaymentLinkRailReceiver:
 
         event_kind = _coerce_event_type(payload.get("type"))
         data_object = _extract_data_object(payload)
+
+        if _is_thin_event_object(data_object):
+            raise ReceiveOnlyRailError(
+                "Stripe thin-payload event rejected — receive-only rail cannot fetch full "
+                "object via SDK. Reconfigure the Stripe webhook endpoint to deliver full "
+                "(non-thin) payloads."
+            )
+
         customer_handle = _extract_customer_handle(data_object, event_kind)
         amount_cents, currency = _extract_amount_and_currency(data_object, event_kind)
         occurred_at = _extract_occurred_at(payload)
+
+        if self._idempotency_store is not None:
+            event_id = payload.get("id")
+            if not isinstance(event_id, str) or not event_id:
+                raise ReceiveOnlyRailError(
+                    "payload missing top-level 'id' (Stripe event id 'evt_...') "
+                    "required for idempotency check"
+                )
+            if not self._idempotency_store.record_or_skip(event_id):
+                return None
 
         try:
             return PaymentEvent(
@@ -549,8 +715,10 @@ class StripePaymentLinkRailReceiver:
 __all__ = [
     "DEFAULT_TOLERANCE_SECONDS",
     "STRIPE_PAYMENT_LINK_WEBHOOK_SECRET_ENV",
+    "IdempotencyStore",
     "PaymentEvent",
     "PaymentEventKind",
     "ReceiveOnlyRailError",
     "StripePaymentLinkRailReceiver",
+    "validate_secret_or_raise",
 ]

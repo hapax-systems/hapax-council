@@ -1674,3 +1674,15 @@ receive_treasury_prime_webhook
 from agents.studio_compositor.layout_switcher import apply_layout_switch as _r9_apply_layout_switch
 
 _r9_apply_layout_switch
+
+# IdempotencyStore.has_seen is a read-only ops/debugging probe for the
+# Stripe Payment Link rail's idempotency table. record_or_skip is the
+# write path; has_seen exists for forensic queries (was this evt_ ever
+# seen before our retention window?). Used by tests but vulture's
+# static scan only sees the rail module.
+# cc-task: jr-stripe-payment-link-replay-idempotency-pin
+from shared.stripe_payment_link_receive_only_rail import (
+    IdempotencyStore as _StripePaymentLinkIdempotencyStore,
+)
+
+_StripePaymentLinkIdempotencyStore.has_seen

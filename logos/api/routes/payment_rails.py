@@ -108,6 +108,9 @@ from shared.patreon_receive_only_rail import (
     ReceiveOnlyRailError as PatreonReceiveOnlyRailError,
 )
 from shared.stripe_payment_link_receive_only_rail import (
+    IdempotencyStore as StripePaymentLinkIdempotencyStore,
+)
+from shared.stripe_payment_link_receive_only_rail import (
     ReceiveOnlyRailError as StripePaymentLinkReceiveOnlyRailError,
 )
 from shared.stripe_payment_link_receive_only_rail import (
@@ -123,6 +126,23 @@ from shared.treasury_prime_receive_only_rail import (
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/payment-rails", tags=["payment-rails"])
+
+_stripe_payment_link_idempotency_store: StripePaymentLinkIdempotencyStore | None = None
+
+
+def _get_stripe_payment_link_idempotency_store() -> StripePaymentLinkIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for Stripe Payment Link.
+
+    First-call creates the store + parent directory. Subsequent calls
+    reuse the same instance (sqlite connections are short-lived per
+    `record_or_skip` call). Tests can swap the singleton by assigning
+    to ``_stripe_payment_link_idempotency_store`` directly.
+    """
+    global _stripe_payment_link_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _stripe_payment_link_idempotency_store is None:
+        _stripe_payment_link_idempotency_store = StripePaymentLinkIdempotencyStore()
+    return _stripe_payment_link_idempotency_store
+
 
 GITHUB_SPONSORS_SIGNATURE_HEADER: str = "X-Hub-Signature-256"
 """GitHub Sponsors webhook signature header. Documented at
@@ -429,7 +449,9 @@ async def receive_stripe_payment_link_webhook(request: Request) -> JSONResponse:
 
     signature = request.headers.get(STRIPE_PAYMENT_LINK_SIGNATURE_HEADER)
 
-    receiver = StripePaymentLinkRailReceiver()
+    receiver = StripePaymentLinkRailReceiver(
+        idempotency_store=_get_stripe_payment_link_idempotency_store(),
+    )
     try:
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
     except StripePaymentLinkReceiveOnlyRailError as exc:
@@ -437,6 +459,12 @@ async def receive_stripe_payment_link_webhook(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        # Either heartbeat ping (empty payload) or duplicate event id —
+        # both shapes return 200 OK so Stripe stops retrying.
+        if payload:
+            event_id = payload.get("id", "<missing>")
+            log.info("stripe_payment_link webhook duplicate: %s", event_id)
+            return JSONResponse({"status": "duplicate", "event_id": event_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = StripePaymentLinkPublisher()

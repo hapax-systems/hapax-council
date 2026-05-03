@@ -10,6 +10,7 @@ import hmac
 import json
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -552,3 +553,215 @@ def test_session_id_used_as_handle_when_no_customer():
     event = receiver.ingest_webhook(payload, signature=None)
     assert event is not None
     assert event.customer_handle == "cs_test_01"
+
+
+# ---------------------------------------------------------------------------
+# Idempotency (jr-stripe-payment-link-replay-idempotency-pin pin #1)
+# ---------------------------------------------------------------------------
+
+
+def test_idempotency_store_rejects_duplicate_event_id(tmp_path):
+    """Replay of the same evt_... id is short-circuited to a no-op."""
+    from shared.stripe_payment_link_receive_only_rail import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "idem.db")
+    receiver = StripePaymentLinkRailReceiver(idempotency_store=store)
+
+    payload = _payment_intent_payload()
+    first = receiver.ingest_webhook(payload, signature=None)
+    assert first is not None
+    assert first.amount_currency_cents == 2500
+
+    # Same event id arrives a second time.
+    second = receiver.ingest_webhook(payload, signature=None)
+    assert second is None  # short-circuit; caller returns 200 OK without re-processing
+
+
+def test_idempotency_store_distinct_event_ids_both_processed(tmp_path):
+    """Two distinct evt_... ids both insert + return events."""
+    from shared.stripe_payment_link_receive_only_rail import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "idem.db")
+    receiver = StripePaymentLinkRailReceiver(idempotency_store=store)
+
+    a = _payment_intent_payload()
+    b = _checkout_session_payload()
+    assert a["id"] != b["id"]
+
+    assert receiver.ingest_webhook(a, signature=None) is not None
+    assert receiver.ingest_webhook(b, signature=None) is not None
+
+
+def test_idempotency_store_table_persists_on_disk(tmp_path):
+    """A second receiver pointed at the same db path sees prior inserts."""
+    from shared.stripe_payment_link_receive_only_rail import IdempotencyStore
+
+    db_path = tmp_path / "idem.db"
+    receiver_a = StripePaymentLinkRailReceiver(idempotency_store=IdempotencyStore(db_path=db_path))
+    payload = _payment_intent_payload()
+    assert receiver_a.ingest_webhook(payload, signature=None) is not None
+
+    # Fresh receiver, fresh store, same db path → duplicate is short-circuited.
+    receiver_b = StripePaymentLinkRailReceiver(idempotency_store=IdempotencyStore(db_path=db_path))
+    assert receiver_b.ingest_webhook(payload, signature=None) is None
+
+
+def test_idempotency_store_missing_event_id_raises(tmp_path):
+    """Idempotency-on payload without top-level 'id' raises (not silent-fail)."""
+    from shared.stripe_payment_link_receive_only_rail import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "idem.db")
+    receiver = StripePaymentLinkRailReceiver(idempotency_store=store)
+
+    payload = _payment_intent_payload()
+    del payload["id"]
+    with pytest.raises(ReceiveOnlyRailError, match="missing top-level 'id'"):
+        receiver.ingest_webhook(payload, signature=None)
+
+
+def test_idempotency_store_record_or_skip_returns_correct_booleans(tmp_path):
+    from shared.stripe_payment_link_receive_only_rail import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "idem.db")
+    assert store.record_or_skip("evt_test_first") is True
+    assert store.record_or_skip("evt_test_first") is False
+    assert store.record_or_skip("evt_test_second") is True
+    assert store.has_seen("evt_test_first") is True
+    assert store.has_seen("evt_test_third") is False
+
+
+def test_idempotency_store_empty_event_id_raises(tmp_path):
+    from shared.stripe_payment_link_receive_only_rail import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "idem.db")
+    with pytest.raises(ReceiveOnlyRailError, match="event_id must be a non-empty string"):
+        store.record_or_skip("")
+
+
+def test_no_idempotency_store_means_no_idempotency_check(tmp_path):
+    """When constructed without a store, duplicates are processed twice (legacy shape)."""
+    receiver = StripePaymentLinkRailReceiver()
+    payload = _payment_intent_payload()
+    first = receiver.ingest_webhook(payload, signature=None)
+    second = receiver.ingest_webhook(payload, signature=None)
+    assert first is not None
+    assert second is not None  # no idempotency store → no short-circuit
+
+
+# ---------------------------------------------------------------------------
+# Thin-event rejection (jr-stripe-payment-link-replay-idempotency-pin pin #2)
+# ---------------------------------------------------------------------------
+
+
+def test_thin_event_rejected_with_explicit_error():
+    """data.object with only id+object (Stripe thin payload) fails closed."""
+    receiver = StripePaymentLinkRailReceiver()
+    payload = {
+        "id": "evt_test_thin",
+        "type": "payment_intent.succeeded",
+        "created": 1_745_000_000,
+        "data": {"object": {"id": "pi_test_thin", "object": "payment_intent"}},
+    }
+    with pytest.raises(ReceiveOnlyRailError, match="thin-payload event rejected"):
+        receiver.ingest_webhook(payload, signature=None)
+
+
+def test_full_payload_with_id_and_object_plus_data_is_not_thin():
+    """A standard payload with id+object+customer+amount+currency is processed normally."""
+    receiver = StripePaymentLinkRailReceiver()
+    payload = _payment_intent_payload()
+    assert "customer" in payload["data"]["object"]
+    assert "currency" in payload["data"]["object"]
+    event = receiver.ingest_webhook(payload, signature=None)
+    assert event is not None
+    assert event.customer_handle == "cus_AbCdEfGhIj01"
+
+
+def test_thin_event_with_only_id_key_rejected():
+    """Even minimal {id: ...} alone (Stripe shapes) fails closed."""
+    receiver = StripePaymentLinkRailReceiver()
+    payload = {
+        "id": "evt_test_thin_2",
+        "type": "checkout.session.completed",
+        "created": 1_745_000_010,
+        "data": {"object": {"id": "cs_test_thin"}},
+    }
+    with pytest.raises(ReceiveOnlyRailError, match="thin-payload event rejected"):
+        receiver.ingest_webhook(payload, signature=None)
+
+
+# ---------------------------------------------------------------------------
+# Startup secret validation (jr-stripe-payment-link-replay-idempotency-pin pin #3)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_secret_or_raise_with_unset_env_raises():
+    from shared.stripe_payment_link_receive_only_rail import validate_secret_or_raise
+
+    with mock.patch.dict("os.environ", {}, clear=True):
+        with pytest.raises(ReceiveOnlyRailError, match="must be set to a non-empty"):
+            validate_secret_or_raise()
+
+
+def test_validate_secret_or_raise_with_empty_env_raises():
+    from shared.stripe_payment_link_receive_only_rail import validate_secret_or_raise
+
+    with mock.patch.dict("os.environ", {STRIPE_PAYMENT_LINK_WEBHOOK_SECRET_ENV: ""}, clear=False):
+        with pytest.raises(ReceiveOnlyRailError, match="must be set to a non-empty"):
+            validate_secret_or_raise()
+
+
+def test_validate_secret_or_raise_with_whitespace_only_raises():
+    from shared.stripe_payment_link_receive_only_rail import validate_secret_or_raise
+
+    with mock.patch.dict(
+        "os.environ", {STRIPE_PAYMENT_LINK_WEBHOOK_SECRET_ENV: "   \t\n  "}, clear=False
+    ):
+        with pytest.raises(ReceiveOnlyRailError, match="must be set to a non-empty"):
+            validate_secret_or_raise()
+
+
+def test_validate_secret_or_raise_with_valid_secret_does_not_raise():
+    from shared.stripe_payment_link_receive_only_rail import validate_secret_or_raise
+
+    with mock.patch.dict(
+        "os.environ",
+        {STRIPE_PAYMENT_LINK_WEBHOOK_SECRET_ENV: "whsec_real_secret_value"},
+        clear=False,
+    ):
+        validate_secret_or_raise()  # should not raise
+
+
+def test_validate_secret_or_raise_supports_custom_env_var_name():
+    from shared.stripe_payment_link_receive_only_rail import validate_secret_or_raise
+
+    with mock.patch.dict("os.environ", {"CUSTOM_STRIPE_SECRET": "whsec_x"}, clear=False):
+        validate_secret_or_raise(env_var="CUSTOM_STRIPE_SECRET")
+
+
+# ---------------------------------------------------------------------------
+# Default idempotency DB path respects HAPAX_HOME
+# ---------------------------------------------------------------------------
+
+
+def test_default_idempotency_db_path_uses_hapax_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    from shared.stripe_payment_link_receive_only_rail import (
+        IdempotencyStore,
+        _default_idempotency_db_path,
+    )
+
+    p = _default_idempotency_db_path()
+    assert p == tmp_path / "stripe-payment-link" / "idempotency.db"
+
+    store = IdempotencyStore()
+    assert store.db_path == p
+    assert p.parent.is_dir()
+
+
+def test_default_idempotency_db_path_falls_back_to_home(monkeypatch):
+    from shared.stripe_payment_link_receive_only_rail import _default_idempotency_db_path
+
+    monkeypatch.delenv("HAPAX_HOME", raising=False)
+    p = _default_idempotency_db_path()
+    assert p == Path.home() / "hapax-state" / "stripe-payment-link" / "idempotency.db"
