@@ -145,3 +145,100 @@ def test_coverage_rejects_commit_ranges_before_touching_targets() -> None:
 
     assert result.returncode == 2
     assert "expected a single commit SHA/ref" in result.stderr
+
+
+def test_real_deploy_invokes_smoke_runner_with_sha(tmp_path: Path) -> None:
+    """The smoke runner is wired into the deploy chain (cc-task
+    post-merge-smoke-deploy-wiring). After deploy actions complete,
+    ``$REPO/scripts/hapax-post-merge-smoke <sha>`` is invoked. We stub
+    the smoke script with a recorder so the test can assert it ran
+    with the right SHA, without depending on the live smoke logic."""
+    repo, sha = _repo_with_merge_commit(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    smoke_recorder = tmp_path / "smoke-call-record.txt"
+
+    smoke_stub = repo / "scripts" / "hapax-post-merge-smoke"
+    smoke_stub.write_text(
+        f'#!/bin/sh\nprintf "smoke-invoked sha=%s\\n" "$1" > "{smoke_recorder}"\nexit 0\n',
+        encoding="utf-8",
+    )
+    smoke_stub.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "REPO": str(repo),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert smoke_recorder.exists(), "smoke runner was not invoked"
+    assert smoke_recorder.read_text(encoding="utf-8").strip() == f"smoke-invoked sha={sha}"
+
+
+def test_real_deploy_smoke_failure_does_not_block_trace(tmp_path: Path) -> None:
+    """If the smoke runner exits non-zero (defying its own contract),
+    the deploy script must still write its post-merge trace and exit
+    cleanly. The `|| true` guard around the smoke invocation is the
+    contract this test pins."""
+    repo, sha = _repo_with_merge_commit(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+
+    smoke_stub = repo / "scripts" / "hapax-post-merge-smoke"
+    smoke_stub.write_text("#!/bin/sh\necho smoke-broken >&2\nexit 1\n", encoding="utf-8")
+    smoke_stub.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "REPO": str(repo),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert trace_path.exists(), "post-merge trace was not written"
+    records = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    assert records[-1]["status"] == "completed"
+
+
+def test_real_deploy_with_no_smoke_script_is_a_no_op(tmp_path: Path) -> None:
+    """If ``scripts/hapax-post-merge-smoke`` is absent (e.g. on a repo
+    that hasn't yet adopted the smoke runner), the deploy script
+    silently skips smoke and completes normally — backward-compatible
+    with the pre-#2148 deploy chain."""
+    repo, sha = _repo_with_merge_commit(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+
+    smoke_stub = repo / "scripts" / "hapax-post-merge-smoke"
+    assert not smoke_stub.exists(), "fixture should not include smoke script"
+
+    env = {
+        **os.environ,
+        "REPO": str(repo),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert trace_path.exists()
