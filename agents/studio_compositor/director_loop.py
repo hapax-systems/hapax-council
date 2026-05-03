@@ -2611,6 +2611,35 @@ class DirectorLoop:
         except Exception:
             log.debug("PerceptualField build failed", exc_info=True)
 
+        # ─── Layer 1b.1: Camera salience bundle (Phase B of
+        # bayesian-camera-salience-broker-production-wiring). The broker
+        # returns a compact, authority-bounded projection that the LLM
+        # can ground compositional moves in specific camera/IR evidence.
+        # Fail-closed: broker errors are swallowed; section is omitted.
+        try:
+            from shared.camera_salience_singleton import broker as _camera_broker
+
+            _bundle = _camera_broker().query(
+                consumer="director",
+                decision_context="director_tick_perceptual_assembly",
+                candidate_action="compose_livestream_move",
+            )
+            if _bundle is not None:
+                _projection = _bundle.to_director_world_surface_projection()
+                if _projection.get("ranked"):
+                    parts.append("")
+                    parts.append("## Camera Salience")
+                    parts.append(
+                        "Bayesian camera/IR evidence ranked by value-of-information. "
+                        "Ground compositional moves in specific aperture evidence, "
+                        "not abstract scene descriptions."
+                    )
+                    parts.append("```json")
+                    parts.append(json.dumps(_projection, indent=2))
+                    parts.append("```")
+        except Exception:
+            log.debug("camera salience director query failed", exc_info=True)
+
         # ─── Layer 1c: Structural direction (Phase 5c — long-horizon
         # context from StructuralDirector). Stays in effect ~150s; reading
         # is best-effort. Missing file → narrative director decides freely.
