@@ -341,6 +341,112 @@ class TestAssembleContext:
         assert "flow=0.7" in context
         assert "HR=72" in context
 
+    def test_perceptual_field_block_present_when_snapshot_carries_it(self) -> None:
+        """A populated ``perceptual_field`` in the snapshot widens the prompt.
+
+        Closes the meta-architectural Bayesian audit Fix #2 (2026-05-03):
+        the imagination-narrative recruitment query was being born from a
+        4-key text snippet (activity / flow_score / presence / heart_rate).
+        With the full PerceptualField dump in the snapshot, the assembled
+        context carries data from ≥5 of the 13 typed sub-fields so the
+        downstream cosine-similarity query can actually distinguish
+        compositionally distinct world states.
+        """
+        snapshot = {
+            "perceptual_field": {
+                "audio": {
+                    "contact_mic": {"desk_activity": "typing", "desk_energy": 0.42},
+                    "midi": {"transport_state": "PLAYING", "tempo": 88.0},
+                },
+                "visual": {
+                    "detected_action": "scratching",
+                    "overhead_hand_zones": ["turntable"],
+                },
+                "ir": {"ir_hand_zone": "turntable", "ir_heart_rate_bpm": 71},
+                "album": {"artist": "Madvillain", "title": "Madvillainy"},
+                "chat": {"recent_message_count": 4, "unique_authors": 2},
+                "context": {"working_mode": "rnd", "stream_live": True},
+                "stimmung": {
+                    "dimensions": {"intensity": 0.7, "tension": 0.3},
+                    "overall_stance": "seeking",
+                },
+                "presence": {"state": "PRESENT", "probability": 0.92},
+                "tendency": {"desk_energy_rate": 0.05, "chat_heating_rate": 0.1},
+                "homage": {"package_name": "bitchx", "voice_register": "textmode"},
+            },
+        }
+        ctx = assemble_context([], [], snapshot)
+        assert "## Perceptual Field" in ctx
+        assert "```json" in ctx
+        # Pin: ≥5 of the 13 sub-fields must show up in the assembled
+        # prompt (the regression that the audit's Fix #2 closes — the
+        # slim-snapshot bottleneck collapsed everything to 4 keys).
+        sub_fields_seen = sum(
+            1
+            for marker in (
+                "audio",
+                "visual",
+                "ir",
+                "album",
+                "chat",
+                "context",
+                "stimmung",
+                "presence",
+                "stream_health",
+                "tendency",
+                "homage",
+                "camera_classifications",
+            )
+            if f'"{marker}":' in ctx
+        )
+        assert sub_fields_seen >= 5, (
+            f"Expected ≥5 PerceptualField sub-fields in assembled context, "
+            f"saw {sub_fields_seen}. The slim-snapshot bottleneck has regressed."
+        )
+        # Spot-check: specific values from at least three different
+        # sub-fields are reachable to the LLM (so the narrative it
+        # produces — the eventual cosine-similarity retrieval query — can
+        # cite them).
+        assert "Madvillainy" in ctx  # album.title
+        assert "scratching" in ctx  # visual.detected_action
+        assert "turntable" in ctx  # ir.ir_hand_zone
+
+    def test_perceptual_field_block_absent_when_snapshot_lacks_it(self) -> None:
+        """Backwards compatibility: legacy slim snapshots still produce a
+        usable prompt without the Perceptual Field block.
+
+        The DMN sensor's PerceptualField build is wrapped in a try/except
+        so a sub-read failure degrades to ``perceptual_field`` absent. In
+        that branch the prompt falls back to the legacy ``System State`` /
+        ``Time`` / ``Music`` / ``Goals`` / ``Fortress`` sections — which
+        chronicle and exploration consumers continue to depend on.
+        """
+        snapshot = {
+            "stimmung": {"stance": "calm"},
+            "perception": {"activity": "idle", "flow_score": 0.3},
+        }
+        ctx = assemble_context([], [], snapshot)
+        assert "## Perceptual Field" not in ctx
+        # Legacy slim-section markers still present.
+        assert "## System State" in ctx
+        assert "stance=calm" in ctx
+
+    def test_perceptual_field_block_handles_unserializable_payload(self) -> None:
+        """Pathologically non-JSON-serializable payloads degrade to repr,
+        never crash the imagination tick.
+        """
+
+        class _Unserializable:
+            def __repr__(self) -> str:
+                return "<unserializable_marker>"
+
+        snapshot = {"perceptual_field": {"weird": _Unserializable()}}
+        ctx = assemble_context([], [], snapshot)
+        assert "## Perceptual Field" in ctx
+        # Either the json.dumps succeeded (won't, here) or the repr
+        # fallback fired — the section must still be present.
+        assert "weird" in ctx or "unserializable_marker" in ctx
+
 
 # ---------------------------------------------------------------------------
 # Task 6: ImaginationLoop tests
