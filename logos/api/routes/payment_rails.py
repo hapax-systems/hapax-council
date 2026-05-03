@@ -137,6 +137,20 @@ _liberapay_idempotency_store: _RailIdempotencyStore | None = None
 _open_collective_idempotency_store: _RailIdempotencyStore | None = None
 _mercury_idempotency_store: _RailIdempotencyStore | None = None
 _modern_treasury_idempotency_store: _RailIdempotencyStore | None = None
+_treasury_prime_idempotency_store: _RailIdempotencyStore | None = None
+
+
+def _get_treasury_prime_idempotency_store() -> _RailIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for Treasury Prime.
+
+    Keyed on the in-payload ``data.id`` (incoming_ach uuid).
+    """
+    global _treasury_prime_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _treasury_prime_idempotency_store is None:
+        _treasury_prime_idempotency_store = _RailIdempotencyStore(
+            db_path=default_idempotency_db_path("treasury-prime"),
+        )
+    return _treasury_prime_idempotency_store
 
 
 def _get_modern_treasury_idempotency_store() -> _RailIdempotencyStore:
@@ -1044,7 +1058,9 @@ async def receive_treasury_prime_webhook(request: Request) -> JSONResponse:
 
     signature = request.headers.get(TREASURY_PRIME_SIGNATURE_HEADER)
 
-    receiver = TreasuryPrimeRailReceiver()
+    receiver = TreasuryPrimeRailReceiver(
+        idempotency_store=_get_treasury_prime_idempotency_store(),
+    )
     try:
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
     except TreasuryPrimeReceiveOnlyRailError as exc:
@@ -1052,6 +1068,10 @@ async def receive_treasury_prime_webhook(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        ach_id = (payload.get("data") or {}).get("id") if isinstance(payload, dict) else None
+        if payload and isinstance(ach_id, str) and ach_id:
+            log.info("treasury_prime webhook duplicate: %s", ach_id)
+            return JSONResponse({"status": "duplicate", "ach_id": ach_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = TreasuryPrimePublisher()

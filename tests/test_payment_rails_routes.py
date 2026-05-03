@@ -2971,11 +2971,12 @@ def _treasury_prime_payload(
     amount: object = 10000,
     currency: str = "USD",
     created_at: str = "2026-05-03T00:00:00Z",
+    ach_id: str = "tp-incoming-ach-uuid",
 ) -> dict:
     return {
         "event": event,
         "data": {
-            "id": "tp-incoming-ach-uuid",
+            "id": ach_id,
             "amount": amount,
             "currency": currency,
             "originating_party_name": originating_party_name,
@@ -3000,6 +3001,17 @@ def tp_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def tp_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setenv(TREASURY_PRIME_WEBHOOK_SECRET_ENV, _TP_VALID_SECRET)
     return _TP_VALID_SECRET
+
+
+@pytest.fixture
+def tp_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's Treasury Prime idempotency singleton + tmp db."""
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._treasury_prime_idempotency_store = None
+    yield tmp_path / "treasury-prime" / "idempotency.db"
+    routes_mod._treasury_prime_idempotency_store = None
 
 
 @pytest.mark.asyncio
@@ -3110,3 +3122,87 @@ def test_treasury_prime_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# Treasury Prime — idempotency hard pin (cc-task jr-treasury-prime-rail-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_treasury_prime_route_replays_same_ach_id_returns_duplicate(
+    tp_output_dir: Path,
+    tp_secret_env: str,
+    tp_idempotency_isolated: Path,
+) -> None:
+    payload = _treasury_prime_payload(ach_id="tp-replay-001")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(tp_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    headers = {"X-Signature": sig}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post("/api/payment-rails/treasury-prime", content=raw, headers=headers)
+        second = await client.post(
+            "/api/payment-rails/treasury-prime", content=raw, headers=headers
+        )
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["ach_id"] == "tp-replay-001"
+    files = list(tp_output_dir.glob("event-incoming_ach_create-*.md"))
+    assert len(files) == 1
+
+
+@pytest.mark.asyncio
+async def test_treasury_prime_route_distinct_ach_ids_both_processed(
+    tp_output_dir: Path,
+    tp_secret_env: str,
+    tp_idempotency_isolated: Path,
+) -> None:
+    payload_a = _treasury_prime_payload(ach_id="tp-a")
+    payload_b = _treasury_prime_payload(ach_id="tp-b", originating_party_name="Foo")
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+    sig_a = hmac.new(tp_secret_env.encode("utf-8"), raw_a, hashlib.sha256).hexdigest()
+    sig_b = hmac.new(tp_secret_env.encode("utf-8"), raw_b, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post(
+            "/api/payment-rails/treasury-prime",
+            content=raw_a,
+            headers={"X-Signature": sig_a},
+        )
+        r_b = await client.post(
+            "/api/payment-rails/treasury-prime",
+            content=raw_b,
+            headers={"X-Signature": sig_b},
+        )
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(tp_output_dir.glob("event-incoming_ach_create-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_treasury_prime_route_missing_data_id_returns_400(
+    tp_output_dir: Path,
+    tp_secret_env: str,
+    tp_idempotency_isolated: Path,
+) -> None:
+    payload = _treasury_prime_payload()
+    del payload["data"]["id"]
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(tp_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/treasury-prime",
+            content=raw,
+            headers={"X-Signature": sig},
+        )
+
+    assert response.status_code == 400
+    assert "data.id" in response.json()["detail"]

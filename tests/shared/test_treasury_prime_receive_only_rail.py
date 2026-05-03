@@ -459,3 +459,77 @@ def test_event_kind_enum_only_accepts_phase_0_event() -> None:
 
 def test_receive_only_error_subclasses_exception() -> None:
     assert issubclass(ReceiveOnlyRailError, Exception)
+
+
+# ---------------------------------------------------------------------------
+# jr-treasury-prime-rail-idempotency-pin regression pins
+# ---------------------------------------------------------------------------
+
+
+def test_idempotency_store_rejects_duplicate_ach_id(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "tp-idem.db")
+    receiver = TreasuryPrimeRailReceiver(idempotency_store=store)
+    payload = _ach_payload()
+    payload["data"]["id"] = "tp-test-001"
+
+    first = receiver.ingest_webhook(payload, signature=None)
+    second = receiver.ingest_webhook(payload, signature=None)
+
+    assert first is not None
+    assert second is None
+
+
+def test_idempotency_store_distinct_ach_ids_both_processed(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "tp-idem.db")
+    receiver = TreasuryPrimeRailReceiver(idempotency_store=store)
+    payload_a = _ach_payload()
+    payload_a["data"]["id"] = "tp-a"
+    payload_b = _ach_payload()
+    payload_b["data"]["id"] = "tp-b"
+
+    first = receiver.ingest_webhook(payload_a, signature=None)
+    second = receiver.ingest_webhook(payload_b, signature=None)
+
+    assert first is not None
+    assert second is not None
+
+
+def test_idempotency_store_provided_but_data_id_missing_raises(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "tp-idem.db")
+    receiver = TreasuryPrimeRailReceiver(idempotency_store=store)
+    payload = _ach_payload()
+    del payload["data"]["id"]
+
+    with pytest.raises(ReceiveOnlyRailError, match="data.id"):
+        receiver.ingest_webhook(payload, signature=None)
+
+
+def test_no_idempotency_store_means_no_idempotency_check():
+    receiver = TreasuryPrimeRailReceiver()
+    payload = _ach_payload()
+    a = receiver.ingest_webhook(payload, signature=None)
+    b = receiver.ingest_webhook(payload, signature=None)
+    assert a is not None
+    assert b is not None
+
+
+def test_idempotency_store_persists_across_receivers(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    db = tmp_path / "tp-idem.db"
+    payload = _ach_payload()
+    payload["data"]["id"] = "tp-persist"
+
+    a = TreasuryPrimeRailReceiver(idempotency_store=IdempotencyStore(db_path=db))
+    first = a.ingest_webhook(payload, signature=None)
+    b = TreasuryPrimeRailReceiver(idempotency_store=IdempotencyStore(db_path=db))
+    second = b.ingest_webhook(payload, signature=None)
+
+    assert first is not None
+    assert second is None
