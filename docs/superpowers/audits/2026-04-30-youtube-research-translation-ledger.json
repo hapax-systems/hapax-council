@@ -191,7 +191,7 @@
       "surface_id": "youtube_live_captions",
       "display_name": "YouTube live captions",
       "publication_surface": true,
-      "current_status": "unavailable",
+      "current_status": "dry_run",
       "public_event_inputs": [
         "caption.segment"
       ],
@@ -210,15 +210,20 @@
           "rights_provenance_token",
           "privacy_class_public_safe",
           "caption_stream_freshness",
-          "av_offset_observation"
+          "av_offset_observation",
+          "caption_substrate_adapter_candidate"
         ],
         "freshness_refs": [
           "/dev/shm/hapax-captions/live.jsonl",
-          "caption_substrate.health_signal"
+          "caption_substrate.health_signal",
+          "caption_substrate_adapter.candidate.generated_at"
         ],
         "public_blockers": [
           "producer_absent",
           "source_stale",
+          "adapter_rejection_stale",
+          "adapter_rejection_denied_routing",
+          "av_offset_unavailable",
           "privacy_blocked",
           "provenance_missing",
           "live_smoke_missing"
@@ -251,9 +256,9 @@
       },
       "fallback": {
         "mode": "dry_run",
-        "reason": "No production caption producer or in-band path is currently evidenced."
+        "reason": "Captions are claimable only when BOTH a fresh production caption producer is writing /dev/shm/hapax-captions/live.jsonl (ytb-009-production-wire shipped via PR #1901) AND the caption-substrate adapter has projected a non-rejected caption.segment candidate with av_offset_s evidence. Adapter rejections (stale, denied_routing, av_offset_unavailable) keep the surface in dry_run."
       },
-      "notes": "Closed reconcile found reader/writer/routing tests, but no production get_caption_bridge callsite and no live caption JSONL evidence."
+      "notes": "Producer wired by ytb-009-production-wire (PR #1901). Adapter shipped by caption-substrate-adapter (shared/caption_substrate_adapter.py). Surface remains dry_run until live smoke produces fresh caption.segment candidates with av_offset evidence — the adapter cleanly degrades to dry_run when av_offset_s is None, so a publisher cannot claim aligned timing without it."
     },
     {
       "surface_id": "youtube_live_cuepoints",
