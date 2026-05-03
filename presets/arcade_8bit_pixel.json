@@ -1,0 +1,46 @@
+{
+  "name": "Arcade 8-bit Pixel",
+  "description": "Retro-arcade lineage (1/2): heavy posterize + dither + scanlines creates the 8-bit-arcade-CRT aesthetic of Pac-Man and Ms. Pac-Man cabinets. Lineage: retro-arcade.",
+  "lineage": "retro-arcade",
+  "transition_ms": 900,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 1.05,
+        "contrast": 1.28,
+        "saturation": 1.35,
+        "hue_rotate": 0
+      }
+    },
+    "posterize_8bit": {
+      "type": "posterize",
+      "params": {
+        "levels": 8
+      }
+    },
+    "dither_arcade": {
+      "type": "dither",
+      "params": {
+        "amount": 0.42,
+        "palette_size": 16
+      }
+    },
+    "scanlines_crt": {
+      "type": "scanlines",
+      "params": {
+        "amount": 0.32,
+        "frequency": 320,
+        "speed": 0.0
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}
