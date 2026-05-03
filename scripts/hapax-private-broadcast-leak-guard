@@ -46,9 +46,41 @@ PRIVATE_SOURCE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^hapax-notification-private(?:[-:]|$)"),
 )
 
+# Option C (2026-05-02 spec amendment) narrows the S-4 forbid pattern.
+# Per `docs/superpowers/specs/2026-05-02-hapax-private-monitor-track-fenced-via-s4.md`,
+# the privacy invariant lives at TRACK-OUTPUT level, not device level:
+#
+#   ALLOW: private → S-4 USB IN (i.e., the host-side SINK
+#          `alsa_output.usb-Torso_Electronics_S-4_*.multichannel-output`).
+#          The S-4 internal scene routes Track 1's input from this USB IN
+#          slot to S-4 analog OUT 1/2, which the operator has patched into
+#          a non-broadcast monitor sink. This is the new wet private path.
+#
+#   FORBID: private → S-4 USB OUT pair (i.e., the host-side SOURCE
+#           `alsa_input.usb-Torso_Electronics_S-4_*.multichannel-input`).
+#           The S-4 USB OUT pair is the broadcast-bound capture surface
+#           that `s4-loopback` returns to `hapax-livestream-tap`.
+#
+#   FORBID: private → `hapax-s4-content` / `hapax-s4-tap` / any S-4-bound
+#           loopback that returns S-4 audio into the broadcast tap.
+#
+# The pattern below matches S-4 USB OUT pair (alsa_input.*S-4*) and any
+# `hapax-s4-*` virtual node, but does NOT match the S-4 USB IN sink
+# (alsa_output.*S-4*). pw-link's source-port column is the producer of
+# audio: `pw-link -d <src> <dst>` disconnects audio flowing FROM src TO
+# dst. So we forbid private → broadcast-bound consumers of the S-4 USB
+# pair; we allow private → host-side S-4 USB IN sink.
 FORBIDDEN_TARGET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"ZOOM_Corporation_L-12"),
-    re.compile(r"Torso_Electronics_S-4"),
+    # S-4 USB OUT pair: the host-side ALSA SOURCE that captures audio
+    # the S-4 is sending OUT to the host. Anything that lands on this
+    # source surface is broadcast-bound (loopback'd via hapax-s4-content
+    # into hapax-livestream-tap). Match `alsa_input.*Torso_Electronics_S-4*`.
+    re.compile(r"^alsa_input\.usb-Torso_Electronics_S-4"),
+    # S-4 virtual loopback nodes: `hapax-s4-content` / `hapax-s4-tap` /
+    # any `hapax-s4-*` is by construction part of the broadcast forwarding
+    # chain (descriptor: `s4-loopback` targets `hapax-livestream-tap`).
+    re.compile(r"^hapax-s4-(?:content|tap)(?:[-:]|$)"),
     re.compile(r"^hapax-livestream(?:[-:]|$)"),
     re.compile(r"^hapax-broadcast(?:[-:]|$)"),
     re.compile(r"^hapax-music-duck(?:[-:]|$)"),

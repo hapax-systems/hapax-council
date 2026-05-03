@@ -3,10 +3,26 @@
 ## Constitutional invariant
 
 The L-12 broadcast bus only carries broadcast-bound audio. Private monitor
-streams (`hapax-private*`, `hapax-notification-private*`) MUST route to the
-Yeti headphone monitor and MUST NEVER reach broadcast.
+streams (`hapax-private*`, `hapax-notification-private*`) MUST route to a
+non-broadcast monitor destination and MUST NEVER reach broadcast.
 
 Memory: `feedback_l12_equals_livestream_invariant`.
+
+## Option C amendment (2026-05-02)
+
+Per `docs/superpowers/specs/2026-05-02-hapax-private-monitor-track-fenced-via-s4.md`,
+the private-monitor target was **retargeted from the Yeti monitor sink to the
+S-4 USB IN Track 1 input** to satisfy the NO-DRY-HAPAX anti-anthropomorphism
+mandate while preserving the privacy invariant. The S-4 internal scene
+`HAPAX-PRIVATE-MONITOR` routes Track 1 input → analog OUT 1/2 (operator's
+non-broadcast monitor patch), so the privacy invariant is enforced at
+TRACK-OUTPUT level, not device level.
+
+The 3-layer defense shape is unchanged — only the Layer B target moved
+from Yeti to S-4 USB IN. The prior Yeti pin is preserved on disk as
+`56-hapax-private-pin-yeti.conf.disabled-2026-05-02-option-c` for revert
+capability. See `docs/governance/option-c-private-track-fenced-routing.md`
+for the operator runbook.
 
 ## Why the three layers
 
@@ -24,7 +40,7 @@ and they compose:
 | Layer | File | Failure mode it prevents |
 |-------|------|--------------------------|
 | A | `config/wireplumber/55-hapax-private-no-restore.conf` | Stream-restore re-applies a stale `target.object` from `~/.local/state/wireplumber/restore-stream` |
-| B | `config/wireplumber/56-hapax-private-pin-yeti.conf` | Linker default-sink elevation when no explicit target — pins Yeti, fail-closed if absent |
+| B | `config/wireplumber/56-hapax-private-pin-s4-track-1.conf` | Linker default-sink elevation when no explicit target — pins S-4 USB IN, fail-closed if S-4 absent (Option C, was 56-hapax-private-pin-yeti.conf pre-2026-05-02) |
 | C | `scripts/hapax-private-broadcast-leak-guard` | Anything else: a forbidden link survives layers A+B, the runtime guard breaks it within 30s |
 
 Together they protect the constitutional invariant against (a) stale state,
@@ -42,24 +58,32 @@ This is the right primitive for the failure mode that fired today. WirePlumber
 0.5.x supports `restore-stream.rules` as a top-level `wireplumber.settings`
 key, with `update-props { state.restore-target = false }` inside the action.
 
-## Layer B — hard-pin to Yeti
+## Layer B — hard-pin to S-4 USB IN (Option C, 2026-05-02)
 
-`config/wireplumber/56-hapax-private-pin-yeti.conf` forces the private
-loopbacks to `target.object = alsa_output.usb-Blue_Microphones_Yeti_...`
+`config/wireplumber/56-hapax-private-pin-s4-track-1.conf` forces the private
+loopbacks to `target.object = alsa_output.usb-Torso_Electronics_S-4_*.multichannel-output`
 with these fail-closed properties:
 
 | Property | Effect |
 |----------|--------|
-| `node.dont-fallback = true` | If Yeti absent, stream stays unrouted instead of falling back to L-12 |
+| `node.dont-fallback = true` | If S-4 absent, stream stays unrouted instead of falling back to L-12 |
 | `node.dont-reconnect = true` | Released link is not re-established to a different target on the next policy sweep |
 | `node.dont-move = true` | Refuses session-policy retarget after creation |
-| `node.linger = true` | Loopback stays alive across hardware changes (waits for Yeti to reappear) |
+| `node.linger = true` | Loopback stays alive across hardware changes (waits for S-4 to reappear) |
 | `priority.session = -1` | Deprioritised for any default-sink-elevation policy |
 
-The Yeti node name is hard-coded; if it ever changes, edit the
-`target.object` literal. The runtime guard (Layer C) does NOT need editing —
-it identifies broadcast targets by a forbidden-list, not by the allowed Yeti
-target.
+The S-4 USB sink node name is hard-coded; if the S-4 firmware / USB
+enumeration name ever changes, edit the `target.object` literal. The runtime
+guard (Layer C) does NOT need editing — it identifies broadcast targets by a
+forbidden-list, not by the allowed S-4 USB IN target.
+
+**S-4 internal scene programming required.** The Layer B WirePlumber pin
+only governs the host-side software route. The S-4 internal scene
+`HAPAX-PRIVATE-MONITOR` (operator-side firmware action, not in this layer)
+must wire `Track 1: input = USB IN <pair>, output = analog OUT 1/2,
+slots = <wet character>` for the path to actually produce wet audio on the
+operator's monitor amp. See `docs/governance/option-c-private-track-fenced-routing.md`
+§ "Program the S-4 internal scene".
 
 ## Layer C — runtime backstop
 
@@ -70,7 +94,12 @@ each tick it:
 1. Calls `pw-link -l` and parses the live PipeWire graph.
 2. Detects any link whose source node matches `hapax-private*` /
    `hapax-notification-private*` AND whose target matches the FORBIDDEN-list:
-   - L-12 (`*ZOOM_Corporation_L-12*`) and S-4 (`*Torso_Electronics_S-4*`)
+   - L-12 (`*ZOOM_Corporation_L-12*`)
+   - S-4 USB OUT pair (`alsa_input.usb-Torso_Electronics_S-4_*` — the
+     broadcast-bound capture surface; Option C 2026-05-02 narrowing).
+     The S-4 USB IN sink (`alsa_output.usb-Torso_Electronics_S-4_*`) is
+     ALLOWED — it is the new wet private path through Track 1.
+   - `hapax-s4-content`, `hapax-s4-tap` (S-4 broadcast loopback nodes)
    - `hapax-livestream*`, `hapax-broadcast*`
    - `hapax-music-duck`, `hapax-tts-duck`
    - `hapax-music-loudnorm`, `hapax-pc-loudnorm`
@@ -105,8 +134,10 @@ automatically — symlink or copy to the user wireplumber config dir:
 mkdir -p ~/.config/wireplumber/wireplumber.conf.d
 ln -sf $(pwd)/config/wireplumber/55-hapax-private-no-restore.conf \
        ~/.config/wireplumber/wireplumber.conf.d/55-hapax-private-no-restore.conf
-ln -sf $(pwd)/config/wireplumber/56-hapax-private-pin-yeti.conf \
-       ~/.config/wireplumber/wireplumber.conf.d/56-hapax-private-pin-yeti.conf
+ln -sf $(pwd)/config/wireplumber/56-hapax-private-pin-s4-track-1.conf \
+       ~/.config/wireplumber/wireplumber.conf.d/56-hapax-private-pin-s4-track-1.conf
+# If reverting from Option C, remove the S-4 pin and copy the disabled Yeti
+# pin back: see docs/governance/option-c-private-track-fenced-routing.md
 systemctl --user restart wireplumber
 ```
 
@@ -149,7 +180,11 @@ repair enabled (the default) and check the JSON status for any entries where
   surfaces unclassified edges (this is what flagged today's incident).
 - `config/audio-topology.yaml` — declarative topology spec; the
   `private-monitor-output` and `notification-private-monitor-output` entries
-  document the intended Yeti target.
+  document the intended S-4 USB IN Track 1 input target (Option C, was
+  Yeti pre-2026-05-02).
+- `docs/governance/option-c-private-track-fenced-routing.md` — Option C
+  operator runbook (S-4 scene programming, hardware patch verification,
+  smoke test).
 - Incident research: `/tmp/usb-hardening-research-2026-05-02.md` §4.
 
 ## Constitutional notes
