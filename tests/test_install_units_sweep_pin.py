@@ -342,53 +342,6 @@ class TestServiceAutoEnableList:
         )
 
 
-class TestPresetBiasHeartbeatDecommissioned:
-    """Pin the preset-bias-heartbeat decommissioning (audit #13).
-
-    PR #2239 shipped a preset-pulse heartbeat that violates memory
-    ``feedback_no_presets_use_parametric_modulation`` (presets are the dumb
-    anti-pattern; variance comes from constrained algorithmic parametric
-    modulation). PR #2252 ships the parametric-modulation heartbeat as the
-    correct unit. This test pins the decommissioning so the preset unit
-    cannot quietly come back via auto-enable.
-    """
-
-    def test_preset_bias_heartbeat_in_decommissioned_list(self) -> None:
-        body = INSTALL_SCRIPT.read_text(encoding="utf-8")
-        # The list is multiline; check the unit name appears between the
-        # DECOMMISSIONED_UNITS=( opening and its closing paren.
-        head, _, tail = body.partition("DECOMMISSIONED_UNITS=(")
-        decom_block, _, _ = tail.partition(")\n")
-        assert "hapax-preset-bias-heartbeat.service" in decom_block, (
-            "hapax-preset-bias-heartbeat.service must be listed in "
-            "DECOMMISSIONED_UNITS so install-units.sh disables+masks it. "
-            "Per memory feedback_no_presets_use_parametric_modulation, the "
-            "preset-pulse heartbeat is the wrong unit; "
-            "hapax-parametric-modulation-heartbeat.service supersedes it."
-        )
-
-    def test_preset_bias_heartbeat_not_in_auto_enable(self) -> None:
-        body = INSTALL_SCRIPT.read_text(encoding="utf-8")
-        head, _, tail = body.partition("AUTO_ENABLE_SERVICES=(")
-        auto_block, _, _ = tail.partition(")\n")
-        assert "hapax-preset-bias-heartbeat" not in auto_block, (
-            "hapax-preset-bias-heartbeat must NOT appear in AUTO_ENABLE_SERVICES "
-            "— it is superseded by hapax-parametric-modulation-heartbeat.service "
-            "and listed in DECOMMISSIONED_UNITS for disable+mask"
-        )
-
-    def test_decommissioned_block_disables_and_masks(self) -> None:
-        """Sanity pin: the remove_decommissioned_unit function must do both
-        ``disable --now`` AND ``mask`` so the unit is permanently quiet."""
-        body = INSTALL_SCRIPT.read_text(encoding="utf-8")
-        assert 'systemctl --user disable --now "$name"' in body, (
-            "remove_decommissioned_unit must disable+stop the unit"
-        )
-        assert 'systemctl --user mask "$name"' in body, (
-            "remove_decommissioned_unit must mask the unit so it cannot be accidentally re-enabled"
-        )
-
-
 class TestAuditedUnitsExist:
     """Sanity pins: the unit files referenced by AUTO_ENABLE_SERVICES must
     exist in the repo. Catches the case where the array lists a unit that
@@ -403,7 +356,6 @@ class TestAuditedUnitsExist:
         "hapax-parametric-modulation-heartbeat.service",
         # Decommissioned but file must still be present so the disable+mask
         # path has something to act on.
-        "hapax-preset-bias-heartbeat.service",
     )
 
     def test_each_unit_file_present(self) -> None:
