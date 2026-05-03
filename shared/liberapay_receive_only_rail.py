@@ -89,6 +89,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from shared._rail_idempotency import (
+    IdempotencyError as _SharedIdempotencyError,
+)
+from shared._rail_idempotency import (
+    IdempotencyStore,
+)
+
 LIBERAPAY_WEBHOOK_SECRET_ENV = "LIBERAPAY_WEBHOOK_SECRET"
 LIBERAPAY_REQUIRE_IP_ALLOWLIST_ENV = "LIBERAPAY_REQUIRE_IP_ALLOWLIST"
 
@@ -286,9 +293,11 @@ class LiberapayRailReceiver:
         *,
         secret_env_var: str = LIBERAPAY_WEBHOOK_SECRET_ENV,
         require_ip_env_var: str = LIBERAPAY_REQUIRE_IP_ALLOWLIST_ENV,
+        idempotency_store: IdempotencyStore | None = None,
     ) -> None:
         self._secret_env_var = secret_env_var
         self._require_ip_env_var = require_ip_env_var
+        self._idempotency_store = idempotency_store
 
     def _resolve_secret(self) -> str:
         return os.environ.get(self._secret_env_var, "")
@@ -302,6 +311,7 @@ class LiberapayRailReceiver:
         signature: str | None,
         *,
         raw_body: bytes | None = None,
+        delivery_id: str | None = None,
     ) -> DonationEvent | None:
         """Validate + normalize a single Liberapay donation notification.
 
@@ -343,6 +353,20 @@ class LiberapayRailReceiver:
         amount_eur_cents = _extract_amount_eur_cents(payload)
         occurred_at = _extract_occurred_at(payload)
 
+        if self._idempotency_store is not None:
+            if not delivery_id:
+                raise ReceiveOnlyRailError(
+                    "idempotency_store provided but delivery_id missing — "
+                    "the bridge layer must supply a unique delivery identifier "
+                    "(e.g. cloudmailin Message-Id, mailgun X-Mailgun-Variables) "
+                    "via the route's delivery_id resolution"
+                )
+            try:
+                if not self._idempotency_store.record_or_skip(delivery_id):
+                    return None
+            except _SharedIdempotencyError as exc:
+                raise ReceiveOnlyRailError(str(exc)) from exc
+
         try:
             return DonationEvent(
                 donor_handle=donor_handle,
@@ -360,6 +384,7 @@ __all__ = [
     "LIBERAPAY_WEBHOOK_SECRET_ENV",
     "DonationEvent",
     "DonationEventKind",
+    "IdempotencyStore",
     "LiberapayRailReceiver",
     "ReceiveOnlyRailError",
 ]

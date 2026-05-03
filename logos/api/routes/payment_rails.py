@@ -133,6 +133,44 @@ _stripe_payment_link_idempotency_store: StripePaymentLinkIdempotencyStore | None
 _patreon_idempotency_store: _RailIdempotencyStore | None = None
 _ko_fi_idempotency_store: _RailIdempotencyStore | None = None
 _buy_me_a_coffee_idempotency_store: _RailIdempotencyStore | None = None
+_liberapay_idempotency_store: _RailIdempotencyStore | None = None
+
+
+def _get_liberapay_idempotency_store() -> _RailIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for Liberapay.
+
+    Keyed on a bridge-supplied `delivery_id` (resolved from one of:
+    ``X-Liberapay-Delivery-Id``, ``X-Cloudmailin-Message-Id``,
+    ``X-Mailgun-Variables`` JSON's ``message-id``, ``Message-Id``).
+    """
+    global _liberapay_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _liberapay_idempotency_store is None:
+        _liberapay_idempotency_store = _RailIdempotencyStore(
+            db_path=default_idempotency_db_path("liberapay"),
+        )
+    return _liberapay_idempotency_store
+
+
+_LIBERAPAY_DELIVERY_ID_HEADERS: tuple[str, ...] = (
+    "X-Liberapay-Delivery-Id",
+    "X-Cloudmailin-Message-Id",
+    "Message-Id",
+)
+
+
+def _resolve_liberapay_delivery_id(headers) -> str | None:
+    """Walk the bridge-header fallback chain for a per-delivery identifier.
+
+    Returns the first non-empty value found across the documented
+    bridge contracts (cloudmailin, mailgun, n8n, generic SMTP). Returns
+    ``None`` if no bridge header is present — the route returns 400
+    so the bridge layer fails-loud.
+    """
+    for header_name in _LIBERAPAY_DELIVERY_ID_HEADERS:
+        value = headers.get(header_name)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def _get_buy_me_a_coffee_idempotency_store() -> _RailIdempotencyStore:
@@ -366,15 +404,27 @@ async def receive_liberapay_webhook(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail="payload must be a JSON object")
 
     signature = request.headers.get(LIBERAPAY_SIGNATURE_HEADER)
+    delivery_id = _resolve_liberapay_delivery_id(request.headers)
 
-    receiver = LiberapayRailReceiver()
+    receiver = LiberapayRailReceiver(
+        idempotency_store=_get_liberapay_idempotency_store(),
+    )
     try:
-        event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
+        event = receiver.ingest_webhook(
+            payload,
+            signature,
+            raw_body=raw_body,
+            delivery_id=delivery_id,
+        )
     except LiberapayReceiveOnlyRailError as exc:
         log.warning("liberapay webhook rejected: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        # Either heartbeat ping or duplicate delivery_id — both 200 OK.
+        if payload and isinstance(delivery_id, str) and delivery_id:
+            log.info("liberapay webhook duplicate: %s", delivery_id)
+            return JSONResponse({"status": "duplicate", "delivery_id": delivery_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = LiberapayPublisher()

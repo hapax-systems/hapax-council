@@ -447,9 +447,22 @@ def liberapay_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
     return "liberapay-secret-XYZ"
 
 
+@pytest.fixture
+def liberapay_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's Liberapay idempotency singleton + point at tmp db."""
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._liberapay_idempotency_store = None
+    yield tmp_path / "liberapay" / "idempotency.db"
+    routes_mod._liberapay_idempotency_store = None
+
+
 @pytest.mark.asyncio
 async def test_liberapay_signed_payin_succeeded_writes_manifest(
-    liberapay_output_dir: Path, liberapay_secret_env: str
+    liberapay_output_dir: Path,
+    liberapay_secret_env: str,
+    liberapay_idempotency_isolated: Path,
 ) -> None:
     payload = _liberapay_payload(event="payin_succeeded")
     raw = json.dumps(payload).encode("utf-8")
@@ -459,7 +472,10 @@ async def test_liberapay_signed_payin_succeeded_writes_manifest(
         response = await client.post(
             "/api/payment-rails/liberapay",
             content=raw,
-            headers={"X-Liberapay-Signature": sig},
+            headers={
+                "X-Liberapay-Signature": sig,
+                "X-Liberapay-Delivery-Id": "lp-delivery-payin-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -475,7 +491,9 @@ async def test_liberapay_signed_payin_succeeded_writes_manifest(
 
 @pytest.mark.asyncio
 async def test_liberapay_dotted_form_alias_accepted(
-    liberapay_output_dir: Path, liberapay_secret_env: str
+    liberapay_output_dir: Path,
+    liberapay_secret_env: str,
+    liberapay_idempotency_isolated: Path,
 ) -> None:
     """Bridges may forward Liberapay's dotted form (`payin.succeeded`)."""
     payload = _liberapay_payload(event="payin.succeeded")
@@ -486,7 +504,10 @@ async def test_liberapay_dotted_form_alias_accepted(
         response = await client.post(
             "/api/payment-rails/liberapay",
             content=raw,
-            headers={"X-Liberapay-Signature": sig},
+            headers={
+                "X-Liberapay-Signature": sig,
+                "X-Liberapay-Delivery-Id": "lp-delivery-dotted-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -498,6 +519,7 @@ async def test_liberapay_tip_cancelled_appends_to_refusal_log(
     liberapay_output_dir: Path,
     liberapay_secret_env: str,
     refusal_log_dir: Path,
+    liberapay_idempotency_isolated: Path,
 ) -> None:
     payload = _liberapay_payload(event="tip_cancelled", donor="bob-donor")
     raw = json.dumps(payload).encode("utf-8")
@@ -507,7 +529,10 @@ async def test_liberapay_tip_cancelled_appends_to_refusal_log(
         response = await client.post(
             "/api/payment-rails/liberapay",
             content=raw,
-            headers={"X-Liberapay-Signature": sig},
+            headers={
+                "X-Liberapay-Signature": sig,
+                "X-Liberapay-Delivery-Id": "lp-delivery-cancel-test",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -605,6 +630,123 @@ def test_liberapay_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# Liberapay — idempotency hard pin (cc-task jr-liberapay-rail-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_liberapay_route_replays_same_delivery_id_returns_duplicate(
+    liberapay_output_dir: Path,
+    liberapay_secret_env: str,
+    liberapay_idempotency_isolated: Path,
+) -> None:
+    """Two POSTs with same X-Liberapay-Delivery-Id → 2nd is duplicate."""
+    payload = _liberapay_payload(event="payin_succeeded")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(liberapay_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    headers = {
+        "X-Liberapay-Signature": sig,
+        "X-Liberapay-Delivery-Id": "lp-replay-001",
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post("/api/payment-rails/liberapay", content=raw, headers=headers)
+        second = await client.post("/api/payment-rails/liberapay", content=raw, headers=headers)
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["delivery_id"] == "lp-replay-001"
+    files = list(liberapay_output_dir.glob("event-payin_succeeded-*.md"))
+    assert len(files) == 1
+
+
+@pytest.mark.asyncio
+async def test_liberapay_route_distinct_delivery_ids_both_processed(
+    liberapay_output_dir: Path,
+    liberapay_secret_env: str,
+    liberapay_idempotency_isolated: Path,
+) -> None:
+    payload_a = _liberapay_payload(event="payin_succeeded")
+    payload_b = _liberapay_payload(event="payin_succeeded", donor="bob-donor")
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+    sig_a = hmac.new(liberapay_secret_env.encode("utf-8"), raw_a, hashlib.sha256).hexdigest()
+    sig_b = hmac.new(liberapay_secret_env.encode("utf-8"), raw_b, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post(
+            "/api/payment-rails/liberapay",
+            content=raw_a,
+            headers={
+                "X-Liberapay-Signature": sig_a,
+                "X-Liberapay-Delivery-Id": "lp-delivery-a",
+            },
+        )
+        r_b = await client.post(
+            "/api/payment-rails/liberapay",
+            content=raw_b,
+            headers={
+                "X-Liberapay-Signature": sig_b,
+                "X-Liberapay-Delivery-Id": "lp-delivery-b",
+            },
+        )
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(liberapay_output_dir.glob("event-payin_succeeded-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_liberapay_route_missing_delivery_id_returns_400(
+    liberapay_output_dir: Path,
+    liberapay_secret_env: str,
+    liberapay_idempotency_isolated: Path,
+) -> None:
+    """No bridge delivery-id header → 400 (bridge fails-loud)."""
+    payload = _liberapay_payload(event="payin_succeeded")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(liberapay_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/liberapay",
+            content=raw,
+            headers={"X-Liberapay-Signature": sig},  # NO delivery_id
+        )
+
+    assert response.status_code == 400
+    assert "delivery_id" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_liberapay_route_accepts_cloudmailin_message_id_header(
+    liberapay_output_dir: Path,
+    liberapay_secret_env: str,
+    liberapay_idempotency_isolated: Path,
+) -> None:
+    """Bridge fallback: X-Cloudmailin-Message-Id is a valid delivery_id."""
+    payload = _liberapay_payload(event="payin_succeeded")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(liberapay_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/liberapay",
+            content=raw,
+            headers={
+                "X-Liberapay-Signature": sig,
+                "X-Cloudmailin-Message-Id": "cm-msg-001",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "received"
 
 
 # ===========================================================================
