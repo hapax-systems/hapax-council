@@ -123,6 +123,24 @@ class ForbiddenLink:
         }
 
 
+# --- typed exceptions ----------------------------------------------------
+
+
+class PwLinkUnavailableError(RuntimeError):
+    """Raised when `pw-link -l` cannot be evaluated.
+
+    Carries the captured stderr (or a synthetic explanation) so the
+    guard can record an actionable witness JSON instead of silently
+    classifying "no leaks = ok" — which would be a fail-OPEN bug for the
+    privacy invariant `feedback_l12_equals_livestream_invariant`.
+    """
+
+    def __init__(self, message: str, *, stderr: str = "", returncode: int | None = None) -> None:
+        super().__init__(message)
+        self.stderr = stderr
+        self.returncode = returncode
+
+
 # --- pw-link parsing -----------------------------------------------------
 
 
@@ -205,7 +223,37 @@ class PwLinkRunner:
     """Thin wrapper around `pw-link` so tests can inject fakes."""
 
     def list_links(self) -> str:
-        proc = subprocess.run(["pw-link", "-l"], text=True, capture_output=True, check=False)
+        """Return raw `pw-link -l` stdout, fail-CLOSED on any subprocess error.
+
+        `pw-link` exiting non-zero (binary missing, PipeWire socket dead,
+        permission denied, etc.) MUST raise `PwLinkUnavailableError`. The
+        previous behaviour silently returned the empty stdout, which made
+        `parse_pw_link("")` produce `[]` and the guard write
+        `{"ok": true, "leak_count": 0}` — a fail-OPEN bug for the privacy
+        invariant `feedback_l12_equals_livestream_invariant`.
+
+        An empty stdout with a zero returncode IS a legitimate state
+        (early boot, no graph yet) and is returned as-is so the caller
+        can record `{"ok": true, "leak_count": 0}` honestly.
+        """
+        try:
+            proc = subprocess.run(["pw-link", "-l"], text=True, capture_output=True, check=False)
+        except FileNotFoundError as exc:
+            raise PwLinkUnavailableError(
+                "pw-link binary not found on PATH",
+                stderr=str(exc),
+            ) from exc
+        except OSError as exc:
+            raise PwLinkUnavailableError(
+                f"pw-link could not be executed: {exc}",
+                stderr=str(exc),
+            ) from exc
+        if proc.returncode != 0:
+            raise PwLinkUnavailableError(
+                f"pw-link -l exited {proc.returncode}",
+                stderr=proc.stderr.strip(),
+                returncode=proc.returncode,
+            )
         return proc.stdout
 
     def disconnect(self, src: str, dst: str) -> tuple[bool, str]:
@@ -287,10 +335,33 @@ def run_once(
     """One iteration of detect-and-repair. Returns the status dict written.
 
     `pw_link_text` is for tests that supply a fixture directly; in
-    production the runner shells out.
+    production the runner shells out. If the runner raises
+    `PwLinkUnavailableError`, the status dict reports `ok=false` with
+    `unavailable=true` so the caller can exit non-zero distinctly from
+    the "leak detected" case.
     """
     runner = runner or PwLinkRunner()
-    text = pw_link_text if pw_link_text is not None else runner.list_links()
+    try:
+        text = pw_link_text if pw_link_text is not None else runner.list_links()
+    except PwLinkUnavailableError as exc:
+        error_msg = f"pw-link unreachable: {exc.stderr or exc}"
+        logger.error(error_msg)
+        status: dict[str, Any] = {
+            "ok": False,
+            "unavailable": True,
+            "leak_count": 0,
+            "leaks": [],
+            "repair_enabled": repair,
+            "error": error_msg,
+        }
+        status_path.parent.mkdir(parents=True, exist_ok=True)
+        status_path.write_text(
+            json.dumps(status, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        # Intentionally DO NOT touch metrics_path: a stale prom file is
+        # better than overwriting it with zeroed counters during a
+        # transient pw-link outage. The witness JSON carries the signal.
+        return status
     edges = parse_pw_link(text)
     leaks = detect_forbidden(edges)
 
@@ -312,7 +383,7 @@ def run_once(
             logger.warning(f"detected_link={leak.source_port}->{leak.target_port} repair_disabled")
         leak_records.append(record)
 
-    status: dict[str, Any] = {
+    status = {
         "ok": not leaks,
         "leak_count": len(leaks),
         "leaks": leak_records,
@@ -368,10 +439,15 @@ def main(argv: list[str] | None = None) -> int:
         print("ok no_forbidden_links")
         return 0
     print(json.dumps(status, indent=2, sort_keys=True))
-    # Exit 0 if every leak was successfully repaired; non-zero otherwise.
-    if all(leak.get("repaired") for leak in status["leaks"]):
-        return 0
-    return 2
+    # Distinct exit codes so monitors can route differently:
+    #   0 — clean (no leaks)
+    #   1 — leak detected (regardless of repair success — privacy was
+    #       breached, even if we tore the link down on this tick)
+    #   2 — guard cannot evaluate (pw-link unreachable, PipeWire down).
+    #       The witness JSON carries `unavailable: true`.
+    if status.get("unavailable"):
+        return 2
+    return 1
 
 
 if __name__ == "__main__":

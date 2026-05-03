@@ -114,9 +114,16 @@ each tick it:
    `~/.local/share/node_exporter/textfile_collector/hapax-private-broadcast-leak-guard.prom`.
 6. Writes JSON status to `/dev/shm/hapax-private-broadcast/status.json`.
 
-Exit code 0 means either no leaks were found OR every leak was successfully
-broken; exit 2 means at least one leak detection failed to repair (the
-operator must intervene).
+Exit codes are distinct so monitors can route by failure mode:
+
+- `0` — clean: no forbidden links observed.
+- `1` — leak detected (the privacy invariant was breached on this tick,
+  even if the link was successfully torn down — operator MUST review the
+  witness JSON).
+- `2` — guard cannot evaluate: `pw-link` exited non-zero, the binary is
+  missing, or PipeWire is down. The witness JSON sets `unavailable: true`
+  and `ok: false`. This is the fail-CLOSED branch — the guard refuses to
+  classify "no output = no leaks" because that would be silent fail-OPEN.
 
 ## Install steps
 
