@@ -188,7 +188,7 @@ YT browser/OBS media source → hapax-yt-loudnorm (this conf) →
 Install (deploy both confs together):
 
 ```fish
-cp config/pipewire/yt-loudnorm.conf ~/.config/pipewire/pipewire.conf.d/
+cp config/pipewire/hapax-yt-loudnorm.conf ~/.config/pipewire/pipewire.conf.d/
 cp config/pipewire/voice-over-ytube-duck.conf ~/.config/pipewire/pipewire.conf.d/
 systemctl --user restart pipewire pipewire-pulse wireplumber
 pactl list short sinks | grep -E "hapax-yt-loudnorm|hapax-ytube-ducked"
