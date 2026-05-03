@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 
 from agents.effect_graph.compiler import GraphValidationError
 from agents.effect_graph.wgsl_compiler import compile_to_wgsl_plan, write_wgsl_pipeline
 from agents.reverie._graph_builder import build_graph
 from agents.reverie.bootstrap import load_vocabulary
+from shared.visual_mode_bias import VisualModeBias, get_visual_mode_bias
 
 log = logging.getLogger("reverie.satellites")
 
@@ -26,12 +28,57 @@ REBUILD_COOLDOWN_S = 2.0
 _HABITUATION_RESET_S = 15.0
 
 
+def _effective_recruitment_threshold(
+    base: float,
+    mode_bias_provider: Callable[[], VisualModeBias],
+) -> float:
+    """Apply the per-mode motion factor to ``base`` recruitment threshold.
+
+    cc-task ``u8-reverie-mode-motion-factor`` Phase 1: per the U8 substrate
+    docstring (``shared/visual_mode_bias.py``): RND mode amplifies motion
+    (more recruits, faster cycling); RESEARCH dampens (slower, longer-dwell).
+
+    Implementation: divide the base threshold by ``motion_factor``. RND has
+    motion_factor=1.4 → effective_threshold=0.3/1.4=0.214 (LOWER → easier to
+    recruit → more satellites). RESEARCH has motion_factor=0.6 → effective_
+    threshold=0.3/0.6=0.5 (HIGHER → harder → fewer satellites). Same
+    comparison as multiplying ``strength`` by ``motion_factor`` before
+    threshold check; the docstring matches if you read motion_factor as a
+    "permissiveness" multiplier.
+
+    Fail-open: if the bias provider raises (working-mode file missing,
+    parse error, etc.), the function returns ``base``. This keeps the
+    reverie mixer running on a clean fallback rather than blocking the
+    visual surface during a transient mode-file failure.
+    """
+    try:
+        bias = mode_bias_provider()
+        mf = bias.motion_factor
+        if mf <= 0:
+            return base
+        return base / mf
+    except Exception:
+        log.debug("mode bias unavailable; using base recruitment threshold", exc_info=True)
+        return base
+
+
 class SatelliteManager:
     """Manages satellite node recruitment, decay, and graph rebuilds."""
 
-    def __init__(self, core_vocab: dict, decay_rate: float = 0.02) -> None:
+    def __init__(
+        self,
+        core_vocab: dict,
+        decay_rate: float = 0.02,
+        *,
+        mode_bias_provider: Callable[[], VisualModeBias] | None = None,
+    ) -> None:
         self._core_vocab = core_vocab
         self._decay_rate = decay_rate
+        # mode_bias_provider is a callable returning a VisualModeBias snapshot.
+        # Defaults to get_visual_mode_bias which reads ~/.cache/hapax/working-mode.
+        # Tests inject a fake (lambda returning a deterministic bias) for
+        # mode-flip assertions.
+        self._mode_bias_provider = mode_bias_provider or get_visual_mode_bias
         self._recruited: dict[str, float] = {}
         self._recruit_count: dict[str, int] = {}
         self._last_recruit_ts: dict[str, float] = {}
@@ -61,8 +108,17 @@ class SatelliteManager:
         First-ever recruitment (or after prolonged absence) sets full strength.
         Re-recruitment applies divisive normalization (Carandini-Heeger):
         gain = 1 / (1 + count * 0.5). Habituation resets after _HABITUATION_RESET_S.
+
+        cc-task ``u8-reverie-mode-motion-factor``: the recruitment threshold
+        is scaled by the per-mode motion factor (RND amplifies → lower
+        threshold; RESEARCH dampens → higher threshold). See
+        ``_effective_recruitment_threshold`` for the math.
         """
-        if strength < RECRUITMENT_THRESHOLD:
+        threshold = _effective_recruitment_threshold(
+            RECRUITMENT_THRESHOLD,
+            self._mode_bias_provider,
+        )
+        if strength < threshold:
             return
         if node_type in self._recruited_this_tick:
             return
