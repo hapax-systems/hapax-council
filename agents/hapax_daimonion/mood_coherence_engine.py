@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import logging
 
+from shared.bayesian_impingement_emitter import emit_state_transition_impingement
 from shared.claim import (
     ClaimEngine,
     ClaimState,
@@ -154,6 +155,12 @@ class MoodCoherenceEngine:
             ),
             signal_weights=lr_records,
         )
+        # Track previous tick's state + posterior so transitions can be
+        # broadcast on the impingement bus with a meaningful Δposterior.
+        # Audit 3 fix #1: surface threshold crossings as cognitive-
+        # substrate events, not just a scalar posterior.
+        self._prev_state: str = self.state
+        self._prev_posterior: float = self._engine.posterior
 
     def contribute(self, observations: dict[str, bool | None]) -> None:
         """Apply a single tick's worth of signal observations.
@@ -162,8 +169,30 @@ class MoodCoherenceEngine:
         engine; unknown keys are silently ignored by the engine's log-
         odds fusion so callers can pass extended-vocabulary dicts
         without breaking forward compatibility.
+
+        On hysteresis state transition, publishes a richly-narrated
+        impingement to ``/dev/shm/hapax-dmn/impingements.jsonl`` so the
+        recruitment pipeline observes the autonomic-coherence shift as
+        a bus event.
         """
         self._engine.tick(observations)
+        new_state = self.state
+        new_posterior = self._engine.posterior
+        if new_state != self._prev_state:
+            try:
+                emit_state_transition_impingement(
+                    source="mood_coherence",
+                    claim_name="mood-coherence-low",
+                    from_state=self._prev_state,
+                    to_state=new_state,
+                    posterior=new_posterior,
+                    prev_posterior=self._prev_posterior,
+                    active_signals={k: v for k, v in observations.items() if v is not None},
+                )
+            except Exception:
+                log.debug("mood_coherence impingement emit failed", exc_info=True)
+        self._prev_state = new_state
+        self._prev_posterior = new_posterior
 
     @property
     def posterior(self) -> float:
@@ -175,6 +204,8 @@ class MoodCoherenceEngine:
 
     def reset(self) -> None:
         self._engine.reset()
+        self._prev_state = self.state
+        self._prev_posterior = self._engine.posterior
 
     def _required_ticks_for_transition(self, frm: str, to: str) -> int:
         """Test-introspection helper. Translates INCOHERENT/COHERENT
