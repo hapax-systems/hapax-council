@@ -1,0 +1,40 @@
+{
+  "name": "Cellular Kuwahara Paint",
+  "description": "Organic-cellular lineage (2/2): kuwahara filter (preserves edges, smooths interiors) + reaction_diffusion at low intensity creates a painted-cell biological aesthetic — the image looks like an oil-painted petri dish. Lineage: organic-cellular.",
+  "lineage": "organic-cellular",
+  "transition_ms": 3000,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 1.04,
+        "contrast": 1.06,
+        "saturation": 1.22,
+        "hue_rotate": 4
+      }
+    },
+    "kuwahara_paint": {
+      "type": "kuwahara",
+      "params": {
+        "radius": 4,
+        "amount": 0.7
+      }
+    },
+    "reaction_subtle": {
+      "type": "reaction_diffusion",
+      "params": {
+        "feed_rate": 0.038,
+        "kill_rate": 0.061,
+        "iterations": 2
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}

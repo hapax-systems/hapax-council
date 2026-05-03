@@ -1,0 +1,47 @@
+{
+  "name": "Electromag Rutt Etra",
+  "description": "Electromagnetic-field lineage (2/2): rutt_etra (analog-video-synthesis topographic mesh) + thermal palette creates the iconic 1970s Rutt-Etra cathode-ray-displacement aesthetic — image becomes spatial mesh. Lineage: electromagnetic-field.",
+  "lineage": "electromagnetic-field",
+  "transition_ms": 2600,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 0.96,
+        "contrast": 1.32,
+        "saturation": 0.78,
+        "hue_rotate": 4
+      }
+    },
+    "rutt_mesh": {
+      "type": "rutt_etra",
+      "params": {
+        "amount": 0.5,
+        "scanlines": 240,
+        "depth": 0.35
+      }
+    },
+    "thermal_warm": {
+      "type": "thermal",
+      "params": {
+        "intensity": 0.32,
+        "palette": "warm"
+      }
+    },
+    "vignette": {
+      "type": "vignette",
+      "params": {
+        "intensity": 0.48,
+        "radius": 0.6
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}
