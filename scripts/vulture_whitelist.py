@@ -1613,6 +1613,30 @@ MERCURY_LEGACY_SIGNATURE_HEADER
 MERCURY_SIGNATURE_HEADER
 receive_mercury_webhook
 
+# Modern Treasury V5 publisher + FastAPI route — cc-task
+# modern-treasury-end-to-end-wiring (9th live monetization rail; 2nd
+# bank rail e2e). HMAC SHA-256 + event-name-level direction filter.
+from agents.publication_bus.modern_treasury_publisher import (
+    ModernTreasuryPublisher,
+)
+from agents.publication_bus.modern_treasury_publisher import (
+    event_to_manifest_record as _mt_event_to_manifest_record,
+)
+from agents.publication_bus.modern_treasury_publisher import (
+    manifest_path_for_event as _mt_manifest_path_for_event,
+)
+from logos.api.routes.payment_rails import (
+    MODERN_TREASURY_SIGNATURE_HEADER,
+    receive_modern_treasury_webhook,
+)
+
+ModernTreasuryPublisher.publish_event
+ModernTreasuryPublisher._render_manifest_body
+_mt_event_to_manifest_record
+_mt_manifest_path_for_event
+MODERN_TREASURY_SIGNATURE_HEADER
+receive_modern_treasury_webhook
+
 # R9 follow-up: apply_layout_switch adapter (cc-task
 # dynamic-compositor-layout-switching-followup). Ships ahead of any
 # caller; whitelisted until director-loop / systemd-timer wiring lands

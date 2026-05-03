@@ -1,0 +1,14 @@
+[Unit]
+Description=Hapax private→broadcast echo probe (Auditor D leak detector)
+Documentation=https://github.com/ryanklee/hapax-council/blob/main/docs/runbooks/audio-incidents.md#private-leak-l12
+After=pipewire.service hapax-secrets.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/uv run --project %h/projects/hapax-council %h/projects/hapax-council/scripts/private-broadcast-echo-probe.py
+TimeoutStartSec=15
+SuccessExitStatus=0 2
+Nice=10
+
+[Install]
+WantedBy=default.target
