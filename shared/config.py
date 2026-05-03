@@ -105,6 +105,12 @@ MODELS: dict[str, str] = {
     "long-context-3": "gemini-3-flash-preview",
     "extraction": "gemini-3.1-flash-lite-preview",
     "scouting": "gemini-3.1-flash-lite-preview",
+    # Vision route — cc-task jr-gemini-3-flash-vision-router-update.
+    # Gemini 3 Flash with media_resolution="low" is the price-performance
+    # leader for 10fps DMN per-tick vision (~$0.00014/frame at low-res
+    # 280-token mode). Callers MUST pass `media_resolution: "low"` in
+    # extra_body alongside the existing `budget_tokens: 0` invariant.
+    "vision-fast": "gemini-3-flash-preview",
 }
 
 EMBEDDING_MODEL: str = "nomic-embed-cpu"
