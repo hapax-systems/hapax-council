@@ -141,13 +141,17 @@ class LayoutStore:
     """
 
     def __init__(self, layout_dir: Path | None = None) -> None:
+        # Track whether caller passed an explicit dir (test isolation):
+        # when explicit, do NOT pull in repo-local fallbacks.
+        explicit = layout_dir is not None
         self._layout_dir = layout_dir or _default_layout_dir()
         # u6-periodic-tick-driver: also scan additional repo-local
         # compositor-layouts dirs so the 4 KNOWN_LAYOUTS the switcher
         # uses (``default``, ``default-legacy``, ``consent-safe``,
-        # ``vinyl-focus``) are discoverable without an install step.
-        # Files in ``layout_dir`` win on name collision.
-        self._extra_dirs: list[Path] = _extra_layout_dirs(self._layout_dir)
+        # ``vinyl-focus``) are discoverable without an install step —
+        # but only when falling back to the default layout dir, so
+        # tests passing tmp_path stay isolated.
+        self._extra_dirs: list[Path] = [] if explicit else _extra_layout_dirs(self._layout_dir)
         self._layouts: dict[str, Layout] = {}
         self._mtimes: dict[str, float] = {}
         self._active_name: str | None = None
