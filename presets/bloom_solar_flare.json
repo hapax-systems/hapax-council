@@ -1,0 +1,47 @@
+{
+  "name": "Bloom Solar Flare",
+  "description": "Chromatic-bloom lineage (2/2): heavier bloom + emboss-relief + warm color tilt — anamorphic-flare astrophotography aesthetic. Lineage: chromatic-bloom.",
+  "lineage": "chromatic-bloom",
+  "transition_ms": 2800,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 1.18,
+        "contrast": 1.12,
+        "saturation": 1.3,
+        "hue_rotate": 8
+      }
+    },
+    "bloom_intense": {
+      "type": "bloom",
+      "params": {
+        "intensity": 0.85,
+        "threshold": 0.4,
+        "radius": 0.24
+      }
+    },
+    "emboss_relief": {
+      "type": "emboss",
+      "params": {
+        "amount": 0.15,
+        "angle": 45
+      }
+    },
+    "vignette": {
+      "type": "vignette",
+      "params": {
+        "intensity": 0.5,
+        "radius": 0.55
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}

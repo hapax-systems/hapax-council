@@ -48,6 +48,7 @@ except ImportError:
 _LLM_CALLS_TOTAL = None
 _LLM_CALL_LATENCY_SECONDS = None
 _LLM_CALL_OUTCOMES_TOTAL = None
+_LLM_CALL_COST_DOLLARS_TOTAL = None
 
 _LLM_LATENCY_BUCKETS = (
     0.05,
@@ -68,6 +69,7 @@ _LLM_LATENCY_BUCKETS = (
 def _ensure_metrics(registry=None) -> None:
     """Lazy-register metrics. Tests may pass a fresh CollectorRegistry."""
     global _LLM_CALLS_TOTAL, _LLM_CALL_LATENCY_SECONDS, _LLM_CALL_OUTCOMES_TOTAL
+    global _LLM_CALL_COST_DOLLARS_TOTAL
 
     if not _PROMETHEUS_AVAILABLE:
         return
@@ -96,14 +98,30 @@ def _ensure_metrics(registry=None) -> None:
             ["condition", "model", "route", "outcome"],
             registry=effective_registry,
         )
+    # cc-task vision-cost-guard-prometheus-emitter — per-call cost tracking.
+    # LiteLLM Proxy returns response cost via the `_hidden_params._response_cost`
+    # path on the OpenAI client response object. Callers (currently DMN
+    # multimodal) pass this into `set_cost` on the LlmCallSpan; the span emits
+    # to this counter on exit. PromQL `rate(...total[1h]) * 3600` derives
+    # `hapax_vision_cost_per_hour_dollars` for alerting (Grafana alert rule
+    # is a separate downstream cc-task).
+    if _LLM_CALL_COST_DOLLARS_TOTAL is None:
+        _LLM_CALL_COST_DOLLARS_TOTAL = Counter(
+            "hapax_llm_call_cost_dollars_total",
+            "Per-call LLM cost in USD, sourced from LiteLLM response.",
+            ["condition", "model", "route"],
+            registry=effective_registry,
+        )
 
 
 def reset_for_testing() -> None:
     """Reset module-level singletons so tests can re-register with a fresh registry."""
     global _LLM_CALLS_TOTAL, _LLM_CALL_LATENCY_SECONDS, _LLM_CALL_OUTCOMES_TOTAL
+    global _LLM_CALL_COST_DOLLARS_TOTAL
     _LLM_CALLS_TOTAL = None
     _LLM_CALL_LATENCY_SECONDS = None
     _LLM_CALL_OUTCOMES_TOTAL = None
+    _LLM_CALL_COST_DOLLARS_TOTAL = None
 
 
 def _condition() -> str:
@@ -141,3 +159,29 @@ def record_llm_call_finish(
         _LLM_CALL_OUTCOMES_TOTAL.labels(
             condition=cond, model=model, route=route, outcome=outcome
         ).inc()
+
+
+def record_llm_call_cost(*, model: str, route: str, cost_dollars: float) -> None:
+    """Record per-call LLM cost in USD.
+
+    Increments `hapax_llm_call_cost_dollars_total{condition, model, route}`
+    by `cost_dollars`. Zero / negative / NaN costs are no-ops (graceful for
+    proxies that don't emit cost). PromQL `rate(...total[1h]) * 3600`
+    derives the per-hour cost for alerting.
+
+    cc-task: vision-cost-guard-prometheus-emitter.
+    """
+    if cost_dollars is None or cost_dollars <= 0:
+        return
+    # Guard against NaN.
+    try:
+        if cost_dollars != cost_dollars:  # NaN test
+            return
+    except TypeError:
+        return
+    _ensure_metrics()
+    if _LLM_CALL_COST_DOLLARS_TOTAL is None:
+        return
+    _LLM_CALL_COST_DOLLARS_TOTAL.labels(condition=_condition(), model=model, route=route).inc(
+        cost_dollars
+    )

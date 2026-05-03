@@ -389,6 +389,36 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "promised subscriber experience."
         ),
     ),
+    "reddit-account": SurfaceSpec(
+        automation_status=AutomationStatus.REFUSED,
+        refusal_link="docs/refusal-briefs/reddit-account.md",
+        scope_note=(
+            "Reddit is a multi-moderator community platform. Subreddits enforce "
+            "per-community rules including bot-content prohibitions; comments "
+            "arrive from named accounts with engagement-reciprocity expectations; "
+            "the platform algorithmically penalizes accounts that post without "
+            "engaging."
+        ),
+    ),
+    "github-discussions": SurfaceSpec(
+        automation_status=AutomationStatus.REFUSED,
+        refusal_link="docs/refusal-briefs/github-discussions.md",
+        scope_note=(
+            "GitHub Discussions creates a Q&A surface expecting operator-mediated "
+            "answers + accepted-answer marking + community moderation. Daemon "
+            "enable would advertise an operator-attention affordance the daemon "
+            "cannot honor."
+        ),
+    ),
+    "wikipedia-auto-edit": SurfaceSpec(
+        automation_status=AutomationStatus.REFUSED,
+        refusal_link="docs/refusal-briefs/wikipedia-auto-edit.md",
+        scope_note=(
+            "Wikipedia ToS forbids unflagged automated editing; the Bot Approvals "
+            "Group requires per-bot community approval. Multi-editor platform also "
+            "violates single_user. Double constitutional barrier."
+        ),
+    ),
 }
 
 
