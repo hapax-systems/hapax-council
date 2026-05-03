@@ -213,6 +213,12 @@ class StimmungCollector:
         self._last_update: dict[str, float] = {}
         self._recovery_readings: int = 0
         self._last_stance: Stance = Stance.NOMINAL
+        # Welford online variance state per-dimension: (count, mean, M2)
+        # Used for Phase B posterior sigma. Tracks the rolling window
+        # (same maxlen=5 as _windows) via reset-on-overflow.
+        self._welford: dict[str, tuple[int, float, float]] = {
+            name: (0, 0.0, 0.0) for name in _DIMENSION_NAMES
+        }
         # Control law state
         self._cl_errors = 0
         self._cl_ok = 0
@@ -443,10 +449,20 @@ class StimmungCollector:
                 value = 0.0
                 trend = "stable"
 
+            # Derive sigma from Welford state
+            w_count, _w_mean, w_m2 = self._welford[name]
+            if w_count >= 2:
+                variance = w_m2 / (w_count - 1)  # sample variance
+                sigma = variance**0.5
+            else:
+                sigma = 0.0
+
             dimensions[name] = DimensionReading(
                 value=round(value, 3),
                 trend=trend,
                 freshness_s=round(freshness, 1),
+                sigma=round(sigma, 4),
+                n=max(1, w_count),
             )
 
         # Chronicle: detect dimension spikes before stance computation
@@ -616,10 +632,40 @@ class StimmungCollector:
         return raw_stance
 
     def _record(self, dimension: str, value: float) -> None:
-        """Record a reading for a dimension."""
+        """Record a reading for a dimension.
+
+        Also updates the Welford online variance tracker for the
+        dimension. The Welford state is reset when the rolling window
+        overflows (maxlen=5) to keep sigma tracking only the recent
+        window, not the entire history.
+        """
         now = time.monotonic()
-        self._windows[dimension].append((now, max(0.0, min(1.0, value))))
+        clamped = max(0.0, min(1.0, value))
+        window = self._windows[dimension]
+        was_full = len(window) == window.maxlen
+        window.append((now, clamped))
         self._last_update[dimension] = now
+
+        # Welford update — reset when window wraps to keep sigma fresh
+        count, mean, m2 = self._welford[dimension]
+        if was_full:
+            # Window just dropped the oldest sample; recompute from scratch
+            vals = [v for _, v in window]
+            n = len(vals)
+            if n > 0:
+                new_mean = sum(vals) / n
+                new_m2 = sum((v - new_mean) ** 2 for v in vals)
+                self._welford[dimension] = (n, new_mean, new_m2)
+            else:
+                self._welford[dimension] = (0, 0.0, 0.0)
+        else:
+            # Normal Welford incremental update
+            count += 1
+            delta = clamped - mean
+            mean += delta / count
+            delta2 = clamped - mean
+            m2 += delta * delta2
+            self._welford[dimension] = (count, mean, m2)
 
     @staticmethod
     def _compute_trend(window: deque[tuple[float, float]]) -> str:
