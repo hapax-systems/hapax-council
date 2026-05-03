@@ -1013,6 +1013,14 @@ from agents.health_monitor.checks.m8_firmware import check_m8_firmware
 
 check_m8_firmware
 
+# Audio ducker liveness health check — registered via @check_group("audio")
+# decorator. Audit C#2 (2026-05-02) caught hapax-audio-ducker.service dead
+# for ~8h with no operator-visible signal; this check fires ntfy on inactive
+# state. Same dynamic-registry pattern as check_m8_firmware above.
+from agents.health_monitor.checks.audio import check_audio_ducker_liveness
+
+check_audio_ducker_liveness
+
 # M8Sequencer — director → M8 MIDI dispatch (cc-task:
 # m8-dmn-mute-solo-transport). Currently invoked only via test fixtures;
 # the director-side recruitment wiring (impingement_consumer dispatch

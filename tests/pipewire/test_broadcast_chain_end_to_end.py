@@ -1,10 +1,18 @@
 """End-to-end structural integration test for the music broadcast chain.
 
 Audit `/tmp/effect-cam-orchestration-audit-2026-05-02.md` flagged that no
-test exercises the FULL pw-cat → loudnorm → duck → USB-line-driver → L-12
-→ broadcast-master → OBS chain end-to-end. This file pins the chain's
-PipeWire-graph topology so a future edit cannot silently drop a stage,
-flip a target.object, or rename the OBS-readable terminal source.
+test exercises the FULL pw-cat → loudnorm → duck → L-12 → broadcast-master
+→ OBS chain end-to-end. This file pins the chain's PipeWire-graph topology
+so a future edit cannot silently drop a stage, flip a target.object, or
+rename the OBS-readable terminal source.
+
+Architecture note (2026-05-02):
+    The music-usb-line-driver stage was retired after audit B#4 caught
+    its +27 dB Input gain being silently rejected as out of range by
+    fast_lookahead_limiter_1913 (LADSPA accepted range is [-20, +20]).
+    The music-duck output now feeds the L-12 USB sink directly, and
+    the loudness compensation lives at the master limiter
+    (MASTER_INPUT_MAKEUP_DB = +14 dB, in-range).
 
 The L-12 hardware loop (USB OUT → physical mixer + operator patch →
 USB IN) is operator-patched on real hardware and not exercisable in CI;
@@ -26,7 +34,6 @@ CONFIG_DIR = Path(__file__).resolve().parents[2] / "config" / "pipewire"
 CHAIN_CONFIGS = (
     "hapax-music-loudnorm.conf",
     "hapax-music-duck.conf",
-    "hapax-music-usb-line-driver.conf",
     "hapax-livestream-tap.conf",
     "hapax-broadcast-master.conf",
 )
@@ -106,63 +113,61 @@ class TestStage1MusicLoudnormToDuck:
         )
 
 
-# ── Stage 2: music-duck → music-usb-line-driver ────────────────────────
+# ── Stage 2: music-duck → L-12 USB OUT (line-driver retired 2026-05-02) ─
 
 
-class TestStage2DuckToUsbLineDriver:
+class TestStage2DuckToL12:
+    """Music-duck plays directly into the L-12 USB OUT sink.
+
+    The prior music-usb-line-driver stage was retired after audit B#4
+    (2026-05-02) caught its +27 dB Input gain being silently rejected
+    as out of range by fast_lookahead_limiter_1913. The architecture
+    moved on to put the loudness compensation at the master limiter
+    (MASTER_INPUT_MAKEUP_DB = +14 dB) instead.
+
+    The L-12 hardware step is operator-patched on physical hardware.
+    Host-side responsibility ends at the ALSA sink that pumps audio out
+    of the L-12 USB OUT. The operator's L-12 surface routes that signal
+    through the Evil Pet wet loop and back to USB IN; the return signal
+    is captured into ``hapax-livestream-tap`` separately (Stage 3).
+    Spec: ``docs/superpowers/specs/2026-04-23-livestream-audio-unified-architecture-design.md``.
+    """
+
     def test_duck_sink_exists(self, chain_configs: dict[str, str]) -> None:
         text = chain_configs["hapax-music-duck.conf"]
         assert 'node.name = "hapax-music-duck"' in text
         assert 'media.class = "Audio/Sink"' in text
 
-    def test_duck_playback_targets_usb_line_driver(self, chain_configs: dict[str, str]) -> None:
+    def test_duck_playback_targets_l12_pro_audio_profile(
+        self, chain_configs: dict[str, str]
+    ) -> None:
         target = _extract_playback_target(
             chain_configs["hapax-music-duck.conf"],
             "hapax-music-duck",
         )
-        assert target == "hapax-music-usb-line-driver", (
-            f"music-duck must hand off to music-usb-line-driver (got {target!r}); "
-            "breaking this drops the +27 dB USB-vs-analog bias correction"
-        )
-
-
-# ── Stage 3: music-usb-line-driver → L-12 USB OUT ──────────────────────
-
-
-class TestStage3UsbLineDriverToL12:
-    """The L-12 hardware step is operator-patched on physical hardware.
-
-    Host-side responsibility ends at the ALSA sink that pumps audio out
-    of the L-12 USB OUT. The operator's L-12 surface routes that signal
-    through the Evil Pet wet loop and back to USB IN; the return signal
-    is captured into ``hapax-livestream-tap`` separately (Stage 4).
-    Spec: ``docs/superpowers/specs/2026-04-23-livestream-audio-unified-architecture-design.md``.
-    """
-
-    def test_usb_line_driver_sink_exists(self, chain_configs: dict[str, str]) -> None:
-        text = chain_configs["hapax-music-usb-line-driver.conf"]
-        assert 'node.name = "hapax-music-usb-line-driver"' in text
-        assert 'media.class = "Audio/Sink"' in text
-
-    def test_usb_line_driver_playback_targets_l12_pro_audio_profile(
-        self, chain_configs: dict[str, str]
-    ) -> None:
-        target = _extract_playback_target(
-            chain_configs["hapax-music-usb-line-driver.conf"],
-            "hapax-music-usb-line-driver",
-        )
-        assert target is not None, "usb-line-driver missing playback.props.target.object"
+        assert target is not None, "music-duck missing playback.props.target.object"
         assert L12_USB_OUT_PATTERN.fullmatch(target), (
-            f"usb-line-driver target.object must be an L-12 analog-surround-40 ALSA "
+            f"music-duck target.object must be an L-12 analog-surround-40 ALSA "
             f"sink (got {target!r}); the analog-surround-40 profile is what makes "
             "all 10 L-12 channels addressable per the dual-FX routing contract"
         )
 
+    def test_no_residual_line_driver_reference(self, chain_configs: dict[str, str]) -> None:
+        """Defense-in-depth: the deprecated line-driver name must not
+        reappear as a target. If a future edit re-introduces it, the
+        +27 dB out-of-range LADSPA bug returns silently."""
+        for name, text in chain_configs.items():
+            assert "hapax-music-usb-line-driver" not in _strip_comments(text), (
+                f"{name} references hapax-music-usb-line-driver — that stage was "
+                "retired (audit B#4); loudness compensation lives at the master "
+                "limiter now (MASTER_INPUT_MAKEUP_DB)"
+            )
 
-# ── Stage 4: livestream-tap is the canonical broadcast bus tap ─────────
+
+# ── Stage 3: livestream-tap is the canonical broadcast bus tap ─────────
 
 
-class TestStage4LivestreamTap:
+class TestStage3LivestreamTap:
     def test_tap_is_null_audio_sink(self, chain_configs: dict[str, str]) -> None:
         text = chain_configs["hapax-livestream-tap.conf"]
         assert 'node.name        = "hapax-livestream-tap"' in text
@@ -176,10 +181,10 @@ class TestStage4LivestreamTap:
         assert "monitor.passthrough     = true" in text or "monitor.passthrough = true" in text
 
 
-# ── Stage 5: broadcast-master captures from tap, exposes Audio/Source ──
+# ── Stage 4: broadcast-master captures from tap, exposes Audio/Source ──
 
 
-class TestStage5BroadcastMaster:
+class TestStage4BroadcastMaster:
     def test_master_captures_from_livestream_tap(self, chain_configs: dict[str, str]) -> None:
         target = _extract_playback_target(
             chain_configs["hapax-broadcast-master.conf"],
@@ -200,10 +205,10 @@ class TestStage5BroadcastMaster:
         assert 'media.class = "Audio/Source"' in text
 
 
-# ── Stage 6: broadcast-normalized is the OBS-readable terminal source ──
+# ── Stage 5: broadcast-normalized is the OBS-readable terminal source ──
 
 
-class TestStage6BroadcastNormalized:
+class TestStage5BroadcastNormalized:
     """Phase 1 design: ``hapax-broadcast-normalized`` is the canonical
     OBS-binding name. The OBS audio source MUST bind here (not to
     ``hapax-livestream:monitor``, which bypasses the master limiter).
@@ -255,10 +260,6 @@ class TestEndToEndChain:
             "hapax-music-duck": _extract_playback_target(
                 chain_configs["hapax-music-duck.conf"], "hapax-music-duck"
             ),
-            "hapax-music-usb-line-driver": _extract_playback_target(
-                chain_configs["hapax-music-usb-line-driver.conf"],
-                "hapax-music-usb-line-driver",
-            ),
             "hapax-broadcast-master-capture": _extract_playback_target(
                 chain_configs["hapax-broadcast-master.conf"], "hapax-broadcast-master-capture"
             ),
@@ -267,11 +268,10 @@ class TestEndToEndChain:
                 "hapax-broadcast-normalized-capture",
             ),
         }
-        # Pre-L12 segment is a strict linear chain.
+        # Pre-L12 segment is a strict linear chain into the L-12 USB sink.
         assert edges["hapax-music-loudnorm"] == "hapax-music-duck"
-        assert edges["hapax-music-duck"] == "hapax-music-usb-line-driver"
-        assert edges["hapax-music-usb-line-driver"] is not None
-        assert L12_USB_OUT_PATTERN.fullmatch(edges["hapax-music-usb-line-driver"])
+        assert edges["hapax-music-duck"] is not None
+        assert L12_USB_OUT_PATTERN.fullmatch(edges["hapax-music-duck"])
         # Post-L12 segment: tap → master → normalized.
         assert edges["hapax-broadcast-master-capture"] == "hapax-livestream-tap"
         assert edges["hapax-broadcast-normalized-capture"] == "hapax-broadcast-master"
