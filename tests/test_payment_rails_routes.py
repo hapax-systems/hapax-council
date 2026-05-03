@@ -1039,6 +1039,158 @@ def test_stripe_payment_link_publisher_module_carries_no_send_path() -> None:
 
 
 # ===========================================================================
+# Stripe Payment Link — replay + idempotency hard pins (route-level integration)
+# (cc-task: jr-stripe-payment-link-replay-idempotency-pin)
+# ===========================================================================
+
+
+@pytest.fixture
+def stripe_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Reset the route's idempotency singleton + point at a tmp sqlite db.
+
+    HAPAX_HOME is set so :func:`_default_idempotency_db_path` lands in
+    a per-test scratch directory; the module-level singleton is reset
+    so the next call materializes a fresh sqlite db pointing into
+    ``tmp_path``.
+    """
+    import logos.api.routes.payment_rails as routes_mod
+
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    routes_mod._stripe_payment_link_idempotency_store = None
+    yield tmp_path / "stripe-payment-link" / "idempotency.db"
+    routes_mod._stripe_payment_link_idempotency_store = None
+
+
+@pytest.mark.asyncio
+async def test_stripe_route_replays_same_event_returns_duplicate_status(
+    stripe_output_dir: Path,
+    stripe_secret_env: str,
+    stripe_idempotency_isolated: Path,
+) -> None:
+    """Two POSTs of identical signed payload — second returns status=duplicate."""
+    ts = int(_time.time())
+    payload = _stripe_payload(occurred_at_unix=ts)
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _stripe_signature(raw, stripe_secret_env, ts)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post(
+            "/api/payment-rails/stripe-payment-link",
+            content=raw,
+            headers={"Stripe-Signature": sig},
+        )
+        second = await client.post(
+            "/api/payment-rails/stripe-payment-link",
+            content=raw,
+            headers={"Stripe-Signature": sig},
+        )
+
+    assert first.status_code == 200 and first.json()["status"] == "received"
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["status"] == "duplicate"
+    assert body["event_id"] == payload["id"]
+
+    # Only ONE manifest file written despite two identical deliveries.
+    files = list(stripe_output_dir.glob("event-payment_intent_succeeded-*.md"))
+    assert len(files) == 1, f"expected 1 manifest, got {files}"
+
+
+@pytest.mark.asyncio
+async def test_stripe_route_distinct_event_ids_both_processed(
+    stripe_output_dir: Path,
+    stripe_secret_env: str,
+    stripe_idempotency_isolated: Path,
+) -> None:
+    """Two distinct evt_... ids → both processed end-to-end."""
+    ts = int(_time.time())
+    payload_a = _stripe_payload(occurred_at_unix=ts)
+    payload_b = _stripe_payload(occurred_at_unix=ts)
+    payload_b["id"] = "evt_3NqVe0LAuO3KjPaT0SgXLnY9_distinct"
+    payload_b["data"]["object"]["id"] = "pi_distinct"
+    raw_a = json.dumps(payload_a).encode("utf-8")
+    raw_b = json.dumps(payload_b).encode("utf-8")
+    sig_a = _stripe_signature(raw_a, stripe_secret_env, ts)
+    sig_b = _stripe_signature(raw_b, stripe_secret_env, ts)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r_a = await client.post(
+            "/api/payment-rails/stripe-payment-link",
+            content=raw_a,
+            headers={"Stripe-Signature": sig_a},
+        )
+        r_b = await client.post(
+            "/api/payment-rails/stripe-payment-link",
+            content=raw_b,
+            headers={"Stripe-Signature": sig_b},
+        )
+
+    assert r_a.json()["status"] == "received"
+    assert r_b.json()["status"] == "received"
+    files = list(stripe_output_dir.glob("event-payment_intent_succeeded-*.md"))
+    assert len(files) == 2
+
+
+@pytest.mark.asyncio
+async def test_stripe_route_thin_payload_rejected_400(
+    stripe_secret_env: str,
+    stripe_idempotency_isolated: Path,
+) -> None:
+    """Thin-payload event (data.object only id+object) returns 400."""
+    ts = int(_time.time())
+    thin_payload = {
+        "id": "evt_thin_test",
+        "type": "payment_intent.succeeded",
+        "created": ts,
+        "api_version": "2024-04-10",
+        "data": {"object": {"id": "pi_thin", "object": "payment_intent"}},
+    }
+    raw = json.dumps(thin_payload).encode("utf-8")
+    sig = _stripe_signature(raw, stripe_secret_env, ts)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/stripe-payment-link",
+            content=raw,
+            headers={"Stripe-Signature": sig},
+        )
+
+    assert response.status_code == 400
+    assert "thin-payload event rejected" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_stripe_route_replay_attack_outside_tolerance_rejected_400(
+    stripe_secret_env: str,
+    stripe_idempotency_isolated: Path,
+) -> None:
+    """Signed payload with timestamp >300s old returns 400 — replay rejected."""
+    now = int(_time.time())
+    expired_ts = now - 600  # 10 minutes old; default tolerance 300s
+    payload = _stripe_payload(occurred_at_unix=expired_ts)
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _stripe_signature(raw, stripe_secret_env, expired_ts)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/stripe-payment-link",
+            content=raw,
+            headers={"Stripe-Signature": sig},
+        )
+
+    assert response.status_code == 400
+    assert "replay rejected" in response.json()["detail"]
+
+
+def test_validate_secret_or_raise_module_export() -> None:
+    """The startup-validator helper is exported and callable."""
+    from shared.stripe_payment_link_receive_only_rail import validate_secret_or_raise
+
+    assert callable(validate_secret_or_raise)
+    # Behavior tested in unit tests; this only pins module-export shape.
+
+
+# ===========================================================================
 # Ko-fi rail integration tests (cc-task ko-fi-end-to-end-wiring)
 # ===========================================================================
 
