@@ -135,7 +135,7 @@ async def test_signed_created_event_returns_200_and_writes_manifest(
     contents = files[0].read_text()
     assert "GitHub Sponsors event — created" in contents
     assert "alice" in contents
-    assert "25.00" in contents
+    assert "2500" in contents  # amount_usd_cents (was "25.00" pre-cents-normalization)
 
 
 @pytest.mark.asyncio
