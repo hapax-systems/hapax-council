@@ -1,0 +1,21 @@
+[Unit]
+Description=Hapax {{ description }}
+Documentation=file://${HAPAX_REPO_ROOT}/docs/runbooks/add-audio-source.md
+After=pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire.service pipewire-pulse.service wireplumber.service
+PartOf=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/pipewire -c %h/.config/pipewire/{{ conf_basename }}
+Restart=on-failure
+RestartSec=2s
+
+# Standard hapax sandboxing
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
