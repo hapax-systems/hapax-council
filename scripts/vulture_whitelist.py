@@ -1793,3 +1793,26 @@ _audit_C_db_floor
 _audit_C_perceptual_amplitude_from_db
 _audit_C_lerp_db
 _audit_C_perceptual_ramp_amplitude
+
+# RMS-window substrate (cc-task audio-audit-C-rms-window-50-to-20-ms Phase 0):
+# constants + helper + histogram metric ship ahead of the __main__.py:112
+# constant swap. Phase 1 imports RMS_WINDOW_MS_TARGET in place of the inline
+# 50, validates against hand-clap / chair-creak / mouse-click false positives
+# on the live ducker.
+from shared.audio_ducker_rms_config import (
+    HAPAX_DUCKER_ONSET_DETECTION_LATENCY_MS as _audit_C_onset_latency_hist,
+)
+from shared.audio_ducker_rms_config import (
+    RMS_WINDOW_MS_LEGACY as _audit_C_rms_window_legacy,
+)
+from shared.audio_ducker_rms_config import (
+    RMS_WINDOW_MS_TARGET as _audit_C_rms_window_target,
+)
+from shared.audio_ducker_rms_config import (
+    expected_rms_samples as _audit_C_expected_rms_samples,
+)
+
+_audit_C_onset_latency_hist
+_audit_C_rms_window_legacy
+_audit_C_rms_window_target
+_audit_C_expected_rms_samples
