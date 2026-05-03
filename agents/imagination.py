@@ -7,6 +7,7 @@ High-salience fragments escalate into Impingements for capability recruitment.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import random
@@ -204,7 +205,28 @@ def assemble_context(
     recent_fragments: list[ImaginationFragment],
     sensor_snapshot: dict,
 ) -> str:
-    """Build a prompt string from observations, sensor state, and recent fragments."""
+    """Build a prompt string from observations, sensor state, and recent fragments.
+
+    The ``Perceptual Field`` section embeds the full structured
+    ``PerceptualField`` Pydantic dump (audio / visual / ir / album / chat /
+    context / stimmung / presence / stream_health / tendency / homage /
+    camera_classifications) when ``sensor_snapshot["perceptual_field"]`` is
+    present. This widens the imagination LLM's grounding surface from the
+    legacy 4-key slim snippet (activity, flow_score, presence, heart_rate)
+    to ~13 typed fields, so the resulting ``fragment.narrative`` — which
+    flows through ``Impingement.content["narrative"]`` →
+    ``render_impingement_text`` → embedder → Qdrant cosine similarity — can
+    actually distinguish "operator-typing + album-spinning + IR-hand-on-
+    turntable + stimmung-seeking" from "operator-stress-elevated +
+    watch-HRV-low + desk-quiet" rather than collapsing both into the same
+    thin retrieval query.
+
+    The legacy slim sections (``System State`` / ``Time`` / ``Music`` /
+    ``Goals`` / ``Fortress``) are kept for backwards compatibility — when
+    ``perceptual_field`` is absent (older snapshots, the build raised) the
+    function still produces a usable prompt. Meta-architectural Bayesian
+    audit Fix #2, 2026-05-03.
+    """
     sections: list[str] = []
 
     # Observations (last 5)
@@ -214,6 +236,33 @@ def assemble_context(
             sections.append(f"- {obs}")
     else:
         sections.append("(none)")
+
+    # ─── Perceptual Field (audit Fix #2 — full structured dump) ─────────
+    # The DMN sensor's ``read_all`` publishes the full PerceptualField
+    # under this key, mirroring the director's grounding pattern at
+    # ``director_loop.py:2585-2612``. Renders as fenced JSON so the LLM
+    # treats it as structured evidence rather than free-form prose. The
+    # narrative produced from this prompt becomes the cosine-similarity
+    # retrieval query — feeding the full field here is what unblocks 80%
+    # of dormant capabilities (per the audit).
+    pfield = sensor_snapshot.get("perceptual_field")
+    if isinstance(pfield, dict) and pfield:
+        sections.append("")
+        sections.append("## Perceptual Field")
+        sections.append(
+            "Structured environmental signals — ground your narrative in "
+            "the specific fields below, not in abstract mood. Keys with "
+            "null values are intentionally absent. Cite specific evidence "
+            "(e.g. 'desk_energy rising while ir_hand_zone=turntable')."
+        )
+        sections.append("```json")
+        try:
+            sections.append(json.dumps(pfield, indent=2, ensure_ascii=False))
+        except (TypeError, ValueError):
+            # Pathologically non-serializable payload — fall back to repr
+            # so the section is still informative rather than crashing.
+            sections.append(repr(pfield))
+        sections.append("```")
 
     # System state from sensor snapshot
     sections.append("")
