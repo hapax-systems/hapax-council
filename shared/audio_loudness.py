@@ -73,12 +73,18 @@ DUCK_LOOKAHEAD_MS: float = 5.0
 MASTER_LIMITER_LOOKAHEAD_MS: float = 5.0
 MASTER_LIMITER_RELEASE_MS: float = 50.0
 
-# Master input makeup gain (Phase 1.5 calibration, 2026-04-23).
-# Compensates for ANALOG wet-path losses ONLY (Evil Pet return → L-12
-# multichannel capture bus attenuation). Decoupled from any USB-vs-
-# analog-LINE trim asymmetry — see WET_PATH_USB_BIAS_*_DB and spec §10
-# for that compensation. Until a separate analog-only measurement
-# justifies a change, leave at +1.0 dB.
+# Master input makeup gain (Phase 1.5 calibration, recalibrated 2026-05-02).
+#
+# Closes the egress-loudness gap: live broadcast measurement landed at
+# -27.9 LUFS-I against the -14 LUFS-I YouTube-aligned target (audit B#3).
+# +14 dB master makeup brings the master sum into the target band; the
+# fast_lookahead_limiter_1913 master safety net at -1.0 dBTP catches any
+# transient overshoots safely (live measurement showed 12.6 dB headroom
+# remaining at the time of recalibration). LADSPA fast_lookahead_limiter
+# accepts Input gain (dB) in [-20, +20] so +14 dB sits comfortably in
+# range — the prior +27 dB line-driver bias attempt was silently rejected
+# as out-of-range (audit B#4), which is why the +14 dB master path is the
+# correct architectural placement.
 #
 # Original calibration narrative (subjective, music-alone, 2026-04-23):
 # - +19 dB landed music alone at -15 LUFS-I → too hot (sums with voice/TTS
@@ -86,11 +92,15 @@ MASTER_LIMITER_RELEASE_MS: float = 50.0
 # - +14 dB landed music alone at -20 LUFS-I → still 5 dB too hot
 #   subjectively
 # - +9 dB lands music alone at -25 LUFS-I → operator confirmed "perfect"
-# Headroom budget: music-only at -25 LUFS-I leaves 11 LU for voice + TTS
-# sums to reach -14 LUFS-I egress target.
+#   under the music-duck stereo-split + FL/FR→RL/RR remap topology
+# After 2026-04-23 routing changes (duck mixer + remap added ~8 dB) the
+# +1 dB value held briefly. The 2026-05-02 audit measured the resulting
+# broadcast at -27.9 LUFS-I — 13.9 dB below target. Bumping master makeup
+# to +14 dB closes that gap without touching per-source loudnorm or
+# downstream stages, and stays well within the LADSPA accepted range.
 # Phase 3 per-source pre-normalizers will replace this single constant
 # with proper per-source LUFS targeting.
-MASTER_INPUT_MAKEUP_DB: float = 1.0
+MASTER_INPUT_MAKEUP_DB: float = 14.0
 
 # ── Per-source line-output ceiling for L-12 USB return (Phase 1.5) ────
 #
@@ -119,29 +129,13 @@ PC_BROADCAST_TARGET_LUFS_I: float = -18.0
 PC_BROADCAST_TRUE_PEAK_DBFS: float = -18.0
 PC_BROADCAST_LIMITER_RELEASE_MS: float = 200.0
 
-# ── USB IN line-driver bias — analog-trim substitute (spec §10) ───────
-#
-# USB IN line-driver bias — substitutes for the analog channel-strip TRIM
-# stage that L-12 USB IN lacks (analog LINE IN has it, USB IN does not).
-# Each source routed via USB IN to the L-12 declares its own bias constant.
-# Per-source constants prevent collision with future per-source LUFS
-# targeting (Phase 3).
-#
-# Calibrated 2026-05-02 from live measurement: music-duck output at
-# -18 dBFS → broadcast capture at -45 dBFS = 27 dB loss in
-# L-12 USB-IN-to-broadcast-capture path. Bias of +27 dB lands the
-# per-source signal where the analog LINE-IN design assumption expected.
-WET_PATH_USB_BIAS_MUSIC_DB: float = 27.0
-
-# Reserved for TTS USB-IN path; defer measurement + activation until
-# TTS path is the active audit subject. Constant is reserved so the
-# schema is ready when needed.
-WET_PATH_USB_BIAS_TTS_DB: float = 27.0  # reserved, not yet activated
-
-# Bias-stage limiter ceiling — same as PRE_NORM_TRUE_PEAK_DBTP, i.e.
-# brick-wall at the same headroom as every other safety stage.
-WET_PATH_USB_BIAS_CEILING_DBTP: float = -1.0
-WET_PATH_USB_BIAS_RELEASE_MS: float = 50.0
+# NOTE (2026-05-02): the WET_PATH_USB_BIAS_* constants previously declared
+# here have been removed. They encoded a +27 dB line-driver bias that the
+# fast_lookahead_limiter_1913 LADSPA plugin silently rejected as out of
+# range (its accepted Input gain (dB) range is [-20, +20]) — see audit B#4.
+# The line-driver branch architecture has been superseded by the Evil Pet
+# wet-only signal flow, with master-bus makeup now carrying the
+# loudness-target compensation (see MASTER_INPUT_MAKEUP_DB above).
 
 # ── Headroom budget ───────────────────────────────────────────────────
 #

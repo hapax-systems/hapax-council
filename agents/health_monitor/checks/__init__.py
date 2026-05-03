@@ -2,6 +2,7 @@
 
 from . import (  # noqa: F401
     apperception,
+    audio,
     auth,
     axioms,
     axioms_ef,
