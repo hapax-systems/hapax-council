@@ -77,7 +77,16 @@ def _render(template_basename: str, context: Mapping[str, Any]) -> str:
     try:
         from jinja2 import Environment, StrictUndefined
 
-        env = Environment(undefined=StrictUndefined, autoescape=False)
+        # autoescape intentionally disabled — these templates render
+        # YAML / PipeWire conf / systemd unit files, NOT HTML. HTML
+        # autoescape would corrupt the output (`&` → `&amp;`, `"` →
+        # `&quot;` would break PipeWire conf string-quoting). Inputs
+        # come from operator-supplied CLI args at install time, not
+        # untrusted network input.
+        env = Environment(  # nosec B701
+            undefined=StrictUndefined,
+            autoescape=False,
+        )
         return env.from_string(template_text).render(**dict(context))
     except ImportError:
         # Fallback: very-simple substitution. Only handles
