@@ -1631,3 +1631,190 @@ def test_bmac_publisher_module_carries_no_send_path() -> None:
     )
     for token in forbidden_verbs:
         assert token not in src, f"unexpected send-path: {token!r}"
+
+
+# ===========================================================================
+# Mercury rail integration tests (cc-task mercury-end-to-end-wiring)
+# ===========================================================================
+
+from shared.mercury_receive_only_rail import (
+    MERCURY_WEBHOOK_SECRET_ENV,
+)
+
+_MERCURY_VALID_SECRET = "mercury-webhook-secret-XYZ"
+
+
+def _mercury_payload(
+    *,
+    event_type: str = "transaction.created",
+    counterparty: str = "Acme Foundation",
+    amount: str = "100.00",
+    currency: str = "USD",
+    kind: str = "ach_incoming",
+    occurred_at: str = "2026-05-03T00:00:00Z",
+) -> dict:
+    """Realistic Mercury delivery for an incoming ACH transfer.
+
+    Includes banking PII (account_number, routing_number, memo) that
+    the receiver MUST NOT extract.
+    """
+    return {
+        "type": event_type,
+        "data": {
+            "id": "txn-mercury-incoming-1",
+            "amount": amount,
+            "currency": currency,
+            "kind": kind,
+            "counterparty_name": counterparty,
+            "counterparty_email": "treasury@example.com",  # PII
+            "counterparty_routing_number": "021000089",  # PII
+            "counterparty_account_number": "999111888777",  # PII
+            "memo": "thank you Q2 retainer",  # PII
+            "status": "settled",
+            "created_at": occurred_at,
+            "posted_at": occurred_at,
+        },
+    }
+
+
+@pytest.fixture
+def mercury_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+    return tmp_path / "hapax-state" / "publications" / "mercury"
+
+
+@pytest.fixture
+def mercury_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
+    monkeypatch.setenv(MERCURY_WEBHOOK_SECRET_ENV, _MERCURY_VALID_SECRET)
+    return _MERCURY_VALID_SECRET
+
+
+@pytest.mark.asyncio
+async def test_mercury_signed_ach_incoming_writes_manifest(
+    mercury_output_dir: Path, mercury_secret_env: str
+) -> None:
+    payload = _mercury_payload(kind="ach_incoming")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(mercury_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/mercury",
+            content=raw,
+            headers={"X-Mercury-Signature": sig},
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "received"
+    assert body["event_kind"] == "transaction.created"
+    assert body["direction"] == "incoming"
+    files = list(mercury_output_dir.glob("event-transaction_created-*.md"))
+    assert len(files) == 1
+    contents = files[0].read_text()
+    assert "Acme Foundation" in contents
+    # Banking PII must not leak
+    assert "021000089" not in contents  # routing
+    assert "999111888777" not in contents  # account
+    assert "treasury@example.com" not in contents
+    assert "Q2 retainer" not in contents
+
+
+@pytest.mark.asyncio
+async def test_mercury_legacy_x_hook_signature_header_accepted(
+    mercury_output_dir: Path, mercury_secret_env: str
+) -> None:
+    """Older Mercury integrations may emit X-Hook-Signature instead of X-Mercury-Signature."""
+    payload = _mercury_payload()
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(mercury_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/mercury",
+            content=raw,
+            headers={"X-Hook-Signature": sig},  # legacy header name
+        )
+
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.asyncio
+async def test_mercury_outgoing_kind_rejected(
+    mercury_output_dir: Path, mercury_secret_env: str
+) -> None:
+    """Receiver direction filter rejects outgoing transaction kinds."""
+    payload = _mercury_payload(kind="ach_outgoing")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(mercury_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/mercury",
+            content=raw,
+            headers={"X-Mercury-Signature": sig},
+        )
+
+    assert response.status_code == 400
+    assert "refusing outgoing" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_mercury_wire_incoming_accepted(
+    mercury_output_dir: Path, mercury_secret_env: str
+) -> None:
+    payload = _mercury_payload(kind="wire_incoming")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(mercury_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/mercury",
+            content=raw,
+            headers={"X-Mercury-Signature": sig},
+        )
+
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.asyncio
+async def test_mercury_bad_signature_returns_400(
+    mercury_output_dir: Path, mercury_secret_env: str
+) -> None:
+    payload = _mercury_payload()
+    raw = json.dumps(payload).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/mercury",
+            content=raw,
+            headers={"X-Mercury-Signature": "0" * 64},
+        )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_mercury_empty_body_returns_ping_ok() -> None:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/payment-rails/mercury", content=b"")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ping_ok"
+
+
+def test_mercury_publisher_module_carries_no_send_path() -> None:
+    import inspect
+
+    import agents.publication_bus.mercury_publisher as mod
+
+    src = inspect.getsource(mod).lower()
+    forbidden_verbs = (
+        "def send",
+        "def initiate",
+        "def payout",
+        "def transfer",
+        "def origination",
+    )
+    for token in forbidden_verbs:
+        assert token not in src, f"unexpected send-path: {token!r}"
