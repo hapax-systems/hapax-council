@@ -1,0 +1,11 @@
+[Unit]
+Description=Hapax novelty-shift impingement emitter (1s cadence)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1s
+AccuracySec=200ms
+Unit=hapax-novelty-shift-emitter.service
+
+[Install]
+WantedBy=timers.target
