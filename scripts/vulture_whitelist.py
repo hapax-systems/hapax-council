@@ -1586,6 +1586,33 @@ _bmac_manifest_path_for_event
 BUY_ME_A_COFFEE_SIGNATURE_HEADER
 receive_buy_me_a_coffee_webhook
 
+# Mercury V5 publisher + FastAPI route — cc-task mercury-end-to-end-wiring
+# (8th live monetization rail; first bank rail e2e). HMAC SHA-256 +
+# dual-header acceptance (canonical X-Mercury-Signature + legacy
+# X-Hook-Signature). No cancellation auto-link.
+from agents.publication_bus.mercury_publisher import (
+    MercuryPublisher,
+)
+from agents.publication_bus.mercury_publisher import (
+    event_to_manifest_record as _mercury_event_to_manifest_record,
+)
+from agents.publication_bus.mercury_publisher import (
+    manifest_path_for_event as _mercury_manifest_path_for_event,
+)
+from logos.api.routes.payment_rails import (
+    MERCURY_LEGACY_SIGNATURE_HEADER,
+    MERCURY_SIGNATURE_HEADER,
+    receive_mercury_webhook,
+)
+
+MercuryPublisher.publish_event
+MercuryPublisher._render_manifest_body
+_mercury_event_to_manifest_record
+_mercury_manifest_path_for_event
+MERCURY_LEGACY_SIGNATURE_HEADER
+MERCURY_SIGNATURE_HEADER
+receive_mercury_webhook
+
 # R9 follow-up: apply_layout_switch adapter (cc-task
 # dynamic-compositor-layout-switching-followup). Ships ahead of any
 # caller; whitelisted until director-loop / systemd-timer wiring lands
