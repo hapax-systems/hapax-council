@@ -242,7 +242,7 @@ routes:
       - tts
     generated_artifact_owner: hand_mirrored
     artifact_refs:
-      - config/pipewire/yt-loudnorm.conf
+      - config/pipewire/hapax-yt-loudnorm.conf
       - config/pipewire/ytube-over-24c-duck.conf
       - config/pipewire/yt-over-24c-duck.conf
 
@@ -394,7 +394,7 @@ artifacts:
     status: hand_mirrored
     owner: config/audio-routing.yaml#music-bed
     reason: Music ducking mirrors shared ducking constants.
-  - path: config/pipewire/yt-loudnorm.conf
+  - path: config/pipewire/hapax-yt-loudnorm.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#youtube-bed
     reason: YouTube bed remains blocked from broadcast eligibility until real-content smoke and provenance pass.

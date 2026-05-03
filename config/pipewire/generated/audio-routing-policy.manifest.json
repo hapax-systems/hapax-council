@@ -13,7 +13,7 @@
     "config/pipewire/s4-usb-sink.conf",
     "config/pipewire/voice-fx-chain.conf",
     "config/pipewire/voice-fx-loudnorm.conf",
-    "config/pipewire/yt-loudnorm.conf",
+    "config/pipewire/hapax-yt-loudnorm.conf",
     "config/pipewire/yt-over-24c-duck.conf",
     "config/pipewire/ytube-over-24c-duck.conf",
     "config/wireplumber/10-default-sink-ryzen.conf",

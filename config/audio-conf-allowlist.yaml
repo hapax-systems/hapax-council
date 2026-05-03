@@ -57,16 +57,19 @@ orphans:
 
   # YouTube + tube-over-24c rate-routing helpers.
   - voice-over-ytube-duck.conf
-  - yt-loudnorm.conf  # naming-outlier; tracked under audit-E-conf-naming-unification
   - yt-over-24c-duck.conf
   - ytube-over-24c-duck.conf
 
 known_missing:
-  # tts-loudnorm + ytube-ducked + yt-loudnorm are declared in
-  # audio-topology.yaml with chain_kind set, but no `hapax-*.conf`
-  # exists yet. Tracked under separate audit follow-on tasks; the
-  # gate accepts them as known-missing so the gate ships clean,
-  # but the underlying audit findings remain open.
+  # tts-loudnorm + ytube-ducked are declared in audio-topology.yaml
+  # with chain_kind set, but no `hapax-*.conf` exists yet. Tracked
+  # under separate audit follow-on tasks; the gate accepts them as
+  # known-missing so the gate ships clean, but the underlying audit
+  # findings remain open.
+  #
+  # 2026-05-03: hapax-yt-loudnorm.conf removed from this list (and
+  # `yt-loudnorm.conf` removed from orphans above) by the
+  # audit-E-conf-naming-unification slice that renamed
+  # `config/pipewire/yt-loudnorm.conf` → `hapax-yt-loudnorm.conf`.
   - hapax-tts-loudnorm.conf
-  - hapax-yt-loudnorm.conf  # naming-outlier; tracked under audit-E-conf-naming-unification
   - hapax-ytube-ducked.conf
