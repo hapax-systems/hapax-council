@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from collections.abc import Iterable
 from pathlib import Path
@@ -15,6 +16,33 @@ from agents.reverie.programme_context import ProgrammeProvider
 from agents.reverie.substrate_palette import compute_substrate_saturation
 
 log = logging.getLogger("reverie.uniforms")
+
+
+def _sanitize_uniform_value(value: float | int | bool) -> float:
+    """Clamp NaN/Inf to 0.0; coerce bool to float; clip to safe range.
+
+    Rust ``serde_json`` silently crashes on NaN/Inf in input. The visual
+    chain must NEVER write a poison value into ``uniforms.json``: a
+    single NaN aggregate from ``compute_param_deltas()`` (e.g. from a
+    divide-by-zero in a per-tick mapping) would freeze the GPU bridge
+    until the file is hand-edited. This sanitizer is the last line of
+    defence — bad input → safe default → log warning, no retry/recovery.
+
+    Audit: 24h independent-auditor batch 2026-05-02 (E #9). The audit
+    found ``compute_param_deltas()`` aggregates without clamping, so
+    upstream NaN/Inf/bool propagation could land in the JSON dump.
+    """
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    f = float(value)
+    if math.isnan(f) or math.isinf(f):
+        return 0.0
+    # Clip to a generous sanity bound. Uniforms are usually [0, 1] or
+    # [-π, π]; allow [-1e6, 1e6] to catch the truly pathological without
+    # rejecting legitimate large modulation values (e.g. hue degrees,
+    # accumulated phase).
+    return max(-1e6, min(1e6, f))
+
 
 UNIFORMS_FILE = Path("/dev/shm/hapax-imagination/uniforms.json")
 PLAN_FILE = Path("/dev/shm/hapax-imagination/pipeline/plan.json")
@@ -279,7 +307,22 @@ def write_uniforms(
     # as HashMap<String, f64> — non-scalar values (arrays) must be excluded or
     # the entire parse fails silently. Per-node overrides (node.param) and signal
     # overrides (signal.*) both flow through this file.
-    scalar_uniforms = {k: v for k, v in uniforms.items() if isinstance(v, (int, float))}
+    #
+    # NaN/Inf/bool sanitisation: Rust ``serde_json`` silently crashes on
+    # NaN/Inf input. ``compute_param_deltas()`` aggregates per-dimension
+    # mappings without clamping, so upstream propagation (divide-by-zero,
+    # bool-to-float coercion, runaway modulation) could land a poison
+    # value in this dict. ``_sanitize_uniform_value`` is the last line
+    # of defence — every value gets coerced/clamped before serialisation.
+    # Per-tick deltas don't need an additional per-key envelope clamp:
+    # they're applied to envelope-clipped base values (plan defaults +
+    # bounded chain modulation), so reaching ±1e6 indicates upstream
+    # corruption rather than legitimate modulation.
+    scalar_uniforms = {
+        k: _sanitize_uniform_value(v)
+        for k, v in uniforms.items()
+        if isinstance(v, (int, float, bool))
+    }
 
     try:
         UNIFORMS_FILE.parent.mkdir(parents=True, exist_ok=True)
