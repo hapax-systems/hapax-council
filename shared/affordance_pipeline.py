@@ -849,6 +849,25 @@ class AffordancePipeline:
         if winner is not None:
             winner_embedding = winner.payload.get("embedding") or embedding
             self._recency.record_apply(winner.capability_name, winner_embedding)
+            # Camera salience broker query (Phase B of
+            # bayesian-camera-salience-broker-production-wiring). Attach
+            # the salience bundle to the winner payload so downstream
+            # capability daemons can ground their decisions in Bayesian
+            # camera/IR evidence. Fail-closed: errors swallowed.
+            try:
+                from shared.camera_salience_singleton import broker as _camera_broker
+
+                _salience_bundle = _camera_broker().query(
+                    consumer="affordance",
+                    decision_context=f"affordance_select:{impingement.source}",
+                    candidate_action=winner.capability_name,
+                )
+                if _salience_bundle is not None:
+                    winner.payload["camera_salience_bundle"] = (
+                        _salience_bundle.to_wcs_projection_payload()
+                    )
+            except Exception:
+                log.debug("camera salience affordance query failed", exc_info=True)
             # Phase 6: emit perceptual-distance impingement when the
             # window has clustered above threshold. Cooldown bounded so
             # a sustained cluster doesn't spam the bus.
