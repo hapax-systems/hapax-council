@@ -378,6 +378,9 @@ def test_write_uniforms_end_to_end_produces_expected_keys(tmp_path: Path):
         # overridden by the live broadcast (the homage substrate-invariant
         # damping is pinned separately in test_homage_substrate_damping.py).
         mock.patch.object(_uniforms, "HOMAGE_SUBSTRATE_PACKAGE_FILE", tmp_path / "no-homage.json"),
+        # U8 mode tint is covered separately; keep this legacy merge test
+        # focused on plan-default + chain-delta composition.
+        mock.patch.object(_uniforms, "_apply_mode_palette_tint", lambda u, **kw: None),
         mock.patch.object(_uniforms.time, "time", return_value=FAKE_NOW),
     ):
         _uniforms.write_uniforms(
@@ -591,6 +594,10 @@ def test_write_uniforms_sanitizes_nan_inf_bool_before_json_dump(tmp_path: Path):
         mock.patch.object(_uniforms, "PLAN_FILE", plan_file),
         mock.patch.object(_uniforms, "UNIFORMS_FILE", uniforms_file),
         mock.patch.object(_uniforms, "HOMAGE_SUBSTRATE_PACKAGE_FILE", tmp_path / "no-homage.json"),
+        # U8 mode tint intentionally owns hue_rotate in production; this
+        # sanitizer test only asserts finite chain values survive the
+        # scalar merge path.
+        mock.patch.object(_uniforms, "_apply_mode_palette_tint", lambda u, **kw: None),
         mock.patch.object(_uniforms.time, "time", return_value=FAKE_NOW),
     ):
         _uniforms.write_uniforms(
@@ -647,6 +654,10 @@ def test_write_uniforms_passes_normal_values_through(tmp_path: Path):
         mock.patch.object(_uniforms, "PLAN_FILE", plan_file),
         mock.patch.object(_uniforms, "UNIFORMS_FILE", uniforms_file),
         mock.patch.object(_uniforms, "HOMAGE_SUBSTRATE_PACKAGE_FILE", tmp_path / "no-homage.json"),
+        # U8 mode tint intentionally owns hue_rotate in production; this
+        # sanitizer test only asserts finite chain values survive the
+        # scalar merge path.
+        mock.patch.object(_uniforms, "_apply_mode_palette_tint", lambda u, **kw: None),
         mock.patch.object(_uniforms.time, "time", return_value=FAKE_NOW),
     ):
         _uniforms.write_uniforms(
