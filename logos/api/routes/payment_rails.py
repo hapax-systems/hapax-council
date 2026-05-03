@@ -134,6 +134,24 @@ _patreon_idempotency_store: _RailIdempotencyStore | None = None
 _ko_fi_idempotency_store: _RailIdempotencyStore | None = None
 _buy_me_a_coffee_idempotency_store: _RailIdempotencyStore | None = None
 _liberapay_idempotency_store: _RailIdempotencyStore | None = None
+_open_collective_idempotency_store: _RailIdempotencyStore | None = None
+
+
+def _get_open_collective_idempotency_store() -> _RailIdempotencyStore:
+    """Lazy singleton sqlite-backed idempotency store for Open Collective.
+
+    Keyed on the per-delivery header ``X-Open-Collective-Activity-Id``.
+    """
+    global _open_collective_idempotency_store  # noqa: PLW0603 — module-level singleton
+    if _open_collective_idempotency_store is None:
+        _open_collective_idempotency_store = _RailIdempotencyStore(
+            db_path=default_idempotency_db_path("open-collective"),
+        )
+    return _open_collective_idempotency_store
+
+
+OPEN_COLLECTIVE_DELIVERY_ID_HEADER: str = "X-Open-Collective-Activity-Id"
+"""Open Collective per-delivery activity identifier header."""
 
 
 def _get_liberapay_idempotency_store() -> _RailIdempotencyStore:
@@ -480,15 +498,26 @@ async def receive_open_collective_webhook(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail="payload must be a JSON object")
 
     signature = request.headers.get(OPEN_COLLECTIVE_SIGNATURE_HEADER)
+    delivery_id = request.headers.get(OPEN_COLLECTIVE_DELIVERY_ID_HEADER)
 
-    receiver = OpenCollectiveRailReceiver()
+    receiver = OpenCollectiveRailReceiver(
+        idempotency_store=_get_open_collective_idempotency_store(),
+    )
     try:
-        event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
+        event = receiver.ingest_webhook(
+            payload,
+            signature,
+            raw_body=raw_body,
+            delivery_id=delivery_id,
+        )
     except OpenCollectiveReceiveOnlyRailError as exc:
         log.warning("open_collective webhook rejected: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
+        if payload and isinstance(delivery_id, str) and delivery_id:
+            log.info("open_collective webhook duplicate: %s", delivery_id)
+            return JSONResponse({"status": "duplicate", "delivery_id": delivery_id})
         return JSONResponse({"status": "ping_ok"})
 
     publisher = OpenCollectivePublisher()
