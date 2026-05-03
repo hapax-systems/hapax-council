@@ -80,6 +80,10 @@ from shared.audio_loudness import (
     DUCK_DEPTH_TTS_DB,
     DUCK_RELEASE_MS,
 )
+from shared.audio_working_mode_couplings import (
+    current_audio_constraints,
+    working_mode_changed_since,
+)
 
 log = logging.getLogger("audio_ducker")
 
@@ -454,17 +458,29 @@ MUSIC_DUCK_TTS = db_to_lin(DUCK_DEPTH_TTS_DB)  # ≈ 0.398 (-8 dB)
 TTS_DUCK_OPERATOR = db_to_lin(DUCK_DEPTH_TTS_DB)  # TTS ducks -8 dB under operator
 
 
-def compute_targets(rode_active: bool, tts_active: bool) -> tuple[float, float]:
+def compute_targets(
+    rode_active: bool,
+    tts_active: bool,
+    *,
+    allow_tts_into_broadcast: bool = True,
+) -> tuple[float, float]:
     """Return (music_target_gain, tts_target_gain) given trigger states.
 
     Music: take the DEEPEST duck (min gain) when both Rode + TTS active.
     TTS:   only Rode triggers TTS duck (TTS doesn't duck itself).
+
+    ``allow_tts_into_broadcast`` is the working-mode coupling: when
+    fortress mode disables ``duck_role_assistant_into_broadcast``, the
+    TTS trigger no longer drives the music duck (only operator voice
+    does). Operator-voice ducking is unaffected — the operator IS the
+    broadcast voice and always takes priority.
     """
-    if rode_active and tts_active:
+    effective_tts = tts_active and allow_tts_into_broadcast
+    if rode_active and effective_tts:
         music = min(MUSIC_DUCK_OPERATOR, MUSIC_DUCK_TTS)
     elif rode_active:
         music = MUSIC_DUCK_OPERATOR
-    elif tts_active:
+    elif effective_tts:
         music = MUSIC_DUCK_TTS
     else:
         music = UNITY
@@ -733,6 +749,8 @@ def main() -> int:
 
     last_tick = time.monotonic()
     last_readback = 0.0
+    last_mode_mtime: float | None = None
+    cached_constraints: dict[str, object] = current_audio_constraints()
     log.info("Audio ducker running")
 
     try:
@@ -743,12 +761,25 @@ def main() -> int:
             dt_ms = (now - last_tick) * 1000.0
             last_tick = now
 
+            mode_changed, last_mode_mtime = working_mode_changed_since(last_mode_mtime)
+            if mode_changed:
+                cached_constraints = current_audio_constraints()
+                log.info(
+                    "audio ducker working-mode constraints refreshed: %s",
+                    cached_constraints,
+                )
+            allow_tts_broadcast = bool(
+                cached_constraints.get("duck_role_assistant_into_broadcast", True)
+            )
+
             blockers = source_blockers(rode_state, tts_state, now_ms)
             if blockers:
                 music_target, tts_target = UNITY, UNITY
             else:
                 music_target, tts_target = compute_targets(
-                    rode_state.is_active, tts_state.is_active
+                    rode_state.is_active,
+                    tts_state.is_active,
+                    allow_tts_into_broadcast=allow_tts_broadcast,
                 )
             music_duck.target_gain = music_target
             tts_duck.target_gain = tts_target

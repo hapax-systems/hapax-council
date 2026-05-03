@@ -36,6 +36,17 @@ from __future__ import annotations
 
 import subprocess
 
+from shared.audio_working_mode_couplings import current_audio_constraints
+
+
+class DefaultSinkChangeBlocked(RuntimeError):
+    """Raised when the working-mode coupling forbids default-sink swaps.
+
+    Fortress mode forbids ``pactl set-default-sink`` because a sink
+    swap can break the live OBS broadcast feed mid-air. Callers that
+    encounter this should log + emit a metric, NOT silently fall back.
+    """
+
 
 def build_switch_commands(
     target_sink: str, sink_input_ids: list[str] | None = None
@@ -93,6 +104,7 @@ def apply_switch(
     sink_input_ids: list[str] | None = None,
     *,
     dry_run: bool = False,
+    constraints: dict[str, object] | None = None,
 ) -> list[subprocess.CompletedProcess[str]]:
     """Execute the pactl command sequence to switch audio routing.
 
@@ -104,12 +116,24 @@ def apply_switch(
             nothing (default-sink change only).
         dry_run: When True, returns empty list — no execution.
             Tests + operator "what would this do" use it.
+        constraints: Optional working-mode constraint dict. When
+            ``default_sink_change_allowed`` is ``False`` (fortress
+            mode), the swap is refused with
+            :class:`DefaultSinkChangeBlocked`. Defaults to a live
+            mode read so callers do not have to thread the mode
+            through their call sites.
 
     Returns the ``CompletedProcess`` for each command in order. Raises
     ``subprocess.CalledProcessError`` on any non-zero exit, aborting
     mid-sequence — callers that need to tolerate partial application
     should catch + inspect.
     """
+    active = constraints if constraints is not None else current_audio_constraints()
+    if not active.get("default_sink_change_allowed", True):
+        raise DefaultSinkChangeBlocked(
+            f"default-sink change to {target_sink!r} blocked by working-mode "
+            f"coupling (fortress freezes routing)"
+        )
     input_ids = sink_input_ids if sink_input_ids is not None else list_sink_inputs()
     commands = build_switch_commands(target_sink, input_ids)
     if dry_run:
