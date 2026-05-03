@@ -1977,3 +1977,34 @@ _tier4_assert_witness_indicates_playback
 _tier4_is_playback_present
 _tier4_is_playback_present_with
 _tier4_witness_age_s
+
+# Micromove advance consumer (cc-task u4-micromove-advance-tick-consumer
+# Phase 1): consumes the 8-slot substrate from PR #2328, advances on tick,
+# emits state JSON for downstream compositor render bridge + Prometheus
+# counter. Phase 2 wires camera-tile transform / shader uniform deltas
+# from the slot hint dict.
+from agents.studio_compositor.micromove_consumer import (
+    DEFAULT_ADVANCE_STATE_PATH as _u4_default_advance_state_path,
+)
+from agents.studio_compositor.micromove_consumer import (
+    DEFAULT_TICK_INTERVAL_S as _u4_default_tick_interval_s,
+)
+from agents.studio_compositor.micromove_consumer import (
+    MicromoveAdvanceConsumer as _u4_micromove_advance_consumer,
+)
+from agents.studio_compositor.micromove_consumer import (
+    all_slot_indices as _u4_all_slot_indices,
+)
+from agents.studio_compositor.micromove_consumer import (
+    hapax_micromove_advance_total as _u4_hapax_micromove_advance_total,
+)
+
+_u4_default_advance_state_path
+_u4_default_tick_interval_s
+_u4_micromove_advance_consumer
+_u4_micromove_advance_consumer.advance
+_u4_micromove_advance_consumer.cycle
+_u4_micromove_advance_consumer.state_path
+_u4_micromove_advance_consumer.latest_state
+_u4_all_slot_indices
+_u4_hapax_micromove_advance_total
