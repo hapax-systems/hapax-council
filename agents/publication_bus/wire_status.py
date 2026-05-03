@@ -133,6 +133,21 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "IsObsoletedBy) ships with the publisher."
         ),
     ),
+    "agents.publication_bus.ko_fi_publisher": WireEntry(
+        module="agents.publication_bus.ko_fi_publisher",
+        surface_slug="ko-fi-receiver",
+        status="WIRED",
+        pass_key_required="ko-fi/webhook-verification-token",
+        rationale=(
+            "Fifth wired monetization rail (cc-task ko-fi-end-to-end-wiring). "
+            "Wired via logos/api/routes/payment_rails.py POST "
+            "/api/payment-rails/ko-fi. Token-in-payload verification (NOT HMAC) "
+            "via KO_FI_WEBHOOK_VERIFICATION_TOKEN env var (hapax-secrets.service "
+            "from pass `ko-fi/webhook-verification-token`). No cancellation event "
+            "in the canonical 4 (donation / subscription / commission / shop_order), "
+            "so no auto-link path."
+        ),
+    ),
     "agents.publication_bus.stripe_payment_link_publisher": WireEntry(
         module="agents.publication_bus.stripe_payment_link_publisher",
         surface_slug="stripe-payment-link-receiver",
