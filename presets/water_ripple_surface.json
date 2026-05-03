@@ -1,0 +1,48 @@
+{
+  "name": "Water Ripple Surface",
+  "description": "Water-ripple lineage (1/2): fluid_sim + drift + warp at moderate frequencies creates water-surface ripple aesthetic — image floats on liquid. Lineage: water-ripple.",
+  "lineage": "water-ripple",
+  "transition_ms": 3000,
+  "nodes": {
+    "colorgrade": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 1.02,
+        "contrast": 1.04,
+        "saturation": 1.18,
+        "hue_rotate": -10
+      }
+    },
+    "fluid_ripple": {
+      "type": "fluid_sim",
+      "params": {
+        "viscosity": 0.45,
+        "speed": 0.32,
+        "amount": 0.28
+      }
+    },
+    "drift_water": {
+      "type": "drift",
+      "params": {
+        "amplitude": 0.014,
+        "frequency": 0.55
+      }
+    },
+    "warp_ripple": {
+      "type": "warp",
+      "params": {
+        "amplitude": 0.018,
+        "frequency": 0.9,
+        "speed": 0.4
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {}
+    }
+  }
+}
