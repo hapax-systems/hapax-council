@@ -206,10 +206,27 @@ def test_perform_recovery_writes_sysfs_and_restarts_units(
     ]
     # Sleeps: 2s after remove, 5s after rescan
     assert sleeps == [2, 5]
-    # Both post-recovery units restarted
+    # Both post-recovery units restarted via the operator's USER manager —
+    # not the system manager — because POST_RECOVERY_UNITS are user units
+    # and this watchdog runs as a system unit (User=root). Pinning the
+    # `--user --machine=hapax@.host` invocation prevents the regression
+    # surfaced by the 24h auditor (system manager silently drops the
+    # restart, leaving the USB router stale).
     assert runs == [
-        ["systemctl", "restart", "hapax-usb-router.service"],
-        ["systemctl", "restart", "hapax-usb-topology-witness.service"],
+        [
+            "systemctl",
+            "--user",
+            "--machine=hapax@.host",
+            "restart",
+            "hapax-usb-router.service",
+        ],
+        [
+            "systemctl",
+            "--user",
+            "--machine=hapax@.host",
+            "restart",
+            "hapax-usb-topology-witness.service",
+        ],
     ]
     assert all(item["succeeded"] for item in outcome["post_recovery_restarts"])
 
@@ -268,6 +285,120 @@ def test_perform_recovery_warns_when_device_does_not_reappear(
     assert outcome["remove_succeeded"] is True
     assert outcome["rescan_succeeded"] is True
     assert outcome["reappeared"] is False
+
+
+# --- Post-recovery user-unit restart ------------------------------------
+
+
+def test_post_recovery_argv_targets_user_manager_via_machinectl(
+    watchdog: types.ModuleType,
+) -> None:
+    """Regression pin: post-recovery argv must invoke the USER manager.
+
+    The watchdog runs as a SYSTEM unit (User=root). POST_RECOVERY_UNITS are
+    USER units installed under ~/.config/systemd/user/. A bare
+    `systemctl restart` would target the system manager and silently fail.
+    """
+
+    argv = watchdog._post_recovery_restart_argv("hapax-usb-router.service")
+    assert argv == [
+        "systemctl",
+        "--user",
+        "--machine=hapax@.host",
+        "restart",
+        "hapax-usb-router.service",
+    ]
+
+
+def test_perform_recovery_logs_user_manager_unreachable(
+    watchdog: types.ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Fallback path: machinectl-unreachable must emit a journal-grepable marker.
+
+    The fallback must NOT swallow the failure — operators rely on grepping
+    the journal for `POST_RECOVERY_USER_MANAGER_UNREACHABLE` to notice
+    that the user-side restart never landed.
+    """
+
+    sys_root = tmp_path / "sys-bus-pci"
+    pci_dev = sys_root / "devices" / "0000:71:00.0"
+    pci_dev.mkdir(parents=True)
+
+    def writer(path: Path, value: str) -> bool:
+        return True
+
+    def runner(argv: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        # Simulate the failure mode: lingering not active, user bus not up.
+        return subprocess.CompletedProcess(
+            argv,
+            1,
+            "",
+            "Failed to get D-Bus connection: No such file or directory",
+        )
+
+    outcome = watchdog.perform_recovery(
+        "0000:71:00.0",
+        sys_pci_root=sys_root,
+        sleep_fn=lambda _: None,
+        runner=runner,
+        sysfs_writer=writer,
+    )
+
+    # Each restart records a structured failure entry — no swallowing.
+    assert len(outcome["post_recovery_restarts"]) == len(watchdog.POST_RECOVERY_UNITS)
+    for entry in outcome["post_recovery_restarts"]:
+        assert entry["succeeded"] is False
+        assert entry["returncode"] == 1
+        assert entry["machine_unreachable"] is True
+
+    captured = capsys.readouterr()
+    # Stderr carries the journal-grepable marker for each failed unit.
+    assert "POST_RECOVERY_USER_MANAGER_UNREACHABLE" in captured.err
+    assert "hapax-usb-router.service" in captured.err
+    assert "hapax-usb-topology-witness.service" in captured.err
+    # Operator hint included for next-action discoverability.
+    assert "loginctl show-user hapax" in captured.err
+
+
+def test_perform_recovery_logs_generic_restart_failure(
+    watchdog: types.ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Non-machinectl failures still get a distinct, grepable marker."""
+
+    sys_root = tmp_path / "sys-bus-pci"
+    pci_dev = sys_root / "devices" / "0000:71:00.0"
+    pci_dev.mkdir(parents=True)
+
+    def writer(path: Path, value: str) -> bool:
+        return True
+
+    def runner(argv: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        # User manager IS reachable, but the unit failed to start (e.g.,
+        # ExecStart segfault). Different marker, must still surface clearly.
+        return subprocess.CompletedProcess(
+            argv,
+            5,  # systemd "unit not loaded"
+            "",
+            "Job for hapax-usb-router.service failed because the control process exited",
+        )
+
+    outcome = watchdog.perform_recovery(
+        "0000:71:00.0",
+        sys_pci_root=sys_root,
+        sleep_fn=lambda _: None,
+        runner=runner,
+        sysfs_writer=writer,
+    )
+
+    for entry in outcome["post_recovery_restarts"]:
+        assert entry["succeeded"] is False
+        assert entry["returncode"] == 5
+        assert entry["machine_unreachable"] is False
+
+    captured = capsys.readouterr()
+    assert "POST_RECOVERY_RESTART_FAILED" in captured.err
+    # Must NOT mis-classify as user-manager-unreachable.
+    assert "POST_RECOVERY_USER_MANAGER_UNREACHABLE" not in captured.err
 
 
 # --- watch_loop integration ----------------------------------------------
