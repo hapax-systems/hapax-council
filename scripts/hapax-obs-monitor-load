@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Load the OBS-broadcast → iLoud Micro Monitor BT loopback via pactl.
+# Used by hapax-obs-monitor-loopback.service.
+#
+# History:
+#   - The conf-file approach via pipewire.conf.d/ was demonstrably broken:
+#     pipewire would link the capture and playback ports correctly but no
+#     signal flowed through the module. Loading via pactl works around that.
+#   - 2026-05-03 (gamma incident response): added explicit verification that
+#     the target sink actually exists before calling load-module. Without
+#     this, pactl fell back to whatever was hardcoded in TARGET_SINK (a
+#     concurrent session had pinned it to a Bluetooth headset address!), and
+#     OBS broadcast was being silently mirrored to the wrong device. Also
+#     added post-load verification that the module bound to the configured
+#     target and not something else.
+#   - 2026-05-03 (audio-noise-fix agent): switched target from Caldigit TS4
+#     analog stereo to iLoud Micro Monitor BT speaker. The Caldigit's rear
+#     analog jack was unplugged for an extended period, so the loopback
+#     refused to load all day. The iLoud BT speaker is the operator's
+#     current monitoring target.
+#
+# Operator task: stable monitor-speaker patch point — broadcast audio
+# emerges from the iLoud BT speaker. If the speaker is powered off or
+# unpaired, this script refuses to load (rather than re-routing to a
+# default sink) so nothing leaks to a wrong destination.
+set -euo pipefail
+
+# iLoud Micro Monitor BT MAC: EB:06:EF:26:3F:AE
+TARGET_SINK="bluez_output.EB_06_EF_26_3F_AE.1"
+SOURCE="hapax-broadcast-normalized"
+
+# Wait for both source and sink to exist (BT sink only appears when the
+# speaker is powered on AND paired AND connected).
+sink_present=0
+for i in $(seq 1 30); do
+    if pactl list sources short | grep -q "^[0-9]*	${SOURCE}\b" \
+       && pactl list sinks short | grep -q "${TARGET_SINK}"; then
+        sink_present=1
+        break
+    fi
+    sleep 2
+done
+
+if [ "$sink_present" -ne 1 ]; then
+    echo "hapax-obs-monitor-load: target sink not present (waited 60s)" >&2
+    echo "hapax-obs-monitor-load: source=${SOURCE} target_sink=${TARGET_SINK}" >&2
+    echo "hapax-obs-monitor-load: refusing to load — operator must power on iLoud BT speaker AND verify pairing" >&2
+    # Tear down any stale loopback whose target sink is now gone (so we don't
+    # leave an orphan module pointing at a dead sink — pulse will silently
+    # auto-route it elsewhere on next sink-input event).
+    pactl list modules | awk -v src="$SOURCE" -v snk="$TARGET_SINK" '
+        /^Module #/{idx=substr($2,2)}
+        /^\tName: module-loopback/{is_lb=1; next}
+        /^\tName:/{is_lb=0}
+        is_lb && $0 ~ src && $0 ~ snk {print idx; is_lb=0}
+    ' | xargs -r -I{} pactl unload-module {}
+    # Exit 0 (success) so systemd treats this as "nothing to do" rather than failed.
+    # The loopback can be re-loaded by re-running this script when the operator
+    # powers on the iLoud. (We don't want a Restart=on-failure loop spamming.)
+    exit 0
+fi
+
+# Idempotent: if a healthy loopback already targets src→sink, keep it.
+existing=$(pactl list modules | awk -v src="$SOURCE" -v snk="$TARGET_SINK" '
+    /^Module #/{idx=substr($2,2)}
+    /^\tName: module-loopback/{is_lb=1; next}
+    /^\tName:/{is_lb=0}
+    is_lb && $0 ~ src && $0 ~ snk {print idx; is_lb=0}
+')
+if [ -n "$existing" ]; then
+    echo "hapax-obs-monitor-load: loopback already loaded (id=${existing}); nothing to do"
+    exit 0
+fi
+
+# Load. source_dont_move / sink_dont_move prevent PulseAudio's "automove"
+# from silently re-routing the loopback to a different sink (e.g. another
+# Bluetooth device) if the iLoud drops out at runtime — without these the
+# loopback survives BT disconnect by re-targeting whatever's default.
+loaded_id=$(pactl load-module module-loopback \
+    source="${SOURCE}" \
+    sink="${TARGET_SINK}" \
+    source_dont_move=true \
+    sink_dont_move=true \
+    latency_msec=20 \
+    sink_input_properties="media.name='OBS broadcast monitor → iLoud Micro Monitor BT'")
+
+# Sanity check: the loaded module's argument MUST contain the target sink
+# name. If pactl silently fell back to a different sink (despite sink_dont_move)
+# we tear down immediately rather than mis-route audio.
+loaded_arg=$(pactl list modules 2>/dev/null | awk -v m="Module #${loaded_id}" '
+    $0 == m {found=1; next}
+    found && /^\tArgument:/{print; exit}
+')
+if ! echo "$loaded_arg" | grep -q "$TARGET_SINK"; then
+    echo "hapax-obs-monitor-load: post-load verification FAILED — module ${loaded_id} did not bind target sink" >&2
+    echo "hapax-obs-monitor-load: argument was: $loaded_arg" >&2
+    pactl unload-module "$loaded_id"
+    exit 1
+fi
+echo "hapax-obs-monitor-load: loaded module-loopback id=${loaded_id} src=${SOURCE} sink=${TARGET_SINK}"
