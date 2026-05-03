@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from agents.publication_bus.buy_me_a_coffee_publisher import (
@@ -62,6 +62,7 @@ from logos.api.routes._payment_rails_helpers import (
     dispatch_publish_result,
     parse_webhook_request_body,
     render_null_event_response,
+    wrap_rail_error_to_400,
 )
 from shared._rail_idempotency import (
     get_idempotency_store as _get_idempotency_store,
@@ -256,16 +257,13 @@ async def receive_github_sponsors_webhook(request: Request) -> JSONResponse:
     receiver = GitHubSponsorsRailReceiver(
         idempotency_store=_get_idempotency_store("github-sponsors"),
     )
-    try:
+    with wrap_rail_error_to_400(GitHubSponsorsReceiveOnlyRailError, log_label="github_sponsors"):
         event = receiver.ingest_webhook(
             payload,
             signature,
             raw_body=raw_body,
             delivery_id=delivery_id,
         )
-    except GitHubSponsorsReceiveOnlyRailError as exc:
-        log.warning("github_sponsors webhook rejected: %s", exc)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
         return render_null_event_response(
@@ -309,16 +307,13 @@ async def receive_liberapay_webhook(request: Request) -> JSONResponse:
     receiver = LiberapayRailReceiver(
         idempotency_store=_get_idempotency_store("liberapay"),
     )
-    try:
+    with wrap_rail_error_to_400(LiberapayReceiveOnlyRailError, log_label="liberapay"):
         event = receiver.ingest_webhook(
             payload,
             signature,
             raw_body=raw_body,
             delivery_id=delivery_id,
         )
-    except LiberapayReceiveOnlyRailError as exc:
-        log.warning("liberapay webhook rejected: %s", exc)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
         return render_null_event_response(
@@ -351,16 +346,13 @@ async def receive_open_collective_webhook(request: Request) -> JSONResponse:
     receiver = OpenCollectiveRailReceiver(
         idempotency_store=_get_idempotency_store("open-collective"),
     )
-    try:
+    with wrap_rail_error_to_400(OpenCollectiveReceiveOnlyRailError, log_label="open_collective"):
         event = receiver.ingest_webhook(
             payload,
             signature,
             raw_body=raw_body,
             delivery_id=delivery_id,
         )
-    except OpenCollectiveReceiveOnlyRailError as exc:
-        log.warning("open_collective webhook rejected: %s", exc)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
         return render_null_event_response(
@@ -393,11 +385,10 @@ async def receive_stripe_payment_link_webhook(request: Request) -> JSONResponse:
     receiver = StripePaymentLinkRailReceiver(
         idempotency_store=_get_idempotency_store("stripe-payment-link"),
     )
-    try:
+    with wrap_rail_error_to_400(
+        StripePaymentLinkReceiveOnlyRailError, log_label="stripe_payment_link"
+    ):
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
-    except StripePaymentLinkReceiveOnlyRailError as exc:
-        log.warning("stripe_payment_link webhook rejected: %s", exc)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
         return render_null_event_response(
@@ -427,11 +418,8 @@ async def receive_ko_fi_webhook(request: Request) -> JSONResponse:
         return JSONResponse({"status": "ping_ok"})
 
     receiver = KoFiRailReceiver(idempotency_store=_get_idempotency_store("ko-fi"))
-    try:
+    with wrap_rail_error_to_400(KoFiReceiveOnlyRailError, log_label="ko_fi"):
         event = receiver.ingest_webhook(payload, verify_token=True)
-    except KoFiReceiveOnlyRailError as exc:
-        log.warning("ko_fi webhook rejected: %s", exc)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
         return render_null_event_response(
@@ -464,7 +452,7 @@ async def receive_patreon_webhook(request: Request) -> JSONResponse:
     webhook_id = request.headers.get("X-Patreon-Webhook-Id")
 
     receiver = PatreonRailReceiver(idempotency_store=_get_idempotency_store("patreon"))
-    try:
+    with wrap_rail_error_to_400(PatreonReceiveOnlyRailError, log_label="patreon"):
         event = receiver.ingest_webhook(
             payload,
             signature,
@@ -472,9 +460,6 @@ async def receive_patreon_webhook(request: Request) -> JSONResponse:
             raw_body=raw_body,
             webhook_id=webhook_id,
         )
-    except PatreonReceiveOnlyRailError as exc:
-        log.warning("patreon webhook rejected: %s", exc)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
         return render_null_event_response(
@@ -506,11 +491,8 @@ async def receive_buy_me_a_coffee_webhook(request: Request) -> JSONResponse:
     receiver = BuyMeACoffeeRailReceiver(
         idempotency_store=_get_idempotency_store("buy-me-a-coffee"),
     )
-    try:
+    with wrap_rail_error_to_400(BuyMeACoffeeReceiveOnlyRailError, log_label="buy_me_a_coffee"):
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
-    except BuyMeACoffeeReceiveOnlyRailError as exc:
-        log.warning("buy_me_a_coffee webhook rejected: %s", exc)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
         return render_null_event_response(
@@ -546,11 +528,8 @@ async def receive_mercury_webhook(request: Request) -> JSONResponse:
     )
 
     receiver = MercuryRailReceiver(idempotency_store=_get_idempotency_store("mercury"))
-    try:
+    with wrap_rail_error_to_400(MercuryReceiveOnlyRailError, log_label="mercury"):
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
-    except MercuryReceiveOnlyRailError as exc:
-        log.warning("mercury webhook rejected: %s", exc)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
         txn_id = (payload.get("data") or {}).get("id")
@@ -590,11 +569,8 @@ async def receive_modern_treasury_webhook(request: Request) -> JSONResponse:
     receiver = ModernTreasuryRailReceiver(
         idempotency_store=_get_idempotency_store("modern-treasury"),
     )
-    try:
+    with wrap_rail_error_to_400(ModernTreasuryReceiveOnlyRailError, log_label="modern_treasury"):
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
-    except ModernTreasuryReceiveOnlyRailError as exc:
-        log.warning("modern_treasury webhook rejected: %s", exc)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
         payment_id = (payload.get("data") or {}).get("id")
@@ -634,11 +610,8 @@ async def receive_treasury_prime_webhook(request: Request) -> JSONResponse:
     receiver = TreasuryPrimeRailReceiver(
         idempotency_store=_get_idempotency_store("treasury-prime"),
     )
-    try:
+    with wrap_rail_error_to_400(TreasuryPrimeReceiveOnlyRailError, log_label="treasury_prime"):
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
-    except TreasuryPrimeReceiveOnlyRailError as exc:
-        log.warning("treasury_prime webhook rejected: %s", exc)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if event is None:
         ach_id = (payload.get("data") or {}).get("id")
