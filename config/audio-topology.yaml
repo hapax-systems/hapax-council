@@ -57,6 +57,38 @@ nodes:
       private_monitor_endpoint: true
       forbidden_target_family: l12-broadcast
 
+  # Option C (2026-05-02 spec amendment) — S-4 analog OUT 1/2 endpoint.
+  # This node is a model-only descriptor: the S-4 analog OUT 1/2 is a
+  # TR line output, not a PipeWire-visible ALSA endpoint on this host.
+  # Recording it lets the audit graph reason about the destination of
+  # the private-monitor track, and lets the static guard
+  # `scripts/audio-leak-guard.sh` confirm there's no back-path to
+  # L-12 USB IN.
+  #
+  # The S-4 USB IN sink itself (`s4-output` below) carries the
+  # `private_monitor_endpoint: true` annotation under Option C so the
+  # WirePlumber pin's target_object resolves into a recognized
+  # private-monitor endpoint.
+  - id: s4-analog-out-1-2
+    kind: tap
+    pipewire_name: s4-analog-out-1-2
+    description: |
+      Operator-monitor analog OUT 1/2 patch from the S-4. Patched into
+      a non-broadcast monitor sink per spec §5 (headphone amp /
+      motherboard HDA / separate USB headphone interface / hardware-
+      fenced L-12 MON B). Forbidden: any L-12 channel input, any S-4
+      USB IN pair, any broadcast-bound capture surface. Operator-side
+      hardware patch action; software cannot enforce the destination,
+      only verify no broadcast-back path exists in the PipeWire graph.
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      audit_classification: external-hardware-optional
+      private_monitor_endpoint: true
+      forbidden_target_family: l12-broadcast
+      option_c_route: private-track-fenced-via-s4-out-1
+
   # Stable fan-out and fail-closed sinks.
   - id: livestream-tap
     kind: tap
@@ -116,8 +148,15 @@ nodes:
   - id: private-monitor-output
     kind: loopback
     pipewire_name: hapax-private-playback
-    description: Private assistant monitor bridge to Blue Yeti headphone
-    target_object: alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo
+    description: |
+      Option C private-monitor bridge to S-4 USB IN Track 1 input.
+      Per spec amendment 2026-05-02, this loopback's playback target is
+      the S-4 multichannel-output sink (host-side), where the S-4
+      internal scene HAPAX-PRIVATE-MONITOR routes Track 1 input through
+      a wet chain and out to S-4 analog OUT 1/2. The privacy invariant
+      is enforced at TRACK-OUTPUT level via the operator's analog patch
+      (operator-confirmed 2026-05-02T~17:00Z).
+    target_object: alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output
     channels:
       count: 2
       positions: [FL, FR]
@@ -133,6 +172,7 @@ nodes:
       fail_closed_on_target_absent: true
       private_monitor_bridge: true
       audit_classification: private-monitor-hardware-dependent
+      option_c_route: private-track-fenced-via-s4-out-1
 
   - id: notification-private-monitor-capture
     kind: filter_chain
@@ -152,8 +192,13 @@ nodes:
   - id: notification-private-monitor-output
     kind: loopback
     pipewire_name: hapax-notification-private-playback
-    description: Private notification monitor bridge to Blue Yeti headphone
-    target_object: alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo
+    description: |
+      Option C private-monitor bridge to S-4 USB IN Track 1 input.
+      Per spec amendment 2026-05-02, the notification private path
+      shares the same S-4 USB IN target as the assistant private
+      path; the S-4 internal scene routes both through the same
+      private-monitor track.
+    target_object: alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output
     channels:
       count: 2
       positions: [FL, FR]
@@ -169,6 +214,7 @@ nodes:
       fail_closed_on_target_absent: true
       private_monitor_bridge: true
       audit_classification: private-monitor-hardware-dependent
+      option_c_route: private-track-fenced-via-s4-out-1
 
   # L-12 capture into the livestream. Only AUX1/3/4/5 are bound; raw
   # vinyl, PC return, and MASTER channels stay unbound.
@@ -375,13 +421,31 @@ nodes:
   - id: s4-output
     kind: alsa_sink
     pipewire_name: alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output
-    description: Torso S-4 pro-audio multichannel output
+    description: |
+      Torso S-4 pro-audio multichannel output.
+      Option C (2026-05-02 spec amendment): the host-side write end of
+      the S-4 USB pair. WirePlumber pin
+      `config/wireplumber/56-hapax-private-pin-s4-track-1.conf` targets
+      this sink for `hapax-private*` streams; the S-4 internal scene
+      `HAPAX-PRIVATE-MONITOR` routes Track 1 input from the
+      corresponding USB IN slot through a wet chain to S-4 analog
+      OUT 1/2 (operator's non-broadcast monitor patch). The privacy
+      invariant is enforced at TRACK-OUTPUT level — this sink itself
+      is dual-citizen (broadcast tracks 2-4 also write here), but
+      Track 1's output never enters the L-12 USB IN capture chain.
     hw: hw:CARD=S4
     channels:
       count: 10
       positions: [AUX0, AUX1, AUX2, AUX3, AUX4, AUX5, AUX6, AUX7, AUX8, AUX9]
     params:
       audit_role: external-s4-hardware-present
+      # Option C private-monitor endpoint annotation. The S-4 USB IN
+      # sink is the host-side software entry into the private-monitor
+      # Track 1 path; the S-4 internal scene plus operator analog
+      # patch enforce the privacy invariant at the track-output level.
+      private_monitor_endpoint: true
+      private_monitor_track: 1
+      option_c_route: private-track-fenced-via-s4-out-1
 
   - id: s4-loopback
     kind: loopback
@@ -455,6 +519,23 @@ edges:
 
   - source: notification-private-monitor-capture
     target: notification-private-monitor-output
+
+  # Option C (2026-05-02 spec amendment) — canonical private-monitor route.
+  # `hapax-private-playback` (and its notification sibling) writes into
+  # the S-4 USB IN sink (`s4-output` carries the option_c_route annotation);
+  # the S-4 internal scene `HAPAX-PRIVATE-MONITOR` routes Track 1 input
+  # through the wet chain to the analog OUT 1/2 endpoint. The third edge
+  # (S-4 internal scene routing) is operator-side firmware action, not
+  # PipeWire-visible — recorded here as a model-only edge so the audit
+  # graph reasons about the destination of the private-monitor track.
+  - source: private-monitor-output
+    target: s4-output
+
+  - source: notification-private-monitor-output
+    target: s4-output
+
+  - source: s4-output
+    target: s4-analog-out-1-2
 
   # Expected only when the M8 hardware source is present. When absent,
   # live PipeWire can expose an auto-link fallback; audit classifies that
