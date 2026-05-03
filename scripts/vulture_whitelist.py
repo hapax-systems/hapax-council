@@ -1750,3 +1750,23 @@ from shared.stripe_payment_link_receive_only_rail import (
 )
 
 _StripePaymentLinkIdempotencyStore.has_seen
+
+# Multi-source duck composition (cc-task audio-audit-C-multi-source-product-
+# composition Phase 0): pure function lives ahead of the call-site swap.
+# Phase 1 will wire compose_attenuations into the ducker's per-source
+# composition path (replacing the implicit max() at the PipeWire mixer
+# layer with an explicit sum-of-dB clamp). Until then, only the test
+# suite exercises these symbols.
+from shared.audio_duck_compose import (
+    MAX_TOTAL_ATTEN_DB as _audit_C_max_total_atten_db,
+)
+from shared.audio_duck_compose import (
+    amplitude_from_db as _audit_C_amplitude_from_db,
+)
+from shared.audio_duck_compose import (
+    compose_attenuations as _audit_C_compose_attenuations,
+)
+
+_audit_C_max_total_atten_db
+_audit_C_amplitude_from_db
+_audit_C_compose_attenuations
