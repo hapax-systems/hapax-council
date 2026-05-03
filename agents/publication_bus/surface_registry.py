@@ -114,6 +114,18 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "to the canonical refusal log under axiom full_auto_or_nothing."
         ),
     ),
+    "open-collective-receiver": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="webhook",
+        dispatch_entry="logos.api.routes.payment_rails:receive_open_collective_webhook",
+        activation_path="agents.publication_bus.open_collective_publisher.OpenCollectivePublisher",
+        scope_note=(
+            "Third wired monetization rail. POST /api/payment-rails/open-collective "
+            "on logos :8051; HMAC SHA-256 over raw body via X-Open-Collective-Signature "
+            "+ OPEN_COLLECTIVE_WEBHOOK_SECRET env var. Multi-currency-native; no "
+            "cancellation auto-link (no cancellation event in the canonical 4)."
+        ),
+    ),
     "liberapay-receiver": SurfaceSpec(
         automation_status=AutomationStatus.CONDITIONAL_ENGAGE,
         api="webhook-via-bridge",

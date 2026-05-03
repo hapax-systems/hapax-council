@@ -1458,3 +1458,29 @@ _lp_event_to_manifest_record
 _lp_manifest_path_for_event
 LIBERAPAY_SIGNATURE_HEADER
 receive_liberapay_webhook
+
+# Open Collective V5 publisher + FastAPI route — cc-task
+# open-collective-end-to-end-wiring (3rd live monetization rail).
+# Same pattern as Sponsors (#2280) + Liberapay (#2287); no cancellation
+# auto-link because the canonical 4 OC events do not include a
+# cancellation-equivalent.
+from agents.publication_bus.open_collective_publisher import (
+    OpenCollectivePublisher,
+)
+from agents.publication_bus.open_collective_publisher import (
+    event_to_manifest_record as _oc_event_to_manifest_record,
+)
+from agents.publication_bus.open_collective_publisher import (
+    manifest_path_for_event as _oc_manifest_path_for_event,
+)
+from logos.api.routes.payment_rails import (
+    OPEN_COLLECTIVE_SIGNATURE_HEADER,
+    receive_open_collective_webhook,
+)
+
+OpenCollectivePublisher.publish_event
+OpenCollectivePublisher._render_manifest_body
+_oc_event_to_manifest_record
+_oc_manifest_path_for_event
+OPEN_COLLECTIVE_SIGNATURE_HEADER
+receive_open_collective_webhook

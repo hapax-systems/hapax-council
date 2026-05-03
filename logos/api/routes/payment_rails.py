@@ -41,6 +41,9 @@ from agents.publication_bus.github_sponsors_publisher import (
     GitHubSponsorsPublisher,
 )
 from agents.publication_bus.liberapay_publisher import LiberapayPublisher
+from agents.publication_bus.open_collective_publisher import (
+    OpenCollectivePublisher,
+)
 from shared.github_sponsors_receive_only_rail import (
     GitHubSponsorsRailReceiver,
 )
@@ -52,6 +55,12 @@ from shared.liberapay_receive_only_rail import (
 )
 from shared.liberapay_receive_only_rail import (
     ReceiveOnlyRailError as LiberapayReceiveOnlyRailError,
+)
+from shared.open_collective_receive_only_rail import (
+    OpenCollectiveRailReceiver,
+)
+from shared.open_collective_receive_only_rail import (
+    ReceiveOnlyRailError as OpenCollectiveReceiveOnlyRailError,
 )
 
 log = logging.getLogger(__name__)
@@ -68,6 +77,11 @@ LIBERAPAY_SIGNATURE_HEADER: str = "X-Liberapay-Signature"
 header bridges (cloudmailin / mailgun / n8n) set when forwarding
 HMAC-signed deliveries to the rail. The bridge layer chooses; the
 header name is stable across the rail's documented bridge contracts."""
+
+OPEN_COLLECTIVE_SIGNATURE_HEADER: str = "X-Open-Collective-Signature"
+"""Open Collective webhook signature header (per the rail's
+documented contract). Bare hex digest; ``sha256=<hex>`` prefix also
+accepted by the receiver."""
 
 
 @router.post("/github-sponsors")
@@ -227,8 +241,73 @@ async def receive_liberapay_webhook(request: Request) -> JSONResponse:
     )
 
 
+@router.post("/open-collective")
+async def receive_open_collective_webhook(request: Request) -> JSONResponse:
+    """Receive an Open Collective webhook delivery and dispatch.
+
+    Open Collective signs deliveries with HMAC SHA-256 in the
+    ``X-Open-Collective-Signature`` header. Multi-currency native;
+    no cancellation event in the canonical 4 (so no auto-link path).
+    """
+    raw_body = await request.body()
+
+    if not raw_body:
+        receiver = OpenCollectiveRailReceiver()
+        result = receiver.ingest_webhook({}, None)
+        if result is None:
+            return JSONResponse({"status": "ping_ok"})
+        raise HTTPException(status_code=500, detail="unexpected non-None result from heartbeat")
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        log.warning("open_collective webhook: malformed JSON")
+        raise HTTPException(status_code=400, detail=f"malformed JSON: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be a JSON object")
+
+    signature = request.headers.get(OPEN_COLLECTIVE_SIGNATURE_HEADER)
+
+    receiver = OpenCollectiveRailReceiver()
+    try:
+        event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
+    except OpenCollectiveReceiveOnlyRailError as exc:
+        log.warning("open_collective webhook rejected: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if event is None:
+        return JSONResponse({"status": "ping_ok"})
+
+    publisher = OpenCollectivePublisher()
+    publish_result = publisher.publish_event(event)
+
+    if publish_result.refused:
+        log.info("open_collective publish refused: %s", publish_result.detail)
+        return JSONResponse(
+            {"status": "refused", "detail": publish_result.detail},
+            status_code=200,
+        )
+    if publish_result.error:
+        log.error("open_collective publish error: %s", publish_result.detail)
+        raise HTTPException(
+            status_code=500,
+            detail=f"publisher transport error: {publish_result.detail}",
+        )
+
+    return JSONResponse(
+        {
+            "status": "received",
+            "event_kind": event.event_kind.value,
+            "publish_detail": publish_result.detail,
+            "raw_payload_sha256": event.raw_payload_sha256,
+        }
+    )
+
+
 __all__ = [
     "GITHUB_SPONSORS_SIGNATURE_HEADER",
     "LIBERAPAY_SIGNATURE_HEADER",
+    "OPEN_COLLECTIVE_SIGNATURE_HEADER",
     "router",
 ]

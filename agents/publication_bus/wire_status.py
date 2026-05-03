@@ -133,6 +133,24 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "IsObsoletedBy) ships with the publisher."
         ),
     ),
+    "agents.publication_bus.open_collective_publisher": WireEntry(
+        module="agents.publication_bus.open_collective_publisher",
+        surface_slug="open-collective-receiver",
+        status="WIRED",
+        pass_key_required="open-collective/webhook-secret",
+        rationale=(
+            "Third wired monetization rail (cc-task open-collective-end-to-end-wiring). "
+            "Wired via logos/api/routes/payment_rails.py POST "
+            "/api/payment-rails/open-collective. HMAC SHA-256 over raw body via "
+            "X-Open-Collective-Signature + OPEN_COLLECTIVE_WEBHOOK_SECRET env var "
+            "(hapax-secrets.service from pass `open-collective/webhook-secret`). "
+            "Multi-currency-native; no cancellation event in the canonical 4 "
+            "(collective_transaction_created / order_processed / member_created / "
+            "expense_paid), so no auto-link path. Operator-action gated on the "
+            "Wyoming-LLC bootstrap (Open Source Collective fiscal-sponsor "
+            "application requires a payout entity)."
+        ),
+    ),
     "agents.publication_bus.liberapay_publisher": WireEntry(
         module="agents.publication_bus.liberapay_publisher",
         surface_slug="liberapay-receiver",
