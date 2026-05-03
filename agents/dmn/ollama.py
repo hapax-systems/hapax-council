@@ -123,6 +123,33 @@ async def _tabby_think(prompt: str, system: str) -> str:
 _pending: dict[str, asyncio.Task[str]] = {}
 
 
+def _extract_litellm_response_cost(resp: object) -> float | None:
+    """Pull `_response_cost` from a LiteLLM Proxy response object.
+
+    LiteLLM Proxy attaches per-call cost via `_hidden_params._response_cost`
+    on the OpenAI-compatible response. Non-LiteLLM proxies + responses
+    without cost return None — caller treats None as "no cost data" and
+    the span emission is a no-op.
+
+    Defensive: any exception in attribute walk returns None (telemetry
+    must never raise).
+    """
+    try:
+        hidden = getattr(resp, "_hidden_params", None)
+        if hidden is None:
+            return None
+        cost = (
+            hidden.get("_response_cost")
+            if isinstance(hidden, dict)
+            else getattr(hidden, "_response_cost", None)
+        )
+        if cost is None:
+            return None
+        return float(cost)
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
 async def _gemini_multimodal(prompt: str, system: str, frame_b64: str) -> str:
     """Multimodal evaluative call via gemini-flash — sees the visual surface directly."""
     import os
@@ -141,7 +168,7 @@ async def _gemini_multimodal(prompt: str, system: str, frame_b64: str) -> str:
         else nullcontext(None)
     )
     try:
-        with metrics_ctx:
+        with metrics_ctx as span:
             from openai import AsyncOpenAI
 
             client = AsyncOpenAI(
@@ -165,6 +192,15 @@ async def _gemini_multimodal(prompt: str, system: str, frame_b64: str) -> str:
                     "media_resolution": "low",
                 },
             )
+            # cc-task vision-cost-guard-prometheus-emitter: capture LiteLLM
+            # response cost when present. LiteLLM Proxy attaches cost via
+            # `_hidden_params._response_cost` on the response object; non-
+            # LiteLLM proxies + responses without cost return None and the
+            # span emission is a no-op.
+            if span is not None and hasattr(span, "set_cost"):
+                cost = _extract_litellm_response_cost(resp)
+                if cost is not None:
+                    span.set_cost(cost)
             return resp.choices[0].message.content.strip()
     except Exception as exc:
         log.warning("Gemini multimodal failed (%s), falling back to text-only", exc)
