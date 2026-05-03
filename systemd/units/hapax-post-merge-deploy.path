@@ -1,0 +1,37 @@
+[Unit]
+Description=Watch canonical main ref for post-merge deploy auto-invocation
+Documentation=file://%h/projects/hapax-council/docs/superpowers/specs/2026-04-13-claude-md-excellence-design.md
+# Companion to hapax-rebuild-services.timer (every 5 min) — that timer pulls
+# Python service code; this path unit picks up the systemd-units / pipewire
+# confs / scripts side that hapax-post-merge-deploy classifies. Together they
+# close the gap that surfaced in the deploy-pipeline-canonical-worktree-isolation
+# audit: 25 systemd units canonical-but-not-installed because nothing fired
+# hapax-post-merge-deploy after merges.
+#
+# Watching strategy: PathChanged on the canonical local main ref. The ref
+# advances when something runs `git pull` / `git merge --ff-only` against
+# origin/main — which is exactly what rebuild-service.sh does in its primary
+# pull step. So this unit naturally chains: timer fetches + ff-merges main →
+# refs/heads/main mtime advances → path unit fires → service computes the
+# new HEAD sha and runs hapax-post-merge-deploy with it.
+#
+# Loop-safety: hapax-post-merge-deploy writes to ~/.config/systemd/user/,
+# ~/.config/pipewire/, ~/.local/bin/, and ~/.cache/hapax/post-merge-traces/.
+# It NEVER writes back into the .git tree, so the watched ref file is
+# immutable from the script's perspective and a fire cannot trigger another
+# fire. Belt-and-braces guard: hapax-post-merge-deploy.service carries
+# StartLimitIntervalSec=60 / StartLimitBurst=3.
+#
+# Migration note: targeting the shared .git/refs/heads/main file works
+# regardless of whether rebuild-service.sh runs in the canonical worktree
+# (current state) or in the dedicated rebuild worktree at
+# $HOME/.cache/hapax/rebuild/worktree/ (recommendation #1 of the same audit,
+# tracked under alpha/rebuild-service-dedicated-worktree). git worktrees
+# share refs/heads/, so the watched path stays correct across that flip.
+
+[Path]
+PathChanged=/home/hapax/projects/hapax-council/.git/refs/heads/main
+Unit=hapax-post-merge-deploy.service
+
+[Install]
+WantedBy=default.target

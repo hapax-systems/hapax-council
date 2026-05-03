@@ -207,6 +207,33 @@ Two timers poll `origin/main` every 5 minutes and rebuild/restart services when 
 
 SHA state files: `~/.cache/hapax/rebuild/last-{key}-sha`.
 
+### Post-Merge Auto-Deploy (`hapax-post-merge-deploy.path`)
+
+`scripts/hapax-post-merge-deploy` covers everything the python-services rebuild
+cascade doesn't: systemd unit files, drop-ins, pipewire/wireplumber confs,
+`scripts/hapax-*` symlinks, and helper watchdog binaries. Until 2026-05-03 it
+was manual-only; the audit in `cc-task deploy-pipeline-canonical-worktree-isolation`
+found 25 systemd units canonical-but-not-installed because nothing fired the
+script after merges.
+
+`hapax-post-merge-deploy.path` watches the canonical local main ref
+(`/home/hapax/projects/hapax-council/.git/refs/heads/main`). When
+`rebuild-service.sh` ff-merges `origin/main` into local main (or any other
+caller advances the ref), the path unit fires `hapax-post-merge-deploy.service`,
+which resolves the new HEAD SHA and invokes the script.
+
+Loop-safety: the deploy script only writes to `~/.config/systemd/user/`,
+`~/.config/pipewire/`, `~/.local/bin/`, and `~/.cache/hapax/post-merge-traces/`;
+it never touches `.git/refs`. Belt-and-braces: `StartLimitIntervalSec=60` /
+`StartLimitBurst=3` on the `[Unit]` section caps runaway fires. Failures route
+through `OnFailure=notify-failure@%n.service`. Trace inspection is documented
+at `docs/runbooks/post-merge-traces.md`.
+
+Bootstrap: the path unit is canonical at `systemd/units/hapax-post-merge-deploy.path`;
+the operator must `systemctl --user enable --now hapax-post-merge-deploy.path` once
+after the deploy script's normal install step copies the units in place. From the
+next merge onward the chain self-hosts.
+
 ## Storage Management
 
 Two automated systems prevent disk exhaustion:
