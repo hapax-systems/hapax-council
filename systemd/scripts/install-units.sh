@@ -21,6 +21,17 @@ DECOMMISSIONED_UNITS=(
     tabbyapi-hermes8b.service
     hapax-discord-webhook.service
 )
+# Privacy / safety-critical timers that MUST be enabled. The script's
+# sweep loop also enables every linked-but-not-enabled timer, so this
+# list is documentation + a belt-and-braces final pass to guarantee
+# these specific timers are running. Any privacy-critical timer added
+# here is enabled --now (immediate start) regardless of its prior
+# enable state.
+AUTO_ENABLE_PRIVACY_TIMERS=(
+    hapax-private-broadcast-leak-guard.timer
+    hapax-private-monitor-recover.timer
+    hapax-audio-topology-assertion.timer
+)
 
 EXPECTED_PRIMARY="${HOME}/projects/hapax-council"
 if [ "$PROJECT_DIR" != "$EXPECTED_PRIMARY" ] && [ "${ALLOW_NONSTANDARD_REPO:-0}" != "1" ]; then
@@ -214,4 +225,34 @@ fi
 
 if [ "$changed" -eq 0 ] && [ "${enabled_in_sweep:-0}" -eq 0 ] && [ "$dropin_changed" -eq 0 ]; then
     echo "all units up to date"
+fi
+
+# Privacy / safety-critical timer guarantee (final pass).
+# The L-12 broadcast bus carries everything that touches it. Any private
+# monitor stream reaching it is a constitutional axiom violation
+# (`feedback_l12_equals_livestream_invariant`). The 3-layer leak guard
+# (WP rules 55+56 + runtime backstop) and the recover/topology-assertion
+# timers are the runtime defense. They MUST be enabled and active. This
+# block ensures they are even if the sweep skipped them (e.g., they were
+# already linked-and-enabled but no .wants/ symlink due to a prior
+# rollback). Idempotent — `enable --now` on a running active unit is a
+# no-op.
+if [ "${SKIP_TIMER_ENABLE:-0}" != "1" ]; then
+    privacy_failures=0
+    for timer_name in "${AUTO_ENABLE_PRIVACY_TIMERS[@]}"; do
+        if [ ! -L "$DEST_DIR/$timer_name" ] && [ ! -f "$DEST_DIR/$timer_name" ]; then
+            echo "WARN: privacy-critical timer $timer_name is not installed" >&2
+            privacy_failures=$((privacy_failures + 1))
+            continue
+        fi
+        if systemctl --user enable --now "$timer_name" 2>/dev/null; then
+            echo "privacy-critical: $timer_name enabled+started"
+        else
+            echo "ERROR: failed to enable privacy-critical $timer_name" >&2
+            privacy_failures=$((privacy_failures + 1))
+        fi
+    done
+    if [ "$privacy_failures" -gt 0 ]; then
+        echo "WARN: $privacy_failures privacy-critical timer(s) could not be enabled" >&2
+    fi
 fi

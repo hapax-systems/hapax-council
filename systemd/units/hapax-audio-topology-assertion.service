@@ -1,0 +1,17 @@
+[Unit]
+Description=Hapax audio topology boot-time + recurring assertion
+Documentation=file:///home/hapax/projects/hapax-council/scripts/hapax-audio-topology
+Documentation=file:///home/hapax/projects/hapax-council/docs/governance/option-c-private-track-fenced-routing.md
+After=pipewire.service wireplumber.service pipewire-pulse.service
+Wants=pipewire.service wireplumber.service pipewire-pulse.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/hapax-council
+# Wraps `hapax-audio-topology verify --strict` and writes the outcome to
+# /dev/shm for cheap downstream observability. The wrapper script keeps
+# the JSON-emit logic out of the unit so it stays readable.
+ExecStart=%h/.local/bin/hapax-audio-topology-assertion-runner
+
+[Install]
+WantedBy=default.target
