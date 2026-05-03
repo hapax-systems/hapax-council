@@ -23,6 +23,7 @@ from agents.publication_bus.github_sponsors_publisher import (
     CANCELLATION_REFUSAL_SURFACE,
 )
 from logos.api.app import app
+from shared._rail_idempotency import reset_idempotency_store
 from shared.github_sponsors_receive_only_rail import (
     GITHUB_SPONSORS_WEBHOOK_SECRET_ENV,
 )
@@ -87,12 +88,11 @@ def secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
 @pytest.fixture
 def gh_sponsors_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Reset the route's GitHub Sponsors idempotency singleton + tmp db."""
-    import logos.api.routes.payment_rails as routes_mod
 
     monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
-    routes_mod._github_sponsors_idempotency_store = None
+    reset_idempotency_store("github-sponsors")
     yield tmp_path / "github-sponsors" / "idempotency.db"
-    routes_mod._github_sponsors_idempotency_store = None
+    reset_idempotency_store("github-sponsors")
 
 
 @pytest.fixture
@@ -573,12 +573,11 @@ def liberapay_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
 @pytest.fixture
 def liberapay_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Reset the route's Liberapay idempotency singleton + point at tmp db."""
-    import logos.api.routes.payment_rails as routes_mod
 
     monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
-    routes_mod._liberapay_idempotency_store = None
+    reset_idempotency_store("liberapay")
     yield tmp_path / "liberapay" / "idempotency.db"
-    routes_mod._liberapay_idempotency_store = None
+    reset_idempotency_store("liberapay")
 
 
 @pytest.mark.asyncio
@@ -921,12 +920,11 @@ def open_collective_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
 @pytest.fixture
 def open_collective_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Reset the route's Open Collective idempotency singleton + tmp db."""
-    import logos.api.routes.payment_rails as routes_mod
 
     monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
-    routes_mod._open_collective_idempotency_store = None
+    reset_idempotency_store("open-collective")
     yield tmp_path / "open-collective" / "idempotency.db"
-    routes_mod._open_collective_idempotency_store = None
+    reset_idempotency_store("open-collective")
 
 
 @pytest.mark.asyncio
@@ -1436,12 +1434,11 @@ def test_stripe_payment_link_publisher_module_carries_no_send_path() -> None:
 
 @pytest.fixture
 def stripe_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Reset the route's idempotency singleton + point at a tmp sqlite db.
+    """Reset the route's Stripe idempotency singleton + point at a tmp sqlite db.
 
-    HAPAX_HOME is set so :func:`_default_idempotency_db_path` lands in
-    a per-test scratch directory; the module-level singleton is reset
-    so the next call materializes a fresh sqlite db pointing into
-    ``tmp_path``.
+    Stripe still carries its own per-rail singleton (the rail
+    pre-dates the shared registry); reset it directly. HAPAX_HOME
+    setting routes the lazy-init's default db path into ``tmp_path``.
     """
     import logos.api.routes.payment_rails as routes_mod
 
@@ -1635,12 +1632,11 @@ def ko_fi_token_env(monkeypatch: pytest.MonkeyPatch) -> str:
 @pytest.fixture
 def ko_fi_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Reset the route's Ko-fi idempotency singleton + point at tmp db."""
-    import logos.api.routes.payment_rails as routes_mod
 
     monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
-    routes_mod._ko_fi_idempotency_store = None
+    reset_idempotency_store("ko-fi")
     yield tmp_path / "ko-fi" / "idempotency.db"
-    routes_mod._ko_fi_idempotency_store = None
+    reset_idempotency_store("ko-fi")
 
 
 @pytest.mark.asyncio
@@ -1916,12 +1912,11 @@ def patreon_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     a per-test scratch directory; the module-level singleton is reset
     so the next call materializes a fresh sqlite db.
     """
-    import logos.api.routes.payment_rails as routes_mod
 
     monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
-    routes_mod._patreon_idempotency_store = None
+    reset_idempotency_store("patreon")
     yield tmp_path / "patreon" / "idempotency.db"
-    routes_mod._patreon_idempotency_store = None
+    reset_idempotency_store("patreon")
 
 
 @pytest.mark.asyncio
@@ -2239,12 +2234,11 @@ def bmac_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
 @pytest.fixture
 def bmac_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Reset the route's BMaC idempotency singleton + point at tmp db."""
-    import logos.api.routes.payment_rails as routes_mod
 
     monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
-    routes_mod._buy_me_a_coffee_idempotency_store = None
+    reset_idempotency_store("buy-me-a-coffee")
     yield tmp_path / "buy-me-a-coffee" / "idempotency.db"
-    routes_mod._buy_me_a_coffee_idempotency_store = None
+    reset_idempotency_store("buy-me-a-coffee")
 
 
 @pytest.mark.asyncio
@@ -2567,12 +2561,11 @@ def mercury_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
 @pytest.fixture
 def mercury_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Reset the route's Mercury idempotency singleton + tmp db."""
-    import logos.api.routes.payment_rails as routes_mod
 
     monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
-    routes_mod._mercury_idempotency_store = None
+    reset_idempotency_store("mercury")
     yield tmp_path / "mercury" / "idempotency.db"
-    routes_mod._mercury_idempotency_store = None
+    reset_idempotency_store("mercury")
 
 
 @pytest.mark.asyncio
@@ -2844,12 +2837,11 @@ def mt_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
 @pytest.fixture
 def mt_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Reset the route's Modern Treasury idempotency singleton + tmp db."""
-    import logos.api.routes.payment_rails as routes_mod
 
     monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
-    routes_mod._modern_treasury_idempotency_store = None
+    reset_idempotency_store("modern-treasury")
     yield tmp_path / "modern-treasury" / "idempotency.db"
-    routes_mod._modern_treasury_idempotency_store = None
+    reset_idempotency_store("modern-treasury")
 
 
 @pytest.mark.asyncio
@@ -3129,12 +3121,11 @@ def tp_secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
 @pytest.fixture
 def tp_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Reset the route's Treasury Prime idempotency singleton + tmp db."""
-    import logos.api.routes.payment_rails as routes_mod
 
     monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
-    routes_mod._treasury_prime_idempotency_store = None
+    reset_idempotency_store("treasury-prime")
     yield tmp_path / "treasury-prime" / "idempotency.db"
-    routes_mod._treasury_prime_idempotency_store = None
+    reset_idempotency_store("treasury-prime")
 
 
 @pytest.mark.asyncio

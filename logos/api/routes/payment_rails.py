@@ -59,8 +59,9 @@ from agents.publication_bus.stripe_payment_link_publisher import (
 from agents.publication_bus.treasury_prime_publisher import (
     TreasuryPrimePublisher,
 )
-from shared._rail_idempotency import IdempotencyStore as _RailIdempotencyStore
-from shared._rail_idempotency import default_idempotency_db_path
+from shared._rail_idempotency import (
+    get_idempotency_store as _get_idempotency_store,
+)
 from shared.buy_me_a_coffee_receive_only_rail import (
     BuyMeACoffeeRailReceiver,
 )
@@ -129,105 +130,15 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/payment-rails", tags=["payment-rails"])
 
-_stripe_payment_link_idempotency_store: StripePaymentLinkIdempotencyStore | None = None
-_patreon_idempotency_store: _RailIdempotencyStore | None = None
-_ko_fi_idempotency_store: _RailIdempotencyStore | None = None
-_buy_me_a_coffee_idempotency_store: _RailIdempotencyStore | None = None
-_liberapay_idempotency_store: _RailIdempotencyStore | None = None
-_open_collective_idempotency_store: _RailIdempotencyStore | None = None
-_mercury_idempotency_store: _RailIdempotencyStore | None = None
-_modern_treasury_idempotency_store: _RailIdempotencyStore | None = None
-_treasury_prime_idempotency_store: _RailIdempotencyStore | None = None
-_github_sponsors_idempotency_store: _RailIdempotencyStore | None = None
-
-
-def _get_treasury_prime_idempotency_store() -> _RailIdempotencyStore:
-    """Lazy singleton sqlite-backed idempotency store for Treasury Prime.
-
-    Keyed on the in-payload ``data.id`` (incoming_ach uuid).
-    """
-    global _treasury_prime_idempotency_store  # noqa: PLW0603 — module-level singleton
-    if _treasury_prime_idempotency_store is None:
-        _treasury_prime_idempotency_store = _RailIdempotencyStore(
-            db_path=default_idempotency_db_path("treasury-prime"),
-        )
-    return _treasury_prime_idempotency_store
-
-
-def _get_github_sponsors_idempotency_store() -> _RailIdempotencyStore:
-    """Lazy singleton sqlite-backed idempotency store for GitHub Sponsors.
-
-    Keyed on ``X-GitHub-Delivery`` header (per-delivery UUID).
-    """
-    global _github_sponsors_idempotency_store  # noqa: PLW0603 — module-level singleton
-    if _github_sponsors_idempotency_store is None:
-        _github_sponsors_idempotency_store = _RailIdempotencyStore(
-            db_path=default_idempotency_db_path("github-sponsors"),
-        )
-    return _github_sponsors_idempotency_store
-
-
+# Per-rail webhook delivery-id headers + bridge-fallback chains.
+# Idempotency stores themselves are managed by the shared registry in
+# `shared._rail_idempotency.get_idempotency_store(rail_subdir)` — see
+# the receive_*_webhook handlers below.
 GITHUB_SPONSORS_DELIVERY_ID_HEADER: str = "X-GitHub-Delivery"
 """GitHub webhook per-delivery identifier header (UUID per delivery)."""
 
-
-def _get_modern_treasury_idempotency_store() -> _RailIdempotencyStore:
-    """Lazy singleton sqlite-backed idempotency store for Modern Treasury.
-
-    Keyed on the in-payload ``data.id`` (IPD payment_id).
-    """
-    global _modern_treasury_idempotency_store  # noqa: PLW0603 — module-level singleton
-    if _modern_treasury_idempotency_store is None:
-        _modern_treasury_idempotency_store = _RailIdempotencyStore(
-            db_path=default_idempotency_db_path("modern-treasury"),
-        )
-    return _modern_treasury_idempotency_store
-
-
-def _get_mercury_idempotency_store() -> _RailIdempotencyStore:
-    """Lazy singleton sqlite-backed idempotency store for Mercury.
-
-    Keyed on the in-payload ``data.id`` Mercury transaction identifier.
-    """
-    global _mercury_idempotency_store  # noqa: PLW0603 — module-level singleton
-    if _mercury_idempotency_store is None:
-        _mercury_idempotency_store = _RailIdempotencyStore(
-            db_path=default_idempotency_db_path("mercury"),
-        )
-    return _mercury_idempotency_store
-
-
-def _get_open_collective_idempotency_store() -> _RailIdempotencyStore:
-    """Lazy singleton sqlite-backed idempotency store for Open Collective.
-
-    Keyed on the per-delivery header ``X-Open-Collective-Activity-Id``.
-    """
-    global _open_collective_idempotency_store  # noqa: PLW0603 — module-level singleton
-    if _open_collective_idempotency_store is None:
-        _open_collective_idempotency_store = _RailIdempotencyStore(
-            db_path=default_idempotency_db_path("open-collective"),
-        )
-    return _open_collective_idempotency_store
-
-
 OPEN_COLLECTIVE_DELIVERY_ID_HEADER: str = "X-Open-Collective-Activity-Id"
 """Open Collective per-delivery activity identifier header."""
-
-
-def _get_liberapay_idempotency_store() -> _RailIdempotencyStore:
-    """Lazy singleton sqlite-backed idempotency store for Liberapay.
-
-    Keyed on a bridge-supplied `delivery_id` (resolved from one of:
-    ``X-Liberapay-Delivery-Id``, ``X-Cloudmailin-Message-Id``,
-    ``X-Mailgun-Variables`` JSON's ``message-id``, ``Message-Id``).
-    """
-    global _liberapay_idempotency_store  # noqa: PLW0603 — module-level singleton
-    if _liberapay_idempotency_store is None:
-        _liberapay_idempotency_store = _RailIdempotencyStore(
-            db_path=default_idempotency_db_path("liberapay"),
-        )
-    return _liberapay_idempotency_store
-
 
 _LIBERAPAY_DELIVERY_ID_HEADERS: tuple[str, ...] = (
     "X-Liberapay-Delivery-Id",
@@ -251,55 +162,21 @@ def _resolve_liberapay_delivery_id(headers) -> str | None:
     return None
 
 
-def _get_buy_me_a_coffee_idempotency_store() -> _RailIdempotencyStore:
-    """Lazy singleton sqlite-backed idempotency store for Buy Me a Coffee.
-
-    Keyed on top-level ``event_id`` (BMaC's per-delivery UUID).
-    """
-    global _buy_me_a_coffee_idempotency_store  # noqa: PLW0603 — module-level singleton
-    if _buy_me_a_coffee_idempotency_store is None:
-        _buy_me_a_coffee_idempotency_store = _RailIdempotencyStore(
-            db_path=default_idempotency_db_path("buy-me-a-coffee"),
-        )
-    return _buy_me_a_coffee_idempotency_store
-
-
-def _get_ko_fi_idempotency_store() -> _RailIdempotencyStore:
-    """Lazy singleton sqlite-backed idempotency store for Ko-fi.
-
-    Keyed on ``kofi_transaction_id`` (in-payload UUID per delivery).
-    Tests can swap the singleton by assigning to
-    ``_ko_fi_idempotency_store`` directly.
-    """
-    global _ko_fi_idempotency_store  # noqa: PLW0603 — module-level singleton
-    if _ko_fi_idempotency_store is None:
-        _ko_fi_idempotency_store = _RailIdempotencyStore(
-            db_path=default_idempotency_db_path("ko-fi"),
-        )
-    return _ko_fi_idempotency_store
-
-
-def _get_patreon_idempotency_store() -> _RailIdempotencyStore:
-    """Lazy singleton sqlite-backed idempotency store for Patreon.
-
-    First call materializes the store + parent dir. Tests can swap the
-    singleton by assigning to ``_patreon_idempotency_store`` directly.
-    """
-    global _patreon_idempotency_store  # noqa: PLW0603 — module-level singleton
-    if _patreon_idempotency_store is None:
-        _patreon_idempotency_store = _RailIdempotencyStore(
-            db_path=default_idempotency_db_path("patreon"),
-        )
-    return _patreon_idempotency_store
+# Stripe is the one rail that still uses its own IdempotencyStore class
+# (preserves the rail's existing 138 tests + sqlite table-name shape).
+# A future cc-task can migrate it to the shared registry.
+_stripe_payment_link_idempotency_store: StripePaymentLinkIdempotencyStore | None = None
 
 
 def _get_stripe_payment_link_idempotency_store() -> StripePaymentLinkIdempotencyStore:
     """Lazy singleton sqlite-backed idempotency store for Stripe Payment Link.
 
-    First-call creates the store + parent directory. Subsequent calls
-    reuse the same instance (sqlite connections are short-lived per
-    `record_or_skip` call). Tests can swap the singleton by assigning
-    to ``_stripe_payment_link_idempotency_store`` directly.
+    Stripe pre-dates the shared registry and uses its own
+    :class:`StripePaymentLinkIdempotencyStore` class with a distinct
+    table schema (``stripe_webhook_events`` vs. shared
+    ``rail_webhook_events``). Migrating Stripe is a separate cc-task —
+    keeping the singleton here for now preserves the rail's existing
+    test surface.
     """
     global _stripe_payment_link_idempotency_store  # noqa: PLW0603 — module-level singleton
     if _stripe_payment_link_idempotency_store is None:
@@ -407,7 +284,7 @@ async def receive_github_sponsors_webhook(request: Request) -> JSONResponse:
     delivery_id = request.headers.get(GITHUB_SPONSORS_DELIVERY_ID_HEADER)
 
     receiver = GitHubSponsorsRailReceiver(
-        idempotency_store=_get_github_sponsors_idempotency_store(),
+        idempotency_store=_get_idempotency_store("github-sponsors"),
     )
     try:
         event = receiver.ingest_webhook(
@@ -496,7 +373,7 @@ async def receive_liberapay_webhook(request: Request) -> JSONResponse:
     delivery_id = _resolve_liberapay_delivery_id(request.headers)
 
     receiver = LiberapayRailReceiver(
-        idempotency_store=_get_liberapay_idempotency_store(),
+        idempotency_store=_get_idempotency_store("liberapay"),
     )
     try:
         event = receiver.ingest_webhook(
@@ -572,7 +449,7 @@ async def receive_open_collective_webhook(request: Request) -> JSONResponse:
     delivery_id = request.headers.get(OPEN_COLLECTIVE_DELIVERY_ID_HEADER)
 
     receiver = OpenCollectiveRailReceiver(
-        idempotency_store=_get_open_collective_idempotency_store(),
+        idempotency_store=_get_idempotency_store("open-collective"),
     )
     try:
         event = receiver.ingest_webhook(
@@ -718,7 +595,7 @@ async def receive_ko_fi_webhook(request: Request) -> JSONResponse:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="payload must be a JSON object")
 
-    receiver = KoFiRailReceiver(idempotency_store=_get_ko_fi_idempotency_store())
+    receiver = KoFiRailReceiver(idempotency_store=_get_idempotency_store("ko-fi"))
     try:
         event = receiver.ingest_webhook(payload, verify_token=True)
     except KoFiReceiveOnlyRailError as exc:
@@ -790,7 +667,7 @@ async def receive_patreon_webhook(request: Request) -> JSONResponse:
     event_header = request.headers.get(PATREON_EVENT_HEADER)
     webhook_id = request.headers.get("X-Patreon-Webhook-Id")
 
-    receiver = PatreonRailReceiver(idempotency_store=_get_patreon_idempotency_store())
+    receiver = PatreonRailReceiver(idempotency_store=_get_idempotency_store("patreon"))
     try:
         event = receiver.ingest_webhook(
             payload,
@@ -865,7 +742,7 @@ async def receive_buy_me_a_coffee_webhook(request: Request) -> JSONResponse:
     signature = request.headers.get(BUY_ME_A_COFFEE_SIGNATURE_HEADER)
 
     receiver = BuyMeACoffeeRailReceiver(
-        idempotency_store=_get_buy_me_a_coffee_idempotency_store(),
+        idempotency_store=_get_idempotency_store("buy-me-a-coffee"),
     )
     try:
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
@@ -941,7 +818,7 @@ async def receive_mercury_webhook(request: Request) -> JSONResponse:
         MERCURY_LEGACY_SIGNATURE_HEADER
     )
 
-    receiver = MercuryRailReceiver(idempotency_store=_get_mercury_idempotency_store())
+    receiver = MercuryRailReceiver(idempotency_store=_get_idempotency_store("mercury"))
     try:
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
     except MercuryReceiveOnlyRailError as exc:
@@ -1014,7 +891,7 @@ async def receive_modern_treasury_webhook(request: Request) -> JSONResponse:
     signature = request.headers.get(MODERN_TREASURY_SIGNATURE_HEADER)
 
     receiver = ModernTreasuryRailReceiver(
-        idempotency_store=_get_modern_treasury_idempotency_store(),
+        idempotency_store=_get_idempotency_store("modern-treasury"),
     )
     try:
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
@@ -1088,7 +965,7 @@ async def receive_treasury_prime_webhook(request: Request) -> JSONResponse:
     signature = request.headers.get(TREASURY_PRIME_SIGNATURE_HEADER)
 
     receiver = TreasuryPrimeRailReceiver(
-        idempotency_store=_get_treasury_prime_idempotency_store(),
+        idempotency_store=_get_idempotency_store("treasury-prime"),
     )
     try:
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
