@@ -93,6 +93,26 @@ DEFAULT_POLL_S = 1.0
 # monitoring is required.
 DEFAULT_SINK = "hapax-music-loudnorm"
 
+# Phase 4 chain: hapax-music-loudnorm-playback (FL/FR) →
+# hapax-music-duck (RL/RR) → L-12 USB. The conf at
+# config/pipewire/hapax-music-loudnorm.conf declares
+# `target.object = "hapax-music-duck"` on the playback half, but
+# pipewire's auto-routing intermittently fails to instantiate the
+# link when channel positions differ (FL/FR → RL/RR). When the
+# link is missing, audio dead-ends at the loudnorm sink monitor
+# and the operator sees pw-cat playing into a black hole.
+#
+# Empirical evidence (2026-05-03 incident): both
+# `hapax-music-loudnorm.monitor` and `hapax-music-duck.monitor`
+# read silence even with active yt-dlp → ffmpeg → pw-cat
+# upstream. Manual `pw-link` of the cross-channel pair restores
+# audio to L-12 within 1s. We codify the manual-recovery step at
+# player startup so the operator never has to debug this again.
+_LOUDNORM_DUCK_LINKS: tuple[tuple[str, str], ...] = (
+    ("hapax-music-loudnorm-playback:output_FL", "hapax-music-duck:playback_RL"),
+    ("hapax-music-loudnorm-playback:output_FR", "hapax-music-duck:playback_RR"),
+)
+
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
@@ -267,6 +287,55 @@ def _spawn_process(cmd: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
     return subprocess.Popen(cmd, **kwargs)  # noqa: S603 — fixed argv built above
 
 
+def _ensure_loudnorm_duck_links() -> None:
+    """Idempotently create the loudnorm-playback → music-duck link pair.
+
+    PipeWire's auto-routing intermittently fails to instantiate the
+    cross-channel link declared by `target.object` in
+    config/pipewire/hapax-music-loudnorm.conf when channel positions
+    differ between source (FL/FR) and sink (RL/RR). When the link
+    is missing, audio dead-ends at the loudnorm sink monitor and
+    the rest of the chain receives silence.
+
+    `pw-link` is idempotent: it returns success on a duplicate link
+    request and we explicitly tolerate the "File exists" / "already
+    linked" error class. Missing-port errors (the chain hasn't
+    instantiated yet) are logged and skipped — the player will keep
+    going; if the next track restart finds the chain healthy the
+    link will succeed then.
+    """
+    for src, dst in _LOUDNORM_DUCK_LINKS:
+        try:
+            result = subprocess.run(  # noqa: S603 — fixed argv
+                ["pw-link", src, dst],  # noqa: S607 — pw-link from PATH
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log.warning("pw-link %s -> %s failed to invoke: %s", src, dst, exc)
+            continue
+        if result.returncode == 0:
+            log.info("ensured pipewire link: %s -> %s", src, dst)
+            continue
+        stderr = (result.stderr or "").strip().lower()
+        if "file exists" in stderr or "already" in stderr:
+            log.debug("pipewire link already present: %s -> %s", src, dst)
+            continue
+        # Missing ports (chain not yet instantiated) is the common
+        # failure: the loudnorm/duck filter-chains live in pipewire
+        # and may load lazily. Log + continue so the player still
+        # boots; subsequent tick may see the chain alive.
+        log.warning(
+            "pw-link %s -> %s returned %s: %s",
+            src,
+            dst,
+            result.returncode,
+            stderr or "(no stderr)",
+        )
+
+
 # ── Daemon ──────────────────────────────────────────────────────────────────
 
 
@@ -407,6 +476,12 @@ class LocalMusicPlayer:
             log.warning("attribution write failed", exc_info=True)
 
         sink = self.config.sink
+        # Self-heal the FL/FR → RL/RR cross-channel link before each
+        # track. Cheap (idempotent pw-link, ~5ms when present) and
+        # catches the case where pipewire restarted mid-session and
+        # the conf-declared `target.object` failed to re-instantiate.
+        if sink == DEFAULT_SINK:
+            _ensure_loudnorm_duck_links()
         try:
             if is_url(track_path):
                 yt_cmd, ffmpeg_cmd, pw_cmd = _build_url_pipeline(track_path, sink=sink)
@@ -708,6 +783,11 @@ class LocalMusicPlayer:
             self.config.sink,
             self.config.poll_s,
         )
+        # Self-heal the FL/FR → RL/RR cross-channel link that PipeWire's
+        # auto-routing intermittently fails to instantiate. Safe to call
+        # repeatedly (idempotent at the pw-link layer).
+        if self.config.sink == DEFAULT_SINK:
+            _ensure_loudnorm_duck_links()
         signal.signal(signal.SIGTERM, lambda *_: self.stop())
         signal.signal(signal.SIGINT, lambda *_: self.stop())
         while not self._stop:

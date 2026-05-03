@@ -167,6 +167,7 @@ _REQUIRED_L12_DIRECTIONALITY_NODES = {
     "tts-broadcast-playback",
 }
 _ALLOWED_L12_RETURN_PRODUCERS = {"tts-duck", "pc-loudnorm", "music-duck"}
+_ALLOWED_L12_RETURN_DIRECTIONS = {"broadcast"}
 _PRIVATE_ONLY_ROOTS = {
     "role-assistant",
     "role-notification",
@@ -660,7 +661,11 @@ def check_l12_forward_invariant(descriptor: TopologyDescriptor) -> L12ForwardInv
         l12_return_refs = {l12_return.id, l12_return.pipewire_name}
         for candidate in descriptor.nodes:
             if _node_targets_any(candidate, l12_return_refs):
-                if candidate.id not in _ALLOWED_L12_RETURN_PRODUCERS:
+                allowed_direction = candidate.params.get("allowed_l12_return_direction")
+                if (
+                    candidate.id not in _ALLOWED_L12_RETURN_PRODUCERS
+                    and allowed_direction not in _ALLOWED_L12_RETURN_DIRECTIONS
+                ):
                     violations.append(
                         L12ForwardInvariantViolation(
                             code="unexpected_l12_return_producer",

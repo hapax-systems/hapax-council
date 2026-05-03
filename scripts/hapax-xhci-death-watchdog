@@ -48,6 +48,25 @@ POST_RECOVERY_UNITS = (
     "hapax-usb-topology-witness.service",
 )
 
+# The watchdog runs as a SYSTEM unit (User=root) but POST_RECOVERY_UNITS are
+# USER units installed under ~/.config/systemd/user/. A bare `systemctl restart`
+# would target the system manager and silently fail, leaving the user-side
+# router stale post-recovery. Invoke the operator's user manager via
+# `--user --machine=hapax@.host` (requires lingering, which is configured).
+POST_RECOVERY_USER = "hapax"
+
+
+def _post_recovery_restart_argv(unit: str) -> list[str]:
+    """Argv for restarting a USER unit from this SYSTEM-context watchdog."""
+
+    return [
+        "systemctl",
+        "--user",
+        f"--machine={POST_RECOVERY_USER}@.host",
+        "restart",
+        unit,
+    ]
+
 
 @dataclass(frozen=True)
 class JournalLine:
@@ -211,18 +230,51 @@ def perform_recovery(
             stream=sys.stderr,
         )
 
-    # Best-effort post-recovery service restart. Errors are tolerated and
-    # logged (the watchdog must not crash if these units don't exist).
+    # Best-effort post-recovery service restart. Targets USER units via the
+    # operator's lingering user manager (`--user --machine=hapax@.host`) since
+    # this watchdog runs as a SYSTEM unit. Failures are surfaced explicitly
+    # with journalctl-grepable markers — never silently swallowed.
     for unit in POST_RECOVERY_UNITS:
-        completed = runner(["systemctl", "restart", unit], timeout_s=10.0)
+        argv = _post_recovery_restart_argv(unit)
+        completed = runner(argv, timeout_s=10.0)
         ok = completed.returncode == 0
-        result["post_recovery_restarts"].append({"unit": unit, "succeeded": ok})
+        stderr_text = (completed.stderr or "").strip()
+        entry: dict[str, Any] = {
+            "unit": unit,
+            "succeeded": ok,
+            "returncode": completed.returncode,
+        }
+        # Detect the specific "user manager unreachable" failure mode so the
+        # operator can grep for it. machinectl/systemd surface this as
+        # "Failed to get D-Bus connection" / "No machine 'hapax' known" /
+        # "Failed to connect to user bus" depending on lingering / bus state.
+        machine_unreachable_markers = (
+            "Failed to get D-Bus connection",
+            "Failed to connect to user bus",
+            "No machine '",
+            "Failed to acquire bus",
+            "Failed to start transient .* unit",
+        )
+        machine_unreachable = not ok and any(
+            marker in stderr_text for marker in machine_unreachable_markers
+        )
+        entry["machine_unreachable"] = machine_unreachable
+        result["post_recovery_restarts"].append(entry)
         if not ok:
-            log(
-                f"post-recovery restart of {unit} failed (rc={completed.returncode}): "
-                f"{completed.stderr.strip()}",
-                stream=sys.stderr,
-            )
+            if machine_unreachable:
+                log(
+                    f"POST_RECOVERY_USER_MANAGER_UNREACHABLE unit={unit} "
+                    f"rc={completed.returncode} stderr={stderr_text!r} "
+                    f"hint=verify `loginctl show-user {POST_RECOVERY_USER}` reports "
+                    "Linger=yes and the user manager is running",
+                    stream=sys.stderr,
+                )
+            else:
+                log(
+                    f"POST_RECOVERY_RESTART_FAILED unit={unit} "
+                    f"rc={completed.returncode} stderr={stderr_text!r}",
+                    stream=sys.stderr,
+                )
 
     return result
 
