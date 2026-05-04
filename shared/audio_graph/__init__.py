@@ -1,29 +1,35 @@
-"""Audio Graph SSOT — Pydantic schema, compiler, validator, invariants.
+"""Audio Graph SSOT — Pydantic schema, compiler, validator, and invariants.
 
-Phase P1 of the audio-graph SSOT spec
-(``docs/superpowers/specs/2026-05-03-audio-graph-ssot-and-router-daemon-design.md``).
+Single source of truth for the PipeWire/WirePlumber audio graph that
+drives the livestream broadcast. Implements Phase 1 of the audio graph
+SSOT design (`docs/superpowers/specs/2026-05-03-audio-graph-ssot-and-router-daemon-design.md`)
+with all 17 alignment-audit gap-folds applied
+(`docs/research/2026-05-03-audio-graph-ssot-alignment-audit.md`).
 
-This package introduces the typed source-of-truth for the workstation's
-PipeWire audio graph. P1 ships:
+Public API:
 
-- ``schema``: ``AudioGraph`` + child models (frozen, ``extra="forbid"``).
-- ``compiler``: ``compile_descriptor(graph) -> CompiledArtefacts``
-  (pure function, byte-deterministic, emits 5-tuple of artefacts).
-- ``invariants``: 11 pure-function predicates (9 pre-apply + 2 continuous
-  egress), each returning a list of ``InvariantViolation``.
-- ``validator``: ``AudioGraphValidator`` decomposes existing PipeWire
-  conf files into ``AudioGraph`` instances and surfaces gaps for follow-up
-  schema iteration.
+- :class:`AudioGraph` — the typed root model (alias for compatibility
+  with the existing :class:`shared.audio_topology.TopologyDescriptor`,
+  with extension fields for the 12 schema-additive gaps).
+- :func:`compile_descriptor` — pure compiler from descriptor to
+  artefacts (PipeWire confs, WirePlumber confs, pactl loads,
+  pre-apply violation list, post-apply probes).
+- :class:`AudioGraphValidator` — read-only decomposer that turns
+  live ``~/.config/pipewire/pipewire.conf.d/*.conf`` files into an
+  AudioGraph instance and reports any structural gaps.
+- 11 invariant predicates (in :mod:`shared.audio_graph.invariants`).
 
-P1 contains NO runtime side-effects: no PipeWire mutation, no service
-restarts, no live audio probes. The validator is read-only against
-operator configuration. The CI gate (``audio-graph-validate``) runs the
-validator against a fixture snapshot of the operator's confs and fails
-when any conf does not decompose cleanly.
+Phase 1 ships **schema + compiler + validator + invariants** only.
+No daemon, no apply path, no runtime mutation. The validator is
+read-only against ``~/.config/pipewire/`` (file reads only, no
+``pw-dump`` / ``pactl`` / ``pw-link`` invocations).
 
-Subsequent phases (P2–P5) add the ``hapax-pipewire-graph`` daemon, the
-applier lock, atomic apply with snapshot+rollback, and the continuous
-egress circuit breaker. Those are out of scope here.
+References:
+- Spec: docs/superpowers/specs/2026-05-03-audio-graph-ssot-and-router-daemon-design.md
+- Audit: docs/research/2026-05-03-audio-graph-ssot-alignment-audit.md
+- Existing schema: shared/audio_topology.py (schema_version=3, reused)
+- Existing compiler primitive: shared/audio_topology_generator.py
+- Existing live-graph reader: shared/audio_topology_inspector.py
 """
 
 from __future__ import annotations
@@ -32,82 +38,96 @@ from shared.audio_graph.compiler import (
     CompiledArtefacts,
     PactlLoad,
     PostApplyProbe,
-    RollbackPlan,
     compile_descriptor,
 )
 from shared.audio_graph.invariants import (
-    INVARIANT_REGISTRY,
-    EgressHealth,
+    INVARIANT_CHECKERS,
     InvariantKind,
     InvariantSeverity,
     InvariantViolation,
     check_all_invariants,
-    check_channel_count_topology_wide,
-    check_egress_safety_band_crest,
-    check_egress_safety_band_rms,
-    check_format_compatibility,
-    check_gain_budget,
-    check_hardware_bleed_guard,
-    check_l12_directionality,
-    check_master_bus_sole_path,
-    check_no_duplicate_pipewire_names,
-    check_port_compatibility,
-    check_private_never_broadcasts,
 )
 from shared.audio_graph.schema import (
+    AlsaCardRule,
+    AlsaProfilePin,
     AudioGraph,
     AudioLink,
     AudioNode,
+    BluezRule,
     BroadcastInvariant,
+    ChannelDownmix,
     ChannelMap,
+    DownmixRoute,
     DownmixStrategy,
+    DuckPolicy,
+    Fanout,
+    FilterChainTemplate,
+    FilterStage,
     FormatSpec,
     GainStage,
+    GlobalTunables,
     LoopbackTopology,
+    MediaRoleSink,
+    MixdownGraph,
+    MixerRoute,
     NodeKind,
+    PreferredTargetPin,
+    RemapSource,
+    RoleLoopback,
+    StreamPin,
+    StreamRestoreRule,
+    WireplumberRule,
 )
 from shared.audio_graph.validator import (
     AudioGraphValidator,
-    ConfParseError,
-    ValidationGap,
-    ValidationReport,
+    DecomposeResult,
+    GapReport,
 )
 
 __all__ = [
-    "INVARIANT_REGISTRY",
+    # schema
+    "AlsaCardRule",
+    "AlsaProfilePin",
     "AudioGraph",
-    "AudioGraphValidator",
     "AudioLink",
     "AudioNode",
+    "BluezRule",
     "BroadcastInvariant",
+    "ChannelDownmix",
     "ChannelMap",
-    "CompiledArtefacts",
-    "ConfParseError",
+    "DownmixRoute",
     "DownmixStrategy",
-    "EgressHealth",
+    "DuckPolicy",
+    "Fanout",
+    "FilterChainTemplate",
+    "FilterStage",
     "FormatSpec",
     "GainStage",
+    "GlobalTunables",
+    "LoopbackTopology",
+    "MediaRoleSink",
+    "MixdownGraph",
+    "MixerRoute",
+    "NodeKind",
+    "PreferredTargetPin",
+    "RemapSource",
+    "RoleLoopback",
+    "StreamPin",
+    "StreamRestoreRule",
+    "WireplumberRule",
+    # invariants
     "InvariantKind",
     "InvariantSeverity",
     "InvariantViolation",
-    "LoopbackTopology",
-    "NodeKind",
+    "check_all_invariants",
+    "INVARIANT_CHECKERS",
+    # compiler
+    "CompiledArtefacts",
     "PactlLoad",
     "PostApplyProbe",
-    "RollbackPlan",
-    "ValidationGap",
-    "ValidationReport",
-    "check_all_invariants",
-    "check_channel_count_topology_wide",
-    "check_egress_safety_band_crest",
-    "check_egress_safety_band_rms",
-    "check_format_compatibility",
-    "check_gain_budget",
-    "check_hardware_bleed_guard",
-    "check_l12_directionality",
-    "check_master_bus_sole_path",
-    "check_no_duplicate_pipewire_names",
-    "check_port_compatibility",
-    "check_private_never_broadcasts",
     "compile_descriptor",
+    # validator
+    "AudioGraphValidator",
+    "DecomposeResult",
+    "GapReport",
 ]

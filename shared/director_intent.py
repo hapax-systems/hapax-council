@@ -105,6 +105,51 @@ IntentFamily = Literal[
     # gap end-to-end.
     "gem.emphasis",
     "gem.composition",
+    # gem.spawn (cc-task `director-moves-richness-expansion`): a fresh
+    # GEM keyframe spawn distinct from emphasis/composition — the move
+    # when the surface should mint a new graffiti rather than modulate
+    # an existing mural. Used by the director when a beat or phrase
+    # warrants its own mark on the lower band.
+    "gem.spawn",
+    # Director micromove vocabulary expansion (cc-task
+    # `director-moves-richness-expansion`, operator outcome 3 of 5).
+    # Operator constraint: NO presets — these families are parametric
+    # modulation + chain composition. The director never picks a preset
+    # family; instead it modulates parameters or composes transitions.
+    #
+    # transition.fade / transition.cut: chain-composition transitions
+    # already implemented as ``transition.fade.smooth`` /
+    # ``transition.cut.hard`` capabilities — see
+    # ``shared/compositional_affordances.py`` ``_TRANSITION``. The
+    # director emits the family tag, recruitment picks the variant.
+    "transition.fade",
+    "transition.cut",
+    # composition.reframe: parametric reframe of the active hero
+    # camera's crop/zoom — not a camera swap (camera.hero) and not a
+    # preset (operator forbids). Modulates ``ward-properties.json``'s
+    # camera-tile scale + position_offset envelope so the same camera
+    # is reframed in place.
+    "composition.reframe",
+    # pace.tempo_shift: parametric shift of the surface's effective
+    # cadence — slows or accelerates ward emphasis, transition timing,
+    # narrative ticks. Writes to
+    # ``/dev/shm/hapax-compositor/pace-state.json`` so cadence-aware
+    # consumers (homage choreographer, ward animation) can pick up the
+    # multiplier.
+    "pace.tempo_shift",
+    # mood.tone_pivot: parametric color/warmth/saturation pivot. NOT a
+    # preset family selection — modulates the per-pass uniforms (color
+    # warmth, saturation, brightness) directly via
+    # ``/dev/shm/hapax-imagination/uniforms.json`` overrides. The
+    # generative substrate keeps running; only the parametric color
+    # envelope shifts.
+    "mood.tone_pivot",
+    # programme.beat_advance: signals the active programme's narrative
+    # beat should advance. Consumer is the programme manager —
+    # advancing a beat is structural content programming, not visual
+    # composition. The director recognises when the current programme
+    # has played out and emits this family to mark the boundary.
+    "programme.beat_advance",
     # YouTube viewer-telemetry impingements (ytb-005). Emitted by
     # ``agents.youtube_telemetry`` from Analytics + Reporting APIs at a
     # 3-min cadence (under the 500-req/day soft cap). Salience is a

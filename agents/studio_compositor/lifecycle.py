@@ -182,12 +182,15 @@ def start_compositor(compositor: Any) -> None:
 
     compositor._write_status("running")
 
-    # Activate a default obscuring preset on startup — never show raw feed
+    # Activate a default obscuring overlay on startup — never show raw feed.
+    # Sierpinski overlay matches operator's aesthetic bar (memory:
+    # feedback_gem_aesthetic_bar: "Sierpinski-caliber visual"); face privacy is
+    # independently enforced by face_obscure_integration (fail-CLOSED at egress).
     from .effects import try_graph_preset
 
-    try_graph_preset(compositor, "halftone_preset")
-    compositor._current_preset_name = "halftone_preset"
-    log.info("Default startup preset: halftone_preset")
+    try_graph_preset(compositor, "sierpinski_line_overlay")
+    compositor._current_preset_name = "sierpinski_line_overlay"
+    log.info("Default startup preset: sierpinski_line_overlay")
     log_consent_event(compositor, "pipeline_start", allowed=compositor._consent_recording_allowed)
 
     with compositor._camera_status_lock:

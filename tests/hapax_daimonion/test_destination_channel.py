@@ -308,9 +308,11 @@ class TestPlaybackDecision:
         assert decision.target == PRIVATE_SINK
 
     def test_autonomous_narration_with_bias_blocks_without_programme_auth(self, tmp_path):
-        """Broadcast bias classifies autonomous narrative as LIVESTREAM,
-        but resolve_playback_decision blocks when programme auth is missing
-        from the impingement content."""
+        """Broadcast bias classifies autonomous narrative as LIVESTREAM and
+        the bias path supplies implicit intent, but ``resolve_playback_decision``
+        still blocks when the per-utterance ``programme_authorization`` payload
+        is absent — the role-level authorization at classify time is not a
+        substitute for the fresh per-utterance evidence the gate requires."""
         imp = SimpleNamespace(
             source="autonomous_narrative",
             content={"narrative": "No public contract."},
@@ -323,12 +325,12 @@ class TestPlaybackDecision:
         )
 
         assert decision.allowed is False
-        # With broadcast bias, classification is LIVESTREAM (soft prior),
-        # but blocked because the content dict doesn't carry explicit
-        # broadcast intent tokens (those are injected by runner.py, not
-        # by classify_destination).
+        # With broadcast bias, classification is LIVESTREAM (soft prior).
+        # The bias_implicit branch in _broadcast_intent_evidence supplies
+        # intent, so the next gate — programme_authorization_evidence —
+        # is the one that blocks.
         assert decision.destination is DestinationChannel.LIVESTREAM
-        assert decision.reason_code == "broadcast_intent_missing"
+        assert decision.reason_code == "programme_authorization_missing"
         assert decision.target is None
 
     def test_explicit_broadcast_requires_fresh_programme_auth_and_audio_safe(self, tmp_path):
@@ -637,3 +639,134 @@ class TestBroadcastBias:
             content={"public_broadcast_intent": True, "narrative": "Explicit intent."},
         )
         assert classify_destination(imp) == DestinationChannel.LIVESTREAM
+
+    # --- Endogenous narrative-drive sources (cc-task vocal-as-fuck) ---
+
+    def test_endogenous_narrative_drive_routes_livestream(self, monkeypatch):
+        """endogenous.narrative_drive source ⇒ LIVESTREAM under bias."""
+        monkeypatch.delenv(BROADCAST_BIAS_ENV, raising=False)
+        monkeypatch.setattr(
+            "agents.hapax_daimonion.cpal.destination_channel._programme_authorizes_broadcast",
+            lambda: True,
+        )
+        imp = SimpleNamespace(
+            source="endogenous.narrative_drive",
+            content={"narrative": "Sustained vocal presence on broadcast."},
+        )
+        assert classify_destination(imp) == DestinationChannel.LIVESTREAM
+
+    def test_endogenous_gem_routes_livestream(self, monkeypatch):
+        """endogenous.gem source (gem-producer) ⇒ LIVESTREAM under bias."""
+        monkeypatch.delenv(BROADCAST_BIAS_ENV, raising=False)
+        monkeypatch.setattr(
+            "agents.hapax_daimonion.cpal.destination_channel._programme_authorizes_broadcast",
+            lambda: True,
+        )
+        imp = SimpleNamespace(
+            source="endogenous.gem",
+            content={"narrative": "Gem-frame intent."},
+        )
+        assert classify_destination(imp) == DestinationChannel.LIVESTREAM
+
+    def test_endogenous_source_with_bias_off_stays_private(self, monkeypatch):
+        """Bias OFF ⇒ even endogenous.narrative_drive falls through to PRIVATE."""
+        monkeypatch.setenv(BROADCAST_BIAS_ENV, "0")
+        imp = SimpleNamespace(
+            source="endogenous.narrative_drive",
+            content={"narrative": "Bias off, expect private."},
+        )
+        assert classify_destination(imp) == DestinationChannel.PRIVATE
+
+    def test_endogenous_resolve_unblocks_broadcast_when_gates_pass(self, monkeypatch, tmp_path):
+        """Endogenous source + bias on + active programme + audio safe ⇒ ALLOWED."""
+        monkeypatch.delenv(BROADCAST_BIAS_ENV, raising=False)
+        monkeypatch.setattr(
+            "agents.hapax_daimonion.cpal.destination_channel._programme_authorizes_broadcast",
+            lambda: True,
+        )
+        now = time.time()
+        health_path = tmp_path / "audio-safe-for-broadcast.json"
+        _write_broadcast_health(health_path, safe=True)
+        imp = SimpleNamespace(
+            source="endogenous.narrative_drive",
+            content={
+                "narrative": "Endogenous intent, fresh programme auth.",
+                "programme_authorization": {
+                    "authorized": True,
+                    "authorized_at": now,
+                    "expires_at": now + 90.0,
+                    "programme_id": "programme:test-bias",
+                    "evidence_ref": "programme_active:work_block:programme:test-bias",
+                },
+            },
+        )
+
+        decision = resolve_playback_decision(
+            imp,
+            broadcast_audio_health_path=health_path,
+            now=now,
+        )
+
+        assert decision.allowed is True
+        assert decision.destination is DestinationChannel.LIVESTREAM
+        assert decision.reason_code == "broadcast_voice_authorized"
+        assert decision.target == "hapax-voice-fx-capture"
+        assert decision.media_role == BROADCAST_MEDIA_ROLE
+        assert decision.safety_gate["broadcast_intent"]["bias_implicit"] is True
+
+    def test_endogenous_resolve_blocks_when_audio_unsafe(self, monkeypatch, tmp_path):
+        """Endogenous bias preserves the audio_safe_for_broadcast gate (fail-closed)."""
+        monkeypatch.delenv(BROADCAST_BIAS_ENV, raising=False)
+        monkeypatch.setattr(
+            "agents.hapax_daimonion.cpal.destination_channel._programme_authorizes_broadcast",
+            lambda: True,
+        )
+        now = time.time()
+        health_path = tmp_path / "audio-safe-for-broadcast.json"
+        _write_broadcast_health(health_path, safe=False)
+        imp = SimpleNamespace(
+            source="endogenous.narrative_drive",
+            content={
+                "narrative": "Audio unsafe — must block.",
+                "programme_authorization": {
+                    "authorized": True,
+                    "authorized_at": now,
+                    "expires_at": now + 90.0,
+                    "programme_id": "programme:test-bias",
+                    "evidence_ref": "programme_active:work_block:programme:test-bias",
+                },
+            },
+        )
+
+        decision = resolve_playback_decision(
+            imp,
+            broadcast_audio_health_path=health_path,
+            now=now,
+        )
+
+        assert decision.allowed is False
+        assert decision.reason_code == "audio_safe_for_broadcast_false"
+
+    def test_endogenous_resolve_blocks_when_programme_auth_missing(self, monkeypatch, tmp_path):
+        """Endogenous bias still requires fresh programme_authorization in payload."""
+        monkeypatch.delenv(BROADCAST_BIAS_ENV, raising=False)
+        monkeypatch.setattr(
+            "agents.hapax_daimonion.cpal.destination_channel._programme_authorizes_broadcast",
+            lambda: True,
+        )
+        now = time.time()
+        health_path = tmp_path / "audio-safe-for-broadcast.json"
+        _write_broadcast_health(health_path, safe=True)
+        imp = SimpleNamespace(
+            source="endogenous.narrative_drive",
+            content={"narrative": "No programme_authorization in payload."},
+        )
+
+        decision = resolve_playback_decision(
+            imp,
+            broadcast_audio_health_path=health_path,
+            now=now,
+        )
+
+        assert decision.allowed is False
+        assert decision.reason_code == "programme_authorization_missing"

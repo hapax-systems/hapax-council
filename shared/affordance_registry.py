@@ -350,6 +350,29 @@ STUDIO_AFFORDANCES = [
             consent_required=False,
         ),
     ),
+    # Cc-task ``activity-reveal-ward-p1-durf-migration`` (2026-05-04):
+    # symmetry with ``studio.m8_lcd_reveal`` for the Coding-Activity
+    # variant of the activity-reveal-ward family. Surfaces the Codex
+    # tmux-pane DURF surface in the broadcast composite when coding
+    # work is the subject of attention. Recruitment is impingement-
+    # narrative driven (chat / impingement-bus mentions of "code",
+    # "PR", "task", "review", etc.); no auto-on per
+    # feedback_no_expert_system_rules. Consent considerations live at
+    # the redaction layer (RISK_PATTERNS in ``durf_redaction``); no
+    # PII surfaces, so consent_required=False here.
+    CapabilityRecord(
+        name="studio.durf_reveal",
+        description=(
+            "Reveal the bounded Codex tmux-pane DURF surface in the broadcast "
+            "composite when coding-session activity is the subject of attention"
+        ),
+        daemon="compositor",
+        operational=_public_operational(
+            latency_class="fast",
+            medium="visual",
+            consent_required=False,
+        ),
+    ),
     # cc-task m8-remote-button-control-daemon. Hardware-actuation
     # affordance (buttons, keyjazz, theme, display reset). No PII —
     # button presses don't carry operator-identifying data — so
@@ -381,6 +404,28 @@ STUDIO_AFFORDANCES = [
         operational=_public_operational(
             latency_class="fast",
             medium="action",
+            consent_required=False,
+        ),
+    ),
+    # Re-Splay Homage Ward — Steam Deck HDMI reveal. cc-task
+    # re-splay-homage-ward-steam-deck. Mirrors the M8 LCD reveal
+    # contract: the ward becomes recruitable when the steamdeck bridge
+    # is publishing recent frames to
+    # /dev/shm/hapax-sources/steamdeck-display.rgba. Narrative gating
+    # through the affordance pipeline ensures the ward only surfaces
+    # when the operator is actually playing — motion + audio activity
+    # provide the context boost; idle suppression hides the ward when
+    # the Deck sits in a menu without play activity.
+    CapabilityRecord(
+        name="ward.reveal.steamdeck-display",
+        description=(
+            "Reveal the Steam Deck's HDMI output in the broadcast composite "
+            "when the operator is actively playing a game on the handheld"
+        ),
+        daemon="compositor",
+        operational=_public_operational(
+            latency_class="fast",
+            medium="visual",
             consent_required=False,
         ),
     ),
@@ -1474,6 +1519,180 @@ EXPRESSION_AFFORDANCES = [
 ]
 
 # ---------------------------------------------------------------------------
+# Domain 11: Chat (chat.*) — livestream audience reactivity
+# ---------------------------------------------------------------------------
+
+CHAT_AFFORDANCES = [
+    CapabilityRecord(
+        name="chat.acknowledge_message",
+        description=(
+            "Acknowledge a livestream chat message with a brief vocal nod"
+            " confirming receipt without committing to a full reply"
+        ),
+        daemon="daimonion",
+        operational=_public_operational(
+            latency_class="fast",
+            medium="speech",
+            monetization_risk="low",
+            risk_reason=(
+                "Brief acknowledgement carries minimal third-party content risk;"
+                " operator-voiced TTS over operator-owned broadcast surface."
+            ),
+        ),
+    ),
+    CapabilityRecord(
+        name="chat.answer_question",
+        description=(
+            "Compose a short spoken answer to a question posed in livestream"
+            " chat grounding it in the current studio context"
+        ),
+        daemon="daimonion",
+        operational=_public_operational(
+            latency_class="slow",
+            medium="speech",
+            monetization_risk="medium",
+            risk_reason=(
+                "Generated answers can produce monetization-sensitive wording"
+                " when the question solicits opinion or third-party content;"
+                " Programme opt-in for broadcast speech."
+            ),
+        ),
+    ),
+    CapabilityRecord(
+        name="chat.tier_suggestion_add",
+        description=(
+            "Surface a chat-suggested item to the programme tier list as a"
+            " candidate without committing to inclusion"
+        ),
+        daemon="programme",
+        operational=_public_operational(
+            latency_class="fast",
+            persistence="session",
+            medium="textual",
+        ),
+    ),
+    CapabilityRecord(
+        name="chat.mood_shift",
+        description=(
+            "Bias the studio compositor preset family toward a mood the chat"
+            " is collectively gravitating toward as audience-aware reactivity"
+        ),
+        daemon="compositor",
+        operational=_public_operational(
+            latency_class="fast",
+            medium="visual",
+        ),
+    ),
+    CapabilityRecord(
+        name="chat.hero_swap",
+        description=(
+            "Swap the camera hero perspective in response to chat directing"
+            " attention to a specific studio surface or instrument"
+        ),
+        daemon="compositor",
+        operational=_public_operational(
+            latency_class="fast",
+            medium="visual",
+        ),
+    ),
+]
+
+# ---------------------------------------------------------------------------
+# Lore wards — Enlightenment-GTK + BitchX HOMAGE Ward hybrid epic.
+#
+# Four broadcast-surface wards that surface the system's accumulating
+# narrative state (governance precedent, programme arc, research
+# apparatus, audience query log) for viewers. Each ward is already
+# implemented as a CairoSource subclass and registered in
+# ``cairo_sources.__init__``; the entries below give the
+# AffordancePipeline a Gibson-verb cosine-target so the wards can be
+# RECRUITED rather than always-on (per the unified semantic
+# recruitment axiom).
+#
+# Cc-task ``programme-wards-gibson-verb-affordances`` (2026-05-04).
+# Composes with merged PRs #2483 (programme-history),
+# #2485 (research-instrument-dashboard keystone), and the in-flight
+# #2482 (precedent-ticker) + #2484 (interactive-lore-query). When the
+# in-flight pair lands, the affordance entries here are already in
+# place — ``init_pipeline.index_capabilities_batch`` picks them up on
+# the next daemon start.
+# ---------------------------------------------------------------------------
+
+LORE_WARD_AFFORDANCES = [
+    CapabilityRecord(
+        name="lore_ward.precedent_ticker",
+        description=(
+            "Surface axiom-precedent history as a slow ticker anchoring temporal "
+            "continuity of governance lineage and exposing accumulated normative "
+            "reasoning to the broadcast audience"
+        ),
+        daemon="compositor",
+        operational=_public_operational(
+            latency_class="slow",
+            medium="visual",
+            persistence="session",
+        ),
+    ),
+    CapabilityRecord(
+        name="lore_ward.programme_history",
+        description=(
+            "Render multi-session programme arc as bordered Moksha-chrome timeline "
+            "situating the current session in its cross-session structure so the "
+            "broadcast surface reads its own accumulating shape"
+        ),
+        daemon="compositor",
+        operational=_public_operational(
+            latency_class="slow",
+            medium="visual",
+            persistence="session",
+        ),
+    ),
+    CapabilityRecord(
+        name="lore_ward.research_instrument_dashboard",
+        description=(
+            "Display research-condition by claim by status grid exposing the live "
+            "experimental apparatus to viewers so the broadcast reads as instrumented "
+            "research rather than entertainment"
+        ),
+        daemon="compositor",
+        operational=_public_operational(
+            latency_class="slow",
+            medium="visual",
+            persistence="session",
+        ),
+    ),
+    CapabilityRecord(
+        name="lore_ward.interactive_lore_query",
+        description=(
+            "Respond to chat lore-queries with REPL-style scrolling log answering "
+            "allowlisted audience questions from chronicle while honoring "
+            "chat-authority gate and operator-referent policy"
+        ),
+        daemon="compositor",
+        operational=_public_operational(
+            latency_class="fast",
+            medium="visual",
+            persistence="session",
+            # The ward consumes chat-author identifiers for its
+            # allowlist gate. Per ``interpersonal_transparency`` axiom
+            # the persistent-state-on-non-operator path needs a
+            # consent record; the chat-authority-allowlist YAML IS
+            # that consent. consent_required=True surfaces the gate
+            # to the pipeline so non-allowlisted contexts route
+            # around the ward at recruitment rather than at render.
+            consent_required=True,
+            monetization_risk="medium",
+            risk_reason=(
+                "Chat-driven REPL surface — author tokens routed through "
+                "anonymize.py + chat-authority allowlist; programme opt-in "
+                "still required for broadcast surfaces."
+            ),
+        ),
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
 # Legacy bridge entries (pre-dot-namespace names)
 # ---------------------------------------------------------------------------
 
@@ -1513,6 +1732,7 @@ AFFORDANCE_DOMAINS: dict[str, list[CapabilityRecord]] = {
     "system": SYSTEM_AFFORDANCES,
     "world": WORLD_AFFORDANCES,
     "narration": EXPRESSION_AFFORDANCES,
+    "chat": CHAT_AFFORDANCES,
 }
 
 ALL_AFFORDANCES: list[CapabilityRecord] = (
@@ -1520,5 +1740,6 @@ ALL_AFFORDANCES: list[CapabilityRecord] = (
     + SHADER_NODE_AFFORDANCES
     + CONTENT_AFFORDANCES
     + GEM_AFFORDANCES
+    + LORE_WARD_AFFORDANCES
     + LEGACY_AFFORDANCES
 )

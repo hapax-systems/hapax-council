@@ -35,5 +35,13 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    ["@live", "colorgrade"],
+    ["colorgrade", "sierpinski_lines_main"],
+    ["sierpinski_lines_main", "edge_sierpinski"],
+    ["edge_sierpinski", "content_layer"],
+    ["content_layer", "out"]
+  ],
+  "modulations": []
 }

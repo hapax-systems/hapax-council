@@ -314,6 +314,18 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
         api="Playwright",
         scope_note="bootstrap login via Playwright session daemon (one-time)",
     ),
+    "youtube-live-chat-message": SurfaceSpec(
+        automation_status=AutomationStatus.CONDITIONAL_ENGAGE,
+        api="YouTube Data API v3",
+        dispatch_entry="agents.hapax_daimonion.cpal.response_dispatch:dispatch_response",
+        scope_note=(
+            "bootstrap requires (1) operator-minted Google OAuth token with "
+            "youtube.force-ssl scope via shared.google_auth and (2) populating "
+            "config/publication-bus/youtube-live-chat.yaml with the active "
+            "broadcast's liveChatId; pairs with epsilon's youtube_chat_reader "
+            "(cc-task youtube-chat-ingestion-impingement) for the reverse channel"
+        ),
+    ),
     # ── REFUSED ────────────────────────────────────────────────────
     "alphaxiv-comments": SurfaceSpec(
         automation_status=AutomationStatus.REFUSED,

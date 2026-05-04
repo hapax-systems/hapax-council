@@ -174,8 +174,19 @@ def narrative_drive_content_payload(
     chronicle_event_count: int,
     stimmung_stance: str,
     programme_role: str | None,
+    programme_authorization: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build the conative content payload emitted by narrative_drive."""
+    """Build the conative content payload emitted by narrative_drive.
+
+    ``programme_authorization`` (optional) is a dict matching the schema
+    consumed by ``cpal.destination_channel._programme_authorization_evidence``:
+    ``{"authorized": True, "authorized_at": <epoch>, "expires_at": <epoch>,
+    "programme_id": ..., "evidence_ref": ...}``. When present, it lets
+    the playback gate confirm fresh broadcast voice authorization without
+    a separate state-file read; absent, the gate falls through to its
+    "programme_authorization_missing" code, which is correct fail-closed
+    behavior when no programme is active.
+    """
     role = programme_role or "none"
     impulse = ActionTendencyImpingement(
         impulse_id=f"narration-{impingement_id}",
@@ -210,6 +221,8 @@ def narrative_drive_content_payload(
             "programme_role": role,
         }
     )
+    if programme_authorization is not None:
+        payload["programme_authorization"] = programme_authorization
     return payload
 
 

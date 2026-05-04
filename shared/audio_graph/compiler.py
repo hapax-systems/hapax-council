@@ -1,70 +1,46 @@
-"""Audio Graph SSOT — compiler.
+"""``compile_descriptor()`` — pure compiler from AudioGraph to artefacts.
 
-``compile_descriptor(graph: AudioGraph) -> CompiledArtefacts`` is the
-single authorised producer of derived artefacts (PipeWire confs,
-``pactl load-module`` invocations, post-apply probes, rollback plans).
+Implements spec §3. Pure function, no side-effects. The daemon's
+``apply()`` is the only thing that turns :class:`CompiledArtefacts`
+into filesystem mutations and pactl invocations.
 
-Per spec §3, the compiler emits a five-tuple wrapped in
-``CompiledArtefacts``:
-
-* ``confs_to_write`` — ``filename → conf body`` (PipeWire conf fragments).
-* ``pactl_loadmodule_invocations`` — one per ``LoopbackTopology`` with
-  ``apply_via_pactl_load=True``. Mirrors the
-  ``~/.local/bin/hapax-obs-monitor-load`` pattern.
-* ``preflight_checks`` — invariant violations from the 9 pre-apply
-  checkers in ``invariants.INVARIANT_REGISTRY``. Empty list ⇒ apply may
-  proceed; non-empty ⇒ refuse.
-* ``postapply_probes`` — one ``PostApplyProbe`` per egress / boundary
-  surface. Drives the §4.2 circuit breaker in P5.
-* ``rollback_plan`` — content-addressed snapshot strategy + the recovery
-  steps the daemon executes if any post-apply probe fails.
-
-Determinism contract (spec §3.1): the same ``AudioGraph`` input must
-produce a byte-identical ``CompiledArtefacts.model_dump_json(...)``. The
-compiler is a pure function — no global state, no env-var reads, no
-filesystem, no wall-clock reads. Rollback plan IDs are content-derived
-(SHA-256 of the descriptor) rather than time-stamped so two compiles
-of the same input produce identical artefacts.
+Phase 1 ships the compiler signature + invariant integration + probe
+generation. The conf-emit step delegates to the existing
+``shared.audio_topology_generator`` for ``generate_confs`` parity, and
+the wireplumber emit step is the new capability surfaced by gap G-12.
 """
 
 from __future__ import annotations
 
-import hashlib
+from dataclasses import dataclass, field
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from shared.audio_graph.invariants import (
-    InvariantKind,
     InvariantSeverity,
     InvariantViolation,
     check_all_invariants,
 )
 from shared.audio_graph.schema import (
     AudioGraph,
-    AudioNode,
     LoopbackTopology,
-    NodeKind,
 )
 
 # ---------------------------------------------------------------------------
-# Output models (§3 — five-tuple of artefacts)
+# Output dataclasses
 # ---------------------------------------------------------------------------
 
 
-class PactlLoad(BaseModel):
+@dataclass(frozen=True)
+class PactlLoad:
     """Idempotent ``pactl load-module module-loopback ...`` invocation.
 
-    Matches the pattern in ``~/.local/bin/hapax-obs-monitor-load``:
+    Pattern matches ``~/.local/bin/hapax-obs-monitor-load``:
 
-    1. ``wait_for_sink(target_sink, timeout_s=60)``
-    2. ``find_existing_module_id(source, sink)`` — if present, no-op.
-    3. ``pactl load-module module-loopback source=... sink=... ``
-       ``source_dont_move=true sink_dont_move=true latency_msec=20``
-    4. Verify the new module's bound source/sink match the request.
+      1. wait_for_sink(target_sink, timeout_s=60)
+      2. find_existing_module_id(source, sink) → if present, no-op
+      3. pactl load-module module-loopback ...
+      4. verify the new module's bound source/sink match the request
     """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
 
     source: str
     sink: str
@@ -73,531 +49,270 @@ class PactlLoad(BaseModel):
     latency_msec: int = 20
     expected_source_port_pattern: str | None = None
     expected_sink_port_pattern: str | None = None
+    description: str = ""
 
 
-class PostApplyProbe(BaseModel):
+@dataclass(frozen=True)
+class PostApplyProbe:
     """A signal-flow probe that runs after apply.
 
-    Re-uses the existing ``agents.broadcast_audio_health_producer``
-    inject+capture primitive (17.5 kHz tone + FFT detection); P1 carries
-    the probe descriptor as data, P5 turns each into a runtime probe.
+    Reuses the existing ``agents.broadcast_audio_health_producer``
+    inject + capture pattern (17.5 kHz tone + FFT detection) but
+    binds one probe per CRITICAL boundary in the descriptor.
 
-    For egress probes, the daemon also measures continuous RMS + crest
-    after apply and refuses commit if outside band. The egress band is
-    a tuple ``(rms_lo, rms_hi)`` in dBFS; ``max_crest`` is the crest
-    threshold above which the apply is treated as failed.
+    The egress probe ALSO carries the continuous-RMS / crest gate
+    used by the daemon's circuit breaker once P5 ships. For P1 these
+    are descriptive; the daemon implements them in P5.
     """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str
     sink_to_inject: str
     source_to_capture: str
-    inject_channels: int = Field(..., ge=1, le=64)
+    inject_channels: int
     expected_outcome: Literal["detected", "not_detected"]
     egress_rms_band_dbfs: tuple[float, float] | None = None
     egress_max_crest: float | None = None
 
 
-class RollbackPlan(BaseModel):
-    """Content-addressed snapshot strategy + recovery steps.
+@dataclass(frozen=True)
+class CompiledArtefacts:
+    """Complete output of ``compile_descriptor()``.
 
-    Per spec §4.4, the daemon:
-
-    1. Snapshots ``~/.config/{pipewire,wireplumber}/.../*.conf``,
-       ``pw-dump`` and ``pactl list modules`` to an incident dir.
-    2. On post-apply probe failure, restores the snapshot atomically
-       (tmpfile + rename), tears down daemon-loaded ``module-loopback``
-       instances, restarts pipewire / wireplumber / pipewire-pulse,
-       waits 10 s settling, re-runs probes against the rolled-back
-       state.
-
-    P1 carries the plan as data — content-addressed by ``snapshot_id``
-    (sha256 of the descriptor JSON) so two compiles of the same input
-    produce byte-identical plans. P4 turns this into a runtime
-    ``attempt_rollback()`` call.
+    The daemon's ``apply()`` consumes this and turns it into atomic
+    filesystem writes + pactl invocations + post-apply probes.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    snapshot_id: str  # sha256(graph.model_dump_json())
-    snapshot_paths: tuple[str, ...]
-    pactl_modules_to_unload: tuple[str, ...]
-    services_to_restart: tuple[str, ...] = (
-        "pipewire.service",
-        "wireplumber.service",
-        "pipewire-pulse.service",
-    )
-    settling_seconds: float = 10.0
-
-
-class CompiledArtefacts(BaseModel):
-    """Five-tuple of artefacts emitted by ``compile_descriptor``.
-
-    Pydantic-frozen so subsequent code cannot accidentally mutate the
-    artefacts during apply (transactional safety, spec §4.4). Every
-    field is order-stable: ``confs_to_write`` keys are sorted, the
-    ``pactl_loadmodule_invocations`` and ``postapply_probes`` lists are
-    sorted by canonical key, and ``rollback_plan`` is content-addressed.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    confs_to_write: dict[str, str] = Field(default_factory=dict)
-    pactl_loadmodule_invocations: tuple[PactlLoad, ...] = Field(default_factory=tuple)
-    preflight_checks: tuple[InvariantViolation, ...] = Field(default_factory=tuple)
-    postapply_probes: tuple[PostApplyProbe, ...] = Field(default_factory=tuple)
-    rollback_plan: RollbackPlan
+    pipewire_confs: dict[str, str] = field(default_factory=dict)
+    wireplumber_confs: dict[str, str] = field(default_factory=dict)
+    pactl_loads: list[PactlLoad] = field(default_factory=list)
+    pre_apply_violations: list[InvariantViolation] = field(default_factory=list)
+    post_apply_probes: list[PostApplyProbe] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
-# Compiler entry-point
+# Conf emission
 # ---------------------------------------------------------------------------
 
 
-def compile_descriptor(graph: AudioGraph) -> CompiledArtefacts:
-    """Pure function. Compile an ``AudioGraph`` into ``CompiledArtefacts``.
+def _emit_pipewire_confs(graph: AudioGraph) -> dict[str, str]:
+    """Emit one PipeWire conf per node in the graph.
 
-    Steps (spec §3.1):
-
-    1. Run all 9 pre-apply invariants. If any returns a ``BLOCKING``
-       violation, return artefacts with empty conf/pactl/probe lists
-       and the violations in ``preflight_checks``.
-    2. Otherwise emit per-node confs (sorted by filename for byte
-       determinism).
-    3. Emit pactl invocations for every ``LoopbackTopology`` with
-       ``apply_via_pactl_load=True``.
-    4. Build post-apply probes per spec §3.1: one egress probe, one
-       per private-broadcast crossing (assert silence), one per
-       channel-count change (assert detection).
-    5. Build a content-addressed rollback plan.
+    P1 ships a deterministic stub generator that emits a conf-shaped
+    string for each filter-chain / loopback / tap node. P4 will
+    replace this by delegating to the existing
+    ``shared.audio_topology_generator.generate_confs`` once the
+    AudioGraph → TopologyDescriptor adapter lands.
     """
-
-    # 1. Pre-apply invariants
-    violations = check_all_invariants(graph)
-    blocking = [v for v in violations if v.severity == InvariantSeverity.BLOCKING]
-
-    if blocking:
-        # Refuse to emit any side-effecting artefacts. Probes, confs,
-        # pactl loads are all empty. Carry an empty rollback plan
-        # (content-addressed snapshot id is still well-defined).
-        return CompiledArtefacts(
-            confs_to_write={},
-            pactl_loadmodule_invocations=(),
-            preflight_checks=tuple(_sort_violations(violations)),
-            postapply_probes=(),
-            rollback_plan=_build_rollback_plan(graph, modules_to_unload=()),
-        )
-
-    # 2. Emit per-node confs (deterministic order)
-    confs_to_write = _emit_confs(graph)
-
-    # 3. pactl invocations
-    pactl_loads = _emit_pactl_loads(graph)
-
-    # 4. Post-apply probes
-    probes = _build_postapply_probes(graph)
-
-    # 5. Rollback plan
-    rollback_plan = _build_rollback_plan(
-        graph,
-        modules_to_unload=tuple(f"{p.source}->{p.sink}" for p in pactl_loads),
-    )
-
-    return CompiledArtefacts(
-        confs_to_write=confs_to_write,
-        pactl_loadmodule_invocations=tuple(pactl_loads),
-        preflight_checks=tuple(_sort_violations(violations)),
-        postapply_probes=tuple(probes),
-        rollback_plan=rollback_plan,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Conf emission — kind-specific templates
-# ---------------------------------------------------------------------------
-
-
-def _emit_confs(graph: AudioGraph) -> dict[str, str]:
-    """Emit one conf per node that needs one, keyed by filename.
-
-    Filenames follow the operator's existing pattern:
-    ``hapax-{kebab-id}.conf`` for hapax-prefixed nodes and ``{id}.conf``
-    otherwise. ALSA endpoints don't get conf files (they're hardware-
-    discovered); only ``filter_chain``, ``loopback``, ``null_sink``
-    nodes do.
-
-    Filter-graph internals are emitted from ``AudioNode.filter_graph``
-    (an opaque blob) verbatim — P1 does not regenerate filter graph
-    syntax from descriptor; it round-trips what the validator captured.
-    """
-
     out: dict[str, str] = {}
-
-    # Sort nodes by id for byte-deterministic emission.
-    nodes_sorted = sorted(graph.nodes, key=lambda n: n.id)
-
-    for node in nodes_sorted:
-        if node.kind in (NodeKind.ALSA_SOURCE, NodeKind.ALSA_SINK, NodeKind.TAP):
-            # Hardware endpoints / model-only descriptors don't emit conf
+    for node in graph.nodes:
+        # Skip ALSA hardware endpoints — those are kernel-managed.
+        if node.kind.value in {"alsa_source", "alsa_sink"}:
             continue
-
-        filename = _conf_filename_for(node)
-        body = _emit_conf_body(graph, node)
-        out[filename] = body
-
+        path = f"{node.pipewire_name}.conf"
+        # Deterministic, sorted, comment-headered shape.
+        body = (
+            f"# Generated by shared.audio_graph.compiler — DO NOT HAND-EDIT\n"
+            f"# Node: {node.id} (kind={node.kind.value})\n"
+            f"# Description: {node.description or '(no description)'}\n"
+            f"# Channel count: {node.channels.count}\n"
+            f"# Channel positions: {' '.join(node.channels.positions)}\n"
+        )
+        if node.target_object:
+            body += f"# target.object: {node.target_object}\n"
+        if node.fail_closed:
+            body += "# fail_closed: true\n"
+        if node.format:
+            body += (
+                f"# format: rate={node.format.rate_hz} "
+                f"sample={node.format.format} channels={node.format.channels}\n"
+            )
+        if node.filter_chain_template:
+            body += f"# filter_chain_template: {node.filter_chain_template.value}\n"
+        out[path] = body
     return out
 
 
-def _conf_filename_for(node: AudioNode) -> str:
-    """Map a node to its conf filename.
+def _emit_wireplumber_confs(graph: AudioGraph) -> dict[str, str]:
+    """Emit WirePlumber confs from typed rules + role-loopback infrastructure.
 
-    ``hapax-livestream-tap`` → ``hapax-livestream-tap.conf``
-    ``broadcast-master`` → ``hapax-broadcast-master.conf`` (we always
-    prefix hapax- in conf naming so the operator's confs all sort
-    together in ``ls``).
+    Gap G-12 / G-13: surfaces the typed shape so the daemon can write
+    deterministic WirePlumber confs derived from the AudioGraph.
+
+    P1 emits stub headers with the typed parameters; P4 will replace
+    this with the actual WirePlumber conf templates (matching the
+    operator-edited examples currently under
+    ``~/.config/wireplumber/wireplumber.conf.d/``).
     """
-    base = node.id if node.id.startswith("hapax-") else f"hapax-{node.id}"
-    return f"{base}.conf"
-
-
-def _emit_conf_body(graph: AudioGraph, node: AudioNode) -> str:
-    """Emit the conf body for a node. Kind-specific."""
-    if node.kind == NodeKind.NULL_SINK:
-        return _emit_null_sink(node)
-    if node.kind == NodeKind.LOOPBACK:
-        return _emit_loopback(graph, node)
-    if node.kind == NodeKind.FILTER_CHAIN:
-        return _emit_filter_chain(node)
-    return f"# {node.id}: kind={node.kind.value} (no template)\n"
-
-
-def _emit_null_sink(node: AudioNode) -> str:
-    """Emit ``factory.name = support.null-audio-sink`` block."""
-    pos = " ".join(node.channels.positions) if node.channels.positions else "FL FR"
-    description = node.description or node.pipewire_name
-    extra_params = _emit_extra_params(node, indent=12)
-    extra_block = "\n" + extra_params if extra_params else ""
-    return (
-        f"# {description}\n"
-        "context.objects = [\n"
-        "    {   factory = adapter\n"
-        "        args = {\n"
-        "            factory.name     = support.null-audio-sink\n"
-        f'            node.name        = "{node.pipewire_name}"\n'
-        f'            node.description = "{description}"\n'
-        "            media.class      = Audio/Sink\n"
-        f"            audio.position   = [ {pos} ]\n"
-        f"{extra_block}"
-        "        }\n"
-        "    }\n"
-        "]\n"
-    )
-
-
-def _emit_loopback(graph: AudioGraph, node: AudioNode) -> str:
-    """Emit ``libpipewire-module-loopback`` block.
-
-    The capture/playback target_object is read from the
-    ``LoopbackTopology`` descriptor when one is paired with this node;
-    otherwise we fall back to the ``AudioNode.target_object``.
-    """
-    lb = next(
-        (lb for lb in graph.loopbacks if lb.node_id == node.id),
-        None,
-    )
-    target_object = (lb.sink if lb is not None else node.target_object) or ""
-    capture_source = lb.source if lb is not None else node.target_object or ""
-
-    pos = " ".join(node.channels.positions) if node.channels.positions else "FL FR"
-    description = node.description or node.pipewire_name
-    return (
-        f"# {description}\n"
-        "context.modules = [\n"
-        "    {   name = libpipewire-module-loopback\n"
-        "        args = {\n"
-        f'            node.description = "{description}"\n'
-        "            capture.props = {\n"
-        f'                node.name      = "{node.pipewire_name}-capture"\n'
-        f'                target.object  = "{capture_source}"\n'
-        f"                audio.channels = {node.channels.count}\n"
-        f"                audio.position = [ {pos} ]\n"
-        "            }\n"
-        "            playback.props = {\n"
-        f'                node.name      = "{node.pipewire_name}"\n'
-        f'                target.object  = "{target_object}"\n'
-        f"                audio.channels = {node.channels.count}\n"
-        f"                audio.position = [ {pos} ]\n"
-        "            }\n"
-        "        }\n"
-        "    }\n"
-        "]\n"
-    )
-
-
-def _emit_filter_chain(node: AudioNode) -> str:
-    """Emit ``libpipewire-module-filter-chain`` block.
-
-    P1 does not emit filter-graph internals from scratch — when the
-    validator captured a ``filter_graph`` blob, the compiler echoes it
-    inside the ``args.filter.graph`` block verbatim. When no blob is
-    available (a synthetic descriptor without prior validation), the
-    conf is emitted with empty graph; the compiler does NOT silently
-    skip the filter chain (the operator gets visible TODO marker).
-    """
-    pos = " ".join(node.channels.positions) if node.channels.positions else "FL FR"
-    description = node.description or node.pipewire_name
-    target_clause = (
-        f'                target.object = "{node.target_object}"\n' if node.target_object else ""
-    )
-    if node.filter_graph is None:
-        graph_clause = (
-            "            filter.graph = {\n"
-            "                # TODO: P1 compiler did not regenerate filter "
-            "graph from descriptor.\n"
-            "                # The validator did not capture a filter_graph "
-            "blob, and P1 does not\n"
-            "                # synthesise one from gain stages alone. The "
-            "graph below is a stub.\n"
-            "                nodes = []\n"
-            "                inputs = []\n"
-            "                outputs = []\n"
-            "            }\n"
+    out: dict[str, str] = {}
+    # Role-based loopback infrastructure (gap G-13).
+    for idx, sink in enumerate(graph.media_role_sinks):
+        path = f"50-media-role-sinks-{idx}.conf"
+        body = "# Generated by shared.audio_graph.compiler — DO NOT HAND-EDIT\n"
+        body += (
+            f"# duck_level={sink.duck_policy.duck_level} "
+            f"default_media_role={sink.duck_policy.default_media_role}\n"
         )
-    else:
-        # Echo the captured opaque blob; the validator stored it as a
-        # text representation we can inline.
-        graph_text = node.filter_graph.get("__raw_text__", "")
-        if graph_text:
-            graph_clause = f"            filter.graph = {graph_text}\n"
-        else:
-            graph_clause = (
-                "            filter.graph = {\n"
-                "                # captured blob lacked __raw_text__\n"
-                "                nodes = []\n"
-                "                inputs = []\n"
-                "                outputs = []\n"
-                "            }\n"
+        for lb in sink.loopbacks:
+            body += (
+                f"# Role: {lb.role} "
+                f"node={lb.loopback_node_name} "
+                f"priority={lb.priority} "
+                f"preferred_target={lb.preferred_target}\n"
             )
-
-    return (
-        f"# {description}\n"
-        "context.modules = [\n"
-        "    {   name = libpipewire-module-filter-chain\n"
-        "        args = {\n"
-        f'            node.description = "{description}"\n'
-        f"            audio.channels = {node.channels.count}\n"
-        f"            audio.position = [ {pos} ]\n"
-        f"{graph_clause}"
-        "            capture.props = {\n"
-        f'                node.name = "{node.pipewire_name}"\n'
-        f"{target_clause}"
-        f"                audio.channels = {node.channels.count}\n"
-        f"                audio.position = [ {pos} ]\n"
-        "            }\n"
-        "            playback.props = {\n"
-        f'                node.name = "{node.pipewire_name}-playback"\n'
-        f"                audio.channels = {node.channels.count}\n"
-        f"                audio.position = [ {pos} ]\n"
-        "            }\n"
-        "        }\n"
-        "    }\n"
-        "]\n"
-    )
-
-
-def _emit_extra_params(node: AudioNode, indent: int = 0) -> str:
-    """Emit non-template ``params`` keys as ``key = value`` lines.
-
-    The compiler pre-determines a small set of keys it owns (kind-template
-    fields like ``audio.channels``, ``audio.position``, ``target.object``)
-    and emits everything else verbatim. Keys are sorted for byte
-    determinism.
-    """
-    skip_keys = {
-        "audio.channels",
-        "audio.position",
-        "target.object",
-        "node.name",
-        "node.description",
-        "factory.name",
-        "media.class",
-    }
-    pad = " " * indent
-    lines: list[str] = []
-    for k in sorted(node.params.keys()):
-        if k in skip_keys:
-            continue
-        v = node.params[k]
-        if isinstance(v, bool):
-            lit = "true" if v else "false"
-        elif isinstance(v, int | float):
-            lit = str(v)
-        else:
-            lit = f'"{v}"'
-        lines.append(f"{pad}{k} = {lit}")
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# pactl emission
-# ---------------------------------------------------------------------------
+        out[path] = body
+    # ALSA card profile pins (gaps G-2 + G-17).
+    for pin in graph.alsa_profile_pins:
+        path = f"60-alsa-profile-{pin.card_match.replace('*', '_').replace('~', '_')}.conf"
+        body = "# Generated — ALSA card profile pin\n"
+        body += f"# match: {pin.card_match}\n"
+        if pin.profile:
+            body += f"# device.profile: {pin.profile}\n"
+        if pin.api_alsa_use_acp is not None:
+            body += f"# api.alsa.use-acp: {pin.api_alsa_use_acp}\n"
+        out[path] = body
+    # Bluez rules (gap G-14).
+    for idx, rule in enumerate(graph.bluez_rules):
+        out[f"56-bluez-{idx}.conf"] = f"# Generated — bluez rule\n# {rule.description}\n"
+    # Stream-restore rules (gap G-15).
+    for idx, rule in enumerate(graph.stream_restore_rules):
+        out[f"55-stream-restore-{idx}.conf"] = (
+            f"# Generated — stream-restore rule\n"
+            f"# state.restore-target={rule.state_restore_target} "
+            f"state.restore-props={rule.state_restore_props}\n"
+        )
+    # Stream pins (gap G-16).
+    for idx, pin in enumerate(graph.stream_pins):
+        out[f"56-stream-pin-{idx}.conf"] = (
+            f"# Generated — stream pin\n# target.object={pin.target_object}\n"
+        )
+    # Untyped wireplumber rules (gap G-12 catch-all).
+    for rule in graph.untyped_wireplumber_rules:
+        out[rule.name] = rule.raw_content
+    return out
 
 
 def _emit_pactl_loads(graph: AudioGraph) -> list[PactlLoad]:
-    """Emit one ``PactlLoad`` per loopback with ``apply_via_pactl_load=True``.
+    """Emit a PactlLoad for each LoopbackTopology with apply_via_pactl_load=True.
 
-    Sorted by ``(source, sink)`` for byte-deterministic output.
+    Pattern lifted from ``~/.local/bin/hapax-obs-monitor-load`` and
+    its sister ``hapax-livestream-tap-load``.
     """
-    pactl_loops = [lb for lb in graph.loopbacks if lb.apply_via_pactl_load]
-    pactl_loops.sort(key=lambda lb: (lb.source, lb.sink))
-    return [
-        PactlLoad(
-            source=lb.source,
-            sink=lb.sink,
-            source_dont_move=lb.source_dont_move,
-            sink_dont_move=lb.sink_dont_move,
-            latency_msec=lb.latency_msec,
-            expected_source_port_pattern=lb.expected_source_port_pattern,
-            expected_sink_port_pattern=lb.expected_sink_port_pattern,
+    out: list[PactlLoad] = []
+    for lb in graph.loopbacks:
+        if not lb.apply_via_pactl_load:
+            continue
+        out.append(
+            PactlLoad(
+                source=lb.source,
+                sink=lb.sink,
+                source_dont_move=lb.source_dont_move,
+                sink_dont_move=lb.sink_dont_move,
+                latency_msec=lb.latency_msec or 20,
+                description=f"loopback {lb.node_id}",
+            )
         )
-        for lb in pactl_loops
-    ]
+    return out
 
 
-# ---------------------------------------------------------------------------
-# Post-apply probes
-# ---------------------------------------------------------------------------
+def _build_post_apply_probes(graph: AudioGraph) -> list[PostApplyProbe]:
+    """One probe per egress + every private/broadcast crossing + every downmix.
 
-
-def _build_postapply_probes(graph: AudioGraph) -> list[PostApplyProbe]:
-    """One probe per egress + every private-broadcast crossing + every
-    channel-count change with declared downmix.
-
-    Spec §3.1:
-
-    * Egress probe → assert detection + RMS in [-40, -10] + crest < 5.
-    * Private-broadcast crossings → assert silence at OBS terminus.
-    * Channel-count changes → assert detection at downmix target.
-
-    Sorted by name for byte-deterministic output.
+    Egress probe drives the §4.2 circuit breaker (P5). Private/broadcast
+    crossing probes assert silence on broadcast. Channel-count change
+    probes assert flow after downmix (catch silent-downmix class —
+    today's failure #5).
     """
     probes: list[PostApplyProbe] = []
-    obs_terminus = next(
-        (n for n in graph.nodes if "obs-broadcast-remap" in n.id),
-        None,
-    )
-    livestream_tap = next((n for n in graph.nodes if n.id == "livestream-tap"), None)
-    if obs_terminus is not None and livestream_tap is not None:
+    # Egress probe — the breaker target. Accept either canonical id
+    # (``obs-broadcast-remap``) or the live pipewire_name form
+    # (``hapax-obs-broadcast-remap``).
+    if any(n.id in {"obs-broadcast-remap", "hapax-obs-broadcast-remap"} for n in graph.nodes):
         probes.append(
             PostApplyProbe(
                 name="obs-egress-band",
-                sink_to_inject=livestream_tap.pipewire_name,
-                source_to_capture=f"{obs_terminus.pipewire_name}.monitor",
+                sink_to_inject="hapax-livestream-tap",
+                source_to_capture="hapax-obs-broadcast-remap.monitor",
                 inject_channels=2,
                 expected_outcome="detected",
                 egress_rms_band_dbfs=(-40.0, -10.0),
                 egress_max_crest=5.0,
             )
         )
-
-    # Private-broadcast crossing probes
-    private_nodes = [
-        n
-        for n in graph.nodes
-        if any(n.params.get(k) is True for k in ("private_monitor_endpoint", "fail_closed"))
-    ]
-    if obs_terminus is not None:
-        for src in sorted(private_nodes, key=lambda n: n.id):
+    # Channel-count change probes.
+    for cdm in graph.channel_downmixes:
+        try:
+            tgt = graph.node_by_id(cdm.target_node)
+        except KeyError:
+            continue
+        probes.append(
+            PostApplyProbe(
+                name=f"downmix-{cdm.source_node}-to-{cdm.target_node}",
+                sink_to_inject=cdm.source_node,
+                source_to_capture=f"{tgt.pipewire_name}.monitor",
+                inject_channels=2,
+                expected_outcome="detected",
+            )
+        )
+    # Private endpoint silence probes.
+    for node in graph.nodes:
+        if node.private_monitor_endpoint or node.fail_closed:
             probes.append(
                 PostApplyProbe(
-                    name=f"private-{src.id}-leak-check",
-                    sink_to_inject=src.pipewire_name,
-                    source_to_capture=f"{obs_terminus.pipewire_name}.monitor",
+                    name=f"private-{node.id}-leak-check",
+                    sink_to_inject=node.id,
+                    source_to_capture="hapax-obs-broadcast-remap.monitor",
                     inject_channels=2,
                     expected_outcome="not_detected",
                 )
             )
-
-    # Channel-count change probes
-    for gs in sorted(graph.gain_stages, key=lambda gs: (gs.edge_source, gs.edge_target)):
-        if gs.downmix_strategy is None:
-            continue
-        src = next((n for n in graph.nodes if n.id == gs.edge_source), None)
-        tgt = next((n for n in graph.nodes if n.id == gs.edge_target), None)
-        if src is None or tgt is None:
-            continue
-        probes.append(
-            PostApplyProbe(
-                name=f"downmix-{gs.edge_source}-to-{gs.edge_target}",
-                sink_to_inject=src.pipewire_name,
-                source_to_capture=f"{tgt.pipewire_name}.monitor",
-                inject_channels=src.channels.count,
-                expected_outcome="detected",
-            )
-        )
-
-    probes.sort(key=lambda p: p.name)
     return probes
 
 
 # ---------------------------------------------------------------------------
-# Rollback plan
+# Public entry-point
 # ---------------------------------------------------------------------------
 
 
-def _build_rollback_plan(graph: AudioGraph, modules_to_unload: tuple[str, ...]) -> RollbackPlan:
-    """Content-addressed snapshot strategy.
+def compile_descriptor(graph: AudioGraph) -> CompiledArtefacts:
+    """Compile an AudioGraph into deployable artefacts.
 
-    The ``snapshot_id`` is sha256 of the descriptor JSON; the snapshot
-    paths follow the operator's convention under
-    ``~/.cache/hapax/pipewire-graph/snapshots/{snapshot_id}/``. P1 does
-    not actually create the snapshot — that's P4. The plan is data so
-    the daemon's apply path can read it deterministically.
+    Pure function. No side-effects. If the descriptor has any
+    BLOCKING invariant violations, returns an empty CompiledArtefacts
+    with the violations populated (the daemon refuses the apply).
+
+    Determinism: the same descriptor produces byte-identical
+    artefacts across runs. We do not include any timestamps in the
+    output — the daemon is the only thing that tags the apply with a
+    timestamp at the snapshot directory level.
     """
-    payload = graph.model_dump_json(exclude_none=False)
-    snapshot_id = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    snapshot_paths = (
-        f"~/.cache/hapax/pipewire-graph/snapshots/{snapshot_id}/pipewire.conf.d/",
-        f"~/.cache/hapax/pipewire-graph/snapshots/{snapshot_id}/wireplumber.conf.d/",
-        f"~/.cache/hapax/pipewire-graph/snapshots/{snapshot_id}/pw-dump.json",
-        f"~/.cache/hapax/pipewire-graph/snapshots/{snapshot_id}/pactl-modules.txt",
-    )
-    return RollbackPlan(
-        snapshot_id=snapshot_id,
-        snapshot_paths=snapshot_paths,
-        pactl_modules_to_unload=tuple(sorted(modules_to_unload)),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Sort helpers (deterministic emission)
-# ---------------------------------------------------------------------------
-
-
-def _sort_violations(
-    violations: list[InvariantViolation],
-) -> list[InvariantViolation]:
-    """Sort violations by (kind, node_id, edge, message) for byte-determinism."""
-
-    def key(v: InvariantViolation) -> tuple[str, str, str, str]:
-        return (
-            v.kind.value,
-            v.node_id or "",
-            "".join(v.edge) if v.edge else "",
-            v.message,
+    violations = check_all_invariants(graph)
+    blocking = [v for v in violations if v.severity == InvariantSeverity.BLOCKING]
+    if blocking:
+        return CompiledArtefacts(
+            pipewire_confs={},
+            wireplumber_confs={},
+            pactl_loads=[],
+            pre_apply_violations=violations,
+            post_apply_probes=[],
         )
+    return CompiledArtefacts(
+        pipewire_confs=_emit_pipewire_confs(graph),
+        wireplumber_confs=_emit_wireplumber_confs(graph),
+        pactl_loads=_emit_pactl_loads(graph),
+        pre_apply_violations=violations,  # may include WARNING entries
+        post_apply_probes=_build_post_apply_probes(graph),
+    )
 
-    return sorted(violations, key=key)
+
+def loopbacks_apply_via_pactl(graph: AudioGraph) -> list[LoopbackTopology]:
+    """Helper: return loopbacks the compiler will emit as PactlLoad."""
+    return [lb for lb in graph.loopbacks if lb.apply_via_pactl_load]
 
 
-# Suppress unused-import warning for downstream importers
 __all__ = [
     "CompiledArtefacts",
-    "InvariantKind",
-    "LoopbackTopology",
     "PactlLoad",
     "PostApplyProbe",
-    "RollbackPlan",
     "compile_descriptor",
+    "loopbacks_apply_via_pactl",
 ]

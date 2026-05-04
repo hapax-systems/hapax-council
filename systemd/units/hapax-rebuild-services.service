@@ -9,14 +9,21 @@ Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 SyslogIdentifier=hapax-rebuild-services
 TimeoutStartSec=120
 
+# Council-specific deploys point --repo at the dedicated rebuild worktree
+# (~/.cache/hapax/rebuild/worktree). The script auto-creates that worktree on
+# first run and fast-forwards it to origin/main at the start of every
+# invocation, so the operator's interactive ~/projects/hapax-council checkout
+# is no longer load-bearing for deploys. Foreign repos (officium, mcp) keep
+# pointing at their own paths.
+
 # hapax-dmn: restart if DMN, imagination, or reverie code changed
-ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-dmn.service --watch "agents/dmn/ agents/imagination.py agents/imagination_resolver.py agents/imagination_context.py agents/reverie/ agents/visual_chain.py agents/effect_graph/ shared/" --sha-key dmn
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-dmn.service --watch "agents/dmn/ agents/imagination.py agents/imagination_resolver.py agents/imagination_context.py agents/reverie/ agents/visual_chain.py agents/effect_graph/ shared/" --sha-key dmn
 
 # hapax-daimonion: restart if voice agent or shared code changed
-ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-daimonion.service --watch "agents/hapax_daimonion/ shared/" --sha-key voice
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-daimonion.service --watch "agents/hapax_daimonion/ shared/" --sha-key voice
 
 # logos-api: restart if logos backend code changed
-ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service logos-api.service --watch "logos/" --sha-key logos-api
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service logos-api.service --watch "logos/" --sha-key logos-api
 
 # officium-api: restart if officium code changed (separate repo)
 ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-officium --service officium-api.service --sha-key officium
@@ -29,33 +36,35 @@ ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/project
 # compositor off the local ``studio-compositor-reload.path`` unit, which
 # fired on any file-system change without a branch check and caused three
 # unexplained restarts during queue 023 research while alpha was editing
-# the compositor on a feature branch. rebuild-service.sh runs the
-# branch-check and skips the deploy on feature branches instead.
-ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service studio-compositor.service --watch "agents/studio_compositor/ agents/effect_graph/ agents/shaders/nodes/ presets/ shared/ config/compositor-layouts/" --sha-key compositor
+# the compositor on a feature branch. The current invariant is structural:
+# --repo points at the dedicated rebuild worktree which is always on main,
+# so a feature-branch checkout in the operator's interactive worktree no
+# longer blocks deploys for the rest of the system.
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service studio-compositor.service --watch "agents/studio_compositor/ agents/effect_graph/ agents/shaders/nodes/ presets/ shared/ config/compositor-layouts/" --sha-key compositor
 
 # ── Gap 2 (round-4 Phase 6 coverage expansion): 8 daemons that previously
 # had no rebuild coverage. The editing-then-restart pattern was manual for
 # all of them; now they are picked up by the 5-minute
-# hapax-rebuild-services.timer with the same branch-check discipline as
-# the services above. Watch lists are minimised to the subdirectories
-# each daemon actually imports so an unrelated edit to another module
-# under ``shared/`` still triggers every service — that is intentional
-# because the shared layer is cross-cutting.
+# hapax-rebuild-services.timer. They share the same dedicated rebuild
+# worktree as the services above. Watch lists are minimised to the
+# subdirectories each daemon actually imports so an unrelated edit to
+# another module under ``shared/`` still triggers every service — that is
+# intentional because the shared layer is cross-cutting.
 
 # visual-layer-aggregator: perception fusion feeding stimmung
-ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service visual-layer-aggregator.service --watch "agents/visual_layer_aggregator/ shared/" --sha-key vla
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service visual-layer-aggregator.service --watch "agents/visual_layer_aggregator/ shared/" --sha-key vla
 
 # hapax-content-resolver: content scheduling / ground-surface enrichment
-ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-content-resolver.service --watch "agents/content_resolver/ shared/" --sha-key content-resolver
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-content-resolver.service --watch "agents/content_resolver/ shared/" --sha-key content-resolver
 
 # hapax-watch-receiver: biometric ingestion (watch_receiver is a single module, not a package)
-ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-watch-receiver.service --watch "agents/watch_receiver.py shared/" --sha-key watch-receiver
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-watch-receiver.service --watch "agents/watch_receiver.py shared/" --sha-key watch-receiver
 
 # hapax-reverie: visual expression Python daemon (distinct from the Rust wgpu binary)
-ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-reverie.service --watch "agents/reverie/ shared/" --sha-key reverie
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-reverie.service --watch "agents/reverie/ shared/" --sha-key reverie
 
 # hapax-imagination-loop: imagination daemon loop (single-file modules)
-ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-imagination-loop.service --watch "agents/imagination.py agents/imagination_loop.py agents/imagination_resolver.py agents/imagination_context.py shared/" --sha-key imagination-loop
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-imagination-loop.service --watch "agents/imagination.py agents/imagination_loop.py agents/imagination_resolver.py agents/imagination_context.py shared/" --sha-key imagination-loop
 
 # studio-fx retired 2026-04-17: the numpy/OpenCV effects pipeline was
 # orphaned after the effect_graph/WGSL unification. Every fx-*.jpg
@@ -66,42 +75,42 @@ ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/project
 
 # studio-fx-output: shell-launcher driving the GStreamer output bin; the
 # ExecStart IS the shell script, so its own source is the watch path.
-ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service studio-fx-output.service --watch "systemd/units/studio-fx-output.sh" --sha-key studio-fx-output
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service studio-fx-output.service --watch "systemd/units/studio-fx-output.sh" --sha-key studio-fx-output
 
 # studio-person-detector: camera-side person detection
 # (agents/studio_person_detector.py is the single-file module)
-ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service studio-person-detector.service --watch "agents/studio_person_detector.py shared/" --sha-key studio-person-detector
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service studio-person-detector.service --watch "agents/studio_person_detector.py shared/" --sha-key studio-person-detector
 
 # hapax-audio-router: 5 Hz Evil Pet + S-4 dynamic arbiter (Phase B of
 # the dual-processor routing epic, PR #1136). Restart on edits to the
 # router code OR its policy/state inputs (s4_midi, s4_scenes,
 # evil_pet_presets) so the live daemon picks up CC-table changes /
 # scene additions / preset additions without manual intervention.
-ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-audio-router.service --watch "agents/audio_router/ shared/s4_midi.py shared/s4_scenes.py shared/evil_pet_presets.py shared/" --sha-key audio-router
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-router.service --watch "agents/audio_router/ shared/s4_midi.py shared/s4_scenes.py shared/evil_pet_presets.py shared/" --sha-key audio-router
 
 # hapax-operator-awareness: 30s tick canonical state aggregator (the MAPE-K
 # Knowledge layer). Restart on edits to the awareness package, the payment
 # event log (which the monetization source reads), or shared modules so
 # all consumers (waybar, watch, sidebar, omg.lol fanout) see new fields
 # the moment a producer ships them.
-ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-operator-awareness.service --watch "agents/operator_awareness/ agents/payment_processors/event_log.py shared/" --sha-key operator-awareness
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-operator-awareness.service --watch "agents/operator_awareness/ agents/payment_processors/event_log.py shared/" --sha-key operator-awareness
 
 # ── Audio coverage (forever-fix #3 from
 # docs/research/2026-05-03-deployment-pipeline-audit.md §G).
-# Both daemons are audio-touching, so rebuild-service.sh's branch-check
-# still applies (no deploy on feature branches). On main, the 5-min timer
-# now picks them up the same as every other Python service. The audit
-# captured ``hapax-broadcast-orchestrator`` 129 min stale and
-# ``hapax-audio-ducker`` inactive — without coverage here, the operator
-# had to manually `systemctl --user restart` each one after every merge
-# touching the relevant code paths.
+# Both daemons are audio-touching. The dedicated rebuild worktree
+# (set above via --repo) is always on main, so a feature-branch checkout
+# in the operator's interactive worktree no longer blocks deploys for
+# audio services either. The audit captured ``hapax-broadcast-orchestrator``
+# 129 min stale and ``hapax-audio-ducker`` inactive — without coverage here,
+# the operator had to manually `systemctl --user restart` each one after
+# every merge touching the relevant code paths.
 
 # hapax-broadcast-orchestrator: YouTube broadcast boundary orchestrator.
 # Watches the orchestrator package itself plus publication_bus (event source)
 # and the shared layer.
-ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-broadcast-orchestrator.service --watch "agents/broadcast_orchestrator/ agents/publication_bus/ shared/" --sha-key broadcast-orchestrator
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-broadcast-orchestrator.service --watch "agents/broadcast_orchestrator/ agents/publication_bus/ shared/" --sha-key broadcast-orchestrator
 
 # hapax-audio-ducker: VAD-driven mixer-gain controller (audio-touching).
 # Watches the ducker package plus the compositor's audio_ducking shim
 # (which the ducker calls into) and shared modules.
-ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-audio-ducker.service --watch "agents/audio_ducker/ agents/studio_compositor/audio_ducking.py shared/" --sha-key audio-ducker
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-ducker.service --watch "agents/audio_ducker/ agents/studio_compositor/audio_ducking.py shared/" --sha-key audio-ducker

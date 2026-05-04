@@ -4,7 +4,7 @@
 # Intended to run via systemd timer (hapax-rebuild-services.timer).
 #
 # Usage:
-#   rebuild-service.sh --repo ~/projects/hapax-council \
+#   rebuild-service.sh --repo ~/.cache/hapax/rebuild/worktree \
 #       --service hapax-daimonion.service \
 #       --watch "agents/hapax_daimonion/ shared/" \
 #       --sha-key voice
@@ -12,6 +12,26 @@
 #   rebuild-service.sh --repo ~/projects/hapax-mcp \
 #       --sha-key hapax-mcp \
 #       --pull-only
+#
+# Canonical worktree isolation
+# ----------------------------
+# Council-specific deploys point ``--repo`` at
+# ``$HOME/.cache/hapax/rebuild/worktree`` — a dedicated build/deploy worktree
+# permanently tracking ``origin/main``. The script auto-creates the worktree on
+# first run and fast-forwards it at the start of every invocation. This
+# replaces the previous defense-in-depth ``branch != main`` skip: the rebuild
+# worktree is structurally on main, so a feature-branch checkout in the
+# operator's interactive worktree (``~/projects/hapax-council``) can no longer
+# accidentally block deploys for the rest of the system.
+#
+# Foreign repos (officium, mcp, etc.) keep their previous semantics — they are
+# not managed worktrees, so the script still pulls ff-only on whatever branch
+# they happen to be on. Only the council ``rebuild/worktree`` path triggers the
+# managed-worktree code path.
+#
+# Recovery: if the rebuild worktree is dirty, locked, or otherwise unusable,
+# the script logs a warning and skips the deploy without advancing SHA_FILE so
+# the next cycle retries.
 set -euo pipefail
 
 # --- Parse arguments ---
@@ -37,7 +57,12 @@ if [ -z "$REPO" ] || [ -z "$SHA_KEY" ]; then
     exit 1
 fi
 
-STATE_DIR="$HOME/.cache/hapax/rebuild"
+# Test-injectable knobs. Real runs use the production paths.
+: "${HAPAX_REBUILD_STATE_DIR:=$HOME/.cache/hapax/rebuild}"
+: "${HAPAX_REBUILD_CANONICAL_REPO:=$HOME/projects/hapax-council}"
+: "${HAPAX_REBUILD_WORKTREE:=$HOME/.cache/hapax/rebuild/worktree}"
+
+STATE_DIR="$HAPAX_REBUILD_STATE_DIR"
 SHA_FILE="$STATE_DIR/last-${SHA_KEY}-sha"
 LOG_TAG="hapax-rebuild-${SHA_KEY}"
 NTFY_URL="${NTFY_BASE_URL:-http://localhost:8090}/hapax-build"
@@ -53,6 +78,50 @@ ntfy() {
         -d "$msg" \
         "$NTFY_URL" 2>/dev/null || true
 }
+
+# --- Managed rebuild worktree bootstrap ---
+# When --repo points at the dedicated rebuild worktree, ensure the worktree
+# exists and is fast-forwarded to origin/main BEFORE any other git work. The
+# canonical source repo (operator's interactive checkout) provides the git
+# objects + remotes; the rebuild worktree is a sibling worktree linked to it.
+#
+# Foreign repos (--repo != HAPAX_REBUILD_WORKTREE) skip this step.
+if [ "$REPO" = "$HAPAX_REBUILD_WORKTREE" ]; then
+    if [ ! -e "$REPO/.git" ]; then
+        if [ ! -d "$HAPAX_REBUILD_CANONICAL_REPO/.git" ] && [ ! -f "$HAPAX_REBUILD_CANONICAL_REPO/.git" ]; then
+            logger -t "$LOG_TAG" "canonical repo missing at $HAPAX_REBUILD_CANONICAL_REPO — cannot bootstrap rebuild worktree"
+            exit 0
+        fi
+        logger -t "$LOG_TAG" "creating rebuild worktree at $REPO"
+        cd "$HAPAX_REBUILD_CANONICAL_REPO"
+        git fetch origin main --quiet 2>/dev/null || {
+            logger -t "$LOG_TAG" "git fetch failed during worktree bootstrap — skipping"
+            exit 0
+        }
+        git worktree prune 2>/dev/null || true
+        # Detach-mode worktree on origin/main: avoids consuming the 'main'
+        # branch ref (which is checked out by the canonical repo).
+        if ! git worktree add --detach "$REPO" origin/main --quiet 2>/dev/null; then
+            logger -t "$LOG_TAG" "git worktree add failed for $REPO — skipping"
+            ntfy "Rebuild worktree bootstrap FAILED" "git worktree add $REPO" "high" "x"
+            exit 0
+        fi
+    fi
+
+    # Fast-forward the rebuild worktree to origin/main at the start of every
+    # run. Detached HEAD is the steady state — we never make commits here, so
+    # `git fetch && git reset --hard origin/main` is the correct semantics.
+    cd "$REPO"
+    git fetch origin main --quiet 2>/dev/null || {
+        logger -t "$LOG_TAG" "git fetch failed in rebuild worktree — skipping"
+        exit 0
+    }
+    if ! git reset --hard origin/main --quiet 2>/dev/null; then
+        logger -t "$LOG_TAG" "rebuild worktree reset to origin/main failed (dirty? locked?) — skipping for ${SHA_KEY}; SHA_FILE NOT updated"
+        echo "[WARN] rebuild-service: rebuild worktree at $REPO not fast-forwardable — skipping ${SHA_KEY}" >&2
+        exit 0
+    fi
+fi
 
 # --- Fetch latest main ---
 cd "$REPO"
@@ -83,44 +152,17 @@ fi
 logger -t "$LOG_TAG" "main advanced: ${LAST_SHA:0:8} → ${CURRENT_SHA:0:8} — updating"
 
 # --- Pull ff-only ---
-CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
-if [ "$CURRENT_BRANCH" = "main" ]; then
+# For the managed rebuild worktree we already reset to origin/main above, so
+# this is a no-op. For foreign repos we still ff-merge onto whatever branch
+# they're on (officium, mcp). The branch-check that previously refused to
+# deploy when the council canonical was on a feature branch is gone: the
+# rebuild worktree is structurally on main, so the operator's interactive
+# checkout no longer blocks the deploy cascade.
+if [ "$REPO" != "$HAPAX_REBUILD_WORKTREE" ]; then
     git merge origin/main --ff-only --quiet 2>/dev/null || {
-        logger -t "$LOG_TAG" "ff-merge failed — skipping"
+        logger -t "$LOG_TAG" "ff-merge failed in $REPO — skipping"
         exit 0
     }
-else
-    # Repo is on a feature branch — we can't auto-deploy without clobbering
-    # the operator's work. Do NOT update SHA_FILE; the next cycle must keep
-    # flagging this as stale until the operator rebases/merges. Notify once
-    # per distinct origin/main SHA so the operator isn't spammed.
-    #
-    # Queue 025 round-4 Phase 6 Gap 3: upgrade visibility. Previously the
-    # "deploy skipped" line was only emitted via ``logger -t`` at default
-    # priority (user.notice) and the single-shot ntfy only fired once per
-    # new origin/main SHA. After alpha's queue 023 incident where two
-    # consecutive rebuild cycles silently skipped a voice-critical fix
-    # on a feature branch, we want the skip to be loud at every cycle.
-    # Changes:
-    #
-    #   1. upgrade ``logger`` to ``user.warning`` so the journal filters
-    #      it above informational messages
-    #   2. echo a ``[WARN] rebuild-service: ...`` line to stderr so
-    #      systemd captures it in the per-run status output
-    #   3. keep the throttled per-SHA ntfy so the phone still gets a
-    #      single actionable alert per advance (no spam)
-    NOTIFIED_FILE="$STATE_DIR/last-notified-${SHA_KEY}-sha"
-    LAST_NOTIFIED=$(cat "$NOTIFIED_FILE" 2>/dev/null || echo "none")
-    skip_msg="repo not on main (on $CURRENT_BRANCH) — deploy skipped for ${SHA_KEY}; SHA_FILE NOT updated"
-    echo "[WARN] rebuild-service: $skip_msg" >&2
-    logger -t "$LOG_TAG" -p user.warning "$skip_msg"
-    if [ "$CURRENT_SHA" != "$LAST_NOTIFIED" ]; then
-        ntfy "$SHA_KEY stale on $CURRENT_BRANCH" \
-            "Operator: rebase $CURRENT_BRANCH onto origin/main to deploy ${CURRENT_SHA:0:8}. rebuild-service.sh refuses to auto-advance a feature branch." \
-            "default" "warning"
-        echo "$CURRENT_SHA" > "$NOTIFIED_FILE"
-    fi
-    exit 0
 fi
 
 # --- Restart service or just pull ---

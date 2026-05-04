@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from agents.hapax_daimonion.gem_producer import (
     MAX_FRAME_TEXT_CHARS,
     MAX_FRAMES_PER_IMPINGEMENT,
@@ -171,3 +173,12 @@ def test_write_frames_atomic_no_partial_files_on_success(tmp_path: Path) -> None
     # No .tmp leftovers in the directory.
     leftovers = [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
     assert leftovers == []
+
+
+def test_write_frames_atomic_rejects_space_only_payload(tmp_path: Path) -> None:
+    target = tmp_path / "gem-frames.json"
+
+    with pytest.raises(ValueError, match="renderable frame"):
+        write_frames_atomic([GemFrame(text=" ", hold_ms=100)], target)
+
+    assert not target.exists()

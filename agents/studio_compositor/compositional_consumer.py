@@ -1038,12 +1038,141 @@ def dispatch_gem(capability_name: str, ttl_s: float) -> bool:
 
     The GEM producer (``agents/hapax_daimonion/gem_producer.py``) tails
     the impingement bus; the recruitment marker is the signal it reads
-    to decide which gem.emphasis.* / gem.composition.* keyframe to
-    render. lssh-002 (P0 GEM rendering redesign) will define the live
-    visual contract; the dispatcher here keeps the catalog-completeness
-    invariant green and the recruitment surface alive.
+    to decide which gem.emphasis.* / gem.composition.* / gem.spawn.*
+    keyframe to render. lssh-002 (P0 GEM rendering redesign) will
+    define the live visual contract; the dispatcher here keeps the
+    catalog-completeness invariant green and the recruitment surface
+    alive.
     """
     _mark_recruitment(capability_name, extra={"ttl_s": ttl_s})
+    return True
+
+
+# ── Director micromove vocabulary expansion (cc-task ────────────────────────
+# `director-moves-richness-expansion`, operator outcome 3 of 5).
+#
+# Operator constraint: NO presets — these dispatchers write parametric
+# state files only. Downstream consumers (homage choreographer, ward
+# animation, imagination uniforms bridge) read these files and apply
+# the parametric envelope on their next tick boundary. No preset
+# selection happens here — the director NEVER picks a preset.
+
+_COMPOSITION_STATE = Path("/dev/shm/hapax-compositor/composition-state.json")
+_PACE_STATE = Path("/dev/shm/hapax-compositor/pace-state.json")
+_MOOD_STATE = Path("/dev/shm/hapax-compositor/mood-state.json")
+_PROGRAMME_ADVANCE_INTENT = Path("/dev/shm/hapax-compositor/programme-advance-intent.json")
+
+
+def _capability_variant(capability_name: str, family_prefix: str) -> str:
+    """Return the variant suffix from ``family.variant`` (e.g. ``tighten``)."""
+    prefix = family_prefix.rstrip(".") + "."
+    if capability_name.startswith(prefix):
+        return capability_name[len(prefix) :].split(".", 1)[0]
+    return ""
+
+
+# Tempo multiplier table for pace.tempo_shift. Multipliers are applied
+# by cadence-aware consumers (homage choreographer, ward animation,
+# narrative ticker) to scale their effective period. 1.0 = baseline.
+_PACE_MULTIPLIERS: dict[str, float] = {
+    "slow": 0.7,
+    "quicken": 1.3,
+    "steady": 1.0,
+}
+
+
+def dispatch_composition_reframe(capability_name: str, ttl_s: float) -> bool:
+    """composition.reframe.* → write composition-state.json + recruit marker.
+
+    Parametric reframe of the active hero camera — distinct from
+    ``camera.hero`` (which swaps cameras). The reframe variant
+    (``tighten`` / ``widen`` / ``recompose``) is written to the
+    composition-state file so the camera-tile property consumer can
+    apply the matching ``scale`` / ``position_offset`` envelope on its
+    next tick. The recruit marker is the same one transition / gem use
+    so the family stays observable in the recent-recruitment surface.
+    """
+    variant = _capability_variant(capability_name, "composition.reframe") or "recompose"
+    _atomic_write_json(
+        _COMPOSITION_STATE,
+        {
+            "reframe": variant,
+            "ttl_s": ttl_s,
+            "ts": time.time(),
+        },
+    )
+    _mark_recruitment(capability_name, extra={"ttl_s": ttl_s, "variant": variant})
+    return True
+
+
+def dispatch_pace_tempo_shift(capability_name: str, ttl_s: float) -> bool:
+    """pace.tempo_shift.* → write pace-state.json + recruit marker.
+
+    Parametric cadence multiplier — slow / quicken / steady. Cadence
+    aware consumers (homage choreographer, ward animation, structural
+    director) read the multiplier on their next tick boundary and
+    rescale their effective period.
+    """
+    variant = _capability_variant(capability_name, "pace.tempo_shift") or "steady"
+    multiplier = _PACE_MULTIPLIERS.get(variant, 1.0)
+    _atomic_write_json(
+        _PACE_STATE,
+        {
+            "tempo": variant,
+            "multiplier": multiplier,
+            "ttl_s": ttl_s,
+            "ts": time.time(),
+        },
+    )
+    _mark_recruitment(
+        capability_name,
+        extra={"ttl_s": ttl_s, "variant": variant, "multiplier": multiplier},
+    )
+    return True
+
+
+def dispatch_mood_tone_pivot(capability_name: str, ttl_s: float) -> bool:
+    """mood.tone_pivot.* → write mood-state.json + recruit marker.
+
+    Parametric color / warmth / saturation pivot. The reverie uniforms
+    bridge (visual_chain → uniforms.json) reads this state and applies
+    the matching color-grade deltas. The generative substrate keeps
+    running; only the parametric color envelope shifts.
+    """
+    variant = _capability_variant(capability_name, "mood.tone_pivot") or "steady"
+    _atomic_write_json(
+        _MOOD_STATE,
+        {
+            "pivot": variant,
+            "ttl_s": ttl_s,
+            "ts": time.time(),
+        },
+    )
+    _mark_recruitment(capability_name, extra={"ttl_s": ttl_s, "variant": variant})
+    return True
+
+
+def dispatch_programme_beat_advance(capability_name: str, ttl_s: float) -> bool:
+    """programme.beat_advance.* → write programme-advance-intent + recruit marker.
+
+    Structural cue the programme manager picks up to walk the show plan
+    forward. The director recognises when the current programme has run
+    its course at a perceptual level (sustained activity match,
+    narrative arc complete) and emits this family to mark the boundary.
+    The programme manager reads the intent file on its next tick and
+    advances the plan if the boundary criteria match.
+    """
+    variant = _capability_variant(capability_name, "programme.beat_advance") or "next"
+    _atomic_write_json(
+        _PROGRAMME_ADVANCE_INTENT,
+        {
+            "requested": True,
+            "variant": variant,
+            "ttl_s": ttl_s,
+            "ts": time.time(),
+        },
+    )
+    _mark_recruitment(capability_name, extra={"ttl_s": ttl_s, "variant": variant})
     return True
 
 
@@ -1072,6 +1201,10 @@ def dispatch(
     "novelty.shift",
     "transition",
     "gem",
+    "composition.reframe",
+    "pace.tempo_shift",
+    "mood.tone_pivot",
+    "programme.beat_advance",
     "unknown",
 ]:
     """Route a recruitment record to the correct dispatcher.
@@ -1131,6 +1264,20 @@ def dispatch(
         return "transition" if dispatch_transition(name, record.ttl_s) else "unknown"
     if name.startswith("gem."):
         return "gem" if dispatch_gem(name, record.ttl_s) else "unknown"
+    if name.startswith("composition.reframe."):
+        return (
+            "composition.reframe" if dispatch_composition_reframe(name, record.ttl_s) else "unknown"
+        )
+    if name.startswith("pace.tempo_shift."):
+        return "pace.tempo_shift" if dispatch_pace_tempo_shift(name, record.ttl_s) else "unknown"
+    if name.startswith("mood.tone_pivot."):
+        return "mood.tone_pivot" if dispatch_mood_tone_pivot(name, record.ttl_s) else "unknown"
+    if name.startswith("programme.beat_advance."):
+        return (
+            "programme.beat_advance"
+            if dispatch_programme_beat_advance(name, record.ttl_s)
+            else "unknown"
+        )
     log.warning("unknown compositional capability family: %s", name)
     return "unknown"
 
@@ -1605,5 +1752,9 @@ __all__ = [
     "dispatch_ward_appearance",
     "dispatch_ward_cadence",
     "dispatch_ward_choreography",
+    "dispatch_composition_reframe",
+    "dispatch_pace_tempo_shift",
+    "dispatch_mood_tone_pivot",
+    "dispatch_programme_beat_advance",
     "recent_recruitment_age_s",
 ]

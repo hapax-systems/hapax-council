@@ -157,19 +157,6 @@ def _is_meta_narration(text: str) -> bool:
 
 
 def _extract_emphasis_text(imp: Impingement) -> str:
-    text = ""
-    for key in ("emphasis_text", "summary", "narrative"):
-        val = imp.content.get(key)
-        if isinstance(val, str) and val.strip():
-            text = val.strip()
-            if key == "narrative" and _is_meta_narration(text):
-                text = ""
-                continue
-            break
-
-    if text.startswith(".") or " , ." in text:
-        return ""
-    return text
     """Pull a renderable text fragment from an impingement.
 
     Preference order:
@@ -184,21 +171,28 @@ def _extract_emphasis_text(imp: Impingement) -> str:
        lssh-002 (P0 GEM rendering redesign) will replace this whole
        text-passthrough path with content authoring; until then the
        meta-filter prevents the worst leak.
-    4. Empty string — caller falls back to a stock frame keyed on
-       material + salience rather than rendering nothing.
+    4. Empty string — caller skips the write so the renderer keeps the
+       last valid sequence or uses its own visible fallback.
     """
-    # Trusted-author keys take precedence and are returned as-is.
     for key in ("emphasis_text", "summary"):
         value = imp.content.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()
-    # Narrative is the LLM's own framing — filter meta-narration.
+            text = value.strip()
+            return "" if _looks_like_corrupt_fragment(text) else text
+
     narrative = imp.content.get("narrative")
     if isinstance(narrative, str) and narrative.strip():
         text = narrative.strip()
-        if not _is_meta_narration(text):
-            return text
+        if _is_meta_narration(text) or _looks_like_corrupt_fragment(text):
+            return ""
+        return text
     return ""
+
+
+def _looks_like_corrupt_fragment(text: str) -> bool:
+    """Reject punctuation-only fragments seen in malformed GEM payloads."""
+
+    return text.startswith(".") or " , ." in text
 
 
 def _frame_text_safe(text: str) -> str:
@@ -226,8 +220,12 @@ def render_emphasis_template(text: str) -> list[GemFrame]:
     """
     safe = _frame_text_safe(text)
     if not safe:
-        return [GemFrame(text=" ", hold_ms=100)]
-    return [GemFrame(text=f"» {safe} «", hold_ms=2800)]
+        return []
+    return [
+        GemFrame(text="┌──[ GEM ]──┐", hold_ms=400),
+        GemFrame(text=f"│ {safe} │", hold_ms=1800),
+        GemFrame(text=f"└─ {safe} ─┘", hold_ms=600),
+    ]
 
 
 def render_composition_template(text: str) -> list[GemFrame]:
@@ -239,7 +237,7 @@ def render_composition_template(text: str) -> list[GemFrame]:
     """
     safe = _frame_text_safe(text)
     if not safe:
-        return [GemFrame(text=" ", hold_ms=100)]
+        return []
     return [
         GemFrame(text=f">>> {safe}", hold_ms=2000),
     ]
@@ -254,10 +252,10 @@ def frames_for_impingement(imp: Impingement) -> list[GemFrame]:
     failure or when the flag is off.
     """
     if not _intent_matches(imp):
-        return [GemFrame(text=" ", hold_ms=100)]
+        return []
     text = _extract_emphasis_text(imp)
     if not text:
-        return [GemFrame(text=" ", hold_ms=100)]
+        return []
     if imp.intent_family is not None and imp.intent_family.startswith("gem.composition"):
         frames = render_composition_template(text)
     else:
@@ -275,10 +273,10 @@ async def async_frames_for_impingement(imp: Impingement) -> list[GemFrame]:
     validation / model unavailable), the template path is used.
     """
     if not _intent_matches(imp):
-        return [GemFrame(text=" ", hold_ms=100)]
+        return []
     text = _extract_emphasis_text(imp)
     if not text:
-        return [GemFrame(text=" ", hold_ms=100)]
+        return []
 
     from agents.hapax_daimonion.gem_authoring_agent import (
         author_sequence,
@@ -300,9 +298,17 @@ def write_frames_atomic(frames: list[GemFrame], path: Path) -> None:
     sibling temp file then rename so the renderer never sees a half-
     written payload. Parent directory created on demand.
     """
+    frame_payloads = [
+        {"text": f.text.strip(), "hold_ms": f.hold_ms}
+        for f in frames
+        if f.text.strip() and not contains_emoji(f.text)
+    ]
+    if not frame_payloads:
+        raise ValueError("gem frames payload must include at least one renderable frame")
+
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "frames": [{"text": f.text, "hold_ms": f.hold_ms} for f in frames],
+        "frames": frame_payloads,
         "written_ts": time.time(),
     }
     fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
@@ -352,6 +358,22 @@ async def gem_producer_loop(
                         imp.id,
                         exc_info=True,
                     )
+                    continue
+                # Append-only emission log for the variance scorer
+                # (cc-task vocal-gem-frames-variance-trace). Wrapped in
+                # try/except via log_gem_frame's own defensive posture —
+                # observability cannot break the emission path.
+                from shared.gem_frame_log import log_gem_frame
+
+                content = getattr(imp, "content", {}) or {}
+                log_gem_frame(
+                    impingement_id=str(getattr(imp, "id", "")),
+                    impingement_source=str(getattr(imp, "source", "")),
+                    frame_texts=[f.text for f in frames],
+                    programme_role=(
+                        content.get("programme_role") if isinstance(content, dict) else None
+                    ),
+                )
         except Exception:
             log.debug("gem-producer loop error", exc_info=True)
         await asyncio.sleep(poll_interval_s)

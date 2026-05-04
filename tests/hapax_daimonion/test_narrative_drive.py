@@ -10,8 +10,10 @@ from unittest import mock
 
 import pytest
 
+from agents.hapax_daimonion import narrative_drive as nd
 from agents.hapax_daimonion.narrative_drive import (
     _assemble_drive_context,
+    _compose_programme_authorization,
     _emit_drive_impingement,
 )
 from shared.endogenous_drive import DriveContext, EndogenousDrive
@@ -168,3 +170,103 @@ class TestDriveLoopRefractory:
             # Immediately after — pressure should be ~0
             DriveContext(chronicle_event_count=10, now=now + 1)  # verify no side effects
             assert drive.base_pressure(now + 1) < 0.01
+
+
+class TestCadenceConstants:
+    """Pin the cadence values tuned for sustained vocal presence."""
+
+    def test_cooldown_is_30s(self):
+        """30s cooldown floor; was 60s before vocal-as-fuck tune."""
+        assert nd._EMISSION_COOLDOWN_S == 30.0
+
+    def test_drive_tau_is_60s(self):
+        """tau=60s reaches surfacing threshold inside the cooldown window."""
+        assert nd._DRIVE_TAU_S == 60.0
+
+    def test_drive_threshold_is_012(self):
+        """Threshold unchanged from prior tune; only tau and cooldown moved."""
+        assert nd._DRIVE_THRESHOLD == 0.12
+
+
+class TestProgrammeAuthorization:
+    """Cover the programme_authorization payload composer."""
+
+    def test_returns_none_without_programme(self):
+        """No active programme ⇒ None (gate fails closed downstream)."""
+        with mock.patch(
+            "agents.hapax_daimonion.autonomous_narrative.state_readers.read_active_programme",
+            return_value=None,
+        ):
+            assert _compose_programme_authorization(SimpleNamespace(), time.time()) is None
+
+    def test_returns_none_when_status_not_active(self):
+        """Status PENDING/COMPLETED ⇒ None."""
+        prog = SimpleNamespace(
+            programme_id="prog-x",
+            role="listening",
+            status="pending",
+        )
+        with mock.patch(
+            "agents.hapax_daimonion.autonomous_narrative.state_readers.read_active_programme",
+            return_value=prog,
+        ):
+            assert _compose_programme_authorization(SimpleNamespace(), time.time()) is None
+
+    def test_returns_fresh_payload_when_programme_active(self):
+        """Active programme ⇒ payload with authorized=True and fresh timestamps."""
+        prog = SimpleNamespace(
+            programme_id="prog-listening-1",
+            role="listening",
+            status="active",
+        )
+        now = 1_800_000_000.0
+        with mock.patch(
+            "agents.hapax_daimonion.autonomous_narrative.state_readers.read_active_programme",
+            return_value=prog,
+        ):
+            auth = _compose_programme_authorization(SimpleNamespace(), now)
+
+        assert auth is not None
+        assert auth["authorized"] is True
+        assert auth["authorized_at"] == now
+        assert auth["expires_at"] == now + nd._PROGRAMME_AUTH_FRESHNESS_S
+        assert auth["programme_id"] == "prog-listening-1"
+        assert "listening" in auth["evidence_ref"]
+
+    def test_emit_threads_authorization_into_payload(self, tmp_impingements: Path):
+        """When programme_authorization is passed, it appears in the content payload."""
+        drive = EndogenousDrive(tau=60.0)
+        drive._last_emission_ts = time.time() - 200.0
+        ctx = DriveContext(chronicle_event_count=3, stimmung_stance="ambient")
+        auth = {
+            "authorized": True,
+            "authorized_at": time.time(),
+            "expires_at": time.time() + 90.0,
+            "programme_id": "prog-test",
+            "evidence_ref": "programme_active:listening:prog-test",
+        }
+
+        with mock.patch(
+            "agents.hapax_daimonion.narrative_drive._IMPINGEMENTS_FILE",
+            tmp_impingements,
+        ):
+            ok = _emit_drive_impingement(drive, ctx, programme_authorization=auth)
+
+        assert ok is True
+        imp = json.loads(tmp_impingements.read_text().strip())
+        assert imp["content"]["programme_authorization"] == auth
+
+    def test_emit_omits_authorization_key_when_none(self, tmp_impingements: Path):
+        """No authorization passed ⇒ key absent (downstream gate fails closed)."""
+        drive = EndogenousDrive(tau=60.0)
+        drive._last_emission_ts = time.time() - 200.0
+        ctx = DriveContext(chronicle_event_count=3, stimmung_stance="ambient")
+
+        with mock.patch(
+            "agents.hapax_daimonion.narrative_drive._IMPINGEMENTS_FILE",
+            tmp_impingements,
+        ):
+            _emit_drive_impingement(drive, ctx)
+
+        imp = json.loads(tmp_impingements.read_text().strip())
+        assert "programme_authorization" not in imp["content"]

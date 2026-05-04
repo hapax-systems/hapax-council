@@ -409,9 +409,100 @@ try:
         **_metric_kwargs,
     )
 
+    # Cc-task ``director-moves-grounding-trace-coverage`` (operator outcome 3
+    # follow-up). The R8 grounding-act gate already drops LLM impingements
+    # missing both real and synthetic markers, but the operator wants
+    # per-move classification visible on the Prometheus surface so a
+    # Grafana panel can answer "what fraction of camera.hero moves were
+    # uniformly real-grounded today" without reading the JSONL by hand.
+    #
+    # ``move_type`` is the ``intent_family`` for compositional impingements
+    # (e.g. ``camera.hero``, ``mood.tone_pivot``) plus the literal label
+    # ``"intent"`` for the top-level DirectorIntent. ``grounding_class``
+    # ∈ ``{"real", "synthetic", "missing"}``:
+    #   - real    — at least one entry in ``grounding_provenance``.
+    #   - synthetic — empty real grounding, but ``synthetic_grounding_markers``
+    #                 carries a fallback / inferred marker (deterministic-code
+    #                 fallback or post-parse synthesis).
+    #   - missing — both empty (would be rejected by R8 in production; counted
+    #               here for visibility into pre-R8 classification).
+    _move_grounding_total = Counter(
+        "hapax_director_move_grounding_total",
+        (
+            "Director moves classified by grounding-class. "
+            "``move_type`` is the intent_family or 'intent' for the "
+            "top-level DirectorIntent. ``grounding_class`` ∈ "
+            "{real, synthetic, missing} per cc-task "
+            "director-moves-grounding-trace-coverage."
+        ),
+        ("move_type", "grounding_class"),
+        **_metric_kwargs,
+    )
+
     _METRICS_AVAILABLE = True
 except Exception:  # pragma: no cover — prometheus_client missing at install time
     log.info("prometheus_client unavailable — director observability metrics are no-ops")
+
+
+def _classify_grounding(
+    real: list[str] | None,
+    synthetic: list[str] | None,
+) -> str:
+    """Classify a grounding pair as ``real``, ``synthetic``, or ``missing``.
+
+    Cc-task ``director-moves-grounding-trace-coverage``: the operator
+    wants every director move visible on the Prometheus surface, classified
+    so a Grafana dashboard can compute the fallback ratio per move type
+    without parsing the JSONL.
+
+    A real entry takes precedence — if any non-empty string sits in
+    ``grounding_provenance`` the move grounds in observable evidence,
+    even if synthetic markers are also attached (split_grounding_provenance
+    in shared.director_intent already migrates synthetic prefixes out of
+    grounding_provenance, but the classification stays correct under any
+    drift in that helper).
+    """
+    if real and any((entry or "").strip() for entry in real):
+        return "real"
+    if synthetic and any((entry or "").strip() for entry in synthetic):
+        return "synthetic"
+    return "missing"
+
+
+def emit_move_grounding(intent: DirectorIntent) -> None:
+    """Increment ``hapax_director_move_grounding_total`` per move in the intent.
+
+    One increment for the top-level intent (``move_type="intent"``) and
+    one increment per compositional impingement (``move_type=intent_family``).
+    Each increment carries a ``grounding_class`` label of ``real``,
+    ``synthetic``, or ``missing`` based on whether the move's
+    grounding_provenance / synthetic_grounding_markers fields carry any
+    real evidence. Fail-open — any exception inside the emit is logged at
+    debug and swallowed so the director's tick path never breaks on
+    metric-backend failure.
+    """
+    if not _METRICS_AVAILABLE:
+        return
+    try:
+        top_class = _classify_grounding(
+            intent.grounding_provenance,
+            intent.synthetic_grounding_markers,
+        )
+        _move_grounding_total.labels(
+            move_type="intent",
+            grounding_class=top_class,
+        ).inc()
+        for imp in intent.compositional_impingements:
+            cls = _classify_grounding(
+                imp.grounding_provenance,
+                imp.synthetic_grounding_markers,
+            )
+            _move_grounding_total.labels(
+                move_type=imp.intent_family,
+                grounding_class=cls,
+            ).inc()
+    except Exception:
+        log.debug("emit_move_grounding failed", exc_info=True)
 
 
 def emit_director_intent(intent: DirectorIntent, condition_id: str) -> None:
@@ -445,6 +536,11 @@ def emit_director_intent(intent: DirectorIntent, condition_id: str) -> None:
                 ).inc()
     except Exception:
         log.warning("emit_director_intent failed", exc_info=True)
+    # Cc-task `director-moves-grounding-trace-coverage`: the per-move
+    # grounding-class counter is the new surface that lets dashboards
+    # compute fallback-ratio per move type. Called from the same emit
+    # path as the legacy counters so the two stay in lock-step.
+    emit_move_grounding(intent)
 
 
 def emit_ungrounded_audit(intent: DirectorIntent, condition_id: str) -> None:
@@ -944,6 +1040,7 @@ __all__ = [
     "emit_homage_substrate_saturation_target",
     "emit_homage_transition",
     "emit_homage_violation",
+    "emit_move_grounding",
     "emit_parse_failure",
     "emit_random_mode_pick",
     "emit_transition_pick",

@@ -236,6 +236,7 @@ while IFS= read -r f; do
         systemd/user-preset.d/*.preset)   USER_PRESETS+=("$f") ;;
         systemd/watchdogs/*)              WATCHDOGS+=("$f") ;;
         systemd/scripts/*)                ;; # installer helpers; run manually when needed
+        systemd/udev/*.rules)             ;; # udev rules; require sudo install + udevadm reload (operator action)
         scripts/hapax-*)                  SCRIPTS+=("$f") ;;
         scripts/*.py|scripts/*.sh)        SCRIPT_PY+=("$f") ;;
         systemd/expected-timers.yaml)     ;; # frozen-baseline doc, not deployable
