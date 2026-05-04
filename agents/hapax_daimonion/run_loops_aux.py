@@ -546,12 +546,14 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
                 },
             )
             # Refractory inhibition — pipeline-native replacement for the
-            # hardcoded 120s rate-limit gate. Prepared delivery uses a
-            # short refractory (15s — enough for TTS playback + holdover)
-            # so blocks flow with natural pacing. Live compose keeps 120s.
+            # hardcoded 120s rate-limit gate. Prepared delivery skips
+            # refractory entirely so blocks flow as fast as the narrative
+            # drive emits (~30s). Live compose keeps 120s.
             _is_prepped = programme_id and programme_id in _delivered_beats
-            _refractory = 15.0 if _is_prepped else _effective_refractory_s(daemon)
-            daemon._affordance_pipeline.add_inhibition(imp, duration_s=_refractory)
+            if not _is_prepped:
+                daemon._affordance_pipeline.add_inhibition(
+                    imp, duration_s=_effective_refractory_s(daemon)
+                )
             _publish_recruitment_log(
                 "narration",
                 candidate.capability_name,

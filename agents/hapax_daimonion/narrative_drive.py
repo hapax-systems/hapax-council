@@ -258,10 +258,23 @@ async def narrative_drive_loop(daemon: Any) -> None:
         try:
             now = time.time()
 
-            # Cooldown: don't evaluate or emit within _EMISSION_COOLDOWN_S
-            # of the last emission to prevent bus flooding when contextual
-            # modifiers (high chronicle count) overwhelm base_pressure reset.
-            if (now - last_emission_at) < _EMISSION_COOLDOWN_S:
+            # Cooldown: adaptive based on delivery mode.
+            # Prepped segments use a tight 5s cooldown for continuous
+            # narration flow. Live mode keeps 30s to prevent bus flooding.
+            _active_prog = None
+            try:
+                from agents.hapax_daimonion.autonomous_narrative.state_readers import (
+                    read_active_programme,
+                )
+
+                _active_prog = read_active_programme(daemon)
+            except Exception:
+                pass
+            _has_prepped = bool(
+                getattr(getattr(_active_prog, "content", None), "prepared_script", None)
+            )
+            _cooldown = 5.0 if _has_prepped else _EMISSION_COOLDOWN_S
+            if (now - last_emission_at) < _cooldown:
                 await asyncio.sleep(_TICK_SLEEP_S)
                 continue
 
