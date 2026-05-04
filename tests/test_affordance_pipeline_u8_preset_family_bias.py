@@ -17,8 +17,14 @@ take effect on the next pipeline tick (≤60s).
 
 The score-differential test asserts the per-mode tilt the operator
 expects:
-  * research mode: calm-textural × 1.5 vs rnd × 0.6 (factor 2.5×)
-  * rnd mode: audio-reactive × 1.5 vs research × 0.7 (factor ~2.14×)
+  * research mode: calm-textural × 1.2 vs rnd × 1.0 (factor 1.2×)
+  * rnd mode: audio-reactive × 1.2 vs research × 0.9 (factor ~1.33×)
+
+(Tilt magnitudes were compressed on 2026-05-03 per the visual-
+monoculture audit — the prior 2.5× / 2.14× factors made selection
+winner-take-all over the last 2h of recruitment. New weights keep
+the directional tilt but let similarity scoring decide within the
+mode-appropriate lean.)
 """
 
 from __future__ import annotations
@@ -83,7 +89,9 @@ class TestPresetFamilyWeightsTable:
 class TestFamilyWeightLookup:
     def test_known_capability_returns_per_mode_weight(self) -> None:
         bias = visual_mode_bias_for("research")
-        assert bias.family_weight("fx.family.calm-textural") == 1.5
+        # Compressed to 1.2 on 2026-05-03 (was 1.5) — visual-monoculture
+        # rebalance.
+        assert bias.family_weight("fx.family.calm-textural") == 1.2
 
     def test_unknown_capability_returns_default(self) -> None:
         bias = visual_mode_bias_for("research")
@@ -126,9 +134,10 @@ class TestPipelineMultiplier:
         self._apply_u8_multiplier(cands_research, visual_mode_bias_for("research"))
         self._apply_u8_multiplier(cands_rnd, visual_mode_bias_for("rnd"))
         assert cands_research[0].combined > cands_rnd[0].combined
-        # Numeric pin: 1.5 vs 0.6 → 2.5× ratio
-        assert cands_research[0].combined == pytest.approx(1.5)
-        assert cands_rnd[0].combined == pytest.approx(0.6)
+        # Numeric pin: 1.2 vs 1.0 → 1.2× ratio (compressed from 2.5× on
+        # 2026-05-03 per visual-monoculture rebalance).
+        assert cands_research[0].combined == pytest.approx(1.2)
+        assert cands_rnd[0].combined == pytest.approx(1.0)
 
     def test_audio_reactive_scores_higher_in_rnd(self) -> None:
         cands_rnd = [_candidate("fx.family.audio-reactive", combined=1.0)]
@@ -194,4 +203,5 @@ class TestPipelineLiveIntegration:
             if candidate.capability_name.startswith("fx.family."):
                 candidate.combined *= visual_bias.family_weight(candidate.capability_name)
 
-        assert candidate.combined == pytest.approx(1.5)
+        # Was 1.5 pre-2026-05-03; now 1.2 after visual-monoculture rebalance.
+        assert candidate.combined == pytest.approx(1.2)
