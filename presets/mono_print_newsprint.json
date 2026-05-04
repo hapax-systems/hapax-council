@@ -27,10 +27,9 @@
       }
     },
     "grain_print": {
-      "type": "grain_bump",
+      "type": "noise_overlay",
       "params": {
-        "amount": 0.32,
-        "scale": 700
+        "intensity": 0.32
       }
     },
     "vignette": {
@@ -48,5 +47,36 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "halftone_fine"
+    ],
+    [
+      "halftone_fine",
+      "posterize_print"
+    ],
+    [
+      "posterize_print",
+      "grain_print"
+    ],
+    [
+      "grain_print",
+      "vignette"
+    ],
+    [
+      "vignette",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

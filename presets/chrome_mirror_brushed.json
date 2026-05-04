@@ -42,5 +42,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "mirror_brushed"
+    ],
+    [
+      "mirror_brushed",
+      "slitscan_brushed"
+    ],
+    [
+      "slitscan_brushed",
+      "emboss_brushed"
+    ],
+    [
+      "emboss_brushed",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

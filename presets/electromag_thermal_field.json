@@ -1,6 +1,6 @@
 {
   "name": "Electromag Thermal Field",
-  "description": "Electromagnetic-field lineage (1/2): thermal palette + particle_system + displacement_map creates a magnetic-field-line iron-filing aesthetic — image becomes a field substrate showing flow lines. Lineage: electromagnetic-field.",
+  "description": "Electromagnetic-field lineage (1/2): thermal palette + particle_system + displacement_map creates a magnetic-field-line iron-filing aesthetic \u2014 image becomes a field substrate showing flow lines. Lineage: electromagnetic-field.",
   "lineage": "electromagnetic-field",
   "transition_ms": 2200,
   "nodes": {
@@ -43,5 +43,36 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "modulations": [],
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "thermal_field"
+    ],
+    [
+      "thermal_field",
+      "particle_field"
+    ],
+    [
+      "particle_field",
+      "displacement_field:a"
+    ],
+    [
+      "particle_field",
+      "displacement_field:b"
+    ],
+    [
+      "displacement_field",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ]
 }

@@ -43,5 +43,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "noise_drone"
+    ],
+    [
+      "noise_drone",
+      "drift_drone"
+    ],
+    [
+      "drift_drone",
+      "vignette_heavy"
+    ],
+    [
+      "vignette_heavy",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }
