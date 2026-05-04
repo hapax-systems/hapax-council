@@ -35,53 +35,213 @@ from agents.effect_graph.types import PresetFamily
 # atmospheric presets with halftone_preset shifted to last position; seeking
 # rows are added explicitly so the fold-back can be retired in a follow-up.
 _STATE_MATRIX: dict[tuple[str, str], PresetFamily] = {
-    # NOMINAL
+    # NOMINAL — quiet research / conversation
     ("nominal", "low"): PresetFamily(
         presets=(
-            "vhs_preset",
             "ghost",
             "ambient",
             "dither_retro",
             "trails",
-            "kaleidodream",
-            "halftone_preset",
+            "vhs_preset",
+            "tape_warmth",
+            "mono_print_newsprint",
+            "paper_fold_origami",
+            "liquid_flow_breath",
+            "water_ripple_surface",
+            "drone_static_drift",
+            "circular_lens_focus",
+            "xerox_photocopy_decay",
+            "vinyl_dust",
+            "chamber_feedback_breathing",
+            "chrome_mirror_brushed",
         )
     ),
     ("nominal", "medium"): PresetFamily(
-        presets=("vhs_preset", "ghost", "nightvision", "trails", "kaleidodream")
+        presets=(
+            "kaleidodream",
+            "nightvision",
+            "trails",
+            "ghost",
+            "vhs_preset",
+            "bloom_neon_night",
+            "neon_grid_tunnel",
+            "dub_echo_spatial",
+            "cellular_kuwahara_paint",
+            "kaleido_fractal_mirror",
+            "electromag_thermal_field",
+            "liquid_flow_fluid",
+            "broadcast_vhs_decay",
+            "tape_wow_flutter",
+            "circular_porthole_view",
+        )
     ),
     ("nominal", "high"): PresetFamily(
-        presets=("datamosh", "feedback_preset", "kaleidodream", "trails")
+        presets=(
+            "datamosh",
+            "feedback_preset",
+            "kaleidodream",
+            "trap",
+            "screwed",
+            "glitch_blocks_preset",
+            "pixsort_glitch_horizontal",
+            "granular_stutter",
+            "modulation_pulse_warp",
+            "datamosh_heavy",
+            "kaleido_fractal_dense",
+            "bloom_solar_flare",
+            "glitch_y2k_chroma",
+        )
     ),
-    # SEEKING (exploration stance — explicitly diverse so fx_tick fold-back
-    # can eventually be retired without losing variance).
+    # SEEKING — exploration / curiosity
     ("seeking", "low"): PresetFamily(
-        presets=("ghost", "trails", "kaleidodream", "ambient", "dither_retro", "vhs_preset")
+        presets=(
+            "ghost",
+            "trails",
+            "kaleidodream",
+            "ambient",
+            "dither_retro",
+            "voronoi_crystal",
+            "water_ripple_caustic",
+            "arcane_dither_sigil",
+            "mono_print_woodcut",
+            "paper_fold_crumple",
+            "drone_dense_static",
+            "xerox_smudge_streak",
+            "cellular_reaction",
+            "chrome_mirror_polished",
+            "sculpture",
+        )
     ),
     ("seeking", "medium"): PresetFamily(
-        presets=("kaleidodream", "trails", "feedback_preset", "ghost", "nightvision")
+        presets=(
+            "kaleidodream",
+            "feedback_preset",
+            "nightvision",
+            "tunnelvision",
+            "neon_grid_arcade",
+            "electromag_rutt_etra",
+            "dub_tunnel_chamber",
+            "broadcast_static_carrier",
+            "slitscan_preset",
+            "pixsort_preset",
+            "arcane_ascii_glyph",
+            "diff_motion_trail",
+            "kaleido_fractal_mirror",
+            "liquid_flow_fluid",
+        )
     ),
     ("seeking", "high"): PresetFamily(
-        presets=("kaleidodream", "datamosh", "feedback_preset", "trails")
+        presets=(
+            "datamosh",
+            "feedback_preset",
+            "glitch_blocks_preset",
+            "pixsort_glitch_vertical",
+            "granular_stutter",
+            "modulation_pulse_strobe",
+            "datamosh_heavy",
+            "glitch_y2k_block",
+            "antivapor_thresh",
+            "fisheye_pulse",
+            "bloom_solar_flare",
+        )
     ),
-    # CAUTIOUS
-    ("cautious", "low"): PresetFamily(presets=("ambient", "dither_retro", "ghost")),
-    ("cautious", "medium"): PresetFamily(presets=("ghost", "ambient", "vhs_preset")),
-    ("cautious", "high"): PresetFamily(presets=("trails", "ghost")),
-    # DEGRADED
-    ("degraded", "low"): PresetFamily(presets=("dither_retro", "vhs_preset", "ambient")),
-    ("degraded", "medium"): PresetFamily(presets=("vhs_preset", "dither_retro")),
-    ("degraded", "high"): PresetFamily(presets=("screwed", "vhs_preset")),
-    # CRITICAL
-    ("critical", "low"): PresetFamily(presets=("silhouette",)),
-    ("critical", "medium"): PresetFamily(presets=("silhouette",)),
+    # CAUTIOUS — reserved / careful
+    ("cautious", "low"): PresetFamily(
+        presets=(
+            "ambient",
+            "ghost",
+            "dither_retro",
+            "tape_warmth",
+            "mono_print_newsprint",
+            "vinyl_dust",
+            "chamber_feedback_breathing",
+            "water_ripple_surface",
+            "paper_fold_origami",
+            "circular_lens_focus",
+        )
+    ),
+    ("cautious", "medium"): PresetFamily(
+        presets=(
+            "ghost",
+            "vhs_preset",
+            "trails",
+            "nightvision",
+            "broadcast_vhs_decay",
+            "tape_wow_flutter",
+            "diff_motion_thermal",
+            "cellular_kuwahara_paint",
+            "chrome_mirror_brushed",
+        )
+    ),
+    ("cautious", "high"): PresetFamily(
+        presets=(
+            "trails",
+            "ghost",
+            "kaleidodream",
+            "feedback_preset",
+            "neon",
+            "bloom_neon_night",
+        )
+    ),
+    # DEGRADED — system stress / error states
+    ("degraded", "low"): PresetFamily(
+        presets=(
+            "dither_retro",
+            "vhs_preset",
+            "ambient",
+            "xerox_photocopy_decay",
+            "drone_static_drift",
+            "broadcast_vhs_decay",
+            "vinyl_pop_static",
+            "antivapor_grit",
+            "mono_print_woodcut",
+        )
+    ),
+    ("degraded", "medium"): PresetFamily(
+        presets=(
+            "vhs_preset",
+            "dither_retro",
+            "screwed",
+            "glitch_blocks_preset",
+            "broadcast_static_carrier",
+            "xerox_smudge_streak",
+            "diff_preset",
+            "antivapor_thresh",
+        )
+    ),
+    ("degraded", "high"): PresetFamily(
+        presets=(
+            "screwed",
+            "datamosh",
+            "glitch_y2k_block",
+            "pixsort_glitch_horizontal",
+            "datamosh_heavy",
+            "granular_stutter",
+            "antivapor_thresh",
+        )
+    ),
+    # CRITICAL — system failure
+    ("critical", "low"): PresetFamily(presets=("silhouette", "drone_dense_static", "clean")),
+    ("critical", "medium"): PresetFamily(presets=("silhouette", "antivapor_grit")),
     ("critical", "high"): PresetFamily(presets=("silhouette",)),
 }
 
-# Default fallback for unknown matrix keys. Must NOT be halftone-only — that
-# was the second cause of the halftone monoculture (line 78, pre-2026-05-04).
+# Default fallback — diverse pool for unknown matrix keys.
 _DEFAULT_FAMILY: PresetFamily = PresetFamily(
-    presets=("ambient", "dither_retro", "ghost", "vhs_preset")
+    presets=(
+        "ambient",
+        "ghost",
+        "trails",
+        "kaleidodream",
+        "vhs_preset",
+        "dither_retro",
+        "nightvision",
+        "voronoi_crystal",
+        "tape_warmth",
+        "water_ripple_surface",
+        "bloom_neon_night",
+        "cellular_kuwahara_paint",
+    )
 )
 
 # Genre bias: genre keyword → list of preferred preset names (prepended to family)
