@@ -46,6 +46,7 @@ jobs:
           uv run pytest tests/audio_graph/test_schema.py \
                         tests/audio_graph/test_compiler.py \
                         tests/audio_graph/test_invariants.py \
+                        tests/audio_graph/test_today_regression_pins.py \
                         tests/audio_graph/test_validator.py \
                         -q --no-header
       - name: Validate config/pipewire and config/wireplumber (in-tree copies)
