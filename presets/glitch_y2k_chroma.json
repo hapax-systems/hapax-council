@@ -42,5 +42,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "chroma_heavy"
+    ],
+    [
+      "chroma_heavy",
+      "slitscan_strip"
+    ],
+    [
+      "slitscan_strip",
+      "dither_y2k"
+    ],
+    [
+      "dither_y2k",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

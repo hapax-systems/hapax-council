@@ -43,5 +43,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "kaleido_dense"
+    ],
+    [
+      "kaleido_dense",
+      "tunnel_kaleido"
+    ],
+    [
+      "tunnel_kaleido",
+      "chroma_kaleido"
+    ],
+    [
+      "chroma_kaleido",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

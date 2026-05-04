@@ -37,5 +37,28 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "reaction"
+    ],
+    [
+      "reaction",
+      "voronoi_cells"
+    ],
+    [
+      "voronoi_cells",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

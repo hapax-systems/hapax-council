@@ -42,5 +42,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "posterize_8bit"
+    ],
+    [
+      "posterize_8bit",
+      "dither_arcade"
+    ],
+    [
+      "dither_arcade",
+      "scanlines_crt"
+    ],
+    [
+      "scanlines_crt",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }
