@@ -384,6 +384,28 @@ STUDIO_AFFORDANCES = [
             consent_required=False,
         ),
     ),
+    # Re-Splay Homage Ward — Steam Deck HDMI reveal. cc-task
+    # re-splay-homage-ward-steam-deck. Mirrors the M8 LCD reveal
+    # contract: the ward becomes recruitable when the steamdeck bridge
+    # is publishing recent frames to
+    # /dev/shm/hapax-sources/steamdeck-display.rgba. Narrative gating
+    # through the affordance pipeline ensures the ward only surfaces
+    # when the operator is actually playing — motion + audio activity
+    # provide the context boost; idle suppression hides the ward when
+    # the Deck sits in a menu without play activity.
+    CapabilityRecord(
+        name="ward.reveal.steamdeck-display",
+        description=(
+            "Reveal the Steam Deck's HDMI output in the broadcast composite "
+            "when the operator is actively playing a game on the handheld"
+        ),
+        daemon="compositor",
+        operational=_public_operational(
+            latency_class="fast",
+            medium="visual",
+            consent_required=False,
+        ),
+    ),
 ]
 
 # ---------------------------------------------------------------------------
