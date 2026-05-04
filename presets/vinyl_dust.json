@@ -22,10 +22,9 @@
       }
     },
     "grain": {
-      "type": "grain_bump",
+      "type": "noise_overlay",
       "params": {
-        "amount": 0.22,
-        "scale": 800
+        "intensity": 0.22
       }
     },
     "vignette": {
@@ -43,5 +42,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "noise_dust"
+    ],
+    [
+      "noise_dust",
+      "grain"
+    ],
+    [
+      "grain",
+      "vignette"
+    ],
+    [
+      "vignette",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

@@ -102,8 +102,9 @@ class TestVisualModeBiasSnapshot:
 
     def test_family_weight_returns_configured_value(self) -> None:
         bias = visual_mode_bias_for(WorkingMode.RND)
-        # PRESET_FAMILY_WEIGHTS[RND] sets audio-reactive to 1.5
-        assert bias.family_weight("fx.family.audio-reactive") == 1.5
+        # PRESET_FAMILY_WEIGHTS[RND] sets audio-reactive to 1.2 after
+        # the 2026-05-03 visual-monoculture rebalance (was 1.5).
+        assert bias.family_weight("fx.family.audio-reactive") == 1.2
 
     def test_snapshot_is_independent_per_mode(self) -> None:
         """Mutating one snapshot's preset_family_weights must not leak

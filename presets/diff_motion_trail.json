@@ -1,6 +1,6 @@
 {
   "name": "Diff Motion Trail",
-  "description": "Diff-motion lineage (1/2): diff (frame-difference) + trail creates a motion-detection visualization — only moving pixels persist; static pixels fade. Lineage: diff-motion.",
+  "description": "Diff-motion lineage (1/2): diff (frame-difference) + trail creates a motion-detection visualization \u2014 only moving pixels persist; static pixels fade. Lineage: diff-motion.",
   "lineage": "diff-motion",
   "transition_ms": 1400,
   "nodes": {
@@ -42,5 +42,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "diff_motion"
+    ],
+    [
+      "diff_motion",
+      "trail_motion"
+    ],
+    [
+      "trail_motion",
+      "edge_motion"
+    ],
+    [
+      "edge_motion",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

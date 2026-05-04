@@ -6,16 +6,23 @@ the required ``edges`` field, so Pydantic raised ``ValidationError`` at load
 time and the compositor silently fell back to ``halftone_preset``. The
 operator saw halftone dominating the broadcast even after the swap.
 
-Two complementary checks here:
+A 2026-05-04 audit then found 55 of 86 graph presets in ``presets/``
+shipping without ``edges`` — i.e., 64% of the recruitable visual corpus
+was unloadable, with ``state.py:362`` swallowing the ``ValidationError``
+silently so recruitment fired but the chain held the previous plan.
 
-1. ``test_preset_validates_as_effect_graph`` parameterizes over every preset
-   that is wired into the compositor runtime today (i.e., declares both
-   ``nodes`` and ``edges``). It guards against schema regressions on
-   already-runtime-wired presets. A preset with only ``nodes`` is treated as
-   a satellite-only / not-yet-wired graph and intentionally skipped here —
-   ``test_default_startup_preset_is_runtime_loadable`` is the explicit guard
-   that catches a default-startup preset slipping through schema-incomplete.
-2. ``test_default_startup_preset_is_runtime_loadable`` pins the specific
+Three complementary checks here:
+
+1. ``test_every_graph_preset_validates_as_effect_graph`` parameterizes over
+   EVERY graph-shaped preset in ``presets/`` (anything with a ``nodes`` map,
+   excluding leading-underscore files and the ``shader_intensity_bounds``
+   config file). This is the corpus-wide schema floor — any new preset that
+   ships without ``edges`` regresses the recruitable corpus and fails here.
+2. ``test_runtime_wired_presets_validate`` (legacy of PR #2491) parameterizes
+   over presets that ALREADY declare both ``nodes`` and ``edges``. Subset of
+   (1); kept as a focused check so failures still attribute clearly when the
+   broader corpus check is parametrized away by future contributors.
+3. ``test_default_startup_preset_is_runtime_loadable`` pins the specific
    PR #2488 fallout: ``sierpinski_line_overlay.json`` (the compositor's
    default startup preset) must declare ``edges`` and ``modulations`` and
    must validate end-to-end. If this regresses, the compositor falls back
@@ -38,6 +45,36 @@ PRESETS_DIR = Path(__file__).parent.parent.parent / "presets"
 # The compositor's default startup preset (see ``agents/studio_compositor/lifecycle.py``).
 DEFAULT_STARTUP_PRESET = "sierpinski_line_overlay"
 
+# Files in ``presets/`` that are not graph presets and are intentionally not
+# subject to ``EffectGraph`` validation.
+NON_GRAPH_PRESET_FILES = frozenset(
+    {
+        # Per-shader-family caps; ``_meta`` + ``node_caps`` shape, no ``nodes`` map.
+        "shader_intensity_bounds.json",
+    }
+)
+
+
+def _all_graph_presets() -> list[Path]:
+    """Every preset in ``presets/`` that has the graph-preset shape.
+
+    Graph-preset shape = a JSON object with a ``nodes`` map. This is the
+    corpus the compositor's recruitment chain expects to be able to load
+    without ``ValidationError``. Excludes leading-underscore files
+    (``_default_modulations.json``) and the explicit non-graph allowlist.
+    """
+    out: list[Path] = []
+    for p in sorted(PRESETS_DIR.glob("*.json")):
+        if p.name.startswith("_") or p.name in NON_GRAPH_PRESET_FILES:
+            continue
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if isinstance(raw, dict) and isinstance(raw.get("nodes"), dict):
+            out.append(p)
+    return out
+
 
 def _runtime_wired_presets() -> list[Path]:
     """Presets currently wired into the compositor runtime.
@@ -48,9 +85,7 @@ def _runtime_wired_presets() -> list[Path]:
     template fragments and are intentionally not loaded by the compositor.
     """
     out: list[Path] = []
-    for p in sorted(PRESETS_DIR.glob("*.json")):
-        if p.name.startswith("_"):
-            continue
+    for p in _all_graph_presets():
         try:
             raw = json.loads(p.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
@@ -60,8 +95,29 @@ def _runtime_wired_presets() -> list[Path]:
     return out
 
 
+@pytest.mark.parametrize("preset_path", _all_graph_presets(), ids=lambda p: p.stem)
+def test_every_graph_preset_validates_as_effect_graph(preset_path: Path) -> None:
+    """EVERY graph-shaped preset must validate as ``EffectGraph``.
+
+    Corpus-wide schema floor: any preset in ``presets/`` with a ``nodes``
+    map must construct cleanly under ``EffectGraph(**raw)``. A failure here
+    means the preset is missing ``edges``, has malformed ``edges``, or has
+    a bad ``nodes`` entry — the runtime would either crash on load or
+    (worse) silently swallow the ``ValidationError`` at
+    ``agents/studio_compositor/state.py:362`` and hold the previous chain.
+    """
+    raw = json.loads(preset_path.read_text(encoding="utf-8"))
+    try:
+        EffectGraph(**raw)
+    except ValidationError as exc:  # pragma: no cover — failure path
+        pytest.fail(
+            f"{preset_path.name} fails EffectGraph schema:\n{exc}\n"
+            f"Add the missing field(s) so the compositor can load this preset."
+        )
+
+
 @pytest.mark.parametrize("preset_path", _runtime_wired_presets(), ids=lambda p: p.stem)
-def test_preset_validates_as_effect_graph(preset_path: Path) -> None:
+def test_runtime_wired_presets_validate(preset_path: Path) -> None:
     """Every runtime-wired preset must validate as ``EffectGraph``.
 
     A ``ValidationError`` here means the preset declares ``nodes`` and

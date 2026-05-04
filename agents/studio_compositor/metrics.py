@@ -218,6 +218,11 @@ COMP_NONDESTRUCTIVE_CLAMPS_TOTAL: Any = None
 # behind the single-frame budget.
 HAPAX_WARD_FX_EVENTS_TOTAL: Any = None
 HAPAX_WARD_FX_LATENCY_SECONDS: Any = None
+# Researcher audit (2026-05-03) halftone-monoculture root-cause #3:
+# preset load failures are now surfaced as a counter labelled by preset
+# name and exception class (was DEBUG-swallowed before, masking a 64%
+# load-fail rate).
+HAPAX_COMPOSITOR_PRESET_LOAD_FAILED_TOTAL: Any = None
 # Task #136 — follow-mode cut counter. Incremented from
 # ``state.py``'s hero-override consumer when follow-mode drives the
 # hero-camera selection (no manual override present). Labelled by
@@ -981,6 +986,23 @@ def _init_metrics() -> None:
         registry=REGISTRY,
     )
 
+    # Researcher audit (2026-05-03) halftone-monoculture root-cause #3:
+    # state.py was swallowing graph/preset load failures (Pydantic
+    # ValidationError + assorted shape errors) at DEBUG level, masking a
+    # 64% load-fail rate that drove the chain back to atmospheric
+    # defaults. Promoting the swallow to WARNING + a Prometheus counter
+    # surfaces the failure rate in dashboards. Labels: ``preset`` (the
+    # graph name when extractable, ``unknown`` otherwise) and ``reason``
+    # (exception class). Cardinality is bounded by the preset registry
+    # size × small set of common exception classes.
+    global HAPAX_COMPOSITOR_PRESET_LOAD_FAILED_TOTAL
+    HAPAX_COMPOSITOR_PRESET_LOAD_FAILED_TOTAL = Counter(
+        "hapax_compositor_preset_load_failed_total",
+        "Compositor graph/preset load failures (mutation file parse + load + activate path).",
+        ["preset", "reason"],
+        registry=REGISTRY,
+    )
+
 
 _init_metrics()
 
@@ -1077,6 +1099,23 @@ def record_refusal_gate_reroll(*, surface: str, outcome: str) -> None:
     if HAPAX_REFUSAL_GATE_REROLLS is None:
         return
     HAPAX_REFUSAL_GATE_REROLLS.labels(surface=surface, outcome=outcome).inc()
+
+
+def record_preset_load_failed(*, preset: str, reason: str) -> None:
+    """Increment the compositor preset-load-failure counter.
+
+    Called from the state-reader loop's graph-mutation / fx-request
+    paths whenever ``EffectGraph(...)`` parsing or
+    ``GraphRuntime.load_graph`` raises. ``preset`` is the graph name
+    when extractable (or ``unknown``); ``reason`` is the exception
+    class. Researcher audit 2026-05-03 promoted these from a silent
+    DEBUG swallow to a loud WARNING + counter so the 64% load-fail
+    rate becomes visible in dashboards.
+    """
+
+    if HAPAX_COMPOSITOR_PRESET_LOAD_FAILED_TOTAL is None:
+        return
+    HAPAX_COMPOSITOR_PRESET_LOAD_FAILED_TOTAL.labels(preset=preset, reason=reason).inc()
 
 
 def register_camera(role: str, model: str) -> None:
