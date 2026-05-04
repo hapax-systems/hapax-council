@@ -70,11 +70,22 @@ class TestExplorationDeficitSeeking:
             f"got {snap.overall_stance.value}"
         )
 
-    def test_seeking_still_blocked_at_degraded(self):
+    def test_seeking_still_blocked_at_degraded(self, monkeypatch):
         """Regression pin: the relaxed gate must not allow SEEKING from
         DEGRADED or CRITICAL. Those represent real infrastructure
         problems where the recruitment-threshold halving would compete
-        with recovery instead of helping."""
+        with recovery instead of helping.
+
+        Pinned to the legacy point-estimate stance via
+        ``HAPAX_STIMMUNG_POSTERIOR_STANCE=0`` because the posterior
+        path (cc-task ``dimension-reading-posterior-promotion``,
+        default-on as of 2026-05-04) intentionally moderates the
+        DEGRADED escalation under measurement-noise — feeding 3
+        oscillating health readings produces sigma > 0 and the
+        ``P(value > 0.6) >= 0.85`` gate may not clear. Posterior
+        semantics are covered by the dedicated phase-c test suite.
+        """
+        monkeypatch.setenv("HAPAX_STIMMUNG_POSTERIOR_STANCE", "0")
         collector = StimmungCollector()
         for _ in range(3):
             self._feed_healthy(collector)
