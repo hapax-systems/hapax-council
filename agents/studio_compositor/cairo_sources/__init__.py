@@ -193,6 +193,17 @@ def _register_builtins() -> None:
     )
 
     register("PrecedentTickerCairoSource", PrecedentTickerCairoSource)
+    # ytb-LORE-EXT-future-wards (cc-task ward-interactive-lore-query-bitchx-repl,
+    # 2026-05-04) — chat-driven !lore REPL ward. Allowlist gate is load-bearing:
+    # the ward only renders queries from operator-curated chat-authority
+    # channelIds (see config/lore/chat-authority-allowlist.yaml or
+    # HAPAX_LORE_CHAT_AUTHORITY_ALLOWLIST env override). Bridges outcome-5
+    # chat work into the lore-surface ward family.
+    from agents.studio_compositor.interactive_lore_query_ward import (
+        InteractiveLoreQueryWard,
+    )
+
+    register("InteractiveLoreQueryWard", InteractiveLoreQueryWard)
     # programme-banner-ward (PR #2366, 2026-05-03) — Cairo lower-third
     # surfacing the active programme's role + narrative_beat + residual
     # time. Per /tmp/wsjf-path-content-programming.md §3 G1: the planner
