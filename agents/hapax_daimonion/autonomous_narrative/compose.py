@@ -17,7 +17,7 @@ import os
 import re
 from typing import Any
 
-from shared.claim_prompt import SURFACE_FLOORS, render_envelope
+from shared.claim_prompt import SURFACE_FLOORS
 from shared.narration_triad import render_triad_prompt_context
 from shared.operator_referent import REFERENTS
 
@@ -105,8 +105,35 @@ def compose_narrative(
     nothing. Empty chronicle is no longer a short-circuit — the LLM
     can compose from programme/stimmung/activity alone.
     """
+    try:
+        import json
+        from pathlib import Path
+
+        bands_raw = json.loads(
+            Path("/dev/shm/hapax-temporal/bands.json").read_text(encoding="utf-8")
+        )
+    except Exception:
+        bands_raw = {}
+
+    try:
+        from agents.hapax_daimonion.phenomenal_context import render as render_phenom
+
+        phenom_text = render_phenom(tier="CAPABLE")
+        phenom_lines = phenom_text.strip().split("\n") if phenom_text else []
+    except Exception:
+        phenom_lines = []
+
+    from shared.grounding_context import GroundingContextVerifier
+
+    envelope = GroundingContextVerifier.build_envelope(
+        turn_id="autonomous_narrative",
+        temporal_bands=bands_raw,
+        phenomenal_lines=phenom_lines,
+        available_tools=[],
+    )
+
     seed = _build_seed(context)
-    prompt = _build_prompt(context, seed, operator_referent=operator_referent)
+    prompt = _build_prompt(context, seed, operator_referent=operator_referent, envelope=envelope)
 
     if llm_call is None:
         llm_call = _call_llm_grounded
@@ -123,9 +150,27 @@ def compose_narrative(
     cleaned = _sanitize_register(polished.strip(), operator_referent=operator_referent)
     if not cleaned:
         return None
-    if cleaned[-1] not in ".!?":
-        cleaned = cleaned + "."
-    return cleaned
+
+    sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+    safe_sentences = []
+    for sentence in sentences:
+        s = sentence.strip()
+        if not s:
+            continue
+        is_safe, reason = GroundingContextVerifier.verify_clause(envelope, s)
+        if is_safe:
+            safe_sentences.append(s)
+        else:
+            log.warning(
+                "autonomous_narrative clause gate rejected sentence: %r (reason: %s)", s, reason
+            )
+
+    final_text = " ".join(safe_sentences).strip()
+    if not final_text:
+        return None
+    if final_text[-1] not in ".!?":
+        final_text = final_text + "."
+    return final_text
 
 
 def _build_seed(context: Any) -> str:
@@ -223,9 +268,20 @@ def _summarize_events(events: tuple[dict, ...]) -> str:
     return "\n" + "\n".join(bullets)
 
 
-def _build_prompt(context: Any, seed: str, *, operator_referent: str | None = None) -> str:
+def _build_prompt(
+    context: Any, seed: str, *, operator_referent: str | None = None, envelope: Any | None = None
+) -> str:
     """The full LLM prompt for the local grounded tier."""
-    envelope = render_envelope([], floor=SURFACE_FLOORS["autonomous_narrative"])
+    if envelope is not None:
+        from shared.grounding_context import GroundingContextVerifier
+
+        envelope_xml = GroundingContextVerifier.render_xml(envelope)
+    else:
+        # Fallback for tests that don't pass an envelope
+        from shared.claim_prompt import render_envelope
+
+        envelope_xml = render_envelope([], floor=SURFACE_FLOORS["autonomous_narrative"])
+
     referent_clause = ""
     if operator_referent:
         referents = ", ".join(f"'{r}'" for r in REFERENTS)
@@ -235,7 +291,7 @@ def _build_prompt(context: Any, seed: str, *, operator_referent: str | None = No
             f"operator referent from this set: {referents}.\n"
         )
     return (
-        f"{envelope}\n\n"
+        f"{envelope_xml}\n\n"
         "Compose one short autonomous narration for the Hapax "
         "research-instrument livestream, spoken in first-system voice "
         "(Hapax as a system, not a character).\n\n"

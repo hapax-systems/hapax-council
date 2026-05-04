@@ -1119,35 +1119,38 @@ class ConversationPipeline:
             _model = getattr(self, "_turn_model", self.llm_model)
             _tier_name = getattr(self, "_turn_model_tier", "")
 
-            # LOCAL tier: phenomenal context replaces the old context_distillation.
-            # Identity + orientation in ~60 tokens. The phenomenal renderer
-            # returns layers 1-3 for LOCAL (stimmung + situation + impression),
-            # which is a directionally faithful rendering of the same temporal
-            # structure that CAPABLE gets in full — just at lower fidelity.
-            _messages = self.messages
-            if _tier_name == "LOCAL" and _messages and _messages[0].get("role") == "system":
-                try:
-                    from agents.hapax_daimonion.phenomenal_context import render as render_phenom
+            # Build GroundingContextEnvelope
+            try:
+                import json
+                from pathlib import Path
 
-                    phenom = render_phenom(tier="LOCAL")
-                except Exception:
-                    phenom = self._context_distillation  # fallback to old distillation
-                _messages = [
-                    {
-                        "role": "system",
-                        "content": (
-                            compose_persona_prompt(
-                                role_id="partner-in-conversation", compressed=True
-                            )
-                            + (f"\n\n{phenom}" if phenom else "")
-                        ),
-                    },
-                    *_messages[1:],
-                ]
+                bands_raw = json.loads(
+                    Path("/dev/shm/hapax-temporal/bands.json").read_text(encoding="utf-8")
+                )
+            except Exception:
+                bands_raw = {}
+
+            try:
+                from agents.hapax_daimonion.phenomenal_context import render as render_phenom
+
+                phenom_text = render_phenom(tier=_tier_name or "CAPABLE")
+                phenom_lines = phenom_text.strip().split("\n") if phenom_text else []
+            except Exception:
+                phenom_lines = []
+
+            available_tool_names = [t["function"]["name"] for t in self.tools] if self.tools else []
+
+            from shared.grounding_context import GroundingContextVerifier
+
+            envelope = GroundingContextVerifier.build_envelope(
+                turn_id=str(self.turn_count),
+                temporal_bands=bands_raw,
+                phenomenal_lines=phenom_lines,
+                available_tools=available_tool_names,
+            )
 
             kwargs = {
                 "model": f"openai/{_model}",
-                "messages": _messages,
                 "stream": True,
                 "max_tokens": _TIER_MAX_TOKENS.get(
                     getattr(self, "_turn_model_tier", ""), _MAX_RESPONSE_TOKENS
@@ -1157,20 +1160,40 @@ class ConversationPipeline:
                 "api_key": os.environ.get("LITELLM_API_KEY", "not-set"),
             }
             if self.tools and self._tool_recruitment_gate:
-                # Extract last user utterance for recruitment
-                _last_user_text = ""
-                for _m in reversed(self.messages):
-                    if _m.get("role") == "user":
-                        _last_user_text = _m.get("content", "") or ""
-                        break
-                recruited_names = self._tool_recruitment_gate.recruit(_last_user_text)
+                recruited_names = self._tool_recruitment_gate.recruit(envelope)
                 if recruited_names:
+                    envelope = GroundingContextVerifier.build_envelope(
+                        turn_id=str(self.turn_count),
+                        temporal_bands=bands_raw,
+                        phenomenal_lines=phenom_lines,
+                        available_tools=available_tool_names,
+                        recruited_tools=recruited_names,
+                    )
                     kwargs["tools"] = [
                         t for t in self.tools if t["function"]["name"] in recruited_names
                     ]
-                # If no tools recruited, don't add tools — LLM sees no tools
             elif self.tools:
-                kwargs["tools"] = self.tools  # fallback: no gate, use all
+                kwargs["tools"] = self.tools
+
+            self._current_envelope = envelope
+
+            _messages = self.messages
+            if _messages and _messages[0].get("role") == "system":
+                _sys_content = _messages[0].get("content", "")
+                if _tier_name == "LOCAL":
+                    _sys_content = compose_persona_prompt(
+                        role_id="partner-in-conversation", compressed=True
+                    )
+
+                _xml = GroundingContextVerifier.render_xml(envelope)
+                _messages = [
+                    {
+                        "role": "system",
+                        "content": f"{_sys_content}\n\n{_xml}",
+                    },
+                    *_messages[1:],
+                ]
+            kwargs["messages"] = _messages
 
             kwargs["timeout"] = 15  # seconds — fail fast, don't block conversation
             _t_llm_start = time.monotonic()
@@ -1190,6 +1213,7 @@ class ConversationPipeline:
             _t_first_token = 0.0
             _t_first_audio = 0.0
             _first_clause_spoken = False
+            spoken_full_text = ""
             _spoken_words = 0  # Track words sent to TTS for cutoff
             # Word limit: effort-driven (Batch 2) > lockdown fixed > density-driven
             if self._grounding_ledger is not None and self._experiment_flags.get(
@@ -1269,7 +1293,9 @@ class ConversationPipeline:
                             cut = cut.split(tag)[0]
                     cut = cut.strip()
                     if cut and not _first_clause_spoken:
-                        await self._speak_sentence(cut)
+                        actual = await self._speak_sentence(cut)
+                        if actual:
+                            spoken_full_text += actual + " "
                     log.info("Halted: LLM hallucinated tool XML in text output")
                     full_text = cut
                     accumulated = ""
@@ -1287,17 +1313,23 @@ class ConversationPipeline:
                     if len(parts) > 1:
                         to_speak = parts[0].strip()
                         if to_speak and _words >= _MIN_FIRST_CLAUSE_WORDS:
-                            await self._speak_sentence(to_speak)
+                            actual = await self._speak_sentence(to_speak)
+                            if actual:
+                                spoken_full_text += actual + " "
                             _first_clause_spoken = True
                             # Speak any complete middle clauses too (don't drop them)
                             for mid in parts[1:-1]:
                                 mid = mid.strip()
                                 if mid and len(mid.split()) >= _MIN_CLAUSE_WORDS:
-                                    await self._speak_sentence(mid)
+                                    actual = await self._speak_sentence(mid)
+                                    if actual:
+                                        spoken_full_text += actual + " "
                             accumulated = parts[-1]
                             accumulation_start = time.monotonic()
                     elif _elapsed > _MAX_ACCUMULATION_S and _words >= _MIN_FIRST_CLAUSE_WORDS:
-                        await self._speak_sentence(accumulated.strip())
+                        actual = await self._speak_sentence(accumulated.strip())
+                        if actual:
+                            spoken_full_text += actual + " "
                         _first_clause_spoken = True
                         accumulated = ""
                         accumulation_start = time.monotonic()
@@ -1309,7 +1341,9 @@ class ConversationPipeline:
                         for sentence in parts[:-1]:
                             sentence = sentence.strip()
                             if sentence and len(sentence.split()) >= _MIN_CLAUSE_WORDS:
-                                await self._speak_sentence(sentence)
+                                actual = await self._speak_sentence(sentence)
+                                if actual:
+                                    spoken_full_text += actual + " "
                                 _spoke = True
                                 if self.buffer and self.buffer.barge_in_detected:
                                     log.info("Barge-in: cutting response short")
@@ -1319,7 +1353,9 @@ class ConversationPipeline:
                             accumulation_start = time.monotonic()
                     elif _elapsed > _MAX_ACCUMULATION_S:
                         if accumulated.strip() and _words >= _MIN_CLAUSE_WORDS:
-                            await self._speak_sentence(accumulated.strip())
+                            actual = await self._speak_sentence(accumulated.strip())
+                            if actual:
+                                spoken_full_text += actual + " "
                             accumulated = ""
                             accumulation_start = time.monotonic()
 
@@ -1343,7 +1379,9 @@ class ConversationPipeline:
             # Flush remaining text (skip if barge-in or word cutoff)
             if accumulated.strip() and not (self.buffer and self.buffer.barge_in_detected):
                 if _spoken_words < _word_limit:
-                    await self._speak_sentence(accumulated.strip())
+                    actual = await self._speak_sentence(accumulated.strip())
+                    if actual:
+                        spoken_full_text += actual + " "
 
             # Expose word counts for visual overlay monitoring
             self.last_spoken_words = _spoken_words
@@ -1353,16 +1391,16 @@ class ConversationPipeline:
             if full_text:
                 log.info("LLM full response (%d chars): %r", len(full_text), full_text[:200])
 
-            # Record assistant message (even partial on barge-in)
-            # Only append here if there are NO tool calls — _handle_tool_calls
-            # appends its own assistant message with the tool_calls structure.
+            # Record assistant message using safely spoken clauses
             if full_text and not tool_calls_data:
-                self.messages.append({"role": "assistant", "content": full_text})
-                if self.buffer and self.buffer.barge_in_detected:
-                    self._emit("assistant_interrupted", text=full_text)
-                    self._emit("user_interrupted", turn=self.turn_count)
-                else:
-                    self._emit("assistant_response", text=full_text)
+                spoken_full_text = spoken_full_text.strip()
+                if spoken_full_text:
+                    self.messages.append({"role": "assistant", "content": spoken_full_text})
+                    if self.buffer and self.buffer.barge_in_detected:
+                        self._emit("assistant_interrupted", text=spoken_full_text)
+                        self._emit("user_interrupted", turn=self.turn_count)
+                    else:
+                        self._emit("assistant_response", text=spoken_full_text)
                 self._last_assistant_end = time.monotonic()
 
             # Tool calls: skip in voice turns to avoid 10-15s latency penalty.
@@ -1911,7 +1949,7 @@ class ConversationPipeline:
         *,
         destination_target: str | None = None,
         destination_role: str | None = None,
-    ) -> None:
+    ) -> str:
         """Synthesize and play a single sentence/clause.
 
         TTS runs in _tts_executor, audio write runs in _audio_executor.
@@ -1930,7 +1968,7 @@ class ConversationPipeline:
         ``Broadcast`` role, while private clips pick up the ``Assistant`` role.
         """
         if not self._running:
-            return
+            return ""
 
         if destination_target is None and destination_role is None:
             allowed, destination_target, destination_role = self._resolve_direct_playback_route(
@@ -1938,7 +1976,17 @@ class ConversationPipeline:
                 text=text,
             )
             if not allowed:
-                return
+                return ""
+
+        # Apply grounding context clause gate
+        if hasattr(self, "_current_envelope") and self._current_envelope is not None:
+            from shared.grounding_context import GroundingContextVerifier
+
+            is_safe, reason = GroundingContextVerifier.verify_clause(self._current_envelope, text)
+            if not is_safe:
+                log.warning("Clause gate rejected sentence: %r (reason: %s)", text, reason)
+                text = f"I cannot verify that right now. {reason}."
+                self._emit("clause_gate_refusal", reason=reason)
 
         # Track for echo detection — store with timestamp for TTL pruning
         self._recent_tts_texts.append((time.monotonic(), text.lower().strip().rstrip(".,!?")))
@@ -1951,7 +1999,7 @@ class ConversationPipeline:
             # or silence. Keep original in echo detection history.
             tts_text = _strip_emoji(text)
             if not tts_text.strip():
-                return  # text was only emoji
+                return ""  # text was only emoji
 
             loop = asyncio.get_running_loop()
             pcm = await loop.run_in_executor(
@@ -1994,8 +2042,10 @@ class ConversationPipeline:
                     destination_target,
                     destination_role,
                 )
+            return text
         except Exception:
             log.debug("TTS/playback failed for: %s", text[:50], exc_info=True)
+            return ""
 
     @staticmethod
     def _write_audio(
