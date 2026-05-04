@@ -90,9 +90,20 @@ _transition_lock = threading.Lock()
 
 
 def _write_mutation(graph: dict) -> None:
-    """Primitive callback — write a graph dict to the SHM mutation file."""
+    """Primitive callback — write a graph dict to the SHM mutation file.
+
+    Tags the mutation with ``_source: "recruitment"`` so ``state.py`` can
+    distinguish recruitment-originated chain mutations from operator-manual
+    ones (chain builder PUT, fx-request, chat reactor). The reader pops the
+    field before constructing ``EffectGraph``. Source-aware hold lifecycle:
+    recruitment → 25s hold (next director recruitment can land), operator
+    manual → 600s hold (protects operator-authored intent from director
+    thrash).
+    """
     MUTATION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    MUTATION_FILE.write_text(json.dumps(graph))
+    tagged = dict(graph)
+    tagged["_source"] = "recruitment"
+    MUTATION_FILE.write_text(json.dumps(tagged))
 
 
 def _read_recruited_transition() -> str | None:

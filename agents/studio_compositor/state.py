@@ -362,11 +362,24 @@ def state_reader_loop(compositor: Any) -> None:
                             preset_hint = _hint
                     except Exception:
                         pass
-                    graph = EffectGraph(**json.loads(raw))
+                    parsed = json.loads(raw)
+                    # Source-aware hold lifecycle. Recruitment-driven
+                    # mutations (preset_recruitment_consumer._write_mutation)
+                    # tag with _source="recruitment" and get a 25s hold so
+                    # the next director recruitment can land. Operator-manual
+                    # paths (chain builder PUT, chat reactor, untagged) keep
+                    # the 600s hold that protects authored intent from
+                    # director thrash. _source is not an EffectGraph field,
+                    # so pop before construction.
+                    source_tag = parsed.pop("_source", None)
+                    graph = EffectGraph(**parsed)
                     graph = merge_default_modulations(graph)
                     compositor._graph_runtime.load_graph(graph)
                     compositor._current_preset_name = graph.name
-                    compositor._user_preset_hold_until = time.monotonic() + 600.0
+                    if source_tag == "recruitment":
+                        compositor._user_preset_hold_until = time.monotonic() + 25.0
+                    else:
+                        compositor._user_preset_hold_until = time.monotonic() + 600.0
                     try:
                         (SNAPSHOT_DIR / "fx-current.txt").write_text(graph.name)
                     except OSError:
