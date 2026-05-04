@@ -1,6 +1,6 @@
 {
   "name": "Chrome Mirror Polished",
-  "description": "Chrome-mirror lineage (1/2): heavy mirror + chromatic_aberration + bloom creates a polished-chrome surface aesthetic — image becomes reflective metal. Lineage: chrome-mirror.",
+  "description": "Chrome-mirror lineage (1/2): heavy mirror + chromatic_aberration + bloom creates a polished-chrome surface aesthetic \u2014 image becomes reflective metal. Lineage: chrome-mirror.",
   "lineage": "chrome-mirror",
   "transition_ms": 1800,
   "nodes": {
@@ -43,5 +43,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "mirror_chrome"
+    ],
+    [
+      "mirror_chrome",
+      "chroma_chrome"
+    ],
+    [
+      "chroma_chrome",
+      "bloom_chrome"
+    ],
+    [
+      "bloom_chrome",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

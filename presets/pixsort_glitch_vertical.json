@@ -1,6 +1,6 @@
 {
   "name": "Pixsort Glitch Vertical",
-  "description": "Pixsort-glitch lineage (2/2): vertical pixsort + glitch_block + stutter — image collapses vertically along sorted luminance bands. Lineage: pixsort-glitch.",
+  "description": "Pixsort-glitch lineage (2/2): vertical pixsort + glitch_block + stutter \u2014 image collapses vertically along sorted luminance bands. Lineage: pixsort-glitch.",
   "lineage": "pixsort-glitch",
   "transition_ms": 1000,
   "nodes": {
@@ -44,5 +44,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "pixsort_v"
+    ],
+    [
+      "pixsort_v",
+      "glitch_pixsort"
+    ],
+    [
+      "glitch_pixsort",
+      "stutter_pixsort"
+    ],
+    [
+      "stutter_pixsort",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

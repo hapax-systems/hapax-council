@@ -43,5 +43,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "glitch_block"
+    ],
+    [
+      "glitch_block",
+      "stutter"
+    ],
+    [
+      "stutter",
+      "chroma"
+    ],
+    [
+      "chroma",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

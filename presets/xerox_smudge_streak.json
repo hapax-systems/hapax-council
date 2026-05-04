@@ -42,5 +42,36 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "modulations": [],
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "displacement_smudge:a"
+    ],
+    [
+      "colorgrade",
+      "displacement_smudge:b"
+    ],
+    [
+      "displacement_smudge",
+      "threshold_smudge"
+    ],
+    [
+      "threshold_smudge",
+      "slitscan_streak"
+    ],
+    [
+      "slitscan_streak",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ]
 }
