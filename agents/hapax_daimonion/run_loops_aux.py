@@ -734,6 +734,37 @@ async def prepared_playback_loop(daemon: object) -> None:
                     "prepared_playback_loop: deactivate failed for %s", prog_id, exc_info=True
                 )
 
+            # Post-delivery self-evaluation → impingement
+            # Complement to prep-time self-eval: this one measures what
+            # was actually delivered, not just what was composed.
+            try:
+                _bus = _Path("/dev/shm/hapax-dmn/impingements.jsonl")
+                if _bus.parent.exists():
+                    total_chars = sum(len(b) for b in script if b.strip())
+                    delivered_count = sum(1 for b in script if b.strip())
+                    avg_chars = total_chars / max(delivered_count, 1)
+                    _eval_imp = {
+                        "source": "self_evaluation.segment_delivery",
+                        "programme_id": prog_id,
+                        "role": role,
+                        "evaluation": {
+                            "blocks_delivered": delivered_count,
+                            "total_chars_delivered": total_chars,
+                            "avg_chars_per_block": round(avg_chars),
+                        },
+                        "ts": _ward_time.time(),
+                    }
+                    with _bus.open("a") as _f:
+                        _f.write(_json.dumps(_eval_imp) + "\n")
+                    log.info(
+                        "self-eval delivery: %s blocks=%d avg_chars=%.0f",
+                        prog_id,
+                        delivered_count,
+                        avg_chars,
+                    )
+            except Exception:
+                log.debug("self-eval delivery: emission failed", exc_info=True)
+
             # Inter-programme gap — DURF returns to integrated
             await asyncio.sleep(2.0)
             set_ward_properties(

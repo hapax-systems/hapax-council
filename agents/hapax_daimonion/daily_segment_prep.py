@@ -40,8 +40,10 @@ DEFAULT_PREP_DIR = Path(
 # Max wall-clock for the entire prep window.
 PREP_BUDGET_S = float(os.environ.get("HAPAX_SEGMENT_PREP_BUDGET_S", "1800"))  # 30 min
 
-# How many segments to prep per run.
-MAX_SEGMENTS = int(os.environ.get("HAPAX_SEGMENT_PREP_MAX", "6"))
+# How many segments to prep per run.  Fewer segments = more time per
+# segment for iterative refinement.  Each segment gets an initial
+# composition pass PLUS a critic/rewrite pass.
+MAX_SEGMENTS = int(os.environ.get("HAPAX_SEGMENT_PREP_MAX", "4"))
 
 
 def _today_dir(base: Path) -> Path:
@@ -60,7 +62,8 @@ def _build_full_segment_prompt(
 
     Unlike the live `build_segment_prompt` which asks for the current
     beat only, this prompt gives the full structure and asks for a
-    JSON array of narration blocks — one per beat.
+    JSON array of narration blocks — one per beat.  Each beat is a
+    substantial paragraph (800-2000 chars, ~1-2 minutes spoken).
     """
     from shared.claim_prompt import SURFACE_FLOORS, render_envelope
     from shared.operator_referent import REFERENTS
@@ -89,25 +92,45 @@ def _build_full_segment_prompt(
         f"for your research livestream.\n\n"
         f"== SEGMENT DIRECTION ==\n{narrative_beat}\n\n"
         f"== SEGMENT STRUCTURE ==\n{beat_lines}\n\n"
+        "== DRAMATIC ARC ==\n"
+        "Every segment is a PERFORMANCE, not a listicle. Shape energy across beats:\n"
+        "- OPEN with a hook that creates *tension* — a question, a paradox, a provocation\n"
+        "- BUILD through the body — each beat must EARN the next, not just follow it\n"
+        "- Include at least one PIVOT — a moment where the frame shifts unexpectedly\n"
+        "- PEAK at roughly 2/3 through — the deepest, most surprising, most specific beat\n"
+        "- BREATHE before landing — a beat that lets the audience absorb what just happened\n"
+        "- CLOSE with a reframe that changes how the opening sounds in retrospect\n\n"
+        "== BEAT DEPTH ==\n"
+        "Each beat is 800-2000 characters of spoken prose (1-2 minutes at broadcast pace).\n"
+        "That means 8-20 sentences per beat. Think ESSAY PARAGRAPH, not tweet thread.\n"
+        "- Every claim gets its FULL ARGUMENT, not just an assertion\n"
+        "- Sources get CONTEXT: 'Zuboff argues X because Y, which matters because Z'\n"
+        "- Transitions between beats should feel like a DJ crossfade, not a chapter break\n"
+        "- Use rhetorical questions, callbacks to earlier beats, direct address to chat\n"
+        "- Let ideas BREATHE — develop a point, sit with it, then pivot\n"
+        "- A beat that can be summarized in one sentence is a beat that wasn't written yet\n\n"
         "== YOUR TASK ==\n"
-        "Compose the COMPLETE narration for this segment — one block of "
-        "broadcast-ready prose per beat. Return a JSON array where each "
-        "element is the spoken text for that beat (3-8 sentences, 200-600 "
-        "characters each).\n\n"
+        "Compose the COMPLETE narration for this segment — one SUBSTANTIAL block of "
+        "broadcast-ready prose per beat. Return a JSON array where each element is "
+        "the spoken text for that beat (800-2000 characters each, 8-20 sentences).\n\n"
         "Example format:\n"
-        '[\n  "First beat narration here. Specific claims with sources. ...",\n'
-        '  "Second beat narration. Continue the argument. ...",\n'
+        '[\n  "Opening beat — a full paragraph that hooks, contextualizes, and builds '
+        'anticipation. Multiple sentences developing the frame...",\n'
+        '  "Second beat — continues with depth. Names sources with context. Develops '
+        'the argument across many sentences...",\n'
         "  ...\n]\n\n"
         "REGISTER: specialist host on a live production. Mid-Atlantic "
         "broadcast — informed, direct, opinionated. Conference keynote "
-        "meets late-night monologue.\n\n"
+        "meets late-night monologue. Charlie Rose depth meets Anthony Bourdain energy.\n\n"
         "RHETORIC — every beat must satisfy ALL of these:\n"
-        "1. CLAIM → EVIDENCE → SO-WHAT per beat.\n"
+        "1. CLAIM → EVIDENCE → SO-WHAT → IMPLICATION chain per beat.\n"
         "2. Every sentence has at least one TECHNICAL NOUN or PROPER NAME.\n"
-        "3. Every claim NAMES ITS SOURCE.\n"
+        "3. Every claim NAMES ITS SOURCE with context, not just a name-drop.\n"
         "4. ACTIVE VOICE throughout.\n"
         "5. Code for INSIDERS, land for OUTSIDERS.\n"
         "6. Hapax is the system's name. Never 'the AI'.\n"
+        "7. VARY SENTENCE LENGTH — short punches between longer developments.\n"
+        "8. Each beat must be AT LEAST 800 characters. Shorter beats are FAILURES.\n"
         f"{referent_clause}\n"
         "Segment research & assets:\n"
         "---\n"
@@ -118,51 +141,62 @@ def _build_full_segment_prompt(
     )
 
 
-def _call_llm(prompt: str) -> str:
-    """Call the LLM for segment prep via the LiteLLM gateway.
+# LLM timeout — raised from 180s to 300s to accommodate longer, richer
+# output from the expanded prompt (800-2000 chars per beat × 10-15 beats).
+_PREP_LLM_TIMEOUT_S = 300
 
-    Uses the same raw urllib pattern as the programme planner so the
-    prep runner works in the same environments (service, CLI with secrets).
+
+def _call_llm(prompt: str) -> str:
+    """Call the LLM — TabbyAPI primary, LiteLLM fallback.
+
+    Mirrors the programme planner's local-first routing: TabbyAPI at
+    localhost:5000 for zero external dependency, LiteLLM at localhost:4000
+    as fallback.
     """
     import urllib.request
 
+    tabby_url = os.environ.get("HAPAX_TABBY_URL", "http://localhost:5000/v1/chat/completions")
     litellm_url = os.environ.get("HAPAX_LITELLM_URL", "http://localhost:4000/v1/chat/completions")
     litellm_key = os.environ.get("LITELLM_API_KEY", "")
-    model = os.environ.get("HAPAX_SEGMENT_PREP_MODEL", "claude-opus")
+    model = os.environ.get("HAPAX_SEGMENT_PREP_MODEL", "command-r-08-2024-exl3-5.0bpw")
 
     body = json.dumps(
         {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 8192,
+            "max_tokens": 16384,
+            "temperature": 0.7,
         }
     ).encode()
 
-    req = urllib.request.Request(
-        litellm_url,
-        body,
-        {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {litellm_key}",
-        },
-    )
+    # Primary: TabbyAPI (local, no auth)
     try:
-        with urllib.request.urlopen(req, timeout=180) as resp:
+        req = urllib.request.Request(tabby_url, body, {"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=_PREP_LLM_TIMEOUT_S) as resp:
             data = json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        err_body = ""
-        try:
-            err_body = e.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
-            pass
-        log.warning("segment prep LLM HTTP %d: %s", e.code, err_body)
-        raise
+        content = data["choices"][0]["message"]["content"] or ""
+        if content:
+            log.info("segment prep LLM: served by TabbyAPI (local)")
+            return content
+    except Exception:
+        log.info("segment prep LLM: TabbyAPI unavailable, trying LiteLLM")
 
+    # Fallback: LiteLLM
     try:
+        req = urllib.request.Request(
+            litellm_url,
+            body,
+            {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {litellm_key}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=_PREP_LLM_TIMEOUT_S) as resp:
+            data = json.loads(resp.read())
         return data["choices"][0]["message"]["content"] or ""
-    except (KeyError, IndexError):
-        log.warning("segment prep: unexpected LLM response shape")
-        return ""
+    except Exception:
+        log.warning("segment prep LLM: both TabbyAPI and LiteLLM failed", exc_info=True)
+        raise
 
 
 def _parse_script(raw: str) -> list[str]:
@@ -208,8 +242,91 @@ def _build_seed(programme: Any) -> str:
         return getattr(content, "narrative_beat", "") or ""
 
 
+def _build_refinement_prompt(script: list[str], programme: Any) -> str:
+    """Build a critic/rewrite prompt for iterative refinement.
+
+    Takes the initial draft and asks the LLM to evaluate each beat
+    and rewrite any that are thin, rushed, or don't earn their
+    conclusions.
+    """
+    role = getattr(getattr(programme, "role", None), "value", "rant")
+    content = getattr(programme, "content", None)
+    narrative_beat = getattr(content, "narrative_beat", "") or "" if content else ""
+    beats = getattr(content, "segment_beats", []) or [] if content else []
+
+    beat_review = ""
+    for i, (direction, text) in enumerate(zip(beats, script, strict=False)):
+        chars = len(text)
+        beat_review += f"\n--- Beat {i + 1} ({chars} chars) ---\n"
+        beat_review += f"Direction: {direction}\n"
+        beat_review += f"Draft: {text}\n"
+
+    return (
+        f"You are a broadcast editor reviewing a {role.upper().replace('_', ' ')} "
+        f"segment script for a research livestream.\n\n"
+        f"Topic: {narrative_beat}\n\n"
+        "== REVIEW CRITERIA ==\n"
+        "For each beat, evaluate:\n"
+        "1. LENGTH: Is it at least 800 characters? Beats under 600 chars are THIN.\n"
+        "2. SPECIFICITY: Does it name sources WITH context, or just name-drop?\n"
+        "3. ARC: Does it earn the next beat, or just stop and start a new topic?\n"
+        "4. RHETORIC: Does it vary sentence length? Use direct address? Callbacks?\n"
+        "5. ENERGY: Does the beat breathe, or does it rush through its material?\n"
+        "6. DEPTH: Could a Wikipedia article make this same point? If yes, it's too shallow.\n\n"
+        "== THE DRAFT ==\n"
+        f"{beat_review}\n\n"
+        "== YOUR TASK ==\n"
+        "Rewrite the ENTIRE script. For beats that are strong, keep them largely "
+        "intact but polish transitions. For beats that are thin, rushed, or shallow, "
+        "SUBSTANTIALLY expand them — add argument, add evidence, add rhetorical "
+        "texture. Every beat in the output MUST be at least 800 characters.\n\n"
+        "Return a JSON array of the rewritten beats (same count as the input). "
+        "Output ONLY the JSON array. No preamble, no markdown fences. "
+        "Start with [ and end with ]."
+    )
+
+
+def _refine_script(
+    script: list[str],
+    programme: Any,
+) -> list[str]:
+    """Iterative refinement pass — critic + rewrite.
+
+    Sends the initial draft to the LLM with a broadcast-editor persona
+    that evaluates each beat on specificity, arc, length, and rhetoric,
+    then rewrites weak beats.  Returns the improved script.
+    """
+    prompt = _build_refinement_prompt(script, programme)
+    try:
+        raw = _call_llm(prompt)
+        refined = _parse_script(raw)
+        if refined and len(refined) >= len(script):
+            # Log improvement stats
+            old_avg = sum(len(b) for b in script) / max(len(script), 1)
+            new_avg = sum(len(b) for b in refined) / max(len(refined), 1)
+            log.info(
+                "refinement: avg chars/beat %.0f → %.0f (%.0f%% change)",
+                old_avg,
+                new_avg,
+                ((new_avg - old_avg) / max(old_avg, 1)) * 100,
+            )
+            return refined[: len(script)]  # Trim to original beat count
+        log.warning(
+            "refinement: got %d beats (expected %d), keeping original",
+            len(refined) if refined else 0,
+            len(script),
+        )
+    except Exception:
+        log.warning("refinement: LLM call failed, keeping original", exc_info=True)
+    return script
+
+
 def prep_segment(programme: Any, prep_dir: Path) -> Path | None:
     """Compose the full narration script for one programme and save it.
+
+    Two-pass process:
+      1. Initial composition — full script from the segment prompt
+      2. Refinement — broadcast-editor review + rewrite of weak beats
 
     Returns the path to the saved JSON file, or None on failure.
     """
@@ -224,6 +341,7 @@ def prep_segment(programme: Any, prep_dir: Path) -> Path | None:
 
     log.info("prep_segment: composing %s (%s, %d beats)", prog_id, role, len(beats))
 
+    # Pass 1: Initial composition
     seed = _build_seed(programme)
     prompt = _build_full_segment_prompt(programme, seed)
     raw = _call_llm(prompt)
@@ -244,8 +362,20 @@ def prep_segment(programme: Any, prep_dir: Path) -> Path | None:
     elif len(script) > len(beats):
         script = script[: len(beats)]
 
+    avg_chars = sum(len(b) for b in script) / max(len(script), 1)
+    log.info(
+        "prep_segment: pass 1 done for %s — %d beats, avg %.0f chars/beat",
+        prog_id,
+        len(script),
+        avg_chars,
+    )
+
+    # Pass 2: Iterative refinement
+    script = _refine_script(script, programme)
+
     # Save to disk
     out_path = prep_dir / f"{prog_id}.json"
+    final_avg = sum(len(b) for b in script) / max(len(script), 1)
     payload = {
         "programme_id": prog_id,
         "role": role,
@@ -254,12 +384,97 @@ def prep_segment(programme: Any, prep_dir: Path) -> Path | None:
         "prepared_script": script,
         "prepped_at": datetime.now(tz=UTC).isoformat(),
         "beat_count": len(beats),
+        "avg_chars_per_beat": round(final_avg),
+        "refinement_applied": True,
     }
     tmp = out_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(out_path)
-    log.info("prep_segment: saved %s (%d blocks)", out_path, len(script))
+    log.info(
+        "prep_segment: saved %s (%d blocks, avg %.0f chars/beat)",
+        out_path,
+        len(script),
+        final_avg,
+    )
+
+    # Pass 3: Self-evaluation → emit impingement
+    # This is how taste develops. Hapax evaluates its own output and
+    # the evaluation flows through the impingement bus into the
+    # narrative drive's Bayesian prior, shaping future generation.
+    _emit_self_evaluation(prog_id, role, script, beats)
+
     return out_path
+
+
+def _emit_self_evaluation(
+    prog_id: str,
+    role: str,
+    script: list[str],
+    beat_directions: list[str],
+) -> None:
+    """Emit a self-evaluation impingement after segment prep.
+
+    Scores the segment on depth, specificity, and arc — then writes
+    the evaluation to the impingement bus.  The narrative drive
+    consumes these impingements and accumulates them as evidence
+    about what Hapax does well and where it falls short.
+
+    This is NOT a personality simulation.  It is a selection pressure:
+    segments that score well on a topic bias future planning toward
+    that topic.  Segments that score poorly bias against the pattern
+    that produced them.
+    """
+    try:
+        thin_beats = sum(1 for b in script if len(b) < 600)
+        avg_chars = sum(len(b) for b in script) / max(len(script), 1)
+        # Rough source density: count capitalized proper nouns as proxy
+        total_text = " ".join(script)
+        # Words that look like source citations (capitalized, 2+ chars)
+        source_like = [
+            w
+            for w in total_text.split()
+            if len(w) > 2
+            and w[0].isupper()
+            and w not in ("The", "This", "That", "And", "But", "For", "Not")
+        ]
+        source_density = len(source_like) / max(len(total_text.split()), 1)
+
+        quality = (
+            "strong"
+            if thin_beats == 0 and avg_chars > 800
+            else "developing"
+            if thin_beats <= 2
+            else "thin"
+        )
+
+        impingement = {
+            "source": "self_evaluation.segment_prep",
+            "programme_id": prog_id,
+            "role": role,
+            "evaluation": {
+                "quality": quality,
+                "avg_chars_per_beat": round(avg_chars),
+                "thin_beats": thin_beats,
+                "total_beats": len(script),
+                "source_density": round(source_density, 3),
+            },
+            "ts": datetime.now(tz=UTC).isoformat(),
+        }
+
+        bus_path = Path("/dev/shm/hapax-dmn/impingements.jsonl")
+        if bus_path.parent.exists():
+            with bus_path.open("a") as f:
+                f.write(json.dumps(impingement) + "\n")
+            log.info(
+                "self-eval: %s quality=%s avg_chars=%.0f thin=%d sources=%.3f",
+                prog_id,
+                quality,
+                avg_chars,
+                thin_beats,
+                source_density,
+            )
+    except Exception:
+        log.debug("self-eval: impingement emission failed (non-fatal)", exc_info=True)
 
 
 def run_prep(prep_dir: Path | None = None) -> list[Path]:

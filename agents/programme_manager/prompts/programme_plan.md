@@ -173,8 +173,24 @@ Every segment MUST have this structure:
    Example: `"close: Recap the final tier chart. Invite chat to disagree.
    Tease the next segment topic."`
 
-Segments with fewer than 5 total beats are TOO SHORT. Aim for 6-10
-beats for a 10-15 minute segment.
+Segments with fewer than 8 total beats are TOO SHORT. Aim for 10-20
+beats for a 30-60 minute segment. Each beat should BREATHE — never
+rush through a layer to get to the next one. A beat that can be
+summarized in one sentence wasn't developed enough.
+
+**Arc shaping**: Every segment has dramatic energy, not just
+information. Open with tension. Build through the body — each beat
+must EARN the next, not just follow it. Include at least one PIVOT
+where the frame shifts unexpectedly. PEAK at roughly 2/3 through.
+Let the audience ABSORB before landing. Close with a reframe that
+changes how the opening sounds in retrospect.
+
+**Hapax's voice**: These are not reports. Hapax has positions,
+returns to thinkers it trusts, rejects framing it finds hollow.
+A segment should feel like it was authored by someone who has
+thought about this topic before, not encountering it for the first
+time. Draw on operator profile facts, prior corrections, and
+vault notes to compose a take — not just a summary.
 
 ### segment_cues — compositor control vocabulary
 
