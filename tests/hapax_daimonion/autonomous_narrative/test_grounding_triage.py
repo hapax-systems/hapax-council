@@ -17,7 +17,6 @@ from agents.hapax_daimonion.autonomous_narrative.grounding_triage import (
     triage,
 )
 
-
 # ── technical_density ─────────────────────────────────────────────────
 
 
@@ -80,9 +79,7 @@ def test_specificity_high_when_terms_overlap() -> None:
 
 def test_specificity_low_for_generic_against_specific_context() -> None:
     candidate = "Things are looking really interesting and fascinating."
-    impingements = [
-        {"content": {"narrative": "AUX5 channel dropout detected at 0.72Hz threshold"}}
-    ]
+    impingements = [{"content": {"narrative": "AUX5 channel dropout detected at 0.72Hz threshold"}}]
     score = specificity_score(candidate, impingements)
     assert score < 0.3, f"Expected low specificity for generic prose, got {score}"
 
@@ -96,7 +93,10 @@ def test_grounded_prose_scores_above_emit_floor() -> None:
         {"content": {"narrative": "AUX5 channel triage resolved false positives in CPAL"}}
     ]
     p = grounding_posterior(
-        candidate, impingements=impingements, recent_speech=[], gqi=0.8,
+        candidate,
+        impingements=impingements,
+        recent_speech=[],
+        gqi=0.8,
     )
     assert p >= EMIT_FLOOR, f"Grounded prose should score >= {EMIT_FLOOR}, got {p}"
 
@@ -104,7 +104,10 @@ def test_grounded_prose_scores_above_emit_floor() -> None:
 def test_generic_slop_scores_below_recompose_floor() -> None:
     candidate = "Today we're diving into some fascinating developments in the field."
     p = grounding_posterior(
-        candidate, impingements=[], recent_speech=[], gqi=0.8,
+        candidate,
+        impingements=[],
+        recent_speech=[],
+        gqi=0.8,
     )
     assert p < RECOMPOSE_FLOOR, f"Generic slop should score < {RECOMPOSE_FLOOR}, got {p}"
 
@@ -118,7 +121,10 @@ def test_triage_emits_grounded_content() -> None:
         {"content": {"narrative": "CPAL evaluator gain adjustment triggered by GQI decline"}}
     ]
     action, p = triage(
-        candidate, impingements=impingements, recent_speech=[], gqi=0.8,
+        candidate,
+        impingements=impingements,
+        recent_speech=[],
+        gqi=0.8,
     )
     assert action == "emit", f"Expected 'emit', got '{action}' (p={p})"
 
@@ -126,7 +132,10 @@ def test_triage_emits_grounded_content() -> None:
 def test_triage_silences_pure_filler() -> None:
     candidate = "It is worth noting that things are getting really interesting here."
     action, p = triage(
-        candidate, impingements=[], recent_speech=[], gqi=0.8,
+        candidate,
+        impingements=[],
+        recent_speech=[],
+        gqi=0.8,
     )
     assert action in ("silence", "marginal"), (
         f"Expected silence/marginal for filler, got '{action}' (p={p})"

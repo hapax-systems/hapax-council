@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from shared.claim_prompt import SURFACE_FLOORS, render_envelope
 from shared.operator_referent import REFERENTS
 
 # Segmented-content roles that get the full host prompt.
@@ -270,9 +269,11 @@ def build_segment_prompt(
     """
     if envelope is not None:
         from shared.grounding_context import GroundingContextVerifier
+
         envelope_xml = GroundingContextVerifier.render_xml(envelope)
     else:
         from shared.claim_prompt import SURFACE_FLOORS, render_envelope
+
         envelope_xml = render_envelope([], floor=SURFACE_FLOORS["autonomous_narrative"])
 
     # Extract role and segment plan

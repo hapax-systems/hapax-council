@@ -37,7 +37,7 @@ _SPEECH_CHRONICLE = Path("/dev/shm/hapax-daimonion/speech-chronicle.jsonl")
 # Grounding posterior thresholds — tuned from production logs:
 # p=0.27 for 'Hapax observes a shift' → silence (generic observation)
 # p=0.45+ for 'CPAL evaluator gain dropped 0.02' → emit (specific)
-EMIT_FLOOR: float = 0.30       # below this → silence
+EMIT_FLOOR: float = 0.30  # below this → silence
 RECOMPOSE_FLOOR: float = 0.35  # below this → marginal (logged)
 
 # Technical noun pattern: capitalized words, dotted identifiers,
@@ -126,10 +126,40 @@ def specificity_score(candidate: str, impingements: list[dict]) -> float:
     # Jaccard-like: what fraction of candidate words appear in context?
     overlap = candidate_terms & context_terms
     # Remove stopwords from consideration
-    stopwords = {"the", "a", "an", "is", "are", "was", "were", "in", "on",
-                 "at", "to", "for", "of", "and", "or", "but", "not", "with",
-                 "this", "that", "it", "has", "have", "had", "be", "been",
-                 "from", "by", "as", "its", "we", "our", "the"}
+    stopwords = {
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "and",
+        "or",
+        "but",
+        "not",
+        "with",
+        "this",
+        "that",
+        "it",
+        "has",
+        "have",
+        "had",
+        "be",
+        "been",
+        "from",
+        "by",
+        "as",
+        "its",
+        "we",
+        "our",
+    }
     meaningful_candidate = candidate_terms - stopwords
     meaningful_overlap = overlap - stopwords
 
@@ -167,14 +197,11 @@ def technical_density(candidate: str) -> float:
     1.0 = every sentence has specific content.
     0.0 = pure filler.
     """
-    sentences = [s.strip() for s in re.split(r'[.!?]+', candidate) if s.strip()]
+    sentences = [s.strip() for s in re.split(r"[.!?]+", candidate) if s.strip()]
     if not sentences:
         return 0.0
 
-    technical_count = sum(
-        1 for s in sentences
-        if _TECHNICAL_NOUN_RE.search(s)
-    )
+    technical_count = sum(1 for s in sentences if _TECHNICAL_NOUN_RE.search(s))
     return technical_count / len(sentences)
 
 
@@ -209,7 +236,10 @@ def grounding_posterior(
     log.debug(
         "grounding_triage: posterior=%.3f (spec=%.2f nov=%.2f tech=%.2f gqi=%.2f) | %s",
         posterior,
-        factors[0], factors[1], factors[2], factors[3],
+        factors[0],
+        factors[1],
+        factors[2],
+        factors[3],
         candidate[:60],
     )
     return posterior
@@ -245,13 +275,16 @@ def triage(
     elif p < EMIT_FLOOR:
         log.info(
             "grounding_triage: SILENCE (p=%.3f < %.2f) | %s",
-            p, EMIT_FLOOR, candidate[:80],
+            p,
+            EMIT_FLOOR,
+            candidate[:80],
         )
         return "silence", p
     else:
         log.info(
             "grounding_triage: MARGINAL (p=%.3f) | %s",
-            p, candidate[:80],
+            p,
+            candidate[:80],
         )
         return "marginal", p
 
