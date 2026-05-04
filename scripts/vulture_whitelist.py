@@ -2436,3 +2436,22 @@ from agents.playwright_grant_submission_runner.runner import (
 
 _GR_UniversalGrantPackage.primary_text_for_section
 _GR_GrantSubmissionRunner.schema_only_recipes
+
+
+# Cc-task ``m8-re-splay-operator-install-and-smoke`` (2026-05-04):
+# scripts/m8-smoke.py is invoked from the operator CLI and CI tests
+# (importlib.util loader). Vulture can't see the dynamic entrypoints,
+# so its public functions are flagged.
+import importlib.util as _importlib_util
+from pathlib import Path as _Path
+
+_M8_SMOKE_SPEC = _importlib_util.spec_from_file_location(
+    "_m8_smoke_whitelist",
+    _Path(__file__).resolve().parent / "m8-smoke.py",
+)
+if _M8_SMOKE_SPEC is not None and _M8_SMOKE_SPEC.loader is not None:
+    _m8_smoke_module = _importlib_util.module_from_spec(_M8_SMOKE_SPEC)
+    _M8_SMOKE_SPEC.loader.exec_module(_m8_smoke_module)
+    _m8_smoke_module.main
+    _m8_smoke_module.run_checks
+    _m8_smoke_module._is_feature_flag_enabled
