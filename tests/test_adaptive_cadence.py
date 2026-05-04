@@ -141,6 +141,45 @@ class TestStimmungTickModulation:
         interval = agg._adaptive_tick_interval(state)
         assert interval >= 3.5
 
+    def test_high_resource_pressure_with_high_sigma_holds_back_slowdown(self):
+        """Phase D (cc-task ``dimension-reading-posterior-promotion``):
+        a high-mean / high-sigma resource_pressure spike should NOT
+        immediately fire the cadence-slow gate.
+
+        ``exceeds_with_confidence(0.7, conf=0.7)`` requires P(value>0.7)
+        >= 0.7 under Normal(value, sigma). At value=0.85 + sigma=0.30
+        the right tail is wide enough that the noisy single-sample
+        spike is held back from cascading into reduced cadence —
+        Bayesian humility under measurement noise.
+        """
+        agg = VisualLayerAggregator()
+        agg._prev_display_state = "peripheral"
+        agg._production_active = True
+        agg._stimmung = SystemStimmung(
+            overall_stance=Stance.NOMINAL,
+            resource_pressure=DimensionReading(value=0.85, sigma=0.30, n=2, trend="rising"),
+        )
+        state = _make_state(display_state="peripheral")
+        interval = agg._adaptive_tick_interval(state)
+        # The posterior gate should NOT fire — interval stays near base
+        # rather than escalating to >=4.0 the legacy gate would force.
+        assert interval < 4.0
+
+    def test_high_resource_pressure_with_low_sigma_still_slows(self):
+        """Phase D: a high-mean / LOW-sigma reading IS confidently
+        above threshold — the gate fires as it would have under the
+        legacy point-estimate path.
+        """
+        agg = VisualLayerAggregator()
+        agg._prev_display_state = "ambient"
+        agg._stimmung = SystemStimmung(
+            overall_stance=Stance.NOMINAL,
+            resource_pressure=DimensionReading(value=0.85, sigma=0.02, n=5, trend="stable"),
+        )
+        state = _make_state()
+        interval = agg._adaptive_tick_interval(state)
+        assert interval >= 4.0
+
     def test_state_transition_overrides_stimmung(self):
         """State transition (0.5s) takes priority over degraded stance."""
         agg = VisualLayerAggregator()

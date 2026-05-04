@@ -163,7 +163,20 @@ class TestStimmungCollector:
         s = c.snapshot()
         assert s.resource_pressure.trend == "stable"
 
-    def test_stance_thresholds(self):
+    def test_stance_thresholds(self, monkeypatch):
+        """Legacy point-estimate stance thresholds — pinned via the
+        ``HAPAX_STIMMUNG_POSTERIOR_STANCE=0`` rollback flag.
+
+        Posterior-aware stance (default-on as of cc-task
+        ``dimension-reading-posterior-promotion``) is sigma-aware: a
+        single 0.4 reading after a 0.0 reading produces sigma>0 and
+        ``P(value > 0.3) >= 0.7`` may not clear, holding the stance at
+        NOMINAL even though the *mean* exceeds the legacy threshold.
+        That is the intended Bayesian-humility behavior. Phase-c tests
+        cover the posterior path; this test pins the legacy semantics
+        for emergency rollback.
+        """
+        monkeypatch.setenv("HAPAX_STIMMUNG_POSTERIOR_STANCE", "0")
         c = StimmungCollector()
         # All nominal
         c.update_health(healthy=10, total=10)
