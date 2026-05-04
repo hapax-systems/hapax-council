@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Load the hapax-livestream-tap → hapax-livestream loopback via pactl.
+# Used by hapax-livestream-tap-loopback.service.
+#
+# History:
+#   - The conf-file approach via pipewire.conf.d/ for module-loopback was
+#     demonstrably unreliable: pipewire links the capture and playback ports
+#     correctly but signal flow can fail silently. PipeWire upstream issue
+#     #2791 ("loopback module produces large amount of errors after update")
+#     describes the same pathology — `node.passive=true` loopbacks linked
+#     but silent — and remained unresolved as of 2026-05-03.
+#   - 3 of 6 today's audio incidents involved hapax-livestream-tap directly
+#     or transitively. Migration recommended in:
+#         docs/research/2026-05-03-audio-config-hardening-unthought-of-solutions.md
+#         §6 "One immediate-ship recommendation" (H3 phase 1).
+#   - Modeled on ~/.local/bin/hapax-obs-monitor-load, which has been the only
+#     stable loopback this week.
+#
+# Scope: ONLY module-loopback migrates. The null-audio-sink declaration
+# stays in hapax-livestream-tap.conf — null sinks load reliably from conf
+# and have no signal-flow dependency. This script loads the loopback that
+# previously sat in the same conf's `context.modules` block.
+#
+# Idempotent: re-running detects an existing loopback with matching source
+# and target.object props and exits 0 without reloading.
+#
+# Pre-flight: refuses to load (exit 0, success) if the source sink or the
+# target sink isn't present yet, so we don't auto-route to a wrong
+# destination during PipeWire bring-up. systemd's Restart=on-failure will
+# NOT loop us — we exit cleanly. The next service restart attempts again.
+set -euo pipefail
+
+# Source: the null-audio-sink declared by hapax-livestream-tap.conf.
+# We capture from its monitor port (stream.capture.sink=true equivalent
+# via PipeWire's source.media-class semantics; pactl flattens this to a
+# capture from the sink's monitor port).
+SOURCE_SINK="hapax-livestream-tap"
+SOURCE_MONITOR="${SOURCE_SINK}.monitor"
+
+# Target: the downstream filter-chain that handles broadcast routing.
+# (Historical: prior to the 24c retirement 2026-05-03 this terminated at
+# the PreSonus 24c FL-only mix; current path is the L-12 broadcast bus.)
+TARGET_SINK="hapax-livestream"
+
+# Wait for both sinks to exist. Both are declared in pipewire.conf.d/
+# null-sinks / filter-chains so they appear during PipeWire startup —
+# but the systemd unit only orders us After=pipewire.service, NOT
+# Requires=, so the conf-loaded objects may not be live yet.
+both_present=0
+for i in $(seq 1 30); do
+    if pactl list sinks short | grep -q "^[0-9]*	${SOURCE_SINK}\b" \
+       && pactl list sinks short | grep -q "^[0-9]*	${TARGET_SINK}\b"; then
+        both_present=1
+        break
+    fi
+    sleep 2
+done
+
+if [ "$both_present" -ne 1 ]; then
+    echo "hapax-livestream-tap-load: source or target sink not present (waited 60s)" >&2
+    echo "hapax-livestream-tap-load: source=${SOURCE_SINK} target=${TARGET_SINK}" >&2
+    echo "hapax-livestream-tap-load: refusing to load — operator must verify pipewire.conf.d/ confs are loading hapax-livestream-tap and hapax-livestream sinks" >&2
+    # Tear down any stale loopback whose target sink is now gone.
+    pactl list modules | awk -v src="$SOURCE_SINK" -v snk="$TARGET_SINK" '
+        /^Module #/{idx=substr($2,2)}
+        /^\tName: module-loopback/{is_lb=1; next}
+        /^\tName:/{is_lb=0}
+        is_lb && $0 ~ src && $0 ~ snk {print idx; is_lb=0}
+    ' | xargs -r -I{} pactl unload-module {}
+    # Exit 0 so systemd treats this as "nothing to do." The unit can be
+    # restarted manually after operator fixes whatever blocks the conf.
+    exit 0
+fi
+
+# Idempotent: if a healthy loopback already targets src→sink, keep it.
+existing=$(pactl list modules | awk -v src="$SOURCE_SINK" -v snk="$TARGET_SINK" '
+    /^Module #/{idx=substr($2,2)}
+    /^\tName: module-loopback/{is_lb=1; next}
+    /^\tName:/{is_lb=0}
+    is_lb && $0 ~ src && $0 ~ snk {print idx; is_lb=0}
+')
+if [ -n "$existing" ]; then
+    echo "hapax-livestream-tap-load: loopback already loaded (id=${existing}); nothing to do"
+    exit 0
+fi
+
+# Tear down the conf-loaded variant if it survived a partial-disable
+# (any module-loopback whose Argument mentions both sinks but we didn't
+# find above — defensive).
+pactl list modules | awk -v src="$SOURCE_SINK" -v snk="$TARGET_SINK" '
+    /^Module #/{idx=substr($2,2)}
+    /^\tName: module-loopback/{is_lb=1; next}
+    /^\tName:/{is_lb=0}
+    is_lb && $0 ~ src && $0 ~ snk {print idx; is_lb=0}
+' | xargs -r -I{} pactl unload-module {}
+
+# Load. source_dont_move / sink_dont_move prevent PulseAudio's "automove"
+# from silently re-routing the loopback if either sink drops out at runtime.
+# audio-channels=2 + FL,FR channel-map preserve the conf-file shape.
+loaded_id=$(pactl load-module module-loopback \
+    source="${SOURCE_MONITOR}" \
+    sink="${TARGET_SINK}" \
+    source_dont_move=true \
+    sink_dont_move=true \
+    latency_msec=20 \
+    channels=2 \
+    channel_map=front-left,front-right \
+    sink_input_properties="media.name='hapax-livestream-tap → hapax-livestream (H3 systemd-driven)' node.passive=true" \
+    source_output_properties="media.name='hapax-livestream-tap-src (H3 systemd-driven)'")
+
+# Sanity: the loaded module's argument MUST contain both sink names.
+loaded_arg=$(pactl list modules 2>/dev/null | awk -v m="Module #${loaded_id}" '
+    $0 == m {found=1; next}
+    found && /^\tArgument:/{print; exit}
+')
+if ! { echo "$loaded_arg" | grep -q "$SOURCE_SINK" && echo "$loaded_arg" | grep -q "$TARGET_SINK"; }; then
+    echo "hapax-livestream-tap-load: post-load verification FAILED — module ${loaded_id} did not bind both sinks" >&2
+    echo "hapax-livestream-tap-load: argument was: $loaded_arg" >&2
+    pactl unload-module "$loaded_id"
+    exit 1
+fi
+echo "hapax-livestream-tap-load: loaded module-loopback id=${loaded_id} src=${SOURCE_MONITOR} sink=${TARGET_SINK}"
