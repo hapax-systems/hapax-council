@@ -378,11 +378,14 @@ def _ensure_prepped_loaded() -> None:
 
 
 def _try_prepared_delivery(context: object) -> str | None:
-    """Read pre-composed narration for the current beat if available.
+    """Deliver pre-composed narration one paragraph at a time.
 
-    Returns the prepared text for the current beat, or None to fall back
-    to live composition. Tracks delivery state so each beat chunk is
-    emitted only once.
+    Each call returns the next undelivered block (~400 chars) from the
+    prepared script. After the last block, deactivates the programme
+    so auto-cycling picks the next one.
+
+    This avoids overwhelming Kokoro TTS with 3000+ chars at once
+    (which blocks the executor for minutes on CPU).
     """
     _ensure_prepped_loaded()
 
@@ -402,33 +405,34 @@ def _try_prepared_delivery(context: object) -> str | None:
     if not prog_id:
         return None
 
-    # Determine current beat index
-    try:
-        from agents.hapax_daimonion.autonomous_narrative.compose import _get_beat_index
+    # Track which block we're on (0-indexed)
+    next_block = _delivered_beats.get(prog_id, 0)
 
-        beat_idx = _get_beat_index(prog)
-    except Exception:
-        beat_idx = 0
+    if next_block >= len(script):
+        # All blocks delivered — deactivate and signal wait
+        if next_block == len(script):
+            _delivered_beats[prog_id] = len(script) + 1  # sentinel: done
+            try:
+                from shared.programme_store import default_store
 
-    if beat_idx < 0 or beat_idx >= len(script):
-        return None
-
-    # Check if this beat was already delivered — return sentinel so
-    # the caller knows NOT to fall through to live composition.
-    last_delivered = _delivered_beats.get(prog_id, -1)
-    if beat_idx <= last_delivered:
+                default_store().deactivate(prog_id)
+                log.info("delivery: completed all %d blocks for %s", len(script), prog_id)
+            except Exception:
+                log.debug("delivery: deactivate failed for %s", prog_id, exc_info=True)
         return _DELIVERY_WAIT
 
-    # Deliver this beat
-    _delivered_beats[prog_id] = beat_idx
-    text = script[beat_idx].strip()
+    text = script[next_block].strip()
+    _delivered_beats[prog_id] = next_block + 1
+
     if not text:
-        return None
+        # Skip empty blocks
+        return _try_prepared_delivery(context)
 
     log.info(
-        "delivery: prepared script beat %d/%d for %s",
-        beat_idx + 1,
+        "delivery: block %d/%d (%d chars) for %s",
+        next_block + 1,
         len(script),
+        len(text),
         prog_id,
     )
     return text
@@ -542,13 +546,12 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
                 },
             )
             # Refractory inhibition — pipeline-native replacement for the
-            # hardcoded 120s rate-limit gate. base_level decay handles the
-            # longer-term cadence (150s+), but the hard floor prevents
-            # burst-firing when multiple impingements recruit narration
-            # within a short window.
-            daemon._affordance_pipeline.add_inhibition(
-                imp, duration_s=_effective_refractory_s(daemon)
-            )
+            # hardcoded 120s rate-limit gate. Prepared delivery uses a
+            # short refractory (15s — enough for TTS playback + holdover)
+            # so blocks flow with natural pacing. Live compose keeps 120s.
+            _is_prepped = programme_id and programme_id in _delivered_beats
+            _refractory = 15.0 if _is_prepped else _effective_refractory_s(daemon)
+            daemon._affordance_pipeline.add_inhibition(imp, duration_s=_refractory)
             _publish_recruitment_log(
                 "narration",
                 candidate.capability_name,

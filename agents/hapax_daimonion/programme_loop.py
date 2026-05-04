@@ -539,19 +539,35 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
                 _hold_path.unlink(missing_ok=True)
                 _segment_path.unlink(missing_ok=True)
 
-                # Continuous cycling: when no segment is active, activate
-                # the next pending prepped programme so there's always a
-                # segment playing. This is the "radio station" model —
-                # never dead air.
-                try:
-                    from shared.programme import ProgrammeStatus as _PS
+            # Continuous cycling: activate the next pending prepped
+            # programme when either (a) no programme is active, or
+            # (b) the active programme has no prepared script (i.e.
+            # came from the auto-planner, not the prep bridge).
+            # This is the "radio station" model — never dead air.
+            try:
+                from shared.programme import ProgrammeStatus as _PS
 
+                _active = manager.store.active_programme()
+                _needs_cycle = _active is None or not getattr(
+                    getattr(_active, "content", None), "prepared_script", None
+                )
+                if _needs_cycle:
                     pending = [
                         p
                         for p in manager.store.all()
                         if p.status == _PS.PENDING and getattr(p.content, "prepared_script", None)
                     ]
                     if pending:
+                        # Deactivate the current non-prepped programme if any
+                        if _active is not None:
+                            try:
+                                manager.store.deactivate(_active.programme_id)
+                                log.info(
+                                    "auto-cycle: deactivated non-prepped %s",
+                                    _active.programme_id,
+                                )
+                            except Exception:
+                                log.debug("auto-cycle: deactivate failed", exc_info=True)
                         nxt = pending[0]
                         manager.store.activate(nxt.programme_id)
                         log.info(
@@ -559,8 +575,8 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
                             nxt.programme_id,
                             getattr(nxt.role, "value", "?"),
                         )
-                except Exception:
-                    log.debug("auto-cycle failed", exc_info=True)
+            except Exception:
+                log.debug("auto-cycle failed", exc_info=True)
         except Exception:
             log.debug("beat transition check failed", exc_info=True)
 
