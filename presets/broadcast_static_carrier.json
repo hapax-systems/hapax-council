@@ -1,6 +1,6 @@
 {
   "name": "Broadcast Static Carrier",
-  "description": "Broadcast-degraded lineage (2/2): vhs + noise_overlay + thermal-style colormap creates dead-channel static carrier aesthetic — broadcast at edge of signal. Lineage: broadcast-degraded.",
+  "description": "Broadcast-degraded lineage (2/2): vhs + noise_overlay + thermal-style colormap creates dead-channel static carrier aesthetic \u2014 broadcast at edge of signal. Lineage: broadcast-degraded.",
   "lineage": "broadcast-degraded",
   "transition_ms": 1800,
   "nodes": {
@@ -50,5 +50,36 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "vhs_static"
+    ],
+    [
+      "vhs_static",
+      "noise_static"
+    ],
+    [
+      "noise_static",
+      "thermal_carrier"
+    ],
+    [
+      "thermal_carrier",
+      "vignette"
+    ],
+    [
+      "vignette",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

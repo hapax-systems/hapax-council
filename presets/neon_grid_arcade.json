@@ -1,6 +1,6 @@
 {
   "name": "Neon Grid Arcade",
-  "description": "Neon-grid lineage (1/2): scanlines + edge_detect + chromatic_aberration on saturated colorgrade creates arcade-cabinet light-grid aesthetic — Tron + Robotron. Lineage: neon-grid. Distinct from chromatic-bloom by the explicit grid + edge structure.",
+  "description": "Neon-grid lineage (1/2): scanlines + edge_detect + chromatic_aberration on saturated colorgrade creates arcade-cabinet light-grid aesthetic \u2014 Tron + Robotron. Lineage: neon-grid. Distinct from chromatic-bloom by the explicit grid + edge structure.",
   "lineage": "neon-grid",
   "transition_ms": 1500,
   "nodes": {
@@ -43,5 +43,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "scanlines_grid"
+    ],
+    [
+      "scanlines_grid",
+      "edge_grid"
+    ],
+    [
+      "edge_grid",
+      "chroma_neon"
+    ],
+    [
+      "chroma_neon",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

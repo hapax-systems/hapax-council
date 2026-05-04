@@ -43,5 +43,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "bloom_neon"
+    ],
+    [
+      "bloom_neon",
+      "chroma_soft"
+    ],
+    [
+      "chroma_soft",
+      "vignette"
+    ],
+    [
+      "vignette",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }
