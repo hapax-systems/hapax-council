@@ -72,6 +72,19 @@ DESTINATION_ROUTING_ENV: str = "HAPAX_TTS_DESTINATION_ROUTING_ACTIVE"
 DEFAULT_TARGET_ENV: str = "HAPAX_TTS_TARGET"
 """Legacy default target env var. Semantic routing no longer consumes it."""
 
+BROADCAST_BIAS_ENV: str = "HAPAX_DAIMONION_BROADCAST_BIAS_ENABLED"
+"""Feature flag for autonomous-narrative broadcast bias.
+
+When ``1`` (default), autonomous narrative impingements that arrive during
+an active programme with a broadcast-eligible role are classified
+``LIVESTREAM`` instead of falling through to the ``PRIVATE`` default.
+All downstream safety gates (programme authorization, audio health,
+private-risk context, route evidence) remain enforced.
+
+Set to ``0`` to revert to the legacy behavior where autonomous narration
+always routes private unless explicit broadcast tokens are present.
+"""
+
 BROADCAST_AUTH_MAX_AGE_S: float = 120.0
 """Maximum age for per-utterance public/broadcast voice authorization."""
 
@@ -203,6 +216,22 @@ def classify_destination(
         return DestinationChannel.PRIVATE
 
     if _has_explicit_broadcast_intent(content):
+        return DestinationChannel.LIVESTREAM
+
+    # Rule 3.5: Autonomous-narrative broadcast bias.
+    # When the feature flag is enabled and an active programme with a
+    # broadcast-eligible role exists, autonomous narrative impingements
+    # classify as LIVESTREAM. This is a soft prior — all downstream
+    # safety gates (programme auth, audio health, route evidence) still
+    # apply in resolve_playback_decision. The intent is explicit at
+    # classification time (not implicit/default) because the programme
+    # context is the evidence for broadcast authorization.
+    if (
+        _is_broadcast_bias_enabled()
+        and isinstance(source, str)
+        and source == "autonomous_narrative"
+        and _programme_authorizes_broadcast()
+    ):
         return DestinationChannel.LIVESTREAM
 
     # Rule 4: TEXTMODE alone does NOT route private (see module docstring).
@@ -446,6 +475,63 @@ def _is_private_risk_context(source: object, content: dict[str, Any]) -> bool:
     if isinstance(input_device, str) and "yeti" in input_device.lower():
         return True
     return content.get("private") is True or content.get("operator_private") is True
+
+
+def _is_broadcast_bias_enabled() -> bool:
+    """Return ``True`` when autonomous-narrative broadcast bias is active.
+
+    Reads ``HAPAX_DAIMONION_BROADCAST_BIAS_ENABLED`` on every call (no
+    caching) so an operator flipping the flag at runtime takes effect on
+    the next utterance.
+
+    Default: ``True`` (unset, empty, or "1" → active). Only the literal
+    "0" forces legacy private-only behavior.
+    """
+    raw = os.environ.get(BROADCAST_BIAS_ENV)
+    if raw is None:
+        return True
+    return raw.strip() != "0"
+
+
+# Roles where broadcast voice is appropriate. LISTENING is excluded
+# because the operator explicitly chose a receptive programme role —
+# Hapax speaking to the audience defeats the role's intent.
+_BROADCAST_ELIGIBLE_ROLES: frozenset[str] = frozenset(
+    {
+        "showcase",
+        "ritual",
+        "interlude",
+        "work_block",
+        "tutorial",
+        "wind_down",
+        "hothouse_pressure",
+        "ambient",
+        "experiment",
+        "repair",
+        "invitation",
+    }
+)
+
+
+def _programme_authorizes_broadcast() -> bool:
+    """Return ``True`` when the active programme's role is broadcast-eligible.
+
+    Reads the programme store on every call (filesystem-as-bus, small file).
+    Returns ``False`` on any error or missing programme — fail-closed to
+    private when programme state is ambiguous.
+    """
+    try:
+        from agents.hapax_daimonion.cpal.programme_context import default_provider
+
+        programme = default_provider()
+        if programme is None:
+            return False
+        if programme.status != "active":
+            return False
+        return programme.role.value in _BROADCAST_ELIGIBLE_ROLES
+    except Exception:
+        log.debug("programme broadcast authorization check failed", exc_info=True)
+        return False
 
 
 def _broadcast_intent_evidence(content: dict[str, Any]) -> dict[str, Any]:
