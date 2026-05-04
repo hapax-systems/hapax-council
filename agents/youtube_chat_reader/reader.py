@@ -180,9 +180,7 @@ class ChatReader:
         from agents.youtube_chat_reader import YoutubeChatReaderUnavailable
 
         if self._active_live_chat_id is None:
-            raise YoutubeChatReaderUnavailable(
-                "no active broadcast — liveChatId unresolved"
-            )
+            raise YoutubeChatReaderUnavailable("no active broadcast — liveChatId unresolved")
         return self._active_live_chat_id
 
     def recent_messages(self, *, limit: int = 50) -> list:
