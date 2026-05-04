@@ -7,7 +7,7 @@
       "kind": "camera",
       "backend": "v4l2_camera",
       "params": {
-        "device": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_5342C819-video-index0",
+        "device": "/dev/video60",
         "format": "mjpeg",
         "width": 1280,
         "height": 720,
@@ -57,7 +57,7 @@
       "kind": "camera",
       "backend": "v4l2_camera",
       "params": {
-        "device": "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_7B88C71F-video-index0",
+        "device": "/dev/video61",
         "format": "mjpeg",
         "width": 1280,
         "height": 720,

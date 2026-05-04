@@ -398,6 +398,7 @@ nodes:
     params:
       monitor.passthrough: true
       dormant_until_pr_b: true
+      audit_classification: dormant-pr-b
 
   - id: pc-monitor
     kind: filter_chain
@@ -416,6 +417,7 @@ nodes:
       forbidden_target_family: l12-broadcast
       ladspa_plugin: fast_lookahead_limiter_1913
       limit_db: -1.0
+      audit_classification: dormant-pr-b
 
   - id: pc-broadcast
     kind: filter_chain
@@ -435,6 +437,7 @@ nodes:
       ladspa_plugin: fast_lookahead_limiter_1913
       limit_db: -18.0
       dormant_until_pr_b: true
+      audit_classification: dormant-pr-b
 
   - id: music-loudnorm
     kind: filter_chain

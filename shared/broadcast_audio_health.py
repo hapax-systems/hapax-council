@@ -609,16 +609,27 @@ def _evaluate_loudness(
         )
         return
     if not lufs_ok:
-        _block(
-            blocking,
-            code="loudness_out_of_band",
-            owner="shared/audio_loudness.py",
-            message=(
-                f"broadcast loudness {integrated} LUFS-I is outside "
-                f"{thresholds.loudness_min_lufs_i}..{thresholds.loudness_max_lufs_i}"
-            ),
-            evidence_refs=["loudness"],
-        )
+        # Distinguish egress silence (no signal present) from genuine
+        # miscalibration. Silence (-50 LUFS or below) is the normal state
+        # before/between autonomous speech events; blocking on it creates
+        # a circular dependency where voice can't flow because the gate
+        # requires voice to already be flowing at the right level.
+        # Genuine miscalibration (e.g. -20 LUFS or -8 LUFS) is still blocked.
+        SILENCE_FLOOR_LUFS = -50.0
+        if integrated is not None and integrated < SILENCE_FLOOR_LUFS:
+            evidence["loudness"]["egress_silent"] = True
+            evidence["loudness"]["silence_floor_lufs"] = SILENCE_FLOOR_LUFS
+        else:
+            _block(
+                blocking,
+                code="loudness_out_of_band",
+                owner="shared/audio_loudness.py",
+                message=(
+                    f"broadcast loudness {integrated} LUFS-I is outside "
+                    f"{thresholds.loudness_min_lufs_i}..{thresholds.loudness_max_lufs_i}"
+                ),
+                evidence_refs=["loudness"],
+            )
     if not true_peak_ok:
         _block(
             blocking,
@@ -1045,13 +1056,23 @@ def _evaluate_voice_output_witness(
     )
     evidence["voice_output_witness"] = record
     if silent_failure:
-        _block(
-            blocking,
-            code="voice_output_silent_failure",
-            owner=str(path),
-            message=f"voice output witness reports {status}",
-            evidence_refs=["voice_output_witness"],
-        )
+        # Break self-referential circular dependency: if the witness
+        # records drops whose blocker_drop_reason is
+        # "audio_safe_for_broadcast_false", those drops were caused by
+        # THIS gate being closed.  Using them as evidence to keep the
+        # gate closed creates an infinite loop.  Only block on
+        # genuinely independent failure signals.
+        drop_reason = data.get("blocker_drop_reason") if isinstance(data, dict) else None
+        if drop_reason == "audio_safe_for_broadcast_false":
+            record["self_referential_drop"] = True
+        else:
+            _block(
+                blocking,
+                code="voice_output_silent_failure",
+                owner=str(path),
+                message=f"voice output witness reports {status}",
+                evidence_refs=["voice_output_witness"],
+            )
 
 
 def _evaluate_service_freshness(

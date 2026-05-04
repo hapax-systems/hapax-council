@@ -759,7 +759,7 @@
       },
       "effect_chain": [],
       "blend_mode": "over",
-      "z_order": 5,
+      "z_order": 50,
       "update_cadence": "rate"
     },
     {

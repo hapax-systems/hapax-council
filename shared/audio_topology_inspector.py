@@ -350,9 +350,13 @@ def _id_from_name(pipewire_name: str) -> str:
     # segments: "l6-00-multitrack".
     if base.startswith("alsa-input.") or base.startswith("alsa-output."):
         tail = base.split(".", 1)[1]
-        # Keep the last two dash-separated segments.
+        # Keep the last three dash-separated segments to avoid ID
+        # collisions between devices sharing the same ALSA suffix
+        # (e.g. L-12 and MPC both ending in "00.multichannel-input").
         parts = tail.split("-")
-        if len(parts) > 2:
+        if len(parts) > 3:
+            base = "-".join(parts[-3:])
+        elif len(parts) > 2:
             base = "-".join(parts[-2:])
         else:
             base = tail

@@ -137,10 +137,10 @@ class TestHappyPath:
 
     def test_default_model_alias_routes_through_balanced_tier(self) -> None:
         """Pin the model alias the production planner uses."""
-        assert DEFAULT_MODEL in ("balanced", "claude-sonnet")  # operator-tunable
+        assert DEFAULT_MODEL in ("balanced", "claude-sonnet", "claude-opus-4-7")  # operator-tunable
         # Default before any env override
         if "HAPAX_PROGRAMME_PLANNER_MODEL" not in __import__("os").environ:
-            assert DEFAULT_MODEL == "balanced"
+            assert DEFAULT_MODEL == "claude-opus-4-7"
 
 
 # ── Failure modes — first attempt ───────────────────────────────────────

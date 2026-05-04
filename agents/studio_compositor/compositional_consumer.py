@@ -162,6 +162,30 @@ def _safe_load_json(path: Path) -> dict:
     return {}
 
 
+# ── Segment cue hold ──────────────────────────────────────────────────────
+
+_SEGMENT_CUE_HOLD = Path("/dev/shm/hapax-compositor/segment-cue-hold.json")
+
+
+def _segment_cue_hold_active() -> bool:
+    """Return True when a segment cue hold is active.
+
+    During segments, the narrative engine's cue executor writes a hold
+    file with a TTL. While active, ALL default director behaviors
+    (camera, mood, FX, overlays) are suppressed — Hapax's volitional
+    programme plan choices override ambient compositor behavior.
+    """
+    try:
+        if not _SEGMENT_CUE_HOLD.exists():
+            return False
+        data = json.loads(_SEGMENT_CUE_HOLD.read_text(encoding="utf-8"))
+        set_at = float(data.get("set_at", 0.0))
+        ttl = float(data.get("ttl_s", 0.0))
+        return (time.time() - set_at) <= ttl
+    except Exception:
+        return False  # fail-open
+
+
 # ── Per-family dispatchers ─────────────────────────────────────────────────
 
 
@@ -1197,12 +1221,13 @@ def dispatch_mood_tone_pivot(capability_name: str, ttl_s: float) -> bool:
     running; only the parametric color envelope shifts.
     """
     variant = _capability_variant(capability_name, "mood.tone_pivot") or "steady"
+    now = time.time()
     _atomic_write_json(
         _MOOD_STATE,
         {
             "pivot": variant,
             "ttl_s": ttl_s,
-            "ts": time.time(),
+            "ts": now,
         },
     )
     _mark_recruitment(capability_name, extra={"ttl_s": ttl_s, "variant": variant})
@@ -1270,6 +1295,11 @@ def dispatch(
     Returns the family name if dispatch succeeded, or "unknown" otherwise.
     """
     name = record.name
+    # Segment cue hold: during active segment beats, Hapax's programme plan
+    # cue choices override ALL default director behaviors. The only exemption
+    # is programme.beat_advance (the programme manager's own transition signal).
+    if not name.startswith("programme.beat_advance.") and _segment_cue_hold_active():
+        return "unknown"
     if name.startswith("cam.hero."):
         return "camera.hero" if dispatch_camera_hero(name, record.ttl_s) else "unknown"
     if name.startswith("fx.family."):
@@ -1687,6 +1717,9 @@ def dispatch_structural_intent(intent) -> dict[str, int]:
     overwriting the structural director's long-horizon choice.
     """
     tally = {"emphasized": 0, "dispatched": 0, "retired": 0, "placed": 0}
+    # Segment cue hold: suppress structural intent during segment beats
+    if _segment_cue_hold_active():
+        return tally
     try:
         if hasattr(intent, "model_dump"):
             data = intent.model_dump()

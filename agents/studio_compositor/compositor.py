@@ -474,7 +474,7 @@ _FALLBACK_LAYOUT = Layout(
         SurfaceSchema(
             id="durf-fullframe",
             geometry=SurfaceGeometry(kind="rect", x=0, y=0, w=1920, h=1080),
-            z_order=5,
+            z_order=50,
             update_cadence="rate",
         ),
         SurfaceSchema(

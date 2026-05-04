@@ -979,6 +979,20 @@ class CpalRunner:
         # the resolved destination decision accepts the route.
         source = getattr(impingement, "source", "")
         if source == "autonomous_narrative" and self._daemon is not None:
+            # When the dedicated prepared_playback_loop is driving TTS for a
+            # prepped programme, skip CPAL's autonomous narrative path entirely.
+            # The dedicated loop uses resolve_playback_decision for correct routing.
+            try:
+                from shared.programme_store import default_store as _ds
+
+                _ap = _ds().active_programme()
+                if _ap is not None and getattr(
+                    getattr(_ap, "content", None), "prepared_script", None
+                ):
+                    log.debug("Autonomous narrative skipped: prepared_playback_loop owns TTS")
+                    return
+            except Exception:
+                pass  # fail-open: let it through if store is unavailable
             tts = getattr(self._daemon, "tts", None)
             content = getattr(impingement, "content", {})
             narrative = content.get("narrative") if isinstance(content, dict) else None

@@ -423,7 +423,12 @@ def state_reader_loop(compositor: Any) -> None:
                 ):
                     try_graph_preset(compositor, preset_name)
                     compositor._current_preset_name = preset_name
-                    compositor._user_preset_hold_until = time.monotonic() + 600.0
+                    # 2026-05-04 hot-fix: 600.0 s → 25.0 s. The 10-min hold blocked
+                    # recruitment-driven mutations (which use the same bus) from
+                    # advancing for 10 min after each director cycle. Operator
+                    # manual changes still get a brief 25 s lock — sufficient to
+                    # avoid director thrash without freezing the chain.
+                    compositor._user_preset_hold_until = time.monotonic() + 25.0
                     try:
                         (SNAPSHOT_DIR / "fx-current.txt").write_text(preset_name)
                     except OSError:

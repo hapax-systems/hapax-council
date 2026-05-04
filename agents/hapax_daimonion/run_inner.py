@@ -48,6 +48,7 @@ RECREATE_TASKS: frozenset[str] = frozenset(
         "actuation_loop",
         "gem_producer_loop",
         "programme_manager_loop",
+        "prepared_playback_loop",
         "narrative_drive_loop",
         "salience_publish_loop",
     }
@@ -499,6 +500,17 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         daemon,
         "programme_manager_loop",
         lambda: programme_manager_loop(daemon),
+    )
+    # Dedicated prepared-content playback loop — bypasses narrative_drive →
+    # affordance_pipeline → recruitment → CPAL chain entirely. Drives TTS
+    # synthesis and playback directly, block by block, with only a 1s
+    # breath between paragraphs. Eliminates all pipeline overhead.
+    from agents.hapax_daimonion.run_loops_aux import prepared_playback_loop
+
+    _make_task(
+        daemon,
+        "prepared_playback_loop",
+        lambda: prepared_playback_loop(daemon),
     )
     # Salience-router exploration-signal republish — keeps the
     # apperception-style writer-fresh signal alive during quiet operator

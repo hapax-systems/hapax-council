@@ -1,0 +1,15 @@
+[Unit]
+Description=Hapax daily segment prep — compose narration scripts offline
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hapax/projects/hapax-council
+EnvironmentFile=/run/user/1000/hapax-secrets.env
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+ExecStart=/home/hapax/.local/bin/uv run python -m agents.hapax_daimonion.daily_segment_prep
+TimeoutStartSec=2400
+
+[Install]
+WantedBy=default.target

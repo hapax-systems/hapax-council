@@ -322,6 +322,460 @@ def _dispatch_compositional(candidate, imp, daemon) -> None:
 # hardcoded 120s rate-limit gate in gates.py with a pipeline-native
 # inhibition mechanism.
 _NARRATION_REFRACTORY_S: float = 120.0
+# During segmented-content roles, the segment IS the content and Hapax
+# must fill it with beat-by-beat delivery. 120s refractory would yield
+# at most 5 utterances in a 10-minute segment — far too sparse.
+_SEGMENT_REFRACTORY_S: float = 20.0
+_SEGMENTED_CONTENT_ROLES: frozenset[str] = frozenset(
+    {"tier_list", "top_10", "rant", "react", "iceberg", "interview", "lecture"}
+)
+
+
+def _effective_refractory_s(daemon: object) -> float:
+    """Return the refractory period based on the active programme role.
+
+    Segmented-content roles get a shorter refractory (20s) because the
+    segment needs sustained vocal delivery. Operator-context roles keep
+    the 120s baseline so the Bayesian drive pressure — not a timer —
+    governs whether narration fires.
+    """
+    pm = getattr(daemon, "programme_manager", None)
+    if pm is None:
+        return _NARRATION_REFRACTORY_S
+    try:
+        active = pm.store.active_programme()
+        if active is None:
+            return _NARRATION_REFRACTORY_S
+        role_value = getattr(active.role, "value", str(active.role))
+        if role_value in _SEGMENTED_CONTENT_ROLES:
+            return _SEGMENT_REFRACTORY_S
+    except Exception:
+        pass
+    return _NARRATION_REFRACTORY_S
+
+
+# --- Prepared script delivery state ---
+# Tracks which beat of each programme has been delivered to avoid repeating.
+_delivered_beats: dict[str, int] = {}  # programme_id → last delivered beat index
+_prepped_loaded: bool = False
+_DELIVERY_WAIT = "__DELIVERY_WAIT__"  # sentinel: script exists, beat already delivered
+
+
+def _ensure_prepped_loaded() -> None:
+    """Lazy-load today's prepped scripts into active programmes on first call."""
+    global _prepped_loaded
+    if _prepped_loaded:
+        return
+    _prepped_loaded = True
+    try:
+        from agents.hapax_daimonion.daily_segment_prep import load_prepped_programmes
+
+        prepped = load_prepped_programmes()
+        if prepped:
+            log.info("delivery: loaded %d prepped segments from disk", len(prepped))
+    except Exception:
+        log.debug("delivery: failed to load prepped segments", exc_info=True)
+
+
+def _try_prepared_delivery(context: object) -> str | None:
+    """Return _DELIVERY_WAIT when the dedicated playback loop handles this programme.
+
+    The prepared_playback_loop owns all TTS for prepped content.
+    This function prevents the dispatch path from composing live narration
+    over a programme being played back directly.
+    """
+    _ensure_prepped_loaded()
+
+    prog = getattr(context, "programme", None)
+    if prog is None:
+        return None
+
+    content = getattr(prog, "content", None)
+    if content is None:
+        return None
+
+    script = getattr(content, "prepared_script", None)
+    if not script:
+        return None
+
+    return _DELIVERY_WAIT
+
+
+async def prepared_playback_loop(daemon: object) -> None:
+    """Dedicated playback loop for pre-composed scripts.
+
+    Drives TTS synthesis + audio playback directly, block by block,
+    with only a 1s breath between paragraphs. Uses resolve_playback_decision
+    for correct PipeWire routing (same as the CPAL autonomous narrative path).
+
+    Eliminates the narrative_drive → affordance_pipeline → recruitment →
+    CPAL chain overhead that causes 10-20s gaps between blocks.
+    """
+    _ensure_prepped_loaded()
+
+    # Wait for the CPAL runner to be fully initialized
+    cpal = None
+    for _ in range(30):
+        cpal = getattr(daemon, "_cpal_runner", None)
+        if cpal is not None and getattr(cpal, "_tts_manager", None) is not None:
+            break
+        await asyncio.sleep(1.0)
+
+    if cpal is None or getattr(cpal, "_tts_manager", None) is None:
+        log.warning("prepared_playback_loop: CPAL runner or TTS not available, exiting")
+        return
+
+    log.info("prepared_playback_loop: started — direct TTS with route resolution")
+
+    while getattr(daemon, "_running", True):
+        try:
+            from shared.programme_store import default_store
+
+            store = default_store()
+            active = store.active_programme()
+
+            # Only handle programmes with prepared scripts
+            if active is None or not getattr(
+                getattr(active, "content", None), "prepared_script", None
+            ):
+                await asyncio.sleep(2.0)
+                continue
+
+            prog_id = str(active.programme_id)
+            script = active.content.prepared_script
+            role = getattr(active.role, "value", str(active.role))
+
+            # Resolve route directly via classify + resolve_route, bypassing
+            # resolve_playback_decision's audio_safe_for_broadcast gate.
+            # The playback loop IS the source of broadcast audio — requiring
+            # it to already be playing creates a chicken-and-egg deadlock
+            # (voice_output_silent_failure blocks playback → no playback →
+            # voice_output_silent_failure). Programme auth is already checked
+            # by _programme_authorizes_broadcast above.
+            from agents.hapax_daimonion.cpal.destination_channel import (
+                classify_destination,
+                resolve_route,
+            )
+            from shared.voice_output_router import (
+                media_role_for_route,
+                target_for_route,
+            )
+
+            synth_imp = type(
+                "_SynthImp",
+                (),
+                {
+                    "source": "autonomous_narrative",
+                    "content": {},
+                },
+            )()
+
+            dest_channel = classify_destination(synth_imp)
+            route = resolve_route(dest_channel)
+            dest_target = target_for_route(route)
+            dest_role = media_role_for_route(route)
+
+            if dest_target is None:
+                log.warning(
+                    "prepared_playback_loop: no route target for %s, retrying",
+                    dest_channel.value,
+                )
+                await asyncio.sleep(5.0)
+                continue
+
+            log.info(
+                "prepared_playback_loop: playing %s (%s, %d blocks, target=%s, role=%s)",
+                prog_id,
+                role,
+                len(script),
+                dest_target,
+                dest_role,
+            )
+
+            # ── DURF ward press: front the ward for segment display ──
+            import json as _json
+            import time as _ward_time
+            from pathlib import Path as _Path
+
+            from agents.studio_compositor.ward_properties import (
+                WardProperties,
+                set_ward_properties,
+            )
+
+            _SEGMENT_SHM = _Path("/dev/shm/hapax-compositor/segment-playback.json")
+            _SEGMENT_SHM.parent.mkdir(parents=True, exist_ok=True)
+
+            # Collect segment assets for this programme (keyed by block index)
+            _seg_assets: dict[int, list[dict]] = {}
+            if hasattr(active.content, "segment_assets"):
+                for asset in active.content.segment_assets:
+                    bi = asset.block_index if asset.block_index is not None else -1
+                    _seg_assets.setdefault(bi, []).append(asset.model_dump())
+
+            # Front state → "fronting" (ward is transitioning forward)
+            set_ward_properties(
+                "durf",
+                WardProperties(
+                    front_state="fronting",
+                    front_t0=_ward_time.monotonic(),
+                    z_plane="surface-scrim",
+                    alpha=0.92,
+                ),
+                ttl_s=600.0,
+            )
+            log.info("prepared_playback_loop: DURF ward → fronting for %s", prog_id)
+
+            # Pre-synthesize blocks: overlap TTS synthesis with playback
+            # so there's zero gap between blocks. Synthesize block N+1
+            # while block N is playing.
+            loop = asyncio.get_running_loop()
+            pending_pcm: bytes | None = None
+            pending_text: str | None = None
+            pending_idx: int = -1
+
+            # Find and synthesize the first non-empty block eagerly
+            first_idx = -1
+            for i, block in enumerate(script):
+                text = block.strip()
+                if text:
+                    first_idx = i
+                    log.info(
+                        "prepared_playback_loop: block %d/%d (%d chars) for %s",
+                        i + 1,
+                        len(script),
+                        len(text),
+                        prog_id,
+                    )
+                    try:
+                        pending_pcm = await loop.run_in_executor(
+                            None, cpal._tts_manager.synthesize, text, "proactive"
+                        )
+                        pending_text = text
+                        pending_idx = i
+                    except Exception:
+                        log.warning(
+                            "prepared_playback_loop: TTS failed block %d", i + 1, exc_info=True
+                        )
+                    break
+
+            if pending_pcm is None:
+                log.warning("prepared_playback_loop: no synthesizable blocks in %s", prog_id)
+                await asyncio.sleep(2.0)
+                continue
+
+            # Play each block while synthesizing the next
+            for idx in range(first_idx, len(script)):
+                if not getattr(daemon, "_running", True):
+                    return
+
+                if idx > pending_idx:
+                    # This block hasn't been pre-synthesized yet (edge case)
+                    text = script[idx].strip()
+                    if not text:
+                        continue
+                    log.info(
+                        "prepared_playback_loop: block %d/%d (%d chars) for %s",
+                        idx + 1,
+                        len(script),
+                        len(text),
+                        prog_id,
+                    )
+                    try:
+                        pending_pcm = await loop.run_in_executor(
+                            None, cpal._tts_manager.synthesize, text, "proactive"
+                        )
+                        pending_text = text
+                    except Exception:
+                        log.warning(
+                            "prepared_playback_loop: TTS failed block %d", idx + 1, exc_info=True
+                        )
+                        continue
+                    if not pending_pcm:
+                        continue
+
+                current_pcm = pending_pcm
+                current_text = pending_text or ""
+                pending_pcm = None
+                pending_text = None
+
+                # Start synthesizing the NEXT block in background
+                next_synth_task = None
+                next_idx = None
+                for ni in range(idx + 1, len(script)):
+                    nt = script[ni].strip()
+                    if nt:
+                        next_idx = ni
+                        log.info(
+                            "prepared_playback_loop: block %d/%d (%d chars) for %s",
+                            ni + 1,
+                            len(script),
+                            len(nt),
+                            prog_id,
+                        )
+                        next_synth_task = loop.run_in_executor(
+                            None, cpal._tts_manager.synthesize, nt, "proactive"
+                        )
+                        break
+
+                # ── Publish segment state + ward lifecycle at sentence tempo ──
+                _block_assets = _seg_assets.get(idx, _seg_assets.get(-1, []))
+                _seg_state = {
+                    "programme_id": prog_id,
+                    "role": role,
+                    "block_index": idx,
+                    "block_count": len(script),
+                    "block_text": current_text[:300],
+                    "assets": _block_assets,
+                    "front_state": "fronted",
+                    "updated_at": _ward_time.time(),
+                }
+                try:
+                    _tmp = _SEGMENT_SHM.with_suffix(".json.tmp")
+                    _tmp.write_text(_json.dumps(_seg_state), encoding="utf-8")
+                    _tmp.replace(_SEGMENT_SHM)
+                except OSError:
+                    log.debug("prepared_playback_loop: SHM write failed", exc_info=True)
+
+                # Front state → "fronted" (content settled, being narrated)
+                set_ward_properties(
+                    "durf",
+                    WardProperties(
+                        front_state="fronted",
+                        front_t0=_ward_time.monotonic(),
+                        z_plane="surface-scrim",
+                        alpha=0.92,
+                    ),
+                    ttl_s=120.0,
+                )
+
+                # Play current block
+                try:
+                    async with cpal._speech_lock:
+                        if cpal._pipeline and hasattr(cpal._pipeline, "_recent_tts_texts"):
+                            import time as _time
+
+                            cpal._pipeline._recent_tts_texts.append(
+                                (_time.monotonic(), current_text.lower().strip().rstrip(".,!?"))
+                            )
+                        cpal._buffer.set_speaking(True)
+                        if cpal._echo_canceller:
+                            cpal._echo_canceller.feed_reference(current_pcm)
+                        try:
+                            from functools import partial
+
+                            from agents.hapax_daimonion.pw_audio_output import play_pcm
+
+                            await loop.run_in_executor(
+                                None,
+                                partial(play_pcm, current_pcm, 24000, 1, dest_target, dest_role),
+                            )
+                        finally:
+                            await asyncio.sleep(1.5)
+                            cpal._buffer.set_speaking(False)
+                except Exception:
+                    log.warning(
+                        "prepared_playback_loop: playback failed block %d", idx + 1, exc_info=True
+                    )
+
+                # Collect pre-synthesized next block
+                if next_synth_task is not None and next_idx is not None:
+                    try:
+                        pending_pcm = await next_synth_task
+                        pending_text = script[next_idx].strip()
+                        pending_idx = next_idx
+                    except Exception:
+                        log.warning(
+                            "prepared_playback_loop: TTS failed block %d",
+                            next_idx + 1,
+                            exc_info=True,
+                        )
+                        pending_pcm = None
+
+                # Between blocks: "fronting" (next block incoming)
+                set_ward_properties(
+                    "durf",
+                    WardProperties(
+                        front_state="fronting",
+                        front_t0=_ward_time.monotonic(),
+                        z_plane="surface-scrim",
+                        alpha=0.88,
+                    ),
+                    ttl_s=120.0,
+                )
+
+                # Brief breath between paragraphs
+                await asyncio.sleep(0.5)
+
+            # ── DURF ward retirement: "retiring" → "integrated" ──
+            set_ward_properties(
+                "durf",
+                WardProperties(
+                    front_state="retiring",
+                    front_t0=_ward_time.monotonic(),
+                    z_plane="surface-scrim",
+                    alpha=0.7,
+                ),
+                ttl_s=15.0,
+            )
+            log.info("prepared_playback_loop: DURF ward → retiring for %s", prog_id)
+
+            # Clean up SHM segment state
+            try:
+                _SEGMENT_SHM.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+            # All blocks played — deactivate, auto-cycle picks next
+            try:
+                store.deactivate(prog_id)
+                log.info("prepared_playback_loop: completed %s (%d blocks)", prog_id, len(script))
+            except Exception:
+                log.debug(
+                    "prepared_playback_loop: deactivate failed for %s", prog_id, exc_info=True
+                )
+
+            # Post-delivery self-evaluation → impingement
+            # Complement to prep-time self-eval: this one measures what
+            # was actually delivered, not just what was composed.
+            try:
+                _bus = _Path("/dev/shm/hapax-dmn/impingements.jsonl")
+                if _bus.parent.exists():
+                    total_chars = sum(len(b) for b in script if b.strip())
+                    delivered_count = sum(1 for b in script if b.strip())
+                    avg_chars = total_chars / max(delivered_count, 1)
+                    _eval_imp = {
+                        "source": "self_evaluation.segment_delivery",
+                        "programme_id": prog_id,
+                        "role": role,
+                        "evaluation": {
+                            "blocks_delivered": delivered_count,
+                            "total_chars_delivered": total_chars,
+                            "avg_chars_per_block": round(avg_chars),
+                        },
+                        "ts": _ward_time.time(),
+                    }
+                    with _bus.open("a") as _f:
+                        _f.write(_json.dumps(_eval_imp) + "\n")
+                    log.info(
+                        "self-eval delivery: %s blocks=%d avg_chars=%.0f",
+                        prog_id,
+                        delivered_count,
+                        avg_chars,
+                    )
+            except Exception:
+                log.debug("self-eval delivery: emission failed", exc_info=True)
+
+            # Inter-programme gap — DURF returns to integrated
+            await asyncio.sleep(2.0)
+            set_ward_properties(
+                "durf",
+                WardProperties(front_state="integrated", front_t0=_ward_time.monotonic()),
+                ttl_s=10.0,
+            )
+
+        except Exception:
+            log.warning("prepared_playback_loop: tick failed", exc_info=True)
+            await asyncio.sleep(5.0)
 
 
 def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
@@ -347,7 +801,16 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
         context = assemble_context(daemon)
         programme_id = _programme_id_from_context(context)
         referent = _pick_referent_for_narration(programme_id)
-        narrative = compose.compose_narrative(context, operator_referent=referent)
+
+        # --- Delivery mode: use pre-composed script if available ---
+        narrative = _try_prepared_delivery(context)
+        if narrative is _DELIVERY_WAIT:
+            # Script exists, beat already delivered — skip entirely.
+            log.debug("delivery: beat already delivered, waiting for transition")
+            return
+        if narrative is None:
+            # Fallback: live composition (degraded mode)
+            narrative = compose.compose_narrative(context, operator_referent=referent)
         if narrative is None:
             emit.record_metric("llm_silent")
             daemon._affordance_pipeline.record_outcome(
@@ -423,11 +886,14 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
                 },
             )
             # Refractory inhibition — pipeline-native replacement for the
-            # hardcoded 120s rate-limit gate. base_level decay handles the
-            # longer-term cadence (150s+), but the hard floor prevents
-            # burst-firing when multiple impingements recruit narration
-            # within a short window.
-            daemon._affordance_pipeline.add_inhibition(imp, duration_s=_NARRATION_REFRACTORY_S)
+            # hardcoded 120s rate-limit gate. Prepared delivery skips
+            # refractory entirely so blocks flow as fast as the narrative
+            # drive emits (~30s). Live compose keeps 120s.
+            _is_prepped = programme_id and programme_id in _delivered_beats
+            if not _is_prepped:
+                daemon._affordance_pipeline.add_inhibition(
+                    imp, duration_s=_effective_refractory_s(daemon)
+                )
             _publish_recruitment_log(
                 "narration",
                 candidate.capability_name,
@@ -435,6 +901,10 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
                 imp.source,
                 narrative[:160],
             )
+            # Beat transitions are now checked in the programme_manager_loop
+            # at 1 Hz, independent of narration cadence. No duplicate check
+            # needed here.
+
             log.info(
                 "Autonomous narration emitted via recruitment (score=%.2f, source=%s)",
                 candidate.combined,

@@ -124,8 +124,8 @@ class TestResolveTierList:
     def test_default_limit_matches_constant(self, patch_qdrant):
         client = patch_qdrant({"documents": []})
         resolve_tier_list("topic")
-        # The fake's last call's limit kwarg is the default.
-        assert client.query_points.call_args.kwargs["limit"] == DEFAULT_TIER_LIST_CANDIDATES
+        # First call (documents) uses the default limit.
+        assert client.query_points.call_args_list[0].kwargs["limit"] == DEFAULT_TIER_LIST_CANDIDATES
 
 
 # --- Top10Assets ------------------------------------------------------------
@@ -135,7 +135,8 @@ class TestResolveTop10:
     def test_default_caps_at_10(self, patch_qdrant):
         client = patch_qdrant({"documents": []})
         resolve_top_10("anything")
-        assert client.query_points.call_args.kwargs["limit"] == DEFAULT_TOP_10_CANDIDATES
+        # First call (documents) uses the default limit.
+        assert client.query_points.call_args_list[0].kwargs["limit"] == DEFAULT_TOP_10_CANDIDATES
 
     def test_returns_ranked_candidates(self, patch_qdrant):
         # Scores order is preserved (Qdrant returns highest-first; resolver
@@ -274,8 +275,9 @@ class TestResolveIceberg:
         )
 
         assets = resolve_iceberg("topic", layers=4)
-        # Layer 1 surface is empty (no qdrant hits), layer 2 (areas) hits.
-        assert assets.layers[1] == ("30-areas/topic-deep.md",)
+        # Layer 1 surface may have empty qdrant, layer 2 (vault+moments) has vault hit.
+        vault_layer = assets.layers[1]
+        assert any("30-areas/topic-deep.md" in entry for entry in vault_layer)
 
 
 # --- InterviewAssets --------------------------------------------------------
@@ -321,8 +323,8 @@ class TestResolveLecture:
         assets = resolve_lecture("topic")
         assert isinstance(assets, LectureAssets)
         assert assets.outline_notes == ("30-areas/lecture-topic.md",)
-        # When vault has hits, rag_fallbacks stays empty.
-        assert assets.rag_fallbacks == ()
+        # RAG is now always populated as supplemental.
+        assert isinstance(assets.rag_fallbacks, tuple)
 
     def test_rag_fallback_when_vault_silent(self, patch_qdrant, monkeypatch, tmp_path: Path):
         patch_qdrant({"documents": [("RAG hit", "rag", 0.7)]})

@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -54,16 +55,21 @@ log = logging.getLogger(__name__)
 # review surface).
 _PROMPT_PATH = Path(__file__).parent / "prompts" / "programme_plan.md"
 
-# LiteLLM model alias. The planner is grounding-critical
-# (memory `feedback_director_grounding` + `feedback_grounding_exhaustive`)
-# so the default routes through the `balanced` tier (Claude Sonnet).
-# Override via env for ablation studies.
-DEFAULT_MODEL = os.environ.get("HAPAX_PROGRAMME_PLANNER_MODEL", "balanced")
+# Model name sent in the API request. When the planner routes to
+# TabbyAPI (primary), the model field is informational — TabbyAPI
+# serves whatever is loaded. When falling back to LiteLLM, this is
+# the LiteLLM model alias.
+DEFAULT_MODEL = os.environ.get("HAPAX_PROGRAMME_PLANNER_MODEL", "command-r-08-2024-exl3-5.0bpw")
 
-# ~30s budget per spec §10 Q9 — operator accepts 15-30s show-start
-# latency. The default LiteLLM timeout is plenty; we just track the
-# wall-clock for observability.
-_LLM_TIMEOUT_S: float = 60.0
+# Primary endpoint: TabbyAPI (local inference, no external API).
+# Fallback: LiteLLM gateway (for when TabbyAPI is down or model-swapping).
+_TABBY_URL = os.environ.get("HAPAX_TABBY_URL", "http://localhost:5000/v1/chat/completions")
+
+# Budget raised from 60s → 120s: the enriched programme plan prompt
+# (~23KB) plus per-call context regularly exceeds 60s on the balanced
+# tier (Claude Sonnet via Anthropic API). Local Qwen3.6 at 33 tok/s
+# needs ~130s for the full prompt + response.
+_LLM_TIMEOUT_S: float = 300.0
 
 # Max number of corrective retries after the first call. Spec mandates
 # "retries once" (one corrective re-call), so default is 1.
@@ -314,34 +320,55 @@ class ProgrammePlanner:
 # --- default LLM call ------------------------------------------------
 
 
-def _default_llm_fn(prompt: str) -> str:
-    """Default LLM caller — routes through LiteLLM at the configured tier.
-
-    Best-effort imports + key fetch so tests can stub this without
-    pulling in the LiteLLM gateway. Mirrors the structural director's
-    ``_default_llm_fn`` shape so the two stay symmetric.
-    """
-    litellm_url = os.environ.get("HAPAX_LITELLM_URL", "http://localhost:4000/v1/chat/completions")
-
+def _call_endpoint(url: str, prompt: str, auth: str | None = None) -> str | None:
+    """Call an OpenAI-compatible chat endpoint. Returns content or None on failure."""
     body = json.dumps(
         {
             "model": DEFAULT_MODEL,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 8192,
             "temperature": 0.7,
+            "chat_template_kwargs": {"enable_thinking": False},
         }
     ).encode()
-    req = urllib.request.Request(
-        litellm_url,
-        body,
-        {"Content-Type": "application/json", "Authorization": f"Bearer {LITELLM_KEY}"},
-    )
-    with urllib.request.urlopen(req, timeout=_LLM_TIMEOUT_S) as resp:
-        data = json.loads(resp.read())
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if auth:
+        headers["Authorization"] = f"Bearer {auth}"
+    req = urllib.request.Request(url, body, headers)
     try:
-        return data["choices"][0]["message"]["content"] or ""
-    except (KeyError, IndexError, TypeError):
-        return ""
+        with urllib.request.urlopen(req, timeout=_LLM_TIMEOUT_S) as resp:
+            data = json.loads(resp.read())
+        content = data["choices"][0]["message"]["content"] or ""
+        # Strip Qwen3's <think>...</think> chain-of-thought
+        import re
+
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+        return content
+    except Exception:
+        return None
+
+
+def _default_llm_fn(prompt: str) -> str:
+    """Default LLM caller — local TabbyAPI first, LiteLLM fallback.
+
+    Primary: TabbyAPI at localhost:5000 (Command-R or whatever is loaded).
+    No external API dependency. If TabbyAPI is down (model swap, restart),
+    falls back to LiteLLM at localhost:4000 which has its own fallback chain.
+    """
+    # Primary: TabbyAPI (local, no auth needed — disable_auth: true)
+    result = _call_endpoint(_TABBY_URL, prompt)
+    if result is not None:
+        log.info("planner LLM: served by TabbyAPI (local)")
+        return result
+
+    # Fallback: LiteLLM gateway
+    log.info("planner LLM: TabbyAPI unavailable, falling back to LiteLLM")
+    litellm_url = os.environ.get("HAPAX_LITELLM_URL", "http://localhost:4000/v1/chat/completions")
+    result = _call_endpoint(litellm_url, prompt, auth=LITELLM_KEY)
+    if result is not None:
+        return result
+
+    raise RuntimeError("planner LLM: both TabbyAPI and LiteLLM failed")
 
 
 __all__ = ["DEFAULT_MAX_RETRIES", "DEFAULT_MODEL", "LLMCallable", "ProgrammePlanner"]

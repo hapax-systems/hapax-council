@@ -2376,7 +2376,6 @@ from agents.studio_compositor import durf_source as _AR_durf_module
 
 _AR_durf_module.__getattr__
 
-
 # Graph-patch chain-composition consumer (architectural fix per memory
 # `feedback_no_presets_use_parametric_modulation`, cc-task
 # `parametric-modulation-heartbeat`). The consumer is wired into
@@ -2389,3 +2388,21 @@ from agents.studio_compositor import graph_patch_consumer as _GP_module
 _GP_module._reset_state_for_tests
 _GP_module.set_current_graph_provider
 _GP_module.process_graph_patch_recruitment
+
+# ProgrammeContent Pydantic validators are invoked dynamically by model
+# validation. The segment helpers are also called by the daily segment
+# prep runner and the programme loop beat transition check.
+from shared.programme import ProgrammeContent as _PrgContent
+
+_PrgContent._segment_beats_reasonable
+_PrgContent._segment_cues_reasonable
+_PrgContent._segment_beat_durations_reasonable
+_PrgContent._durations_ordered
+
+# Segment prompt helpers are called dynamically by the compose module's
+# phase detection path and the daily segment prep runner.
+from agents.hapax_daimonion.autonomous_narrative.segment_prompts import (
+    _phase_label as _segment_phase_label,
+)
+
+_segment_phase_label

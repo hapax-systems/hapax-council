@@ -82,7 +82,7 @@ def _read_narrative_state() -> dict:
 _SIGNIFICANT_MAGNITUDE = 0.35  # signals above this count toward "pressure"
 _PRESSURE_FORCE_THRESHOLD = 6  # N active signals → force a compositional move
 _IDLE_VARIATION_CADENCE_S = 12.0  # gentle overlay emphasis when nothing else fires
-_CHAT_RECENT_PATH = Path("/dev/shm/hapax-compositor/chat-recent.json")
+_CHAT_RECENT_PATH = Path("/dev/shm/hapax-chat/recent.jsonl")
 
 
 class TwitchDirector:
@@ -204,8 +204,8 @@ class TwitchDirector:
         # viewers feel their messages land.
         try:
             if _CHAT_RECENT_PATH.exists():
-                raw = json.loads(_CHAT_RECENT_PATH.read_text(encoding="utf-8"))
-                count = len(raw) if isinstance(raw, list) else 0
+                lines = _CHAT_RECENT_PATH.read_text(encoding="utf-8").strip().splitlines()
+                count = len(lines)
                 if count > self._last_chat_count:
                     self._last_chat_count = count
                     if self._emit_if_cool(

@@ -148,6 +148,8 @@ def merge_default_modulations(graph: Any) -> Any:
 
     merged = list(graph.modulations)
     for d in defaults:
+        if "node" not in d or "param" not in d:
+            continue  # skip comment entries
         target_type = d["node"]
         node_id = type_to_id.get(target_type)
         if node_id is None:

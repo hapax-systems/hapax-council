@@ -263,6 +263,20 @@ class ProgrammeConstraintEnvelope(BaseModel):
         return self.bias_multiplier(capability_name) > 0.0
 
 
+class SegmentAsset(BaseModel):
+    """One media asset referenced by a prepared script block.
+
+    Populated during daily_segment_prep alongside the prepared_script.
+    The playback loop publishes these to SHM at sentence tempo so the
+    DURF compositor ward can display relevant visuals per-block.
+    """
+
+    kind: Literal["image", "youtube", "url", "text"] = "text"
+    url: str | None = None
+    caption: str | None = None
+    block_index: int | None = None  # which script block this belongs to
+
+
 class ProgrammeContent(BaseModel):
     """Concrete content grounding — perception inputs, never scripted text.
 
@@ -270,12 +284,66 @@ class ProgrammeContent(BaseModel):
     ``narrative_beat`` is a 1-2 sentence prose intent the programme
     planner emits as *direction* for the narrative director — not a
     scripted utterance Hapax reads aloud.
+
+    ``segment_beats`` (optional) carries an ordered list of beat cues
+    for segmented-content programmes. Each beat is a short directive
+    (NOT a scripted line) that the director advances through — the
+    actual spoken delivery is composed spontaneously from assets +
+    perception at each beat. Think of it as a show rundown:
+
+        ["hook: introduce topic and why it matters",
+         "item_10: present entry #10 with context",
+         "item_9: present entry #9, contrast with #10",
+         ...
+         "item_1: reveal #1 with operator's distinctive angle",
+         "close: invite chat reactions and tease next segment"]
+
+    The director reads the *current* beat (indexed by programme
+    elapsed time / beat count) and composes its narrative_text to
+    advance that beat. Beat transitions happen via
+    ``programme.beat_advance`` intent family.
+
+    ``segment_cues`` (optional) carries compositional cues paired 1:1
+    with segment_beats. Each cue is a short directive for the
+    compositor — camera cuts, graphic overlays, mood shifts — that
+    fire when the corresponding beat activates.
     """
 
     music_track_ids: list[str] = Field(default_factory=list)
     operator_task_ref: str | None = None
     research_objective_ref: str | None = None
     narrative_beat: str | None = None
+    segment_beats: list[str] = Field(default_factory=list)
+    segment_cues: list[str] = Field(default_factory=list)
+    segment_beat_durations: list[float] = Field(default_factory=list)
+    """Seconds per beat, paired 1:1 with segment_beats.
+
+    The planner specifies how long each beat should last. The opening
+    beat is typically short (30-60s), body beats are longer (60-120s),
+    and the closing beat is moderate (45-90s). If empty or shorter
+    than segment_beats, missing durations default to
+    (planned_duration_s / len(segment_beats)).
+    """
+    prepared_script: list[str] = Field(default_factory=list)
+    """Pre-composed narration text, one entry per segment_beat.
+
+    Populated by the daily prep runner BEFORE the programme activates.
+    During delivery, the programme loop reads these chunks sequentially
+    and feeds them to TTS.  No LLM calls during delivery.
+
+    Each entry is 8-20 sentences (800-2000 characters) of broadcast-
+    ready prose — the actual words Hapax will speak for that beat.
+    Unlike segment_beats (which are director cues / rundown notes),
+    these are composed and iteratively refined output.
+    """
+    segment_assets: list[SegmentAsset] = Field(default_factory=list)
+    """Per-block media assets for DURF ward display during playback.
+
+    Populated during daily_segment_prep. Each asset carries a kind
+    (image/youtube/url/text), URL, caption, and the block_index it
+    belongs to. The playback loop publishes the current block's assets
+    to SHM so the DURF can render them at sentence tempo.
+    """
     invited_capabilities: set[str] = Field(default_factory=set)
 
     @field_validator("narrative_beat")
@@ -291,6 +359,27 @@ class ProgrammeContent(BaseModel):
                 "narrative_beat > 500 chars — programme direction, not a scripted utterance"
             )
         return stripped
+
+    @field_validator("segment_beats")
+    @classmethod
+    def _segment_beats_reasonable(cls, v: list[str]) -> list[str]:
+        if len(v) > 30:
+            raise ValueError(f"segment_beats has {len(v)} entries — max 30 per programme")
+        return [b.strip() for b in v if b.strip()]
+
+    @field_validator("segment_cues")
+    @classmethod
+    def _segment_cues_reasonable(cls, v: list[str]) -> list[str]:
+        if len(v) > 30:
+            raise ValueError(f"segment_cues has {len(v)} entries — max 30 per programme")
+        return [c.strip() for c in v if c.strip()]
+
+    @field_validator("segment_beat_durations")
+    @classmethod
+    def _segment_beat_durations_reasonable(cls, v: list[float]) -> list[float]:
+        if len(v) > 30:
+            raise ValueError(f"segment_beat_durations has {len(v)} entries — max 30 per programme")
+        return [max(15.0, d) for d in v]  # Floor of 15s per beat
 
 
 class ProgrammeRitual(BaseModel):
@@ -322,8 +411,8 @@ class ProgrammeSuccessCriteria(BaseModel):
 
     completion_predicates: list[str] = Field(default_factory=list)
     abort_predicates: list[str] = Field(default_factory=list)
-    min_duration_s: float = 60.0
-    max_duration_s: float = 1800.0
+    min_duration_s: float = 600.0  # 10-min floor; operator hard requirement
+    max_duration_s: float = 7200.0  # 2-hour cap; segments target 1 hour
 
     @model_validator(mode="after")
     def _durations_ordered(self) -> ProgrammeSuccessCriteria:

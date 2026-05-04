@@ -267,15 +267,23 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
         snapshot argument so the poll's gate decision and FSM-drive
         decision read the same data without re-acquiring the snapshot
         lock between calls.
+
+        Also returns True when segment-playback.json exists — the DURF
+        should be visible during programme narration even if no tmux
+        panes are active.
         """
         if _durf_module._consent_safe_active() or _durf_module._unsafe_public_bypass_active():
             return False
+        if self._SEGMENT_SHM_PATH.exists():
+            return True
         return any(pane.visible for pane in snapshot.panes)
 
     def _gate_active(self) -> bool:
         """Live gate reader — used by ``state()`` and tests."""
         if _durf_module._consent_safe_active() or _durf_module._unsafe_public_bypass_active():
             return False
+        if self._SEGMENT_SHM_PATH.exists():
+            return True
         with self._snapshot_lock:
             return any(pane.visible for pane in self._snapshot.panes)
 
@@ -470,6 +478,14 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
         self._last_rendered_alpha = alpha
         if alpha <= 0.001:
             return
+
+        # ── Segment mode: display programme content instead of tmux ──
+        seg = self._read_segment_state()
+        if seg is not None:
+            self._render_segment_content(cr, canvas_w, canvas_h, alpha, seg, t)
+            return
+
+        # ── Default: tmux pane display ──
         with self._snapshot_lock:
             panes = [pane for pane in self._snapshot.panes if pane.visible]
         if not panes:
@@ -484,6 +500,175 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
         rects = _layout_for_count(len(panes), canvas_w, canvas_h)
         for pane, rect in zip(panes, rects, strict=False):
             self._render_text_pane(cr, rect, pane, alpha)
+
+    # ── Segment state reader ─────────────────────────────────────────
+
+    _SEGMENT_SHM_PATH = Path("/dev/shm/hapax-compositor/segment-playback.json")
+    _seg_cache: dict[str, Any] | None = None
+    _seg_cache_mtime: float = 0.0
+
+    def _read_segment_state(self) -> dict[str, Any] | None:
+        """Read segment-playback.json from SHM with mtime-based caching."""
+        try:
+            st = self._SEGMENT_SHM_PATH.stat()
+            if st.st_mtime_ns == self._seg_cache_mtime and self._seg_cache is not None:
+                return self._seg_cache
+            import json
+
+            data = json.loads(self._SEGMENT_SHM_PATH.read_text(encoding="utf-8"))
+            self._seg_cache = data
+            self._seg_cache_mtime = st.st_mtime_ns
+            return data
+        except FileNotFoundError:
+            self._seg_cache = None
+            return None
+        except Exception:
+            return self._seg_cache  # stale is better than nothing
+
+    # ── Segment content renderer ─────────────────────────────────────
+
+    def _render_segment_content(
+        self,
+        cr: cairo.Context,
+        canvas_w: int,
+        canvas_h: int,
+        alpha: float,
+        seg: dict[str, Any],
+        t: float,
+    ) -> None:
+        """Render the current segment block: text + asset metadata."""
+        from agents.studio_compositor.homage.rendering import active_package
+
+        pkg = active_package()
+        bright = pkg.palette.bright
+        muted = pkg.palette.muted
+        accent = pkg.palette.accent_cyan
+
+        # ── Content-fitted panel (not full-frame) ──
+        # Size to content: estimate lines needed, then draw a fitted
+        # opaque background. Panel sits in lower-left to avoid covering
+        # camera feeds in upper quadrants.
+        block_text = seg.get("block_text", "")
+        assets = seg.get("assets", [])
+
+        # Estimate content height
+        margin = 36
+        pad = 20
+        line_h = 22
+        header_h = 32
+        asset_h = 22 * min(len(assets), 2)
+        divider_h = 24
+        # Word-wrap estimate at ~90 chars/line
+        text_lines = max(1, (len(block_text) + 89) // 90) if block_text else 0
+        body_h = text_lines * line_h
+
+        content_h = header_h + asset_h + divider_h + body_h + pad * 2
+        panel_w = min(canvas_w - margin * 2, 900)
+        panel_h = min(content_h, canvas_h - margin * 2)
+        panel_x = margin
+        panel_y = canvas_h - panel_h - margin
+
+        # Opaque background panel with rounded corners
+        radius = 12.0
+        cr.save()
+        cr.new_sub_path()
+        cr.arc(panel_x + panel_w - radius, panel_y + radius, radius, -1.5708, 0)
+        cr.arc(panel_x + panel_w - radius, panel_y + panel_h - radius, radius, 0, 1.5708)
+        cr.arc(panel_x + radius, panel_y + panel_h - radius, radius, 1.5708, 3.1416)
+        cr.arc(panel_x + radius, panel_y + radius, radius, 3.1416, 4.7124)
+        cr.close_path()
+        # Fully opaque dark background for legibility
+        cr.set_source_rgba(0.03, 0.03, 0.06, 0.96 * alpha)
+        cr.fill_preserve()
+        # Subtle border
+        cr.set_source_rgba(bright[0], bright[1], bright[2], 0.25 * alpha)
+        cr.set_line_width(1.5)
+        cr.stroke()
+        cr.restore()
+
+        text_x = panel_x + pad
+        text_y = panel_y + pad
+        max_w = max(1, panel_w - pad * 2)
+
+        # Header: programme role + block progress
+        block_idx = seg.get("block_index", 0)
+        block_count = seg.get("block_count", 1)
+        role = seg.get("role", "")
+        progress_text = f"▸ {role.upper().replace('_', ' ')} · {block_idx + 1}/{block_count}"
+        header_style = TextStyle(
+            text=progress_text,
+            font_description=self._font_description,
+            color_rgba=(accent[0], accent[1], accent[2], 0.90 * alpha),
+            outline_color_rgba=(0.0, 0.0, 0.0, 0.90 * alpha),
+            outline_offsets=OUTLINE_OFFSETS_4,
+            max_width_px=max_w,
+            wrap="word",
+        )
+        render_text(cr, header_style, text_x, text_y)
+        text_y += 32
+
+        # Asset info (if present)
+        for asset in assets[:2]:
+            kind = asset.get("kind", "text")
+            caption = asset.get("caption") or asset.get("url") or ""
+            if caption:
+                asset_label = f"  [{kind.upper()}] {caption[:80]}"
+                asset_style = TextStyle(
+                    text=asset_label,
+                    font_description=self._font_description,
+                    color_rgba=(muted[0], muted[1], muted[2], 0.72 * alpha),
+                    outline_color_rgba=(0.0, 0.0, 0.0, 0.80 * alpha),
+                    outline_offsets=OUTLINE_OFFSETS_4,
+                    max_width_px=max_w,
+                    wrap="char",
+                )
+                render_text(cr, asset_style, text_x, text_y)
+                text_y += 22
+
+        # Divider line
+        text_y += 8
+        cr.save()
+        cr.set_source_rgba(bright[0], bright[1], bright[2], 0.35 * alpha)
+        cr.move_to(panel_x + pad, text_y)
+        cr.line_to(panel_x + panel_w - pad, text_y)
+        cr.set_line_width(1.5)
+        cr.stroke()
+        cr.restore()
+        text_y += 16
+
+        # Block text — the narration content
+        if block_text:
+            max_lines = max(1, int((panel_y + panel_h - pad - text_y) / line_h))
+            # Wrap at roughly 90 chars per line
+            words = block_text.split()
+            lines: list[str] = []
+            current = ""
+            for word in words:
+                test = f"{current} {word}".strip()
+                if len(test) > 90:
+                    if current:
+                        lines.append(current)
+                    current = word
+                else:
+                    current = test
+            if current:
+                lines.append(current)
+
+            for line in lines[:max_lines]:
+                line_style = TextStyle(
+                    text=line,
+                    font_description=self._font_description,
+                    color_rgba=(bright[0], bright[1], bright[2], 0.88 * alpha),
+                    outline_color_rgba=(0.0, 0.0, 0.0, 0.82 * alpha),
+                    outline_offsets=OUTLINE_OFFSETS_4,
+                    max_width_px=max_w,
+                    wrap="word",
+                    line_spacing=0.95,
+                )
+                render_text(cr, line_style, text_x, text_y)
+                text_y += line_h
+                if text_y > panel_y + panel_h - pad:
+                    break
 
     def _render_text_pane(
         self,

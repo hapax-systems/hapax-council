@@ -252,12 +252,27 @@ def resolve_tier_list(
     *,
     limit: int = DEFAULT_TIER_LIST_CANDIDATES,
 ) -> TierListAssets:
-    """Pull candidate items + source attributions for a tier-list segment."""
-    hits = _qdrant_search("documents", topic, limit=limit)
+    """Pull candidate items + source attributions for a tier-list segment.
+
+    Queries ALL available content sources — documents, stream reactions,
+    studio moments, operator episodes. The rig has content abound;
+    every segment should be saturated with grounding material.
+    """
+    doc_hits = _qdrant_search("documents", topic, limit=limit)
+    reaction_hits = _qdrant_search("stream-reactions", topic, limit=limit // 2 or 5)
+    moment_hits = _qdrant_search("studio-moments", topic, limit=limit // 2 or 5)
+    episode_hits = _qdrant_search("operator-episodes", topic, limit=limit // 3 or 3)
+    all_hits = doc_hits + reaction_hits + moment_hits + episode_hits
+    # De-duplicate by text content, keep highest-scored version
+    seen: dict[str, tuple[str, str, float]] = {}
+    for text, source, score in all_hits:
+        if text not in seen or score > seen[text][2]:
+            seen[text] = (text, source, score)
+    deduped = sorted(seen.values(), key=lambda x: -x[2])[:limit]
     return TierListAssets(
         topic=topic,
-        candidates=tuple(text for text, _, _ in hits),
-        candidate_sources=tuple(source for _, source, _ in hits),
+        candidates=tuple(text for text, _, _ in deduped),
+        candidate_sources=tuple(source for _, source, _ in deduped),
     )
 
 
@@ -268,14 +283,24 @@ def resolve_top_10(
 ) -> Top10Assets:
     """Pull ranked candidates for a top-10 countdown segment.
 
-    Reuses the documents collection + relevance score for ranking;
-    Qdrant returns highest-score-first so the order is the ranking.
+    Queries documents, stream reactions, studio moments, and episodes
+    for maximum content saturation. Qdrant relevance score drives
+    ranking — highest score = #1.
     """
-    hits = _qdrant_search("documents", topic, limit=limit)
+    doc_hits = _qdrant_search("documents", topic, limit=limit)
+    reaction_hits = _qdrant_search("stream-reactions", topic, limit=5)
+    moment_hits = _qdrant_search("studio-moments", topic, limit=5)
+    episode_hits = _qdrant_search("operator-episodes", topic, limit=3)
+    all_hits = doc_hits + reaction_hits + moment_hits + episode_hits
+    seen: dict[str, tuple[str, str, float]] = {}
+    for text, source, score in all_hits:
+        if text not in seen or score > seen[text][2]:
+            seen[text] = (text, source, score)
+    deduped = sorted(seen.values(), key=lambda x: -x[2])[:limit]
     return Top10Assets(
         topic=topic,
-        ranked_candidates=tuple(text for text, _, _ in hits[:limit]),
-        candidate_sources=tuple(source for _, source, _ in hits[:limit]),
+        ranked_candidates=tuple(text for text, _, _ in deduped),
+        candidate_sources=tuple(source for _, source, _ in deduped),
     )
 
 
@@ -286,14 +311,26 @@ def resolve_rant(
 ) -> RantAssets:
     """Pull operator positions + prior corrections grounding a rant.
 
-    Operator profile + corrections are the two collections the rant
-    composer must never invent past. Both fail open to empty tuples.
+    Operator profile + corrections are the primary sources, but we
+    also pull from operator episodes and apperceptions for deeper
+    grounding — the operator's lived experience with this topic
+    across the full archive. Never invent positions.
     """
     positions = _qdrant_search("profile-facts", topic, limit=limit)
+    episode_positions = _qdrant_search("operator-episodes", topic, limit=limit)
+    apperception_positions = _qdrant_search("hapax-apperceptions", topic, limit=limit // 2 or 3)
     corrections = _qdrant_search("operator-corrections", topic, limit=limit)
+    all_positions = positions + episode_positions + apperception_positions
+    # De-duplicate
+    seen: set[str] = set()
+    unique_positions: list[str] = []
+    for text, _, _ in all_positions:
+        if text not in seen:
+            seen.add(text)
+            unique_positions.append(text)
     return RantAssets(
         topic=topic,
-        operator_positions=tuple(text for text, _, _ in positions),
+        operator_positions=tuple(unique_positions[: limit * 2]),
         prior_corrections=tuple(text for text, _, _ in corrections),
     )
 
@@ -339,25 +376,39 @@ def resolve_iceberg(
 ) -> IcebergAssets:
     """Build a layered outline from surface RAG → vault → operator edge.
 
-    Layer 1 (surface): documents-collection RAG hits — common knowledge.
+    Layer 1 (surface): documents + stream reactions — common/public knowledge.
     Layer 2 (vault notes): operator's 30-areas notes for this topic.
-    Layer 3 (specialized): operator's 20-projects notes (projects encode
-    the operator's edge thinking — current research lines, custom
-    rigs, in-flight work).
-    Layer 4+ (deepest): falls through to specialised resources.
+    Layer 3 (specialized): operator's 20-projects notes + operator episodes
+    Layer 4 (deepest): vault resources + apperceptions + corrections
 
-    With ``layers < 4`` we drop the deepest layers first, preserving the
-    surface-to-vault gradient.
+    Each layer pulls from progressively more specialized sources.
     """
-    surface = [text for text, _, _ in _qdrant_search("documents", topic, limit=4)]
+    # Surface: documents + stream reactions
+    doc_hits = [text for text, _, _ in _qdrant_search("documents", topic, limit=6)]
+    reaction_hits = [text for text, _, _ in _qdrant_search("stream-reactions", topic, limit=4)]
+    surface = doc_hits + reaction_hits
+
+    # Vault layer: areas notes + studio moments
     areas = _vault_notes_for_topic(topic, roots=(VAULT_AREAS,), limit=4)
+    moment_refs = [text for text, _, _ in _qdrant_search("studio-moments", topic, limit=3)]
+    vault_layer = list(areas) + moment_refs
+
+    # Specialized: projects + episodes
     projects = _vault_notes_for_topic(topic, roots=(VAULT_PROJECTS,), limit=4)
+    episode_hits = [text for text, _, _ in _qdrant_search("operator-episodes", topic, limit=4)]
+    specialized = list(projects) + episode_hits
+
+    # Deepest: resources + apperceptions + corrections
     resources = _vault_notes_for_topic(topic, roots=(VAULT_RESOURCES,), limit=4)
+    apperceptions = [text for text, _, _ in _qdrant_search("hapax-apperceptions", topic, limit=4)]
+    corrections = [text for text, _, _ in _qdrant_search("operator-corrections", topic, limit=3)]
+    deepest = list(resources) + apperceptions + corrections
+
     full_layers: list[tuple[str, ...]] = [
         tuple(surface),
-        tuple(areas),
-        tuple(projects),
-        tuple(resources),
+        tuple(vault_layer),
+        tuple(specialized),
+        tuple(deepest),
     ]
     return IcebergAssets(topic=topic, layers=tuple(full_layers[:layers]))
 
@@ -369,17 +420,27 @@ def resolve_interview(
 ) -> InterviewAssets:
     """Prep an interview against the named subject.
 
-    Pulls subject-relevant material from documents + profile-facts
-    (operator positions on or about the subject). ``prior_interaction_refs``
-    is left as a placeholder for the consent-gated prior-conversation
-    pull when the subject is a vault-resident voice; today it returns
-    empty (consent infrastructure governs the future hook).
+    Pulls from ALL content sources — documents, profile-facts,
+    stream reactions (prior audience engagement with this subject),
+    operator episodes, and studio moments. Prior interaction refs
+    are consent-gated for vault-resident voices.
     """
     prep = _qdrant_search("documents", subject, limit=limit)
     profile_hits = _qdrant_search("profile-facts", subject, limit=limit)
+    reaction_hits = _qdrant_search("stream-reactions", subject, limit=limit // 2 or 3)
+    episode_hits = _qdrant_search("operator-episodes", subject, limit=limit // 2 or 3)
+    moment_hits = _qdrant_search("studio-moments", subject, limit=3)
+    all_hits = prep + profile_hits + reaction_hits + episode_hits + moment_hits
+    # De-duplicate
+    seen: set[str] = set()
+    unique: list[str] = []
+    for text, _, _ in all_hits:
+        if text not in seen:
+            seen.add(text)
+            unique.append(text)
     return InterviewAssets(
         subject=subject,
-        prep_hits=tuple(text for text, _, _ in prep + profile_hits),
+        prep_hits=tuple(unique[: limit * 2]),
         prior_interaction_refs=(),
     )
 
@@ -391,14 +452,20 @@ def resolve_lecture(
 ) -> LectureAssets:
     """Build an outline-friendly asset bundle for a lecture programme.
 
-    Vault notes are preferred; RAG hits backstop when the vault is
-    silent. The narrative composer is expected to cite vault notes by
-    relative path inline so the lecture stays grounded.
+    Vault notes are preferred. RAG hits from documents, apperceptions,
+    and episodes ALWAYS supplement — never leave content on the table.
+    The narrative composer cites sources inline so the lecture stays
+    grounded in evidence.
     """
     notes = _vault_notes_for_topic(topic, roots=(VAULT_AREAS, VAULT_PROJECTS), limit=limit)
-    rag_hits: list[str] = []
-    if not notes:
-        rag_hits = [text for text, _, _ in _qdrant_search("documents", topic, limit=limit)]
+    # ALWAYS pull RAG supplemental — not just when vault is empty.
+    # The lecture should be saturated with grounding material.
+    doc_hits = [text for text, _, _ in _qdrant_search("documents", topic, limit=limit)]
+    apperception_hits = [
+        text for text, _, _ in _qdrant_search("hapax-apperceptions", topic, limit=3)
+    ]
+    episode_hits = [text for text, _, _ in _qdrant_search("operator-episodes", topic, limit=3)]
+    rag_hits = doc_hits + apperception_hits + episode_hits
     return LectureAssets(
         topic=topic,
         outline_notes=tuple(notes),

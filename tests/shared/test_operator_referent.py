@@ -7,9 +7,8 @@ from collections import Counter
 from shared.operator_referent import REFERENTS, OperatorReferentPicker
 
 
-def test_referents_are_exactly_four_canonical_forms() -> None:
+def test_referents_are_exactly_three_canonical_forms() -> None:
     assert REFERENTS == (
-        "The Operator",
         "Oudepode",
         "Oudepode The Operator",
         "OTO",
@@ -56,16 +55,16 @@ def test_pick_for_vod_segment_is_deterministic() -> None:
 
 
 def test_equal_weight_distribution_over_ten_thousand_seeds() -> None:
-    """SHA-256 mod 4 should be indistinguishable from uniform over N=10_000.
+    """SHA-256 mod 3 should be indistinguishable from uniform over N=10_000.
 
-    Each bucket's expected count is 2500. We allow a generous ±250 (~10%)
+    Each bucket's expected count is ~3333. We allow a generous ±333 (~10%)
     tolerance — this is a smoke test against gross bias, not a χ² proof.
     """
     counts: Counter[str] = Counter(OperatorReferentPicker.pick(f"seed-{i}") for i in range(10_000))
     assert set(counts.keys()) == set(REFERENTS)
     for referent in REFERENTS:
-        assert 2250 <= counts[referent] <= 2750, (
-            f"{referent}: expected ~2500, got {counts[referent]}"
+        assert 3000 <= counts[referent] <= 3666, (
+            f"{referent}: expected ~3333, got {counts[referent]}"
         )
 
 
@@ -76,7 +75,7 @@ def test_equal_weight_distribution_over_tick_ids() -> None:
     """
     counts: Counter[str] = Counter(OperatorReferentPicker.pick_for_tick(i) for i in range(10_000))
     for referent in REFERENTS:
-        assert 2250 <= counts[referent] <= 2750
+        assert 3000 <= counts[referent] <= 3666
 
 
 def test_empty_string_seed_is_valid() -> None:
