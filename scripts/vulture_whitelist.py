@@ -2435,7 +2435,6 @@ from agents.playwright_grant_submission_runner.runner import (
 _GR_UniversalGrantPackage.primary_text_for_section
 _GR_GrantSubmissionRunner.schema_only_recipes
 
-
 # Cc-task ``m8-re-splay-operator-install-and-smoke`` (2026-05-04):
 # scripts/m8-smoke.py is invoked from the operator CLI and CI tests
 # (importlib.util loader). Vulture can't see the dynamic entrypoints,
@@ -2453,3 +2452,16 @@ if _M8_SMOKE_SPEC is not None and _M8_SMOKE_SPEC.loader is not None:
     _m8_smoke_module.main
     _m8_smoke_module.run_checks
     _m8_smoke_module._is_feature_flag_enabled
+
+# cc-task ``publication-bus-monetization-rails-surfaces`` (2026-05-04).
+# omg.lol Pay publisher methods are dispatched via the FastAPI route
+# at ``logos.api.routes.payment_rails:receive_omg_lol_pay_webhook``
+# — vulture cannot see the FastAPI registration. _emit + _handle_is_address_only
+# are also called via Pydantic field-validator + Publisher ABC dispatch.
+from agents.publication_bus.omg_lol_pay_publisher import OmgLolPayPublisher
+from shared.omg_lol_pay_receive_only_rail import PaymentEvent
+
+OmgLolPayPublisher.requires_legal_name
+OmgLolPayPublisher._emit
+PaymentEvent.model_config
+PaymentEvent._handle_is_address_only
