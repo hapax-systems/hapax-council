@@ -255,56 +255,283 @@ class LogosStimmungBridge:
         return None
 
 
-# Phase 6b-ii bridge contract for the four mood-valence signals
-# (``hrv_below_baseline``, ``skin_temp_drop``, ``sleep_debt_high``,
-# ``voice_pitch_elevated``) defined in
-# ``mood_valence_engine.DEFAULT_SIGNAL_WEIGHTS``. Per-signal sources
-# live in heterogeneous backends — health.py (Pixel Watch HRV /
-# skin temp / sleep) + voice-side speech analysis (pitch baseline).
-# The bridge ships the protocol-matching surface with all accessors
-# returning ``None`` so the engine math runs cleanly with no live
-# signal contribution; per-backend threshold calibration is deferred
-# until production data stabilises the references.
+# Phase 6b-ii bridge for the four mood-valence signals. Per-backend
+# calibration is now live (audit-3-fix-4, Phase B). Each accessor reads
+# from watch state files and perception-state.json with staleness gating.
 class LogosMoodValenceBridge:
-    """Bridge health/voice signals → MoodValenceEngine signal Protocol."""
+    """Bridge health/voice signals → MoodValenceEngine signal Protocol.
+
+    Phase B mood-valence calibration (audit-3-fix-4). Reads from:
+    - ``~/hapax-state/watch/hrv.json`` (HRV RMSSD)
+    - ``~/hapax-state/watch/skin_temp.json`` (skin temperature)
+    - ``~/hapax-state/watch/phone_health_summary.json`` (sleep data)
+    - perception-state.json (voice pitch — via sst_pipeline)
+
+    Staleness contract: accessors return ``None`` when data is >120s old
+    or missing entirely (skip-signal per ClaimEngine.tick semantics).
+    """
+
+    # Staleness threshold for watch state files (seconds)
+    _STALE_S: float = 120.0
+
+    def __init__(self) -> None:
+        from shared.mood_calibration import RollingQuantile
+
+        # HRV baseline: 30-min rolling median
+        self._hrv_baseline = RollingQuantile(
+            window_s=1800.0, quantile=0.5, min_samples=10, stale_s=120.0
+        )
+        # Skin temp: 6-hour rolling tracker for drop detection
+        self._skin_temp_tracker = RollingQuantile(
+            window_s=21600.0, quantile=0.5, min_samples=10, stale_s=300.0
+        )
+
+    def _load_watch_file(self, filename: str) -> dict | None:
+        """Load a watch state JSON file, return None if missing/corrupt."""
+        import json
+        from pathlib import Path
+
+        path = Path.home() / "hapax-state" / "watch" / filename
+        try:
+            return json.loads(path.read_text())
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return None
+
+    def _is_watch_fresh(self, data: dict) -> bool:
+        """Check if watch state file is <120s old via updated_at."""
+        from datetime import UTC, datetime
+
+        updated = data.get("updated_at")
+        if not isinstance(updated, str):
+            return False
+        try:
+            ts = datetime.fromisoformat(updated)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=UTC)
+            age = (datetime.now(UTC) - ts).total_seconds()
+            return age < self._STALE_S
+        except ValueError:
+            return False
 
     def hrv_below_baseline(self) -> bool | None:
-        return None
+        """True if HRV RMSSD is below the 30-min rolling median.
+
+        Reads ``~/hapax-state/watch/hrv.json``. When current RMSSD
+        falls below the rolling median, valence evidence is negative
+        (operator may be stressed or fatigued).
+        """
+        data = self._load_watch_file("hrv.json")
+        if data is None or not self._is_watch_fresh(data):
+            return None
+        current = data.get("current", {})
+        rmssd = current.get("rmssd_ms")
+        if rmssd is None:
+            return None
+        rmssd = float(rmssd)
+        self._hrv_baseline.observe(rmssd)
+        median = self._hrv_baseline.current_quantile()
+        if median is None:
+            return None
+        return rmssd < median
 
     def skin_temp_drop(self) -> bool | None:
-        return None
+        """True if skin temp has dropped >0.3°C from the 6-hour median.
+
+        Reads ``~/hapax-state/watch/skin_temp.json``. A drop in skin
+        temperature correlates with stress or vasoconstriction.
+        """
+        data = self._load_watch_file("skin_temp.json")
+        if data is None or not self._is_watch_fresh(data):
+            return None
+        current = data.get("current", {})
+        temp_c = current.get("temp_c")
+        if temp_c is None:
+            return None
+        temp_c = float(temp_c)
+        self._skin_temp_tracker.observe(temp_c)
+        median = self._skin_temp_tracker.current_quantile()
+        if median is None:
+            return None
+        return temp_c < (median - 0.3)
 
     def sleep_debt_high(self) -> bool | None:
-        return None
+        """True if sleep quality score is below 0.6 (indicating sleep debt).
+
+        Reads ``sleep_quality`` from perception-state.json. The watch
+        backend computes a 0.0-1.0 score where 7h sleep = 1.0 and
+        <6h sleep starts dropping significantly.
+        """
+        import json
+        import time
+        from pathlib import Path
+
+        path = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
+        try:
+            data = json.loads(path.read_text())
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return None
+        ts = data.get("timestamp", 0)
+        if not ts or (time.time() - float(ts)) > self._STALE_S:
+            return None
+        quality = data.get("sleep_quality")
+        if quality is None:
+            return None
+        return float(quality) < 0.6
 
     def voice_pitch_elevated(self) -> bool | None:
+        """True if voice pitch is elevated above baseline.
+
+        Returns ``None`` until a voice_pitch_baseline reader is
+        implemented (Phase B long pole — needs 30-min bootstrap).
+        The engine skips this signal on ``None`` per the ClaimEngine
+        contract; the other 3 signals still contribute.
+        """
+        # Phase B long pole: voice pitch baseline needs a rolling
+        # 30-min reader from sst_pipeline. Shipping as None until
+        # the voice_pitch_baseline module is wired (follow-up PR).
         return None
 
 
-# Phase 6b-iii bridge contract for the four mood-coherence (low-tier)
-# signals (``hrv_variability_high``, ``respiration_irregular``,
-# ``movement_jitter_high``, ``skin_temp_volatility_high``) defined in
-# ``mood_coherence_engine.DEFAULT_SIGNAL_WEIGHTS``. Per-signal sources
-# live in heterogeneous backends — mostly Pixel Watch volatility /
-# variance metrics in health.py. The bridge ships the protocol-matching
-# surface with all accessors returning ``None`` so the engine math
-# runs cleanly with no live signal contribution; per-backend threshold
-# calibration is deferred until production data stabilises the
-# references.
+# Phase 6b-iii bridge for the four mood-coherence signals. Per-backend
+# calibration is now live (audit-3-fix-4, Phase C). Each accessor reads
+# from watch state files with staleness gating.
 class LogosMoodCoherenceBridge:
-    """Bridge health-volatility signals → MoodCoherenceEngine signal Protocol."""
+    """Bridge health-volatility signals → MoodCoherenceEngine signal Protocol.
+
+    Phase C mood-coherence calibration (audit-3-fix-4). Reads from:
+    - ``~/hapax-state/watch/hrv.json`` (HRV variability)
+    - ``~/hapax-state/watch/skin_temp.json`` (skin temp volatility)
+    - perception-state.json (accelerometer jerk)
+
+    Staleness contract: accessors return ``None`` when data is >120s old
+    or missing entirely (skip-signal per ClaimEngine.tick semantics).
+    """
+
+    _STALE_S: float = 120.0
+
+    def __init__(self) -> None:
+        from shared.mood_calibration import RollingQuantile
+
+        # HRV variability: track 1h window to compute CV
+        self._hrv_var_tracker = RollingQuantile(
+            window_s=3600.0, quantile=0.5, min_samples=10, stale_s=120.0
+        )
+        # Skin temp volatility: 1h window for CV
+        self._skin_temp_vol_tracker = RollingQuantile(
+            window_s=3600.0, quantile=0.5, min_samples=10, stale_s=300.0
+        )
+
+    def _load_watch_file(self, filename: str) -> dict | None:
+        """Load a watch state JSON file, return None if missing/corrupt."""
+        import json
+        from pathlib import Path
+
+        path = Path.home() / "hapax-state" / "watch" / filename
+        try:
+            return json.loads(path.read_text())
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return None
+
+    def _is_watch_fresh(self, data: dict) -> bool:
+        """Check if watch state file is <120s old via updated_at."""
+        from datetime import UTC, datetime
+
+        updated = data.get("updated_at")
+        if not isinstance(updated, str):
+            return False
+        try:
+            ts = datetime.fromisoformat(updated)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=UTC)
+            age = (datetime.now(UTC) - ts).total_seconds()
+            return age < self._STALE_S
+        except ValueError:
+            return False
 
     def hrv_variability_high(self) -> bool | None:
-        return None
+        """True if HRV coefficient of variation > 30% over the last hour.
+
+        Reads ``~/hapax-state/watch/hrv.json`` window_1h stats. High HRV
+        variability suggests autonomic incoherence (sympathetic/para-
+        sympathetic oscillation).
+        """
+        data = self._load_watch_file("hrv.json")
+        if data is None or not self._is_watch_fresh(data):
+            return None
+        window = data.get("window_1h", {})
+        mean = window.get("mean")
+        min_val = window.get("min")
+        max_val = window.get("max")
+        readings = window.get("readings", 0)
+        if mean is None or readings < 5 or float(mean) <= 0:
+            return None
+        # Approximate CV from min/max/mean: (max-min) / (2*mean) as a
+        # rough coefficient of variation proxy. True CV requires stddev
+        # but the 1h window only provides min/max/mean.
+        spread = float(max_val) - float(min_val)
+        cv_approx = spread / (2.0 * float(mean))
+        return cv_approx > 0.30
 
     def respiration_irregular(self) -> bool | None:
+        """True if respiratory pattern is irregular.
+
+        Returns ``None`` — no respiratory data source is currently
+        available from the watch or phone. The engine skips this signal
+        on ``None`` per the ClaimEngine contract.
+        """
+        # No respiratory data source wired yet. The Pixel Watch 4 doesn't
+        # expose breath rate in real-time via the Health Services API.
+        # Follow-up: wire phone-side breath estimation if available.
         return None
 
     def movement_jitter_high(self) -> bool | None:
-        return None
+        """True if accelerometer jerk / motion variance is high.
+
+        Reads ``physiological_load`` from perception-state.json as a proxy
+        for movement jitter. High physiological load correlates with
+        fidgeting, restlessness, or physical exertion — all coherence-
+        reducing signals.
+        """
+        import json
+        import time
+        from pathlib import Path
+
+        path = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
+        try:
+            data = json.loads(path.read_text())
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return None
+        ts = data.get("timestamp", 0)
+        if not ts or (time.time() - float(ts)) > self._STALE_S:
+            return None
+        load = data.get("physiological_load")
+        if load is None:
+            return None
+        # Physiological load > 0.6 indicates high exertion/movement
+        return float(load) > 0.6
 
     def skin_temp_volatility_high(self) -> bool | None:
-        return None
+        """True if skin temperature CV > 10% over the last hour.
+
+        Reads ``~/hapax-state/watch/skin_temp.json``. Rapid skin
+        temperature fluctuations suggest autonomic dysregulation or
+        environmental temperature stress.
+        """
+        data = self._load_watch_file("skin_temp.json")
+        if data is None or not self._is_watch_fresh(data):
+            return None
+        current = data.get("current", {})
+        temp_c = current.get("temp_c")
+        if temp_c is None:
+            return None
+        temp_c = float(temp_c)
+        self._skin_temp_vol_tracker.observe(temp_c)
+        median = self._skin_temp_vol_tracker.current_quantile()
+        if median is None or median <= 0:
+            return None
+        # Use deviation from median as volatility proxy
+        deviation = abs(temp_c - median) / median
+        return deviation > 0.10
 
 
 @asynccontextmanager

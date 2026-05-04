@@ -4,12 +4,16 @@ use std::path::Path;
 use std::time::Instant;
 
 // --- Stimmung (from shared/stimmung.py) ---
+// Python side: shared/stimmung.py::Stance — keep in sync.
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Stance {
     #[default]
     Nominal,
+    /// Parallel to Nominal — system is actively exploring/seeking,
+    /// not degraded. Visually maps to slightly elevated turbulence.
+    Seeking,
     Cautious,
     Degraded,
     Critical,
@@ -43,6 +47,19 @@ pub struct SystemStimmung {
     pub perception_confidence: DimensionReading,
     #[serde(default)]
     pub llm_cost_pressure: DimensionReading,
+    // Phase 2 dimensions (shared/stimmung.py parity)
+    #[serde(default)]
+    pub grounding_quality: DimensionReading,
+    #[serde(default)]
+    pub exploration_deficit: DimensionReading,
+    #[serde(default)]
+    pub audience_engagement: DimensionReading,
+    #[serde(default)]
+    pub operator_stress: DimensionReading,
+    #[serde(default)]
+    pub operator_energy: DimensionReading,
+    #[serde(default)]
+    pub physiological_coherence: DimensionReading,
     #[serde(default)]
     pub overall_stance: Stance,
     #[serde(default)]
@@ -442,6 +459,7 @@ impl StateReader {
             self.stimmung.overall_stance
         } else {
             match self.visual.stimmung_stance.as_str() {
+                "seeking" => Stance::Seeking,
                 "cautious" => Stance::Cautious,
                 "degraded" => Stance::Degraded,
                 "critical" => Stance::Critical,
