@@ -19,28 +19,80 @@ from shared.programme import (
     ProgrammeStatus,
     ProgrammeSuccessCriteria,
 )
+from shared.voice_tier import _ROLE_TIER_DEFAULTS
+
+# Phase 1 vocabulary — operator-context programmes (12 roles).
+_PHASE_1_ROLES: frozenset[str] = frozenset(
+    {
+        "listening",
+        "showcase",
+        "ritual",
+        "interlude",
+        "work_block",
+        "tutorial",
+        "wind_down",
+        "hothouse_pressure",
+        "ambient",
+        "experiment",
+        "repair",
+        "invitation",
+    }
+)
+
+# Segmented-content formats — operator outcome 2 (auto-programmed
+# segmented content). Seven added in
+# cc-task `segmented-content-formats-expansion` (2026-05-04).
+_SEGMENTED_CONTENT_ROLES: frozenset[str] = frozenset(
+    {
+        "tier_list",
+        "top_10",
+        "rant",
+        "react",
+        "iceberg",
+        "interview",
+        "lecture",
+    }
+)
 
 
 class TestProgrammeRole:
-    def test_twelve_roles(self) -> None:
-        assert len(list(ProgrammeRole)) == 12
+    def test_role_count_phase_1_plus_segmented(self) -> None:
+        assert len(list(ProgrammeRole)) == 19
 
-    def test_roles_match_research_doc(self) -> None:
-        expected = {
-            "listening",
-            "showcase",
-            "ritual",
-            "interlude",
-            "work_block",
-            "tutorial",
-            "wind_down",
-            "hothouse_pressure",
-            "ambient",
-            "experiment",
-            "repair",
-            "invitation",
-        }
-        assert {r.value for r in ProgrammeRole} == expected
+    def test_phase_1_roles_present(self) -> None:
+        values = {r.value for r in ProgrammeRole}
+        assert values >= _PHASE_1_ROLES
+
+    def test_segmented_content_roles_present(self) -> None:
+        """Operator outcome 2 — auto-programmed segmented content."""
+        values = {r.value for r in ProgrammeRole}
+        assert values >= _SEGMENTED_CONTENT_ROLES
+
+    def test_segmented_content_role_names_match_snake_case(self) -> None:
+        """Each new segmented-content role's str value is snake_case."""
+        assert ProgrammeRole.TIER_LIST.value == "tier_list"
+        assert ProgrammeRole.TOP_10.value == "top_10"
+        assert ProgrammeRole.RANT.value == "rant"
+        assert ProgrammeRole.REACT.value == "react"
+        assert ProgrammeRole.ICEBERG.value == "iceberg"
+        assert ProgrammeRole.INTERVIEW.value == "interview"
+        assert ProgrammeRole.LECTURE.value == "lecture"
+
+    def test_no_duplicate_role_values(self) -> None:
+        values = [r.value for r in ProgrammeRole]
+        assert len(values) == len(set(values))
+
+    def test_roles_match_phase_1_plus_segmented_set(self) -> None:
+        assert {r.value for r in ProgrammeRole} == _PHASE_1_ROLES | _SEGMENTED_CONTENT_ROLES
+
+    def test_segmented_content_roles_have_tier_band_defaults(self) -> None:
+        """Each new role must have a _ROLE_TIER_DEFAULTS entry so the
+        voice-tier resolver does not raise KeyError when the structural
+        director picks a tier under a segmented-content programme."""
+        for value in _SEGMENTED_CONTENT_ROLES:
+            assert value in _ROLE_TIER_DEFAULTS, (
+                f"ProgrammeRole {value!r} missing from _ROLE_TIER_DEFAULTS"
+            )
 
 
 class TestProgrammeStatus:
