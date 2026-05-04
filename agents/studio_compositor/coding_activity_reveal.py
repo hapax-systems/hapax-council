@@ -544,17 +544,51 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
         muted = pkg.palette.muted
         accent = pkg.palette.accent_cyan
 
-        # Background scrim
+        # ── Content-fitted panel (not full-frame) ──
+        # Size to content: estimate lines needed, then draw a fitted
+        # opaque background. Panel sits in lower-left to avoid covering
+        # camera feeds in upper quadrants.
+        block_text = seg.get("block_text", "")
+        assets = seg.get("assets", [])
+
+        # Estimate content height
+        margin = 36
+        pad = 20
+        line_h = 22
+        header_h = 32
+        asset_h = 22 * min(len(assets), 2)
+        divider_h = 24
+        # Word-wrap estimate at ~90 chars/line
+        text_lines = max(1, (len(block_text) + 89) // 90) if block_text else 0
+        body_h = text_lines * line_h
+
+        content_h = header_h + asset_h + divider_h + body_h + pad * 2
+        panel_w = min(canvas_w - margin * 2, 900)
+        panel_h = min(content_h, canvas_h - margin * 2)
+        panel_x = margin
+        panel_y = canvas_h - panel_h - margin
+
+        # Opaque background panel with rounded corners
+        radius = 12.0
         cr.save()
-        cr.set_source_rgba(0.02, 0.02, 0.05, 0.78 * alpha)
-        cr.rectangle(0, 0, canvas_w, canvas_h)
-        cr.fill()
+        cr.new_sub_path()
+        cr.arc(panel_x + panel_w - radius, panel_y + radius, radius, -1.5708, 0)
+        cr.arc(panel_x + panel_w - radius, panel_y + panel_h - radius, radius, 0, 1.5708)
+        cr.arc(panel_x + radius, panel_y + panel_h - radius, radius, 1.5708, 3.1416)
+        cr.arc(panel_x + radius, panel_y + radius, radius, 3.1416, 4.7124)
+        cr.close_path()
+        # Fully opaque dark background for legibility
+        cr.set_source_rgba(0.03, 0.03, 0.06, 0.96 * alpha)
+        cr.fill_preserve()
+        # Subtle border
+        cr.set_source_rgba(bright[0], bright[1], bright[2], 0.25 * alpha)
+        cr.set_line_width(1.5)
+        cr.stroke()
         cr.restore()
 
-        margin = 48
-        text_x = margin
-        text_y = margin + 20
-        max_w = max(1, canvas_w - margin * 2)
+        text_x = panel_x + pad
+        text_y = panel_y + pad
+        max_w = max(1, panel_w - pad * 2)
 
         # Header: programme role + block progress
         block_idx = seg.get("block_index", 0)
@@ -571,10 +605,9 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
             wrap="word",
         )
         render_text(cr, header_style, text_x, text_y)
-        text_y += 36
+        text_y += 32
 
         # Asset info (if present)
-        assets = seg.get("assets", [])
         for asset in assets[:2]:
             kind = asset.get("kind", "text")
             caption = asset.get("caption") or asset.get("url") or ""
@@ -596,19 +629,16 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
         text_y += 8
         cr.save()
         cr.set_source_rgba(bright[0], bright[1], bright[2], 0.35 * alpha)
-        cr.move_to(margin, text_y)
-        cr.line_to(canvas_w - margin, text_y)
+        cr.move_to(panel_x + pad, text_y)
+        cr.line_to(panel_x + panel_w - pad, text_y)
         cr.set_line_width(1.5)
         cr.stroke()
         cr.restore()
         text_y += 16
 
         # Block text — the narration content
-        block_text = seg.get("block_text", "")
         if block_text:
-            # Split into sentences for readable display
-            line_h = 22
-            max_lines = max(1, int((canvas_h - text_y - margin) / line_h))
+            max_lines = max(1, int((panel_y + panel_h - pad - text_y) / line_h))
             # Wrap at roughly 90 chars per line
             words = block_text.split()
             lines: list[str] = []
@@ -637,7 +667,7 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
                 )
                 render_text(cr, line_style, text_x, text_y)
                 text_y += line_h
-                if text_y > canvas_h - margin:
+                if text_y > panel_y + panel_h - pad:
                     break
 
     def _render_text_pane(
