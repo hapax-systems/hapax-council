@@ -67,8 +67,9 @@ _TABBY_URL = os.environ.get("HAPAX_TABBY_URL", "http://localhost:5000/v1/chat/co
 
 # Budget raised from 60s → 120s: the enriched programme plan prompt
 # (~23KB) plus per-call context regularly exceeds 60s on the balanced
-# tier (Claude Sonnet via Anthropic API).
-_LLM_TIMEOUT_S: float = 120.0
+# tier (Claude Sonnet via Anthropic API). Local Qwen3.6 at 33 tok/s
+# needs ~130s for the full prompt + response.
+_LLM_TIMEOUT_S: float = 300.0
 
 # Max number of corrective retries after the first call. Spec mandates
 # "retries once" (one corrective re-call), so default is 1.
