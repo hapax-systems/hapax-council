@@ -6,6 +6,7 @@ import logging
 import time
 
 from shared.affordance import CapabilityRecord, OperationalProperties, SelectionCandidate
+from shared.grounding_context import GroundingContextEnvelope
 from shared.impingement import Impingement, ImpingementType
 
 log = logging.getLogger("tool.recruitment")
@@ -24,13 +25,17 @@ class ToolRecruitmentGate:
         self._pipeline = pipeline
         self._tool_names = tool_names
 
-    def recruit(self, utterance: str) -> list[str]:
-        """Recruit tools for the given utterance via affordance selection."""
-        imp = self._utterance_to_impingement(utterance)
+    def recruit(self, envelope: GroundingContextEnvelope) -> list[str]:
+        """Recruit tools for the given envelope via affordance selection."""
+        # Use the most recent phenomenal line or fallback to default
+        utterance = (
+            envelope.phenomenal_lines[-1] if envelope.phenomenal_lines else "operator utterance"
+        )
+        imp = self._envelope_to_impingement(envelope, utterance)
         candidates: list[SelectionCandidate] = self._pipeline.select(imp)
         recruited = [c.capability_name for c in candidates if c.capability_name in self._tool_names]
         if recruited:
-            log.info("Recruited tools for '%s': %s", utterance[:50], recruited)
+            log.info("Recruited tools for hash '%s': %s", envelope.context_hash, recruited)
         return recruited
 
     def record_outcome(self, tool_name: str, success: bool) -> None:
@@ -47,14 +52,17 @@ class ToolRecruitmentGate:
         )
 
     @staticmethod
-    def _utterance_to_impingement(utterance: str) -> Impingement:
-        """Convert an operator utterance into an impingement for pipeline selection."""
+    def _envelope_to_impingement(envelope: GroundingContextEnvelope, utterance: str) -> Impingement:
+        """Convert a grounding context envelope into an impingement for pipeline selection."""
         return Impingement(
             source="operator.utterance",
             type=ImpingementType.SALIENCE_INTEGRATION,
             timestamp=time.time(),
             strength=1.0,
-            content={"narrative": utterance},
+            content={
+                "narrative": utterance,
+                "context_hash": envelope.context_hash,
+            },
         )
 
     # Tools that produce visual output rather than textual (spoken) output
