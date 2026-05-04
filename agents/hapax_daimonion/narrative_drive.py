@@ -34,7 +34,20 @@ _TICK_SLEEP_S: float = 10.0
 # exponential reset.  The pipeline's own 120s refractory inhibition
 # prevents actual narration re-dispatch, but we should not flood the
 # impingement bus with drive signals.
-_EMISSION_COOLDOWN_S: float = 60.0
+#
+# Tuned 2026-05-04 from 60s → 30s as the cadence floor for sustained
+# vocal presence on the broadcast (cc-task livestream-vocal-as-fuck-amp).
+# The pipeline's own 120s refractory still prevents downstream re-dispatch
+# of identical narration content — this is the impingement-bus floor.
+_EMISSION_COOLDOWN_S: float = 30.0
+
+# Drive tuning constants. Lower tau → faster pressure accumulation
+# (~0.39 of full pressure at t=tau, ~0.63 at 2*tau).  At tau=60s the
+# drive reaches surfacing threshold inside the 30s cooldown window so
+# every cooldown expiry is an emission candidate when programme is
+# active and operator is engaged.
+_DRIVE_TAU_S: float = 60.0
+_DRIVE_THRESHOLD: float = 0.12
 
 
 def _read_chronicle_count(now: float, window_s: float = 600.0) -> int:
@@ -108,6 +121,54 @@ def _read_programme_role(daemon: Any) -> str | None:
         return None
 
 
+# Freshness window for the programme_authorization payload composed
+# alongside each impingement. The broadcast playback gate accepts an
+# auth as fresh when ``now - authorized_at <= 120s``; we set
+# expires_at to authorized_at + this constant so the gate has a
+# matching forward window.
+_PROGRAMME_AUTH_FRESHNESS_S: float = 90.0
+
+
+def _compose_programme_authorization(daemon: Any, now: float) -> dict[str, Any] | None:
+    """Compose a programme_authorization payload from the active Programme.
+
+    Returns ``None`` when no Programme is active, when the active
+    Programme is not in the ``ACTIVE`` status, or when the canonical
+    store is unreadable. The destination_channel gate already treats
+    a missing payload as ``programme_authorization_missing`` and
+    fails closed, so returning ``None`` here is the safe path.
+    """
+    try:
+        from agents.hapax_daimonion.autonomous_narrative.state_readers import (
+            read_active_programme,
+        )
+
+        prog = read_active_programme(daemon)
+        if prog is None:
+            return None
+        status = getattr(prog, "status", None)
+        if status is None or str(status) not in {"active", "ProgrammeStatus.ACTIVE"}:
+            return None
+        programme_id = getattr(prog, "programme_id", None)
+        if not programme_id:
+            return None
+        role = getattr(prog, "role", None)
+        return {
+            "authorized": True,
+            "authorized_at": now,
+            "expires_at": now + _PROGRAMME_AUTH_FRESHNESS_S,
+            "programme_id": str(programme_id),
+            "evidence_ref": (
+                f"programme_active:{role}:{programme_id}"
+                if role is not None
+                else f"programme_active:{programme_id}"
+            ),
+        }
+    except Exception:
+        log.debug("programme_authorization composition failed", exc_info=True)
+        return None
+
+
 def _assemble_drive_context(daemon: Any, now: float) -> DriveContext:
     """Build a DriveContext from live daemon state."""
     return DriveContext(
@@ -119,8 +180,19 @@ def _assemble_drive_context(daemon: Any, now: float) -> DriveContext:
     )
 
 
-def _emit_drive_impingement(drive: EndogenousDrive, context: DriveContext) -> bool:
+def _emit_drive_impingement(
+    drive: EndogenousDrive,
+    context: DriveContext,
+    *,
+    programme_authorization: dict[str, Any] | None = None,
+) -> bool:
     """Write an endogenous drive impingement to the DMN bus.
+
+    ``programme_authorization`` (optional) is forwarded into the content
+    payload so downstream playback resolution can confirm fresh
+    broadcast-voice authorization. Pass ``None`` when no programme is
+    active — the playback gate will then fail closed on
+    ``programme_authorization_missing``, which is the correct behavior.
 
     Returns True if the write succeeded, False otherwise.
     """
@@ -143,6 +215,7 @@ def _emit_drive_impingement(drive: EndogenousDrive, context: DriveContext) -> bo
             chronicle_event_count=context.chronicle_event_count,
             stimmung_stance=context.stimmung_stance,
             programme_role=context.programme_role,
+            programme_authorization=programme_authorization,
         ),
         "context": {},
     }
@@ -171,7 +244,7 @@ async def narrative_drive_loop(daemon: Any) -> None:
     3. Evaluate drive posterior
     4. If posterior > threshold, emit impingement + record emission
     """
-    drive = EndogenousDrive(tau=120.0, threshold=0.12, name="narration")
+    drive = EndogenousDrive(tau=_DRIVE_TAU_S, threshold=_DRIVE_THRESHOLD, name="narration")
     last_emission_at: float = 0.0
 
     log.info(
@@ -195,7 +268,12 @@ async def narrative_drive_loop(daemon: Any) -> None:
             context = _assemble_drive_context(daemon, now)
 
             if drive.should_emit(context):
-                ok = _emit_drive_impingement(drive, context)
+                programme_auth = _compose_programme_authorization(daemon, now)
+                ok = _emit_drive_impingement(
+                    drive,
+                    context,
+                    programme_authorization=programme_auth,
+                )
                 if ok:
                     drive.record_emission(now)
                     last_emission_at = now
