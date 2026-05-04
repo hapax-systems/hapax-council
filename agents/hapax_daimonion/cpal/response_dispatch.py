@@ -67,12 +67,52 @@ class ResponseDispatch:
     skip_reason: str | None = None
 
 
+OPERATOR_PLACEHOLDER: str = "{operator}"
+"""Token Hapax's narrative LLM may emit when it wants the moderation
+layer to pick the operator referent stickily for the impingement.
+
+Substituted by :func:`moderate_chat_text` with one of the four
+ratified non-formal referents (``shared/operator_referent.REFERENTS``)
+so the legal name never appears in chat output. Pre-substituted text
+is also forwarded to the publisher's legal-name-leak guard, which
+refuses any post whose body literally contains the operator's legal
+name pattern (``HAPAX_OPERATOR_NAME``).
+"""
+
+
+def moderate_chat_text(text: str, *, impingement_id: str | None) -> str:
+    """Apply non-formal operator-referent policy to outgoing chat text.
+
+    Substitutes any occurrence of :data:`OPERATOR_PLACEHOLDER` with a
+    sticky operator referent picked via
+    :class:`OperatorReferentPicker`. Same ``impingement_id`` always
+    picks the same referent so verbal and text channels of a single
+    response read consistently and the same impingement quoted twice
+    on chat reads identically.
+
+    Returns the moderated text. Never raises; if no placeholder is
+    present the text is returned unchanged. The publisher's
+    legal-name-leak guard runs separately and refuses any post whose
+    body still contains the literal operator legal name after
+    moderation — moderation is a substitution layer, not a
+    sanitization gate.
+    """
+    seed = f"impingement-{impingement_id}" if impingement_id else None
+    referent = OperatorReferentPicker.pick(seed)
+    return text.replace(OPERATOR_PLACEHOLDER, referent)
+
+
 def _sign_for_chat(text: str, *, impingement_id: str | None) -> str:
     """Append a sticky operator referent to ``text``.
 
     Sticky-per-impingement: same impingement_id always picks the same
     referent so a multi-modal response (verbal + chat) reads
     consistently. Caller-controlled via ``attribution=True``.
+
+    Composes with :func:`moderate_chat_text` (placeholder substitution
+    runs first; signing appends the suffix). Both use the same seed,
+    so the suffix referent matches any in-body referent that came from
+    the placeholder.
     """
     seed = f"impingement-{impingement_id}" if impingement_id else None
     referent = OperatorReferentPicker.pick(seed)
@@ -118,11 +158,15 @@ def dispatch_response(
             else:
                 content = getattr(impingement, "content", {}) or {}
                 text = content.get("response_text", "")
+                impingement_id = content.get("impingement_id")
+                # Moderation pass — substitute {operator} placeholder with the
+                # sticky referent. Runs unconditionally (independent of
+                # attribution) because the placeholder is a contract between
+                # Hapax's narrative LLM and the moderation layer; ignoring it
+                # would leak the literal token into chat.
+                text = moderate_chat_text(text, impingement_id=impingement_id)
                 if attribution:
-                    text = _sign_for_chat(
-                        text,
-                        impingement_id=content.get("impingement_id"),
-                    )
+                    text = _sign_for_chat(text, impingement_id=impingement_id)
                 pub = publisher or YoutubeLiveChatPublisher()
                 chat_result = pub.publish(PublisherPayload(target=chat_id, text=text))
 
@@ -135,6 +179,8 @@ def dispatch_response(
 
 
 __all__ = [
+    "OPERATOR_PLACEHOLDER",
     "ResponseDispatch",
     "dispatch_response",
+    "moderate_chat_text",
 ]

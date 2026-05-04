@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from agents.publication_bus.youtube_live_chat_publisher import (
     YOUTUBE_LIVE_CHAT_SURFACE,
-    LiveChatRateLimiter,
+    LiveChatTokenBucket,
     YoutubeLiveChatPublisher,
 )
 from agents.publication_bus.youtube_live_chat_publisher import (
@@ -33,7 +33,7 @@ from agents.publication_bus.youtube_live_chat_publisher import (
 
 __all__ = [
     "YOUTUBE_LIVE_CHAT_SURFACE",
-    "LiveChatRateLimiter",
+    "LiveChatTokenBucket",
     "YoutubeLiveChatPublisher",
     "load_youtube_live_chat_allowlist",
 ]
