@@ -358,6 +358,22 @@ async def gem_producer_loop(
                         imp.id,
                         exc_info=True,
                     )
+                    continue
+                # Append-only emission log for the variance scorer
+                # (cc-task vocal-gem-frames-variance-trace). Wrapped in
+                # try/except via log_gem_frame's own defensive posture —
+                # observability cannot break the emission path.
+                from shared.gem_frame_log import log_gem_frame
+
+                content = getattr(imp, "content", {}) or {}
+                log_gem_frame(
+                    impingement_id=str(getattr(imp, "id", "")),
+                    impingement_source=str(getattr(imp, "source", "")),
+                    frame_texts=[f.text for f in frames],
+                    programme_role=(
+                        content.get("programme_role") if isinstance(content, dict) else None
+                    ),
+                )
         except Exception:
             log.debug("gem-producer loop error", exc_info=True)
         await asyncio.sleep(poll_interval_s)
