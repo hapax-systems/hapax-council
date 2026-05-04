@@ -331,9 +331,10 @@ class ProgrammeContent(BaseModel):
     During delivery, the programme loop reads these chunks sequentially
     and feeds them to TTS.  No LLM calls during delivery.
 
-    Each entry is 3-8 sentences of broadcast-ready prose — the actual
-    words Hapax will speak for that beat.  Unlike segment_beats (which
-    are director cues / rundown notes), these are composed output.
+    Each entry is 8-20 sentences (800-2000 characters) of broadcast-
+    ready prose — the actual words Hapax will speak for that beat.
+    Unlike segment_beats (which are director cues / rundown notes),
+    these are composed and iteratively refined output.
     """
     segment_assets: list[SegmentAsset] = Field(default_factory=list)
     """Per-block media assets for DURF ward display during playback.
