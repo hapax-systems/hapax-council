@@ -44,6 +44,31 @@ class EntityAppearance:
     box: list[float] = field(default_factory=list)
 
 
+def _ingest_camera_salience_suggestion(suggestion: MergeSuggestion) -> bool:
+    """Push one cross-camera merge suggestion into the salience broker."""
+    try:
+        from shared.camera_salience_producer_adapters import cross_camera_to_envelope
+        from shared.camera_salience_singleton import broker as _camera_broker
+
+        tracklet = {
+            "track_id": f"{suggestion.entity_a}:{suggestion.entity_b}",
+            "cameras": [suggestion.camera_a, suggestion.camera_b],
+            "similarity": suggestion.confidence,
+            "time_delta_s": 0.0,
+            "confidence": suggestion.confidence,
+            "topology_path": f"{suggestion.camera_a}->{suggestion.camera_b}",
+            "reason": suggestion.reason,
+        }
+        envelope = cross_camera_to_envelope(tracklet)
+        if envelope is None:
+            return False
+        _camera_broker().ingest(envelope)
+        return True
+    except Exception:
+        log.debug("camera salience cross-camera ingest failed", exc_info=True)
+        return False
+
+
 # Camera adjacency graph — which cameras have overlapping FOVs
 # Updated for 6-camera setup (3 Brio + 3 C920)
 DEFAULT_ADJACENCY: dict[str, list[str]] = {
@@ -167,6 +192,7 @@ class CrossCameraStitcher:
         suggestions.sort(key=lambda s: s.confidence, reverse=True)
         if suggestions:
             self._merge_history.extend(suggestions[:1])
+            _ingest_camera_salience_suggestion(suggestions[0])
         return suggestions
 
     @property

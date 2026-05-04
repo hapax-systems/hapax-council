@@ -85,6 +85,25 @@ def _staleness_cutoff_for(cadence_interval_s: float | None) -> float:
     return max(_MIN_STALE_S, min(_MAX_STALE_S, cutoff))
 
 
+def _ingest_camera_salience_reports(reports: dict[str, dict[str, object]]) -> int:
+    """Push fresh IR reports into the camera salience broker singleton."""
+    ingested = 0
+    try:
+        from shared.camera_salience_producer_adapters import ir_to_envelope
+        from shared.camera_salience_singleton import broker as _camera_broker
+
+        singleton = _camera_broker()
+        for role, report in reports.items():
+            envelope = ir_to_envelope(report, pi_name=role)
+            if envelope is None:
+                continue
+            singleton.ingest(envelope)
+            ingested += 1
+    except Exception:
+        log.debug("camera salience IR ingest failed", exc_info=True)
+    return ingested
+
+
 class IrPresenceBackend:
     """PerceptionBackend that fuses Pi NoIR state files into 14 signals."""
 
@@ -148,6 +167,7 @@ class IrPresenceBackend:
     def contribute(self, behaviors: dict[str, Behavior]) -> None:
         now = time.monotonic()
         reports = self._read_with_cadence_staleness()
+        _ingest_camera_salience_reports(reports)
         self._fuse(reports, now)
         for key, behavior in self._behaviors.items():
             behaviors[key] = behavior

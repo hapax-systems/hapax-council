@@ -36,6 +36,41 @@ BROADCAST_MODE_PATH = Path("/dev/shm/hapax-compositor/broadcast-mode.json")
 _VALID_BROADCAST_MODES = frozenset({"desktop", "mobile", "dual"})
 
 
+def _ingest_camera_salience_livestream_status(status: dict[str, Any]) -> bool:
+    """Push one compositor status snapshot into the salience broker."""
+    try:
+        from shared.camera_salience_producer_adapters import livestream_to_envelope
+        from shared.camera_salience_singleton import broker as _camera_broker
+
+        cameras = status.get("cameras")
+        active_camera = str(status.get("camera_profile") or "unknown")
+        if isinstance(cameras, dict):
+            for role, state in cameras.items():
+                if state == "active":
+                    active_camera = str(role)
+                    break
+        active_count = int(status.get("active_cameras", 0) or 0)
+        total_cameras = int(status.get("total_cameras", 0) or 0)
+        confidence = 0.45
+        if total_cameras > 0:
+            confidence = max(0.45, min(0.95, active_count / total_cameras))
+        envelope = livestream_to_envelope(
+            {
+                "active_camera": active_camera,
+                "scene_name": str(status.get("broadcast_mode") or status.get("state") or "unknown"),
+                "frame_ts": status.get("timestamp") or time.time(),
+                "confidence": confidence,
+            }
+        )
+        if envelope is None:
+            return False
+        _camera_broker().ingest(envelope)
+        return True
+    except Exception:
+        log.debug("camera salience livestream ingest failed", exc_info=True)
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Source-registry epic Phase D task 13 — Layout loader + hardcoded rescue
 #
@@ -767,6 +802,13 @@ class StudioCompositor:
         self._overlay_cache_surface: Any = None
         self._overlay_cache_timestamp: float = 0.0
         self._overlay_cache_cam_hash: str = ""
+        self._camera_salience_broker: Any | None = None
+        try:
+            from shared.camera_salience_singleton import broker as _camera_broker
+
+            self._camera_salience_broker = _camera_broker()
+        except Exception:
+            log.debug("camera salience broker startup init failed", exc_info=True)
         # Phase 10 observability polish — wire the Phase 7 BudgetTracker
         # that has sat dead since PR #752. One tracker shared across every
         # CairoSourceRunner in the process; lifecycle.start_compositor
@@ -1169,6 +1211,7 @@ class StudioCompositor:
             consent_file.write_text("allowed" if self._consent_recording_allowed else "blocked")
         except OSError:
             pass
+        _ingest_camera_salience_livestream_status(status)
 
     def _status_tick(self) -> bool:
         if self._running:

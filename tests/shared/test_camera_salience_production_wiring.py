@@ -8,10 +8,12 @@ handle broker responses + failures gracefully.
 from __future__ import annotations
 
 import json
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import shared.camera_salience_singleton as singleton_mod
 from shared.bayesian_camera_salience_world_surface import (
     CameraEvidenceRow,
     CameraFreshness,
@@ -92,6 +94,20 @@ def _make_test_observation() -> CameraObservationEnvelope:
     )
 
 
+def _counter_value(counter: object, *, consumer: str) -> float:
+    collect = getattr(counter, "collect", None)
+    if collect is None:
+        return 0.0
+    for metric in collect():
+        for sample in metric.samples:
+            if (
+                sample.name == "camera_salience_broker_queries_total"
+                and sample.labels.get("consumer") == consumer
+            ):
+                return float(sample.value)
+    return 0.0
+
+
 # ── Singleton tests ────────────────────────────────────────────────────
 
 
@@ -128,6 +144,20 @@ class TestBrokerSingleton:
         )
         assert result is None
 
+    def test_query_increments_affordance_prometheus_counter(self) -> None:
+        if not singleton_mod._METRICS_AVAILABLE:
+            pytest.skip("prometheus_client unavailable")
+        before = _counter_value(singleton_mod._QUERY_COUNTER, consumer="affordance")
+        b = broker()
+        result = b.query(
+            consumer="affordance",
+            decision_context="test_affordance_tick",
+            candidate_action="fx.family.audio-reactive",
+        )
+        after = _counter_value(singleton_mod._QUERY_COUNTER, consumer="affordance")
+        assert result is None
+        assert after == before + 1.0
+
     def test_query_with_observations(self) -> None:
         b = broker()
         obs = _make_test_observation()
@@ -146,6 +176,125 @@ class TestBrokerSingleton:
         for _ in range(10):
             b.ingest(_make_test_observation())
         assert b.observation_count == 5
+
+
+# ── Producer wiring tests ──────────────────────────────────────────────
+
+
+class TestProducerWiring:
+    """Verify production producers push envelopes into the singleton."""
+
+    @patch("shared.camera_salience_singleton.broker")
+    def test_vision_snapshot_helper_ingests_fixture_backed_role(self, mock_broker_fn):
+        from agents.hapax_daimonion.backends.vision import _ingest_camera_salience_snapshot
+
+        mock_singleton = MagicMock()
+        mock_broker_fn.return_value = mock_singleton
+
+        ingested = _ingest_camera_salience_snapshot(
+            "operator",
+            {
+                "person_count": 1,
+                "gaze_direction": "screen",
+                "scene_objects": "keyboard, monitor",
+                "detected_action": "coding",
+                "updated_at": time.monotonic(),
+            },
+        )
+
+        assert ingested is True
+        envelope = mock_singleton.ingest.call_args.args[0]
+        assert envelope.aperture_id == "aperture:studio-rgb.brio-operator"
+        assert envelope.evidence_class == EvidenceClass.FRAME
+
+    def test_vision_cache_exposes_per_camera_snapshots(self) -> None:
+        from agents.hapax_daimonion.backends.vision import _VisionCache
+
+        cache = _VisionCache()
+        cache._current_role = "operator"
+        cache.update(
+            detected_objects="[]",
+            person_count=1,
+            pose_summary="seated",
+            scene_objects="keyboard",
+            gaze_direction="screen",
+        )
+        snapshots = cache.camera_salience_snapshots(detected_action="coding")
+
+        assert "operator" in snapshots
+        assert snapshots["operator"]["detected_action"] == "coding"
+        assert snapshots["operator"]["updated_at"]
+
+    @patch("shared.camera_salience_singleton.broker")
+    def test_ir_report_helper_ingests_registered_desk_pi(self, mock_broker_fn):
+        from agents.hapax_daimonion.backends.ir_presence import (
+            _ingest_camera_salience_reports,
+        )
+
+        mock_singleton = MagicMock()
+        mock_broker_fn.return_value = mock_singleton
+
+        ingested = _ingest_camera_salience_reports(
+            {
+                "desk": {
+                    "persons": [{"confidence": 0.8}],
+                    "motion_delta": 0.3,
+                    "ir_brightness": 0.5,
+                    "timestamp": time.time(),
+                },
+                "room": {
+                    "persons": [{"confidence": 0.7}],
+                    "motion_delta": 0.2,
+                    "timestamp": time.time(),
+                },
+            }
+        )
+
+        assert ingested == 1
+        envelope = mock_singleton.ingest.call_args.args[0]
+        assert envelope.aperture_id == "aperture:studio-ir.noir-desk"
+        assert envelope.evidence_class == EvidenceClass.IR_PRESENCE
+
+    @patch("shared.camera_salience_singleton.broker")
+    def test_cross_camera_stitcher_ingests_top_merge_suggestion(self, mock_broker_fn):
+        from agents.models.cross_camera import CrossCameraStitcher
+
+        mock_singleton = MagicMock()
+        mock_broker_fn.return_value = mock_singleton
+
+        stitcher = CrossCameraStitcher(temporal_window_s=10.0)
+        stitcher.report_disappeared("entity-a", "brio-operator", "person")
+        suggestions = stitcher.report_appeared("entity-b", "c920-desk", "person")
+
+        assert suggestions
+        envelope = mock_singleton.ingest.call_args.args[0]
+        assert envelope.producer == ProducerKind.CROSS_CAMERA_STITCHER
+        assert envelope.evidence_class == EvidenceClass.CROSS_CAMERA_TRACKLET
+
+    @patch("shared.camera_salience_singleton.broker")
+    def test_compositor_status_helper_ingests_livestream_snapshot(self, mock_broker_fn):
+        from agents.studio_compositor.compositor import (
+            _ingest_camera_salience_livestream_status,
+        )
+
+        mock_singleton = MagicMock()
+        mock_broker_fn.return_value = mock_singleton
+
+        ingested = _ingest_camera_salience_livestream_status(
+            {
+                "state": "running",
+                "cameras": {"brio-operator": "active", "c920-desk": "active"},
+                "active_cameras": 2,
+                "total_cameras": 2,
+                "broadcast_mode": "dual",
+                "timestamp": time.time(),
+            }
+        )
+
+        assert ingested is True
+        envelope = mock_singleton.ingest.call_args.args[0]
+        assert envelope.producer == ProducerKind.COMPOSITOR_SNAPSHOT
+        assert envelope.evidence_class == EvidenceClass.COMPOSED_LIVESTREAM
 
 
 # ── Director loop wiring tests ─────────────────────────────────────────
