@@ -130,6 +130,13 @@ except ImportError:
     pass
 
 
+from shared.public_speech_index import (
+    PublicSpeechEventRecord,
+    append_public_speech_event,
+    compute_utterance_hash,
+)
+
+
 class CpalRunner:
     """Async run loop for CPAL-based conversation.
 
@@ -492,13 +499,34 @@ class CpalRunner:
                                     decision.media_role,
                                 ),
                             )
-                            record_playback_result(
+                            witness = record_playback_result(
                                 text=msg,
                                 playback_result=playback_result,
                                 destination=decision.destination.value,
                                 target=decision.target,
                                 media_role=decision.media_role,
                             )
+                            if decision.destination.value == "livestream":
+                                scope = (
+                                    "public_broadcast" if playback_result.completed else "failed"
+                                )
+                                record = PublicSpeechEventRecord(
+                                    speech_event_id=f"se-{time.time_ns()}",
+                                    impulse_id=None,
+                                    triad_ids=[],
+                                    utterance_hash=compute_utterance_hash(msg),
+                                    route_decision=witness.last_destination_decision or {},
+                                    tts_result=witness.last_tts_synthesis,
+                                    playback_result=witness.last_playback,
+                                    audio_safety_refs=[],
+                                    egress_refs=[],
+                                    wcs_snapshot_refs=[],
+                                    chronicle_refs=[],
+                                    temporal_span_refs=[],
+                                    scope=scope,
+                                    created_at=witness.updated_at,
+                                )
+                                append_public_speech_event(record)
                     except Exception:
                         log.debug("Goodbye TTS failed", exc_info=True)
                 await close_session(d, reason="silence_timeout")
@@ -1116,7 +1144,7 @@ class CpalRunner:
                                 # and the pipeline processes it as a response.
                                 await asyncio.sleep(3.0)
                                 self._buffer.set_speaking(False)
-                            record_playback_result(
+                            witness = record_playback_result(
                                 text=narrative,
                                 playback_result=playback_result,
                                 destination=destination.value,
@@ -1124,6 +1152,27 @@ class CpalRunner:
                                 media_role=destination_role,
                                 impulse_id=impulse_id,
                             )
+                            if destination.value == "livestream":
+                                scope = (
+                                    "public_broadcast" if playback_result.completed else "failed"
+                                )
+                                record = PublicSpeechEventRecord(
+                                    speech_event_id=f"se-{time.time_ns()}",
+                                    impulse_id=impulse_id,
+                                    triad_ids=[],
+                                    utterance_hash=compute_utterance_hash(narrative),
+                                    route_decision=witness.last_destination_decision or {},
+                                    tts_result=witness.last_tts_synthesis,
+                                    playback_result=witness.last_playback,
+                                    audio_safety_refs=[],
+                                    egress_refs=[],
+                                    wcs_snapshot_refs=[],
+                                    chronicle_refs=[],
+                                    temporal_span_refs=[],
+                                    scope=scope,
+                                    created_at=witness.updated_at,
+                                )
+                                append_public_speech_event(record)
                             if playback_result.completed:
                                 self._last_speech_end = time.monotonic()
                                 self._recent_speech_events.append(

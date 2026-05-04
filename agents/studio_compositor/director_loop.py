@@ -3136,6 +3136,23 @@ class DirectorLoop:
         except Exception:
             log.debug("programme context render failed", exc_info=True)
 
+        # ─── World Surface Read Model (cc-task director-prompt-world-
+        # surface-block). Compact block derived from WCS snapshot so
+        # the director sees live availability, blockers, and claim
+        # posture instead of static hand-maintained prose. Fail-closed:
+        # missing/stale snapshot yields empty block.
+        try:
+            from shared.director_world_surface_prompt_block import (
+                render_world_surface_prompt_block,
+            )
+
+            wcs_block = render_world_surface_prompt_block()
+            if wcs_block:
+                parts.append("")
+                parts.append(wcs_block)
+        except Exception:
+            log.debug("world-surface prompt block failed", exc_info=True)
+
         # ─── Layer 2: System state (TOON ~150 tokens, 40% savings) ─
         try:
             from shared.context import ContextAssembler
