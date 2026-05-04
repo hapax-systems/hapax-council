@@ -66,6 +66,14 @@ class PixsortEffect(BaseEffect):
         h, w = frame.shape[:2]
         energy = min(1.0, p.audio_energy * 10)
 
+        # === Safeguard: Bypass on empty/flat frames ===
+        # If the camera feed is dark or a solid "No Signal" color, contrast boost
+        # will blow out the noise and sort it into a solid smeared block.
+        gray_for_check = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        std_dev = cv2.meanStdDev(gray_for_check)[1][0][0]
+        if std_dev < 3.0:
+            return frame
+
         # === Boost contrast BEFORE sorting so thresholds work on dark frames ===
         f = frame.astype(np.float32)
         mean = f.mean()

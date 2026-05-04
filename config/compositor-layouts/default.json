@@ -857,7 +857,7 @@
       "geometry": {
         "kind": "rect",
         "x": 510,
-        "y": 84,
+        "y": 40,
         "w": 900,
         "h": 120,
         "mask": null,
@@ -874,8 +874,8 @@
       "id": "lore-precedent-ticker",
       "geometry": {
         "kind": "rect",
-        "x": 20,
-        "y": 380,
+        "x": 40,
+        "y": 840,
         "w": 460,
         "h": 140,
         "mask": null,
@@ -892,8 +892,8 @@
       "id": "lore-programme-history",
       "geometry": {
         "kind": "rect",
-        "x": 500,
-        "y": 380,
+        "x": 40,
+        "y": 400,
         "w": 460,
         "h": 110,
         "mask": null,
@@ -910,8 +910,8 @@
       "id": "lore-research-instrument-dashboard",
       "geometry": {
         "kind": "rect",
-        "x": 980,
-        "y": 380,
+        "x": 1340,
+        "y": 840,
         "w": 540,
         "h": 220,
         "mask": null,
@@ -923,6 +923,24 @@
       "blend_mode": "over",
       "z_order": 22,
       "update_cadence": "rate"
+    },
+    {
+      "id": "sierpinski-center",
+      "geometry": {
+        "kind": "rect",
+        "x": 640,
+        "y": 220,
+        "w": 640,
+        "h": 640,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 15,
+      "update_cadence": "always"
     }
   ],
   "assignments": [
@@ -1138,6 +1156,15 @@
       "surface": "lore-research-instrument-dashboard",
       "transform": {},
       "opacity": 0.92,
+      "per_assignment_effects": [],
+      "non_destructive": true,
+      "render_stage": "pre_fx"
+    },
+    {
+      "source": "sierpinski",
+      "surface": "sierpinski-center",
+      "transform": {},
+      "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "pre_fx"
