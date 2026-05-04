@@ -142,46 +142,87 @@ def _read_segment_events(path: Path) -> list[dict]:
 
 
 class TestAssessDirectorMovesQuality:
-    """Each tier boundary verified against a hand-crafted record window."""
+    """Each tier boundary verified against a hand-crafted record window.
+
+    Cc-task ``director-moves-grounding-trace-coverage`` (this branch)
+    replaces the prior boolean tiers with ratio-based thresholds:
+
+      excellent   = 0% fallback + impingement-uniform real grounding
+      good        = <10% fallback OR 0% fallback w/ non-uniform impingements
+      acceptable  = 10-30% fallback
+      poor        = ≥30% fallback OR ≥50% stale_intent dominance
+    """
 
     def test_empty_window_is_unmeasured(self):
         assert assess_director_moves_quality([]) == QualityRating.UNMEASURED
 
     def test_all_stale_intent_is_poor(self):
+        """100% stale_intent → POOR via both the dominance gate and the fallback gate."""
+
         records = [_stale_intent_record() for _ in range(3)]
         assert assess_director_moves_quality(records) == QualityRating.POOR
 
-    def test_one_stale_one_real_is_acceptable(self):
-        records = [_stale_intent_record(), _good_record()]
-        assert assess_director_moves_quality(records) == QualityRating.ACCEPTABLE
+    def test_one_stale_one_real_is_poor(self):
+        """50% fallback is over the acceptable cap and over the stale dominance gate."""
 
-    def test_inferred_marker_at_top_level_is_acceptable(self):
-        """Top-level ``inferred.<stance>.<family>`` markers also count as fallback."""
+        records = [_stale_intent_record(), _good_record()]
+        # fallback_ratio = 0.5 ≥ 0.30 → POOR
+        # stale_ratio    = 0.5 ≥ 0.50 → POOR (independently)
+        assert assess_director_moves_quality(records) == QualityRating.POOR
+
+    def test_inferred_marker_at_top_level_is_poor_in_solo_window(self):
+        """100% fallback in a solo-record window → POOR."""
 
         record = _good_record()
         record["synthetic_grounding_markers"] = ["inferred.nominal.camera.hero"]
-        assert assess_director_moves_quality([record]) == QualityRating.ACCEPTABLE
+        # 1/1 = 100% fallback → POOR
+        assert assess_director_moves_quality([record]) == QualityRating.POOR
 
-    def test_single_family_real_grounding_is_good(self):
-        """Non-fallback + uniformly real but only one family → GOOD, not EXCELLENT.
+    def test_three_real_one_stale_is_acceptable(self):
+        """25% fallback → ACCEPTABLE (under the 30% cap, over the 10% good cap)."""
 
-        Composability requires ≥2 distinct intent_family across the window.
+        records = [_good_record() for _ in range(3)] + [_stale_intent_record()]
+        # 1/4 = 0.25; in [0.10, 0.30) and stale_ratio = 0.25 < 0.50 → ACCEPTABLE
+        assert assess_director_moves_quality(records) == QualityRating.ACCEPTABLE
+
+    def test_one_fallback_in_twenty_is_good(self):
+        """5% fallback → GOOD (under the 10% cap)."""
+
+        records = [_good_record() for _ in range(19)] + [_stale_intent_record()]
+        # 1/20 = 0.05 < 0.10 → GOOD
+        assert assess_director_moves_quality(records) == QualityRating.GOOD
+
+    def test_uniform_real_no_fallback_is_excellent(self):
+        """0% fallback + uniformly real impingements → EXCELLENT.
+
+        The new tier definition drops the prior PR's composability
+        discriminator (≥2 distinct intent_family). The operator's
+        cc-task definition for EXCELLENT is "100% grounded, no fallback
+        markers" — coverage, not breadth.
         """
 
         records = [_good_record() for _ in range(3)]
-        assert assess_director_moves_quality(records) == QualityRating.GOOD
+        assert assess_director_moves_quality(records) == QualityRating.EXCELLENT
 
     def test_synthetic_only_impingement_caps_at_good(self):
-        """Non-fallback top-level but synthetic-only impingements caps at GOOD."""
+        """Non-fallback top-level but synthetic-only impingements caps at GOOD.
+
+        The top-level intent has 0 fallback markers (qualifying for the
+        EXCELLENT path), but one impingement carries only synthetic
+        markers, so the per-impingement uniformity check fails → GOOD.
+        """
 
         records = [_good_record(), _good_record_synthetic_only_impingement()]
-        # Two distinct families (camera.hero + overlay.emphasis), but the
-        # second record's impingement has only synthetic markers → uniformly
-        # real grounding fails → ceiling is GOOD.
         assert assess_director_moves_quality(records) == QualityRating.GOOD
 
     def test_multi_family_uniformly_real_is_excellent(self):
-        """Non-fallback + uniformly real grounding + ≥2 families → EXCELLENT."""
+        """Multi-family uniformly real grounding still scores EXCELLENT.
+
+        Composability is no longer a discriminator (cc-task
+        ``director-moves-grounding-trace-coverage``). Multi-family
+        windows pass for the same reason single-family ones do — every
+        impingement is uniformly real-grounded.
+        """
 
         records = [
             _good_record(family="camera.hero", grounding="visual.detected_action"),
@@ -189,6 +230,20 @@ class TestAssessDirectorMovesQuality:
             _good_record(family="composition.reframe", grounding="visual.gaze_direction"),
         ]
         assert assess_director_moves_quality(records) == QualityRating.EXCELLENT
+
+    def test_stale_dominance_overrides_low_fallback_ratio(self):
+        """If stale_intent ≥ 50% the segment is POOR even at non-30% ratio.
+
+        Constructed via two stale records + two non-fallback records:
+        fallback_ratio = 0.50 (which already triggers POOR via the
+        ≥0.30 ratio gate), but the stale-dominance gate also fires
+        independently — this asserts the dominance gate is wired.
+        """
+
+        records = [_stale_intent_record(), _stale_intent_record(), _good_record(), _good_record()]
+        # fallback_ratio = 0.50 ≥ 0.30 → POOR
+        # stale_ratio    = 0.50 ≥ 0.50 → POOR
+        assert assess_director_moves_quality(records) == QualityRating.POOR
 
 
 # ── 2. SegmentRecorder wiring — segments.jsonl receives the rating ───────────
@@ -263,11 +318,13 @@ class TestRecordDirectorSegmentLifecycle:
         events = _read_segment_events(segments_log)
         assert events[-1]["quality"]["director_moves"] == QualityRating.POOR.value
 
-    def test_happened_with_good_rating_when_single_family(
+    def test_happened_with_good_rating_when_synthetic_only_impingement(
         self,
         segments_log: Path,
         director_intent_jsonl: Path,
     ):
+        """0% top-level fallback but synthetic-only impingement → GOOD."""
+
         with record_director_segment(
             programme_role="director_moves_smoke",
             topic_seed="good-tier",
@@ -275,17 +332,19 @@ class TestRecordDirectorSegmentLifecycle:
         ):
             _write_records(
                 director_intent_jsonl,
-                [_good_record() for _ in range(3)],
+                [_good_record(), _good_record_synthetic_only_impingement()],
             )
 
         events = _read_segment_events(segments_log)
         assert events[-1]["quality"]["director_moves"] == QualityRating.GOOD.value
 
-    def test_happened_with_acceptable_when_mixed(
+    def test_happened_with_acceptable_when_under_30pct_fallback(
         self,
         segments_log: Path,
         director_intent_jsonl: Path,
     ):
+        """1 stale + 3 good = 25% fallback → ACCEPTABLE under the ratio thresholds."""
+
         with record_director_segment(
             programme_role="director_moves_smoke",
             topic_seed="acceptable-tier",
@@ -293,7 +352,7 @@ class TestRecordDirectorSegmentLifecycle:
         ):
             _write_records(
                 director_intent_jsonl,
-                [_stale_intent_record(), _good_record(), _good_record()],
+                [_stale_intent_record(), _good_record(), _good_record(), _good_record()],
             )
 
         events = _read_segment_events(segments_log)
