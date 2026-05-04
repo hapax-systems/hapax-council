@@ -49,12 +49,26 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "whos_here",
         "durf",
         "m8-display",
+        # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
+        "steamdeck-display",
         "egress_footer",
         # HOMAGE follow-on #191 (2026-04-21) — GEM (Graffiti Emphasis
         # Mural) is the 15th HOMAGE ward; lower-band geometry, retires
         # captions in same surface area. See
         # docs/superpowers/plans/2026-04-21-gem-ward-activation-plan.md.
         "gem",
+        # cc-task ``programme-banner-ward`` (PR #2366, 2026-05-03).
+        "programme_banner",
+        # ytb-LORE-EXT family (2026-05-04, ward-family-compositor-layout-
+        # integration cc-task) — three lore-surface wards composing the
+        # mid-band lore strip. Each is feature-flagged OFF by default.
+        # The fourth family member (interactive_lore_query, #2484) is
+        # not wired here: its constructor requires a non-default
+        # ``allowlist`` kwarg incompatible with the compositor's
+        # no-arg auto-construction path; wiring it needs a follow-up.
+        "precedent_ticker",
+        "programme_history",
+        "research_instrument_dashboard",
     }
 
     # LRR Phase 2 item 10: video_out surfaces declared for OutputRouter.from_layout()
@@ -83,9 +97,21 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "whos-here-tr",
         "durf-fullframe",
         "m8-display-surface",
+        "m8-display-tiny-surface",
+        # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
+        "steamdeck-display-pip",
+        "steamdeck-display-fullscreen",
         "egress-footer-bottom",
         # HOMAGE follow-on #191 — GEM mural surface (lower-band).
         "gem-mural-bottom",
+        # cc-task ``programme-banner-ward`` (PR #2366, 2026-05-03).
+        "programme-banner-top",
+        # ytb-LORE-EXT mid-band lore strip (2026-05-04). Three slots
+        # span the mid-band x=20 → x=1520 at y=380, the family's
+        # "side-by-side" rendering.
+        "lore-precedent-ticker",
+        "lore-programme-history",
+        "lore-research-instrument-dashboard",
     }
 
     assignment_pairs = {(a.source, a.surface) for a in layout.assignments}
@@ -110,9 +136,19 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         ("whos_here", "whos-here-tr"),
         ("durf", "durf-fullframe"),
         ("m8-display", "m8-display-surface"),
+        ("m8-display", "m8-display-tiny-surface"),
+        # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
+        ("steamdeck-display", "steamdeck-display-pip"),
+        ("steamdeck-display", "steamdeck-display-fullscreen"),
         ("egress_footer", "egress-footer-bottom"),
         # HOMAGE follow-on #191 — GEM mural assignment.
         ("gem", "gem-mural-bottom"),
+        # cc-task ``programme-banner-ward`` (PR #2366, 2026-05-03).
+        ("programme_banner", "programme-banner-top"),
+        # ytb-LORE-EXT family (2026-05-04).
+        ("precedent_ticker", "lore-precedent-ticker"),
+        ("programme_history", "lore-programme-history"),
+        ("research_instrument_dashboard", "lore-research-instrument-dashboard"),
     }
 
 
@@ -143,7 +179,15 @@ def test_default_json_source_backends_match_registry_dispatch() -> None:
         "whos_here": "cairo",
         "durf": "cairo",
         "m8-display": "shm_rgba",
+        # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
+        "steamdeck-display": "shm_rgba",
         "egress_footer": "cairo",
+        # cc-task ``programme-banner-ward`` (PR #2366, 2026-05-03) +
+        # ytb-LORE-EXT family (2026-05-04).
+        "programme_banner": "cairo",
+        "precedent_ticker": "cairo",
+        "programme_history": "cairo",
+        "research_instrument_dashboard": "cairo",
     }
 
 
@@ -259,9 +303,19 @@ def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
         "whos_here",
         "durf",
         "m8-display",
+        # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
+        "steamdeck-display",
         "egress_footer",
         # HOMAGE follow-on #191 — GEM mural ward (15th HOMAGE).
         "gem",
+        # cc-task ``programme-banner-ward`` (PR #2366, 2026-05-03).
+        "programme_banner",
+        # ytb-LORE-EXT family (2026-05-04, ward-family-compositor-layout-
+        # integration cc-task) — three lore-surface wards on the
+        # default layout's mid-band lore strip.
+        "precedent_ticker",
+        "programme_history",
+        "research_instrument_dashboard",
     }
 
 

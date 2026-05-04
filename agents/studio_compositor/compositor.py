@@ -230,6 +230,24 @@ _FALLBACK_LAYOUT = Layout(
             # canonical JSON byte-for-byte where it counts.
             ward_id="m8-display",
         ),
+        # Re-Splay Homage Ward — Steam Deck. Mirrors the M8 source
+        # contract (external_rgba + shm_rgba); sourced from
+        # ``agents/hapax_steamdeck_bridge/`` capture daemon. Activated
+        # only when the Magewell USB Capture HDMI Plus is plugged in
+        # AND the Steam Deck is driving HDMI into it (two-stage
+        # monitor). Default opacity 0 in assignments so the surface
+        # only becomes visible when the affordance pipeline recruits
+        # ``ward.reveal.steamdeck-display``.
+        SourceSchema(
+            id="steamdeck-display",
+            kind="external_rgba",
+            backend="shm_rgba",
+            params={
+                "natural_w": 1920,
+                "natural_h": 1080,
+                "shm_path": "/dev/shm/hapax-sources/steamdeck-display.rgba",
+            },
+        ),
         SourceSchema(
             id="egress_footer",
             kind="cairo",
@@ -267,6 +285,76 @@ _FALLBACK_LAYOUT = Layout(
                 "fps": 24,
             },
         ),
+        # Programme banner ward (PR #2366) — lower-third surfacing
+        # the active programme's role + narrative_beat.
+        SourceSchema(
+            id="programme_banner",
+            kind="cairo",
+            backend="cairo",
+            params={
+                "class_name": "ProgrammeBannerWard",
+                "natural_w": 900,
+                "natural_h": 120,
+            },
+            update_cadence="rate",
+            rate_hz=1.0,
+            tags=["programme", "ward", "lower-third"],
+            ward_id="programme-banner",
+        ),
+        # ytb-LORE-EXT family (2026-05-04, ward-family-compositor-layout-
+        # integration cc-task) — three lore-surface wards composing the
+        # mid-band lore strip. Each is feature-flagged OFF by default
+        # via its module-level ``HAPAX_LORE_*_ENABLED`` env, so adding
+        # them to the fallback layout is safe at boot.
+        SourceSchema(
+            id="precedent_ticker",
+            kind="cairo",
+            backend="cairo",
+            params={
+                "class_name": "PrecedentTickerCairoSource",
+                "natural_w": 460,
+                "natural_h": 140,
+            },
+            update_cadence="rate",
+            rate_hz=0.5,
+            tags=["homage", "ward", "lore-ext", "bitchx"],
+            ward_id="precedent-ticker",
+        ),
+        SourceSchema(
+            id="programme_history",
+            kind="cairo",
+            backend="cairo",
+            params={
+                "class_name": "ProgrammeHistoryCairoSource",
+                "natural_w": 460,
+                "natural_h": 110,
+            },
+            update_cadence="rate",
+            rate_hz=0.5,
+            tags=["homage", "ward", "lore-ext", "moksha"],
+            ward_id="programme-history",
+        ),
+        SourceSchema(
+            id="research_instrument_dashboard",
+            kind="cairo",
+            backend="cairo",
+            params={
+                "class_name": "ResearchInstrumentDashboardCairoSource",
+                "natural_w": 540,
+                "natural_h": 220,
+            },
+            update_cadence="rate",
+            rate_hz=0.5,
+            tags=["homage", "ward", "lore-ext", "hybrid", "keystone"],
+            ward_id="research-instrument-dashboard",
+        ),
+        # Fourth ytb-LORE-EXT ward (interactive_lore_query / #2484) is
+        # NOT wired here yet: its constructor requires a non-default
+        # ``allowlist`` kwarg, which the compositor's
+        # ``source_registry.construct_backend`` no-arg path can't
+        # supply. Wiring it needs either (a) a layout-side factory
+        # shim or (b) a default-allowlist auto-construction path on
+        # the ward itself. Tracked as the follow-up for this cc-task.
     ],
     surfaces=[
         SurfaceSchema(
@@ -399,10 +487,53 @@ _FALLBACK_LAYOUT = Layout(
             geometry=SurfaceGeometry(kind="rect", x=440, y=336, w=320, h=240),
             z_order=25,
         ),
+        # Re-Splay Homage Ward — Steam Deck PiP (upper-right large
+        # quadrant per cc-task spec; ~920×580 surface at z=22 to sit
+        # under the operator-canonical wards but above ambient
+        # surfaces). HAPAX_STEAMDECK_FULLSCREEN=1 swaps to the
+        # fullscreen surface below.
+        SurfaceSchema(
+            id="steamdeck-display-pip",
+            geometry=SurfaceGeometry(kind="rect", x=960, y=60, w=920, h=580),
+            z_order=22,
+        ),
+        SurfaceSchema(
+            id="steamdeck-display-fullscreen",
+            geometry=SurfaceGeometry(kind="rect", x=0, y=0, w=1920, h=1080),
+            z_order=22,
+        ),
         SurfaceSchema(
             id="egress-footer-bottom",
             geometry=SurfaceGeometry(kind="rect", x=0, y=1050, w=1920, h=30),
             z_order=60,
+            update_cadence="rate",
+        ),
+        # Programme banner ward (PR #2366).
+        SurfaceSchema(
+            id="programme-banner-top",
+            geometry=SurfaceGeometry(kind="rect", x=510, y=84, w=900, h=120),
+            z_order=28,
+            update_cadence="rate",
+        ),
+        # ytb-LORE-EXT mid-band lore strip (2026-05-04). Three slots
+        # at y=380 spanning x=20 → x=1520, the "side-by-side"
+        # rendering surface for the lore-extension ward family.
+        SurfaceSchema(
+            id="lore-precedent-ticker",
+            geometry=SurfaceGeometry(kind="rect", x=20, y=380, w=460, h=140),
+            z_order=22,
+            update_cadence="rate",
+        ),
+        SurfaceSchema(
+            id="lore-programme-history",
+            geometry=SurfaceGeometry(kind="rect", x=500, y=380, w=460, h=110),
+            z_order=22,
+            update_cadence="rate",
+        ),
+        SurfaceSchema(
+            id="lore-research-instrument-dashboard",
+            geometry=SurfaceGeometry(kind="rect", x=980, y=380, w=540, h=220),
+            z_order=22,
             update_cadence="rate",
         ),
     ],
@@ -443,7 +574,33 @@ _FALLBACK_LAYOUT = Layout(
         Assignment(source="durf", surface="durf-fullframe", opacity=0.96),
         Assignment(source="m8-display", surface="m8-display-surface", opacity=0.0),
         Assignment(source="m8-display", surface="m8-display-tiny-surface", opacity=0.0),
+        # Steam Deck — start at opacity=0; the affordance pipeline
+        # recruits ``ward.reveal.steamdeck-display`` to fade the PiP in.
+        Assignment(source="steamdeck-display", surface="steamdeck-display-pip", opacity=0.0),
+        Assignment(
+            source="steamdeck-display",
+            surface="steamdeck-display-fullscreen",
+            opacity=0.0,
+        ),
         Assignment(source="egress_footer", surface="egress-footer-bottom"),
+        # Programme banner ward (PR #2366).
+        Assignment(source="programme_banner", surface="programme-banner-top"),
+        # ytb-LORE-EXT family (2026-05-04).
+        Assignment(
+            source="precedent_ticker",
+            surface="lore-precedent-ticker",
+            opacity=0.92,
+        ),
+        Assignment(
+            source="programme_history",
+            surface="lore-programme-history",
+            opacity=0.92,
+        ),
+        Assignment(
+            source="research_instrument_dashboard",
+            surface="lore-research-instrument-dashboard",
+            opacity=0.92,
+        ),
     ],
 )
 
