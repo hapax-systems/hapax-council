@@ -343,6 +343,7 @@ def state_reader_loop(compositor: Any) -> None:
         # FX graph replacement (from chain builder PUT)
         graph_mutation_path = SNAPSHOT_DIR / "graph-mutation.json"
         if graph_mutation_path.exists():
+            preset_hint = "unknown"
             try:
                 raw = graph_mutation_path.read_text().strip()
                 graph_mutation_path.unlink(missing_ok=True)
@@ -351,6 +352,16 @@ def state_reader_loop(compositor: Any) -> None:
 
                     from .effects import merge_default_modulations
 
+                    # Pre-extract a preset hint from the raw JSON for
+                    # the failure path's metric label. Best-effort —
+                    # any error here is swallowed so the actual load
+                    # path's exception is the one that surfaces.
+                    try:
+                        _hint = json.loads(raw).get("name")
+                        if isinstance(_hint, str):
+                            preset_hint = _hint
+                    except Exception:
+                        pass
                     graph = EffectGraph(**json.loads(raw))
                     graph = merge_default_modulations(graph)
                     compositor._graph_runtime.load_graph(graph)
@@ -362,7 +373,11 @@ def state_reader_loop(compositor: Any) -> None:
                         pass
                     log.info("Loaded graph from mutation file: %s", graph.name)
             except Exception as exc:
-                log.debug("Failed to process graph mutation: %s", exc)
+                # Researcher audit 2026-05-03: was DEBUG-swallowed; the
+                # 64% load-fail rate was invisible in dashboards. Now
+                # WARNING + Prometheus counter so failures surface.
+                log.warning("preset load failed: %s — %s", preset_hint, exc, exc_info=True)
+                _metrics.record_preset_load_failed(preset=preset_hint, reason=type(exc).__name__)
                 graph_mutation_path.unlink(missing_ok=True)
 
         # FX input source switching (independent of graph mutation)
@@ -384,10 +399,15 @@ def state_reader_loop(compositor: Any) -> None:
         # FX preset switch requests
         fx_request_path = SNAPSHOT_DIR / "fx-request.txt"
         if fx_request_path.exists():
+            preset_name = "unknown"
             try:
-                preset_name = fx_request_path.read_text().strip()
+                preset_name = fx_request_path.read_text().strip() or "unknown"
                 fx_request_path.unlink(missing_ok=True)
-                if preset_name and compositor._graph_runtime is not None:
+                if (
+                    preset_name
+                    and preset_name != "unknown"
+                    and compositor._graph_runtime is not None
+                ):
                     try_graph_preset(compositor, preset_name)
                     compositor._current_preset_name = preset_name
                     compositor._user_preset_hold_until = time.monotonic() + 600.0
@@ -396,7 +416,12 @@ def state_reader_loop(compositor: Any) -> None:
                     except OSError:
                         pass
             except Exception as exc:
-                log.debug("Failed to process FX request: %s", exc)
+                # Researcher audit 2026-05-03: parallel to the
+                # graph-mutation path, was DEBUG-swallowed; promoted to
+                # WARNING + counter so preset_recruitment / chat-driven
+                # request failures surface.
+                log.warning("preset load failed: %s — %s", preset_name, exc, exc_info=True)
+                _metrics.record_preset_load_failed(preset=preset_name, reason=type(exc).__name__)
                 fx_request_path.unlink(missing_ok=True)
         # Layout mode switch (balanced / hero/{role} / sierpinski)
         layout_path = SNAPSHOT_DIR / "layout-mode.txt"
@@ -550,7 +575,13 @@ def state_reader_loop(compositor: Any) -> None:
         try:
             from .preset_recruitment_consumer import process_preset_recruitment
 
-            process_preset_recruitment()
+            # Pass the compositor so the consumer can extend
+            # _user_preset_hold_until on a successful dispatch — protects
+            # the recruitment-driven chain change from being clobbered by
+            # the 30 fps atmospheric governance tick. Without this hold,
+            # tick_governance reverts to _STATE_MATRIX defaults within
+            # 33 ms (the halftone-monoculture symptom).
+            process_preset_recruitment(compositor)
         except Exception:
             log.exception("process_preset_recruitment raised (non-fatal)")
 

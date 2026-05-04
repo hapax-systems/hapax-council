@@ -2,11 +2,65 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+# ── Stimmung stance reader ────────────────────────────────────────────────────
+#
+# Halftone-monoculture root cause (researcher audit, 2026-05-03): the
+# governance tick previously hardcoded ``stance="nominal"``, so
+# ``_STATE_MATRIX[("nominal","low")]`` always picked its first member —
+# halftone_preset — whenever recruitment fell silent for more than a
+# cooldown. Reading the live stimmung overall_stance (with a 30s cache so
+# the 30 fps governance tick doesn't re-stat the SHM file every frame)
+# lets the matrix actually exercise its other rows. Missing/parse-error
+# falls back to "nominal" — same default as before, so behaviour with no
+# stimmung writer matches the old hardcoded path.
+_STIMMUNG_STATE_PATH = Path("/dev/shm/hapax-stimmung/state.json")
+_STANCE_CACHE_TTL_S = 30.0
+_VALID_MATRIX_STANCES: frozenset[str] = frozenset({"nominal", "cautious", "degraded", "critical"})
+_stance_cache: tuple[float, str] = (0.0, "nominal")
+
+
+def _read_stimmung_stance() -> str:
+    """Return a ``_STATE_MATRIX``-keyable stance from stimmung.
+
+    Cached for ``_STANCE_CACHE_TTL_S`` so the 30 fps governance tick
+    doesn't re-stat / re-parse the SHM file on every frame. Stimmung
+    publishes ``overall_stance`` with values ``nominal``, ``seeking``,
+    ``cautious``, ``degraded``, ``critical`` (see ``shared.stimmung.Stance``).
+    The atmospheric ``_STATE_MATRIX`` only carries entries for
+    ``nominal``/``cautious``/``degraded``/``critical``; ``seeking`` is
+    folded back to ``nominal`` so the matrix lookup still hits.
+    """
+    global _stance_cache
+    now = time.monotonic()
+    cached_t, cached_stance = _stance_cache
+    if now - cached_t < _STANCE_CACHE_TTL_S:
+        return cached_stance
+    stance = "nominal"
+    try:
+        raw = json.loads(_STIMMUNG_STATE_PATH.read_text(encoding="utf-8"))
+        candidate = raw.get("overall_stance") or raw.get("stance") or "nominal"
+        if isinstance(candidate, str):
+            candidate = candidate.lower()
+            if candidate in _VALID_MATRIX_STANCES:
+                stance = candidate
+            elif candidate == "seeking":
+                # No matrix entry for SEEKING — fall back to nominal so the
+                # lookup hits a non-degenerate row.
+                stance = "nominal"
+            else:
+                stance = "nominal"
+    except (OSError, json.JSONDecodeError, ValueError):
+        log.debug("stimmung stance read failed; falling back to nominal", exc_info=True)
+    _stance_cache = (now, stance)
+    return stance
 
 
 def _degraded_active() -> bool:
@@ -100,7 +154,7 @@ def tick_governance(compositor: Any, t: float) -> None:
 
     gov_data = compositor._overlay_state._data
     energy_level = energy_level_from_activity(gov_data.desk_activity)
-    stance = "nominal"
+    stance = _read_stimmung_stance()
     available = get_available_preset_names()
     target = compositor._atmospheric_selector.evaluate(
         stance=stance,
