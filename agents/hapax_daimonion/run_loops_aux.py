@@ -492,56 +492,110 @@ async def prepared_playback_loop(daemon: object) -> None:
                 dest_role,
             )
 
-            # Play all blocks back-to-back
-            for idx, block in enumerate(script):
+            # Pre-synthesize blocks: overlap TTS synthesis with playback
+            # so there's zero gap between blocks. Synthesize block N+1
+            # while block N is playing.
+            loop = asyncio.get_running_loop()
+            pending_pcm: bytes | None = None
+            pending_text: str | None = None
+            pending_idx: int = -1
+
+            # Find and synthesize the first non-empty block eagerly
+            first_idx = -1
+            for i, block in enumerate(script):
+                text = block.strip()
+                if text:
+                    first_idx = i
+                    log.info(
+                        "prepared_playback_loop: block %d/%d (%d chars) for %s",
+                        i + 1,
+                        len(script),
+                        len(text),
+                        prog_id,
+                    )
+                    try:
+                        pending_pcm = await loop.run_in_executor(
+                            None, cpal._tts_manager.synthesize, text, "proactive"
+                        )
+                        pending_text = text
+                        pending_idx = i
+                    except Exception:
+                        log.warning(
+                            "prepared_playback_loop: TTS failed block %d", i + 1, exc_info=True
+                        )
+                    break
+
+            if pending_pcm is None:
+                log.warning("prepared_playback_loop: no synthesizable blocks in %s", prog_id)
+                await asyncio.sleep(2.0)
+                continue
+
+            # Play each block while synthesizing the next
+            for idx in range(first_idx, len(script)):
                 if not getattr(daemon, "_running", True):
                     return
 
-                text = block.strip()
-                if not text:
-                    continue
-
-                log.info(
-                    "prepared_playback_loop: block %d/%d (%d chars) for %s",
-                    idx + 1,
-                    len(script),
-                    len(text),
-                    prog_id,
-                )
-
-                # Synthesize via TTS manager (in executor to not block)
-                loop = asyncio.get_running_loop()
-                try:
-                    pcm = await loop.run_in_executor(
-                        None, cpal._tts_manager.synthesize, text, "proactive"
-                    )
-                except Exception:
-                    log.warning(
-                        "prepared_playback_loop: TTS failed block %d",
+                if idx > pending_idx:
+                    # This block hasn't been pre-synthesized yet (edge case)
+                    text = script[idx].strip()
+                    if not text:
+                        continue
+                    log.info(
+                        "prepared_playback_loop: block %d/%d (%d chars) for %s",
                         idx + 1,
-                        exc_info=True,
+                        len(script),
+                        len(text),
+                        prog_id,
                     )
-                    continue
+                    try:
+                        pending_pcm = await loop.run_in_executor(
+                            None, cpal._tts_manager.synthesize, text, "proactive"
+                        )
+                        pending_text = text
+                    except Exception:
+                        log.warning(
+                            "prepared_playback_loop: TTS failed block %d", idx + 1, exc_info=True
+                        )
+                        continue
+                    if not pending_pcm:
+                        continue
 
-                if not pcm:
-                    log.warning(
-                        "prepared_playback_loop: empty PCM block %d/%d", idx + 1, len(script)
-                    )
-                    continue
+                current_pcm = pending_pcm
+                current_text = pending_text or ""
+                pending_pcm = None
+                pending_text = None
 
-                # Play with speech lock + echo cancellation
+                # Start synthesizing the NEXT block in background
+                next_synth_task = None
+                next_idx = None
+                for ni in range(idx + 1, len(script)):
+                    nt = script[ni].strip()
+                    if nt:
+                        next_idx = ni
+                        log.info(
+                            "prepared_playback_loop: block %d/%d (%d chars) for %s",
+                            ni + 1,
+                            len(script),
+                            len(nt),
+                            prog_id,
+                        )
+                        next_synth_task = loop.run_in_executor(
+                            None, cpal._tts_manager.synthesize, nt, "proactive"
+                        )
+                        break
+
+                # Play current block
                 try:
                     async with cpal._speech_lock:
-                        # Register echo text for suppression
                         if cpal._pipeline and hasattr(cpal._pipeline, "_recent_tts_texts"):
                             import time as _time
 
                             cpal._pipeline._recent_tts_texts.append(
-                                (_time.monotonic(), text.lower().strip().rstrip(".,!?"))
+                                (_time.monotonic(), current_text.lower().strip().rstrip(".,!?"))
                             )
                         cpal._buffer.set_speaking(True)
                         if cpal._echo_canceller:
-                            cpal._echo_canceller.feed_reference(pcm)
+                            cpal._echo_canceller.feed_reference(current_pcm)
                         try:
                             from functools import partial
 
@@ -549,19 +603,29 @@ async def prepared_playback_loop(daemon: object) -> None:
 
                             await loop.run_in_executor(
                                 None,
-                                partial(play_pcm, pcm, 24000, 1, dest_target, dest_role),
+                                partial(play_pcm, current_pcm, 24000, 1, dest_target, dest_role),
                             )
                         finally:
-                            # Brief holdover for echo suppression
                             await asyncio.sleep(1.5)
                             cpal._buffer.set_speaking(False)
                 except Exception:
                     log.warning(
-                        "prepared_playback_loop: playback failed block %d",
-                        idx + 1,
-                        exc_info=True,
+                        "prepared_playback_loop: playback failed block %d", idx + 1, exc_info=True
                     )
-                    continue
+
+                # Collect pre-synthesized next block
+                if next_synth_task is not None and next_idx is not None:
+                    try:
+                        pending_pcm = await next_synth_task
+                        pending_text = script[next_idx].strip()
+                        pending_idx = next_idx
+                    except Exception:
+                        log.warning(
+                            "prepared_playback_loop: TTS failed block %d",
+                            next_idx + 1,
+                            exc_info=True,
+                        )
+                        pending_pcm = None
 
                 # Brief breath between paragraphs
                 await asyncio.sleep(0.5)
