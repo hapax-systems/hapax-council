@@ -38,7 +38,11 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .preset_family_selector import family_names, pick_and_load_mutated
+from .preset_family_selector import (
+    family_names,
+    pick_and_load_mutated,
+    pick_family_with_role_bias,
+)
 from .random_mode import MUTATION_FILE
 from .transition_primitives import PRIMITIVES, TRANSITION_NAMES, TransitionFn, fade_smooth
 
@@ -234,6 +238,22 @@ def process_preset_recruitment(compositor: Any | None = None) -> bool:
     if (now - _last_activation_t) < COOLDOWN_S:
         return False
     seed = int(last_recruited_ts) ^ os.getpid()
+
+    # Programme role bias — soft prior reweighting (audit-3-fix-4).
+    # When HAPAX_SEGMENT_BIAS_DISABLED=1, the original family passes
+    # through unchanged (preserves current behavior as kill-switch).
+    if os.environ.get("HAPAX_SEGMENT_BIAS_DISABLED") != "1":
+        try:
+            from shared.programme_store import default_store
+
+            active = default_store().active_programme()
+            if active is not None:
+                role = active.role.value
+                rng_bias = random.Random(seed)
+                family = pick_family_with_role_bias(family, role, rng=rng_bias)
+        except Exception:
+            log.debug("programme role bias failed (continuing)", exc_info=True)
+
     hit = pick_and_load_mutated(family, last=_last_family_activated, seed=seed)
     if hit is None:
         log.debug("preset_family_selector returned no preset for family=%r", family)

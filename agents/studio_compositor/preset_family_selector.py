@@ -189,6 +189,98 @@ def _resolve_family(family: str) -> str:
     return FAMILY_ALIASES.get(family, family)
 
 
+# ── Programme role → family bias ────────────────────────────────────────────
+# Soft prior: when a programme with a given role is active, preset
+# recruitment is biased toward the role's preferred families. The bias
+# is a MULTIPLIER (0.25–1.5), never zero — programmes EXPAND grounding
+# opportunities, they never REPLACE grounding (memory:
+# project_programmes_enable_grounding).
+#
+# Each entry is a tuple of (family_name, weight) pairs. Families not
+# listed get weight 1.0 (no bias). A weight < 1.0 is "bias against";
+# a weight > 1.0 is "bias toward". The director still picks inside
+# the band — the bias just reweights recruitment likelihood.
+ROLE_FAMILY_BIAS: dict[str, tuple[tuple[str, float], ...]] = {
+    "listening": (("calm-textural", 1.5), ("neutral-ambient", 1.3)),
+    "showcase": (("audio-reactive", 1.5), ("glitch-dense", 1.3)),
+    "ritual": (("calm-textural", 1.5), ("neutral-ambient", 1.4)),
+    "interlude": (("neutral-ambient", 1.5), ("calm-textural", 1.2)),
+    "work_block": (("warm-minimal", 1.5), ("neutral-ambient", 1.2)),
+    "tutorial": (("warm-minimal", 1.4),),
+    "wind_down": (("calm-textural", 1.5), ("neutral-ambient", 1.4)),
+    "hothouse_pressure": (("glitch-dense", 1.5), ("audio-reactive", 1.3)),
+    "ambient": (("neutral-ambient", 1.5), ("calm-textural", 1.3)),
+    "experiment": (("glitch-dense", 1.4), ("audio-reactive", 1.3)),
+    "repair": (("warm-minimal", 1.4),),
+    "invitation": (("audio-reactive", 1.4), ("warm-minimal", 1.2)),
+}
+
+
+def family_bias_for_role(role: str) -> dict[str, float]:
+    """Return {family_name: weight} bias map for the given programme role.
+
+    Returns an empty dict for unknown roles (no bias applied). Callers
+    merge with a default weight of 1.0 for unlisted families.
+    """
+    entry = ROLE_FAMILY_BIAS.get(role, ())
+    return dict(entry)
+
+
+def pick_family_with_role_bias(
+    family: str,
+    role: str | None,
+    *,
+    rng: Random | None = None,
+) -> str:
+    """Potentially reroll the family based on programme role bias.
+
+    If ``role`` is None or the family is already in the role's preferred
+    set, the family passes through unchanged. Otherwise, with probability
+    proportional to ``1 - role_match_strength``, the family is rerolled
+    to a weighted random pick from the role's preferred families.
+
+    The reroll is a SOFT PRIOR, not a hard gate — the original family
+    can still win because the coin flip may not trigger.
+
+    Parameters
+    ----------
+    family
+        The originally recruited family name.
+    role
+        The active programme's ``ProgrammeRole.value`` string, or None.
+    rng
+        Optional seeded RNG for deterministic tests.
+    """
+    if role is None:
+        return family
+    bias = family_bias_for_role(role)
+    if not bias:
+        return family
+    # If the family is in the preferred set, pass through (already aligned)
+    if family in bias:
+        return family
+    # Compute role-match strength: higher = family more role-aligned.
+    # An unbiased family has strength 0.0; the reroll probability is
+    # 1 - role_match_strength = 1.0 for completely misaligned families.
+    chooser = rng if rng is not None else random
+    # 60% chance of reroll when family is not in the preferred set.
+    # This is the soft-prior: unaligned families still have a 40% chance
+    # of surviving, preserving grounding diversity.
+    if chooser.random() > 0.6:
+        return family  # the original family survives
+    # Weighted random pick from the preferred families
+    preferred_families = list(bias.keys())
+    preferred_weights = [bias[f] for f in preferred_families]
+    rerolled = chooser.choices(preferred_families, weights=preferred_weights, k=1)[0]
+    log.info(
+        "role bias reroll: %s -> %s (role=%s)",
+        family,
+        rerolled,
+        role,
+    )
+    return rerolled
+
+
 # Module-level last-pick memory per family to avoid back-to-back repeats
 # without forcing a strict round-robin (which would be too predictable
 # given many families have only 3–6 presets).
@@ -450,10 +542,13 @@ def pick_and_load_mutated(
 __all__ = [
     "FAMILY_ALIASES",
     "FAMILY_PRESETS",
+    "ROLE_FAMILY_BIAS",
     "SCENE_TAG_BIAS",
+    "family_bias_for_role",
     "family_for_preset",
     "family_names",
     "pick_and_load_mutated",
+    "pick_family_with_role_bias",
     "pick_from_family",
     "pick_with_scene_bias",
     "presets_for_family",
