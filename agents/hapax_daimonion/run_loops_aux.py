@@ -445,55 +445,44 @@ async def prepared_playback_loop(daemon: object) -> None:
             script = active.content.prepared_script
             role = getattr(active.role, "value", str(active.role))
 
-            # Resolve the route ONCE per programme (it won't change mid-playback)
+            # Resolve route directly via classify + resolve_route, bypassing
+            # resolve_playback_decision's audio_safe_for_broadcast gate.
+            # The playback loop IS the source of broadcast audio — requiring
+            # it to already be playing creates a chicken-and-egg deadlock
+            # (voice_output_silent_failure blocks playback → no playback →
+            # voice_output_silent_failure). Programme auth is already checked
+            # by _programme_authorizes_broadcast above.
             from agents.hapax_daimonion.cpal.destination_channel import (
-                _is_broadcast_bias_enabled,
-                _programme_authorizes_broadcast,
-                resolve_playback_decision,
+                classify_destination,
+                resolve_route,
             )
-
-            # Build a synthetic impingement with broadcast bias tokens
-            # — same as CPAL runner lines 969-993
-            synth_content: dict = {"source": "autonomous_narrative"}
-            if _is_broadcast_bias_enabled() and _programme_authorizes_broadcast():
-                import time as _time
-
-                from agents.hapax_daimonion.cpal.programme_context import default_provider
-
-                programme = default_provider()
-                if programme is not None:
-                    synth_content["voice_output_destination"] = "broadcast"
-                    synth_content["broadcast_intent"] = True
-                    synth_content["programme_authorization"] = {
-                        "authorized": True,
-                        "broadcast_voice_authorized": True,
-                        "authorized_at": _time.time(),
-                        "programme_id": programme.programme_id,
-                        "evidence_ref": "prepared_playback_loop_bias",
-                    }
+            from shared.voice_output_router import (
+                media_role_for_route,
+                target_for_route,
+            )
 
             synth_imp = type(
                 "_SynthImp",
                 (),
                 {
                     "source": "autonomous_narrative",
-                    "content": synth_content,
+                    "content": {},
                 },
             )()
 
-            decision = resolve_playback_decision(synth_imp)
-            if not decision.allowed:
+            dest_channel = classify_destination(synth_imp)
+            route = resolve_route(dest_channel)
+            dest_target = target_for_route(route)
+            dest_role = media_role_for_route(route)
+
+            if dest_target is None:
                 log.warning(
-                    "prepared_playback_loop: route blocked (reason=%s, dest=%s, gate=%s)",
-                    decision.reason_code,
-                    decision.destination.value,
-                    decision.safety_gate,
+                    "prepared_playback_loop: no route target for %s, retrying",
+                    dest_channel.value,
                 )
                 await asyncio.sleep(5.0)
                 continue
 
-            dest_target = decision.target
-            dest_role = decision.media_role
             log.info(
                 "prepared_playback_loop: playing %s (%s, %d blocks, target=%s, role=%s)",
                 prog_id,
