@@ -78,6 +78,12 @@ class TestStartLayoutOnly:
             "egress_footer",
             "gem",
             "programme_banner",
+            # ytb-LORE-EXT family (2026-05-04, ward-family-compositor-
+            # layout-integration cc-task) — three lore-surface wards.
+            # Each is feature-flagged OFF by its own env.
+            "precedent_ticker",
+            "programme_history",
+            "research_instrument_dashboard",
         }
         assert {s.id for s in layout.sources} == expected_ids
         assert set(compositor.source_registry.ids()) == expected_ids
@@ -90,9 +96,11 @@ class TestStartLayoutOnly:
         assert compositor.layout_state is not None
         layout = compositor.layout_state.get()
         assert layout.name == "default"
-        # Fallback layout is the in-Python ``_FALLBACK_LAYOUT`` — no
-        # ``programme_banner`` (that source only exists in the on-disk
-        # layout JSON, not in the hardcoded fallback).
+        # Fallback layout is the in-Python ``_FALLBACK_LAYOUT``. As of
+        # ward-family-compositor-layout-integration (2026-05-04) the
+        # fallback now mirrors the on-disk JSON for programme_banner
+        # and the ytb-LORE-EXT family — the rescue path stays
+        # structurally identical to default.json.
         assert set(compositor.source_registry.ids()) == {
             "token_pole",
             "album",
@@ -113,6 +121,15 @@ class TestStartLayoutOnly:
             "steamdeck-display",
             "egress_footer",
             "gem",
+            # Programme banner ward (PR #2366).
+            "programme_banner",
+            # ytb-LORE-EXT family (2026-05-04, ward-family-compositor-
+            # layout-integration cc-task) — three lore-surface wards
+            # in the default fallback. Each is feature-flagged OFF
+            # via its own HAPAX_LORE_*_ENABLED env.
+            "precedent_ticker",
+            "programme_history",
+            "research_instrument_dashboard",
         }
 
     def test_broken_json_resolves_to_fallback(self, tmp_path: Path) -> None:

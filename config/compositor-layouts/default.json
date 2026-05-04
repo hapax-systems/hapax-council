@@ -371,6 +371,70 @@
       "pair_role": "solo",
       "pair_leg": null,
       "ward_id": "programme-banner"
+    },
+    {
+      "id": "precedent_ticker",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "PrecedentTickerCairoSource",
+        "natural_w": 460,
+        "natural_h": 140
+      },
+      "update_cadence": "rate",
+      "rate_hz": 0.5,
+      "tags": [
+        "homage",
+        "ward",
+        "lore-ext",
+        "bitchx"
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": "precedent-ticker"
+    },
+    {
+      "id": "programme_history",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "ProgrammeHistoryCairoSource",
+        "natural_w": 460,
+        "natural_h": 110
+      },
+      "update_cadence": "rate",
+      "rate_hz": 0.5,
+      "tags": [
+        "homage",
+        "ward",
+        "lore-ext",
+        "moksha"
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": "programme-history"
+    },
+    {
+      "id": "research_instrument_dashboard",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "ResearchInstrumentDashboardCairoSource",
+        "natural_w": 540,
+        "natural_h": 220
+      },
+      "update_cadence": "rate",
+      "rate_hz": 0.5,
+      "tags": [
+        "homage",
+        "ward",
+        "lore-ext",
+        "hybrid",
+        "keystone"
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": "research-instrument-dashboard"
     }
   ],
   "surfaces": [
@@ -805,6 +869,60 @@
       "blend_mode": "over",
       "z_order": 28,
       "update_cadence": "rate"
+    },
+    {
+      "id": "lore-precedent-ticker",
+      "geometry": {
+        "kind": "rect",
+        "x": 20,
+        "y": 380,
+        "w": 460,
+        "h": 140,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 22,
+      "update_cadence": "rate"
+    },
+    {
+      "id": "lore-programme-history",
+      "geometry": {
+        "kind": "rect",
+        "x": 500,
+        "y": 380,
+        "w": 460,
+        "h": 110,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 22,
+      "update_cadence": "rate"
+    },
+    {
+      "id": "lore-research-instrument-dashboard",
+      "geometry": {
+        "kind": "rect",
+        "x": 980,
+        "y": 380,
+        "w": 540,
+        "h": 220,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 22,
+      "update_cadence": "rate"
     }
   ],
   "assignments": [
@@ -993,6 +1111,33 @@
       "surface": "programme-banner-top",
       "transform": {},
       "opacity": 1.0,
+      "per_assignment_effects": [],
+      "non_destructive": true,
+      "render_stage": "pre_fx"
+    },
+    {
+      "source": "precedent_ticker",
+      "surface": "lore-precedent-ticker",
+      "transform": {},
+      "opacity": 0.92,
+      "per_assignment_effects": [],
+      "non_destructive": true,
+      "render_stage": "pre_fx"
+    },
+    {
+      "source": "programme_history",
+      "surface": "lore-programme-history",
+      "transform": {},
+      "opacity": 0.92,
+      "per_assignment_effects": [],
+      "non_destructive": true,
+      "render_stage": "pre_fx"
+    },
+    {
+      "source": "research_instrument_dashboard",
+      "surface": "lore-research-instrument-dashboard",
+      "transform": {},
+      "opacity": 0.92,
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "pre_fx"
