@@ -238,6 +238,248 @@ def _gather_content_state(store: ProgrammePlanStore) -> dict | None:
     return result if result else None
 
 
+# ── Recycled segment picker ──────────────────────────────────────────────────
+#
+# When all pre-authored segments have been played, pick the most
+# contextually relevant completed segment from the archive and reset it
+# to PENDING so the playback loop re-delivers it. Scoring is a weighted
+# sum of: content affinity (keyword overlap between the segment's
+# narrative_beat + script text and current perception signals),
+# role affinity (working_mode × stance → preferred roles), and a
+# recency penalty (don't replay the segment that just finished).
+
+# Track recently played recycled segments to avoid tight loops.
+_recycled_recent: list[str] = []
+_RECYCLED_RECENT_MAX = 5
+
+# Working mode × stance → preferred roles (soft bias, not exclusive)
+_ROLE_AFFINITY: dict[str, dict[str, list[str]]] = {
+    "rnd": {
+        "nominal": ["iceberg", "lecture", "tier_list"],
+        "seeking": ["iceberg", "rant", "lecture"],
+        "cautious": ["lecture", "tier_list"],
+        "degraded": ["tier_list"],
+    },
+    "deep_work": {
+        "nominal": ["lecture", "iceberg"],
+        "seeking": ["rant", "iceberg"],
+        "cautious": ["lecture"],
+        "degraded": ["tier_list"],
+    },
+    "broadcast": {
+        "nominal": ["rant", "iceberg", "tier_list"],
+        "seeking": ["rant", "tier_list"],
+        "cautious": ["lecture", "tier_list"],
+        "degraded": ["tier_list"],
+    },
+}
+
+
+def _gather_context_keywords() -> list[str]:
+    """Gather keywords from live perception signals for content matching.
+
+    Reads narrative-state, stimmung, and working-mode to build a bag of
+    words the segment scorer can match against segment content.
+    """
+    keywords: list[str] = []
+    try:
+        state_path = _Path("/dev/shm/hapax-director/narrative-state.json")
+        if state_path.exists():
+            data = _json.loads(state_path.read_text(encoding="utf-8"))
+            # Extract topic/theme signals from the narrative state
+            for key in ("current_topic", "theme", "mood", "focus_area", "exploration_target"):
+                val = data.get(key)
+                if isinstance(val, str) and val:
+                    keywords.extend(val.lower().split())
+            # Recent impingement summaries
+            for imp in data.get("recent_impingements", [])[:5]:
+                if isinstance(imp, dict):
+                    summary = imp.get("summary", "") or imp.get("title", "")
+                    if summary:
+                        keywords.extend(summary.lower().split()[:8])
+    except Exception:
+        pass
+
+    try:
+        stimmung_path = _Path("/dev/shm/hapax-stimmung/state.json")
+        if stimmung_path.exists():
+            stim = _json.loads(stimmung_path.read_text(encoding="utf-8"))
+            stance = stim.get("overall_stance", "")
+            if stance:
+                keywords.append(stance.lower())
+    except Exception:
+        pass
+
+    # Deduplicate and filter noise words
+    noise = {
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "of",
+        "to",
+        "in",
+        "for",
+        "and",
+        "on",
+        "it",
+        "at",
+        "by",
+        "or",
+        "as",
+        "be",
+        "that",
+        "this",
+        "with",
+        "from",
+        "not",
+        "but",
+        "its",
+        "has",
+        "had",
+        "have",
+    }
+    return list(dict.fromkeys(w for w in keywords if len(w) > 2 and w not in noise))
+
+
+def _score_segment_content(programme: object, context_keywords: list[str]) -> float:
+    """Score a segment's content relevance to the current context.
+
+    Returns 0.0–1.0. Higher = more contextually relevant.
+    Uses keyword overlap between context signals and the segment's
+    narrative_beat + prepared_script text.
+    """
+    content = getattr(programme, "content", None)
+    if not content:
+        return 0.0
+
+    # Build segment text bag from narrative_beat + script blocks
+    seg_text = ""
+    beat = getattr(content, "narrative_beat", "") or ""
+    seg_text += beat.lower() + " "
+    for block in getattr(content, "prepared_script", None) or []:
+        if isinstance(block, str):
+            seg_text += block.lower()[:200] + " "
+        elif isinstance(block, dict):
+            seg_text += (block.get("text", "") or "").lower()[:200] + " "
+
+    if not context_keywords or not seg_text:
+        return 0.0
+
+    # Count keyword hits
+    hits = sum(1 for kw in context_keywords if kw in seg_text)
+    # Normalize: full score at 5+ hits
+    return min(1.0, hits / 5.0)
+
+
+def _pick_recycled_segment(
+    store: object,
+    active: object | None,
+) -> object | None:
+    """Pick a completed segment from the archive for recycling.
+
+    Scoring: content_affinity × 0.5 + role_affinity × 0.3 + recency × 0.2.
+    Resets the chosen segment to PENDING so the playback loop picks it up.
+    Falls back to random when no contextual signals are available.
+    """
+    import random as _rng
+
+    from shared.programme import ProgrammeStatus
+
+    all_progs = store.all()
+    pool = [
+        p
+        for p in all_progs
+        if p.status == ProgrammeStatus.COMPLETED
+        and getattr(getattr(p, "content", None), "prepared_script", None)
+    ]
+    if not pool:
+        return None
+
+    # Gather context
+    context_keywords = _gather_context_keywords()
+    stance = "nominal"
+    working_mode = "rnd"
+    try:
+        stim = _json.loads(_Path("/dev/shm/hapax-stimmung/state.json").read_text(encoding="utf-8"))
+        stance = stim.get("overall_stance", "nominal")
+    except Exception:
+        pass
+    try:
+        from shared.working_mode import get_working_mode
+
+        working_mode = str(get_working_mode())
+    except Exception:
+        pass
+
+    # Preferred roles for this mode × stance
+    mode_affinities = _ROLE_AFFINITY.get(working_mode, _ROLE_AFFINITY.get("rnd", {}))
+    preferred_roles = mode_affinities.get(stance, [])
+
+    # Active programme id + recent recycled ids for recency penalty
+    active_pid = getattr(active, "programme_id", None) if active else None
+
+    scored: list[tuple[float, object]] = []
+    for p in pool:
+        # Content affinity (0.0–1.0)
+        content_score = _score_segment_content(p, context_keywords)
+
+        # Role affinity (0.0 or 1.0)
+        role_val = getattr(p.role, "value", str(p.role))
+        role_score = 1.0 if role_val in preferred_roles else 0.0
+
+        # Recency penalty: penalize the just-finished segment and recent replays
+        recency_score = 1.0
+        if p.programme_id == active_pid:
+            recency_score = 0.0
+        elif p.programme_id in _recycled_recent:
+            # Graduated penalty: more recent = heavier penalty
+            idx = _recycled_recent.index(p.programme_id)
+            recency_score = (idx + 1) / (_RECYCLED_RECENT_MAX + 1)
+
+        # Weighted composite + small random jitter for variety
+        total = (
+            content_score * 0.50 + role_score * 0.25 + recency_score * 0.20 + _rng.random() * 0.05
+        )
+        scored.append((total, p))
+
+    if not scored:
+        return None
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    winner = scored[0][1]
+
+    # Track recency
+    _recycled_recent.insert(0, winner.programme_id)
+    while len(_recycled_recent) > _RECYCLED_RECENT_MAX:
+        _recycled_recent.pop()
+
+    # Reset to PENDING so the playback loop re-activates it
+    try:
+        updated = winner.model_copy(
+            update={
+                "status": ProgrammeStatus.PENDING,
+                "actual_started_at": None,
+                "actual_ended_at": None,
+            }
+        )
+        store.add(updated)
+        log.info(
+            "recycled-picker: selected %s (content=%.2f role=%s recency=%.2f)",
+            winner.programme_id,
+            scored[0][0],
+            getattr(winner.role, "value", "?"),
+            recency_score,
+        )
+        return updated
+    except Exception:
+        log.debug("recycled-picker: reset to PENDING failed", exc_info=True)
+        return None
+
+
 def _has_pending_queued(store: ProgrammePlanStore) -> bool:
     """True when the store already has pending programmes queued.
 
@@ -544,6 +786,11 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
             # (b) the active programme has no prepared script (i.e.
             # came from the auto-planner, not the prep bridge).
             # This is the "radio station" model — never dead air.
+            #
+            # When the pending pool is empty, recycle completed
+            # segments from the archive using contextual matching
+            # (working_mode × stance → role affinity) or pseudo-RNG
+            # as fallback. Never dead air.
             try:
                 from shared.programme import ProgrammeStatus as _PS
 
@@ -557,7 +804,14 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
                         for p in manager.store.all()
                         if p.status == _PS.PENDING and getattr(p.content, "prepared_script", None)
                     ]
+                    nxt = None
                     if pending:
+                        nxt = pending[0]
+                    else:
+                        # Pool exhausted — recycle from completed archive
+                        nxt = _pick_recycled_segment(manager.store, _active)
+
+                    if nxt is not None:
                         # Deactivate the current non-prepped programme if any
                         if _active is not None:
                             try:
@@ -568,10 +822,10 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
                                 )
                             except Exception:
                                 log.debug("auto-cycle: deactivate failed", exc_info=True)
-                        nxt = pending[0]
                         manager.store.activate(nxt.programme_id)
                         log.info(
-                            "auto-cycle: activated next prepped segment %s (%s)",
+                            "auto-cycle: activated %s %s (%s)",
+                            "recycled" if nxt.status == _PS.COMPLETED else "next prepped",
                             nxt.programme_id,
                             getattr(nxt.role, "value", "?"),
                         )
