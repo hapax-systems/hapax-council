@@ -120,6 +120,38 @@ def update_stimmung_sources(agg: VisualLayerAggregator) -> None:
     except Exception:
         log.debug("Exploration deficit read failed", exc_info=True)
 
+    # 6d. Audience engagement — chat activity + viewer count signal.
+    # Engagement = 0.0 (nobody) → 1.0 (active audience).
+    # The StimmungCollector inverts this (0.0 = good engagement,
+    # 1.0 = no engagement) to match stimmung convention.
+    try:
+        engagement = 0.0
+        # Chat activity: unique_authors in the last monitoring window
+        chat_path = Path("/dev/shm/hapax-compositor/chat-state.json")
+        if chat_path.exists():
+            chat = json.loads(chat_path.read_text(encoding="utf-8"))
+            chat_age = time.time() - chat.get("generated_at", 0)
+            if chat_age < 120:
+                authors = int(chat.get("unique_authors", 0))
+                messages = int(chat.get("total_messages", 0))
+                # 1+ unique authors → 0.3 base; scale with messages
+                if authors > 0:
+                    engagement = min(1.0, 0.3 + 0.1 * authors + 0.05 * messages)
+
+        # Viewer count: baseline presence signal
+        viewer_path = Path("/dev/shm/hapax-youtube/viewer-count.json")
+        if viewer_path.exists():
+            vc = json.loads(viewer_path.read_text(encoding="utf-8"))
+            vc_age = time.time() - vc.get("timestamp", 0)
+            if vc_age < 120:
+                viewers = int(vc.get("concurrent_viewers", 0))
+                if viewers > 0 and engagement < 0.1:
+                    engagement = min(1.0, 0.1 + 0.02 * viewers)
+
+        agg._stimmung_collector.update_audience_engagement(engagement)
+    except Exception:
+        log.debug("Audience engagement read failed", exc_info=True)
+
     # 7. Snapshot
     prev_stance = agg._stimmung.overall_stance.value if agg._stimmung else "nominal"
     agg._stimmung = agg._stimmung_collector.snapshot()

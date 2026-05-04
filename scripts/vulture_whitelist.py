@@ -937,6 +937,15 @@ mood_arousal_status
 mood_valence_status
 mood_coherence_status
 
+# BaselineQuantileTracker.is_above_quantile — the public query API of the
+# mood calibration module. Called dynamically by mood bridge accessors
+# (LogosMoodValenceBridge / LogosMoodCoherenceBridge) that read watch data
+# through the tracker's quantile interface. Vulture can't see the bridge
+# accessor dispatch.
+from shared.mood_calibration import BaselineQuantileTracker
+
+BaselineQuantileTracker.is_above_quantile
+
 # IR VLM hand-semantics classifier — Phase 1 ships the helper before
 # its consumer (Pi-edge daemon wiring in `pi-edge/ir_hands.py` lands
 # in a follow-up). Whitelisted so the Phase 1 slice can land first per
