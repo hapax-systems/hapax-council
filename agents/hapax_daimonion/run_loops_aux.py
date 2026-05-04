@@ -378,14 +378,8 @@ def _ensure_prepped_loaded() -> None:
 
 
 def _try_prepared_delivery(context: object) -> str | None:
-    """Deliver pre-composed narration one paragraph at a time.
-
-    Each call returns the next undelivered block (~400 chars) from the
-    prepared script. After the last block, deactivates the programme
-    so auto-cycling picks the next one.
-
-    This avoids overwhelming Kokoro TTS with 3000+ chars at once
-    (which blocks the executor for minutes on CPU).
+    """Legacy per-block delivery — returns _DELIVERY_WAIT when the dedicated
+    playback loop is handling this programme, or None to fall back to live.
     """
     _ensure_prepped_loaded()
 
@@ -401,41 +395,147 @@ def _try_prepared_delivery(context: object) -> str | None:
     if not script:
         return None
 
-    prog_id = str(getattr(prog, "programme_id", ""))
-    if not prog_id:
-        return None
+    # The dedicated prepared_playback_loop handles all prepped programmes.
+    # Signal DELIVERY_WAIT so the recruitment path doesn't try to compose
+    # live narration over a programme that's being played back directly.
+    return _DELIVERY_WAIT
 
-    # Track which block we're on (0-indexed)
-    next_block = _delivered_beats.get(prog_id, 0)
 
-    if next_block >= len(script):
-        # All blocks delivered — deactivate and signal wait
-        if next_block == len(script):
-            _delivered_beats[prog_id] = len(script) + 1  # sentinel: done
+async def prepared_playback_loop(daemon: object) -> None:
+    """Dedicated playback loop for pre-composed scripts.
+
+    Bypasses the narrative_drive → affordance_pipeline → recruitment → CPAL
+    chain entirely. Directly drives TTS synthesis and audio playback,
+    block by block, with only a 1s breath between paragraphs.
+
+    This is the "radio station" model: continuous narration with zero
+    pipeline overhead between blocks.
+    """
+    _ensure_prepped_loaded()
+
+    # Wait for the CPAL runner to be fully initialized
+    cpal = None
+    for _ in range(30):
+        cpal = getattr(daemon, "_cpal_runner", None)
+        if cpal is not None and getattr(cpal, "_tts_manager", None) is not None:
+            break
+        await asyncio.sleep(1.0)
+
+    if cpal is None or getattr(cpal, "_tts_manager", None) is None:
+        log.warning("prepared_playback_loop: CPAL runner or TTS not available, exiting")
+        return
+
+    log.info("prepared_playback_loop: started — direct TTS bypass active")
+
+    while getattr(daemon, "_running", True):
+        try:
+            from shared.programme_store import default_store
+
+            store = default_store()
+            active = store.active_programme()
+
+            # Only handle programmes with prepared scripts
+            if active is None or not getattr(
+                getattr(active, "content", None), "prepared_script", None
+            ):
+                await asyncio.sleep(2.0)
+                continue
+
+            prog_id = str(active.programme_id)
+            script = active.content.prepared_script
+            role = getattr(active.role, "value", str(active.role))
+
+            log.info(
+                "prepared_playback_loop: playing %s (%s, %d blocks)",
+                prog_id,
+                role,
+                len(script),
+            )
+
+            # Play all blocks back-to-back
+            for idx, block in enumerate(script):
+                # Check if daemon is still running
+                if not getattr(daemon, "_running", True):
+                    return
+
+                text = block.strip()
+                if not text:
+                    continue
+
+                log.info(
+                    "prepared_playback_loop: block %d/%d (%d chars) for %s",
+                    idx + 1,
+                    len(script),
+                    len(text),
+                    prog_id,
+                )
+
+                # Synthesize via CPAL's TTS manager (in executor to not block)
+                loop = asyncio.get_running_loop()
+                try:
+                    pcm = await loop.run_in_executor(
+                        None, cpal._tts_manager.synthesize, text, "proactive"
+                    )
+                except Exception:
+                    log.warning(
+                        "prepared_playback_loop: TTS synthesis failed for block %d",
+                        idx + 1,
+                        exc_info=True,
+                    )
+                    continue
+
+                if not pcm:
+                    log.warning(
+                        "prepared_playback_loop: empty PCM for block %d/%d",
+                        idx + 1,
+                        len(script),
+                    )
+                    continue
+
+                # Play through CPAL's audio output with speaking gate
+                try:
+                    # Wait for speech lock (don't interrupt conversation)
+                    async with cpal._speech_lock:
+                        cpal._buffer.set_speaking(True)
+                        if cpal._echo_canceller:
+                            cpal._echo_canceller.feed_reference(pcm)
+                        try:
+                            from functools import partial
+
+                            from agents.hapax_daimonion.pw_audio_output import play_pcm
+
+                            await loop.run_in_executor(
+                                None,
+                                partial(play_pcm, pcm, 24000, 1, "livestream", "broadcast"),
+                            )
+                        finally:
+                            # Brief holdover for echo suppression
+                            await asyncio.sleep(1.5)
+                            cpal._buffer.set_speaking(False)
+                except Exception:
+                    log.warning(
+                        "prepared_playback_loop: playback failed for block %d",
+                        idx + 1,
+                        exc_info=True,
+                    )
+                    continue
+
+                # Brief breath between paragraphs — just enough to sound natural
+                await asyncio.sleep(0.5)
+
+            # All blocks played — deactivate programme, auto-cycle will pick next
             try:
-                from shared.programme_store import default_store
-
-                default_store().deactivate(prog_id)
-                log.info("delivery: completed all %d blocks for %s", len(script), prog_id)
+                store.deactivate(prog_id)
+                log.info("prepared_playback_loop: completed %s (%d blocks)", prog_id, len(script))
             except Exception:
-                log.debug("delivery: deactivate failed for %s", prog_id, exc_info=True)
-        return _DELIVERY_WAIT
+                log.debug("prepared_playback_loop: deactivate failed", prog_id, exc_info=True)
 
-    text = script[next_block].strip()
-    _delivered_beats[prog_id] = next_block + 1
+            # Small gap between programmes for a natural "segment break" feel
+            await asyncio.sleep(2.0)
 
-    if not text:
-        # Skip empty blocks
-        return _try_prepared_delivery(context)
-
-    log.info(
-        "delivery: block %d/%d (%d chars) for %s",
-        next_block + 1,
-        len(script),
-        len(text),
-        prog_id,
-    )
-    return text
+        except Exception:
+            log.warning("prepared_playback_loop: tick failed", exc_info=True)
+            await asyncio.sleep(5.0)
 
 
 def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
