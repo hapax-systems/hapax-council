@@ -34,7 +34,6 @@ import re
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -295,6 +294,7 @@ def _exec_media_resume() -> None:
 
 # ── GEM overlays ─────────────────────────────────────────────────────────
 
+
 def _exec_gem_emphasis_stamp(args: str) -> None:
     """gem.emphasis stamp <text>"""
     # Strip 'stamp' prefix if present, then quotes
@@ -320,6 +320,7 @@ def _exec_gem_spawn() -> None:
 
 
 # ── Main dispatcher ──────────────────────────────────────────────────────
+
 
 def execute_cue(cue_string: str) -> None:
     """Parse and execute a segment_cue string.
@@ -417,4 +418,3 @@ def _dispatch_single(directive: str) -> None:
             # graphic.iceberg_layer_indicator) that only the compositor
             # reads. These aren't errors.
             log.debug("cue_executor: unhandled directive: %s", directive)
-
