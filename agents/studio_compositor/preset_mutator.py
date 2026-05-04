@@ -5,7 +5,8 @@ identical stance ticks don't always produce identical visual output.
 Family entropy rises from ``log2(family_size)`` toward
 ``log2(family_size) + log2(N_perceptual)`` where ``N_perceptual`` is the
 number of perceptually-distinguishable renditions of the same base
-preset (empirically ~4-8 at 15% variance).
+preset (empirically ~8-16 at 30% variance; was ~4-8 at the prior 15%
+default before the 2026-05-03 visual-monoculture rebalance).
 
 **Structure preservation invariant.** The mutator MUST NOT add, remove,
 rename, or rewire nodes or edges. Only numeric leaf values inside
@@ -28,7 +29,15 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-DEFAULT_VARIANCE = 0.15
+# Wider per-instance jitter (was 0.15 → now 0.30) per the researcher
+# visual-monoculture audit (2026-05-03). 0.15 was empirically too narrow
+# to produce visibly distinct renditions of the same base preset, so
+# the same preset within the same family read as one repeated frame.
+# 0.30 roughly doubles the perceptually-distinguishable rendition
+# count per base preset (~4–8 at 0.15 → ~8–16 at 0.30) and pairs with
+# the family-weight rebalance in `shared/visual_mode_bias.py` to break
+# up the visual monoculture without preset-corpus changes.
+DEFAULT_VARIANCE = 0.30
 FEATURE_FLAG_ENV = "HAPAX_PRESET_VARIETY_ACTIVE"
 
 
