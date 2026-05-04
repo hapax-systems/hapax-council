@@ -2286,3 +2286,30 @@ from shared.audio_graph.validator import (
 
 _extract_quoted_string  # noqa: B018
 _extract_token  # noqa: B018
+
+# audio-graph SSOT P1 — 17 gap-folds extension (cc-task
+# `audio-graph-ssot-p1-compiler-validator-with-17-gap-folds`, this PR).
+# Gap-fold model classes + their reflection-invoked validators on top of
+# the merged-PR base. Kept separate from the upstream block above so the
+# next merge can drop these without touching the base entries.
+from shared.audio_graph.schema import AudioNode as _AG_AudioNode2
+from shared.audio_graph.schema import ChannelDownmix as _AG_ChannelDownmix
+from shared.audio_graph.schema import FilterStage as _AG_FilterStage
+
+_AG_FilterStage._ladspa_requires_plugin  # type: ignore[attr-defined]
+_AG_ChannelDownmix._strategy_requires_correct_payload  # type: ignore[attr-defined]
+_AG_AudioNode2._custom_template_requires_stages  # type: ignore[attr-defined]
+
+# AudioGraph extras introduced by gap-fold work.
+from shared.audio_graph.schema import AudioGraph as _AG_AudioGraph2
+
+_AG_AudioGraph2._pipewire_names_unique  # type: ignore[attr-defined]
+_AG_AudioGraph2._downmixes_reference_valid_nodes  # type: ignore[attr-defined]
+_AG_AudioGraph2.node_by_pipewire_name
+_AG_AudioGraph2.to_yaml
+
+# Validator gap-fold methods.
+from shared.audio_graph.validator import AudioGraphValidator as _AG_Validator2
+
+_AG_Validator2.decompose_confs
+_AG_Validator2.conf_decomposed_cleanly

@@ -1,31 +1,35 @@
 #!/usr/bin/env python3
-"""hapax-audio-graph-validate — CI-gate validator CLI.
+"""hapax-audio-graph-validate — read-only audio-graph SSOT validator (P1 CLI).
 
-Walks a PipeWire ``conf.d`` directory and reports whether every active
-``*.conf`` decomposes cleanly into the ``AudioGraph`` schema. Exits
-non-zero when any gap is surfaced — the CI gate
-(``audio-graph-validate.yml``) uses this exit code as its pass/fail
-signal.
+Walks the live ``~/.config/pipewire/pipewire.conf.d/`` and
+``~/.config/wireplumber/wireplumber.conf.d/`` directories, decomposes
+every active conf into typed AudioGraph models, runs the 11 invariant
+predicates, and emits JSON to stdout.
+
+NO runtime audio mutation. NO ``pw-dump`` / ``pactl`` / ``pw-link``
+invocations. File reads only. Safe to run during a livestream.
 
 Usage:
+    hapax-audio-graph-validate [--pretty] [--fail-on-violations]
 
-    hapax-audio-graph-validate                       # default: ~/.config/pipewire/pipewire.conf.d/
-    hapax-audio-graph-validate --source <dir>        # a fixture or alternate dir
-    hapax-audio-graph-validate --json-output <path>  # write report JSON
-    hapax-audio-graph-validate --quiet               # suppress per-file decomposed output
+Output JSON shape:
+    {
+      "active_pipewire_confs": int,
+      "active_wireplumber_confs": int,
+      "decomposed_clean": {"pipewire": int, "wireplumber": int},
+      "decompose_failures": [str, ...],
+      "graph_stats": {"nodes": int, "loopbacks": int, ...},
+      "violations": [
+        {"kind": str, "severity": str, "node_id": str|null, "message": str},
+        ...
+      ],
+      "gaps": {"untyped_confs": [str], "parse_warnings": [str], "inferred_models": [str]}
+    }
 
-The full report is always printed to stderr in human-readable form.
-The JSON report (when requested) carries the structured findings:
-
-* ``decomposed_files`` — paths that decomposed cleanly
-* ``skipped_files`` — backup/disabled variants
-* ``gaps`` — per-file validation findings, each with ``kind``,
-  ``source_path``, ``message``, ``suggested_schema_change``
-* ``summary`` — counts only
-
-This script has NO runtime side-effects on PipeWire. It only reads
-files. Per the P1 spec constraint, no live audio probes, no service
-restarts, no PipeWire mutation are permitted.
+Exit codes:
+    0 — all confs decomposed cleanly, no BLOCKING violations
+    1 — some confs failed to decompose
+    2 — BLOCKING invariants violated (only when --fail-on-violations)
 """
 
 from __future__ import annotations
@@ -35,111 +39,92 @@ import json
 import sys
 from pathlib import Path
 
-# Allow running the script from a checked-out repo without install.
-_repo_root = Path(__file__).resolve().parent.parent
-if str(_repo_root) not in sys.path:
-    sys.path.insert(0, str(_repo_root))
-
-from shared.audio_graph import AudioGraphValidator, ValidationReport  # noqa: E402
-
-
-def _default_source() -> Path:
-    """The operator's live PipeWire conf.d directory."""
-    return Path.home() / ".config" / "pipewire" / "pipewire.conf.d"
-
-
-def _parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Decompose every active *.conf in a PipeWire conf.d directory "
-            "into an AudioGraph; report gaps."
-        )
-    )
-    parser.add_argument(
-        "--source",
-        type=Path,
-        default=None,
-        help="conf.d directory to validate (default: ~/.config/pipewire/pipewire.conf.d/)",
-    )
-    parser.add_argument(
-        "--json-output",
-        type=Path,
-        default=None,
-        help="Write structured JSON report to this path",
-    )
-    parser.add_argument(
-        "--quiet",
-        action="store_true",
-        help="Suppress per-file decomposed output",
-    )
-    return parser.parse_args(argv)
-
-
-def _print_report(report: ValidationReport, quiet: bool) -> None:
-    """Print human-readable report to stderr."""
-    n_decomp = len(report.decomposed_files)
-    n_skip = len(report.skipped_files)
-    n_gaps = len(report.gaps)
-    print(
-        f"audio-graph-validate: decomposed={n_decomp}, skipped={n_skip}, gaps={n_gaps}",
-        file=sys.stderr,
-    )
-    if not quiet:
-        for f in report.decomposed_files:
-            print(f"  OK   {f}", file=sys.stderr)
-    if report.gaps:
-        print("", file=sys.stderr)
-        print("Gaps:", file=sys.stderr)
-        for gap in report.gaps:
-            line_part = f":{gap.line}" if gap.line else ""
-            print(
-                f"  GAP  [{gap.kind}] {gap.source_path}{line_part}: {gap.message}",
-                file=sys.stderr,
-            )
-            if gap.suggested_schema_change:
-                print(
-                    f"        suggestion: {gap.suggested_schema_change}",
-                    file=sys.stderr,
-                )
-
-
-def _emit_json(report: ValidationReport, path: Path) -> None:
-    """Serialise the report to JSON."""
-    payload = {
-        "decomposed_files": list(report.decomposed_files),
-        "skipped_files": list(report.skipped_files),
-        "gaps": [g.model_dump() for g in report.gaps],
-        "summary": {
-            "decomposed": len(report.decomposed_files),
-            "skipped": len(report.skipped_files),
-            "gaps": len(report.gaps),
-            "graph_nodes": len(report.graph.nodes),
-            "graph_links": len(report.graph.links),
-            "graph_loopbacks": len(report.graph.loopbacks),
-        },
-    }
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+from shared.audio_graph import AudioGraphValidator, check_all_invariants
+from shared.audio_graph.invariants import InvariantSeverity
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(argv if argv is not None else sys.argv[1:])
-    source: Path = args.source if args.source is not None else _default_source()
-    if not source.is_dir():
-        print(
-            f"audio-graph-validate: source directory not found: {source}",
-            file=sys.stderr,
-        )
-        return 2
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
+    parser.add_argument(
+        "--pipewire-conf-dir",
+        type=Path,
+        default=Path("~/.config/pipewire/pipewire.conf.d").expanduser(),
+    )
+    parser.add_argument(
+        "--wireplumber-conf-dir",
+        type=Path,
+        default=Path("~/.config/wireplumber/wireplumber.conf.d").expanduser(),
+    )
+    parser.add_argument("--pretty", action="store_true", help="indent JSON output")
+    parser.add_argument(
+        "--fail-on-violations",
+        action="store_true",
+        help="exit 2 if any BLOCKING invariant violation is detected",
+    )
+    args = parser.parse_args(argv)
 
-    validator = AudioGraphValidator()
-    report = validator.decompose(source)
+    validator = AudioGraphValidator(
+        pipewire_conf_dir=args.pipewire_conf_dir,
+        wireplumber_conf_dir=args.wireplumber_conf_dir,
+    )
 
-    if args.json_output is not None:
-        _emit_json(report, args.json_output)
+    pw_confs = validator.list_active_pipewire_confs()
+    wp_confs = validator.list_active_wireplumber_confs()
 
-    _print_report(report, quiet=args.quiet)
+    pw_clean = sum(1 for c in pw_confs if validator.conf_decomposed_cleanly(c))
+    wp_clean = sum(1 for c in wp_confs if validator.conf_decomposed_cleanly(c))
+    failures = [c.name for c in pw_confs + wp_confs if not validator.conf_decomposed_cleanly(c)]
 
-    return 0 if not report.gaps else 1
+    result = validator.decompose_confs()
+    violations = check_all_invariants(result.graph)
+
+    output = {
+        "active_pipewire_confs": len(pw_confs),
+        "active_wireplumber_confs": len(wp_confs),
+        "decomposed_clean": {
+            "pipewire": pw_clean,
+            "wireplumber": wp_clean,
+            "total": pw_clean + wp_clean,
+        },
+        "decompose_failures": failures,
+        "graph_stats": {
+            "nodes": len(result.graph.nodes),
+            "loopbacks": len(result.graph.loopbacks),
+            "channel_downmixes": len(result.graph.channel_downmixes),
+            "tunables": len(result.graph.tunables),
+            "alsa_profile_pins": len(result.graph.alsa_profile_pins),
+            "alsa_rules": len(result.graph.alsa_rules),
+            "bluez_rules": len(result.graph.bluez_rules),
+            "stream_restore_rules": len(result.graph.stream_restore_rules),
+            "stream_pins": len(result.graph.stream_pins),
+            "media_role_sinks": len(result.graph.media_role_sinks),
+            "untyped_wireplumber_rules": len(result.graph.untyped_wireplumber_rules),
+        },
+        "violations": [
+            {
+                "kind": v.kind.value,
+                "severity": v.severity.value,
+                "node_id": v.node_id,
+                "message": v.message,
+            }
+            for v in violations
+        ],
+        "gaps": {
+            "untyped_confs": result.gaps.untyped_confs,
+            "parse_warnings": result.gaps.parse_warnings,
+            "inferred_models": result.gaps.inferred_models,
+        },
+    }
+
+    indent = 2 if args.pretty else None
+    sys.stdout.write(json.dumps(output, indent=indent, sort_keys=True) + "\n")
+
+    if failures:
+        return 1
+    if args.fail_on_violations:
+        if any(v.severity == InvariantSeverity.BLOCKING for v in violations):
+            return 2
+    return 0
 
 
 if __name__ == "__main__":

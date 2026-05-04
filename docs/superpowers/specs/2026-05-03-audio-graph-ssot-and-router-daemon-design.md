@@ -503,8 +503,43 @@ def build_post_apply_probes(d: TopologyDescriptor) -> list[PostApplyProbe]:
 5. **Continuous post-apply verification** — runs the §4.2 circuit breaker in its own thread.
 6. **Read-only API** for everyone else: `current()` (returns the applied descriptor),
    `verify_live()` (returns a HealthReport), `query_invariant(kind)`.
+7. **Sole `pw-link` mutator** for the manifested graph (gap **G-spec-3** reconciliation,
+   2026-05-03 alignment audit). Today three call-sites mutate live `pw-link`
+   state outside the daemon:
+   - `scripts/audio-leak-guard.sh` (tears down forbidden private→broadcast links).
+   - `scripts/usb-router.py` (creates and destroys task-specific links).
+   - `agents/local_music_player/player.py` (creates per-track stereo cross-links).
+   Phase 4 transitions all three into daemon-mediated calls:
+   - **leak-guard** becomes an internal emergency rollback path inside the
+     daemon's continuous verification loop. The bash script is deprecated
+     (replaced by an internal `EmergencyLinkSweep` function called by the
+     breaker on engagement).
+   - **usb-router** becomes a daemon API caller — its create/destroy
+     operations route through `daemon.create_link()` / `daemon.destroy_link()`
+     while it retains its scheduling logic.
+   - **local_music_player** keeps its per-track link semantics but routes
+     them through `daemon.ensure_link(source, target)`, which idempotently
+     creates the link if absent and is a no-op if present.
+   Control-plane writes (filter-chain `pw-cli set-param` for runtime gain
+   knobs) remain owned by their domain agents per §4.6 and are NOT
+   considered `pw-link` mutations.
 
 ## 4.2 The two-failure-mode circuit breaker
+
+> **Auto-mute reconciliation (G-spec-2 — 2026-05-03 alignment audit).** The new
+> `hapax-audio-signal-assertion` daemon (shipped on the parallel
+> `alpha/audio-safe-restart-pre-flight-gate` branch) explicitly forbids auto-mute on
+> false-positive grounds. **This spec wins the design tension.** The SSOT egress circuit
+> breaker (§4.2) is the authoritative auto-mute surface; the assertion daemon's role
+> narrows to signal-flow stage classification (not egress band breaker). The follow-on
+> cc-task `h1-signal-flow-daemon-add-auto-mute-flag-aligning-with-ssot-p5` adds a
+> `--auto-mute-on-clipping` opt-in flag to the assertion daemon (default OFF). When P5
+> hardens the breaker the flag flips ON and the daemons consolidate into a single
+> auto-mute path (the daemon becomes the breaker proxy for the signal-flow side and
+> the SSOT breaker handles the egress side; both engage safe-mute through the same
+> `SafeMuteRail` instance). Operator's framing rationale: "silence is better than noise
+> on stream" — the spec's BLOCKING-on-detection behaviour stays load-bearing.
+
 
 This is where the operator's reframing lands directly in code.
 
@@ -879,10 +914,24 @@ returns. Document the manual recovery script in case the lock file gets stuck.
 
 ## Phase 4 — Daemon takes over write path
 
+> **Phase boundary clarification (G-spec-4 — 2026-05-03 alignment audit).** The
+> "post-apply probes are P5" framing in §7 #11 was tightened during the audit. P4
+> ships the daemon-orchestrated write path PLUS a basic post-apply settling probe
+> (single-shot, runs immediately after `systemctl restart` and signals failure if no
+> signal flow is detected within 10 s; this is what catches today's #7 "PipeWire
+> restart breaks links" class). P5 hardens this into the continuous breaker thread
+> AND the pre-loaded `SafeMuteRail` AND the integration test for the deliberate-
+> failure injection. **What "post-apply probe" means in P4 vs P5 differs:** P4 is
+> "did the apply produce signal flow", P5 is "is the live broadcast egress within
+> safe band continuously". Operator-facing rule: P4 catches restart breakage, P5
+> catches drift / sustained noise / silence.
+
 **What ships:**
 
 1. The daemon transitions from shadow to active. `apply()` writes confs and runs pactl loads.
-2. The §4.2 circuit breaker transitions from observe-only to enforcement (auto-mute on engage).
+2. The §4.2 circuit breaker transitions from observe-only to enforcement (auto-mute on engage)
+   — see G-spec-4 phase boundary clarification above for the P4-vs-P5 split on the
+   distinct "post-apply settling probe" and "continuous breaker" surfaces.
 3. All operator scripts that used to write `~/.config/pipewire/` are converted to invoke
    `hapax-pipewire-graph apply` against the descriptor. `~/.local/bin/hapax-obs-monitor-load` is
    deprecated; its loopback moves into the descriptor as a `LoopbackTopology(apply_via_pactl_load=True)`.
@@ -891,6 +940,12 @@ returns. Document the manual recovery script in case the lock file gets stuck.
    `*.disabled-by-graph-router-{ts}` and the operator is notified with a list.
 5. A bypass envvar `HAPAX_PIPEWIRE_GRAPH_BYPASS=1` exists for incident-response (read by the hook).
    Setting it logs an immediate ntfy red (the operator wants to know if the safety is bypassed).
+6. **`config/pipewire/` becomes legacy snapshot post-P4 (G-11 reconciliation,
+   2026-05-03 alignment audit).** The in-tree git copy remains for git history /
+   review-by-grep, but the daemon owns the deployed `~/.config/pipewire/...` only.
+   A README in `config/pipewire/` is updated to declare the directory "frozen
+   post-P4 — operator-edited examples preserved for spec review; the runtime
+   source-of-truth is the AudioGraph YAML descriptor + the daemon".
 
 **Observable that proves it works:** during a 24 h livestream window, every conf change goes through
 the daemon, and the egress-health log shows zero CLIPPING_NOISE / SILENCE state entries (because the
@@ -1059,6 +1114,41 @@ cannot prevent." The audio churn between sessions and operator-aimed at level tu
 6. **Threshold-reconciliation between this spec and the research doc's H1 predicates.** §4.2.1 ships
    BOTH predicate forms in parallel; P2's 24 h shadow window decides which one(s) survive into P4. Open
    for operator input on whether parallel predicates is acceptable, or whether to choose one before P2.
+
+7. **CLI naming reconciliation (G-spec-5 — 2026-05-03 alignment audit).** The audit
+   surfaced a naming ambiguity between `scripts/hapax-audio-topology` (existing,
+   1100 LOC) and `scripts/hapax-pipewire-graph` (new in P3). **Resolution: two
+   distinct binaries, distinct surfaces.** `hapax-audio-topology` stays the
+   read/diff/audit CLI for the descriptor-vs-runtime delta (it is tested,
+   documented, and operator-known). `hapax-pipewire-graph` is the new
+   write/lock/apply CLI for the daemon. P3 ships the new binary as
+   `scripts/hapax-pipewire-graph`; the existing CLI keeps its surface
+   unchanged. P1 ships a third, narrower CLI `scripts/hapax-audio-graph-validate`
+   as the read-only pre-P3 validator (no daemon dependency, JSON output,
+   CI-runnable). Operator runs whichever the immediate task needs:
+   - `hapax-audio-topology verify`     — diff descriptor vs live `pw-dump`
+   - `hapax-audio-graph-validate`      — passive schema decomposition + invariants (P1)
+   - `hapax-pipewire-graph apply`       — daemon-mediated apply (P3+)
+
+8. **`config/pipewire/` post-P4 status (G-11 — 2026-05-03 alignment audit).**
+   Resolved in §5 Phase 4 step 6 above: `config/pipewire/` becomes a frozen
+   legacy snapshot post-P4. The deployed `~/.config/pipewire/...` is
+   daemon-owned; the in-tree `config/` copy stays for git-history review only.
+
+9. **Acknowledged-punt: ALSA card pin / kernel codec state (G-17 — 2026-05-03
+   alignment audit).** Per §7 #9 + §7 residual-failure #1, the kernel-side
+   HD-audio pin mux state is partially out-of-band for the descriptor. The
+   schema can model the *user-space configurable* part (card profile pin via
+   WirePlumber rule, surfaced as :class:`AlsaProfilePin` in P1's audio_graph
+   module) but cannot model the kernel codec layer below. P1 includes
+   `AlsaProfilePin` (gap G-2 fold) — that's the user-space surface. The kernel
+   codec layer stays out of scope; the existing `hapax-audio-topology
+   pin-check` watchdog handles the runtime detection side, and the daemon's
+   continuous breaker catches the audible failure post-hoc. Recommendation
+   (deferred to a Phase 6 tracking note): if a kernel-side codec API surfaces
+   that lets us declaratively pin the pin mux state, revisit. Until then,
+   acknowledge the gap explicitly here rather than promise coverage we
+   cannot deliver.
 
 ---
 
