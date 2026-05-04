@@ -50,5 +50,36 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "echo_dub"
+    ],
+    [
+      "echo_dub",
+      "trail_long"
+    ],
+    [
+      "trail_long",
+      "mirror_spatial"
+    ],
+    [
+      "mirror_spatial",
+      "vignette"
+    ],
+    [
+      "vignette",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

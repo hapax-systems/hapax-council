@@ -50,5 +50,36 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "tunnel_dub"
+    ],
+    [
+      "tunnel_dub",
+      "droste_recursive"
+    ],
+    [
+      "droste_recursive",
+      "feedback_chamber"
+    ],
+    [
+      "feedback_chamber",
+      "vignette"
+    ],
+    [
+      "vignette",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

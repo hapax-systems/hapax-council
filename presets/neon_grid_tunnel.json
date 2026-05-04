@@ -1,6 +1,6 @@
 {
   "name": "Neon Grid Tunnel",
-  "description": "Neon-grid lineage (2/2): tunnel + scanlines + bloom creates a moving neon-grid corridor — Tron light-cycle aesthetic. Lineage: neon-grid.",
+  "description": "Neon-grid lineage (2/2): tunnel + scanlines + bloom creates a moving neon-grid corridor \u2014 Tron light-cycle aesthetic. Lineage: neon-grid.",
   "lineage": "neon-grid",
   "transition_ms": 1700,
   "nodes": {
@@ -45,5 +45,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "tunnel_neon"
+    ],
+    [
+      "tunnel_neon",
+      "scanlines_tunnel"
+    ],
+    [
+      "scanlines_tunnel",
+      "bloom_neon"
+    ],
+    [
+      "bloom_neon",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

@@ -1,6 +1,6 @@
 {
   "name": "Arcane Dither Sigil",
-  "description": "Arcane-glyph lineage (2/2): heavy dither + edge_detect + invert at low intensity creates a sigil-on-vellum aesthetic — image becomes ritual mark. Lineage: arcane-glyph.",
+  "description": "Arcane-glyph lineage (2/2): heavy dither + edge_detect + invert at low intensity creates a sigil-on-vellum aesthetic \u2014 image becomes ritual mark. Lineage: arcane-glyph.",
   "lineage": "arcane-glyph",
   "transition_ms": 1400,
   "nodes": {
@@ -41,5 +41,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "dither_heavy"
+    ],
+    [
+      "dither_heavy",
+      "edge_sigil"
+    ],
+    [
+      "edge_sigil",
+      "invert_partial"
+    ],
+    [
+      "invert_partial",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

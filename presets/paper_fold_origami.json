@@ -1,6 +1,6 @@
 {
   "name": "Paper Fold Origami",
-  "description": "Paper-fold lineage (1/2): heavy emboss + sharpen + posterize creates fold-line origami aesthetic — image becomes geometric paper construct. Lineage: paper-fold.",
+  "description": "Paper-fold lineage (1/2): heavy emboss + sharpen + posterize creates fold-line origami aesthetic \u2014 image becomes geometric paper construct. Lineage: paper-fold.",
   "lineage": "paper-fold",
   "transition_ms": 1900,
   "nodes": {
@@ -40,5 +40,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "emboss_fold"
+    ],
+    [
+      "emboss_fold",
+      "sharpen_fold"
+    ],
+    [
+      "sharpen_fold",
+      "posterize_fold"
+    ],
+    [
+      "posterize_fold",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

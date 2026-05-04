@@ -1,6 +1,6 @@
 {
   "name": "Arcade Palette Remap",
-  "description": "Retro-arcade lineage (2/2): palette_remap + palette_extract + posterize creates a remapped-color-table aesthetic — image gets re-rendered through a constrained palette like an old arcade cabinet's color ROM. Lineage: retro-arcade.",
+  "description": "Retro-arcade lineage (2/2): palette_remap + palette_extract + posterize creates a remapped-color-table aesthetic \u2014 image gets re-rendered through a constrained palette like an old arcade cabinet's color ROM. Lineage: retro-arcade.",
   "lineage": "retro-arcade",
   "transition_ms": 1100,
   "nodes": {
@@ -39,5 +39,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "palette_extract_arcade"
+    ],
+    [
+      "palette_extract_arcade",
+      "palette_remap_arcade"
+    ],
+    [
+      "palette_remap_arcade",
+      "posterize_arcade"
+    ],
+    [
+      "posterize_arcade",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

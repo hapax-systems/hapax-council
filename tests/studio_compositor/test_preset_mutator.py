@@ -298,5 +298,9 @@ class TestPickAndLoadMutated:
         assert hit_a == hit_b
 
 
-def test_default_variance_is_15_percent():
-    assert DEFAULT_VARIANCE == 0.15
+def test_default_variance_is_30_percent():
+    # Widened from 0.15 → 0.30 on 2026-05-03 (visual-monoculture
+    # rebalance). Pairs with the family-weight rebalance in
+    # `shared/visual_mode_bias.py` to break up monoculture without
+    # preset-corpus changes.
+    assert DEFAULT_VARIANCE == 0.30
