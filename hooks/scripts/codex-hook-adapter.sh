@@ -159,6 +159,7 @@ run_pre_shell() {
     axiom-commit-scan.sh
     pip-guard.sh
     no-stale-branches.sh
+    canonical-worktree-protect.sh
     safe-stash-guard.sh
     conductor-pre.sh
     branch-switch-guard.sh

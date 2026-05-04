@@ -11,6 +11,26 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 ADAPTER = REPO_ROOT / "hooks" / "scripts" / "codex-hook-adapter.sh"
 
 
+def _make_repo_on_main(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": "test",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "test",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+        }
+    )
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=path, check=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=path, check=True)
+    (path / "README.md").write_text("repo\n")
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=path, check=True, env=env)
+    subprocess.run(["git", "branch", "alpha/foo"], cwd=path, check=True)
+    return path
+
+
 def _run_adapter(
     payload: dict,
     *,
@@ -20,8 +40,11 @@ def _run_adapter(
 ) -> dict:
     env = os.environ.copy()
     env["HOME"] = str(home)
+    env.pop("HAPAX_AGENT_NAME", None)
     env.pop("HAPAX_AGENT_ROLE", None)
     env.pop("CODEX_ROLE", None)
+    env.pop("CODEX_SESSION", None)
+    env.pop("CODEX_SESSION_NAME", None)
     env["CODEX_THREAD_NAME"] = "cx-red"
     env["HAPAX_WORKTREE_ROLE"] = "alpha"
     if extra_env:
@@ -75,6 +98,26 @@ def test_shell_command_runs_session_name_enforcement(tmp_path: Path) -> None:
     assert result["decision"] == "block"
     assert "session-name-enforcement.sh" in result["reason"]
     assert "unknown session name" in result["reason"].lower()
+
+
+def test_shell_command_runs_canonical_worktree_protect(tmp_path: Path) -> None:
+    canonical = _make_repo_on_main(tmp_path / "canonical")
+    result = _run_adapter(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "cwd": str(canonical),
+            "tool_name": "exec_command",
+            "tool_input": {"cmd": "git switch alpha/foo"},
+        },
+        home=tmp_path,
+        cwd=REPO_ROOT,
+        extra_env={"HAPAX_CANONICAL_PATH_OVERRIDE": str(canonical)},
+    )
+
+    assert result["decision"] == "block"
+    assert "canonical-worktree-protect.sh" in result["reason"]
+    assert "Canonical worktree" in result["reason"]
 
 
 def test_task_gate_blocks_destructive_shell_without_claim(tmp_path: Path) -> None:
