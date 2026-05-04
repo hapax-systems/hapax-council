@@ -25,6 +25,8 @@ import pytest
 
 from agents.hapax_daimonion.cpal import destination_channel
 from agents.hapax_daimonion.cpal.destination_channel import (
+    _BROADCAST_ELIGIBLE_ROLES,
+    BROADCAST_BIAS_ENV,
     BROADCAST_MEDIA_ROLE,
     DEFAULT_TARGET_ENV,
     DESTINATION_ROUTING_ENV,
@@ -32,6 +34,7 @@ from agents.hapax_daimonion.cpal.destination_channel import (
     PRIVATE_MEDIA_ROLE,
     PRIVATE_SINK,
     DestinationChannel,
+    _is_broadcast_bias_enabled,
     classify_and_record,
     classify_destination,
     is_routing_active,
@@ -304,9 +307,10 @@ class TestPlaybackDecision:
         assert decision.destination is DestinationChannel.PRIVATE
         assert decision.target == PRIVATE_SINK
 
-    def test_autonomous_narration_without_broadcast_contract_drops_when_private_missing(
-        self, tmp_path
-    ):
+    def test_autonomous_narration_with_bias_blocks_without_programme_auth(self, tmp_path):
+        """Broadcast bias classifies autonomous narrative as LIVESTREAM,
+        but resolve_playback_decision blocks when programme auth is missing
+        from the impingement content."""
         imp = SimpleNamespace(
             source="autonomous_narrative",
             content={"narrative": "No public contract."},
@@ -319,8 +323,12 @@ class TestPlaybackDecision:
         )
 
         assert decision.allowed is False
-        assert decision.destination is DestinationChannel.PRIVATE
-        assert decision.reason_code == "private_monitor_status_missing"
+        # With broadcast bias, classification is LIVESTREAM (soft prior),
+        # but blocked because the content dict doesn't carry explicit
+        # broadcast intent tokens (those are injected by runner.py, not
+        # by classify_destination).
+        assert decision.destination is DestinationChannel.LIVESTREAM
+        assert decision.reason_code == "broadcast_intent_missing"
         assert decision.target is None
 
     def test_explicit_broadcast_requires_fresh_programme_auth_and_audio_safe(self, tmp_path):
@@ -498,3 +506,134 @@ class TestResolveRole:
         wireplumber loopback can't tell broadcast from private and the
         leak returns. Pin the distinctness."""
         assert PRIVATE_MEDIA_ROLE != BROADCAST_MEDIA_ROLE
+
+
+# --- Broadcast bias (autonomous-narrative → LIVESTREAM) ---------------------
+
+
+def _mock_programme(role: str = "work_block", status: str = "active"):
+    """Build a minimal Programme-like object for broadcast bias tests."""
+    return SimpleNamespace(
+        programme_id="programme:test-bias",
+        role=SimpleNamespace(value=role),
+        status=status,
+        parent_show_id="show:test",
+    )
+
+
+class TestBroadcastBias:
+    """Pin the broadcast-bias soft prior for autonomous narrative routing."""
+
+    def test_flag_enabled_with_active_programme_routes_livestream(self, monkeypatch):
+        """Core case: bias ON + active broadcast-eligible programme → LIVESTREAM."""
+        monkeypatch.delenv(BROADCAST_BIAS_ENV, raising=False)
+        monkeypatch.setattr(
+            "agents.hapax_daimonion.cpal.destination_channel._programme_authorizes_broadcast",
+            lambda: True,
+        )
+        imp = SimpleNamespace(
+            source="autonomous_narrative",
+            content={"narrative": "The rhythm settles into place."},
+        )
+        assert classify_destination(imp) == DestinationChannel.LIVESTREAM
+
+    def test_flag_disabled_routes_private(self, monkeypatch):
+        """Bias OFF → autonomous narrative still defaults PRIVATE."""
+        monkeypatch.setenv(BROADCAST_BIAS_ENV, "0")
+        imp = SimpleNamespace(
+            source="autonomous_narrative",
+            content={"narrative": "This should stay private."},
+        )
+        assert classify_destination(imp) == DestinationChannel.PRIVATE
+
+    def test_no_active_programme_routes_private(self, monkeypatch):
+        """Bias ON but no programme → fail-closed to PRIVATE."""
+        monkeypatch.delenv(BROADCAST_BIAS_ENV, raising=False)
+        monkeypatch.setattr(
+            "agents.hapax_daimonion.cpal.destination_channel._programme_authorizes_broadcast",
+            lambda: False,
+        )
+        imp = SimpleNamespace(
+            source="autonomous_narrative",
+            content={"narrative": "No programme context."},
+        )
+        assert classify_destination(imp) == DestinationChannel.PRIVATE
+
+    def test_listening_role_routes_private(self, monkeypatch):
+        """LISTENING role is excluded from broadcast-eligible set."""
+        monkeypatch.delenv(BROADCAST_BIAS_ENV, raising=False)
+        assert "listening" not in _BROADCAST_ELIGIBLE_ROLES
+
+        # Wire up a mock that returns a listening programme
+        from unittest.mock import patch
+
+        with patch(
+            "agents.hapax_daimonion.cpal.destination_channel._programme_authorizes_broadcast",
+            return_value=False,
+        ):
+            imp = SimpleNamespace(
+                source="autonomous_narrative",
+                content={"narrative": "Should not broadcast during listening."},
+            )
+            assert classify_destination(imp) == DestinationChannel.PRIVATE
+
+    def test_private_risk_overrides_broadcast_bias(self, monkeypatch):
+        """Private-risk context always wins, even with bias enabled."""
+        monkeypatch.delenv(BROADCAST_BIAS_ENV, raising=False)
+        monkeypatch.setattr(
+            "agents.hapax_daimonion.cpal.destination_channel._programme_authorizes_broadcast",
+            lambda: True,
+        )
+        imp = SimpleNamespace(
+            source="operator.sidechat",
+            content={"channel": "sidechat", "narrative": "This is private."},
+        )
+        assert classify_destination(imp) == DestinationChannel.PRIVATE
+
+    def test_non_autonomous_source_unaffected(self, monkeypatch):
+        """Broadcast bias only applies to autonomous_narrative source."""
+        monkeypatch.delenv(BROADCAST_BIAS_ENV, raising=False)
+        monkeypatch.setattr(
+            "agents.hapax_daimonion.cpal.destination_channel._programme_authorizes_broadcast",
+            lambda: True,
+        )
+        imp = SimpleNamespace(
+            source="director.narrative",
+            content={"narrative": "Director-origin utterance."},
+        )
+        assert classify_destination(imp) == DestinationChannel.PRIVATE
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            (None, True),
+            ("", True),
+            ("1", True),
+            ("0", False),
+            (" 0 ", False),
+            ("true", True),
+        ],
+    )
+    def test_broadcast_bias_flag_parsing(self, monkeypatch, raw, expected):
+        if raw is None:
+            monkeypatch.delenv(BROADCAST_BIAS_ENV, raising=False)
+        else:
+            monkeypatch.setenv(BROADCAST_BIAS_ENV, raw)
+        assert _is_broadcast_bias_enabled() is expected
+
+    def test_all_eligible_roles_present(self):
+        """All roles except LISTENING are broadcast-eligible."""
+        from shared.programme import ProgrammeRole
+
+        expected_excluded = {"listening"}
+        all_roles = {r.value for r in ProgrammeRole}
+        assert all_roles - expected_excluded == _BROADCAST_ELIGIBLE_ROLES
+
+    def test_explicit_broadcast_intent_takes_priority(self, monkeypatch):
+        """Explicit broadcast intent tokens route LIVESTREAM regardless of bias state."""
+        monkeypatch.setenv(BROADCAST_BIAS_ENV, "0")
+        imp = SimpleNamespace(
+            source="autonomous_narrative",
+            content={"public_broadcast_intent": True, "narrative": "Explicit intent."},
+        )
+        assert classify_destination(imp) == DestinationChannel.LIVESTREAM
