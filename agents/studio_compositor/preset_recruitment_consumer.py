@@ -36,6 +36,7 @@ import random
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from .preset_family_selector import family_names, pick_and_load_mutated
 from .random_mode import MUTATION_FILE
@@ -51,6 +52,24 @@ Matches the director's preset.bias TTL — recruitments that re-fire within
 the cooldown window represent the same compositional moment, not a new
 intent. Without cooldown the chain mutation thrashes visibly when the
 director loop ticks at sub-cooldown intervals.
+"""
+
+RECRUITMENT_HOLD_S = 25.0
+"""How long ``compositor._user_preset_hold_until`` is extended after a
+successful recruitment dispatch.
+
+The atmospheric governance tick (``fx_tick.tick_governance``) runs at
+30 fps and reverts the chain to ``_STATE_MATRIX``-derived presets
+whenever recruitment is silent for one cooldown. Without a hold, a
+recruitment-driven preset change would be clobbered within 33 ms by
+the very next governance tick — exactly the halftone-monoculture
+symptom the researcher audit identified (2026-05-03).
+
+This mirrors the operator-API mutation hold pattern in
+``state.py`` (where ``graph-mutation.json`` ingest sets
+``_user_preset_hold_until = now + 600s``); recruitment-driven mutations
+get a shorter hold (≥ ``COOLDOWN_S``) so the next director-driven
+recruitment can land but atmospheric reversion stays out.
 """
 
 _TRANSITION_BIAS_COOLDOWN_S = 20.0
@@ -71,9 +90,20 @@ _transition_lock = threading.Lock()
 
 
 def _write_mutation(graph: dict) -> None:
-    """Primitive callback — write a graph dict to the SHM mutation file."""
+    """Primitive callback — write a graph dict to the SHM mutation file.
+
+    Tags the mutation with ``_source: "recruitment"`` so ``state.py`` can
+    distinguish recruitment-originated chain mutations from operator-manual
+    ones (chain builder PUT, fx-request, chat reactor). The reader pops the
+    field before constructing ``EffectGraph``. Source-aware hold lifecycle:
+    recruitment → 25s hold (next director recruitment can land), operator
+    manual → 600s hold (protects operator-authored intent from director
+    thrash).
+    """
     MUTATION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    MUTATION_FILE.write_text(json.dumps(graph))
+    tagged = dict(graph)
+    tagged["_source"] = "recruitment"
+    MUTATION_FILE.write_text(json.dumps(tagged))
 
 
 def _read_recruited_transition() -> str | None:
@@ -156,7 +186,7 @@ def _run_transition_async(
     threading.Thread(target=_runner, name="preset-transition", daemon=True).start()
 
 
-def process_preset_recruitment() -> bool:
+def process_preset_recruitment(compositor: Any | None = None) -> bool:
     """Read recent recruitment, dispatch a transition primitive on a fresh
     fx.family recruitment.
 
@@ -164,6 +194,15 @@ def process_preset_recruitment() -> bool:
     repeated calls within the cooldown window are no-ops. The actual
     chain mutation is written by the background-thread primitive over
     the next ~0.4–1.4 s; this function returns immediately.
+
+    When ``compositor`` is supplied, ``compositor._user_preset_hold_until``
+    is extended by ``RECRUITMENT_HOLD_S`` on successful dispatch so the
+    atmospheric governance tick (``fx_tick.tick_governance``) does not
+    revert the chain back to a ``_STATE_MATRIX`` default within the next
+    33 ms. Mirrors the operator-API mutation hold pattern in
+    ``state.py``. ``compositor`` is optional for backward compatibility
+    with existing tests / direct callers — when omitted, the recruited
+    chain is still written but is unprotected from atmospheric reversion.
     """
     global _last_activation_t, _last_family_activated, _last_recruitment_ts_seen
     global _last_graph_activated
@@ -206,6 +245,18 @@ def process_preset_recruitment() -> bool:
     _last_family_activated = preset_name
     _last_graph_activated = graph
     _last_recruitment_ts_seen = float(last_recruited_ts)
+    # Protect the recruitment-driven chain change from atmospheric
+    # reversion by ``fx_tick.tick_governance``. The governance tick runs
+    # at 30 fps and would otherwise clobber the chain back to a
+    # ``_STATE_MATRIX`` default within the next 33 ms. Mirrors the
+    # operator-API mutation hold (state.py:358 / state.py:393) but with
+    # a shorter window so the next director-driven recruitment can still
+    # land within a few seconds.
+    if compositor is not None:
+        try:
+            compositor._user_preset_hold_until = time.monotonic() + RECRUITMENT_HOLD_S
+        except Exception:
+            log.debug("failed to extend _user_preset_hold_until on compositor", exc_info=True)
     log.info(
         "preset recruitment: family=%r preset=%r transition=%r (recruitment_ts=%.3f)",
         family,
