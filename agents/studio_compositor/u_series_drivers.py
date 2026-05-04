@@ -62,6 +62,8 @@ DIRECTOR_INTENT_STALE_S: float = 180.0
 # whose axis best matches it. Activities not in this table are skipped
 # (the consumer is stateless; missing-mapping is a no-op, not an error).
 ACTIVITY_TO_VERB: dict[str, str] = {
+    "music": "dwell",  # temporal — sustained presence during music
+    "observe": "linger",  # temporal — extended contemplative dwell
     "react": "rupture",  # phenomenological — sudden shift on react cue
     "vinyl": "dwell",  # temporal — sustained presence on vinyl
     "narrate": "linger",  # temporal — extended dwell during narration
