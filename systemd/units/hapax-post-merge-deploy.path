@@ -22,12 +22,11 @@ Documentation=file://%h/projects/hapax-council/docs/superpowers/specs/2026-04-13
 # fire. Belt-and-braces guard: hapax-post-merge-deploy.service carries
 # StartLimitIntervalSec=60 / StartLimitBurst=3.
 #
-# Migration note: targeting the shared .git/refs/heads/main file works
-# regardless of whether rebuild-service.sh runs in the canonical worktree
-# (current state) or in the dedicated rebuild worktree at
-# $HOME/.cache/hapax/rebuild/worktree/ (recommendation #1 of the same audit,
-# tracked under alpha/rebuild-service-dedicated-worktree). git worktrees
-# share refs/heads/, so the watched path stays correct across that flip.
+# Migration note: rebuild-service.sh now runs council deploy checks from the
+# dedicated rebuild worktree at $HOME/.cache/hapax/rebuild/worktree/. The
+# watched ref remains the shared .git/refs/heads/main file because git
+# worktrees share refs/heads/, so the path trigger still fires when the deploy
+# worktree advances local main.
 
 [Path]
 PathChanged=/home/hapax/projects/hapax-council/.git/refs/heads/main

@@ -196,7 +196,7 @@ Two timers poll `origin/main` every 5 minutes and rebuild/restart services when 
 
 ### Python Services (`hapax-rebuild-services.timer`)
 
-`scripts/rebuild-service.sh` — generic script accepting `--repo`, `--service`, `--watch`, `--sha-key`, `--pull-only`. Checks if watched paths changed between last SHA and current `origin/main`. Only restarts the service if relevant files differ.
+`scripts/rebuild-service.sh` — generic script accepting `--repo`, `--service`, `--watch`, `--sha-key`, `--pull-only`. Council service entries run against the dedicated rebuild worktree at `~/.cache/hapax/rebuild/worktree`, not the operator's interactive `~/projects/hapax-council` checkout. The script creates that worktree on first use, resets it to `origin/main` at the start of every run, checks whether watched paths changed between the last deployed SHA and current `origin/main`, and only restarts the service if relevant files differ.
 
 | Service | Repo | Watched Paths | SHA Key |
 |---------|------|---------------|---------|
@@ -217,10 +217,11 @@ found 25 systemd units canonical-but-not-installed because nothing fired the
 script after merges.
 
 `hapax-post-merge-deploy.path` watches the canonical local main ref
-(`/home/hapax/projects/hapax-council/.git/refs/heads/main`). When
-`rebuild-service.sh` ff-merges `origin/main` into local main (or any other
-caller advances the ref), the path unit fires `hapax-post-merge-deploy.service`,
-which resolves the new HEAD SHA and invokes the script.
+(`/home/hapax/projects/hapax-council/.git/refs/heads/main`). The dedicated
+rebuild worktree shares that ref namespace with the canonical checkout, so when
+`rebuild-service.sh` advances local main to `origin/main` the path unit fires
+`hapax-post-merge-deploy.service`, which resolves the new HEAD SHA and invokes
+the script.
 
 Loop-safety: the deploy script only writes to `~/.config/systemd/user/`,
 `~/.config/pipewire/`, `~/.local/bin/`, and `~/.cache/hapax/post-merge-traces/`;

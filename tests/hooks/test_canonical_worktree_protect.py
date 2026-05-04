@@ -2,8 +2,9 @@
 
 The hook is a PreToolUse blocker that refuses git commands which would
 leave the canonical worktree (/home/hapax/projects/hapax-council) on a
-non-main ref. The canonical worktree is the deploy target for
-rebuild-service.sh; it must stay on main or deploys go silent.
+non-main ref. The canonical worktree is the operator surface and local
+main-ref source for post-merge deploy convergence; agents must use their
+own worktrees for feature branches.
 
 Tests use HAPAX_CANONICAL_PATH_OVERRIDE to point the hook at a sandbox
 path so we don't need to run inside the actual canonical worktree.
@@ -164,6 +165,40 @@ class TestBlockInCanonical:
         result = _run(
             _bash("git reset --hard alpha/foo"),
             cwd=canonical,
+            canonical_override=canonical,
+        )
+        assert result.returncode == 2, result.stderr
+
+    def test_refuses_using_payload_cwd(self, tmp_path: Path) -> None:
+        """Codex passes cwd in the hook payload; the hook must honor it."""
+        canonical = _make_repo_on_main(tmp_path / "canonical")
+        result = _run(
+            {
+                "tool_name": "Bash",
+                "cwd": str(canonical),
+                "tool_input": {"command": "git switch alpha/foo"},
+            },
+            cwd=tmp_path,
+            canonical_override=canonical,
+        )
+        assert result.returncode == 2, result.stderr
+
+    def test_refuses_leading_cd_then_switch(self, tmp_path: Path) -> None:
+        """Common shell form: `cd canonical && git switch feature`."""
+        canonical = _make_repo_on_main(tmp_path / "canonical")
+        result = _run(
+            _bash(f"cd {canonical} && git switch alpha/foo"),
+            cwd=tmp_path,
+            canonical_override=canonical,
+        )
+        assert result.returncode == 2, result.stderr
+
+    def test_refuses_git_dash_c_checkout(self, tmp_path: Path) -> None:
+        """Common shell form: `git -C canonical checkout feature`."""
+        canonical = _make_repo_on_main(tmp_path / "canonical")
+        result = _run(
+            _bash(f"git -C {canonical} checkout alpha/foo"),
+            cwd=tmp_path,
             canonical_override=canonical,
         )
         assert result.returncode == 2, result.stderr
