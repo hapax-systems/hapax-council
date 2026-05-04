@@ -222,6 +222,13 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_h": 240,
                 "shm_path": "/dev/shm/hapax-sources/m8-display.rgba",
             },
+            # Cc-task ``activity-reveal-ward-p2-m8-migration``: pair the
+            # external_rgba M8 source with its ActivityRevealMixin
+            # lifecycle owner via ``ward_id``. Mirrors the
+            # ``"ward_id": "m8-display"`` entry on the default.json
+            # source so the in-memory fallback layout matches the
+            # canonical JSON byte-for-byte where it counts.
+            ward_id="m8-display",
         ),
         SourceSchema(
             id="egress_footer",
