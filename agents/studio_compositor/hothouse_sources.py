@@ -306,6 +306,13 @@ class ImpingementCascadeCairoSource(HomageTransitionalSource):
     ghost-trail alpha decay (rendered as a dim trailing halo to the
     left of each row's first dot). Older rows decay alpha over the
     5-second lifetime window.
+
+    **Performance (F14 audit):** signal data updates at director cadence
+    (30-90s) but render is called every frame (~30fps). A content-hash
+    cache stores the rendered surface and only re-renders when signal
+    data or stance changes. Between changes, the cached surface is
+    blitted in <1ms instead of spending ~112ms on full text layout +
+    emissive point rendering.
     """
 
     _LIFETIME_S: float = 5.0
@@ -313,6 +320,27 @@ class ImpingementCascadeCairoSource(HomageTransitionalSource):
 
     def __init__(self) -> None:
         super().__init__(source_id="impingement_cascade")
+        self._cached_surface: cairo.ImageSurface | None = None
+        self._cached_hash: str = ""
+        self._cached_w: int = 0
+        self._cached_h: int = 0
+
+    @staticmethod
+    def _content_hash(
+        signals: list[tuple[str, float, str]],
+        stance: str,
+    ) -> str:
+        """Fast content hash from signal paths + values + stance.
+
+        Only hashes the data that drives visual output. Avoids hashing
+        the full JSON — just the sorted (path, rounded_value, family)
+        tuples plus stance. Rounding values to 2 decimal places avoids
+        cache thrashing on float jitter.
+        """
+        parts = [stance]
+        for path, value, family in signals:
+            parts.append(f"{path}:{value:.2f}:{family}")
+        return "|".join(parts)
 
     def render_content(
         self,
@@ -322,12 +350,37 @@ class ImpingementCascadeCairoSource(HomageTransitionalSource):
         t: float,
         state: dict[str, Any],
     ) -> None:
+        import cairo as _cairo
+
         pkg = active_package()
-        paint_emissive_bg(cr, canvas_w, canvas_h)
-        paint_bitchx_bg(cr, canvas_w, canvas_h, pkg, ward_id=self._source_id)
-        paint_bitchx_header(cr, "IMPINGEMENT", pkg, accent_role="accent_cyan", y=14.0, x=8.0)
+        stance = _read_stance()
+
+        # Read signal data (the slow filesystem part).
+        overlay = _recent_impingements_overlay(limit=14)
+        signals = overlay if overlay is not None else _active_perceptual_signals(limit=14)
+
+        # Content-hash cache: only re-render when data changes.
+        content_hash = self._content_hash(signals, stance)
+        if (
+            content_hash == self._cached_hash
+            and self._cached_surface is not None
+            and self._cached_w == canvas_w
+            and self._cached_h == canvas_h
+        ):
+            # Blit cached surface — fast path (<1ms).
+            cr.set_source_surface(self._cached_surface, 0, 0)
+            cr.paint()
+            return
+
+        # Full render — only runs when content changes.
+        cache_surface = _cairo.ImageSurface(_cairo.FORMAT_ARGB32, canvas_w, canvas_h)
+        cache_cr = _cairo.Context(cache_surface)
+
+        paint_emissive_bg(cache_cr, canvas_w, canvas_h)
+        paint_bitchx_bg(cache_cr, canvas_w, canvas_h, pkg, ward_id=self._source_id)
+        paint_bitchx_header(cache_cr, "IMPINGEMENT", pkg, accent_role="accent_cyan", y=14.0, x=8.0)
         paint_scanlines(
-            cr,
+            cache_cr,
             canvas_w,
             canvas_h,
             role_rgba=pkg.resolve_colour("muted"),
@@ -338,19 +391,11 @@ class ImpingementCascadeCairoSource(HomageTransitionalSource):
 
         muted = pkg.resolve_colour("muted")
         bright = pkg.resolve_colour("bright")
-        stance = _read_stance()
         hz = stance_hz(stance)
 
-        # FINDING-V Phase 6: prefer the narrowed-salience overlay when
-        # the producer is publishing; fall back to the raw perception
-        # walk otherwise. The overlay gives operator-salience semantics
-        # ("what just grabbed Hapax's attention") rather than raw "what
-        # is currently present in perception state".
-        overlay = _recent_impingements_overlay(limit=14)
-        signals = overlay if overlay is not None else _active_perceptual_signals(limit=14)
         row_h = 20
         y0 = 34
-        font_desc = select_bitchx_font_pango(cr, 11, bold=False)
+        font_desc = select_bitchx_font_pango(cache_cr, 11, bold=False)
         for idx, (path, value, family) in enumerate(signals):
             y = y0 + idx * row_h
             if y + row_h > canvas_h:
@@ -371,7 +416,7 @@ class ImpingementCascadeCairoSource(HomageTransitionalSource):
             # ``*`` centre dot (muted) with ghost trail — the ghost is a
             # second dim point to the left, alpha scaled by lifetime.
             paint_emissive_point(
-                cr,
+                cache_cr,
                 cx=12.0,
                 cy=y + 6.0,
                 role_rgba=muted,
@@ -387,7 +432,7 @@ class ImpingementCascadeCairoSource(HomageTransitionalSource):
                 # Join-message slide-in ghost for the newest row only —
                 # a faint trailing dot suggesting arrival from the left.
                 paint_emissive_point(
-                    cr,
+                    cache_cr,
                     cx=4.0,
                     cy=y + 6.0,
                     role_rgba=muted,
@@ -407,7 +452,7 @@ class ImpingementCascadeCairoSource(HomageTransitionalSource):
                 font_description=font_desc,
                 color_rgba=(bright[0], bright[1], bright[2], bright[3] * lifetime_alpha),
             )
-            render_text(cr, id_style, x=24.0, y=y - 2.0)
+            render_text(cache_cr, id_style, x=24.0, y=y - 2.0)
 
             # Salience bar — N emissive points, filled per |value|.
             filled = int(min(1.0, abs(value)) * self._N_BAR_CELLS)
@@ -416,7 +461,7 @@ class ImpingementCascadeCairoSource(HomageTransitionalSource):
                 is_filled = i < filled
                 bar_role = accent_rgba if is_filled else muted
                 paint_emissive_point(
-                    cr,
+                    cache_cr,
                     cx=bar_x0 + i * 12.0,
                     cy=y + 6.0,
                     role_rgba=bar_role,
@@ -440,7 +485,20 @@ class ImpingementCascadeCairoSource(HomageTransitionalSource):
                     accent_rgba[3] * lifetime_alpha,
                 ),
             )
-            render_text(cr, family_style, x=bar_x0 + self._N_BAR_CELLS * 12.0 + 10.0, y=y - 2.0)
+            render_text(
+                cache_cr, family_style, x=bar_x0 + self._N_BAR_CELLS * 12.0 + 10.0, y=y - 2.0
+            )
+
+        cache_surface.flush()
+
+        # Store cache and blit to output.
+        self._cached_surface = cache_surface
+        self._cached_hash = content_hash
+        self._cached_w = canvas_w
+        self._cached_h = canvas_h
+
+        cr.set_source_surface(cache_surface, 0, 0)
+        cr.paint()
 
 
 # ── 2. Recruitment candidate panel ───────────────────────────────────────

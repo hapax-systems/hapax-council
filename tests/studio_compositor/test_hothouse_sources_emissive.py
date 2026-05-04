@@ -154,6 +154,51 @@ class TestImpingementCascade:
         assert surface.get_width() == 480
         assert surface.get_height() == 360
 
+    def test_cache_hit_on_repeated_render(self):
+        """F14 perf fix: second render with same data should use the cached
+        surface, not re-render. Verify by checking that _cached_hash is
+        populated after the first render and unchanged after the second."""
+        src = hs.ImpingementCascadeCairoSource()
+        surface, cr = _ctx(480, 360)
+        src.render(cr, 480, 360, 0.0, {})
+        first_hash = src._cached_hash
+        assert first_hash, "first render must populate the content hash"
+        assert src._cached_surface is not None, "first render must cache the surface"
+
+        # Second render — same data.
+        surface2, cr2 = _ctx(480, 360)
+        src.render(cr2, 480, 360, 1.0, {})
+        assert src._cached_hash == first_hash, "cache hash must not change on identical data"
+
+    def test_cache_invalidated_on_data_change(self, tmp_path, monkeypatch):
+        """F14: cache must invalidate when signal data changes."""
+        src = hs.ImpingementCascadeCairoSource()
+        surface, cr = _ctx(480, 360)
+        src.render(cr, 480, 360, 0.0, {})
+        first_hash = src._cached_hash
+
+        # Now populate perception state with new data.
+        perception = tmp_path / "perception.json"
+        perception.write_text(json.dumps({"ir": {"ir_hand_zone": "turntable"}}))
+        monkeypatch.setattr(hs, "_PERCEPTION_STATE", perception)
+
+        surface2, cr2 = _ctx(480, 360)
+        src.render(cr2, 480, 360, 1.0, {})
+        assert src._cached_hash != first_hash, "cache must invalidate when signal data changes"
+
+    def test_cache_invalidated_on_canvas_resize(self):
+        """F14: cache must invalidate when canvas dimensions change."""
+        src = hs.ImpingementCascadeCairoSource()
+        surface, cr = _ctx(480, 360)
+        src.render(cr, 480, 360, 0.0, {})
+        assert src._cached_w == 480
+        assert src._cached_h == 360
+
+        surface2, cr2 = _ctx(640, 480)
+        src.render(cr2, 640, 480, 0.0, {})
+        assert src._cached_w == 640
+        assert src._cached_h == 480
+
 
 # ── Recruitment candidate panel ─────────────────────────────────────────
 
