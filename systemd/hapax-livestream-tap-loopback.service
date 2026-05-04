@@ -1,0 +1,16 @@
+[Unit]
+Description=Hapax livestream-tap → livestream loopback (P0 pactl-load, post-WirePlumber)
+After=pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire.service wireplumber.service
+# P0 audio-graph-ssot migration: conf-file module-loopback replaced by
+# pactl-load for stability (conf loads during PipeWire startup before
+# WirePlumber policies are ready; pactl loads after both are stable).
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=%h/.local/bin/hapax-livestream-tap-load
+ExecStop=%h/.local/bin/hapax-livestream-tap-unload
+
+[Install]
+WantedBy=default.target
