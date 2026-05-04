@@ -204,6 +204,20 @@ def _register_builtins() -> None:
     )
 
     register("InteractiveLoreQueryWard", InteractiveLoreQueryWard)
+    # ward-research-instrument-dashboard-hybrid (cc-task, 2026-05-04) —
+    # KEYSTONE hybrid Moksha-frame + BitchX-grid dashboard. Surfaces
+    # research conditions × claims × status. Default OFF via
+    # HAPAX_LORE_RESEARCH_INSTRUMENT_DASHBOARD_ENABLED so the operator
+    # can flip after a visual sign-off without forcing default-layout
+    # changes.
+    from agents.studio_compositor.research_instrument_dashboard_ward import (
+        ResearchInstrumentDashboardCairoSource,
+    )
+
+    register(
+        "ResearchInstrumentDashboardCairoSource",
+        ResearchInstrumentDashboardCairoSource,
+    )
     # programme-banner-ward (PR #2366, 2026-05-03) — Cairo lower-third
     # surfacing the active programme's role + narrative_beat + residual
     # time. Per /tmp/wsjf-path-content-programming.md §3 G1: the planner
