@@ -313,6 +313,26 @@
       "ward_id": "m8-display"
     },
     {
+      "id": "steamdeck-display",
+      "kind": "external_rgba",
+      "backend": "shm_rgba",
+      "params": {
+        "natural_w": 1920,
+        "natural_h": 1080,
+        "shm_path": "/dev/shm/hapax-sources/steamdeck-display.rgba"
+      },
+      "update_cadence": "always",
+      "rate_hz": null,
+      "tags": [
+        "homage",
+        "re-splay",
+        "steamdeck"
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
+    },
+    {
       "id": "egress_footer",
       "kind": "cairo",
       "backend": "cairo",
@@ -715,6 +735,42 @@
       "update_cadence": "always"
     },
     {
+      "id": "steamdeck-display-pip",
+      "geometry": {
+        "kind": "rect",
+        "x": 960,
+        "y": 60,
+        "w": 920,
+        "h": 580,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 22,
+      "update_cadence": "always"
+    },
+    {
+      "id": "steamdeck-display-fullscreen",
+      "geometry": {
+        "kind": "rect",
+        "x": 0,
+        "y": 0,
+        "w": 1920,
+        "h": 1080,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 22,
+      "update_cadence": "always"
+    },
+    {
       "id": "egress-footer-bottom",
       "geometry": {
         "kind": "rect",
@@ -899,6 +955,24 @@
     {
       "source": "m8-display",
       "surface": "m8-display-tiny-surface",
+      "transform": {},
+      "opacity": 0.0,
+      "per_assignment_effects": [],
+      "non_destructive": true,
+      "render_stage": "pre_fx"
+    },
+    {
+      "source": "steamdeck-display",
+      "surface": "steamdeck-display-pip",
+      "transform": {},
+      "opacity": 0.0,
+      "per_assignment_effects": [],
+      "non_destructive": true,
+      "render_stage": "pre_fx"
+    },
+    {
+      "source": "steamdeck-display",
+      "surface": "steamdeck-display-fullscreen",
       "transform": {},
       "opacity": 0.0,
       "per_assignment_effects": [],

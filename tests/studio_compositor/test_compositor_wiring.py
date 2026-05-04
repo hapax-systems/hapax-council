@@ -74,8 +74,10 @@ class TestStartLayoutOnly:
             "whos_here",
             "durf",
             "m8-display",
+            "steamdeck-display",
             "egress_footer",
             "gem",
+            "programme_banner",
         }
         assert {s.id for s in layout.sources} == expected_ids
         assert set(compositor.source_registry.ids()) == expected_ids
@@ -88,6 +90,9 @@ class TestStartLayoutOnly:
         assert compositor.layout_state is not None
         layout = compositor.layout_state.get()
         assert layout.name == "default"
+        # Fallback layout is the in-Python ``_FALLBACK_LAYOUT`` — no
+        # ``programme_banner`` (that source only exists in the on-disk
+        # layout JSON, not in the hardcoded fallback).
         assert set(compositor.source_registry.ids()) == {
             "token_pole",
             "album",
@@ -105,6 +110,7 @@ class TestStartLayoutOnly:
             "whos_here",
             "durf",
             "m8-display",
+            "steamdeck-display",
             "egress_footer",
             "gem",
         }

@@ -49,12 +49,16 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "whos_here",
         "durf",
         "m8-display",
+        # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
+        "steamdeck-display",
         "egress_footer",
         # HOMAGE follow-on #191 (2026-04-21) — GEM (Graffiti Emphasis
         # Mural) is the 15th HOMAGE ward; lower-band geometry, retires
         # captions in same surface area. See
         # docs/superpowers/plans/2026-04-21-gem-ward-activation-plan.md.
         "gem",
+        # cc-task ``programme-banner-ward`` (PR #2366, 2026-05-03).
+        "programme_banner",
     }
 
     # LRR Phase 2 item 10: video_out surfaces declared for OutputRouter.from_layout()
@@ -83,9 +87,15 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "whos-here-tr",
         "durf-fullframe",
         "m8-display-surface",
+        "m8-display-tiny-surface",
+        # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
+        "steamdeck-display-pip",
+        "steamdeck-display-fullscreen",
         "egress-footer-bottom",
         # HOMAGE follow-on #191 — GEM mural surface (lower-band).
         "gem-mural-bottom",
+        # cc-task ``programme-banner-ward`` (PR #2366, 2026-05-03).
+        "programme-banner-top",
     }
 
     assignment_pairs = {(a.source, a.surface) for a in layout.assignments}
@@ -110,9 +120,15 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         ("whos_here", "whos-here-tr"),
         ("durf", "durf-fullframe"),
         ("m8-display", "m8-display-surface"),
+        ("m8-display", "m8-display-tiny-surface"),
+        # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
+        ("steamdeck-display", "steamdeck-display-pip"),
+        ("steamdeck-display", "steamdeck-display-fullscreen"),
         ("egress_footer", "egress-footer-bottom"),
         # HOMAGE follow-on #191 — GEM mural assignment.
         ("gem", "gem-mural-bottom"),
+        # cc-task ``programme-banner-ward`` (PR #2366, 2026-05-03).
+        ("programme_banner", "programme-banner-top"),
     }
 
 
@@ -143,7 +159,11 @@ def test_default_json_source_backends_match_registry_dispatch() -> None:
         "whos_here": "cairo",
         "durf": "cairo",
         "m8-display": "shm_rgba",
+        # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
+        "steamdeck-display": "shm_rgba",
         "egress_footer": "cairo",
+        # cc-task ``programme-banner-ward`` (PR #2366, 2026-05-03).
+        "programme_banner": "cairo",
     }
 
 
@@ -259,9 +279,13 @@ def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
         "whos_here",
         "durf",
         "m8-display",
+        # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
+        "steamdeck-display",
         "egress_footer",
         # HOMAGE follow-on #191 — GEM mural ward (15th HOMAGE).
         "gem",
+        # cc-task ``programme-banner-ward`` (PR #2366, 2026-05-03).
+        "programme_banner",
     }
 
 

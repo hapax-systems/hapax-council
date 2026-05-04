@@ -230,6 +230,24 @@ _FALLBACK_LAYOUT = Layout(
             # canonical JSON byte-for-byte where it counts.
             ward_id="m8-display",
         ),
+        # Re-Splay Homage Ward — Steam Deck. Mirrors the M8 source
+        # contract (external_rgba + shm_rgba); sourced from
+        # ``agents/hapax_steamdeck_bridge/`` capture daemon. Activated
+        # only when the Magewell USB Capture HDMI Plus is plugged in
+        # AND the Steam Deck is driving HDMI into it (two-stage
+        # monitor). Default opacity 0 in assignments so the surface
+        # only becomes visible when the affordance pipeline recruits
+        # ``ward.reveal.steamdeck-display``.
+        SourceSchema(
+            id="steamdeck-display",
+            kind="external_rgba",
+            backend="shm_rgba",
+            params={
+                "natural_w": 1920,
+                "natural_h": 1080,
+                "shm_path": "/dev/shm/hapax-sources/steamdeck-display.rgba",
+            },
+        ),
         SourceSchema(
             id="egress_footer",
             kind="cairo",
@@ -399,6 +417,21 @@ _FALLBACK_LAYOUT = Layout(
             geometry=SurfaceGeometry(kind="rect", x=440, y=336, w=320, h=240),
             z_order=25,
         ),
+        # Re-Splay Homage Ward — Steam Deck PiP (upper-right large
+        # quadrant per cc-task spec; ~920×580 surface at z=22 to sit
+        # under the operator-canonical wards but above ambient
+        # surfaces). HAPAX_STEAMDECK_FULLSCREEN=1 swaps to the
+        # fullscreen surface below.
+        SurfaceSchema(
+            id="steamdeck-display-pip",
+            geometry=SurfaceGeometry(kind="rect", x=960, y=60, w=920, h=580),
+            z_order=22,
+        ),
+        SurfaceSchema(
+            id="steamdeck-display-fullscreen",
+            geometry=SurfaceGeometry(kind="rect", x=0, y=0, w=1920, h=1080),
+            z_order=22,
+        ),
         SurfaceSchema(
             id="egress-footer-bottom",
             geometry=SurfaceGeometry(kind="rect", x=0, y=1050, w=1920, h=30),
@@ -443,6 +476,14 @@ _FALLBACK_LAYOUT = Layout(
         Assignment(source="durf", surface="durf-fullframe", opacity=0.96),
         Assignment(source="m8-display", surface="m8-display-surface", opacity=0.0),
         Assignment(source="m8-display", surface="m8-display-tiny-surface", opacity=0.0),
+        # Steam Deck — start at opacity=0; the affordance pipeline
+        # recruits ``ward.reveal.steamdeck-display`` to fade the PiP in.
+        Assignment(source="steamdeck-display", surface="steamdeck-display-pip", opacity=0.0),
+        Assignment(
+            source="steamdeck-display",
+            surface="steamdeck-display-fullscreen",
+            opacity=0.0,
+        ),
         Assignment(source="egress_footer", surface="egress-footer-bottom"),
     ],
 )

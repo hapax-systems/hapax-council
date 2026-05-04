@@ -1,0 +1,31 @@
+# Hapax — Re-Splay Homage Ward (Steam Deck via Magewell USB Capture HDMI Plus).
+# See cc-task ``re-splay-homage-ward-steam-deck``.
+#
+# Stage 1 — when the Magewell USB Capture HDMI Plus appears (VID 2935,
+# PID range 0:6e:00 — Magewell-assigned for the Capture HDMI family),
+# TAG+="systemd" + SYSTEMD_USER_WANTS pulls the user-scope
+# hapax-steamdeck-monitor.service into the active dependency graph.
+# The monitor then polls v4l2-ctl --query-dv-timings against the
+# Magewell V4L2 node to detect when the Steam Deck actually starts
+# driving HDMI into the capture card (Stage 2).
+#
+# The Magewell exposes both a UAC audio source and a UVC video sink on
+# the same composite. USB autosuspend is disabled for the device to
+# match the M8 + studio-cameras pattern (autosuspend on class-compliant
+# AV devices is a documented contributor to mid-stream drops).
+
+# Disable USB autosuspend for the Magewell capture device.
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="2935", ATTR{power/control}="on"
+
+# Stable symlink for the Magewell V4L2 capture node so consumers don't
+# depend on /dev/video<N> numbering. The Magewell always appears at
+# /dev/hapax-steamdeck-capture post-rule.
+ACTION=="add", SUBSYSTEM=="video4linux", ATTRS{idVendor}=="2935", \
+    ATTR{name}=="USB Capture HDMI*", \
+    SYMLINK+="hapax-steamdeck-capture"
+
+# Pull hapax-steamdeck-monitor.service into the active graph when the
+# Magewell appears. Runs in the user systemd instance (matches the
+# rest of the application stack).
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="2935", \
+    TAG+="systemd", ENV{SYSTEMD_USER_WANTS}+="hapax-steamdeck-monitor.service"
