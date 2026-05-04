@@ -296,6 +296,63 @@ def dispatch_preset_bias(capability_name: str, ttl_s: float) -> bool:
     return True
 
 
+@observe_dispatch("node.patch")
+def dispatch_node_patch(capability_name: str, ttl_s: float) -> bool:
+    """node.add.<type> | node.remove.<id> → recent-recruitment.json.
+
+    Architectural fix per memory ``feedback_no_presets_use_parametric_modulation``:
+    the chain-composition primitive (add/remove a specific shader node)
+    is the architecturally-correct mutation path, parallel to preset.bias
+    but finer-grained. The graph_patch_consumer reads this file and
+    applies the resulting ``GraphPatch`` to the live ``EffectGraph``.
+
+    Each recruitment is appended to a per-family ``items`` list under
+    the family key so multiple add / remove recruitments within the
+    cooldown coalesce into a single patch when the consumer fires.
+    """
+    parts = capability_name.split(".", 2)
+    if len(parts) < 3 or parts[0] != "node" or parts[1] not in ("add", "remove"):
+        log.warning("malformed node-patch name: %s", capability_name)
+        return False
+    family = f"node.{parts[1]}"
+    suffix = parts[2]
+    if not suffix:
+        log.warning("node-patch capability has empty suffix: %s", capability_name)
+        return False
+    now = time.time()
+    current = _safe_load_json(_RECENT_RECRUITMENT)
+    families = current.get("families") or {}
+    entry: dict = families.get(family) or {}
+    items: list = entry.get("items") if isinstance(entry.get("items"), list) else []
+    # Drop stale items so the list does not grow unbounded across runs.
+    fresh: list = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        ts = it.get("last_recruited_ts")
+        if not isinstance(ts, (int, float)):
+            continue
+        if now - float(ts) > ttl_s + 30.0:
+            continue
+        fresh.append(it)
+    fresh.append(
+        {
+            "capability": capability_name,
+            "suffix": suffix,
+            "last_recruited_ts": now,
+            "ttl_s": ttl_s,
+        }
+    )
+    entry["items"] = fresh
+    entry["last_recruited_ts"] = now
+    families[family] = entry
+    _atomic_write_json(
+        _RECENT_RECRUITMENT,
+        {"families": families, "updated_at": now},
+    )
+    return True
+
+
 # overlay.* target slug → ward_id. Mirrors the informal convention the
 # overlay catalog uses: "album" is the album_overlay ward, "captions" the
 # captions source, "activity-header" the activity_header panel, etc. The
@@ -1205,6 +1262,7 @@ def dispatch(
     "pace.tempo_shift",
     "mood.tone_pivot",
     "programme.beat_advance",
+    "node.patch",
     "unknown",
 ]:
     """Route a recruitment record to the correct dispatcher.
@@ -1278,6 +1336,8 @@ def dispatch(
             if dispatch_programme_beat_advance(name, record.ttl_s)
             else "unknown"
         )
+    if name.startswith("node.add.") or name.startswith("node.remove."):
+        return "node.patch" if dispatch_node_patch(name, record.ttl_s) else "unknown"
     log.warning("unknown compositional capability family: %s", name)
     return "unknown"
 
@@ -1756,5 +1816,6 @@ __all__ = [
     "dispatch_pace_tempo_shift",
     "dispatch_mood_tone_pivot",
     "dispatch_programme_beat_advance",
+    "dispatch_node_patch",
     "recent_recruitment_age_s",
 ]

@@ -2375,3 +2375,17 @@ _PA_LectureAssets.is_empty
 from agents.studio_compositor import durf_source as _AR_durf_module
 
 _AR_durf_module.__getattr__
+
+
+# Graph-patch chain-composition consumer (architectural fix per memory
+# `feedback_no_presets_use_parametric_modulation`, cc-task
+# `parametric-modulation-heartbeat`). The consumer is wired into
+# state.py's reader loop and the test-only state-reset helper is invoked
+# from tests/studio_compositor/test_graph_patch_consumer.py — vulture
+# only scans agents/logos/shared/scripts so the test-only callable path
+# is invisible. Mirrors the preset_recruitment_consumer convention.
+from agents.studio_compositor import graph_patch_consumer as _GP_module
+
+_GP_module._reset_state_for_tests
+_GP_module.set_current_graph_provider
+_GP_module.process_graph_patch_recruitment

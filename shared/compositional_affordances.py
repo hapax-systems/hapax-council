@@ -904,6 +904,74 @@ _YOUTUBE_TELEMETRY: list[CapabilityRecord] = [
 ]
 
 
+# ── Node-patch affordances (chain composition) ────────────────────────────
+# Architectural fix per researcher audit + operator memory
+# `feedback_no_presets_use_parametric_modulation`: the system architecture
+# mandates "constrained algorithmic parametric modulation + chain composition
+# (transition primitives + affordance-recruited node add/remove). Director
+# NEVER picks a preset." The `GraphPatch` type at
+# `agents/effect_graph/types.py:85-89` had zero callers — the architecturally-
+# correct chain mutation primitive was unwired.
+#
+# These capabilities fire the chain-composition primitive: instead of
+# swapping between 30 fixed preset graphs (the dumb anti-pattern), the
+# pipeline recruits surgical add/remove of specific shader nodes against
+# the live graph. The dispatcher in
+# `agents/studio_compositor/compositional_consumer.dispatch_node_patch`
+# records the recruitment; `agents/studio_compositor/graph_patch_consumer`
+# applies the resulting `GraphPatch` to the live `EffectGraph` and writes
+# the patched graph as a mutation file.
+#
+# Descriptions are Gibson-verb cognitive-function (not implementation
+# details). The pipeline cosine-matches impingement narratives against
+# these descriptions to recruit the right node for the moment.
+
+_NODE_PATCH: list[CapabilityRecord] = [
+    # Five `node.add.<type>` capabilities (the operator-mandated minimum
+    # of 5). Each capability description names the perceptual register
+    # the node opens up, never the shader's implementation language.
+    _record(
+        "node.add.halftone",
+        "opens a printed-newsprint register — adds a half-tone dot pattern that "
+        "lets the surface feel inked rather than rendered, the move when the "
+        "moment wants a tactile press-print quality",
+    ),
+    _record(
+        "node.add.kaleidoscope",
+        "opens a mirrored-reflection register — adds a kaleidoscopic fold so "
+        "the surface multiplies its content into rotational symmetry, the "
+        "move when the moment wants prismatic recursion",
+    ),
+    _record(
+        "node.add.glitch_block",
+        "opens a digital-tear register — adds blocky data corruption that lets "
+        "the surface feel like a broken transmission, the move when the "
+        "moment wants disrupted signal as content",
+    ),
+    _record(
+        "node.add.slitscan",
+        "opens a temporal-slice register — adds a horizontal time-shear so "
+        "different image rows show different moments, the move when the "
+        "moment wants visible time-stretching",
+    ),
+    _record(
+        "node.add.fluid_sim",
+        "opens a liquid-motion register — adds a fluid simulation layer that "
+        "lets the surface flow and pool, the move when the moment wants "
+        "physical-substance behavior in the rendering",
+    ),
+    # One `node.remove.<role>` capability — the satellite cleanup move.
+    # Removes the most-recently-added satellite node from the chain.
+    _record(
+        "node.remove.last_satellite",
+        "closes the most-recently-opened register — removes the last satellite "
+        "node added to the chain so the surface settles back toward its "
+        "core vocabulary, the move when the moment has moved on from a "
+        "transient effect",
+    ),
+]
+
+
 # ── Catalog ────────────────────────────────────────────────────────────────
 
 COMPOSITIONAL_CAPABILITIES: list[CapabilityRecord] = (
@@ -922,6 +990,7 @@ COMPOSITIONAL_CAPABILITIES: list[CapabilityRecord] = (
     + _MOOD
     + _PROGRAMME
     + _YOUTUBE_TELEMETRY
+    + _NODE_PATCH
 )
 
 
