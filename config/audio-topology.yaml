@@ -105,6 +105,9 @@ nodes:
     channels:
       count: 2
       positions: [FL, FR]
+    params:
+      apply_via_pactl_load: true
+      systemd_unit: hapax-livestream-tap-loopback.service
 
   - id: livestream-legacy
     kind: tap
