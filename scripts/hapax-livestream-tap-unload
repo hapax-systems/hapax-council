@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Unload the hapax-livestream-tap null-sink + loopback.
+# Used by hapax-livestream-tap-loopback.service ExecStop.
+set -euo pipefail
+
+TAP_NAME="hapax-livestream-tap"
+LIVESTREAM_SINK="hapax-livestream"
+
+log() { echo "hapax-livestream-tap-unload: $*"; }
+
+# Unload the loopback first (it depends on the tap sink).
+pactl list modules 2>/dev/null | awk -v tap="${TAP_NAME}" -v ls="${LIVESTREAM_SINK}" '
+    /^Module #/{idx=substr($2,2)}
+    /^\tName: module-loopback/{is_lb=1; next}
+    /^\tName:/{is_lb=0}
+    is_lb && $0 ~ tap && $0 ~ ls {print idx; is_lb=0}
+' | xargs -r -I{} pactl unload-module {}
+log "loopback unloaded"
+
+# Unload the null-sink.
+pactl list modules 2>/dev/null | awk -v tap="${TAP_NAME}" '
+    /^Module #/{idx=substr($2,2)}
+    /^\tName: module-null-sink/{is_ns=1; next}
+    /^\tName:/{is_ns=0}
+    is_ns && $0 ~ tap {print idx; is_ns=0}
+' | xargs -r -I{} pactl unload-module {}
+log "null-sink unloaded"
