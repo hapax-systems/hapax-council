@@ -178,6 +178,15 @@ from shared.scrim_wcs_claim_posture import (
     ScrimWCSClaimPostureProjection,
     WCSClaimReference,
 )
+
+# Public-API context manager. Called by the five per-outcome smoke tests
+# (vocal / programme_authoring / director_moves / chat_reactivity /
+# chat_response) shipping in follow-up cc-tasks; vulture cannot see the
+# eventual call sites.
+from shared.segment_observability import SegmentRecorder as _SegmentRecorder
+
+_SegmentRecorder
+
 from shared.self_grounding_envelope import (
     SelfPresenceEnvelopeProjection,
     build_envelope_projection,
