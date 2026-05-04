@@ -62,6 +62,10 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         # ytb-LORE-EXT family (2026-05-04, ward-family-compositor-layout-
         # integration cc-task) — three lore-surface wards composing the
         # mid-band lore strip. Each is feature-flagged OFF by default.
+        # The fourth family member (interactive_lore_query, #2484) is
+        # not wired here: its constructor requires a non-default
+        # ``allowlist`` kwarg incompatible with the compositor's
+        # no-arg auto-construction path; wiring it needs a follow-up.
         "precedent_ticker",
         "programme_history",
         "research_instrument_dashboard",
@@ -100,8 +104,6 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "egress-footer-bottom",
         # HOMAGE follow-on #191 — GEM mural surface (lower-band).
         "gem-mural-bottom",
-        # m8 secondary smaller surface (added alongside m8-display-surface).
-        "m8-display-tiny-surface",
         # cc-task ``programme-banner-ward`` (PR #2366, 2026-05-03).
         "programme-banner-top",
         # ytb-LORE-EXT mid-band lore strip (2026-05-04). Three slots
@@ -141,8 +143,6 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         ("egress_footer", "egress-footer-bottom"),
         # HOMAGE follow-on #191 — GEM mural assignment.
         ("gem", "gem-mural-bottom"),
-        # m8 also lands on the smaller secondary surface.
-        ("m8-display", "m8-display-tiny-surface"),
         # cc-task ``programme-banner-ward`` (PR #2366, 2026-05-03).
         ("programme_banner", "programme-banner-top"),
         # ytb-LORE-EXT family (2026-05-04).

@@ -79,8 +79,8 @@ class TestStartLayoutOnly:
             "gem",
             "programme_banner",
             # ytb-LORE-EXT family (2026-05-04, ward-family-compositor-
-            # layout-integration cc-task) — three lore-surface wards
-            # in the default layout, each feature-flagged OFF by env.
+            # layout-integration cc-task) — three lore-surface wards.
+            # Each is feature-flagged OFF by its own env.
             "precedent_ticker",
             "programme_history",
             "research_instrument_dashboard",

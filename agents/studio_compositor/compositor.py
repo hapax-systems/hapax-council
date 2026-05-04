@@ -348,6 +348,13 @@ _FALLBACK_LAYOUT = Layout(
             tags=["homage", "ward", "lore-ext", "hybrid", "keystone"],
             ward_id="research-instrument-dashboard",
         ),
+        # Fourth ytb-LORE-EXT ward (interactive_lore_query / #2484) is
+        # NOT wired here yet: its constructor requires a non-default
+        # ``allowlist`` kwarg, which the compositor's
+        # ``source_registry.construct_backend`` no-arg path can't
+        # supply. Wiring it needs either (a) a layout-side factory
+        # shim or (b) a default-allowlist auto-construction path on
+        # the ward itself. Tracked as the follow-up for this cc-task.
     ],
     surfaces=[
         SurfaceSchema(
