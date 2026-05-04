@@ -1,0 +1,17 @@
+[Unit]
+Description=Hapax livestream-tap → livestream loopback (H3 systemd-driven, replaces conf-file load)
+After=pipewire.service pipewire-pulse.service wireplumber.service
+Requires=pipewire.service
+# Document the migration in the unit file itself. Source of truth:
+#   docs/research/2026-05-03-audio-config-hardening-unthought-of-solutions.md §6
+#   docs/runbooks/livestream-tap-migration.md
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=%h/.local/bin/hapax-livestream-tap-load
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=pipewire.service default.target

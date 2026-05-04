@@ -1,0 +1,58 @@
+# Hapax Livestream OBS-monitor tap — 2026-04-19
+#
+# Architectural fix for the filter-chain-monitor-starvation bug (task #187
+# research `/tmp/pipewire-monitor-fix-research.md`). The original
+# hapax-livestream virtual sink is a filter-chain; filter-chain sinks
+# suspend when all producer-side links are passive, which starves the
+# monitor port, which silently kills OBS capture.
+#
+# Solution (research §7 "alternate workaround"): add a support.null-audio-sink
+# with an explicit monitor port in front of hapax-livestream. Clients that
+# need to appear in OBS's capture write to hapax-livestream-tap instead of
+# hapax-livestream directly. A loopback forwards tap output into
+# hapax-livestream, which continues to handle the FL-only panning.
+# (Historical note: prior to the 24c retirement 2026-05-03, this was the
+# "FL-only 24c panning" — same shape, different physical destination.)
+#
+# Trade-off: one extra loopback hop (< 1 ms), irrelevant for voice/music
+# monitoring. Null-sinks do NOT suspend based on passive-link accounting,
+# so the monitor stays live as long as any producer writes to the tap.
+
+context.objects = [
+    {   factory = adapter
+        args = {
+            factory.name     = support.null-audio-sink
+            node.name        = "hapax-livestream-tap"
+            node.description = "Hapax Livestream (OBS monitor tap)"
+            media.class      = Audio/Sink
+            audio.position   = [ FL FR ]
+            monitor.channel-volumes = true
+            monitor.passthrough     = true
+            adapter.auto-port-config = {
+                mode = dsp  monitor = true  position = preserve
+            }
+        }
+    }
+]
+
+context.modules = [
+    {   name = libpipewire-module-loopback
+        args = {
+            node.description = "tap → hapax-livestream"
+            capture.props = {
+                node.name      = "hapax-livestream-tap-src"
+                stream.capture.sink = true
+                target.object  = "hapax-livestream-tap"
+                audio.channels = 2
+                audio.position = [ FL FR ]
+            }
+            playback.props = {
+                node.name      = "hapax-livestream-tap-dst"
+                target.object  = "hapax-livestream"
+                audio.channels = 2
+                audio.position = [ FL FR ]
+                node.passive   = true
+            }
+        }
+    }
+]
