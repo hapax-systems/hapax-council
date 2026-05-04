@@ -528,7 +528,12 @@ class StimmungCollector:
             pass  # Chronicle unavailable — non-fatal
 
         _prev_stance = self._last_stance
-        _use_posterior = os.environ.get("HAPAX_STIMMUNG_POSTERIOR_STANCE", "") == "1"
+        # Posterior-aware stance aggregation is the default (cc-task
+        # dimension-reading-posterior-promotion, 2026-05-04). Setting
+        # ``HAPAX_STIMMUNG_POSTERIOR_STANCE=0`` falls back to the legacy
+        # point-estimate ``_compute_stance`` for emergency rollback;
+        # any other value (including unset) uses the posterior path.
+        _use_posterior = os.environ.get("HAPAX_STIMMUNG_POSTERIOR_STANCE", "1") != "0"
         if _use_posterior:
             raw_stance = self._compute_stance_posterior(dimensions)
         else:

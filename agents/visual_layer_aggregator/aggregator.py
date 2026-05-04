@@ -949,14 +949,21 @@ class VisualLayerAggregator:
                 return 5.0
             if stance == "degraded":
                 interval = max(interval, 4.0)
-            if self._stimmung.resource_pressure.value > 0.7:
+            # Phase D (cc-task dimension-reading-posterior-promotion):
+            # gate on the *probability* a dimension exceeds threshold,
+            # not on the raw mean. ``exceeds_with_confidence`` falls
+            # back to ``value >= threshold`` when sigma=0 (legacy
+            # point-estimate behavior preserved); when sigma>0 (Phase B
+            # Welford rolling window populated) a high-mean / high-sigma
+            # spike is held back from cascading into reduced cadence.
+            if self._stimmung.resource_pressure.exceeds_with_confidence(0.7, confidence=0.7):
                 interval = max(interval, 4.0)
             if (
-                self._stimmung.error_rate.value > 0.5
+                self._stimmung.error_rate.exceeds_with_confidence(0.5, confidence=0.7)
                 and self._stimmung.error_rate.trend == "rising"
             ):
                 interval = min(interval, 1.5)
-            if self._stimmung.llm_cost_pressure.value > 0.6:
+            if self._stimmung.llm_cost_pressure.exceeds_with_confidence(0.6, confidence=0.7):
                 interval = max(interval, 3.5)
 
         if state.display_state == "ambient" and not self._production_active:
