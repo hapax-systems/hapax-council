@@ -729,6 +729,15 @@ class StudioCompositor:
         self._v4l2_frame_count: int = 0
         self._v4l2_last_frame_monotonic: float = 0.0
         self._v4l2_lock = threading.Lock()
+        # Cc-task ``compositor-v4l2sink-graph-mutation-stall`` (2026-05-04):
+        # auto-recovery bookkeeping. Tracks consecutive failed sink-
+        # reattach attempts so the watchdog tick can decide whether to
+        # try recovery again or escalate to "withhold the ping" and
+        # let systemd SIGABRT the unit. Late import keeps the recovery
+        # module out of the cold-start critical path.
+        from agents.studio_compositor.v4l2_stall_recovery import StallRecoveryState
+
+        self._v4l2_recovery_state = StallRecoveryState()
         self._recording_status: dict[str, str] = {}
         self._recording_status_lock = threading.Lock()
         self._element_to_role: dict[str, str] = {}

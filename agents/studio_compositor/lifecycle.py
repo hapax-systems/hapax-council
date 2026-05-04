@@ -357,8 +357,30 @@ def start_compositor(compositor: Any) -> None:
                 except Exception:
                     pass
             elif any_active and not v4l2_alive:
-                sd_notify_status("DEGRADED — v4l2sink silent for >20s")
-                log.warning("v4l2sink stall detected — withholding watchdog ping")
+                # Cc-task ``compositor-v4l2sink-graph-mutation-stall`` (2026-05-04):
+                # before withholding the ping (and letting systemd
+                # WatchdogSec=60s SIGABRT the unit), attempt sink-only
+                # recovery — cycle the v4l2sink ``PLAYING → NULL → PLAYING``
+                # to force the v4l2loopback fd to close + re-open. The
+                # original watchdog semantics are preserved: if recovery
+                # fails (or hits the escalation threshold), the ping is
+                # still withheld and systemd kills the unit. The recovery
+                # path only widens the "auto-recoverable" window before
+                # that fail-closed terminal action.
+                from .v4l2_stall_recovery import attempt_recovery, should_escalate
+
+                recovered = attempt_recovery(compositor, compositor._v4l2_recovery_state)
+                if recovered:
+                    sd_notify_status("DEGRADED — v4l2sink stalled then recovered via sink reattach")
+                    sd_notify_watchdog()
+                elif should_escalate(compositor._v4l2_recovery_state):
+                    sd_notify_status("DEGRADED — v4l2sink stall unrecoverable, withholding ping")
+                    log.warning(
+                        "v4l2sink stall detected and recovery exhausted — withholding watchdog ping"
+                    )
+                else:
+                    sd_notify_status("DEGRADED — v4l2sink silent for >20s")
+                    log.warning("v4l2sink stall detected — recovery in progress, withholding ping")
             elif any_active and v4l2_alive and not director_alive:
                 sd_notify_status("DEGRADED — director silent for >180s")
                 log.warning("director loop silent for >180s — withholding watchdog ping")
