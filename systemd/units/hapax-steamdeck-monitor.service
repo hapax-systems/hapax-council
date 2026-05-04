@@ -1,0 +1,34 @@
+[Unit]
+Description=Hapax Re-Splay Homage Ward — Steam Deck HDMI capture monitor
+Documentation=https://github.com/ryanklee/council/blob/main/agents/hapax_steamdeck_bridge/__init__.py
+# Pulled into the active graph by the udev rule at
+# systemd/udev/99-hapax-steamdeck.rules (TAG+="systemd" +
+# SYSTEMD_USER_WANTS) when the Magewell USB Capture HDMI Plus appears.
+# StopWhenUnneeded ensures clean teardown when the Magewell is unplugged.
+After=graphical-session.target hapax-secrets.service
+PartOf=hapax.target
+StopWhenUnneeded=yes
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
+Environment=PATH=%h/projects/hapax-council/.venv/bin:/usr/bin
+Environment=HAPAX_LOG_LEVEL=INFO
+Environment=HAPAX_STEAMDECK_V4L2=/dev/hapax-steamdeck-capture
+# Default redaction mode is FULL (mask Steam notification + friends-list).
+# Operator can downgrade to PARTIAL or OFF via this env var; daemon
+# never auto-downgrades.
+Environment=HAPAX_STEAMDECK_REDACT=full
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.hapax_steamdeck_bridge
+# Restart on failure — the monitor itself is robust but a transient
+# v4l2-ctl wedge (USB hub reset, kernel device-descriptor read error)
+# can abort the service. Short backoff because the Steam Deck +
+# Magewell typically settle within 1-2 s.
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=30
+MemoryMax=256M
+
+[Install]
+WantedBy=hapax.target
