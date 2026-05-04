@@ -223,6 +223,8 @@ _COMPOSITIONAL_PREFIXES: tuple[str, ...] = (
     "pace.",
     "mood.",
     "programme.",
+    "node.add.",
+    "node.remove.",
 )
 
 
