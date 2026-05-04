@@ -310,7 +310,7 @@
       ],
       "pair_role": "solo",
       "pair_leg": null,
-      "ward_id": null
+      "ward_id": "m8-display"
     },
     {
       "id": "egress_footer",
