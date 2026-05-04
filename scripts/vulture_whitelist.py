@@ -2406,3 +2406,18 @@ from agents.hapax_daimonion.autonomous_narrative.segment_prompts import (
 )
 
 _segment_phase_label
+
+
+# cc-task ``refusal-brief-article-50-case-study`` (2026-05-04). The
+# ``ArticleFiftyCaseStudy`` facade methods are dispatched from
+# operator-facing CLI / publisher daemon paths that vulture does not
+# follow (PublisherPayload construction sites are dynamic). Tests
+# exercise each method directly so dead-code detection here is a
+# false positive.
+from agents.publication_bus.article_50_case_study import ArticleFiftyCaseStudy
+
+ArticleFiftyCaseStudy.body
+ArticleFiftyCaseStudy.metadata
+ArticleFiftyCaseStudy.declined
+ArticleFiftyCaseStudy.related_identifiers
+ArticleFiftyCaseStudy.title

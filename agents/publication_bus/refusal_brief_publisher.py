@@ -89,10 +89,16 @@ ZENODO_REQUEST_TIMEOUT_S: float = 60.0
 
 DEFAULT_REFUSAL_DEPOSIT_ALLOWLIST: AllowlistGate = load_allowlist(
     REFUSAL_DEPOSIT_SURFACE,
-    permitted=[],
+    permitted=[
+        # cc-task ``refusal-brief-article-50-case-study`` (2026-05-04).
+        # Operator-curated entry: the Article 50 case-study deposit is
+        # the first concrete refusal-brief shipped through this surface.
+        "refusal-brief-article-50-case-study",
+    ],
 )
-"""Empty default allowlist — operator-curated refusal-brief slugs
-added via class-level reassignment."""
+"""Operator-curated refusal-brief allowlist — entries here are
+authorized to mint a Zenodo refusal-deposit DOI. Subclass publishers
+may extend via class-level reassignment."""
 
 
 @dataclass(frozen=True)
