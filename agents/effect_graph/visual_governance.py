@@ -13,6 +13,7 @@ Perlin noise drift, idle escalation, and silence-as-decay.
 from __future__ import annotations
 
 import math
+import random
 import time
 
 from agents._capability import SystemContext
@@ -22,24 +23,66 @@ from agents.effect_graph.types import PresetFamily
 # ── Atmospheric Layer ─────────────────────────────────────────────────────────
 
 # State matrix: stance × energy_level → PresetFamily
+#
+# Halftone-monoculture mitigation (researcher audit, 2026-05-04): the dot-
+# pattern reversion every cycle traced to two coupled defects — a small
+# ``("nominal", "low")`` family with ``halftone_preset`` first AND a default
+# fallback that returned a halftone-only family. ``("nominal", "low")`` is
+# the dominant condition during quiet research sessions and ``seeking`` (the
+# exploration stance) folds back to ``nominal`` in
+# ``fx_tick._read_stimmung_stance``, so any quiet tick became a halftone
+# tick. The matrix now expands the nominal/seeking-low row to seven distinct
+# atmospheric presets with halftone_preset shifted to last position; seeking
+# rows are added explicitly so the fold-back can be retired in a follow-up.
 _STATE_MATRIX: dict[tuple[str, str], PresetFamily] = {
     # NOMINAL
-    ("nominal", "low"): PresetFamily(presets=("halftone_preset", "dither_retro", "ambient")),
-    ("nominal", "medium"): PresetFamily(presets=("vhs_preset", "ghost", "nightvision")),
-    ("nominal", "high"): PresetFamily(presets=("datamosh", "feedback_preset", "kaleidodream")),
+    ("nominal", "low"): PresetFamily(
+        presets=(
+            "vhs_preset",
+            "ghost",
+            "ambient",
+            "dither_retro",
+            "trails",
+            "kaleidodream",
+            "halftone_preset",
+        )
+    ),
+    ("nominal", "medium"): PresetFamily(
+        presets=("vhs_preset", "ghost", "nightvision", "trails", "kaleidodream")
+    ),
+    ("nominal", "high"): PresetFamily(
+        presets=("datamosh", "feedback_preset", "kaleidodream", "trails")
+    ),
+    # SEEKING (exploration stance — explicitly diverse so fx_tick fold-back
+    # can eventually be retired without losing variance).
+    ("seeking", "low"): PresetFamily(
+        presets=("ghost", "trails", "kaleidodream", "ambient", "dither_retro", "vhs_preset")
+    ),
+    ("seeking", "medium"): PresetFamily(
+        presets=("kaleidodream", "trails", "feedback_preset", "ghost", "nightvision")
+    ),
+    ("seeking", "high"): PresetFamily(
+        presets=("kaleidodream", "datamosh", "feedback_preset", "trails")
+    ),
     # CAUTIOUS
-    ("cautious", "low"): PresetFamily(presets=("ambient",)),
-    ("cautious", "medium"): PresetFamily(presets=("ghost",)),
-    ("cautious", "high"): PresetFamily(presets=("trails",)),
+    ("cautious", "low"): PresetFamily(presets=("ambient", "dither_retro", "ghost")),
+    ("cautious", "medium"): PresetFamily(presets=("ghost", "ambient", "vhs_preset")),
+    ("cautious", "high"): PresetFamily(presets=("trails", "ghost")),
     # DEGRADED
-    ("degraded", "low"): PresetFamily(presets=("dither_retro", "vhs_preset")),
-    ("degraded", "medium"): PresetFamily(presets=("vhs_preset",)),
-    ("degraded", "high"): PresetFamily(presets=("screwed",)),
+    ("degraded", "low"): PresetFamily(presets=("dither_retro", "vhs_preset", "ambient")),
+    ("degraded", "medium"): PresetFamily(presets=("vhs_preset", "dither_retro")),
+    ("degraded", "high"): PresetFamily(presets=("screwed", "vhs_preset")),
     # CRITICAL
     ("critical", "low"): PresetFamily(presets=("silhouette",)),
     ("critical", "medium"): PresetFamily(presets=("silhouette",)),
     ("critical", "high"): PresetFamily(presets=("silhouette",)),
 }
+
+# Default fallback for unknown matrix keys. Must NOT be halftone-only — that
+# was the second cause of the halftone monoculture (line 78, pre-2026-05-04).
+_DEFAULT_FAMILY: PresetFamily = PresetFamily(
+    presets=("ambient", "dither_retro", "ghost", "vhs_preset")
+)
 
 # Genre bias: genre keyword → list of preferred preset names (prepended to family)
 _GENRE_BIAS: dict[str, list[str]] = {
@@ -67,15 +110,42 @@ def energy_level_from_activity(desk_activity: str) -> str:
 class AtmosphericSelector:
     """State machine for atmospheric preset selection."""
 
-    def __init__(self) -> None:
+    def __init__(self, rng: random.Random | None = None) -> None:
         self._current_preset: str | None = None
         self._current_stance: str = "nominal"
         self._last_transition: float = 0.0
+        # Anti-recency: deterministic-but-non-trivial picker. Tests can pass
+        # a seeded RNG; production constructs without args and gets a
+        # process-local Random with monotonic-time seed so two co-running
+        # selectors don't lock-step.
+        self._rng = rng if rng is not None else random.Random(time.monotonic_ns())
 
     def select_family(self, stance: str, energy_level: str) -> PresetFamily:
         """Get the preset family for a stance x energy combination."""
         key = (stance, energy_level)
-        return _STATE_MATRIX.get(key, PresetFamily(presets=("halftone_preset",)))
+        return _STATE_MATRIX.get(key, _DEFAULT_FAMILY)
+
+    def _pick_with_anti_recency(
+        self, candidates: tuple[str, ...], available_presets: set[str]
+    ) -> str | None:
+        """Pick a preset from ``candidates`` that is loaded and avoids repeating.
+
+        Filters to only loaded presets, drops ``self._current_preset`` when
+        another option exists (anti-recency), and randomly picks among the
+        survivors. Falls back to ``current_preset`` when it is the only
+        loaded option, and returns ``None`` if nothing in ``candidates`` is
+        available.
+        """
+        loaded = tuple(p for p in candidates if p in available_presets)
+        if not loaded:
+            return None
+        # Avoid repeating the same preset twice in a row when the family
+        # offers genuine alternatives. This is the load-bearing diversity
+        # mechanism — without it, ``first_available`` deterministically
+        # picks the first family entry every time.
+        non_recent = tuple(p for p in loaded if p != self._current_preset)
+        pool = non_recent if non_recent else loaded
+        return self._rng.choice(pool)
 
     def evaluate(
         self,
@@ -112,8 +182,14 @@ class AtmosphericSelector:
             biased_presets = tuple(p for p in bias if p in available_presets) + family.presets
             family = PresetFamily(presets=biased_presets)
 
-        target = family.first_available(available_presets)
-        if target is None or target == self._current_preset:
+        # Anti-recency rotation: pick a different preset than the current
+        # one when the family offers >1 loaded option. This kills the
+        # halftone-monoculture failure mode where deterministic
+        # ``first_available`` reverts to the first family entry every tick.
+        target = self._pick_with_anti_recency(family.presets, available_presets)
+        if target is None:
+            return self._current_preset
+        if target == self._current_preset:
             return self._current_preset
 
         self._current_preset = target

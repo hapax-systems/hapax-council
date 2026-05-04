@@ -82,6 +82,85 @@ class TestAtmosphericSelector:
         assert energy_level_from_activity("drumming") == "high"
         assert energy_level_from_activity("scratching") == "high"
 
+    def test_nominal_low_yields_diversity_under_repeated_invocation(self):
+        """Regression: identical inputs MUST produce >=3 distinct outputs.
+
+        Halftone-monoculture root-cause fix (2026-05-04). The pre-fix
+        behaviour was deterministic ``first_available`` — every governance
+        tick with ``stance="nominal"``, ``energy_level="low"`` returned the
+        same preset (``halftone_preset``). The selector now anti-recency-
+        rotates within the loaded family, so 10 consecutive invocations
+        against the full ``("nominal", "low")`` family must surface at
+        least 3 distinct presets.
+        """
+        import random as _random
+
+        from agents.effect_graph.visual_governance import (
+            _DWELL_MIN_S,
+            AtmosphericSelector,
+        )
+
+        # Seeded RNG so the test is deterministic; the seed is arbitrary.
+        sel = AtmosphericSelector(rng=_random.Random(0xC0FFEE))
+        # Full available set so the family-resolution exercises every entry.
+        available = {
+            "vhs_preset",
+            "ghost",
+            "ambient",
+            "dither_retro",
+            "trails",
+            "kaleidodream",
+            "halftone_preset",
+        }
+        seen: set[str] = set()
+        for _ in range(10):
+            target = sel.evaluate(
+                stance="nominal",
+                energy_level="low",
+                available_presets=available,
+            )
+            if target is not None:
+                seen.add(target)
+            # Defeat the dwell timer between calls — every invocation must
+            # be free to return a new preset, otherwise the test would
+            # only measure the first call.
+            sel._last_transition -= _DWELL_MIN_S + 1.0
+        assert len(seen) >= 3, (
+            f"expected >=3 distinct presets across 10 invocations, saw {sorted(seen)!r}"
+        )
+
+    def test_default_fallback_is_not_halftone_only(self):
+        """Unknown matrix keys must NOT return a halftone-only family."""
+        from agents.effect_graph.visual_governance import AtmosphericSelector
+
+        sel = AtmosphericSelector()
+        family = sel.select_family(stance="unknown_stance", energy_level="low")
+        assert "halftone_preset" not in family.presets or len(family.presets) > 1, (
+            f"default fallback must offer alternatives, got {family.presets!r}"
+        )
+
+    def test_nominal_low_does_not_lead_with_halftone(self):
+        """Halftone must not be the FIRST entry of the dominant family."""
+        from agents.effect_graph.visual_governance import AtmosphericSelector
+
+        sel = AtmosphericSelector()
+        family = sel.select_family(stance="nominal", energy_level="low")
+        assert family.presets[0] != "halftone_preset", (
+            f"nominal/low first entry must not be halftone, got {family.presets[0]!r}"
+        )
+
+    def test_seeking_rows_present_and_diverse(self):
+        """SEEKING stance has explicit rows so fx_tick fold-back is optional."""
+        from agents.effect_graph.visual_governance import AtmosphericSelector
+
+        sel = AtmosphericSelector()
+        for level in ("low", "medium", "high"):
+            family = sel.select_family(stance="seeking", energy_level=level)
+            assert len(family.presets) >= 3, (
+                f"seeking/{level} should be diverse, got {family.presets!r}"
+            )
+            assert family.presets[0] != "halftone_preset"
+
 
 class TestGesturalOffsets:
     def test_scratching_boosts_trail_opacity(self):
