@@ -1553,6 +1553,101 @@ CHAT_AFFORDANCES = [
 ]
 
 # ---------------------------------------------------------------------------
+# Lore wards — Enlightenment-GTK + BitchX HOMAGE Ward hybrid epic.
+#
+# Four broadcast-surface wards that surface the system's accumulating
+# narrative state (governance precedent, programme arc, research
+# apparatus, audience query log) for viewers. Each ward is already
+# implemented as a CairoSource subclass and registered in
+# ``cairo_sources.__init__``; the entries below give the
+# AffordancePipeline a Gibson-verb cosine-target so the wards can be
+# RECRUITED rather than always-on (per the unified semantic
+# recruitment axiom).
+#
+# Cc-task ``programme-wards-gibson-verb-affordances`` (2026-05-04).
+# Composes with merged PRs #2483 (programme-history),
+# #2485 (research-instrument-dashboard keystone), and the in-flight
+# #2482 (precedent-ticker) + #2484 (interactive-lore-query). When the
+# in-flight pair lands, the affordance entries here are already in
+# place — ``init_pipeline.index_capabilities_batch`` picks them up on
+# the next daemon start.
+# ---------------------------------------------------------------------------
+
+LORE_WARD_AFFORDANCES = [
+    CapabilityRecord(
+        name="lore_ward.precedent_ticker",
+        description=(
+            "Surface axiom-precedent history as a slow ticker anchoring temporal "
+            "continuity of governance lineage and exposing accumulated normative "
+            "reasoning to the broadcast audience"
+        ),
+        daemon="compositor",
+        operational=_public_operational(
+            latency_class="slow",
+            medium="visual",
+            persistence="session",
+        ),
+    ),
+    CapabilityRecord(
+        name="lore_ward.programme_history",
+        description=(
+            "Render multi-session programme arc as bordered Moksha-chrome timeline "
+            "situating the current session in its cross-session structure so the "
+            "broadcast surface reads its own accumulating shape"
+        ),
+        daemon="compositor",
+        operational=_public_operational(
+            latency_class="slow",
+            medium="visual",
+            persistence="session",
+        ),
+    ),
+    CapabilityRecord(
+        name="lore_ward.research_instrument_dashboard",
+        description=(
+            "Display research-condition by claim by status grid exposing the live "
+            "experimental apparatus to viewers so the broadcast reads as instrumented "
+            "research rather than entertainment"
+        ),
+        daemon="compositor",
+        operational=_public_operational(
+            latency_class="slow",
+            medium="visual",
+            persistence="session",
+        ),
+    ),
+    CapabilityRecord(
+        name="lore_ward.interactive_lore_query",
+        description=(
+            "Respond to chat lore-queries with REPL-style scrolling log answering "
+            "allowlisted audience questions from chronicle while honoring "
+            "chat-authority gate and operator-referent policy"
+        ),
+        daemon="compositor",
+        operational=_public_operational(
+            latency_class="fast",
+            medium="visual",
+            persistence="session",
+            # The ward consumes chat-author identifiers for its
+            # allowlist gate. Per ``interpersonal_transparency`` axiom
+            # the persistent-state-on-non-operator path needs a
+            # consent record; the chat-authority-allowlist YAML IS
+            # that consent. consent_required=True surfaces the gate
+            # to the pipeline so non-allowlisted contexts route
+            # around the ward at recruitment rather than at render.
+            consent_required=True,
+            monetization_risk="medium",
+            risk_reason=(
+                "Chat-driven REPL surface — author tokens routed through "
+                "anonymize.py + chat-authority allowlist; programme opt-in "
+                "still required for broadcast surfaces."
+            ),
+        ),
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
 # Legacy bridge entries (pre-dot-namespace names)
 # ---------------------------------------------------------------------------
 
@@ -1600,5 +1695,6 @@ ALL_AFFORDANCES: list[CapabilityRecord] = (
     + SHADER_NODE_AFFORDANCES
     + CONTENT_AFFORDANCES
     + GEM_AFFORDANCES
+    + LORE_WARD_AFFORDANCES
     + LEGACY_AFFORDANCES
 )
