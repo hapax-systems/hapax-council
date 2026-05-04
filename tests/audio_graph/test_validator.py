@@ -1,271 +1,215 @@
-"""Validator tests — synthetic confs decompose to expected AudioGraph;
-broken confs surface gaps."""
+"""Validator tests — synthetic conf surfaces gap correctly."""
 
 from __future__ import annotations
 
-import textwrap
 from pathlib import Path
+from textwrap import dedent
 
-import pytest
-
-from shared.audio_graph.schema import NodeKind
-from shared.audio_graph.validator import AudioGraphValidator
+from shared.audio_graph import AudioGraphValidator
 
 
-@pytest.fixture
-def conf_dir(tmp_path: Path) -> Path:
-    """Empty conf directory for synthetic tests."""
-    d = tmp_path / "pipewire.conf.d"
-    d.mkdir()
-    return d
+def _write_conf(tmp_path: Path, name: str, body: str) -> Path:
+    p = tmp_path / name
+    p.write_text(dedent(body))
+    return p
 
 
-def _write(conf_dir: Path, filename: str, content: str) -> None:
-    (conf_dir / filename).write_text(textwrap.dedent(content).lstrip())
-
-
-class TestNullSinkDecompose:
-    def test_minimal_null_sink(self, conf_dir: Path) -> None:
-        _write(
-            conf_dir,
-            "hapax-test-tap.conf",
-            """
-            context.objects = [
-                {   factory = adapter
-                    args = {
-                        factory.name     = support.null-audio-sink
-                        node.name        = "hapax-test-tap"
-                        node.description = "Test Tap"
-                        media.class      = Audio/Sink
-                        audio.position   = [ FL FR ]
-                    }
+def test_validator_decomposes_simple_null_sink_conf(tmp_path: Path) -> None:
+    pw_dir = tmp_path / "pipewire.conf.d"
+    pw_dir.mkdir()
+    _write_conf(
+        pw_dir,
+        "hapax-livestream-tap.conf",
+        """\
+        context.objects = [
+            {   factory = adapter
+                args = {
+                    factory.name     = support.null-audio-sink
+                    node.name        = "hapax-livestream-tap"
+                    node.description = "Hapax Livestream (OBS monitor tap)"
+                    media.class      = Audio/Sink
+                    audio.position   = [ FL FR ]
                 }
-            ]
-            """,
-        )
-        report = AudioGraphValidator().decompose(conf_dir)
-        assert report.gaps == ()
-        assert len(report.graph.nodes) == 1
-        node = report.graph.nodes[0]
-        assert node.kind == NodeKind.NULL_SINK
-        assert node.pipewire_name == "hapax-test-tap"
-        assert node.channels.count == 2
-        assert node.channels.positions == ("FL", "FR")
+            }
+        ]
+        """,
+    )
+    v = AudioGraphValidator(pw_dir, tmp_path / "wp.conf.d-empty")
+    result = v.decompose_confs()
+    assert any(n.id == "hapax-livestream-tap" for n in result.graph.nodes)
+    tap = next(n for n in result.graph.nodes if n.id == "hapax-livestream-tap")
+    assert tap.kind.value == "tap"
+    assert tap.channels.count == 2
 
 
-class TestLoopbackDecompose:
-    def test_minimal_loopback(self, conf_dir: Path) -> None:
-        _write(
-            conf_dir,
-            "hapax-bridge.conf",
-            """
-            context.modules = [
-                {   name = libpipewire-module-loopback
-                    args = {
-                        node.description = "Bridge"
-                        capture.props = {
-                            node.name      = "hapax-bridge-cap"
-                            target.object  = "hapax-source"
-                            audio.channels = 2
-                            audio.position = [ FL FR ]
-                        }
-                        playback.props = {
-                            node.name      = "hapax-bridge"
-                            target.object  = "hapax-sink"
-                            audio.channels = 2
-                            audio.position = [ FL FR ]
-                        }
-                    }
-                }
-            ]
-            """,
-        )
-        report = AudioGraphValidator().decompose(conf_dir)
-        assert report.gaps == ()
-        # Should produce one LOOPBACK node + one LoopbackTopology
-        assert len(report.graph.nodes) == 1
-        assert report.graph.nodes[0].kind == NodeKind.LOOPBACK
-        assert len(report.graph.loopbacks) == 1
-        lb = report.graph.loopbacks[0]
-        assert lb.source == "hapax-source"
-        assert lb.sink == "hapax-sink"
-
-
-class TestFilterChainDecompose:
-    def test_minimal_filter_chain(self, conf_dir: Path) -> None:
-        _write(
-            conf_dir,
-            "hapax-chain.conf",
-            """
-            context.modules = [
-                {   name = libpipewire-module-filter-chain
-                    args = {
-                        node.description = "Test Chain"
+def test_validator_detects_loopback_with_g8_flags(tmp_path: Path) -> None:
+    pw_dir = tmp_path / "pipewire.conf.d"
+    pw_dir.mkdir()
+    _write_conf(
+        pw_dir,
+        "hapax-private-bridge.conf",
+        """\
+        context.modules = [
+            {   name = libpipewire-module-loopback
+                args = {
+                    node.description = "private monitor bridge"
+                    capture.props = {
+                        node.name = "hapax-private-monitor-capture"
+                        target.object = "hapax-private"
                         audio.channels = 2
                         audio.position = [ FL FR ]
-                        filter.graph = {
-                            nodes = [
-                                { type = builtin label = mixer name = mix
-                                  control = { "Gain 1" = 1.0 } }
-                            ]
-                            inputs = [ "mix:In 1" ]
-                            outputs = [ "mix:Out" ]
-                        }
-                        capture.props = {
-                            node.name = "hapax-chain"
-                            target.object = "hapax-upstream"
-                            audio.channels = 2
-                            audio.position = [ FL FR ]
-                        }
-                        playback.props = {
-                            node.name = "hapax-chain-playback"
-                            audio.channels = 2
-                            audio.position = [ FL FR ]
-                        }
+                        stream.dont-remix = true
+                    }
+                    playback.props = {
+                        node.name = "hapax-private-playback"
+                        target.object = "alsa_output.usb-Torso_Electronics_S-4.multichannel-output"
+                        audio.channels = 2
+                        audio.position = [ FL FR ]
+                        node.dont-fallback = true
+                        node.dont-reconnect = true
+                        node.dont-move = true
+                        node.linger = true
+                        state.restore = false
                     }
                 }
-            ]
-            """,
-        )
-        report = AudioGraphValidator().decompose(conf_dir)
-        assert report.gaps == ()
-        assert len(report.graph.nodes) == 1
-        node = report.graph.nodes[0]
-        assert node.kind == NodeKind.FILTER_CHAIN
-        assert node.pipewire_name == "hapax-chain"
-        assert node.target_object == "hapax-upstream"
-        # filter_graph blob captured as opaque
-        assert node.filter_graph is not None
-        assert "mix" in node.filter_graph["__raw_text__"]
-
-
-class TestSkipPatterns:
-    def test_disabled_files_skipped(self, conf_dir: Path) -> None:
-        _write(conf_dir, "hapax-x.conf.disabled", "garbage that won't parse")
-        _write(conf_dir, "hapax-y.conf.bak-1234", "more garbage")
-        _write(conf_dir, "_disabled-foo.conf", "garbage")
-        report = AudioGraphValidator().decompose(conf_dir)
-        assert report.gaps == ()
-        assert len(report.skipped_files) >= 3
-
-    def test_non_conf_files_skipped(self, conf_dir: Path) -> None:
-        _write(conf_dir, "readme.md", "## Notes")
-        report = AudioGraphValidator().decompose(conf_dir)
-        assert report.gaps == ()
-
-
-class TestGraphTunables:
-    def test_quantum_conf_recognised(self, conf_dir: Path) -> None:
-        _write(
-            conf_dir,
-            "10-voice-quantum.conf",
-            """
-            context.properties = {
-                default.clock.quantum = 128
-                default.clock.min-quantum = 64
             }
-            """,
-        )
-        report = AudioGraphValidator().decompose(conf_dir)
-        assert report.gaps == ()
-        # Tunable conf does not introduce nodes
-        assert len(report.graph.nodes) == 0
-
-    def test_wireplumber_rules_recognised(self, conf_dir: Path) -> None:
-        _write(
-            conf_dir,
-            "s4-usb-sink.conf",
-            """
-            monitor.alsa.rules = [
-                {
-                    matches = [ { device.name = "~alsa_card.usb-Foo*" } ]
-                    actions = { update-props = { device.profile = "pro-audio" } }
-                }
-            ]
-            """,
-        )
-        report = AudioGraphValidator().decompose(conf_dir)
-        assert report.gaps == ()
+        ]
+        """,
+    )
+    v = AudioGraphValidator(pw_dir, tmp_path / "wp.conf.d-empty")
+    result = v.decompose_confs()
+    lb = next(lb for lb in result.graph.loopbacks if lb.node_id == "hapax-private-playback")
+    assert lb.dont_reconnect is True
+    assert lb.dont_move is True
+    assert lb.linger is True
+    assert lb.state_restore is False
 
 
-class TestGapDetection:
-    def test_unknown_module_surfaces_gap(self, conf_dir: Path) -> None:
-        _write(
-            conf_dir,
-            "hapax-bogus.conf",
-            """
-            context.modules = [
-                {   name = libpipewire-module-undocumented-thing
-                    args = {
-                        node.name = "x"
+def test_validator_extracts_quantum_tunables(tmp_path: Path) -> None:
+    pw_dir = tmp_path / "pipewire.conf.d"
+    pw_dir.mkdir()
+    _write_conf(
+        pw_dir,
+        "10-voice-quantum.conf",
+        """\
+        context.properties = {
+            default.clock.quantum = 128
+            default.clock.min-quantum = 64
+            default.clock.max-quantum = 1024
+            default.clock.allowed-rates = [ 16000 44100 48000 ]
+        }
+        """,
+    )
+    v = AudioGraphValidator(pw_dir, tmp_path / "wp.conf.d-empty")
+    result = v.decompose_confs()
+    assert len(result.graph.tunables) == 1
+    t = result.graph.tunables[0]
+    assert t.default_clock_quantum == 128
+    assert t.allowed_rates == [16000, 44100, 48000]
+
+
+def test_validator_extracts_alsa_profile_pin(tmp_path: Path) -> None:
+    pw_dir = tmp_path / "pipewire.conf.d"
+    pw_dir.mkdir()
+    _write_conf(
+        pw_dir,
+        "s4-usb-sink.conf",
+        """\
+        monitor.alsa.rules = [
+            {
+                matches = [
+                    { device.name = "~alsa_card.usb-Torso_Electronics_S-4*" }
+                ]
+                actions = {
+                    update-props = {
+                        api.alsa.use-acp = false
+                        device.profile = "pro-audio"
+                        priority.session = 1500
+                        priority.driver = 1500
                     }
                 }
-            ]
-            """,
-        )
-        report = AudioGraphValidator().decompose(conf_dir)
-        assert len(report.gaps) >= 1
-        assert any("undocumented" in g.message for g in report.gaps)
-
-    def test_unstructured_conf_surfaces_gap(self, conf_dir: Path) -> None:
-        _write(
-            conf_dir,
-            "hapax-unparseable.conf",
-            """
-            some.weird.directive = something
-            another.thing = [ a b c ]
-            """,
-        )
-        report = AudioGraphValidator().decompose(conf_dir)
-        assert len(report.gaps) >= 1
+            }
+        ]
+        """,
+    )
+    v = AudioGraphValidator(pw_dir, tmp_path / "wp.conf.d-empty")
+    result = v.decompose_confs()
+    assert len(result.graph.alsa_profile_pins) >= 1
+    pin = result.graph.alsa_profile_pins[0]
+    assert "Torso_Electronics_S-4" in pin.card_match
+    assert pin.profile == "pro-audio"
+    assert pin.api_alsa_use_acp is False
 
 
-class TestEmptyDir:
-    def test_empty_dir_no_gaps(self, conf_dir: Path) -> None:
-        report = AudioGraphValidator().decompose(conf_dir)
-        assert report.gaps == ()
-        assert len(report.graph.nodes) == 0
+def test_validator_detects_role_loopback_infra(tmp_path: Path) -> None:
+    wp_dir = tmp_path / "wp.conf.d"
+    wp_dir.mkdir()
+    _write_conf(
+        wp_dir,
+        "50-hapax-voice-duck.conf",
+        """\
+        wireplumber.profiles = {
+          main = {
+            policy.linking.role-based.loopbacks = required
+          }
+        }
 
-    def test_missing_dir_raises(self, tmp_path: Path) -> None:
-        with pytest.raises(FileNotFoundError):
-            AudioGraphValidator().decompose(tmp_path / "does-not-exist")
+        wireplumber.settings = {
+          node.stream.default-media-role = "Multimedia"
+          linking.role-based.duck-level = 0.3
+        }
+
+        wireplumber.components = [
+          {
+            type = virtual, provides = policy.linking.role-based.loopbacks
+            requires = [ loopback.sink.role.multimedia ]
+          }
+          {
+            name = libpipewire-module-loopback, type = pw-module
+            arguments = {
+              node.name = "loopback.sink.role.multimedia"
+              node.description = "Multimedia"
+              capture.props = {
+                device.intended-roles = [ "Music", "Movie", "Multimedia" ]
+                policy.role-based.priority = 10
+                policy.role-based.preferred-target = "hapax-pc-loudnorm"
+                node.volume = 0.5
+              }
+            }
+            provides = loopback.sink.role.multimedia
+          }
+        ]
+        """,
+    )
+    v = AudioGraphValidator(tmp_path / "pw.conf.d-empty", wp_dir)
+    result = v.decompose_confs()
+    assert len(result.graph.media_role_sinks) == 1
+    sink = result.graph.media_role_sinks[0]
+    assert sink.duck_policy.duck_level == 0.3
+    assert sink.duck_policy.default_media_role == "Multimedia"
+    assert len(sink.loopbacks) >= 1
+    multi = next(lb for lb in sink.loopbacks if lb.role == "Music")
+    assert multi.priority == 10
+    assert multi.preferred_target == "hapax-pc-loudnorm"
 
 
-class TestMultipleConfs:
-    def test_two_confs_combine(self, conf_dir: Path) -> None:
-        _write(
-            conf_dir,
-            "hapax-tap-a.conf",
-            """
-            context.objects = [
-                {   factory = adapter
-                    args = {
-                        factory.name = support.null-audio-sink
-                        node.name = "hapax-tap-a"
-                        media.class = Audio/Sink
-                        audio.position = [ FL FR ]
-                    }
-                }
-            ]
-            """,
-        )
-        _write(
-            conf_dir,
-            "hapax-tap-b.conf",
-            """
-            context.objects = [
-                {   factory = adapter
-                    args = {
-                        factory.name = support.null-audio-sink
-                        node.name = "hapax-tap-b"
-                        media.class = Audio/Sink
-                        audio.position = [ FL FR ]
-                    }
-                }
-            ]
-            """,
-        )
-        report = AudioGraphValidator().decompose(conf_dir)
-        assert report.gaps == ()
-        names = sorted(n.pipewire_name for n in report.graph.nodes)
-        assert names == ["hapax-tap-a", "hapax-tap-b"]
+def test_validator_surfaces_synthetic_broken_conf_as_warning(tmp_path: Path) -> None:
+    pw_dir = tmp_path / "pipewire.conf.d"
+    pw_dir.mkdir()
+    # Conf that has no recognisable structure.
+    _write_conf(pw_dir, "broken.conf", "this is not a valid pipewire conf at all")
+    v = AudioGraphValidator(pw_dir, tmp_path / "wp.conf.d-empty")
+    result = v.decompose_confs()
+    assert "broken.conf" in result.gaps.untyped_confs
+
+
+def test_validator_skips_disabled_and_bak_files(tmp_path: Path) -> None:
+    pw_dir = tmp_path / "pipewire.conf.d"
+    pw_dir.mkdir()
+    (pw_dir / "live.conf").write_text("context.modules = []")
+    (pw_dir / "live.conf.bak-1234567").write_text("context.modules = []")
+    (pw_dir / "live.conf.disabled-2026-04-25").write_text("context.modules = []")
+    (pw_dir / "live.conf.replaced-by-systemd-2026").write_text("context.modules = []")
+    v = AudioGraphValidator(pw_dir, tmp_path / "wp.conf.d-empty")
+    active = v.list_active_pipewire_confs()
+    assert [p.name for p in active] == ["live.conf"]

@@ -171,12 +171,72 @@ class TestSummariseConstraint:
 
 
 class TestRolePaletteRole:
-    def test_mapped_roles(self):
+    def test_mapped_operator_context_roles(self):
         assert _role_palette_role(ProgrammeRole.REPAIR.value) == "accent_red"
         assert _role_palette_role(ProgrammeRole.SHOWCASE.value) == "accent_yellow"
         assert _role_palette_role(ProgrammeRole.LISTENING.value) == "accent_cyan"
         assert _role_palette_role(ProgrammeRole.RITUAL.value) == "accent_magenta"
         assert _role_palette_role(ProgrammeRole.WIND_DOWN.value) == "accent_blue"
+
+    def test_mapped_segmented_content_roles(self):
+        assert _role_palette_role(ProgrammeRole.TIER_LIST.value) == "accent_blue"
+        assert _role_palette_role(ProgrammeRole.TOP_10.value) == "accent_yellow"
+        assert _role_palette_role(ProgrammeRole.RANT.value) == "accent_red"
+        assert _role_palette_role(ProgrammeRole.REACT.value) == "accent_green"
+        assert _role_palette_role(ProgrammeRole.ICEBERG.value) == "accent_cyan"
+        assert _role_palette_role(ProgrammeRole.INTERVIEW.value) == "accent_magenta"
+        assert _role_palette_role(ProgrammeRole.LECTURE.value) == "bright"
+
+    def test_all_segmented_content_roles_mapped(self):
+        """No segmented-content role should fall through to muted.
+
+        Acceptance criterion from cc-task
+        ``programme-state-ward-palette-accents-segmented-types``.
+        """
+        segmented_content_roles = (
+            ProgrammeRole.TIER_LIST,
+            ProgrammeRole.TOP_10,
+            ProgrammeRole.RANT,
+            ProgrammeRole.REACT,
+            ProgrammeRole.ICEBERG,
+            ProgrammeRole.INTERVIEW,
+            ProgrammeRole.LECTURE,
+        )
+        for role in segmented_content_roles:
+            resolved = _role_palette_role(role.value)
+            assert resolved != "muted", (
+                f"{role.name} maps to muted — segmented-content roles must have a distinct accent"
+            )
+
+    def test_segmented_content_accents_are_canonical_palette_roles(self):
+        """Every accent must be a HomagePalette ColourRoleName.
+
+        Anything outside the canonical set would silently fall back to
+        muted at render time via ``_resolve()``.
+        """
+        canonical_role_names = {
+            "muted",
+            "bright",
+            "accent_cyan",
+            "accent_magenta",
+            "accent_green",
+            "accent_yellow",
+            "accent_red",
+            "accent_blue",
+            "terminal_default",
+            "background",
+        }
+        new_roles = (
+            ProgrammeRole.TIER_LIST,
+            ProgrammeRole.TOP_10,
+            ProgrammeRole.RANT,
+            ProgrammeRole.REACT,
+            ProgrammeRole.ICEBERG,
+            ProgrammeRole.INTERVIEW,
+            ProgrammeRole.LECTURE,
+        )
+        for role in new_roles:
+            assert _role_palette_role(role.value) in canonical_role_names
 
     def test_unknown_role_falls_to_muted(self):
         assert _role_palette_role("not_a_role") == "muted"

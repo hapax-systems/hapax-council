@@ -16,21 +16,14 @@ import logging
 import os
 import re
 import subprocess
-import threading
-import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import yaml
 
 from .durf_redaction import DURF_RAW_ENV, RISK_PATTERNS, RedactionAction
-from .homage.transitional_source import HomageTransitionalSource
-from .text_render import OUTLINE_OFFSETS_4, TextStyle, render_text
-
-if TYPE_CHECKING:
-    import cairo
 
 log = logging.getLogger(__name__)
 
@@ -708,206 +701,50 @@ def _layout_for_count(n: int, canvas_w: int, canvas_h: int) -> list[tuple[int, i
     return rects[:n]
 
 
-class DURFCairoSource(HomageTransitionalSource):
-    """Full-frame HOMAGE ward for bounded Codex tmux text panes."""
+# ── Backward-compat alias (cc-task `activity-reveal-ward-p1-durf-migration`) ──
+#
+# The class formerly defined here moved to
+# ``agents.studio_compositor.coding_activity_reveal.CodingActivityReveal``
+# to integrate with the activity-reveal-ward family base mixin
+# (``ActivityRevealMixin``). ``DURFCairoSource`` is preserved as a
+# module-level attribute so existing layout-JSON declarations + import
+# paths keep working without any caller-side change.
+#
+# The import is implemented through module ``__getattr__`` rather than a
+# top-level ``import`` to break the circular dependency:
+# ``coding_activity_reveal`` imports helpers from this module on its own
+# load, so a top-level back-import here would deadlock the
+# partially-initialised ``coding_activity_reveal``. Lazy resolution +
+# first-access caching keeps the alias hot in steady-state without the
+# cycle.
 
-    def __init__(
-        self,
-        *,
-        config_path: Path | None = None,
-        font_description: str = DEFAULT_FONT_DESCRIPTION,
-        registry: CodexPaneRegistry | None = None,
-        start_thread: bool = True,
-    ) -> None:
-        super().__init__(source_id="durf")
-        self._config_path = config_path or DEFAULT_CONFIG_PATH
-        self._font_description = font_description
-        self._registry = registry or CodexPaneRegistry(config_path=self._config_path)
-        self._snapshot = DURFSourceSnapshot(
-            panes=(),
-            captured_at=time.time(),
-            wcs_row=build_wcs_row((), now=time.time(), egress_allowed=False),
+
+def __getattr__(name: str):  # noqa: D401 — module-level __getattr__ contract
+    """Lazy attribute resolution for the ``DURFCairoSource`` and
+    ``CodingActivityReveal`` aliases.
+
+    Triggered when an ``import`` / ``getattr`` resolution misses a
+    direct module attribute. The lift target is resolved on first
+    access, cached on the module dict, and returned.
+    """
+
+    if name in ("DURFCairoSource", "CodingActivityReveal"):
+        from agents.studio_compositor.coding_activity_reveal import (
+            CodingActivityReveal as _CAR,
         )
-        self._snapshot_lock = threading.Lock()
-        self._gate_on_since: float | None = None
-        self._gate_off_since: float | None = None
-        self._current_alpha: float = 0.0
-        self._stop_event = threading.Event()
-        self._poll_thread: threading.Thread | None = None
-        if start_thread:
-            self._poll_thread = threading.Thread(
-                target=self._poll_loop,
-                name="durf-codex-text-poll",
-                daemon=True,
-            )
-            self._poll_thread.start()
 
-    def _poll_loop(self) -> None:
-        while not self._stop_event.is_set():
-            try:
-                self._poll_once()
-            except Exception as exc:
-                log.warning("durf: poll cycle failed: %s", exc, exc_info=True)
-            self._stop_event.wait(_POLL_INTERVAL_S)
-
-    def _poll_once(self, *, now: float | None = None) -> DURFSourceSnapshot:
-        ts = time.time() if now is None else now
-        lanes, max_visible = self._registry.discover_lanes()
-        panes: list[DURFPaneState] = []
-        egress_allowed = True
-        if _consent_safe_active():
-            egress_allowed = False
-            panes = [_suppressed_lane(lane, "consent_safe", now=ts) for lane in lanes]
-        elif _unsafe_public_bypass_active():
-            egress_allowed = False
-            panes = [_suppressed_lane(lane, "unsafe_public_bypass", now=ts) for lane in lanes]
-        else:
-            selected, overflow = _select_lanes(lanes, max_visible)
-            panes.extend(_pane_state_from_capture(lane, now=ts) for lane in selected)
-            panes.extend(_suppressed_lane(lane, "not_selected", now=ts) for lane in overflow)
-            configured_ids = {lane.lane_id for lane in selected + overflow}
-            panes.extend(
-                _suppressed_lane(lane, "lane_ineligible", now=ts)
-                for lane in lanes
-                if lane.lane_id not in configured_ids
-            )
-        row = build_wcs_row(
-            tuple(panes), now=ts, egress_allowed=egress_allowed, max_visible=max_visible
-        )
-        snapshot = DURFSourceSnapshot(panes=tuple(panes), captured_at=ts, wcs_row=row)
-        with self._snapshot_lock:
-            self._snapshot = snapshot
-        return snapshot
-
-    def stop(self) -> None:
-        self._stop_event.set()
-        if self._poll_thread is not None:
-            self._poll_thread.join(timeout=1.0)
-
-    def _gate_active(self) -> bool:
-        if _consent_safe_active() or _unsafe_public_bypass_active():
-            return False
-        with self._snapshot_lock:
-            return any(pane.visible for pane in self._snapshot.panes)
-
-    def _compute_alpha(self, now: float) -> float:
-        gate = self._gate_active()
-        if not gate:
-            if self._gate_off_since is None:
-                self._gate_off_since = now
-            self._gate_on_since = None
-            if now - self._gate_off_since < _EXIT_HYSTERESIS_S:
-                return self._current_alpha
-            dt_ms = (now - self._gate_off_since - _EXIT_HYSTERESIS_S) * 1000.0
-            factor = max(0.0, 1.0 - dt_ms / _EXIT_RAMP_MS)
-            return self._current_alpha * factor
-        self._gate_off_since = None
-        if self._gate_on_since is None:
-            self._gate_on_since = now
-        gate_age = now - self._gate_on_since
-        if gate_age < (_ENTER_RAMP_MS / 1000.0):
-            return max(self._current_alpha, (gate_age * 1000.0 / _ENTER_RAMP_MS) * _FRONTED_ALPHA)
-        return _FRONTED_ALPHA
-
-    def state(self) -> dict[str, Any]:
-        now = time.monotonic()
-        with self._snapshot_lock:
-            snapshot = self._snapshot
-        return {
-            "alpha": self._compute_alpha(now),
-            "now": now,
-            "panes": [pane.__dict__ for pane in snapshot.panes],
-            "wcs": snapshot.wcs_row,
-        }
-
-    def render_content(
-        self,
-        cr: cairo.Context,
-        canvas_w: int,
-        canvas_h: int,
-        t: float,
-        state: dict[str, Any],
-    ) -> None:
-        alpha = float(state.get("alpha", 0.0))
-        self._current_alpha = alpha
-        if alpha <= 0.001:
-            return
-        with self._snapshot_lock:
-            panes = [pane for pane in self._snapshot.panes if pane.visible]
-        if not panes:
-            return
-
-        cr.save()
-        cr.set_source_rgba(0.02, 0.02, 0.05, 0.82 * alpha)
-        cr.rectangle(0, 0, canvas_w, canvas_h)
-        cr.fill()
-        cr.restore()
-
-        rects = _layout_for_count(len(panes), canvas_w, canvas_h)
-        for pane, rect in zip(panes, rects, strict=False):
-            self._render_text_pane(cr, rect, pane, alpha)
-
-    def _render_text_pane(
-        self,
-        cr: cairo.Context,
-        rect: tuple[int, int, int, int],
-        pane: DURFPaneState,
-        alpha: float,
-    ) -> None:
-        from .homage.rendering import active_package
-
-        x, y, w, h = rect
-        pkg = active_package()
-        bg = pkg.palette.background
-        muted = pkg.palette.muted
-        bright = pkg.palette.bright
-
-        cr.save()
-        cr.set_source_rgba(bg[0], bg[1], bg[2], min(bg[3], 0.88) * alpha)
-        cr.rectangle(x, y, w, h)
-        cr.fill()
-        cr.set_line_width(2.0)
-        cr.set_source_rgba(bright[0], bright[1], bright[2], 0.65 * alpha)
-        cr.rectangle(x, y, w, h)
-        cr.stroke()
-        cr.restore()
-
-        marker_style = TextStyle(
-            text=f">>> {pane.glyph}",
-            font_description=self._font_description,
-            color_rgba=(muted[0], muted[1], muted[2], 0.78 * alpha),
-            outline_color_rgba=(0.0, 0.0, 0.0, 0.86 * alpha),
-            outline_offsets=OUTLINE_OFFSETS_4,
-            max_width_px=max(1, w - 36),
-            wrap="char",
-        )
-        render_text(cr, marker_style, x + 18, y + 14)
-
-        line_y = y + 48
-        line_h = 19
-        max_lines = max(1, int((h - 64) / line_h))
-        for line in pane.lines[-max_lines:]:
-            style = TextStyle(
-                text=line or " ",
-                font_description=self._font_description,
-                color_rgba=_line_color(line),
-                outline_color_rgba=(0.0, 0.0, 0.0, 0.80 * alpha),
-                outline_offsets=OUTLINE_OFFSETS_4,
-                max_width_px=max(1, w - 36),
-                wrap="char",
-                line_spacing=0.92,
-            )
-            render_text(cr, style, x + 18, line_y)
-            line_y += line_h
-            if line_y > y + h - line_h:
-                break
+        globals()["CodingActivityReveal"] = _CAR
+        globals()["DURFCairoSource"] = _CAR
+        return _CAR
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
     "CodexLane",
     "CodexPaneConfig",
     "CodexPaneRegistry",
-    "DURFCairoSource",
+    "CodingActivityReveal",  # noqa: F822 — resolved via module __getattr__
+    "DURFCairoSource",  # noqa: F822 — resolved via module __getattr__
     "DURFPaneState",
     "DURFSourceSnapshot",
     "TextRedactionResult",

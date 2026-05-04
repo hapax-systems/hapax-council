@@ -141,6 +141,20 @@ def test_non_dict_frame_entries_skipped(tmp_path: Path) -> None:
     assert state["frame_count"] == 1
 
 
+def test_space_only_frame_entries_are_ignored(tmp_path: Path) -> None:
+    frames_path = tmp_path / "frames.json"
+    frames_path.write_text(
+        json.dumps({"frames": [{"text": " ", "hold_ms": 100}]}),
+        encoding="utf-8",
+    )
+
+    src = GemCairoSource(frames_path=frames_path)
+    state = src.state()
+
+    assert state["text"] == FALLBACK_FRAME_TEXT
+    assert state["frame_count"] == 0
+
+
 def test_negative_hold_ms_clamped_to_minimum(tmp_path: Path) -> None:
     frames_path = tmp_path / "frames.json"
     _write_frames(frames_path, [{"text": "a", "hold_ms": -500}])

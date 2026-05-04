@@ -67,12 +67,30 @@ _FEATURE_FLAG_ENV: str = "HAPAX_LORE_PROGRAMME_STATE_ENABLED"
 # is a ``StrEnum`` with lowercase values (see
 # ``shared/programme.py::ProgrammeRole``), so keys are lowercase here.
 # Roles not in the map → ``muted`` fallback via ``_role_palette_role``.
+#
+# HomagePalette canonical tokens (`shared/homage_package.ColourRoleName`)
+# expose 6 named accent hues (cyan/magenta/green/yellow/red/blue) plus
+# `bright` and `muted`. With 19 roles to colour, each segmented-content
+# type still gets its own legible accent — some semantic overlap with
+# operator-context roles (e.g. RANT shares accent_red with REPAIR;
+# both signal high-energy intensity) is accepted because the ward
+# header text already disambiguates the role; the accent is a
+# secondary recognition signal, not the sole identifier.
 _ROLE_PALETTE_ROLE: dict[str, str] = {
+    # Operator-context roles (Phase 1)
     "repair": "accent_red",
     "showcase": "accent_yellow",
     "listening": "accent_cyan",
     "ritual": "accent_magenta",
     "wind_down": "accent_blue",
+    # Segmented-content roles (operator outcome 2)
+    "tier_list": "accent_blue",  # categorical / structured
+    "top_10": "accent_yellow",  # countdown / reveal
+    "rant": "accent_red",  # high-energy
+    "react": "accent_green",  # responsive (unique — only canonical accent not used by op-context)
+    "iceberg": "accent_cyan",  # depth / exploration
+    "interview": "accent_magenta",  # dialogue
+    "lecture": "bright",  # extended / structured discourse (uses the bright role)
 }
 
 

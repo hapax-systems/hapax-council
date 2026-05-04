@@ -1398,43 +1398,51 @@ ACTIVITY_CAPABILITIES = (
     "at least one compositional_impingement saying what the surface does.\n"
     "\n"
     "Each activity below names the compositional impingements that\n"
-    "typically pair with it (camera.hero, preset.bias family, ward.*).\n"
+    "typically pair with it (camera.hero, parametric modulations, ward.*).\n"
     "Treat these as the natural recruitments for that activity — when\n"
     "you pick the activity, also recruit a coupled compositional move\n"
     "in the same tick. The activity names what you ARE doing; the\n"
     "compositional impingements name what the AUDIENCE sees you doing.\n"
+    "Operator constraint: NO presets — the director never picks a preset\n"
+    "family. Use parametric modulation (mood.tone_pivot, pace.tempo_shift,\n"
+    "composition.reframe) and chain composition (transition.fade,\n"
+    "transition.cut, gem.*, homage.*) instead. The system handles preset\n"
+    "selection autonomously from your parametric signals.\n"
     "\n"
     "- react: respond to the video content in the triangle display. What\n"
     "  caught you? PAIRS WITH: camera.hero (operator-brio.reacting to show\n"
-    "  the operator reading the video), preset.bias (audio-reactive or\n"
-    "  glitch-dense to match video energy), attention.winner if a specific\n"
-    "  visual moment deserves the spotlight.\n"
+    "  the operator reading the video), composition.reframe (tighten when\n"
+    "  the video moment is striking), transition.cut for a hard pivot,\n"
+    "  attention.winner if a specific visual moment deserves the spotlight.\n"
     "- chat: engage viewers in the livestream chat. Answer, respond, explain.\n"
-    "  PAIRS WITH: camera.hero (operator-brio.conversing), preset.bias\n"
-    "  (pick the family that keeps visual noise low during conversation),\n"
-    "  overlay.foreground for chat_keyword_legend / captions.\n"
+    "  PAIRS WITH: camera.hero (operator-brio.conversing), mood.tone_pivot\n"
+    "  (warmer/brighten to keep the conversational register inviting),\n"
+    "  overlay.foreground for chat_keyword_legend / captions, ward.dispatch\n"
+    "  whos_here on a fresh arrival.\n"
     "- music: comment on the operator's curated music — vinyl on the turntable\n"
     "  or YouTube queue track. PAIRS WITH: camera.hero (overhead.vinyl-spinning\n"
     "  when the record is the subject; synths-brio.beatmaking for pad work),\n"
-    "  preset.bias (audio-reactive to sync visuals to the beat),\n"
-    "  ward.choreography.album-emphasize when album cover should pop.\n"
+    "  pace.tempo_shift (quicken when the beat is dense; slow on a held\n"
+    "  passage), ward.choreography.album-emphasize when album cover should pop,\n"
+    "  homage.expand on album for sustained centre-of-attention.\n"
     "- study: reflect on your own research — Clark & Brennan, phenomenology,\n"
     "  grounding theory. PAIRS WITH: camera.hero (desk-c920.writing-reading\n"
-    "  or coding), preset.bias (pick a family that holds attention for\n"
-    "  reading), overlay.foreground on grounding_provenance_ticker,\n"
-    "  ward.staging.research_panel.show.\n"
+    "  or coding), mood.tone_pivot.cooler (calm during deliberate reading),\n"
+    "  overlay.foreground on grounding_provenance_ticker, ward.staging.\n"
+    "  recruitment_candidate_panel.hide if the diagnostic chrome is noise.\n"
     "- observe: notice the composed surface. Shaders, triangle layout,\n"
     "  visual effects. PAIRS WITH: camera.hero (room-c920.ambient for the\n"
-    "  wide), preset.bias (whatever family currently expresses the stance),\n"
-    "  ward.highlight on whichever ward you're calling attention to.\n"
+    "  wide), composition.reframe.widen for context, ward.highlight on\n"
+    "  whichever ward you're calling attention to. The reverie chain\n"
+    "  picks its own preset from your parametric signals — comment on\n"
+    "  what you SEE, do not pick a family for it.\n"
     "- draft / reflect / critique / patch / compose_drop / synthesize /\n"
     "  exemplar_review (HSEA Phase 2): treat like study with sharper focus —\n"
-    "  desk-c920 hero camera, pick a preset that doesn't compete with\n"
-    "  the ticker, grounding ticker foregrounded, hothouse panels staged\n"
-    "  in.\n"
+    "  desk-c920 hero camera, mood.tone_pivot.cooler for calm focus,\n"
+    "  grounding ticker foregrounded, hothouse panels staged in.\n"
     '- silence: say nothing. Let the music carry. Return {"activity": "silence"}.\n'
     "  EVEN IN SILENCE: emit at least one compositional_impingement saying\n"
-    "  what the silent surface should look like (which preset family,\n"
+    "  what the silent surface should look like (which parametric pivot,\n"
     "  whether to dim chrome, which ward is foregrounded). Silence is a\n"
     "  voice choice; it is not a compositional choice. The frame is still\n"
     "  yours to direct.\n"
@@ -1505,6 +1513,512 @@ def _render_director_programme_context(
         "the grounded move and keep programme state as context."
     )
     return lines
+
+
+# ── Programme-conditioned micromove vocabulary (cc-task ─────────────────────
+# `director-moves-richness-expansion`, operator outcome 3 of 5).
+#
+# Each entry shape: ``(intent_family, narrative, material, ward_emphasis,
+# rotation_mode)``. Per the operator constraint NO presets, the families
+# below are parametric modulation (``mood.tone_pivot``, ``pace.tempo_shift``,
+# ``composition.reframe``) and chain composition (``transition.*``,
+# ``gem.*``, ``homage.*``, ``ward.*``) only — the director never picks
+# a preset family from this fallback path either.
+#
+# The ``narrative`` text is a Gibson-verb description of the COMPOSITIONAL
+# MOVE for cosine retrieval against the affordance catalog — it is NOT the
+# viewer-facing speech (``narrative_text``); the fallback wraps it in
+# ``[micromove:<reason>]`` for legibility surfaces and never speaks it
+# directly except via ``_MICROMOVE_SPEAK_EVERY_N`` rate-limited speak.
+
+_MicromoveEntry = tuple[str, str, str, list[str], str]
+
+
+_MICROMOVE_BASELINE: list[_MicromoveEntry] = [
+    (
+        "overlay.emphasis",
+        "fade the grounding-provenance ticker back up to full so the "
+        "perceptual-field sources stay legibly attributed",
+        "air",
+        ["grounding_provenance_ticker"],
+        "sequential",
+    ),
+    (
+        "mood.tone_pivot",
+        "settle the room's color register a notch toward warmth without "
+        "swapping any visual family — small parametric drift",
+        "water",
+        ["pressure_gauge", "activity_variety_log"],
+        "weighted_by_salience",
+    ),
+    (
+        "overlay.emphasis",
+        "pulse the stance indicator so the current stance reads as active rather than frozen",
+        "earth",
+        ["stance_indicator", "activity_header"],
+        "sequential",
+    ),
+    (
+        "composition.reframe",
+        "keep the current hero camera but recompose its framing center — "
+        "a small spatial reset, not a cut",
+        "earth",
+        ["sierpinski"],
+        "weighted_by_salience",
+    ),
+    (
+        "overlay.emphasis",
+        "dim the chrome half a step so the reverie breathes",
+        "void",
+        ["impingement_cascade", "recruitment_candidate_panel"],
+        "random",
+    ),
+    (
+        "ward.highlight",
+        "brighten the album face for a beat so the music stays legible",
+        "fire",
+        ["album_overlay", "token_pole"],
+        "weighted_by_salience",
+    ),
+    (
+        "overlay.emphasis",
+        "sweep emphasis across the chat-ambient ward so conversation reads",
+        "air",
+        ["chat_ambient", "captions"],
+        "sequential",
+    ),
+    (
+        "pace.tempo_shift",
+        "settle the room's effective tempo back to baseline — neither slow "
+        "nor quick, the standing rhythm of the surface",
+        "water",
+        ["thinking_indicator"],
+        "weighted_by_salience",
+    ),
+]
+
+
+# Per-ProgrammeRole micromove distributions. Each role's list is biased
+# toward families that fit that role's character — RITUAL slow + fading,
+# HOTHOUSE_PRESSURE hard + tight, LISTENING ambient + warm, etc. Roles
+# not enumerated fall through to ``_MICROMOVE_BASELINE``.
+
+_MICROMOVE_BY_ROLE: dict[str, list[_MicromoveEntry]] = {
+    "ritual": [
+        (
+            "transition.fade",
+            "fade the room's surface gently — extend the held beat before the "
+            "next idea, the move when ceremony asks for breath",
+            "void",
+            ["grounding_provenance_ticker", "stance_indicator"],
+            "weighted_by_salience",
+        ),
+        (
+            "mood.tone_pivot",
+            "deepen the surface's tonal contrast — pull mid-tones down and let "
+            "highlights breathe, the move when the room wants weight",
+            "earth",
+            ["album_overlay"],
+            "weighted_by_salience",
+        ),
+        (
+            "pace.tempo_shift",
+            "slow the room's effective tempo — extend emphasis windows, let the ceremony land",
+            "water",
+            ["thinking_indicator", "stance_indicator"],
+            "paused",
+        ),
+        (
+            "homage.recede",
+            "retire diagnostic chrome to the background so the ritual surface reads as primary",
+            "air",
+            ["impingement_cascade", "recruitment_candidate_panel"],
+            "sequential",
+        ),
+    ],
+    "hothouse_pressure": [
+        (
+            "transition.cut",
+            "cut hard to the next subject without a fade — the sharpest possible "
+            "punctuation when the room is building heat",
+            "fire",
+            ["pressure_gauge", "activity_header"],
+            "random",
+        ),
+        (
+            "gem.spawn",
+            "mint a fresh CP437 graffiti onto the lower band to mark the moment "
+            "the heat lands — a new mural fragment from scratch",
+            "fire",
+            ["sierpinski"],
+            "weighted_by_salience",
+        ),
+        (
+            "pace.tempo_shift",
+            "quicken the room's effective tempo — snap transition timing tighter, "
+            "shorten emphasis windows to match the heat",
+            "fire",
+            ["pressure_gauge", "activity_variety_log"],
+            "random",
+        ),
+        (
+            "composition.reframe",
+            "tighten the active hero camera's framing — pull in toward the subject "
+            "without swapping cameras",
+            "earth",
+            ["activity_header"],
+            "weighted_by_salience",
+        ),
+    ],
+    "listening": [
+        (
+            "ward.highlight",
+            "brighten the album face for a sustained beat so the music holds the "
+            "centre of attention",
+            "fire",
+            ["album_overlay", "vinyl_platter"],
+            "weighted_by_salience",
+        ),
+        (
+            "mood.tone_pivot",
+            "warm the room's color register — push toward warmer hue and slightly "
+            "higher saturation, the move when the music wants tenderness",
+            "water",
+            ["album_overlay"],
+            "weighted_by_salience",
+        ),
+        (
+            "homage.expand",
+            "expand the album overlay with a scale-bump — the music is the centre "
+            "of the moment and the surface should say so",
+            "fire",
+            ["album_overlay", "token_pole"],
+            "weighted_by_salience",
+        ),
+        (
+            "overlay.emphasis",
+            "fade chrome back so the listening surface breathes around the music",
+            "air",
+            ["chat_ambient", "captions"],
+            "sequential",
+        ),
+    ],
+    "showcase": [
+        (
+            "composition.reframe",
+            "tighten the active hero camera's framing — pull in toward the subject "
+            "the showcase wants foregrounded",
+            "earth",
+            ["activity_header", "sierpinski"],
+            "weighted_by_salience",
+        ),
+        (
+            "gem.composition",
+            "rewrite the GEM ward's standing composition to mark the showcase's central subject",
+            "earth",
+            ["sierpinski"],
+            "weighted_by_salience",
+        ),
+        (
+            "ward.choreography",
+            "scale up the showcased ward and dim peripherals — the moment is "
+            "claiming attention and the surface should track that",
+            "fire",
+            ["album_overlay", "token_pole"],
+            "weighted_by_salience",
+        ),
+        (
+            "transition.fade",
+            "smoothly fade between framings — continuity matters more than "
+            "punctuation in a showcase",
+            "air",
+            ["activity_header"],
+            "sequential",
+        ),
+    ],
+    "work_block": [
+        (
+            "overlay.emphasis",
+            "foreground the grounding-provenance ticker so the research instrument "
+            "reads as the legible subject",
+            "air",
+            ["grounding_provenance_ticker", "activity_header"],
+            "sequential",
+        ),
+        (
+            "mood.tone_pivot",
+            "cool the room's color register slightly — pull toward cooler hue and "
+            "lower saturation for deliberate work",
+            "water",
+            ["thinking_indicator"],
+            "weighted_by_salience",
+        ),
+        (
+            "ward.staging",
+            "hide the recruitment-candidate panel during sustained focus when its "
+            "diagnostic chrome would be noise",
+            "void",
+            ["recruitment_candidate_panel", "impingement_cascade"],
+            "paused",
+        ),
+        (
+            "pace.tempo_shift",
+            "settle the room's effective tempo to steady — neither slow nor quick, "
+            "the standing rhythm of deliberate work",
+            "water",
+            ["activity_variety_log"],
+            "sequential",
+        ),
+    ],
+    "tutorial": [
+        (
+            "overlay.emphasis",
+            "foreground the captions strip — the explanation needs to be readable "
+            "alongside the spoken pass",
+            "air",
+            ["captions", "activity_header"],
+            "sequential",
+        ),
+        (
+            "ward.highlight",
+            "brighten the activity-header ward so the directorial activity itself "
+            "is legible to the learner",
+            "earth",
+            ["activity_header", "stance_indicator"],
+            "weighted_by_salience",
+        ),
+        (
+            "composition.reframe",
+            "widen the active hero camera so the learner sees the broader context "
+            "around what's being demonstrated",
+            "earth",
+            ["sierpinski"],
+            "weighted_by_salience",
+        ),
+        (
+            "homage.emergence",
+            "bring the grounding-provenance ticker into view so the learner can "
+            "see the signals driving each move",
+            "air",
+            ["grounding_provenance_ticker"],
+            "sequential",
+        ),
+    ],
+    "wind_down": [
+        (
+            "transition.fade",
+            "fade the room's surface gently down — soft hand-off as the session winds toward rest",
+            "void",
+            ["stance_indicator"],
+            "sequential",
+        ),
+        (
+            "pace.tempo_shift",
+            "slow the room's effective tempo deeply — extend windows, let "
+            "everything land before the next idea moves",
+            "water",
+            ["thinking_indicator"],
+            "paused",
+        ),
+        (
+            "mood.tone_pivot",
+            "deepen the surface's tonal contrast — settle the highlights and let "
+            "the room dim toward rest",
+            "earth",
+            ["album_overlay"],
+            "weighted_by_salience",
+        ),
+        (
+            "homage.recede",
+            "retire chrome wards back to absent — the surface is winding toward its quiet baseline",
+            "void",
+            ["impingement_cascade", "recruitment_candidate_panel"],
+            "sequential",
+        ),
+    ],
+    "ambient": [
+        (
+            "ward.position",
+            "drift the token pole on a slow sine — gentle attention dynamics, "
+            "ambient hold rather than directional cue",
+            "water",
+            ["token_pole"],
+            "weighted_by_salience",
+        ),
+        (
+            "mood.tone_pivot",
+            "warm the room's color register slowly — gentle parametric drift "
+            "without changing the underlying rhythm",
+            "water",
+            ["album_overlay"],
+            "weighted_by_salience",
+        ),
+        (
+            "homage.rotation",
+            "rotate to the next signature artefact under the active package — "
+            "the room's slow standing pulse",
+            "air",
+            ["stance_indicator"],
+            "weighted_by_salience",
+        ),
+        (
+            "pace.tempo_shift",
+            "settle the room's effective tempo to steady — neither slow nor quick, "
+            "the ambient standing rhythm",
+            "water",
+            ["activity_variety_log"],
+            "sequential",
+        ),
+    ],
+    "experiment": [
+        (
+            "transition.cut",
+            "cut hard to a re-composed framing — the experiment wants its discontinuities legible",
+            "fire",
+            ["activity_header", "sierpinski"],
+            "random",
+        ),
+        (
+            "composition.reframe",
+            "recompose the active hero camera's framing — the same subject viewed "
+            "from a re-balanced composition, the move when the experiment is testing "
+            "a new spatial register",
+            "earth",
+            ["sierpinski"],
+            "weighted_by_salience",
+        ),
+        (
+            "gem.composition",
+            "rewrite the GEM ward's standing composition to mark the experiment's "
+            "current hypothesis",
+            "earth",
+            ["sierpinski"],
+            "weighted_by_salience",
+        ),
+        (
+            "pace.tempo_shift",
+            "quicken the room's tempo when the experiment is iterating fast — the "
+            "surface should keep up with the test rhythm",
+            "fire",
+            ["pressure_gauge"],
+            "random",
+        ),
+    ],
+    "repair": [
+        (
+            "ward.highlight",
+            "pulse the pressure gauge so the system pressure spike is itself "
+            "legible content during the repair pass",
+            "fire",
+            ["pressure_gauge", "thinking_indicator"],
+            "weighted_by_salience",
+        ),
+        (
+            "overlay.emphasis",
+            "foreground the impingement-cascade panel so the repair work is transparent to viewers",
+            "earth",
+            ["impingement_cascade", "recruitment_candidate_panel"],
+            "sequential",
+        ),
+        (
+            "mood.tone_pivot",
+            "cool the room's color register — pull toward calm during the repair "
+            "so the work register reads as deliberate",
+            "water",
+            ["thinking_indicator"],
+            "weighted_by_salience",
+        ),
+        (
+            "pace.tempo_shift",
+            "settle the room's tempo to steady — repair work asks for steady "
+            "rhythm, not heat or slowness",
+            "water",
+            ["activity_variety_log"],
+            "sequential",
+        ),
+    ],
+    "invitation": [
+        (
+            "ward.highlight",
+            "brighten the chat-ambient surface so audience traffic deserves direct "
+            "visibility — the invitation is to the people in chat",
+            "air",
+            ["chat_ambient", "whos_here"],
+            "weighted_by_salience",
+        ),
+        (
+            "overlay.emphasis",
+            "foreground the chat-keyword legend so new viewers see the participation "
+            "vocabulary up front",
+            "air",
+            ["chat_keyword_legend", "captions"],
+            "sequential",
+        ),
+        (
+            "homage.emergence",
+            "bring the who's-here ward into view via the package's default entry "
+            "transition — acknowledge arrivals",
+            "air",
+            ["whos_here", "activity_header"],
+            "sequential",
+        ),
+        (
+            "mood.tone_pivot",
+            "brighten the surface's overall luminance — lift the master opacity so "
+            "the invitation register reads as welcoming",
+            "fire",
+            ["chat_ambient"],
+            "weighted_by_salience",
+        ),
+    ],
+    "interlude": [
+        (
+            "mood.tone_pivot",
+            "warm the room's color register a half step — the interlude is a "
+            "parametric breath between segments, not a hard transition",
+            "water",
+            ["album_overlay", "stance_indicator"],
+            "weighted_by_salience",
+        ),
+        (
+            "pace.tempo_shift",
+            "slow the room's effective tempo for the interlude — extend emphasis "
+            "windows, let the segment boundary breathe",
+            "water",
+            ["thinking_indicator"],
+            "weighted_by_salience",
+        ),
+        (
+            "transition.fade",
+            "fade smoothly between segments — continuity through the interlude, not punctuation",
+            "air",
+            ["stance_indicator"],
+            "sequential",
+        ),
+        (
+            "composition.reframe",
+            "widen the active hero camera so the interlude carries air around the "
+            "subject before the next segment arrives",
+            "earth",
+            ["sierpinski"],
+            "weighted_by_salience",
+        ),
+    ],
+}
+
+
+def _select_micromove_cycle(role_value: str | None) -> list[_MicromoveEntry]:
+    """Pick the micromove cycle for the given ``ProgrammeRole`` value.
+
+    ``role_value`` is the StrEnum value (e.g. ``"ritual"``,
+    ``"hothouse_pressure"``) or ``None`` for no active programme.
+    Unrecognised roles fall through to ``_MICROMOVE_BASELINE``.
+    """
+    if role_value:
+        cycle = _MICROMOVE_BY_ROLE.get(role_value)
+        if cycle:
+            return cycle
+    return _MICROMOVE_BASELINE
 
 
 class DirectorLoop:
@@ -2073,9 +2587,21 @@ class DirectorLoop:
         ``continue``d — leaving the compositor layer with zero new
         impingements for the full 60s narrative cadence. This replaces
         the gap with a rotating baseline: one ``CompositionalImpingement``
-        per tick, cycling through overlay emphasis, preset bias, and
-        stance-indicator refresh targets so the surface has a felt
-        movement every tick.
+        per tick, cycling through ward emphasis, parametric mood pivots,
+        composition reframes, and chain-composition transitions so the
+        surface has a felt movement every tick.
+
+        Cc-task ``director-moves-richness-expansion`` (operator outcome 3
+        of 5) — the cycle is now PROGRAMME-CONDITIONED: when an active
+        ``Programme`` is wired, the micromove distribution selected for
+        that programme's role drives the fallback. RITUAL gets slow fades
+        + deepening; HOTHOUSE_PRESSURE gets hard cuts + gem spawns;
+        LISTENING gets ambient camera + album emphasis; etc. With no
+        programme active, the role-agnostic baseline cycle drives.
+        Operator constraint: NO presets — the cycle is parametric
+        modulation (``mood.tone_pivot``, ``pace.tempo_shift``,
+        ``composition.reframe``) and chain composition (``transition.*``,
+        ``gem.*``, ``homage.*``) only. The director NEVER picks a preset.
 
         The micromove's ``DirectorIntent`` is written to the same JSONL +
         narrative-state + DMN impingement stream as a real tick via
@@ -2095,73 +2621,11 @@ class DirectorLoop:
             # visibly shift the homage surface. Without this, the LLM
             # going quiet collapsed the surface to a static techno
             # overlay — the exact failure mode the operator flagged.
-            micromove_cycle: list[tuple[str, str, str, list[str], str]] = [
-                (
-                    "overlay.emphasis",
-                    "Fade the grounding-provenance ticker back up to full so the "
-                    "perceptual-field sources stay legibly attributed.",
-                    "air",
-                    ["grounding_provenance_ticker"],
-                    "sequential",
-                ),
-                (
-                    "preset.bias",
-                    "Push the effect graph a notch toward a less-dense family — "
-                    "small drift, no new content.",
-                    "water",
-                    ["pressure_gauge", "activity_variety_log"],
-                    "weighted_by_salience",
-                ),
-                (
-                    "overlay.emphasis",
-                    "Pulse the stance indicator so the current stance reads as active "
-                    "rather than frozen.",
-                    "earth",
-                    ["stance_indicator", "activity_header"],
-                    "sequential",
-                ),
-                (
-                    "camera.hero",
-                    "Keep the current hero camera but nudge its framing weight — a small "
-                    "gesture, not a cut.",
-                    "earth",
-                    ["sierpinski"],
-                    "weighted_by_salience",
-                ),
-                (
-                    "overlay.emphasis",
-                    "Dim the chrome half a step so the reverie breathes.",
-                    "void",
-                    ["impingement_cascade", "recruitment_candidate_panel"],
-                    "random",
-                ),
-                # NOTE (2026-04-21): gem.emphasis removed from the fallback
-                # cycle. The fallback micromove narrative is a meta-instruction
-                # for speak/log contexts ("Stamp a small graffito on the lower
-                # band — hold the attention on a fragment of what's present.")
-                # which the GEM producer (gem_producer._extract_emphasis_text)
-                # would treat as authentic graffito content and render inside
-                # the banner. GEM needs grounded mural content, not a
-                # description of what the mural should do. When the director's
-                # LLM emits a proper gem.emphasis DirectorIntent it still
-                # reaches GEM; when the fallback path fires, GEM stays on its
-                # static `» hapax «` frame rather than broadcasting
-                # director-internal prose.
-                (
-                    "ward.highlight",
-                    "Brighten the album face for a beat so the music stays legible.",
-                    "fire",
-                    ["album", "token_pole"],
-                    "weighted_by_salience",
-                ),
-                (
-                    "overlay.emphasis",
-                    "Sweep emphasis across the chat-ambient ward so conversation reads.",
-                    "air",
-                    ["chat_ambient_ward", "captions_source"],
-                    "sequential",
-                ),
-            ]
+            programme = self._active_programme()
+            role_value = (
+                getattr(getattr(programme, "role", None), "value", None) if programme else None
+            )
+            micromove_cycle = _select_micromove_cycle(role_value)
             idx = int(getattr(self, "_micromove_cycle_idx", 0)) % len(micromove_cycle)
             self._micromove_cycle_idx = idx + 1
             family, narrative, material, wards_to_emphasize, rotation = micromove_cycle[idx]
@@ -2763,86 +3227,89 @@ class DirectorLoop:
             "appreciation paragraph."
         )
 
-        # Preset-family vocabulary. Task #166 Phase 2 (2026-04-20):
-        # the prior hardcoded ``stance → specific-family`` table was the
-        # root cause of the narrative monoculture on `calm-textural` —
-        # the prompt was an expert-system rule in disguise, guaranteeing
-        # the LLM would repeat the same family assignments forever
-        # regardless of signal. Replaced with a neutral enumeration: all
-        # five families are presented without stance preference; the
-        # director picks from the perceptual field directly.
-        #
-        # Per operator memory ``feedback_no_expert_system_rules``:
-        # behavior should emerge from impingement → recruitment → role →
-        # persona; hardcoded cadence/threshold gates are bugs.
-        import random as _random
-
+        # Parametric modulation vocabulary. Cc-task
+        # `director-moves-richness-expansion` (2026-05-04): operator
+        # constraint — NO presets. The director never picks a preset
+        # family; instead it emits parametric modulation
+        # (mood.tone_pivot, pace.tempo_shift, composition.reframe) and
+        # chain composition (transition.fade, transition.cut, gem.*,
+        # homage.*). The system reads these from the recruitment surface
+        # and picks presets autonomously. Replaces the prior "Preset
+        # Family Vocabulary" prompt section, which violated the
+        # operator's constraint by asking the director to pick a family.
         parts.append("")
-        parts.append("## Preset Family Vocabulary")
+        parts.append("## Parametric modulation vocabulary (NO presets)")
         parts.append(
-            "Five preset families are available for `preset.bias`. Pick the "
-            "family that matches what the current perceptual field is "
-            "actually asking for — not by stance-table, by observed signal. "
-            "The families are presented here in arbitrary order; any "
-            "recurring pattern in your output is a pattern you are "
-            "choosing, not a default you are obeying."
+            "Operator constraint (cc-task `director-moves-richness-expansion`): "
+            "the director NEVER picks a preset family. Preset selection "
+            "is handled autonomously by the system from your parametric "
+            "signals. Instead of biasing a preset family, emit one of "
+            "the parametric modulations below — the system reads them "
+            "from the recruitment surface and picks presets that match. "
+            "Show the move with parameters, not the family name."
         )
-        _families = [
-            "  - audio-reactive: beat-synced / energy-linked; good when "
-            "something audibly rhythmic is active.",
-            "  - glitch-dense: high-entropy / cut-up / discovery; good for "
-            "SEEKING-stance exploration or critical-stance urgency.",
-            "  - calm-textural: gentle / minimal-movement; good when the "
-            "visual wants to not compete with speech or a held note.",
-            "  - warm-minimal: low-flux backdrop; good for ambient "
-            "continuity without interest-drop.",
-            "  - audio-abstract: slowly-evolving shapes reading as "
-            "listening-back; good for reflective or attentive registers.",
-        ]
-        _random.shuffle(_families)
-        parts.extend(_families)
         parts.append(
-            "Avoid repeating the same family across consecutive "
-            "preset.bias recruitments unless the field is genuinely "
-            "unchanged. Repetition without signal-change is a pattern "
-            "the director must feel necessary to break."
+            "  - **mood.tone_pivot** — parametric color/warmth/saturation. "
+            "Variants: warmer, cooler, brighten, deepen. Use when the "
+            "music or moment calls for a color register shift.\n"
+            "  - **pace.tempo_shift** — parametric cadence multiplier. "
+            "Variants: slow, quicken, steady. Use when the room's "
+            "rhythm should expand or contract.\n"
+            "  - **composition.reframe** — parametric reframe of the "
+            "active hero camera. Variants: tighten, widen, recompose. "
+            "Use when the same camera should be re-cropped without a cut.\n"
+            "  - **transition.fade / transition.cut** — chain-composition "
+            "transitions between scenes. fade = continuity, cut = "
+            "punctuation. Use when crossing a scene boundary.\n"
+            "  - **gem.spawn** — fresh CP437 graffiti onto the lower "
+            "band. Use when a phrase or beat warrants its own mark.\n"
+            "  - **programme.beat_advance** — structural cue that the "
+            "current programme has run its course. Use when the show "
+            "plan should walk forward.\n"
+            "Parametric repetition without signal-change is still a "
+            "pattern the director must feel necessary to break — vary "
+            "the variant, the salience, or the family across consecutive ticks."
         )
 
         # Multi-destination guidance. The same impingement may legitimately
         # fire on multiple surfaces (e.g., "cut to closeup of the album"
-        # = camera.hero + ward.highlight on album + preset.bias bringing
-        # in a matching family). Stage 1 routing fix (PR #1044) means each
-        # impingement targets exactly ONE family — so multi-surface moves
-        # require emitting MULTIPLE impingements in the same tick.
+        # = camera.hero + ward.highlight on album + composition.reframe).
+        # Stage 1 routing fix (PR #1044) means each impingement targets
+        # exactly ONE family — so multi-surface moves require emitting
+        # MULTIPLE impingements in the same tick.
         parts.append("")
         parts.append("## Multi-Surface Moves")
         parts.append(
             'A single directorial intent ("cut to closeup of the album") '
             "often deserves recruitment on multiple surfaces — the camera "
-            "swap, the album ward emphasis, AND a matching preset family. "
-            "Each compositional_impingement targets ONE intent_family, so "
-            "to fire multiple surfaces emit multiple impingements in the "
-            "same tick:"
+            "swap, the album ward emphasis, AND a parametric mood pivot "
+            "to match. Each compositional_impingement targets ONE "
+            "intent_family, so to fire multiple surfaces emit multiple "
+            "impingements in the same tick:"
         )
         parts.append(
             "  [\n"
             '    {intent_family: "camera.hero", '
-            'narrative: "show the overhead turntable", salience: 0.85},\n'
+            'narrative: "show the overhead turntable", salience: 0.85, '
+            'grounding_provenance: ["ir.ir_hand_zone"]},\n'
             '    {intent_family: "ward.highlight", '
-            'narrative: "brighten the album cover ward", salience: 0.7},\n'
-            '    {intent_family: "preset.bias", '
-            'narrative: "audio-reactive to sync to the spinning vinyl", '
-            "salience: 0.6}\n"
+            'narrative: "brighten the album cover ward", salience: 0.7, '
+            'grounding_provenance: ["album.artist", "album.title"]},\n'
+            '    {intent_family: "mood.tone_pivot", '
+            'narrative: "warm the room\'s color register to match the music", '
+            "salience: 0.6, "
+            'grounding_provenance: ["stimmung.dimensions.audience_engagement"]}\n'
             "  ]"
         )
         parts.append(
             "Reverie / shader effects are a SECONDARY companion to the "
             "livestream surface, never the primary destination of a "
-            "directorial move. If you want a Reverie companion, recruit "
-            'it explicitly with intent_family="preset.bias" — but the '
-            "primary surface (cameras, wards, overlays) must be recruited "
-            "first. Do not let the shader chain be the only thing you "
-            "drive."
+            "directorial move. The reverie chain reads the parametric "
+            "modulations (mood.tone_pivot, pace.tempo_shift) from the "
+            "recruitment surface and adapts its presets autonomously — "
+            "the primary surface (cameras, wards, overlays) must be "
+            "recruited first. Do not let the shader chain be the only "
+            "thing you drive, and do not pick presets directly."
         )
         parts.append("")
         parts.append("## GEM mural (lower-band CP437 graffiti)")
@@ -3124,7 +3591,7 @@ class DirectorLoop:
             '  "compositional_impingements": [\n'
             "    {\n"
             '      "narrative": "<gibson-verb description of the compositional move (used for cosine retrieval against the affordance catalog — not displayed to viewers; do NOT write content for any ward here, write what the move IS)>",\n'
-            '      "intent_family": "<camera.hero|preset.bias|overlay.emphasis|youtube.direction|attention.winner|stream_mode.transition|ward.size|ward.position|ward.staging|ward.highlight|ward.appearance|ward.cadence|ward.choreography|gem.emphasis|gem.composition>",\n'
+            '      "intent_family": "<camera.hero|overlay.emphasis|youtube.direction|attention.winner|stream_mode.transition|ward.size|ward.position|ward.staging|ward.highlight|ward.appearance|ward.cadence|ward.choreography|homage.rotation|homage.emergence|homage.swap|homage.cycle|homage.recede|homage.expand|gem.emphasis|gem.composition|gem.spawn|transition.fade|transition.cut|composition.reframe|pace.tempo_shift|mood.tone_pivot|programme.beat_advance>",\n'
             '      "material": "<water|fire|earth|air|void>",\n'
             '      "salience": 0.0..1.0,\n'
             '      "grounding_provenance": ["<signal.path.that.made.this.impingement.felt-necessary>", ...]\n'
@@ -3143,27 +3610,60 @@ class DirectorLoop:
             "**The richer shape is mandatory now.** The legacy "
             "{activity, react} fallback exists only for parser-error "
             "recovery — do not target it. Use compositional_impingements "
-            "to say what you want foregrounded, biased, dimmed, cut to, "
-            "or declared — the pipeline recruits the right capability "
-            "from the family you tag. "
+            "to say what you want foregrounded, dimmed, cut to, reframed, "
+            "slowed, or declared — the pipeline recruits the right "
+            "capability from the family you tag. "
             "**At least one compositional_impingement per tick.** A tick "
             "with empty compositional_impingements means you delegated "
             "the visible output to neutral defaults — which is acceptable "
             "ONLY if the perceptual signals genuinely call for that "
             "neutral state, and you should still emit it explicitly "
-            '(e.g., {intent_family: "preset.bias", narrative: "neutral '
-            'ambient — let the room breathe", salience: 0.3}). '
+            '(e.g., {intent_family: "pace.tempo_shift", narrative: "settle '
+            "the room's tempo to steady — neither slow nor quick\", "
+            'salience: 0.3, grounding_provenance: ["stimmung.dimensions.coherence"]}). '
             "**Mandatory grounding_provenance per impingement.** Every "
             "compositional_impingement MUST include at least one perceptual-field "
             "key in its grounding_provenance array — the signal path that made "
             'the move felt-necessary. "audio.midi.beat_position" for a '
-            'beat-synced preset, "visual.top_emotion" for a react choice, '
+            'beat-driven cut, "visual.top_emotion" for a react choice, '
             '"chat.recent_keywords" for a chat-driven ward emphasis. '
             "**An impingement with empty grounding_provenance is DROPPED** by "
-            "the R8 grounding-act gate — it never reaches the pipeline. If you "
-            "cannot name a real perceptual signal, name the closest available "
-            "signal or the stance-derived context that motivates the move. "
-            "Do not leave grounding_provenance empty."
+            "the R8 grounding-act gate — it never reaches the pipeline. "
+            "Per-family concrete grounding examples (pick whichever real "
+            "key from the Perceptual Field block above actually justifies "
+            "the move you are emitting):\n"
+            '  - camera.hero ← ["visual.per_camera_person_count.<role>", '
+            '"ir.ir_hand_zone", "visual.detected_action"]\n'
+            '  - composition.reframe ← ["visual.per_camera_person_count.<role>", '
+            '"visual.gaze_direction", "visual.posture"]\n'
+            '  - mood.tone_pivot ← ["stimmung.dimensions.coherence", '
+            '"stimmung.dimensions.audience_engagement", "stimmung.overall_stance"]\n'
+            '  - pace.tempo_shift ← ["tendency.beat_position_rate", '
+            '"tendency.chat_heating_rate", "audio.midi.tempo"]\n'
+            '  - transition.fade ← ["stimmung.dimensions.coherence", '
+            '"stimmung.dimensions.exploration_deficit", "presence.state"]\n'
+            '  - transition.cut ← ["audio.midi.beat_position", '
+            '"tendency.desk_energy_rate", "stimmung.overall_stance"]\n'
+            "  - gem.emphasis / gem.composition / gem.spawn ← "
+            '["chat.tier_counts", "audio.contact_mic.desk_tap_gesture", '
+            '"visual.top_emotion"]\n'
+            '  - ward.highlight ← ["album.artist", "album.title", '
+            '"chat.unique_authors", "presence.state"]\n'
+            '  - overlay.emphasis ← ["context.active_objective_ids", '
+            '"chat.recent_message_count", "context.stream_live"]\n'
+            '  - homage.* ← ["context.stream_live", "stimmung.overall_stance", '
+            '"presence.state"]\n'
+            '  - programme.beat_advance ← ["context.recent_reactions", '
+            '"stimmung.dimensions.audience_engagement"]\n'
+            "If you genuinely cannot name a real perceptual signal, name "
+            "the closest available signal or the stance-derived context "
+            "that motivates the move — never leave grounding_provenance empty. "
+            "**Operator constraint** (cc-task `director-moves-richness-expansion`): "
+            "do NOT emit ``preset.bias``. Preset selection is handled "
+            "autonomously by the system from your parametric signals "
+            "(``mood.tone_pivot``, ``pace.tempo_shift``, ``composition.reframe``); "
+            "the director NEVER picks a preset. Emit the parametric "
+            "modulation instead and let the system choose."
         )
         parts.append("Complete your sentences. Say as much or as little as the moment requires.")
         parts.append("</reactor_context>")
@@ -3310,11 +3810,19 @@ class DirectorLoop:
             {"role": "user", "content": content},
         ]
 
+        # 2026-05-04 latency cap: max_tokens 2048 → 512.
+        # Last 50 director outputs measured p95=406 tokens, max=440. Cap at 512
+        # leaves ~25% headroom while preventing pathological 2048-token rambles
+        # that gen at ~10 tok/s on Command-R 35B (would otherwise add 15+s wall
+        # time worst-case). Director output schema (narrative_text + 3
+        # compositional_impingements + structural_intent) is structurally
+        # bounded; if it ever genuinely exceeds 512, the schema needs trimming
+        # not the cap raised.
         body = json.dumps(
             {
                 "model": DIRECTOR_MODEL,
                 "messages": messages,
-                "max_tokens": 2048,
+                "max_tokens": 512,
                 "temperature": 0.7,
             }
         ).encode()
@@ -3467,11 +3975,19 @@ class DirectorLoop:
                                 + "\n\n"
                                 + gate_result.reroll_prompt_addendum
                             )
+                        # 2026-05-04 latency cap: max_tokens 2048 → 512.
+                        # Last 50 director outputs measured p95=406 tokens, max=440. Cap at 512
+                        # leaves ~25% headroom while preventing pathological 2048-token rambles
+                        # that gen at ~10 tok/s on Command-R 35B (would otherwise add 15+s wall
+                        # time worst-case). Director output schema (narrative_text + 3
+                        # compositional_impingements + structural_intent) is structurally
+                        # bounded; if it ever genuinely exceeds 512, the schema needs trimming
+                        # not the cap raised.
                         reroll_body = json.dumps(
                             {
                                 "model": DIRECTOR_MODEL,
                                 "messages": reroll_messages,
-                                "max_tokens": 2048,
+                                "max_tokens": 512,
                                 "temperature": 0.7,
                             }
                         ).encode()

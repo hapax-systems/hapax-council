@@ -178,6 +178,15 @@ from shared.scrim_wcs_claim_posture import (
     ScrimWCSClaimPostureProjection,
     WCSClaimReference,
 )
+
+# Public-API context manager. Called by the five per-outcome smoke tests
+# (vocal / programme_authoring / director_moves / chat_reactivity /
+# chat_response) shipping in follow-up cc-tasks; vulture cannot see the
+# eventual call sites.
+from shared.segment_observability import SegmentRecorder as _SegmentRecorder
+
+_SegmentRecorder
+
 from shared.self_grounding_envelope import (
     SelfPresenceEnvelopeProjection,
     build_envelope_projection,
@@ -2286,3 +2295,83 @@ from shared.audio_graph.validator import (
 
 _extract_quoted_string  # noqa: B018
 _extract_token  # noqa: B018
+
+# audio-graph SSOT P1 — 17 gap-folds extension (cc-task
+# `audio-graph-ssot-p1-compiler-validator-with-17-gap-folds`, this PR).
+# Gap-fold model classes + their reflection-invoked validators on top of
+# the merged-PR base. Kept separate from the upstream block above so the
+# next merge can drop these without touching the base entries.
+from shared.audio_graph.schema import AudioNode as _AG_AudioNode2
+from shared.audio_graph.schema import ChannelDownmix as _AG_ChannelDownmix
+from shared.audio_graph.schema import FilterStage as _AG_FilterStage
+
+_AG_FilterStage._ladspa_requires_plugin  # type: ignore[attr-defined]
+_AG_ChannelDownmix._strategy_requires_correct_payload  # type: ignore[attr-defined]
+_AG_AudioNode2._custom_template_requires_stages  # type: ignore[attr-defined]
+
+# AudioGraph extras introduced by gap-fold work.
+from shared.audio_graph.schema import AudioGraph as _AG_AudioGraph2
+
+_AG_AudioGraph2._pipewire_names_unique  # type: ignore[attr-defined]
+_AG_AudioGraph2._downmixes_reference_valid_nodes  # type: ignore[attr-defined]
+_AG_AudioGraph2.node_by_pipewire_name
+_AG_AudioGraph2.to_yaml
+
+# Validator gap-fold methods.
+from shared.audio_graph.validator import AudioGraphValidator as _AG_Validator2
+
+_AG_Validator2.decompose_confs
+_AG_Validator2.conf_decomposed_cleanly
+
+# YouTube chat reader Protocol — methods are satisfied by epsilon's concrete reader at runtime
+# via structural typing. Vulture cannot see Protocol satisfaction.
+from agents.youtube_chat_reader import YoutubeChatReader as _YT_ChatReader
+
+_YT_ChatReader.live_chat_id
+_YT_ChatReader.recent_messages
+
+# Programme-author asset bundles — ``is_empty`` is part of the public
+# ``ProgrammeAssets`` contract that the narrative composer + director
+# surfaces will consume. The wiring lands in a follow-up PR; this
+# entry pins the property as a known dynamic entrypoint until then.
+from agents.programme_authors.asset_resolver import (
+    IcebergAssets as _PA_IcebergAssets,
+)
+from agents.programme_authors.asset_resolver import (
+    InterviewAssets as _PA_InterviewAssets,
+)
+from agents.programme_authors.asset_resolver import (
+    LectureAssets as _PA_LectureAssets,
+)
+from agents.programme_authors.asset_resolver import (
+    RantAssets as _PA_RantAssets,
+)
+from agents.programme_authors.asset_resolver import (
+    ReactAssets as _PA_ReactAssets,
+)
+from agents.programme_authors.asset_resolver import (
+    TierListAssets as _PA_TierListAssets,
+)
+from agents.programme_authors.asset_resolver import (
+    Top10Assets as _PA_Top10Assets,
+)
+
+_PA_TierListAssets.is_empty
+_PA_Top10Assets.is_empty
+_PA_RantAssets.is_empty
+_PA_ReactAssets.is_empty
+_PA_IcebergAssets.is_empty
+_PA_InterviewAssets.is_empty
+_PA_LectureAssets.is_empty
+
+
+# Cc-task ``activity-reveal-ward-p1-durf-migration`` (2026-05-04):
+# durf_source.py defines a module-level ``__getattr__`` to lazily
+# resolve the ``DURFCairoSource`` / ``CodingActivityReveal`` aliases
+# without inducing a circular import. Python invokes module
+# ``__getattr__`` from the import machinery on attribute miss, so the
+# function is never referenced statically — vulture flags it. Whitelist
+# the dynamic-entrypoint reference here.
+from agents.studio_compositor import durf_source as _AR_durf_module
+
+_AR_durf_module.__getattr__

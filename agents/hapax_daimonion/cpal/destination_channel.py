@@ -218,18 +218,20 @@ def classify_destination(
     if _has_explicit_broadcast_intent(content):
         return DestinationChannel.LIVESTREAM
 
-    # Rule 3.5: Autonomous-narrative broadcast bias.
+    # Rule 3.5: Endogenous-narrative broadcast bias.
     # When the feature flag is enabled and an active programme with a
-    # broadcast-eligible role exists, autonomous narrative impingements
-    # classify as LIVESTREAM. This is a soft prior — all downstream
-    # safety gates (programme auth, audio health, route evidence) still
-    # apply in resolve_playback_decision. The intent is explicit at
-    # classification time (not implicit/default) because the programme
-    # context is the evidence for broadcast authorization.
+    # broadcast-eligible role exists, endogenous narrative impingements
+    # classify as LIVESTREAM. This covers the legacy ``autonomous_narrative``
+    # source plus the endogenous-drive emitters (``endogenous.narrative_drive``,
+    # ``endogenous.gem``) that compose Hapax's autonomous vocal presence on
+    # the livestream. This is a soft prior — all downstream safety gates
+    # (programme auth, audio health, route evidence) still apply in
+    # resolve_playback_decision. The intent is explicit at classification
+    # time (not implicit/default) because the programme context is the
+    # evidence for broadcast authorization.
     if (
         _is_broadcast_bias_enabled()
-        and isinstance(source, str)
-        and source == "autonomous_narrative"
+        and _is_endogenous_narrative_source(source)
         and _programme_authorizes_broadcast()
     ):
         return DestinationChannel.LIVESTREAM
@@ -297,7 +299,8 @@ def resolve_playback_decision(
             },
         )
 
-    intent = _broadcast_intent_evidence(content)
+    source = getattr(impingement, "source", "") or ""
+    intent = _broadcast_intent_evidence(content, source=source)
     programme_auth = _programme_authorization_evidence(content, now=now)
     audio_health = read_broadcast_audio_health_state(
         broadcast_audio_health_path,
@@ -478,7 +481,7 @@ def _is_private_risk_context(source: object, content: dict[str, Any]) -> bool:
 
 
 def _is_broadcast_bias_enabled() -> bool:
-    """Return ``True`` when autonomous-narrative broadcast bias is active.
+    """Return ``True`` when endogenous-narrative broadcast bias is active.
 
     Reads ``HAPAX_DAIMONION_BROADCAST_BIAS_ENABLED`` on every call (no
     caching) so an operator flipping the flag at runtime takes effect on
@@ -493,11 +496,38 @@ def _is_broadcast_bias_enabled() -> bool:
     return raw.strip() != "0"
 
 
+# Sources whose impingements are eligible for the broadcast bias. The
+# legacy ``autonomous_narrative`` source covered the original autonomous
+# narration path; the ``endogenous.*`` sources cover narrative_drive,
+# gem-producer, and other endogenous cognitive emitters whose default
+# fall-through to PRIVATE leaves Hapax silent on the livestream.
+_BROADCAST_BIAS_ENDOGENOUS_PREFIX: str = "endogenous."
+_BROADCAST_BIAS_LEGACY_SOURCES: frozenset[str] = frozenset({"autonomous_narrative"})
+
+
+def _is_endogenous_narrative_source(source: object) -> bool:
+    """Return ``True`` when ``source`` is a broadcast-bias-eligible emitter.
+
+    Matches both the legacy ``autonomous_narrative`` source (preserved
+    for the existing autonomous narration path) and any ``endogenous.*``
+    cognitive emitter (narrative_drive, gem-producer, etc.).
+    """
+    if not isinstance(source, str):
+        return False
+    if source in _BROADCAST_BIAS_LEGACY_SOURCES:
+        return True
+    return source.startswith(_BROADCAST_BIAS_ENDOGENOUS_PREFIX)
+
+
 # Roles where broadcast voice is appropriate. LISTENING is excluded
 # because the operator explicitly chose a receptive programme role —
-# Hapax speaking to the audience defeats the role's intent.
+# Hapax speaking to the audience defeats the role's intent. The seven
+# segmented-content roles (TIER_LIST through LECTURE, shipped via
+# #2465) are all broadcast-eligible: each is a Hapax-authored
+# narrative format whose entire point is to broadcast.
 _BROADCAST_ELIGIBLE_ROLES: frozenset[str] = frozenset(
     {
+        # Operator-context roles (Phase 1)
         "showcase",
         "ritual",
         "interlude",
@@ -509,6 +539,14 @@ _BROADCAST_ELIGIBLE_ROLES: frozenset[str] = frozenset(
         "experiment",
         "repair",
         "invitation",
+        # Segmented-content roles (operator outcome 2)
+        "tier_list",
+        "top_10",
+        "rant",
+        "react",
+        "iceberg",
+        "interview",
+        "lecture",
     }
 )
 
@@ -534,7 +572,11 @@ def _programme_authorizes_broadcast() -> bool:
         return False
 
 
-def _broadcast_intent_evidence(content: dict[str, Any]) -> dict[str, Any]:
+def _broadcast_intent_evidence(
+    content: dict[str, Any],
+    *,
+    source: object = "",
+) -> dict[str, Any]:
     candidates: tuple[object, ...] = (
         content.get("voice_output_destination"),
         content.get("destination"),
@@ -574,11 +616,23 @@ def _broadcast_intent_evidence(content: dict[str, Any]) -> dict[str, Any]:
             )
             or nested.get("public_broadcast_intent") is True
         )
+    # Implicit intent from the broadcast-bias path: when the flag is on
+    # AND the source is a bias-eligible endogenous emitter AND the active
+    # programme authorizes broadcast, that combination IS the intent.
+    # The programme authorization check is the load-bearing safety gate,
+    # not the per-utterance token; without it this branch returns False
+    # and the explicit-token requirement still applies.
+    bias_implicit = (
+        _is_broadcast_bias_enabled()
+        and _is_endogenous_narrative_source(source)
+        and _programme_authorizes_broadcast()
+    )
     return {
-        "present": bool(explicit_bool or explicit_token or nested_token),
+        "present": bool(explicit_bool or explicit_token or nested_token or bias_implicit),
         "explicit_bool": explicit_bool,
         "explicit_token": explicit_token,
         "nested_token": nested_token,
+        "bias_implicit": bias_implicit,
     }
 
 

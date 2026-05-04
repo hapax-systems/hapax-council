@@ -10,7 +10,9 @@ import pytest
 import yaml
 
 from agents.studio_compositor import durf_source as _durf_module
+from agents.studio_compositor.activity_reveal_ward import ActivityRevealMixin
 from agents.studio_compositor.cairo_sources import get_cairo_source_class
+from agents.studio_compositor.coding_activity_reveal import CodingActivityReveal
 from agents.studio_compositor.durf_redaction import RedactionAction
 from agents.studio_compositor.durf_source import (
     CodexPaneRegistry,
@@ -21,6 +23,10 @@ from agents.studio_compositor.durf_source import (
     capture_tmux_text,
     is_pane_stale,
     redact_terminal_lines,
+)
+from agents.studio_compositor.homage.transitional_source import (
+    HomageTransitionalSource,
+    TransitionState,
 )
 
 
@@ -389,3 +395,193 @@ class TestLayoutIntegration:
         assert surf["geometry"]["w"] == 1920
         assert surf["geometry"]["h"] == 1080
         assert surf["z_order"] == 5
+
+
+# ── Cc-task ``activity-reveal-ward-p1-durf-migration`` ──────────────────────
+
+
+class TestActivityRevealMigration:
+    """Five new tests for the P1 lift into the activity-reveal-ward family.
+
+    Coverage: alias resolution, FSM integration timings, suppression
+    wiring, redaction unchanged, claim score map.
+    """
+
+    def test_alias_resolution(self) -> None:
+        """``DURFCairoSource`` alias resolves to ``CodingActivityReveal``.
+
+        Both the module-level attribute on ``durf_source`` (via the
+        ``__getattr__`` shim) and the ``cairo_sources`` registry entry
+        return the same class.
+        """
+
+        # Module-level alias.
+        assert _durf_module.DURFCairoSource is CodingActivityReveal
+        assert DURFCairoSource is CodingActivityReveal
+        # cairo_sources registry — both names resolve to the same class.
+        assert get_cairo_source_class("CodingActivityReveal") is CodingActivityReveal
+        assert get_cairo_source_class("DURFCairoSource") is CodingActivityReveal
+
+    def test_inherits_both_parents_and_declares_family_contract(self) -> None:
+        """``CodingActivityReveal`` is a Cairo source AND a family member."""
+
+        assert issubclass(CodingActivityReveal, HomageTransitionalSource)
+        assert issubclass(CodingActivityReveal, ActivityRevealMixin)
+        # Mixin-required class vars.
+        assert CodingActivityReveal.WARD_ID == "durf"
+        assert CodingActivityReveal.SOURCE_KIND == "cairo"
+        assert (
+            frozenset({"album", "gem", "grounding_provenance_ticker"})
+            == CodingActivityReveal.SUPPRESS_WHEN_ACTIVE
+        )
+
+    def test_fsm_integration_timings(self, codex_config: Path) -> None:
+        """Constructor wires ``entering_duration_s=0.4`` and ``exiting_duration_s=0.6``.
+
+        Matches legacy ``durf_source._ENTER_RAMP_MS=400`` /
+        ``_EXIT_RAMP_MS=600``.
+        """
+
+        src = CodingActivityReveal(config_path=codex_config, start_thread=False)
+        try:
+            assert src.transition_state in (
+                TransitionState.HOLD,
+                TransitionState.ABSENT,
+                TransitionState.ENTERING,
+            )
+            assert src._entering_duration_s == pytest.approx(0.4)
+            assert src._exiting_duration_s == pytest.approx(0.6)
+        finally:
+            src.stop()
+
+    def test_suppression_writes_visible_false_when_gate_active(
+        self,
+        registry_paths: tuple[Path, Path, Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Gate-active poll cycle writes ``visible=false`` to the three
+        suppressed wards' ``ward-properties.json`` entries."""
+
+        from agents.studio_compositor import ward_properties as wp
+
+        # Redirect the ward-properties JSON to tmp + clear the cache so
+        # the test reads only what this test wrote.
+        ward_path = tmp_path / "ward-properties.json"
+        monkeypatch.setattr(wp, "WARD_PROPERTIES_PATH", ward_path)
+        wp.clear_ward_properties_cache()
+
+        # Wire registry + claim + relay state so the gate is active.
+        _, relay_dir, claim_dir, health_path = registry_paths
+        (claim_dir / "cc-active-task-cx-cyan").write_text(
+            "coding-session-livestream-homage-ward\n",
+            encoding="utf-8",
+        )
+        (relay_dir / "cx-cyan.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "status": "claimed",
+                    "task_id": "coding-session-livestream-homage-ward",
+                    "branch": "codex/cx-cyan-coding-session-livestream-homage-ward",
+                }
+            ),
+            encoding="utf-8",
+        )
+        _write_health(health_path)
+        # Force the consent path to "not consent_safe" so the gate
+        # decision uses pane visibility, and stub the tmux capture so a
+        # selected lane comes back visible.
+        monkeypatch.setattr(_durf_module, "_consent_safe_active", lambda: False)
+        monkeypatch.setattr(_durf_module, "_unsafe_public_bypass_active", lambda: False)
+        monkeypatch.setattr(
+            _durf_module,
+            "capture_tmux_text",
+            lambda *args, **kwargs: _durf_module.TmuxCaptureResult(
+                ok=True, lines=("ok line one", "ok line two")
+            ),
+        )
+
+        src = CodingActivityReveal(registry=_registry(registry_paths), start_thread=False)
+        try:
+            snapshot = src._poll_once(now=100.0)
+            # Gate must actually be active for the suppression to fire.
+            assert any(p.visible for p in snapshot.panes)
+        finally:
+            src.stop()
+
+        # ward-properties.json now carries ``visible=false`` for all
+        # three suppressed wards.
+        for ward_id in CodingActivityReveal.SUPPRESS_WHEN_ACTIVE:
+            props = wp.get_specific_ward_properties(ward_id)
+            assert props is not None, f"no entry written for {ward_id}"
+            assert props.visible is False, f"{ward_id}: expected visible=False, got {props.visible}"
+
+    def test_redaction_unchanged(self) -> None:
+        """The redaction pipeline (RISK_PATTERNS, redact_terminal_lines)
+        keeps the same behaviour the legacy DURFCairoSource relied on."""
+
+        # Lines containing a known risk substring should suppress.
+        suppressed = redact_terminal_lines(("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDxxx",))
+        assert suppressed.action == RedactionAction.SUPPRESS
+
+        # Operator legal-name pattern still suppresses.
+        legal_hit = redact_terminal_lines(("git log Ryan Kleeberger",))
+        assert legal_hit.action == RedactionAction.SUPPRESS
+
+        # Clean text passes through.
+        clean = redact_terminal_lines(("def foo(): return 42", "tests pass"))
+        assert clean.action != RedactionAction.SUPPRESS
+
+    def test_claim_score_maps_visible_pane_count(self, codex_config: Path) -> None:
+        """``_compute_claim_score`` returns visible-pane-count / 4 in [0, 1].
+
+        Drives the snapshot directly to exercise the score map without
+        spinning up the full registry / capture path.
+        """
+
+        src = CodingActivityReveal(config_path=codex_config, start_thread=False)
+        try:
+
+            def _make_pane(visible: bool, lane_id: str) -> DURFPaneState:
+                return DURFPaneState(
+                    lane_id=lane_id,
+                    glyph="?",
+                    tmux_target=None,
+                    visible=visible,
+                )
+
+            # 0 visible → 0.0
+            with src._snapshot_lock:
+                src._snapshot = DURFSourceSnapshot(panes=(), captured_at=0.0)
+            assert src._compute_claim_score() == pytest.approx(0.0)
+
+            # 2 visible / 4 → 0.5
+            with src._snapshot_lock:
+                src._snapshot = DURFSourceSnapshot(
+                    panes=(
+                        _make_pane(True, "cx-cyan"),
+                        _make_pane(False, "cx-blue"),
+                        _make_pane(True, "cx-violet"),
+                        _make_pane(False, "cx-amber"),
+                    ),
+                    captured_at=0.0,
+                )
+            assert src._compute_claim_score() == pytest.approx(0.5)
+
+            # 4 visible → 1.0 (full score)
+            with src._snapshot_lock:
+                src._snapshot = DURFSourceSnapshot(
+                    panes=tuple(_make_pane(True, f"cx-{i}") for i in range(4)),
+                    captured_at=0.0,
+                )
+            assert src._compute_claim_score() == pytest.approx(1.0)
+
+            # 5 visible → still capped at 1.0 (defensive against >4)
+            with src._snapshot_lock:
+                src._snapshot = DURFSourceSnapshot(
+                    panes=tuple(_make_pane(True, f"cx-{i}") for i in range(5)),
+                    captured_at=0.0,
+                )
+            assert src._compute_claim_score() == pytest.approx(1.0)
+        finally:
+            src.stop()

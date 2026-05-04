@@ -55,10 +55,23 @@ class ProgrammeDisplayDensity(StrEnum):
 
 
 class ProgrammeRole(StrEnum):
-    """Twelve roles cover the operator's livestream content space.
+    """Programme roles spanning the operator's livestream content space.
 
-    Closed set: widening produces decision paralysis for the Hapax-
-    authored programme planner.
+    The first twelve roles are the original Phase 1 vocabulary covering
+    operator-context programmes (listening / work_block / wind_down /
+    etc.). The trailing seven (TIER_LIST through LECTURE) are
+    segmented-content formats added per operator outcome 2 — auto-
+    programmed segmented content. They give the Hapax-authored
+    programme planner an explicit vocabulary for recognizable formats
+    (tier list, top 10, rant, react, iceberg, interview, lecture)
+    which downstream consumers (planner prompt, programme_authors
+    agent, ward composers, preset_recruitment_consumer family bias)
+    wire up incrementally in follow-up cc-tasks.
+
+    Set is open to extension. Earlier "closed set" framing was a Phase
+    1 design comment that the operator has now overridden — the
+    grounding axiom (programmes EXPAND grounding opportunities, never
+    REPLACE them) gives no architectural reason to fix the role count.
     """
 
     LISTENING = "listening"
@@ -73,6 +86,17 @@ class ProgrammeRole(StrEnum):
     EXPERIMENT = "experiment"
     REPAIR = "repair"
     INVITATION = "invitation"
+
+    # Segmented-content formats — operator outcome 2 (auto-programmed
+    # segmented content). Each maps to a recognizable content format
+    # Hapax can run as a structured segment on the livestream.
+    TIER_LIST = "tier_list"
+    TOP_10 = "top_10"
+    RANT = "rant"
+    REACT = "react"
+    ICEBERG = "iceberg"
+    INTERVIEW = "interview"
+    LECTURE = "lecture"
 
 
 class ProgrammeStatus(StrEnum):

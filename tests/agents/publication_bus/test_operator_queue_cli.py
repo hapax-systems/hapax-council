@@ -47,23 +47,24 @@ def test_check_creds_mode_lists_per_key(capsys, monkeypatch):
     # operator's actual pass-store.
     from agents.publication_bus import __main__ as m
 
+    # Cred-blocked keys after PRs #1676 / #1680 / batch wiring +
+    # youtube-force-ssl-token added with the chat-response-verbal-and-text
+    # publisher. The fake says all cred-blocked keys have arrived.
     def fake_present(key: str) -> bool:
-        # crossref creds "arrived"; everything else still missing
-        # (must use an in-the-list key — most non-Crossref keys flipped
-        # to WIRED via PRs #1676 / #1680 / and this PR's batch wiring)
-        return key == "crossref/depositor-credentials"
+        return key in {
+            "crossref/depositor-credentials",
+            "google/youtube-force-ssl-token",
+        }
 
     monkeypatch.setattr(m, "_key_present_in_pass", fake_present)
     rc = m.main(["--check-creds"])
     assert rc == 0
     captured = capsys.readouterr()
-    # Only crossref/depositor-credentials remains cred-blocked after the
-    # batch wire-PR. When the mock says it's present, every cred-blocked
-    # key has arrived — no "Still cred-blocked" block renders.
-    assert "PRESENT:   1" in captured.out
+    # All cred-blocked keys present → no "Still cred-blocked" block renders.
     assert "MISSING:   0" in captured.out
     assert "Ready-to-wire" in captured.out
     assert "+ crossref/depositor-credentials" in captured.out
+    assert "+ google/youtube-force-ssl-token" in captured.out
     assert "Still cred-blocked" not in captured.out
 
 

@@ -1,0 +1,28 @@
+name: youtube_chat_reader
+category: perception
+capabilities:
+  - youtube.live_chat_ingestion
+  - chat.impingement_emit
+  - chat.state_surface_write
+description: |
+  Polls YouTube ``liveChatMessages.list`` on the active broadcast and
+  emits one impingement per message onto the DMN bus. Anonymizes
+  authors per session (HMAC, fresh key per process) so chat content
+  can flow into the AffordancePipeline without violating the
+  ``interpersonal_transparency`` axiom. Writes a 50-message ring
+  buffer to ``/dev/shm/hapax-chat/recent.jsonl`` for the compositor
+  chat ward.
+runtime: long_running_daemon
+deps:
+  - shared.youtube_api_client
+  - shared.youtube_rate_limiter
+  - shared.google_auth
+metrics:
+  - hapax_youtube_chat_messages_total
+  - hapax_youtube_chat_polls_total
+  - hapax_youtube_chat_active
+  - hapax_youtube_chat_ring_size
+  - hapax_broadcast_yt_api_calls_total
+governance:
+  axiom: interpersonal_transparency
+  invariant: "no plaintext author identifiers persist; per-process HMAC key only"

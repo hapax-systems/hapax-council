@@ -21,3 +21,19 @@ surface long-form publication uses v5.
 """
 
 from __future__ import annotations
+
+from agents.publication_bus.youtube_live_chat_publisher import (
+    YOUTUBE_LIVE_CHAT_SURFACE,
+    LiveChatTokenBucket,
+    YoutubeLiveChatPublisher,
+)
+from agents.publication_bus.youtube_live_chat_publisher import (
+    load_default_allowlist as load_youtube_live_chat_allowlist,
+)
+
+__all__ = [
+    "YOUTUBE_LIVE_CHAT_SURFACE",
+    "LiveChatTokenBucket",
+    "YoutubeLiveChatPublisher",
+    "load_youtube_live_chat_allowlist",
+]

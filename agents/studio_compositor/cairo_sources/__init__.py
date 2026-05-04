@@ -173,6 +173,51 @@ def _register_builtins() -> None:
     from agents.studio_compositor.programme_state_ward import ProgrammeStateCairoSource
 
     register("ProgrammeStateCairoSource", ProgrammeStateCairoSource)
+    # ward-programme-history-e-panel (2026-05-04) — Enlightenment-GTK +
+    # BitchX HOMAGE Ward hybrid epic. Multi-session arc surface using
+    # the Moksha curly-chrome aesthetic from PR #1314
+    # (ytb-AUTH-ENLIGHTENMENT-package). Default OFF via
+    # HAPAX_LORE_PROGRAMME_HISTORY_ENABLED so the operator can flip it
+    # after a visual sign-off without forcing default-layout changes.
+    from agents.studio_compositor.programme_history_ward import (
+        ProgrammeHistoryCairoSource,
+    )
+
+    register("ProgrammeHistoryCairoSource", ProgrammeHistoryCairoSource)
+    # ward-precedent-ticker-bitchx (cc-task, 2026-05-04) — axiom precedent
+    # history ward. BitchX-grammar header + most-recent N precedents by
+    # ratification date. Default OFF via HAPAX_LORE_PRECEDENT_TICKER_ENABLED;
+    # registered so layout JSON can declare it independent of the flag.
+    from agents.studio_compositor.precedent_ticker_ward import (
+        PrecedentTickerCairoSource,
+    )
+
+    register("PrecedentTickerCairoSource", PrecedentTickerCairoSource)
+    # ytb-LORE-EXT-future-wards (cc-task ward-interactive-lore-query-bitchx-repl,
+    # 2026-05-04) — chat-driven !lore REPL ward. Allowlist gate is load-bearing:
+    # the ward only renders queries from operator-curated chat-authority
+    # channelIds (see config/lore/chat-authority-allowlist.yaml or
+    # HAPAX_LORE_CHAT_AUTHORITY_ALLOWLIST env override). Bridges outcome-5
+    # chat work into the lore-surface ward family.
+    from agents.studio_compositor.interactive_lore_query_ward import (
+        InteractiveLoreQueryWard,
+    )
+
+    register("InteractiveLoreQueryWard", InteractiveLoreQueryWard)
+    # ward-research-instrument-dashboard-hybrid (cc-task, 2026-05-04) —
+    # KEYSTONE hybrid Moksha-frame + BitchX-grid dashboard. Surfaces
+    # research conditions × claims × status. Default OFF via
+    # HAPAX_LORE_RESEARCH_INSTRUMENT_DASHBOARD_ENABLED so the operator
+    # can flip after a visual sign-off without forcing default-layout
+    # changes.
+    from agents.studio_compositor.research_instrument_dashboard_ward import (
+        ResearchInstrumentDashboardCairoSource,
+    )
+
+    register(
+        "ResearchInstrumentDashboardCairoSource",
+        ResearchInstrumentDashboardCairoSource,
+    )
     # programme-banner-ward (PR #2366, 2026-05-03) — Cairo lower-third
     # surfacing the active programme's role + narrative_beat + residual
     # time. Per /tmp/wsjf-path-content-programming.md §3 G1: the planner
@@ -188,9 +233,21 @@ def _register_builtins() -> None:
     # directive. First full-frame HOMAGE ward. Text-only tmux-capture of
     # the 4-session Claude-Code coordination setup. Design:
     # docs/research/2026-04-24-durf-design.md.
-    from agents.studio_compositor.durf_source import DURFCairoSource
+    #
+    # Cc-task ``activity-reveal-ward-p1-durf-migration`` (2026-05-04):
+    # the class moved to ``agents.studio_compositor.coding_activity_reveal
+    # .CodingActivityReveal`` to integrate with the
+    # ``ActivityRevealMixin`` family base. ``DURFCairoSource`` is
+    # preserved as a module-level alias on ``durf_source`` (see that
+    # module) AND registered here under both names so existing layout
+    # JSONs that declare ``"DURFCairoSource"`` keep resolving while new
+    # layouts may declare ``"CodingActivityReveal"`` directly.
+    from agents.studio_compositor.coding_activity_reveal import (
+        CodingActivityReveal,
+    )
 
-    register("DURFCairoSource", DURFCairoSource)
+    register("CodingActivityReveal", CodingActivityReveal)
+    register("DURFCairoSource", CodingActivityReveal)
     # ef7b-165 Phase 9 Part 2 (2026-04-24) — anti-personification egress
     # footer. Static text strip framing the channel as a research
     # instrument. Mounted in default.json; the source fails closed to an

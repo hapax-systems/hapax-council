@@ -375,6 +375,42 @@ _ROLE_TIER_DEFAULTS: dict[str, RoleTierBand] = {
         default_band=(VoiceTier.UNADORNED, VoiceTier.RADIO),
         excursion_set=frozenset({VoiceTier.BROADCAST_GHOST}),
     ),
+    # Segmented-content formats (operator outcome 2). Bands per the
+    # cc-task `segmented-content-formats-expansion`:
+    #   tier_list / top_10 → mid (work_block-like, structured exposition)
+    #   rant              → high (sustained vocal energy, processed)
+    #   react             → high (responsive, expressive)
+    #   iceberg           → low-to-mid (depth-tiered surface→deep)
+    #   interview         → mid (dialogue)
+    #   lecture           → mid (extended monologue, intelligibility-critical)
+    "tier_list": RoleTierBand(
+        default_band=(VoiceTier.UNADORNED, VoiceTier.RADIO),
+        excursion_set=frozenset({VoiceTier.BROADCAST_GHOST}),
+    ),
+    "top_10": RoleTierBand(
+        default_band=(VoiceTier.UNADORNED, VoiceTier.RADIO),
+        excursion_set=frozenset({VoiceTier.BROADCAST_GHOST}),
+    ),
+    "rant": RoleTierBand(
+        default_band=(VoiceTier.MEMORY, VoiceTier.UNDERWATER),
+        excursion_set=frozenset({VoiceTier.GRANULAR_WASH}),
+    ),
+    "react": RoleTierBand(
+        default_band=(VoiceTier.MEMORY, VoiceTier.UNDERWATER),
+        excursion_set=frozenset({VoiceTier.BROADCAST_GHOST}),
+    ),
+    "iceberg": RoleTierBand(
+        default_band=(VoiceTier.UNADORNED, VoiceTier.BROADCAST_GHOST),
+        excursion_set=frozenset({VoiceTier.MEMORY, VoiceTier.UNDERWATER}),
+    ),
+    "interview": RoleTierBand(
+        default_band=(VoiceTier.UNADORNED, VoiceTier.RADIO),
+        excursion_set=frozenset({VoiceTier.BROADCAST_GHOST}),
+    ),
+    "lecture": RoleTierBand(
+        default_band=(VoiceTier.UNADORNED, VoiceTier.UNADORNED),
+        excursion_set=frozenset({VoiceTier.RADIO}),
+    ),
 }
 
 
