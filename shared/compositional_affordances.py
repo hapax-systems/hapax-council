@@ -756,6 +756,128 @@ _GEM: list[CapabilityRecord] = [
         "rewrites the GEM ward's standing composition when the room's subject "
         "shifts — the murals's own way of saying 'we are doing a different thing now'",
     ),
+    # gem.spawn (cc-task `director-moves-richness-expansion`): a fresh
+    # mural spawn rather than an emphasis or composition shift. Use when
+    # the moment warrants its own mark — a phrase, a beat, a punctuation
+    # the lower band should carry alongside whatever was there.
+    _record(
+        "gem.spawn.fresh-mural",
+        "mints a new CP437 graffiti onto the lower band when a phrase, beat, "
+        "or punctuation warrants its own mark — distinct from modulating an "
+        "existing mural; this is the surface authoring a new fragment from scratch",
+    ),
+]
+
+
+# ── Composition reframe affordances ───────────────────────────────────────
+# Parametric reframe of the active hero camera. Distinct from camera.hero
+# (which swaps which camera is foregrounded) — composition.reframe modulates
+# the SAME camera's crop / zoom / position_offset envelope so the framing
+# itself shifts without a cut. Operator constraint (cc-task
+# `director-moves-richness-expansion`): NO presets, parametric only.
+
+_COMPOSITION_REFRAME: list[CapabilityRecord] = [
+    _record(
+        "composition.reframe.tighten",
+        "tightens the active hero camera's framing — pulls in toward the subject "
+        "without swapping cameras, the move when the moment wants closer attention "
+        "on what is already on screen",
+    ),
+    _record(
+        "composition.reframe.widen",
+        "widens the active hero camera's framing — pulls back to give the subject "
+        "more air, the move when the moment wants context around what is on screen",
+    ),
+    _record(
+        "composition.reframe.recompose",
+        "shifts the active hero camera's framing center — the same subject viewed "
+        "from a re-balanced composition, the move when the visual balance has drifted "
+        "and a small spatial reset is the right gesture",
+    ),
+]
+
+
+# ── Pace / tempo shift affordances ────────────────────────────────────────
+# Parametric shift of the surface's effective cadence. Slows or accelerates
+# ward emphasis decay, transition timing, narrative-tick perceptual cadence.
+# Writes to /dev/shm/hapax-compositor/pace-state.json so cadence-aware
+# consumers (homage choreographer, ward animation, structural director)
+# can pick up the multiplier on their next tick boundary.
+
+_PACE: list[CapabilityRecord] = [
+    _record(
+        "pace.tempo_shift.slow",
+        "slows the room's effective tempo — extends emphasis windows, lengthens "
+        "transition timing, the move when the moment wants to breathe and "
+        "the room is moving faster than it needs to",
+    ),
+    _record(
+        "pace.tempo_shift.quicken",
+        "quickens the room's effective tempo — shortens emphasis windows, snaps "
+        "transition timing tighter, the move when the moment is building heat and "
+        "the surface should pick up its step to match",
+    ),
+    _record(
+        "pace.tempo_shift.steady",
+        "settles the room's effective tempo back to baseline — neither slow nor "
+        "quick, the move when prior pacing has run its course and the surface "
+        "should return to its standing rhythm",
+    ),
+]
+
+
+# ── Mood / tone pivot affordances ─────────────────────────────────────────
+# Parametric color / warmth / saturation pivot. Distinct from preset.bias
+# (operator forbids preset selection): mood.tone_pivot modulates the
+# per-pass uniform overrides directly — the generative substrate keeps
+# running, only the parametric color envelope shifts. Writes to the
+# imagination uniforms.json override surface so the next reverie tick
+# picks up the warmth / saturation deltas.
+
+_MOOD: list[CapabilityRecord] = [
+    _record(
+        "mood.tone_pivot.warmer",
+        "warms the room's color register — pushes the active uniforms toward "
+        "warmer hue and slightly higher saturation, the move when the moment "
+        "wants tenderness or familiarity in the visual register",
+    ),
+    _record(
+        "mood.tone_pivot.cooler",
+        "cools the room's color register — pulls the active uniforms toward "
+        "cooler hue and slightly lower saturation, the move when the moment "
+        "wants reflection or distance in the visual register",
+    ),
+    _record(
+        "mood.tone_pivot.brighten",
+        "brightens the surface's overall luminance — lifts the master opacity "
+        "and pushes mid-tones up, the move when the room has dimmed past what "
+        "the moment calls for",
+    ),
+    _record(
+        "mood.tone_pivot.deepen",
+        "deepens the surface's tonal contrast — pulls mid-tones down and lets "
+        "highlights breathe, the move when the moment wants weight rather than "
+        "bright energy",
+    ),
+]
+
+
+# ── Programme beat advance affordance ─────────────────────────────────────
+# Signals the active programme's narrative beat should advance. Consumer
+# is the programme manager (agents/programme_manager.py) — advancing a
+# beat is structural content programming, not visual composition. The
+# director emits this when the current programme has run its course at
+# a perceptual level (sustained activity match, narrative arc complete,
+# operator state shifted away from the programme's design).
+
+_PROGRAMME: list[CapabilityRecord] = [
+    _record(
+        "programme.beat_advance.next",
+        "marks the active programme's narrative beat as run-its-course and "
+        "ready to advance — a structural cue the programme manager picks up "
+        "to walk the show plan forward, distinct from any visual move",
+        medium="notification",
+    ),
 ]
 
 
@@ -795,6 +917,10 @@ COMPOSITIONAL_CAPABILITIES: list[CapabilityRecord] = (
     + _HOMAGE_AFFORDANCES
     + _TRANSITION
     + _GEM
+    + _COMPOSITION_REFRAME
+    + _PACE
+    + _MOOD
+    + _PROGRAMME
     + _YOUTUBE_TELEMETRY
 )
 
