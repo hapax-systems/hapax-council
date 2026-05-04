@@ -208,9 +208,21 @@ def _register_builtins() -> None:
     # directive. First full-frame HOMAGE ward. Text-only tmux-capture of
     # the 4-session Claude-Code coordination setup. Design:
     # docs/research/2026-04-24-durf-design.md.
-    from agents.studio_compositor.durf_source import DURFCairoSource
+    #
+    # Cc-task ``activity-reveal-ward-p1-durf-migration`` (2026-05-04):
+    # the class moved to ``agents.studio_compositor.coding_activity_reveal
+    # .CodingActivityReveal`` to integrate with the
+    # ``ActivityRevealMixin`` family base. ``DURFCairoSource`` is
+    # preserved as a module-level alias on ``durf_source`` (see that
+    # module) AND registered here under both names so existing layout
+    # JSONs that declare ``"DURFCairoSource"`` keep resolving while new
+    # layouts may declare ``"CodingActivityReveal"`` directly.
+    from agents.studio_compositor.coding_activity_reveal import (
+        CodingActivityReveal,
+    )
 
-    register("DURFCairoSource", DURFCairoSource)
+    register("CodingActivityReveal", CodingActivityReveal)
+    register("DURFCairoSource", CodingActivityReveal)
     # ef7b-165 Phase 9 Part 2 (2026-04-24) — anti-personification egress
     # footer. Static text strip framing the channel as a research
     # instrument. Mounted in default.json; the source fails closed to an

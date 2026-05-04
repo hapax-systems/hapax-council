@@ -2363,3 +2363,15 @@ _PA_ReactAssets.is_empty
 _PA_IcebergAssets.is_empty
 _PA_InterviewAssets.is_empty
 _PA_LectureAssets.is_empty
+
+
+# Cc-task ``activity-reveal-ward-p1-durf-migration`` (2026-05-04):
+# durf_source.py defines a module-level ``__getattr__`` to lazily
+# resolve the ``DURFCairoSource`` / ``CodingActivityReveal`` aliases
+# without inducing a circular import. Python invokes module
+# ``__getattr__`` from the import machinery on attribute miss, so the
+# function is never referenced statically — vulture flags it. Whitelist
+# the dynamic-entrypoint reference here.
+from agents.studio_compositor import durf_source as _AR_durf_module
+
+_AR_durf_module.__getattr__
