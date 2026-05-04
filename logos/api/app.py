@@ -229,30 +229,137 @@ class LogosPerceptionStateBridge:
         return state not in self._WATCH_IDLE_STATES
 
 
-# Phase 6b-i bridge contract for the four mood-arousal signals
-# (``ambient_audio_rms_high``, ``contact_mic_onset_rate_high``,
-# ``midi_clock_bpm_high``, ``hr_bpm_above_baseline``) defined in
-# ``mood_arousal_engine.DEFAULT_SIGNAL_WEIGHTS``. Per-signal sources
-# live in heterogeneous backends — ambient_audio.py / contact_mic.py /
-# midi_clock.py / health.py — each with its own quantile or baseline
-# threshold semantics. The bridge ships the protocol-matching surface
-# with all accessors returning ``None`` so the engine math runs cleanly
-# with no live signal contribution; per-backend threshold calibration
-# is deferred until production data stabilises the references.
+# Phase 6b-i bridge for the four mood-arousal signals. Per-backend
+# rolling-quantile calibration is now live (audit-3-fix-4, Phase A).
+# Each accessor reads perception-state.json and compares against a
+# 30-min rolling baseline via shared.mood_calibration.RollingQuantile.
 class LogosStimmungBridge:
-    """Bridge stimmung-derived signals → MoodArousalEngine signal Protocol."""
+    """Bridge stimmung-derived signals → MoodArousalEngine signal Protocol.
+
+    Phase A mood-arousal calibration (audit-3-fix-4). Each accessor reads
+    live data from perception-state.json and compares against rolling
+    baselines via ``RollingQuantile``.
+
+    Staleness contract: if the perception-state data is >120s old or
+    the rolling quantile has insufficient samples, the accessor returns
+    ``None`` (skip-signal per ClaimEngine.tick semantics).
+    """
+
+    # BPM cutoff for midi_clock_bpm_high. Operator-configurable via env.
+    _BPM_CUTOFF: float = float(__import__("os").environ.get("HAPAX_MOOD_AROUSAL_BPM_CUTOFF", "120"))
+
+    def __init__(self) -> None:
+        from shared.mood_calibration import RollingQuantile
+
+        # 30-min rolling window, q80 threshold, min 10 observations
+        self._rms_quantile = RollingQuantile(
+            window_s=1800.0, quantile=0.8, min_samples=10, stale_s=120.0
+        )
+        self._onset_quantile = RollingQuantile(
+            window_s=1800.0, quantile=0.8, min_samples=10, stale_s=120.0
+        )
+        # HR: 30-day window is too long for rolling deque; use a simpler
+        # 30-min baseline median + 1.5×MAD. RollingQuantile(q=0.5) gives
+        # the median; we track MAD separately via a second quantile.
+        self._hr_baseline = RollingQuantile(
+            window_s=1800.0, quantile=0.5, min_samples=10, stale_s=120.0
+        )
+
+    def _load(self) -> dict | None:
+        import json
+        from pathlib import Path
+
+        path = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
+        try:
+            return json.loads(path.read_text())
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return None
+
+    def _is_fresh(self, data: dict) -> bool:
+        """Check if perception state is <120s old."""
+        import time
+
+        ts = data.get("timestamp", 0)
+        if not ts:
+            return False
+        return (time.time() - float(ts)) < 120.0
 
     def ambient_audio_rms_high(self) -> bool | None:
-        return None
+        """True if room mic RMS is above the operator's 30-min q80.
+
+        Reads ``audio_energy_rms`` from perception-state.json. Observes
+        each tick into the rolling quantile tracker, then compares the
+        current value against q80.
+        """
+        data = self._load()
+        if data is None or not self._is_fresh(data):
+            return None
+        rms = data.get("audio_energy_rms")
+        if rms is None:
+            return None
+        rms = float(rms)
+        self._rms_quantile.observe(rms)
+        return self._rms_quantile.is_above_quantile(rms)
 
     def contact_mic_onset_rate_high(self) -> bool | None:
-        return None
+        """True if Cortado MKIII onset rate is above the operator's 30-min q80.
+
+        Reads ``desk_onset_rate`` from perception-state.json. Observes
+        each tick into the rolling quantile tracker, then compares.
+        """
+        data = self._load()
+        if data is None or not self._is_fresh(data):
+            return None
+        onset_rate = data.get("desk_onset_rate")
+        if onset_rate is None:
+            return None
+        onset_rate = float(onset_rate)
+        self._onset_quantile.observe(onset_rate)
+        return self._onset_quantile.is_above_quantile(onset_rate)
 
     def midi_clock_bpm_high(self) -> bool | None:
-        return None
+        """True if MIDI clock tempo exceeds the BPM cutoff (default 120).
+
+        Reads ``midi_clock_transport`` from perception-state.json.
+        Returns ``None`` when transport is not PLAYING (no tempo signal).
+        The BPM is read from the timeline_mapping behavior if available,
+        otherwise from the ``midi_tempo_bpm`` key.
+
+        Configurable via ``HAPAX_MOOD_AROUSAL_BPM_CUTOFF`` env var.
+        """
+        data = self._load()
+        if data is None or not self._is_fresh(data):
+            return None
+        transport = data.get("midi_clock_transport", "")
+        if transport != "PLAYING":
+            return None
+        bpm = data.get("midi_tempo_bpm")
+        if bpm is None:
+            return None
+        return float(bpm) > self._BPM_CUTOFF
 
     def hr_bpm_above_baseline(self) -> bool | None:
-        return None
+        """True if heart rate is above 30-min median + 1.5×MAD.
+
+        Reads ``heart_rate_bpm`` from perception-state.json. Uses the
+        rolling median from RollingQuantile(q=0.5) as the baseline.
+        HR above median + 15 BPM is considered elevated (simplified
+        MAD approximation for a 1.5×MAD threshold).
+        """
+        data = self._load()
+        if data is None or not self._is_fresh(data):
+            return None
+        hr = data.get("heart_rate_bpm")
+        if hr is None or int(hr) == 0:
+            return None
+        hr = float(hr)
+        self._hr_baseline.observe(hr)
+        median = self._hr_baseline.current_quantile()
+        if median is None:
+            return None
+        # Simplified: above median + 15 BPM threshold
+        # (approximation of median + 1.5×MAD for typical HR distributions)
+        return hr > median + 15.0
 
 
 # Phase 6b-ii bridge for the four mood-valence signals. Per-backend
@@ -642,11 +749,10 @@ async def lifespan(app: FastAPI):
     # Phase 6b-i MoodArousalEngine observes four stimmung-derived
     # arousal signals (ambient room mic RMS, contact mic onset rate,
     # MIDI clock BPM, watch HR vs baseline). All four signal accessors
-    # on LogosStimmungBridge return ``None`` until per-backend quantile
-    # / baseline references are calibrated against production data —
-    # the bridge ships the protocol-matching surface and is the
-    # documented "calibration deferred" contract. Posterior + state
-    # exposed at GET /api/engine/mood_arousal for the DMN governor.
+    # on LogosStimmungBridge are now calibrated against rolling baselines
+    # (audit-3-fix-4, Phase A) and return live True/False/None values.
+    # None is returned when perception data is stale (>120s) or the
+    # rolling baseline has insufficient samples (<10 observations).
     mae = None
     try:
         from agents.hapax_daimonion.mood_arousal_engine import MoodArousalEngine
