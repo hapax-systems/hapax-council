@@ -306,3 +306,115 @@ class TestSilenceHoldImpingementDiagnostic:
         assert intent.activity == "silence"
         assert len(intent.compositional_impingements) == 1
         assert intent.compositional_impingements[0].diagnostic is True
+
+
+class TestR8GroundingActGate:
+    """Pin the R8 grounding-act gate behavior.
+
+    The gate REJECTS impingements with empty ``grounding_provenance`` AND
+    no ``synthetic_grounding_markers``. This forces the LLM to emit real
+    perceptual-field evidence per impingement. Without per-impingement
+    provenance, all creative impingements get dropped → silence-hold
+    fallback → lifeless broadcast. Regression for F6 audit finding.
+    """
+
+    def test_grounded_impingement_passes_gate(self):
+        """Impingement with real grounding_provenance passes R8."""
+        imp = CompositionalImpingement(
+            narrative="cut to turntable close-up",
+            intent_family="camera.hero",
+            grounding_provenance=["ir.ir_hand_zone.turntable"],
+        )
+        result = dl._ensure_impingement_grounded(imp, stance=Stance.NOMINAL)
+        assert result is not None
+        assert result.grounding_provenance == ["ir.ir_hand_zone.turntable"]
+
+    def test_ungrounded_impingement_rejected(self):
+        """Impingement with empty grounding_provenance AND no synthetic
+        markers is REJECTED (returns None)."""
+        imp = CompositionalImpingement(
+            narrative="bias toward warm tones",
+            intent_family="preset.bias",
+        )
+        result = dl._ensure_impingement_grounded(imp, stance=Stance.NOMINAL)
+        assert result is None
+
+    def test_synthetic_marker_passes_gate(self):
+        """Impingement with synthetic_grounding_markers (fallback path)
+        passes the gate — silence-hold and parser-error impingements
+        must survive."""
+        imp = CompositionalImpingement(
+            narrative="silence hold: maintain the current surface",
+            intent_family="preset.bias",
+            synthetic_grounding_markers=["fallback.silence_hold"],
+        )
+        result = dl._ensure_impingement_grounded(imp, stance=Stance.NOMINAL)
+        assert result is not None
+
+    def test_ensure_intent_grounded_keeps_grounded_impingements(self):
+        """Intent with grounded impingements passes through unchanged."""
+        imp = CompositionalImpingement(
+            narrative="beat-synced preset shift",
+            intent_family="preset.bias",
+            grounding_provenance=["audio.midi.beat_position"],
+        )
+        intent = DirectorIntent(
+            activity="music",
+            stance=Stance.NOMINAL,
+            narrative_text="the beat opens up",
+            compositional_impingements=[imp],
+        )
+        result = dl._ensure_intent_grounded(intent)
+        assert len(result.compositional_impingements) == 1
+        assert result.compositional_impingements[0].grounding_provenance == [
+            "audio.midi.beat_position"
+        ]
+
+    def test_ensure_intent_grounded_substitutes_silence_hold(self):
+        """If ALL impingements are ungrounded, the gate substitutes a
+        silence-hold fallback so the no-vacuum invariant holds."""
+        imp = CompositionalImpingement(
+            narrative="ungrounded guess",
+            intent_family="camera.hero",
+        )
+        intent = DirectorIntent(
+            activity="react",
+            stance=Stance.NOMINAL,
+            narrative_text="hmm",
+            compositional_impingements=[imp],
+        )
+        result = dl._ensure_intent_grounded(intent)
+        assert len(result.compositional_impingements) == 1
+        assert result.compositional_impingements[0].synthetic_grounding_markers == [
+            "fallback.all_impingements_rejected_ungrounded"
+        ]
+        assert result.compositional_impingements[0].diagnostic is True
+
+    def test_full_parse_with_per_impingement_provenance(self):
+        """End-to-end: LLM emits per-impingement grounding_provenance →
+        parse → R8 gate → impingement survives. Regression pin for the
+        prompt-schema fix (F6)."""
+        payload = json.dumps(
+            {
+                "activity": "music",
+                "stance": "nominal",
+                "narrative_text": "the beat opens up with hand drums",
+                "grounding_provenance": ["audio.midi.beat_position"],
+                "compositional_impingements": [
+                    {
+                        "narrative": "beat-synced camera cut to overhead",
+                        "intent_family": "camera.hero",
+                        "grounding_provenance": ["audio.midi.beat_position"],
+                    },
+                    {
+                        "narrative": "warm tone preset bias",
+                        "intent_family": "preset.bias",
+                        "grounding_provenance": ["audio.spectral.warm_dominant"],
+                    },
+                ],
+            }
+        )
+        intent = dl._parse_intent_from_llm(payload)
+        # Both impingements should survive the R8 gate
+        assert len(intent.compositional_impingements) == 2
+        assert all(imp.grounding_provenance for imp in intent.compositional_impingements)
