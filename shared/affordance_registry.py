@@ -1474,6 +1474,85 @@ EXPRESSION_AFFORDANCES = [
 ]
 
 # ---------------------------------------------------------------------------
+# Domain 11: Chat (chat.*) — livestream audience reactivity
+# ---------------------------------------------------------------------------
+
+CHAT_AFFORDANCES = [
+    CapabilityRecord(
+        name="chat.acknowledge_message",
+        description=(
+            "Acknowledge a livestream chat message with a brief vocal nod"
+            " confirming receipt without committing to a full reply"
+        ),
+        daemon="daimonion",
+        operational=_public_operational(
+            latency_class="fast",
+            medium="speech",
+            monetization_risk="low",
+            risk_reason=(
+                "Brief acknowledgement carries minimal third-party content risk;"
+                " operator-voiced TTS over operator-owned broadcast surface."
+            ),
+        ),
+    ),
+    CapabilityRecord(
+        name="chat.answer_question",
+        description=(
+            "Compose a short spoken answer to a question posed in livestream"
+            " chat grounding it in the current studio context"
+        ),
+        daemon="daimonion",
+        operational=_public_operational(
+            latency_class="slow",
+            medium="speech",
+            monetization_risk="medium",
+            risk_reason=(
+                "Generated answers can produce monetization-sensitive wording"
+                " when the question solicits opinion or third-party content;"
+                " Programme opt-in for broadcast speech."
+            ),
+        ),
+    ),
+    CapabilityRecord(
+        name="chat.tier_suggestion_add",
+        description=(
+            "Surface a chat-suggested item to the programme tier list as a"
+            " candidate without committing to inclusion"
+        ),
+        daemon="programme",
+        operational=_public_operational(
+            latency_class="fast",
+            persistence="session",
+            medium="textual",
+        ),
+    ),
+    CapabilityRecord(
+        name="chat.mood_shift",
+        description=(
+            "Bias the studio compositor preset family toward a mood the chat"
+            " is collectively gravitating toward as audience-aware reactivity"
+        ),
+        daemon="compositor",
+        operational=_public_operational(
+            latency_class="fast",
+            medium="visual",
+        ),
+    ),
+    CapabilityRecord(
+        name="chat.hero_swap",
+        description=(
+            "Swap the camera hero perspective in response to chat directing"
+            " attention to a specific studio surface or instrument"
+        ),
+        daemon="compositor",
+        operational=_public_operational(
+            latency_class="fast",
+            medium="visual",
+        ),
+    ),
+]
+
+# ---------------------------------------------------------------------------
 # Legacy bridge entries (pre-dot-namespace names)
 # ---------------------------------------------------------------------------
 
@@ -1513,6 +1592,7 @@ AFFORDANCE_DOMAINS: dict[str, list[CapabilityRecord]] = {
     "system": SYSTEM_AFFORDANCES,
     "world": WORLD_AFFORDANCES,
     "narration": EXPRESSION_AFFORDANCES,
+    "chat": CHAT_AFFORDANCES,
 }
 
 ALL_AFFORDANCES: list[CapabilityRecord] = (

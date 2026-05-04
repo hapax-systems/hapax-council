@@ -1,0 +1,27 @@
+[Unit]
+Description=Hapax YouTube live-chat → impingement bus reader
+Documentation=https://github.com/ryanklee/council/blob/main/agents/youtube_chat_reader/__init__.py
+After=network-online.target hapax-secrets.service
+Wants=network-online.target
+PartOf=hapax.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
+Environment=PATH=%h/projects/hapax-council/.venv/bin:/usr/bin
+Environment=HAPAX_YT_CHAT_METRICS_PORT=9499
+Environment=HAPAX_LOG_LEVEL=INFO
+# OAuth path: shared/google_auth.py reads `google/token-youtube-streaming`
+# from the pass store. Operator must mint the token with at least the
+# `https://www.googleapis.com/auth/youtube.readonly` scope:
+#   scripts/mint-google-token.py --pass-key google/token-youtube-streaming
+# Daemon idles silently (no API calls) when no broadcast is live, so
+# leaving it enabled outside livestream windows is safe.
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.youtube_chat_reader
+Restart=on-failure
+RestartSec=15
+MemoryMax=128M
+
+[Install]
+WantedBy=default.target
