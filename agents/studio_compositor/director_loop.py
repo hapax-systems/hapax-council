@@ -3126,7 +3126,8 @@ class DirectorLoop:
             '      "narrative": "<gibson-verb description of the compositional move (used for cosine retrieval against the affordance catalog — not displayed to viewers; do NOT write content for any ward here, write what the move IS)>",\n'
             '      "intent_family": "<camera.hero|preset.bias|overlay.emphasis|youtube.direction|attention.winner|stream_mode.transition|ward.size|ward.position|ward.staging|ward.highlight|ward.appearance|ward.cadence|ward.choreography|gem.emphasis|gem.composition>",\n'
             '      "material": "<water|fire|earth|air|void>",\n'
-            '      "salience": 0.0..1.0\n'
+            '      "salience": 0.0..1.0,\n'
+            '      "grounding_provenance": ["<signal.path.that.made.this.impingement.felt-necessary>", ...]\n'
             "    }\n"
             "  ],\n"
             '  "structural_intent": {\n'
@@ -3153,17 +3154,16 @@ class DirectorLoop:
             '(e.g., {intent_family: "preset.bias", narrative: "neutral '
             'ambient — let the room breathe", salience: 0.3}). '
             "**Mandatory grounding_provenance per impingement.** Every "
-            "compositional_impingement carries the perceptual-field key "
-            'that made it felt-necessary. "audio.midi.beat_position" '
-            'for a beat-synced preset, "visual.top_emotion" for a '
-            'react choice, "chat.recent_keywords" for a chat-driven '
-            "ward emphasis. An impingement without grounding is a guess; "
-            "the pipeline accepts it but the audit will mark it ungrounded. "
-            "When grounding_provenance is left empty, the parser records a "
-            'synthetic "inferred.<stance>.<family>" diagnostic marker in '
-            "synthetic_grounding_markers. That marker is not evidence and "
-            "cannot satisfy public, WCS, or recruitment grounding gates, so "
-            "prefer naming the real key."
+            "compositional_impingement MUST include at least one perceptual-field "
+            "key in its grounding_provenance array — the signal path that made "
+            'the move felt-necessary. "audio.midi.beat_position" for a '
+            'beat-synced preset, "visual.top_emotion" for a react choice, '
+            '"chat.recent_keywords" for a chat-driven ward emphasis. '
+            "**An impingement with empty grounding_provenance is DROPPED** by "
+            "the R8 grounding-act gate — it never reaches the pipeline. If you "
+            "cannot name a real perceptual signal, name the closest available "
+            "signal or the stance-derived context that motivates the move. "
+            "Do not leave grounding_provenance empty."
         )
         parts.append("Complete your sentences. Say as much or as little as the moment requires.")
         parts.append("</reactor_context>")
