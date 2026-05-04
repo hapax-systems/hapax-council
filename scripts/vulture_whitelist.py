@@ -2313,3 +2313,10 @@ from shared.audio_graph.validator import AudioGraphValidator as _AG_Validator2
 
 _AG_Validator2.decompose_confs
 _AG_Validator2.conf_decomposed_cleanly
+
+# YouTube chat reader Protocol — methods are satisfied by epsilon's concrete reader at runtime
+# via structural typing. Vulture cannot see Protocol satisfaction.
+from agents.youtube_chat_reader import YoutubeChatReader as _YT_ChatReader
+
+_YT_ChatReader.live_chat_id
+_YT_ChatReader.recent_messages
