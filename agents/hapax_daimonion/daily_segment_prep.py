@@ -166,6 +166,7 @@ def _call_llm(prompt: str) -> str:
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 16384,
             "temperature": 0.7,
+            "chat_template_kwargs": {"enable_thinking": False},
         }
     ).encode()
 

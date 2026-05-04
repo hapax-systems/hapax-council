@@ -327,6 +327,7 @@ def _call_endpoint(url: str, prompt: str, auth: str | None = None) -> str | None
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 8192,
             "temperature": 0.7,
+            "chat_template_kwargs": {"enable_thinking": False},
         }
     ).encode()
     headers: dict[str, str] = {"Content-Type": "application/json"}
