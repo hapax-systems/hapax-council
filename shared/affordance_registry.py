@@ -350,6 +350,29 @@ STUDIO_AFFORDANCES = [
             consent_required=False,
         ),
     ),
+    # Cc-task ``activity-reveal-ward-p1-durf-migration`` (2026-05-04):
+    # symmetry with ``studio.m8_lcd_reveal`` for the Coding-Activity
+    # variant of the activity-reveal-ward family. Surfaces the Codex
+    # tmux-pane DURF surface in the broadcast composite when coding
+    # work is the subject of attention. Recruitment is impingement-
+    # narrative driven (chat / impingement-bus mentions of "code",
+    # "PR", "task", "review", etc.); no auto-on per
+    # feedback_no_expert_system_rules. Consent considerations live at
+    # the redaction layer (RISK_PATTERNS in ``durf_redaction``); no
+    # PII surfaces, so consent_required=False here.
+    CapabilityRecord(
+        name="studio.durf_reveal",
+        description=(
+            "Reveal the bounded Codex tmux-pane DURF surface in the broadcast "
+            "composite when coding-session activity is the subject of attention"
+        ),
+        daemon="compositor",
+        operational=_public_operational(
+            latency_class="fast",
+            medium="visual",
+            consent_required=False,
+        ),
+    ),
     # cc-task m8-remote-button-control-daemon. Hardware-actuation
     # affordance (buttons, keyjazz, theme, display reset). No PII —
     # button presses don't carry operator-identifying data — so
