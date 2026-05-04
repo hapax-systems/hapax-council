@@ -2320,3 +2320,37 @@ from agents.youtube_chat_reader import YoutubeChatReader as _YT_ChatReader
 
 _YT_ChatReader.live_chat_id
 _YT_ChatReader.recent_messages
+
+# Programme-author asset bundles — ``is_empty`` is part of the public
+# ``ProgrammeAssets`` contract that the narrative composer + director
+# surfaces will consume. The wiring lands in a follow-up PR; this
+# entry pins the property as a known dynamic entrypoint until then.
+from agents.programme_authors.asset_resolver import (
+    IcebergAssets as _PA_IcebergAssets,
+)
+from agents.programme_authors.asset_resolver import (
+    InterviewAssets as _PA_InterviewAssets,
+)
+from agents.programme_authors.asset_resolver import (
+    LectureAssets as _PA_LectureAssets,
+)
+from agents.programme_authors.asset_resolver import (
+    RantAssets as _PA_RantAssets,
+)
+from agents.programme_authors.asset_resolver import (
+    ReactAssets as _PA_ReactAssets,
+)
+from agents.programme_authors.asset_resolver import (
+    TierListAssets as _PA_TierListAssets,
+)
+from agents.programme_authors.asset_resolver import (
+    Top10Assets as _PA_Top10Assets,
+)
+
+_PA_TierListAssets.is_empty
+_PA_Top10Assets.is_empty
+_PA_RantAssets.is_empty
+_PA_ReactAssets.is_empty
+_PA_IcebergAssets.is_empty
+_PA_InterviewAssets.is_empty
+_PA_LectureAssets.is_empty
