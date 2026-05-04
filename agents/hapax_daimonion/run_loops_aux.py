@@ -502,11 +502,18 @@ async def prepared_playback_loop(daemon: object) -> None:
                         try:
                             from functools import partial
 
-                            from agents.hapax_daimonion.pw_audio_output import play_pcm
-
+                            # Use the CPAL runner's persistent PwAudioOutput —
+                            # same path the old working CPAL narration used.
+                            # play_pcm spawns ephemeral pw-cat subprocesses
+                            # that may not route correctly.
                             await loop.run_in_executor(
                                 None,
-                                partial(play_pcm, pcm, 24000, 1, "livestream", "broadcast"),
+                                partial(
+                                    cpal._audio_output.write,
+                                    pcm,
+                                    target="livestream",
+                                    media_role="broadcast",
+                                ),
                             )
                         finally:
                             # Brief holdover for echo suppression
