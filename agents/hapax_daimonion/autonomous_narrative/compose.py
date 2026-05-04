@@ -395,7 +395,9 @@ def compose_narrative(
             prog_id,
         )
     else:
-        prompt = _build_prompt(context, seed, operator_referent=operator_referent, envelope=envelope)
+        prompt = _build_prompt(
+            context, seed, operator_referent=operator_referent, envelope=envelope
+        )
         max_tokens = _GROUNDED_MAX_TOKENS
 
     if llm_call is None:
