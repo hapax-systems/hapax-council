@@ -3810,11 +3810,19 @@ class DirectorLoop:
             {"role": "user", "content": content},
         ]
 
+        # 2026-05-04 latency cap: max_tokens 2048 → 512.
+        # Last 50 director outputs measured p95=406 tokens, max=440. Cap at 512
+        # leaves ~25% headroom while preventing pathological 2048-token rambles
+        # that gen at ~10 tok/s on Command-R 35B (would otherwise add 15+s wall
+        # time worst-case). Director output schema (narrative_text + 3
+        # compositional_impingements + structural_intent) is structurally
+        # bounded; if it ever genuinely exceeds 512, the schema needs trimming
+        # not the cap raised.
         body = json.dumps(
             {
                 "model": DIRECTOR_MODEL,
                 "messages": messages,
-                "max_tokens": 2048,
+                "max_tokens": 512,
                 "temperature": 0.7,
             }
         ).encode()
@@ -3967,11 +3975,19 @@ class DirectorLoop:
                                 + "\n\n"
                                 + gate_result.reroll_prompt_addendum
                             )
+                        # 2026-05-04 latency cap: max_tokens 2048 → 512.
+                        # Last 50 director outputs measured p95=406 tokens, max=440. Cap at 512
+                        # leaves ~25% headroom while preventing pathological 2048-token rambles
+                        # that gen at ~10 tok/s on Command-R 35B (would otherwise add 15+s wall
+                        # time worst-case). Director output schema (narrative_text + 3
+                        # compositional_impingements + structural_intent) is structurally
+                        # bounded; if it ever genuinely exceeds 512, the schema needs trimming
+                        # not the cap raised.
                         reroll_body = json.dumps(
                             {
                                 "model": DIRECTOR_MODEL,
                                 "messages": reroll_messages,
-                                "max_tokens": 2048,
+                                "max_tokens": 512,
                                 "temperature": 0.7,
                             }
                         ).encode()
