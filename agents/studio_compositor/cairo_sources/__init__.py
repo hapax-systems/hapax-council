@@ -184,6 +184,15 @@ def _register_builtins() -> None:
     )
 
     register("ProgrammeHistoryCairoSource", ProgrammeHistoryCairoSource)
+    # ward-precedent-ticker-bitchx (cc-task, 2026-05-04) — axiom precedent
+    # history ward. BitchX-grammar header + most-recent N precedents by
+    # ratification date. Default OFF via HAPAX_LORE_PRECEDENT_TICKER_ENABLED;
+    # registered so layout JSON can declare it independent of the flag.
+    from agents.studio_compositor.precedent_ticker_ward import (
+        PrecedentTickerCairoSource,
+    )
+
+    register("PrecedentTickerCairoSource", PrecedentTickerCairoSource)
     # programme-banner-ward (PR #2366, 2026-05-03) — Cairo lower-third
     # surfacing the active programme's role + narrative_beat + residual
     # time. Per /tmp/wsjf-path-content-programming.md §3 G1: the planner
