@@ -116,6 +116,813 @@
       "offset": 0.0,
       "attack": 0.0,
       "decay": 0.7
+    },
+
+    {
+      "node": "halftone",
+      "param": "dot_size",
+      "source": "music.hat_onset",
+      "scale": 6.0,
+      "offset": 4.0,
+      "attack": 0.05,
+      "decay": 0.85
+    },
+    {
+      "node": "halftone",
+      "param": "color_mode",
+      "source": "music.centroid",
+      "scale": 1.0,
+      "offset": 0.0,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+
+    {
+      "node": "glitch_block",
+      "param": "intensity",
+      "source": "music.snare_onset",
+      "scale": 0.6,
+      "offset": 0.05,
+      "attack": 0.0,
+      "decay": 0.55
+    },
+    {
+      "node": "glitch_block",
+      "param": "block_size",
+      "source": "music.kick_onset",
+      "scale": 24.0,
+      "offset": 12.0,
+      "attack": 0.0,
+      "decay": 0.7
+    },
+    {
+      "node": "glitch_block",
+      "param": "rgb_split",
+      "source": "music.snare_onset",
+      "scale": 0.4,
+      "offset": 0.0,
+      "attack": 0.0,
+      "decay": 0.5
+    },
+
+    {
+      "node": "slitscan",
+      "param": "speed",
+      "source": "music.centroid",
+      "scale": 1.5,
+      "offset": 0.2,
+      "attack": 0.2,
+      "decay": 0.92
+    },
+    {
+      "node": "slitscan",
+      "param": "direction",
+      "source": "music.bass",
+      "scale": 1.0,
+      "offset": 0.0,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+
+    {
+      "node": "displacement_map",
+      "param": "strength_x",
+      "source": "music.bass",
+      "scale": 12.0,
+      "offset": 0.0,
+      "attack": 0.05,
+      "decay": 0.8
+    },
+    {
+      "node": "displacement_map",
+      "param": "strength_y",
+      "source": "music.rms",
+      "scale": 10.0,
+      "offset": 0.0,
+      "attack": 0.05,
+      "decay": 0.82
+    },
+
+    {
+      "node": "kaleidoscope",
+      "param": "segments",
+      "source": "music.rms",
+      "scale": 6.0,
+      "offset": 6.0,
+      "attack": 0.4,
+      "decay": 0.95
+    },
+    {
+      "node": "kaleidoscope",
+      "param": "rotation",
+      "source": "music.centroid",
+      "scale": 6.28318,
+      "offset": 0.0,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+
+    {
+      "node": "sierpinski_lines",
+      "param": "intensity",
+      "source": "music.rms",
+      "scale": 0.6,
+      "offset": 0.4,
+      "attack": 0.1,
+      "decay": 0.85
+    },
+    {
+      "node": "sierpinski_lines",
+      "param": "line_width",
+      "source": "music.kick_onset",
+      "scale": 1.5,
+      "offset": 1.0,
+      "attack": 0.0,
+      "decay": 0.7
+    },
+    {
+      "node": "sierpinski_lines",
+      "param": "glow_radius",
+      "source": "music.bass",
+      "scale": 8.0,
+      "offset": 2.0,
+      "attack": 0.05,
+      "decay": 0.8
+    },
+    {
+      "node": "sierpinski_lines",
+      "param": "spectral_color",
+      "source": "music.centroid",
+      "scale": 1.0,
+      "offset": 0.0,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+
+    {
+      "node": "fluid_sim",
+      "param": "viscosity",
+      "source": "broadcast.rms",
+      "scale": 0.3,
+      "offset": 0.4,
+      "attack": 0.4,
+      "decay": 0.96
+    },
+    {
+      "node": "fluid_sim",
+      "param": "vorticity",
+      "source": "music.snare_onset",
+      "scale": 0.5,
+      "offset": 0.2,
+      "attack": 0.0,
+      "decay": 0.7
+    },
+    {
+      "node": "fluid_sim",
+      "param": "speed",
+      "source": "music.rms",
+      "scale": 1.5,
+      "offset": 0.5,
+      "attack": 0.1,
+      "decay": 0.85
+    },
+
+    {
+      "node": "voronoi_overlay",
+      "param": "cell_count",
+      "source": "music.bass",
+      "scale": 24.0,
+      "offset": 12.0,
+      "attack": 0.2,
+      "decay": 0.92
+    },
+    {
+      "node": "voronoi_overlay",
+      "param": "jitter",
+      "source": "music.snare_onset",
+      "scale": 0.5,
+      "offset": 0.3,
+      "attack": 0.0,
+      "decay": 0.6
+    },
+    {
+      "node": "voronoi_overlay",
+      "param": "animation_speed",
+      "source": "music.rms",
+      "scale": 1.5,
+      "offset": 0.3,
+      "attack": 0.1,
+      "decay": 0.85
+    },
+
+    {
+      "node": "kuwahara",
+      "param": "radius",
+      "source": "music.hat_onset",
+      "scale": 6.0,
+      "offset": 3.0,
+      "attack": 0.05,
+      "decay": 0.85
+    },
+
+    {
+      "node": "fisheye",
+      "param": "strength",
+      "source": "music.bass",
+      "scale": 0.6,
+      "offset": 0.0,
+      "attack": 0.1,
+      "decay": 0.85
+    },
+    {
+      "node": "fisheye",
+      "param": "zoom",
+      "source": "broadcast.rms",
+      "scale": 0.3,
+      "offset": 1.0,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+
+    {
+      "node": "droste",
+      "param": "zoom_speed",
+      "source": "broadcast.rms",
+      "scale": 0.6,
+      "offset": 0.2,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+    {
+      "node": "droste",
+      "param": "spiral",
+      "source": "music.centroid",
+      "scale": 0.4,
+      "offset": 0.0,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+    {
+      "node": "droste",
+      "param": "branches",
+      "source": "music.bass",
+      "scale": 4.0,
+      "offset": 4.0,
+      "attack": 0.4,
+      "decay": 0.96
+    },
+
+    {
+      "node": "chroma_key",
+      "param": "tolerance",
+      "source": "music.centroid",
+      "scale": 0.2,
+      "offset": 0.15,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+    {
+      "node": "chroma_key",
+      "param": "softness",
+      "source": "music.hat_onset",
+      "scale": 0.15,
+      "offset": 0.05,
+      "attack": 0.05,
+      "decay": 0.85
+    },
+
+    {
+      "node": "dither",
+      "param": "matrix_size",
+      "source": "music.hat_onset",
+      "scale": 6.0,
+      "offset": 4.0,
+      "attack": 0.05,
+      "decay": 0.85
+    },
+    {
+      "node": "dither",
+      "param": "color_levels",
+      "source": "music.bass",
+      "scale": 6.0,
+      "offset": 4.0,
+      "attack": 0.2,
+      "decay": 0.92
+    },
+
+    {
+      "node": "mirror",
+      "param": "position",
+      "source": "music.centroid",
+      "scale": 0.4,
+      "offset": 0.5,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+    {
+      "node": "mirror",
+      "param": "axis",
+      "source": "music.bass",
+      "scale": 1.0,
+      "offset": 0.0,
+      "attack": 0.4,
+      "decay": 0.96
+    },
+
+    {
+      "node": "feedback",
+      "param": "decay",
+      "source": "broadcast.rms",
+      "scale": 0.2,
+      "offset": 0.85,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+    {
+      "node": "feedback",
+      "param": "zoom",
+      "source": "music.bass",
+      "scale": 0.04,
+      "offset": 1.0,
+      "attack": 0.1,
+      "decay": 0.88
+    },
+    {
+      "node": "feedback",
+      "param": "rotate",
+      "source": "music.centroid",
+      "scale": 0.04,
+      "offset": 0.0,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+    {
+      "node": "feedback",
+      "param": "hue_shift",
+      "source": "music.centroid",
+      "scale": 0.5,
+      "offset": 0.0,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+
+    {
+      "node": "tunnel",
+      "param": "speed",
+      "source": "music.rms",
+      "scale": 1.5,
+      "offset": 0.4,
+      "attack": 0.1,
+      "decay": 0.85
+    },
+    {
+      "node": "tunnel",
+      "param": "twist",
+      "source": "music.kick_onset",
+      "scale": 1.5,
+      "offset": 0.5,
+      "attack": 0.0,
+      "decay": 0.6
+    },
+    {
+      "node": "tunnel",
+      "param": "distortion",
+      "source": "music.bass",
+      "scale": 0.6,
+      "offset": 0.2,
+      "attack": 0.05,
+      "decay": 0.8
+    },
+
+    {
+      "node": "warp",
+      "param": "slice_amplitude",
+      "source": "music.bass",
+      "scale": 0.4,
+      "offset": 0.0,
+      "attack": 0.05,
+      "decay": 0.8
+    },
+    {
+      "node": "warp",
+      "param": "rotation",
+      "source": "music.centroid",
+      "scale": 0.5,
+      "offset": 0.0,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+    {
+      "node": "warp",
+      "param": "zoom_breath",
+      "source": "broadcast.rms",
+      "scale": 0.15,
+      "offset": 0.0,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+
+    {
+      "node": "echo",
+      "param": "frame_count",
+      "source": "music.rms",
+      "scale": 6.0,
+      "offset": 4.0,
+      "attack": 0.2,
+      "decay": 0.92
+    },
+    {
+      "node": "echo",
+      "param": "decay_curve",
+      "source": "broadcast.rms",
+      "scale": 0.4,
+      "offset": 0.6,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+
+    {
+      "node": "scanlines",
+      "param": "opacity",
+      "source": "music.hat_onset",
+      "scale": 0.3,
+      "offset": 0.15,
+      "attack": 0.05,
+      "decay": 0.85
+    },
+    {
+      "node": "scanlines",
+      "param": "spacing",
+      "source": "music.bass",
+      "scale": 4.0,
+      "offset": 3.0,
+      "attack": 0.2,
+      "decay": 0.92
+    },
+
+    {
+      "node": "vhs",
+      "param": "chroma_shift",
+      "source": "music.snare_onset",
+      "scale": 0.6,
+      "offset": 0.1,
+      "attack": 0.0,
+      "decay": 0.55
+    },
+    {
+      "node": "vhs",
+      "param": "head_switch_y",
+      "source": "music.centroid",
+      "scale": 0.4,
+      "offset": 0.4,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+
+    {
+      "node": "thermal",
+      "param": "edge_glow",
+      "source": "music.kick_onset",
+      "scale": 0.6,
+      "offset": 0.3,
+      "attack": 0.0,
+      "decay": 0.7
+    },
+    {
+      "node": "thermal",
+      "param": "palette_shift",
+      "source": "music.centroid",
+      "scale": 0.5,
+      "offset": 0.0,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+
+    {
+      "node": "rutt_etra",
+      "param": "displacement",
+      "source": "music.bass",
+      "scale": 0.6,
+      "offset": 0.2,
+      "attack": 0.05,
+      "decay": 0.8
+    },
+    {
+      "node": "rutt_etra",
+      "param": "line_density",
+      "source": "music.rms",
+      "scale": 0.5,
+      "offset": 0.4,
+      "attack": 0.2,
+      "decay": 0.92
+    },
+
+    {
+      "node": "posterize",
+      "param": "levels",
+      "source": "music.hat_onset",
+      "scale": 6.0,
+      "offset": 4.0,
+      "attack": 0.05,
+      "decay": 0.85
+    },
+
+    {
+      "node": "sharpen",
+      "param": "amount",
+      "source": "music.snare_onset",
+      "scale": 1.0,
+      "offset": 0.3,
+      "attack": 0.0,
+      "decay": 0.6
+    },
+
+    {
+      "node": "threshold",
+      "param": "level",
+      "source": "music.centroid",
+      "scale": 0.3,
+      "offset": 0.4,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+
+    {
+      "node": "tile",
+      "param": "count_x",
+      "source": "music.rms",
+      "scale": 4.0,
+      "offset": 2.0,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+    {
+      "node": "tile",
+      "param": "count_y",
+      "source": "music.bass",
+      "scale": 4.0,
+      "offset": 2.0,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+
+    {
+      "node": "edge_detect",
+      "param": "threshold",
+      "source": "music.centroid",
+      "scale": 0.2,
+      "offset": 0.15,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+
+    {
+      "node": "emboss",
+      "param": "strength",
+      "source": "music.kick_onset",
+      "scale": 0.5,
+      "offset": 0.3,
+      "attack": 0.0,
+      "decay": 0.7
+    },
+    {
+      "node": "emboss",
+      "param": "angle",
+      "source": "music.centroid",
+      "scale": 6.28318,
+      "offset": 0.0,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+
+    {
+      "node": "breathing",
+      "param": "rate",
+      "source": "broadcast.rms",
+      "scale": 0.8,
+      "offset": 0.4,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+    {
+      "node": "breathing",
+      "param": "amplitude",
+      "source": "music.bass",
+      "scale": 0.06,
+      "offset": 0.02,
+      "attack": 0.1,
+      "decay": 0.88
+    },
+
+    {
+      "node": "reaction_diffusion",
+      "param": "feed_rate",
+      "source": "music.centroid",
+      "scale": 0.02,
+      "offset": 0.04,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+    {
+      "node": "reaction_diffusion",
+      "param": "kill_rate",
+      "source": "music.bass",
+      "scale": 0.015,
+      "offset": 0.06,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+    {
+      "node": "reaction_diffusion",
+      "param": "speed",
+      "source": "music.rms",
+      "scale": 1.0,
+      "offset": 0.3,
+      "attack": 0.1,
+      "decay": 0.85
+    },
+
+    {
+      "node": "noise_gen",
+      "param": "amplitude",
+      "source": "music.rms",
+      "scale": 0.5,
+      "offset": 0.3,
+      "attack": 0.1,
+      "decay": 0.85
+    },
+    {
+      "node": "noise_gen",
+      "param": "speed",
+      "source": "music.centroid",
+      "scale": 1.5,
+      "offset": 0.4,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+
+    {
+      "node": "stutter",
+      "param": "freeze_chance",
+      "source": "music.snare_onset",
+      "scale": 0.3,
+      "offset": 0.05,
+      "attack": 0.0,
+      "decay": 0.55
+    },
+
+    {
+      "node": "pixsort",
+      "param": "threshold_low",
+      "source": "music.bass",
+      "scale": 0.2,
+      "offset": 0.2,
+      "attack": 0.2,
+      "decay": 0.92
+    },
+    {
+      "node": "pixsort",
+      "param": "sort_length",
+      "source": "music.rms",
+      "scale": 80.0,
+      "offset": 40.0,
+      "attack": 0.1,
+      "decay": 0.85
+    },
+
+    {
+      "node": "ascii",
+      "param": "cell_size",
+      "source": "music.bass",
+      "scale": 8.0,
+      "offset": 8.0,
+      "attack": 0.2,
+      "decay": 0.92
+    },
+
+    {
+      "node": "circular_mask",
+      "param": "radius",
+      "source": "broadcast.rms",
+      "scale": 0.2,
+      "offset": 0.5,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+    {
+      "node": "circular_mask",
+      "param": "softness",
+      "source": "music.rms",
+      "scale": 0.15,
+      "offset": 0.1,
+      "attack": 0.2,
+      "decay": 0.92
+    },
+
+    {
+      "node": "luma_key",
+      "param": "threshold",
+      "source": "music.centroid",
+      "scale": 0.3,
+      "offset": 0.4,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+    {
+      "node": "luma_key",
+      "param": "softness",
+      "source": "music.hat_onset",
+      "scale": 0.2,
+      "offset": 0.1,
+      "attack": 0.05,
+      "decay": 0.85
+    },
+
+    {
+      "node": "invert",
+      "param": "strength",
+      "source": "music.kick_onset",
+      "scale": 0.5,
+      "offset": 0.0,
+      "attack": 0.0,
+      "decay": 0.7
+    },
+
+    {
+      "node": "color_map",
+      "param": "blend",
+      "source": "music.centroid",
+      "scale": 0.5,
+      "offset": 0.5,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+
+    {
+      "node": "palette_remap",
+      "param": "cycle_rate",
+      "source": "music.rms",
+      "scale": 0.6,
+      "offset": 0.2,
+      "attack": 0.2,
+      "decay": 0.92
+    },
+    {
+      "node": "palette_remap",
+      "param": "blend",
+      "source": "broadcast.rms",
+      "scale": 0.5,
+      "offset": 0.5,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+
+    {
+      "node": "blend",
+      "param": "alpha",
+      "source": "music.rms",
+      "scale": 0.4,
+      "offset": 0.5,
+      "attack": 0.2,
+      "decay": 0.92
+    },
+
+    {
+      "node": "transform",
+      "param": "scale_x",
+      "source": "music.bass",
+      "scale": 0.06,
+      "offset": 1.0,
+      "attack": 0.1,
+      "decay": 0.88
+    },
+    {
+      "node": "transform",
+      "param": "scale_y",
+      "source": "music.bass",
+      "scale": 0.06,
+      "offset": 1.0,
+      "attack": 0.1,
+      "decay": 0.88
+    },
+    {
+      "node": "transform",
+      "param": "rotation",
+      "source": "music.centroid",
+      "scale": 0.2,
+      "offset": 0.0,
+      "attack": 0.3,
+      "decay": 0.95
+    },
+
+    {
+      "node": "syrup",
+      "param": "top_alpha",
+      "source": "music.kick_onset",
+      "scale": 0.3,
+      "offset": 0.05,
+      "attack": 0.0,
+      "decay": 0.7
     }
   ]
 }
