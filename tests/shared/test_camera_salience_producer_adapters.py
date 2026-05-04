@@ -11,13 +11,18 @@ import time
 
 from shared.bayesian_camera_salience_world_surface import (
     CameraObservationEnvelope,
+    CameraSalienceBroker,
+    CameraSalienceQuery,
     ClaimAuthorityCeiling,
+    ConsumerKind,
     EvidenceClass,
     FreshnessState,
     ObservationApertureKind,
     ObservationState,
     PrivacyMode,
     ProducerKind,
+    PublicClaimMode,
+    load_camera_salience_fixtures,
 )
 from shared.camera_salience_producer_adapters import (
     cross_camera_to_envelope,
@@ -76,9 +81,20 @@ class TestVisionToEnvelope:
 
     def test_no_person(self) -> None:
         snapshot = self._fixture_snapshot(person_count=0, gaze_direction="unknown")
-        env = vision_to_envelope(snapshot, camera_role="c920-room")
+        env = vision_to_envelope(snapshot, camera_role="c920-desk")
         assert env is not None
         assert env.evidence_rows[0].hypothesis == "operator_absent"
+
+    def test_runtime_operator_role_maps_to_fixture_aperture(self) -> None:
+        snapshot = self._fixture_snapshot()
+        env = vision_to_envelope(snapshot, camera_role="operator")
+        assert env is not None
+        assert env.aperture_id == "aperture:studio-rgb.brio-operator"
+        assert env.wcs_surface_refs == ("wcs-surface:camera.brio-operator",)
+
+    def test_unregistered_vision_role_fails_closed(self) -> None:
+        snapshot = self._fixture_snapshot()
+        assert vision_to_envelope(snapshot, camera_role="c920-room") is None
 
     def test_stale_snapshot(self) -> None:
         snapshot = self._fixture_snapshot(updated_at=time.monotonic() - 60.0)
@@ -153,6 +169,7 @@ class TestIrToEnvelope:
     def test_produces_valid_envelope(self) -> None:
         env = ir_to_envelope(self._fixture_ir(), pi_name="desk")
         assert env is not None
+        assert env.aperture_id == "aperture:studio-ir.noir-desk"
         assert env.aperture_kind == ObservationApertureKind.STUDIO_IR_CAMERA
         assert env.producer == ProducerKind.IR_PRESENCE_BACKEND
         assert env.evidence_class == EvidenceClass.IR_PRESENCE
@@ -166,7 +183,7 @@ class TestIrToEnvelope:
     def test_no_person_motion(self) -> None:
         env = ir_to_envelope(
             self._fixture_ir(person_detected=False, motion_delta=0.5),
-            pi_name="room",
+            pi_name="desk",
         )
         assert env is not None
         assert env.evidence_rows[0].hypothesis == "motion_detected_ir"
@@ -174,10 +191,27 @@ class TestIrToEnvelope:
     def test_no_person_no_motion(self) -> None:
         env = ir_to_envelope(
             self._fixture_ir(person_detected=False, motion_delta=0.0),
-            pi_name="overhead",
+            pi_name="desk",
         )
         assert env is not None
         assert env.evidence_rows[0].hypothesis == "operator_absent_ir"
+
+    def test_unregistered_ir_role_fails_closed(self) -> None:
+        assert ir_to_envelope(self._fixture_ir(), pi_name="room") is None
+
+    def test_real_report_shape_maps_persons_and_ir_brightness(self) -> None:
+        env = ir_to_envelope(
+            {
+                "persons": [{"confidence": 0.8}],
+                "motion_delta": 0.2,
+                "ir_brightness": 0.42,
+                "timestamp": time.time(),
+            },
+            pi_name="pi-noir-desk",
+        )
+        assert env is not None
+        assert env.evidence_rows[0].hypothesis == "operator_present_ir"
+        assert env.evidence_rows[0].metadata["brightness"] == 0.42
 
     def test_stale_ir(self) -> None:
         env = ir_to_envelope(
@@ -211,11 +245,11 @@ class TestCrossCameraToEnvelope:
     def _fixture_tracklet(self, **overrides: object) -> dict:
         base = {
             "track_id": "t42",
-            "cameras": ["brio-operator", "c920-room"],
+            "cameras": ["brio-operator", "c920-desk"],
             "similarity": 0.88,
             "time_delta_s": 1.5,
             "confidence": 0.82,
-            "topology_path": "operator→room",
+            "topology_path": "operator->desk",
         }
         base.update(overrides)
         return base
@@ -223,6 +257,7 @@ class TestCrossCameraToEnvelope:
     def test_produces_valid_envelope(self) -> None:
         env = cross_camera_to_envelope(self._fixture_tracklet())
         assert env is not None
+        assert env.aperture_id == "aperture:studio-rgb.brio-operator"
         assert env.producer == ProducerKind.CROSS_CAMERA_STITCHER
         assert env.evidence_class == EvidenceClass.CROSS_CAMERA_TRACKLET
         assert env.authority_ceiling == ClaimAuthorityCeiling.INTERNAL_ONLY
@@ -239,15 +274,19 @@ class TestCrossCameraToEnvelope:
 
     def test_witness_refs_from_cameras(self) -> None:
         env = cross_camera_to_envelope(
-            self._fixture_tracklet(cameras=["brio-operator", "c920-room"]),
+            self._fixture_tracklet(cameras=["brio-operator", "c920-desk"]),
         )
         assert env is not None
         assert len(env.witness_refs) == 2
         assert any("brio-operator" in ref for ref in env.witness_refs)
 
-    def test_empty_tracklet_returns_envelope(self) -> None:
+    def test_empty_tracklet_fails_closed(self) -> None:
         env = cross_camera_to_envelope({})
-        assert env is not None or env is None  # fail-closed allowed
+        assert env is None
+
+    def test_unregistered_tracklet_fails_closed(self) -> None:
+        env = cross_camera_to_envelope(self._fixture_tracklet(cameras=["c920-room"]))
+        assert env is None
 
 
 # ── Livestream compositor adapter tests ─────────────────────────────────
@@ -273,6 +312,7 @@ class TestLivestreamToEnvelope:
         assert env.producer == ProducerKind.COMPOSITOR_SNAPSHOT
         assert env.evidence_class == EvidenceClass.COMPOSED_LIVESTREAM
         assert env.privacy_mode == PrivacyMode.PUBLIC_SAFE
+        assert env.wcs_surface_refs == ("wcs-surface:livestream.composed-frame",)
 
     def test_scene_name_in_hypothesis(self) -> None:
         env = livestream_to_envelope(self._fixture_compositor(scene_name="splitscreen"))
@@ -317,11 +357,11 @@ class TestAdapterIntegration:
         tracklet = cross_camera_to_envelope(
             {
                 "track_id": "t1",
-                "cameras": ["a", "b"],
+                "cameras": ["brio-operator", "c920-desk"],
                 "similarity": 0.9,
                 "time_delta_s": 1.0,
                 "confidence": 0.8,
-                "topology_path": "a→b",
+                "topology_path": "brio-operator->c920-desk",
             },
         )
         livestream = livestream_to_envelope(
@@ -347,11 +387,11 @@ class TestAdapterIntegration:
             cross_camera_to_envelope(
                 {
                     "track_id": "t2",
-                    "cameras": ["x"],
+                    "cameras": ["brio-operator"],
                     "similarity": 0.7,
                     "time_delta_s": 0.5,
                     "confidence": 0.6,
-                    "topology_path": "x→x",
+                    "topology_path": "brio-operator->brio-operator",
                 }
             ),
             livestream_to_envelope({"scene_name": "test", "frame_ts": time.time()}),
@@ -360,3 +400,51 @@ class TestAdapterIntegration:
             assert env is not None
             for row in env.evidence_rows:
                 assert row.evidence_class == env.evidence_class
+
+    def test_default_adapter_outputs_are_accepted_by_fixture_broker(self) -> None:
+        fixtures = load_camera_salience_fixtures()
+        envs = tuple(
+            env
+            for env in (
+                vision_to_envelope(
+                    {"person_count": 1, "gaze_direction": "screen", "updated_at": time.monotonic()},
+                    camera_role="operator",
+                ),
+                ir_to_envelope({"persons": [{"confidence": 0.8}], "timestamp": time.time()}),
+                cross_camera_to_envelope(
+                    {
+                        "track_id": "t3",
+                        "cameras": ["brio-operator", "c920-desk"],
+                        "similarity": 0.86,
+                        "time_delta_s": 1.0,
+                        "confidence": 0.82,
+                        "topology_path": "brio-operator->c920-desk",
+                    }
+                ),
+                livestream_to_envelope({"scene_name": "dual", "frame_ts": time.time()}),
+            )
+            if env is not None
+        )
+        assert len(envs) == 4
+
+        broker = CameraSalienceBroker(fixtures.apertures, envs)
+        bundle = broker.evaluate(
+            CameraSalienceQuery(
+                query_id="camera-salience-query:adapter-integration",
+                consumer=ConsumerKind.DIRECTOR,
+                decision_context="adapter_fixture_acceptance",
+                candidate_action="compose_livestream_move",
+                time_budget_ms=50,
+                privacy_mode=PrivacyMode.PRIVATE,
+                public_claim_mode=PublicClaimMode.NONE,
+                evidence_classes=(
+                    EvidenceClass.FRAME,
+                    EvidenceClass.IR_PRESENCE,
+                    EvidenceClass.CROSS_CAMERA_TRACKLET,
+                    EvidenceClass.COMPOSED_LIVESTREAM,
+                ),
+                max_images=0,
+                max_tokens=200,
+            )
+        )
+        assert bundle.ranked_observations

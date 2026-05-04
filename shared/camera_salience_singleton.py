@@ -16,6 +16,7 @@ import json
 import logging
 import threading
 import time
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -36,6 +37,41 @@ log = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 _singleton: _BrokerSingleton | None = None
+_QUERY_COUNTER: Any = None
+_METRICS_AVAILABLE = False
+
+try:
+    from prometheus_client import REGISTRY, Counter
+
+    _registry = REGISTRY
+    try:
+        from agents.studio_compositor import metrics as _compositor_metrics
+
+        if _compositor_metrics.REGISTRY is not None:
+            _registry = _compositor_metrics.REGISTRY
+    except Exception:
+        pass
+
+    _existing = getattr(_registry, "_names_to_collectors", {}).get(
+        "camera_salience_broker_queries"
+    ) or getattr(_registry, "_names_to_collectors", {}).get("camera_salience_broker_queries_total")
+    _QUERY_COUNTER = _existing or Counter(
+        "camera_salience_broker_queries_total",
+        "Camera salience broker query attempts by consumer.",
+        ("consumer",),
+        registry=_registry,
+    )
+    _METRICS_AVAILABLE = True
+except Exception:
+    log.info("prometheus_client unavailable; camera salience query metric disabled")
+
+
+def _record_query_metric(consumer: str) -> None:
+    try:
+        if _METRICS_AVAILABLE and _QUERY_COUNTER is not None:
+            _QUERY_COUNTER.labels(consumer=consumer).inc()
+    except Exception:
+        log.debug("camera salience query metric emit failed", exc_info=True)
 
 
 class _BrokerSingleton:
@@ -73,6 +109,7 @@ class _BrokerSingleton:
         privacy_mode: PrivacyMode = PrivacyMode.PRIVATE,
     ) -> CameraSalienceBundle | None:
         """Query the broker. Returns ``None`` on any error (fail-closed)."""
+        _record_query_metric(consumer)
         try:
             with self._obs_lock:
                 observations = tuple(self._observations)
@@ -84,7 +121,7 @@ class _BrokerSingleton:
                 observations=observations,
             )
             query_obj = CameraSalienceQuery(
-                query_id=f"camera-salience-query:{consumer}.{int(time.time())}",
+                query_id=f"camera-salience-query:{consumer}.{time.time_ns()}",
                 consumer=ConsumerKind(consumer),
                 decision_context=decision_context,
                 candidate_action=candidate_action,

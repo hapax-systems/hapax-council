@@ -447,6 +447,39 @@ class _VisionCache:
                 "updated_at": self._updated_at,
             }
 
+    def camera_salience_snapshots(
+        self, *, detected_action: object = None
+    ) -> dict[str, dict[str, object]]:
+        """Return per-camera snapshots for the camera salience broker."""
+        with self._lock:
+            snapshots: dict[str, dict[str, object]] = {}
+            for role, behaviors in self._per_camera_behaviors.items():
+                snapshot = dict(behaviors)
+                snapshot["updated_at"] = float(snapshot.get("ts") or self._updated_at)
+                if detected_action is not None:
+                    snapshot.setdefault("detected_action", str(detected_action))
+                scene_type = self._per_camera_scene_types.get(role)
+                if scene_type:
+                    snapshot.setdefault("scene_type", scene_type)
+                snapshots[role] = snapshot
+            return snapshots
+
+
+def _ingest_camera_salience_snapshot(camera_role: str, snapshot: dict[str, object]) -> bool:
+    """Push one VisionBackend snapshot into the broker singleton."""
+    try:
+        from shared.camera_salience_producer_adapters import vision_to_envelope
+        from shared.camera_salience_singleton import broker as _camera_broker
+
+        envelope = vision_to_envelope(snapshot, camera_role=camera_role)
+        if envelope is None:
+            return False
+        _camera_broker().ingest(envelope)
+        return True
+    except Exception:
+        log.debug("camera salience vision ingest failed for %s", camera_role, exc_info=True)
+        return False
+
 
 def _estimate_pose(keypoints: np.ndarray) -> str:
     """Estimate posture from YOLO pose keypoints.
@@ -704,6 +737,7 @@ class VisionBackend:
 
         now = time.monotonic()
         cached = self._cache.read()
+        self._ingest_camera_salience(cached)
 
         self._b_objects.update(cached["detected_objects"], now)
         self._b_person_count.update(cached["person_count"], now)
@@ -760,6 +794,12 @@ class VisionBackend:
         behaviors["per_camera_scenes"] = self._b_per_camera_scenes
         behaviors["room_occupancy"] = self._b_room_occupancy
         behaviors["overhead_hand_zones"] = self._b_hand_zones
+
+    def _ingest_camera_salience(self, cached: dict[str, object]) -> None:
+        detected_action = cached.get("detected_action", "unknown")
+        snapshots = self._cache.camera_salience_snapshots(detected_action=detected_action)
+        for role, snapshot in snapshots.items():
+            _ingest_camera_salience_snapshot(role, snapshot)
 
     def _smooth_gaze(self, raw_gaze: str) -> str:
         """3-of-5 majority vote smoother to reduce per-frame gaze jitter."""

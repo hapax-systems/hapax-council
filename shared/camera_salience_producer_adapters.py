@@ -40,6 +40,56 @@ from shared.bayesian_camera_salience_world_surface import (
 
 log = logging.getLogger(__name__)
 
+_VISION_ROLE_TO_APERTURE_ID = {
+    "operator": "aperture:studio-rgb.brio-operator",
+    "brio-operator": "aperture:studio-rgb.brio-operator",
+    "desk": "aperture:studio-rgb.c920-desk",
+    "c920-desk": "aperture:studio-rgb.c920-desk",
+}
+
+_VISION_ROLE_TO_CANONICAL_SOURCE = {
+    "operator": "brio-operator",
+    "brio-operator": "brio-operator",
+    "desk": "c920-desk",
+    "c920-desk": "c920-desk",
+}
+
+_IR_ROLE_TO_APERTURE_ID = {
+    "desk": "aperture:studio-ir.noir-desk",
+    "noir-desk": "aperture:studio-ir.noir-desk",
+    "pi-noir-desk": "aperture:studio-ir.noir-desk",
+}
+
+_IR_ROLE_TO_CANONICAL_SOURCE = {
+    "desk": "pi-noir-desk",
+    "noir-desk": "pi-noir-desk",
+    "pi-noir-desk": "pi-noir-desk",
+}
+
+
+def _normalize_role(role: object) -> str:
+    return str(role or "").strip().lower()
+
+
+def _vision_aperture_id(camera_role: object, explicit: str | None) -> str | None:
+    if explicit:
+        return explicit
+    return _VISION_ROLE_TO_APERTURE_ID.get(_normalize_role(camera_role))
+
+
+def _canonical_vision_source(camera_role: object) -> str | None:
+    return _VISION_ROLE_TO_CANONICAL_SOURCE.get(_normalize_role(camera_role))
+
+
+def _ir_aperture_id(pi_name: object, explicit: str | None) -> str | None:
+    if explicit:
+        return explicit
+    return _IR_ROLE_TO_APERTURE_ID.get(_normalize_role(pi_name))
+
+
+def _canonical_ir_source(pi_name: object) -> str | None:
+    return _IR_ROLE_TO_CANONICAL_SOURCE.get(_normalize_role(pi_name))
+
 
 def _now_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -89,8 +139,11 @@ def vision_to_envelope(
     """
     try:
         now_str = _now_iso()
-        aid = aperture_id or f"aperture:studio-rgb.{camera_role}"
-        source_ref = f"vision-backend:camera-classifications:{camera_role}"
+        aid = _vision_aperture_id(camera_role, aperture_id)
+        canonical_role = _canonical_vision_source(camera_role) or _normalize_role(camera_role)
+        if aid is None:
+            return None
+        source_ref = f"vision-backend:camera-classifications:{canonical_role}"
 
         updated_at = snapshot.get("updated_at") or snapshot.get("ts", 0.0)
         age_s = time.monotonic() - float(updated_at) if updated_at else 0.0
@@ -141,7 +194,7 @@ def vision_to_envelope(
             stale_refs = ()
 
         evidence_row = CameraEvidenceRow(
-            evidence_ref=f"camera-evidence:frame.{camera_role}.{hypothesis}",
+            evidence_ref=f"camera-evidence:frame.{canonical_role}.{hypothesis}",
             evidence_class=EvidenceClass.FRAME,
             hypothesis=hypothesis,
             likelihood=likelihood,
@@ -149,23 +202,26 @@ def vision_to_envelope(
             observation_state=obs_state,
             supports_hypothesis=True,
             source_refs=(source_ref,),
-            witness_refs=(f"witness:vision-backend:{camera_role}:frame",),
-            span_refs=(f"span:frame:{camera_role}:{now_str}",),
-            wcs_refs=(f"wcs-surface:camera.{camera_role}",),
-            metadata={"semantic_role": camera_role},
+            witness_refs=(f"witness:vision-backend:{canonical_role}:frame",),
+            span_refs=(f"span:frame:{canonical_role}:{now_str}",),
+            wcs_refs=(f"wcs-surface:camera.{canonical_role}",),
+            metadata={
+                "semantic_role": canonical_role,
+                "source_camera_role": str(camera_role),
+            },
         )
 
         window = CameraTemporalWindow(
-            window_id=f"camera-window:vision.{camera_role}.frame",
+            window_id=f"camera-window:vision.{canonical_role}.frame",
             kind="current_frame",
             aperture_id=aid,
             observed_at=now_str,
             duration_s=0.0,
-            span_ref=f"span:frame:{camera_role}:{now_str}",
+            span_ref=f"span:frame:{canonical_role}:{now_str}",
         )
 
         return CameraObservationEnvelope(
-            envelope_id=f"camera-observation:vision.{camera_role}.frame",
+            envelope_id=f"camera-observation:vision.{canonical_role}.frame",
             aperture_id=aid,
             aperture_kind=ObservationApertureKind.STUDIO_RGB_CAMERA,
             producer=ProducerKind.VISION_BACKEND,
@@ -177,12 +233,12 @@ def vision_to_envelope(
             semantic_labels=tuple(semantic_labels),
             evidence_rows=(evidence_row,),
             source_refs=(source_ref,),
-            wcs_surface_refs=(f"wcs-surface:camera.{camera_role}",),
-            witness_refs=(f"witness:vision-backend:{camera_role}:frame",),
-            span_refs=(f"span:frame:{camera_role}:{now_str}",),
+            wcs_surface_refs=(f"wcs-surface:camera.{canonical_role}",),
+            witness_refs=(f"witness:vision-backend:{canonical_role}:frame",),
+            span_refs=(f"span:frame:{canonical_role}:{now_str}",),
             authority_ceiling=ClaimAuthorityCeiling.EVIDENCE_BOUND,
             privacy_mode=PrivacyMode.PRIVATE,
-            image_ref=f"image-ref:{camera_role}-frame",
+            image_ref=f"image-ref:{canonical_role}-frame",
             blocked_reasons=blocked_reasons,
             stale_refs=stale_refs,
         )
@@ -211,8 +267,12 @@ def ir_to_envelope(
     """
     try:
         now_str = _now_iso()
-        aid = aperture_id or f"aperture:studio-ir.pi-noir-{pi_name}"
-        source_ref = f"ir-presence-backend:pi-noir-{pi_name}"
+        aid = _ir_aperture_id(pi_name, aperture_id)
+        canonical_source = _canonical_ir_source(pi_name) or _normalize_role(pi_name)
+        if aid is None:
+            return None
+        canonical_surface = canonical_source.removeprefix("pi-")
+        source_ref = f"ir-presence-backend:{canonical_source}"
 
         # IR reports typically have a timestamp field
         report_ts = ir_state.get("timestamp") or ir_state.get("ts", 0.0)
@@ -221,9 +281,10 @@ def ir_to_envelope(
         else:
             age_s = max(0.0, time.time() - float(report_ts)) if report_ts else 0.0
 
-        person_detected = bool(ir_state.get("person_detected", False))
+        persons = ir_state.get("persons", [])
+        person_detected = bool(ir_state.get("person_detected", False)) or bool(persons)
         motion_delta = float(ir_state.get("motion_delta", 0.0))
-        brightness = float(ir_state.get("brightness", 0.0))
+        brightness = float(ir_state.get("brightness", ir_state.get("ir_brightness", 0.0)))
 
         if person_detected:
             hypothesis = "operator_present_ir"
@@ -248,7 +309,7 @@ def ir_to_envelope(
             stale_refs = ()
 
         evidence_row = CameraEvidenceRow(
-            evidence_ref=f"camera-evidence:ir-presence.{pi_name}.{hypothesis}",
+            evidence_ref=f"camera-evidence:ir-presence.{canonical_surface}.{hypothesis}",
             evidence_class=EvidenceClass.IR_PRESENCE,
             hypothesis=hypothesis,
             likelihood=likelihood,
@@ -256,27 +317,28 @@ def ir_to_envelope(
             observation_state=obs_state,
             supports_hypothesis=True,
             source_refs=(source_ref,),
-            witness_refs=(f"witness:ir-backend:{pi_name}:presence",),
-            span_refs=(f"span:ir:{pi_name}:{now_str}",),
-            wcs_refs=(f"wcs-surface:ir.pi-noir-{pi_name}",),
+            witness_refs=(f"witness:ir-backend:{canonical_source}:presence",),
+            span_refs=(f"span:ir:{canonical_surface}:{now_str}",),
+            wcs_refs=(f"wcs-surface:ir.{canonical_surface}",),
             metadata={
                 "motion_delta": motion_delta,
                 "brightness": brightness,
                 "person_detected": person_detected,
+                "source_pi_name": str(pi_name),
             },
         )
 
         window = CameraTemporalWindow(
-            window_id=f"camera-window:ir.{pi_name}.presence",
+            window_id=f"camera-window:ir.{canonical_surface}.presence",
             kind="current_frame",
             aperture_id=aid,
             observed_at=now_str,
             duration_s=0.0,
-            span_ref=f"span:ir:{pi_name}:{now_str}",
+            span_ref=f"span:ir:{canonical_surface}:{now_str}",
         )
 
         return CameraObservationEnvelope(
-            envelope_id=f"camera-observation:ir.{pi_name}.presence",
+            envelope_id=f"camera-observation:ir.{canonical_surface}.presence",
             aperture_id=aid,
             aperture_kind=ObservationApertureKind.STUDIO_IR_CAMERA,
             producer=ProducerKind.IR_PRESENCE_BACKEND,
@@ -288,9 +350,9 @@ def ir_to_envelope(
             semantic_labels=("ir_presence", hypothesis),
             evidence_rows=(evidence_row,),
             source_refs=(source_ref,),
-            wcs_surface_refs=(f"wcs-surface:ir.pi-noir-{pi_name}",),
-            witness_refs=(f"witness:ir-backend:{pi_name}:presence",),
-            span_refs=(f"span:ir:{pi_name}:{now_str}",),
+            wcs_surface_refs=(f"wcs-surface:ir.{canonical_surface}",),
+            witness_refs=(f"witness:ir-backend:{canonical_source}:presence",),
+            span_refs=(f"span:ir:{canonical_surface}:{now_str}",),
             authority_ceiling=ClaimAuthorityCeiling.INTERNAL_ONLY,
             privacy_mode=PrivacyMode.PRIVATE,
             blocked_reasons=blocked_reasons,
@@ -322,13 +384,29 @@ def cross_camera_to_envelope(
     try:
         now_str = _now_iso()
         track_id = str(tracklet.get("track_id", "unknown"))
-        cameras = tracklet.get("cameras", [])
+        raw_cameras = tracklet.get("cameras", [])
+        if isinstance(raw_cameras, str):
+            cameras = [raw_cameras]
+        else:
+            cameras = [str(camera) for camera in raw_cameras]
         similarity = float(tracklet.get("similarity", 0.5))
         time_delta_s = float(tracklet.get("time_delta_s", 0.0))
         confidence = float(tracklet.get("confidence", 0.5))
         topology_path = str(tracklet.get("topology_path", "unknown"))
 
-        aid = aperture_id or "aperture:cross-camera.stitcher"
+        primary_role = next(
+            (
+                canonical
+                for canonical in (_canonical_vision_source(camera) for camera in cameras)
+                if canonical is not None
+            ),
+            None,
+        )
+        aid = aperture_id or (
+            _VISION_ROLE_TO_APERTURE_ID[primary_role] if primary_role is not None else None
+        )
+        if aid is None:
+            return None
         source_ref = f"cross-camera-stitcher:tracklet:{track_id}"
 
         hypothesis = f"cross_camera_movement_{track_id}"
@@ -354,12 +432,17 @@ def cross_camera_to_envelope(
             source_refs=(source_ref,),
             witness_refs=tuple(f"witness:camera:{c}" for c in cameras[:3]) or ("witness:stitcher",),
             span_refs=(f"span:tracklet:{track_id}:{now_str}",),
-            wcs_refs=("wcs-surface:cross-camera.stitcher",),
+            wcs_refs=(
+                f"wcs-surface:camera.{primary_role}"
+                if primary_role is not None
+                else "wcs-surface:cross-camera.stitcher",
+            ),
             metadata={
                 "topology_path": topology_path,
                 "time_delta_s": time_delta_s,
                 "similarity": similarity,
                 "uncertainty": uncertainty,
+                "cameras": ",".join(cameras),
             },
         )
 
@@ -385,7 +468,14 @@ def cross_camera_to_envelope(
             semantic_labels=("cross_camera_tracklet",),
             evidence_rows=(evidence_row,),
             source_refs=(source_ref,),
-            wcs_surface_refs=("wcs-surface:cross-camera.stitcher",),
+            wcs_surface_refs=(
+                (
+                    f"wcs-surface:camera.{primary_role}",
+                    "wcs-surface:cross-camera.stitcher",
+                )
+                if primary_role is not None
+                else ("wcs-surface:cross-camera.stitcher",)
+            ),
             witness_refs=tuple(f"witness:camera:{c}" for c in cameras[:3]) or ("witness:stitcher",),
             span_refs=(f"span:tracklet:{track_id}:{now_str}",),
             authority_ceiling=ClaimAuthorityCeiling.INTERNAL_ONLY,
@@ -454,7 +544,7 @@ def livestream_to_envelope(
             source_refs=(source_ref,),
             witness_refs=(f"witness:compositor:{scene_name}",),
             span_refs=(f"span:livestream:{scene_name}:{now_str}",),
-            wcs_refs=("wcs-surface:livestream.composed",),
+            wcs_refs=("wcs-surface:livestream.composed-frame",),
             metadata={
                 "active_camera": active_camera,
                 "scene_name": scene_name,
@@ -483,7 +573,7 @@ def livestream_to_envelope(
             semantic_labels=("livestream", scene_name),
             evidence_rows=(evidence_row,),
             source_refs=(source_ref,),
-            wcs_surface_refs=("wcs-surface:livestream.composed",),
+            wcs_surface_refs=("wcs-surface:livestream.composed-frame",),
             witness_refs=(f"witness:compositor:{scene_name}",),
             span_refs=(f"span:livestream:{scene_name}:{now_str}",),
             authority_ceiling=ClaimAuthorityCeiling.EVIDENCE_BOUND,

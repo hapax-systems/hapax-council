@@ -22,7 +22,6 @@ from shared.bayesian_camera_salience_world_surface import (
     CameraEvidenceRow,
     CameraFreshness,
     CameraObservationEnvelope,
-    CameraSalienceBroker,
     CameraSalienceBundle,
     CameraSalienceFixtureSet,
     CameraTemporalWindow,
@@ -648,7 +647,6 @@ ImageAttachmentPolicy._validate_attachment_bounds
 CameraSalienceBundle._validate_bundle_contract
 CameraSalienceBundle.to_director_world_surface_projection
 CameraSalienceBundle.to_wcs_projection_payload
-CameraSalienceBroker.evaluate
 CameraSalienceFixtureSet._validate_fixture_contract
 CameraSalienceFixtureSet.broker
 CameraSalienceFixtureSet.query_by_id
