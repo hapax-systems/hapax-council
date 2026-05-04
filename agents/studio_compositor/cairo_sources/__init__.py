@@ -173,6 +173,17 @@ def _register_builtins() -> None:
     from agents.studio_compositor.programme_state_ward import ProgrammeStateCairoSource
 
     register("ProgrammeStateCairoSource", ProgrammeStateCairoSource)
+    # ward-programme-history-e-panel (2026-05-04) — Enlightenment-GTK +
+    # BitchX HOMAGE Ward hybrid epic. Multi-session arc surface using
+    # the Moksha curly-chrome aesthetic from PR #1314
+    # (ytb-AUTH-ENLIGHTENMENT-package). Default OFF via
+    # HAPAX_LORE_PROGRAMME_HISTORY_ENABLED so the operator can flip it
+    # after a visual sign-off without forcing default-layout changes.
+    from agents.studio_compositor.programme_history_ward import (
+        ProgrammeHistoryCairoSource,
+    )
+
+    register("ProgrammeHistoryCairoSource", ProgrammeHistoryCairoSource)
     # programme-banner-ward (PR #2366, 2026-05-03) — Cairo lower-third
     # surfacing the active programme's role + narrative_beat + residual
     # time. Per /tmp/wsjf-path-content-programming.md §3 G1: the planner
