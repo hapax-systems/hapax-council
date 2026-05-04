@@ -194,8 +194,17 @@ class TestApplyTier:
 class TestRoleTierBand:
     """§2 of 2026-04-20-voice-tier-director-integration.md — per-role bands."""
 
-    def test_all_twelve_programme_roles_covered(self) -> None:
-        """Every ProgrammeRole value has a default band entry."""
+    def test_all_programme_roles_covered(self) -> None:
+        """Every ProgrammeRole value has a default band entry.
+
+        This is the load-bearing invariant: ``role_tier_band`` raises
+        ``KeyError`` on a missing role, so a new ProgrammeRole shipped
+        without a corresponding ``_ROLE_TIER_DEFAULTS`` entry would
+        crash the structural director the first time the role is
+        active. The assertion is open-ended (every role, not a fixed
+        count) so the count-of-roles can change with new content
+        formats without forcing an unrelated test edit.
+        """
         from shared.programme import ProgrammeRole
 
         for role in ProgrammeRole:
