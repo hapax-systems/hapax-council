@@ -21,6 +21,7 @@ Live-graph + recovery subcommands (Phase 4 + Phase 5):
 - ``verify``    — assert live graph matches descriptor
 - ``audit``     — full drift report
 - ``l12-forward-check`` — static L-12 forward/private route guard
+- ``l12-scene-check`` — live L-12 BROADCAST-V2 scene signal assertion
 - ``watchdog``  — Ryzen codec pin-glitch recovery sequence (manual)
 - ``pin-check`` — single-shot pin-glitch detection with persisted
   silence-window state for systemd-timer composition; --auto-fix
@@ -47,6 +48,7 @@ from shared.audio_topology import (
 )
 from shared.audio_topology_generator import generate_confs
 from shared.audio_topology_inspector import (
+    check_l12_broadcast_scene_active,
     check_l12_forward_invariant,
     check_tts_broadcast_path,
     descriptor_from_dump_file,
@@ -453,7 +455,8 @@ def _classify_live_extra_edge(
     # privacy invariant; the MPC link is a runtime artifact that the
     # topology audit should classify rather than flag as unclassified drift.
     if (
-        source_name in (
+        source_name
+        in (
             "hapax-private-playback",
             "hapax-notification-private-playback",
         )
@@ -674,9 +677,7 @@ def _build_verify_report(
         "strict": bool(strict),
         "l12_forward_invariant": {
             "ok": bool(l12_check.ok),
-            "violations": [
-                {"code": v.code, "message": v.message} for v in l12_check.violations
-            ],
+            "violations": [{"code": v.code, "message": v.message} for v in l12_check.violations],
         },
         "tts_broadcast_path": {
             "ok": bool(tts_check.ok),
@@ -767,7 +768,6 @@ def _write_topology_prom(path: Path, payload: dict) -> None:
     # link, possible leak). Existing metrics above cover the classification axis;
     # these add the topology-as-set axis.
     declared_edges = int(payload.get("declared_edge_count", 0))
-    live_edges = int(payload.get("live_edge_count", 0))
     drift = payload.get("drift", {}) or {}
     missing_count = sum(
         len(drift.get(key, []) or [])
@@ -865,6 +865,25 @@ def cmd_l12_forward_check(args: argparse.Namespace) -> int:
     """Verify the static L-12 forward/private directionality contract."""
     descriptor = _load(args.descriptor)
     result = check_l12_forward_invariant(descriptor)
+    print(result.format())
+    return 0 if result.ok else 2
+
+
+def cmd_l12_scene_check(args: argparse.Namespace) -> int:
+    """Verify the live L-12 BROADCAST-V2 scene signal assertion."""
+    descriptor = _load(args.descriptor)
+    pcm = None
+    if args.raw_pcm_file:
+        try:
+            pcm = Path(args.raw_pcm_file).read_bytes()
+        except OSError as exc:
+            print(f"error: failed to read raw PCM file: {exc}", file=sys.stderr)
+            return 1
+    result = check_l12_broadcast_scene_active(
+        descriptor,
+        duration_s=args.duration_s,
+        pcm_int16=pcm,
+    )
     print(result.format())
     return 0 if result.ok else 2
 
@@ -1126,6 +1145,34 @@ def main() -> int:
     )
     p_l12_forward.add_argument("descriptor")
     p_l12_forward.set_defaults(func=cmd_l12_forward_check)
+
+    p_l12_scene = sub.add_parser(
+        "l12-scene-check",
+        help="Verify the live L-12 BROADCAST-V2 scene signal assertion.",
+    )
+    p_l12_scene.add_argument(
+        "descriptor",
+        nargs="?",
+        default="config/audio-topology.yaml",
+        help="Topology descriptor path (default: config/audio-topology.yaml).",
+    )
+    p_l12_scene.add_argument(
+        "--duration-s",
+        dest="duration_s",
+        type=float,
+        default=30.0,
+        help="Capture duration for live parec probe; must be at least 30s.",
+    )
+    p_l12_scene.add_argument(
+        "--raw-pcm-file",
+        dest="raw_pcm_file",
+        default=None,
+        help=(
+            "Read interleaved signed-16 14-channel PCM from this file instead "
+            "of running parec. Intended for tests and captured evidence only."
+        ),
+    )
+    p_l12_scene.set_defaults(func=cmd_l12_scene_check)
 
     p_watchdog = sub.add_parser(
         "watchdog",

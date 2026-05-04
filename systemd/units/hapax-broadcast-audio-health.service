@@ -13,7 +13,7 @@ Environment=HOME=/home/hapax
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/hapax/.local/bin/uv run --directory /home/hapax/projects/hapax-council python -m agents.broadcast_audio_health --loudness-duration 5
-TimeoutStartSec=35s
+TimeoutStartSec=75s
 MemoryMax=256M
 CPUQuota=25%
 StandardOutput=journal

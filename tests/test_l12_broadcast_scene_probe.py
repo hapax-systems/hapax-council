@@ -22,6 +22,7 @@ import pytest
 
 from agents.broadcast_audio_health.l12_broadcast_scene_probe import (
     EVENT_NAME,
+    RUNBOOK_ANCHOR,
     L12SceneProbeConfig,
     L12SceneProbeState,
     _parse_sink_running,
@@ -29,11 +30,18 @@ from agents.broadcast_audio_health.l12_broadcast_scene_probe import (
     evaluate_tick,
     fire_ntfy_alert,
     is_music_sink_running,
+    load_scene_check_rotation_state,
     load_state,
     probe_l12_broadcast_scene,
+    run_l12_scene_check_rotation,
     save_state,
     write_impingement,
 )
+from shared.audio_topology import TopologyDescriptor
+from shared.audio_topology_inspector import SceneAssertion
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CANONICAL_YAML = REPO_ROOT / "config" / "audio-topology.yaml"
 
 # ── DSP layer ────────────────────────────────────────────────────────────────
 
@@ -317,6 +325,8 @@ class TestSideEffects:
         )
         assert "L-12 BROADCAST scene unloaded" in captured["title"]
         assert "operator-only fix" in captured["message"]
+        assert "BROADCAST-V2" in captured["message"]
+        assert RUNBOOK_ANCHOR in captured["message"]
         assert captured.get("priority") == "high"
 
     def test_fire_ntfy_alert_swallows_notifier_exceptions(self) -> None:
@@ -331,6 +341,112 @@ class TestSideEffects:
             config=cfg,
             notifier=raising_notifier,
         )
+
+
+class TestL12SceneCheckRotation:
+    def test_rotation_alerts_only_on_transition_to_not_ok(self, tmp_path: Path) -> None:
+        captured: list[tuple[str, str]] = []
+        state_path = tmp_path / "scene-check-state.json"
+
+        def fake_notifier(title: str, message: str, **kwargs) -> None:
+            captured.append((title, message))
+
+        def fail_checker(
+            _descriptor: TopologyDescriptor,
+            _duration_s: float,
+        ) -> SceneAssertion:
+            return SceneAssertion(
+                ok=False,
+                evidence={"aux5_peak_dbfs": "-inf"},
+                violations=("AUX5/CH6 peak -inf dBFS below -20.0 dBFS threshold",),
+            )
+
+        outcome1 = run_l12_scene_check_rotation(
+            descriptor_path=CANONICAL_YAML,
+            state_path=state_path,
+            interval_s=0.0,
+            duration_s=30.0,
+            now=1000.0,
+            music_running=True,
+            checker=fail_checker,
+            notifier=fake_notifier,
+        )
+        assert outcome1.ran is True
+        assert outcome1.status == "not-ok"
+        assert outcome1.alerted is True
+        assert len(captured) == 1
+        assert RUNBOOK_ANCHOR in captured[0][1]
+
+        outcome2 = run_l12_scene_check_rotation(
+            descriptor_path=CANONICAL_YAML,
+            state_path=state_path,
+            interval_s=0.0,
+            duration_s=30.0,
+            now=1300.0,
+            music_running=True,
+            checker=fail_checker,
+            notifier=fake_notifier,
+        )
+        assert outcome2.ran is True
+        assert outcome2.alerted is False
+        assert len(captured) == 1
+
+        def ok_checker(
+            _descriptor: TopologyDescriptor,
+            _duration_s: float,
+        ) -> SceneAssertion:
+            return SceneAssertion(ok=True, evidence={})
+
+        run_l12_scene_check_rotation(
+            descriptor_path=CANONICAL_YAML,
+            state_path=state_path,
+            interval_s=0.0,
+            duration_s=30.0,
+            now=1600.0,
+            music_running=True,
+            checker=ok_checker,
+            notifier=fake_notifier,
+        )
+        outcome4 = run_l12_scene_check_rotation(
+            descriptor_path=CANONICAL_YAML,
+            state_path=state_path,
+            interval_s=0.0,
+            duration_s=30.0,
+            now=1900.0,
+            music_running=True,
+            checker=fail_checker,
+            notifier=fake_notifier,
+        )
+        assert outcome4.alerted is True
+        assert len(captured) == 2
+
+    def test_rotation_skips_when_music_is_not_running(self, tmp_path: Path) -> None:
+        calls = 0
+
+        def checker(
+            _descriptor: TopologyDescriptor,
+            _duration_s: float,
+        ) -> SceneAssertion:
+            nonlocal calls
+            calls += 1
+            return SceneAssertion(ok=False, evidence={})
+
+        state_path = tmp_path / "scene-check-state.json"
+        outcome = run_l12_scene_check_rotation(
+            descriptor_path=CANONICAL_YAML,
+            state_path=state_path,
+            interval_s=0.0,
+            duration_s=30.0,
+            now=1000.0,
+            music_running=False,
+            checker=checker,
+        )
+
+        assert outcome.ran is False
+        assert outcome.status == "skipped_music_not_running"
+        assert calls == 0
+        state = load_scene_check_rotation_state(state_path)
+        assert state.last_status == "skipped_music_not_running"
 
 
 # ── End-to-end probe ────────────────────────────────────────────────────────

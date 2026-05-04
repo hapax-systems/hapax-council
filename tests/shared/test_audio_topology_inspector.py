@@ -6,10 +6,14 @@ import json
 from textwrap import dedent
 from typing import Any
 
+import numpy as np
+
 from shared.audio_topology import Node, NodeKind, TopologyDescriptor
 from shared.audio_topology_inspector import (
     _classify_node_kind,
     _id_from_name,
+    channel_peak_dbfs,
+    check_l12_broadcast_scene_active,
     check_l12_forward_invariant,
     check_tts_broadcast_path,
     pw_dump_to_descriptor,
@@ -72,6 +76,48 @@ def _replace_node(
     for node in descriptor.nodes:
         nodes.append(node.model_copy(update=updates) if node.id == node_id else node)
     return descriptor.model_copy(update={"nodes": nodes})
+
+
+def _l12_scene_assignments() -> dict[str, str]:
+    return {
+        "CH1": "evil-pet-in-from-monitor-a",
+        "CH2": "cortado-contact-mic",
+        "CH3": "reserve",
+        "CH4": "sampler-chain",
+        "CH5": "rode-wireless-pro-rx",
+        "CH6": "evil-pet-return-aux5",
+        "CH7": "reserve",
+        "CH8": "reserve",
+        "CH9": "vinyl-l",
+        "CH10": "vinyl-r",
+        "CH11": "pc-l-out",
+        "CH12": "pc-r-out",
+        "CH13": "master-l-dropped-from-broadcast",
+        "CH14": "master-r-dropped-from-broadcast",
+    }
+
+
+def _l12_scene_fixture() -> TopologyDescriptor:
+    return _replace_node(
+        _l12_contract_fixture(),
+        "l12-capture",
+        expected_scene="BROADCAST-V2",
+        expected_channel_assignments=_l12_scene_assignments(),
+    )
+
+
+def _scene_pcm(
+    *,
+    aux5_amp: int = 8000,
+    aux10_amp: int = 20000,
+    aux11_amp: int = 0,
+    samples: int = 4800,
+) -> bytes:
+    buffer = np.zeros((samples, 14), dtype=np.int16)
+    buffer[:, 5] = aux5_amp
+    buffer[:, 10] = aux10_amp
+    buffer[:, 11] = aux11_amp
+    return buffer.tobytes()
 
 
 def _l12_contract_fixture() -> TopologyDescriptor:
@@ -629,6 +675,72 @@ class TestTtsBroadcastPathCheck:
         ]
         result = check_tts_broadcast_path(pw_dump_to_descriptor(dump))
         assert result.ok is True
+
+
+class TestL12BroadcastSceneAssertion:
+    def test_channel_peak_dbfs_isolated_to_selected_channel(self) -> None:
+        pcm = _scene_pcm(aux5_amp=8000, aux10_amp=0)
+
+        assert channel_peak_dbfs(pcm, channels=14, channel_index=5) > -20.0
+        assert channel_peak_dbfs(pcm, channels=14, channel_index=10) == float("-inf")
+
+    def test_passes_when_scene_metadata_and_levels_match(self) -> None:
+        result = check_l12_broadcast_scene_active(
+            _l12_scene_fixture(),
+            pcm_int16=_scene_pcm(),
+            duration_s=30.0,
+        )
+
+        assert result.ok is True
+        assert result.evidence["descriptor_expected_scene"] == "BROADCAST-V2"
+        assert result.evidence["aux5_peak_dbfs"] > -20.0
+        assert result.evidence["aux10_11_peak_dbfs"] > -10.0
+
+    def test_fails_when_aux5_is_cold(self) -> None:
+        result = check_l12_broadcast_scene_active(
+            _l12_scene_fixture(),
+            pcm_int16=_scene_pcm(aux5_amp=0),
+            duration_s=30.0,
+        )
+
+        assert result.ok is False
+        assert any("AUX5/CH6 peak" in violation for violation in result.violations)
+
+    def test_fails_when_usb_return_pair_is_cold(self) -> None:
+        result = check_l12_broadcast_scene_active(
+            _l12_scene_fixture(),
+            pcm_int16=_scene_pcm(aux10_amp=0, aux11_amp=0),
+            duration_s=30.0,
+        )
+
+        assert result.ok is False
+        assert any("AUX10/11 PC return peak" in violation for violation in result.violations)
+
+    def test_fails_when_expected_scene_metadata_does_not_match(self) -> None:
+        descriptor = _replace_node(
+            _l12_scene_fixture(),
+            "l12-capture",
+            expected_scene="BROADCAST",
+        )
+
+        result = check_l12_broadcast_scene_active(
+            descriptor,
+            pcm_int16=_scene_pcm(),
+            duration_s=30.0,
+        )
+
+        assert result.ok is False
+        assert any("expected_scene='BROADCAST'" in v for v in result.violations)
+
+    def test_requires_minimum_thirty_second_probe_window(self) -> None:
+        result = check_l12_broadcast_scene_active(
+            _l12_scene_fixture(),
+            pcm_int16=_scene_pcm(),
+            duration_s=5.0,
+        )
+
+        assert result.ok is False
+        assert any("requires at least 30s" in v for v in result.violations)
 
 
 class TestL12ForwardInvariantCheck:
