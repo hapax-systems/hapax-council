@@ -336,7 +336,12 @@ def _call_endpoint(url: str, prompt: str, auth: str | None = None) -> str | None
     try:
         with urllib.request.urlopen(req, timeout=_LLM_TIMEOUT_S) as resp:
             data = json.loads(resp.read())
-        return data["choices"][0]["message"]["content"] or ""
+        content = data["choices"][0]["message"]["content"] or ""
+        # Strip Qwen3's <think>...</think> chain-of-thought
+        import re
+
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+        return content
     except Exception:
         return None
 

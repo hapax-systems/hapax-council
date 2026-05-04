@@ -176,6 +176,7 @@ def _call_llm(prompt: str) -> str:
             data = json.loads(resp.read())
         content = data["choices"][0]["message"]["content"] or ""
         if content:
+            content = _strip_think_tags(content)
             log.info("segment prep LLM: served by TabbyAPI (local)")
             return content
     except Exception:
@@ -193,15 +194,22 @@ def _call_llm(prompt: str) -> str:
         )
         with urllib.request.urlopen(req, timeout=_PREP_LLM_TIMEOUT_S) as resp:
             data = json.loads(resp.read())
-        return data["choices"][0]["message"]["content"] or ""
+        return _strip_think_tags(data["choices"][0]["message"]["content"] or "")
     except Exception:
         log.warning("segment prep LLM: both TabbyAPI and LiteLLM failed", exc_info=True)
         raise
 
 
+def _strip_think_tags(text: str) -> str:
+    """Strip Qwen3's <think>...</think> chain-of-thought from responses."""
+    import re
+
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+
 def _parse_script(raw: str) -> list[str]:
     """Parse the LLM response into a list of beat narration blocks."""
-    text = raw.strip()
+    text = _strip_think_tags(raw.strip())
     # Strip markdown fences
     if text.startswith("```"):
         lines = text.split("\n")
