@@ -206,11 +206,23 @@ _COMPOSITIONAL_PREFIXES: tuple[str, ...] = (
     # via preset_recruitment_consumer's background-thread runner.
     "transition.",
     # GEM (Graffiti Emphasis Mural) — gem.emphasis.* and
-    # gem.composition.* recruited from director impingements; producer
-    # at agents/hapax_daimonion/gem_producer.py renders CP437 keyframes.
-    # Catalog rows are placeholders until lssh-002 (P0 GEM rendering
-    # redesign).
+    # gem.composition.* + gem.spawn.* recruited from director impingements;
+    # producer at agents/hapax_daimonion/gem_producer.py renders CP437
+    # keyframes. Catalog rows are placeholders until lssh-002 (P0 GEM
+    # rendering redesign).
     "gem.",
+    # Director micromove vocabulary expansion (cc-task
+    # `director-moves-richness-expansion`): four parametric / programme
+    # families. ``composition.reframe`` reframes the active hero camera;
+    # ``pace.tempo_shift`` shifts cadence multipliers; ``mood.tone_pivot``
+    # pivots color/warmth/saturation parametrically; ``programme.beat_advance``
+    # signals the active programme's narrative beat should advance.
+    # Operator constraint: NO presets — these are parametric modulation
+    # only; the director never picks a preset family.
+    "composition.",
+    "pace.",
+    "mood.",
+    "programme.",
 )
 
 

@@ -1427,7 +1427,7 @@ ACTIVITY_CAPABILITIES = (
     "  homage.expand on album for sustained centre-of-attention.\n"
     "- study: reflect on your own research — Clark & Brennan, phenomenology,\n"
     "  grounding theory. PAIRS WITH: camera.hero (desk-c920.writing-reading\n"
-    "  or coding), mood.tone_pivot.cooler (calm during focused reading),\n"
+    "  or coding), mood.tone_pivot.cooler (calm during deliberate reading),\n"
     "  overlay.foreground on grounding_provenance_ticker, ward.staging.\n"
     "  recruitment_candidate_panel.hide if the diagnostic chrome is noise.\n"
     "- observe: notice the composed surface. Shaders, triangle layout,\n"
@@ -1748,7 +1748,7 @@ _MICROMOVE_BY_ROLE: dict[str, list[_MicromoveEntry]] = {
         (
             "mood.tone_pivot",
             "cool the room's color register slightly — pull toward cooler hue and "
-            "lower saturation for focused work",
+            "lower saturation for deliberate work",
             "water",
             ["thinking_indicator"],
             "weighted_by_salience",
@@ -1764,7 +1764,7 @@ _MICROMOVE_BY_ROLE: dict[str, list[_MicromoveEntry]] = {
         (
             "pace.tempo_shift",
             "settle the room's effective tempo to steady — neither slow nor quick, "
-            "the standing rhythm of focused work",
+            "the standing rhythm of deliberate work",
             "water",
             ["activity_variety_log"],
             "sequential",
