@@ -136,11 +136,21 @@ class TestHappyPath:
         assert len(plan.programmes) == 2
 
     def test_default_model_alias_routes_through_balanced_tier(self) -> None:
-        """Pin the model alias the production planner uses."""
-        assert DEFAULT_MODEL in ("balanced", "claude-sonnet", "claude-opus-4-7")  # operator-tunable
-        # Default before any env override
+        """Pin the model alias the production planner uses.
+
+        The alias migrated from ``claude-opus-4-7`` to a TabbyAPI
+        local-served Command-R EXL3 model
+        (``command-r-08-2024-exl3-5.0bpw``) for cost + latency.
+        Operator-tunable via ``HAPAX_PROGRAMME_PLANNER_MODEL``.
+        """
+        assert DEFAULT_MODEL in (
+            "balanced",
+            "claude-sonnet",
+            "claude-opus-4-7",
+            "command-r-08-2024-exl3-5.0bpw",
+        )
         if "HAPAX_PROGRAMME_PLANNER_MODEL" not in __import__("os").environ:
-            assert DEFAULT_MODEL == "claude-opus-4-7"
+            assert DEFAULT_MODEL == "command-r-08-2024-exl3-5.0bpw"
 
 
 # ── Failure modes — first attempt ───────────────────────────────────────

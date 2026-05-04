@@ -24,7 +24,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def test_default_modulations_use_namespaced_audio_sources() -> None:
     payload = json.loads((REPO_ROOT / "presets" / "_default_modulations.json").read_text())
 
-    sources = {row["source"] for row in payload["default_modulations"]}
+    # Skip _comment-only rows (header markers in the JSON for human
+    # readability); only real binding rows have a `source` field.
+    sources = {row["source"] for row in payload["default_modulations"] if "source" in row}
 
     assert "music.rms" in sources
     assert "broadcast.rms" in sources

@@ -255,9 +255,11 @@ class TestProgrammeRitual:
 
 class TestProgrammeSuccessCriteria:
     def test_durations_default(self) -> None:
+        # Defaults shifted to a 10-min floor / 2-hour cap (operator
+        # hard requirement; segments target ~1 hour).
         s = ProgrammeSuccessCriteria()
-        assert s.min_duration_s == 60.0
-        assert s.max_duration_s == 1800.0
+        assert s.min_duration_s == 600.0
+        assert s.max_duration_s == 7200.0
 
     def test_min_cannot_exceed_max(self) -> None:
         with pytest.raises(ValueError, match="min_duration_s"):

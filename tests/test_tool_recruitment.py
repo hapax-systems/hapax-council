@@ -66,10 +66,34 @@ def test_descriptions_use_gibson_verbs():
 # --- Task 2: Recruitment gate tests ---
 
 
-def test_utterance_to_impingement():
+def _envelope(utterance: str) -> "GroundingContextEnvelope":
+    """Build a minimal envelope around a single phenomenal line.
+
+    The recruit path was refactored from ``recruit(utterance: str)`` to
+    ``recruit(envelope: GroundingContextEnvelope)``; tests now thread
+    a real envelope through. The envelope's last
+    ``phenomenal_lines`` entry is what the gate treats as the
+    utterance for impingement construction.
+    """
+    from shared.grounding_context import GroundingContextEnvelope
+
+    return GroundingContextEnvelope(
+        turn_id="t1",
+        assembled_at=0.0,
+        source_freshness="fresh",
+        temporal_bands={},
+        phenomenal_lines=[utterance],
+        context_hash="ctx-test",
+    )
+
+
+def test_envelope_to_impingement():
     gate = ToolRecruitmentGate.__new__(ToolRecruitmentGate)
     gate._pipeline = None
-    imp = gate._utterance_to_impingement("what's the weather like today?")
+    imp = gate._envelope_to_impingement(
+        _envelope("what's the weather like today?"),
+        "what's the weather like today?",
+    )
     assert imp.source == "operator.utterance"
     assert "weather" in imp.content.get("narrative", "")
     assert imp.strength == 1.0
@@ -84,7 +108,7 @@ def test_recruit_returns_tool_names():
     ]
     gate._pipeline = mock_pipeline
     gate._tool_names = {"get_weather", "get_current_time", "search_documents"}
-    recruited = gate.recruit("what's the weather?")
+    recruited = gate.recruit(_envelope("what's the weather?"))
     assert "get_weather" in recruited
     assert "get_current_time" in recruited
 
@@ -99,7 +123,7 @@ def test_recruit_filters_non_tool_candidates():
     ]
     gate._pipeline = mock_pipeline
     gate._tool_names = {"get_weather", "get_current_time"}
-    recruited = gate.recruit("weather check")
+    recruited = gate.recruit(_envelope("weather check"))
     assert "get_weather" in recruited
     assert "not_a_real_tool" not in recruited
 
