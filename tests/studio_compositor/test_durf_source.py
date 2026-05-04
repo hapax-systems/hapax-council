@@ -394,7 +394,9 @@ class TestLayoutIntegration:
         surf = next(s for s in data["surfaces"] if s["id"] == "durf-fullframe")
         assert surf["geometry"]["w"] == 1920
         assert surf["geometry"]["h"] == 1080
-        assert surf["z_order"] == 5
+        # z_order migrated up to clear the new lore-band scrim;
+        # 50 is the documented "above background, below content" tier.
+        assert surf["z_order"] == 50
 
 
 # ── Cc-task ``activity-reveal-ward-p1-durf-migration`` ──────────────────────

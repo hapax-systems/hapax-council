@@ -331,12 +331,17 @@ class TestIdFromName:
         assert _id_from_name("hapax-livestream-tap") == "hapax-livestream-tap"
 
     def test_alsa_long_name_compresses(self) -> None:
-        """ALSA multi-segment names trim to the last two dash-separated segments."""
-        # Result is still a valid kebab-ish id — tolerates the dot
-        # from ``00.multitrack`` since Node.id validator only rejects
-        # whitespace + uppercase.
+        """ALSA multi-segment names trim to the last three dash-separated segments.
+
+        Three (rather than two) prevents ID collisions between devices
+        whose ALSA suffix shares the trailing two segments (e.g. L-12
+        and MPC both ending in ``00.multichannel-input``). Result is
+        still kebab-ish — Node.id validator only rejects whitespace
+        + uppercase, so the dot in ``00.multitrack`` is tolerated.
+        """
         assert (
-            _id_from_name("alsa_input.usb-ZOOM_Corporation_L6-00.multitrack") == "l6-00.multitrack"
+            _id_from_name("alsa_input.usb-ZOOM_Corporation_L6-00.multitrack")
+            == "corporation-l6-00.multitrack"
         )
 
     def test_lowercase_and_dash_normalised(self) -> None:

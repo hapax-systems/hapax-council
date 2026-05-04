@@ -213,6 +213,19 @@ ROLE_FAMILY_BIAS: dict[str, tuple[tuple[str, float], ...]] = {
     "experiment": (("glitch-dense", 1.4), ("audio-reactive", 1.3)),
     "repair": (("warm-minimal", 1.4),),
     "invitation": (("audio-reactive", 1.4), ("warm-minimal", 1.2)),
+    # Segmented-content roles (operator outcome 2 — alpha #2465). Each
+    # is a Hapax-authored narrative format whose visual register is
+    # intentionally dense or animated; biases skew toward audio-reactive
+    # / glitch-dense for the high-energy formats and warm-minimal for
+    # the talk-track formats. Weights mirror the operator-context
+    # role magnitudes (1.3–1.5).
+    "tier_list": (("audio-reactive", 1.4), ("glitch-dense", 1.3)),
+    "top_10": (("audio-reactive", 1.5), ("glitch-dense", 1.3)),
+    "rant": (("glitch-dense", 1.5), ("audio-reactive", 1.3)),
+    "react": (("audio-reactive", 1.4), ("glitch-dense", 1.3)),
+    "iceberg": (("calm-textural", 1.3), ("warm-minimal", 1.3)),
+    "interview": (("warm-minimal", 1.5), ("neutral-ambient", 1.3)),
+    "lecture": (("warm-minimal", 1.5), ("neutral-ambient", 1.3)),
 }
 
 

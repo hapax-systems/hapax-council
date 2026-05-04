@@ -17,13 +17,22 @@ from unittest.mock import MagicMock
 def test_tool_recruitment_empty_returns_no_tools():
     """When pipeline returns no candidates, recruit() returns empty list."""
     from agents.hapax_daimonion.tool_recruitment import ToolRecruitmentGate
+    from shared.grounding_context import GroundingContextEnvelope
 
     gate = ToolRecruitmentGate.__new__(ToolRecruitmentGate)
     gate._pipeline = MagicMock()
     gate._pipeline.select.return_value = []
     gate._tool_names = {"get_weather"}
 
-    result = gate.recruit("something completely unrelated to any tool")
+    envelope = GroundingContextEnvelope(
+        turn_id="t1",
+        assembled_at=0.0,
+        source_freshness="fresh",
+        temporal_bands={},
+        phenomenal_lines=["something completely unrelated to any tool"],
+        context_hash="ctx-test",
+    )
+    result = gate.recruit(envelope)
     assert result == []
 
 
