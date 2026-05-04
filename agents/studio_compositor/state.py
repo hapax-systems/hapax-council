@@ -554,6 +554,33 @@ def state_reader_loop(compositor: Any) -> None:
         except Exception:
             log.exception("process_preset_recruitment raised (non-fatal)")
 
+        # Graph-patch recruitment consumer — closes the chain-composition
+        # primitive (architectural fix per memory
+        # ``feedback_no_presets_use_parametric_modulation``). Where preset
+        # recruitment swaps among 30 fixed preset graphs, the patch consumer
+        # mutates the live graph in place via ``EffectGraph.apply_patch``:
+        # affordance-recruited ``node.add.<type>`` and ``node.remove.<id>``
+        # capabilities translate to a ``GraphPatch`` and the patched graph
+        # is written as a mutation file. Same egress channel, finer
+        # granularity. The two consumers can coexist — preset recruitment
+        # changes the family, patch recruitment adds/removes specific nodes
+        # within whatever graph is live.
+        try:
+            from .graph_patch_consumer import (
+                process_graph_patch_recruitment,
+                set_current_graph_provider,
+            )
+
+            # Bind the live graph provider once; idempotent on re-entry.
+            if compositor._graph_runtime is not None and not getattr(
+                compositor, "_graph_patch_provider_set", False
+            ):
+                set_current_graph_provider(lambda: compositor._graph_runtime.current_graph)
+                compositor._graph_patch_provider_set = True
+            process_graph_patch_recruitment()
+        except Exception:
+            log.exception("process_graph_patch_recruitment raised (non-fatal)")
+
         # Vinyl mode toggle (Stream Deck / API)
         vinyl_path = SNAPSHOT_DIR / "vinyl-mode.txt"
         if vinyl_path.exists():
