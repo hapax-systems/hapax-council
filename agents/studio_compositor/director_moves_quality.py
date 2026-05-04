@@ -1,32 +1,35 @@
 """Director-moves quality assessment for segment observability.
 
-Cc-task ``director-moves-segment-smoke`` (operator outcome 3 follow-up).
-Composes with PR #2472 ``shared/segment_observability.py`` — the SegmentRecorder
-context manager yields a ``SegmentEvent`` whose ``quality.director_moves``
-field this module computes from a window of director-intent records.
+Cc-task ``director-moves-segment-smoke`` (PR #2477) shipped the first cut.
+Cc-task ``director-moves-grounding-trace-coverage`` (this PR) refines the
+thresholds to the operator's ratio-based grading so a long observation
+window can score on coverage rather than presence/absence:
 
-Operator's 4-tier framing:
-
-- **poor** — every record in the window carries the
-  ``fallback.micromove.stale_intent`` synthetic marker; the surface ran on
-  the director's deterministic-code micromove autopilot only.
-- **acceptable** — mixed; the window has at least one non-fallback record
-  but at least one record IS a fallback (stale_intent or another
-  ``fallback.*`` marker).
-- **good** — every record in the window is non-fallback (no
-  ``synthetic_grounding_markers`` at the top level), but the per-impingement
-  grounding may not be uniformly real, or the moves did not span multiple
-  surfaces.
-- **excellent** — every record is non-fallback AND every per-impingement
-  ``grounding_provenance`` is real (no synthetic markers anywhere), AND the
-  window's compositional_impingements span ≥2 distinct ``intent_family``
-  values (composability across surfaces, per the operator's "multi-surface
-  moves" prompt guidance in the unified director prompt).
+- **excellent** — 0% fallback markers; every record in the window grounds
+  in real perceptual evidence and the per-impingement grounding is
+  uniformly real (every impingement carries non-empty
+  ``grounding_provenance`` AND no ``synthetic_grounding_markers``).
+- **good** — fallback ratio < 10%; LLM compliance is high but the window
+  carries some inferred / fallback markers OR the impingement-level
+  grounding is mixed real / synthetic.
+- **acceptable** — fallback ratio < 30%; the LLM is producing real intents
+  most ticks but the deterministic fallback is firing more than once in ten.
+- **poor** — fallback ratio ≥ 30% OR the stale-intent micromove dominates
+  the fallback set (≥ 50% of the records are stale_intent specifically).
+  Either signal means the surface has effectively run on autopilot for
+  the window — a Grafana panel watching the
+  ``hapax_director_move_grounding_total`` counter would see the same
+  pattern.
 
 The four tiers are computed deterministically from the JSONL records the
 director already writes via ``_emit_intent_artifacts``; this module does
 not need to look at the live director loop or run any LLM call. That keeps
 the smoke test infrastructure-free.
+
+Tier transitions favour the higher-impact rating: a window that satisfies
+both "≥ 30% fallback" AND "stale_intent dominant" is reported as POOR
+once. UNMEASURED is reserved for windows that emitted nothing, which is
+its own outcome and should not be silently coerced into a ranked tier.
 """
 
 from __future__ import annotations
@@ -39,6 +42,9 @@ from shared.segment_observability import QualityRating
 __all__ = [
     "assess_director_moves_quality",
     "STALE_INTENT_MARKER_TOKEN",
+    "FALLBACK_RATIO_GOOD_MAX",
+    "FALLBACK_RATIO_ACCEPTABLE_MAX",
+    "STALE_INTENT_DOMINANCE_MIN",
 ]
 
 
@@ -49,6 +55,21 @@ __all__ = [
 # under the ``fallback.`` prefix still counts as a fallback.
 STALE_INTENT_MARKER_TOKEN: str = "stale_intent"
 _FALLBACK_PREFIX: str = "fallback."
+
+# Ratio thresholds (cc-task ``director-moves-grounding-trace-coverage``).
+# Strict less-than: a fallback rate that exactly hits the threshold falls
+# to the next-lower tier. The boundaries are deliberately tight because the
+# director already writes one record per tick and the operator wants the
+# surface to feel actively driven, not autopiloted.
+FALLBACK_RATIO_GOOD_MAX: float = 0.10
+FALLBACK_RATIO_ACCEPTABLE_MAX: float = 0.30
+
+# When stale_intent records reach this fraction of the window, the segment
+# is poor regardless of the overall fallback ratio. The director's
+# ``_maybe_emit_stale_intent_micromove`` fires every 15s without an LLM
+# tick, so a window dominated by stale_intent is the surface running on
+# autopilot — the operator's "frequently empty grounding_provenance" tier.
+STALE_INTENT_DOMINANCE_MIN: float = 0.50
 
 
 def _is_stale_intent_record(record: dict[str, Any]) -> bool:
@@ -79,20 +100,25 @@ def _impingement_has_real_grounding(impingement: dict[str, Any]) -> bool:
     return any((entry or "").strip() for entry in real)
 
 
-def _impingement_is_synthetic_only(impingement: dict[str, Any]) -> bool:
-    """True when the impingement has only synthetic_grounding_markers, no real."""
+def _impingement_uniformly_real(impingement: dict[str, Any]) -> bool:
+    """True when the impingement has real grounding AND no synthetic markers.
 
-    if _impingement_has_real_grounding(impingement):
+    EXCELLENT requires uniform purity at the impingement level — a record
+    whose top-level grounding is real but whose impingement still carries
+    a synthetic marker is GOOD, not EXCELLENT.
+    """
+
+    if not _impingement_has_real_grounding(impingement):
         return False
     synth = impingement.get("synthetic_grounding_markers") or []
-    return any((entry or "").strip() for entry in synth)
+    return not any((entry or "").strip() for entry in synth)
 
 
 def _record_grounding_uniformly_real(record: dict[str, Any]) -> bool:
-    """All impingements on a record must carry real grounding for excellent.
+    """All impingements on a record must carry real grounding for EXCELLENT.
 
-    A single synthetic-only impingement disqualifies the record from the
-    "excellent" tier. Records with no impingements at all are treated as
+    A single synthetic-only impingement disqualifies the record from
+    ``excellent``. Records with no impingements at all are treated as
     not-uniformly-real (the no-vacuum invariant should have populated a
     silence-hold; if it didn't, the LLM emitted nothing groundable).
     """
@@ -100,23 +126,7 @@ def _record_grounding_uniformly_real(record: dict[str, Any]) -> bool:
     impingements = record.get("compositional_impingements") or []
     if not impingements:
         return False
-    for imp in impingements:
-        if not _impingement_has_real_grounding(imp):
-            return False
-        if _impingement_is_synthetic_only(imp):
-            return False
-    return True
-
-
-def _record_distinct_families(record: dict[str, Any]) -> set[str]:
-    """Return the set of intent_family values across the record's impingements."""
-
-    out: set[str] = set()
-    for imp in record.get("compositional_impingements") or []:
-        family = imp.get("intent_family")
-        if family:
-            out.add(family)
-    return out
+    return all(_impingement_uniformly_real(imp) for imp in impingements)
 
 
 def assess_director_moves_quality(
@@ -141,28 +151,28 @@ def assess_director_moves_quality(
     """
 
     records = list(intent_records)
-    if not records:
+    total = len(records)
+    if total == 0:
         return QualityRating.UNMEASURED
 
-    is_stale = [_is_stale_intent_record(rec) for rec in records]
-    is_fallback = [_is_fallback_record(rec) for rec in records]
+    fallback_count = sum(1 for rec in records if _is_fallback_record(rec))
+    stale_count = sum(1 for rec in records if _is_stale_intent_record(rec))
 
-    if all(is_stale):
+    fallback_ratio = fallback_count / total
+    stale_ratio = stale_count / total
+
+    if fallback_ratio >= FALLBACK_RATIO_ACCEPTABLE_MAX or stale_ratio >= STALE_INTENT_DOMINANCE_MIN:
         return QualityRating.POOR
 
-    if any(is_fallback):
-        return QualityRating.ACCEPTABLE
+    if fallback_count == 0:
+        # Promote to EXCELLENT only when every record's impingements are
+        # uniformly real-grounded. Anything less is GOOD — the LLM is
+        # complying but the per-impingement grounding still has gaps.
+        if all(_record_grounding_uniformly_real(rec) for rec in records):
+            return QualityRating.EXCELLENT
+        return QualityRating.GOOD
 
-    # No fallback markers at all in the window. Promote to EXCELLENT only
-    # when every record's impingements have real grounding and the window
-    # spans ≥2 distinct intent_family values (multi-surface composability
-    # per the unified prompt's "Multi-Surface Moves" guidance).
-    all_real_grounding = all(_record_grounding_uniformly_real(rec) for rec in records)
+    if fallback_ratio < FALLBACK_RATIO_GOOD_MAX:
+        return QualityRating.GOOD
 
-    families: set[str] = set()
-    for rec in records:
-        families.update(_record_distinct_families(rec))
-
-    if all_real_grounding and len(families) >= 2:
-        return QualityRating.EXCELLENT
-    return QualityRating.GOOD
+    return QualityRating.ACCEPTABLE
