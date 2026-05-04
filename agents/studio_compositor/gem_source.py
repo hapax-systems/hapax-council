@@ -115,6 +115,10 @@ def _read_frames(path: Path) -> list[GemFrame]:
         text = entry.get("text")
         if not isinstance(text, str):
             continue
+        if not text.strip():
+            continue
+        if contains_emoji(text):
+            continue
         hold_ms_raw = entry.get("hold_ms", 1500)
         try:
             hold_ms = max(50, int(hold_ms_raw))
