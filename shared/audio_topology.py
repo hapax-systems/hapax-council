@@ -155,6 +155,8 @@ class Node(BaseModel, frozen=True):
         default_factory=lambda: ChannelMap(count=2, positions=["FL", "FR"])
     )
     params: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    expected_scene: str | None = None
+    expected_channel_assignments: dict[str, str] = Field(default_factory=dict)
     chain_kind: Literal["loudnorm", "duck", "usb-bias"] | None = None
     limit_db: float | None = None
     bias_db: float | None = None

@@ -73,6 +73,26 @@ class TestNode:
         with pytest.raises(ValidationError, match="kebab-case"):
             Node(id="voice fx", kind=NodeKind.FILTER_CHAIN, pipewire_name="x")
 
+    def test_expected_scene_metadata_round_trips(self) -> None:
+        n = Node(
+            id="l12-capture",
+            kind=NodeKind.ALSA_SOURCE,
+            pipewire_name="alsa_input.usb-ZOOM_L12-00.multichannel-input",
+            hw="hw:L12,0",
+            expected_scene="BROADCAST-V2",
+            expected_channel_assignments={
+                "CH1": "evil-pet-in-from-monitor-a",
+                "CH6": "evil-pet-return-aux5",
+                "CH11": "pc-l-out",
+                "CH12": "pc-r-out",
+            },
+        )
+        text = TopologyDescriptor(nodes=[n]).to_yaml()
+        reloaded = TopologyDescriptor.from_yaml(text).node_by_id("l12-capture")
+
+        assert reloaded.expected_scene == "BROADCAST-V2"
+        assert reloaded.expected_channel_assignments["CH11"] == "pc-l-out"
+
 
 class TestEdge:
     def test_gain_must_be_in_range(self) -> None:

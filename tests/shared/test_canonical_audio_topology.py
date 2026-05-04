@@ -88,6 +88,12 @@ def test_l12_hardware_nodes_pin_live_names() -> None:
     assert l12_capture.pipewire_name == L12_SOURCE_NAME
     assert l12_capture.channels.count == 14
     assert l12_capture.channels.positions == [f"AUX{i}" for i in range(14)]
+    assert l12_capture.expected_scene == "BROADCAST-V2"
+    assert len(l12_capture.expected_channel_assignments) == 14
+    assert l12_capture.expected_channel_assignments["CH1"] == "evil-pet-in-from-monitor-a"
+    assert l12_capture.expected_channel_assignments["CH6"] == "evil-pet-return-aux5"
+    assert l12_capture.expected_channel_assignments["CH11"] == "pc-l-out"
+    assert l12_capture.expected_channel_assignments["CH12"] == "pc-r-out"
 
     assert l12_return.kind == "alsa_sink"
     assert l12_return.pipewire_name == L12_RETURN_NAME

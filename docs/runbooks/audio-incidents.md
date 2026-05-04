@@ -196,25 +196,25 @@ journalctl --user -u hapax-music-loudnorm.service --since '15 min ago' \
 ### Symptoms
 
 - Broadcast surface goes silent (no music, no Hapax voice).
-- Solid State Logic L-12 mixer's BROADCAST scene is no longer the
-  active scene (front-panel display shows a different scene name).
+- Zoom LiveTrak L-12 mixer's **BROADCAST-V2** scene is no longer the
+  active scene (front-panel OLED shows a different scene name).
 - Often triggered by a power cycle or USB re-enumeration.
 
 ### Detection
 
 ```bash
-# Check L-12 active scene via amixer / sysfs.
-ls /proc/asound/cards | grep -i 'L-?12'
-cat /proc/asound/card*/usbid 2>/dev/null | head -5
+# Run during music playback; this is read-only and never changes hardware.
+uv run scripts/hapax-audio-topology l12-scene-check config/audio-topology.yaml
 ```
 
 ### 1-command recovery
 
-Operator action — load BROADCAST scene from the L-12 front panel:
+Operator action — load BROADCAST-V2 scene from the L-12 front panel:
 
-1. Press `SCENES`.
-2. Select `BROADCAST`.
-3. Press `LOAD`.
+1. Press `SCENE` on the L-12 hardware.
+2. Select `BROADCAST-V2`.
+3. Press `SELECT` / `LOAD`.
+4. Verify the OLED shows `BROADCAST-V2`.
 
 (Software cannot remote-control L-12 scene loads; this is a
 hardware-only step. Cross-reference cc-task
@@ -224,14 +224,19 @@ re-established together.)
 
 ### Verification
 
-Confirm music + voice present in broadcast egress (use the
-`broadcast-low` LUFS detection above).
+```bash
+uv run scripts/hapax-audio-topology l12-scene-check config/audio-topology.yaml
+journalctl --user -u hapax-broadcast-audio-health -f
+```
+
+Wait for the health log to report `l12-scene=ok`.
 
 ### Postmortem evidence-collection
 
 ```bash
-# Capture L-12 USB enumeration history.
-dmesg | grep -i -E 'L-?12|Solid State Logic' | tail -50 \
+parec --device=alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input \
+  --format=s16le --rate=48000 --channels=14 --raw > /tmp/l12-scene-$(date -Iseconds).s16le
+dmesg | grep -i -E 'L-?12|ZOOM' | tail -50 \
     > /tmp/incident-l12-enum-$(date -Iseconds).log
 ```
 

@@ -40,6 +40,22 @@ nodes:
     params:
       api.alsa.use-acp: false
       audit_role: l12-capture-source
+    expected_scene: BROADCAST-V2
+    expected_channel_assignments:
+      CH1: evil-pet-in-from-monitor-a
+      CH2: cortado-contact-mic
+      CH3: reserve
+      CH4: sampler-chain
+      CH5: rode-wireless-pro-rx
+      CH6: evil-pet-return-aux5
+      CH7: reserve
+      CH8: reserve
+      CH9: vinyl-l
+      CH10: vinyl-r
+      CH11: pc-l-out
+      CH12: pc-r-out
+      CH13: master-l-dropped-from-broadcast
+      CH14: master-r-dropped-from-broadcast
 
   - id: l12-usb-return
     kind: alsa_sink

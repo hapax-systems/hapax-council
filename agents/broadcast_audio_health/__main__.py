@@ -60,9 +60,27 @@ def main(argv: list[str] | None = None) -> int:
         "--skip-l12-scene-probe",
         action="store_true",
         help=(
-            "Audit-A#6: disable the L-12 BROADCAST scene unloaded probe "
+            "Audit-A#6: disable the L-12 BROADCAST-V2 scene probes "
             "(useful for tests + dev workstations without an L-12 attached)."
         ),
+    )
+    parser.add_argument(
+        "--l12-scene-check-interval-s",
+        type=float,
+        default=300.0,
+        help="Cadence for the full l12-scene-check rotation (default: 300s).",
+    )
+    parser.add_argument(
+        "--l12-scene-check-duration-s",
+        type=float,
+        default=30.0,
+        help="Capture duration for full L-12 scene assertions (default: 30s).",
+    )
+    parser.add_argument(
+        "--l12-scene-check-state-path",
+        type=Path,
+        default=None,
+        help="Persisted state for full L-12 scene-check rotation.",
     )
     args = parser.parse_args(argv)
 
@@ -86,25 +104,55 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
 
     if not args.skip_l12_scene_probe:
-        # Audit A#6: L-12 BROADCAST scene unloaded detector.
-        # Wired here (not as a separate daemon) so the existing 30s
-        # broadcast-audio-health timer drives both the safety envelope
-        # and the scene-unloaded probe under one cadence.
+        # Audit A#6 / H5 P1: the existing 30s health timer drives
+        # the lightweight AUX5 detector every tick, and the full
+        # BROADCAST-V2 scene assertion on a 5-minute rotation.
         try:
             from agents.broadcast_audio_health.l12_broadcast_scene_probe import (
+                DEFAULT_L12_SCENE_CHECK_STATE_PATH,
+                DEFAULT_MUSIC_SINK_NAME,
+                is_music_sink_running,
                 probe_l12_broadcast_scene,
+                run_l12_scene_check_rotation,
             )
 
+            music_running = is_music_sink_running(DEFAULT_MUSIC_SINK_NAME)
+            rotation = run_l12_scene_check_rotation(
+                descriptor_path=paths.topology_descriptor,
+                state_path=(args.l12_scene_check_state_path or DEFAULT_L12_SCENE_CHECK_STATE_PATH),
+                interval_s=args.l12_scene_check_interval_s,
+                duration_s=args.l12_scene_check_duration_s,
+                music_running=music_running,
+            )
+            if rotation.ran:
+                assertion = rotation.assertion
+                log.info(
+                    "l12-scene=%s rotation=full alerted=%s aux5_peak=%s aux10_11_peak=%s",
+                    "ok" if rotation.scene_ok else "not-ok",
+                    rotation.alerted,
+                    assertion.evidence.get("aux5_peak_dbfs") if assertion else None,
+                    assertion.evidence.get("aux10_11_peak_dbfs") if assertion else None,
+                )
+                return 1 if args.fail_on_unsafe and not health.safe else 0
+
             outcome = probe_l12_broadcast_scene()
+            scene_status = "ok"
+            if not outcome.music_running:
+                scene_status = "skipped_music_not_running"
+            elif outcome.fired:
+                scene_status = "not-ok"
             log.info(
-                "l12-scene-probe aux5_dbfs=%.2f music_running=%s silent_for_s=%.1f fired=%s",
+                "l12-scene=%s rotation=%s aux5_dbfs=%.2f "
+                "music_running=%s silent_for_s=%.1f fired=%s",
+                scene_status,
+                rotation.status,
                 outcome.aux5_dbfs,
                 outcome.music_running,
                 outcome.silent_for_s,
                 outcome.fired,
             )
         except Exception:  # noqa: BLE001 — never let probe failure break the safety envelope
-            log.warning("l12-scene-probe failed", exc_info=True)
+            log.warning("l12-scene probe failed", exc_info=True)
 
     if args.fail_on_unsafe and not health.safe:
         return 1

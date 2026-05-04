@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from textwrap import dedent
 
+import numpy as np
 import pytest
 
 from shared.audio_topology import Node, TopologyDescriptor
@@ -41,6 +42,21 @@ def _replace_node(
     for node in descriptor.nodes:
         nodes.append(node.model_copy(update=updates) if node.id == node_id else node)
     return descriptor.model_copy(update={"nodes": nodes})
+
+
+def _write_l12_scene_pcm(
+    path: Path,
+    *,
+    aux5_amp: int = 8000,
+    aux10_amp: int = 20000,
+    aux11_amp: int = 0,
+) -> Path:
+    buffer = np.zeros((4800, 14), dtype=np.int16)
+    buffer[:, 5] = aux5_amp
+    buffer[:, 10] = aux10_amp
+    buffer[:, 11] = aux11_amp
+    path.write_bytes(buffer.tobytes())
+    return path
 
 
 @pytest.fixture
@@ -730,6 +746,46 @@ class TestL12ForwardCheck:
         assert result.returncode == 2
         assert "L-12 forward invariant: FAIL" in result.stdout
         assert "private_route_reaches_broadcast_path" in result.stdout
+
+
+class TestL12SceneCheck:
+    def test_l12_scene_check_accepts_canonical_descriptor_and_hot_pcm(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        raw = _write_l12_scene_pcm(tmp_path / "l12-hot.s16le")
+
+        result = _run(
+            [
+                "l12-scene-check",
+                str(CANONICAL_YAML),
+                "--raw-pcm-file",
+                str(raw),
+            ]
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "L-12 broadcast scene: OK" in result.stdout
+        assert "expected_scene: BROADCAST-V2" in result.stdout
+
+    def test_l12_scene_check_returns_2_when_aux5_is_cold(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        raw = _write_l12_scene_pcm(tmp_path / "l12-cold.s16le", aux5_amp=0)
+
+        result = _run(
+            [
+                "l12-scene-check",
+                str(CANONICAL_YAML),
+                "--raw-pcm-file",
+                str(raw),
+            ]
+        )
+
+        assert result.returncode == 2
+        assert "L-12 broadcast scene: FAIL" in result.stdout
+        assert "AUX5/CH6 peak" in result.stdout
 
 
 class TestWatchdog:

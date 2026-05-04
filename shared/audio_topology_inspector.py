@@ -59,10 +59,15 @@ References:
 from __future__ import annotations
 
 import json
+import math
 import subprocess
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from shared.audio_topology import (
     ChannelMap,
@@ -140,6 +145,35 @@ class L12ForwardInvariantCheck:
         lines = ["L-12 forward invariant: " + ("OK" if self.ok else "FAIL")]
         for violation in self.violations:
             lines.append(f"{violation.code}: {violation.message}")
+        return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class SceneAssertion:
+    """Result of the live L-12 BROADCAST-V2 scene assertion."""
+
+    ok: bool
+    evidence: dict[str, Any]
+    violations: tuple[str, ...] = ()
+
+    def format(self) -> str:
+        """Operator-readable single report block."""
+        lines = ["L-12 broadcast scene: " + ("OK" if self.ok else "FAIL")]
+        scene = self.evidence.get("expected_scene")
+        if scene:
+            lines.append(f"expected_scene: {scene}")
+        for key in (
+            "aux5_peak_dbfs",
+            "aux10_peak_dbfs",
+            "aux11_peak_dbfs",
+            "aux10_11_peak_dbfs",
+            "duration_s",
+            "target",
+        ):
+            if key in self.evidence:
+                lines.append(f"{key}: {self.evidence[key]}")
+        for violation in self.violations:
+            lines.append(f"violation: {violation}")
         return "\n".join(lines)
 
 
@@ -230,6 +264,22 @@ _PRIVATE_MONITOR_FAIL_CLOSED_PARAMS = {
     "state.restore": False,
     "fail_closed_on_target_absent": True,
 }
+DEFAULT_L12_SCENE_NAME = "BROADCAST-V2"
+DEFAULT_L12_CAPTURE_TARGET = (
+    "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"
+)
+DEFAULT_L12_SCENE_DURATION_S = 30.0
+DEFAULT_L12_SCENE_RATE = 48000
+DEFAULT_L12_SCENE_CHANNELS = 14
+L12_AUX5_PEAK_THRESHOLD_DBFS = -20.0
+L12_USB_RETURN_PEAK_THRESHOLD_DBFS = -10.0
+_REQUIRED_L12_BROADCAST_ASSIGNMENTS = {
+    "CH1": "evil-pet-in-from-monitor-a",
+    "CH6": "evil-pet-return-aux5",
+    "CH11": "pc-l-out",
+    "CH12": "pc-r-out",
+}
+ParecRunner = Callable[[str, int, int, float], bytes]
 
 
 def run_pw_dump() -> str:
@@ -516,6 +566,207 @@ def check_tts_broadcast_path(
         missing_nodes=tuple(missing_nodes),
         missing_edges=tuple(missing_edges),
     )
+
+
+def check_l12_broadcast_scene_active(
+    descriptor: TopologyDescriptor | None = None,
+    *,
+    target: str | None = None,
+    duration_s: float = DEFAULT_L12_SCENE_DURATION_S,
+    rate: int = DEFAULT_L12_SCENE_RATE,
+    channels: int | None = None,
+    pcm_int16: bytes | np.ndarray | None = None,
+    parec_runner: ParecRunner | None = None,
+    expected_scene: str = DEFAULT_L12_SCENE_NAME,
+    aux5_threshold_dbfs: float = L12_AUX5_PEAK_THRESHOLD_DBFS,
+    usb_return_threshold_dbfs: float = L12_USB_RETURN_PEAK_THRESHOLD_DBFS,
+) -> SceneAssertion:
+    """Verify the software-observable L-12 BROADCAST-V2 scene contract.
+
+    The L-12 does not expose its active scene name over USB. The best
+    software-side assertion is therefore two-part:
+
+    - the topology descriptor declares the expected hardware scene and
+      load-bearing channel assignments; and
+    - a live multichannel capture during music playback shows the Evil Pet
+      return (AUX5 / CH6) and PC USB-return pair (AUX10/11 / CH11/12) hot.
+
+    The default live probe uses ``parec`` against the L-12 multichannel
+    source for 30 seconds. Tests pass ``pcm_int16`` or ``parec_runner`` to
+    avoid touching PipeWire.
+    """
+
+    violations: list[str] = []
+    capture_target = target or DEFAULT_L12_CAPTURE_TARGET
+    capture_channels = channels or DEFAULT_L12_SCENE_CHANNELS
+    positions = [f"AUX{i}" for i in range(capture_channels)]
+    assignments: dict[str, str] = {}
+    descriptor_scene: str | None = None
+
+    if descriptor is not None:
+        try:
+            l12 = descriptor.node_by_id("l12-capture")
+        except KeyError:
+            violations.append("descriptor missing l12-capture node")
+        else:
+            capture_target = target or l12.pipewire_name
+            capture_channels = channels or l12.channels.count
+            if l12.channels.positions:
+                positions = list(l12.channels.positions)
+            descriptor_scene = l12.expected_scene
+            assignments = dict(l12.expected_channel_assignments)
+            if descriptor_scene != expected_scene:
+                violations.append(
+                    f"l12-capture expected_scene={descriptor_scene!r}; expected {expected_scene!r}"
+                )
+            for channel, expected_assignment in _REQUIRED_L12_BROADCAST_ASSIGNMENTS.items():
+                observed = assignments.get(channel)
+                if observed != expected_assignment:
+                    violations.append(
+                        f"l12-capture expected_channel_assignments[{channel}]={observed!r}; "
+                        f"expected {expected_assignment!r}"
+                    )
+
+    if duration_s < DEFAULT_L12_SCENE_DURATION_S:
+        violations.append(
+            f"duration_s={duration_s:g}; l12-scene-check requires at least "
+            f"{DEFAULT_L12_SCENE_DURATION_S:g}s"
+        )
+
+    capture_error: str | None = None
+    if pcm_int16 is None:
+        runner = parec_runner or _default_parec_runner
+        try:
+            pcm_int16 = runner(capture_target, capture_channels, rate, duration_s)
+        except Exception as exc:  # noqa: BLE001 - assertion returns evidence
+            capture_error = f"{type(exc).__name__}: {exc}"
+            pcm_int16 = b""
+            violations.append(f"parec capture failed: {capture_error}")
+
+    aux5_index = _channel_index(positions, "AUX5", fallback=5)
+    aux10_index = _channel_index(positions, "AUX10", fallback=10)
+    aux11_index = _channel_index(positions, "AUX11", fallback=11)
+    aux5_peak = channel_peak_dbfs(
+        pcm_int16,
+        channels=capture_channels,
+        channel_index=aux5_index,
+    )
+    aux10_peak = channel_peak_dbfs(
+        pcm_int16,
+        channels=capture_channels,
+        channel_index=aux10_index,
+    )
+    aux11_peak = channel_peak_dbfs(
+        pcm_int16,
+        channels=capture_channels,
+        channel_index=aux11_index,
+    )
+    usb_return_peak = max(aux10_peak, aux11_peak)
+
+    if aux5_peak < aux5_threshold_dbfs:
+        violations.append(
+            f"AUX5/CH6 peak {aux5_peak:.1f} dBFS below {aux5_threshold_dbfs:.1f} dBFS threshold"
+        )
+    if usb_return_peak < usb_return_threshold_dbfs:
+        violations.append(
+            f"AUX10/11 PC return peak {usb_return_peak:.1f} dBFS below "
+            f"{usb_return_threshold_dbfs:.1f} dBFS threshold"
+        )
+
+    evidence: dict[str, Any] = {
+        "target": capture_target,
+        "channels": capture_channels,
+        "rate": rate,
+        "duration_s": duration_s,
+        "expected_scene": expected_scene,
+        "descriptor_expected_scene": descriptor_scene,
+        "required_assignments": dict(_REQUIRED_L12_BROADCAST_ASSIGNMENTS),
+        "aux5_index": aux5_index,
+        "aux10_index": aux10_index,
+        "aux11_index": aux11_index,
+        "aux5_peak_dbfs": _finite_or_label(aux5_peak),
+        "aux10_peak_dbfs": _finite_or_label(aux10_peak),
+        "aux11_peak_dbfs": _finite_or_label(aux11_peak),
+        "aux10_11_peak_dbfs": _finite_or_label(usb_return_peak),
+        "aux5_threshold_dbfs": aux5_threshold_dbfs,
+        "usb_return_threshold_dbfs": usb_return_threshold_dbfs,
+    }
+    if capture_error:
+        evidence["capture_error"] = capture_error
+    if assignments:
+        evidence["expected_channel_assignments"] = assignments
+
+    return SceneAssertion(ok=not violations, evidence=evidence, violations=tuple(violations))
+
+
+def channel_peak_dbfs(
+    pcm_int16: bytes | np.ndarray,
+    *,
+    channels: int,
+    channel_index: int,
+) -> float:
+    """Peak of one channel of interleaved signed-16 PCM, in dBFS."""
+    if isinstance(pcm_int16, bytes):
+        if not pcm_int16:
+            return float("-inf")
+        arr = np.frombuffer(pcm_int16, dtype=np.int16)
+    else:
+        arr = pcm_int16
+    if arr.size == 0 or channel_index < 0:
+        return float("-inf")
+    truncate_to = (arr.size // channels) * channels
+    if truncate_to == 0:
+        return float("-inf")
+    framed = arr[:truncate_to].reshape(-1, channels)
+    if channel_index >= framed.shape[1]:
+        return float("-inf")
+    samples = framed[:, channel_index].astype(np.float32) / 32768.0
+    if samples.size == 0:
+        return float("-inf")
+    peak = float(np.max(np.abs(samples)))
+    if peak <= 1e-12:
+        return float("-inf")
+    return 20.0 * math.log10(peak)
+
+
+def _default_parec_runner(target: str, channels: int, rate: int, duration_s: float) -> bytes:
+    """Capture raw signed-16 PCM from ``target`` via parec for ``duration_s``."""
+    cmd = [
+        "parec",
+        f"--device={target}",
+        "--format=s16le",
+        f"--rate={rate}",
+        f"--channels={channels}",
+        "--raw",
+    ]
+    proc = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        time.sleep(duration_s)
+    finally:
+        proc.terminate()
+    try:
+        out, _err = proc.communicate(timeout=3.0)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, _err = proc.communicate()
+    return out or b""
+
+
+def _channel_index(positions: list[str], name: str, *, fallback: int) -> int:
+    try:
+        return positions.index(name)
+    except ValueError:
+        return fallback
+
+
+def _finite_or_label(value: float) -> float | str:
+    if math.isfinite(value):
+        return round(value, 3)
+    return "-inf"
 
 
 def check_l12_forward_invariant(descriptor: TopologyDescriptor) -> L12ForwardInvariantCheck:
