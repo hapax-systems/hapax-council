@@ -378,14 +378,11 @@ def _ensure_prepped_loaded() -> None:
 
 
 def _try_prepared_delivery(context: object) -> str | None:
-    """Deliver pre-composed narration one paragraph at a time.
+    """Return _DELIVERY_WAIT when the dedicated playback loop handles this programme.
 
-    Each call returns the next undelivered block (~400 chars) from the
-    prepared script. After the last block, deactivates the programme
-    so auto-cycling picks the next one.
-
-    This avoids overwhelming Kokoro TTS with 3000+ chars at once
-    (which blocks the executor for minutes on CPU).
+    The prepared_playback_loop owns all TTS for prepped content.
+    This function prevents the dispatch path from composing live narration
+    over a programme being played back directly.
     """
     _ensure_prepped_loaded()
 
@@ -401,54 +398,198 @@ def _try_prepared_delivery(context: object) -> str | None:
     if not script:
         return None
 
-    prog_id = str(getattr(prog, "programme_id", ""))
-    if not prog_id:
-        return None
-
-    # Track which block we're on (0-indexed)
-    next_block = _delivered_beats.get(prog_id, 0)
-
-    if next_block >= len(script):
-        # All blocks delivered — deactivate and signal wait
-        if next_block == len(script):
-            _delivered_beats[prog_id] = len(script) + 1  # sentinel: done
-            try:
-                from shared.programme_store import default_store
-
-                default_store().deactivate(prog_id)
-                log.info("delivery: completed all %d blocks for %s", len(script), prog_id)
-            except Exception:
-                log.debug("delivery: deactivate failed for %s", prog_id, exc_info=True)
-        return _DELIVERY_WAIT
-
-    text = script[next_block].strip()
-    _delivered_beats[prog_id] = next_block + 1
-
-    if not text:
-        # Skip empty blocks
-        return _try_prepared_delivery(context)
-
-    log.info(
-        "delivery: block %d/%d (%d chars) for %s",
-        next_block + 1,
-        len(script),
-        len(text),
-        prog_id,
-    )
-    return text
+    return _DELIVERY_WAIT
 
 
 async def prepared_playback_loop(daemon: object) -> None:
     """Dedicated playback loop for pre-composed scripts.
 
-    DISABLED: the CPAL process_impingement path is the only one that
-    correctly resolves PipeWire routing via resolve_playback_decision.
-    This loop will be re-enabled once we integrate route resolution.
-    For now it sleeps to keep the supervised task alive.
+    Drives TTS synthesis + audio playback directly, block by block,
+    with only a 1s breath between paragraphs. Uses resolve_playback_decision
+    for correct PipeWire routing (same as the CPAL autonomous narrative path).
+
+    Eliminates the narrative_drive → affordance_pipeline → recruitment →
+    CPAL chain overhead that causes 10-20s gaps between blocks.
     """
-    log.info("prepared_playback_loop: disabled (CPAL path handles playback)")
+    _ensure_prepped_loaded()
+
+    # Wait for the CPAL runner to be fully initialized
+    cpal = None
+    for _ in range(30):
+        cpal = getattr(daemon, "_cpal_runner", None)
+        if cpal is not None and getattr(cpal, "_tts_manager", None) is not None:
+            break
+        await asyncio.sleep(1.0)
+
+    if cpal is None or getattr(cpal, "_tts_manager", None) is None:
+        log.warning("prepared_playback_loop: CPAL runner or TTS not available, exiting")
+        return
+
+    log.info("prepared_playback_loop: started — direct TTS with route resolution")
+
     while getattr(daemon, "_running", True):
-        await asyncio.sleep(60.0)
+        try:
+            from shared.programme_store import default_store
+
+            store = default_store()
+            active = store.active_programme()
+
+            # Only handle programmes with prepared scripts
+            if active is None or not getattr(
+                getattr(active, "content", None), "prepared_script", None
+            ):
+                await asyncio.sleep(2.0)
+                continue
+
+            prog_id = str(active.programme_id)
+            script = active.content.prepared_script
+            role = getattr(active.role, "value", str(active.role))
+
+            # Resolve the route ONCE per programme (it won't change mid-playback)
+            from agents.hapax_daimonion.cpal.destination_channel import (
+                _is_broadcast_bias_enabled,
+                _programme_authorizes_broadcast,
+                resolve_playback_decision,
+            )
+
+            # Build a synthetic impingement with broadcast bias tokens
+            # — same as CPAL runner lines 969-993
+            synth_content: dict = {"source": "autonomous_narrative"}
+            if _is_broadcast_bias_enabled() and _programme_authorizes_broadcast():
+                import time as _time
+
+                from agents.hapax_daimonion.cpal.programme_context import default_provider
+
+                programme = default_provider()
+                if programme is not None:
+                    synth_content["voice_output_destination"] = "broadcast"
+                    synth_content["broadcast_intent"] = True
+                    synth_content["programme_authorization"] = {
+                        "authorized": True,
+                        "broadcast_voice_authorized": True,
+                        "authorized_at": _time.time(),
+                        "programme_id": programme.programme_id,
+                        "evidence_ref": "prepared_playback_loop_bias",
+                    }
+
+            synth_imp = type(
+                "_SynthImp",
+                (),
+                {
+                    "source": "autonomous_narrative",
+                    "content": synth_content,
+                },
+            )()
+
+            decision = resolve_playback_decision(synth_imp)
+            if not decision.allowed:
+                log.debug(
+                    "prepared_playback_loop: route blocked (%s), falling back to CPAL path",
+                    decision.reason_code,
+                )
+                await asyncio.sleep(5.0)
+                continue
+
+            dest_target = decision.target
+            dest_role = decision.media_role
+            log.info(
+                "prepared_playback_loop: playing %s (%s, %d blocks, target=%s, role=%s)",
+                prog_id,
+                role,
+                len(script),
+                dest_target,
+                dest_role,
+            )
+
+            # Play all blocks back-to-back
+            for idx, block in enumerate(script):
+                if not getattr(daemon, "_running", True):
+                    return
+
+                text = block.strip()
+                if not text:
+                    continue
+
+                log.info(
+                    "prepared_playback_loop: block %d/%d (%d chars) for %s",
+                    idx + 1,
+                    len(script),
+                    len(text),
+                    prog_id,
+                )
+
+                # Synthesize via TTS manager (in executor to not block)
+                loop = asyncio.get_running_loop()
+                try:
+                    pcm = await loop.run_in_executor(
+                        None, cpal._tts_manager.synthesize, text, "proactive"
+                    )
+                except Exception:
+                    log.warning(
+                        "prepared_playback_loop: TTS failed block %d",
+                        idx + 1,
+                        exc_info=True,
+                    )
+                    continue
+
+                if not pcm:
+                    log.warning(
+                        "prepared_playback_loop: empty PCM block %d/%d", idx + 1, len(script)
+                    )
+                    continue
+
+                # Play with speech lock + echo cancellation
+                try:
+                    async with cpal._speech_lock:
+                        # Register echo text for suppression
+                        if cpal._pipeline and hasattr(cpal._pipeline, "_recent_tts_texts"):
+                            import time as _time
+
+                            cpal._pipeline._recent_tts_texts.append(
+                                (_time.monotonic(), text.lower().strip().rstrip(".,!?"))
+                            )
+                        cpal._buffer.set_speaking(True)
+                        if cpal._echo_canceller:
+                            cpal._echo_canceller.feed_reference(pcm)
+                        try:
+                            from functools import partial
+
+                            from agents.hapax_daimonion.pw_audio_output import play_pcm
+
+                            await loop.run_in_executor(
+                                None,
+                                partial(play_pcm, pcm, 24000, 1, dest_target, dest_role),
+                            )
+                        finally:
+                            # Brief holdover for echo suppression
+                            await asyncio.sleep(1.5)
+                            cpal._buffer.set_speaking(False)
+                except Exception:
+                    log.warning(
+                        "prepared_playback_loop: playback failed block %d",
+                        idx + 1,
+                        exc_info=True,
+                    )
+                    continue
+
+                # Brief breath between paragraphs
+                await asyncio.sleep(0.5)
+
+            # All blocks played — deactivate, auto-cycle picks next
+            try:
+                store.deactivate(prog_id)
+                log.info("prepared_playback_loop: completed %s (%d blocks)", prog_id, len(script))
+            except Exception:
+                log.debug(
+                    "prepared_playback_loop: deactivate failed for %s", prog_id, exc_info=True
+                )
+
+            # Small gap between programmes
+            await asyncio.sleep(2.0)
+
+        except Exception:
+            log.warning("prepared_playback_loop: tick failed", exc_info=True)
+            await asyncio.sleep(5.0)
 
 
 def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
