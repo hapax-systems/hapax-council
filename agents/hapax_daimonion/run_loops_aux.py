@@ -483,9 +483,11 @@ async def prepared_playback_loop(daemon: object) -> None:
 
             decision = resolve_playback_decision(synth_imp)
             if not decision.allowed:
-                log.debug(
-                    "prepared_playback_loop: route blocked (%s), falling back to CPAL path",
+                log.warning(
+                    "prepared_playback_loop: route blocked (reason=%s, dest=%s, gate=%s)",
                     decision.reason_code,
+                    decision.destination.value,
+                    decision.safety_gate,
                 )
                 await asyncio.sleep(5.0)
                 continue
