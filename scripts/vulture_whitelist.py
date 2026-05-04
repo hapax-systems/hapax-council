@@ -2421,3 +2421,18 @@ ArticleFiftyCaseStudy.metadata
 ArticleFiftyCaseStudy.declined
 ArticleFiftyCaseStudy.related_identifiers
 ArticleFiftyCaseStudy.title
+
+
+# Cc-task ``playwright-grant-submission-runner`` (2026-05-04):
+# convenience helpers consumed by the CLI surface and follow-up
+# cc-task ``playwright-grant-submission-runner-q3-batch-recipes``
+# (operator inspection + future recipe resolution paths).
+from agents.playwright_grant_submission_runner.package import (
+    UniversalGrantPackage as _GR_UniversalGrantPackage,
+)
+from agents.playwright_grant_submission_runner.runner import (
+    GrantSubmissionRunner as _GR_GrantSubmissionRunner,
+)
+
+_GR_UniversalGrantPackage.primary_text_for_section
+_GR_GrantSubmissionRunner.schema_only_recipes
