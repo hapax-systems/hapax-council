@@ -1,0 +1,45 @@
+[Unit]
+Description=Auto-invoke hapax-post-merge-deploy when canonical main ref advances
+Documentation=file://%h/projects/hapax-council/docs/superpowers/specs/2026-04-13-claude-md-excellence-design.md
+After=network-online.target
+OnFailure=notify-failure@%n.service
+
+# Runaway-fire guard. The .path unit's PathChanged trigger only fires on
+# refs/heads/main mtime changes, which the deploy script itself cannot
+# cause (script writes to ~/.config/systemd/user/, ~/.config/pipewire/,
+# ~/.local/bin/, and ~/.cache/hapax/post-merge-traces/ — none in .git).
+# Belt-and-braces: cap to 3 invocations per 60s window so a runaway loop
+# (caused by a future change) gets contained quickly and surfaced via
+# OnFailure=notify-failure@%n.service. NOTE: StartLimitIntervalSec /
+# StartLimitBurst belong on the [Unit] section, not [Service] — the
+# 2026-05-02 waybar hardening bug pinned this exact landing site.
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+# Companion to hapax-post-merge-deploy.path. Resolves the latest local main
+# SHA at run time and hands it to scripts/hapax-post-merge-deploy, which
+# classifies the diff and deploys the systemd-units / pipewire-confs /
+# scripts side that rebuild-services.timer doesn't cover.
+
+[Service]
+Type=oneshot
+
+WorkingDirectory=/home/hapax/projects/hapax-council
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+# Resolve the SHA at run time — refs/heads/main is what the .path unit
+# watched, so origin/main has either already been merged into local main
+# (rebuild-service.sh ff-merge path) or local main was advanced directly.
+# Either way, `git -C $REPO rev-parse main` is the right answer.
+ExecStart=/bin/bash -c 'sha=$(git -C /home/hapax/projects/hapax-council rev-parse main 2>/dev/null) && [ -n "$sha" ] && exec /home/hapax/projects/hapax-council/scripts/hapax-post-merge-deploy "$sha"'
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-post-merge-deploy
+
+# Guard rails — the deploy script itself manages systemctl --user restarts
+# and writes small text files; no GPU/big-memory resident state. 512M is
+# the conservative ceiling consistent with deliberation-eval.service.
+MemoryMax=512M
+TimeoutStartSec=180

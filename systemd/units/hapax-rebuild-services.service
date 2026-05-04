@@ -85,3 +85,23 @@ ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/project
 # all consumers (waybar, watch, sidebar, omg.lol fanout) see new fields
 # the moment a producer ships them.
 ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-operator-awareness.service --watch "agents/operator_awareness/ agents/payment_processors/event_log.py shared/" --sha-key operator-awareness
+
+# ── Audio coverage (forever-fix #3 from
+# docs/research/2026-05-03-deployment-pipeline-audit.md §G).
+# Both daemons are audio-touching, so rebuild-service.sh's branch-check
+# still applies (no deploy on feature branches). On main, the 5-min timer
+# now picks them up the same as every other Python service. The audit
+# captured ``hapax-broadcast-orchestrator`` 129 min stale and
+# ``hapax-audio-ducker`` inactive — without coverage here, the operator
+# had to manually `systemctl --user restart` each one after every merge
+# touching the relevant code paths.
+
+# hapax-broadcast-orchestrator: YouTube broadcast boundary orchestrator.
+# Watches the orchestrator package itself plus publication_bus (event source)
+# and the shared layer.
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-broadcast-orchestrator.service --watch "agents/broadcast_orchestrator/ agents/publication_bus/ shared/" --sha-key broadcast-orchestrator
+
+# hapax-audio-ducker: VAD-driven mixer-gain controller (audio-touching).
+# Watches the ducker package plus the compositor's audio_ducking shim
+# (which the ducker calls into) and shared modules.
+ExecStart=%h/projects/hapax-council/scripts/rebuild-service.sh --repo %h/projects/hapax-council --service hapax-audio-ducker.service --watch "agents/audio_ducker/ agents/studio_compositor/audio_ducking.py shared/" --sha-key audio-ducker

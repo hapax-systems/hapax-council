@@ -1,0 +1,25 @@
+[Unit]
+Description=Hapax audio-health suite meta-monitor (M0)
+Documentation=file:///home/hapax/projects/hapax-council/docs/runbooks/audio-pipeline-health.md
+# Watches each audio-health monitor's Prometheus textfile mtime.
+# Emits hapax_audio_health_suite_up and _freshness_seconds gauges.
+# Ntfys on monitor-down transition. READ-ONLY: no service restarts.
+After=hapax-audio-signal-assertion.service
+Wants=hapax-audio-signal-assertion.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=-%h/.config/hapax/audio-health-meta.env
+ExecStart=%h/.local/bin/uv run python -m agents.audio_health_meta
+Restart=always
+RestartSec=15s
+WatchdogSec=300s
+TimeoutStartSec=30s
+TimeoutStopSec=10s
+Nice=15
+Slice=app.slice
+
+[Install]
+WantedBy=default.target

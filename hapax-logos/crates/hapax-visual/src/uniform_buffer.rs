@@ -129,6 +129,7 @@ impl UniformBuffer {
             resolution: [width as f32, height as f32],
             stance: match s.stance {
                 crate::state::Stance::Nominal => 0,
+                crate::state::Stance::Seeking => 0, // parallel to nominal, not degraded
                 crate::state::Stance::Cautious => 1,
                 crate::state::Stance::Degraded => 2,
                 crate::state::Stance::Critical => 3,
