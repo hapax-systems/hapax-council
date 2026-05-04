@@ -1,6 +1,6 @@
 {
   "name": "Xerox Photocopy Decay",
-  "description": "Xerox-degraded lineage (1/2): heavy threshold + grain + posterize creates a degenerated-photocopy aesthetic — image becomes 17th-generation copy of itself. Lineage: xerox-degraded.",
+  "description": "Xerox-degraded lineage (1/2): heavy threshold + grain + posterize creates a degenerated-photocopy aesthetic \u2014 image becomes 17th-generation copy of itself. Lineage: xerox-degraded.",
   "lineage": "xerox-degraded",
   "transition_ms": 1300,
   "nodes": {
@@ -21,10 +21,9 @@
       }
     },
     "grain_xerox": {
-      "type": "grain_bump",
+      "type": "noise_overlay",
       "params": {
-        "amount": 0.45,
-        "scale": 600
+        "intensity": 0.45
       }
     },
     "posterize_xerox": {
@@ -41,5 +40,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "threshold_xerox"
+    ],
+    [
+      "threshold_xerox",
+      "grain_xerox"
+    ],
+    [
+      "grain_xerox",
+      "posterize_xerox"
+    ],
+    [
+      "posterize_xerox",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

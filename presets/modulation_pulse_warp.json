@@ -1,6 +1,6 @@
 {
   "name": "Modulation Pulse Warp",
-  "description": "Modulation-pulse lineage (2/2): drift + warp at modulated frequency creates a continuous-pulse + spatial-bend aesthetic — analog frequency modulation made visible. Lineage: modulation-pulse.",
+  "description": "Modulation-pulse lineage (2/2): drift + warp at modulated frequency creates a continuous-pulse + spatial-bend aesthetic \u2014 analog frequency modulation made visible. Lineage: modulation-pulse.",
   "lineage": "modulation-pulse",
   "transition_ms": 1300,
   "nodes": {
@@ -43,5 +43,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "drift_modulated"
+    ],
+    [
+      "drift_modulated",
+      "warp_pulse"
+    ],
+    [
+      "warp_pulse",
+      "breathing_carrier"
+    ],
+    [
+      "breathing_carrier",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

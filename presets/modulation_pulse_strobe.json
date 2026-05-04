@@ -1,6 +1,6 @@
 {
   "name": "Modulation Pulse Strobe",
-  "description": "Modulation-pulse lineage (1/2): strobe + breathing + scanlines — analog pulse-width-modulation aesthetic. Channels FM-radio analog modulation into visible light pulses. Lineage: modulation-pulse.",
+  "description": "Modulation-pulse lineage (1/2): strobe + breathing + scanlines \u2014 analog pulse-width-modulation aesthetic. Channels FM-radio analog modulation into visible light pulses. Lineage: modulation-pulse.",
   "lineage": "modulation-pulse",
   "transition_ms": 1100,
   "nodes": {
@@ -44,5 +44,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "strobe_pulse"
+    ],
+    [
+      "strobe_pulse",
+      "breathing_slow"
+    ],
+    [
+      "breathing_slow",
+      "scanlines_pulse"
+    ],
+    [
+      "scanlines_pulse",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

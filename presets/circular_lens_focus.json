@@ -1,6 +1,6 @@
 {
   "name": "Circular Lens Focus",
-  "description": "Circular-mask-focus lineage (1/2): circular_mask + bloom + vignette creates a lens-focus / spotlight aesthetic — only the centered region is sharp + bright. Lineage: circular-mask-focus.",
+  "description": "Circular-mask-focus lineage (1/2): circular_mask + bloom + vignette creates a lens-focus / spotlight aesthetic \u2014 only the centered region is sharp + bright. Lineage: circular-mask-focus.",
   "lineage": "circular-mask-focus",
   "transition_ms": 1700,
   "nodes": {
@@ -45,5 +45,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "circular_mask_focus"
+    ],
+    [
+      "circular_mask_focus",
+      "bloom_focus"
+    ],
+    [
+      "bloom_focus",
+      "vignette_heavy"
+    ],
+    [
+      "vignette_heavy",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

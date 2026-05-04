@@ -1,6 +1,6 @@
 {
   "name": "Chromakey Lift",
-  "description": "Chromatic-key lineage (1/2): chroma_key + color_map creates a color-replaced overlay aesthetic — keyed regions become palette-mapped surfaces. Lineage: chromatic-key.",
+  "description": "Chromatic-key lineage (1/2): chroma_key + color_map creates a color-replaced overlay aesthetic \u2014 keyed regions become palette-mapped surfaces. Lineage: chromatic-key.",
   "lineage": "chromatic-key",
   "transition_ms": 1500,
   "nodes": {
@@ -43,5 +43,36 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "modulations": [],
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "chroma_key_lift:a"
+    ],
+    [
+      "colorgrade",
+      "chroma_key_lift:b"
+    ],
+    [
+      "chroma_key_lift",
+      "color_map_replace"
+    ],
+    [
+      "color_map_replace",
+      "vignette"
+    ],
+    [
+      "vignette",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ]
 }

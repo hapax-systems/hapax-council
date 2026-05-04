@@ -1,6 +1,6 @@
 {
   "name": "Diff Motion Thermal",
-  "description": "Diff-motion lineage (2/2): diff + thermal palette + trail creates a thermal-camera motion aesthetic — moving regions glow as heat traces. Lineage: diff-motion.",
+  "description": "Diff-motion lineage (2/2): diff + thermal palette + trail creates a thermal-camera motion aesthetic \u2014 moving regions glow as heat traces. Lineage: diff-motion.",
   "lineage": "diff-motion",
   "transition_ms": 1500,
   "nodes": {
@@ -42,5 +42,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "diff_thermal"
+    ],
+    [
+      "diff_thermal",
+      "thermal_motion"
+    ],
+    [
+      "thermal_motion",
+      "trail_thermal"
+    ],
+    [
+      "trail_thermal",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

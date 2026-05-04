@@ -1,6 +1,6 @@
 {
   "name": "Liquid Flow Breath",
-  "description": "Liquid-flow lineage (2/2): fisheye + breathing + drift creates a slow-respiration spatial expansion. The visual surface 'inhales' — the canonical Bachelard amendment 1 (Breath) extended into liquid space. Lineage: liquid-flow.",
+  "description": "Liquid-flow lineage (2/2): fisheye + breathing + drift creates a slow-respiration spatial expansion. The visual surface 'inhales' \u2014 the canonical Bachelard amendment 1 (Breath) extended into liquid space. Lineage: liquid-flow.",
   "lineage": "liquid-flow",
   "transition_ms": 4200,
   "nodes": {
@@ -43,5 +43,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "fisheye_breath"
+    ],
+    [
+      "fisheye_breath",
+      "breathing_deep"
+    ],
+    [
+      "breathing_deep",
+      "drift_slow"
+    ],
+    [
+      "drift_slow",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

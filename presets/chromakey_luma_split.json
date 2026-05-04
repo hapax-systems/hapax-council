@@ -1,6 +1,6 @@
 {
   "name": "Chromakey Luma Split",
-  "description": "Chromatic-key lineage (2/2): luma_key + invert at low intensity + color_map creates luminance-isolated chromatic-split aesthetic — bright regions get color-mapped while dark regions invert. Lineage: chromatic-key.",
+  "description": "Chromatic-key lineage (2/2): luma_key + invert at low intensity + color_map creates luminance-isolated chromatic-split aesthetic \u2014 bright regions get color-mapped while dark regions invert. Lineage: chromatic-key.",
   "lineage": "chromatic-key",
   "transition_ms": 1700,
   "nodes": {
@@ -41,5 +41,36 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "modulations": [],
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "luma_key_split:a"
+    ],
+    [
+      "colorgrade",
+      "luma_key_split:b"
+    ],
+    [
+      "luma_key_split",
+      "color_map_luma"
+    ],
+    [
+      "color_map_luma",
+      "invert_dark"
+    ],
+    [
+      "invert_dark",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ]
 }

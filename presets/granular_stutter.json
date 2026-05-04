@@ -1,6 +1,6 @@
 {
   "name": "Granular Stutter",
-  "description": "Granular-loop lineage (1/2): rapid stutter + slitscan creates fragmented temporal patterns — the visual twin of granular synthesis at small grain sizes. Lineage: granular-loop.",
+  "description": "Granular-loop lineage (1/2): rapid stutter + slitscan creates fragmented temporal patterns \u2014 the visual twin of granular synthesis at small grain sizes. Lineage: granular-loop.",
   "lineage": "granular-loop",
   "transition_ms": 700,
   "nodes": {
@@ -42,5 +42,36 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "modulations": [],
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "stutter_rapid"
+    ],
+    [
+      "stutter_rapid",
+      "slitscan_thin"
+    ],
+    [
+      "slitscan_thin",
+      "displacement_grain:a"
+    ],
+    [
+      "slitscan_thin",
+      "displacement_grain:b"
+    ],
+    [
+      "displacement_grain",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ]
 }

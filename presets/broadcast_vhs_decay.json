@@ -43,5 +43,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "vhs_decay"
+    ],
+    [
+      "vhs_decay",
+      "scanlines_broadcast"
+    ],
+    [
+      "scanlines_broadcast",
+      "chroma_broadcast"
+    ],
+    [
+      "chroma_broadcast",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }

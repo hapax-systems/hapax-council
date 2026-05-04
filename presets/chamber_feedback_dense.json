@@ -1,6 +1,6 @@
 {
   "name": "Chamber Feedback Dense",
-  "description": "Chamber-feedback lineage (1/2): heavy feedback + trail + echo creates a deep recursive feedback chamber — image trails into itself across many frames. Lineage: chamber-feedback.",
+  "description": "Chamber-feedback lineage (1/2): heavy feedback + trail + echo creates a deep recursive feedback chamber \u2014 image trails into itself across many frames. Lineage: chamber-feedback.",
   "lineage": "chamber-feedback",
   "transition_ms": 3500,
   "nodes": {
@@ -43,5 +43,32 @@
       "type": "content_layer",
       "params": {}
     }
-  }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "feedback_chamber"
+    ],
+    [
+      "feedback_chamber",
+      "trail_chamber"
+    ],
+    [
+      "trail_chamber",
+      "echo_chamber"
+    ],
+    [
+      "echo_chamber",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": []
 }
