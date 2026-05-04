@@ -322,6 +322,116 @@ def _dispatch_compositional(candidate, imp, daemon) -> None:
 # hardcoded 120s rate-limit gate in gates.py with a pipeline-native
 # inhibition mechanism.
 _NARRATION_REFRACTORY_S: float = 120.0
+# During segmented-content roles, the segment IS the content and Hapax
+# must fill it with beat-by-beat delivery. 120s refractory would yield
+# at most 5 utterances in a 10-minute segment — far too sparse.
+_SEGMENT_REFRACTORY_S: float = 20.0
+_SEGMENTED_CONTENT_ROLES: frozenset[str] = frozenset(
+    {"tier_list", "top_10", "rant", "react", "iceberg", "interview", "lecture"}
+)
+
+
+def _effective_refractory_s(daemon: object) -> float:
+    """Return the refractory period based on the active programme role.
+
+    Segmented-content roles get a shorter refractory (20s) because the
+    segment needs sustained vocal delivery. Operator-context roles keep
+    the 120s baseline so the Bayesian drive pressure — not a timer —
+    governs whether narration fires.
+    """
+    pm = getattr(daemon, "programme_manager", None)
+    if pm is None:
+        return _NARRATION_REFRACTORY_S
+    try:
+        active = pm.store.active_programme()
+        if active is None:
+            return _NARRATION_REFRACTORY_S
+        role_value = getattr(active.role, "value", str(active.role))
+        if role_value in _SEGMENTED_CONTENT_ROLES:
+            return _SEGMENT_REFRACTORY_S
+    except Exception:
+        pass
+    return _NARRATION_REFRACTORY_S
+
+
+# --- Prepared script delivery state ---
+# Tracks which beat of each programme has been delivered to avoid repeating.
+_delivered_beats: dict[str, int] = {}  # programme_id → last delivered beat index
+_prepped_loaded: bool = False
+_DELIVERY_WAIT = "__DELIVERY_WAIT__"  # sentinel: script exists, beat already delivered
+
+
+def _ensure_prepped_loaded() -> None:
+    """Lazy-load today's prepped scripts into active programmes on first call."""
+    global _prepped_loaded
+    if _prepped_loaded:
+        return
+    _prepped_loaded = True
+    try:
+        from agents.hapax_daimonion.daily_segment_prep import load_prepped_programmes
+
+        prepped = load_prepped_programmes()
+        if prepped:
+            log.info("delivery: loaded %d prepped segments from disk", len(prepped))
+    except Exception:
+        log.debug("delivery: failed to load prepped segments", exc_info=True)
+
+
+def _try_prepared_delivery(context: object) -> str | None:
+    """Read pre-composed narration for the current beat if available.
+
+    Returns the prepared text for the current beat, or None to fall back
+    to live composition. Tracks delivery state so each beat chunk is
+    emitted only once.
+    """
+    _ensure_prepped_loaded()
+
+    prog = getattr(context, "programme", None)
+    if prog is None:
+        return None
+
+    content = getattr(prog, "content", None)
+    if content is None:
+        return None
+
+    script = getattr(content, "prepared_script", None)
+    if not script:
+        return None
+
+    prog_id = str(getattr(prog, "programme_id", ""))
+    if not prog_id:
+        return None
+
+    # Determine current beat index
+    try:
+        from agents.hapax_daimonion.autonomous_narrative.compose import _get_beat_index
+
+        beat_idx = _get_beat_index(prog)
+    except Exception:
+        beat_idx = 0
+
+    if beat_idx < 0 or beat_idx >= len(script):
+        return None
+
+    # Check if this beat was already delivered — return sentinel so
+    # the caller knows NOT to fall through to live composition.
+    last_delivered = _delivered_beats.get(prog_id, -1)
+    if beat_idx <= last_delivered:
+        return _DELIVERY_WAIT
+
+    # Deliver this beat
+    _delivered_beats[prog_id] = beat_idx
+    text = script[beat_idx].strip()
+    if not text:
+        return None
+
+    log.info(
+        "delivery: prepared script beat %d/%d for %s",
+        beat_idx + 1,
+        len(script),
+        prog_id,
+    )
+    return text
 
 
 def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
@@ -347,7 +457,16 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
         context = assemble_context(daemon)
         programme_id = _programme_id_from_context(context)
         referent = _pick_referent_for_narration(programme_id)
-        narrative = compose.compose_narrative(context, operator_referent=referent)
+
+        # --- Delivery mode: use pre-composed script if available ---
+        narrative = _try_prepared_delivery(context)
+        if narrative is _DELIVERY_WAIT:
+            # Script exists, beat already delivered — skip entirely.
+            log.debug("delivery: beat already delivered, waiting for transition")
+            return
+        if narrative is None:
+            # Fallback: live composition (degraded mode)
+            narrative = compose.compose_narrative(context, operator_referent=referent)
         if narrative is None:
             emit.record_metric("llm_silent")
             daemon._affordance_pipeline.record_outcome(
@@ -427,7 +546,9 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
             # longer-term cadence (150s+), but the hard floor prevents
             # burst-firing when multiple impingements recruit narration
             # within a short window.
-            daemon._affordance_pipeline.add_inhibition(imp, duration_s=_NARRATION_REFRACTORY_S)
+            daemon._affordance_pipeline.add_inhibition(
+                imp, duration_s=_effective_refractory_s(daemon)
+            )
             _publish_recruitment_log(
                 "narration",
                 candidate.capability_name,
@@ -435,6 +556,10 @@ def _dispatch_autonomous_narration(daemon, imp, candidate) -> None:
                 imp.source,
                 narrative[:160],
             )
+            # Beat transitions are now checked in the programme_manager_loop
+            # at 1 Hz, independent of narration cadence. No duplicate check
+            # needed here.
+
             log.info(
                 "Autonomous narration emitted via recruitment (score=%.2f, source=%s)",
                 candidate.combined,

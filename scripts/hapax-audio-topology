@@ -384,6 +384,11 @@ def _classify_live_extra_node(node: Node) -> str | None:
         return "wireplumber-runtime-role-loopback"
     if name == "hapax-livestream-duck":
         return "legacy-retired-l6-runtime-node"
+    # L-12 USB-return capture filter chain — runtime node not yet in the
+    # canonical descriptor (added by the L-12 USB-return capture module
+    # after the MPC-centric topology migration).
+    if name == "hapax-l12-usb-return-capture":
+        return "runtime-l12-usb-return-capture"
     return None
 
 
@@ -439,6 +444,30 @@ def _classify_live_extra_edge(
         and target.target_object not in live_by_name
     ):
         return "runtime-fallback-m8-source-absent"
+
+    # MPC-centric topology (2026-05-04): PipeWire sometimes resolves
+    # private-monitor playback links to the MPC USB multichannel output
+    # in addition to the declared S-4 target. This occurs when the MPC
+    # is on the same USB bus and PipeWire's link graph exposes both
+    # endpoints. The S-4 WirePlumber pin remains authoritative for the
+    # privacy invariant; the MPC link is a runtime artifact that the
+    # topology audit should classify rather than flag as unclassified drift.
+    if (
+        source_name in (
+            "hapax-private-playback",
+            "hapax-notification-private-playback",
+        )
+        and "Akai_Professional_MPC" in target_name
+    ):
+        return "runtime-mpc-private-playback-artifact"
+
+    # L-12 USB-return capture: edges feeding runtime-classified nodes
+    # should inherit a classification so they don't appear as unclassified
+    # drift. The l12-usb-return-capture node is classified as a runtime
+    # node above; its feed edge from L-12 capture is the same provenance.
+    if target_name == "hapax-l12-usb-return-capture":
+        return "runtime-l12-usb-return-capture-feed"
+
     return None
 
 

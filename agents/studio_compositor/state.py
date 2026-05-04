@@ -535,11 +535,17 @@ def state_reader_loop(compositor: Any) -> None:
             # returns None when the flag is off, the file is missing,
             # expired, or active=False — all of which mean "leave the
             # hero as-is".
-            fm_rec = read_follow_mode_recommendation()
-            if fm_rec is not None:
-                override_camera_role = fm_rec.camera_role
-                override_set_at = fm_rec.ts
-                override_source = "follow_mode"
+            # Segment cue hold: suppress follow-mode during segment beats.
+            from agents.studio_compositor.compositional_consumer import (
+                _segment_cue_hold_active,
+            )
+
+            if not _segment_cue_hold_active():
+                fm_rec = read_follow_mode_recommendation()
+                if fm_rec is not None:
+                    override_camera_role = fm_rec.camera_role
+                    override_set_at = fm_rec.ts
+                    override_source = "follow_mode"
         if override_camera_role is not None:
             try:
                 requested_mode = f"hero/{override_camera_role}"

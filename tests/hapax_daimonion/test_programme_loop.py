@@ -201,7 +201,9 @@ def test_maybe_author_plan_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -
     manager.store.add.assert_not_called()
 
 
-def test_maybe_author_plan_noop_when_active_present(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_maybe_author_plan_runs_while_active_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An ACTIVE programme does NOT block planning — segments pre-assemble
+    while the current one runs so content flows continuously."""
     from agents.hapax_daimonion.programme_loop import (
         PROGRAMME_AUTO_PLAN_ENV,
         _maybe_author_plan,
@@ -213,6 +215,31 @@ def test_maybe_author_plan_noop_when_active_present(monkeypatch: pytest.MonkeyPa
     active = MagicMock()
     active.status = ProgrammeStatus.ACTIVE
     manager.store.all.return_value = [active]
+
+    fake_plan = MagicMock()
+    p1 = MagicMock(programme_id="p_next")
+    fake_plan.programmes = [p1]
+    fake_planner = MagicMock()
+    fake_planner.plan.return_value = fake_plan
+
+    planner, ts = _maybe_author_plan(manager, fake_planner, 0.0)
+    assert ts > 0.0  # attempt was made
+    fake_planner.plan.assert_called_once()
+
+
+def test_maybe_author_plan_noop_when_pending_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PENDING programmes block planning — no double-queueing."""
+    from agents.hapax_daimonion.programme_loop import (
+        PROGRAMME_AUTO_PLAN_ENV,
+        _maybe_author_plan,
+    )
+    from shared.programme import ProgrammeStatus
+
+    monkeypatch.setenv(PROGRAMME_AUTO_PLAN_ENV, "1")
+    manager = MagicMock()
+    pending = MagicMock()
+    pending.status = ProgrammeStatus.PENDING
+    manager.store.all.return_value = [pending]
 
     planner, ts = _maybe_author_plan(manager, None, 0.0)
     assert ts == 0.0  # no attempt timestamp recorded

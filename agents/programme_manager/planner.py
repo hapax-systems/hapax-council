@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -54,16 +55,15 @@ log = logging.getLogger(__name__)
 # review surface).
 _PROMPT_PATH = Path(__file__).parent / "prompts" / "programme_plan.md"
 
-# LiteLLM model alias. The planner is grounding-critical
-# (memory `feedback_director_grounding` + `feedback_grounding_exhaustive`)
-# so the default routes through the `balanced` tier (Claude Sonnet).
-# Override via env for ablation studies.
-DEFAULT_MODEL = os.environ.get("HAPAX_PROGRAMME_PLANNER_MODEL", "balanced")
+# LiteLLM model alias. The planner is the most important creative
+# decision in the system — it picks topics, structures segments, and
+# determines content direction. Opus is the right model for this.
+DEFAULT_MODEL = os.environ.get("HAPAX_PROGRAMME_PLANNER_MODEL", "claude-opus-4-7")
 
-# ~30s budget per spec §10 Q9 — operator accepts 15-30s show-start
-# latency. The default LiteLLM timeout is plenty; we just track the
-# wall-clock for observability.
-_LLM_TIMEOUT_S: float = 60.0
+# Budget raised from 60s → 120s: the enriched programme plan prompt
+# (~23KB) plus per-call context regularly exceeds 60s on the balanced
+# tier (Claude Sonnet via Anthropic API).
+_LLM_TIMEOUT_S: float = 120.0
 
 # Max number of corrective retries after the first call. Spec mandates
 # "retries once" (one corrective re-call), so default is 1.
@@ -328,7 +328,6 @@ def _default_llm_fn(prompt: str) -> str:
             "model": DEFAULT_MODEL,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 8192,
-            "temperature": 0.7,
         }
     ).encode()
     req = urllib.request.Request(
@@ -336,8 +335,17 @@ def _default_llm_fn(prompt: str) -> str:
         body,
         {"Content-Type": "application/json", "Authorization": f"Bearer {LITELLM_KEY}"},
     )
-    with urllib.request.urlopen(req, timeout=_LLM_TIMEOUT_S) as resp:
-        data = json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=_LLM_TIMEOUT_S) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            pass
+        log.warning("planner LLM HTTP %d: %s", e.code, body)
+        raise
     try:
         return data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError):

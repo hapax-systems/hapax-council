@@ -268,6 +268,12 @@ def _register_builtins() -> None:
     register("MobileImpingementCascadeCairoSource", MobileImpingementCascadeCairoSource)
     register("MobileTokenPoleCairoSource", MobileTokenPoleCairoSource)
     register("MobileCaptionsCairoSource", MobileCaptionsCairoSource)
+    # Segment Content Ward (2026-05-04) — displays the active programme
+    # segment's topic, beat progression, and elapsed time as a styled
+    # text overlay.  Fronts when a segmented-content programme is active.
+    from agents.studio_compositor.segment_content_ward import SegmentContentWard
+
+    register("SegmentContentWard", SegmentContentWard)
 
 
 _register_builtins()

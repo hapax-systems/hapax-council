@@ -24,8 +24,17 @@ import time
 
 import mido
 
-# Mido port name prefix — resolver tolerates ALSA client-id drift.
-PORT_PREFIX = "MIDI Dispatch:MIDI Dispatch MIDI 1"
+# Mido port name prefixes — resolver tolerates ALSA client-id drift.
+# Erica MIDI Dispatch is normally USB-attached to the workstation, but as
+# of 2026-05-03 it lives on Pi-4 and is bridged back here via aseqnet
+# (`hapax-midi-bridge-client.service`), where it appears as
+# "Net Client:Network <client-id>:0". Try the direct USB name first
+# (still wins on direct-attach), then the aseqnet bridge.
+PORT_PREFIXES = (
+    "MIDI Dispatch:MIDI Dispatch MIDI 1",
+    "Net Client:Network",
+)
+PORT_PREFIX = PORT_PREFIXES[0]  # legacy var for messages
 EVIL_PET_CHANNEL = 0  # 0-indexed; MIDI channel 1 on the wire
 
 
@@ -61,24 +70,29 @@ BASE_SCENE: list[tuple[int, int, str]] = [
 ]
 
 
-def _resolve_port(mido_mod, configured: str) -> str | None:
+def _resolve_port(mido_mod, configured) -> str | None:
+    """Resolve a port name by exact match, then by stripping the trailing
+    ALSA client-id token, then by substring. ``configured`` may be a single
+    string or a tuple of candidates tried in order."""
+    candidates = (configured,) if isinstance(configured, str) else tuple(configured)
     names = list(mido_mod.get_output_names())
-    if configured in names:
-        return configured
-    for name in names:
-        if name.rsplit(" ", 1)[0] == configured.rsplit(" ", 1)[0]:
-            return name
-    for name in names:
-        if configured in name:
-            return name
+    for cand in candidates:
+        if cand in names:
+            return cand
+        for name in names:
+            if name.rsplit(" ", 1)[0] == cand.rsplit(" ", 1)[0]:
+                return name
+        for name in names:
+            if cand in name:
+                return name
     return None
 
 
 def main() -> int:
-    resolved = _resolve_port(mido, PORT_PREFIX)
+    resolved = _resolve_port(mido, PORT_PREFIXES)
     if resolved is None:
         print(
-            f"MIDI port {PORT_PREFIX!r} not found among {mido.get_output_names()}",
+            f"MIDI port (none of {PORT_PREFIXES!r}) not found among {mido.get_output_names()}",
             file=sys.stderr,
         )
         return 1

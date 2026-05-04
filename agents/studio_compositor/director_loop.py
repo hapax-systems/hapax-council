@@ -1458,16 +1458,87 @@ def _render_director_programme_context(
         return []
 
     lines: list[str] = ["## Programme context"]
-    lines.append(
-        "AUDIT-18 programme context is soft-prior director context: it "
-        "biases activity, narrative, and compositional choices while "
-        "grounding provenance and live perceptual pressure stay authoritative."
+
+    # Segmented-content roles get a PRIMARY DIRECTIVE — the segment IS the
+    # content and the director must deliver it, not observe around it.
+    _segmented_roles = frozenset(
+        {"tier_list", "top_10", "rant", "react", "iceberg", "interview", "lecture"}
     )
 
     if programme is not None:
         role = programme.role.value if hasattr(programme.role, "value") else str(programme.role)
         programme_id = str(getattr(programme, "programme_id", "unknown"))
-        lines.append(f"- active programme: `{programme_id}` with role `{role}`")
+        beat = (getattr(getattr(programme, "content", None), "narrative_beat", "") or "").strip()
+
+        if role in _segmented_roles:
+            # Segmented-content PRIMARY DIRECTIVE — NOT soft-prior context.
+            lines.append("")
+            lines.append("**⚡ YOU ARE RUNNING A SEGMENT RIGHT NOW. ⚡**")
+            lines.append(f"Segment type: **{role.upper().replace('_', ' ')}**")
+            lines.append(f"Programme: `{programme_id}`")
+            if beat:
+                lines.append(f"Segment directive: {beat}")
+            lines.append("")
+            lines.append(
+                "Your narrative_text for this tick MUST advance this segment. "
+                "Do NOT observe the room. Do NOT comment on ambient music. "
+                "Do NOT describe the composed surface. "
+                f"DELIVER THE {role.upper().replace('_', ' ')}. "
+                "You are a livestream host in the middle of a "
+                f"{role.replace('_', ' ')} segment — act like it. "
+                "Every tick of silence or generic observation during an active "
+                "segment is a MISSED BEAT."
+            )
+
+            # Segment script: if the programme has structured beats, show
+            # the full rundown with the current beat highlighted. The
+            # director advances through these like a show script — each
+            # beat is a DIRECTION, not a line to read. Delivery is
+            # spontaneous from assets + perception.
+            content = getattr(programme, "content", None)
+            segment_beats = list(getattr(content, "segment_beats", []) or [])
+            segment_cues = list(getattr(content, "segment_cues", []) or [])
+            if segment_beats:
+                # Current beat index: track via elapsed time / total beats.
+                import time as _time
+
+                started_at = getattr(programme, "actual_started_at", None)
+                planned_dur = getattr(programme, "planned_duration_s", 600.0) or 600.0
+                if started_at and isinstance(started_at, (int, float)):
+                    elapsed = _time.time() - started_at
+                    beat_dur = planned_dur / len(segment_beats)
+                    current_idx = min(int(elapsed / beat_dur), len(segment_beats) - 1)
+                else:
+                    current_idx = 0
+
+                lines.append("")
+                lines.append(f"### SEGMENT SCRIPT ({len(segment_beats)} beats)")
+                for i, beat_text in enumerate(segment_beats):
+                    marker = "▶ NOW" if i == current_idx else f"  {i + 1}"
+                    cue = segment_cues[i] if i < len(segment_cues) else ""
+                    cue_str = f" [CUE: {cue}]" if cue else ""
+                    lines.append(f"{marker}. {beat_text}{cue_str}")
+
+                lines.append("")
+                lines.append(
+                    "Advance through these beats. When you've exhausted the "
+                    "current beat's content, emit intent_family "
+                    '"programme.beat_advance" to move to the next one. '
+                    "Do NOT rush — each beat should feel complete before "
+                    "advancing. IMPROVISE the delivery; the beats are "
+                    "structure, not a teleprompter."
+                )
+        else:
+            # Operator-context roles remain soft-prior.
+            lines.append(
+                "AUDIT-18 programme context is soft-prior director context: it "
+                "biases activity, narrative, and compositional choices while "
+                "grounding provenance and live perceptual pressure stay authoritative."
+            )
+            lines.append(f"- active programme: `{programme_id}` with role `{role}`")
+
+            if beat:
+                lines.append(f"- programme direction: {beat}")
 
         parent_show_id = getattr(programme, "parent_show_id", None)
         if parent_show_id:
@@ -1476,10 +1547,6 @@ def _render_director_programme_context(
         parent_condition_id = getattr(programme, "parent_condition_id", None)
         if parent_condition_id:
             lines.append(f"- condition ref: `{parent_condition_id}`")
-
-        beat = (getattr(getattr(programme, "content", None), "narrative_beat", "") or "").strip()
-        if beat:
-            lines.append(f"- programme direction: {beat}")
 
         constraints = getattr(programme, "constraints", None)
         if constraints is not None:
@@ -2004,6 +2071,244 @@ _MICROMOVE_BY_ROLE: dict[str, list[_MicromoveEntry]] = {
             "weighted_by_salience",
         ),
     ],
+    # ── Segmented-content roles ─────────────────────────────────────────
+    # These micromoves fire when the director LLM is slow or returns
+    # silence during an active segment. Each set advances the segment
+    # visually so the stream doesn't go dead during content delivery.
+    "tier_list": [
+        (
+            "gem.emphasis",
+            "stamp the current tier label onto the GEM mural — S/A/B/C/D as "
+            "a visual marker the viewer can track",
+            "earth",
+            ["captions", "sierpinski"],
+            "sequential",
+        ),
+        (
+            "overlay.emphasis",
+            "foreground the captions strip so the tier placements are readable "
+            "alongside the spoken delivery",
+            "air",
+            ["captions", "activity_header"],
+            "sequential",
+        ),
+        (
+            "transition.cut",
+            "cut between tier items — hard punctuation marks tier boundaries",
+            "fire",
+            ["activity_header", "sierpinski"],
+            "weighted_by_salience",
+        ),
+        (
+            "composition.reframe",
+            "tighten the hero camera framing during tier justification — the "
+            "delivery is the subject",
+            "earth",
+            ["activity_header"],
+            "weighted_by_salience",
+        ),
+    ],
+    "top_10": [
+        (
+            "gem.emphasis",
+            "stamp the countdown number onto the GEM mural — viewers track "
+            "the descent from 10 to 1",
+            "fire",
+            ["captions", "sierpinski"],
+            "sequential",
+        ),
+        (
+            "transition.cut",
+            "cut hard between countdown entries — each number is its own beat",
+            "fire",
+            ["activity_header"],
+            "random",
+        ),
+        (
+            "pace.tempo_shift",
+            "quicken the room's tempo as the countdown approaches #1 — "
+            "building anticipation through cadence",
+            "fire",
+            ["pressure_gauge", "activity_variety_log"],
+            "random",
+        ),
+        (
+            "overlay.emphasis",
+            "foreground the captions strip so each countdown entry is legible",
+            "air",
+            ["captions", "activity_header"],
+            "sequential",
+        ),
+    ],
+    "rant": [
+        (
+            "composition.reframe",
+            "tighten the hero camera to closeup — rant delivery needs "
+            "intimacy and intensity in the framing",
+            "fire",
+            ["activity_header"],
+            "weighted_by_salience",
+        ),
+        (
+            "pace.tempo_shift",
+            "quicken the room's tempo as the rant escalates — the cadence "
+            "should match the argumentative intensity",
+            "fire",
+            ["pressure_gauge"],
+            "random",
+        ),
+        (
+            "gem.emphasis",
+            "carve the rant's punchline onto the GEM mural — the landing "
+            "phrase deserves a visual stamp",
+            "fire",
+            ["sierpinski", "captions"],
+            "weighted_by_salience",
+        ),
+        (
+            "mood.tone_pivot",
+            "deepen the surface's tonal contrast during escalation — pull "
+            "the room darker as the argument builds",
+            "fire",
+            ["stance_indicator"],
+            "weighted_by_salience",
+        ),
+    ],
+    "react": [
+        (
+            "overlay.emphasis",
+            "foreground the captions strip so the reaction commentary reads "
+            "alongside the source material",
+            "air",
+            ["captions", "activity_header"],
+            "sequential",
+        ),
+        (
+            "composition.reframe",
+            "recompose the hero camera — alternate between the source "
+            "material view and the operator's reaction face",
+            "earth",
+            ["activity_header", "sierpinski"],
+            "weighted_by_salience",
+        ),
+        (
+            "gem.emphasis",
+            "stamp a reaction marker onto the GEM mural — time-stamped "
+            "moment from the source material that landed",
+            "earth",
+            ["sierpinski", "captions"],
+            "weighted_by_salience",
+        ),
+        (
+            "mood.tone_pivot",
+            "pivot the room's color register to match the source material's "
+            "emotional register — warm for approval, cool for critique",
+            "water",
+            ["album_overlay"],
+            "weighted_by_salience",
+        ),
+    ],
+    "iceberg": [
+        (
+            "transition.fade",
+            "fade between iceberg layers — each descent is a continuity "
+            "transition deeper into the topic",
+            "water",
+            ["stance_indicator", "captions"],
+            "sequential",
+        ),
+        (
+            "gem.composition",
+            "compose a depth indicator on the GEM mural — surface / middle / "
+            "deep / abyss markers for the current layer",
+            "water",
+            ["sierpinski"],
+            "weighted_by_salience",
+        ),
+        (
+            "mood.tone_pivot",
+            "deepen the surface's tonal register with each layer descent — "
+            "darker and cooler as knowledge gets more specialized",
+            "water",
+            ["stance_indicator"],
+            "weighted_by_salience",
+        ),
+        (
+            "overlay.emphasis",
+            "foreground the captions and grounding ticker so the layer "
+            "transitions and source citations are legible",
+            "air",
+            ["captions", "grounding_provenance_ticker"],
+            "sequential",
+        ),
+    ],
+    "interview": [
+        (
+            "overlay.emphasis",
+            "foreground the captions strip — interview Q&A needs both sides readable on screen",
+            "air",
+            ["captions", "whos_here"],
+            "sequential",
+        ),
+        (
+            "composition.reframe",
+            "alternate hero camera framing between questioner and subject — "
+            "interview rhythm needs visual turn-taking",
+            "earth",
+            ["activity_header"],
+            "weighted_by_salience",
+        ),
+        (
+            "mood.tone_pivot",
+            "warm the room's color register — interview register should be "
+            "inviting and conversational",
+            "water",
+            ["chat_ambient"],
+            "weighted_by_salience",
+        ),
+        (
+            "ward.highlight",
+            "brighten the who's-here ward so the interview subject has "
+            "visual presence on the surface",
+            "air",
+            ["whos_here", "activity_header"],
+            "weighted_by_salience",
+        ),
+    ],
+    "lecture": [
+        (
+            "overlay.emphasis",
+            "foreground the captions and grounding ticker — lecture content "
+            "needs legible text alongside delivery",
+            "air",
+            ["captions", "grounding_provenance_ticker"],
+            "sequential",
+        ),
+        (
+            "gem.composition",
+            "compose a structural outline marker on the GEM mural — which "
+            "main point are we on, how many remain",
+            "earth",
+            ["sierpinski"],
+            "weighted_by_salience",
+        ),
+        (
+            "composition.reframe",
+            "tighten the hero camera for emphasis points, widen for overview "
+            "framing — lecture rhythm alternates close and wide",
+            "earth",
+            ["activity_header", "sierpinski"],
+            "weighted_by_salience",
+        ),
+        (
+            "mood.tone_pivot",
+            "cool the room's color register for deliberate explanation — "
+            "lecture register is calm authority",
+            "water",
+            ["thinking_indicator"],
+            "weighted_by_salience",
+        ),
+    ],
 }
 
 
@@ -2434,6 +2739,19 @@ class DirectorLoop:
                 # Speak — speech + slot advance happen in one thread
                 self._speak_activity(text, activity)
 
+                # Chat text-back: when the director picks "chat" activity,
+                # also post the narrative as a text-back to YouTube live chat
+                # so viewers see the response in their chat window. Uses the
+                # CPAL dispatch_response pathway (PR #2464 / #2471) with
+                # token-bucket rate limiting (cap=20, refill=10/min). Short
+                # responses (<140 chars) route as TEXT_CHAT; longer as BOTH
+                # (verbal + text). Best-effort; never blocks the director loop.
+                if activity == "chat" and text:
+                    try:
+                        self._post_chat_textback(text)
+                    except Exception:
+                        log.debug("chat text-back failed", exc_info=True)
+
             except Exception:
                 log.exception("Director loop error")
             time.sleep(0.5)
@@ -2638,17 +2956,28 @@ class DirectorLoop:
             # and swallowed so micromove emission downstream is unaffected.
             speak_count = int(getattr(self, "_micromove_spoken_count", 0))
             self._micromove_spoken_count = speak_count + 1
-            if reason == "llm_empty" and speak_count % _MICROMOVE_SPEAK_EVERY_N == 0:
+            # During segmented-content roles, speak on EVERY micromove tick —
+            # the segment IS the content and silence between items breaks
+            # the format. Operator-context roles keep the 1-in-N rate.
+            _segmented_content_roles = frozenset(
+                {"tier_list", "top_10", "rant", "react", "iceberg", "interview", "lecture"}
+            )
+            is_segment = role_value in _segmented_content_roles
+            speak_every = 1 if is_segment else _MICROMOVE_SPEAK_EVERY_N
+            if reason == "llm_empty" and speak_count % speak_every == 0:
                 try:
                     self._speak_activity(narrative, "observe")
                 except Exception:
                     log.debug("micromove speak failed", exc_info=True)
+            # Bump micromove salience during segments so the compositional
+            # moves actually win recruitment against baseline candidates.
+            micromove_salience = 0.65 if is_segment else 0.35
             try:
                 impingement = CompositionalImpingement(
                     narrative=narrative,
                     intent_family=family,  # type: ignore[arg-type]
                     material=material,  # type: ignore[arg-type]
-                    salience=0.35,
+                    salience=micromove_salience,
                     dimensions={},
                     # Deterministic-code fallback path. Keep the marker
                     # diagnostic-only so downstream gates do not treat it
@@ -3009,11 +3338,61 @@ class DirectorLoop:
         # state in Phase 1+.
 
         # ─── Chat state ───────────────────────────────────────────
+        # Primary source: YouTube chat reader ring buffer
+        # (agents/youtube_chat_reader/reader.py → /dev/shm/hapax-chat/recent.jsonl).
+        # Fallback: legacy compositor chat-state.json for aggregate counts.
         try:
-            chat_recent_path = SHM_DIR / "chat-recent.json"
-            chat_state_path = SHM_DIR / "chat-state.json"
-            if chat_state_path.exists():
-                cs = json.loads(chat_state_path.read_text())
+            _chat_ring_path = Path("/dev/shm/hapax-chat/recent.jsonl")
+            _chat_state_legacy = SHM_DIR / "chat-state.json"
+            _chat_entries: list[dict] = []
+
+            # Read the JSONL ring buffer (most recent 50 messages)
+            if _chat_ring_path.exists():
+                _raw_lines = _chat_ring_path.read_text(encoding="utf-8").strip().splitlines()
+                for _line in _raw_lines:
+                    try:
+                        _chat_entries.append(json.loads(_line))
+                    except json.JSONDecodeError:
+                        continue
+
+            if _chat_entries:
+                _unique_authors = len({e.get("author_token", "") for e in _chat_entries})
+                _questions = [e for e in _chat_entries if e.get("has_question")]
+                _mentions = [e for e in _chat_entries if e.get("has_mention")]
+                _commands = [e for e in _chat_entries if e.get("is_command")]
+                if _unique_authors <= 2:
+                    parts.append(f"Chat is quiet ({len(_chat_entries)} messages).")
+                else:
+                    parts.append(
+                        f"Chat is active ({len(_chat_entries)} messages, {_unique_authors} people)."
+                    )
+                if _questions:
+                    parts.append(f"{len(_questions)} unanswered question(s) in chat.")
+                if _mentions:
+                    parts.append(f"{len(_mentions)} message(s) mentioning the channel.")
+                # Show last 5 messages for conversational context
+                for _m in _chat_entries[-5:]:
+                    _text = _m.get("text", "")
+                    _author = _m.get("author_token", "")
+                    if not _text:
+                        continue
+                    _flags = []
+                    if _m.get("has_question"):
+                        _flags.append("❓")
+                    if _m.get("has_mention"):
+                        _flags.append("@")
+                    if _m.get("is_command"):
+                        _flags.append("!")
+                    _flag_str = " ".join(_flags)
+                    if _flag_str:
+                        _flag_str = f" [{_flag_str}]"
+                    if _is_chat_author_operator(_author):
+                        parts.append(f'{referent}: "{_text}"{_flag_str}')
+                    else:
+                        parts.append(f'Viewer ({_author[:6]}): "{_text}"{_flag_str}')
+            elif _chat_state_legacy.exists():
+                # Fallback to legacy aggregate counts
+                cs = json.loads(_chat_state_legacy.read_text())
                 total = cs.get("total_messages", 0)
                 authors = cs.get("unique_authors", 0)
                 if total == 0:
@@ -3022,16 +3401,8 @@ class DirectorLoop:
                     parts.append("Chat is quiet.")
                 else:
                     parts.append(f"Chat is active ({authors} people).")
-            if chat_recent_path.exists():
-                recent = json.loads(chat_recent_path.read_text())
-                for m in recent[-3:]:
-                    author = m.get("author", "")
-                    text = m.get("text", "")
-                    if text:
-                        if _is_chat_author_operator(author):
-                            parts.append(f'{referent}: "{text}"')
-                        else:
-                            parts.append(f'Someone in chat: "{text}"')
+            else:
+                parts.append("Chat is silent.")
         except Exception:
             pass
 
@@ -3728,10 +4099,11 @@ class DirectorLoop:
             album = _read_album_info()
             chat_snippet = ""
             try:
-                chat_path = SHM_DIR / "chat-recent.json"
+                chat_path = Path("/dev/shm/hapax-chat/recent.jsonl")
                 if chat_path.exists():
-                    recent = json.loads(chat_path.read_text())
-                    chat_snippet = " ".join(m.get("text", "") for m in recent[-3:])
+                    lines = chat_path.read_text(encoding="utf-8").strip().splitlines()
+                    recent = [json.loads(l) for l in lines[-3:] if l.strip()]
+                    chat_snippet = " ".join(m.get("text", "") for m in recent)
             except Exception:
                 pass
 
@@ -4172,6 +4544,41 @@ class DirectorLoop:
         threading.Thread(
             target=_do_speak_and_advance, daemon=True, name=f"speak-{activity}"
         ).start()
+
+    def _post_chat_textback(self, text: str) -> None:
+        """Post the director's chat narration back to YouTube live chat.
+
+        Constructs a synthetic impingement-like object that carries the
+        narrative_text as ``response_text`` with a ``youtube.live_chat``
+        source prefix so ``classify_response_modality`` routes it correctly:
+        - ≤140 chars → TEXT_CHAT (text-only to YouTube)
+        - >140 chars → VERBAL (already handled by _speak_activity)
+
+        Best-effort: failures are swallowed since the verbal path already
+        delivered the response. Token-bucket rate limiting in the publisher
+        prevents YouTube 403s.
+        """
+        try:
+            from types import SimpleNamespace
+
+            from agents.hapax_daimonion.cpal.response_dispatch import dispatch_response
+
+            # Build a synthetic impingement with the fields that
+            # classify_response_modality and dispatch_response expect.
+            impingement = SimpleNamespace(
+                source="youtube.live_chat.director_response",
+                content={
+                    "response_text": text,
+                    "impingement_id": f"director-chat-{int(time.time() * 1000)}",
+                },
+            )
+            result = dispatch_response(impingement, attribution=True)
+            if result.chat_result:
+                log.info("chat text-back posted: %s", result.chat_result)
+            elif result.skip_reason:
+                log.debug("chat text-back skipped: %s", result.skip_reason)
+        except Exception:
+            log.debug("_post_chat_textback failed", exc_info=True)
 
     def _synthesize(self, text: str) -> bytes:
         # No-truncation invariant: downstream transport may guard stuck
