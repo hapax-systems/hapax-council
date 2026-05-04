@@ -2292,9 +2292,9 @@ _extract_token  # noqa: B018
 # Gap-fold model classes + their reflection-invoked validators on top of
 # the merged-PR base. Kept separate from the upstream block above so the
 # next merge can drop these without touching the base entries.
+from shared.audio_graph.schema import AudioNode as _AG_AudioNode2
 from shared.audio_graph.schema import ChannelDownmix as _AG_ChannelDownmix
 from shared.audio_graph.schema import FilterStage as _AG_FilterStage
-from shared.audio_graph.schema import AudioNode as _AG_AudioNode2
 
 _AG_FilterStage._ladspa_requires_plugin  # type: ignore[attr-defined]
 _AG_ChannelDownmix._strategy_requires_correct_payload  # type: ignore[attr-defined]
