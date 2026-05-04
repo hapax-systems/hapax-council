@@ -32,13 +32,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agents.audio_signal_assertion.classifier import (
+from agents.audio_health.classifier import (
     BAD_STEADY_STATES,
     Classification,
     ClassifierConfig,
     ProbeMeasurement,
 )
-from agents.audio_signal_assertion.probes import (
+from agents.audio_health.probes import (
     DEFAULT_DURATION_S,
     DEFAULT_STAGES,
     OBS_BOUND_STAGE,
@@ -47,7 +47,7 @@ from agents.audio_signal_assertion.probes import (
     capture_and_measure,
     discover_broadcast_stages,
 )
-from agents.audio_signal_assertion.transitions import (
+from agents.audio_health.transitions import (
     DEFAULT_CLIPPING_SUSTAIN_S,
     DEFAULT_NOISE_SUSTAIN_S,
     DEFAULT_RECOVERY_SUSTAIN_S,
