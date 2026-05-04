@@ -101,6 +101,9 @@ COMP_UPTIME: Any = None
 COMP_WATCHDOG_LAST_FED: Any = None
 V4L2SINK_LAST_FRAME_AGE: Any = None
 V4L2SINK_FRAMES_TOTAL: Any = None
+# Cc-task ``compositor-v4l2sink-graph-mutation-stall`` (2026-05-04).
+V4L2SINK_STALL_TOTAL: Any = None
+V4L2SINK_RECOVERY_TOTAL: Any = None
 DIRECTOR_LAST_INTENT_AGE: Any = None
 DIRECTOR_INTENT_TOTAL: Any = None
 HAPAX_REFUSAL_GATE_REROLLS: Any = None
@@ -256,6 +259,8 @@ def _init_metrics() -> None:
     global COMP_WATCHDOG_LAST_FED
     global V4L2SINK_LAST_FRAME_AGE
     global V4L2SINK_FRAMES_TOTAL
+    global V4L2SINK_STALL_TOTAL
+    global V4L2SINK_RECOVERY_TOTAL
     global DIRECTOR_LAST_INTENT_AGE
     global DIRECTOR_INTENT_TOTAL
     global HAPAX_REFUSAL_GATE_REROLLS
@@ -681,6 +686,26 @@ def _init_metrics() -> None:
     V4L2SINK_FRAMES_TOTAL = Counter(
         "studio_compositor_v4l2sink_frames_total",
         "Cumulative buffers crossing the v4l2sink sink pad",
+        registry=REGISTRY,
+    )
+    # Cc-task ``compositor-v4l2sink-graph-mutation-stall`` (2026-05-04).
+    # Stall detection counters paired with the recovery counter below
+    # so a Grafana panel can compute the fraction of stalls that
+    # auto-recovered vs. escalated.
+    V4L2SINK_STALL_TOTAL = Counter(
+        "studio_compositor_v4l2sink_stall_total",
+        "Cumulative v4l2sink stalls observed by the watchdog tick.",
+        ["reason"],
+        registry=REGISTRY,
+    )
+    V4L2SINK_RECOVERY_TOTAL = Counter(
+        "studio_compositor_v4l2sink_recovery_total",
+        (
+            "Cumulative v4l2sink recovery attempts by outcome — ok / "
+            "failed_no_sink / failed_state_change / failed_no_frame / "
+            "escalated."
+        ),
+        ["outcome"],
         registry=REGISTRY,
     )
     # Phase 1 director liveness watchdog per
