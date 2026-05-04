@@ -283,34 +283,70 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
     start = time.monotonic()
     saved: list[Path] = []
 
-    # Step 1: Plan
-    log.info("daily_segment_prep: planning programmes...")
+    # Step 1: Plan — call the planner in rounds until we have enough
+    # segmented programmes. Each round yields ~3 programmes; for 10
+    # segments we typically need 4 rounds.
+    log.info("daily_segment_prep: planning programmes (target=%d)...", MAX_SEGMENTS)
+    segmented: list[Any] = []
+    seen_ids: set[str] = set()
+    plan_round = 0
+    max_rounds = (MAX_SEGMENTS // 2) + 2  # generous ceiling
+
     try:
         from agents.programme_manager.planner import ProgrammePlanner
 
         planner = ProgrammePlanner()
-        show_id = f"show-{datetime.now(tz=UTC).strftime('%Y%m%d')}"
-        plan = planner.plan(show_id=show_id)
     except Exception:
-        log.error("daily_segment_prep: planner failed", exc_info=True)
+        log.error("daily_segment_prep: planner construction failed", exc_info=True)
         return saved
 
-    if plan is None or not plan.programmes:
-        log.warning("daily_segment_prep: planner returned no programmes")
-        return saved
+    while len(segmented) < MAX_SEGMENTS and plan_round < max_rounds:
+        elapsed = time.monotonic() - start
+        if elapsed >= PREP_BUDGET_S:
+            log.warning(
+                "daily_segment_prep: prep budget exhausted during planning (%.0fs)", elapsed
+            )
+            break
 
-    # Step 2: Compose each segmented-content programme
-    segmented = [
-        p
-        for p in plan.programmes
-        if getattr(getattr(p, "role", None), "value", "") in SEGMENTED_CONTENT_ROLES
-    ]
+        plan_round += 1
+        show_id = f"show-{datetime.now(tz=UTC).strftime('%Y%m%d')}-{plan_round:02d}"
+        try:
+            plan = planner.plan(show_id=show_id)
+        except Exception:
+            log.warning("daily_segment_prep: planner round %d failed", plan_round, exc_info=True)
+            continue
+
+        if plan is None or not plan.programmes:
+            log.warning("daily_segment_prep: planner round %d returned no programmes", plan_round)
+            continue
+
+        for p in plan.programmes:
+            pid = getattr(p, "programme_id", "")
+            role_val = getattr(getattr(p, "role", None), "value", "")
+            if role_val in SEGMENTED_CONTENT_ROLES and pid not in seen_ids:
+                segmented.append(p)
+                seen_ids.add(pid)
+
+        log.info(
+            "daily_segment_prep: round %d → %d total segmented (%d new this round)",
+            plan_round,
+            len(segmented),
+            len(
+                [
+                    p
+                    for p in plan.programmes
+                    if getattr(getattr(p, "role", None), "value", "") in SEGMENTED_CONTENT_ROLES
+                ]
+            ),
+        )
+
     log.info(
-        "daily_segment_prep: %d programmes, %d segmented",
-        len(plan.programmes),
+        "daily_segment_prep: %d segmented programmes collected in %d rounds",
         len(segmented),
+        plan_round,
     )
 
+    # Step 2: Compose each segmented-content programme
     for prog in segmented[:MAX_SEGMENTS]:
         elapsed = time.monotonic() - start
         if elapsed >= PREP_BUDGET_S:
@@ -335,12 +371,118 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
         ),
         encoding="utf-8",
     )
+
+    # Step 4: Upsert programme summaries into Qdrant so the affordance
+    # pipeline can semantically match impingements against available
+    # pre-composed content.
+    _upsert_programmes_to_qdrant(segmented[:MAX_SEGMENTS], saved)
+
     log.info(
         "daily_segment_prep: done. %d segments prepped in %.0fs",
         len(saved),
         time.monotonic() - start,
     )
     return saved
+
+
+def _upsert_programmes_to_qdrant(
+    programmes: list[Any],
+    saved_paths: list[Path],
+) -> None:
+    """Embed and upsert prepped programmes into Qdrant.
+
+    Each programme gets a semantic summary embedded and stored in the
+    affordances collection with a ``programme.prepped.*`` capability name.
+    This lets the affordance pipeline's cosine-similarity retrieval
+    surface relevant pre-composed programmes when impingements fire.
+
+    Best-effort: Qdrant or Ollama unavailability does NOT block the prep.
+    """
+    if not programmes or not saved_paths:
+        return
+
+    try:
+        import uuid
+
+        from shared.affordance_pipeline import (
+            COLLECTION_NAME,
+            embed_batch_safe,
+        )
+        from shared.config import get_qdrant
+
+        # Build semantic summaries for each programme
+        texts: list[str] = []
+        prog_ids: list[str] = []
+        prog_meta: list[dict] = []
+        for prog in programmes:
+            pid = getattr(prog, "programme_id", None) or ""
+            if not pid:
+                continue
+            content = getattr(prog, "content", None)
+            role_value = getattr(getattr(prog, "role", None), "value", "rant")
+            topic = getattr(content, "narrative_beat", "") or "" if content else ""
+            beats = getattr(content, "segment_beats", []) or [] if content else []
+            script = getattr(content, "prepared_script", []) or [] if content else []
+
+            # Build a rich text summary for embedding
+            beat_summary = " → ".join(str(b)[:60] for b in beats[:8])
+            text = (
+                f"Programme {pid}: {role_value} segment about {topic[:200]}. "
+                f"Beats: {beat_summary}. "
+                f"{'Pre-composed script available.' if script else 'No script yet.'}"
+            )
+            texts.append(text)
+            prog_ids.append(pid)
+            prog_meta.append(
+                {
+                    "programme_id": pid,
+                    "role": role_value,
+                    "topic": str(topic)[:500],
+                    "beat_count": len(beats),
+                    "has_script": bool(script),
+                    "prepped_at": datetime.now(tz=UTC).isoformat(),
+                }
+            )
+
+        if not texts:
+            return
+
+        # Batch embed
+        embeddings = embed_batch_safe(texts, prefix="search_document")
+        if embeddings is None:
+            log.warning("prep qdrant: embed_batch failed, skipping Qdrant upsert")
+            return
+
+        # Build Qdrant points
+        from qdrant_client.models import PointStruct
+
+        points = []
+        for i, (pid, meta) in enumerate(zip(prog_ids, prog_meta, strict=True)):
+            if i >= len(embeddings) or embeddings[i] is None:
+                continue
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"programme.prepped.{pid}"))
+            points.append(
+                PointStruct(
+                    id=point_id,
+                    vector=embeddings[i],
+                    payload={
+                        "capability_name": f"programme.prepped.{pid}",
+                        "description": texts[i],
+                        "daemon": "hapax_daimonion",
+                        **meta,
+                    },
+                )
+            )
+
+        if not points:
+            return
+
+        client = get_qdrant()
+        client.upsert(collection_name=COLLECTION_NAME, points=points)
+        log.info("prep qdrant: upserted %d programme points", len(points))
+
+    except Exception:
+        log.warning("prep qdrant: upsert failed (non-fatal)", exc_info=True)
 
 
 def load_prepped_programmes(prep_dir: Path | None = None) -> list[dict]:

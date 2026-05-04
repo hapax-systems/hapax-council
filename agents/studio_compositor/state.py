@@ -423,7 +423,12 @@ def state_reader_loop(compositor: Any) -> None:
                 ):
                     try_graph_preset(compositor, preset_name)
                     compositor._current_preset_name = preset_name
-                    compositor._user_preset_hold_until = time.monotonic() + 600.0
+                    # 2026-05-04 hot-fix: 600.0 s → 25.0 s. The 10-min hold blocked
+                    # recruitment-driven mutations (which use the same bus) from
+                    # advancing for 10 min after each director cycle. Operator
+                    # manual changes still get a brief 25 s lock — sufficient to
+                    # avoid director thrash without freezing the chain.
+                    compositor._user_preset_hold_until = time.monotonic() + 25.0
                     try:
                         (SNAPSHOT_DIR / "fx-current.txt").write_text(preset_name)
                     except OSError:
@@ -535,17 +540,11 @@ def state_reader_loop(compositor: Any) -> None:
             # returns None when the flag is off, the file is missing,
             # expired, or active=False — all of which mean "leave the
             # hero as-is".
-            # Segment cue hold: suppress follow-mode during segment beats.
-            from agents.studio_compositor.compositional_consumer import (
-                _segment_cue_hold_active,
-            )
-
-            if not _segment_cue_hold_active():
-                fm_rec = read_follow_mode_recommendation()
-                if fm_rec is not None:
-                    override_camera_role = fm_rec.camera_role
-                    override_set_at = fm_rec.ts
-                    override_source = "follow_mode"
+            fm_rec = read_follow_mode_recommendation()
+            if fm_rec is not None:
+                override_camera_role = fm_rec.camera_role
+                override_set_at = fm_rec.ts
+                override_source = "follow_mode"
         if override_camera_role is not None:
             try:
                 requested_mode = f"hero/{override_camera_role}"

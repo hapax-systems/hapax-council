@@ -538,6 +538,29 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
             else:
                 _hold_path.unlink(missing_ok=True)
                 _segment_path.unlink(missing_ok=True)
+
+                # Continuous cycling: when no segment is active, activate
+                # the next pending prepped programme so there's always a
+                # segment playing. This is the "radio station" model —
+                # never dead air.
+                try:
+                    from shared.programme import ProgrammeStatus as _PS
+
+                    pending = [
+                        p
+                        for p in manager.store.all()
+                        if p.status == _PS.PENDING and getattr(p.content, "prepared_script", None)
+                    ]
+                    if pending:
+                        nxt = pending[0]
+                        manager.store.activate(nxt.programme_id)
+                        log.info(
+                            "auto-cycle: activated next prepped segment %s (%s)",
+                            nxt.programme_id,
+                            getattr(nxt.role, "value", "?"),
+                        )
+                except Exception:
+                    log.debug("auto-cycle failed", exc_info=True)
         except Exception:
             log.debug("beat transition check failed", exc_info=True)
 
