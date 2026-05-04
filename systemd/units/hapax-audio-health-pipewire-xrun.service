@@ -1,0 +1,18 @@
+[Unit]
+Description=Hapax audio health M5 — PipeWire pw-top xrun + buffer-underrun monitor
+After=pipewire.service
+Requires=pipewire.service
+PartOf=hapax-audio-health.target
+
+[Service]
+Type=notify
+ExecStart=%h/.local/share/hapax-council/.venv/bin/python -m agents.audio_health.m5_pipewire_xrun_daemon
+WorkingDirectory=%h/.local/share/hapax-council
+Restart=on-failure
+RestartSec=10
+WatchdogSec=120s
+EnvironmentFile=-%h/.config/hapax/audio-health.env
+MemoryMax=128M
+
+[Install]
+WantedBy=hapax-audio-health.target
