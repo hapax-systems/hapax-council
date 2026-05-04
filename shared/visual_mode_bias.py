@@ -83,22 +83,37 @@ MOTION_FACTOR: dict[WorkingMode, float] = {
 # ── Preset-family recruitment weights ──
 #
 # Multipliers applied to candidate scores in the AffordancePipeline's
-# `fx.family.*` retrieve step. Per-mode lean: RND favors high-energy
-# families (audio-reactive, glitch-dense), RESEARCH favors calm
-# families (calm-textural, warm-minimal). Default 1.0 elsewhere.
+# `fx.family.*` retrieve step. Per-mode lean: RND keeps a mild residual
+# preference for high-energy families (audio-reactive, glitch-dense);
+# RESEARCH keeps a mild residual preference for calm families
+# (calm-textural, warm-minimal). Default 1.0 elsewhere.
+#
+# Rebalance (researcher visual-monoculture audit, 2026-05-03): the
+# previous weights (RND audio-reactive=1.5, glitch-dense=1.4 vs
+# warm-minimal=0.7, calm-textural=0.6) produced winner-take-all
+# selection — over the last 2h of recruitment, 100% of selections came
+# from 2 of 5 families, while warm-minimal, calm-textural, and
+# neutral-ambient (no weight at all) became dark matter: preset corpus
+# present, never selected. New weights compress the per-family spread
+# to keep all families above 0.85 so similarity scoring (the dominant
+# signal) actually decides selection within each mode's mild
+# aesthetic lean. Pairs with `preset_mutator.DEFAULT_VARIANCE = 0.30`
+# for stronger in-family per-instance jitter.
 
 PRESET_FAMILY_WEIGHTS: dict[WorkingMode, dict[str, float]] = {
     WorkingMode.RND: {
-        "fx.family.audio-reactive": 1.5,
-        "fx.family.glitch-dense": 1.4,
-        "fx.family.warm-minimal": 0.7,
-        "fx.family.calm-textural": 0.6,
+        "fx.family.audio-reactive": 1.2,
+        "fx.family.glitch-dense": 1.2,
+        "fx.family.warm-minimal": 1.0,
+        "fx.family.calm-textural": 1.0,
+        "fx.family.neutral-ambient": 1.0,
     },
     WorkingMode.RESEARCH: {
-        "fx.family.calm-textural": 1.5,
-        "fx.family.warm-minimal": 1.4,
-        "fx.family.audio-reactive": 0.7,
-        "fx.family.glitch-dense": 0.5,
+        "fx.family.calm-textural": 1.2,
+        "fx.family.warm-minimal": 1.2,
+        "fx.family.neutral-ambient": 1.0,
+        "fx.family.audio-reactive": 0.9,
+        "fx.family.glitch-dense": 0.85,
     },
     WorkingMode.FORTRESS: {
         # Neutral — fortress mode prioritizes consent + livestream gating
