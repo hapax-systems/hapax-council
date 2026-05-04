@@ -492,6 +492,39 @@ async def prepared_playback_loop(daemon: object) -> None:
                 dest_role,
             )
 
+            # ── DURF ward press: front the ward for segment display ──
+            import json as _json
+            import time as _ward_time
+            from pathlib import Path as _Path
+
+            from agents.studio_compositor.ward_properties import (
+                WardProperties,
+                set_ward_properties,
+            )
+
+            _SEGMENT_SHM = _Path("/dev/shm/hapax-compositor/segment-playback.json")
+            _SEGMENT_SHM.parent.mkdir(parents=True, exist_ok=True)
+
+            # Collect segment assets for this programme (keyed by block index)
+            _seg_assets: dict[int, list[dict]] = {}
+            if hasattr(active.content, "segment_assets"):
+                for asset in active.content.segment_assets:
+                    bi = asset.block_index if asset.block_index is not None else -1
+                    _seg_assets.setdefault(bi, []).append(asset.model_dump())
+
+            # Front state → "fronting" (ward is transitioning forward)
+            set_ward_properties(
+                "durf",
+                WardProperties(
+                    front_state="fronting",
+                    front_t0=_ward_time.monotonic(),
+                    z_plane="surface-scrim",
+                    alpha=0.92,
+                ),
+                ttl_s=600.0,
+            )
+            log.info("prepared_playback_loop: DURF ward → fronting for %s", prog_id)
+
             # Pre-synthesize blocks: overlap TTS synthesis with playback
             # so there's zero gap between blocks. Synthesize block N+1
             # while block N is playing.
@@ -584,6 +617,37 @@ async def prepared_playback_loop(daemon: object) -> None:
                         )
                         break
 
+                # ── Publish segment state + ward lifecycle at sentence tempo ──
+                _block_assets = _seg_assets.get(idx, _seg_assets.get(-1, []))
+                _seg_state = {
+                    "programme_id": prog_id,
+                    "role": role,
+                    "block_index": idx,
+                    "block_count": len(script),
+                    "block_text": current_text[:300],
+                    "assets": _block_assets,
+                    "front_state": "fronted",
+                    "updated_at": _ward_time.time(),
+                }
+                try:
+                    _tmp = _SEGMENT_SHM.with_suffix(".json.tmp")
+                    _tmp.write_text(_json.dumps(_seg_state), encoding="utf-8")
+                    _tmp.replace(_SEGMENT_SHM)
+                except OSError:
+                    log.debug("prepared_playback_loop: SHM write failed", exc_info=True)
+
+                # Front state → "fronted" (content settled, being narrated)
+                set_ward_properties(
+                    "durf",
+                    WardProperties(
+                        front_state="fronted",
+                        front_t0=_ward_time.monotonic(),
+                        z_plane="surface-scrim",
+                        alpha=0.92,
+                    ),
+                    ttl_s=120.0,
+                )
+
                 # Play current block
                 try:
                     async with cpal._speech_lock:
@@ -627,8 +691,39 @@ async def prepared_playback_loop(daemon: object) -> None:
                         )
                         pending_pcm = None
 
+                # Between blocks: "fronting" (next block incoming)
+                set_ward_properties(
+                    "durf",
+                    WardProperties(
+                        front_state="fronting",
+                        front_t0=_ward_time.monotonic(),
+                        z_plane="surface-scrim",
+                        alpha=0.88,
+                    ),
+                    ttl_s=120.0,
+                )
+
                 # Brief breath between paragraphs
                 await asyncio.sleep(0.5)
+
+            # ── DURF ward retirement: "retiring" → "integrated" ──
+            set_ward_properties(
+                "durf",
+                WardProperties(
+                    front_state="retiring",
+                    front_t0=_ward_time.monotonic(),
+                    z_plane="surface-scrim",
+                    alpha=0.7,
+                ),
+                ttl_s=15.0,
+            )
+            log.info("prepared_playback_loop: DURF ward → retiring for %s", prog_id)
+
+            # Clean up SHM segment state
+            try:
+                _SEGMENT_SHM.unlink(missing_ok=True)
+            except OSError:
+                pass
 
             # All blocks played — deactivate, auto-cycle picks next
             try:
@@ -639,8 +734,13 @@ async def prepared_playback_loop(daemon: object) -> None:
                     "prepared_playback_loop: deactivate failed for %s", prog_id, exc_info=True
                 )
 
-            # Small gap between programmes
+            # Inter-programme gap — DURF returns to integrated
             await asyncio.sleep(2.0)
+            set_ward_properties(
+                "durf",
+                WardProperties(front_state="integrated", front_t0=_ward_time.monotonic()),
+                ttl_s=10.0,
+            )
 
         except Exception:
             log.warning("prepared_playback_loop: tick failed", exc_info=True)

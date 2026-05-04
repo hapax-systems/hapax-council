@@ -470,6 +470,14 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
         self._last_rendered_alpha = alpha
         if alpha <= 0.001:
             return
+
+        # ── Segment mode: display programme content instead of tmux ──
+        seg = self._read_segment_state()
+        if seg is not None:
+            self._render_segment_content(cr, canvas_w, canvas_h, alpha, seg, t)
+            return
+
+        # ── Default: tmux pane display ──
         with self._snapshot_lock:
             panes = [pane for pane in self._snapshot.panes if pane.visible]
         if not panes:
@@ -484,6 +492,145 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
         rects = _layout_for_count(len(panes), canvas_w, canvas_h)
         for pane, rect in zip(panes, rects, strict=False):
             self._render_text_pane(cr, rect, pane, alpha)
+
+    # ── Segment state reader ─────────────────────────────────────────
+
+    _SEGMENT_SHM_PATH = Path("/dev/shm/hapax-compositor/segment-playback.json")
+    _seg_cache: dict[str, Any] | None = None
+    _seg_cache_mtime: float = 0.0
+
+    def _read_segment_state(self) -> dict[str, Any] | None:
+        """Read segment-playback.json from SHM with mtime-based caching."""
+        try:
+            st = self._SEGMENT_SHM_PATH.stat()
+            if st.st_mtime_ns == self._seg_cache_mtime and self._seg_cache is not None:
+                return self._seg_cache
+            import json
+
+            data = json.loads(self._SEGMENT_SHM_PATH.read_text(encoding="utf-8"))
+            self._seg_cache = data
+            self._seg_cache_mtime = st.st_mtime_ns
+            return data
+        except FileNotFoundError:
+            self._seg_cache = None
+            return None
+        except Exception:
+            return self._seg_cache  # stale is better than nothing
+
+    # ── Segment content renderer ─────────────────────────────────────
+
+    def _render_segment_content(
+        self,
+        cr: cairo.Context,
+        canvas_w: int,
+        canvas_h: int,
+        alpha: float,
+        seg: dict[str, Any],
+        t: float,
+    ) -> None:
+        """Render the current segment block: text + asset metadata."""
+        from agents.studio_compositor.homage.rendering import active_package
+
+        pkg = active_package()
+        bright = pkg.palette.bright
+        muted = pkg.palette.muted
+        accent = pkg.palette.accent_cyan
+
+        # Background scrim
+        cr.save()
+        cr.set_source_rgba(0.02, 0.02, 0.05, 0.78 * alpha)
+        cr.rectangle(0, 0, canvas_w, canvas_h)
+        cr.fill()
+        cr.restore()
+
+        margin = 48
+        text_x = margin
+        text_y = margin + 20
+        max_w = max(1, canvas_w - margin * 2)
+
+        # Header: programme role + block progress
+        block_idx = seg.get("block_index", 0)
+        block_count = seg.get("block_count", 1)
+        role = seg.get("role", "")
+        progress_text = f"▸ {role.upper().replace('_', ' ')} · {block_idx + 1}/{block_count}"
+        header_style = TextStyle(
+            text=progress_text,
+            font_description=self._font_description,
+            color_rgba=(accent[0], accent[1], accent[2], 0.90 * alpha),
+            outline_color_rgba=(0.0, 0.0, 0.0, 0.90 * alpha),
+            outline_offsets=OUTLINE_OFFSETS_4,
+            max_width_px=max_w,
+            wrap="word",
+        )
+        render_text(cr, header_style, text_x, text_y)
+        text_y += 36
+
+        # Asset info (if present)
+        assets = seg.get("assets", [])
+        for asset in assets[:2]:
+            kind = asset.get("kind", "text")
+            caption = asset.get("caption") or asset.get("url") or ""
+            if caption:
+                asset_label = f"  [{kind.upper()}] {caption[:80]}"
+                asset_style = TextStyle(
+                    text=asset_label,
+                    font_description=self._font_description,
+                    color_rgba=(muted[0], muted[1], muted[2], 0.72 * alpha),
+                    outline_color_rgba=(0.0, 0.0, 0.0, 0.80 * alpha),
+                    outline_offsets=OUTLINE_OFFSETS_4,
+                    max_width_px=max_w,
+                    wrap="char",
+                )
+                render_text(cr, asset_style, text_x, text_y)
+                text_y += 22
+
+        # Divider line
+        text_y += 8
+        cr.save()
+        cr.set_source_rgba(bright[0], bright[1], bright[2], 0.35 * alpha)
+        cr.move_to(margin, text_y)
+        cr.line_to(canvas_w - margin, text_y)
+        cr.set_line_width(1.5)
+        cr.stroke()
+        cr.restore()
+        text_y += 16
+
+        # Block text — the narration content
+        block_text = seg.get("block_text", "")
+        if block_text:
+            # Split into sentences for readable display
+            line_h = 22
+            max_lines = max(1, int((canvas_h - text_y - margin) / line_h))
+            # Wrap at roughly 90 chars per line
+            words = block_text.split()
+            lines: list[str] = []
+            current = ""
+            for word in words:
+                test = f"{current} {word}".strip()
+                if len(test) > 90:
+                    if current:
+                        lines.append(current)
+                    current = word
+                else:
+                    current = test
+            if current:
+                lines.append(current)
+
+            for line in lines[:max_lines]:
+                line_style = TextStyle(
+                    text=line,
+                    font_description=self._font_description,
+                    color_rgba=(bright[0], bright[1], bright[2], 0.88 * alpha),
+                    outline_color_rgba=(0.0, 0.0, 0.0, 0.82 * alpha),
+                    outline_offsets=OUTLINE_OFFSETS_4,
+                    max_width_px=max_w,
+                    wrap="word",
+                    line_spacing=0.95,
+                )
+                render_text(cr, line_style, text_x, text_y)
+                text_y += line_h
+                if text_y > canvas_h - margin:
+                    break
 
     def _render_text_pane(
         self,

@@ -263,6 +263,20 @@ class ProgrammeConstraintEnvelope(BaseModel):
         return self.bias_multiplier(capability_name) > 0.0
 
 
+class SegmentAsset(BaseModel):
+    """One media asset referenced by a prepared script block.
+
+    Populated during daily_segment_prep alongside the prepared_script.
+    The playback loop publishes these to SHM at sentence tempo so the
+    DURF compositor ward can display relevant visuals per-block.
+    """
+
+    kind: Literal["image", "youtube", "url", "text"] = "text"
+    url: str | None = None
+    caption: str | None = None
+    block_index: int | None = None  # which script block this belongs to
+
+
 class ProgrammeContent(BaseModel):
     """Concrete content grounding — perception inputs, never scripted text.
 
@@ -320,6 +334,14 @@ class ProgrammeContent(BaseModel):
     Each entry is 3-8 sentences of broadcast-ready prose — the actual
     words Hapax will speak for that beat.  Unlike segment_beats (which
     are director cues / rundown notes), these are composed output.
+    """
+    segment_assets: list[SegmentAsset] = Field(default_factory=list)
+    """Per-block media assets for DURF ward display during playback.
+
+    Populated during daily_segment_prep. Each asset carries a kind
+    (image/youtube/url/text), URL, caption, and the block_index it
+    belongs to. The playback loop publishes the current block's assets
+    to SHM so the DURF can render them at sentence tempo.
     """
     invited_capabilities: set[str] = Field(default_factory=set)
 
