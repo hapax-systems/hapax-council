@@ -322,6 +322,23 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "`datacite-graphql-mirror`."
         ),
     ),
+    "agents.publication_bus.youtube_live_chat_publisher": WireEntry(
+        module="agents.publication_bus.youtube_live_chat_publisher",
+        surface_slug="youtube-live-chat-message",
+        status="CRED_BLOCKED",
+        pass_key_required="google/youtube-force-ssl-token",
+        rationale=(
+            "Wired via agents.hapax_daimonion.cpal.response_dispatch.dispatch_response "
+            "for cc-task chat-response-verbal-and-text (operator outcome 5/5). "
+            "CRED_BLOCKED until operator (1) mints a Google OAuth token with "
+            "youtube.force-ssl scope through shared.google_auth and (2) populates "
+            "config/publication-bus/youtube-live-chat.yaml or sets "
+            "HAPAX_YOUTUBE_LIVE_CHAT_ALLOWLIST with the active broadcast's liveChatId. "
+            "Once epsilon's youtube_chat_reader (cc-task "
+            "youtube-chat-ingestion-impingement) registers a concrete reader, "
+            "the chat-post path activates automatically."
+        ),
+    ),
 }
 
 
