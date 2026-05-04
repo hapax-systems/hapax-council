@@ -1,0 +1,28 @@
+# Chat-authority allowlist for the InteractiveLoreQueryWard.
+#
+# Per the interpersonal_transparency axiom, persistent state about
+# non-operator persons requires explicit consent. Inclusion of a
+# YouTube channelId in this list IS the consent record — the operator
+# is explicitly affirming "this person may issue !lore queries against
+# the chronicle on my livestream".
+#
+# This file lives at config/lore/chat-authority-allowlist.yaml in the
+# repository, OR at the path pointed to by the
+# HAPAX_LORE_CHAT_AUTHORITY_ALLOWLIST environment variable when set.
+# The example here is committed; the real allowlist file should be
+# operator-maintained and (if it contains real channel ids) git-ignored.
+#
+# Schema: a single top-level key `allowed_channel_ids` mapping to a
+# YAML list of raw YouTube channelId strings. The ward computes the
+# same per-process anonymized HMAC token via
+# `agents.youtube_chat_reader.anonymize.AuthorAnonymizer` to compare
+# against incoming chat impingement `author_token` values.
+#
+# An empty list means the ward is effectively dormant (no queries
+# can be authorized) — the IDLE message renders but no lore traffic
+# flows.
+
+allowed_channel_ids:
+  # - "UC_OPERATOR_CHANNEL_ID_HERE"
+  # - "UC_TRUSTED_VIEWER_1"
+  # - "UC_TRUSTED_VIEWER_2"
