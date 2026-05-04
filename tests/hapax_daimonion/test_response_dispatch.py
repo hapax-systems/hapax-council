@@ -7,7 +7,9 @@ import pytest
 
 from agents.hapax_daimonion.cpal.chat_destination import ResponseModality
 from agents.hapax_daimonion.cpal.response_dispatch import (
+    OPERATOR_PLACEHOLDER,
     dispatch_response,
+    moderate_chat_text,
 )
 from agents.publication_bus.publisher_kit.base import PublisherResult
 from agents.youtube_chat_reader import (
@@ -179,3 +181,85 @@ def test_sticky_referent_per_impingement():
     dispatch_response(imp, publisher=publisher, attribution=True)
     second_text = publisher.publish.call_args.args[0].text
     assert first_text == second_text
+
+
+# ── moderate_chat_text ────────────────────────────────────────────────────
+
+
+REFERENTS = ("The Operator", "Oudepode", "Oudepode The Operator", "OTO")
+
+
+def test_moderate_substitutes_operator_placeholder():
+    out = moderate_chat_text(
+        f"now spinning at {OPERATOR_PLACEHOLDER}'s desk",
+        impingement_id="imp-1",
+    )
+    assert OPERATOR_PLACEHOLDER not in out
+    assert any(r in out for r in REFERENTS)
+
+
+def test_moderate_no_placeholder_passes_through():
+    out = moderate_chat_text("plain text without placeholder", impingement_id="imp-1")
+    assert out == "plain text without placeholder"
+
+
+def test_moderate_sticky_per_impingement():
+    text = f"{OPERATOR_PLACEHOLDER} says hi"
+    first = moderate_chat_text(text, impingement_id="imp-stable")
+    second = moderate_chat_text(text, impingement_id="imp-stable")
+    assert first == second
+
+
+def test_moderate_replaces_all_occurrences():
+    out = moderate_chat_text(
+        f"{OPERATOR_PLACEHOLDER} likes {OPERATOR_PLACEHOLDER}'s couch",
+        impingement_id="imp-1",
+    )
+    assert OPERATOR_PLACEHOLDER not in out
+    # Both placeholders use the same sticky pick, so the same referent appears
+    # at both positions.
+    referent = next(r for r in REFERENTS if r in out)
+    assert out.count(referent) == 2
+
+
+def test_dispatch_substitutes_placeholder_in_chat_post():
+    register_reader(_stub_reader("abc"))
+    publisher = MagicMock()
+    publisher.publish.return_value = PublisherResult(ok=True, detail="ok")
+    imp = _Imp(
+        source="youtube.live_chat",
+        content={
+            "kind": "chat_message",
+            "response_text": f"thanks from {OPERATOR_PLACEHOLDER}",
+            "impingement_id": "imp-99",
+        },
+    )
+    dispatch_response(imp, publisher=publisher, attribution=False)
+    payload = publisher.publish.call_args.args[0]
+    assert OPERATOR_PLACEHOLDER not in payload.text
+    assert any(r in payload.text for r in REFERENTS)
+
+
+def test_dispatch_moderation_runs_even_when_attribution_disabled():
+    """Moderation is independent of the attribution suffix.
+
+    Operator-referent policy applies to placeholder substitution
+    unconditionally — the attribution flag only controls the trailing
+    suffix sign, not whether the placeholder gets resolved.
+    """
+    register_reader(_stub_reader("abc"))
+    publisher = MagicMock()
+    publisher.publish.return_value = PublisherResult(ok=True, detail="ok")
+    imp = _Imp(
+        source="youtube.live_chat",
+        content={
+            "kind": "chat_message",
+            "response_text": f"hello from {OPERATOR_PLACEHOLDER}",
+            "impingement_id": "imp-100",
+        },
+    )
+    dispatch_response(imp, publisher=publisher, attribution=False)
+    payload = publisher.publish.call_args.args[0]
+    assert OPERATOR_PLACEHOLDER not in payload.text
+    # No attribution suffix appended (attribution=False), so no " — " separator.
+    assert " — " not in payload.text

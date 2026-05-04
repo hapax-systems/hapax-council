@@ -521,9 +521,13 @@ def _is_endogenous_narrative_source(source: object) -> bool:
 
 # Roles where broadcast voice is appropriate. LISTENING is excluded
 # because the operator explicitly chose a receptive programme role —
-# Hapax speaking to the audience defeats the role's intent.
+# Hapax speaking to the audience defeats the role's intent. The seven
+# segmented-content roles (TIER_LIST through LECTURE, shipped via
+# #2465) are all broadcast-eligible: each is a Hapax-authored
+# narrative format whose entire point is to broadcast.
 _BROADCAST_ELIGIBLE_ROLES: frozenset[str] = frozenset(
     {
+        # Operator-context roles (Phase 1)
         "showcase",
         "ritual",
         "interlude",
@@ -535,6 +539,14 @@ _BROADCAST_ELIGIBLE_ROLES: frozenset[str] = frozenset(
         "experiment",
         "repair",
         "invitation",
+        # Segmented-content roles (operator outcome 2)
+        "tier_list",
+        "top_10",
+        "rant",
+        "react",
+        "iceberg",
+        "interview",
+        "lecture",
     }
 )
 
