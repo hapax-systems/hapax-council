@@ -267,15 +267,23 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
         snapshot argument so the poll's gate decision and FSM-drive
         decision read the same data without re-acquiring the snapshot
         lock between calls.
+
+        Also returns True when segment-playback.json exists — the DURF
+        should be visible during programme narration even if no tmux
+        panes are active.
         """
         if _durf_module._consent_safe_active() or _durf_module._unsafe_public_bypass_active():
             return False
+        if self._SEGMENT_SHM_PATH.exists():
+            return True
         return any(pane.visible for pane in snapshot.panes)
 
     def _gate_active(self) -> bool:
         """Live gate reader — used by ``state()`` and tests."""
         if _durf_module._consent_safe_active() or _durf_module._unsafe_public_bypass_active():
             return False
+        if self._SEGMENT_SHM_PATH.exists():
+            return True
         with self._snapshot_lock:
             return any(pane.visible for pane in self._snapshot.panes)
 
