@@ -96,27 +96,29 @@ def _load_stimmung_snapshot(
 ) -> dict[str, Any]:
     """Best-effort stimmung snapshot. Returns {} if unavailable.
 
-    Enriched with a ``camera_salience`` key carrying the broker's WCS
-    projection (``None`` when the broker is unavailable). The salience
-    projection is *used* as part of the per-segment sidecar payload —
-    archive readers can correlate a segment's stimmung with which
-    apertures were salient at rotation time.
+    Enriched with a ``camera_salience`` key when the broker returns a
+    bundle — but only then. When the broker is unavailable, returns
+    no value, or fails closed, the key is *omitted entirely* so the
+    serialized sidecar JSON does not carry ``"camera_salience": null``
+    noise. Absent salience is the empty case, not a stored fact.
     """
     salience = _query_camera_salience_for_archive()
     if not stimmung_path.exists():
-        return {"camera_salience": salience}
+        return {"camera_salience": salience} if salience is not None else {}
     try:
         payload = json.loads(stimmung_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"camera_salience": salience}
+        return {"camera_salience": salience} if salience is not None else {}
     if not isinstance(payload, dict):
-        return {"camera_salience": salience}
-    return {
+        return {"camera_salience": salience} if salience is not None else {}
+    snapshot: dict[str, Any] = {
         "stance": payload.get("stance"),
         "dimensions": payload.get("dimensions"),
         "snapshotted_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        "camera_salience": salience,
     }
+    if salience is not None:
+        snapshot["camera_salience"] = salience
+    return snapshot
 
 
 def _query_camera_salience_for_archive() -> dict[str, Any] | None:

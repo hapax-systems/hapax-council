@@ -310,11 +310,14 @@ class TestArchiveWiring:
         # Use: the projection is embedded in the stimmung dict that the
         # rotator passes into ``build_sidecar`` and ultimately into the
         # per-segment sidecar's ``stimmung_snapshot`` field.
-        assert snapshot["camera_salience"] is not None
         assert snapshot["camera_salience"]["bundle_id"] == "camera-salience-bundle:test.archive"
 
     @patch("shared.camera_salience_singleton.broker")
-    def test_none_bundle_keys_camera_salience_to_none(self, mock_broker_fn, tmp_path) -> None:
+    def test_none_bundle_omits_camera_salience_key(self, mock_broker_fn, tmp_path) -> None:
+        # Contract: absent salience MUST NOT serialize as
+        # ``"camera_salience": null`` in the archive sidecar — the key
+        # is omitted entirely. Pinned by archive lifecycle integration
+        # test asserting ``stimmung_snapshot == {}``.
         from agents.studio_compositor.hls_archive import _load_stimmung_snapshot
 
         mock_singleton = MagicMock()
@@ -323,17 +326,19 @@ class TestArchiveWiring:
 
         snapshot = _load_stimmung_snapshot(stimmung_path=tmp_path / "missing.json")
 
-        assert snapshot["camera_salience"] is None
+        assert "camera_salience" not in snapshot
+        assert snapshot == {}
 
     @patch("shared.camera_salience_singleton.broker")
-    def test_broker_error_does_not_break_loader(self, mock_broker_fn, tmp_path) -> None:
+    def test_broker_error_omits_camera_salience_key(self, mock_broker_fn, tmp_path) -> None:
         from agents.studio_compositor.hls_archive import _load_stimmung_snapshot
 
         mock_broker_fn.side_effect = RuntimeError("broker down")
 
         snapshot = _load_stimmung_snapshot(stimmung_path=tmp_path / "missing.json")
 
-        assert snapshot["camera_salience"] is None
+        assert "camera_salience" not in snapshot
+        assert snapshot == {}
 
 
 # ── 5. visual_variance → shared.gem_frame_variance ──────────────────────

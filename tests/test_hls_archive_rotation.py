@@ -37,31 +37,27 @@ class TestLoadStimmungSnapshot:
     were previously only indirectly exercised. These tests pin each branch
     so a future refactor cannot silently change the empty-dict fallback.
 
-    Camera-salience extension: every snapshot now also carries a
-    ``camera_salience`` key (populated by the broker query, ``None``
-    when the broker is unavailable). The original fallback contract —
-    that no stimmung fields leak from missing/malformed sources — is
-    preserved by checking that the only key present in those branches
-    is ``camera_salience``.
+    Camera-salience contract: when the broker has no observations or
+    fails closed, the snapshot OMITS the ``camera_salience`` key
+    entirely (no ``"camera_salience": null`` in the serialized
+    sidecar). The CI harness has no live broker, so all three error
+    branches end up returning ``{}``.
     """
 
-    def test_missing_file_returns_camera_salience_only(self, tmp_path: Path) -> None:
+    def test_missing_file_returns_empty_dict(self, tmp_path: Path) -> None:
         missing = tmp_path / "does-not-exist.json"
         assert not missing.exists()
-        snapshot = hls_archive._load_stimmung_snapshot(missing)
-        assert set(snapshot) == {"camera_salience"}
+        assert hls_archive._load_stimmung_snapshot(missing) == {}
 
-    def test_malformed_json_returns_camera_salience_only(self, tmp_path: Path) -> None:
+    def test_malformed_json_returns_empty_dict(self, tmp_path: Path) -> None:
         bad = tmp_path / "bad.json"
         bad.write_text("{this is not valid json", encoding="utf-8")
-        snapshot = hls_archive._load_stimmung_snapshot(bad)
-        assert set(snapshot) == {"camera_salience"}
+        assert hls_archive._load_stimmung_snapshot(bad) == {}
 
-    def test_non_dict_payload_returns_camera_salience_only(self, tmp_path: Path) -> None:
+    def test_non_dict_payload_returns_empty_dict(self, tmp_path: Path) -> None:
         list_payload = tmp_path / "list.json"
         list_payload.write_text(json.dumps(["stance", "dimensions"]), encoding="utf-8")
-        snapshot = hls_archive._load_stimmung_snapshot(list_payload)
-        assert set(snapshot) == {"camera_salience"}
+        assert hls_archive._load_stimmung_snapshot(list_payload) == {}
 
 
 class TestIsSegmentStable:
