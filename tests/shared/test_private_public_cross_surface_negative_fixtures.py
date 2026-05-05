@@ -606,11 +606,15 @@ def test_public_claim_gate_blocks_text_bearing_private_activity_sentinel() -> No
     assert decision.allows_emission is False
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known gap: YouTube description assembler has no bridge/private-sentinel text hygiene gate yet",
-)
 def test_youtube_description_assembler_blocks_private_sentinel() -> None:
+    """YouTube description assembler must redact every
+    ``PRIVATE_SENTINEL_DO_NOT_PUBLISH_*`` token before composition.
+
+    Closed by ``cc-task youtube-description-assembler-private-sentinel-filtering``:
+    ``assemble_description`` runs ``_redact_private_sentinels`` on every
+    text input (and attribution title/url) so the rendered description
+    cannot leak the sentinel to the public YouTube surface.
+    """
     description = assemble_description(
         condition_id=PRIVATE_SENTINEL,
         claim_id=None,
