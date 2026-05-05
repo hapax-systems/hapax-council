@@ -118,6 +118,11 @@ class ActivityRevealMixin(ABC):
     HOLD. P3 wires the router-side enforcement; P0 just defines the
     declarative slot."""
 
+    priority: ClassVar[int] = 0
+    """Router-policy priority. P4 ``PRIORITY_SCORED`` uses this as the
+    first ordering key, with lexicographic ``WARD_ID`` as the tie-break.
+    Default 0 preserves existing family behavior unless a ward opts in."""
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         # Allow abstract-but-not-yet-concrete subclasses (used in test
