@@ -67,7 +67,7 @@ class TestSchemaDiscriminator:
 
     def test_unknown_schema_falls_back_to_v1(self) -> None:
         mod = _runner()
-        vector = mod.braid_vector_from_frontmatter({"braid_schema": "2.0"})
+        vector = mod.braid_vector_from_frontmatter({"braid_schema": "9.99"})
         assert vector.is_v11 is False
 
 
