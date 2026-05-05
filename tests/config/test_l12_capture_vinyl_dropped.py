@@ -193,7 +193,7 @@ def test_l12_capture_pins_dont_remix_flag() -> None:
     Setting ``stream.dont-remix = true`` pins each declared AUX position
     1:1 to its corresponding USB-IN channel (no remix matrix), matching
     the working reference pattern in
-    ``~/.config/pipewire/pipewire.conf.d/10-contact-mic.conf``.
+    ``~/.config/pipewire/pipewire.conf.d/hapax-contact-mic.conf``.
 
     If this flag goes missing in any future revision, the channelmix
     leak reappears and OBS broadcast carries phantom signal again.

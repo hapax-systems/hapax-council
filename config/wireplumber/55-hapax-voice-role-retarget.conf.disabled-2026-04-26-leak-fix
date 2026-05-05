@@ -46,8 +46,8 @@
 # - Plan: docs/superpowers/plans/2026-04-21-livestream-surface-shepherd-plan.md item K
 # - cc-task: lssh-012
 # - Memory: reference_default_sink_elevation_breaks_roles.md (sibling failure class)
-# - Voice FX chain: config/pipewire/voice-fx-chain.conf
-# - Voice loudnorm: config/pipewire/voice-fx-loudnorm.conf
+# - Voice FX chain: config/pipewire/hapax-voice-fx-chain.conf
+# - Voice loudnorm: config/pipewire/hapax-voice-fx-loudnorm.conf
 # - Voice duck: config/wireplumber/50-hapax-voice-duck.conf
 
 node.rules = [

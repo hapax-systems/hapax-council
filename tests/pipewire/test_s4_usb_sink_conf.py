@@ -12,13 +12,13 @@ from pathlib import Path
 
 import pytest
 
-CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "pipewire" / "s4-usb-sink.conf"
+CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "pipewire" / "hapax-s4-usb-sink.conf"
 
 
 @pytest.fixture()
 def raw_config() -> str:
     if not CONFIG_PATH.exists():
-        pytest.skip("s4-usb-sink.conf missing from repo checkout")
+        pytest.skip("hapax-s4-usb-sink.conf missing from repo checkout")
     return CONFIG_PATH.read_text(encoding="utf-8")
 
 

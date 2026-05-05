@@ -33,9 +33,9 @@ CONFIG_DIR = Path(__file__).resolve().parents[2] / "config" / "pipewire"
 
 LOUDNORM_CONFS = (
     "hapax-music-loudnorm.conf",
-    "voice-fx-loudnorm.conf",
-    "pc-loudnorm.conf",
-    "yt-loudnorm.conf",
+    "hapax-voice-fx-loudnorm.conf",
+    "hapax-pc-loudnorm.conf",
+    "hapax-yt-loudnorm.conf",
 )
 
 
@@ -64,7 +64,7 @@ def test_no_hard_limiter_in_loudnorm_conf(conf_name: str) -> None:
     )
 
 
-@pytest.mark.parametrize("conf_name", ("pc-loudnorm.conf", "yt-loudnorm.conf"))
+@pytest.mark.parametrize("conf_name", ("hapax-pc-loudnorm.conf", "hapax-yt-loudnorm.conf"))
 def test_pc_yt_loudnorm_use_fast_lookahead(conf_name: str) -> None:
     """The two confs touched by audit B #10 must explicitly wire the
     new limiter. Belt-and-braces against accidental partial reverts."""

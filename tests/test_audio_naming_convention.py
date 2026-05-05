@@ -6,10 +6,16 @@ operator-authored conf carries the ``hapax-*`` prefix. The conf was
 renamed to ``hapax-pc-loudnorm.conf`` in the same PR.
 
 This test pins the convention so future audio work cannot silently
-re-introduce non-prefixed nodes. The rule:
+re-introduce non-prefixed nodes or deployable conf filenames. The rules:
 
     Every operator-authored PipeWire node in the canonical topology
     descriptor must declare a ``pipewire_name`` starting with ``hapax-``.
+
+    Every top-level, hand-authored PipeWire conf under
+    ``config/pipewire/*.conf`` must be named ``hapax-*.conf``. Generated
+    compiler outputs under ``config/pipewire/generated/`` are governed
+    by the audio-routing compiler's node-id filename convention and are
+    intentionally not checked here.
 
 Two well-defined exception classes:
 
@@ -37,6 +43,7 @@ from shared.audio_topology import TopologyDescriptor
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_YAML = REPO_ROOT / "config" / "audio-topology.yaml"
+PIPEWIRE_DIR = REPO_ROOT / "config" / "pipewire"
 
 # Pipewire-authored prefixes (operator hardware / wireplumber primitives).
 OPERATOR_HARDWARE_PREFIXES: tuple[str, ...] = (
@@ -84,6 +91,17 @@ def test_pc_loudnorm_conf_uses_hapax_prefix_filename() -> None:
     legacy = REPO_ROOT / "config" / "pipewire" / "pc-loudnorm.conf"
     assert correct.exists(), f"expected renamed conf at {correct}"
     assert not legacy.exists(), f"legacy conf {legacy} must be removed"
+
+
+def test_top_level_pipewire_conf_filenames_use_hapax_prefix() -> None:
+    """Top-level deployable PipeWire confs must all be hapax-*."""
+
+    violations = [
+        path.name
+        for path in sorted(PIPEWIRE_DIR.glob("*.conf"))
+        if path.is_file() and not path.name.startswith("hapax-")
+    ]
+    assert not violations, "non-hapax deployable PipeWire conf names: " + ", ".join(violations)
 
 
 @pytest.mark.parametrize(

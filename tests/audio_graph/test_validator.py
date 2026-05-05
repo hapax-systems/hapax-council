@@ -113,7 +113,7 @@ def test_validator_extracts_alsa_profile_pin(tmp_path: Path) -> None:
     pw_dir.mkdir()
     _write_conf(
         pw_dir,
-        "s4-usb-sink.conf",
+        "hapax-s4-usb-sink.conf",
         """\
         monitor.alsa.rules = [
             {

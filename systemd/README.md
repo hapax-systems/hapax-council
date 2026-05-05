@@ -235,6 +235,16 @@ the operator must `systemctl --user enable --now hapax-post-merge-deploy.path` o
 after the deploy script's normal install step copies the units in place. From the
 next merge onward the chain self-hosts.
 
+### Audio Config Naming
+
+Deployable hand-authored PipeWire files under `config/pipewire/*.conf`
+must be named `hapax-*.conf`. This keeps post-merge deploy traces,
+operator copies into `~/.config/pipewire/pipewire.conf.d/`, and grep
+queries deterministic. `scripts/check-audio-conf-names.py` enforces the
+rule in pre-commit for top-level PipeWire confs; generated compiler
+artifacts under `config/pipewire/generated/` keep the audio-routing
+compiler's node-id filename convention.
+
 ## Storage Management
 
 Two automated systems prevent disk exhaustion:

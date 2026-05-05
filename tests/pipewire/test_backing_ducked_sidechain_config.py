@@ -86,7 +86,7 @@ def test_conf_has_install_documentation() -> None:
 
 
 def test_conf_documents_pairs_with_voice_over() -> None:
-    """The reverse ducker pairs with voice-over-ytube-duck.conf to form
+    """The reverse ducker pairs with hapax-voice-over-ytube-duck.conf to form
     the bidirectional matrix. Pin the cross-reference so removing one
     side's documentation triggers the test."""
     text = CONF_PATH.read_text()

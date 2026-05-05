@@ -108,7 +108,7 @@ def load_allowlist(path: Path) -> tuple[set[str], set[str]]:
     The allowlist is a yaml file with the shape:
 
         orphans:
-          - 10-contact-mic.conf
+          - hapax-contact-mic.conf
           - hapax-voice-fx-loudnorm.conf
         known_missing:
           - hapax-tts-loudnorm.conf
