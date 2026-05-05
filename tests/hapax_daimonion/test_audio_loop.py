@@ -11,6 +11,7 @@ Engagement classifier runs on VAD confidence after presence processing.
 from __future__ import annotations
 
 import struct
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -181,6 +182,57 @@ class TestAudioLoopDistribution:
         # Buffer always receives update_vad (once per VAD chunk)
         assert daemon._conversation_buffer.update_vad.call_count == 2
         daemon._engagement.on_speech_detected.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_operator_vad_publishes_voice_pitch_sample(self):
+        """Operator VAD chunks publish numeric voice-pitch calibration samples."""
+        daemon = _make_daemon()
+        daemon.presence._latest_vad_confidence = 0.5
+        daemon.session.is_active = False
+        frames = _make_flush_frames(3)
+        _wire_audio_input(daemon, frames)
+
+        with patch(
+            "agents.hapax_daimonion.run_loops.publish_operator_voice_pitch_sample"
+        ) as publish:
+            await daemon._audio_loop()
+
+        publish.assert_called()
+        assert publish.call_args.kwargs["sample_rate_hz"] == 16000
+
+    @pytest.mark.asyncio
+    async def test_guest_vad_does_not_publish_voice_pitch_sample(self):
+        """Active non-operator session speech must not train operator pitch."""
+        daemon = _make_daemon()
+        daemon.presence._latest_vad_confidence = 0.5
+        daemon.session.is_active = True
+        daemon.session.speaker = "guest"
+        frames = _make_flush_frames(3)
+        _wire_audio_input(daemon, frames)
+
+        with patch(
+            "agents.hapax_daimonion.run_loops.publish_operator_voice_pitch_sample"
+        ) as publish:
+            await daemon._audio_loop()
+
+        publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_consent_guest_phase_does_not_publish_voice_pitch_sample(self):
+        """Guest-present consent posture suppresses operator pitch learning."""
+        daemon = _make_daemon()
+        daemon.presence._latest_vad_confidence = 0.5
+        daemon.session.is_active = False
+        daemon.consent_tracker = SimpleNamespace(phase=SimpleNamespace(value="guest_detected"))
+        frames = _make_flush_frames(3)
+        _wire_audio_input(daemon, frames)
+
+        with patch(
+            "agents.hapax_daimonion.run_loops.publish_operator_voice_pitch_sample"
+        ) as publish:
+            await daemon._audio_loop()
+
+        publish.assert_not_called()
 
 
 # --- Error handling ---

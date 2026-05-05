@@ -44,6 +44,7 @@ DEVICE_NAMES: dict[str, str] = {"pw4": "pixel_watch_4", "pixel10": "pixel_10"}
 _WINDOW_MAX_AGE_S = 3600
 _hr_window: deque[tuple[float, float]] = deque()  # (epoch, bpm)
 _hrv_window: deque[tuple[float, float]] = deque()  # (epoch, rmssd_ms)
+_respiration_window: deque[tuple[float, float]] = deque()  # (epoch, breaths/min)
 _window_lock = threading.Lock()
 
 
@@ -67,6 +68,7 @@ class SensorReading(BaseModel):
     temp_c: float | None = Field(default=None, ge=20, le=45)
     state: str | None = None
     value: float | None = None
+    breaths_per_min: float | None = Field(default=None, ge=0, le=80)
 
 
 class SensorPayload(BaseModel):
@@ -217,6 +219,28 @@ def _handle_hrv(reading: SensorReading, now: float, source: str = "pixel_watch_4
     )
 
 
+def _handle_respiration(reading: SensorReading, now: float, source: str = "pixel_watch_4") -> None:
+    """Process respiration-rate reading."""
+    breaths_per_min = (
+        reading.breaths_per_min if reading.breaths_per_min is not None else reading.value
+    )
+    if breaths_per_min is None:
+        return
+    with _window_lock:
+        _prune_window(_respiration_window, now)
+        _respiration_window.append((now, breaths_per_min))
+        stats = _window_stats(_respiration_window)
+    _atomic_write(
+        _get_watch_state_dir() / "respiration.json",
+        {
+            "source": source,
+            "updated_at": datetime.now(UTC).isoformat(),
+            "current": {"breaths_per_min": breaths_per_min},
+            "window_1h": stats,
+        },
+    )
+
+
 def _handle_eda(reading: SensorReading, source: str = "pixel_watch_4") -> None:
     """Process EDA reading."""
     _atomic_write(
@@ -259,6 +283,8 @@ def _handle_activity(reading: SensorReading, source: str = "pixel_watch_4") -> N
 _HANDLERS: dict[str, object] = {
     "heart_rate": lambda r, now, src: _handle_heart_rate(r, now, src),
     "hrv": lambda r, now, src: _handle_hrv(r, now, src),
+    "respiration": lambda r, now, src: _handle_respiration(r, now, src),
+    "respiration_rate": lambda r, now, src: _handle_respiration(r, now, src),
     "eda": lambda r, now, src: _handle_eda(r, src),
     "skin_temp": lambda r, now, src: _handle_skin_temp(r, src),
     "activity": lambda r, now, src: _handle_activity(r, src),

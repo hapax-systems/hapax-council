@@ -6,7 +6,7 @@ Self-contained, asyncio_mode="auto", unittest.mock only.
 from __future__ import annotations
 
 from datetime import datetime
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -1060,9 +1060,9 @@ class TestMoodArousalObservation:
 class TestLogosMoodValenceBridge:
     """Mood-valence bridge: all 4 health/voice signal accessors.
 
-    Part 1 ships the protocol-matching surface with all accessors
-    returning ``None``. Per-signal threshold wiring lands in subsequent
-    PRs (Part 2-5) — same additive pattern alpha used in #1392.
+    Missing/stale sources return ``None`` so the engine skips those
+    signals. Calibrated live sources are covered in the dedicated mood
+    bridge calibration tests.
     """
 
     def test_hrv_below_baseline_returns_none(self):
@@ -1078,7 +1078,8 @@ class TestLogosMoodValenceBridge:
     def test_sleep_debt_high_returns_none(self):
         from logos.api.app import LogosMoodValenceBridge
 
-        assert LogosMoodValenceBridge().sleep_debt_high() is None
+        with patch("pathlib.Path.read_text", side_effect=FileNotFoundError):
+            assert LogosMoodValenceBridge().sleep_debt_high() is None
 
     def test_voice_pitch_elevated_returns_none(self):
         from logos.api.app import LogosMoodValenceBridge
@@ -1091,13 +1092,14 @@ class TestLogosMoodValenceBridge:
 
 class TestMoodValenceObservation:
     def test_returns_four_signal_dict_with_none_values(self):
-        """Default scaffolding bridge returns all-None observation dict."""
+        """Missing source files return all-None observation dict."""
         from agents.hapax_daimonion.backends.mood_valence_observation import (
             mood_valence_observation,
         )
         from logos.api.app import LogosMoodValenceBridge
 
-        obs = mood_valence_observation(LogosMoodValenceBridge())
+        with patch("pathlib.Path.read_text", side_effect=FileNotFoundError):
+            obs = mood_valence_observation(LogosMoodValenceBridge())
         assert obs == {
             "hrv_below_baseline": None,
             "skin_temp_drop": None,
@@ -1156,9 +1158,9 @@ class TestMoodValenceObservation:
 class TestLogosMoodCoherenceBridge:
     """Mood-coherence bridge: all 4 health-volatility signal accessors.
 
-    Part 1 ships the protocol-matching surface with all accessors
-    returning ``None``. Per-signal threshold wiring lands in subsequent
-    PRs (Part 2-5) — same additive pattern alpha used in #1392 / #1399.
+    Missing/stale sources return ``None`` so the engine skips those
+    signals. Calibrated live sources are covered in the dedicated mood
+    bridge calibration tests.
     """
 
     def test_hrv_variability_high_returns_none(self):
@@ -1174,7 +1176,8 @@ class TestLogosMoodCoherenceBridge:
     def test_movement_jitter_high_returns_none(self):
         from logos.api.app import LogosMoodCoherenceBridge
 
-        assert LogosMoodCoherenceBridge().movement_jitter_high() is None
+        with patch("pathlib.Path.read_text", side_effect=FileNotFoundError):
+            assert LogosMoodCoherenceBridge().movement_jitter_high() is None
 
     def test_skin_temp_volatility_high_returns_none(self):
         from logos.api.app import LogosMoodCoherenceBridge
@@ -1187,13 +1190,14 @@ class TestLogosMoodCoherenceBridge:
 
 class TestMoodCoherenceObservation:
     def test_returns_four_signal_dict_with_none_values(self):
-        """Default scaffolding bridge returns all-None observation dict."""
+        """Missing source files return all-None observation dict."""
         from agents.hapax_daimonion.backends.mood_coherence_observation import (
             mood_coherence_observation,
         )
         from logos.api.app import LogosMoodCoherenceBridge
 
-        obs = mood_coherence_observation(LogosMoodCoherenceBridge())
+        with patch("pathlib.Path.read_text", side_effect=FileNotFoundError):
+            obs = mood_coherence_observation(LogosMoodCoherenceBridge())
         assert obs == {
             "hrv_variability_high": None,
             "respiration_irregular": None,
