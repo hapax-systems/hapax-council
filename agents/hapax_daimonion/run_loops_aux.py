@@ -232,6 +232,10 @@ _COMPOSITIONAL_PREFIXES: tuple[str, ...] = (
     "attention.refocus.",
     "node.add.",
     "node.remove.",
+    "node.compose.",
+    "node.fork.",
+    "node.merge.",
+    "node.route.",
 )
 
 
