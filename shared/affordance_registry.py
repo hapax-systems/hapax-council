@@ -373,6 +373,24 @@ STUDIO_AFFORDANCES = [
             consent_required=False,
         ),
     ),
+    # Cc-task ``activity-reveal-ward-p5-polyend-variant`` (2026-05-05):
+    # Polyend-class USB instrument reveal. Unlike the M8 LCD path there
+    # is no display protocol; the ward renders aggregate UAC waveform
+    # and MIDI note-grid activity only, gated by USB presence, audio
+    # energy, and recent recruitment.
+    CapabilityRecord(
+        name="ward.reveal.polyend-instrument",
+        description=(
+            "Reveal aggregate Polyend USB instrument audio and MIDI activity "
+            "in the broadcast composite when the instrument is recruited"
+        ),
+        daemon="compositor",
+        operational=_public_operational(
+            latency_class="fast",
+            medium="visual",
+            consent_required=False,
+        ),
+    ),
     # cc-task m8-remote-button-control-daemon. Hardware-actuation
     # affordance (buttons, keyjazz, theme, display reset). No PII —
     # button presses don't carry operator-identifying data — so
