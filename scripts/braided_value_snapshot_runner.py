@@ -23,6 +23,20 @@ from typing import Any
 
 import yaml
 
+from shared.braid_v2_config import (
+    BRAID_V2_BETA,
+    BRAID_V2_FORCING_GATE_THRESHOLD,
+    BRAID_V2_MAX_PUBLIC_CLAIM_ORDER,
+    BRAID_V2_RHO,
+    BRAID_V2_STRAIN_GATE_THRESHOLD,
+    BRAID_V2_W_ENGAGEMENT,
+    BRAID_V2_W_FORCING,
+    BRAID_V2_W_MONETARY,
+    BRAID_V2_W_POLYSEMIC,
+    BRAID_V2_W_RESEARCH,
+    BRAID_V2_W_TREE_EFFECT,
+    BRAID_V2_W_UNBLOCK,
+)
 from shared.github_publication_log import classify_publication_log_payload
 
 DEFAULT_TASK_ROOT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
@@ -103,6 +117,18 @@ class BraidVector:
     funnel_role: str | None = None
     compounding_curve: str | None = None
     axiomatic_strain: float | None = None
+    # v2.0 optional dimensions and gate flags.
+    # Witness-derived in production; for the spike, operator-set or
+    # test-fixture populated. None / default values mean "do not gate":
+    # ``deny_wins`` defaults False; ``mode_ceiling`` /
+    # ``max_public_claim`` / ``target_deposit_tier`` default None
+    # (no comparison made); ``witness_freshness`` defaults 1.0.
+    deny_wins: bool = False
+    mode_ceiling: str | None = None
+    max_public_claim: str | None = None
+    target_deposit_tier: str | None = None
+    grounding_class: str | None = None
+    witness_freshness: float = 1.0
 
     @property
     def complete(self) -> bool:
@@ -122,11 +148,22 @@ class BraidVector:
         """True when the braid_schema discriminator selects v1.1.
 
         Per the schema contract in ``cc-readme.md`` braid-overlay section,
-        only ``braid_schema: 1.1`` selects the new formula. Anything else
-        (``1``, missing, parse error) routes to v1 unchanged.
+        only ``braid_schema: 1.1`` selects the v1.1 formula. Anything else
+        (``1``, ``2``, missing, parse error) does NOT route here.
         """
 
         return self.schema == "1.1"
+
+    @property
+    def is_v2(self) -> bool:
+        """True when the braid_schema discriminator selects v2.0.
+
+        Per the v2.0 design spec, ``braid_schema: 2`` (or ``2.0``) selects
+        the 5-layer composition pipeline. Anything else (``1``, ``1.1``,
+        missing, parse error) routes to its own formula.
+        """
+
+        return self.schema == "2"
 
     def as_dict(self) -> JsonDict:
         return {
@@ -146,6 +183,12 @@ class BraidVector:
             "funnel_role": self.funnel_role,
             "compounding_curve": self.compounding_curve,
             "axiomatic_strain": self.axiomatic_strain,
+            "deny_wins": self.deny_wins,
+            "mode_ceiling": self.mode_ceiling,
+            "max_public_claim": self.max_public_claim,
+            "target_deposit_tier": self.target_deposit_tier,
+            "grounding_class": self.grounding_class,
+            "witness_freshness": self.witness_freshness,
         }
 
 
@@ -339,11 +382,12 @@ _FORCING_WINDOW_RE: re.Pattern[str] = re.compile(
 
 
 def _normalize_schema(value: Any) -> str:
-    """Canonicalise braid_schema into '1' or '1.1'.
+    """Canonicalise braid_schema into '1', '1.1', or '2'.
 
-    YAML may produce numeric (1, 1.1), string ('1', '1.1'), or absent —
-    all collapse to a string discriminator. Anything else (parse error,
-    unknown version) routes to v1 to preserve backward compatibility.
+    YAML may produce numeric (1, 1.1, 2, 2.0), string ('1', '1.1', '2',
+    '2.0'), or absent — all collapse to a string discriminator. Anything
+    else (parse error, unknown version) routes to v1 to preserve
+    backward compatibility.
     """
 
     if value is None:
@@ -351,14 +395,22 @@ def _normalize_schema(value: Any) -> str:
     if isinstance(value, bool):
         return "1"
     if isinstance(value, int):
-        return "1" if value == 1 else "1"
+        if value == 2:
+            return "2"
+        return "1"
     if isinstance(value, float):
-        return "1.1" if abs(value - 1.1) < 1e-6 else "1"
+        if abs(value - 1.1) < 1e-6:
+            return "1.1"
+        if abs(value - 2.0) < 1e-6:
+            return "2"
+        return "1"
     text = str(value).strip()
     if text in {"1", "1.0"}:
         return "1"
     if text == "1.1":
         return "1.1"
+    if text in {"2", "2.0"}:
+        return "2"
     return "1"
 
 
@@ -451,8 +503,28 @@ def compute_forcing_function_urgency(
     return 2.0
 
 
+def _parse_string_enum(value: Any, allowed: tuple[str, ...]) -> str | None:
+    """Validate ``value`` against an allowed string enum tuple.
+
+    Used for v2.0 ``mode_ceiling``, ``max_public_claim``,
+    ``target_deposit_tier`` fields where unknown values must not enter
+    the gate computation.
+    """
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text in allowed:
+        return text
+    return None
+
+
 def braid_vector_from_frontmatter(frontmatter: JsonDict) -> BraidVector:
     schema = _normalize_schema(frontmatter.get("braid_schema"))
+    raw_freshness = as_float(frontmatter.get("braid_witness_freshness"))
+    witness_freshness = 1.0 if raw_freshness is None else max(0.0, min(raw_freshness, 1.0))
     return BraidVector(
         engagement=as_float(frontmatter.get("braid_engagement")),
         monetary=as_float(frontmatter.get("braid_monetary")),
@@ -480,6 +552,24 @@ def braid_vector_from_frontmatter(frontmatter: JsonDict) -> BraidVector:
             else None
         ),
         axiomatic_strain=as_float(frontmatter.get("braid_axiomatic_strain")),
+        deny_wins=bool(frontmatter.get("braid_deny_wins", False)),
+        mode_ceiling=_parse_string_enum(
+            frontmatter.get("braid_mode_ceiling"),
+            ("private", "dry_run", "public_archive", "public_live", "public_monetizable"),
+        ),
+        max_public_claim=_parse_string_enum(
+            frontmatter.get("braid_max_public_claim"),
+            BRAID_V2_MAX_PUBLIC_CLAIM_ORDER,
+        ),
+        target_deposit_tier=_parse_string_enum(
+            frontmatter.get("braid_target_deposit_tier"),
+            BRAID_V2_MAX_PUBLIC_CLAIM_ORDER,
+        ),
+        grounding_class=_parse_string_enum(
+            frontmatter.get("braid_grounding_class"),
+            ("grounding-act", "delegable-work"),
+        ),
+        witness_freshness=witness_freshness,
     )
 
 
@@ -533,20 +623,173 @@ def _recompute_v11(vector: BraidVector, *, now: datetime | None = None) -> float
     )
 
 
+def _ces_aggregate(values: list[float], weights: list[float], rho: float) -> float:
+    """Constant Elasticity of Substitution aggregator.
+
+    Per spec §3.2: ``core = (Σ w_i · x_i^ρ)^(1/ρ)``. Three limit cases:
+        ρ → -∞   reproduces ``min`` (Leontief, perfect complements)
+        ρ = 0    reproduces Cobb-Douglas via L'Hopital limit
+        ρ = 1    reproduces weighted average (perfect substitutes)
+
+    Defensive against zero-valued inputs under negative rho: if any
+    value <= 0 and rho < 0, returns 0 (matches the Leontief limit's
+    treatment of "any zero zeroes the aggregate"). The spec's intent
+    for rho = -2 is "we want all three reasonable" — a literal zero
+    trips this gate.
+    """
+
+    if not values or not weights or len(values) != len(weights):
+        raise ValueError("CES aggregate requires matched values/weights")
+    if math.isinf(rho) and rho < 0:
+        return min(values)
+    if rho < 0 and any(v <= 0 for v in values):
+        return 0.0
+    if rho == 0:
+        if any(v <= 0 for v in values):
+            return 0.0
+        return math.exp(sum(w * math.log(v) for w, v in zip(weights, values, strict=True)))
+    inner = sum(w * (v**rho) for w, v in zip(weights, values, strict=True))
+    if inner <= 0:
+        return 0.0
+    return inner ** (1.0 / rho)
+
+
+def _compute_v2_layer_1_gate(
+    vector: BraidVector,
+    *,
+    forcing_urgency: float,
+) -> str | None:
+    """Evaluate v2 Layer 1 lexicographic gates per spec §3.1.
+
+    Returns a gate-cause string if any hard-cut gate fires; returns
+    ``None`` when the score path is clear. The score-recompute path
+    short-circuits to ``None`` (sentinel for GATED) on any firing
+    cause.
+
+    Mode-ceiling violation criterion (spec §2.6): public-tier ceiling
+    with ``axiomatic_strain >= 1`` OR with stale consent. The spike
+    encodes only the strain-coupled half — the consent-staleness half
+    is a Phase A witness-wiring concern out of scope for the formula
+    spike.
+
+    max_public_claim mismatch (spec §2.6): the artifact's claim must
+    dominate (be >= ladder index of) its declared deposit target.
+    """
+
+    if vector.deny_wins:
+        return "deny_wins"
+
+    strain = vector.axiomatic_strain or 0.0
+    if strain >= BRAID_V2_STRAIN_GATE_THRESHOLD:
+        return "strain_gate"
+
+    if forcing_urgency >= BRAID_V2_FORCING_GATE_THRESHOLD:
+        return "forcing_zero_deadline"
+
+    ceiling = vector.mode_ceiling
+    if ceiling and ceiling.startswith("public") and strain >= 1.0:
+        return "mode_ceiling_strain"
+
+    claim = vector.max_public_claim
+    target = vector.target_deposit_tier
+    if claim and target:
+        try:
+            claim_idx = BRAID_V2_MAX_PUBLIC_CLAIM_ORDER.index(claim)
+            target_idx = BRAID_V2_MAX_PUBLIC_CLAIM_ORDER.index(target)
+        except ValueError:
+            return None
+        if claim_idx < target_idx:
+            return "max_public_claim_below_target"
+
+    return None
+
+
+def _recompute_v2(
+    vector: BraidVector,
+    *,
+    now: datetime | None = None,
+    rho: float = BRAID_V2_RHO,
+    beta: float = BRAID_V2_BETA,
+) -> float | None:
+    """Compute v2.0 score per spec §3 (5-layer composition).
+
+    Returns ``None`` when any Layer 1 gate fires. Returns a
+    floating-point score otherwise. Caller responsibility to interpret
+    the ``None`` sentinel — the dashboard surfaces it as
+    ``GATED:<cause>`` rather than as a low priority.
+
+    Layers, in order:
+      1. Lexicographic gates → None
+      2. CES core over (E, M, R)
+      3. Additive bonuses (T, U/1.5, |channels|^β, forcing_urgency)
+      4. Subtractive penalties (P, strain ∈ {0,1,2})
+      5. Multiplicative envelope (C/10) × witness_freshness
+    """
+
+    engagement = float(vector.engagement)
+    monetary = float(vector.monetary)
+    research = float(vector.research)
+    tree_effect = float(vector.tree_effect)
+    evidence_confidence = float(vector.evidence_confidence)
+
+    unblock = vector.unblock_breadth or 0.0
+    channels = vector.polysemic_channels or ()
+    urgency = compute_forcing_function_urgency(vector.forcing_function_window, now=now)
+    strain = vector.axiomatic_strain or 0.0
+
+    gate_cause = _compute_v2_layer_1_gate(vector, forcing_urgency=urgency)
+    if gate_cause is not None:
+        return None
+
+    core = _ces_aggregate(
+        values=[engagement, monetary, research],
+        weights=[
+            BRAID_V2_W_ENGAGEMENT,
+            BRAID_V2_W_MONETARY,
+            BRAID_V2_W_RESEARCH,
+        ],
+        rho=rho,
+    )
+
+    polysemic_count = float(len(channels))
+    polysemic_term = polysemic_count**beta if polysemic_count > 0 else 0.0
+    bonuses = (
+        BRAID_V2_W_TREE_EFFECT * tree_effect
+        + BRAID_V2_W_UNBLOCK * (unblock / 1.5)
+        + BRAID_V2_W_POLYSEMIC * polysemic_term
+        + BRAID_V2_W_FORCING * urgency
+    )
+
+    penalties = vector.risk_penalty + max(0.0, min(strain, 2.0))
+
+    raw_score = core + bonuses - penalties
+
+    c_envelope = max(0.0, min(evidence_confidence / 10.0, 1.0))
+    freshness = max(0.0, min(vector.witness_freshness, 1.0))
+    return raw_score * c_envelope * freshness
+
+
 def recompute_braid_score(vector: BraidVector, *, now: datetime | None = None) -> float | None:
     """Compute the braid score, dispatching by schema discriminator.
 
     v1 tasks (``braid_schema: 1`` or missing) use the original 5-term
-    formula. v1.1 tasks use the rebalanced 9-term formula with the three
-    new positive terms and the subtractive axiomatic_strain.
+    formula. v1.1 tasks use the rebalanced 9-term formula with the
+    three new positive terms and the subtractive axiomatic_strain.
+    v2 tasks use the 5-layer composition (CES core + additive bonuses
+    + subtractive penalties + confidence/witness multipliers, with
+    Layer 1 lexicographic gates short-circuiting to None).
 
-    Returns ``None`` when the base 5 dimensions aren't fully populated;
-    incomplete v1.1 fields (e.g., a v1.1 task with no
-    ``unblock_breadth``) default to 0 so backward compatibility holds.
+    Returns ``None`` when the base 5 dimensions aren't fully populated,
+    or when a v2 Layer 1 gate fires (deny_wins, strain >= 3,
+    forcing-zero deadline, mode_ceiling violation, max_public_claim
+    mismatch).
     """
 
     if not vector.complete:
         return None
+    if vector.is_v2:
+        result = _recompute_v2(vector, now=now)
+        return None if result is None else round(result, 2)
     if vector.is_v11:
         return round(_recompute_v11(vector, now=now), 2)
     return round(_recompute_v1(vector), 2)
@@ -1806,6 +2049,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--verify-auto-gtm-predictions-v2",
+        action="store_true",
+        help=(
+            "Verify the seven Auto-GTM cc-tasks compute braid v2.0 scores "
+            "within +/- 0.1 of the formula-derived spec table. Exits "
+            "non-zero on drift OR when a task's braid_schema is not '2'. "
+            "Implies --no-write."
+        ),
+    )
+    parser.add_argument(
         "--predictions-tolerance",
         type=float,
         default=0.1,
@@ -1851,6 +2104,38 @@ SPEC_AUTO_GTM_PREDICTIONS: dict[str, float] = {
 #
 # Source of truth: docs/superpowers/specs/2026-05-01-braid-schema-v11-design.md
 # §V1 stability and carveout.
+# Predicted v2.0 re-ranking for the seven Auto-GTM batch tasks. Per the
+# v1.1 reconcile precedent (cc-task
+# `braid-v11-spec-doc-and-prediction-reconcile`), the spec §3.6 worked
+# examples in
+# `docs/superpowers/specs/2026-05-04-braid-v2-and-wsjf-expansion-design.md`
+# are illustrative — formula-derived values are canonical. These values
+# were computed by running the v2 formula (ρ=-2.0, β=1.3, default weights,
+# witness_freshness=1.0) over each task's frontmatter dimensions at the
+# same NOW reference (2026-05-01T15:10Z) used for SPEC_AUTO_GTM_PREDICTIONS.
+#
+# Verifier sub-cases per task:
+#   - ``braid_schema`` must equal ``'2'`` — fails otherwise.
+#   - All five base dimensions populated.
+#   - No Layer 1 gate fires (deny_wins, strain >= 3, deadline-zero,
+#     mode_ceiling/max_public_claim violation).
+#   - Computed score within ±0.1 of the formula-derived value below.
+#
+# Until vault tasks migrate to ``braid_schema: 2``, this verifier exits
+# non-zero with informative per-task FAIL lines. That is the spike's
+# intended behavior — the formula ships in this PR; vault migration is
+# Phase E proper.
+SPEC_AUTO_GTM_PREDICTIONS_V2: dict[str, float] = {
+    "wyoming-llc-dba-legal-entity-bootstrap": 6.97,
+    "citable-nexus-front-door-static-site": 7.87,
+    "publication-bus-monetization-rails-surfaces": 6.31,
+    "immediate-q2-2026-grant-submission-batch": 5.95,
+    "refusal-brief-article-50-case-study": 8.83,
+    "eu-ai-act-art-50-c2pa-watermark-fingerprint-mvp": 6.04,
+    "auto-clip-shorts-livestream-pipeline": 5.38,
+}
+
+
 BRAID_V1_STABILITY_CARVEOUT: frozenset[str] = frozenset(
     {
         "gcp-youtube-quota-extension-runner",
@@ -1938,6 +2223,67 @@ def _verify_auto_gtm_predictions(
     return (1 if failures > 0 else 0), lines
 
 
+def _verify_auto_gtm_predictions_v2(
+    *, task_root: Path, now: datetime, tolerance: float = 0.1
+) -> tuple[int, list[str]]:
+    """Compare each Auto-GTM task's runner-computed v2.0 score to the formula-derived table.
+
+    Mirrors ``_verify_auto_gtm_predictions`` (v1.1) but routes to v2.
+    Per the v1.1 reconcile precedent, the spec table values are
+    illustrative — the formula is canonical and predictions are
+    formula-derived at NOW = 2026-05-01T15:10Z.
+
+    Returns ``(exit_code, lines)``. ``exit_code == 0`` only when every
+    task is on ``braid_schema: 2`` AND its computed score matches the
+    table within ``tolerance``. Per the spike's stated behavior, this
+    will exit non-zero until vault tasks migrate to schema=2 in Phase E
+    proper — the FAIL lines clearly identify which migration step is
+    missing.
+    """
+
+    notes_by_id: dict[str, TaskNote] = {}
+    for note in load_task_notes(task_root):
+        notes_by_id[note.task_id] = note
+    closed_root = task_root / "closed"
+    if closed_root.exists():
+        for note in load_task_notes(closed_root):
+            notes_by_id.setdefault(note.task_id, note)
+
+    lines: list[str] = []
+    failures = 0
+    for task_id, predicted in SPEC_AUTO_GTM_PREDICTIONS_V2.items():
+        note = notes_by_id.get(task_id)
+        if note is None:
+            lines.append(f"FAIL {task_id}: task not found in vault")
+            failures += 1
+            continue
+        vector = braid_vector_from_frontmatter(note.frontmatter)
+        if not vector.is_v2:
+            lines.append(f"FAIL {task_id}: braid_schema is {vector.schema!r}, expected '2'")
+            failures += 1
+            continue
+        computed = recompute_braid_score(vector, now=now)
+        if computed is None:
+            lines.append(
+                f"FAIL {task_id}: score is None (incomplete dimensions or Layer 1 gate fired)"
+            )
+            failures += 1
+            continue
+        delta = computed - predicted
+        if abs(delta) > tolerance:
+            lines.append(
+                f"FAIL {task_id}: computed={computed:.2f} predicted={predicted:.2f} "
+                f"delta={delta:+.2f} (tolerance +/-{tolerance})"
+            )
+            failures += 1
+        else:
+            lines.append(
+                f"OK   {task_id}: computed={computed:.2f} predicted={predicted:.2f} "
+                f"delta={delta:+.2f}"
+            )
+    return (1 if failures > 0 else 0), lines
+
+
 def _verify_v1_stability(*, task_root: Path, tolerance: float = 0.1) -> tuple[int, list[str]]:
     """Verify v1 tasks compute identically to their declared braid_score.
 
@@ -2003,6 +2349,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.verify_v1_stability:
         exit_code, lines = _verify_v1_stability(
             task_root=args.task_root, tolerance=args.predictions_tolerance
+        )
+        for line in lines:
+            print(line)
+        return exit_code
+    if args.verify_auto_gtm_predictions_v2:
+        exit_code, lines = _verify_auto_gtm_predictions_v2(
+            task_root=args.task_root, now=now, tolerance=args.predictions_tolerance
         )
         for line in lines:
             print(line)
