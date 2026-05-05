@@ -43,6 +43,7 @@ the module list) to `~/.config/waybar/config.jsonc`.
 | `hapax-waybar-stream` | `state.json:.stream` | 1s | `awareness-waybar-stream` |
 | `hapax-waybar-oudepode` | `state.json:.music_soundcloud` | 30s | `awareness-waybar-oudepode` |
 | `hapax-waybar-operational-alerts` | `state.json:.mail` | 30s | `mail-monitor-operational-awareness-phase-2` |
+| `hapax-waybar-pipewire-graph` | `~/hapax-state/pipewire-graph/egress-health.jsonl` | 5s | `audio-graph-ssot-p2-daemon-shadow` |
 
 State-derived modules treat `mtime > 90s` on `state.json` as stale and
 emit `class:"stale"` rather than dummy zeroes — so the bar visibly
@@ -76,3 +77,19 @@ or wherever ambient ops state belongs in the bar layout).
     color: @text-emphasis;
 }
 ```
+
+## waybar config snippet — pipewire-graph
+
+```jsonc
+"custom/pipewire-graph": {
+    "exec": "hapax-waybar-pipewire-graph",
+    "interval": 5,
+    "return-type": "json",
+    "format": "{}",
+    "tooltip": true
+}
+```
+
+Classes are `green`, `yellow`, `red`, and `stale`. The module is a
+shadow-mode indicator only; it does not mutate the graph or expose click
+handlers.
