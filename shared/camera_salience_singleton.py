@@ -82,6 +82,9 @@ class _BrokerSingleton:
         self._observations: list[CameraObservationEnvelope] = []
         self._obs_lock = threading.Lock()
         self._max_window = 500  # rolling window size
+        self._outcomes: list[dict[str, Any]] = []
+        self._outcome_lock = threading.Lock()
+        self._max_outcomes = 500  # bounded calibration evidence window
 
     def ingest(self, envelope: CameraObservationEnvelope | None) -> None:
         """Ingest a producer envelope into the rolling window.
@@ -145,10 +148,110 @@ class _BrokerSingleton:
             log.debug("camera salience query unexpected error", exc_info=True)
             return None
 
+    def record_outcome(self, query_id: str, observed_outcome: object) -> bool:
+        """Record bounded outcome evidence for a prior salience query.
+
+        Returns ``True`` when an outcome entered the calibration window.
+        Invalid query ids or malformed outcomes fail closed and return
+        ``False``; callers must treat this as observability loss only.
+        """
+        record = _normalize_outcome_record(query_id, observed_outcome)
+        if record is None:
+            return False
+        with self._outcome_lock:
+            self._outcomes.append(record)
+            if len(self._outcomes) > self._max_outcomes:
+                self._outcomes = self._outcomes[-self._max_outcomes :]
+        return True
+
     @property
     def observation_count(self) -> int:
         with self._obs_lock:
             return len(self._observations)
+
+
+_OUTCOME_STATUS_ALIASES = {
+    "success": "success",
+    "failure": "failure",
+    "failed": "failure",
+    "neutral": "neutral_defer",
+    "neutral_defer": "neutral_defer",
+    "blocked": "blocked",
+    "refused": "refused",
+    "stale": "stale",
+    "missing": "missing",
+    "inferred": "inferred",
+    "public_event_accepted": "public_event_accepted",
+}
+
+
+def _normalize_outcome_record(query_id: str, observed_outcome: object) -> dict[str, Any] | None:
+    if not isinstance(query_id, str) or not query_id.startswith("camera-salience-query:"):
+        return None
+    try:
+        status, metadata = _coerce_observed_outcome(observed_outcome)
+    except Exception:
+        log.debug("camera salience outcome normalization failed", exc_info=True)
+        return None
+    if status is None:
+        return None
+    return {
+        "query_id": query_id,
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "observed_outcome": status,
+        "success": status == "success",
+        **metadata,
+    }
+
+
+def _coerce_observed_outcome(observed_outcome: object) -> tuple[str | None, dict[str, Any]]:
+    metadata: dict[str, Any] = {}
+    if isinstance(observed_outcome, bool):
+        return ("success" if observed_outcome else "failure"), metadata
+    if isinstance(observed_outcome, str):
+        return _status_from_string(observed_outcome), metadata
+    if isinstance(observed_outcome, dict):
+        metadata = {
+            key: observed_outcome[key]
+            for key in ("capability_name", "outcome_id", "source")
+            if isinstance(observed_outcome.get(key), str)
+        }
+        witness_refs = observed_outcome.get("witness_refs")
+        if isinstance(witness_refs, (list, tuple)):
+            metadata["witness_refs"] = [str(ref) for ref in witness_refs]
+        success = observed_outcome.get("success")
+        if isinstance(success, bool):
+            return ("success" if success else "failure"), metadata
+        for key in ("observed_outcome", "outcome_status", "status", "kind"):
+            status = _status_from_string(observed_outcome.get(key))
+            if status is not None:
+                return status, metadata
+        return None, metadata
+
+    capability_name = getattr(observed_outcome, "capability_name", None)
+    if isinstance(capability_name, str):
+        metadata["capability_name"] = capability_name
+    outcome_id = getattr(observed_outcome, "outcome_id", None)
+    if isinstance(outcome_id, str):
+        metadata["outcome_id"] = outcome_id
+    witness_refs = getattr(observed_outcome, "witness_refs", None)
+    if isinstance(witness_refs, (list, tuple)):
+        metadata["witness_refs"] = [str(ref) for ref in witness_refs]
+
+    status_obj = getattr(observed_outcome, "outcome_status", None)
+    status = _status_from_string(getattr(status_obj, "value", status_obj))
+    if status is not None:
+        return status, metadata
+    success = getattr(observed_outcome, "success", None)
+    if isinstance(success, bool):
+        return ("success" if success else "failure"), metadata
+    return None, metadata
+
+
+def _status_from_string(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return _OUTCOME_STATUS_ALIASES.get(value.strip().lower())
 
 
 def broker() -> _BrokerSingleton:
