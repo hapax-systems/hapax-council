@@ -2510,3 +2510,12 @@ from agents.art_50_provenance.webhook import MemoryIdempotencyStore as _Art50Ide
 _Art50CredentialRequest._no_obvious_pii
 _Art50CredentialRequest._domain_shape
 _Art50IdempotencyStore.accept_once
+
+# cc-task ``auto-clip-shorts-llm-segment-detection`` (2026-05-05).
+# SegmentCandidate.{end_after_start, dedupe_channels} are pydantic
+# field_validator hooks invoked at construction time by pydantic-core,
+# not by direct call sites; vulture cannot see the dispatch.
+from agents.auto_clip.segment_detection import SegmentCandidate as _AutoClipSegmentCandidate
+
+_AutoClipSegmentCandidate._end_after_start
+_AutoClipSegmentCandidate._dedupe_channels
