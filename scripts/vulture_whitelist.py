@@ -2465,3 +2465,14 @@ OmgLolPayPublisher.requires_legal_name
 OmgLolPayPublisher._emit
 PaymentEvent.model_config
 PaymentEvent._handle_is_address_only
+
+# cc-task ``audio-graph-ssot-p2-daemon-shadow`` (2026-05-05):
+# SafeMuteRail.engage/disengage are the active-mode API promised by the
+# audio graph SSOT spec, but the P2 daemon must not call them because it
+# is observe-only and must never mutate the live graph. Tests assert the
+# P2 implementations are no-op placeholders until the P4/P5 enforcement
+# tasks wire the real active rail.
+from agents.pipewire_graph.safe_mute import SafeMuteRail as _PipewireGraphSafeMuteRail
+
+_PipewireGraphSafeMuteRail.engage
+_PipewireGraphSafeMuteRail.disengage

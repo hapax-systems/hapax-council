@@ -1,0 +1,26 @@
+[Unit]
+Description=Hapax PipeWire graph daemon (shadow mode)
+Documentation=file:///home/hapax/projects/hapax-council/docs/superpowers/specs/2026-05-03-audio-graph-ssot-and-router-daemon-design.md
+# Phase 2 only: dry-run applies into ~/hapax-state/pipewire-graph and
+# observes egress health. It does not load modules, edit PipeWire confs,
+# engage safe-mute, restart services, or mutate the live graph.
+After=pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire.service pipewire-pulse.service wireplumber.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=-%h/.config/hapax/pipewire-graph-shadow.env
+ExecStart=%h/.local/bin/uv run python -m agents.pipewire_graph.daemon
+Restart=on-failure
+RestartSec=5s
+WatchdogSec=60s
+TimeoutStartSec=30s
+TimeoutStopSec=10s
+MemoryMax=512M
+Nice=10
+Slice=app.slice
+
+[Install]
+WantedBy=default.target

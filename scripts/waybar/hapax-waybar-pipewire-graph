@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+#
+# waybar custom/pipewire-graph module.
+#
+# Reads the P2 shadow daemon egress-health JSONL and emits one waybar
+# JSON payload. This is read-only and intentionally has no click handler.
+
+set -uo pipefail
+
+health="${HAPAX_PIPEWIRE_GRAPH_EGRESS_HEALTH:-$HOME/hapax-state/pipewire-graph/egress-health.jsonl}"
+ttl="${HAPAX_PIPEWIRE_GRAPH_WAYBAR_TTL_S:-10}"
+
+if [[ ! -f "$health" ]]; then
+    echo '{"text":"pw --","tooltip":"pipewire graph shadow health not yet present","class":"stale"}'
+    exit 0
+fi
+
+mtime=$(stat -c %Y "$health" 2>/dev/null || echo 0)
+now=$(date +%s)
+if (( now - mtime > ttl )); then
+    echo '{"text":"pw stale","tooltip":"pipewire graph shadow health stale","class":"stale"}'
+    exit 0
+fi
+
+last=$(tail -n 1 "$health" 2>/dev/null || true)
+if [[ -z "$last" ]]; then
+    echo '{"text":"pw --","tooltip":"pipewire graph shadow health empty","class":"stale"}'
+    exit 0
+fi
+
+read -r mode rms crest zcr amp fmt clip silence err <<<"$(printf '%s\n' "$last" | jq -r '
+    [
+      (.failure_mode // "nominal"),
+      (.rms_dbfs // -120),
+      (.crest_factor // 0),
+      (.zcr // 0),
+      (.amplified_clipping_candidate // false),
+      (.format_artifact_candidate // false),
+      (.clipping_candidate // false),
+      (.silence_candidate // false),
+      (.error // "")
+    ] | @tsv
+' 2>/dev/null || printf 'nominal\t-120\t0\t0\tfalse\tfalse\tfalse\tfalse\tparse-error')"
+
+case "$mode" in
+    clipping-noise)
+        text="pw clip"
+        cls="red"
+        ;;
+    silence)
+        text="pw silence"
+        cls="red"
+        ;;
+    *)
+        if [[ -n "$err" ]]; then
+            text="pw probe"
+            cls="yellow"
+        elif [[ "$clip" == "true" || "$silence" == "true" ]]; then
+            text="pw watch"
+            cls="yellow"
+        else
+            text="pw ok"
+            cls="green"
+        fi
+        ;;
+esac
+
+tooltip=$(printf 'pipewire graph shadow\nmode=%s\nrms=%s dBFS crest=%s zcr=%s\namp=%s format=%s clip=%s silence=%s' \
+    "$mode" "$rms" "$crest" "$zcr" "$amp" "$fmt" "$clip" "$silence" | sed -z 's/\n/\\n/g')
+
+printf '{"text":"%s","tooltip":"%s","class":"%s"}\n' "$text" "$tooltip" "$cls"
