@@ -17,6 +17,10 @@
  *   shm_sink_publish_info()    — write 0xFF system_info to
  *                                /dev/shm/hapax-sources/m8-info.json
  *                                (cockpit: firmware drift surface)
+ *   shm_sink_publish_oscilloscope() — write 0xFC waveform samples to
+ *                                /dev/shm/hapax-sources/m8-osc.bin
+ *                                (audience-scale Cairo ward + zero-latency
+ *                                M8-amplitude perception backend)
  *
  * If USE_SHM_SINK is not defined at build time, all calls are silent
  * no-ops (compiled into the stock m8c binary harmlessly).
@@ -27,6 +31,7 @@
  *   /dev/shm/hapax-sources/m8-display.rgba.json  — sidecar metadata
  *   /dev/shm/hapax-sources/m8-buttons.json       — operator button state
  *   /dev/shm/hapax-sources/m8-info.json          — M8 hardware + firmware
+ *   /dev/shm/hapax-sources/m8-osc.bin            — oscilloscope waveform ring
  */
 
 #ifndef HAPAX_M8C_SHM_SINK_H
@@ -42,6 +47,9 @@ void shm_sink_publish_info(uint8_t hardware_id,
                            uint8_t minor,
                            uint8_t patch,
                            uint8_t font_mode);
+void shm_sink_publish_oscilloscope(uint8_t color,
+                                   const uint8_t *samples,
+                                   uint16_t sample_count);
 void shm_sink_shutdown(void);
 
 #endif /* HAPAX_M8C_SHM_SINK_H */

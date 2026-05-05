@@ -391,6 +391,29 @@ STUDIO_AFFORDANCES = [
             consent_required=False,
         ),
     ),
+    # cc-task m8-oscilloscope-reactive-surface (2026-05-05). Audience-
+    # scale oscilloscope ward (1280x128 by default) reading the M8's
+    # 0xFC waveform packet via the m8c-hapax carry-fork SHM ring at
+    # /dev/shm/hapax-sources/m8-osc.bin. Distinct from the M8 LCD
+    # reveal — both can coexist on the broadcast. Recruitment is
+    # narrative-first + presence-gated: opacity is driven by the
+    # affordance pipeline, and the ward's render path silently skips
+    # when the ring file is absent / stale (>1 s mtime → fade). No PII
+    # — waveform samples carry only post-mix audio amplitude.
+    CapabilityRecord(
+        name="studio.m8_oscilloscope_ward",
+        description=(
+            "Reveal the Dirtywave M8's oscilloscope waveform as an audience-scale "
+            "tinted line in the broadcast composite when the instrument's audio "
+            "activity is the subject of attention"
+        ),
+        daemon="compositor",
+        operational=_public_operational(
+            latency_class="fast",
+            medium="visual",
+            consent_required=False,
+        ),
+    ),
     # cc-task m8-remote-button-control-daemon. Hardware-actuation
     # affordance (buttons, keyjazz, theme, display reset). No PII —
     # button presses don't carry operator-identifying data — so

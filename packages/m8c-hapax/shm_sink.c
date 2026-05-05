@@ -250,16 +250,111 @@ void shm_sink_publish_info(uint8_t hardware_id,
   write_json_sidecar(SHM_SINK_DEFAULT_DIR "/m8-info.json", body);
 }
 
+/* Oscilloscope ring file layout (binary, little-endian, fixed 484 bytes):
+ *   bytes  0..7   uint64 frame_id    — monotonically increasing per packet
+ *   byte   8      uint8  color       — M8's sender-supplied waveform color
+ *                                      (Hapax-side renderer ignores; ward uses
+ *                                      palette tokens, not M8 color)
+ *   byte   9      uint8  reserved    — pad to 10-byte header
+ *   bytes 10..11  uint16 sample_count (LE) — number of valid sample bytes
+ *                                            in [12 .. 12+sample_count)
+ *   bytes 12..491 uint8[480] samples  — waveform samples, 0..count-1 valid;
+ *                                       remainder is stale (consumer must
+ *                                       respect sample_count).
+ *
+ * Total: 492 bytes. M8 0xFC packet caps at 480 samples; we round the
+ * file to a fixed 492-byte size so consumers can mmap or read(492) without
+ * branching on a variable-length payload. */
+#define SHM_SINK_OSC_PATH SHM_SINK_DEFAULT_DIR "/m8-osc.bin"
+#define SHM_SINK_OSC_TMP_PATH SHM_SINK_DEFAULT_DIR "/m8-osc.bin.tmp"
+#define SHM_SINK_OSC_HEADER_SIZE 12
+#define SHM_SINK_OSC_MAX_SAMPLES 480
+#define SHM_SINK_OSC_FILE_SIZE (SHM_SINK_OSC_HEADER_SIZE + SHM_SINK_OSC_MAX_SAMPLES)
+
+static int osc_fd = -1;
+static uint64_t osc_frame_id;
+static uint8_t osc_buffer[SHM_SINK_OSC_FILE_SIZE];
+
+static void osc_open_lazy(void) {
+  if (osc_fd >= 0) {
+    return;
+  }
+  mkdir(SHM_SINK_DEFAULT_DIR, 0755);
+  osc_fd = open(SHM_SINK_OSC_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (osc_fd < 0) {
+    return;
+  }
+  if (ftruncate(osc_fd, SHM_SINK_OSC_FILE_SIZE) < 0) {
+    /* Non-fatal — pre-sized for first read but write loop below still works. */
+  }
+  osc_frame_id = 0;
+}
+
+void shm_sink_publish_oscilloscope(uint8_t color,
+                                   const uint8_t *samples,
+                                   uint16_t sample_count) {
+  /* M8 0xFC oscilloscope packet — color byte + up to 480 8-bit waveform
+   * samples per packet at the M8's draw rate (~60 Hz). Fixed-size ring
+   * file so the audience-scale Cairo ward + perception amplitude backend
+   * can mmap/read without branching on variable-length payloads.
+   *
+   * Lazy-open avoids creating an empty file on builds where the ward is
+   * never recruited; first 0xFC packet seen triggers init. */
+  osc_open_lazy();
+  if (osc_fd < 0) {
+    return;
+  }
+  if (sample_count > SHM_SINK_OSC_MAX_SAMPLES) {
+    sample_count = SHM_SINK_OSC_MAX_SAMPLES;
+  }
+
+  osc_frame_id++;
+  /* Header (little-endian by repo convention; same as the m8-display
+   * sidecar JSON shape). */
+  for (int i = 0; i < 8; i++) {
+    osc_buffer[i] = (uint8_t)((osc_frame_id >> (i * 8)) & 0xFF);
+  }
+  osc_buffer[8] = color;
+  osc_buffer[9] = 0; /* reserved */
+  osc_buffer[10] = (uint8_t)(sample_count & 0xFF);
+  osc_buffer[11] = (uint8_t)((sample_count >> 8) & 0xFF);
+  if (sample_count > 0 && samples != NULL) {
+    memcpy(&osc_buffer[SHM_SINK_OSC_HEADER_SIZE], samples, sample_count);
+  }
+  /* Zero the unused tail so a consumer that ignores sample_count and
+   * reads the whole buffer does not see stale samples from the previous
+   * frame's longer payload. */
+  if (sample_count < SHM_SINK_OSC_MAX_SAMPLES) {
+    memset(&osc_buffer[SHM_SINK_OSC_HEADER_SIZE + sample_count], 0,
+           SHM_SINK_OSC_MAX_SAMPLES - sample_count);
+  }
+
+  if (lseek(osc_fd, 0, SEEK_SET) < 0) {
+    return;
+  }
+  ssize_t written = write(osc_fd, osc_buffer, SHM_SINK_OSC_FILE_SIZE);
+  if (written != SHM_SINK_OSC_FILE_SIZE) {
+    /* Same posture as the display path: partial write is rare, dropping
+     * one frame is fine because the next 0xFC packet (~16 ms) will rewrite. */
+    return;
+  }
+}
+
 void shm_sink_shutdown(void) {
   if (sink_fd >= 0) {
     close(sink_fd);
     sink_fd = -1;
   }
+  if (osc_fd >= 0) {
+    close(osc_fd);
+    osc_fd = -1;
+  }
   /* Unlink sidecar JSONs so consumers detect M8 disconnect by file
    * absence (see m8_buttons.py + m8_firmware.py). The display .rgba
    * file is intentionally NOT unlinked — its mtime is the disconnect
    * signal there, matching the existing Reverie external_rgba
-   * pattern. */
+   * pattern. The oscilloscope ring's mtime serves the same role for
+   * the ward's silence-detection (>1 s no update → fade). */
   unlink(SHM_SINK_DEFAULT_DIR "/m8-buttons.json");
   unlink(SHM_SINK_DEFAULT_DIR "/m8-info.json");
 }
@@ -285,6 +380,13 @@ void shm_sink_publish_info(uint8_t hardware_id,
   (void)minor;
   (void)patch;
   (void)font_mode;
+}
+void shm_sink_publish_oscilloscope(uint8_t color,
+                                   const uint8_t *samples,
+                                   uint16_t sample_count) {
+  (void)color;
+  (void)samples;
+  (void)sample_count;
 }
 void shm_sink_shutdown(void) {}
 

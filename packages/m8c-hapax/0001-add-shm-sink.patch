@@ -7,6 +7,7 @@ publish M8 protocol packets to `/dev/shm/hapax-sources/`:
   * Display frames (every render): m8-display.rgba + sidecar
   * Joypad button state (0xFB): m8-buttons.json
   * System info (0xFF, on connect): m8-info.json
+  * Oscilloscope waveform (0xFC, every draw): m8-osc.bin (ring buffer)
 
 The display path matches the studio compositor's external_rgba source
 pattern (same shape as Reverie). The buttons + info paths are the
@@ -26,9 +27,9 @@ cc-tasks: re-splay-homage-ward-m8, m8-button-activity-perception-signal,
           m8-system-info-firmware-ingest (hapax-council)
 ---
  Makefile      |  4 ++++
- src/command.c |  4 ++++
+ src/command.c |  6 +++++-
  src/render.c  | 12 ++++++++++++
- 3 files changed, 20 insertions(+)
+ 3 files changed, 21 insertions(+), 1 deletion(-)
 
 diff --git a/Makefile b/Makefile
 --- a/Makefile
@@ -91,7 +92,15 @@ diff --git a/src/command.c b/src/command.c
  #include <assert.h>
 
  #define ArrayCount(x) sizeof(x) / sizeof((x)[1])
-@@ -146,7 +147,7 @@
+@@ -132,5 +133,7 @@
+     osccmd.waveform_size = (size & UINT16_MAX) - 4;
+
++    shm_sink_publish_oscilloscope(recv_buf[1], &recv_buf[4], (uint16_t)(size - 4));
++
+     draw_waveform(&osccmd);
+     return 1;
+   }
+@@ -146,7 +149,7 @@
        return 0;
      }
 
@@ -100,7 +109,7 @@ diff --git a/src/command.c b/src/command.c
      return 1;
    }
 
-@@ -176,6 +177,7 @@
+@@ -176,6 +179,7 @@
      }
 
      renderer_set_font_mode(recv_buf[5]);
