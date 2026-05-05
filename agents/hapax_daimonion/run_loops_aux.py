@@ -223,6 +223,13 @@ _COMPOSITIONAL_PREFIXES: tuple[str, ...] = (
     "pace.",
     "mood.",
     "programme.",
+    # Director parametric vocabulary expansion tranche 2:
+    # intensity.surge / silence.invitation / chrome.density /
+    # attention.refocus recruit bounded parametric envelopes only.
+    "intensity.",
+    "silence.",
+    "chrome.",
+    "attention.refocus.",
     "node.add.",
     "node.remove.",
 )
