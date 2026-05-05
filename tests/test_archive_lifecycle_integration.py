@@ -74,6 +74,15 @@ class TestArchiveLifecycle:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
+        # Reset the camera_salience singleton so any observations leaked
+        # from upstream tests in the same xdist worker don't pollute the
+        # ``stimmung_snapshot == {}`` assertion on the sidecar (the
+        # broker's ``query()`` returns a non-None bundle whenever
+        # observations exist regardless of consumer; this test exercises
+        # the empty-broker happy path).
+        from shared.camera_salience_singleton import _reset_for_testing
+
+        _reset_for_testing()
         monkeypatch.setenv("HAPAX_ARCHIVE_ROOT", str(tmp_path / "archive"))
         monkeypatch.setattr(hls_archive, "_query_camera_salience_for_archive", lambda: None)
 
