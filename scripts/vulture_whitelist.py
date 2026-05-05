@@ -1638,6 +1638,7 @@ from agents.publication_bus.stripe_payment_link_publisher import (
 from logos.api.routes.payment_rails import (
     STRIPE_PAYMENT_LINK_SIGNATURE_HEADER,
     receive_stripe_payment_link_webhook,
+    receive_stripe_webhook,
 )
 
 StripePaymentLinkPublisher.publish_event
@@ -1646,6 +1647,7 @@ _stripe_event_to_manifest_record
 _stripe_manifest_path_for_event
 STRIPE_PAYMENT_LINK_SIGNATURE_HEADER
 receive_stripe_payment_link_webhook
+receive_stripe_webhook
 
 # Ko-fi V5 publisher + FastAPI route — cc-task ko-fi-end-to-end-wiring
 # (5th live monetization rail). Ko-fi uses token-in-payload verification

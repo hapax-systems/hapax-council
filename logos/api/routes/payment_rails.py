@@ -131,6 +131,7 @@ from shared.treasury_prime_receive_only_rail import (
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/payment-rails", tags=["payment-rails"])
+stripe_webhook_router = APIRouter(prefix="/api", tags=["payment-rails"])
 
 # Per-rail webhook delivery-id headers + bridge-fallback chains.
 # Idempotency stores themselves are managed by the shared registry in
@@ -400,6 +401,17 @@ async def receive_stripe_payment_link_webhook(request: Request) -> JSONResponse:
 
     publish_result = StripePaymentLinkPublisher().publish_event(event)
     return dispatch_publish_result(publish_result, event, log_label="stripe_payment_link")
+
+
+@stripe_webhook_router.post("/stripe-webhook")
+async def receive_stripe_webhook(request: Request) -> JSONResponse:
+    """Compatibility endpoint for Stripe dashboard/webhook setup.
+
+    The canonical implementation stays the receive-only Payment Link rail;
+    this path exists because the bootstrap contract names
+    ``/api/stripe-webhook`` as the operator-facing Stripe endpoint.
+    """
+    return await receive_stripe_payment_link_webhook(request)
 
 
 @router.post("/ko-fi")

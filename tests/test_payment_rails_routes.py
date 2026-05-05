@@ -1409,6 +1409,29 @@ async def test_stripe_empty_body_returns_ping_ok() -> None:
     assert response.json()["status"] == "ping_ok"
 
 
+@pytest.mark.asyncio
+async def test_stripe_webhook_compat_route_delegates_to_payment_link_receiver(
+    stripe_output_dir: Path, stripe_secret_env: str
+) -> None:
+    ts = int(_time.time())
+    payload = _stripe_payload(occurred_at_unix=ts)
+    payload["id"] = "evt_stripe_webhook_compat_route"
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _stripe_signature(raw, stripe_secret_env, ts)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/stripe-webhook",
+            content=raw,
+            headers={"Stripe-Signature": sig},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["event_kind"] == "payment_intent_succeeded"
+    files = list(stripe_output_dir.glob("event-payment_intent_succeeded-*.md"))
+    assert len(files) == 1
+
+
 def test_stripe_payment_link_publisher_module_carries_no_send_path() -> None:
     import inspect
 
