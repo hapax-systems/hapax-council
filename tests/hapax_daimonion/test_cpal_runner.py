@@ -358,16 +358,21 @@ class TestCpalRunnerLifecycle:
                 return_value=decision,
             ),
             patch("agents.hapax_daimonion.pw_audio_output.play_pcm", return_value=playback_result),
+            patch("shared.programme_store.default_store") as default_store,
             patch("agents.hapax_daimonion.cpal.runner.record_destination_decision"),
             patch("agents.hapax_daimonion.cpal.runner.record_tts_synthesis"),
             patch("agents.hapax_daimonion.cpal.runner.record_playback_result") as record_playback,
             caplog.at_level("INFO", logger="agents.hapax_daimonion.cpal.runner"),
         ):
+            default_store.return_value.active_programme.return_value = None
             await runner.process_impingement(imp)
 
         record_playback.assert_called_once()
         assert record_playback.call_args.kwargs["impulse_id"] == "impulse-timeout-1"
         assert "Autonomous narrative spoken" not in caplog.text
+        assert "broadcast_bias_soft_prior" not in imp.content
+        assert "voice_output_destination" not in imp.content
+        assert "broadcast_intent" not in imp.content
 
     def test_presynthesize_signals(self):
         runner = self._make_runner()
