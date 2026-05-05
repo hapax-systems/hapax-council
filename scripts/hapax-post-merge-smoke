@@ -70,8 +70,12 @@ emit_failure_notice() {
 trap emit_failure_notice EXIT
 
 # ── Gate: services-restarted ─────────────────────────────────────────
-# When any systemd/units/*.service is in the diff, verify the unit is
-# active + NRestarts did not increment after the deploy.
+# When any systemd/units/*.service is in the diff, verify units that should
+# be running are active after deploy. Timer-backed Type=oneshot units are
+# expected to exit, so accept a completed successful oneshot as healthy.
+# Newly installed disabled services are also install-only until a later
+# enable/start PR; the deploy script copies them and daemon-reloads without
+# starting them.
 
 gate_services_restarted() {
     local changed_units=()
@@ -93,6 +97,17 @@ gate_services_restarted() {
             continue
         fi
         if ! systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+            local unit_type result exec_status unit_file_state
+            unit_type="$(systemctl --user show "$unit" -p Type --value 2>/dev/null || true)"
+            result="$(systemctl --user show "$unit" -p Result --value 2>/dev/null || true)"
+            exec_status="$(systemctl --user show "$unit" -p ExecMainStatus --value 2>/dev/null || true)"
+            if [ "$unit_type" = "oneshot" ] && [ "$result" = "success" ] && [ "$exec_status" = "0" ]; then
+                continue
+            fi
+            unit_file_state="$(systemctl --user show "$unit" -p UnitFileState --value 2>/dev/null || true)"
+            if [ "$unit_file_state" = "disabled" ] && [ "$result" = "success" ]; then
+                continue
+            fi
             record_failure "services-restarted" "$unit not active after deploy"
         fi
     done
