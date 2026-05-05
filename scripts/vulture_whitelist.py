@@ -2490,3 +2490,10 @@ from agents.playwright_grant_submission_runner.framing import FramedPackage
 FramedPackage.framed_abstract
 FramedPackage.framed_problem_statement
 FramedPackage.framed_approach
+
+# cc-task ``x402-payment-rail-evm-stablecoin-receive`` (2026-05-04).
+# USDCReceiver.run_forever is the systemd-unit entry; vulture cannot
+# see the systemd dispatch.
+from agents.payment_processors.usdc_receiver import USDCReceiver as _UsdcReceiver
+
+_UsdcReceiver.run_forever
