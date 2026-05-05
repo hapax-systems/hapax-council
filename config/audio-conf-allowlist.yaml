@@ -59,6 +59,11 @@ orphans:
   - hapax-s4-loopback.conf
   - hapax-s4-usb-sink.conf
 
+  # ReSpeaker XVF3800 profile pin — WirePlumber/ALSA card rule that exposes
+  # the optional array mic as a multichannel capture surface; topology models
+  # the hardware endpoints, not this policy drop-in as a filter-chain.
+  - hapax-respeaker-xvf3800-array-mic.conf
+
   # voice-fx variants — operator-curated voice-FX presets, not
   # yaml-modeled (the yaml has a single `voice-fx` chain stub).
   - hapax-voice-fx-chain.conf  # renamed 2026-05-03 (audit-E slice 4)
