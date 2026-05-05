@@ -193,6 +193,14 @@ def _register_builtins() -> None:
     )
 
     register("PrecedentTickerCairoSource", PrecedentTickerCairoSource)
+    # activity-reveal-ward P5 (2026-05-05) — Polyend instrument reveal.
+    # Unlike M8/Steam Deck this is Cairo-native: no display protocol,
+    # just UAC waveform + MIDI note grid.
+    from agents.studio_compositor.polyend_instrument_reveal import (
+        PolyendInstrumentReveal,
+    )
+
+    register("PolyendInstrumentReveal", PolyendInstrumentReveal)
     # ytb-LORE-EXT-future-wards (cc-task ward-interactive-lore-query-bitchx-repl,
     # 2026-05-04) — chat-driven !lore REPL ward. Allowlist gate is load-bearing:
     # the ward only renders queries from operator-curated chat-authority
