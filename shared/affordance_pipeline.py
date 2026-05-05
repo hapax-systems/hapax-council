@@ -277,6 +277,7 @@ class AffordancePipeline:
         # fail-CLOSED for medium-risk capabilities (correct safety posture).
         self._active_programme: Any = None
         self._programme_loaded_at: float = 0.0
+        self._last_camera_salience_query_by_capability: dict[str, str] = {}
 
     def _ensure_collection(self, client: object, vector_size: int) -> None:
         """Create the affordances collection if it doesn't exist."""
@@ -863,9 +864,15 @@ class AffordancePipeline:
                     candidate_action=winner.capability_name,
                 )
                 if _salience_bundle is not None:
+                    query_id = getattr(getattr(_salience_bundle, "query", None), "query_id", None)
                     winner.payload["camera_salience_bundle"] = (
                         _salience_bundle.to_wcs_projection_payload()
                     )
+                    if isinstance(query_id, str):
+                        winner.payload["camera_salience_query_id"] = query_id
+                        self._last_camera_salience_query_by_capability[winner.capability_name] = (
+                            query_id
+                        )
             except Exception:
                 log.debug("camera salience affordance query failed", exc_info=True)
             # Phase 6: emit perceptual-distance impingement when the
@@ -950,6 +957,7 @@ class AffordancePipeline:
             delta = 0.1 if success else -0.05
             for _key, value in context.items():
                 self.update_context_association(str(value), capability_name, delta=delta)
+        self._record_camera_salience_outcome(capability_name, success, context)
 
     def record_capability_outcome(
         self,
@@ -966,6 +974,50 @@ class AffordancePipeline:
                 raise ValueError("affordance outcome decision requested update without success")
             self.record_outcome(decision.capability_name, decision.success, context=context)
         return decision
+
+    def _record_camera_salience_outcome(
+        self,
+        capability_name: str,
+        success: bool,
+        context: dict[str, Any] | None,
+    ) -> None:
+        query_id = self._camera_salience_query_id_for_outcome(capability_name, context)
+        if query_id is None:
+            return
+        try:
+            from shared.camera_salience_singleton import broker as _camera_broker
+
+            _camera_broker().record_outcome(
+                query_id,
+                {
+                    "capability_name": capability_name,
+                    "success": success,
+                    "source": "affordance_pipeline.record_outcome",
+                },
+            )
+        except Exception:
+            log.debug("camera salience outcome feedback failed", exc_info=True)
+
+    def _camera_salience_query_id_for_outcome(
+        self,
+        capability_name: str,
+        context: dict[str, Any] | None,
+    ) -> str | None:
+        if context:
+            direct = context.get("camera_salience_query_id")
+            if isinstance(direct, str):
+                return direct
+            nested = context.get("camera_salience")
+            if isinstance(nested, dict):
+                query_id = nested.get("query_id")
+                if isinstance(query_id, str):
+                    return query_id
+            bundle = context.get("camera_salience_bundle")
+            if isinstance(bundle, dict):
+                query_id = bundle.get("query_id")
+                if isinstance(query_id, str):
+                    return query_id
+        return self._last_camera_salience_query_by_capability.get(capability_name)
 
     def decay_associations(self, factor: float = 0.995) -> None:
         """Decay all context associations toward zero (passive forgetting)."""

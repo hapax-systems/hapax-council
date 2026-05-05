@@ -14,6 +14,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import shared.camera_salience_singleton as singleton_mod
+from shared.affordance import SelectionCandidate
+from shared.affordance_pipeline import AffordancePipeline
 from shared.bayesian_camera_salience_world_surface import (
     CameraEvidenceRow,
     CameraFreshness,
@@ -33,6 +35,7 @@ from shared.camera_salience_singleton import (
     _reset_for_testing,
     broker,
 )
+from shared.impingement import Impingement, ImpingementType
 
 
 @pytest.fixture(autouse=True)
@@ -176,6 +179,28 @@ class TestBrokerSingleton:
         for _ in range(10):
             b.ingest(_make_test_observation())
         assert b.observation_count == 5
+
+    def test_record_outcome_stores_bounded_evidence(self) -> None:
+        b = broker()
+        b._max_outcomes = 2
+
+        assert b.record_outcome(
+            "camera-salience-query:affordance.one",
+            {"success": True, "capability_name": "fx.family.audio-reactive"},
+        )
+        assert b.record_outcome("camera-salience-query:affordance.one", False)
+        assert b.record_outcome("camera-salience-query:affordance.two", "blocked")
+
+        with b._outcome_lock:
+            assert len(b._outcomes) == 2
+            rows = [
+                dict(row)
+                for row in b._outcomes
+                if row["query_id"] == "camera-salience-query:affordance.one"
+            ]
+        assert len(rows) == 1
+        assert rows[0]["observed_outcome"] == "failure"
+        assert b.record_outcome("not-a-query", True) is False
 
 
 # ── Producer wiring tests ──────────────────────────────────────────────
@@ -494,6 +519,78 @@ class TestAffordancePipelineWiring:
             pass
 
         assert "camera_salience_bundle" not in winner.payload
+
+    def test_affordance_outcome_feedback_records_broker_outcome(self):
+        """Producer -> broker -> selection -> outcome feeds query id back."""
+
+        class OutcomeLoopPipeline(AffordancePipeline):
+            def _get_embedding(self, impingement):  # noqa: ANN001
+                return [1.0, 0.0]
+
+            def _retrieve(self, embedding, top_k):  # noqa: ANN001
+                return [
+                    SelectionCandidate(
+                        capability_name="fx.family.audio-reactive",
+                        similarity=0.99,
+                        payload={
+                            "embedding": [1.0, 0.0],
+                            "available": True,
+                            "monetization_risk": "none",
+                            "content_risk": "tier_0_owned",
+                            "public_capable": False,
+                        },
+                    )
+                ]
+
+            def _active_programme_cached(self):
+                return None
+
+        b = broker()
+        b.ingest(_make_test_observation())
+        pipe = OutcomeLoopPipeline()
+        imp = Impingement(
+            timestamp=time.time(),
+            source="test.camera-salience",
+            type=ImpingementType.SALIENCE_INTEGRATION,
+            strength=0.9,
+            content={"metric": "operator_attention_screen"},
+            embedding=[1.0, 0.0],
+        )
+
+        with patch("shared.governance.quiet_frame_subscriber.install"):
+            winners = pipe.select(imp)
+
+        assert winners
+        winner = winners[0]
+        query_id = winner.payload["camera_salience_query_id"]
+        assert query_id.startswith("camera-salience-query:affordance.")
+        assert winner.payload["camera_salience_bundle"]["bundle_id"].startswith(
+            "camera-salience-bundle:affordance."
+        )
+
+        pipe.record_outcome(winner.capability_name, success=True)
+
+        with b._outcome_lock:
+            rows = [dict(row) for row in b._outcomes if row["query_id"] == query_id]
+        assert len(rows) == 1
+        assert rows[0]["observed_outcome"] == "success"
+        assert rows[0]["capability_name"] == winner.capability_name
+
+    @patch("shared.camera_salience_singleton.broker")
+    def test_camera_salience_outcome_failure_does_not_block_learning(self, mock_broker_fn):
+        """Broker outcome failures are fail-closed and do not block learning."""
+        mock_singleton = MagicMock()
+        mock_singleton.record_outcome.side_effect = RuntimeError("broker down")
+        mock_broker_fn.return_value = mock_singleton
+        pipe = AffordancePipeline()
+        pipe._last_camera_salience_query_by_capability["fx.family.audio-reactive"] = (
+            "camera-salience-query:affordance.fail-closed"
+        )
+
+        pipe.record_outcome("fx.family.audio-reactive", success=True, context={"source": "test"})
+
+        assert pipe.get_activation_state("fx.family.audio-reactive").use_count == 1
+        mock_singleton.record_outcome.assert_called_once()
 
 
 # ── Vulture whitelist removal verification ──────────────────────────────
