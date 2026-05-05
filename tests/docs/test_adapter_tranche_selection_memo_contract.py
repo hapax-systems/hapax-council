@@ -160,3 +160,23 @@ def test_markdown_memo_references_contract_and_selection_boundary() -> None:
     assert "substrate-adapter-buildout-tranche-1" in body
     for adapter_id in _memo()["selected_adapter_ids"]:
         assert adapter_id in body
+
+
+def test_markdown_handoff_closes_umbrella_into_child_packets() -> None:
+    body = DOC.read_text(encoding="utf-8")
+
+    assert "2026-05-05 Buildout Handoff Status" in body
+    assert "The umbrella remains architecture only" in body
+    assert "must not" in body
+    assert "adapter implementation changes" in body
+    assert "public-live state, viewer visibility, publication, audio" in body
+
+    selected_ids = _memo()["selected_adapter_ids"]
+    for adapter_id in selected_ids:
+        assert f"| `{adapter_id}` |" in body
+
+    assert "| `caption-substrate-adapter` | closed via PR #2288 |" in body
+    assert "| `cuepoint-substrate-adapter` | closed via PR #2290 |" in body
+    assert "| `chat-ambient-keyword-substrate-adapter` | offered child packet |" in body
+    assert "| `overlay-research-marker-substrate-adapter` | offered child packet |" in body
+    assert "| `music-request-provenance-substrate-adapter` | offered child packet |" in body

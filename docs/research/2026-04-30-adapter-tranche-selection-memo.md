@@ -77,6 +77,26 @@ The dispatch table is the source of truth for those fields. The adapter notes
 that follow this memo should copy the contract row rather than reinterpret the
 umbrella.
 
+## 2026-05-05 Buildout Handoff Status
+
+`substrate-adapter-buildout-tranche-1` is closed by dispatching the first wave
+into concrete child packets. The umbrella remains architecture only and must not
+receive adapter implementation changes.
+
+| Selected adapter | Packet state | Owner boundary |
+| --- | --- | --- |
+| `caption-substrate-adapter` | closed via PR #2288 | `shared/caption_substrate_adapter.py`, `tests/shared/test_caption_substrate_adapter.py` |
+| `cuepoint-substrate-adapter` | closed via PR #2290 | `shared/cuepoint_substrate_adapter.py`, `tests/shared/test_cuepoint_substrate_adapter.py` |
+| `chat-ambient-keyword-substrate-adapter` | offered child packet | `shared/chat_ambient_keyword_substrate_adapter.py`, `tests/shared/test_chat_ambient_keyword_substrate_adapter.py` |
+| `overlay-research-marker-substrate-adapter` | offered child packet | `shared/overlay_research_marker_substrate_adapter.py`, `tests/shared/test_overlay_research_marker_substrate_adapter.py` |
+| `music-request-provenance-substrate-adapter` | offered child packet | `shared/music_request_provenance_substrate_adapter.py`, `tests/shared/test_music_request_provenance_substrate_adapter.py` |
+
+The three offered packets inherit the dispatch-table contract row verbatim:
+event input, producer freshness, render target, rights/consent posture,
+public-claim policy, health signal, dry-run explanation, tests, and verification
+artifact. None grants public-live state, viewer visibility, publication, audio
+routing, or monetization authority.
+
 ## Ownership Preservation
 
 Existing anchors remain authoritative:
