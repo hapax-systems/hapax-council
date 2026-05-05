@@ -32,10 +32,13 @@ Key migration moves vs. the legacy ``durf_source.DURFCairoSource``:
   logged at debug and never breaks the poll cycle.
 * **Aesthetic preservation** — redaction (``redact_terminal_lines``,
   ``sanitize_terminal_lines``, ``RISK_PATTERNS``), pane layout
-  (``_layout_for_count``), text rendering (``_render_text_pane``),
+  (``_layout_for_count``), text rendering (``_render_text_pane`` plus
+  the Phase 3 reflection layer),
   capture path (``capture_tmux_text``, ``CodexPaneRegistry``), and the
   WCS row builder (``build_wcs_row``) all live in ``durf_source`` and
-  are imported here. DURF still looks identical post-migration.
+  are imported here. The reflection layer is live by default but only
+  consumes already-redacted ``DURFPaneState.lines``; the unsafe pixel
+  capture path remains unused.
 
 Spec: ``hapax-research/specs/2026-05-01-activity-reveal-ward-family-spec.md``
 §3.1.
@@ -44,6 +47,7 @@ Spec: ``hapax-research/specs/2026-05-01-activity-reveal-ward-family-spec.md``
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from pathlib import Path
@@ -109,6 +113,33 @@ _POLL_INTERVAL_S: float = 0.5
 # Two poll intervals so a single missed refresh does not drop the
 # suppression mid-flight.
 _SUPPRESSION_TTL_S: float = _POLL_INTERVAL_S * 4.0
+
+# Phase 3 reflection layer. The reflection is deliberately derived from
+# the visible pane state's already-redacted lines, never from the raw tmux
+# capture, so it cannot bypass the public privacy posture.
+_REFLECTION_HEIGHT_FRACTION: float = 0.30
+_REFLECTION_MIN_HEIGHT_PX: int = 40
+_REFLECTION_MAX_ALPHA: float = 0.20
+_REFLECTION_WARP_HZ: float = 0.05
+_REFLECTION_WARP_MAX_PX: float = 4.0
+_REFLECTION_LINE_LIMIT: int = 2
+
+
+def _reflection_lines(lines: tuple[str, ...]) -> tuple[str, ...]:
+    """Return the bottom pane lines in mirror order, nearest first."""
+    return tuple(reversed(tuple(line for line in lines if line)[-_REFLECTION_LINE_LIMIT:]))
+
+
+def _reflection_warp_offset(t: float) -> float:
+    """Slow cosine offset bounded by ``_REFLECTION_WARP_MAX_PX``."""
+    return math.cos(math.tau * _REFLECTION_WARP_HZ * t) * _REFLECTION_WARP_MAX_PX
+
+
+def _reflection_region(rect: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """Bottom clipped region used by the Phase 3 reflection layer."""
+    x, y, w, h = rect
+    reflection_h = min(h, max(_REFLECTION_MIN_HEIGHT_PX, int(h * _REFLECTION_HEIGHT_FRACTION)))
+    return (x, y + h - reflection_h, w, reflection_h)
 
 
 class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
@@ -499,7 +530,7 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
 
         rects = _layout_for_count(len(panes), canvas_w, canvas_h)
         for pane, rect in zip(panes, rects, strict=False):
-            self._render_text_pane(cr, rect, pane, alpha)
+            self._render_text_pane(cr, rect, pane, alpha, t)
 
     # ── Segment state reader ─────────────────────────────────────────
 
@@ -676,6 +707,7 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
         rect: tuple[int, int, int, int],
         pane: DURFPaneState,
         alpha: float,
+        t: float,
     ) -> None:
         from agents.studio_compositor.homage.rendering import active_package
 
@@ -694,6 +726,8 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
         cr.rectangle(x, y, w, h)
         cr.stroke()
         cr.restore()
+
+        self._render_reflection_layer(cr, rect, pane, alpha, t)
 
         marker_style = TextStyle(
             text=f">>> {pane.glyph}",
@@ -724,6 +758,58 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
             line_y += line_h
             if line_y > y + h - line_h:
                 break
+
+    def _render_reflection_layer(
+        self,
+        cr: cairo.Context,
+        rect: tuple[int, int, int, int],
+        pane: DURFPaneState,
+        alpha: float,
+        t: float,
+    ) -> None:
+        """Render the Phase 3 reflection from already-redacted pane text."""
+        lines = _reflection_lines(pane.lines)
+        if not lines:
+            return
+
+        from agents.studio_compositor.homage.rendering import active_package
+
+        x, _y, w, _h = rect
+        rx, ry, rw, rh = _reflection_region(rect)
+        pkg = active_package()
+        muted = pkg.palette.muted
+        line_h = 19.0
+        text_x = x + 18
+        max_w = max(1, w - 36)
+        warp = _reflection_warp_offset(t)
+        fade_distance = max(line_h, float(rh - line_h))
+
+        cr.save()
+        cr.rectangle(rx + 2, ry, max(1, rw - 4), rh)
+        cr.clip()
+        for idx, line in enumerate(lines):
+            line_top = ry + 8.0 + idx * line_h
+            if line_top >= ry + rh:
+                break
+            decay = max(0.0, min(1.0, 1.0 - ((line_top - ry) / fade_distance)))
+            if decay <= 0.0:
+                continue
+            style = TextStyle(
+                text=line or " ",
+                font_description=self._font_description,
+                color_rgba=(muted[0], muted[1], muted[2], _REFLECTION_MAX_ALPHA * alpha * decay),
+                outline_color_rgba=(0.0, 0.0, 0.0, 0.16 * alpha * decay),
+                outline_offsets=OUTLINE_OFFSETS_4,
+                max_width_px=max_w,
+                wrap="char",
+                line_spacing=0.92,
+            )
+            cr.save()
+            cr.translate(text_x + warp * decay, line_top + line_h)
+            cr.scale(1.0, -1.0)
+            render_text(cr, style, 0.0, 0.0)
+            cr.restore()
+        cr.restore()
 
 
 # Suppress unused-import warning for MIXIN_POLL_INTERVAL_S — re-exported
