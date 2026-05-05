@@ -93,8 +93,11 @@ class TestVisionToEnvelope:
         assert env.wcs_surface_refs == ("wcs-surface:camera.brio-operator",)
 
     def test_unregistered_vision_role_fails_closed(self) -> None:
+        # c920-room / c920-overhead are now mapped to canonical apertures
+        # (cc-task: bayesian-camera-salience-runtime-aperture-coverage);
+        # a genuinely-unknown camera_role still returns None.
         snapshot = self._fixture_snapshot()
-        assert vision_to_envelope(snapshot, camera_role="c920-room") is None
+        assert vision_to_envelope(snapshot, camera_role="dvr-archive") is None
 
     def test_stale_snapshot(self) -> None:
         snapshot = self._fixture_snapshot(updated_at=time.monotonic() - 60.0)
@@ -197,7 +200,10 @@ class TestIrToEnvelope:
         assert env.evidence_rows[0].hypothesis == "operator_absent_ir"
 
     def test_unregistered_ir_role_fails_closed(self) -> None:
-        assert ir_to_envelope(self._fixture_ir(), pi_name="room") is None
+        # `room`, `overhead`, and their canonical/short variants are now
+        # mapped to aperture:studio-ir.noir-{room,overhead}; a genuinely
+        # unknown pi_name still returns None.
+        assert ir_to_envelope(self._fixture_ir(), pi_name="pi-noir-archive") is None
 
     def test_real_report_shape_maps_persons_and_ir_brightness(self) -> None:
         env = ir_to_envelope(
@@ -285,7 +291,9 @@ class TestCrossCameraToEnvelope:
         assert env is None
 
     def test_unregistered_tracklet_fails_closed(self) -> None:
-        env = cross_camera_to_envelope(self._fixture_tracklet(cameras=["c920-room"]))
+        # c920-room is now a canonical aperture; a tracklet that names
+        # only genuinely-unknown cameras still returns None.
+        env = cross_camera_to_envelope(self._fixture_tracklet(cameras=["dvr-archive"]))
         assert env is None
 
 
@@ -448,3 +456,119 @@ class TestAdapterIntegration:
             )
         )
         assert bundle.ranked_observations
+
+
+# ── Runtime aperture-coverage tests ──────────────────────────────────────
+#
+# cc-task: bayesian-camera-salience-runtime-aperture-coverage
+#
+# Pin the full studio-camera-fleet → canonical-aperture mapping. Every
+# camera role string the live producers emit (per CLAUDE.md: brio-
+# operator, c920-desk/room/overhead, noir-desk/room/overhead) must
+# resolve to an aperture declared in
+# ``config/bayesian-camera-salience-world-surface-fixtures.json``. If a
+# fixture is removed or a producer starts emitting a new role string
+# that wasn't added to the adapter map, these tests fire — guaranteeing
+# ``camera-classifications.json`` never silently shows ``unspecified``
+# for a known live camera.
+
+import json
+from pathlib import Path
+
+import pytest
+
+_FIXTURE_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "config"
+    / "bayesian-camera-salience-world-surface-fixtures.json"
+)
+
+
+def _fixture_aperture_ids() -> set[str]:
+    raw = json.loads(_FIXTURE_PATH.read_text())
+    return {a["aperture_id"] for a in raw["apertures"]}
+
+
+class TestRuntimeApertureCoverage:
+    """The full live camera fleet maps onto canonical apertures."""
+
+    @pytest.fixture(autouse=True)
+    def _aperture_ids(self) -> None:
+        self.canonical = _fixture_aperture_ids()
+
+    def _vision_snapshot(self) -> dict:
+        return {
+            "person_count": 0,
+            "operator_present": False,
+            "updated_at": time.monotonic(),
+        }
+
+    def _ir_snapshot(self) -> dict:
+        return {"persons": [], "motion_delta": 0.0, "timestamp": time.time()}
+
+    @pytest.mark.parametrize(
+        "role,expected_aperture",
+        [
+            # RGB cameras — every form a producer is known to emit.
+            ("operator", "aperture:studio-rgb.brio-operator"),
+            ("brio-operator", "aperture:studio-rgb.brio-operator"),
+            ("desk", "aperture:studio-rgb.c920-desk"),
+            ("c920-desk", "aperture:studio-rgb.c920-desk"),
+            ("room", "aperture:studio-rgb.c920-room"),
+            ("c920-room", "aperture:studio-rgb.c920-room"),
+            ("overhead", "aperture:studio-rgb.c920-overhead"),
+            ("c920-overhead", "aperture:studio-rgb.c920-overhead"),
+        ],
+    )
+    def test_vision_role_maps_to_canonical_aperture(
+        self, role: str, expected_aperture: str
+    ) -> None:
+        env = vision_to_envelope(self._vision_snapshot(), camera_role=role)
+        assert env is not None, f"vision adapter fail-closed for live role {role!r}"
+        assert env.aperture_id == expected_aperture, (
+            f"vision role {role!r} → {env.aperture_id}, expected {expected_aperture}"
+        )
+        assert env.aperture_id in self.canonical, (
+            f"vision aperture {env.aperture_id} not in canonical fixture"
+        )
+
+    @pytest.mark.parametrize(
+        "pi_name,expected_aperture",
+        [
+            # IR Pis — every form a producer is known to emit.
+            ("desk", "aperture:studio-ir.noir-desk"),
+            ("noir-desk", "aperture:studio-ir.noir-desk"),
+            ("pi-noir-desk", "aperture:studio-ir.noir-desk"),
+            ("room", "aperture:studio-ir.noir-room"),
+            ("noir-room", "aperture:studio-ir.noir-room"),
+            ("pi-noir-room", "aperture:studio-ir.noir-room"),
+            ("overhead", "aperture:studio-ir.noir-overhead"),
+            ("noir-overhead", "aperture:studio-ir.noir-overhead"),
+            ("pi-noir-overhead", "aperture:studio-ir.noir-overhead"),
+        ],
+    )
+    def test_ir_role_maps_to_canonical_aperture(self, pi_name: str, expected_aperture: str) -> None:
+        env = ir_to_envelope(self._ir_snapshot(), pi_name=pi_name)
+        assert env is not None, f"ir adapter fail-closed for live pi_name {pi_name!r}"
+        assert env.aperture_id == expected_aperture
+        assert env.aperture_id in self.canonical
+
+    def test_no_producer_emits_aperture_unknown_to_singleton(self) -> None:
+        """The canonical fleet must be a strict subset of the fixture's
+        aperture set. This is the load-bearing acceptance criterion: no
+        adapter ever produces an envelope whose ``aperture_id`` is unknown
+        to the singleton's loaded apertures."""
+        # The full set of aperture_ids the producer adapters can emit.
+        from shared.camera_salience_producer_adapters import (
+            _IR_ROLE_TO_APERTURE_ID,
+            _VISION_ROLE_TO_APERTURE_ID,
+        )
+
+        emitted = set(_VISION_ROLE_TO_APERTURE_ID.values()) | set(_IR_ROLE_TO_APERTURE_ID.values())
+        # Plus the livestream composed-frame aperture the livestream adapter
+        # hard-codes (not table-driven).
+        emitted.add("aperture:livestream.composed-frame")
+        unknown = emitted - self.canonical
+        assert not unknown, (
+            f"adapters can emit aperture_ids not in the canonical fixture: {unknown}"
+        )
