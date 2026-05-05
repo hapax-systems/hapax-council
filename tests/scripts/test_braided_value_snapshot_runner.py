@@ -101,6 +101,116 @@ def test_default_witness_specs_cover_first_slice_families() -> None:
     }.issubset(ids)
 
 
+def test_default_systemd_specs_use_live_logos_api_unit() -> None:
+    runner = load_runner()
+
+    units = {spec.unit for spec in runner.default_systemd_specs()}
+
+    assert "logos-api.service" in units
+    assert "hapax-logos-api.service" not in units
+
+
+def test_logos_openapi_witness_accepts_fastapi_validation_error_schema(tmp_path: Path) -> None:
+    runner = load_runner()
+    path = tmp_path / "openapi.json"
+    path.write_text(
+        json.dumps(
+            {
+                "openapi": "3.1.0",
+                "info": {"title": "logos-api", "version": "0.2.0"},
+                "paths": {
+                    "/api/ping": {
+                        "get": {
+                            "responses": {
+                                "200": {"description": "Successful Response"},
+                                "422": {"description": "Validation Error"},
+                            }
+                        }
+                    }
+                },
+                "components": {
+                    "schemas": {
+                        "HTTPValidationError": {
+                            "title": "HTTPValidationError",
+                            "type": "object",
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    read = runner.probe_witness(
+        runner.WitnessSpec(
+            "logos_openapi",
+            "Logos OpenAPI witness",
+            path,
+            "executive_function_os",
+        ),
+        NOW,
+    )
+
+    assert read.status == "ok"
+    assert read.reasons == ("logos_openapi_present",)
+
+
+def test_logos_health_and_openapi_recover_executive_function_anchor(tmp_path: Path) -> None:
+    runner = load_runner()
+    vault = tmp_path / "tasks"
+    hygiene = tmp_path / "hygiene.json"
+    health_path = tmp_path / "health.json"
+    openapi_path = tmp_path / "openapi.json"
+    write_hygiene(hygiene)
+    health_path.write_text(
+        json.dumps(
+            {
+                "component": "logos-api",
+                "status": "ok",
+                "ready": True,
+                "openapi": {"path": str(openapi_path), "sha256": "abc123"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    openapi_path.write_text(
+        json.dumps(
+            {
+                "openapi": "3.1.0",
+                "info": {"title": "logos-api", "version": "0.2.0"},
+                "paths": {"/api/ping": {"get": {"responses": {"200": {"description": "OK"}}}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = runner.build_snapshot(
+        task_root=vault,
+        hygiene_path=hygiene,
+        now=NOW,
+        witness_specs=[
+            runner.WitnessSpec(
+                "logos_health",
+                "Logos health witness",
+                health_path,
+                "executive_function_os",
+            ),
+            runner.WitnessSpec(
+                "logos_openapi",
+                "Logos OpenAPI witness",
+                openapi_path,
+                "executive_function_os",
+            ),
+        ],
+        include_systemd=False,
+    )
+    row = row_by_task(snapshot, "executive-function-os")
+
+    assert row["braid_recomputed"] == 10.0
+    assert row["claimability_reason"] == "live_witnessed_presence_only"
+    assert row["blockers"] == []
+
+
 def test_malformed_frontmatter_and_missing_hygiene_are_visible(tmp_path: Path) -> None:
     runner = load_runner()
     vault = tmp_path / "tasks"
