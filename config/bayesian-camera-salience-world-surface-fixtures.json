@@ -243,6 +243,128 @@
         "route:future"
       ],
       "freshness_ttl_s": 0
+    },
+    {
+      "schema_version": 1,
+      "aperture_id": "aperture:studio-rgb.c920-room",
+      "kind": "studio_rgb_camera",
+      "modality": "rgb",
+      "source_id": "c920-room",
+      "display_name": "C920 room camera",
+      "semantic_role": "room-overview",
+      "supported_evidence_classes": [
+        "frame",
+        "object_track",
+        "cross_camera_tracklet"
+      ],
+      "resource_cost": 0.2,
+      "latency_cost_ms": 80,
+      "privacy_mode": "private",
+      "public_claim_ceiling": "evidence_bound",
+      "wcs_surface_refs": [
+        "wcs-surface:camera.c920-room",
+        "wcs-health:temporal-perceptual:camera-scene"
+      ],
+      "topology_refs": [
+        "camera-topology:c920-room->c920-overhead"
+      ],
+      "producer_refs": [
+        "agents.hapax_daimonion.backends.vision:VisionBackend"
+      ],
+      "route_refs": [
+        "route:/dev/shm/hapax-compositor/c920-room.jpg"
+      ],
+      "freshness_ttl_s": 10
+    },
+    {
+      "schema_version": 1,
+      "aperture_id": "aperture:studio-rgb.c920-overhead",
+      "kind": "studio_rgb_camera",
+      "modality": "rgb",
+      "source_id": "c920-overhead",
+      "display_name": "C920 overhead camera",
+      "semantic_role": "overhead-hand-zone",
+      "supported_evidence_classes": [
+        "frame",
+        "object_track",
+        "cross_camera_tracklet"
+      ],
+      "resource_cost": 0.2,
+      "latency_cost_ms": 80,
+      "privacy_mode": "private",
+      "public_claim_ceiling": "evidence_bound",
+      "wcs_surface_refs": [
+        "wcs-surface:camera.c920-overhead",
+        "wcs-health:temporal-perceptual:camera-scene"
+      ],
+      "topology_refs": [
+        "camera-topology:c920-overhead->c920-room"
+      ],
+      "producer_refs": [
+        "agents.hapax_daimonion.backends.vision:VisionBackend"
+      ],
+      "route_refs": [
+        "route:/dev/shm/hapax-compositor/c920-overhead.jpg"
+      ],
+      "freshness_ttl_s": 10
+    },
+    {
+      "schema_version": 1,
+      "aperture_id": "aperture:studio-ir.noir-room",
+      "kind": "studio_ir_camera",
+      "modality": "infrared",
+      "source_id": "pi-noir-room",
+      "display_name": "Pi NoIR room presence",
+      "semantic_role": "room-presence-zone",
+      "supported_evidence_classes": [
+        "ir_presence"
+      ],
+      "resource_cost": 0.08,
+      "latency_cost_ms": 30,
+      "privacy_mode": "private",
+      "public_claim_ceiling": "private_only",
+      "wcs_surface_refs": [
+        "wcs-surface:ir.noir-room"
+      ],
+      "topology_refs": [
+        "ir-topology:room-zone"
+      ],
+      "producer_refs": [
+        "agents.hapax_daimonion.backends.ir_presence"
+      ],
+      "route_refs": [
+        "route:/dev/shm/hapax-ir/presence.json"
+      ],
+      "freshness_ttl_s": 8
+    },
+    {
+      "schema_version": 1,
+      "aperture_id": "aperture:studio-ir.noir-overhead",
+      "kind": "studio_ir_camera",
+      "modality": "infrared",
+      "source_id": "pi-noir-overhead",
+      "display_name": "Pi NoIR overhead hand zone",
+      "semantic_role": "overhead-hand-zone",
+      "supported_evidence_classes": [
+        "ir_presence"
+      ],
+      "resource_cost": 0.08,
+      "latency_cost_ms": 30,
+      "privacy_mode": "private",
+      "public_claim_ceiling": "private_only",
+      "wcs_surface_refs": [
+        "wcs-surface:ir.noir-overhead"
+      ],
+      "topology_refs": [
+        "ir-topology:overhead-zone"
+      ],
+      "producer_refs": [
+        "agents.hapax_daimonion.backends.ir_presence"
+      ],
+      "route_refs": [
+        "route:/dev/shm/hapax-ir/presence.json"
+      ],
+      "freshness_ttl_s": 8
     }
   ],
   "observations": [

@@ -40,11 +40,26 @@ from shared.bayesian_camera_salience_world_surface import (
 
 log = logging.getLogger(__name__)
 
+# Runtime camera-role → canonical aperture mapping. Extended to cover the
+# full studio camera fleet (cc-task: bayesian-camera-salience-runtime-aperture-coverage).
+# Per CLAUDE.md the live RGB cameras are: brio-operator (desk-co-located,
+# Pi-1), c920-desk (Pi-1), c920-room (Pi-2), c920-overhead (Pi-6); the live
+# IR Pis are noir-desk (Pi-1), noir-room (Pi-2), noir-overhead (Pi-6).
+# Each role string a producer might emit resolves to one of the canonical
+# apertures declared in
+# ``config/bayesian-camera-salience-world-surface-fixtures.json`` so no
+# adapter ever returns ``None`` for a known live camera (and the broker's
+# ``unspecified`` fail-closed slot is reserved for genuinely unknown
+# producer output).
 _VISION_ROLE_TO_APERTURE_ID = {
     "operator": "aperture:studio-rgb.brio-operator",
     "brio-operator": "aperture:studio-rgb.brio-operator",
     "desk": "aperture:studio-rgb.c920-desk",
     "c920-desk": "aperture:studio-rgb.c920-desk",
+    "room": "aperture:studio-rgb.c920-room",
+    "c920-room": "aperture:studio-rgb.c920-room",
+    "overhead": "aperture:studio-rgb.c920-overhead",
+    "c920-overhead": "aperture:studio-rgb.c920-overhead",
 }
 
 _VISION_ROLE_TO_CANONICAL_SOURCE = {
@@ -52,18 +67,34 @@ _VISION_ROLE_TO_CANONICAL_SOURCE = {
     "brio-operator": "brio-operator",
     "desk": "c920-desk",
     "c920-desk": "c920-desk",
+    "room": "c920-room",
+    "c920-room": "c920-room",
+    "overhead": "c920-overhead",
+    "c920-overhead": "c920-overhead",
 }
 
 _IR_ROLE_TO_APERTURE_ID = {
     "desk": "aperture:studio-ir.noir-desk",
     "noir-desk": "aperture:studio-ir.noir-desk",
     "pi-noir-desk": "aperture:studio-ir.noir-desk",
+    "room": "aperture:studio-ir.noir-room",
+    "noir-room": "aperture:studio-ir.noir-room",
+    "pi-noir-room": "aperture:studio-ir.noir-room",
+    "overhead": "aperture:studio-ir.noir-overhead",
+    "noir-overhead": "aperture:studio-ir.noir-overhead",
+    "pi-noir-overhead": "aperture:studio-ir.noir-overhead",
 }
 
 _IR_ROLE_TO_CANONICAL_SOURCE = {
     "desk": "pi-noir-desk",
     "noir-desk": "pi-noir-desk",
     "pi-noir-desk": "pi-noir-desk",
+    "room": "pi-noir-room",
+    "noir-room": "pi-noir-room",
+    "pi-noir-room": "pi-noir-room",
+    "overhead": "pi-noir-overhead",
+    "noir-overhead": "pi-noir-overhead",
+    "pi-noir-overhead": "pi-noir-overhead",
 }
 
 
