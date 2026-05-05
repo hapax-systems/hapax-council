@@ -82,6 +82,13 @@ class DaemonConfig:
     noise_sustain_s: float = DEFAULT_NOISE_SUSTAIN_S
     silence_sustain_s: float = DEFAULT_SILENCE_SUSTAIN_S
     recovery_sustain_s: float = DEFAULT_RECOVERY_SUSTAIN_S
+    auto_mute_on_clipping: bool = False
+    """Opt-in flag: when True, engage the SSOT egress circuit-breaker's
+    ``SafeMuteRail`` on transitions into ``Classification.CLIPPING`` or
+    ``Classification.SILENT`` at the obs-bound stage. Default ``False``
+    until SSOT P5 hardens the breaker (per spec §4.2 G-spec-2 reconciliation
+    pointer + cc-task ``h1-signal-flow-daemon-add-auto-mute-flag-aligning-with-ssot-p5``).
+    Operator's framing: "silence is better than noise on stream"."""
 
     @classmethod
     def from_env(cls) -> DaemonConfig:
@@ -116,6 +123,10 @@ class DaemonConfig:
         )
         config.discover_stages = _bool("HAPAX_AUDIO_SIGNAL_DISCOVER_STAGES", config.discover_stages)
         config.enable_ntfy = _bool("HAPAX_AUDIO_SIGNAL_ENABLE_NTFY", config.enable_ntfy)
+        config.auto_mute_on_clipping = _bool(
+            "HAPAX_AUDIO_SIGNAL_AUTO_MUTE_ON_CLIPPING",
+            config.auto_mute_on_clipping,
+        )
         config.clipping_sustain_s = _float(
             "HAPAX_AUDIO_SIGNAL_CLIPPING_SUSTAIN_S",
             config.clipping_sustain_s,
@@ -147,6 +158,10 @@ class DaemonState:
 
     last_probes: dict[str, ProbeResult] = field(default_factory=dict)
     last_events: list[TransitionEvent] = field(default_factory=list)
+    auto_mute_engagements: int = 0
+    """Count of times SafeMuteRail.engage was invoked this run.
+    Driven by the ``auto_mute_on_clipping`` flag — stays at zero when
+    the flag is OFF (the default until SSOT P5 ships)."""
     tick_count: int = 0
 
 
@@ -368,6 +383,66 @@ def _format_event_message(event: TransitionEvent, anchor: str) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# SafeMuteRail engagement (opt-in via DaemonConfig.auto_mute_on_clipping)
+# ---------------------------------------------------------------------------
+
+#: Classifications that trigger ``SafeMuteRail.engage`` when the
+#: ``--auto-mute-on-clipping`` flag is ON. Per cc-task spec the list is
+#: clipping + silent (not noise — noise is operator-judgement territory
+#: where false-positives would cost more than the wrong-stream-output
+#: it would prevent). See spec §4.2 G-spec-2 reconciliation pointer.
+SAFE_MUTE_TRIGGER_STATES: frozenset[Classification] = frozenset(
+    {Classification.CLIPPING, Classification.SILENT}
+)
+
+
+def _engage_safe_mute(event: TransitionEvent) -> bool:
+    """Engage ``SafeMuteRail`` for a bad-state transition. Returns True on success.
+
+    Lazy import: the SSOT egress circuit-breaker's ``SafeMuteRail`` lives
+    at ``agents.pipewire_graph.safe_mute`` and ships at SSOT P5 (currently
+    in flight via the audio-graph-ssot-p2-daemon-shadow PR for the
+    structural module + observe-only stubs; engage/disengage become
+    load-bearing at P5). Until then the import either succeeds with a
+    no-op stub or fails outright; either way this helper degrades to
+    "log + return False" so the assertion daemon keeps running and the
+    operator's livestream is not affected by missing-rail conditions.
+
+    The ``--auto-mute-on-clipping`` flag is opt-in (default OFF) per
+    cc-task ``h1-signal-flow-daemon-add-auto-mute-flag-aligning-with-ssot-p5``;
+    the operator (or the spec's flip-on at P5 ship) is the authority for
+    whether an engagement attempt happens at all.
+    """
+    try:
+        from agents.pipewire_graph.safe_mute import SafeMuteRail
+    except ImportError:
+        log.warning(
+            "auto-mute-on-clipping requested but SafeMuteRail import failed; "
+            "SSOT P5 not yet shipped or path renamed (flag remains effective once "
+            "agents.pipewire_graph.safe_mute is available); event=%s/%s",
+            event.stage,
+            event.new_state,
+        )
+        return False
+    try:
+        rail = SafeMuteRail()
+        rail.engage()
+    except Exception:  # noqa: BLE001 — never propagate from the safety path
+        log.exception(
+            "auto-mute-on-clipping: SafeMuteRail.engage raised — leaving stream untouched"
+        )
+        return False
+    log.warning(
+        "auto-mute-on-clipping: SafeMuteRail engaged on %s → %s (was %s, sustained %.1fs)",
+        event.stage,
+        event.new_state,
+        event.previous_state,
+        event.sustained_for_s,
+    )
+    return True
+
+
 def _ntfy_event(event: TransitionEvent, *, anchor: str) -> None:
     """Page on transition into bad steady-state at the OBS-bound stage."""
     try:
@@ -434,6 +509,13 @@ def run_tick(
             state.last_events.append(event)
             if config.enable_ntfy and is_obs_bound:
                 _ntfy_event(event, anchor=config.runbook_anchor)
+            if (
+                config.auto_mute_on_clipping
+                and is_obs_bound
+                and event.new_state in SAFE_MUTE_TRIGGER_STATES
+            ):
+                if _engage_safe_mute(event):
+                    state.auto_mute_engagements += 1
 
     state.tick_count += 1
     write_snapshot(
@@ -583,6 +665,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Disable ntfy on transitions (probes + metrics still fire).",
     )
     parser.add_argument(
+        "--auto-mute-on-clipping",
+        action="store_true",
+        help=(
+            "Opt-in: engage the SSOT egress circuit-breaker's SafeMuteRail on "
+            "transitions into clipping or silent at the obs-bound stage. "
+            "Default OFF until SSOT P5 hardens the breaker (per spec §4.2 "
+            "G-spec-2). When ON, the daemon shares the breaker's mute path so "
+            "egress and signal-flow converge on a single auto-mute surface. "
+            "Operator framing: silence is better than noise on stream."
+        ),
+    )
+    parser.add_argument(
         "--no-discover",
         action="store_true",
         help="Skip pactl-based stage discovery; use static stages only.",
@@ -616,6 +710,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         config.enable_ntfy = False
     if args.no_discover:
         config.discover_stages = False
+    if args.auto_mute_on_clipping:
+        config.auto_mute_on_clipping = True
 
     if args.once:
         if config.discover_stages:
@@ -662,6 +758,7 @@ __all__ = [
     "DEFAULT_PROBE_INTERVAL_S",
     "DEFAULT_RUNBOOK_ANCHOR",
     "DEFAULT_SNAPSHOT_PATH",
+    "SAFE_MUTE_TRIGGER_STATES",
     "DaemonConfig",
     "DaemonState",
     "emit_metrics",

@@ -415,3 +415,226 @@ def test_format_event_message_handles_various_durations(duration):
     body = daemon._format_event_message(event, anchor="anchor")
     assert "noise" in body
     assert f"{duration:.1f}" in body
+
+
+# ---------------------------------------------------------------------------
+# --auto-mute-on-clipping flag (cc-task
+# h1-signal-flow-daemon-add-auto-mute-flag-aligning-with-ssot-p5)
+# ---------------------------------------------------------------------------
+
+
+def _run_obs_clipping_tick(
+    *,
+    config: daemon.DaemonConfig,
+    state: daemon.DaemonState,
+    probe_factory,
+    flag_path: Path,
+    now: float = 50.0,
+):
+    flag_path.write_text("on")
+    detector = TransitionDetector(
+        stage_names=config.stages,
+        clipping_sustain_s=0.0,
+        noise_sustain_s=0.0,
+        silence_sustain_s=0.0,
+    )
+    seq = iter([probe_factory("hapax-obs-broadcast-remap", now)])
+
+    def _fake_capture(stage, **_kwargs):
+        return next(seq)
+
+    with patch.object(daemon, "capture_and_measure", side_effect=_fake_capture):
+        with patch.object(daemon, "emit_metrics"):
+            with patch.object(daemon, "_ntfy_event"):
+                daemon.run_tick(
+                    config=config,
+                    detector=detector,
+                    state=state,
+                    probe_config=ProbeConfig(),
+                    classifier_config=ClassifierConfig(),
+                    now=now,
+                )
+
+
+def test_auto_mute_default_off_does_not_engage(tmp_path: Path):
+    """Status quo when SSOT P5 has not yet shipped: ntfy fires, no mute."""
+    snapshot_path = tmp_path / "signal-flow.json"
+    flag = tmp_path / "livestream-active"
+    config = daemon.DaemonConfig(
+        stages=("hapax-obs-broadcast-remap",),
+        snapshot_path=snapshot_path,
+        livestream_flag_path=flag,
+        enable_ntfy=True,
+        discover_stages=False,
+        clipping_sustain_s=0.0,
+    )
+    assert config.auto_mute_on_clipping is False  # documented default
+    state = daemon.DaemonState()
+
+    with patch.object(daemon, "_engage_safe_mute") as engage:
+        _run_obs_clipping_tick(
+            config=config,
+            state=state,
+            probe_factory=_clipping_probe,
+            flag_path=flag,
+        )
+
+    engage.assert_not_called()
+    assert state.auto_mute_engagements == 0
+
+
+def test_auto_mute_engages_on_clipping_when_flag_on(tmp_path: Path):
+    snapshot_path = tmp_path / "signal-flow.json"
+    flag = tmp_path / "livestream-active"
+    config = daemon.DaemonConfig(
+        stages=("hapax-obs-broadcast-remap",),
+        snapshot_path=snapshot_path,
+        livestream_flag_path=flag,
+        enable_ntfy=True,
+        discover_stages=False,
+        clipping_sustain_s=0.0,
+        auto_mute_on_clipping=True,
+    )
+    state = daemon.DaemonState()
+
+    with patch.object(daemon, "_engage_safe_mute", return_value=True) as engage:
+        _run_obs_clipping_tick(
+            config=config,
+            state=state,
+            probe_factory=_clipping_probe,
+            flag_path=flag,
+        )
+
+    engage.assert_called_once()
+    event = engage.call_args.args[0]
+    assert event.stage == "hapax-obs-broadcast-remap"
+    assert event.new_state == Classification.CLIPPING
+    assert state.auto_mute_engagements == 1
+
+
+def test_auto_mute_engages_on_silence_when_flag_on(tmp_path: Path):
+    snapshot_path = tmp_path / "signal-flow.json"
+    flag = tmp_path / "livestream-active"
+    config = daemon.DaemonConfig(
+        stages=("hapax-obs-broadcast-remap",),
+        snapshot_path=snapshot_path,
+        livestream_flag_path=flag,
+        enable_ntfy=True,
+        discover_stages=False,
+        silence_sustain_s=0.0,
+        auto_mute_on_clipping=True,
+    )
+    state = daemon.DaemonState()
+
+    with patch.object(daemon, "_engage_safe_mute", return_value=True) as engage:
+        _run_obs_clipping_tick(
+            config=config,
+            state=state,
+            probe_factory=_silent_probe,
+            flag_path=flag,
+        )
+
+    engage.assert_called_once()
+    assert engage.call_args.args[0].new_state == Classification.SILENT
+    assert state.auto_mute_engagements == 1
+
+
+def test_auto_mute_does_not_engage_on_non_obs_bound_stage(tmp_path: Path):
+    """Engagement gates on the obs-bound stage; pre-egress stages do not fire mute."""
+    snapshot_path = tmp_path / "signal-flow.json"
+    flag = tmp_path / "livestream-active"
+    flag.write_text("on")
+    config = daemon.DaemonConfig(
+        stages=("hapax-broadcast-master",),  # NOT the obs-bound stage
+        snapshot_path=snapshot_path,
+        livestream_flag_path=flag,
+        enable_ntfy=True,
+        discover_stages=False,
+        clipping_sustain_s=0.0,
+        auto_mute_on_clipping=True,
+    )
+    state = daemon.DaemonState()
+    detector = TransitionDetector(
+        stage_names=config.stages,
+        clipping_sustain_s=0.0,
+    )
+    seq = iter([_clipping_probe("hapax-broadcast-master", 50.0)])
+
+    def _fake_capture(stage, **_kwargs):
+        return next(seq)
+
+    with patch.object(daemon, "capture_and_measure", side_effect=_fake_capture):
+        with patch.object(daemon, "emit_metrics"):
+            with patch.object(daemon, "_ntfy_event"):
+                with patch.object(daemon, "_engage_safe_mute") as engage:
+                    daemon.run_tick(
+                        config=config,
+                        detector=detector,
+                        state=state,
+                        probe_config=ProbeConfig(),
+                        classifier_config=ClassifierConfig(),
+                        now=50.0,
+                    )
+
+    engage.assert_not_called()
+    assert state.auto_mute_engagements == 0
+
+
+def test_engage_safe_mute_returns_false_when_safemuterail_unavailable(monkeypatch):
+    """Lazy import is best-effort: ImportError → log + False, no exception."""
+    from agents.audio_signal_assertion.transitions import TransitionEvent
+
+    event = TransitionEvent(
+        stage="hapax-obs-broadcast-remap",
+        new_state=Classification.CLIPPING,
+        previous_state=Classification.MUSIC_VOICE,
+        detected_at=0.0,
+        sustained_for_s=2.0,
+    )
+
+    real_import = (
+        __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+    )
+
+    def _import_fail(name, *args, **kwargs):
+        if name == "agents.pipewire_graph.safe_mute":
+            raise ImportError("simulated: SSOT P5 not yet shipped")
+        return real_import(name, *args, **kwargs)
+
+    if isinstance(__builtins__, dict):
+        monkeypatch.setitem(__builtins__, "__import__", _import_fail)
+    else:
+        monkeypatch.setattr(__builtins__, "__import__", _import_fail)
+
+    assert daemon._engage_safe_mute(event) is False
+
+
+def test_auto_mute_on_clipping_in_safe_mute_trigger_states():
+    """Pin the trigger set: clipping + silent (per cc-task spec)."""
+    assert (
+        frozenset({Classification.CLIPPING, Classification.SILENT})
+        == daemon.SAFE_MUTE_TRIGGER_STATES
+    )
+    assert Classification.NOISE not in daemon.SAFE_MUTE_TRIGGER_STATES
+
+
+def test_auto_mute_flag_from_env(monkeypatch):
+    monkeypatch.setenv("HAPAX_AUDIO_SIGNAL_AUTO_MUTE_ON_CLIPPING", "1")
+    config = daemon.DaemonConfig.from_env()
+    assert config.auto_mute_on_clipping is True
+
+
+def test_auto_mute_flag_default_off_when_env_unset(monkeypatch):
+    monkeypatch.delenv("HAPAX_AUDIO_SIGNAL_AUTO_MUTE_ON_CLIPPING", raising=False)
+    config = daemon.DaemonConfig.from_env()
+    assert config.auto_mute_on_clipping is False
+
+
+def test_auto_mute_cli_flag_sets_config(tmp_path: Path, monkeypatch):
+    """The --auto-mute-on-clipping flag flows through to DaemonConfig.auto_mute_on_clipping."""
+    monkeypatch.delenv("HAPAX_AUDIO_SIGNAL_AUTO_MUTE_ON_CLIPPING", raising=False)
+    parser = daemon._build_parser()
+    args = parser.parse_args(["--once", "--auto-mute-on-clipping"])
+    assert args.auto_mute_on_clipping is True
+    args_off = parser.parse_args(["--once"])
+    assert args_off.auto_mute_on_clipping is False
