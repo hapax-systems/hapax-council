@@ -226,6 +226,19 @@ def _register_builtins() -> None:
         "ResearchInstrumentDashboardCairoSource",
         ResearchInstrumentDashboardCairoSource,
     )
+    # research-poster-ward-family-foundation (2026-05-05) — three
+    # opt-in poster-family wards adjacent to the LORE-EXT pattern.
+    # They are declarable from layout JSON but default OFF through their
+    # HAPAX_LORE_RESEARCH_POSTER_*_ENABLED flags.
+    from agents.studio_compositor.ascii_schematic_ward import ASCIISchematicWard
+    from agents.studio_compositor.constructivist_research_poster_ward import (
+        ConstructivistResearchPosterWard,
+    )
+    from agents.studio_compositor.tufte_density_ward import TufteDensityWard
+
+    register("ConstructivistResearchPosterWard", ConstructivistResearchPosterWard)
+    register("TufteDensityWard", TufteDensityWard)
+    register("ASCIISchematicWard", ASCIISchematicWard)
     # programme-banner-ward (PR #2366, 2026-05-03) — Cairo lower-third
     # surfacing the active programme's role + narrative_beat + residual
     # time. Per /tmp/wsjf-path-content-programming.md §3 G1: the planner
