@@ -337,7 +337,7 @@ def test_global_tunables_models_quantum_conf() -> None:
 
 
 def test_alsa_profile_pin_models_s4_usb_sink_conf() -> None:
-    """s4-usb-sink.conf decomposition (gap G-2)."""
+    """hapax-s4-usb-sink.conf decomposition (gap G-2)."""
     pin = AlsaProfilePin(
         card_match="~alsa_card.usb-Torso_Electronics_S-4*",
         profile="pro-audio",

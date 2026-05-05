@@ -21,9 +21,9 @@
 # Cc-task: `audio-audit-F-precommit-yaml-conf-gate`.
 
 orphans:
-  # Numbered PipeWire modules — load-order convention, not chain-modeled.
-  - 10-contact-mic.conf
-  - 99-hapax-quantum.conf
+  # Global / source-split PipeWire modules — not LADSPA chain-modeled.
+  - hapax-contact-mic.conf
+  - hapax-quantum.conf
 
   # Stream-routing wraps that the yaml represents as filter_chain
   # nodes with chain_kind=None (no LADSPA conf needed). The conf
@@ -57,7 +57,7 @@ orphans:
   # S-4 routing confs (s4-loopback, s4-usb-sink) — operator-monitor
   # path, not part of the yaml-modeled broadcast graph.
   - hapax-s4-loopback.conf
-  - s4-usb-sink.conf
+  - hapax-s4-usb-sink.conf
 
   # voice-fx variants — operator-curated voice-FX presets, not
   # yaml-modeled (the yaml has a single `voice-fx` chain stub).
@@ -71,7 +71,7 @@ orphans:
   # YouTube + backing-mix rate-routing helpers (24c hardware retired).
   - hapax-backing-ducked.conf  # renamed 2026-05-03 from hapax-yt-over-24c-duck.conf (24c retirement)
   - hapax-backing-ducked-sidechain.conf  # renamed 2026-05-03 from ytube-over-24c-duck.conf (24c retirement)
-  - voice-over-ytube-duck.conf
+  - hapax-voice-over-ytube-duck.conf
 
 known_missing:
   # tts-loudnorm + ytube-ducked are declared in audio-topology.yaml
@@ -80,9 +80,8 @@ known_missing:
   # known-missing so the gate ships clean, but the underlying audit
   # findings remain open.
   #
-  # 2026-05-03: hapax-yt-loudnorm.conf removed from this list (and
-  # `yt-loudnorm.conf` removed from orphans above) by the
-  # audit-E-conf-naming-unification slice that renamed
-  # `config/pipewire/yt-loudnorm.conf` → `hapax-yt-loudnorm.conf`.
+  # 2026-05-03: hapax-yt-loudnorm.conf removed from this list by the
+  # audit-E naming slice that renamed the old unprefixed yt-loudnorm
+  # file to `config/pipewire/hapax-yt-loudnorm.conf`.
   - hapax-tts-loudnorm.conf
   - hapax-ytube-ducked.conf

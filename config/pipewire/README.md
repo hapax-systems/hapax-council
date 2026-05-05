@@ -9,16 +9,27 @@ when you swap presets — only the filter graph does.
 
 | File | Character |
 |---|---|
-| `voice-fx-chain.conf` | Studio vocal chain: HP 80 Hz, low-mid cut 350 Hz, presence 3 kHz, air 10 kHz. Neutral-leaning clarity. |
+| `hapax-voice-fx-chain.conf` | Studio vocal chain: HP 80 Hz, low-mid cut 350 Hz, presence 3 kHz, air 10 kHz. Neutral-leaning clarity. |
 
-> Note: a `voice-fx-radio.conf` (telephone / AM-radio bandpass) preset was
+> Note: a `hapax-voice-fx-radio.conf` (telephone / AM-radio bandpass) preset was
 > removed 2026-05-03 along with the PreSonus Studio 24c retirement — its
 > hardcoded `target.object` pointed at a non-existent 24c sink. If a
-> radio-style preset is needed, fork `voice-fx-chain.conf` and replace
+> radio-style preset is needed, fork `hapax-voice-fx-chain.conf` and replace
 > the `filter.graph` nodes; do NOT pin a hardware target.
 
-Add new presets by dropping another `voice-fx-*.conf` next to these, keeping
+Add new presets by dropping another `hapax-voice-fx-*.conf` next to these, keeping
 the capture sink name `hapax-voice-fx-capture`.
+
+## Naming Rule
+
+Deployable hand-authored PipeWire files in this directory must be named
+`hapax-*.conf`. The pre-commit hook `audio-conf-names` runs
+`scripts/check-audio-conf-names.py` against top-level
+`config/pipewire/*.conf` files, so load-order knobs and special-purpose
+rules use descriptive Hapax names such as `hapax-quantum.conf`,
+`hapax-contact-mic.conf`, and `hapax-s4-usb-sink.conf`. Generated
+compiler artifacts under `config/pipewire/generated/` are intentionally
+outside this rule; the audio-routing compiler owns those filenames.
 
 ## Install
 
@@ -26,7 +37,7 @@ Only **one** preset may be installed at a time — they collide on the sink
 name. To install a preset:
 
 ```fish
-cp config/pipewire/voice-fx-chain.conf ~/.config/pipewire/pipewire.conf.d/
+cp config/pipewire/hapax-voice-fx-chain.conf ~/.config/pipewire/pipewire.conf.d/
 systemctl --user restart pipewire pipewire-pulse wireplumber
 pactl list short sinks | grep hapax-voice-fx
 ```
@@ -50,7 +61,7 @@ routing — the FX chain is fully opt-in.
 
 ## Operator-voice-over-YouTube ducker (LRR Phase 9 §3.8)
 
-`voice-over-ytube-duck.conf` is a *different shape* from the TTS presets
+`hapax-voice-over-ytube-duck.conf` is a *different shape* from the TTS presets
 above — it lives in the same directory for convenience, but it operates
 on a separate sink (`hapax-ytube-ducked`) that OBS / browsers target
 for the YouTube music bed. A sidechain compressor driven by the operator
@@ -59,7 +70,7 @@ mic attenuates the bed when the operator speaks.
 Install + verify:
 
 ```fish
-cp config/pipewire/voice-over-ytube-duck.conf ~/.config/pipewire/pipewire.conf.d/
+cp config/pipewire/hapax-voice-over-ytube-duck.conf ~/.config/pipewire/pipewire.conf.d/
 systemctl --user restart pipewire pipewire-pulse wireplumber
 pactl list short sinks | grep hapax-ytube-ducked
 ```
@@ -75,7 +86,7 @@ Depends on the `sc4m_1916` LADSPA plugin (``swh-plugins`` on Arch).
 ## YouTube → backing-mix ducker (CVS #145)
 
 `hapax-backing-ducked.conf` is the symmetric partner of
-`voice-over-ytube-duck.conf`: it creates a `hapax-backing-ducked` sink
+`hapax-voice-over-ytube-duck.conf`: it creates a `hapax-backing-ducked` sink
 that the Python `AudioDuckingController` modulates when YouTube/React
 audio is active, so the backing bed ducks under the YT content (operator
 has said "pull the backing down while the video plays").
@@ -165,7 +176,7 @@ as the sink target in pavucontrol or via a wireplumber rule pinning
 
 ## S-4 USB device profile pin (dual-fx-routing Phase 1)
 
-`s4-usb-sink.conf` is a wireplumber-style `monitor.alsa.rules` block
+`hapax-s4-usb-sink.conf` is a wireplumber-style `monitor.alsa.rules` block
 that pins the Elektron Torso S-4 USB audio device to its `pro-audio`
 ALSA profile. Without this rule, the default `analog-stereo` profile
 collapses everything to a single stereo pair and the dual-FX router
@@ -175,7 +186,7 @@ collapses everything to a single stereo pair and the dual-FX router
 Install + verify (with the S-4 plugged in):
 
 ```fish
-cp config/pipewire/s4-usb-sink.conf ~/.config/pipewire/pipewire.conf.d/
+cp config/pipewire/hapax-s4-usb-sink.conf ~/.config/pipewire/pipewire.conf.d/
 systemctl --user restart pipewire pipewire-pulse wireplumber
 pactl list short cards | grep -i torso
 pactl list cards | grep -A 3 'Active Profile' | grep -i 'pro-audio'
@@ -188,7 +199,7 @@ the router has individually-addressable destinations.
 
 ## YT bed loudness normalisation (B2 / H#13)
 
-`yt-loudnorm.conf` creates a stereo `hapax-yt-loudnorm` sink that
+`hapax-yt-loudnorm.conf` creates a stereo `hapax-yt-loudnorm` sink that
 operators route YouTube media-bed sources through BEFORE the
 voice-over-ytube ducker. Targets -16 LUFS integrated / -1.5 dBTP
 true-peak per audit spec §3.4.
@@ -197,14 +208,14 @@ Signal chain:
 
 ```
 YT browser/OBS media source → hapax-yt-loudnorm (this conf) →
-  hapax-ytube-ducked (voice-over-ytube-duck.conf) → default stereo
+  hapax-ytube-ducked (hapax-voice-over-ytube-duck.conf) → default stereo
 ```
 
 Install (deploy both confs together):
 
 ```fish
 cp config/pipewire/hapax-yt-loudnorm.conf ~/.config/pipewire/pipewire.conf.d/
-cp config/pipewire/voice-over-ytube-duck.conf ~/.config/pipewire/pipewire.conf.d/
+cp config/pipewire/hapax-voice-over-ytube-duck.conf ~/.config/pipewire/pipewire.conf.d/
 systemctl --user restart pipewire pipewire-pulse wireplumber
 pactl list short sinks | grep -E "hapax-yt-loudnorm|hapax-ytube-ducked"
 ```

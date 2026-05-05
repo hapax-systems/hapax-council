@@ -306,7 +306,7 @@ routes:
       - tts
     generated_artifact_owner: hand_mirrored
     artifact_refs:
-      - config/pipewire/s4-usb-sink.conf
+      - config/pipewire/hapax-s4-usb-sink.conf
       - config/pipewire/hapax-s4-loopback.conf
 
   - source_id: m8-instrument
@@ -410,7 +410,7 @@ artifacts:
     status: hand_mirrored
     owner: config/audio-routing.yaml#l12-evilpet-capture
     reason: Narrowed L-12 capture is policy-bearing and mirrored from topology until route generator parity.
-  - path: config/pipewire/s4-usb-sink.conf
+  - path: config/pipewire/hapax-s4-usb-sink.conf
     status: non_round_trippable
     owner: config/audio-routing.yaml#s4-content
     reason: S-4 hardware endpoint depends on live enumeration and host profile; policy row owns eligibility but conf generation waits.

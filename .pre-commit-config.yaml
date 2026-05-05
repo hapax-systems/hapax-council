@@ -49,3 +49,9 @@ repos:
         language: system
         files: ^(config/audio-topology\.yaml|config/audio-conf-allowlist\.yaml|config/pipewire/.*\.conf)$
         pass_filenames: false
+      - id: audio-conf-names
+        name: Audio conf hapax-prefix naming gate (audit E)
+        entry: uv run python scripts/check-audio-conf-names.py
+        language: system
+        files: ^(config/pipewire/[^/]+\.conf|scripts/check-audio-conf-names\.py)$
+        pass_filenames: false

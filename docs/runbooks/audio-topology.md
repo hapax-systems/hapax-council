@@ -30,7 +30,7 @@ monitor); it is not a PipeWire source.
 | PipeWire node / name                                     | Consumer                                                       | Notes                                                              |
 |----------------------------------------------------------|----------------------------------------------------------------|--------------------------------------------------------------------|
 | `alsa_output.usb-PreSonus_Studio_24c...`                 | Studio monitors (default sink)                                 | Kokoro TTS lands here when `HAPAX_TTS_TARGET` is unset.            |
-| `hapax-voice-fx-capture` *(virtual, optional)*           | TTS FX chain (`voice-fx-chain.conf` / `voice-fx-radio.conf`)   | Installed only if operator opts in. See `config/pipewire/README.md`. |
+| `hapax-voice-fx-capture` *(virtual, optional)*           | TTS FX chain (`hapax-voice-fx-chain.conf`)                     | Installed only if operator opts in. See `config/pipewire/README.md`. |
 | `hapax-ytube-ducked` *(virtual)*                         | OBS / browser YouTube bed                                      | LADSPA sidechain; operator voice ducks the bed.                    |
 | `hapax-24c-ducked` *(virtual, optional)*                 | Studio 24c backing sources (DAW returns, synth strip)          | Driven by `AudioDuckingController` FSM; ducks backing when YT audio is active. CVS #145. |
 | `echo_cancel_sink` *(virtual)*                           | `module-echo-cancel` reference                                 | Receives default-sink audio so AEC knows what to subtract.         |

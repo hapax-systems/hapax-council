@@ -4,7 +4,7 @@ A bidirectional audio ducking controller for the broadcast backing mix
 (DAW returns, synth strips, MPC pads — historically the PreSonus Studio
 24c hardware before its 2026-05 retirement). Complements the
 operator-voice-over-YouTube sidechain compressor shipped via
-``config/pipewire/voice-over-ytube-duck.conf`` (VAD + VAD-driven ramp)
+``config/pipewire/hapax-voice-over-ytube-duck.conf`` (VAD + VAD-driven ramp)
 with a state machine that couples:
 
 * **Voice activity** — operator speaking (from ``vad_ducking.VOICE_STATE_FILE``).
