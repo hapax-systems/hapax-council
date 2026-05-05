@@ -2490,3 +2490,14 @@ from agents.playwright_grant_submission_runner.framing import FramedPackage
 FramedPackage.framed_abstract
 FramedPackage.framed_problem_statement
 FramedPackage.framed_approach
+
+# cc-task ``eu-ai-act-art-50-c2pa-watermark-fingerprint-mvp`` (2026-05-05).
+# Pydantic invokes the request validators reflectively, and the webhook
+# receiver/route integration calls the idempotency store through the dispatcher
+# path; vulture's production-only scan cannot see either dynamic call path yet.
+from agents.art_50_provenance.models import Art50CredentialRequest as _Art50CredentialRequest
+from agents.art_50_provenance.webhook import MemoryIdempotencyStore as _Art50IdempotencyStore
+
+_Art50CredentialRequest._no_obvious_pii
+_Art50CredentialRequest._domain_shape
+_Art50IdempotencyStore.accept_once

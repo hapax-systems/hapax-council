@@ -335,6 +335,25 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
         api="Playwright",
         scope_note="bootstrap login via Playwright session daemon (one-time)",
     ),
+    "art-50-credential-issue": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="local+webhook",
+        dispatch_entry="agents.art_50_provenance:issue_image_credential",
+        activation_path="agents.art_50_provenance after one-time signer/credential bootstrap",
+        scope_note=(
+            "image-only Article 50 credential issue path; fully daemon-side after "
+            "operator bootstraps C2PA claim signer, Zenodo/IA credentials, and "
+            "customer webhook secret. Missing bootstrap returns machine-readable "
+            "blocked/pending_substrate state, not a trusted claim."
+        ),
+    ),
+    "art-50-credential-verify": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="REST",
+        dispatch_entry="logos.api.routes.art_50_credentials:verify_credential_v1",
+        activation_path="logos :8051 /v1/credential/verify/{credential_id}",
+        scope_note="read-only local certificate packet verification; no external callout",
+    ),
     "youtube-live-chat-message": SurfaceSpec(
         automation_status=AutomationStatus.CONDITIONAL_ENGAGE,
         api="YouTube Data API v3",

@@ -960,6 +960,7 @@ except Exception:
 
 from logos.api.routes.accommodations import router as accommodations_router
 from logos.api.routes.agents import router as agents_router
+from logos.api.routes.art_50_credentials import router as art_50_credentials_router
 from logos.api.routes.awareness import router as awareness_router
 from logos.api.routes.cbip import router as cbip_router
 from logos.api.routes.chat import router as chat_router
@@ -998,6 +999,7 @@ from logos.api.routes.x402 import router as x402_router
 app.include_router(data_router)
 app.include_router(nudges_router)
 app.include_router(agents_router)
+app.include_router(art_50_credentials_router)
 app.include_router(chat_router)
 app.include_router(profile_router)
 app.include_router(accommodations_router)
