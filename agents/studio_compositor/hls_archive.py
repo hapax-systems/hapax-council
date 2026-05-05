@@ -35,12 +35,21 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from agents.art_50_provenance.livestream import (
+    DEFAULT_STREAM_ID,
+    LiveSegmentSigner,
+    LiveSegmentSigningResult,
+    load_signer_from_env,
+    sign_live_segment,
+    write_signed_segment,
+)
 from shared.stream_archive import (
     SegmentSidecar,
     atomic_write_json,
@@ -67,6 +76,21 @@ DEFAULT_STIMMUNG_PATH = Path("/dev/shm/hapax-daimonion/current.json")
 
 DEFAULT_CONDITION_POINTER = Path.home() / "hapax-state" / "research-registry" / "current.txt"
 """Research registry active condition pointer (Phase 1 item 8)."""
+
+DEFAULT_ART50_LIVE_SIGNING_ENABLED = True
+"""Attempt C2PA live VSI signing sidecars during HLS rotation by default.
+
+Current production HLS is MPEG-TS, so this records explicit fail-closed
+``blocked_not_bmff`` sidecars without mutating segment bytes. When the HLS sink
+is upgraded to fMP4/CMAF, the same hook signs BMFF media segments in place if a
+live session signer is configured.
+"""
+
+DEFAULT_ART50_STREAM_ID = DEFAULT_STREAM_ID
+"""Stream identifier carried in the Article 50 live segment sidecar."""
+
+HLS_MEDIA_SUFFIXES = (".ts", ".m4s")
+"""Closed HLS media segment suffixes handled by the rotator."""
 
 
 @dataclass(frozen=True)
@@ -247,6 +271,11 @@ def rotate_segment(
         stimmung=stimmung,
     )
     atomic_write_json(sidecar_path_for(new_path), sidecar.to_json())
+    maybe_sign_archived_hls_segment(
+        new_path,
+        target_duration_seconds=target_duration_seconds,
+        stream_id=DEFAULT_ART50_STREAM_ID,
+    )
     return new_path
 
 
@@ -296,7 +325,7 @@ def rotate_pass(
     skipped_already_rotated = 0
     errors: list[str] = []
 
-    for segment_path in sorted(effective_source.glob("*.ts")):
+    for segment_path in _iter_hls_media_segments(effective_source):
         scanned += 1
         if not is_segment_stable(segment_path, now_ts=now_ts, window_seconds=window_seconds):
             skipped_unstable += 1
@@ -365,15 +394,106 @@ def rotate_pass(
     )
 
 
+def c2pa_sidecar_path_for(segment_path: Path) -> Path:
+    """Return the Article 50 live C2PA sidecar path for an archived segment."""
+
+    return segment_path.with_suffix(segment_path.suffix + ".c2pa")
+
+
+def art50_live_signing_enabled() -> bool:
+    """Return whether the C2PA live-signing hook should run."""
+
+    raw = os.environ.get("HAPAX_ART50_LIVE_SIGNING")
+    if raw is None:
+        return DEFAULT_ART50_LIVE_SIGNING_ENABLED
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def maybe_sign_archived_hls_segment(
+    segment_path: Path,
+    *,
+    target_duration_seconds: float = DEFAULT_TARGET_DURATION_SECONDS,
+    stream_id: str = DEFAULT_ART50_STREAM_ID,
+    signer: LiveSegmentSigner | None = None,
+) -> LiveSegmentSigningResult | None:
+    """Sign/record Article 50 C2PA live VSI status for an archived HLS segment."""
+
+    if not art50_live_signing_enabled():
+        return None
+    try:
+        return sign_archived_hls_segment(
+            segment_path,
+            target_duration_seconds=target_duration_seconds,
+            stream_id=stream_id,
+            signer=signer,
+        )
+    except Exception:
+        log.debug("Article 50 live C2PA signing hook failed for %s", segment_path, exc_info=True)
+        return None
+
+
+def sign_archived_hls_segment(
+    segment_path: Path,
+    *,
+    target_duration_seconds: float = DEFAULT_TARGET_DURATION_SECONDS,
+    stream_id: str = DEFAULT_ART50_STREAM_ID,
+    signer: LiveSegmentSigner | None = None,
+) -> LiveSegmentSigningResult:
+    """Run C2PA live VSI signing for one archived HLS segment.
+
+    Signed BMFF media segments are replaced in place. MPEG-TS segments are not
+    mutated; their ``.c2pa`` sidecar records the explicit fail-closed state.
+    """
+
+    segment_bytes = segment_path.read_bytes()
+    effective_signer = signer if signer is not None else load_signer_from_env()
+    result = sign_live_segment(
+        segment_bytes,
+        signer=effective_signer,
+        stream_id=stream_id,
+        sequence_number=_sequence_number_from_segment_name(segment_path),
+        target_duration_seconds=target_duration_seconds,
+    )
+    if result.signed and result.output_bytes != segment_bytes:
+        write_signed_segment(segment_path, result)
+    payload = result.to_sidecar_payload()
+    payload["segment_path"] = str(segment_path)
+    payload["sidecar_kind"] = "art50_c2pa_live_vsi"
+    payload["segment_suffix"] = segment_path.suffix
+    atomic_write_json(
+        c2pa_sidecar_path_for(segment_path), json.dumps(payload, indent=2, sort_keys=True)
+    )
+    return result
+
+
+def _sequence_number_from_segment_name(segment_path: Path) -> int | None:
+    digits = "".join(ch for ch in segment_path.stem if ch.isdigit())
+    return int(digits) if digits else None
+
+
+def _iter_hls_media_segments(source_dir: Path) -> list[Path]:
+    paths: list[Path] = []
+    for suffix in HLS_MEDIA_SUFFIXES:
+        paths.extend(source_dir.glob(f"*{suffix}"))
+    return sorted(paths)
+
+
 __all__ = [
     "DEFAULT_STABLE_MTIME_WINDOW_SECONDS",
     "DEFAULT_TARGET_DURATION_SECONDS",
     "DEFAULT_HLS_SOURCE_DIR",
     "DEFAULT_STIMMUNG_PATH",
     "DEFAULT_CONDITION_POINTER",
+    "DEFAULT_ART50_LIVE_SIGNING_ENABLED",
+    "DEFAULT_ART50_STREAM_ID",
+    "HLS_MEDIA_SUFFIXES",
     "RotationResult",
+    "art50_live_signing_enabled",
     "build_sidecar",
+    "c2pa_sidecar_path_for",
     "is_segment_stable",
+    "maybe_sign_archived_hls_segment",
     "rotate_pass",
     "rotate_segment",
+    "sign_archived_hls_segment",
 ]
