@@ -1,0 +1,55 @@
+slug: polysemic-7-channel-artifact-compounder
+title: "Refused: single-channel refusal artifacts as sufficient public evidence"
+doi: null
+publication_state: repository_published
+external_publication_state: not_minted
+byline_variant: V5
+unsettled_variant: V5
+non_engagement_form: LONG
+surfaces_targeted:
+  - zenodo-refusal-deposit
+surfaces_landed:
+  - repository
+published_at: "2026-05-05T03:28:57Z"
+polysemic_audit_passed: true
+braid:
+  schema: 1.1
+  score: 5.20
+  channel_bonus: 0.70
+  polysemic_channels:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+channels:
+  - id: 1
+    name: visual
+    artifact_surface: visual-map.svg
+    evidence: "Seven-node refusal map: each decoder channel is a visible node."
+  - id: 2
+    name: sonic
+    artifact_surface: sonic-score.txt
+    evidence: "A renderable three-pulse earcon score encodes refuse, compound, attest."
+  - id: 3
+    name: linguistic
+    artifact_surface: source.md
+    evidence: "The refusal prose names the declined single-channel posture."
+  - id: 4
+    name: typographic
+    artifact_surface: source.md
+    evidence: "The source uses an explicit seven-row typographic channel ledger."
+  - id: 5
+    name: structural-form
+    artifact_surface: metadata.yaml
+    evidence: "The directory shape separates source, metadata, evidence, visual, and sonic files."
+  - id: 6
+    name: marker-as-membership
+    artifact_surface: metadata.yaml
+    evidence: "The stable slug and channel ids act as repeatable membership markers."
+  - id: 7
+    name: authorship
+    artifact_surface: attribution.yaml
+    evidence: "The attribution record keeps authorship indeterminacy visible."

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# install-voice-fx-ducking.sh — install voice-over-ytube-duck.conf + restart pipewire
+# install-voice-fx-ducking.sh — install hapax-voice-over-ytube-duck.conf + restart pipewire
 #
-# Audit-closeout 4.4: voice-over-ytube-duck.conf was missing from
+# Audit-closeout 4.4: hapax-voice-over-ytube-duck.conf was missing from
 # ~/.config/pipewire/pipewire.conf.d/. The audio-ducking FSM works at the
 # Python layer (AudioDuckingController + youtube-player wpctl tick), but
 # without this PipeWire sidechain conf the sink-level gain modulation
@@ -17,9 +17,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC="${REPO_ROOT}/config/pipewire/voice-over-ytube-duck.conf"
+SRC="${REPO_ROOT}/config/pipewire/hapax-voice-over-ytube-duck.conf"
 DEST_DIR="${HOME}/.config/pipewire/pipewire.conf.d"
-DEST="${DEST_DIR}/voice-over-ytube-duck.conf"
+DEST="${DEST_DIR}/hapax-voice-over-ytube-duck.conf"
 
 [ -f "$SRC" ] || { echo "missing source: $SRC" >&2; exit 1; }
 

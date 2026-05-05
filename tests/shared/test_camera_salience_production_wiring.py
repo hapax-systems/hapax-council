@@ -252,6 +252,11 @@ class TestProducerWiring:
 
     @patch("shared.camera_salience_singleton.broker")
     def test_ir_report_helper_ingests_registered_desk_pi(self, mock_broker_fn):
+        # cc-task: bayesian-camera-salience-runtime-aperture-coverage —
+        # both ``desk`` and ``room`` are now canonical-aperture-mapped
+        # (along with ``overhead``); both reports ingest into the broker.
+        # An unregistered Pi name (e.g. ``pi-noir-archive``) still
+        # fail-closes.
         from agents.hapax_daimonion.backends.ir_presence import (
             _ingest_camera_salience_reports,
         )
@@ -275,10 +280,16 @@ class TestProducerWiring:
             }
         )
 
-        assert ingested == 1
-        envelope = mock_singleton.ingest.call_args.args[0]
-        assert envelope.aperture_id == "aperture:studio-ir.noir-desk"
-        assert envelope.evidence_class == EvidenceClass.IR_PRESENCE
+        assert ingested == 2
+        ingested_apertures = {
+            call.args[0].aperture_id for call in mock_singleton.ingest.call_args_list
+        }
+        assert ingested_apertures == {
+            "aperture:studio-ir.noir-desk",
+            "aperture:studio-ir.noir-room",
+        }
+        for call in mock_singleton.ingest.call_args_list:
+            assert call.args[0].evidence_class == EvidenceClass.IR_PRESENCE
 
     @patch("shared.camera_salience_singleton.broker")
     def test_cross_camera_stitcher_ingests_top_merge_suggestion(self, mock_broker_fn):

@@ -27,11 +27,10 @@ Drift in either direction fails the gate.
 classes:
 
 * **`orphans`** — confs on disk with no yaml backing. Legitimate
-  cases include numbered PipeWire modules (`10-`, `99-`), legacy
-  rollback confs (`hapax-l6-evilpet-capture.conf`), voice-fx variants
-  the yaml doesn't model yet (`voice-fx-loudnorm.conf`), and naming
-  outliers (`yt-loudnorm.conf` — tracked under
-  `audio-audit-E-conf-naming-unification`).
+  cases include global PipeWire knobs (`hapax-quantum.conf`), legacy
+  rollback confs (`hapax-l6-evilpet-capture.conf`), and voice-fx
+  variants the yaml doesn't model yet
+  (`hapax-voice-fx-loudnorm.conf`).
 
 * **`known_missing`** — confs the yaml declares but disk lacks. These
   represent open audit follow-on tasks; the gate accepts them so it

@@ -522,7 +522,7 @@ class AudioLink(BaseModel):
 class GlobalTunables(BaseModel):
     """PipeWire ``context.properties`` tunables (gap G-1).
 
-    Models ``10-voice-quantum.conf`` / ``99-hapax-quantum.conf``.
+    Models ``10-voice-quantum.conf`` / ``hapax-quantum.conf``.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -542,7 +542,7 @@ class GlobalTunables(BaseModel):
 class AlsaProfilePin(BaseModel):
     """Profile-pinning rule on an ALSA card (gaps G-2 + G-17 partial).
 
-    ``s4-usb-sink.conf`` pins the S-4 to its ``pro-audio`` profile so
+    ``hapax-s4-usb-sink.conf`` pins the S-4 to its ``pro-audio`` profile so
     all 10 channels enumerate. ``60-ryzen-analog-always.conf`` pins
     the Ryzen HDA to ``analog-stereo``.
     """

@@ -709,7 +709,7 @@ def _decompose_pipewire_conf(
         gaps.inferred_models.append(f"GlobalTunables from {path.name}")
 
     # Wireplumber-style monitor.alsa.rules sometimes live in pipewire.conf.d
-    # (gap G-2): s4-usb-sink.conf is the canonical example.
+    # (gap G-2): hapax-s4-usb-sink.conf is the canonical example.
     if _WP_MONITOR_ALSA_RULES_RE.search(text):
         for match in _WP_DEVICE_NAME_MATCH_RE.finditer(text):
             card_match = match.group(1)

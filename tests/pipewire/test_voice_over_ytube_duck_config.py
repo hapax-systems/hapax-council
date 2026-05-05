@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 CONFIG_PATH = (
-    Path(__file__).resolve().parents[2] / "config" / "pipewire" / "voice-over-ytube-duck.conf"
+    Path(__file__).resolve().parents[2] / "config" / "pipewire" / "hapax-voice-over-ytube-duck.conf"
 )
 
 
