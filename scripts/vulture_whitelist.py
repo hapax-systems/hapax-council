@@ -2476,3 +2476,17 @@ from agents.pipewire_graph.safe_mute import SafeMuteRail as _PipewireGraphSafeMu
 
 _PipewireGraphSafeMuteRail.engage
 _PipewireGraphSafeMuteRail.disengage
+
+# cc-task ``immediate-q2-2026-grant-submission-batch`` (2026-05-04).
+# FramedPackage properties are dispatched by recipe modules at
+# submission time (NLnet / Manifund / etc. recipes resolve the
+# operator's framing via framing_for_recipe + apply_framing, then
+# read framed_abstract / framed_problem_statement / framed_approach
+# off the FramedPackage). vulture cannot see the recipe-side reads
+# because they are dynamically resolved through the runner's
+# dispatch_for_recipe() lookup.
+from agents.playwright_grant_submission_runner.framing import FramedPackage
+
+FramedPackage.framed_abstract
+FramedPackage.framed_problem_statement
+FramedPackage.framed_approach
