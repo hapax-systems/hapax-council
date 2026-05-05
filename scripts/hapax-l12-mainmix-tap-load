@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Load the H5 Phase 2 secondary L-12 AUX10/AUX11 -> OBS A/B tap loopback.
+#
+# This is intentionally a software-side, read-only capture of the existing
+# L-12 multichannel USB source. It never changes the L-12 hardware scene,
+# ALSA profile, mixer levels, or the live RTMP route.
+
+set -euo pipefail
+
+L12_SOURCE="${HAPAX_L12_MAINMIX_SOURCE:-alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input}"
+TAP_SINK="${HAPAX_L12_MAINMIX_TAP_SINK:-hapax-obs-broadcast-mainmix-tap}"
+LOOPBACK_NAME="${HAPAX_L12_MAINMIX_LOOPBACK_NAME:-hapax-l12-mainmix-tap-loopback}"
+
+log() { echo "hapax-l12-mainmix-tap-load: $*"; }
+err() { echo "hapax-l12-mainmix-tap-load: $*" >&2; }
+
+wait_for_source() {
+    local source="$1"
+    for _ in $(seq 1 30); do
+        if pactl list sources short | awk '{print $2}' | grep -Fxq "$source"; then
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
+wait_for_sink() {
+    local sink="$1"
+    for _ in $(seq 1 30); do
+        if pactl list sinks short | awk '{print $2}' | grep -Fxq "$sink"; then
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
+if ! wait_for_source "$L12_SOURCE"; then
+    err "L-12 multichannel source not present after 60s; refusing to load"
+    err "source=${L12_SOURCE}"
+    exit 0
+fi
+
+if pactl list sinks short | awk '{print $2}' | grep -Fxq "$TAP_SINK"; then
+    log "null-sink '${TAP_SINK}' already exists"
+else
+    log "loading null-sink '${TAP_SINK}'..."
+    pactl load-module module-null-sink \
+        sink_name="${TAP_SINK}" \
+        sink_properties="device.description='Hapax L-12 Mainmix A/B Tap (monitor-only)' media.class=Audio/Sink" \
+        channels=2 \
+        channel_map=front-left,front-right
+fi
+
+if ! wait_for_sink "$TAP_SINK"; then
+    err "tap sink '${TAP_SINK}' not present after load; aborting"
+    exit 1
+fi
+
+existing_loopback=$(pactl list modules 2>/dev/null | awk -v src="$L12_SOURCE" -v sink="$TAP_SINK" '
+    /^Module #/{idx=substr($2,2); is_lb=0}
+    /^\tName: module-loopback/{is_lb=1; next}
+    /^\tName:/{is_lb=0}
+    is_lb && $0 ~ src && $0 ~ sink {print idx; is_lb=0}
+')
+
+if [ -n "$existing_loopback" ]; then
+    log "loopback already loaded (id=${existing_loopback}); nothing to do"
+    exit 0
+fi
+
+log "loading loopback: ${L12_SOURCE} AUX10/AUX11 -> ${TAP_SINK}..."
+loaded_id=$(pactl load-module module-loopback \
+    source="${L12_SOURCE}" \
+    sink="${TAP_SINK}" \
+    channels=2 \
+    channel_map=front-left,front-right \
+    source_dont_move=true \
+    sink_dont_move=true \
+    remix=false \
+    latency_msec=20 \
+    source_output_properties="media.name='${LOOPBACK_NAME} capture AUX10/AUX11' audio.position='[ AUX10 AUX11 ]' stream.dont-remix=true node.dont-reconnect=true node.passive=true" \
+    sink_input_properties="media.name='${LOOPBACK_NAME} playback monitor-only' audio.position='[ FL FR ]' node.dont-reconnect=true")
+
+loaded_arg=$(pactl list modules 2>/dev/null | awk -v m="Module #${loaded_id}" '
+    $0 == m {found=1; next}
+    found && /^\tArgument:/{print; exit}
+')
+
+if ! echo "$loaded_arg" | grep -q "$L12_SOURCE" || ! echo "$loaded_arg" | grep -q "$TAP_SINK"; then
+    err "post-load verification FAILED; module ${loaded_id} did not bind source and sink"
+    err "argument was: $loaded_arg"
+    pactl unload-module "$loaded_id"
+    exit 1
+fi
+
+if ! echo "$loaded_arg" | grep -q "AUX10" || ! echo "$loaded_arg" | grep -q "AUX11"; then
+    err "post-load verification FAILED; module ${loaded_id} did not retain AUX10/AUX11 binding"
+    err "argument was: $loaded_arg"
+    pactl unload-module "$loaded_id"
+    exit 1
+fi
+
+log "loopback loaded: id=${loaded_id} source=${L12_SOURCE} positions=AUX10/AUX11 sink=${TAP_SINK}"

@@ -33,6 +33,7 @@ orphans:
   - hapax-l12-evilpet-capture.conf
   - hapax-livestream-duck.conf
   - hapax-livestream-tap.conf
+  - hapax-l12-mainmix-tap.conf  # H5 P2 monitor-only null-sink; topology node is kind=tap, loopback is systemd/pactl-owned.
   - hapax-notification-private.conf
   - hapax-obs-broadcast-remap.conf
   - hapax-private-monitor-bridge.conf

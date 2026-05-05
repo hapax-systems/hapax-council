@@ -1,0 +1,20 @@
+[Unit]
+Description=Hapax L-12 mainmix secondary A/B tap loopback
+Documentation=file:///home/hapax/projects/hapax-council/docs/superpowers/specs/2026-05-03-audio-graph-ssot-and-router-daemon-design.md
+# H5 Phase 2 only: creates a monitor-only secondary tap from the existing
+# L-12 AUX10/AUX11 USB capture pair into hapax-obs-broadcast-mainmix-tap.
+# It does not change L-12 hardware state and does not feed RTMP.
+After=pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire.service pipewire-pulse.service wireplumber.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-%h/.config/hapax/l12-mainmix-tap.env
+ExecStart=%h/projects/hapax-council/scripts/hapax-l12-mainmix-tap-load
+TimeoutStartSec=90s
+TimeoutStopSec=10s
+
+[Install]
+WantedBy=default.target

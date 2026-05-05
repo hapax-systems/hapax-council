@@ -260,6 +260,49 @@ nodes:
       playback_target: hapax-livestream-tap
       playback_node_passive: false
 
+  # H5 Phase 2: secondary L-12 USB-IN A/B tap. This is monitor-only and
+  # never feeds the RTMP path; OBS may add it as a muted secondary source
+  # for 7-day software-vs-L-12 comparison.
+  - id: l12-mainmix-capture
+    kind: filter_chain
+    pipewire_name: hapax-l12-mainmix-capture
+    description: L-12 AUX10/AUX11 secondary broadcast A/B capture, monitor-only
+    target_object: alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      capture_channels: 2
+      capture_positions: AUX10 AUX11
+      source_channel_identity: CH11/CH12 PC line-out pair in BROADCAST-V2
+      playback_target: hapax-obs-broadcast-mainmix-tap
+      stream.dont-remix: true
+      state.restore: false
+      node.dont-reconnect: true
+      source_dont_move: true
+      sink_dont_move: true
+      monitor_only: true
+      secondary_obs_source: true
+      no_rtmp_egress: true
+      operator_obs_mute_required: true
+      systemd_unit: hapax-l12-mainmix-tap-loopback.service
+
+  - id: obs-broadcast-mainmix-tap
+    kind: tap
+    pipewire_name: hapax-obs-broadcast-mainmix-tap
+    description: OBS-visible L-12 mainmix A/B monitor tap, muted secondary source only
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      monitor.passthrough: true
+      monitor_only: true
+      secondary_obs_source: true
+      no_rtmp_egress: true
+      operator_obs_mute_required: true
+      apply_via_pactl_load: true
+      systemd_unit: hapax-l12-mainmix-tap-loopback.service
+
   # Broadcast master / limiter / OBS source chain.
   - id: broadcast-master-capture
     kind: filter_chain
@@ -594,6 +637,12 @@ edges:
   # Live edges the inspector can observe directly.
   - source: l12-capture
     target: l12-evilpet-capture
+
+  - source: l12-capture
+    target: l12-mainmix-capture
+
+  - source: l12-mainmix-capture
+    target: obs-broadcast-mainmix-tap
 
   - source: livestream-tap
     target: broadcast-master-capture
