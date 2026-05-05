@@ -29,7 +29,11 @@ Operating law (cc-task §"Best-Version Synthesis"):
 from __future__ import annotations
 
 import enum
+import logging
 from dataclasses import dataclass, field
+from typing import Any
+
+log = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────
 
@@ -179,6 +183,15 @@ class GateResult:
     """Short human-readable summary; complements ``blockers`` for
     log lines / dashboards."""
 
+    camera_salience: dict[str, Any] | None = None
+    """WCS-shaped camera-salience projection from the broker (see
+    ``shared.bayesian_camera_salience_world_surface``). Populated by
+    ``evaluate_opportunity`` from a ``broker().query(consumer=
+    'content_opportunity', ...)`` call so downstream surfaces can
+    inspect which camera apertures were salient at gate time without
+    re-querying. ``None`` when the broker is unavailable or the query
+    failed-closed; the gate verdict itself is unaffected."""
+
 
 def _required_evidence_blockers(
     requirement: FormatWcsRequirement, snapshot: WcsSnapshot
@@ -198,6 +211,32 @@ def _required_evidence_blockers(
     if requirement.requires_public_event_path and not snapshot.public_event_path_ready:
         blockers.append(BlockerKind.MISSING_PUBLIC_EVENT_PATH)
     return tuple(blockers)
+
+
+def _query_camera_salience_for_opportunity(
+    opportunity: ContentOpportunity,
+) -> dict[str, Any] | None:
+    """Query the camera-salience broker for this opportunity's gate decision.
+
+    Mirrors the inline pattern used by ``director_loop`` and
+    ``affordance_pipeline``. Fails closed (returns ``None``) on any
+    broker error so the gate's verdict is never blocked by a salience
+    lookup failure.
+    """
+    try:
+        from shared.camera_salience_singleton import broker as _camera_broker
+
+        bundle = _camera_broker().query(
+            consumer="content_opportunity",
+            decision_context=f"opportunity_gate:{opportunity.opportunity_id}",
+            candidate_action=f"format:{opportunity.format_id}",
+        )
+        if bundle is None:
+            return None
+        return bundle.to_wcs_projection_payload()
+    except Exception:
+        log.debug("camera salience content_opportunity query failed", exc_info=True)
+        return None
 
 
 def evaluate_opportunity(
@@ -224,7 +263,28 @@ def evaluate_opportunity(
       8. NOT public-claim intended → DRY_RUN (default for non-public
          opportunities; PRIVATE chosen explicitly by the caller via
          a separate path, not promoted by the gate).
+
+    Camera-salience attachment: every returned ``GateResult`` carries
+    the broker's WCS projection on ``camera_salience`` (``None`` when
+    the broker is unavailable). Surface consumers can inspect which
+    camera apertures were salient at gate time without re-querying.
     """
+    base_verdict = _decide_opportunity(opportunity, requirement, snapshot, min_posterior)
+    salience = _query_camera_salience_for_opportunity(opportunity)
+    if salience is None:
+        return base_verdict
+    from dataclasses import replace
+
+    return replace(base_verdict, camera_salience=salience)
+
+
+def _decide_opportunity(
+    opportunity: ContentOpportunity,
+    requirement: FormatWcsRequirement,
+    snapshot: WcsSnapshot,
+    min_posterior: float,
+) -> GateResult:
+    """Pure decision function — see ``evaluate_opportunity`` for contract."""
     # Step 1: posterior floor.
     if opportunity.posterior < min_posterior:
         return GateResult(

@@ -10,10 +10,13 @@ inspect before making claims.
 from __future__ import annotations
 
 import json
+import logging
 from collections import Counter
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Self
+
+log = logging.getLogger(__name__)
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -731,6 +734,52 @@ def project_temporal_perceptual_health_envelope(
     return build_temporal_perceptual_health_envelope(load_temporal_perceptual_health_fixtures(path))
 
 
+def _query_camera_salience_for_wcs_health(envelope_id: str) -> dict[str, Any] | None:
+    """Query the broker for the WCS-health envelope context.
+
+    Mirrors the inline pattern used by ``director_loop`` and
+    ``affordance_pipeline``. Fails closed (returns ``None``) on any
+    broker error so the health envelope never depends on a salience
+    lookup succeeding.
+    """
+    try:
+        from shared.camera_salience_singleton import broker as _camera_broker
+
+        bundle = _camera_broker().query(
+            consumer="wcs_health",
+            decision_context=f"wcs_health_envelope:{envelope_id}",
+            candidate_action="project_temporal_perceptual_health",
+        )
+        if bundle is None:
+            return None
+        return bundle.to_wcs_projection_payload()
+    except Exception:
+        log.debug("camera salience wcs_health query failed", exc_info=True)
+        return None
+
+
+def project_temporal_perceptual_health_envelope_with_camera_salience(
+    path: Path = TEMPORAL_PERCEPTUAL_HEALTH_FIXTURES,
+) -> dict[str, Any]:
+    """Project the WCS health envelope alongside the camera-salience snapshot.
+
+    Returns a dict with two keys:
+
+      * ``envelope`` — the standard ``WorldSurfaceHealthEnvelope``.
+      * ``camera_salience`` — the broker's WCS projection (``None`` when
+        unavailable).
+
+    The salience projection is *used* by attaching it as the second key
+    of the returned health-row payload; downstream consumers consult it
+    when constructing the next-required-actions list or when annotating
+    a health row with the apertures that backed (or failed to back) the
+    fixture set's claims.
+    """
+    envelope = project_temporal_perceptual_health_envelope(path)
+    salience = _query_camera_salience_for_wcs_health(envelope.envelope_id)
+    return {"envelope": envelope, "camera_salience": salience}
+
+
 __all__ = [
     "FAIL_CLOSED_POLICY",
     "REQUIRED_OBSERVATION_CATEGORIES",
@@ -746,6 +795,7 @@ __all__ = [
     "load_temporal_perceptual_health_fixtures",
     "project_temporal_false_grounding_risk_metrics",
     "project_temporal_perceptual_health_envelope",
+    "project_temporal_perceptual_health_envelope_with_camera_salience",
     "project_temporal_perceptual_health_records",
     "temporal_false_grounding_risk_counts",
 ]
