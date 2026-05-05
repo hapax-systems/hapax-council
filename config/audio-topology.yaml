@@ -81,6 +81,50 @@ nodes:
       private_monitor_endpoint: true
       forbidden_target_family: l12-broadcast
 
+  # ReSpeaker XVF3800 USB 4-Mic Array introduction (2026-05-05).
+  # Optional far-field operator capture surface. It complements the
+  # current Rode-on-L-12 broadcast mic; it does not replace CH5/AUX4 or
+  # become the default source until the operator explicitly promotes it.
+  # Host placement: AMD 09:00.0/front-case controller, after running
+  # `scripts/hapax-usb-bandwidth-preflight --device 2886:001a/0000:09:00.0`.
+  - id: respeaker-xvf3800-array-source
+    kind: alsa_source
+    pipewire_name: alsa_input.usb-Seeed_Studio_ReSpeaker_XVF3800-00.multichannel-input
+    description: ReSpeaker XVF3800 4-mic far-field array, optional operator sidechat capture
+    hw: hw:CARD=XVF3800
+    channels:
+      count: 4
+      positions: [AUX0, AUX1, AUX2, AUX3]
+    params:
+      audit_classification: external-hardware-optional
+      operator_voice_candidate: true
+      capture_role: hapax-array-mic
+      replaces_broadcast_rode: false
+      complements_rode: true
+      default_source: false
+      usb_host_controller: "0000:09:00.0"
+      usb_placement: host-amd-front-controller
+      privacy_risk: ambient_room_capture
+      forbidden_default_route: l12-broadcast
+      hardware_vad: vendor-control-unwired
+
+  - id: respeaker-xvf3800-aec-reference-output
+    kind: alsa_sink
+    pipewire_name: alsa_output.usb-Seeed_Studio_ReSpeaker_XVF3800-00.multichannel-output
+    description: ReSpeaker XVF3800 stereo playback endpoint for optional AEC reference only
+    hw: hw:CARD=XVF3800
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      audit_classification: external-hardware-optional
+      aec_reference_endpoint: true
+      aec_reference_source: hapax-livestream-tap.monitor
+      not_operator_monitor: true
+      not_broadcast_egress: true
+      default_sink: false
+      usb_host_controller: "0000:09:00.0"
+
   # Option C (2026-05-02 spec amendment) — S-4 analog OUT 1/2 endpoint.
   # This node is a model-only descriptor: the S-4 analog OUT 1/2 is a
   # TR line output, not a PipeWire-visible ALSA endpoint on this host.
@@ -743,3 +787,11 @@ edges:
 
   - source: pc-router
     target: pc-broadcast
+
+  # Optional XVF3800 AEC reference loopback. This edge is absent until the
+  # array is plugged in and an explicit loopback feeds the broadcast monitor
+  # sum into the array's 2ch playback endpoint as far-end reference audio.
+  # It does not send private audio to broadcast and does not replace the
+  # Rode CH5/AUX4 broadcast mic path.
+  - source: livestream-tap
+    target: respeaker-xvf3800-aec-reference-output

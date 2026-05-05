@@ -27,8 +27,9 @@ break across reboots.
 ## What ships in this PR
 
 - `config/udev/rules.d/50-hapax-alsa-card-ids.rules` — the pinning rule.
-  Covers L-12, S-4, Yeti, M8, Erica MIDI Dispatch, three BRIOs (by serial),
-  three C920/C920 PROs (by serial across both vid:pid revisions).
+  Covers L-12, S-4, Yeti, M8, ReSpeaker XVF3800, Erica MIDI Dispatch, three
+  BRIOs (by serial), three C920/C920 PROs (by serial across both vid:pid
+  revisions).
 - `config/audio-topology.yaml` — `schema_version` bumped to 2; all `hw:`
   fields rewritten to symbolic `hw:CARD=<id>` form.
 - `scripts/hapax-show-stable-card-ids` — operator helper that reports
@@ -61,7 +62,8 @@ scripts/hapax-show-stable-card-ids
 ```
 
 After step 3 the expected card ids appear in `/proc/asound/cards` as
-`[L12]`, `[S4]`, `[Yeti]`, `[M8]`, `[Dispatch]`, `[Brio0..2]`, `[C920a..c]`.
+`[L12]`, `[S4]`, `[Yeti]`, `[M8]`, `[XVF3800]`, `[Dispatch]`,
+`[Brio0..2]`, `[C920a..c]`.
 
 If `udevadm trigger` does not pick up an already-bound card, unbind and
 rebind it:
@@ -82,6 +84,7 @@ cat /proc/asound/cards
 #  11 [L12            ]: USB-Audio - L-12
 #  12 [S4             ]: USB-Audio - S-4
 #  14 [Yeti           ]: USB-Audio - Yeti Stereo Microphone
+#  15 [XVF3800        ]: USB-Audio - ReSpeaker XVF3800
 
 # Self-check helper
 scripts/hapax-show-stable-card-ids
