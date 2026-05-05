@@ -1,0 +1,14 @@
+[Unit]
+Description=Hapax Jr/Spark packet auto-consumer
+Documentation=file://%h/projects/hapax-council/docs/research/2026-05-03-jr-spark-packet-leverage-audit.md
+After=hapax-secrets.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/hapax-council
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/projects/hapax-council
+ExecStart=%h/projects/hapax-council/.venv/bin/python %h/projects/hapax-council/scripts/hapax-jr-spark-auto-consumer run --max-packets 25
+
+[Install]
+WantedBy=default.target
