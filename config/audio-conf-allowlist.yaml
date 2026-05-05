@@ -68,6 +68,19 @@ orphans:
   # duplicate of the quarantined ~/.config/pipewire/_disabled-duplicate-voice-fx-2026-04-27/
   # version. See /tmp/sc-chain-and-24c-cleanup-investigation.md.
 
+  # voice-fx aesthetic preset tranche — cc-task voice-fx-chain-
+  # aesthetic-presets-tranche (2026-05-05). Five drop-in alternatives
+  # that share node.name="hapax-voice-fx" with the default chain;
+  # only ONE can be active at a time, swapping does not require
+  # restarting daimonion. Orphan-by-design — yaml-unbacked because
+  # they are operator-curated alternatives, not chain-modeled. JR
+  # packet evidence base: voice-fx-broadcast-best-practices-2026-05-04.
+  - hapax-voice-fx-vinyl-warmth.conf
+  - hapax-voice-fx-telephone-narrowband.conf
+  - hapax-voice-fx-am-radio.conf
+  - hapax-voice-fx-lo-fi.conf
+  - hapax-voice-fx-sci-fi-tunneled.conf
+
   # YouTube + backing-mix rate-routing helpers (24c hardware retired).
   - hapax-backing-ducked.conf  # renamed 2026-05-03 from hapax-yt-over-24c-duck.conf (24c retirement)
   - hapax-backing-ducked-sidechain.conf  # renamed 2026-05-03 from ytube-over-24c-duck.conf (24c retirement)

@@ -9,16 +9,16 @@ when you swap presets — only the filter graph does.
 
 | File | Character |
 |---|---|
-| `hapax-voice-fx-chain.conf` | Studio vocal chain: HP 80 Hz, low-mid cut 350 Hz, presence 3 kHz, air 10 kHz. Neutral-leaning clarity. |
+| `hapax-voice-fx-chain.conf` | Studio vocal chain: HP 80 Hz, low-mid cut 350 Hz, presence 3 kHz, air 10 kHz. Neutral-leaning clarity (workspace default). |
+| `hapax-voice-fx-vinyl-warmth.conf` | Warm tube/vinyl signature: HP 60 Hz, low-shelf +3 dB at 200 Hz (warmth), wide tube body lift at 800 Hz, gentle high-shelf -3 dB above 8 kHz (analog roll-off). Warm-conversation register. |
+| `hapax-voice-fx-telephone-narrowband.conf` | G.711 / POTS telephone band: HP 300 Hz + LP 3400 Hz constrains to telephone band; +6 dB peak at 1.5 kHz for POTS resonance; -2 dB hollow midrange at 500 Hz. Vintage / institutional / "agent on the line" register. |
+| `hapax-voice-fx-am-radio.conf` | AM broadcast aesthetic: HP 200 Hz + LP 5 kHz (AM band); +4 dB intelligibility lift at 1.8 kHz; -2 dB low-shelf at 250 Hz; +2 dB high-shelf fizz at 4 kHz. Announcement / spectacle / nostalgic-broadcast register. |
+| `hapax-voice-fx-lo-fi.conf` | Lo-fi hip-hop / cassette character: mild HP 100 Hz; cassette warmth +2 dB at 180 Hz; mid-emphasis +3 dB at 1.5 kHz; cassette dropout notch at 3.2 kHz; high-shelf -4 dB above 8 kHz (cassette frequency loss). Contemplative / studied register. |
+| `hapax-voice-fx-sci-fi-tunneled.conf` | Long-tunnel / spacial: HP 100 Hz; three-band tunnel resonance at 800/1200/2400 Hz with formant-shift notch at 1500 Hz; thin bright layer at 5 kHz. Builtin-only (no LADSPA). Contemplative-distant / system-error / inner-monologue register. |
 
-> Note: a `hapax-voice-fx-radio.conf` (telephone / AM-radio bandpass) preset was
-> removed 2026-05-03 along with the PreSonus Studio 24c retirement — its
-> hardcoded `target.object` pointed at a non-existent 24c sink. If a
-> radio-style preset is needed, fork `hapax-voice-fx-chain.conf` and replace
-> the `filter.graph` nodes; do NOT pin a hardware target.
+All 5 aesthetic presets (vinyl-warmth → sci-fi-tunneled) share `node.name = "hapax-voice-fx"` and capture sink `hapax-voice-fx-capture` so swapping does NOT require restarting the daimonion service — only the filter graph differs. Per cc-task `voice-fx-chain-aesthetic-presets-tranche` (JR packet evidence base: `voice-fx-broadcast-best-practices-2026-05-04`). Supersedes the 2026-05-03 `hapax-voice-fx-radio.conf` removal note (the AM-radio + telephone aesthetics now live as their own presets without the dead PreSonus Studio 24c hardware target).
 
-Add new presets by dropping another `hapax-voice-fx-*.conf` next to these, keeping
-the capture sink name `hapax-voice-fx-capture`.
+Add new presets by dropping another `hapax-voice-fx-*.conf` next to these, keeping the capture sink name `hapax-voice-fx-capture`.
 
 ## Naming Rule
 
