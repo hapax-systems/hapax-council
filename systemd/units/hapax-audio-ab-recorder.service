@@ -1,0 +1,29 @@
+[Unit]
+Description=Hapax audio A/B recorder, software egress vs L-12 secondary tap
+Documentation=file:///home/hapax/projects/hapax-council/docs/superpowers/specs/2026-05-03-audio-graph-ssot-and-router-daemon-design.md
+# H5 Phase 2: observe-only telemetry. Samples hapax-broadcast-normalized.monitor
+# and hapax-obs-broadcast-mainmix-tap.monitor, writes JSONL + textfile gauges,
+# and ntfys sustained LUFS-I drift. Does not load modules or mutate PipeWire.
+After=hapax-l12-mainmix-tap-loopback.service hapax-pipewire-graph-shadow.service
+Wants=hapax-l12-mainmix-tap-loopback.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=-%h/.config/hapax/audio-ab-recorder.env
+Environment=HAPAX_AUDIO_AB_SOFTWARE_DEVICE=hapax-broadcast-normalized.monitor
+Environment=HAPAX_AUDIO_AB_L12_DEVICE=hapax-obs-broadcast-mainmix-tap.monitor
+Environment=HAPAX_AUDIO_AB_INTERVAL_S=0.2
+Environment=HAPAX_AUDIO_AB_CAPTURE_DURATION_S=0.2
+ExecStart=%h/.local/bin/uv run python -m agents.audio_ab_recorder
+Restart=always
+RestartSec=15s
+WatchdogSec=120s
+TimeoutStartSec=30s
+TimeoutStopSec=10s
+Nice=10
+Slice=app.slice
+
+[Install]
+WantedBy=default.target

@@ -42,6 +42,8 @@ def test_canonical_has_current_livestream_node_ids() -> None:
         "yeti-headphone-output",
         "livestream-tap",
         "l12-evilpet-capture",
+        "l12-mainmix-capture",
+        "obs-broadcast-mainmix-tap",
         "broadcast-master-capture",
         "broadcast-normalized-capture",
         "obs-broadcast-remap-capture",
@@ -121,6 +123,36 @@ def test_l12_evilpet_capture_preserves_inverse_safety_invariant() -> None:
     assert any(edge.source == l12_capture.id and edge.target == capture.id for edge in d.edges), (
         "missing L-12 capture source -> l12-evilpet-capture edge"
     )
+
+
+def test_l12_mainmix_tap_is_secondary_monitor_only() -> None:
+    """H5 P2 pins AUX10/AUX11 as an A/B tap without changing RTMP egress."""
+    d = _descriptor()
+    capture = d.node_by_id("l12-mainmix-capture")
+    tap = d.node_by_id("obs-broadcast-mainmix-tap")
+    edge_pairs = {(edge.source, edge.target) for edge in d.edges}
+
+    assert capture.target_object == L12_SOURCE_NAME
+    assert capture.params["capture_channels"] == 2
+    assert capture.params["capture_positions"] == "AUX10 AUX11"
+    assert capture.params["playback_target"] == "hapax-obs-broadcast-mainmix-tap"
+    assert capture.params["stream.dont-remix"] is True
+    assert capture.params["source_dont_move"] is True
+    assert capture.params["sink_dont_move"] is True
+    assert capture.params["monitor_only"] is True
+    assert capture.params["no_rtmp_egress"] is True
+
+    assert tap.kind == "tap"
+    assert tap.pipewire_name == "hapax-obs-broadcast-mainmix-tap"
+    assert tap.params["secondary_obs_source"] is True
+    assert tap.params["operator_obs_mute_required"] is True
+    assert tap.params["no_rtmp_egress"] is True
+
+    assert ("l12-capture", "l12-mainmix-capture") in edge_pairs
+    assert ("l12-mainmix-capture", "obs-broadcast-mainmix-tap") in edge_pairs
+    assert ("obs-broadcast-mainmix-tap", "livestream-tap") not in edge_pairs
+    assert ("obs-broadcast-mainmix-tap", "broadcast-master-capture") not in edge_pairs
+    assert ("obs-broadcast-mainmix-tap", "broadcast-normalized-capture") not in edge_pairs
 
 
 def test_l12_evilpet_conf_matches_descriptor_narrowed_binding() -> None:
