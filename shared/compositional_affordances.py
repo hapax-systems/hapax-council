@@ -1005,8 +1005,8 @@ _YOUTUBE_TELEMETRY: list[CapabilityRecord] = [
 #
 # These capabilities fire the chain-composition primitive: instead of
 # swapping between 30 fixed preset graphs (the dumb anti-pattern), the
-# pipeline recruits surgical add/remove of specific shader nodes against
-# the live graph. The dispatcher in
+# pipeline recruits surgical add/remove plus structural compose/fork/
+# merge/route operations against the live graph. The dispatcher in
 # `agents/studio_compositor/compositional_consumer.dispatch_node_patch`
 # records the recruitment; `agents/studio_compositor/graph_patch_consumer`
 # applies the resulting `GraphPatch` to the live `EffectGraph` and writes
@@ -1058,6 +1058,30 @@ _NODE_PATCH: list[CapabilityRecord] = [
         "node added to the chain so the surface settles back toward its "
         "core vocabulary, the move when the moment has moved on from a "
         "transient effect",
+    ),
+    _record(
+        "node.compose.color,drift",
+        "binds color and spatial drift into one composite gesture — the surface "
+        "keeps both registers audible at once instead of treating tone and "
+        "motion as separate steps",
+    ),
+    _record(
+        "node.fork.fb",
+        "opens a parallel feedback branch — duplicates the trace-bearing "
+        "register so one path can continue while another path is prepared for "
+        "a later merge",
+    ),
+    _record(
+        "node.merge.fb,fork_fb",
+        "gathers two feedback branches into a single downstream stream — the "
+        "surface resolves parallel echoes into one legible blended passage "
+        "when the moment wants convergence",
+    ),
+    _record(
+        "node.route.content,out",
+        "redirects content toward the output path — changes the chain's "
+        "downstream route so recruited material can bypass a settled ending "
+        "and arrive more directly",
     ),
 ]
 
