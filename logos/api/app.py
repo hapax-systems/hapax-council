@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from logos.api.cache import start_refresh_loop
 from logos.api.sessions import agent_run_manager
+from logos.api.witness_rail import start_logos_witness_producer
 
 _log = logging.getLogger(__name__)
 
@@ -919,9 +920,11 @@ async def lifespan(app: FastAPI):
     _mae_task = asyncio.create_task(_mood_arousal_tick_loop()) if mae is not None else None
     _mve_task = asyncio.create_task(_mood_valence_tick_loop()) if mve is not None else None
     _mce_task = asyncio.create_task(_mood_coherence_tick_loop()) if mce is not None else None
+    _witness_task = start_logos_witness_producer(app)
 
     yield
 
+    _witness_task.cancel()
     _sampler_task.cancel()
     _trim_task.cancel()
     if _sde_task is not None:

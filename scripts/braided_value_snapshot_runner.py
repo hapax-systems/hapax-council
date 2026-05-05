@@ -752,7 +752,7 @@ def default_witness_specs() -> list[WitnessSpec]:
 
 def default_systemd_specs() -> list[SystemdSpec]:
     return [
-        SystemdSpec("hapax-logos-api.service", "executive_function_os"),
+        SystemdSpec("logos-api.service", "executive_function_os"),
         SystemdSpec("hapax-daimonion.service", "voice_grounding_research"),
         SystemdSpec("hapax-imagination.service", "visual_reverie_path"),
         SystemdSpec("hapax-compositor.service", "visual_reverie_path"),
@@ -825,6 +825,37 @@ def falsy(value: Any) -> bool:
     return False
 
 
+def classify_logos_health_payload(payload: Any) -> tuple[str, tuple[str, ...]]:
+    if not isinstance(payload, dict):
+        return "degraded", ("logos_health_not_mapping",)
+    if payload.get("component") != "logos-api":
+        return "degraded", ("logos_component_mismatch",)
+    if payload.get("ready") is not True:
+        return "degraded", ("logos_not_ready",)
+    if str(payload.get("status") or "").lower() not in {"ok", "healthy", "active"}:
+        return "degraded", ("logos_status_not_ok",)
+    openapi = payload.get("openapi")
+    if not isinstance(openapi, dict) or not openapi.get("sha256") or not openapi.get("path"):
+        return "degraded", ("logos_openapi_pointer_missing",)
+    return "ok", ("logos_health_present",)
+
+
+def classify_logos_openapi_payload(payload: Any) -> tuple[str, tuple[str, ...]]:
+    if not isinstance(payload, dict):
+        return "degraded", ("logos_openapi_not_mapping",)
+    if not payload.get("openapi"):
+        return "degraded", ("logos_openapi_version_missing",)
+    info = payload.get("info")
+    paths = payload.get("paths")
+    if not isinstance(info, dict) or not isinstance(paths, dict):
+        return "degraded", ("logos_openapi_shape_incomplete",)
+    if str(info.get("title") or "") != "logos-api":
+        return "degraded", ("logos_openapi_title_mismatch",)
+    if not paths:
+        return "degraded", ("logos_openapi_paths_empty",)
+    return "ok", ("logos_openapi_present",)
+
+
 def payload_text(payload: Any) -> str:
     try:
         return json.dumps(payload, sort_keys=True, default=str).lower()
@@ -835,6 +866,10 @@ def payload_text(payload: Any) -> str:
 def classify_payload(spec: WitnessSpec, payload: Any) -> tuple[str, tuple[str, ...]]:
     if spec.witness_id == "publication_log":
         return classify_publication_log_payload(payload)
+    if spec.witness_id == "logos_health":
+        return classify_logos_health_payload(payload)
+    if spec.witness_id == "logos_openapi":
+        return classify_logos_openapi_payload(payload)
 
     text = payload_text(payload)
     reasons: list[str] = []
