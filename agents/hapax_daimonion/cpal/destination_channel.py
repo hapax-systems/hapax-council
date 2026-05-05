@@ -75,11 +75,10 @@ DEFAULT_TARGET_ENV: str = "HAPAX_TTS_TARGET"
 BROADCAST_BIAS_ENV: str = "HAPAX_DAIMONION_BROADCAST_BIAS_ENABLED"
 """Feature flag for autonomous-narrative broadcast bias.
 
-When ``1`` (default), autonomous narrative impingements that arrive during
-an active programme with a broadcast-eligible role are classified
-``LIVESTREAM`` instead of falling through to the ``PRIVATE`` default.
-All downstream safety gates (programme authorization, audio health,
-private-risk context, route evidence) remain enforced.
+When ``1`` (default), programme context may ask the autonomous bridge layer
+to consider a public broadcast proposal. This flag does not mint playback
+intent, does not classify an utterance as ``LIVESTREAM`` by itself, and does
+not replace bridge-produced metadata.
 
 Set to ``0`` to revert to the legacy behavior where autonomous narration
 always routes private unless explicit broadcast tokens are present.
@@ -218,24 +217,6 @@ def classify_destination(
     if _has_explicit_broadcast_intent(content):
         return DestinationChannel.LIVESTREAM
 
-    # Rule 3.5: Endogenous-narrative broadcast bias.
-    # When the feature flag is enabled and an active programme with a
-    # broadcast-eligible role exists, endogenous narrative impingements
-    # classify as LIVESTREAM. This covers the legacy ``autonomous_narrative``
-    # source plus the endogenous-drive emitters (``endogenous.narrative_drive``,
-    # ``endogenous.gem``) that compose Hapax's autonomous vocal presence on
-    # the livestream. This is a soft prior — all downstream safety gates
-    # (programme auth, audio health, route evidence) still apply in
-    # resolve_playback_decision. The intent is explicit at classification
-    # time (not implicit/default) because the programme context is the
-    # evidence for broadcast authorization.
-    if (
-        _is_broadcast_bias_enabled()
-        and _is_endogenous_narrative_source(source)
-        and _programme_authorizes_broadcast()
-    ):
-        return DestinationChannel.LIVESTREAM
-
     # Rule 4: TEXTMODE alone does NOT route private (see module docstring).
     # It would only combine with sidechat provenance, which rules 1/2
     # already captured. This branch exists so adding a future sidechat
@@ -302,6 +283,11 @@ def resolve_playback_decision(
     source = getattr(impingement, "source", "") or ""
     intent = _broadcast_intent_evidence(content, source=source)
     programme_auth = _programme_authorization_evidence(content, now=now)
+    bridge_metadata = _bridge_metadata_evidence(
+        content,
+        source=source,
+        programme_auth=programme_auth,
+    )
     audio_health = read_broadcast_audio_health_state(
         broadcast_audio_health_path,
         now=now,
@@ -311,6 +297,7 @@ def resolve_playback_decision(
         "explicit_broadcast_intent": intent["present"],
         "broadcast_intent": intent,
         "programme_authorization": programme_auth,
+        "private_to_public_bridge": bridge_metadata,
         "audio_safe_for_broadcast": {
             "safe": audio_health.safe,
             "status": str(audio_health.status),
@@ -339,6 +326,17 @@ def resolve_playback_decision(
             reason_code=programme_auth["reason_code"],
             operator_visible_reason=(
                 "Broadcast voice requires fresh programme authorization; playback is blocked."
+            ),
+            safety_gate=safety_gate,
+        )
+    if bridge_metadata["required"] and not bridge_metadata["authorized"]:
+        return _blocked_decision(
+            destination=destination,
+            route=route,
+            reason_code=str(bridge_metadata["reason_code"]),
+            operator_visible_reason=(
+                "Autonomous broadcast voice requires private-to-public bridge metadata; "
+                "playback is blocked."
             ),
             safety_gate=safety_gate,
         )
@@ -465,6 +463,109 @@ def _blocked_decision(
 
 def _has_explicit_broadcast_intent(content: dict[str, Any]) -> bool:
     return _broadcast_intent_evidence(content)["present"]
+
+
+def _bridge_metadata_evidence(
+    content: dict[str, Any],
+    *,
+    source: object,
+    programme_auth: dict[str, Any],
+) -> dict[str, Any]:
+    required = _is_endogenous_narrative_source(source)
+    if not required:
+        return {
+            "required": False,
+            "authorized": True,
+            "reason_code": "bridge_metadata_not_required",
+        }
+    bridge_outcome = content.get("bridge_outcome")
+    if bridge_outcome != "public_action_proposal":
+        return {
+            "required": True,
+            "authorized": False,
+            "reason_code": "bridge_metadata_missing",
+            "bridge_outcome": bridge_outcome,
+        }
+    if content.get("route_posture") != "broadcast_authorized":
+        return {
+            "required": True,
+            "authorized": False,
+            "reason_code": "bridge_route_posture_invalid",
+            "bridge_outcome": bridge_outcome,
+            "route_posture": content.get("route_posture"),
+        }
+    if content.get("public_broadcast_intent") is not True:
+        return {
+            "required": True,
+            "authorized": False,
+            "reason_code": "bridge_public_intent_missing",
+            "bridge_outcome": bridge_outcome,
+        }
+    if content.get("claim_ceiling") not in {"public_gate_required", "evidence_bound"}:
+        return {
+            "required": True,
+            "authorized": False,
+            "reason_code": "bridge_claim_ceiling_invalid",
+            "bridge_outcome": bridge_outcome,
+            "claim_ceiling": content.get("claim_ceiling"),
+        }
+    auth = (
+        content.get("programme_authorization")
+        or content.get("broadcast_programme_authorization")
+        or content.get("broadcast_authorization")
+    )
+    if not isinstance(auth, dict):
+        return {
+            "required": True,
+            "authorized": False,
+            "reason_code": "bridge_programme_authorization_missing",
+            "bridge_outcome": bridge_outcome,
+        }
+    auth_ref = content.get("programme_authorization_ref")
+    evidence_ref = auth.get("evidence_ref")
+    if evidence_ref == "broadcast_bias_soft_prior":
+        return {
+            "required": True,
+            "authorized": False,
+            "reason_code": "bridge_programme_authorization_soft_prior",
+            "bridge_outcome": bridge_outcome,
+            "evidence_ref": evidence_ref,
+        }
+    if not auth_ref:
+        return {
+            "required": True,
+            "authorized": False,
+            "reason_code": "bridge_programme_authorization_ref_missing",
+            "bridge_outcome": bridge_outcome,
+        }
+    if evidence_ref and auth_ref != evidence_ref:
+        return {
+            "required": True,
+            "authorized": False,
+            "reason_code": "bridge_programme_authorization_mismatch",
+            "bridge_outcome": bridge_outcome,
+            "programme_authorization_ref": auth_ref,
+            "evidence_ref": evidence_ref,
+        }
+    content_programme_id = content.get("programme_id")
+    auth_programme_id = programme_auth.get("programme_id")
+    if content_programme_id and auth_programme_id and content_programme_id != auth_programme_id:
+        return {
+            "required": True,
+            "authorized": False,
+            "reason_code": "bridge_programme_id_mismatch",
+            "bridge_outcome": bridge_outcome,
+            "programme_id": content_programme_id,
+            "authorization_programme_id": auth_programme_id,
+        }
+    return {
+        "required": True,
+        "authorized": True,
+        "reason_code": "bridge_metadata_present",
+        "bridge_outcome": bridge_outcome,
+        "route_posture": content.get("route_posture"),
+        "programme_authorization_ref": auth_ref,
+    }
 
 
 def _is_private_risk_context(source: object, content: dict[str, Any]) -> bool:
@@ -616,23 +717,18 @@ def _broadcast_intent_evidence(
             )
             or nested.get("public_broadcast_intent") is True
         )
-    # Implicit intent from the broadcast-bias path: when the flag is on
-    # AND the source is a bias-eligible endogenous emitter AND the active
-    # programme authorizes broadcast, that combination IS the intent.
-    # The programme authorization check is the load-bearing safety gate,
-    # not the per-utterance token; without it this branch returns False
-    # and the explicit-token requirement still applies.
-    bias_implicit = (
+    bias_candidate = (
         _is_broadcast_bias_enabled()
         and _is_endogenous_narrative_source(source)
         and _programme_authorizes_broadcast()
     )
     return {
-        "present": bool(explicit_bool or explicit_token or nested_token or bias_implicit),
+        "present": bool(explicit_bool or explicit_token or nested_token),
         "explicit_bool": explicit_bool,
         "explicit_token": explicit_token,
         "nested_token": nested_token,
-        "bias_implicit": bias_implicit,
+        "bias_candidate": bias_candidate,
+        "bias_implicit": False,
     }
 
 

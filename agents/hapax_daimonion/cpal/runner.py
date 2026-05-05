@@ -1001,39 +1001,10 @@ class CpalRunner:
             narrative = narrative or effect.narrative
 
             # Resolve the destination explicitly before synthesis/playback.
-            # Autonomous narration only reaches broadcast when the public gates pass.
-            #
-            # Broadcast bias: when the feature flag is enabled and the active
-            # programme authorizes broadcast voice, inject explicit broadcast
-            # intent + fresh programme authorization into the impingement
-            # content. This supplies the evidence tokens that
-            # resolve_playback_decision requires without bypassing any gate.
-            if isinstance(content, dict):
-                from agents.hapax_daimonion.cpal.destination_channel import (
-                    _is_broadcast_bias_enabled,
-                    _programme_authorizes_broadcast,
-                )
-
-                if _is_broadcast_bias_enabled() and _programme_authorizes_broadcast():
-                    from agents.hapax_daimonion.cpal.programme_context import default_provider
-
-                    programme = default_provider()
-                    if programme is not None:
-                        content["voice_output_destination"] = "broadcast"
-                        content["broadcast_intent"] = True
-                        content["programme_authorization"] = {
-                            "authorized": True,
-                            "broadcast_voice_authorized": True,
-                            "authorized_at": time.time(),
-                            "programme_id": programme.programme_id,
-                            "evidence_ref": "broadcast_bias_soft_prior",
-                        }
-                        # Mutate the impingement content in-place if possible
-                        if hasattr(impingement, "content") and isinstance(
-                            impingement.content, dict
-                        ):
-                            impingement.content.update(content)
-
+            # Autonomous narration only reaches broadcast when the public gates
+            # pass and the impingement already carries bridge-produced public
+            # metadata. CPAL's broadcast bias is a candidate trigger only; this
+            # runner must not mint broadcast intent or programme authorization.
             register = self._register_bridge.current_register()
             decision = resolve_playback_decision(impingement, voice_register=register)
             destination = decision.destination

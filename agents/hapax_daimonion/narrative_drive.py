@@ -189,10 +189,11 @@ def _emit_drive_impingement(
     """Write an endogenous drive impingement to the DMN bus.
 
     ``programme_authorization`` (optional) is forwarded into the content
-    payload so downstream playback resolution can confirm fresh
-    broadcast-voice authorization. Pass ``None`` when no programme is
-    active — the playback gate will then fail closed on
-    ``programme_authorization_missing``, which is the correct behavior.
+    payload as one public-playback gate. It does not authorize broadcast by
+    itself; autonomous/endogenous public playback also needs bridge-produced
+    metadata. Pass ``None`` when no programme is active — the playback gate
+    will then fail closed on ``programme_authorization_missing``, which is
+    the correct behavior.
 
     Returns True if the write succeeded, False otherwise.
     """
