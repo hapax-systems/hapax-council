@@ -3,7 +3,8 @@
 Per cc-task ``post-merge-smoke-runner`` (WSJF 6.5, 2026-05-02).
 Verifies the active gates:
 
-- services-restarted (systemd/units/*.service in diff → unit must be active)
+- services-restarted (systemd/units/*.service in diff → unit must be active,
+  except successful timer-backed oneshots, which should exit)
 - broadcast-healthy (audio-routing surface diff → world-surface row OK in 30s)
 - m8-midi-clock-peer (midi_clock.py diff → M8 tempo signal present, if M8 connected)
 
@@ -141,6 +142,118 @@ class TestServicesRestartedGate:
         assert result.returncode == 0
         assert "services-restarted" not in result.stderr
 
+    def test_successful_oneshot_inactive_unit_passes_silently(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {"systemd/units/foo.service": "[Service]\nType=oneshot\n"},
+        )
+        result = _run(
+            sha,
+            cwd=repo,
+            stubs={
+                "systemctl": """
+if [ "$2" = "is-active" ]; then exit 3; fi
+if [ "$2" = "show" ]; then
+  case "$5" in
+    Type) echo oneshot ;;
+    Result) echo success ;;
+    ExecMainStatus) echo 0 ;;
+  esac
+  exit 0
+fi
+exit 1
+""",
+            },
+        )
+        assert result.returncode == 0
+        assert "services-restarted" not in result.stderr
+
+    def test_failed_oneshot_inactive_unit_records_failure(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {"systemd/units/foo.service": "[Service]\nType=oneshot\n"},
+        )
+        result = _run(
+            sha,
+            cwd=repo,
+            stubs={
+                "systemctl": """
+if [ "$2" = "is-active" ]; then exit 3; fi
+if [ "$2" = "show" ]; then
+  case "$5" in
+    Type) echo oneshot ;;
+    Result) echo failed ;;
+    ExecMainStatus) echo 1 ;;
+  esac
+  exit 0
+fi
+exit 1
+""",
+            },
+        )
+        assert result.returncode == 0
+        assert "services-restarted" in result.stderr
+        assert "foo.service not active" in result.stderr
+
+    def test_disabled_install_only_service_passes_silently(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {"systemd/units/foo.service": "[Service]\nType=notify\n"},
+        )
+        result = _run(
+            sha,
+            cwd=repo,
+            stubs={
+                "systemctl": """
+if [ "$2" = "is-active" ]; then exit 3; fi
+if [ "$2" = "show" ]; then
+  case "$5" in
+    Type) echo notify ;;
+    Result) echo success ;;
+    ExecMainStatus) echo 0 ;;
+    UnitFileState) echo disabled ;;
+  esac
+  exit 0
+fi
+exit 1
+""",
+            },
+        )
+        assert result.returncode == 0
+        assert "services-restarted" not in result.stderr
+
+    def test_disabled_failed_service_records_failure(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {"systemd/units/foo.service": "[Service]\nType=notify\n"},
+        )
+        result = _run(
+            sha,
+            cwd=repo,
+            stubs={
+                "systemctl": """
+if [ "$2" = "is-active" ]; then exit 3; fi
+if [ "$2" = "show" ]; then
+  case "$5" in
+    Type) echo notify ;;
+    Result) echo failed ;;
+    ExecMainStatus) echo 1 ;;
+    UnitFileState) echo disabled ;;
+  esac
+  exit 0
+fi
+exit 1
+""",
+            },
+        )
+        assert result.returncode == 0
+        assert "services-restarted" in result.stderr
+        assert "foo.service not active" in result.stderr
+
     def test_no_unit_diff_skips_gate(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path)
         sha = _commit_files(repo, {"agents/foo.py": "x = 1\n"})
@@ -205,15 +318,14 @@ class TestM8MidiClockPeerGate:
         result = _run(sha, cwd=repo, extra_env={"HAPAX_SMOKE_DRYRUN": "1"})
         assert "m8-midi-clock-peer" in result.stdout
 
-    def test_skips_when_amidi_missing(self, tmp_path: Path) -> None:
-        """`amidi` not in PATH (operator-physical device absent) → skip silent."""
+    def test_skips_when_m8_absent(self, tmp_path: Path) -> None:
+        """`amidi` present but no M8 device listed → skip silent."""
         repo = _make_repo(tmp_path)
         sha = _commit_files(
             repo,
             {"agents/hapax_daimonion/backends/midi_clock.py": "x=1\n"},
         )
-        # No amidi stub; the live `command -v amidi` returns 1.
-        result = _run(sha, cwd=repo)
+        result = _run(sha, cwd=repo, stubs={"amidi": "exit 0"})
         assert "m8-midi-clock-peer" not in result.stderr
 
 
