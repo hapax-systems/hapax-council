@@ -1,0 +1,57 @@
+import { Button, VerticalBox } from "std-widgets.slint";
+
+export component AppWindow inherits Window {
+    in property <string> endpoint;
+    in-out property <string> status-text;
+    callback refresh();
+
+    title: "Slint Logos Spike";
+    width: 540px;
+    height: 300px;
+    background: #101419;
+
+    VerticalBox {
+        padding: 16px;
+        spacing: 10px;
+
+        Text {
+            text: "Logos API health";
+            color: #edf2f7;
+            font-size: 22px;
+            font-weight: 700;
+        }
+
+        Text {
+            text: root.endpoint;
+            color: #8fb3ff;
+            font-size: 13px;
+        }
+
+        Rectangle {
+            min-height: 144px;
+            border-radius: 6px;
+            background: #18212b;
+            border-color: #324153;
+            border-width: 1px;
+
+            Text {
+                x: 14px;
+                y: 14px;
+                width: parent.width - 28px;
+                height: parent.height - 28px;
+                text: root.status-text;
+                color: #d9e2ec;
+                font-size: 14px;
+                wrap: word-wrap;
+                overflow: elide;
+            }
+        }
+
+        Button {
+            text: "Refresh";
+            clicked => {
+                root.refresh();
+            }
+        }
+    }
+}
