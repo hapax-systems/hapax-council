@@ -49,11 +49,14 @@ def test_check_creds_mode_lists_per_key(capsys, monkeypatch):
 
     # Cred-blocked keys after PRs #1676 / #1680 / batch wiring +
     # youtube-force-ssl-token added with the chat-response-verbal-and-text
-    # publisher. The fake says all cred-blocked keys have arrived.
+    # publisher + omg-lol-pay/webhook-secret added with the
+    # publication-bus-monetization-rails-surfaces keystone (5th rail).
+    # The fake says all cred-blocked keys have arrived.
     def fake_present(key: str) -> bool:
         return key in {
             "crossref/depositor-credentials",
             "google/youtube-force-ssl-token",
+            "omg-lol-pay/webhook-secret",
         }
 
     monkeypatch.setattr(m, "_key_present_in_pass", fake_present)
@@ -65,6 +68,7 @@ def test_check_creds_mode_lists_per_key(capsys, monkeypatch):
     assert "Ready-to-wire" in captured.out
     assert "+ crossref/depositor-credentials" in captured.out
     assert "+ google/youtube-force-ssl-token" in captured.out
+    assert "+ omg-lol-pay/webhook-secret" in captured.out
     assert "Still cred-blocked" not in captured.out
 
 
