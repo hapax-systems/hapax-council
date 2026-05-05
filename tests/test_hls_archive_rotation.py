@@ -36,6 +36,12 @@ class TestLoadStimmungSnapshot:
     defensive branches — missing file, malformed JSON, non-dict payload —
     were previously only indirectly exercised. These tests pin each branch
     so a future refactor cannot silently change the empty-dict fallback.
+
+    Camera-salience contract: when the broker has no observations or
+    fails closed, the snapshot OMITS the ``camera_salience`` key
+    entirely (no ``"camera_salience": null`` in the serialized
+    sidecar). The CI harness has no live broker, so all three error
+    branches end up returning ``{}``.
     """
 
     def test_missing_file_returns_empty_dict(self, tmp_path: Path) -> None:

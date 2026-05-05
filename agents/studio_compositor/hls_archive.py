@@ -34,6 +34,7 @@ Metadata is assembled from:
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -46,6 +47,8 @@ from shared.stream_archive import (
     hls_archive_dir,
     sidecar_path_for,
 )
+
+log = logging.getLogger(__name__)
 
 DEFAULT_STABLE_MTIME_WINDOW_SECONDS = 10.0
 """Minimum mtime-stable age before a segment is considered closed + rotatable."""
@@ -91,20 +94,55 @@ def _load_condition_id(pointer_path: Path = DEFAULT_CONDITION_POINTER) -> str | 
 def _load_stimmung_snapshot(
     stimmung_path: Path = DEFAULT_STIMMUNG_PATH,
 ) -> dict[str, Any]:
-    """Best-effort stimmung snapshot. Returns {} if unavailable."""
+    """Best-effort stimmung snapshot. Returns {} if unavailable.
+
+    Enriched with a ``camera_salience`` key when the broker returns a
+    bundle — but only then. When the broker is unavailable, returns
+    no value, or fails closed, the key is *omitted entirely* so the
+    serialized sidecar JSON does not carry ``"camera_salience": null``
+    noise. Absent salience is the empty case, not a stored fact.
+    """
+    salience = _query_camera_salience_for_archive()
     if not stimmung_path.exists():
-        return {}
+        return {"camera_salience": salience} if salience is not None else {}
     try:
         payload = json.loads(stimmung_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
+        return {"camera_salience": salience} if salience is not None else {}
     if not isinstance(payload, dict):
-        return {}
-    return {
+        return {"camera_salience": salience} if salience is not None else {}
+    snapshot: dict[str, Any] = {
         "stance": payload.get("stance"),
         "dimensions": payload.get("dimensions"),
         "snapshotted_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
+    if salience is not None:
+        snapshot["camera_salience"] = salience
+    return snapshot
+
+
+def _query_camera_salience_for_archive() -> dict[str, Any] | None:
+    """Query the broker for the per-segment archive sidecar context.
+
+    Mirrors the inline pattern used by ``director_loop`` and
+    ``affordance_pipeline``. Fails closed (returns ``None``) so a
+    broker outage never blocks segment rotation — archive integrity is
+    the higher-priority invariant.
+    """
+    try:
+        from shared.camera_salience_singleton import broker as _camera_broker
+
+        bundle = _camera_broker().query(
+            consumer="archive",
+            decision_context="hls_segment_rotation",
+            candidate_action="archive_segment",
+        )
+        if bundle is None:
+            return None
+        return bundle.to_wcs_projection_payload()
+    except Exception:
+        log.debug("camera salience archive query failed", exc_info=True)
+        return None
 
 
 def is_segment_stable(

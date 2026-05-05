@@ -67,6 +67,29 @@ class _VocalChainMetrics:
 _metrics = _VocalChainMetrics()
 
 
+def _query_camera_salience_for_voice(impingement: Impingement) -> dict[str, Any] | None:
+    """Query the camera-salience broker for voice activation context.
+
+    Mirrors the inline pattern used by ``director_loop`` and
+    ``affordance_pipeline``. Fails closed (returns ``None``) on any
+    broker error so vocal activation never blocks on a salience lookup.
+    """
+    try:
+        from shared.camera_salience_singleton import broker as _camera_broker
+
+        bundle = _camera_broker().query(
+            consumer="voice",
+            decision_context=f"vocal_chain_activate:{impingement.source}",
+            candidate_action="modulate_vocal_dimensions",
+        )
+        if bundle is None:
+            return None
+        return bundle.to_wcs_projection_payload()
+    except Exception:
+        log.debug("camera salience voice query failed", exc_info=True)
+        return None
+
+
 @dataclass(frozen=True)
 class CCMapping:
     """Maps an activation level to a specific MIDI CC on a specific device."""
@@ -306,6 +329,12 @@ class VocalChainCapability:
         """Activate vocal chain dimensions from impingement content.
 
         Accepts bare names ("intensity") or fully-qualified ("vocal_chain.intensity").
+
+        On every activation the broker is queried for camera salience under
+        ``consumer="voice"``; the WCS projection (or ``None`` when unavailable)
+        is attached to the returned payload as ``camera_salience`` so the
+        caller can correlate the vocal modulation with which apertures were
+        salient at activation time.
         """
         dims = impingement.content.get("dimensions", {}) or impingement.context.get(
             "dimensions", {}
@@ -318,15 +347,22 @@ class VocalChainCapability:
             if key in DIMENSIONS:
                 self.activate_dimension(key, impingement, float(level))
                 activated.append(key)
+        salience = _query_camera_salience_for_voice(impingement)
         if not activated:
             score = self.can_resolve(impingement)
             if score > 0:
                 self.activate(impingement, score)
-                return {"activated": True, "level": score, "dimensions": []}
+                return {
+                    "activated": True,
+                    "level": score,
+                    "dimensions": [],
+                    "camera_salience": salience,
+                }
         return {
             "activated": bool(activated),
             "level": self._activation_level,
             "dimensions": activated,
+            "camera_salience": salience,
         }
 
     def activate_dimension(

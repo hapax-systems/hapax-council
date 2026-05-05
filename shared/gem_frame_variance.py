@@ -37,10 +37,14 @@ explicit:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from shared.segment_observability import QualityRating
+
+log = logging.getLogger(__name__)
 
 # Pinned by tests; see module docstring for rationale.
 EXCELLENT_FLOOR: float = 0.7
@@ -165,11 +169,54 @@ def score_variance(texts: Sequence[str]) -> VarianceReport:
     )
 
 
+def _query_camera_salience_for_visual_variance() -> dict[str, Any] | None:
+    """Query the broker for the variance projection's salience context.
+
+    Mirrors the inline pattern used by ``director_loop`` and
+    ``affordance_pipeline``. Fails closed (returns ``None``) so a
+    broker outage never affects the variance score itself.
+    """
+    try:
+        from shared.camera_salience_singleton import broker as _camera_broker
+
+        bundle = _camera_broker().query(
+            consumer="visual_variance",
+            decision_context="gem_frame_variance_projection",
+            candidate_action="score_recent_emissions",
+        )
+        if bundle is None:
+            return None
+        return bundle.to_wcs_projection_payload()
+    except Exception:
+        log.debug("camera salience visual_variance query failed", exc_info=True)
+        return None
+
+
+def project_variance_with_camera_salience(texts: Sequence[str]) -> dict[str, Any]:
+    """Score variance and attach the camera-salience WCS projection.
+
+    Returns a dict with two keys:
+
+      * ``variance_report`` — the standard :class:`VarianceReport`.
+      * ``camera_salience`` — broker WCS projection (``None`` when the
+        broker is unavailable).
+
+    The salience projection is *used* as the second key of the
+    returned variance projection; downstream consumers (smoke harness,
+    SegmentEvent emitter) can correlate variance bucket with which
+    apertures were salient at score time.
+    """
+    report = score_variance(texts)
+    salience = _query_camera_salience_for_visual_variance()
+    return {"variance_report": report, "camera_salience": salience}
+
+
 __all__ = [
     "ACCEPTABLE_FLOOR",
     "EXCELLENT_FLOOR",
     "GOOD_FLOOR",
     "MIN_FRAMES_FOR_RATING",
     "VarianceReport",
+    "project_variance_with_camera_salience",
     "score_variance",
 ]
