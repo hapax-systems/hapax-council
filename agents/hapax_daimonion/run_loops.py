@@ -7,6 +7,8 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from agents.hapax_daimonion.voice_pitch_baseline import publish_operator_voice_pitch_sample
+
 if TYPE_CHECKING:
     from agents.hapax_daimonion.daemon import VoiceDaemon
 
@@ -71,6 +73,24 @@ async def audio_loop(daemon: VoiceDaemon) -> None:
                 daemon.presence.process_audio_frame(chunk)
                 vad_prob = daemon.presence._latest_vad_confidence
                 daemon._conversation_buffer.update_vad(vad_prob)
+                if vad_prob >= 0.3:
+                    speaker = getattr(daemon.session, "speaker", "operator")
+                    consent_phase = getattr(
+                        getattr(getattr(daemon, "consent_tracker", None), "phase", None),
+                        "value",
+                        "no_guest",
+                    )
+                    operator_speech = (
+                        not daemon.session.is_active or speaker == "operator"
+                    ) and consent_phase == "no_guest"
+                    if operator_speech:
+                        try:
+                            publish_operator_voice_pitch_sample(
+                                chunk,
+                                sample_rate_hz=16000,
+                            )
+                        except Exception:
+                            log.debug("operator voice pitch sample publish failed", exc_info=True)
                 # Engagement is a gain/context modulator only. It never
                 # gates buffer ingestion above; audio has already reached
                 # the always-on conversation buffer before this point.

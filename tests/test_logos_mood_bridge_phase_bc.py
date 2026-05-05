@@ -146,10 +146,32 @@ class TestMoodValenceBridge:
         with patch("pathlib.Path.read_text", return_value=perception):
             assert bridge.sleep_debt_high() is True
 
-    def test_voice_pitch_returns_none(self) -> None:
-        """Voice pitch stub returns None (not yet wired)."""
+    def test_voice_pitch_missing_returns_none(self) -> None:
+        """Missing voice pitch state → None."""
         bridge = self._make_bridge()
-        assert bridge.voice_pitch_elevated() is None
+        with patch(
+            "agents.hapax_daimonion.voice_pitch_baseline.operator_voice_pitch_is_elevated",
+            return_value=None,
+        ):
+            assert bridge.voice_pitch_elevated() is None
+
+    def test_voice_pitch_elevated_returns_true(self) -> None:
+        """Elevated operator voice pitch → True."""
+        bridge = self._make_bridge()
+        with patch(
+            "agents.hapax_daimonion.voice_pitch_baseline.operator_voice_pitch_is_elevated",
+            return_value=True,
+        ):
+            assert bridge.voice_pitch_elevated() is True
+
+    def test_voice_pitch_baseline_returns_false(self) -> None:
+        """Fresh voice pitch at baseline → False."""
+        bridge = self._make_bridge()
+        with patch(
+            "agents.hapax_daimonion.voice_pitch_baseline.operator_voice_pitch_is_elevated",
+            return_value=False,
+        ):
+            assert bridge.voice_pitch_elevated() is False
 
 
 # ── Coherence bridge tests ──────────────────────────────────────────────
@@ -224,10 +246,44 @@ class TestMoodCoherenceBridge:
         with patch.object(type(bridge), "_load_watch_file", return_value=data):
             assert bridge.hrv_variability_high() is None
 
-    def test_respiration_returns_none(self) -> None:
-        """Respiration stub returns None (no data source)."""
+    def test_respiration_missing_returns_none(self) -> None:
+        """Missing respiration.json → None."""
         bridge = self._make_bridge()
-        assert bridge.respiration_irregular() is None
+        with patch.object(type(bridge), "_load_watch_file", return_value=None):
+            assert bridge.respiration_irregular() is None
+
+    def test_respiration_stale_returns_none(self) -> None:
+        """Stale respiration.json → None."""
+        bridge = self._make_bridge()
+        data = {
+            "updated_at": "2020-01-01T00:00:00+00:00",
+            "current": {"breaths_per_min": 14.0},
+            "window_1h": {"min": 12.0, "max": 20.0, "mean": 15.0, "readings": 8},
+        }
+        with patch.object(type(bridge), "_load_watch_file", return_value=data):
+            assert bridge.respiration_irregular() is None
+
+    def test_respiration_regular_returns_false(self) -> None:
+        """Low breath-rate variation → False."""
+        bridge = self._make_bridge()
+        data = {
+            "updated_at": datetime.now(UTC).isoformat(),
+            "current": {"breaths_per_min": 14.0},
+            "window_1h": {"min": 13.0, "max": 15.0, "mean": 14.0, "readings": 12},
+        }
+        with patch.object(type(bridge), "_load_watch_file", return_value=data):
+            assert bridge.respiration_irregular() is False
+
+    def test_respiration_irregular_returns_true(self) -> None:
+        """High breath-rate variation → True."""
+        bridge = self._make_bridge()
+        data = {
+            "updated_at": datetime.now(UTC).isoformat(),
+            "current": {"breaths_per_min": 21.0},
+            "window_1h": {"min": 10.0, "max": 22.0, "mean": 15.0, "readings": 12},
+        }
+        with patch.object(type(bridge), "_load_watch_file", return_value=data):
+            assert bridge.respiration_irregular() is True
 
     def test_movement_jitter_low_load(self) -> None:
         """Low physiological load → False."""

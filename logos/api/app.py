@@ -486,17 +486,18 @@ class LogosMoodValenceBridge:
         return float(quality) < 0.6
 
     def voice_pitch_elevated(self) -> bool | None:
-        """True if voice pitch is elevated above baseline.
+        """True if operator voice pitch exceeds the 30-min session baseline.
 
-        Returns ``None`` until a voice_pitch_baseline reader is
-        implemented (Phase B long pole — needs 30-min bootstrap).
-        The engine skips this signal on ``None`` per the ClaimEngine
-        contract; the other 3 signals still contribute.
+        Reads ``/dev/shm/hapax-daimonion/operator-voice-pitch.json``,
+        written by the daimonion audio loop from numeric F0 samples only.
+        The bootstrap fallback needs 5 voiced operator samples; missing,
+        stale, or warming-up data returns ``None``.
         """
-        # Phase B long pole: voice pitch baseline needs a rolling
-        # 30-min reader from sst_pipeline. Shipping as None until
-        # the voice_pitch_baseline module is wired (follow-up PR).
-        return None
+        from agents.hapax_daimonion.voice_pitch_baseline import (
+            operator_voice_pitch_is_elevated,
+        )
+
+        return operator_voice_pitch_is_elevated()
 
 
 # Phase 6b-iii bridge for the four mood-coherence signals. Per-backend
@@ -580,16 +581,29 @@ class LogosMoodCoherenceBridge:
         return cv_approx > 0.30
 
     def respiration_irregular(self) -> bool | None:
-        """True if respiratory pattern is irregular.
+        """True if respiration-rate variance is high in the 1h window.
 
-        Returns ``None`` — no respiratory data source is currently
-        available from the watch or phone. The engine skips this signal
-        on ``None`` per the ClaimEngine contract.
+        Reads ``~/hapax-state/watch/respiration.json`` produced by
+        ``agents.watch_receiver`` from phone/watch respiration-rate samples.
+        Irregularity uses the same min/max/mean CV proxy as HRV variability:
+        ``(max - min) / (2 * mean) > 0.20``. Missing, stale, or underfilled
+        windows return ``None`` so the positive-only signal does not subtract.
         """
-        # No respiratory data source wired yet. The Pixel Watch 4 doesn't
-        # expose breath rate in real-time via the Health Services API.
-        # Follow-up: wire phone-side breath estimation if available.
-        return None
+        data = self._load_watch_file("respiration.json")
+        if data is None or not self._is_watch_fresh(data):
+            return None
+        window = data.get("window_1h", {})
+        mean = window.get("mean")
+        min_val = window.get("min")
+        max_val = window.get("max")
+        readings = window.get("readings", 0)
+        if mean is None or min_val is None or max_val is None or readings < 5:
+            return None
+        if float(mean) <= 0:
+            return None
+        spread = float(max_val) - float(min_val)
+        cv_approx = spread / (2.0 * float(mean))
+        return cv_approx > 0.20
 
     def movement_jitter_high(self) -> bool | None:
         """True if accelerometer jerk / motion variance is high.

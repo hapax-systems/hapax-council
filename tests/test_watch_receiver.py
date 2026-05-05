@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from agents.watch_receiver import _hr_window, _hrv_window, create_app
+from agents.watch_receiver import _hr_window, _hrv_window, _respiration_window, create_app
 
 
 @pytest.fixture
@@ -17,6 +17,7 @@ def state_dir(tmp_path):
     """Override WATCH_STATE_DIR for tests and clear rolling windows."""
     _hr_window.clear()
     _hrv_window.clear()
+    _respiration_window.clear()
     with patch("agents.watch_receiver.WATCH_STATE_DIR", tmp_path):
         yield tmp_path
 
@@ -66,6 +67,32 @@ class TestSensorIngestion:
         assert act_file.exists()
         data = json.loads(act_file.read_text())
         assert data["state"] == "WALKING"
+
+    def test_respiration_rate_creates_file(self, client, state_dir):
+        """Respiration readings create respiration.json with rolling stats."""
+        for rate in (12.0, 13.0, 14.0, 15.0, 18.0):
+            resp = client.post(
+                "/watch/sensors",
+                json={
+                    "ts": int(time.time() * 1000),
+                    "device_id": "pixel10",
+                    "readings": [
+                        {
+                            "type": "respiration_rate",
+                            "breaths_per_min": rate,
+                            "ts": "2026-03-12T14:30:00-05:00",
+                        }
+                    ],
+                },
+            )
+            assert resp.status_code == 200
+
+        data = json.loads((state_dir / "respiration.json").read_text())
+        assert data["source"] == "pixel_10"
+        assert data["current"]["breaths_per_min"] == 18.0
+        assert data["window_1h"]["min"] == 12.0
+        assert data["window_1h"]["max"] == 18.0
+        assert data["window_1h"]["readings"] == 5
 
     def test_connection_updated_on_any_post(self, client, state_dir):
         """Every sensor POST updates connection.json with last_seen."""
