@@ -75,6 +75,7 @@ class TestArchiveLifecycle:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         monkeypatch.setenv("HAPAX_ARCHIVE_ROOT", str(tmp_path / "archive"))
+        monkeypatch.setattr(hls_archive, "_query_camera_salience_for_archive", lambda: None)
 
         source_dir = tmp_path / "hls-source"
         source_dir.mkdir()
