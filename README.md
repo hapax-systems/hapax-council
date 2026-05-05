@@ -4,11 +4,15 @@ Single-operator runtime of the Hapax operating environment. Constituent of the H
 
 [![CI](https://github.com/ryanklee/hapax-council/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanklee/hapax-council/actions/workflows/ci.yml)
 
+## Project spine
+
+Single-operator infrastructure, externalized executive function, semantic recruitment, conversational grounding research, the 24/7 livestream as instrument, and refusal as data are the first-screen frame for this repository.
+
 ## Project posture
 
 | Surface | State |
 |---|---|
-| Code release | Source-available archive at this repository. Pull requests, issues, and discussions are not accepted (see [`CONTRIBUTING.md`](CONTRIBUTING.md), [`NOTICE.md`](NOTICE.md)). |
+| Code release | Source-available archive at this repository. External patches, issues, and discussions are not accepted (see [`CONTRIBUTING.md`](CONTRIBUTING.md), [`NOTICE.md`](NOTICE.md)). |
 | Empirical claims | Research compendium under [`research/`](research/) and [`docs/research/`](docs/research/). Cycle 1 SCED pilot complete (37 sessions, BF=3.66, inconclusive). Cycle 2 implementation complete; pre-registration pending. |
 | Governance | 5 constitutional axioms enforced via [hapax-constitution](https://github.com/ryanklee/hapax-constitution) and [`axioms/`](axioms/). |
 | License authority | [`NOTICE.md`](NOTICE.md), [`CITATION.cff`](CITATION.cff), [`codemeta.json`](codemeta.json) are canonical. The `LICENSE` file is in transition; reconciliation status at [`docs/governance/license-reconciliation-status.md`](docs/governance/license-reconciliation-status.md). |
@@ -178,7 +182,7 @@ uv sync --all-extras                                         # core + audio + sy
 uv run pytest tests/ -q                                      # tests
 uv run ruff check . && uv run ruff format --check .          # lint
 uv run --no-project --with pyrefly==0.62.0 pyrefly check     # CI typecheck (fast)
-uv run pyright                                               # weekly safety net
+uv run pyright                                               # weekly typecheck safety net
 ```
 
 Infrastructure containers (LiteLLM, Qdrant, Postgres, Langfuse, Prometheus, Grafana, etc.) live under `~/llm-stack/`. Application services live under `systemd/units/` (canonical path; the deploy script matches `*.service`/`*.timer` here only). After cloning:
