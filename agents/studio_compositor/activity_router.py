@@ -59,6 +59,7 @@ import threading
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +85,11 @@ ROUTING_STATE_PATH: Path = Path("/dev/shm/hapax-compositor/routing-state.json")
 #: default 0.5s tick interval (2 Hz) so a missed write never lets a
 #: suppressed ward leak visible.
 SUPPRESSION_TTL_S: float = 5.0
+
+#: Operator override for the P4 router policy. Invalid values are
+#: deliberately fail-open to ``UNCONSTRAINED`` so a typo cannot make a
+#: ward disappear from broadcast.
+ACTIVITY_ROUTER_POLICY_ENV: str = "HAPAX_ACTIVITY_ROUTER_POLICY"
 
 
 # ── Prometheus metrics (registry-bound per memory project_compositor_metrics_registry) ──
@@ -155,6 +161,41 @@ def _build_metrics() -> dict[str, Any]:
 _METRICS: dict[str, Any] = _build_metrics()
 
 
+class RouterPolicy(StrEnum):
+    """Activity-reveal ward visibility policy.
+
+    ``UNCONSTRAINED`` is the historical P0/P3 behavior: every ward that
+    wants visibility remains eligible. ``FIRST_WINS`` and
+    ``PRIORITY_SCORED`` are opt-in mutex policies for later family
+    growth when multiple activity wards can compete for the same visual
+    plane.
+    """
+
+    UNCONSTRAINED = "unconstrained"
+    FIRST_WINS = "first_wins"
+    PRIORITY_SCORED = "priority_scored"
+
+    @classmethod
+    def coerce(cls, value: str | RouterPolicy | None) -> RouterPolicy:
+        if isinstance(value, cls):
+            return value
+        raw = (value or cls.UNCONSTRAINED.value).strip().lower().replace("-", "_")
+        try:
+            return cls(raw)
+        except ValueError:
+            log.warning(
+                "invalid %s=%r; falling back to %s",
+                ACTIVITY_ROUTER_POLICY_ENV,
+                value,
+                cls.UNCONSTRAINED.value,
+            )
+            return cls.UNCONSTRAINED
+
+    @classmethod
+    def from_env(cls) -> RouterPolicy:
+        return cls.coerce(os.environ.get(ACTIVITY_ROUTER_POLICY_ENV))
+
+
 @dataclass
 class RouterConfig:
     """Router policy.
@@ -176,6 +217,10 @@ class RouterConfig:
 
     # P3 observability — write the WCS row each tick.
     routing_state_path: Path = ROUTING_STATE_PATH
+    policy: RouterPolicy = field(default_factory=RouterPolicy.from_env)
+
+    def __post_init__(self) -> None:
+        self.policy = RouterPolicy.coerce(self.policy)
 
 
 @dataclass
@@ -197,6 +242,9 @@ class RouterState:
     suppressed_by_other_ward: dict[str, tuple[str, ...]] = field(default_factory=dict)
     """Map of suppressed ward_id -> tuple of suppressor ward IDs that
     forced this ward to invisible this tick."""
+    policy_blocked_ids: tuple[str, ...] = ()
+    """Ward IDs that wanted visibility but were filtered by the active
+    ``RouterPolicy`` mutex."""
     ward_visible_time_bias: dict[str, float] = field(default_factory=dict)
     """Per-ward recruitment-bias multiplier from the shared
     visibility-window tracker. Informational mirror of what the
@@ -214,7 +262,8 @@ class ActivityRouter:
       - ``start`` / ``stop``: lifecycle.
       - ``last_state``: thread-safe snapshot of the most recent tick.
 
-    P4 will add the mutex/priority/hysteresis algorithm in spec §2.
+    P4 adds opt-in mutex/priority policy while preserving the default
+    unconstrained behavior.
     """
 
     def __init__(
@@ -237,9 +286,12 @@ class ActivityRouter:
         self._tracker = (
             visibility_tracker if visibility_tracker is not None else get_default_tracker()
         )
-        # Track per-ward visible-window starts so we can mark intervals
-        # closed when the ward exits (or this router stops).
+        # Track per-ward visible-window cursor so each tick can close
+        # the elapsed interval into the shared tracker. This feeds the
+        # P3 recruitment-bias surface and avoids waiting for a final
+        # "exit" tick before visible-time becomes observable.
         self._open_windows: dict[str, float] = {}
+        self._active_policy_winner: str | None = None
 
     # ── Lifecycle ────────────────────────────────────────────────────
 
@@ -265,12 +317,17 @@ class ActivityRouter:
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
+        self._record_visibility_intervals((), time.monotonic())
 
     # ── Public surface ───────────────────────────────────────────────
 
     @property
     def wards(self) -> tuple[ActivityRevealMixin, ...]:
         return self._wards
+
+    @property
+    def policy(self) -> RouterPolicy:
+        return self._config.policy
 
     def last_state(self) -> RouterState:
         """Thread-safe snapshot of the latest tick state."""
@@ -280,6 +337,7 @@ class ActivityRouter:
     def describe(self) -> dict[str, Any]:
         return {
             "tick_hz": self._config.tick_hz,
+            "policy": self.policy.value,
             "ward_count": len(self._wards),
             "ward_ids": [type(w).WARD_ID for w in self._wards],
         }
@@ -300,6 +358,7 @@ class ActivityRouter:
         for ward in self._wards:
             ward_id = type(ward).WARD_ID
             try:
+                ward.poll_once(now=ts)
                 claim = ward.current_claim()
             except Exception as exc:  # pragma: no cover — defensive
                 log.warning(
@@ -314,9 +373,19 @@ class ActivityRouter:
         mandatory_invisible_ids = tuple(
             sorted(wid for wid, c in claims.items() if c.mandatory_invisible)
         )
-        want_visible_ids = tuple(
-            sorted(wid for wid, c in claims.items() if c.want_visible and not c.mandatory_invisible)
-        )
+        candidate_list: list[str] = []
+        seen_candidates: set[str] = set()
+        for ward in self._wards:
+            ward_id = type(ward).WARD_ID
+            if ward_id in seen_candidates:
+                continue
+            claim = claims.get(ward_id)
+            if claim is None or not claim.want_visible or claim.mandatory_invisible:
+                continue
+            candidate_list.append(ward_id)
+            seen_candidates.add(ward_id)
+        candidate_ids = tuple(candidate_list)
+        want_visible_ids, policy_blocked_ids = self._apply_policy(candidate_ids, claims)
 
         # ── Project SUPPRESS_WHEN_ACTIVE ───────────────────────────
         # Every ward that is currently want_visible projects its
@@ -334,9 +403,13 @@ class ActivityRouter:
             wid: tuple(sorted(suppressors)) for wid, suppressors in suppressed_by_other_ward.items()
         }
 
-        # ── Write suppression to ward_properties on every tick ─────
-        if suppressed_by_other_ward_tuples:
-            self._project_suppression_to_ward_properties(suppressed_by_other_ward_tuples)
+        # ── Write suppression / policy blocks to ward_properties on every tick ─────
+        invisible_wards = set(suppressed_by_other_ward_tuples)
+        invisible_wards.update(policy_blocked_ids)
+        if invisible_wards:
+            self._project_invisible_to_ward_properties(invisible_wards)
+
+        self._record_visibility_intervals(want_visible_ids, ts)
 
         # ── Compute visibility-time bias per ward (informational mirror) ──
         ward_visible_time_bias: dict[str, float] = {
@@ -349,6 +422,7 @@ class ActivityRouter:
             mandatory_invisible_ids=mandatory_invisible_ids,
             want_visible_ids=want_visible_ids,
             suppressed_by_other_ward=suppressed_by_other_ward_tuples,
+            policy_blocked_ids=policy_blocked_ids,
             ward_visible_time_bias=ward_visible_time_bias,
         )
         with self._state_lock:
@@ -361,11 +435,68 @@ class ActivityRouter:
 
     # ── Internal helpers ─────────────────────────────────────────────
 
-    def _project_suppression_to_ward_properties(
-        self, suppressed: dict[str, tuple[str, ...]]
-    ) -> None:
+    def _apply_policy(
+        self,
+        candidate_ids: tuple[str, ...],
+        claims: dict[str, VisibilityClaim],
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Return ``(visible_ids, policy_blocked_ids)`` for this tick."""
+        if not candidate_ids:
+            self._active_policy_winner = None
+            return (), ()
+        if self.policy is RouterPolicy.UNCONSTRAINED:
+            return tuple(sorted(candidate_ids)), ()
+
+        candidate_set = set(candidate_ids)
+        if self.policy is RouterPolicy.FIRST_WINS:
+            current = getattr(self, "_active_policy_winner", None)
+            winner = current if current in candidate_set else candidate_ids[0]
+        else:
+            winner = min(
+                candidate_ids,
+                key=lambda ward_id: (
+                    -int(getattr(self._ward_classes_by_id().get(ward_id), "priority", 0)),
+                    ward_id,
+                ),
+            )
+        self._active_policy_winner = winner
+        visible = (winner,)
+        blocked = tuple(sorted(ward_id for ward_id in candidate_set if ward_id != winner))
+        # Keep ``claims`` referenced in the signature so future policy
+        # scoring can include claim.score without changing the helper API.
+        del claims
+        return visible, blocked
+
+    def _ward_classes_by_id(self) -> dict[str, type[ActivityRevealMixin]]:
+        return {type(ward).WARD_ID: type(ward) for ward in self._wards}
+
+    def _record_visibility_intervals(self, visible_ids: tuple[str, ...], ts: float) -> None:
+        """Close per-tick visible intervals into the shared tracker and
+        each ward's local ceiling counter."""
+        visible = set(visible_ids)
+        wards_by_id = {type(ward).WARD_ID: ward for ward in self._wards}
+        for ward_id in tuple(self._open_windows):
+            start = self._open_windows[ward_id]
+            if ts > start:
+                self._tracker.mark_visible_window(ward_id, start, ts)
+                ward = wards_by_id.get(ward_id)
+                if ward is not None:
+                    ward.mark_visible_window(start, ts)
+                if _METRICS:
+                    try:
+                        _METRICS["visible_seconds_total"].labels(ward_id=ward_id).inc(ts - start)
+                    except Exception:
+                        log.debug("visible_seconds_total metric update failed", exc_info=True)
+            if ward_id in visible:
+                self._open_windows[ward_id] = ts
+            else:
+                del self._open_windows[ward_id]
+        for ward_id in visible:
+            self._open_windows.setdefault(ward_id, ts)
+
+    def _project_invisible_to_ward_properties(self, ward_ids: set[str]) -> None:
         """Write ``visible=False`` to ward_properties.json for every
-        suppressed ward.
+        suppressed or policy-blocked ward.
 
         Defensive: ward_properties depends on an SHM dir that may not
         exist in unit tests. On any failure, log WARNING and continue —
@@ -377,12 +508,12 @@ class ActivityRouter:
                 set_many_ward_properties,
             )
 
-            props_by_ward = {ward_id: WardProperties(visible=False) for ward_id in suppressed}
+            props_by_ward = {ward_id: WardProperties(visible=False) for ward_id in ward_ids}
             set_many_ward_properties(props_by_ward, ttl_s=SUPPRESSION_TTL_S)
         except Exception as exc:
             log.warning(
-                "activity-router: suppression projection failed (%s suppressed wards): %s",
-                len(suppressed),
+                "activity-router: invisible projection failed (%s wards): %s",
+                len(ward_ids),
                 exc,
                 exc_info=True,
             )
@@ -424,6 +555,8 @@ class ActivityRouter:
                     wid: list(suppressors)
                     for wid, suppressors in state.suppressed_by_other_ward.items()
                 },
+                "policy": self.policy.value,
+                "policy_blocked_ids": list(state.policy_blocked_ids),
                 "ward_visible_time_bias": dict(state.ward_visible_time_bias),
                 "rolling_window_s": self._tracker.window_s,
             }
@@ -455,7 +588,9 @@ class ActivityRouter:
 
 
 __all__ = [
+    "ACTIVITY_ROUTER_POLICY_ENV",
     "ActivityRouter",
     "RouterConfig",
+    "RouterPolicy",
     "RouterState",
 ]

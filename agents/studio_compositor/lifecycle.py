@@ -233,6 +233,16 @@ def start_compositor(compositor: Any) -> None:
     interval_ms = int(compositor.config.status_interval_s * 1000)
     compositor._status_timer_id = GLib.timeout_add(interval_ms, compositor._status_tick)
     compositor._broadcast_mode_timer_id = GLib.timeout_add(1000, compositor._broadcast_mode_tick)
+    activity_router = getattr(compositor, "_activity_router", None)
+    if activity_router is not None:
+        cfg = getattr(activity_router, "_config", None)
+        tick_hz = float(getattr(cfg, "tick_hz", 2.0))
+        router_interval_ms = int(1000 / max(0.1, tick_hz))
+        compositor._activity_router_timer_id = GLib.timeout_add(
+            router_interval_ms,
+            compositor._activity_router_tick,
+        )
+        log.info("ActivityRouter tick scheduled at %.2f Hz", tick_hz)
 
     GLib.timeout_add(33, lambda: fx_tick_callback(compositor))  # 30fps uniform updates
 
@@ -491,6 +501,15 @@ def stop_compositor(compositor: Any) -> None:
     if getattr(compositor, "_broadcast_mode_timer_id", None) is not None and GLib is not None:
         GLib.source_remove(compositor._broadcast_mode_timer_id)
         compositor._broadcast_mode_timer_id = None
+    if getattr(compositor, "_activity_router_timer_id", None) is not None and GLib is not None:
+        GLib.source_remove(compositor._activity_router_timer_id)
+        compositor._activity_router_timer_id = None
+    activity_router = getattr(compositor, "_activity_router", None)
+    if activity_router is not None:
+        try:
+            activity_router.stop()
+        except Exception:
+            log.exception("activity router stop failed")
 
     try:
         compositor._stop_mobile_support_threads()
