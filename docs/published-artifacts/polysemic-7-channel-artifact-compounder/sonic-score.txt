@@ -1,0 +1,18 @@
+polysemic-7-channel-artifact-compounder earcon v0
+
+Tempo: 84 BPM
+Meter: 7/8 grouped 2+2+3
+
+Pulse A: low sine, 110 Hz, 120 ms, label REFUSE
+Pulse B: mid triangle, 330 Hz, 120 ms, label COMPOUND
+Pulse C: high square, 660 Hz, 180 ms, label ATTEST
+
+Pattern:
+1: A . B . C . .
+2: A . B . C C .
+3: A B A . C . C
+
+Render note:
+The score is intentionally plain text so a later audio owner can map it
+to M8, MIDI, SuperCollider, or another daemon-owned sound surface without
+changing the artifact identity.

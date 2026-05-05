@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="360" viewBox="0 0 960 360" role="img" aria-labelledby="title desc">
+  <title id="title">Seven-channel refusal artifact map</title>
+  <desc id="desc">A visual map linking the polysemic refusal artifact to seven decoder channels.</desc>
+  <rect width="960" height="360" fill="#101014"/>
+  <rect x="30" y="30" width="900" height="300" fill="none" stroke="#d8c56d" stroke-width="3"/>
+  <text x="480" y="72" fill="#f2f2f2" font-family="monospace" font-size="24" text-anchor="middle">REFUSED: SINGLE-CHANNEL SUFFICIENCY</text>
+  <circle cx="480" cy="180" r="52" fill="#171720" stroke="#d8c56d" stroke-width="3"/>
+  <text x="480" y="174" fill="#f2f2f2" font-family="monospace" font-size="16" text-anchor="middle">7-CHANNEL</text>
+  <text x="480" y="198" fill="#f2f2f2" font-family="monospace" font-size="16" text-anchor="middle">ARTIFACT</text>
+  <g fill="#0f2730" stroke="#44c7d8" stroke-width="2">
+    <circle cx="170" cy="120" r="34"/>
+    <circle cx="300" cy="252" r="34"/>
+    <circle cx="430" cy="282" r="34"/>
+    <circle cx="560" cy="282" r="34"/>
+    <circle cx="690" cy="252" r="34"/>
+    <circle cx="790" cy="120" r="34"/>
+    <circle cx="480" cy="112" r="34"/>
+  </g>
+  <g stroke="#44c7d8" stroke-width="2" opacity="0.75">
+    <line x1="205" y1="124" x2="428" y2="166"/>
+    <line x1="325" y1="245" x2="432" y2="202"/>
+    <line x1="445" y1="250" x2="466" y2="226"/>
+    <line x1="545" y1="250" x2="494" y2="226"/>
+    <line x1="665" y1="245" x2="528" y2="202"/>
+    <line x1="755" y1="124" x2="532" y2="166"/>
+    <line x1="480" y1="146" x2="480" y2="128"/>
+  </g>
+  <g fill="#f2f2f2" font-family="monospace" font-size="13" text-anchor="middle">
+    <text x="170" y="116">1</text><text x="170" y="134">VISUAL</text>
+    <text x="300" y="248">2</text><text x="300" y="266">SONIC</text>
+    <text x="430" y="278">3</text><text x="430" y="296">LINGUISTIC</text>
+    <text x="560" y="278">4</text><text x="560" y="296">TYPE</text>
+    <text x="690" y="248">5</text><text x="690" y="266">FORM</text>
+    <text x="790" y="116">6</text><text x="790" y="134">MARKER</text>
+    <text x="480" y="108">7</text><text x="480" y="126">AUTHOR</text>
+  </g>
+  <text x="480" y="320" fill="#d8c56d" font-family="monospace" font-size="16" text-anchor="middle">0.10 x 7 decoder channels = +0.70 braid bonus</text>
+</svg>
