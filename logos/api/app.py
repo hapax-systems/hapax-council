@@ -994,6 +994,7 @@ from logos.api.routes.mail_monitor import router as mail_monitor_router
 from logos.api.routes.nudges import router as nudges_router
 from logos.api.routes.orientation import router as orientation_router
 from logos.api.routes.payment_rails import router as payment_rails_router
+from logos.api.routes.payment_rails import stripe_webhook_router
 from logos.api.routes.pi import router as pi_router
 from logos.api.routes.predictions import router as predictions_router
 from logos.api.routes.profile import router as profile_router
@@ -1045,6 +1046,7 @@ app.include_router(chronicle_router)
 app.include_router(predictions_router)
 app.include_router(x402_router)
 app.include_router(payment_rails_router)
+app.include_router(stripe_webhook_router)
 
 # Mount HLS segment directory for live stream serving
 # Override .ts MIME type: Starlette defaults to Qt Linguist (text/vnd.trolltech.linguist)
