@@ -1,0 +1,10 @@
+[Unit]
+Description=Hapax research-registry producer Timer (every 6 hours)
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:15:00 UTC
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
