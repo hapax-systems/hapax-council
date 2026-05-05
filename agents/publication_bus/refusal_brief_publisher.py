@@ -94,6 +94,9 @@ DEFAULT_REFUSAL_DEPOSIT_ALLOWLIST: AllowlistGate = load_allowlist(
         # Operator-curated entry: the Article 50 case-study deposit is
         # the first concrete refusal-brief shipped through this surface.
         "refusal-brief-article-50-case-study",
+        # cc-task ``polysemic-7-channel-artifact-compounder`` (2026-05-05).
+        # Repository-staged refusal artifact; pure composer + metadata only.
+        "polysemic-7-channel-artifact-compounder",
     ],
 )
 """Operator-curated refusal-brief allowlist — entries here are
