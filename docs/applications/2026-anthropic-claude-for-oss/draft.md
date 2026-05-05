@@ -1,10 +1,11 @@
 # Anthropic Claude for OSS — Hapax application
 
 **Project:** Hapax (`github.com/ryanklee/hapax-council` + 6 sister repos)
-**Status:** DRAFT — pending operator review + submission
+**Status:** READY FOR OPERATOR REVIEW — channel verified; not submitted
 **Deadline:** 2026-06-30
 **Composed:** 2026-04-26
 **Composed by:** Hapax (the project applying), assembled from substrate
+**Submission packet:** `docs/applications/2026-anthropic-claude-for-oss/submission-packet.md`
 
 ---
 
@@ -63,16 +64,50 @@ If accepted, Hapax commits:
 - **ORCID**: configured via `HAPAX_OPERATOR_ORCID` (operator-supplied at submission)
 - **Hapax citation graph concept-DOI**: minted via `agents/publication_bus/datacite_mirror.py` (operator-supplied at submission once Zenodo PAT lands)
 
-## Submission process — pending research
+## Submission channel — verified 2026-05-05
 
-Anthropic's actual application channel (web form vs email vs API) is not codified in this repo as of 2026-04-26. The architecture for the submission daemon + mail-monitor confirmation parser lives in a separate doc once the submission channel is identified:
+Anthropic's current Claude for Open Source application channel is the official
+web form at `https://claude.com/contact-sales/claude-for-oss`; the Terms page
+also names `https://claude.com/open-source-max`, which currently redirects to
+that form. The page was last published on 2026-05-04 at 14:54:33 UTC and embeds
+a HubSpot form with portal ID `23987127` and form ID
+`64c4f246-3bd4-4d55-ba2b-0c2e52b4a8f2`.
 
-- **Step 1** (research): identify Anthropic's current Claude for OSS application channel + required submission format
-- **Step 2** (compose): convert this draft to the format the channel accepts
-- **Step 3** (submit): operator-mediated submission OR daemon-tractable submission per the channel's API surface
-- **Step 4** (track): mail-monitor parser for the confirmation email + outcome storage at `~/hapax-state/applications/anthropic-cco-2026.yaml`
-- **Step 5** (refusal-as-data on rejection): publish refusal brief with the rationale per `feedback_full_automation_or_no_engagement`
+Current channel constraints:
 
-This draft is the substrate for steps 2-5; the operator review (step 1.5) determines what gets cut, expanded, or restructured before the channel-specific render.
+- Applications are reviewed on a rolling basis and capped at up to 10,000
+  contributors.
+- The benefit is six months of Claude Max 20x if approved.
+- The standard maintainer track requires a public GitHub repo with 5,000+
+  stars or 1M+ monthly NPM downloads plus recent commits, releases, or PR
+  reviews; the page also invites applicants who maintain something the
+  ecosystem quietly depends on to apply and explain the impact.
+- The form requires first name, last name, email, and GitHub handle. Repository
+  URL and "Other info" are optional fields.
+- Submitting the form binds the applicant to Anthropic's Claude for Open Source
+  terms, including the six-month benefit period, one-per-person limit,
+  June 30, 2026 application expiration unless extended, and Anthropic's use of
+  the applicant's GitHub profile data, name/email, and application narrative to
+  administer the program.
+
+No live submission was performed by the agent because the form requires
+operator-only identity/contact fields and the act of submission accepts program
+terms. The channel-specific render and operator checklist live in
+`submission-packet.md`; the application state is recorded at
+`~/hapax-state/applications/anthropic-cco-2026.yaml`.
+
+## Submission process — operator gated
+
+- **Step 1** (done): identify the current Anthropic Claude for OSS application
+  channel and required form fields.
+- **Step 2** (done): convert this draft into the channel-specific "Other info"
+  render in `submission-packet.md`.
+- **Step 3** (operator): review/edit/reject the packet, provide first name,
+  last name, account email, and GitHub handle, then submit through the official
+  form if approved.
+- **Step 4** (pending): record the confirmation email or rejection/no-submit
+  decision in `~/hapax-state/applications/anthropic-cco-2026.yaml`.
+- **Step 5** (pending if rejected): publish refusal brief with the rationale per
+  `feedback_full_automation_or_no_engagement`.
 
 — Hapax (composed; pending Oudepode review)
