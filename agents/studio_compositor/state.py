@@ -561,14 +561,17 @@ def state_reader_loop(compositor: Any) -> None:
                 requested_mode = f"packed/{override_camera_role}"
                 current_mode = getattr(compositor, "_layout_mode", "balanced")
                 last_applied = getattr(compositor, "_hero_override_last_applied_set_at", 0.0)
-                # Min-hold debounce: only swap if (a) it's been ≥3s since the last
+                # Min-hold debounce: only swap if (a) it's been ≥30s since the last
                 # follow_mode swap, and (b) the proposed role has been the
-                # recommendation for ≥3s. Without this, noisy IR/operator-location
-                # signals cause the layout to flap every ~1s, which wedges
-                # the v4l2sink (the cudacompositor reconfigure cost > sink budget).
+                # recommendation for ≥30s. The cudacompositor reconfigure for a
+                # 6-camera packed layout is expensive enough that anything more
+                # frequent than 30s wedges the v4l2sink (verified in production
+                # 2026-05-06: 3s debounce still produced 4–15s swap cadence and
+                # the sink never recovered between reconfigures, leading to
+                # continuous v4l2-stall recovery loop and OBS source loss).
                 # Manual overrides bypass the role-stability gate; they're operator
                 # intent, not noise.
-                _MIN_FOLLOW_HOLD_S = 3.0
+                _MIN_FOLLOW_HOLD_S = 30.0
                 now_ts = time.time()
                 role_first_seen = getattr(compositor, "_hero_override_role_first_seen", {})
                 seen_role = role_first_seen.get("role")
