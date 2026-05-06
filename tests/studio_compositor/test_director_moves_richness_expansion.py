@@ -45,6 +45,10 @@ from shared.stimmung import Stance
         "pace.tempo_shift",
         "mood.tone_pivot",
         "programme.beat_advance",
+        "intensity.surge",
+        "silence.invitation",
+        "chrome.density",
+        "attention.refocus",
     ],
 )
 def test_new_intent_family_validates(intent_family):
@@ -73,6 +77,10 @@ def test_new_families_pass_through_director_intent():
             "pace.tempo_shift",
             "mood.tone_pivot",
             "programme.beat_advance",
+            "intensity.surge",
+            "silence.invitation",
+            "chrome.density",
+            "attention.refocus",
         )
     ]
     intent = DirectorIntent(
@@ -89,6 +97,10 @@ def test_new_families_pass_through_director_intent():
         "pace.tempo_shift",
         "mood.tone_pivot",
         "programme.beat_advance",
+        "intensity.surge",
+        "silence.invitation",
+        "chrome.density",
+        "attention.refocus",
     }
 
 
@@ -112,6 +124,10 @@ def test_new_families_pass_through_director_intent():
         ("pace.tempo_shift", 3),
         ("mood.tone_pivot", 4),
         ("programme.beat_advance", 1),
+        ("intensity.surge", 2),
+        ("silence.invitation", 2),
+        ("chrome.density", 3),
+        ("attention.refocus", 7),
     ],
 )
 def test_new_families_have_catalog_records(family_prefix, minimum_count):
@@ -149,6 +165,8 @@ def tmp_shm(monkeypatch, tmp_path):
     monkeypatch.setattr(cc, "_PACE_STATE", tmp_path / "pace-state.json")
     monkeypatch.setattr(cc, "_MOOD_STATE", tmp_path / "mood-state.json")
     monkeypatch.setattr(cc, "_PROGRAMME_ADVANCE_INTENT", tmp_path / "programme-advance-intent.json")
+    monkeypatch.setattr(cc, "_PARAMETRIC_ENVELOPES", tmp_path / "parametric-envelopes.json")
+    monkeypatch.setattr(cc, "_SEGMENT_CUE_HOLD", tmp_path / "segment-cue-hold.json")
     return tmp_path
 
 
@@ -205,6 +223,66 @@ class TestProgrammeBeatAdvance:
         assert data["variant"] == "next"
 
 
+def _parametric_envelope(tmp_shm, family: str) -> dict:
+    data = json.loads((tmp_shm / "parametric-envelopes.json").read_text())
+    return data["envelopes"][family]
+
+
+def _assert_bounded_targets(targets: dict) -> None:
+    for target in targets.values():
+        assert target["min"] <= target["target"] <= target["max"]
+
+
+def _assert_no_preset_payload(payload: dict) -> None:
+    assert "preset" not in json.dumps(payload).lower()
+
+
+class TestTranche2ParametricPrimitives:
+    def test_intensity_surge_writes_all_nine_dimension_targets(self, tmp_shm):
+        from agents.visual_chain import VISUAL_DIMENSIONS
+
+        assert cc.dispatch_intensity_surge("intensity.surge.crest", 12.0)
+        envelope = _parametric_envelope(tmp_shm, "intensity.surge")
+        assert envelope["kind"] == "parametric_envelope"
+        assert envelope["variant"] == "crest"
+        assert set(envelope["dimension_targets"]) == set(VISUAL_DIMENSIONS)
+        assert len(envelope["dimension_targets"]) == 9
+        _assert_bounded_targets(envelope["dimension_targets"])
+        _assert_bounded_targets(envelope["node_params"])
+        _assert_no_preset_payload(envelope)
+
+    def test_silence_invitation_lowers_expressive_surfaces(self, tmp_shm):
+        assert cc.dispatch_silence_invitation("silence.invitation.hold", 20.0)
+        envelope = _parametric_envelope(tmp_shm, "silence.invitation")
+        assert envelope["variant"] == "hold"
+        assert envelope["surface_targets"]["surface.narration.rate"]["target"] == 0.0
+        assert max(t["target"] for t in envelope["dimension_targets"].values()) <= 0.01
+        _assert_bounded_targets(envelope["surface_targets"])
+        _assert_bounded_targets(envelope["node_params"])
+        _assert_no_preset_payload(envelope)
+
+    def test_chrome_density_toggles_without_preset_state(self, tmp_shm):
+        assert cc.dispatch_chrome_density("chrome.density.denser", 18.0)
+        envelope = _parametric_envelope(tmp_shm, "chrome.density")
+        assert envelope["variant"] == "denser"
+        assert envelope["surface_targets"]["chrome.density"]["target"] == 0.75
+        assert envelope["surface_targets"]["ward.chrome.alpha"]["target"] > 0.7
+        _assert_bounded_targets(envelope["surface_targets"])
+        _assert_bounded_targets(envelope["node_params"])
+        _assert_no_preset_payload(envelope)
+
+    def test_attention_refocus_soft_reweights_all_camera_roles(self, tmp_shm):
+        assert cc.dispatch_attention_refocus("attention.refocus.operator-brio", 16.0)
+        envelope = _parametric_envelope(tmp_shm, "attention.refocus")
+        targets = envelope["surface_targets"]
+        assert targets["camera.brio-operator.weight"]["target"] == 0.72
+        assert targets["camera.c920-desk.weight"]["target"] == 0.34
+        assert len(targets) == 6
+        _assert_bounded_targets(targets)
+        _assert_bounded_targets(envelope["node_params"])
+        _assert_no_preset_payload(envelope)
+
+
 class TestTopLevelDispatchExtended:
     def test_new_families_route_through_top_level_dispatch(self, tmp_shm):
         for name, expected_family in [
@@ -212,6 +290,10 @@ class TestTopLevelDispatchExtended:
             ("pace.tempo_shift.slow", "pace.tempo_shift"),
             ("mood.tone_pivot.warmer", "mood.tone_pivot"),
             ("programme.beat_advance.next", "programme.beat_advance"),
+            ("intensity.surge.lift", "intensity.surge"),
+            ("silence.invitation.hold", "silence.invitation"),
+            ("chrome.density.sparser", "chrome.density"),
+            ("attention.refocus.operator-brio", "attention.refocus"),
         ]:
             rec = cc.RecruitmentRecord(name=name)
             assert cc.dispatch(rec) == expected_family
@@ -337,6 +419,10 @@ class TestNewCatalogIsRoutable:
             "mood.tone_pivot.",
             "programme.beat_advance.",
             "gem.spawn.",
+            "intensity.surge.",
+            "silence.invitation.",
+            "chrome.density.",
+            "attention.refocus.",
         )
         for cap in COMPOSITIONAL_CAPABILITIES:
             if cap.name.startswith(new_prefixes):
@@ -357,3 +443,7 @@ class TestNewCatalogIsRoutable:
         assert "pace.tempo_shift.slow" in names
         assert "mood.tone_pivot.warmer" in names
         assert "programme.beat_advance.next" in names
+        assert "intensity.surge.lift" in names
+        assert "silence.invitation.hold" in names
+        assert "chrome.density.denser" in names
+        assert "attention.refocus.operator-brio" in names

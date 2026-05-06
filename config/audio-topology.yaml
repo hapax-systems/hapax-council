@@ -633,6 +633,43 @@ nodes:
       bypasses_l12: true
       playback_target: hapax-livestream-tap
 
+  - id: polyend-instrument-source
+    kind: alsa_source
+    pipewire_name: alsa_input.usb-Polyend_Tracker_Mini-00.analog-stereo
+    description: Polyend USB audio source, optional hardware endpoint
+    hw: hw:Polyend,0
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      audit_classification: external-hardware-optional
+
+  - id: polyend-instrument-capture
+    kind: filter_chain
+    pipewire_name: hapax-polyend-instrument-capture
+    description: Polyend USB source capture side routed to Polyend loudnorm
+    target_object: alsa_input.usb-Polyend_Tracker_Mini-00.analog-stereo
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      fallback_to_l12_is_runtime_drift: true
+
+  - id: polyend-loudnorm
+    kind: filter_chain
+    pipewire_name: hapax-polyend-loudnorm
+    description: Polyend instrument loudnorm routed directly to livestream tap
+    target_object: hapax-livestream-tap
+    channels:
+      count: 2
+      positions: [FL, FR]
+    chain_kind: loudnorm
+    limit_db: -18.0
+    release_s: 0.20
+    params:
+      bypasses_l12: true
+      playback_target: hapax-livestream-tap
+
 edges:
   # Live edges the inspector can observe directly.
   - source: l12-capture
@@ -651,6 +688,15 @@ edges:
     target: tts-broadcast-capture
 
   - source: tts-broadcast-playback
+    target: livestream-tap
+
+  - source: polyend-instrument-source
+    target: polyend-instrument-capture
+
+  - source: polyend-instrument-capture
+    target: polyend-loudnorm
+
+  - source: polyend-loudnorm
     target: livestream-tap
 
   - source: private-sink

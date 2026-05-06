@@ -39,6 +39,10 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
+      - name: Install system deps (cairo, gobject)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev gobject-introspection
       - name: Install dependencies (no system audio needed; pure file-read)
         run: uv sync --extra ci
       - name: Run audio_graph schema + invariant tests
