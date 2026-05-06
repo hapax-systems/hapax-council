@@ -264,6 +264,13 @@ def _record_chronicle(event: PaymentEvent) -> None:
                 "rail": event.rail,
                 "amount_sats": event.amount_sats,
                 "external_id": event.external_id,
+                # Payments are structurally high-salience — every receipt
+                # is rare and operator-relevant. 0.95 lands above the
+                # chronicle-ticker 0.7 floor and just below the synthetic
+                # ceiling so genuinely critical events can still rank
+                # above. Source ``payment_processors.lightning`` isn't in
+                # the ticker allow-list, so salience is the surfacing path.
+                "salience": 0.95,
             },
         )
     )
