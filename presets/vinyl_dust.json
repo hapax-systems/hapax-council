@@ -16,7 +16,7 @@
     "noise_dust": {
       "type": "noise_overlay",
       "params": {
-        "intensity": 0.18,
+        "intensity": 0.22,
         "animated": 1.0
       }
     },
