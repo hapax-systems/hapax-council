@@ -85,19 +85,17 @@ _EMPHASIZED_DURATION_S: float = 1.5
 
 _PRESET_CHANGE_ACCENT_HZ: float = 2.0
 _PRESET_CHANGE_TTL_S: float = 0.5
-_AUDIO_KICK_SCALE_BUMP: float = 0.08
-_AUDIO_KICK_TTL_S: float = 0.15
-# Single-cycle border flash inside the kick TTL: hz × ttl ≈ 1 cycle.
-# 6.67 × 0.15 ≈ 1.0 — the border pulses once per kick rather than
-# sustaining a multi-cycle ring. Pairs with _AUDIO_KICK_SCALE_BUMP
-# (which the painter currently no-ops, see ward_properties.py:444);
-# the border pulse is the visible audio-coupling channel for kicks
-# until the canvas-safe scale clamp is restored.
-_AUDIO_KICK_PULSE_HZ: float = 6.67
 _CHAIN_SWAP_SCALE_BUMP: float = 0.12
 _CHAIN_SWAP_TTL_S: float = 0.4
-_INTENSITY_SPIKE_PULSE_HZ: float = 4.0
-_INTENSITY_SPIKE_TTL_S: float = 0.6
+
+# (Removed) audio-kick + intensity-spike fan-out constants. The
+# multi-ward synchronous border-pulse + scale-bump fan-out on every
+# kick was a "global reactivity pumping" shape banned by operator
+# directive 2026-05-06 — see
+# ``feedback_never_remove_exception_global_pumping``. The events
+# remain on the bus; per-ward scoped consumers (M8 oscilloscope's own
+# SLIP-driven amplitude, Sierpinski center waveform) operate on
+# independent paths.
 
 _REVERIE_INTENSITY_BOOST_PEAK: float = 0.20
 
@@ -194,37 +192,41 @@ class WardFxReactor:
     # ── Direction 2: FXEvent → ward reactions ───────────────────────
 
     def on_fx_event(self, event: FXEvent) -> None:
-        """Route an FX-chain event to ward-property modulation."""
+        """Route an FX-chain event to ward-property modulation.
+
+        Audio events (``audio_kick_onset``, ``intensity_spike``) are
+        observed but DO NOT fan out to the audio-reactive ward set
+        (``AUDIO_REACTIVE_WARDS``). The historical multi-ward synchronous
+        border-pulse + scale-bump fan-out produced lockstep pumping
+        across 7 wards on every kick — a "global reactivity pumping"
+        shape banned by operator directive 2026-05-06 (carve-out to
+        never-remove: see ``feedback_never_remove_exception_global_pumping``).
+
+        Per-ward, scoped audio reactivity remains live and mandatory:
+        the M8 oscilloscope renders the M8 device's own SLIP-packet
+        amplitudes directly, the Sierpinski center waveform renders the
+        broadcast envelope as Hapax's speech surface (see
+        ``feedback_audio_reactivity_must_be_tight_speech_representation``).
+        Those paths do NOT route through this reactor.
+
+        Discrete chain-state events (``preset_family_change``,
+        ``chain_swap``) remain — they are not audio-driven pumping.
+        """
         recv_ts = time.monotonic()
         try:
             if event.kind == "preset_family_change":
                 self._pulse_all_wards(_PRESET_CHANGE_ACCENT_HZ, _PRESET_CHANGE_TTL_S)
-            elif event.kind == "audio_kick_onset":
-                # event.strength is FXEvent-canonical clamped to [0,1]
-                # at construction in shared.ward_fx_bus. No re-clamp here.
-                self._bump_audio_reactive_wards(
-                    _AUDIO_KICK_SCALE_BUMP * event.strength,
-                    _AUDIO_KICK_TTL_S,
-                )
-                # Border-pulse path: visible single-cycle flash on each
-                # kick. Composes with the (currently painter-disabled)
-                # scale_bump so when the safe-clamp scale path is
-                # restored, both modulations fire together.
-                self._pulse_audio_reactive_wards(
-                    _AUDIO_KICK_PULSE_HZ * event.strength,
-                    _AUDIO_KICK_TTL_S,
-                )
             elif event.kind == "chain_swap":
                 self._bump_specific_wards(
                     _CHAIN_SWAP_RESPONSE_WARDS,
                     _CHAIN_SWAP_SCALE_BUMP,
                     _CHAIN_SWAP_TTL_S,
                 )
-            elif event.kind == "intensity_spike":
-                self._pulse_audio_reactive_wards(
-                    _INTENSITY_SPIKE_PULSE_HZ * event.strength,
-                    _INTENSITY_SPIKE_TTL_S,
-                )
+            # ``audio_kick_onset`` / ``intensity_spike``: observed only.
+            # No multi-ward fan-out (anti-pumping carve-out). The events
+            # remain on the bus for any per-ward, scoped consumer that
+            # wants to opt in with allow-list-class modulation
+            # (vibration / hue / palette / per-region warp).
         except Exception:
             log.warning("WardFxReactor: fx event handler failed", exc_info=True)
         finally:
@@ -238,24 +240,12 @@ class WardFxReactor:
             updates[ward_id] = _with_border_pulse(base, pulse_hz)
         set_many_ward_properties(updates, ttl_s=ttl_s)
 
-    def _bump_audio_reactive_wards(self, scale_bump_pct: float, ttl_s: float) -> None:
-        for ward_id in _audio_reactive_ward_ids():
-            base = get_specific_ward_properties(ward_id) or WardProperties()
-            next_props = _with_scale_bump(base, scale_bump_pct)
-            set_ward_properties(ward_id, next_props, ttl_s=ttl_s)
-
     def _bump_specific_wards(
         self, ward_ids: frozenset[str], scale_bump_pct: float, ttl_s: float
     ) -> None:
         for ward_id in ward_ids:
             base = get_specific_ward_properties(ward_id) or WardProperties()
             next_props = _with_scale(base, 1.0 + scale_bump_pct)
-            set_ward_properties(ward_id, next_props, ttl_s=ttl_s)
-
-    def _pulse_audio_reactive_wards(self, pulse_hz: float, ttl_s: float) -> None:
-        for ward_id in _audio_reactive_ward_ids():
-            base = get_specific_ward_properties(ward_id) or WardProperties()
-            next_props = _with_border_pulse(base, pulse_hz)
             set_ward_properties(ward_id, next_props, ttl_s=ttl_s)
 
     # ── SHM writers (shared between directions) ──────────────────────
@@ -356,25 +346,11 @@ def _known_ward_ids() -> frozenset[str]:
     return frozenset(WARD_DOMAIN.keys())
 
 
-def _audio_reactive_ward_ids() -> frozenset[str]:
-    from agents.studio_compositor.ward_fx_mapping import AUDIO_REACTIVE_WARDS
-
-    return AUDIO_REACTIVE_WARDS
-
-
 def _with_border_pulse(base: WardProperties, pulse_hz: float) -> WardProperties:
     from dataclasses import asdict
 
     kwargs = asdict(base)
     kwargs["border_pulse_hz"] = pulse_hz
-    return _rebuild(kwargs)
-
-
-def _with_scale_bump(base: WardProperties, bump: float) -> WardProperties:
-    from dataclasses import asdict
-
-    kwargs = asdict(base)
-    kwargs["scale_bump_pct"] = bump
     return _rebuild(kwargs)
 
 

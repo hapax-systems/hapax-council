@@ -256,50 +256,23 @@ class TestFxEventToWardProperties:
         assert props2 is not None
         assert props2.border_pulse_hz > 0.0
 
-    def test_audio_kick_onset_bumps_only_audio_reactive_wards(
+    def test_audio_kick_onset_does_not_fan_out_to_audio_reactive_wards(
         self,
         uniforms_path,
         substrate_hint_path,
         recent_recruitment_path,
         ward_properties_isolated,
     ):
+        """Anti-pumping carve-out (operator directive 2026-05-06):
+        ``audio_kick_onset`` must NOT fan out to the
+        ``AUDIO_REACTIVE_WARDS`` set with synchronous border-pulse +
+        scale-bump. That structural shape — 7 wards moving in lockstep
+        on every kick — is global-reactivity pumping, banned by
+        ``feedback_never_remove_exception_global_pumping``. The event
+        remains on the bus for any per-ward, scoped consumer."""
         from agents.studio_compositor import ward_properties
         from agents.studio_compositor.fx_chain_ward_reactor import WardFxReactor
-        from shared.ward_fx_bus import FXEvent, get_bus
-
-        reactor = WardFxReactor(
-            uniforms_path=uniforms_path,
-            substrate_hint_path=substrate_hint_path,
-            recent_recruitment_path=recent_recruitment_path,
-        )
-        reactor.connect()
-
-        get_bus().publish_fx(FXEvent(kind="audio_kick_onset"))
-
-        ward_properties.clear_ward_properties_cache()
-        pressure = ward_properties.get_specific_ward_properties("pressure_gauge")
-        assert pressure is not None
-        assert pressure.scale_bump_pct > 0.0
-
-        # Non-audio-reactive ward remains unset.
-        chat = ward_properties.get_specific_ward_properties("chat_ambient")
-        assert chat is None or chat.scale_bump_pct == 0.0
-
-    def test_audio_kick_onset_also_fires_border_pulse(
-        self,
-        uniforms_path,
-        substrate_hint_path,
-        recent_recruitment_path,
-        ward_properties_isolated,
-    ):
-        """The painter currently no-ops ``scale_bump_pct`` (canvas-safe
-        clamp pending — see ``ward_properties.py:444``), so the kick's
-        only visible chrome modulation is the paired border pulse.
-        Pin: every kick writes BOTH ``scale_bump_pct`` (forward-compat
-        for when the scale path is restored) AND ``border_pulse_hz``
-        (the visible channel today)."""
-        from agents.studio_compositor import ward_properties
-        from agents.studio_compositor.fx_chain_ward_reactor import WardFxReactor
+        from agents.studio_compositor.ward_fx_mapping import AUDIO_REACTIVE_WARDS
         from shared.ward_fx_bus import FXEvent, get_bus
 
         reactor = WardFxReactor(
@@ -310,21 +283,29 @@ class TestFxEventToWardProperties:
         reactor.connect()
 
         get_bus().publish_fx(FXEvent(kind="audio_kick_onset", strength=1.0))
-        ward_properties.clear_ward_properties_cache()
-        props = ward_properties.get_specific_ward_properties("pressure_gauge")
-        assert props is not None
-        assert props.scale_bump_pct > 0.0
-        assert props.border_pulse_hz > 0.0
 
-    def test_audio_kick_onset_scales_bump_by_event_strength(
+        ward_properties.clear_ward_properties_cache()
+        for ward_id in AUDIO_REACTIVE_WARDS:
+            props = ward_properties.get_specific_ward_properties(ward_id)
+            # Either no entry written, or no chrome modulation applied.
+            if props is not None:
+                assert props.scale_bump_pct == 0.0, ward_id
+                assert props.border_pulse_hz == 0.0, ward_id
+
+    def test_intensity_spike_does_not_fan_out_to_audio_reactive_wards(
         self,
         uniforms_path,
         substrate_hint_path,
         recent_recruitment_path,
         ward_properties_isolated,
     ):
+        """Anti-pumping carve-out (operator directive 2026-05-06):
+        ``intensity_spike`` must NOT fan out to the
+        ``AUDIO_REACTIVE_WARDS`` set with synchronous border-pulse.
+        Same shape constraint as ``audio_kick_onset``."""
         from agents.studio_compositor import ward_properties
         from agents.studio_compositor.fx_chain_ward_reactor import WardFxReactor
+        from agents.studio_compositor.ward_fx_mapping import AUDIO_REACTIVE_WARDS
         from shared.ward_fx_bus import FXEvent, get_bus
 
         reactor = WardFxReactor(
@@ -334,17 +315,41 @@ class TestFxEventToWardProperties:
         )
         reactor.connect()
 
-        get_bus().publish_fx(FXEvent(kind="audio_kick_onset", strength=0.25))
-        ward_properties.clear_ward_properties_cache()
-        low = ward_properties.get_specific_ward_properties("pressure_gauge")
-        assert low is not None
-        assert low.scale_bump_pct == pytest.approx(0.08 * 0.25)
+        get_bus().publish_fx(FXEvent(kind="intensity_spike", strength=1.0))
 
-        get_bus().publish_fx(FXEvent(kind="audio_kick_onset", strength=0.75))
         ward_properties.clear_ward_properties_cache()
-        high = ward_properties.get_specific_ward_properties("pressure_gauge")
-        assert high is not None
-        assert high.scale_bump_pct == pytest.approx(0.08 * 0.75)
+        for ward_id in AUDIO_REACTIVE_WARDS:
+            props = ward_properties.get_specific_ward_properties(ward_id)
+            if props is not None:
+                assert props.border_pulse_hz == 0.0, ward_id
+
+    def test_audio_events_remain_on_bus_for_scoped_consumers(
+        self,
+        uniforms_path,
+        substrate_hint_path,
+        recent_recruitment_path,
+        ward_properties_isolated,
+    ):
+        """``audio_kick_onset`` and ``intensity_spike`` events still
+        publish to the bus — only the multi-ward fan-out consumer is
+        gone. Per-ward scoped consumers (e.g. M8 oscilloscope's own
+        SLIP-driven amplitude, Sierpinski center waveform) operate on
+        different paths and are not affected by this change."""
+        from shared.ward_fx_bus import FXEvent, get_bus
+
+        seen: list[FXEvent] = []
+        bus = get_bus()
+        bus.subscribe_fx(seen.append)
+
+        try:
+            bus.publish_fx(FXEvent(kind="audio_kick_onset", strength=0.6))
+            bus.publish_fx(FXEvent(kind="intensity_spike", strength=0.4))
+        finally:
+            bus.unsubscribe_fx(seen.append)
+
+        kinds = [ev.kind for ev in seen]
+        assert "audio_kick_onset" in kinds
+        assert "intensity_spike" in kinds
 
     def test_chain_swap_bumps_token_pole_and_variety_log(
         self,
@@ -371,58 +376,6 @@ class TestFxEventToWardProperties:
             props = ward_properties.get_specific_ward_properties(ward_id)
             assert props is not None
             assert props.scale > 1.0, ward_id
-
-    def test_intensity_spike_pulses_audio_reactive_wards(
-        self,
-        uniforms_path,
-        substrate_hint_path,
-        recent_recruitment_path,
-        ward_properties_isolated,
-    ):
-        from agents.studio_compositor import ward_properties
-        from agents.studio_compositor.fx_chain_ward_reactor import WardFxReactor
-        from shared.ward_fx_bus import FXEvent, get_bus
-
-        reactor = WardFxReactor(
-            uniforms_path=uniforms_path,
-            substrate_hint_path=substrate_hint_path,
-            recent_recruitment_path=recent_recruitment_path,
-        )
-        reactor.connect()
-
-        get_bus().publish_fx(FXEvent(kind="intensity_spike"))
-
-        ward_properties.clear_ward_properties_cache()
-        # HARDM retired 2026-04-23; pressure_gauge substitutes as the
-        # audio-reactive ward asserted to pulse on intensity_spike.
-        pressure = ward_properties.get_specific_ward_properties("pressure_gauge")
-        assert pressure is not None
-        assert pressure.border_pulse_hz > 0.0
-
-    def test_intensity_spike_scales_pulse_by_event_strength(
-        self,
-        uniforms_path,
-        substrate_hint_path,
-        recent_recruitment_path,
-        ward_properties_isolated,
-    ):
-        from agents.studio_compositor import ward_properties
-        from agents.studio_compositor.fx_chain_ward_reactor import WardFxReactor
-        from shared.ward_fx_bus import FXEvent, get_bus
-
-        reactor = WardFxReactor(
-            uniforms_path=uniforms_path,
-            substrate_hint_path=substrate_hint_path,
-            recent_recruitment_path=recent_recruitment_path,
-        )
-        reactor.connect()
-
-        get_bus().publish_fx(FXEvent(kind="intensity_spike", strength=0.5))
-
-        ward_properties.clear_ward_properties_cache()
-        pressure = ward_properties.get_specific_ward_properties("pressure_gauge")
-        assert pressure is not None
-        assert pressure.border_pulse_hz == pytest.approx(4.0 * 0.5)
 
 
 class TestJsonlObservability:
