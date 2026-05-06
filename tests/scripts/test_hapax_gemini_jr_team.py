@@ -362,3 +362,186 @@ def test_consume_rejects_missing_packet(tmp_path: Path) -> None:
     )
     assert result.returncode != 0
     assert "packet not found" in result.stderr
+
+
+# --- jr-test-scout coverage gaps (audit 20260503T041448Z) ----------------
+
+
+def test_dispatch_prompt_and_prompt_file_mutex_exits_with_error(tmp_path: Path) -> None:
+    """Gap 1: ``--prompt`` and ``--prompt-file`` together must not silently pick one.
+
+    The runner ``raise SystemExit("--prompt and --prompt-file are mutually
+    exclusive")`` from ``_prompt_from_args``. Verify the user gets a
+    non-zero exit + the error message on stderr.
+    """
+
+    prompt_file = tmp_path / "p.txt"
+    prompt_file.write_text("from file", encoding="utf-8")
+    result = subprocess.run(
+        [
+            str(RUNNER),
+            "dispatch",
+            "--role",
+            "jr-reviewer",
+            "--task-id",
+            "x",
+            "--title",
+            "x",
+            "--prompt",
+            "from arg",
+            "--prompt-file",
+            str(prompt_file),
+            "--dry-run",
+        ],
+        capture_output=True,
+        text=True,
+        env=_env(tmp_path),
+        timeout=5,
+    )
+    assert result.returncode != 0
+    assert "--prompt and --prompt-file are mutually exclusive" in result.stderr
+
+
+def test_dispatch_reads_stdin_when_no_prompt_args(tmp_path: Path) -> None:
+    """Gap 2: stdin fallback when ``sys.stdin.isatty()`` is false.
+
+    Pipe input into the dispatcher with neither ``--prompt`` nor
+    ``--prompt-file``; ``--dry-run`` lets us inspect the planned packet
+    contract without invoking sidecar.
+    """
+
+    result = subprocess.run(
+        [
+            str(RUNNER),
+            "dispatch",
+            "--role",
+            "jr-reviewer",
+            "--task-id",
+            "stdin-task",
+            "--title",
+            "Stdin Task",
+            "--dry-run",
+        ],
+        input="STDIN_PROMPT_BODY",
+        capture_output=True,
+        text=True,
+        env=_env(tmp_path),
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    # Dry-run must redact the prompt — but the digest changes only when
+    # the sidecar prompt body changes, so we assert the contract: stdin
+    # was consumed and a non-empty prompt_sha256 was produced.
+    assert payload["task_id"] == "stdin-task"
+    assert isinstance(payload["prompt_sha256"], str) and len(payload["prompt_sha256"]) == 64
+
+
+def test_dispatch_writes_blocked_status_on_sidecar_nonzero_exit(tmp_path: Path) -> None:
+    """Gap 3: sidecar non-zero exit → packet status = blocked_strict_model_or_sidecar_error."""
+
+    fake_sidecar = tmp_path / "fake-sidecar"
+    fake_sidecar.write_text(
+        """#!/usr/bin/env bash
+printf 'sidecar barfed\\n' >&2
+exit 5
+"""
+    )
+    fake_sidecar.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(RUNNER),
+            "--sidecar-bin",
+            str(fake_sidecar),
+            "dispatch",
+            "--role",
+            "jr-reviewer",
+            "--task-id",
+            "blocked-task",
+            "--title",
+            "Blocked",
+            "--prompt",
+            "anything",
+            "--timeout",
+            "5",
+        ],
+        capture_output=True,
+        text=True,
+        env=_env(tmp_path),
+        timeout=10,
+    )
+    assert result.returncode == 5  # propagates sidecar's exit code
+    packet = Path(result.stdout.strip())
+    assert packet.exists()
+    text = packet.read_text()
+    assert "status: blocked_strict_model_or_sidecar_error" in text
+    record = json.loads((tmp_path / "jr" / "metadata.jsonl").read_text().splitlines()[0])
+    assert record["status"] == "blocked_strict_model_or_sidecar_error"
+    assert record["exit_code"] == 5
+
+
+def test_plan_subcommand_lists_roles_and_authority(tmp_path: Path) -> None:
+    """Gap 4: ``plan`` subcommand prints model policy + role authority lines."""
+
+    result = subprocess.run(
+        [str(RUNNER), "plan"],
+        capture_output=True,
+        text=True,
+        env=_env(tmp_path),
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "model: gemini-3.1-pro-preview" in out
+    assert "strict_latest_model: true" in out
+    assert "authority: packet-only" in out
+    # At least the two canonical roles seen across the fleet
+    assert "jr-reviewer:" in out
+    assert "jr-test-scout:" in out
+
+
+def test_recent_records_skips_malformed_metadata_lines(tmp_path: Path) -> None:
+    """Gap 5: ``_recent_records`` must survive malformed ``metadata.jsonl`` lines.
+
+    Pre-seed the metadata log with a mix of valid + corrupt rows; invoke
+    ``status`` (which calls ``_recent_records`` indirectly via the
+    dashboard); assert no crash and the dashboard reflects the valid
+    rows only.
+    """
+
+    metadata = tmp_path / "jr" / "metadata.jsonl"
+    metadata.parent.mkdir(parents=True, exist_ok=True)
+    valid_record = {
+        "created_at": "2026-05-04T12:00:00Z",
+        "role": "jr-reviewer",
+        "task_id": "valid-task",
+        "status": "ready_for_senior_review",
+        "exit_code": 0,
+        "packet_path": str(tmp_path / "jr" / "packets" / "valid.md"),
+    }
+    metadata.write_text(
+        "\n".join(
+            [
+                json.dumps(valid_record, sort_keys=True),
+                "this-is-not-json",
+                "{'unbalanced': true",  # invalid JSON
+                "",  # blank line
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(RUNNER), "status"],
+        capture_output=True,
+        text=True,
+        env=_env(tmp_path),
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    dashboard = tmp_path / "dashboard" / "gemini-jr-team.md"
+    assert dashboard.exists()
+    body = dashboard.read_text()
+    assert "valid-task" in body
