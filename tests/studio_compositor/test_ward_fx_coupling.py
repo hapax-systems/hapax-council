@@ -285,6 +285,37 @@ class TestFxEventToWardProperties:
         chat = ward_properties.get_specific_ward_properties("chat_ambient")
         assert chat is None or chat.scale_bump_pct == 0.0
 
+    def test_audio_kick_onset_also_fires_border_pulse(
+        self,
+        uniforms_path,
+        substrate_hint_path,
+        recent_recruitment_path,
+        ward_properties_isolated,
+    ):
+        """The painter currently no-ops ``scale_bump_pct`` (canvas-safe
+        clamp pending — see ``ward_properties.py:444``), so the kick's
+        only visible chrome modulation is the paired border pulse.
+        Pin: every kick writes BOTH ``scale_bump_pct`` (forward-compat
+        for when the scale path is restored) AND ``border_pulse_hz``
+        (the visible channel today)."""
+        from agents.studio_compositor import ward_properties
+        from agents.studio_compositor.fx_chain_ward_reactor import WardFxReactor
+        from shared.ward_fx_bus import FXEvent, get_bus
+
+        reactor = WardFxReactor(
+            uniforms_path=uniforms_path,
+            substrate_hint_path=substrate_hint_path,
+            recent_recruitment_path=recent_recruitment_path,
+        )
+        reactor.connect()
+
+        get_bus().publish_fx(FXEvent(kind="audio_kick_onset", strength=1.0))
+        ward_properties.clear_ward_properties_cache()
+        props = ward_properties.get_specific_ward_properties("pressure_gauge")
+        assert props is not None
+        assert props.scale_bump_pct > 0.0
+        assert props.border_pulse_hz > 0.0
+
     def test_audio_kick_onset_scales_bump_by_event_strength(
         self,
         uniforms_path,
