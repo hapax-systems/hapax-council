@@ -38,8 +38,9 @@ import json as _json
 import logging
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path as _Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from agents.hapax_daimonion.daemon import VoiceDaemon
@@ -637,6 +638,13 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
                                 narrative_beat=p.get("topic", "")[:500],
                                 segment_beats=p.get("segment_beats", []),
                                 prepared_script=list(script),
+                                hosting_context=p.get("hosting_context"),
+                                authority=p.get("authority") or p.get("artifact_authority"),
+                                beat_layout_intents=p.get("beat_layout_intents", []),
+                                layout_decision_contract=p.get("layout_decision_contract", {}),
+                                runtime_layout_validation=p.get("runtime_layout_validation", {}),
+                                prepared_artifact_ref=p.get("prepared_artifact_ref"),
+                                artifact_path_diagnostic=p.get("artifact_path_diagnostic"),
                             )
                             prog = Programme(
                                 programme_id=pid,
@@ -731,48 +739,21 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
 
                     # Write segment state for the Segment Content Ward.
                     # The ward reads this at 1 Hz and renders the visual overlay.
+                    changed = False
+                    beat_idx = -1
                     try:
-                        content = getattr(active, "content", None)
-                        beats = getattr(content, "segment_beats", []) or [] if content else []
-                        narrative_beat = (
-                            getattr(content, "narrative_beat", "") or "" if content else ""
-                        )
-                        topic = getattr(active, "topic", None) or narrative_beat
-                        started_at = getattr(active, "actual_started_at", None) or time.time()
-                        planned_duration_s = getattr(active, "planned_duration_s", 3600.0)
-                        _, beat_idx = check_beat_transition(active)
+                        changed, beat_idx = check_beat_transition(active)
                         _seg_tmp = _segment_path.with_suffix(".json.tmp")
                         _seg_tmp.write_text(
-                            _json.dumps(
-                                {
-                                    "programme_id": str(active.programme_id),
-                                    "role": rv,
-                                    "topic": str(topic)[:200],
-                                    "narrative_beat": str(narrative_beat)[:300],
-                                    "segment_beats": [str(b)[:100] for b in beats[:12]],
-                                    "current_beat_index": beat_idx,
-                                    "started_at": started_at,
-                                    "planned_duration_s": planned_duration_s,
-                                }
-                            ),
+                            _json.dumps(_active_segment_payload(active, rv, beat_idx)),
                             encoding="utf-8",
                         )
                         _seg_tmp.replace(_segment_path)
                     except Exception:
                         log.debug("active-segment.json write failed", exc_info=True)
 
-                    changed, beat_idx = check_beat_transition(active)
                     if changed:
-                        cues = (
-                            getattr(
-                                getattr(active, "content", None),
-                                "segment_cues",
-                                [],
-                            )
-                            or []
-                        )
-                        if cues and 0 <= beat_idx < len(cues):
-                            execute_cue(cues[beat_idx])
+                        _execute_segment_cue_if_allowed(active, beat_idx, execute_cue)
                 else:
                     # Not a segmented role — clear hold and segment state
                     _hold_path.unlink(missing_ok=True)
@@ -844,10 +825,77 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
         await asyncio.sleep(PROGRAMME_TICK_INTERVAL_S)
 
 
+def _current_beat_layout_proposals(content: Any, beat_index: int) -> list[dict[str, Any]]:
+    try:
+        from agents.hapax_daimonion.segment_layout_contract import (
+            current_beat_layout_proposals,
+        )
+
+        return list(current_beat_layout_proposals(content, beat_index))
+    except Exception:
+        log.debug("current beat layout proposal validation failed", exc_info=True)
+        return []
+
+
+def _active_segment_payload(active: Any, role_value: str, beat_index: int) -> dict[str, Any]:
+    content = getattr(active, "content", None)
+    beats = getattr(content, "segment_beats", []) or [] if content else []
+    narrative_beat = getattr(content, "narrative_beat", "") or "" if content else ""
+    topic = getattr(active, "topic", None) or narrative_beat
+    return {
+        "programme_id": str(active.programme_id),
+        "role": role_value,
+        "topic": str(topic)[:200],
+        "narrative_beat": str(narrative_beat)[:300],
+        "segment_beats": [str(b)[:100] for b in beats[:12]],
+        "current_beat_index": beat_index,
+        "started_at": getattr(active, "actual_started_at", None) or time.time(),
+        "planned_duration_s": getattr(active, "planned_duration_s", 3600.0),
+        "prepared_artifact_ref": getattr(content, "prepared_artifact_ref", None),
+        "artifact_path_diagnostic": getattr(content, "artifact_path_diagnostic", None),
+        "hosting_context": getattr(content, "hosting_context", None),
+        "authority": getattr(content, "authority", None),
+        "current_beat_layout_intents": _current_beat_layout_proposals(content, beat_index),
+        "layout_decision_contract": getattr(content, "layout_decision_contract", {}),
+        "runtime_layout_validation": getattr(content, "runtime_layout_validation", {}),
+        "fallback_active": False,
+    }
+
+
+def _execute_segment_cue_if_allowed(
+    active: Any,
+    beat_index: int,
+    execute_cue_fn: Callable[[str], None],
+) -> bool:
+    content = getattr(active, "content", None)
+    cues = getattr(content, "segment_cues", []) or []
+    if not cues or beat_index < 0 or beat_index >= len(cues):
+        return False
+    try:
+        from agents.hapax_daimonion.segment_layout_contract import (
+            programme_content_has_responsible_layout_contract,
+        )
+
+        if programme_content_has_responsible_layout_contract(content):
+            log.warning(
+                "segment cue quarantined for responsible layout contract: programme=%s beat=%s",
+                getattr(active, "programme_id", None),
+                beat_index,
+            )
+            return False
+    except Exception:
+        log.warning("segment cue quarantine check failed closed", exc_info=True)
+        return False
+    execute_cue_fn(str(cues[beat_index]))
+    return True
+
+
 __all__ = [
     "PROGRAMME_AUTO_PLAN_ENV",
     "PROGRAMME_PLAN_COOLDOWN_S",
     "PROGRAMME_TICK_INTERVAL_S",
+    "_active_segment_payload",
+    "_execute_segment_cue_if_allowed",
     "is_auto_plan_enabled",
     "programme_manager_loop",
 ]

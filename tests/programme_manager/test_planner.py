@@ -152,6 +152,35 @@ class TestHappyPath:
         if "HAPAX_PROGRAMME_PLANNER_MODEL" not in __import__("os").environ:
             assert DEFAULT_MODEL == "command-r-08-2024-exl3-5.0bpw"
 
+    def test_prompt_uses_proposal_only_layout_intents(self) -> None:
+        prompt = Path("agents/programme_manager/prompts/programme_plan.md").read_text(
+            encoding="utf-8"
+        )
+
+        assert "beat_layout_intents" in prompt
+        assert "responsible layout is a witnessed runtime control loop" in prompt
+        assert "proposals, not runtime authority" in prompt
+        assert '"may_command_layout": false' in prompt
+        forbidden = [
+            "segment_cues",
+            "camera.",
+            "front.",
+            "composition.",
+            "transition.",
+            "media.",
+            "/dev/shm",
+            "surface_id",
+            "coordinates",
+            "layout_name",
+            "host_presence",
+            "spoken_argument",
+            "garage-door",
+            "default.json",
+            "balanced-v2",
+        ]
+        found = [term for term in forbidden if term in prompt]
+        assert found == []
+
 
 # ── Failure modes — first attempt ───────────────────────────────────────
 
