@@ -280,11 +280,18 @@ def compute_tile_layout(
         mode: Layout mode. One of:
             - "balanced" — grid layout, honors CameraSpec.hero flag (default)
             - "hero/{role}" — named camera dominant, others stacked right
+            - "packed/{role}" — named camera as hero in packed constellation
             - "sierpinski" — 3 cameras in triangle corners, rest hidden
             - "packed" — hero upper-left + 2x2 grid + stacked right column
     """
     if mode == "packed":
         return _packed_layout(cameras, canvas_w, canvas_h)
+    if mode.startswith("packed/"):
+        hero_role = mode[len("packed/") :]
+        # Constellation layout with named hero — set hero flag on the
+        # requested camera so _packed_layout picks it for upper-left.
+        repinned = [c.model_copy(update={"hero": (c.role == hero_role)}) for c in cameras]
+        return _packed_layout(repinned, canvas_w, canvas_h)
     if mode == "sierpinski":
         return _sierpinski_layout(cameras, canvas_w, canvas_h)
     if mode.startswith("hero/"):

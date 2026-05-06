@@ -558,12 +558,14 @@ def state_reader_loop(compositor: Any) -> None:
                 override_source = "follow_mode"
         if override_camera_role is not None:
             try:
-                requested_mode = f"hero/{override_camera_role}"
+                requested_mode = f"packed/{override_camera_role}"
                 current_mode = getattr(compositor, "_layout_mode", "balanced")
                 last_applied = getattr(compositor, "_hero_override_last_applied_set_at", 0.0)
                 if requested_mode != current_mode and override_set_at > last_applied:
                     previous_role = ""
-                    if isinstance(current_mode, str) and current_mode.startswith("hero/"):
+                    if isinstance(current_mode, str) and (
+                        current_mode.startswith("packed/") or current_mode.startswith("hero/")
+                    ):
                         previous_role = current_mode.split("/", 1)[1]
                     compositor._hero_override_last_applied_set_at = override_set_at
                     GLib = compositor._GLib
