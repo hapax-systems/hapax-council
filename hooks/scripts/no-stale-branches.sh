@@ -140,16 +140,20 @@ if ! git rev-parse --is-inside-work-tree &>/dev/null; then
   exit 0
 fi
 
-# Session worktree limit during Codex+Gemini-Interactive bootstrap: legacy
-# Claude permanent worktrees coexist with Codex-native hapax-council--cx-*
-# worktrees AND the Gemini CLI Interactive iota lane (cc-task hello-iota,
-# PR feat(peer-model): hapax-gemini-iota worker lane).
-# Cap: 9 visible session worktrees (8 prior + iota). Re-tighten after
-# legacy Claude/Antigravity worktrees are retired. Known greek/cx/gemini
-# session worktree slots: alpha (primary), beta, gamma, zeta, epsilon,
-# delta-legacy, cx-amber, cx-blue, cx-cyan, cx-red, cx-violet, iota
-# (the iota lane is the first Gemini Interactive peer; if iota proves
-# stable for 24h, follow-up PR adds kappa/lambda/mu).
+# Session worktree limit. Reflects the full multi-interface team that
+# coexists today: Claude Code peers (greek-named) + Codex native lanes
+# (cx-*) + Gemini CLI Interactive (iota+) + Mistral Vibe (vbe-*) +
+# Antigravity (antigrav). Floor sums to ~17 steady-state slots:
+#   1  canonical (alpha, must remain on main; vite reads it)
+#   4  Claude peers (beta, gamma, zeta, epsilon)
+#   7  Codex lanes (cx-amber/blue/cyan/gold/green/red/violet)
+#   N  Codex sub-lane variants (e.g. cx-gold-cbip — same lane, two branches)
+#   1  Gemini Interactive (iota; future kappa/lambda/mu)
+#   2  Mistral Vibe (vbe-1, vbe-2)
+#   1  Antigrav (IDE-bound, JR+ tier)
+# Plus operational slack for transient debug/audit worktrees + alpha-side
+# fix-PR staging. Cap of 20 leaves ~3 spontaneous slots above the floor.
+# Re-evaluate when team capacity changes again.
 #
 # Infrastructure worktrees under ~/.cache/ (e.g. rebuild-scratch at
 # $HOME/.cache/hapax/rebuild/worktree, managed by rebuild-logos.sh via
@@ -157,10 +161,10 @@ fi
 # scratch worktrees are NOT counted — they are not operator-visible session
 # worktrees and exist independently of session work.
 if echo "$CMD" | grep -qE '^\s*git\s+worktree\s+add\s'; then
-    session_wt_cap=9
+    session_wt_cap=20
     session_wt_count=$(git worktree list 2>/dev/null | grep -Evc '/(\.cache|\.claude/worktrees|\.codex/worktrees)/' || true)
     if [ "$session_wt_count" -ge "$session_wt_cap" ]; then
-        echo "BLOCKED: Max ${session_wt_cap} visible session worktrees during Claude+Codex+Gemini-Interactive transition. Clean up before adding another." >&2
+        echo "BLOCKED: Max ${session_wt_cap} visible session worktrees. Clean up before adding another." >&2
         echo "  Current visible session worktrees (infrastructure under ~/.cache/, .claude/worktrees/, and .codex/worktrees/ excluded):" >&2
         git worktree list 2>/dev/null | grep -Ev '/(\.cache|\.claude/worktrees|\.codex/worktrees)/' | sed 's/^/    /' >&2
         git worktree list 2>/dev/null | grep -E '/(\.cache|\.claude/worktrees|\.codex/worktrees)/' | sed 's/^/    [infra, not counted] /' >&2 || true
