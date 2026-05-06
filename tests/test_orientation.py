@@ -198,3 +198,52 @@ class TestEmptyRegistry:
             }
         )
         assert result.domains == []
+
+
+import pytest
+
+from logos.data import orientation as orient
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_get_sprint_summary_non_dict_returns_none(tmp_path, payload, kind, monkeypatch):
+    """Pin _get_sprint_summary against non-dict JSON. The chained
+    data.get() calls inside (OSError, JSONDecodeError) catch let
+    AttributeError escape on non-dict roots."""
+    sprint_path = tmp_path / "sprint.json"
+    sprint_path.write_text(payload)
+    with patch("logos.data.orientation.Path") as MockPath:
+        MockPath.return_value = sprint_path
+        result = orient._get_sprint_summary()
+    assert result is None, f"non-dict root={kind} must yield None"
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_sprint_measure_statuses_non_dict_returns_empty(tmp_path, payload, kind):
+    """Pin _sprint_measure_statuses against non-dict JSON."""
+    sprint_path = tmp_path / "sprint.json"
+    sprint_path.write_text(payload)
+    with patch("logos.data.orientation.Path") as MockPath:
+        MockPath.return_value = sprint_path
+        result = orient._sprint_measure_statuses()
+    assert result == {}, f"non-dict root={kind} must yield empty dict"
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_get_stimmung_stance_non_dict_returns_nominal(tmp_path, payload, kind):
+    """Pin _get_stimmung_stance against non-dict JSON."""
+    stimmung_path = tmp_path / "stimmung.json"
+    stimmung_path.write_text(payload)
+    with patch("logos.data.orientation.Path") as MockPath:
+        MockPath.return_value = stimmung_path
+        result = orient._get_stimmung_stance()
+    assert result == "nominal", f"non-dict root={kind} must yield default"
