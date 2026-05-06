@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from agents.hapax_daimonion import daily_segment_prep as prep
 from scripts.review_one_segment_iteration import main as review_cli_main
 from shared.segment_iteration_review import review_one_segment_iteration
+from shared.segment_prep_consultation import (
+    build_consultation_manifest,
+    build_live_event_viability,
+    build_readback_obligations,
+    build_source_consequence_map,
+)
 from shared.segment_quality_actionability import (
     LAYOUT_RESPONSIBILITY_VERSION,
     QUALITY_RUBRIC_VERSION,
@@ -17,7 +24,7 @@ from shared.segment_quality_actionability import (
 EXCELLENT_SCRIPT = [
     (
         "Number 1 is the Command-R manifest gate because it turns a prepared segment into "
-        "something the host can audit instead of something the model merely asserts. Shoshana "
+        "something reviewers can audit instead of something the model merely asserts. Shoshana "
         "Zuboff argues that measurement systems become social systems when nobody can inspect "
         "their extraction, and that is the exact problem for livestream craft: the audience hears "
         "confidence while the runtime still owes proof. The stakes are practical, not ceremonial. "
@@ -31,7 +38,7 @@ EXCELLENT_SCRIPT = [
         "LayoutState are where the spoken claim either becomes visible or remains only speech. "
         "Place rendered LayoutState in S-tier for the canary, while LayoutStore gauge success is "
         "only B-tier evidence, because a stored switch can look successful without changing the "
-        "frame assignments that the audience sees. This is the pivot: a default host shot can feel "
+        "frame assignments that the audience sees. This is the pivot: a default static shot can look "
         "stable while laundering failure. The consequence is that any chart, comparison, or chat "
         "prompt in the script needs a typed layout need and a pending runtime readback, not a "
         "prepared command pretending to be the broadcast authority."
@@ -124,6 +131,10 @@ def _artifact(script: list[str]) -> dict[str, Any]:
     seed_sha256 = prep._sha256_text("seed")
     actionability = validate_segment_actionability(script, beats)
     layout = validate_layout_responsibility(actionability["beat_action_intents"])
+    source_consequence_map = build_source_consequence_map(
+        script,
+        actionability["beat_action_intents"],
+    )
     source_hashes = prep._source_hashes_from_fields(
         programme_id="prog-canary",
         role="tier_list",
@@ -145,10 +156,21 @@ def _artifact(script: list[str]) -> dict[str, Any]:
         "layout_responsibility_version": LAYOUT_RESPONSIBILITY_VERSION,
         "hosting_context": layout["hosting_context"],
         "segment_quality_report": prep.score_segment_quality(script, beats),
+        "consultation_manifest": build_consultation_manifest("tier_list"),
+        "source_consequence_map": source_consequence_map,
+        "live_event_viability": build_live_event_viability(
+            script,
+            actionability=actionability,
+            layout=layout,
+            role="tier_list",
+        ),
+        "readback_obligations": build_readback_obligations(layout["beat_layout_intents"]),
         "beat_action_intents": actionability["beat_action_intents"],
         "actionability_alignment": {
             "ok": actionability["ok"],
             "removed_unsupported_action_lines": actionability["removed_unsupported_action_lines"],
+            "personage_violations": actionability["personage_violations"],
+            "detector_theater_lines": actionability["detector_theater_lines"],
         },
         "beat_layout_intents": layout["beat_layout_intents"],
         "layout_decision_contract": layout["layout_decision_contract"],
@@ -180,11 +202,43 @@ def _artifact(script: list[str]) -> dict[str, Any]:
     return payload
 
 
-def _team_receipts_for(artifact: dict[str, Any]) -> list[dict[str, str]]:
+def _team_receipts_for(artifact: dict[str, Any]) -> list[dict[str, Any]]:
     base = {
         "artifact_sha256": artifact["artifact_sha256"],
         "programme_id": artifact["programme_id"],
         "iteration_id": artifact["prep_session_id"],
+    }
+    evidence = {
+        "live_bit_viability": {
+            "passed": True,
+            "evidence_refs": ["live_event_viability", "segment_quality_report"],
+            "notes": "The canary has tension, payoff, and multiple visible or doable moves.",
+        },
+        "source_consequence": {
+            "passed": True,
+            "evidence_refs": ["source_consequence_map", "prepared_script[0]"],
+            "notes": "Zuboff changes the ranking argument and the visible manifest obligation.",
+        },
+        "role_standard_fit": {
+            "passed": True,
+            "evidence_refs": ["consultation_manifest", "role_standard:tier_list:v1"],
+            "notes": "The tier-list standard is used as calibration, not a script template.",
+        },
+        "non_anthropomorphic_force": {
+            "passed": True,
+            "evidence_refs": ["prepared_script", "actionability_alignment"],
+            "notes": "The script makes source-bound claims without human feeling or memory claims.",
+        },
+        "no_detector_trigger_theater": {
+            "passed": True,
+            "evidence_refs": ["actionability_alignment", "readback_obligations"],
+            "notes": "No detector output is treated as dramatic proof or runtime authority.",
+        },
+        "framework_vocabulary_leakage": {
+            "passed": True,
+            "evidence_refs": ["prepared_script", "consultation_manifest"],
+            "notes": "Review vocabulary stays in metadata and does not appear in spoken prose.",
+        },
     }
     return [
         {
@@ -195,6 +249,7 @@ def _team_receipts_for(artifact: dict[str, Any]) -> list[dict[str, str]]:
             "checked_at": "2026-05-06T04:00:00Z",
             "receipt_id": "script-quality-pass",
             "notes": "Script clears canary fidelity with concrete stakes and grounded prior.",
+            "positive_excellence_evidence": deepcopy(evidence),
         },
         {
             **base,
@@ -204,6 +259,7 @@ def _team_receipts_for(artifact: dict[str, Any]) -> list[dict[str, str]]:
             "checked_at": "2026-05-06T04:00:00Z",
             "receipt_id": "actionability-layout-pass",
             "notes": "Visible and doable claims align to layout needs and evidence refs.",
+            "positive_excellence_evidence": deepcopy(evidence),
         },
         {
             **base,
@@ -213,6 +269,7 @@ def _team_receipts_for(artifact: dict[str, Any]) -> list[dict[str, str]]:
             "checked_at": "2026-05-06T04:00:00Z",
             "receipt_id": "layout-responsibility-pass",
             "notes": "Prepared artifact stays proposal-only pending witnessed runtime readback.",
+            "positive_excellence_evidence": deepcopy(evidence),
         },
     ]
 
@@ -260,6 +317,9 @@ def test_one_segment_review_accepts_after_automation_and_team_receipts() -> None
     )
 
     assert receipt["automated_gate"]["passed"] is True
+    assert receipt["eligibility_gate"]["passed"] is True
+    assert receipt["excellence_selection"]["automation_passed"] is True
+    assert receipt["excellence_selection"]["team_passed"] is True
     assert receipt["team_critique_loop"]["passed"] is True
     assert receipt["ready_for_next_nine"] is True
     assert receipt["decision"] == "ready_for_next_nine"
@@ -398,6 +458,43 @@ def test_team_critique_receipts_bind_to_artifact_programme_and_iteration() -> No
     ]
 
 
+def test_team_critique_receipts_require_positive_excellence_evidence() -> None:
+    artifact = _artifact(EXCELLENT_SCRIPT)
+    receipts = _team_receipts_for(artifact)
+    receipts[0].pop("positive_excellence_evidence")
+    receipts[1]["positive_excellence_evidence"]["source_consequence"] = {
+        "passed": False,
+        "evidence_refs": ["source_consequence_map"],
+        "notes": "Source citation did not change the segment.",
+    }
+    receipts[2]["positive_excellence_evidence"]["no_detector_trigger_theater"] = {
+        "passed": True,
+        "evidence_refs": [],
+        "notes": "ok",
+    }
+
+    receipt = review_one_segment_iteration(
+        [artifact],
+        team_critique_receipts=receipts,
+    )
+
+    assert receipt["eligibility_gate"]["passed"] is True
+    assert receipt["excellence_selection"]["team_passed"] is False
+    assert receipt["ready_for_next_nine"] is False
+    assert (
+        "receipt[0] missing positive_excellence_evidence"
+        in receipt["team_critique_loop"]["malformed_receipts"]
+    )
+    assert (
+        "receipt[1] evidence source_consequence did not pass"
+        in receipt["team_critique_loop"]["malformed_receipts"]
+    )
+    assert (
+        "receipt[2] evidence no_detector_trigger_theater notes are not substantive"
+        in receipt["team_critique_loop"]["malformed_receipts"]
+    )
+
+
 def test_one_segment_review_requires_exactly_one_manifest_accepted_artifact() -> None:
     receipt = review_one_segment_iteration([])
     assert receipt["ready_for_next_nine"] is False
@@ -441,6 +538,84 @@ def test_one_segment_review_rejects_weak_source_fidelity() -> None:
 
     assert receipt["ready_for_next_nine"] is False
     assert "script.source_fidelity" in _failed_criteria(receipt)
+
+
+def test_one_segment_review_rejects_missing_consultation_manifest() -> None:
+    artifact = _artifact(EXCELLENT_SCRIPT)
+    artifact.pop("consultation_manifest")
+    _rehash_artifact(artifact)
+
+    receipt = review_one_segment_iteration(
+        [artifact],
+        team_critique_receipts=_team_receipts_for(artifact),
+    )
+
+    assert receipt["eligibility_gate"]["passed"] is True
+    assert receipt["excellence_selection"]["automation_passed"] is False
+    assert "consultation.role_standards_exemplars_counterexamples" in _failed_criteria(receipt)
+
+
+def test_one_segment_review_rejects_decorative_sources_without_consequence_map() -> None:
+    artifact = _artifact(EXCELLENT_SCRIPT)
+    artifact["source_consequence_map"] = []
+    _rehash_artifact(artifact)
+
+    receipt = review_one_segment_iteration(
+        [artifact],
+        team_critique_receipts=_team_receipts_for(artifact),
+    )
+
+    assert receipt["ready_for_next_nine"] is False
+    assert "consultation.source_consequence_map" in _failed_criteria(receipt)
+
+
+def test_one_segment_review_rejects_personage_and_detector_theater() -> None:
+    artifact = _artifact(
+        [
+            (
+                "Number 1 is the detector proof because Shoshana Zuboff argues that "
+                "measurement changes institutions. I feel excited by this result, and "
+                "the detector proved the audience saw the chart. Place Detector Proof in "
+                "S-tier because the source changes the visible obligation."
+            ),
+            EXCELLENT_SCRIPT[1],
+            EXCELLENT_SCRIPT[2],
+        ]
+    )
+
+    receipt = review_one_segment_iteration(
+        [artifact],
+        team_critique_receipts=_team_receipts_for(artifact),
+    )
+
+    assert receipt["ready_for_next_nine"] is False
+    assert {
+        "actionability.personage_honesty",
+        "actionability.no_detector_trigger_theater",
+        "script.non_anthropomorphic_force",
+    } & _failed_criteria(receipt)
+
+
+def test_one_segment_review_rejects_framework_vocabulary_in_spoken_script() -> None:
+    artifact = _artifact(
+        [
+            EXCELLENT_SCRIPT[0].replace(
+                "Command-R manifest gate",
+                "Command-R eligibility gate",
+                1,
+            ),
+            EXCELLENT_SCRIPT[1],
+            EXCELLENT_SCRIPT[2],
+        ]
+    )
+
+    receipt = review_one_segment_iteration(
+        [artifact],
+        team_critique_receipts=_team_receipts_for(artifact),
+    )
+
+    assert receipt["ready_for_next_nine"] is False
+    assert "script.framework_vocabulary_not_prompt_facing" in _failed_criteria(receipt)
 
 
 def test_one_segment_review_rejects_wrong_model_and_layout_success_laundering() -> None:

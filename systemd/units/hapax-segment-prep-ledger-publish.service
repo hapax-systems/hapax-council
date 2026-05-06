@@ -1,0 +1,14 @@
+[Unit]
+Description=Hapax segment-prep prediction ledger publication bus enqueue
+Documentation=file:///home/hapax/projects/hapax-council/scripts/publish_segment_prep_prediction_ledger.py
+After=hapax-publish-orchestrator.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/hapax-council
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/projects/hapax-council
+ExecStart=%h/projects/hapax-council/.venv/bin/python %h/projects/hapax-council/scripts/publish_segment_prep_prediction_ledger.py
+
+[Install]
+WantedBy=default.target

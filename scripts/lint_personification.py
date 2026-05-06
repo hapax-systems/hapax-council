@@ -3,8 +3,8 @@
 
 Task #155 Stage 5: enforce fail-loud on the narrow set of files that feed
 LLM prompt surfaces (voice pipeline + director loop), the persona module
-that backs them, the canonical axiom documents, and any ``prompts/*.py``
-shaped module under ``agents/``.
+that backs them, the content-prep segment prompt surfaces, the canonical
+axiom documents, and prompt modules under ``agents/``.
 
 Exits non-zero when any deny-list finding survives the carve-out windows.
 
@@ -40,6 +40,11 @@ _TARGET_GLOBS: tuple[str, ...] = (
     "agents/hapax_daimonion/conversational_policy.py",
     "agents/studio_compositor/director_loop.py",
     "agents/**/prompts/*.py",
+    "agents/**/prompts/*.md",
+    "agents/hapax_daimonion/autonomous_narrative/segment_prompts.py",
+    "agents/hapax_daimonion/daily_segment_prep.py",
+    "shared/segment_quality_actionability.py",
+    "shared/segment_iteration_review.py",
 )
 
 

@@ -24,10 +24,14 @@ def test_load_prepped_programmes_accepts_prior_only_responsible_artifact(tmp_pat
     )
     assert loaded[0]["projected_layout_contract"]["authority"] == "declares_layout_needs_only"
     assert loaded[0]["projected_layout_contract"]["parent_artifact_authority"] == "prior_only"
-    assert loaded[0]["beat_layout_intents"][0]["needs"] == ["comparison_visible"]
+    assert set(loaded[0]["beat_layout_intents"][0]["needs"]) == {
+        "comparison_visible",
+        "source_visible",
+    }
     assert set(loaded[0]["beat_layout_intents"][0]["proposed_postures"]) == {
         "ranked_visual",
         "comparison",
+        "asset_front",
     }
 
 
@@ -83,9 +87,16 @@ def _artifact(programme_id: str) -> dict:
     prompt_sha256 = prep._sha256_text("prompt")
     seed_sha256 = prep._sha256_text("seed")
     segment_beats = ["rank alpha with a visible tier decision"]
-    prepared_script = ["Place Alpha in S-tier because the ranking makes the evidence legible."]
+    prepared_script = [
+        "Place Alpha in S-tier because Zuboff argues measurement systems need visible proof, "
+        "which means the ranking makes the evidence legible."
+    ]
     actionability = prep.validate_segment_actionability(prepared_script, segment_beats)
     layout = prep.validate_layout_responsibility(actionability["beat_action_intents"])
+    source_consequence_map = prep.build_source_consequence_map(
+        prepared_script,
+        actionability["beat_action_intents"],
+    )
     source_hashes = prep._source_hashes_from_fields(
         programme_id=programme_id,
         role="tier_list",
@@ -110,10 +121,21 @@ def _artifact(programme_id: str) -> dict:
         "actionability_rubric_version": prep.ACTIONABILITY_RUBRIC_VERSION,
         "layout_responsibility_version": prep.LAYOUT_RESPONSIBILITY_VERSION,
         "segment_quality_report": prep.score_segment_quality(prepared_script, segment_beats),
+        "consultation_manifest": prep.build_consultation_manifest("tier_list"),
+        "source_consequence_map": source_consequence_map,
+        "live_event_viability": prep.build_live_event_viability(
+            prepared_script,
+            actionability=actionability,
+            layout=layout,
+            role="tier_list",
+        ),
+        "readback_obligations": prep.build_readback_obligations(layout["beat_layout_intents"]),
         "beat_action_intents": actionability["beat_action_intents"],
         "actionability_alignment": {
             "ok": actionability["ok"],
             "removed_unsupported_action_lines": actionability["removed_unsupported_action_lines"],
+            "personage_violations": actionability["personage_violations"],
+            "detector_theater_lines": actionability["detector_theater_lines"],
         },
         "beat_layout_intents": layout["beat_layout_intents"],
         "layout_decision_contract": layout["layout_decision_contract"],
