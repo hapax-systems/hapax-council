@@ -231,3 +231,22 @@ class TestProtentionEngine:
         top = snap.top_predictions
         assert len(top) == 2  # break filtered out (p=0.1 < 0.3)
         assert top[0].probability >= top[1].probability
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_load_non_dict_root_returns_false(tmp_path, payload, kind):
+    """Pin ProtentionEngine.load against non-dict JSON. The
+    data.get('activity_chain', {}) call inside the (OSError,
+    JSONDecodeError, KeyError) catch let AttributeError escape on
+    non-dict roots, crashing the protention-engine startup."""
+    persist = tmp_path / "protention.json"
+    persist.write_text(payload)
+    engine = ProtentionEngine()
+    result = engine.load(path=persist)
+    assert result is False, f"non-dict root={kind} must yield False"
