@@ -881,6 +881,96 @@ _PROGRAMME: list[CapabilityRecord] = [
 ]
 
 
+# ── Director parametric vocabulary tranche 2 ──────────────────────────────
+# Operator directive: NO PRESETS. These are envelope-level primitives:
+# recruitment resolves a capability, and the compositor writes bounded
+# parameter targets for downstream consumers to ease into.
+
+_INTENSITY_SURGE: list[CapabilityRecord] = [
+    _record(
+        "intensity.surge.lift",
+        "temporarily lifts all nine visual-chain dimensions together while keeping "
+        "every node parameter inside its authored envelope — a controlled rise in "
+        "visual energy, not a preset jump",
+    ),
+    _record(
+        "intensity.surge.crest",
+        "briefly crests all nine visual-chain dimensions for a punctuation beat, "
+        "then releases through bounded node parameters so the surface swells "
+        "without changing preset family",
+    ),
+]
+
+_SILENCE_INVITATION: list[CapabilityRecord] = [
+    _record(
+        "silence.invitation.hold",
+        "invites a silent hold by easing narration, motion, chrome, and visual-chain "
+        "dimensions down together — the surface pauses without becoming inactive",
+    ),
+    _record(
+        "silence.invitation.soft",
+        "softens the expressive surfaces for a quiet invitation rather than a full "
+        "hold, preserving a low breathing cadence under bounded parameters",
+    ),
+]
+
+_CHROME_DENSITY: list[CapabilityRecord] = [
+    _record(
+        "chrome.density.sparser",
+        "thins ward chrome and diagnostic density so primary content has more air, "
+        "implemented as alpha, spacing, and contrast envelopes",
+    ),
+    _record(
+        "chrome.density.baseline",
+        "returns ward chrome density to its middle register after a sparse or dense "
+        "moment has run its course",
+    ),
+    _record(
+        "chrome.density.denser",
+        "densifies ward chrome when system legibility itself is the subject, using "
+        "bounded alpha, contrast, and spacing envelopes rather than any preset",
+    ),
+]
+
+_ATTENTION_REFOCUS: list[CapabilityRecord] = [
+    _record(
+        "attention.refocus.overhead",
+        "softly reweights attention toward the overhead hardware camera without "
+        "cutting hero focus — a salience envelope across camera weights",
+    ),
+    _record(
+        "attention.refocus.synths-brio",
+        "softly reweights attention toward the synthesizer camera while keeping "
+        "other cameras alive in the mix",
+    ),
+    _record(
+        "attention.refocus.operator-brio",
+        "softly reweights attention toward the operator camera for conversational "
+        "or reaction emphasis without forcing a hard camera swap",
+    ),
+    _record(
+        "attention.refocus.desk-c920",
+        "softly reweights attention toward the desk camera when reading, writing, "
+        "or code work should pull visual weight",
+    ),
+    _record(
+        "attention.refocus.room-c920",
+        "softly reweights attention toward the room camera for ambient overview "
+        "while preserving secondary camera context",
+    ),
+    _record(
+        "attention.refocus.room-brio",
+        "softly reweights attention toward the room BRIO camera for an alternate "
+        "ambient view without collapsing the camera mix",
+    ),
+    _record(
+        "attention.refocus.reset",
+        "settles camera attention weights back to an even baseline after a soft "
+        "refocus envelope has run its course",
+    ),
+]
+
+
 # YouTube telemetry impingements (ytb-005, #1311). The youtube.telemetry
 # IntentFamily is a downstream-only signal emitted by the analytics tailer
 # onto /dev/shm/hapax-dmn/impingements.jsonl. Per feedback_no_expert_system_rules,
@@ -915,8 +1005,8 @@ _YOUTUBE_TELEMETRY: list[CapabilityRecord] = [
 #
 # These capabilities fire the chain-composition primitive: instead of
 # swapping between 30 fixed preset graphs (the dumb anti-pattern), the
-# pipeline recruits surgical add/remove of specific shader nodes against
-# the live graph. The dispatcher in
+# pipeline recruits surgical add/remove plus structural compose/fork/
+# merge/route operations against the live graph. The dispatcher in
 # `agents/studio_compositor/compositional_consumer.dispatch_node_patch`
 # records the recruitment; `agents/studio_compositor/graph_patch_consumer`
 # applies the resulting `GraphPatch` to the live `EffectGraph` and writes
@@ -969,6 +1059,30 @@ _NODE_PATCH: list[CapabilityRecord] = [
         "core vocabulary, the move when the moment has moved on from a "
         "transient effect",
     ),
+    _record(
+        "node.compose.color,drift",
+        "binds color and spatial drift into one composite gesture — the surface "
+        "keeps both registers audible at once instead of treating tone and "
+        "motion as separate steps",
+    ),
+    _record(
+        "node.fork.fb",
+        "opens a parallel feedback branch — duplicates the trace-bearing "
+        "register so one path can continue while another path is prepared for "
+        "a later merge",
+    ),
+    _record(
+        "node.merge.fb,fork_fb",
+        "gathers two feedback branches into a single downstream stream — the "
+        "surface resolves parallel echoes into one legible blended passage "
+        "when the moment wants convergence",
+    ),
+    _record(
+        "node.route.content,out",
+        "redirects content toward the output path — changes the chain's "
+        "downstream route so recruited material can bypass a settled ending "
+        "and arrive more directly",
+    ),
 ]
 
 
@@ -989,6 +1103,10 @@ COMPOSITIONAL_CAPABILITIES: list[CapabilityRecord] = (
     + _PACE
     + _MOOD
     + _PROGRAMME
+    + _INTENSITY_SURGE
+    + _SILENCE_INVITATION
+    + _CHROME_DENSITY
+    + _ATTENTION_REFOCUS
     + _YOUTUBE_TELEMETRY
     + _NODE_PATCH
 )

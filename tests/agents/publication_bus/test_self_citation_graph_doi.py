@@ -27,6 +27,21 @@ def _seed_snapshot(path: Path, nodes: list[tuple[str, int]]) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _seed_mirror_snapshot(path: Path, nodes: list[tuple[str, int]]) -> None:
+    payload = {
+        "data": {
+            "person": {
+                "works": {
+                    "nodes": [
+                        {"doi": doi, "citations": {"totalCount": cites}} for doi, cites in nodes
+                    ],
+                }
+            }
+        }
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
 def test_extract_topology_nodes_returns_doi_count_pairs():
     payload = {
         "data": {
@@ -35,6 +50,25 @@ def test_extract_topology_nodes_returns_doi_count_pairs():
                     {"doi": "10.5281/zenodo.1", "citationCount": 5},
                     {"doi": "10.5281/zenodo.2", "citationCount": 0},
                 ]
+            }
+        }
+    }
+    assert _extract_topology_nodes(payload) == [
+        ("10.5281/zenodo.1", 5),
+        ("10.5281/zenodo.2", 0),
+    ]
+
+
+def test_extract_topology_nodes_supports_datacite_mirror_shape():
+    payload = {
+        "data": {
+            "person": {
+                "works": {
+                    "nodes": [
+                        {"doi": "10.5281/zenodo.1", "citations": {"totalCount": 5}},
+                        {"doi": "10.5281/zenodo.2", "citations": {"totalCount": 0}},
+                    ]
+                }
             }
         }
     }
@@ -63,6 +97,12 @@ def test_fingerprint_changes_on_citation_count_diff(tmp_path: Path):
     _seed_snapshot(a, [("10.x/y", 1)])
     _seed_snapshot(b, [("10.x/y", 2)])
     assert graph_topology_fingerprint(a) != graph_topology_fingerprint(b)
+
+
+def test_fingerprint_accepts_datacite_mirror_snapshot_shape(tmp_path: Path):
+    snapshot = tmp_path / "mirror.json"
+    _seed_mirror_snapshot(snapshot, [("10.x/y", 2)])
+    assert graph_topology_fingerprint(snapshot) is not None
 
 
 def test_fingerprint_returns_none_for_empty_or_missing(tmp_path: Path):
