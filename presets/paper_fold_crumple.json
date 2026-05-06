@@ -42,7 +42,24 @@
       "params": {}
     }
   },
-  "modulations": [],
+  "modulations": [
+    {
+      "node": "colorgrade",
+      "param": "brightness",
+      "source": "audio_rms",
+      "scale": 0.08,
+      "offset": 0.0,
+      "smoothing": 0.6
+    },
+    {
+      "node": "grain_paper",
+      "param": "intensity",
+      "source": "audio_energy",
+      "scale": 0.08,
+      "offset": 0.0,
+      "smoothing": 0.5
+    }
+  ],
   "edges": [
     [
       "@live",
