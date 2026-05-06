@@ -50,24 +50,37 @@ def _hyprctl_activewindow() -> dict | None:
 def _read_perception() -> dict:
     """Read current perception state."""
     try:
-        return json.loads(PERCEPTION_STATE.read_text())
+        data = json.loads(PERCEPTION_STATE.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    return data
 
 
 def _read_stimmung() -> str:
     """Read current stimmung stance."""
     try:
-        return json.loads(STIMMUNG_STATE.read_text()).get("overall_stance", "unknown")
+        data = json.loads(STIMMUNG_STATE.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return "unknown"
+    if not isinstance(data, dict):
+        return "unknown"
+    return data.get("overall_stance", "unknown")
+
+
+def _default_state() -> dict:
+    return {"samples": [], "last_hour_written": ""}
 
 
 def _load_state() -> dict:
     try:
-        return json.loads(STATE_FILE.read_text())
+        data = json.loads(STATE_FILE.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
-        return {"samples": [], "last_hour_written": ""}
+        return _default_state()
+    if not isinstance(data, dict):
+        return _default_state()
+    return data
 
 
 def _save_state(state: dict) -> None:
