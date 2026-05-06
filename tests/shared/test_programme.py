@@ -273,6 +273,129 @@ class TestProgrammeContent:
                 ]
             )
 
+    def test_layout_decision_receipts_rejected_at_planner_boundary(self) -> None:
+        with pytest.raises(ValueError, match="layout_decision_receipts"):
+            ProgrammeContent(
+                layout_decision_receipts=[
+                    {
+                        "receipt_id": "receipt.layout_state_rendered",
+                        "source": "layout_state",
+                    }
+                ]
+            )
+
+    @pytest.mark.parametrize(
+        "bad_value",
+        [
+            "surface:main",
+            "layout:balanced-v2",
+            "cue:camera.hero tight",
+            "camera.hero tight",
+            "camera:operator-subject",
+            "/dev/shm/hapax-layout.json",
+            "default_static",
+            "config/compositor-layouts/default.json",
+        ],
+    )
+    def test_layout_intents_reject_command_like_nested_string_values(self, bad_value: str) -> None:
+        with pytest.raises(ValueError, match="command-like layout authority"):
+            ProgrammeContent(
+                beat_layout_intents=[
+                    {
+                        "beat_id": "hook",
+                        "action_intent_kinds": ["show_evidence"],
+                        "needs": ["evidence_visible"],
+                        "proposed_postures": ["asset_front"],
+                        "expected_effects": ["evidence_on_screen"],
+                        "evidence_refs": ["vault:source-note-1"],
+                        "source_affordances": ["asset:evidence-card", bad_value],
+                        "default_static_success_allowed": False,
+                    }
+                ]
+            )
+
+    def test_layout_intents_accept_declarative_refs_and_evidence_ids(self) -> None:
+        content = ProgrammeContent(
+            beat_layout_intents=[
+                {
+                    "beat_id": "hook",
+                    "action_intent_kinds": ["show_evidence", "cite_source"],
+                    "needs": ["evidence_visible", "source_visible"],
+                    "proposed_postures": ["asset_front", "camera_subject"],
+                    "expected_effects": ["evidence_on_screen", "source_context_legible"],
+                    "evidence_refs": ["vault:source-note-1", "rag:proof-42"],
+                    "source_affordances": ["asset:evidence-card", "resolver:source-card"],
+                    "default_static_success_allowed": False,
+                }
+            ]
+        )
+
+        assert content.beat_layout_intents[0]["evidence_refs"] == [
+            "vault:source-note-1",
+            "rag:proof-42",
+        ]
+
+    def test_responsible_layout_intents_reject_default_static_success_true(self) -> None:
+        with pytest.raises(ValueError, match="default/static layout success"):
+            ProgrammeContent(
+                hosting_context="hapax_responsible_live",
+                beat_layout_intents=[
+                    {
+                        "beat_id": "hook",
+                        "action_intent_kinds": ["show_evidence"],
+                        "needs": ["evidence_visible"],
+                        "proposed_postures": ["asset_front"],
+                        "expected_effects": ["evidence_on_screen"],
+                        "evidence_refs": ["vault:source-note-1"],
+                        "source_affordances": ["asset:evidence-card"],
+                        "default_static_success_allowed": True,
+                    }
+                ],
+            )
+
+    @pytest.mark.parametrize("truthy_value", ["on", "enabled", "allowed", "yes", "1", "maybe"])
+    def test_responsible_layout_intents_reject_truthy_default_static_success_strings(
+        self, truthy_value: str
+    ) -> None:
+        with pytest.raises(ValueError, match="default/static layout success"):
+            ProgrammeContent(
+                hosting_context="hapax_responsible_live",
+                beat_layout_intents=[
+                    {
+                        "beat_id": "hook",
+                        "action_intent_kinds": ["show_evidence"],
+                        "needs": ["evidence_visible"],
+                        "proposed_postures": ["asset_front"],
+                        "expected_effects": ["evidence_on_screen"],
+                        "evidence_refs": ["vault:source-note-1"],
+                        "source_affordances": ["asset:evidence-card"],
+                        "default_static_success_allowed": truthy_value,
+                    }
+                ],
+            )
+
+    @pytest.mark.parametrize("falsey_value", ["off", "disabled", "false", "no", "0", "none", ""])
+    def test_responsible_layout_intents_accept_falsey_default_static_success_strings(
+        self, falsey_value: str
+    ) -> None:
+        content = ProgrammeContent(
+            hosting_context="hapax_responsible_live",
+            beat_layout_intents=[
+                {
+                    "beat_id": "hook",
+                    "action_intent_kinds": ["show_evidence"],
+                    "needs": ["evidence_visible"],
+                    "proposed_postures": ["asset_front"],
+                    "expected_effects": ["evidence_on_screen"],
+                    "evidence_refs": ["vault:source-note-1"],
+                    "source_affordances": ["asset:evidence-card"],
+                    "default_static_success_allowed": falsey_value,
+                }
+            ],
+        )
+
+        assert content.beat_layout_intents[0]["default_static_success_allowed"] == falsey_value
+
 
 class TestProgrammeRitual:
     def test_default_boundary_freeze(self) -> None:

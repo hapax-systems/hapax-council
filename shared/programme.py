@@ -22,6 +22,7 @@ References:
 from __future__ import annotations
 
 import math
+import re
 import time
 from enum import StrEnum
 from typing import Any, Literal
@@ -404,6 +405,18 @@ class ProgrammeContent(BaseModel):
         _reject_layout_authority_fields(v)
         return {}
 
+    @field_validator("layout_decision_receipts")
+    @classmethod
+    def _layout_decision_receipts_are_runtime_owned(
+        cls, v: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        if v:
+            raise ValueError(
+                "ProgrammeContent layout_decision_receipts are runtime-owned; "
+                "planner/prepared content may not carry layout receipts"
+            )
+        return []
+
     @field_validator("segment_beat_durations")
     @classmethod
     def _segment_beat_durations_reasonable(cls, v: list[float]) -> list[float]:
@@ -422,6 +435,14 @@ class ProgrammeContent(BaseModel):
                 "responsible hosting ProgrammeContent cannot carry executable segment_cues; "
                 "use proposal-only beat_layout_intents"
             )
+        if _content_hosting_context_is_responsible(self.hosting_context):
+            for index, intent in enumerate(self.beat_layout_intents):
+                if _layout_intent_allows_default_static_success(intent):
+                    raise ValueError(
+                        "responsible hosting ProgrammeContent cannot allow default/static "
+                        "layout success: "
+                        f"beat_layout_intents[{index}].default_static_success_allowed"
+                    )
         return self
 
 
@@ -439,6 +460,16 @@ def _content_hosting_context_is_responsible(value: str | dict[str, Any] | None) 
 
 def _hosting_context_token(value: str) -> str:
     return "".join(ch for ch in value.lower() if ch.isalnum())
+
+
+def _layout_intent_allows_default_static_success(intent: dict[str, Any]) -> bool:
+    raw = intent.get("default_static_success_allowed")
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        token = _hosting_context_token(raw)
+        return token not in {"", "0", "disallowed", "disabled", "false", "no", "none", "off"}
+    return raw is not None and bool(raw)
 
 
 _FORBIDDEN_LAYOUT_AUTHORITY_KEY_TOKENS = frozenset(
@@ -464,7 +495,89 @@ _FORBIDDEN_LAYOUT_AUTHORITY_KEY_TOKENS = frozenset(
         "commands",
         "camera",
         "zorder",
+        "directlayoutcommand",
+        "directlayoutcommands",
+        "layoutdecisionreceipt",
+        "layoutdecisionreceipts",
+        "layoutreceipt",
+        "layoutreceipts",
+        "publicbroadcastbypass",
+        "receiptrefs",
+        "runtimepolicy",
+        "runtimereadback",
+        "wcsreadbackrequirements",
     }
+)
+
+
+_FORBIDDEN_LAYOUT_AUTHORITY_VALUE_PREFIX_TOKENS = frozenset(
+    {
+        "command",
+        "commands",
+        "coordinate",
+        "coordinates",
+        "cue",
+        "layout",
+        "shm",
+        "surface",
+        "zindex",
+        "zorder",
+    }
+)
+
+
+_FORBIDDEN_LAYOUT_AUTHORITY_VALUE_TOKENS = frozenset(
+    {
+        "balancedv2",
+        "broadcastbypass",
+        "defaultjson",
+        "defaultlayout",
+        "defaultstatic",
+        "devshm",
+        "fallbackreceipt",
+        "garagedoor",
+        "layoutreceipt",
+        "layoutstate",
+        "layoutstore",
+        "nonresponsiblestatic",
+        "publicbroadcast",
+        "publicbroadcastbypass",
+        "publicbypass",
+        "renderedframe",
+        "spokenonlyfallback",
+        "staticlayout",
+        "wardreadback",
+    }
+)
+
+
+_FORBIDDEN_LAYOUT_AUTHORITY_VALUE_SUBSTRINGS = frozenset(
+    {
+        "broadcastbypass",
+        "camerahero",
+        "compositorlayouts",
+        "defaultjson",
+        "defaultlayout",
+        "defaultstatic",
+        "devshm",
+        "layoutreceipt",
+        "layoutstate",
+        "layoutstore",
+        "nonresponsiblestatic",
+        "publicbroadcastbypass",
+        "spokenonlyfallback",
+        "staticlayout",
+        "wardreadback",
+        "wcsreadback",
+    }
+)
+
+
+_FORBIDDEN_LAYOUT_AUTHORITY_VALUE_PATTERNS = (
+    re.compile(r"(^|[\s:/=._-])camera\s*[:=.]"),
+    re.compile(r"(^|[\s:/=._-])(?:command|cue|layout|shm|surface)\s*[:=.]"),
+    re.compile(r"\b(?:x|y|w|h|width|height|z|z_index|z-index|zindex)\s*[:=]\s*-?\d"),
+    re.compile(r"\bswitch(?:_to)?(?:_layout)?\b"),
 )
 
 
@@ -483,6 +596,31 @@ def _reject_layout_authority_fields(value: Any, *, prefix: str = "") -> None:
     elif isinstance(value, list):
         for index, nested in enumerate(value):
             _reject_layout_authority_fields(nested, prefix=f"{prefix}[{index}]")
+    elif isinstance(value, str):
+        _reject_layout_authority_string(value, path=prefix)
+
+
+def _reject_layout_authority_string(value: str, *, path: str) -> None:
+    stripped = value.strip()
+    if not stripped:
+        return
+
+    raw = stripped.lower()
+    token = _hosting_context_token(stripped)
+    forbidden = (
+        token in _FORBIDDEN_LAYOUT_AUTHORITY_VALUE_TOKENS
+        or any(
+            token.startswith(prefix) for prefix in _FORBIDDEN_LAYOUT_AUTHORITY_VALUE_PREFIX_TOKENS
+        )
+        or any(part in token for part in _FORBIDDEN_LAYOUT_AUTHORITY_VALUE_SUBSTRINGS)
+        or any(pattern.search(raw) for pattern in _FORBIDDEN_LAYOUT_AUTHORITY_VALUE_PATTERNS)
+    )
+    if forbidden:
+        location = path or "<value>"
+        raise ValueError(
+            "ProgrammeContent layout proposals cannot carry command-like layout authority "
+            f"at {location}: {stripped!r}"
+        )
 
 
 class ProgrammeRitual(BaseModel):
