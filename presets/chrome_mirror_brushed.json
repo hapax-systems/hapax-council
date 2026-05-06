@@ -1,6 +1,6 @@
 {
   "name": "Chrome Mirror Brushed",
-  "description": "Chrome-mirror lineage (2/2): mirror + slitscan at low frequency + emboss creates a brushed-aluminum mirror aesthetic. Lineage: chrome-mirror.",
+  "description": "Chrome-mirror lineage (2/2): mirror + slitscan + emboss + audio-driven modulation drives mirror axis drift, slitscan speed, emboss strength, and hue rotation. Brushed-aluminum mirror with breathing variation. Lineage: chrome-mirror.",
   "lineage": "chrome-mirror",
   "transition_ms": 2000,
   "nodes": {
@@ -9,8 +9,8 @@
       "params": {
         "brightness": 1.04,
         "contrast": 1.18,
-        "saturation": 0.85,
-        "hue_rotate": -2
+        "saturation": 0.95,
+        "hue_rotate": 8
       }
     },
     "mirror_brushed": {
@@ -69,5 +69,38 @@
       "out"
     ]
   ],
-  "modulations": []
+  "modulations": [
+    {
+      "node": "mirror_brushed",
+      "param": "position",
+      "source": "audio_energy",
+      "scale": 0.18,
+      "offset": 0.32,
+      "smoothing": 0.6
+    },
+    {
+      "node": "slitscan_brushed",
+      "param": "speed",
+      "source": "audio_rms",
+      "scale": 0.12,
+      "offset": 0.08,
+      "smoothing": 0.5
+    },
+    {
+      "node": "emboss_brushed",
+      "param": "strength",
+      "source": "audio_beat",
+      "scale": 0.18,
+      "offset": 0.32,
+      "smoothing": 0.4
+    },
+    {
+      "node": "colorgrade",
+      "param": "hue_rotate",
+      "source": "audio_rms",
+      "scale": 12,
+      "offset": 8,
+      "smoothing": 0.7
+    }
+  ]
 }
