@@ -143,10 +143,12 @@ def _is_lore_worthy(event: ChronicleEvent) -> bool:
 
     An event surfaces when EITHER:
       - its payload carries numeric ``salience`` >= ``_SALIENCE_THRESHOLD``
-        (forward-compatible path — any emitter that starts tagging
-        salience is picked up automatically), OR
+        (the salience path — after the 2026-05-06 tagging series this is
+        active for ``stimmung``, ``m8_stem_recorder``, ``narration_triad``,
+        ``mail_monitor_operational``, and the three payment rails), OR
       - its ``source`` is in the lore-worthy allow-list
-        (current-state path — no emitter sets salience today).
+        (the allow-list path — backs sources that emit without a
+        salience tag).
 
     The allow-list path is further gated by the event-type blocklist
     so specific high-frequency routine events (``engine.rule.matched``)
