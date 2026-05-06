@@ -640,6 +640,28 @@
         "render_target": null
       },
       "z_order": 15
+    },
+    {
+      "id": "stance-indicator-right-column",
+      "geometry": {
+        "kind": "rect",
+        "x": 1800,
+        "y": 420,
+        "w": 100,
+        "h": 40
+      },
+      "z_order": 54
+    },
+    {
+      "id": "grounding-ticker-right-column",
+      "geometry": {
+        "kind": "rect",
+        "x": 1370,
+        "y": 480,
+        "w": 480,
+        "h": 40
+      },
+      "z_order": 52
     }
   ],
   "assignments": [
@@ -763,6 +785,20 @@
       "source": "reverie",
       "surface": "reverie-upper-right",
       "opacity": 1.0,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "stance_indicator",
+      "surface": "stance-indicator-right-column",
+      "opacity": 0.92,
+      "non_destructive": true,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "grounding_provenance_ticker",
+      "surface": "grounding-ticker-right-column",
+      "opacity": 0.92,
+      "non_destructive": true,
       "render_stage": "post_fx"
     }
   ]
