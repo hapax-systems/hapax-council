@@ -123,7 +123,10 @@ def _read_recruited_transition() -> str | None:
         data = json.loads(RECRUITMENT_FILE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    families = data.get("families") or {}
+    if not isinstance(data, dict):
+        return None
+    families_raw = data.get("families") or {}
+    families = families_raw if isinstance(families_raw, dict) else {}
     best: tuple[float, str] | None = None
     for fam_name, entry in families.items():
         if not isinstance(fam_name, str) or not fam_name.startswith("transition."):
@@ -216,7 +219,12 @@ def process_preset_recruitment(compositor: Any | None = None) -> bool:
         payload = json.loads(RECRUITMENT_FILE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    bias = payload.get("families", {}).get("preset.bias")
+    if not isinstance(payload, dict):
+        return False
+    families = payload.get("families", {})
+    if not isinstance(families, dict):
+        return False
+    bias = families.get("preset.bias")
     if not isinstance(bias, dict):
         return False
     family = bias.get("family")

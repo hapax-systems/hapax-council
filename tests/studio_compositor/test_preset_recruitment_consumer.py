@@ -257,3 +257,53 @@ def test_process_tracks_last_graph_for_transition_out(
     _write_recruitment(prc.RECRUITMENT_FILE, fam, ts=time.time() + 1.0)
     assert prc.process_preset_recruitment() is True
     assert seen_out[-1] is graph_a  # second dispatch carries the prior graph
+
+
+# ── Defensive readers — non-dict JSON root ──────────────────────────────
+
+
+class TestReadersRejectNonDictRoot:
+    """Pin both SHM read sites against non-dict JSON roots.
+
+    ``_read_recruited_transition`` (line 126) and
+    ``process_preset_recruitment`` (line 219) called ``data.get(...)``
+    outside the json.loads except clause; a writer producing valid
+    JSON whose root is null, a list, a string, or a number raised
+    AttributeError out of the compositor preset-recruitment path.
+    Same corruption-class as #2627, #2631, #2632, #2633, #2636.
+    """
+
+    @pytest.mark.parametrize(
+        "payload,kind",
+        [("null", "null"), ('"string"', "string"), ("[1,2]", "list"), ("42", "int")],
+    )
+    def test_read_recruited_transition_non_dict_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: str, kind: str
+    ):
+        path = tmp_path / "recruitment.json"
+        path.write_text(payload)
+        monkeypatch.setattr(prc, "RECRUITMENT_FILE", path)
+        assert prc._read_recruited_transition() is None, f"non-dict root={kind} must yield None"
+
+    @pytest.mark.parametrize(
+        "payload,kind",
+        [("null", "null"), ('"string"', "string"), ("[1,2]", "list"), ("42", "int")],
+    )
+    def test_process_preset_recruitment_non_dict_returns_false(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: str, kind: str
+    ):
+        path = tmp_path / "recruitment.json"
+        path.write_text(payload)
+        monkeypatch.setattr(prc, "RECRUITMENT_FILE", path)
+        assert prc.process_preset_recruitment() is False, f"non-dict root={kind} must yield False"
+
+    def test_process_preset_recruitment_non_dict_families_returns_false(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """``payload[\"families\"]`` could itself be non-dict — tests the
+        chained .get() failure mode where ``payload`` is dict but
+        ``payload['families']`` is a list/string/number."""
+        path = tmp_path / "recruitment.json"
+        path.write_text('{"families": ["mixer", "desk"]}')
+        monkeypatch.setattr(prc, "RECRUITMENT_FILE", path)
+        assert prc.process_preset_recruitment() is False
