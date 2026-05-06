@@ -39,9 +39,23 @@ def read_ir_signal(
         if age > max_age_seconds:
             log.debug("IR signal %s is STALE (%.1fs > %.1fs)", path.name, age, max_age_seconds)
             return None
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return None
+    # Schema guard: a writer producing valid JSON whose root is null,
+    # a list, a string, or a number raises AttributeError out of the
+    # ir_presence callsite at line 233 (``report.get("cadence_interval_s")``)
+    # the moment any consumer tries to read fields. Reject non-dict
+    # roots here so the IR fleet's callers always see a well-typed
+    # report or None. Same shape as the other recent SHM-read fixes.
+    if not isinstance(data, dict):
+        log.debug(
+            "IR signal %s root is %s, expected mapping",
+            path.name,
+            type(data).__name__,
+        )
+        return None
+    return data
 
 
 def read_all_ir_reports(
