@@ -215,10 +215,19 @@ def _read_bookmarks(path: Path = CHROME_BOOKMARKS_FILE) -> list[BookmarkEntry]:
     except Exception as exc:
         log.error("Failed to read bookmarks: %s", exc)
         return []
+    if not isinstance(data, dict):
+        # Schema drift: a writer producing valid JSON whose root is null,
+        # a list, a string, or a number raises AttributeError on
+        # ``data.get(\"roots\", {})``. Same shape as the other recent
+        # SHM-read fixes.
+        log.error("Bookmarks JSON root is %s, expected mapping", type(data).__name__)
+        return []
 
     bookmarks: list[BookmarkEntry] = []
 
     def walk(node: dict, folder: str = "") -> None:
+        if not isinstance(node, dict):
+            return
         node_type = node.get("type", "")
         if node_type == "url":
             url = node.get("url", "")
@@ -245,6 +254,8 @@ def _read_bookmarks(path: Path = CHROME_BOOKMARKS_FILE) -> list[BookmarkEntry]:
                 walk(child, subfolder)
 
     roots = data.get("roots", {})
+    if not isinstance(roots, dict):
+        return bookmarks
     for root_name, root_node in roots.items():
         if isinstance(root_node, dict):
             walk(root_node, root_name)

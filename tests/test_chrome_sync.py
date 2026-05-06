@@ -142,3 +142,32 @@ def test_generate_chrome_profile_facts():
     top_fact = next(f for f in facts if f["key"] == "browsing_top_domains")
     assert "github.com" in top_fact["value"]
     assert top_fact["confidence"] == 0.85
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_read_bookmarks_non_dict_root_returns_empty(tmp_path, payload, kind):
+    """Pin _read_bookmarks against non-dict JSON. data.get('roots', {})
+    raised AttributeError on non-dict roots — the broad Exception catch
+    around json.loads didn't cover it."""
+    from agents.chrome_sync import _read_bookmarks
+
+    path = tmp_path / "bookmarks.json"
+    path.write_text(payload)
+    assert _read_bookmarks(path) == [], f"non-dict root={kind} must yield empty"
+
+
+def test_read_bookmarks_non_dict_roots_field_returns_empty(tmp_path):
+    """Pin: dict root with non-dict 'roots' field falls back to empty."""
+    import json
+
+    path = tmp_path / "bookmarks.json"
+    path.write_text(json.dumps({"roots": "not-a-dict"}))
+    from agents.chrome_sync import _read_bookmarks
+
+    assert _read_bookmarks(path) == []
