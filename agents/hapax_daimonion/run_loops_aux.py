@@ -105,11 +105,21 @@ async def proactive_delivery_loop(daemon: VoiceDaemon) -> None:
 
                 _vls_path = Path("/dev/shm/hapax-compositor/visual-layer-state.json")
                 _vls = _json.loads(_vls_path.read_text())
+            except (FileNotFoundError, ValueError, OSError):
+                _vls = None
+
+            # Schema guard: a writer producing valid JSON whose root is
+            # null, a list, a string, or a number raises AttributeError
+            # out of ``_vls.get(...)`` — the (FileNotFoundError, ValueError,
+            # OSError) catch above does not cover it. Same shape as the
+            # other recent SHM-read fixes.
+            if isinstance(_vls, dict):
                 _change_points = _vls.get("recent_change_points", [])
                 _now_ts = time.time()
                 _flow_transition = any(
                     cp.get("signal") == "flow_score" and _now_ts - cp.get("timestamp", 0) < 60.0
                     for cp in _change_points
+                    if isinstance(cp, dict)
                 )
                 if _flow_transition:
                     delivery_threshold -= 0.15
@@ -123,8 +133,6 @@ async def proactive_delivery_loop(daemon: VoiceDaemon) -> None:
                     continue
                 if _presence_prob is not None:
                     delivery_threshold += 0.1 * (1.0 - _presence_prob)
-            except (FileNotFoundError, ValueError, OSError):
-                pass
 
             if latest is not None and latest.interruptibility_score < delivery_threshold:
                 continue
