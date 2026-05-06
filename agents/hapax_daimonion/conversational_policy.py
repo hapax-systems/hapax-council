@@ -88,10 +88,21 @@ def _load_profile_summary() -> str | None:
     """
     try:
         data = json.loads(_DIGEST_PATH.read_text())
-        return data.get("overall_summary")
     except (FileNotFoundError, KeyError, json.JSONDecodeError):
         log.debug("Could not load profile summary from digest")
         return None
+    if not isinstance(data, dict):
+        # Schema drift: a writer producing valid JSON whose root is null,
+        # a list, a string, or a number raised AttributeError out of
+        # ``data.get(\"overall_summary\")`` — the (FileNotFoundError,
+        # KeyError, JSONDecodeError) catch missed it. Same shape as
+        # the other recent SHM-read fixes.
+        log.debug(
+            "profile digest root is %s, expected mapping",
+            type(data).__name__,
+        )
+        return None
+    return data.get("overall_summary")
 
 
 # ── Environmental Modulation ─────────────────────────────────────────────────
