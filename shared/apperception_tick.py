@@ -272,39 +272,43 @@ class ApperceptionTick:
         # 6. Cross-modal resonance
         try:
             cr = json.loads(CROSS_RESONANCE_FILE.read_text(encoding="utf-8"))
-            cr_ts = cr.get("timestamp", 0)
-            if (time.time() - cr_ts) <= 30:
-                score = cr.get("resonance_score", 0.0)
-                if score > 0.3:
-                    events.append(
-                        CascadeEvent(
-                            source="cross_resonance",
-                            text=f"audio-video agreement: {cr.get('audio_label', '?')} "
-                            f"({len(cr.get('matching_roles', []))} cameras)",
-                            magnitude=score,
+            if isinstance(cr, dict):
+                cr_ts = cr.get("timestamp", 0)
+                if (time.time() - cr_ts) <= 30:
+                    score = cr.get("resonance_score", 0.0)
+                    if score > 0.3:
+                        events.append(
+                            CascadeEvent(
+                                source="cross_resonance",
+                                text=f"audio-video agreement: {cr.get('audio_label', '?')} "
+                                f"({len(cr.get('matching_roles', []))} cameras)",
+                                magnitude=score,
+                            )
                         )
-                    )
         except (OSError, json.JSONDecodeError):
             pass
 
         # 7. Pattern shifts
         try:
             ps = json.loads(PATTERN_SHIFT_FILE.read_text(encoding="utf-8"))
-            ps_ts = ps.get("timestamp", 0)
-            if (time.time() - ps_ts) <= 60:  # longer window — patterns update every 60s
-                for shift in ps.get("shifts", []):
-                    events.append(
-                        CascadeEvent(
-                            source="pattern_shift",
-                            text=f"pattern {'confirmed' if shift.get('confirmed') else 'contradicted'}: "
-                            f"{shift.get('prediction', '?')}",
-                            magnitude=shift.get("confidence", 0.5),
-                            metadata={
-                                "confirmed": shift.get("confirmed", False),
-                                "dimension": "pattern_recognition",
-                            },
+            if isinstance(ps, dict):
+                ps_ts = ps.get("timestamp", 0)
+                if (time.time() - ps_ts) <= 60:  # longer window — patterns update every 60s
+                    for shift in ps.get("shifts", []):
+                        if not isinstance(shift, dict):
+                            continue
+                        events.append(
+                            CascadeEvent(
+                                source="pattern_shift",
+                                text=f"pattern {'confirmed' if shift.get('confirmed') else 'contradicted'}: "
+                                f"{shift.get('prediction', '?')}",
+                                magnitude=shift.get("confidence", 0.5),
+                                metadata={
+                                    "confirmed": shift.get("confirmed", False),
+                                    "dimension": "pattern_recognition",
+                                },
+                            )
                         )
-                    )
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -313,9 +317,19 @@ class ApperceptionTick:
     # ── Filesystem I/O ───────────────────────────────────────────────
 
     def _read_stimmung(self) -> tuple[str, dict | None]:
-        """Read stimmung state. Returns (stance, full_data)."""
+        """Read stimmung state. Returns (stance, full_data).
+
+        Validates that the parsed JSON root is a mapping; a non-dict
+        root (``null``, list, string, number) previously raised
+        AttributeError out of ``raw.get(...)``, escaping the narrow
+        ``(OSError, json.JSONDecodeError)`` catch and crashing the
+        apperception tick loop. Same corruption-class as the SHM
+        readers in #2627, #2631, #2632, #2633.
+        """
         try:
             raw = json.loads(STIMMUNG_FILE.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                return "nominal", None
             return raw.get("overall_stance", "nominal"), raw
         except (OSError, json.JSONDecodeError):
             return "nominal", None
