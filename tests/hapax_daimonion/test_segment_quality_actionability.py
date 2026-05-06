@@ -367,6 +367,50 @@ def test_source_backed_claims_propose_visible_source_context_not_layout_authorit
     assert forbidden_layout_authority_fields(layout["beat_layout_intents"]) == []
 
 
+def test_transition_phrases_do_not_become_source_visible_bypass() -> None:
+    script = [
+        "From here, the segment gets sharper while staying in spoken argument.",
+        "Today shows why the issue matters without citing an external source.",
+        "Drawing on the beat direction, we pivot to the next spoken point.",
+    ]
+
+    alignment = validate_segment_actionability(script, ["transition", "transition", "transition"])
+
+    for declaration in alignment["beat_action_intents"]:
+        assert [intent["kind"] for intent in declaration["intents"]] == ["spoken_argument"]
+
+    layout = validate_layout_responsibility(alignment["beat_action_intents"])
+
+    assert layout["ok"] is False
+    assert [beat["needs"] for beat in layout["beat_layout_intents"]] == [
+        ["unsupported_layout_need"],
+        ["unsupported_layout_need"],
+        ["unsupported_layout_need"],
+    ]
+    assert {item["reason"] for item in layout["violations"]} == {"unsupported_layout_need"}
+
+
+def test_specific_source_structures_still_propose_visible_source_context() -> None:
+    script = [
+        "According to the 2024 FTC report, the interface hides the real cost.",
+        "Zuboff argues that extraction becomes a production surface.",
+    ]
+
+    alignment = validate_segment_actionability(script, ["source", "source"])
+
+    assert [intent["kind"] for intent in alignment["beat_action_intents"][0]["intents"]] == [
+        "source_citation"
+    ]
+    assert [intent["kind"] for intent in alignment["beat_action_intents"][1]["intents"]] == [
+        "source_citation"
+    ]
+    layout = validate_layout_responsibility(alignment["beat_action_intents"])
+    assert [beat["needs"] for beat in layout["beat_layout_intents"]] == [
+        ["source_visible"],
+        ["source_visible"],
+    ]
+
+
 def test_responsible_hosting_rejects_unreceipted_static_default_layout() -> None:
     alignment = validate_segment_actionability(EXCELLENT_SCRIPT, ["hook", "body", "close"])
 
