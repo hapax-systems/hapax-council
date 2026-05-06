@@ -31,7 +31,15 @@
 set -uo pipefail
 
 CANONICAL_PROFILE="output:analog-stereo"
-CARD_NAME_PATTERN="${HAPAX_OPTION_C_CARD_PATTERN:-Family 17h/19h HD Audio}"
+# pactl exposes the AMD Ryzen on-board HDA as ``Ryzen HD Audio Controller``
+# in ``device.product.name`` / ``device.description``. The legacy pattern
+# ``Family 17h/19h HD Audio`` was a kernel-level designation that no
+# longer surfaces through PulseAudio properties on current PipeWire +
+# Linux 6.x stacks; matching it produced a false "card not found"
+# (status=2) on every tick, even though the card is healthy and present.
+# The override env var still wins so deployments on different silicon
+# (e.g., Family 1Ah / Zen 5) can pin their own substring.
+CARD_NAME_PATTERN="${HAPAX_OPTION_C_CARD_PATTERN:-Ryzen HD Audio Controller}"
 TEXTFILE_DIR="${HAPAX_OPTION_C_TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}"
 TEXTFILE="${TEXTFILE_DIR}/hapax_option_c_repin.prom"
 METRIC="hapax_option_c_repin_total"
