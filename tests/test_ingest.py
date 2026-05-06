@@ -537,3 +537,20 @@ class TestBulkIngestDedup:
         ingest.bulk_ingest(force=False)
 
         assert str(f) not in saved_tracker
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_load_dedup_tracker_non_dict_returns_empty(tmp_path, payload, kind, monkeypatch):
+    """Pin _load_dedup_tracker against non-dict JSON. Tracker is
+    consumed via tracker[key] and tracker[str(path)] = ... assignments
+    — non-dict root crashed bulk_ingest."""
+    dedup_path = tmp_path / "dedup.json"
+    dedup_path.write_text(payload)
+    monkeypatch.setattr(ingest, "DEDUP_PATH", dedup_path)
+    assert ingest._load_dedup_tracker() == {}, f"non-dict root={kind} must yield empty"
