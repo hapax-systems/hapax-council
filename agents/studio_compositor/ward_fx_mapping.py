@@ -79,6 +79,7 @@ WARD_DOMAIN: dict[str, WardDomain] = {
     "album": "music",
     "vinyl_platter": "music",
     "m8-display": "music",
+    "m8_oscilloscope": "music",
     # Cognition
     "activity_variety_log": "cognition",
     "recruitment_candidate_panel": "cognition",
@@ -104,12 +105,21 @@ AUDIO_REACTIVE_WARDS: frozenset[str] = frozenset(
         "token_pole",
         "activity_variety_log",
         "vinyl_platter",
+        "m8_oscilloscope",
     }
 )
 """Wards whose render responds to FX audio signals (kick onsets,
 intensity spikes). The reactor modulates these via the ward_properties
 SHM path (``scale_bump_pct`` / ``border_pulse_hz``) so the ward renders
-the beat without hard-coding audio state in every Cairo source."""
+the beat without hard-coding audio state in every Cairo source.
+
+The M8 oscilloscope already renders the M8 device's own SLIP-packet
+amplitudes directly — that surface IS its audio. Inclusion here adds
+bus-level FX-event coupling on top of that, so the ward gets the same
+``scale_bump`` / ``border_pulse`` on broader-mix kicks as the other
+music-domain wards (``vinyl_platter``). The two signal paths compose:
+the waveform reflects the M8 instantaneously, while the FX reactor
+synchronises the ward's chrome to the broadcast's overall beat."""
 
 
 def domain_for_ward(ward_id: str) -> WardDomain:

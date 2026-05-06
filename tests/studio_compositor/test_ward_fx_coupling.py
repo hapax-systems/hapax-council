@@ -520,6 +520,23 @@ class TestDomainPresetFamilyMapping:
         assert is_audio_reactive("token_pole")
         assert not is_audio_reactive("captions")
 
+    def test_m8_oscilloscope_is_audio_reactive(self):
+        """The M8 oscilloscope ward renders the M8's SLIP-packet waveform
+        directly (intrinsic audio reactivity) AND participates in
+        bus-level FX-event modulation alongside the other music-domain
+        wards. Pin both invariants — domain=music + audio-reactive — so
+        a future change can't silently drop the ward from the reactor's
+        scale_bump / border_pulse path."""
+        from agents.studio_compositor.ward_fx_mapping import (
+            AUDIO_REACTIVE_WARDS,
+            domain_for_ward,
+            is_audio_reactive,
+        )
+
+        assert "m8_oscilloscope" in AUDIO_REACTIVE_WARDS
+        assert is_audio_reactive("m8_oscilloscope")
+        assert domain_for_ward("m8_oscilloscope") == "music"
+
 
 # ── helpers ──────────────────────────────────────────────────────────────
 
