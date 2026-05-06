@@ -3,9 +3,9 @@
 Phase 2 of ``docs/superpowers/specs/2026-04-21-ward-stimmung-modulator-design.md``.
 Reads ``/dev/shm/hapax-imagination/current.json`` every sixth fx tick
 (~5 Hz at 30 Hz fx cadence), computes per-ward depth attenuation for
-non-default-plane wards, and writes ``z_index_float`` + ``alpha`` deltas
-to the ward-properties SHM. Default-plane (``"on-scrim"``) wards are not
-touched so director / recruitment authority is preserved.
+non-default-plane wards, and writes bounded ``z_index_float`` + ``alpha``
+deltas to the ward-properties SHM. Default-plane (``"on-scrim"``) wards
+are not touched so director / recruitment authority is preserved.
 
 Default-off behind ``HAPAX_WARD_MODULATOR_ACTIVE=1``. The instance is
 constructed unconditionally so production deploys can flip the flag
@@ -62,6 +62,12 @@ TICK_EVERY_N: int = 6
 # next tick. Epsilon applied to alpha AND z_index_float.
 MIN_DELTA: float = 0.02
 ENABLE_ENV: str = "HAPAX_WARD_MODULATOR_ACTIVE"
+# At ~5 Hz, 0.16 alpha/tick crosses a 0.5 alpha span in ~600 ms:
+# fast enough to read as live response, slow enough to avoid hard pops.
+MAX_ALPHA_STEP: float = 0.16
+MAX_Z_INDEX_STEP: float = 0.12
+MAX_ALPHA_STEP_ENV: str = "HAPAX_WARD_MODULATOR_MAX_ALPHA_STEP"
+MAX_Z_INDEX_STEP_ENV: str = "HAPAX_WARD_MODULATOR_MAX_Z_INDEX_STEP"
 
 
 @dataclass
@@ -146,9 +152,10 @@ class WardStimmungModulator:
 
         Phase 2 contract:
         - Modulator MUST NOT touch ``z_plane`` (precedence §7).
-        - Modulator only writes ``z_index_float`` and ``alpha`` for wards
-          on non-default planes. Default-plane (``"on-scrim"``) wards are
-          owned by director / reactor and untouched.
+        - Modulator only writes bounded ``z_index_float`` and ``alpha``
+          deltas for wards on non-default planes. Default-plane
+          (``"on-scrim"``) wards are owned by director / reactor and
+          untouched.
         - Returns ``base`` unchanged when no field shifts; the caller
           uses identity equality to skip the SHM write.
         """
@@ -161,14 +168,18 @@ class WardStimmungModulator:
         # Coherence pulls deeper-plane wards forward at high coherence
         # (convergence) and pushes them back at low coherence (divergence).
         convergence = (coherence_val - 0.5) * 0.2
-        new_z_idx = _clip01(z_base - convergence)
         # Depth dim attenuates beyond/mid-scrim alpha continuously.
         if z_plane == "beyond-scrim":
-            new_alpha = _clip01(0.5 + 0.5 * (1.0 - depth_val))
+            target_alpha = _clip01(0.5 + 0.5 * (1.0 - depth_val))
         elif z_plane == "mid-scrim":
-            new_alpha = _clip01(0.7 + 0.3 * (1.0 - depth_val))
+            target_alpha = _clip01(0.7 + 0.3 * (1.0 - depth_val))
         else:  # "surface-scrim"
-            new_alpha = base.alpha
+            target_alpha = _clip01(base.alpha)
+        target_z_idx = _clip01(z_base - convergence)
+        current_alpha = _clip01(base.alpha)
+        current_z_idx = _clip01(base.z_index_float)
+        new_alpha = _bounded_step(current_alpha, target_alpha, _max_alpha_step())
+        new_z_idx = _bounded_step(current_z_idx, target_z_idx, _max_z_index_step())
         # 2026-04-23 blink-kill: epsilon-gate. Only write if the new
         # alpha / z_index has moved by at least MIN_DELTA (0.02 of the
         # [0,1] range) since the last resolved value. The previous
@@ -203,6 +214,35 @@ def _safe_float(value: Any, default: float) -> float:
         return float(value) if value is not None else default
     except (TypeError, ValueError):
         return default
+
+
+def _max_alpha_step() -> float:
+    return _positive_env_float(MAX_ALPHA_STEP_ENV, MAX_ALPHA_STEP)
+
+
+def _max_z_index_step() -> float:
+    return _positive_env_float(MAX_Z_INDEX_STEP_ENV, MAX_Z_INDEX_STEP)
+
+
+def _positive_env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0.0 else default
+
+
+def _bounded_step(current: float, target: float, max_delta: float) -> float:
+    current = _clip01(current)
+    target = _clip01(target)
+    if abs(target - current) <= max_delta:
+        return target
+    if target > current:
+        return _clip01(current + max_delta)
+    return _clip01(current - max_delta)
 
 
 def _clip01(value: float) -> float:

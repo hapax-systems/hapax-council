@@ -17,6 +17,8 @@ from agents.studio_compositor.ward_stimmung_modulator import WardStimmungModulat
 @pytest.fixture
 def enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(_wsm.ENABLE_ENV, "1")
+    monkeypatch.delenv(_wsm.MAX_ALPHA_STEP_ENV, raising=False)
+    monkeypatch.delenv(_wsm.MAX_Z_INDEX_STEP_ENV, raising=False)
 
 
 @pytest.fixture
@@ -127,7 +129,7 @@ def test_default_plane_wards_untouched(enabled: None, current_path: Path) -> Non
 
 
 def test_beyond_scrim_attenuates_alpha_with_depth(enabled: None, current_path: Path) -> None:
-    """High ``depth`` dim drives ``beyond-scrim`` ``alpha`` down toward 0.5."""
+    """High ``depth`` dim drives ``beyond-scrim`` ``alpha`` down with a bounded step."""
     _write_current(current_path, {"depth": 1.0, "coherence": 0.5})
     mod = WardStimmungModulator(current_path=current_path, tick_every_n=1)
     base = WardProperties(z_plane="beyond-scrim", alpha=1.0, z_index_float=0.5)
@@ -145,8 +147,57 @@ def test_beyond_scrim_attenuates_alpha_with_depth(enabled: None, current_path: P
     sample = next(iter(captured.values()))
     assert sample.z_plane == "beyond-scrim"
     assert sample.alpha < 1.0
-    # depth=1.0 → attenuation = 0.5
-    assert abs(sample.alpha - 0.5) < 1e-3
+    # depth=1.0 targets 0.5, but the live surface takes an enveloped
+    # step per tick rather than popping instantly.
+    assert sample.alpha == pytest.approx(1.0 - _wsm.MAX_ALPHA_STEP)
+
+
+def test_alpha_step_env_bounds_depth_transition(
+    enabled: None, current_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The alpha envelope is env-tunable for live no-blink calibration."""
+    monkeypatch.setenv(_wsm.MAX_ALPHA_STEP_ENV, "0.05")
+    _write_current(current_path, {"depth": 1.0, "coherence": 0.5})
+    mod = WardStimmungModulator(current_path=current_path, tick_every_n=1)
+    base = WardProperties(z_plane="beyond-scrim", alpha=1.0, z_index_float=0.2)
+    captured: dict[str, WardProperties] = {}
+
+    def _capture(ward_id: str, props: WardProperties, ttl_s: float) -> None:
+        captured[ward_id] = props
+
+    with (
+        patch.object(_wsm, "get_specific_ward_properties", return_value=base),
+        patch.object(_wsm, "set_ward_properties", side_effect=_capture),
+    ):
+        mod.maybe_tick()
+    sample = next(iter(captured.values()))
+    assert sample.alpha == pytest.approx(0.95)
+    assert sample.z_index_float == pytest.approx(0.2)
+
+
+def test_z_index_step_env_bounds_depth_transition(
+    enabled: None, current_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The z-index envelope is bounded separately from alpha."""
+    monkeypatch.setenv(_wsm.MAX_Z_INDEX_STEP_ENV, "0.05")
+    _write_current(current_path, {"depth": 0.0, "coherence": 1.0})
+    mod = WardStimmungModulator(current_path=current_path, tick_every_n=1)
+    # beyond-scrim target at coherence=1.0 is 0.1; from 0.8, only one
+    # 0.05 step is allowed in this tick.
+    base = WardProperties(z_plane="beyond-scrim", alpha=1.0, z_index_float=0.8)
+    captured: dict[str, WardProperties] = {}
+
+    def _capture(ward_id: str, props: WardProperties, ttl_s: float) -> None:
+        captured[ward_id] = props
+
+    with (
+        patch.object(_wsm, "get_specific_ward_properties", return_value=base),
+        patch.object(_wsm, "set_ward_properties", side_effect=_capture),
+    ):
+        mod.maybe_tick()
+    sample = next(iter(captured.values()))
+    assert sample.alpha == pytest.approx(1.0)
+    assert sample.z_index_float == pytest.approx(0.75)
 
 
 def test_does_not_override_z_plane(enabled: None, current_path: Path) -> None:
