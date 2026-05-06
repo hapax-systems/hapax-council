@@ -186,7 +186,7 @@ def test_active_segment_pressure_derives_bounded_runtime_intents(tmp_path: Path)
                             "priority": 80,
                             "source_action_kind": "chat_poll",
                             "evidence_ref": "beat:4:intent:chat_poll",
-                            "expected_visible_effect": "layout.surface.chat_prompt.visible",
+                            "expected_visible_effect": "ward:chat-panel",
                             "ttl_ms": 12000,
                         }
                     ],
@@ -215,7 +215,7 @@ def test_active_segment_pressure_derives_bounded_runtime_intents(tmp_path: Path)
         "beat:4:intent:chat_poll",
         "prepared_artifact:sha256:abc123",
     )
-    assert intent.expected_effects == ("layout.surface.chat_prompt.visible",)
+    assert intent.expected_effects == ("ward:chat-panel",)
     assert intent.requested_layout is None
     assert intent.spoken_text_ref is None
 
@@ -259,6 +259,76 @@ def test_active_segment_pressure_refuses_supported_need_with_forbidden_fields(
         "surface.surface_id",
         "z_order",
     )
+
+
+def test_active_segment_pressure_refuses_runtime_policy_fields(tmp_path: Path) -> None:
+    state_file = tmp_path / "active-segment.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "programme_id": "programme:seg-1",
+                "current_beat_index": 4,
+                "prepared_artifact_ref": "sha256:abc123",
+                "current_beat_layout_intents": {
+                    "layout_decision_receipts": [{"status": "accepted"}],
+                    "runtime_layout_validation": {"layout_success": True},
+                    "layout_decision_contract": {"may_command_layout": True},
+                    "public_broadcast_bypass": True,
+                    "needs": [
+                        {
+                            "kind": "chat_participation_surface",
+                            "evidence_ref": "beat:4:intent:chat_poll",
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pressure = _read_segment_layout_pressure(state_file, now=NOW)
+
+    assert pressure["segment_layout_intents"] == ()
+    refusals = pressure["segment_layout_refusals"]
+    assert isinstance(refusals, tuple)
+    assert refusals[0]["reason"] == "forbidden_segment_layout_authority_field"
+    assert refusals[0]["forbidden_fields"] == (
+        "layout_decision_receipts",
+        "runtime_layout_validation",
+        "layout_decision_contract",
+        "public_broadcast_bypass",
+    )
+
+
+def test_active_segment_pressure_refuses_command_like_string_values(tmp_path: Path) -> None:
+    state_file = tmp_path / "active-segment.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "programme_id": "programme:seg-1",
+                "current_beat_index": 4,
+                "prepared_artifact_ref": "sha256:abc123",
+                "current_beat_layout_intents": {
+                    "needs": [
+                        {
+                            "kind": "chat_participation_surface",
+                            "evidence_ref": "beat:4:intent:chat_poll",
+                            "source_affordance": "surface:main",
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pressure = _read_segment_layout_pressure(state_file, now=NOW)
+
+    assert pressure["segment_layout_intents"] == ()
+    refusals = pressure["segment_layout_refusals"]
+    assert isinstance(refusals, tuple)
+    assert refusals[0]["reason"] == "forbidden_segment_layout_authority_field"
+    assert refusals[0]["forbidden_fields"] == ("source_affordance",)
 
 
 def test_active_segment_pressure_maps_tier_chat_comparison_aliases(tmp_path: Path) -> None:

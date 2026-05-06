@@ -119,6 +119,8 @@ FORBIDDEN_SEGMENT_LAYOUT_PROPOSAL_FIELDS: frozenset[str] = frozenset(
         "target_layout",
         "active_layout",
         "layout_command",
+        "layout_decision_contract",
+        "layout_decision_receipts",
         "surface",
         "surfaces",
         "surface_id",
@@ -138,6 +140,11 @@ FORBIDDEN_SEGMENT_LAYOUT_PROPOSAL_FIELDS: frozenset[str] = frozenset(
         "cue",
         "command",
         "commands",
+        "public_broadcast_bypass",
+        "runtime_layout_validation",
+        "runtime_policy",
+        "runtime_readback",
+        "wcs_readback_requirements",
         "preset",
         "z_order",
         "z-order",
@@ -146,6 +153,71 @@ FORBIDDEN_SEGMENT_LAYOUT_PROPOSAL_FIELDS: frozenset[str] = frozenset(
 FORBIDDEN_SEGMENT_LAYOUT_PROPOSAL_KEY_TOKENS: frozenset[str] = frozenset(
     "".join(ch for ch in field.lower() if ch.isalnum())
     for field in FORBIDDEN_SEGMENT_LAYOUT_PROPOSAL_FIELDS
+)
+FORBIDDEN_SEGMENT_LAYOUT_PROPOSAL_VALUE_PREFIX_TOKENS: frozenset[str] = frozenset(
+    {
+        "command",
+        "commands",
+        "coordinate",
+        "coordinates",
+        "cue",
+        "layout",
+        "shm",
+        "surface",
+        "zindex",
+        "zorder",
+    }
+)
+FORBIDDEN_SEGMENT_LAYOUT_PROPOSAL_VALUE_TOKENS: frozenset[str] = frozenset(
+    {
+        "balancedv2",
+        "broadcastbypass",
+        "defaultjson",
+        "defaultlayout",
+        "defaultstatic",
+        "devshm",
+        "fallbackreceipt",
+        "garagedoor",
+        "layoutdecisioncontract",
+        "layoutdecisionreceipt",
+        "layoutdecisionreceipts",
+        "layoutreceipt",
+        "layoutstate",
+        "layoutstore",
+        "nonresponsiblestatic",
+        "publicbroadcast",
+        "publicbroadcastbypass",
+        "publicbypass",
+        "renderedframe",
+        "runtimelayoutvalidation",
+        "runtimepolicy",
+        "runtimereadback",
+        "spokenonlyfallback",
+        "staticlayout",
+        "wardreadback",
+        "wcsreadback",
+    }
+)
+FORBIDDEN_SEGMENT_LAYOUT_PROPOSAL_VALUE_SUBSTRINGS: frozenset[str] = frozenset(
+    {
+        "broadcastbypass",
+        "compositorlayouts",
+        "defaultjson",
+        "defaultlayout",
+        "defaultstatic",
+        "devshm",
+        "layoutdecisionreceipt",
+        "layoutreceipt",
+        "layoutstate",
+        "layoutstore",
+        "nonresponsiblestatic",
+        "publicbroadcastbypass",
+        "runtimelayoutvalidation",
+        "spokenonlyfallback",
+        "staticlayout",
+        "wardreadback",
+        "wcsreadback",
+    }
 )
 
 
@@ -573,6 +645,17 @@ def _forbidden_segment_layout_fields(value: object, *, prefix: str = "") -> tupl
     elif isinstance(value, list | tuple):
         for index, nested in enumerate(value):
             found.extend(_forbidden_segment_layout_fields(nested, prefix=f"{prefix}[{index}]"))
+    elif isinstance(value, str):
+        token = _hosting_context_token(value)
+        if (
+            token in FORBIDDEN_SEGMENT_LAYOUT_PROPOSAL_VALUE_TOKENS
+            or any(
+                token.startswith(prefix_token)
+                for prefix_token in FORBIDDEN_SEGMENT_LAYOUT_PROPOSAL_VALUE_PREFIX_TOKENS
+            )
+            or any(part in token for part in FORBIDDEN_SEGMENT_LAYOUT_PROPOSAL_VALUE_SUBSTRINGS)
+        ):
+            found.append(prefix or "<value>")
     return tuple(dict.fromkeys(found))
 
 
