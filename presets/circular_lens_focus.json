@@ -46,7 +46,13 @@
     "posterize_subtle": {
       "type": "posterize",
       "params": {
-        "levels": 7
+        "levels": 5
+      }
+    },
+    "halftone_lens": {
+      "type": "halftone",
+      "params": {
+        "dot_size": 0.013
       }
     }
   },
@@ -61,6 +67,10 @@
     ],
     [
       "posterize_subtle",
+      "halftone_lens"
+    ],
+    [
+      "halftone_lens",
       "circular_mask_focus"
     ],
     [
