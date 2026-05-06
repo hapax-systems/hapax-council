@@ -7,11 +7,47 @@ from collections import Counter
 from shared.operator_referent import REFERENTS, OperatorReferentPicker
 
 
-def test_referents_are_exactly_three_canonical_forms() -> None:
+def test_referents_are_exactly_four_canonical_forms() -> None:
+    """Per axioms/implications/non-formal-referent-policy.yaml — four
+    equally-weighted referents. Directive 2026-04-24 from operator."""
     assert REFERENTS == (
+        "The Operator",
         "Oudepode",
         "Oudepode The Operator",
         "OTO",
+    )
+
+
+def test_referents_match_axiom_implication_yaml() -> None:
+    """Code↔yaml parity guard: REFERENTS tuple MUST exactly match the
+    equally-weighted-referents list in the axiom-implication yaml. Drift
+    between the two is the bug this test pins."""
+    from pathlib import Path
+
+    yaml_path = (
+        Path(__file__).resolve().parents[2]
+        / "axioms"
+        / "implications"
+        / "non-formal-referent-policy.yaml"
+    )
+    text = yaml_path.read_text()
+    yaml_referents: list[str] = []
+    in_block = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("equally-weighted referents"):
+            in_block = True
+            continue
+        if in_block:
+            if stripped.startswith("- "):
+                value = stripped[2:].strip()
+                if value.startswith('"') and value.endswith('"'):
+                    value = value[1:-1]
+                yaml_referents.append(value)
+            elif stripped and not stripped.startswith("#"):
+                break
+    assert tuple(yaml_referents) == REFERENTS, (
+        f"REFERENTS code={REFERENTS} != yaml={tuple(yaml_referents)}"
     )
 
 
