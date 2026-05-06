@@ -128,6 +128,12 @@ def emit_for_completed_files(
             continue
 
         meta = _flac_metadata(path)
+        # ``salience`` lifts day-roll events above the chronicle-ticker
+        # ward's ``_SALIENCE_THRESHOLD`` (0.7) so the operator can see
+        # daily archive completion without ``m8_stem_recorder`` joining
+        # the source allow-list. Day-rolls are once-per-day, structurally
+        # high-salience — 0.95 keeps them just under the synthetic
+        # ceiling so genuinely critical events can still rank above.
         payload = {
             "filename": path.name,
             "size_bytes": stat.st_size,
@@ -135,6 +141,7 @@ def emit_for_completed_files(
             "sample_rate": meta.get("sample_rate") if meta else None,
             "channels": meta.get("channels") if meta else None,
             "bit_depth": meta.get("bit_depth") if meta else None,
+            "salience": 0.95,
         }
         trace_id, span_id = _new_trace_id()
         event = ChronicleEvent(

@@ -67,6 +67,11 @@ def test_completed_file_emits_one_event(stem_dir: Path, cursor_path: Path):
     assert event.source == "m8_stem_recorder"
     assert event.payload["filename"] == "2026-05-01.flac"
     assert event.payload["size_bytes"] == 120_000_000
+    # Day-roll events ride above the chronicle-ticker salience threshold
+    # so the operator's broadcast surfaces archive-completion without
+    # ``m8_stem_recorder`` joining the source allow-list.
+    assert event.payload["salience"] >= 0.7
+    assert event.payload["salience"] == 0.95
 
 
 def test_already_emitted_file_skipped_via_cursor(stem_dir: Path, cursor_path: Path):
