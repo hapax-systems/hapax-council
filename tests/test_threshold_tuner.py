@@ -49,3 +49,38 @@ def test_is_suppressed(tmp_path):
     save_thresholds(overrides, path=path)
     assert is_suppressed("connectivity.tailscale", path=path) is True
     assert is_suppressed("docker.qdrant", path=path) is False
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_load_thresholds_non_dict_root_returns_empty(tmp_path, payload, kind):
+    """Pin load_thresholds against non-dict JSON. data.items() raises
+    AttributeError on non-dict — the (json.JSONDecodeError, OSError)
+    catch missed it. Same shape as the other recent SHM-read fixes."""
+    path = tmp_path / "thresholds.json"
+    path.write_text(payload)
+    assert load_thresholds(path) == {}, f"non-dict root={kind} must yield empty"
+
+
+def test_load_thresholds_non_dict_entry_skipped(tmp_path):
+    """If root is dict but an entry is non-dict, Pydantic ValidationError
+    must be caught per-entry so one bad entry doesn't kill the load."""
+    path = tmp_path / "thresholds.json"
+    import json as _json
+
+    path.write_text(
+        _json.dumps(
+            {
+                "good": {"check_name": "good", "suppress": True, "reason": "test"},
+                "bad": "not-a-dict",
+            }
+        )
+    )
+    result = load_thresholds(path)
+    assert "good" in result
+    assert "bad" not in result

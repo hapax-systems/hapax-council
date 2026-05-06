@@ -30,15 +30,33 @@ class ThresholdOverride(BaseModel):
 
 
 def load_thresholds(path: Path | None = None) -> dict[str, ThresholdOverride]:
-    """Load threshold overrides from JSON file."""
+    """Load threshold overrides from JSON file.
+
+    Validates the JSON root is a mapping. ``data.items()`` raises
+    AttributeError on non-dict roots — the
+    ``(json.JSONDecodeError, OSError)`` catch missed it. Pydantic's
+    ValidationError on a non-dict entry value is also caught here so
+    one malformed entry can't tank the whole load. Same shape as the
+    other recent SHM-read fixes.
+    """
+    from pydantic import ValidationError
+
     path = path or THRESHOLDS_FILE
     if not path.exists():
         return {}
     try:
         data = json.loads(path.read_text())
-        return {name: ThresholdOverride.model_validate(entry) for name, entry in data.items()}
     except (json.JSONDecodeError, OSError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, ThresholdOverride] = {}
+    for name, entry in data.items():
+        try:
+            out[name] = ThresholdOverride.model_validate(entry)
+        except ValidationError:
+            continue
+    return out
 
 
 def save_thresholds(
