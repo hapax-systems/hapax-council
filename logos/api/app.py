@@ -61,7 +61,15 @@ class LogosGpuBridge:
             data = json.loads((PROFILES_DIR / "infra-snapshot.json").read_text())
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return (0, 0)
-        gpu = data.get("gpu") or {}
+        # Schema guard: a writer producing valid JSON whose root is null,
+        # a list, a string, or a number raises AttributeError on
+        # ``data.get(\"gpu\")``. Coerce to {} so the GPU-mem accessor
+        # falls back to (0, 0) instead of crashing the API endpoint.
+        # Same shape as the other recent SHM-read fixes.
+        if not isinstance(data, dict):
+            return (0, 0)
+        gpu_raw = data.get("gpu") or {}
+        gpu = gpu_raw if isinstance(gpu_raw, dict) else {}
         return (int(gpu.get("used_mb", 0)), int(gpu.get("total_mb", 0)))
 
 
