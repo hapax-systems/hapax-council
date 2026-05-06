@@ -2,13 +2,18 @@
 Description=Hapax M8 stem retention sweep — age out FLAC files older than 30 days
 Documentation=https://github.com/ryanklee/hapax-council/blob/main/scripts/m8-stem-recorder.sh
 After=graphical-session.target
+# Sweep is a no-op when the M8 has never recorded; do not flap the unit
+# in failed state for the operator's nominal "no M8 plugged" baseline.
+ConditionPathExists=/var/lib/hapax/m8-stems
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/find ${HAPAX_M8_STEM_DIR:-/var/lib/hapax/m8-stems} -type f -name "*.flac" -mtime +30 -delete
-# Read-only otherwise; the sweep is the one mutation.
+# Read-only otherwise; the sweep is the one mutation. Leading `-` makes
+# the path optional so namespace setup succeeds even before the directory
+# exists (m8-stem-recorder.sh creates it on first record).
 ProtectSystem=strict
-ReadWritePaths=/var/lib/hapax/m8-stems
+ReadWritePaths=-/var/lib/hapax/m8-stems
 PrivateDevices=yes
 PrivateTmp=yes
 NoNewPrivileges=yes
