@@ -561,7 +561,32 @@ def state_reader_loop(compositor: Any) -> None:
                 requested_mode = f"packed/{override_camera_role}"
                 current_mode = getattr(compositor, "_layout_mode", "balanced")
                 last_applied = getattr(compositor, "_hero_override_last_applied_set_at", 0.0)
-                if requested_mode != current_mode and override_set_at > last_applied:
+                # Min-hold debounce: only swap if (a) it's been ≥30s since the last
+                # follow_mode swap, and (b) the proposed role has been the
+                # recommendation for ≥30s. The cudacompositor reconfigure for a
+                # 6-camera packed layout is expensive enough that anything more
+                # frequent than 30s wedges the v4l2sink (verified in production
+                # 2026-05-06: 3s debounce still produced 4–15s swap cadence and
+                # the sink never recovered between reconfigures, leading to
+                # continuous v4l2-stall recovery loop and OBS source loss).
+                # Manual overrides bypass the role-stability gate; they're operator
+                # intent, not noise.
+                _MIN_FOLLOW_HOLD_S = 30.0
+                now_ts = time.time()
+                role_first_seen = getattr(compositor, "_hero_override_role_first_seen", {})
+                seen_role = role_first_seen.get("role")
+                if seen_role != override_camera_role:
+                    role_first_seen = {"role": override_camera_role, "ts": now_ts}
+                    compositor._hero_override_role_first_seen = role_first_seen
+                role_age = now_ts - role_first_seen.get("ts", now_ts)
+                debounce_ok = (now_ts - last_applied) >= _MIN_FOLLOW_HOLD_S
+                role_stable = override_source != "follow_mode" or role_age >= _MIN_FOLLOW_HOLD_S
+                if (
+                    requested_mode != current_mode
+                    and override_set_at > last_applied
+                    and debounce_ok
+                    and role_stable
+                ):
                     previous_role = ""
                     if isinstance(current_mode, str) and (
                         current_mode.startswith("packed/") or current_mode.startswith("hero/")
