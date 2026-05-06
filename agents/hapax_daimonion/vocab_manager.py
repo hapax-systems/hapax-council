@@ -281,19 +281,35 @@ class VocabularyManager:
             log.debug("Failed to persist vocabulary", exc_info=True)
 
     def _load(self) -> None:
-        """Load vocabulary from disk on startup."""
+        """Load vocabulary from disk on startup.
+
+        Validates the JSON root is a mapping. ``raw.get("version")`` and
+        ``raw.get("entries", [])`` are called outside the
+        ``(OSError, json.JSONDecodeError)`` catch — a writer producing
+        valid JSON whose root is null, a list, a string, or a number
+        previously raised AttributeError out of vocabulary startup,
+        crashing the daimonion vocabulary subsystem on first read. Same
+        corruption-class as the other recent SHM-read fixes.
+        """
         try:
             if not self._persist_path.exists():
                 return
             raw = json.loads(self._persist_path.read_text(encoding="utf-8"))
-            if raw.get("version") != 1:
-                return
-            for entry_dict in raw.get("entries", []):
-                try:
-                    entry = VocabEntry.from_dict(entry_dict)
-                    self._entries[entry.label] = entry
-                except (KeyError, TypeError, ValueError):
-                    continue
-            log.info("Vocabulary loaded: %d entries from disk", len(self._entries))
         except (OSError, json.JSONDecodeError):
             log.debug("Failed to load vocabulary", exc_info=True)
+            return
+        if not isinstance(raw, dict):
+            log.debug(
+                "vocabulary persist file root is %s, expected mapping",
+                type(raw).__name__,
+            )
+            return
+        if raw.get("version") != 1:
+            return
+        for entry_dict in raw.get("entries", []):
+            try:
+                entry = VocabEntry.from_dict(entry_dict)
+                self._entries[entry.label] = entry
+            except (KeyError, TypeError, ValueError):
+                continue
+        log.info("Vocabulary loaded: %d entries from disk", len(self._entries))
