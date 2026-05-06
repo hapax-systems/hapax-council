@@ -218,8 +218,8 @@ For each beat, emit a `beat_layout_intents` entry with:
   `comparison_visible`, `ranked_list_visible`, `source_visible`,
   `readability_held`, `referent_visible`.
 - `proposed_postures`: use only `segment_primary`, `ranked_visual`,
-  `countdown_visual`, `depth_visual`, `camera_subject`, `chat_prompt`,
-  `asset_front`, `comparison`.
+  `countdown_visual`, `depth_visual`, `chat_prompt`, `asset_front`,
+  `comparison`.
 - `expected_effects`: use only `evidence_on_screen`,
   `action_on_screen`, `comparison_legible`, `ranked_list_legible`,
   `source_context_legible`, `detail_readable`, `referent_available`.
@@ -229,6 +229,11 @@ For each beat, emit a `beat_layout_intents` entry with:
   not a concrete runtime surface.
 - `default_static_success_allowed`: always `false` for responsible live
   segments.
+- Do not emit camera-directed source affordances or camera postures for
+  responsible live segments. Camera control is not accepted as segment prep
+  authority until a witnessed runtime camera loop owns the decision and
+  readback. Prefer `asset_front`, `ranked_visual`, `countdown_visual`,
+  `depth_visual`, `chat_prompt`, `comparison`, or `segment_primary`.
 
 Never emit executable compositor directives, final layout names, pixel
 geometry, control-file paths, concrete runtime surfaces, or cue strings.
@@ -291,7 +296,7 @@ Example for a 10-minute (600s) rant:
       "proposed_postures": ["segment_primary", "asset_front"],
       "expected_effects": ["action_on_screen", "source_context_legible"],
       "evidence_refs": ["rag:example-proof-point"],
-      "source_affordances": ["asset:evidence-card", "camera:operator-subject"],
+      "source_affordances": ["asset:evidence-card", "asset:programme-context"],
       "default_static_success_allowed": false
     }
   ]

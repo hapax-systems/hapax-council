@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -66,9 +67,10 @@ DEFAULT_MODEL = RESIDENT_COMMAND_R_MODEL
 # Resolve at call time so tests and launch wrappers can set HAPAX_TABBY_URL
 # before the production caller runs.
 
-# Budget raised from 60s → 120s: the enriched programme plan prompt
-# (~23KB) plus per-call context regularly exceeds 60s on local inference.
-_LLM_TIMEOUT_S: float = 300.0
+# Resident Command-R programme planning is content programming, not a quick
+# classification call. Keep the timeout above local long-form inference latency
+# so the caller does not interrupt a still-productive resident generation.
+_LLM_TIMEOUT_S: float = float(os.environ.get("HAPAX_PROGRAMME_PLANNER_LLM_TIMEOUT_S", "1200"))
 
 # Max number of corrective retries after the first call. Spec mandates
 # "retries once" (one corrective re-call), so default is 1.

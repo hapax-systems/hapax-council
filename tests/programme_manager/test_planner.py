@@ -146,6 +146,11 @@ class TestHappyPath:
         """
         assert DEFAULT_MODEL == "command-r-08-2024-exl3-5.0bpw"
 
+    def test_default_timeout_preserves_long_resident_generation(self) -> None:
+        from agents.programme_manager import planner as planner_mod
+
+        assert planner_mod._LLM_TIMEOUT_S >= 900
+
     def test_default_llm_rejects_non_resident_model_override(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -427,6 +432,20 @@ class TestContextRendering:
         planner = ProgrammePlanner(llm_fn=capture, prompt_path=custom_template)
         planner.plan(show_id="show-test-001")
         assert "CUSTOM TEMPLATE MARKER" in captured[0]
+
+    def test_default_prompt_does_not_invite_camera_layout_authority(self) -> None:
+        captured: list[str] = []
+
+        def capture(prompt: str) -> str:
+            captured.append(prompt)
+            return json.dumps(_well_formed_plan_payload())
+
+        planner = ProgrammePlanner(llm_fn=capture)
+        planner.plan(show_id="show-test-001")
+        prompt = captured[0]
+
+        assert "camera_subject" not in prompt
+        assert "camera:" not in prompt
 
 
 # ── Soft-prior architectural pin ──────────────────────────────────────

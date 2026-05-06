@@ -33,6 +33,10 @@ def test_prep_model_is_command_r_only(monkeypatch: pytest.MonkeyPatch) -> None:
         prep._prep_model()
 
 
+def test_prep_llm_timeout_preserves_long_resident_generation() -> None:
+    assert prep._PREP_LLM_TIMEOUT_S >= 900
+
+
 def test_daily_prep_source_has_no_model_swap_or_fallback_paths() -> None:
     source = Path(prep.__file__).read_text(encoding="utf-8")
     forbidden = [
@@ -117,11 +121,13 @@ def test_call_llm_uses_resident_command_r_body_and_records_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bodies: list[dict[str, Any]] = []
+    chat_timeouts: list[float] = []
 
-    def fake_urlopen(req: Any, timeout: float) -> _FakeResponse:  # noqa: ARG001
+    def fake_urlopen(req: Any, timeout: float) -> _FakeResponse:
         url = getattr(req, "full_url", str(req))
         if url.endswith("/v1/model"):
             return _FakeResponse({"id": prep.RESIDENT_PREP_MODEL})
+        chat_timeouts.append(timeout)
         bodies.append(json.loads(req.data.decode()))
         return _FakeResponse({"choices": [{"message": {"content": "ok"}}]})
 
@@ -148,6 +154,7 @@ def test_call_llm_uses_resident_command_r_body_and_records_call(
             "temperature": 0.7,
         }
     ]
+    assert chat_timeouts == [prep._PREP_LLM_TIMEOUT_S]
     assert session["llm_calls"] == [
         {
             "call_index": 1,
@@ -352,6 +359,20 @@ def test_load_prepped_programmes_rejects_invalid_provenance(
     assert prep.load_prepped_programmes(tmp_path) == []
 
 
+def test_load_prepped_programmes_rejects_layout_responsibility_failure(
+    tmp_path: Path,
+) -> None:
+    payload = _valid_artifact()
+    payload["runtime_layout_validation"]["ok"] = False
+    payload["runtime_layout_validation"]["violations"] = [
+        {"reason": "unsupported_layout_need", "beat_index": 0}
+    ]
+    payload["artifact_sha256"] = prep._artifact_hash(payload)
+    _write_artifact(tmp_path, payload)
+
+    assert prep.load_prepped_programmes(tmp_path) == []
+
+
 def test_load_prepped_programmes_rejects_hash_mismatch(tmp_path: Path) -> None:
     payload = _valid_artifact()
     payload["prepared_script"] = ["Tampered."]
@@ -532,6 +553,57 @@ def test_prep_segment_quarantines_actionability_invalid_script(
     assert diagnostic["not_loadable_reason"] == "actionability alignment failed"
     assert diagnostic["actionability_alignment"]["ok"] is False
     assert diagnostic["actionability_alignment"]["removed_unsupported_action_lines"]
+
+
+def test_prep_segment_quarantines_responsible_spoken_only_script(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    programme = SimpleNamespace(
+        programme_id="prog-spoken-only",
+        role=SimpleNamespace(value="rant"),
+        content=SimpleNamespace(
+            narrative_beat="Spoken only argument",
+            segment_beats=["argue the point without visible evidence"],
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+
+    monkeypatch.setattr(prep, "_build_seed", lambda _programme: "seed")
+    monkeypatch.setattr(
+        prep,
+        "_build_full_segment_prompt",
+        lambda _programme, _seed: "prompt",
+    )
+    monkeypatch.setattr(
+        prep,
+        "_call_llm",
+        lambda _prompt, **_kwargs: json.dumps(
+            [
+                "This beat makes a spoken argument about stream quality. "
+                "It states a consequence, names a problem, and stays entirely in narration."
+            ]
+        ),
+    )
+    monkeypatch.setattr(prep, "_refine_script", lambda script, _programme, **_kwargs: script)
+    monkeypatch.setattr(prep, "_emit_self_evaluation", lambda *_args, **_kwargs: None)
+
+    saved = prep.prep_segment(programme, tmp_path, prep_session=session)
+
+    assert saved is None
+    assert not (tmp_path / "prog-spoken-only.json").exists()
+    diagnostic_path = tmp_path / "prog-spoken-only.layout-invalid.json"
+    assert diagnostic_path.exists()
+    diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+    assert diagnostic["not_loadable_reason"] == "layout responsibility failed"
+    assert diagnostic["layout_responsibility"]["ok"] is False
+    assert "unsupported_layout_need" in {
+        item["reason"] for item in diagnostic["layout_responsibility"]["violations"]
+    }
 
 
 def test_prep_segment_rejects_unsafe_programme_id_before_writing(
