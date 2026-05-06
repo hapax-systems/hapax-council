@@ -338,6 +338,13 @@ def _pip_draw(compositor: Any, cr: Any) -> None:
     if layout_state is not None and source_registry is not None:
         pip_draw_from_layout(cr, layout_state, source_registry, stage="post_fx")
 
+    hero_small = getattr(compositor, "_hero_small", None)
+    if hero_small is not None:
+        try:
+            hero_small.draw(cr)
+        except Exception:
+            log.debug("hero_small.draw raised", exc_info=True)
+
 
 def pre_fx_draw_from_layout(compositor: Any, cr: Any) -> None:
     """BASE cairooverlay helper — renders substrate assignments.
