@@ -201,7 +201,17 @@ def read_pending_question() -> CorrectionQuestion | None:
     """Read the current pending question (for visual layer to display).
 
     Returns None if no question or question is stale (>30 min).
+
+    Catches Pydantic ``ValidationError`` alongside the json parse
+    errors. A writer producing valid JSON whose root is null, a list,
+    a string, or a number raised ValidationError out of the visual-
+    layer correction-question display path. Same shape as the other
+    recent SHM-read fixes (the leak channel is Pydantic
+    model_validate rather than .get(), but the failure mode is
+    identical: corrupt SHM crashes the consumer).
     """
+    from pydantic import ValidationError
+
     try:
         data = json.loads(QUESTION_FILE.read_text(encoding="utf-8"))
         question = CorrectionQuestion.model_validate(data)
@@ -211,5 +221,5 @@ def read_pending_question() -> CorrectionQuestion | None:
         if question.timestamp and (time.time() - question.timestamp) > 1800:
             return None
         return question
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, ValidationError):
         return None
