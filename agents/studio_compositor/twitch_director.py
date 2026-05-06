@@ -71,9 +71,25 @@ _MIN_DWELL_S: dict[str, float] = {
 
 
 def _read_narrative_state() -> dict:
+    """Return narrative-state JSON as a dict, or {} on any failure.
+
+    Validates the JSON root is a mapping. The TwitchDirector loop calls
+    ``ns.get(\"stance\")`` (line 130) and
+    ``_read_narrative_state().get(\"condition_id\")`` (line 293) directly
+    on the returned value; a writer producing valid JSON whose root is
+    null, a list, a string, or a number previously raised AttributeError
+    out of the twitch loop, killing the 3-4s compositional cadence.
+    Same corruption-class as #2627, #2631, #2632 (already merged).
+    """
     try:
         if _NARRATIVE_STATE.exists():
-            return json.loads(_NARRATIVE_STATE.read_text(encoding="utf-8"))
+            data = json.loads(_NARRATIVE_STATE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+            log.debug(
+                "narrative-state root is %s, expected mapping",
+                type(data).__name__,
+            )
     except Exception:
         log.debug("narrative-state read failed", exc_info=True)
     return {}
