@@ -339,6 +339,34 @@ def test_responsible_layout_rejects_spoken_only_beats() -> None:
     assert "unsupported_layout_need" in {item["reason"] for item in layout["violations"]}
 
 
+def test_source_backed_claims_propose_visible_source_context_not_layout_authority() -> None:
+    script = [
+        (
+            "According to Shoshana Zuboff, surveillance capitalism turns prediction "
+            "markets into institutional gravity. Zuboff argues that the extraction "
+            "matters because behavioural surplus becomes a production surface."
+        )
+    ]
+    alignment = validate_segment_actionability(script, ["source: make the claim accountable"])
+
+    intents = alignment["beat_action_intents"][0]["intents"]
+    assert {intent["kind"] for intent in intents} == {"source_citation"}
+    assert intents[0]["target"] == "Shoshana Zuboff"
+    assert intents[0]["expected_effect"] == "source.visible:Shoshana Zuboff"
+
+    layout = validate_layout_responsibility(alignment["beat_action_intents"])
+    beat = layout["beat_layout_intents"][0]
+
+    assert beat["needs"] == ["source_visible"]
+    assert beat["source_affordances"] == ["source_context"]
+    assert beat["default_static_success_allowed"] is False
+    assert layout["layout_decision_contract"]["may_command_layout"] is False
+    assert layout["runtime_layout_validation"]["status"] == "pending_runtime_readback"
+    assert layout["runtime_layout_validation"]["layout_success"] is False
+    assert layout["layout_decision_receipts"] == []
+    assert forbidden_layout_authority_fields(layout["beat_layout_intents"]) == []
+
+
 def test_responsible_hosting_rejects_unreceipted_static_default_layout() -> None:
     alignment = validate_segment_actionability(EXCELLENT_SCRIPT, ["hook", "body", "close"])
 
