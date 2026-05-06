@@ -194,6 +194,12 @@ from shared.segment_quality_layout_eval import (
 
 _evaluate_segment_quality_layout_fixture
 
+# Test-only reset hook for the in-process rendered-blit readback cache. The
+# production read path is recent_blit_readbacks(); vulture does not scan tests.
+from agents.studio_compositor.fx_chain import clear_blit_readbacks as _clear_blit_readbacks
+
+_clear_blit_readbacks
+
 from shared.self_grounding_envelope import (
     SelfPresenceEnvelopeProjection,
     build_envelope_projection,
@@ -1012,6 +1018,15 @@ from agents.ir_vlm_runner import MotionGatedVlmRunner, fingerprint_image
 MotionGatedVlmRunner
 MotionGatedVlmRunner.tick
 fingerprint_image
+
+# Segment layout responsibility receipts are consumed as dynamic/public receipt
+# metadata by runtime overlays and coordinating agents. The first slice ships
+# the pure controller contract before the compositor bridge consumes the
+# convenience properties.
+from agents.studio_compositor.segment_layout_control import LayoutDecisionReceipt
+
+LayoutDecisionReceipt.layout_applied
+LayoutDecisionReceipt.visible_metadata
 
 # x402 receive-endpoint handler — Path A demo route is dispatched via
 # the @router.get decorator; vulture's static analysis can't see the
