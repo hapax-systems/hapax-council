@@ -1,6 +1,6 @@
 {
   "name": "garage-door",
-  "description": "Current Garage Door Open layout — Sierpinski + 6 cameras + overlays + 24 shader slots. Validates the Source/Surface/Assignment model against the live system. Phase 2 of compositor unification epic.",
+  "description": "Current Garage Door Open layout \u2014 Sierpinski + 6 cameras + overlays + 24 shader slots. Validates the Source/Surface/Assignment model against the live system. Phase 2 of compositor unification epic.",
   "sources": [
     {
       "id": "cam-brio-operator",
@@ -696,62 +696,74 @@
     {
       "source": "obsidian-overlay-cycle",
       "surface": "obsidian-overlay-region",
-      "opacity": 1.0
+      "opacity": 1.0,
+      "render_stage": "post_fx"
     },
     {
       "source": "lyrics-zone",
       "surface": "lyrics-region",
-      "opacity": 1.0
+      "opacity": 1.0,
+      "render_stage": "post_fx"
     },
     {
       "source": "album-cover",
       "surface": "lower-left-album",
-      "opacity": 1.0
+      "opacity": 1.0,
+      "render_stage": "post_fx"
     },
     {
       "source": "vitruvian-man",
       "surface": "upper-left-vitruvian",
-      "opacity": 1.0
+      "opacity": 1.0,
+      "render_stage": "post_fx"
     },
     {
       "source": "token-pole",
       "surface": "upper-left-vitruvian",
-      "opacity": 1.0
+      "opacity": 1.0,
+      "render_stage": "post_fx"
     },
     {
       "source": "impingement_cascade",
       "surface": "impingement-cascade-midleft",
-      "opacity": 0.92
+      "opacity": 0.92,
+      "render_stage": "post_fx"
     },
     {
       "source": "recruitment_candidate_panel",
       "surface": "recruitment-candidate-top",
-      "opacity": 0.92
+      "opacity": 0.92,
+      "render_stage": "post_fx"
     },
     {
       "source": "thinking_indicator",
       "surface": "thinking-indicator-tr",
-      "opacity": 0.92
+      "opacity": 0.92,
+      "render_stage": "post_fx"
     },
     {
       "source": "pressure_gauge",
       "surface": "pressure-gauge-ul",
-      "opacity": 0.92
+      "opacity": 0.92,
+      "render_stage": "post_fx"
     },
     {
       "source": "activity_variety_log",
       "surface": "activity-variety-log-midbottom",
-      "opacity": 0.90
+      "opacity": 0.9,
+      "render_stage": "post_fx"
     },
     {
       "source": "whos_here",
       "surface": "whos-here-tc",
-      "opacity": 0.92
+      "opacity": 0.92,
+      "render_stage": "post_fx"
     },
     {
       "source": "reverie",
       "surface": "reverie-upper-right",
-      "opacity": 1.0
+      "opacity": 1.0,
+      "render_stage": "post_fx"
     }
   ]
 }
