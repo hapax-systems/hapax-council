@@ -10,6 +10,7 @@ Design: ``docs/research/2026-04-19-gem-ward-design.md``.
 Brainstorm (Candidate C): ``docs/research/2026-04-22-gem-rendering-redesign-brainstorm.md``.
 Profile: ``config/ward_enhancement_profiles.yaml::wards.gem``.
 Producer: ``agents/hapax_daimonion/gem_producer.py`` (writes
+``/dev/shm/hapax-gem/gem-frames.json``; legacy compatibility reader:
 ``/dev/shm/hapax-compositor/gem-frames.json``).
 
 Render contract:
@@ -56,9 +57,12 @@ else:
 
 log = logging.getLogger(__name__)
 
-DEFAULT_FRAMES_PATH = Path("/dev/shm/hapax-compositor/gem-frames.json")
+DEFAULT_FRAMES_PATH = Path("/dev/shm/hapax-gem/gem-frames.json")
+LEGACY_FRAMES_PATH = Path("/dev/shm/hapax-compositor/gem-frames.json")
 DEFAULT_FONT_DESCRIPTION = "Px437 IBM VGA 8x16 32"
 FALLBACK_FRAME_TEXT = "» hapax «"
+MIN_FRAME_HOLD_MS = 400
+MAX_LAYER_OFFSET_PX = 128
 
 # Codepoint range Unicode emoji blocks fall into. Conservative — covers
 # Misc Symbols & Pictographs, Emoticons, Transport, Supplemental Symbols,
@@ -77,16 +81,101 @@ _EMOJI_RE = re.compile(
 
 
 @dataclass(frozen=True)
+class GemLayer:
+    """One overlapping text layer in a GEM keyframe.
+
+    Layers are centred together with small offsets. They are not geometry
+    commands; they are bounded raster-text hints owned by the GEM renderer.
+    """
+
+    text: str
+    opacity: float = 1.0
+    offset_x_px: int = 0
+    offset_y_px: int = 0
+
+
+@dataclass(frozen=True)
 class GemFrame:
     """A single keyframe in a GEM mural sequence.
 
-    ``text`` is rendered at the centre of the lower-band canvas in the
-    Px437 raster grammar. ``hold_ms`` is how long the frame stays on
-    screen before the next one advances.
+    ``text`` is the frame's canonical textual fragment. ``layers`` carries
+    overlapping graffiti-density render hints; if absent the renderer derives
+    a bounded multi-layer stack from ``text`` so old producers stay valid.
     """
 
     text: str
     hold_ms: int = 1500
+    layers: tuple[GemLayer, ...] = ()
+
+
+def build_graffiti_layers(text: str) -> tuple[GemLayer, ...]:
+    """Return a dense, non-ticker layer stack for ``text``.
+
+    GEM is a mural band, not a chiron. The stack deliberately overlaps the
+    same fragment at small offsets with varied opacity so the lower band reads
+    as raster graffiti density rather than a scrolling caption strip.
+    """
+    safe = text.strip()
+    if not safe or contains_emoji(safe):
+        safe = FALLBACK_FRAME_TEXT
+    return (
+        GemLayer(text=f"░▒ {safe} ▒░", opacity=0.36, offset_x_px=-26, offset_y_px=-18),
+        GemLayer(text=f"» {safe} «", opacity=0.94, offset_x_px=0, offset_y_px=0),
+        GemLayer(text=f"╱╲ {safe} ╲╱", opacity=0.28, offset_x_px=24, offset_y_px=18),
+    )
+
+
+def _layer_to_payload(layer: GemLayer) -> dict[str, object]:
+    return {
+        "text": layer.text,
+        "opacity": layer.opacity,
+        "offset_x_px": layer.offset_x_px,
+        "offset_y_px": layer.offset_y_px,
+    }
+
+
+def layer_payloads(layers: tuple[GemLayer, ...]) -> list[dict[str, object]]:
+    """Serialize render-layer hints for the GEM frames JSON contract."""
+    return [_layer_to_payload(layer) for layer in layers if layer.text.strip()]
+
+
+def _clamp_opacity(value: object) -> float:
+    try:
+        return min(1.0, max(0.05, float(value)))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _clamp_offset(value: object) -> int:
+    try:
+        return min(MAX_LAYER_OFFSET_PX, max(-MAX_LAYER_OFFSET_PX, int(value)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _parse_layers(entry: dict[str, Any], text: str) -> tuple[GemLayer, ...]:
+    layers_raw = entry.get("layers")
+    if not isinstance(layers_raw, list):
+        return build_graffiti_layers(text)
+    layers: list[GemLayer] = []
+    for raw in layers_raw:
+        if not isinstance(raw, dict):
+            continue
+        layer_text = raw.get("text")
+        if not isinstance(layer_text, str):
+            continue
+        layer_text = layer_text.strip()
+        if not layer_text or contains_emoji(layer_text):
+            continue
+        layers.append(
+            GemLayer(
+                text=layer_text,
+                opacity=_clamp_opacity(raw.get("opacity", 1.0)),
+                offset_x_px=_clamp_offset(raw.get("offset_x_px", 0)),
+                offset_y_px=_clamp_offset(raw.get("offset_y_px", 0)),
+            )
+        )
+    return tuple(layers) if len(layers) >= 2 else build_graffiti_layers(text)
 
 
 def _read_frames(path: Path) -> list[GemFrame]:
@@ -121,10 +210,10 @@ def _read_frames(path: Path) -> list[GemFrame]:
             continue
         hold_ms_raw = entry.get("hold_ms", 1500)
         try:
-            hold_ms = max(50, int(hold_ms_raw))
+            hold_ms = max(MIN_FRAME_HOLD_MS, int(hold_ms_raw))
         except (TypeError, ValueError):
             hold_ms = 1500
-        out.append(GemFrame(text=text, hold_ms=hold_ms))
+        out.append(GemFrame(text=text, hold_ms=hold_ms, layers=_parse_layers(entry, text)))
     return out
 
 
@@ -151,11 +240,13 @@ class GemCairoSource(HomageTransitionalSource):
     ) -> None:
         super().__init__(source_id="gem")
         self._frames_path = frames_path or DEFAULT_FRAMES_PATH
+        self._legacy_frames_path = None if frames_path is not None else LEGACY_FRAMES_PATH
         self._font_description = font_description
         self._frames: list[GemFrame] = []
         self._frame_index: int = 0
         self._frame_started_ts: float = 0.0
         self._last_loaded_mtime: float = 0.0
+        self._last_loaded_path: Path | None = None
         # Candidate C Phase 1 — Gray-Scott substrate ticked once per render.
         # Lazily constructed so a numpy-less environment doesn't break the
         # source at import time (the render path silently degrades to text-
@@ -170,9 +261,13 @@ class GemCairoSource(HomageTransitionalSource):
         """Refresh frame list when the producer's file changes."""
         self._maybe_reload_frames()
         current = self._current_frame()
+        elapsed_ms = self._current_elapsed_ms()
+        envelope_alpha = 1.0 if not self._frames else _crossfade_alpha(elapsed_ms, current.hold_ms)
         return {
             "text": current.text,
             "hold_ms": current.hold_ms,
+            "layers": layer_payloads(current.layers or build_graffiti_layers(current.text)),
+            "envelope_alpha": envelope_alpha,
             "frame_index": self._frame_index,
             "frame_count": len(self._frames),
         }
@@ -194,35 +289,55 @@ class GemCairoSource(HomageTransitionalSource):
         self._render_rooms(cr, canvas_w, canvas_h, t)
 
         text = state.get("text") or FALLBACK_FRAME_TEXT
+        if not isinstance(text, str):
+            text = FALLBACK_FRAME_TEXT
         if contains_emoji(text):
             log.warning("gem: refusing emoji-containing frame %r — falling back", text)
             text = FALLBACK_FRAME_TEXT
-        self._render_text_centered(cr, canvas_w, canvas_h, text)
+        layers = _state_layers(state, text)
+        envelope_alpha = _state_envelope_alpha(state)
+        self._render_graffiti_layers(cr, canvas_w, canvas_h, layers, envelope_alpha)
 
     # ── Frame advancement ─────────────────────────────────────────────
 
     def _maybe_reload_frames(self) -> None:
         """Reload frames if the producer file has been rewritten."""
-        try:
-            mtime = self._frames_path.stat().st_mtime
-        except OSError:
-            # File missing — keep existing frames if any; they may still
-            # be useful (paint-and-hold behaviour).
+        candidate = self._find_current_frames_file()
+        if candidate is None:
             return
-        if mtime <= self._last_loaded_mtime:
+        path, mtime = candidate
+        if path == self._last_loaded_path and mtime <= self._last_loaded_mtime:
             return
-        new_frames = _read_frames(self._frames_path)
+        new_frames = _read_frames(path)
         if not new_frames:
             return
         self._frames = new_frames
         self._frame_index = 0
         self._frame_started_ts = time.monotonic()
         self._last_loaded_mtime = mtime
+        self._last_loaded_path = path
+
+    def _find_current_frames_file(self) -> tuple[Path, float] | None:
+        """Return a readable frames source, preferring canonical GEM SHM."""
+        for path in (self._frames_path, self._legacy_frames_path):
+            if path is None:
+                continue
+            try:
+                return (path, path.stat().st_mtime)
+            except OSError:
+                continue
+        # File missing — keep existing frames if any; they may still be
+        # useful (paint-and-hold behaviour).
+        return None
 
     def _current_frame(self) -> GemFrame:
         """Return the frame to draw now, advancing the index if hold elapsed."""
         if not self._frames:
-            return GemFrame(text=FALLBACK_FRAME_TEXT, hold_ms=1500)
+            return GemFrame(
+                text=FALLBACK_FRAME_TEXT,
+                hold_ms=1500,
+                layers=build_graffiti_layers(FALLBACK_FRAME_TEXT),
+            )
         now = time.monotonic()
         if self._frame_started_ts == 0.0:
             self._frame_started_ts = now
@@ -233,6 +348,11 @@ class GemCairoSource(HomageTransitionalSource):
             self._frame_started_ts = now
             current = self._frames[self._frame_index]
         return current
+
+    def _current_elapsed_ms(self) -> float:
+        if self._frame_started_ts == 0.0:
+            return 0.0
+        return max(0.0, (time.monotonic() - self._frame_started_ts) * 1000.0)
 
     # ── Render ────────────────────────────────────────────────────────
 
@@ -412,12 +532,38 @@ class GemCairoSource(HomageTransitionalSource):
         finally:
             cr.restore()
 
+    def _render_graffiti_layers(
+        self,
+        cr: cairo.Context,
+        canvas_w: int,
+        canvas_h: int,
+        layers: tuple[GemLayer, ...],
+        envelope_alpha: float,
+    ) -> None:
+        for layer in layers:
+            alpha = min(1.0, max(0.0, layer.opacity * envelope_alpha))
+            if alpha <= 0.0:
+                continue
+            self._render_text_centered(
+                cr,
+                canvas_w,
+                canvas_h,
+                layer.text,
+                opacity=alpha,
+                offset_x_px=layer.offset_x_px,
+                offset_y_px=layer.offset_y_px,
+            )
+
     def _render_text_centered(
         self,
         cr: cairo.Context,
         canvas_w: int,
         canvas_h: int,
         text: str,
+        *,
+        opacity: float = 1.0,
+        offset_x_px: int = 0,
+        offset_y_px: int = 0,
     ) -> None:
         """Centre ``text`` in the canvas using Px437 raster + active palette."""
         try:
@@ -429,9 +575,9 @@ class GemCairoSource(HomageTransitionalSource):
         try:
             package = active_package()
             r, g, b, a = package.resolve_colour(package.grammar.content_colour_role)
-            colour = (r, g, b, a)
+            colour = (r, g, b, a * opacity)
         except Exception:
-            colour = (0.95, 0.92, 0.78, 1.0)
+            colour = (0.95, 0.92, 0.78, opacity)
 
         style = TextStyle(
             text=text,
@@ -448,15 +594,49 @@ class GemCairoSource(HomageTransitionalSource):
         except Exception:
             log.debug("gem: text-surface render failed for %r", text, exc_info=True)
             return
-        x = max(0, (canvas_w - sw) // 2)
-        y = max(0, (canvas_h - sh) // 2)
+        x = max(0, (canvas_w - sw) // 2 + offset_x_px)
+        y = max(0, (canvas_h - sh) // 2 + offset_y_px)
         cr.set_source_surface(surface, x, y)
         cr.paint()
 
 
+def _crossfade_alpha(elapsed_ms: float, hold_ms: int) -> float:
+    """Envelope each keyframe to avoid blink/strobe transitions."""
+    fade_ms = min(600.0, max(200.0, hold_ms / 2.0))
+    fade_ms = min(fade_ms, max(1.0, hold_ms / 2.0))
+    if elapsed_ms < fade_ms:
+        return max(0.0, min(1.0, elapsed_ms / fade_ms))
+    remaining_ms = hold_ms - elapsed_ms
+    if remaining_ms < fade_ms:
+        return max(0.0, min(1.0, remaining_ms / fade_ms))
+    return 1.0
+
+
+def _state_envelope_alpha(state: dict[str, Any]) -> float:
+    raw = state.get("envelope_alpha", 1.0)
+    try:
+        return min(1.0, max(0.0, float(raw)))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _state_layers(state: dict[str, Any], fallback_text: str) -> tuple[GemLayer, ...]:
+    raw_layers = state.get("layers")
+    if not isinstance(raw_layers, list):
+        return build_graffiti_layers(fallback_text)
+    parsed = _parse_layers({"layers": raw_layers}, fallback_text)
+    return parsed or build_graffiti_layers(fallback_text)
+
+
 __all__ = [
     "FALLBACK_FRAME_TEXT",
+    "DEFAULT_FRAMES_PATH",
     "GemCairoSource",
     "GemFrame",
+    "GemLayer",
+    "LEGACY_FRAMES_PATH",
+    "MIN_FRAME_HOLD_MS",
+    "build_graffiti_layers",
     "contains_emoji",
+    "layer_payloads",
 ]

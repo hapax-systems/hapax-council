@@ -1,24 +1,16 @@
 """GEM frame producer — turns ``gem.*`` impingements into mural keyframes.
 
 Hapax authors the GEM ward (``agents/studio_compositor/gem_source.py``)
-by writing ``/dev/shm/hapax-compositor/gem-frames.json``. This module
+by writing ``/dev/shm/hapax-gem/gem-frames.json``. This module
 owns that write path. It tails the impingement bus with its own cursor,
-filters for ``intent_family in {"gem.emphasis.*", "gem.composition.*"}``,
+filters for ``intent_family in {"gem.emphasis.*", "gem.composition.*", "gem.spawn.*"}``,
 and renders impingement narrative into 1-3 BitchX-grammar keyframes.
 
 Phase 3 of the GEM activation plan
 (``docs/superpowers/plans/2026-04-21-gem-ward-activation-plan.md``).
 
-Initial slice ships template-driven authoring (no LLM call). The
-template extracts the impingement's emphasis text and frames it with
-BitchX banner punctuation:
-
-  ┌──[ EMPHASIS ]──┐
-  │ <text>         │
-  └────────────────┘
-
-LLM-driven multi-keyframe authoring is a follow-on once the template
-path is proven safe under the AntiPatternKind enforcement gate.
+Template output is a dense, overlapping CP437 graffiti stack. It is not
+a chiron/ticker strip and does not emit layout/cue commands.
 """
 
 from __future__ import annotations
@@ -32,7 +24,15 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agents.studio_compositor.gem_source import GemFrame, contains_emoji
+from agents.studio_compositor.gem_source import (
+    DEFAULT_FRAMES_PATH,
+    LEGACY_FRAMES_PATH,
+    MIN_FRAME_HOLD_MS,
+    GemFrame,
+    build_graffiti_layers,
+    contains_emoji,
+    layer_payloads,
+)
 from shared.impingement import Impingement
 from shared.impingement_consumer import ImpingementConsumer
 
@@ -41,7 +41,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-DEFAULT_FRAMES_PATH = Path("/dev/shm/hapax-compositor/gem-frames.json")
 DEFAULT_BUS_PATH = Path("/dev/shm/hapax-dmn/impingements.jsonl")
 DEFAULT_CURSOR_PATH = Path.home() / ".cache" / "hapax" / "impingement-cursor-daimonion-gem.txt"
 
@@ -52,7 +51,7 @@ MAX_FRAMES_PER_IMPINGEMENT = 3
 # truncation keeps the lower-band geometry from overflowing.
 MAX_FRAME_TEXT_CHARS = 80
 
-GEM_INTENT_PREFIXES: tuple[str, ...] = ("gem.emphasis", "gem.composition")
+GEM_INTENT_PREFIXES: tuple[str, ...] = ("gem.emphasis", "gem.composition", "gem.spawn")
 
 
 def _intent_matches(imp: Impingement) -> bool:
@@ -211,36 +210,72 @@ def _frame_text_safe(text: str) -> str:
     return cleaned
 
 
-def render_emphasis_template(text: str) -> list[GemFrame]:
-    """Template-driven 3-frame sequence around a single emphasis fragment.
+def _mural_frame(text: str, hold_ms: int) -> GemFrame:
+    return GemFrame(
+        text=text, hold_ms=max(MIN_FRAME_HOLD_MS, hold_ms), layers=build_graffiti_layers(text)
+    )
 
-    Frame 1: empty banner (sets up the cell), 400ms.
-    Frame 2: text inside the banner, 1800ms (the emphasis hold).
-    Frame 3: text with revision underline marks, 600ms (the "trace" leave).
-    """
+
+def render_emphasis_template(text: str) -> list[GemFrame]:
+    """Template-driven 3-frame graffiti sequence around one fragment."""
     safe = _frame_text_safe(text)
     if not safe:
         return []
     return [
-        GemFrame(text="┌──[ GEM ]──┐", hold_ms=400),
-        GemFrame(text=f"│ {safe} │", hold_ms=1800),
-        GemFrame(text=f"└─ {safe} ─┘", hold_ms=600),
+        _mural_frame(f"gem // {safe}", 800),
+        _mural_frame(f"{safe}", 1800),
+        _mural_frame(f"{safe} // trace", 800),
     ]
 
 
 def render_composition_template(text: str) -> list[GemFrame]:
-    """Template-driven sequence for a composition impingement.
-
-    Currently a single-frame fragment with BitchX `>>>` prefix; richer
-    multi-keyframe sequences (ASCII tree growing, glyph rotation) land
-    in the LLM-driven follow-on.
-    """
+    """Template-driven sequence for a composition impingement."""
     safe = _frame_text_safe(text)
     if not safe:
         return []
     return [
-        GemFrame(text=f">>> {safe}", hold_ms=2000),
+        _mural_frame(f"╱╲ {safe} ╲╱", 2000),
     ]
+
+
+def render_spawn_template(text: str) -> list[GemFrame]:
+    """Fresh-mural spawn used when recruitment mints a new lower-band mark."""
+    safe = _frame_text_safe(text)
+    if not safe:
+        return []
+    return [
+        _mural_frame(f"▒▒ {safe}", 700),
+        _mural_frame(f"▓▒ {safe} ▒▓", 1500),
+    ]
+
+
+def frames_for_recruitment(
+    capability_name: str,
+    *,
+    narrative: str = "",
+    score: float = 1.0,
+) -> list[GemFrame]:
+    """Convert an affordance recruitment record into GEM mural frames.
+
+    This is the direct impingement→affordance hook used by
+    ``compositional_consumer.dispatch_gem``. The narrative is content
+    pressure for the mural only; it is not layout authority.
+    """
+    del score  # salience can tune density later; the first slice keeps timing stable.
+    if not capability_name.startswith("gem."):
+        return []
+    candidate = "" if _is_meta_narration(narrative) else _frame_text_safe(narrative)
+    if not candidate:
+        candidate = _frame_text_safe(capability_name.rsplit(".", 1)[-1].replace("-", " "))
+    if not candidate:
+        return []
+    if capability_name.startswith("gem.composition"):
+        frames = render_composition_template(candidate)
+    elif capability_name.startswith("gem.spawn"):
+        frames = render_spawn_template(candidate)
+    else:
+        frames = render_emphasis_template(candidate)
+    return frames[:MAX_FRAMES_PER_IMPINGEMENT]
 
 
 def frames_for_impingement(imp: Impingement) -> list[GemFrame]:
@@ -258,6 +293,8 @@ def frames_for_impingement(imp: Impingement) -> list[GemFrame]:
         return []
     if imp.intent_family is not None and imp.intent_family.startswith("gem.composition"):
         frames = render_composition_template(text)
+    elif imp.intent_family is not None and imp.intent_family.startswith("gem.spawn"):
+        frames = render_spawn_template(text)
     else:
         frames = render_emphasis_template(text)
     return frames[:MAX_FRAMES_PER_IMPINGEMENT]
@@ -286,7 +323,14 @@ async def async_frames_for_impingement(imp: Impingement) -> list[GemFrame]:
     if is_llm_authoring_enabled():
         sequence = await author_sequence(imp, text)
         if sequence is not None and sequence.frames:
-            return [GemFrame(text=f.text, hold_ms=f.hold_ms) for f in sequence.frames]
+            return [
+                GemFrame(
+                    text=f.text,
+                    hold_ms=max(MIN_FRAME_HOLD_MS, f.hold_ms),
+                    layers=build_graffiti_layers(f.text),
+                )
+                for f in sequence.frames
+            ]
 
     return frames_for_impingement(imp)
 
@@ -298,11 +342,22 @@ def write_frames_atomic(frames: list[GemFrame], path: Path) -> None:
     sibling temp file then rename so the renderer never sees a half-
     written payload. Parent directory created on demand.
     """
-    frame_payloads = [
-        {"text": f.text.strip(), "hold_ms": f.hold_ms}
-        for f in frames
-        if f.text.strip() and not contains_emoji(f.text)
-    ]
+    frame_payloads = []
+    for frame in frames:
+        text = frame.text.strip()
+        if not text or contains_emoji(text):
+            continue
+        payload: dict[str, object] = {
+            "text": text,
+            "hold_ms": max(MIN_FRAME_HOLD_MS, int(frame.hold_ms)),
+        }
+        layers = frame.layers or build_graffiti_layers(text)
+        serial_layers = layer_payloads(layers)
+        if len(serial_layers) < 2:
+            serial_layers = layer_payloads(build_graffiti_layers(text))
+        if serial_layers:
+            payload["layers"] = serial_layers
+        frame_payloads.append(payload)
     if not frame_payloads:
         raise ValueError("gem frames payload must include at least one renderable frame")
 
@@ -330,6 +385,7 @@ async def gem_producer_loop(
     bus_path: Path = DEFAULT_BUS_PATH,
     cursor_path: Path = DEFAULT_CURSOR_PATH,
     frames_path: Path = DEFAULT_FRAMES_PATH,
+    legacy_frames_path: Path | None = LEGACY_FRAMES_PATH,
     poll_interval_s: float = 0.5,
 ) -> None:
     """Tail the impingement bus and write GEM frames as authored intent arrives.
@@ -351,6 +407,8 @@ async def gem_producer_loop(
                     continue
                 try:
                     write_frames_atomic(frames, frames_path)
+                    if legacy_frames_path is not None and legacy_frames_path != frames_path:
+                        write_frames_atomic(frames, legacy_frames_path)
                     log.debug("gem-producer: wrote %d frames for %s", len(frames), imp.id)
                 except Exception:
                     log.warning(
@@ -388,8 +446,10 @@ __all__ = [
     "MAX_FRAME_TEXT_CHARS",
     "async_frames_for_impingement",
     "frames_for_impingement",
+    "frames_for_recruitment",
     "gem_producer_loop",
     "render_composition_template",
     "render_emphasis_template",
+    "render_spawn_template",
     "write_frames_atomic",
 ]
