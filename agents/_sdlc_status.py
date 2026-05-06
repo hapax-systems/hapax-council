@@ -88,8 +88,17 @@ def _fetch_github_items() -> tuple[list[PipelineItem], bool]:
             age = _time.time() - os.path.getmtime(GITHUB_CACHE)
             if age < CACHE_TTL_SECONDS:
                 data = json.loads(GITHUB_CACHE.read_text())
-                return [PipelineItem(**item) for item in data["items"]], True
-        except (json.JSONDecodeError, KeyError, OSError):
+                # Schema guard: a writer producing valid JSON whose root
+                # is null, a list, a string, or a number causes
+                # ``data[\"items\"]`` to raise TypeError (or for the
+                # iteration to fail) — the ``(json.JSONDecodeError,
+                # KeyError, OSError)`` catch missed it. Same shape as
+                # the other recent SHM-read fixes.
+                if isinstance(data, dict):
+                    items_raw = data.get("items", [])
+                    if isinstance(items_raw, list):
+                        return [PipelineItem(**item) for item in items_raw], True
+        except (json.JSONDecodeError, KeyError, OSError, TypeError):
             pass
 
     items: list[PipelineItem] = []
