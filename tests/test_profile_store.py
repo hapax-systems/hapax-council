@@ -402,3 +402,37 @@ def test_index_profile_triggers_cleanup(mock_embed):
 
     store.index_profile(profile)
     store._client.scroll.assert_called()
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_get_digest_non_dict_root_returns_none(tmp_path, payload, kind, monkeypatch):
+    """Pin get_digest against non-dict JSON. Callers immediately call
+    digest.get('dimensions', {}).get(...) on the returned value — a
+    non-dict root previously raised AttributeError."""
+    monkeypatch.setattr("shared.profile_store.PROFILES_DIR", tmp_path)
+    (tmp_path / "operator-digest.json").write_text(payload)
+    store = _mock_store()
+    assert store.get_digest() is None, f"non-dict root={kind} must yield None"
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_get_dimension_summary_non_dict_root_returns_none(tmp_path, payload, kind, monkeypatch):
+    """Pin get_dimension_summary against non-dict JSON via get_digest."""
+    monkeypatch.setattr("shared.profile_store.PROFILES_DIR", tmp_path)
+    (tmp_path / "operator-digest.json").write_text(payload)
+    store = _mock_store()
+    assert store.get_dimension_summary("any_dim") is None, f"non-dict root={kind} must yield None"
+
+
+def test_get_dimension_summary_non_dict_dimensions_field(tmp_path, monkeypatch):
+    """Pin: dict root but dimensions field is a list — must yield None."""
+    monkeypatch.setattr("shared.profile_store.PROFILES_DIR", tmp_path)
+    (tmp_path / "operator-digest.json").write_text('{"dimensions": ["not-a-dict"]}')
+    store = _mock_store()
+    assert store.get_dimension_summary("any") is None
