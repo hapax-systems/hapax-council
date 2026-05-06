@@ -52,7 +52,7 @@ import numpy as np
 DEFAULT_MARKER_FREQ_HZ: Final[float] = 17500.0
 
 #: Default sample rate. Matches the operator's audio interface
-#: (PreSonus Studio 24c at 48 kHz).
+#: (48 kHz).
 DEFAULT_SAMPLE_RATE_HZ: Final[int] = 48000
 
 #: Default tone amplitude as a fraction of int16 full-scale. -20 dBFS

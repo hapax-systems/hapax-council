@@ -1,8 +1,7 @@
 """Backing-mix ducking around YouTube/React audio (CVS #145).
 
 A bidirectional audio ducking controller for the broadcast backing mix
-(DAW returns, synth strips, MPC pads — historically the PreSonus Studio
-24c hardware before its 2026-05 retirement). Complements the
+(DAW returns, synth strips, MPC pads on the L-12 backing mix). Complements the
 operator-voice-over-YouTube sidechain compressor shipped via
 ``config/pipewire/hapax-voice-over-ytube-duck.conf`` (VAD + VAD-driven ramp)
 with a state machine that couples:
@@ -108,7 +107,7 @@ class DuckingState(StrEnum):
 
 @dataclass
 class _GainTargets:
-    """Per-state target gains for the YT bed + 24c backing mix."""
+    """Per-state target gains for the YT bed + L-12 backing mix."""
 
     yt_bed_linear: float = 1.0
     backing_linear: float = 1.0

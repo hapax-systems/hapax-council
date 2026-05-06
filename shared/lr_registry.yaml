@@ -368,7 +368,7 @@ operator_activity_signals:
     p_true_given_h1: 0.75
     p_true_given_h0: 0.10
     positive_only: false
-    estimation_reference: "Cortado MKIII contact mic on Studio 24c Input 2; activity classes typing/tapping/drumming/active per shared/perception activity vocab; calibrated 2026-04-25"
+    estimation_reference: "Cortado MKIII contact mic on L-12 (CH2); activity classes typing/tapping/drumming/active per shared/perception activity vocab; calibrated 2026-04-25"
     calibration_window_s: null
 
   desktop_focus_changed_recent:

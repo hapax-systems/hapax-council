@@ -131,7 +131,7 @@ COMP_TTS_CLIENT_TIMEOUT_TOTAL: Any = None
 CAM_FRAME_FLOW_STALE_TOTAL: Any = None
 COMP_VOICE_ACTIVE: Any = None
 COMP_MUSIC_DUCKED: Any = None
-# CVS #145 — bidirectional 24c audio-ducking state machine. One-hot
+# CVS #145 — bidirectional audio-ducking state machine. One-hot
 # gauge (one label per state, 1 for the current state and 0 for the
 # others) so Grafana can plot dwell time in each state and alert on
 # anomalous residency (e.g. stuck in BOTH_ACTIVE).
@@ -400,7 +400,7 @@ def _init_metrics() -> None:
         registry=REGISTRY,
     )
 
-    # CVS #145 — 24c bidirectional ducker state machine. Pre-register
+    # CVS #145 — bidirectional ducker state machine. Pre-register
     # every label value below so Grafana scrapes always see the full set.
     global HAPAX_AUDIO_DUCKING_STATE
     HAPAX_AUDIO_DUCKING_STATE = Gauge(

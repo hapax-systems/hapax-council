@@ -1218,7 +1218,7 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
 
             # Vocal chain decay tick — runs at most once per second regardless of
             # impingement volume. Skip entirely if MIDI output never opened
-            # (e.g. 24c MIDI port absent at boot) so we don't churn counters
+            # so we don't churn counters
             # with no-op CC writes.
             _now_mono = _voc_time.monotonic()
             if _now_mono - _last_vocal_decay_monotonic >= _VOCAL_DECAY_INTERVAL_S:
@@ -1238,7 +1238,7 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                 # Vocal chain activation — drives Evil Pet + S-4 CC params
                 # from impingement narratives. Reads the capability's 9-dim
                 # table (vocal_chain.DIMENSIONS) and emits MIDI CCs via the
-                # Studio 24c MIDI 1 port configured in DaimonionConfig.
+                # MIDI port configured in DaimonionConfig.
                 # Fail-open: capability may be absent if init_pipeline is
                 # exercising a partial daemon (tests, etc.).
                 _vocal_chain = getattr(daemon, "_vocal_chain", None)

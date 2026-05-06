@@ -1,17 +1,18 @@
 """Unified audio reactivity contract (CVS #149).
 
-Formalizes the operator directive that *any* signal pumped into the Studio
-24c (room mic, contact mic, line-in, instrument, YT player) is a first-class
-reactivity source — not a bespoke per-source wiring.
+Formalizes the operator directive that *any* signal pumped into the
+broadcast capture chain (room mic, contact mic, line-in, instrument,
+YT player) is a first-class reactivity source — not a bespoke per-source
+wiring.
 
-Today (pre-bus) two DSP consumers run against 24c virtual sources and they
-are not symmetric:
+Two DSP consumers run against virtual sources on the broadcast capture
+chain and they are not symmetric:
 
-- ``mixer_master`` (FR / Input 2) → ``CompositorAudioCapture`` → shader
-  uniforms. 18+ signals.
-- ``contact_mic`` (FL / Input 1) → ``ContactMicBackend`` → perception engine
+- ``mixer_master`` → ``CompositorAudioCapture`` → shader uniforms.
+  18+ signals.
+- ``contact_mic`` → ``ContactMicBackend`` → perception engine
   only. Does not reach shaders.
-- Inputs 3-8 → unmapped.
+- Other capture channels → unmapped.
 
 This module declares a ``AudioReactivitySource`` Protocol and a
 ``UnifiedReactivityBus`` that polls all registered sources, blends

@@ -68,15 +68,10 @@ orphans:
   # yaml-modeled (the yaml has a single `voice-fx` chain stub).
   - hapax-voice-fx-chain.conf  # renamed 2026-05-03 (audit-E slice 4)
   - hapax-voice-fx-loudnorm.conf  # renamed 2026-05-03 (audit-E slice 3)
-  # voice-fx-radio.conf removed 2026-05-03: hardcoded a non-existent
-  # PreSonus Studio 24c sink (decommissioned hardware). The file was a
-  # duplicate of the quarantined ~/.config/pipewire/_disabled-duplicate-voice-fx-2026-04-27/
-  # version. See /tmp/sc-chain-and-24c-cleanup-investigation.md.
-
-  # YouTube + backing-mix rate-routing helpers (24c hardware retired).
-  - hapax-backing-ducked.conf  # renamed 2026-05-03 from hapax-yt-over-24c-duck.conf (24c retirement)
-  - hapax-backing-ducked-sidechain.conf  # renamed 2026-05-03 from ytube-over-24c-duck.conf (24c retirement)
-  - hapax-voice-over-ytube-duck.conf
+  # YouTube + backing-mix sidechain ducker — dynamic gate, not yaml-modeled
+  - hapax-backing-ducked.conf  # YouTube bed ducked under voice/backing events
+  - hapax-backing-ducked-sidechain.conf  # sidechain feed for the ducker
+  - hapax-voice-over-ytube-duck.conf  # VAD-gated voice-over-YT ramp
 
   # MPC Live III TTS broadcast tap. Software ducker retired (MPC owns
   # ducking). hapax-loudnorm → hapax-livestream-tap loopback keeps

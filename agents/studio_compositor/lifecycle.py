@@ -173,7 +173,7 @@ def start_compositor(compositor: Any) -> None:
     compositor._audio_capture.start()
     compositor._sync_mobile_support_threads()
 
-    # CVS #145 — instantiate + start the bidirectional 24c audio ducking
+    # CVS #145 — instantiate + start the bidirectional audio ducking
     # controller. Even with ``HAPAX_AUDIO_DUCKING_ACTIVE`` off, the FSM
     # ticks and publishes ``hapax_audio_ducking_state{state=...}`` so
     # Grafana can observe the state trajectory without the PipeWire
@@ -189,7 +189,7 @@ def start_compositor(compositor: Any) -> None:
     except Exception:
         log.exception("AudioDuckingController start failed (non-fatal)")
 
-    # CVS #149: register 24c sources on the unified reactivity bus.
+    # CVS #149: register backing-mix sources on the unified reactivity bus.
     # Feature-flagged OFF by default; registration happens regardless so
     # the bus observability surface is live, but consumers only read from
     # it when ``HAPAX_UNIFIED_REACTIVITY_ACTIVE`` is set.
