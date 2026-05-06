@@ -89,12 +89,20 @@ _LORE_SOURCES: frozenset[str] = frozenset(
 )
 
 # Event-type blocklist — specific ``source.event_type`` strings always
-# skipped even if the source is in ``_LORE_SOURCES``. Guards against
-# known high-frequency routine events leaking in if a source on the
-# allow-list later grows one.
+# skipped even if the source is in ``_LORE_SOURCES`` or carries
+# salience above the threshold. Guards against known high-frequency
+# routine events leaking in.
 _NOISE_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "engine.rule.matched",
+        # ``shared/chronicle_sampler.py`` writes ``"*"`` source +
+        # ``"snapshot"`` event_type on every periodic stimmung /
+        # eigenform / signal-bus capture (the routine-event docstring
+        # at the top of this file calls it out alongside
+        # ``engine.rule.matched``). It must never surface in the lore
+        # strip — even if a future caller starts tagging salience on
+        # it.
+        "*.snapshot",
     }
 )
 

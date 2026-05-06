@@ -269,6 +269,20 @@ class TestCollectRows:
         assert len(rows) == 1
         assert "stimmung.noop" in rows[0]
 
+    def test_chronicle_sampler_snapshot_excluded(self, _env_and_paths):
+        """``shared/chronicle_sampler.py`` writes ``*.snapshot`` events
+        on a periodic timer. The blocklist must exclude them even when
+        a future writer starts tagging salience >= 0.7."""
+        now = time.time()
+        _write_events(
+            _env_and_paths,
+            [
+                _ev(ts=now - 5, source="*", salience=0.95, event_type="snapshot"),
+                _ev(ts=now - 6, source="*", salience=None, event_type="snapshot"),
+            ],
+        )
+        assert _collect_rows(now) == []
+
 
 # ── ChronicleTickerCairoSource ────────────────────────────────────────────
 
