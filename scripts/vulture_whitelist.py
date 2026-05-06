@@ -188,11 +188,15 @@ _SegmentRecorder
 
 # Deterministic fixture evaluator for segment quality/action/layout contract tests.
 # Test call sites are intentionally outside vulture's production scan.
+from shared.segment_quality_actionability import (
+    build_beat_layout_needs as _build_beat_layout_needs,
+)
 from shared.segment_quality_layout_eval import (
     evaluate_segment_quality_layout_fixture as _evaluate_segment_quality_layout_fixture,
 )
 
 _evaluate_segment_quality_layout_fixture
+_build_beat_layout_needs
 
 # Test-only reset hook for the in-process rendered-blit readback cache. The
 # production read path is recent_blit_readbacks(); vulture does not scan tests.

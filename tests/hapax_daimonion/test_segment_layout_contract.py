@@ -207,6 +207,30 @@ def test_parent_tier_chat_comparison_needs_project_with_artifact_evidence() -> N
     assert beat.evidence_refs == (f"prepared_artifact:{'4' * 64}", "vault:tier-source")
 
 
+def test_parent_countdown_need_projects_to_ranked_list_contract() -> None:
+    parent = _parent_artifact(
+        beat_layout_intents=[
+            {
+                "beat_id": "countdown",
+                "beat_index": 2,
+                "needs": ["countdown_visual"],
+                "evidence_refs": ["vault:countdown-source"],
+                "source_affordances": ["countdown"],
+            }
+        ]
+    )
+
+    parsed = project_parent_prepared_artifact_layout_contract(
+        parent,
+        artifact_sha256="5" * 64,
+    )
+
+    beat = parsed.beat_layout_intents[0]
+    assert [need.value for need in beat.needs] == ["ranked_list_visible"]
+    assert [posture.value for posture in beat.proposed_postures] == ["countdown_visual"]
+    assert [effect.value for effect in beat.expected_effects] == ["ranked_list_legible"]
+
+
 @pytest.mark.parametrize(
     ("patch", "match"),
     [
@@ -553,6 +577,31 @@ def test_prepared_segment_artifact_rejects_segment_cues_in_responsible_hosting()
 
     with pytest.raises(ValueError, match="segment_cues"):
         validate_prepared_segment_artifact(artifact)
+
+
+def test_prepared_segment_artifact_rejects_unprojected_responsible_beat() -> None:
+    artifact = _parent_artifact(
+        beat_layout_intents=[
+            {
+                "beat_id": "hook",
+                "beat_index": 0,
+                "needs": ["evidence_visible"],
+                "evidence_refs": ["vault:source-note"],
+                "source_affordances": ["asset:source-card"],
+            },
+            {
+                "beat_id": "spoken",
+                "beat_index": 1,
+                "needs": ["host_presence"],
+                "evidence_refs": ["voice:host"],
+                "source_affordances": ["host_camera_or_voice_presence"],
+            },
+        ],
+        prepared_script=["visible words", "spoken-only words"],
+    )
+
+    with pytest.raises(ValueError, match="every prepared_script beat"):
+        validate_prepared_segment_artifact(artifact, artifact_sha256="6" * 64)
 
 
 def test_parent_id_mismatch_and_embedding_override_are_rejected() -> None:

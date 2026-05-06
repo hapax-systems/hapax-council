@@ -1,0 +1,379 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from agents.hapax_daimonion import daily_segment_prep as prep
+from shared.segment_quality_actionability import (
+    ACTIONABILITY_RUBRIC_VERSION,
+    EXPLICIT_LAYOUT_FALLBACK_CONTEXT,
+    LAYOUT_RESPONSIBILITY_VERSION,
+    NON_RESPONSIBLE_STATIC_CONTEXT,
+    QUALITY_RUBRIC_VERSION,
+    RESPONSIBLE_HOSTING_CONTEXT,
+    build_beat_action_intents,
+    forbidden_layout_authority_fields,
+    score_segment_quality,
+    validate_layout_responsibility,
+    validate_segment_actionability,
+)
+
+EXCELLENT_SCRIPT = [
+    (
+        "Number 3: Zuboff is useful here because surveillance capitalism is not just "
+        "a villain label; it is a theory of extraction, prediction, and enclosure. "
+        "The tension is that livestream tools promise intimacy while quietly asking "
+        "the host to turn every hesitation into a metric. That matters because the "
+        "audience is not only watching a segment, it is watching a measurement system "
+        "try to become culture."
+    ),
+    (
+        "Now compare that with Popcorn Sutton's still craft, because the Appalachian "
+        "example makes the tradeoff physical instead of abstract. Place Popcorn Sutton "
+        "in S-tier for legibility: not because folklore is pure, but because the method "
+        "stays accountable to material practice. Remember the opening problem: a system "
+        "that cannot show its work becomes a personality mask."
+    ),
+    (
+        "So the ending is not nostalgia, it is a production rule. If Hapax says a chart "
+        "changed, the chart has to change; if Hapax asks chat to judge the ranking, chat "
+        "has to be the surface. What do you think? Drop it in chat, because the next "
+        "move is deciding which claims deserve a visible instrument and which should "
+        "remain spoken argument."
+    ),
+]
+
+GENERIC_SCRIPT = [
+    "This topic is interesting and important. There are many things to consider.",
+    "Another point is also important. We should think about it carefully.",
+    "In conclusion, this was a good discussion. Thanks for watching.",
+]
+
+
+def _artifact(script: list[str], beats: list[str]) -> dict:
+    prompt_sha256 = prep._sha256_text("prompt")
+    seed_sha256 = prep._sha256_text("seed")
+    source_hashes = prep._source_hashes_from_fields(
+        programme_id="prog-quality",
+        role="tier_list",
+        topic="Actionability test",
+        segment_beats=beats,
+        seed_sha256=seed_sha256,
+        prompt_sha256=prompt_sha256,
+    )
+    actionability = validate_segment_actionability(script, beats)
+    layout = validate_layout_responsibility(actionability["beat_action_intents"])
+    payload = {
+        "schema_version": prep.PREP_ARTIFACT_SCHEMA_VERSION,
+        "authority": prep.PREP_ARTIFACT_AUTHORITY,
+        "programme_id": "prog-quality",
+        "role": "tier_list",
+        "topic": "Actionability test",
+        "segment_beats": beats,
+        "prepared_script": script,
+        "segment_quality_rubric_version": QUALITY_RUBRIC_VERSION,
+        "actionability_rubric_version": ACTIONABILITY_RUBRIC_VERSION,
+        "layout_responsibility_version": LAYOUT_RESPONSIBILITY_VERSION,
+        "hosting_context": layout["hosting_context"],
+        "segment_quality_report": score_segment_quality(script, beats),
+        "beat_action_intents": build_beat_action_intents(script, beats),
+        "actionability_alignment": {
+            "ok": actionability["ok"],
+            "removed_unsupported_action_lines": actionability["removed_unsupported_action_lines"],
+        },
+        "beat_layout_intents": layout["beat_layout_intents"],
+        "layout_decision_contract": layout["layout_decision_contract"],
+        "runtime_layout_validation": layout["runtime_layout_validation"],
+        "layout_decision_receipts": layout["layout_decision_receipts"],
+        "prepped_at": "2026-05-05T00:00:00+00:00",
+        "prep_session_id": "segment-prep-quality-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "prompt_sha256": prompt_sha256,
+        "seed_sha256": seed_sha256,
+        "source_hashes": source_hashes,
+        "source_provenance_sha256": prep._sha256_json(source_hashes),
+        "llm_calls": [
+            {
+                "call_index": 1,
+                "phase": "compose",
+                "programme_id": "prog-quality",
+                "model_id": prep.RESIDENT_PREP_MODEL,
+                "prompt_sha256": prompt_sha256,
+                "prompt_chars": 123,
+                "called_at": "2026-05-05T00:00:00+00:00",
+            }
+        ],
+        "beat_count": len(beats),
+        "avg_chars_per_beat": round(sum(len(item) for item in script) / len(script)),
+        "refinement_applied": True,
+    }
+    payload["artifact_sha256"] = prep._artifact_hash(payload)
+    return payload
+
+
+def _write_artifact(base: Path, payload: dict) -> None:
+    today = prep._today_dir(base)
+    path = today / "prog-quality.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    (today / "manifest.json").write_text(
+        json.dumps({"programmes": [path.name]}),
+        encoding="utf-8",
+    )
+
+
+def test_quality_rubric_scores_exemplar_above_generic_script() -> None:
+    excellent = score_segment_quality(EXCELLENT_SCRIPT, ["hook", "body", "close"])
+    generic = score_segment_quality(GENERIC_SCRIPT, ["hook", "body", "close"])
+
+    assert excellent["overall"] > generic["overall"] + 1.0
+    assert excellent["scores"]["actionability"] > generic["scores"]["actionability"]
+    assert generic["label"] == "generic"
+
+
+def test_actionability_declares_expected_visible_or_doable_effects() -> None:
+    alignment = validate_segment_actionability(EXCELLENT_SCRIPT, ["hook", "body", "close"])
+
+    kinds = {
+        intent["kind"] for beat in alignment["beat_action_intents"] for intent in beat["intents"]
+    }
+    assert {"countdown", "tier_chart", "chat_poll", "comparison"}.issubset(kinds)
+    assert alignment["removed_unsupported_action_lines"] == []
+
+
+def test_layout_responsibility_derives_needs_from_action_intents() -> None:
+    alignment = validate_segment_actionability(EXCELLENT_SCRIPT, ["hook", "body", "close"])
+
+    layout = validate_layout_responsibility(alignment["beat_action_intents"])
+
+    kinds = {need for beat in layout["beat_layout_intents"] for need in beat["needs"]}
+    assert {"countdown_visual", "tier_visual", "chat_prompt"}.issubset(kinds)
+    assert layout["hosting_context"] == RESPONSIBLE_HOSTING_CONTEXT
+    assert layout["layout_decision_contract"]["may_command_layout"] is False
+    assert all(
+        beat["evidence_refs"] and beat["source_affordances"]
+        for beat in layout["beat_layout_intents"]
+    )
+
+
+def test_responsible_hosting_rejects_unreceipted_static_default_layout() -> None:
+    alignment = validate_segment_actionability(EXCELLENT_SCRIPT, ["hook", "body", "close"])
+
+    layout = validate_layout_responsibility(
+        alignment["beat_action_intents"],
+        observed_layout_state={
+            "layout_id": "default",
+            "is_static_default": True,
+            "claims_success": True,
+        },
+    )
+
+    assert layout["ok"] is False
+    assert {
+        "static_default_layout_not_responsible_success",
+        "layout_success_without_decision_readback",
+    }.issubset({violation["reason"] for violation in layout["violations"]})
+    assert layout["runtime_layout_validation"]["layout_success"] is False
+
+
+def test_layout_store_gauge_success_is_not_rendered_responsibility_success() -> None:
+    alignment = validate_segment_actionability(EXCELLENT_SCRIPT, ["hook", "body", "close"])
+
+    layout = validate_layout_responsibility(
+        alignment["beat_action_intents"],
+        observed_layout_state={
+            "layout_id": "comparison_split",
+            "layout_store_success": True,
+            "gauge_success": True,
+            "claims_success": True,
+            "receipt_id": "layout-store-only",
+        },
+    )
+
+    assert layout["ok"] is False
+    assert "advisory_layout_store_not_rendered_success" in {
+        violation["reason"] for violation in layout["violations"]
+    }
+    assert layout["layout_decision_contract"]["rendered_authority"] == (
+        "StudioCompositor.layout_state via fx_chain/Layout.assignments"
+    )
+
+
+def test_responsible_static_fallback_requires_ttl_and_receipt() -> None:
+    alignment = validate_segment_actionability(EXCELLENT_SCRIPT, ["hook", "body", "close"])
+
+    missing_receipt = validate_layout_responsibility(
+        alignment["beat_action_intents"],
+        observed_layout_state={
+            "layout_id": "default_fallback",
+            "is_static_default": True,
+            "fallback_explicit": True,
+            "ttl_ms": 4000,
+        },
+    )
+    receipted = validate_layout_responsibility(
+        alignment["beat_action_intents"],
+        observed_layout_state={
+            "layout_id": "default_fallback",
+            "is_static_default": True,
+            "fallback_explicit": True,
+            "receipt_id": "fallback-1",
+            "ttl_ms": 4000,
+            "rendered_readback": True,
+        },
+    )
+
+    assert "static_fallback_missing_ttl_or_receipt" in {
+        violation["reason"] for violation in missing_receipt["violations"]
+    }
+    assert receipted["ok"] is True
+    assert receipted["runtime_layout_validation"]["fallback_active"] is True
+    assert receipted["runtime_layout_validation"]["layout_success"] is False
+
+
+def test_responsible_static_layout_aliases_never_count_as_success() -> None:
+    alignment = validate_segment_actionability(EXCELLENT_SCRIPT, ["hook", "body", "close"])
+
+    for layout_id in (
+        "layout:default-live",
+        "default-live",
+        "config/compositor-layouts/default.json",
+    ):
+        layout = validate_layout_responsibility(
+            alignment["beat_action_intents"],
+            observed_layout_state={
+                "layout_id": layout_id,
+                "rendered_readback": True,
+                "receipt_id": "rendered-static-readback",
+            },
+        )
+
+        assert layout["runtime_layout_validation"]["layout_success"] is False
+        assert "static_default_layout_not_responsible_success" in {
+            violation["reason"] for violation in layout["violations"]
+        }
+
+
+def test_non_responsible_static_context_allows_default_layout() -> None:
+    alignment = validate_segment_actionability(EXCELLENT_SCRIPT, ["hook", "body", "close"])
+
+    layout = validate_layout_responsibility(
+        alignment["beat_action_intents"],
+        responsibility_mode=NON_RESPONSIBLE_STATIC_CONTEXT,
+        observed_layout_state={
+            "layout_id": "default",
+            "is_static_default": True,
+            "claims_success": True,
+        },
+    )
+
+    assert layout["ok"] is True
+    assert layout["layout_decision_contract"]["default_static_success_allowed"] is True
+
+
+def test_explicit_fallback_context_allows_garage_door_layout() -> None:
+    alignment = validate_segment_actionability(EXCELLENT_SCRIPT, ["hook", "body", "close"])
+
+    layout = validate_layout_responsibility(
+        alignment["beat_action_intents"],
+        responsibility_mode=EXPLICIT_LAYOUT_FALLBACK_CONTEXT,
+        observed_layout_state={
+            "layout_id": "garage-door",
+            "is_static_default": True,
+            "claims_success": True,
+            "fallback_explicit": True,
+        },
+    )
+
+    assert layout["ok"] is True
+    assert layout["layout_decision_contract"]["default_static_success_allowed"] is True
+
+
+def test_layout_authority_shaped_fields_are_detected() -> None:
+    assert forbidden_layout_authority_fields(
+        {
+            "beat_layout_intents": [
+                {
+                    "beat_index": 0,
+                    "needs": [{"layout_name": "default", "surface_id": "main"}],
+                }
+            ],
+            "segment_cues": ["front.cam"],
+        }
+    ) == [
+        {
+            "path": "$.beat_layout_intents[0].needs[0].layout_name",
+            "field": "layout_name",
+        },
+        {
+            "path": "$.beat_layout_intents[0].needs[0].surface_id",
+            "field": "surface_id",
+        },
+        {"path": "$.segment_cues", "field": "segment_cues"},
+    ]
+
+
+def test_layout_authority_detection_rejects_aliases_and_static_values() -> None:
+    forbidden = forbidden_layout_authority_fields(
+        {
+            "beat_layout_intents": [
+                {
+                    "beat_index": 0,
+                    "needs": [
+                        {
+                            "LayoutName": "segment-tier",
+                            "requested-layout": "segment-list",
+                            "layoutId": "segment-tier",
+                        },
+                        {
+                            "kind": "tier_visual",
+                            "evidence_ref": "layout:default-live",
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert {"path": "$.beat_layout_intents[0].needs[0].LayoutName", "field": "LayoutName"} in (
+        forbidden
+    )
+    assert {
+        "path": "$.beat_layout_intents[0].needs[0].requested-layout",
+        "field": "requested-layout",
+    } in forbidden
+    assert {"path": "$.beat_layout_intents[0].needs[0].layoutId", "field": "layoutId"} in (
+        forbidden
+    )
+    assert {
+        "path": "$.beat_layout_intents[0].needs[1].evidence_ref",
+        "value": "layout:default-live",
+    } in forbidden
+
+
+def test_actionability_rewrites_unsupported_visual_claims() -> None:
+    script = [
+        "Watch the clip on screen and you can see the problem. "
+        "The safer claim is that the source record does not justify the leap."
+    ]
+
+    alignment = validate_segment_actionability(script, ["test unsupported clip claim"])
+
+    assert alignment["ok"] is False
+    assert alignment["removed_unsupported_action_lines"][0]["beat_index"] == 0
+    assert "Watch the clip" not in alignment["prepared_script"][0]
+    assert "safer claim" in alignment["prepared_script"][0]
+
+
+def test_loader_rejects_artifact_requiring_unsupported_runtime_action_rewrite(
+    tmp_path: Path,
+) -> None:
+    script = [
+        "Show the clip on screen before ranking the evidence. "
+        "Place the provenance ledger in A-tier because the source hashes line up."
+    ]
+    payload = _artifact(script, ["rank the evidence"])
+    _write_artifact(tmp_path, payload)
+
+    loaded = prep.load_prepped_programmes(tmp_path)
+
+    assert loaded == []

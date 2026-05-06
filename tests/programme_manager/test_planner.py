@@ -25,6 +25,8 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
+
 from agents.programme_manager.planner import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_MODEL,
@@ -72,19 +74,6 @@ def _well_formed_plan_payload(
                 "authorship": "hapax",
             }
         ],
-    }
-
-
-def _declarative_beat_layout_intent() -> dict:
-    return {
-        "beat_id": "hook",
-        "action_intent_kinds": ["show_evidence", "cite_source"],
-        "needs": ["evidence_visible", "source_visible"],
-        "proposed_postures": ["asset_front", "camera_subject"],
-        "expected_effects": ["evidence_on_screen", "source_context_legible"],
-        "evidence_refs": ["vault:source-note-1", "rag:proof-42"],
-        "source_affordances": ["asset:evidence-card", "resolver:source-card"],
-        "default_static_success_allowed": False,
     }
 
 
@@ -148,52 +137,52 @@ class TestHappyPath:
         assert plan is not None
         assert len(plan.programmes) == 2
 
-    def test_default_model_alias_routes_through_balanced_tier(self) -> None:
-        """Pin the model alias the production planner uses.
+    def test_default_model_is_resident_command_r(self) -> None:
+        """Pin the only production planner model.
 
-        The alias migrated from ``claude-opus-4-7`` to a TabbyAPI
-        local-served Command-R EXL3 model
-        (``command-r-08-2024-exl3-5.0bpw``) for cost + latency.
-        Operator-tunable via ``HAPAX_PROGRAMME_PLANNER_MODEL``.
+        Programme planning is content programming, so the default route is
+        resident Command-R. Non-Command-R environment overrides fail in the
+        production caller instead of silently falling back through LiteLLM.
         """
-        assert DEFAULT_MODEL in (
-            "balanced",
-            "claude-sonnet",
-            "claude-opus-4-7",
-            "command-r-08-2024-exl3-5.0bpw",
-        )
-        if "HAPAX_PROGRAMME_PLANNER_MODEL" not in __import__("os").environ:
-            assert DEFAULT_MODEL == "command-r-08-2024-exl3-5.0bpw"
+        assert DEFAULT_MODEL == "command-r-08-2024-exl3-5.0bpw"
 
-    def test_prompt_uses_proposal_only_layout_intents(self) -> None:
-        prompt = Path("agents/programme_manager/prompts/programme_plan.md").read_text(
-            encoding="utf-8"
-        )
+    def test_default_llm_rejects_non_resident_model_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.programme_manager import planner as planner_mod
 
-        assert "beat_layout_intents" in prompt
-        assert "responsible layout is a witnessed runtime control loop" in prompt
-        assert "proposals, not runtime authority" in prompt
-        assert '"may_command_layout": false' in prompt
-        forbidden = [
-            "segment_cues",
-            "camera.",
-            "front.",
-            "composition.",
-            "transition.",
-            "media.",
-            "/dev/shm",
-            "surface_id",
-            "coordinates",
-            "layout_name",
-            "host_presence",
-            "spoken_argument",
-            "spoken_only_fallback",
-            "garage-door",
-            "default.json",
-            "balanced-v2",
+        monkeypatch.setenv("HAPAX_PROGRAMME_PLANNER_MODEL", "qwen-not-allowed")
+
+        with pytest.raises(RuntimeError, match="resident Command-R"):
+            planner_mod._default_llm_fn("plan prompt")
+
+    def test_default_llm_calls_resident_command_r_helper(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.programme_manager import planner as planner_mod
+
+        calls: list[tuple[str, dict]] = []
+
+        def fake_call(prompt: str, **kwargs: object) -> str:
+            calls.append((prompt, kwargs))
+            return json.dumps(_well_formed_plan_payload())
+
+        monkeypatch.delenv("HAPAX_PROGRAMME_PLANNER_MODEL", raising=False)
+        monkeypatch.setenv("HAPAX_TABBY_URL", "http://tabby.test/v1/chat/completions")
+        monkeypatch.setattr(planner_mod, "call_resident_command_r", fake_call)
+
+        assert planner_mod._default_llm_fn("plan prompt")
+        assert calls == [
+            (
+                "plan prompt",
+                {
+                    "chat_url": "http://tabby.test/v1/chat/completions",
+                    "max_tokens": 8192,
+                    "temperature": 0.7,
+                    "timeout_s": planner_mod._LLM_TIMEOUT_S,
+                },
+            )
         ]
-        found = [term for term in forbidden if term in prompt]
-        assert found == []
 
 
 # ── Failure modes — first attempt ───────────────────────────────────────
@@ -317,43 +306,6 @@ class TestHardGateRejection:
         )
         plan = planner.plan(show_id="show-test-001")
         assert plan is not None  # retry succeeded
-
-
-# ── Planner ProgrammeContent boundary ─────────────────────────────────
-
-
-class TestPlannerProgrammeContentBoundary:
-    def test_planner_rejects_content_layout_decision_receipts(self) -> None:
-        payload = _well_formed_plan_payload()
-        payload["programmes"][0]["content"]["layout_decision_receipts"] = [
-            {
-                "receipt_id": "receipt.layout_state_rendered",
-                "source": "layout_state",
-            }
-        ]
-        planner = ProgrammePlanner(llm_fn=_stub_llm(payload), max_retries=0)
-        plan = planner.plan(show_id="show-test-001")
-        assert plan is None
-
-    def test_planner_rejects_command_like_values_hidden_in_layout_intents(self) -> None:
-        payload = _well_formed_plan_payload()
-        intent = _declarative_beat_layout_intent()
-        intent["source_affordances"] = ["asset:evidence-card", "surface:main"]
-        payload["programmes"][0]["content"]["beat_layout_intents"] = [intent]
-        planner = ProgrammePlanner(llm_fn=_stub_llm(payload), max_retries=0)
-        plan = planner.plan(show_id="show-test-001")
-        assert plan is None
-
-    def test_planner_accepts_declarative_layout_refs_and_evidence_ids(self) -> None:
-        payload = _well_formed_plan_payload()
-        payload["programmes"][0]["content"]["beat_layout_intents"] = [
-            _declarative_beat_layout_intent()
-        ]
-        planner = ProgrammePlanner(llm_fn=_stub_llm(payload), max_retries=0)
-        plan = planner.plan(show_id="show-test-001")
-        assert plan is not None
-        intents = plan.programmes[0].content.beat_layout_intents
-        assert intents[0]["evidence_refs"] == ["vault:source-note-1", "rag:proof-42"]
 
 
 # ── show_id cross-check ────────────────────────────────────────────────

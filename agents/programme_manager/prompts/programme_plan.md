@@ -129,7 +129,7 @@ outline.
             "beat_id": "hook",
             "action_intent_kinds": ["show_evidence"],
             "needs": ["evidence_visible"],
-            "proposed_postures": ["asset_front", "camera_subject"],
+            "proposed_postures": ["asset_front"],
             "expected_effects": ["evidence_on_screen"],
             "evidence_refs": ["vault:<specific-source-note-or-rag-hit>"],
             "source_affordances": ["asset:<specific-visual-or-source-card>"],
@@ -215,14 +215,14 @@ For each beat, emit a `beat_layout_intents` entry with:
   `demonstrate_action`, `compare_referents`, `cite_source`,
   `read_detail`.
 - `needs`: use only `evidence_visible`, `action_visible`,
-  `comparison_visible`, `source_visible`, `readability_held`,
-  `referent_visible`.
+  `comparison_visible`, `ranked_list_visible`, `source_visible`,
+  `readability_held`, `referent_visible`.
 - `proposed_postures`: use only `segment_primary`, `ranked_visual`,
   `countdown_visual`, `depth_visual`, `camera_subject`, `chat_prompt`,
   `asset_front`, `comparison`.
 - `expected_effects`: use only `evidence_on_screen`,
-  `action_on_screen`, `comparison_legible`, `source_context_legible`,
-  `detail_readable`, `referent_available`.
+  `action_on_screen`, `comparison_legible`, `ranked_list_legible`,
+  `source_context_legible`, `detail_readable`, `referent_available`.
 - `evidence_refs`: cite specific source notes, RAG hits, resolver ids,
   profile facts, or asset ids. Do not leave this generic.
 - `source_affordances`: name the source affordance class or asset class,

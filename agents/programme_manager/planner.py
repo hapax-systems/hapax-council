@@ -1,8 +1,8 @@
 """Hapax-authored programme planner — Phase 3 of the programme-layer plan.
 
 The ``ProgrammePlanner`` runs at show-start and at each programme
-boundary. It assembles a perceptual + vault + profile context, calls a
-grounded LLM (LiteLLM `balanced` tier — Claude Sonnet) with the
+boundary. It assembles a perceptual + vault + profile context, calls the
+resident local grounded Command-R model with the
 ``programme_plan.md`` prompt, parses the response into a
 ``ProgrammePlan``, and (on validation failure) retries once with the
 error message fed back as a corrective hint.
@@ -34,17 +34,19 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
 from pydantic import ValidationError
 
-from shared.config import LITELLM_KEY
 from shared.programme import ProgrammePlan
+from shared.resident_command_r import (
+    RESIDENT_COMMAND_R_MODEL,
+    call_resident_command_r,
+    configured_resident_model,
+    tabby_chat_url,
+)
 
 log = logging.getLogger(__name__)
 
@@ -55,20 +57,17 @@ log = logging.getLogger(__name__)
 # review surface).
 _PROMPT_PATH = Path(__file__).parent / "prompts" / "programme_plan.md"
 
-# Model name sent in the API request. When the planner routes to
-# TabbyAPI (primary), the model field is informational — TabbyAPI
-# serves whatever is loaded. When falling back to LiteLLM, this is
-# the LiteLLM model alias.
-DEFAULT_MODEL = os.environ.get("HAPAX_PROGRAMME_PLANNER_MODEL", "command-r-08-2024-exl3-5.0bpw")
+# Model name sent in the API request. Programme planning is content
+# programming, so it is pinned to resident Command-R and fails closed on
+# non-Command-R environment overrides.
+DEFAULT_MODEL = RESIDENT_COMMAND_R_MODEL
 
-# Primary endpoint: TabbyAPI (local inference, no external API).
-# Fallback: LiteLLM gateway (for when TabbyAPI is down or model-swapping).
-_TABBY_URL = os.environ.get("HAPAX_TABBY_URL", "http://localhost:5000/v1/chat/completions")
+# Primary and only endpoint: TabbyAPI (local inference, no external API).
+# Resolve at call time so tests and launch wrappers can set HAPAX_TABBY_URL
+# before the production caller runs.
 
 # Budget raised from 60s → 120s: the enriched programme plan prompt
-# (~23KB) plus per-call context regularly exceeds 60s on the balanced
-# tier (Claude Sonnet via Anthropic API). Local Qwen3.6 at 33 tok/s
-# needs ~130s for the full prompt + response.
+# (~23KB) plus per-call context regularly exceeds 60s on local inference.
 _LLM_TIMEOUT_S: float = 300.0
 
 # Max number of corrective retries after the first call. Spec mandates
@@ -95,8 +94,8 @@ class ProgrammePlanner:
         max_retries: int = DEFAULT_MAX_RETRIES,
         prompt_path: Path = _PROMPT_PATH,
     ) -> None:
-        """``llm_fn`` defaults to the LiteLLM ``balanced``-tier call;
-        tests inject a deterministic stub. ``max_retries`` is the
+        """``llm_fn`` defaults to the resident Command-R call; tests
+        inject a deterministic stub. ``max_retries`` is the
         number of *additional* attempts after the first (so 1 = total
         of 2 tries: initial + one retry)."""
         self._llm_fn = llm_fn or _default_llm_fn
@@ -320,55 +319,22 @@ class ProgrammePlanner:
 # --- default LLM call ------------------------------------------------
 
 
-def _call_endpoint(url: str, prompt: str, auth: str | None = None) -> str | None:
-    """Call an OpenAI-compatible chat endpoint. Returns content or None on failure."""
-    body = json.dumps(
-        {
-            "model": DEFAULT_MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 8192,
-            "temperature": 0.7,
-            "chat_template_kwargs": {"enable_thinking": False},
-        }
-    ).encode()
-    headers: dict[str, str] = {"Content-Type": "application/json"}
-    if auth:
-        headers["Authorization"] = f"Bearer {auth}"
-    req = urllib.request.Request(url, body, headers)
-    try:
-        with urllib.request.urlopen(req, timeout=_LLM_TIMEOUT_S) as resp:
-            data = json.loads(resp.read())
-        content = data["choices"][0]["message"]["content"] or ""
-        # Strip Qwen3's <think>...</think> chain-of-thought
-        import re
-
-        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
-        return content
-    except Exception:
-        return None
-
-
 def _default_llm_fn(prompt: str) -> str:
-    """Default LLM caller — local TabbyAPI first, LiteLLM fallback.
+    """Default LLM caller — resident Command-R only.
 
-    Primary: TabbyAPI at localhost:5000 (Command-R or whatever is loaded).
-    No external API dependency. If TabbyAPI is down (model swap, restart),
-    falls back to LiteLLM at localhost:4000 which has its own fallback chain.
+    There is intentionally no LiteLLM fallback here. Programme plans are
+    content-programming artifacts; a wrong-model plan is worse than no plan.
     """
-    # Primary: TabbyAPI (local, no auth needed — disable_auth: true)
-    result = _call_endpoint(_TABBY_URL, prompt)
-    if result is not None:
-        log.info("planner LLM: served by TabbyAPI (local)")
-        return result
-
-    # Fallback: LiteLLM gateway
-    log.info("planner LLM: TabbyAPI unavailable, falling back to LiteLLM")
-    litellm_url = os.environ.get("HAPAX_LITELLM_URL", "http://localhost:4000/v1/chat/completions")
-    result = _call_endpoint(litellm_url, prompt, auth=LITELLM_KEY)
-    if result is not None:
-        return result
-
-    raise RuntimeError("planner LLM: both TabbyAPI and LiteLLM failed")
+    configured_resident_model("HAPAX_PROGRAMME_PLANNER_MODEL", purpose="programme planning")
+    result = call_resident_command_r(
+        prompt,
+        chat_url=tabby_chat_url(),
+        max_tokens=8192,
+        temperature=0.7,
+        timeout_s=_LLM_TIMEOUT_S,
+    )
+    log.info("planner LLM: served by resident Command-R")
+    return result
 
 
 __all__ = ["DEFAULT_MAX_RETRIES", "DEFAULT_MODEL", "LLMCallable", "ProgrammePlanner"]
