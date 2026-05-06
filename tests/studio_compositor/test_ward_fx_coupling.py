@@ -285,6 +285,36 @@ class TestFxEventToWardProperties:
         chat = ward_properties.get_specific_ward_properties("chat_ambient")
         assert chat is None or chat.scale_bump_pct == 0.0
 
+    def test_audio_kick_onset_scales_bump_by_event_strength(
+        self,
+        uniforms_path,
+        substrate_hint_path,
+        recent_recruitment_path,
+        ward_properties_isolated,
+    ):
+        from agents.studio_compositor import ward_properties
+        from agents.studio_compositor.fx_chain_ward_reactor import WardFxReactor
+        from shared.ward_fx_bus import FXEvent, get_bus
+
+        reactor = WardFxReactor(
+            uniforms_path=uniforms_path,
+            substrate_hint_path=substrate_hint_path,
+            recent_recruitment_path=recent_recruitment_path,
+        )
+        reactor.connect()
+
+        get_bus().publish_fx(FXEvent(kind="audio_kick_onset", strength=0.25))
+        ward_properties.clear_ward_properties_cache()
+        low = ward_properties.get_specific_ward_properties("pressure_gauge")
+        assert low is not None
+        assert low.scale_bump_pct == pytest.approx(0.08 * 0.25)
+
+        get_bus().publish_fx(FXEvent(kind="audio_kick_onset", strength=0.75))
+        ward_properties.clear_ward_properties_cache()
+        high = ward_properties.get_specific_ward_properties("pressure_gauge")
+        assert high is not None
+        assert high.scale_bump_pct == pytest.approx(0.08 * 0.75)
+
     def test_chain_swap_bumps_token_pole_and_variety_log(
         self,
         uniforms_path,
@@ -337,6 +367,31 @@ class TestFxEventToWardProperties:
         pressure = ward_properties.get_specific_ward_properties("pressure_gauge")
         assert pressure is not None
         assert pressure.border_pulse_hz > 0.0
+
+    def test_intensity_spike_scales_pulse_by_event_strength(
+        self,
+        uniforms_path,
+        substrate_hint_path,
+        recent_recruitment_path,
+        ward_properties_isolated,
+    ):
+        from agents.studio_compositor import ward_properties
+        from agents.studio_compositor.fx_chain_ward_reactor import WardFxReactor
+        from shared.ward_fx_bus import FXEvent, get_bus
+
+        reactor = WardFxReactor(
+            uniforms_path=uniforms_path,
+            substrate_hint_path=substrate_hint_path,
+            recent_recruitment_path=recent_recruitment_path,
+        )
+        reactor.connect()
+
+        get_bus().publish_fx(FXEvent(kind="intensity_spike", strength=0.5))
+
+        ward_properties.clear_ward_properties_cache()
+        pressure = ward_properties.get_specific_ward_properties("pressure_gauge")
+        assert pressure is not None
+        assert pressure.border_pulse_hz == pytest.approx(4.0 * 0.5)
 
 
 class TestJsonlObservability:
@@ -682,6 +737,8 @@ class TestFxChainAudioPublishers:
         fx_chain._maybe_publish_audio_fx_events(fake, {"onset_kick": 0.9})
         kinds = [e.kind for e in captured]
         assert "audio_kick_onset" in kinds
+        kick = next(e for e in captured if e.kind == "audio_kick_onset")
+        assert kick.strength == pytest.approx(0.9)
 
     def test_kick_below_threshold_does_not_emit(self, isolated_bus):
         from agents.studio_compositor import fx_chain
@@ -728,6 +785,23 @@ class TestFxChainAudioPublishers:
         fx_chain._maybe_publish_audio_fx_events(fake, {"mixer_energy": 0.85})
         kinds = [e.kind for e in captured]
         assert "intensity_spike" in kinds
+        spike = next(e for e in captured if e.kind == "intensity_spike")
+        assert spike.strength == pytest.approx(0.85)
+
+    def test_audio_event_strength_is_clamped(self, isolated_bus):
+        from agents.studio_compositor import fx_chain
+        from shared.ward_fx_bus import FXEvent, get_bus
+
+        class _FakeCompositor:
+            pass
+
+        captured: list[FXEvent] = []
+        get_bus().subscribe_fx(captured.append)
+
+        fake = _FakeCompositor()
+        fx_chain._maybe_publish_audio_fx_events(fake, {"onset_kick": 1.4})
+        kick = next(e for e in captured if e.kind == "audio_kick_onset")
+        assert kick.strength == 1.0
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
