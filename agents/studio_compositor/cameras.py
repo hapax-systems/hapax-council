@@ -215,6 +215,7 @@ def add_camera_branch(
         upload = Gst.ElementFactory.make("cudaupload", f"upload_{role}")
         cuda_convert = Gst.ElementFactory.make("cudaconvert", f"cudaconv_{role}")
         scale = Gst.ElementFactory.make("cudascale", f"scale_{role}")
+        scale.set_property("add-borders", True)
         scale_caps = Gst.ElementFactory.make("capsfilter", f"scalecaps_{role}")
         scale_caps.set_property(
             "caps",
@@ -225,6 +226,7 @@ def add_camera_branch(
         cpu_convert = Gst.ElementFactory.make("videoconvert", f"cpuconv_{role}")
         cpu_convert.set_property("dither", 0)
         scale = Gst.ElementFactory.make("videoscale", f"scale_{role}")
+        scale.set_property("add-borders", True)
         scale_caps = Gst.ElementFactory.make("capsfilter", f"scalecaps_{role}")
         scale_caps.set_property(
             "caps",

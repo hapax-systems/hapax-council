@@ -70,6 +70,8 @@ PREP_BUDGET_S = float(os.environ.get("HAPAX_SEGMENT_PREP_BUDGET_S", "1800"))  # 
 MAX_SEGMENTS = int(os.environ.get("HAPAX_SEGMENT_PREP_MAX", "4"))
 PREP_ARTIFACT_SCHEMA_VERSION = 1
 PREP_ARTIFACT_AUTHORITY = "prior_only"
+PREP_STATUS_VERSION = 1
+PREP_STATUS_FILENAME = "prep-status.json"
 
 
 def _today_dir(base: Path) -> Path:
@@ -104,6 +106,45 @@ def _is_sha256_hex(value: Any) -> bool:
 def _artifact_hash(payload: dict[str, Any]) -> str:
     body = {k: v for k, v in payload.items() if k != "artifact_sha256"}
     return _sha256_json(body)
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _update_prep_status(
+    prep_session: dict[str, Any] | None,
+    *,
+    status: str | None = None,
+    phase: str | None = None,
+    **updates: Any,
+) -> None:
+    if not isinstance(prep_session, dict):
+        return
+    raw_path = prep_session.get("prep_status_path")
+    if not raw_path:
+        return
+    path = Path(str(raw_path))
+    payload = dict(prep_session.get("prep_status") or {})
+    if status is not None:
+        payload["status"] = status
+    if phase is not None:
+        payload["phase"] = phase
+    payload.update({key: value for key, value in updates.items() if value is not None})
+    payload["prep_status_version"] = PREP_STATUS_VERSION
+    payload["updated_at"] = datetime.now(tz=UTC).isoformat()
+    start_monotonic = prep_session.get("_prep_started_monotonic")
+    if isinstance(start_monotonic, int | float):
+        payload["elapsed_s"] = round(time.monotonic() - float(start_monotonic), 1)
+    payload["llm_calls"] = list(prep_session.get("llm_calls") or [])
+    prep_session["prep_status"] = payload
+    try:
+        _write_json_atomic(path, payload)
+    except Exception:
+        log.warning("daily_segment_prep: failed to write prep status %s", path, exc_info=True)
 
 
 def _json_equal(left: Any, right: Any) -> bool:
@@ -355,12 +396,23 @@ def _call_llm(
     is worse than no prep artifact.
     """
     model = _prep_model()
-    _assert_resident_prep_model(model)
-    _record_llm_call(
+    record = _record_llm_call(
         prep_session,
         phase=phase,
         programme_id=programme_id,
         prompt=prompt,
+    )
+    current_call = (record or {}) | {
+        "status": "in_progress",
+        "max_tokens": max_tokens,
+        "timeout_s": _PREP_LLM_TIMEOUT_S,
+    }
+    _update_prep_status(
+        prep_session,
+        status="in_progress",
+        phase=f"{phase}_llm_call_in_progress",
+        current_llm_call=current_call,
+        current_model_id=model,
     )
 
     try:
@@ -372,8 +424,21 @@ def _call_llm(
             timeout_s=_PREP_LLM_TIMEOUT_S,
         )
         log.info("segment prep LLM: served by resident Command-R")
+        _update_prep_status(
+            prep_session,
+            status="in_progress",
+            phase=f"{phase}_llm_call_returned",
+            current_llm_call=current_call | {"status": "returned"},
+        )
         return content
-    except Exception:
+    except Exception as exc:
+        _update_prep_status(
+            prep_session,
+            status="in_progress",
+            phase=f"{phase}_llm_call_failed",
+            current_llm_call=current_call | {"status": "failed"},
+            last_error=f"{type(exc).__name__}: {exc}",
+        )
         log.warning("segment prep LLM: resident Command-R call failed", exc_info=True)
         raise
 
@@ -1137,7 +1202,33 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
     start = time.monotonic()
     saved: list[Path] = []
     prep_session = _new_prep_session()
-    _assert_resident_prep_model(prep_session["model_id"])
+    started_at = datetime.now(tz=UTC).isoformat()
+    prep_session["_prep_started_monotonic"] = start
+    prep_session["prep_status_path"] = str(today / PREP_STATUS_FILENAME)
+    prep_session["prep_status"] = {
+        "prep_status_version": PREP_STATUS_VERSION,
+        "status": "in_progress",
+        "phase": "run_start",
+        "pid": os.getpid(),
+        "started_at": started_at,
+        "updated_at": started_at,
+        "prep_session_id": prep_session["prep_session_id"],
+        "model_id": prep_session["model_id"],
+        "target_segments": MAX_SEGMENTS,
+        "existing_manifest_programmes": existing_manifest_names,
+        "llm_calls": [],
+    }
+    _update_prep_status(prep_session, status="in_progress", phase="resident_model_check")
+    try:
+        _assert_resident_prep_model(prep_session["model_id"])
+    except Exception as exc:
+        _update_prep_status(
+            prep_session,
+            status="failed",
+            phase="resident_model_check_failed",
+            last_error=f"{type(exc).__name__}: {exc}",
+        )
+        raise
 
     # Step 1: Plan — call the planner in rounds until we have enough
     # segmented programmes. Each round yields ~3 programmes; for 10
@@ -1146,7 +1237,15 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
     segmented: list[Any] = []
     seen_ids: set[str] = set(existing_programme_ids)
     plan_round = 0
-    max_rounds = (MAX_SEGMENTS // 2) + 2  # generous ceiling
+    max_rounds = 1 if MAX_SEGMENTS == 1 else (MAX_SEGMENTS // 2) + 2
+    planner_target_programmes = 1 if MAX_SEGMENTS == 1 else None
+    _update_prep_status(
+        prep_session,
+        status="in_progress",
+        phase="planning_start",
+        max_rounds=max_rounds,
+        planner_target_programmes=planner_target_programmes,
+    )
 
     try:
         from agents.programme_manager.planner import ProgrammePlanner
@@ -1160,13 +1259,26 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
                 max_tokens=8192,
             )
         )
-    except Exception:
+    except Exception as exc:
+        _update_prep_status(
+            prep_session,
+            status="failed",
+            phase="planner_construction_failed",
+            last_error=f"{type(exc).__name__}: {exc}",
+        )
         log.error("daily_segment_prep: planner construction failed", exc_info=True)
         return saved
 
     while len(segmented) < MAX_SEGMENTS and plan_round < max_rounds:
         elapsed = time.monotonic() - start
         if elapsed >= PREP_BUDGET_S:
+            _update_prep_status(
+                prep_session,
+                status="in_progress",
+                phase="planning_budget_exhausted",
+                plan_round=plan_round,
+                segmented_count=len(segmented),
+            )
             log.warning(
                 "daily_segment_prep: prep budget exhausted during planning (%.0fs)", elapsed
             )
@@ -1174,13 +1286,40 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
 
         plan_round += 1
         show_id = f"show-{datetime.now(tz=UTC).strftime('%Y%m%d')}-{plan_round:02d}"
+        _update_prep_status(
+            prep_session,
+            status="in_progress",
+            phase="planner_round_in_progress",
+            plan_round=plan_round,
+            show_id=show_id,
+            segmented_count=len(segmented),
+        )
         try:
-            plan = planner.plan(show_id=show_id)
-        except Exception:
+            plan = planner.plan(
+                show_id=show_id,
+                target_programmes=planner_target_programmes,
+            )
+        except Exception as exc:
+            _update_prep_status(
+                prep_session,
+                status="in_progress",
+                phase="planner_round_failed",
+                plan_round=plan_round,
+                show_id=show_id,
+                last_error=f"{type(exc).__name__}: {exc}",
+            )
             log.warning("daily_segment_prep: planner round %d failed", plan_round, exc_info=True)
             continue
 
         if plan is None or not plan.programmes:
+            _update_prep_status(
+                prep_session,
+                status="in_progress",
+                phase="planner_round_no_programmes",
+                plan_round=plan_round,
+                show_id=show_id,
+                segmented_count=len(segmented),
+            )
             log.warning("daily_segment_prep: planner round %d returned no programmes", plan_round)
             continue
 
@@ -1203,6 +1342,15 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
                 ]
             ),
         )
+        _update_prep_status(
+            prep_session,
+            status="in_progress",
+            phase="planner_round_returned",
+            plan_round=plan_round,
+            show_id=show_id,
+            planned_programmes=len(plan.programmes),
+            segmented_count=len(segmented),
+        )
 
     log.info(
         "daily_segment_prep: %d segmented programmes collected in %d rounds",
@@ -1214,19 +1362,62 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
     for prog in segmented[:MAX_SEGMENTS]:
         elapsed = time.monotonic() - start
         if elapsed >= PREP_BUDGET_S:
+            _update_prep_status(
+                prep_session,
+                status="in_progress",
+                phase="compose_budget_exhausted",
+                saved_count=len(saved),
+                segmented_count=len(segmented),
+            )
             log.warning("daily_segment_prep: prep budget exhausted (%.0fs)", elapsed)
             break
 
+        prog_id = getattr(prog, "programme_id", "?")
+        _update_prep_status(
+            prep_session,
+            status="in_progress",
+            phase="compose_segment_in_progress",
+            programme_id=str(prog_id),
+            saved_count=len(saved),
+            segmented_count=len(segmented),
+        )
         try:
             path = prep_segment(prog, today, prep_session=prep_session)
-        except Exception:
-            prog_id = getattr(prog, "programme_id", "?")
+        except Exception as exc:
+            _update_prep_status(
+                prep_session,
+                status="in_progress",
+                phase="compose_segment_failed",
+                programme_id=str(prog_id),
+                last_error=f"{type(exc).__name__}: {exc}",
+                saved_count=len(saved),
+            )
             log.warning("daily_segment_prep: segment %s failed, continuing", prog_id, exc_info=True)
             path = None
         if path:
             saved.append(path)
+            _update_prep_status(
+                prep_session,
+                status="in_progress",
+                phase="compose_segment_saved",
+                programme_id=str(prog_id),
+                saved_count=len(saved),
+                last_saved_path=str(path),
+            )
 
-    _assert_resident_prep_model(prep_session["model_id"])
+    _update_prep_status(prep_session, status="in_progress", phase="final_resident_model_check")
+    try:
+        _assert_resident_prep_model(prep_session["model_id"])
+    except Exception as exc:
+        _update_prep_status(
+            prep_session,
+            status="failed",
+            phase="final_resident_model_check_failed",
+            last_error=f"{type(exc).__name__}: {exc}",
+            saved_count=len(saved),
+            segmented_count=len(segmented),
+        )
+        raise
 
     # Step 3: Write manifest.  The manifest is the loader allow-list, so
     # repeated prep runs must append newly accepted artifacts without
@@ -1255,6 +1446,19 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
         encoding="utf-8",
     )
     manifest_tmp.replace(manifest)
+    final_status = "completed" if saved else "completed_no_programmes"
+    if segmented and not saved:
+        final_status = "completed_no_segments_saved"
+    _update_prep_status(
+        prep_session,
+        status=final_status,
+        phase=final_status,
+        saved_count=len(saved),
+        segmented_count=len(segmented),
+        manifest_path=str(manifest),
+        manifest_programmes=manifest_programmes,
+        run_saved_programmes=[p.name for p in saved],
+    )
 
     # Step 4: Upsert programme summaries into Qdrant so the affordance
     # pipeline can semantically match impingements against available
