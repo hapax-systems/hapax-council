@@ -140,6 +140,19 @@ def test_recovery_window_raises_gain_after_visualizer_dampening() -> None:
     assert "anti_visualizer_score_recovering" in recovered.reason_codes
 
 
+def test_default_recovery_rate_restores_variance_after_clean_windows() -> None:
+    governor = AudioVisualModulationGovernor()
+    for _ in range(3):
+        dampened = governor.observe(AntiVisualizerObservation(score=0.9, audio_rms=0.7, fresh=True))
+
+    first_clean = governor.observe(AntiVisualizerObservation(score=0.1, audio_rms=0.7, fresh=True))
+    second_clean = governor.observe(AntiVisualizerObservation(score=0.1, audio_rms=0.7, fresh=True))
+
+    assert dampened.coupling_gain == pytest.approx(0.85)
+    assert first_clean.coupling_gain == pytest.approx(0.9775)
+    assert second_clean.coupling_gain == pytest.approx(1.0)
+
+
 def test_silence_guard_does_not_dampen_audio_geometry() -> None:
     governor = AudioVisualModulationGovernor(dampen_rate=0.5, hysteresis_windows=1)
     state = governor.observe(AntiVisualizerObservation(score=0.99, audio_rms=0.0, fresh=True))
