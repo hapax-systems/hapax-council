@@ -7,7 +7,17 @@ and publish a source-state/WCS row that says what was visible or suppressed.
 
 The older Hyprland/grim pixel-capture path is intentionally not used here.
 Public/default mode must not broadcast unbounded Wayland pixels when the
-bounded tmux text buffer is enough to show work traces.
+bounded tmux text buffer is enough to show work traces. That default also
+closes the old Phase 3 "per-region pixel masking" follow-up: there are no
+public pixels to mask on the live path, and the unsafe raw/pixel bypasses
+fail closed before capture.
+
+Phase 3 status is explicit in this module boundary: foreground rotation is
+the salience-ranked ``_select_lanes`` output rendered by ``_layout_for_count``;
+Bayesian-era gate migration is handled through ``CodingActivityReveal``'s
+``ActivityRevealMixin`` claim instead of a DURF-local hardcoded gate table;
+the default-on reflection layer lives beside the Cairo renderer and consumes
+only redacted ``DURFPaneState.lines``.
 """
 
 from __future__ import annotations

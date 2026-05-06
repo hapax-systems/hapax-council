@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 import yaml
 
+from agents.studio_compositor import coding_activity_reveal as _coding_activity_module
 from agents.studio_compositor import durf_source as _durf_module
 from agents.studio_compositor.activity_reveal_ward import ActivityRevealMixin
 from agents.studio_compositor.cairo_sources import get_cairo_source_class
@@ -67,6 +69,30 @@ def _registry(paths: tuple[Path, Path, Path, Path]) -> CodexPaneRegistry:
         claim_dir=claim_dir,
         session_health_path=health_path,
     )
+
+
+def _surface_region_has_signal(
+    surface: Any,
+    *,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+) -> bool:
+    data = bytes(surface.get_data())
+    stride = surface.get_stride()
+    width = surface.get_width()
+    height = surface.get_height()
+    x0 = max(0, x)
+    x1 = min(width, x + w)
+    y0 = max(0, y)
+    y1 = min(height, y + h)
+    for row in range(y0, y1):
+        start = row * stride + x0 * 4
+        end = row * stride + x1 * 4
+        if any(byte != 0 for byte in data[start:end]):
+            return True
+    return False
 
 
 def _write_health(path: Path) -> None:
@@ -363,6 +389,51 @@ class TestSourceState:
             rendered_text = "\n".join(pane.lines)
             assert "DURF" not in rendered_text
             assert "SESSION" not in rendered_text
+        finally:
+            source.stop()
+
+
+class TestDURFReflectionLayer:
+    def test_reflection_lines_use_last_two_redacted_pane_lines(self) -> None:
+        lines = ("claim acquired", "uv run pytest", "17 passed")
+
+        assert _coding_activity_module._reflection_lines(lines) == ("17 passed", "uv run pytest")
+
+    def test_reflection_warp_is_slow_and_bounded(self) -> None:
+        offset_0 = _coding_activity_module._reflection_warp_offset(0.0)
+        offset_5 = _coding_activity_module._reflection_warp_offset(5.0)
+        offset_10 = _coding_activity_module._reflection_warp_offset(10.0)
+
+        assert abs(offset_0) <= _coding_activity_module._REFLECTION_WARP_MAX_PX
+        assert abs(offset_5) <= _coding_activity_module._REFLECTION_WARP_MAX_PX
+        assert abs(offset_10) <= _coding_activity_module._REFLECTION_WARP_MAX_PX
+        assert offset_0 != pytest.approx(offset_5)
+
+    def test_reflection_layer_renders_only_in_bottom_region(self, codex_config: Path) -> None:
+        import cairo
+
+        rect = (20, 20, 300, 140)
+        rx, ry, rw, rh = _coding_activity_module._reflection_region(rect)
+        pane = DURFPaneState(
+            lane_id="cx-cyan",
+            glyph="C-<>",
+            tmux_target="hapax-codex-cx-cyan:0.0",
+            visible=True,
+            lines=(
+                "uv run pytest tests/studio_compositor/test_durf_source.py -q",
+                "reflection layer pinned",
+                "18 passed",
+            ),
+            captured_at=100.0,
+            redaction_state="clean",
+        )
+        source = CodingActivityReveal(config_path=codex_config, start_thread=False)
+        try:
+            surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 360, 200)
+            cr = cairo.Context(surface)
+            source._render_reflection_layer(cr, rect, pane, alpha=1.0, t=0.0)
+            assert _surface_region_has_signal(surface, x=rx, y=ry, w=rw, h=rh)
+            assert not _surface_region_has_signal(surface, x=20, y=20, w=300, h=40)
         finally:
             source.stop()
 
