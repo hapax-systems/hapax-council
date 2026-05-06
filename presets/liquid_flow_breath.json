@@ -16,7 +16,7 @@
     "fisheye_breath": {
       "type": "fisheye",
       "params": {
-        "amount": 0.18,
+        "strength": 0.18,
         "center_x": 0.5,
         "center_y": 0.5
       }
@@ -24,8 +24,8 @@
     "breathing_deep": {
       "type": "breathing",
       "params": {
-        "frequency": 0.18,
-        "depth": 0.28
+        "rate": 0.18,
+        "amplitude": 0.28
       }
     },
     "drift_slow": {

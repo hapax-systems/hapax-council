@@ -26,6 +26,7 @@ from typing import Any
 from shared.claim_prompt import SURFACE_FLOORS
 from shared.narration_triad import render_triad_prompt_context
 from shared.operator_referent import REFERENTS
+from shared.resident_command_r import call_resident_command_r
 
 log = logging.getLogger(__name__)
 
@@ -585,6 +586,57 @@ def _render_assets_context(assets: Any) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
+def _mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        dumped = value.model_dump(mode="json")
+        return dumped if isinstance(dumped, dict) else {}
+    return {}
+
+
+def _delivery_mode_value(content: Any) -> str:
+    mode = getattr(content, "delivery_mode", "live_prior")
+    return str(getattr(mode, "value", mode) or "live_prior").strip().lower().replace("-", "_")
+
+
+def _render_live_prior_context(prog: Any) -> str:
+    content = getattr(prog, "content", None)
+    if content is None or _delivery_mode_value(content) != "live_prior":
+        return ""
+
+    beat_index = _get_beat_index(prog)
+    cards = [_mapping(item) for item in getattr(content, "beat_cards", []) or []]
+    priors = [_mapping(item) for item in getattr(content, "live_priors", []) or []]
+    cards = [item for item in cards if item.get("beat_index") in {None, beat_index}]
+    priors = [item for item in priors if item.get("beat_index") in {None, beat_index}]
+    if not cards and not priors:
+        return ""
+
+    lines = [
+        "Prepared live priors (proposal-only; compose live, do not read as a script):",
+        f"  current beat index: {beat_index}",
+    ]
+    for card in cards[:2]:
+        title = str(card.get("title") or card.get("beat_id") or "beat").strip()
+        summary = str(card.get("prior_summary") or "").strip()
+        needs = ", ".join(str(item) for item in card.get("layout_needs") or [] if item)
+        actions = ", ".join(str(item) for item in card.get("action_intent_kinds") or [] if item)
+        if title:
+            lines.append(f"  - beat card: {title[:140]}")
+        if summary:
+            lines.append(f"    prior: {summary[:700]}")
+        if actions:
+            lines.append(f"    action intents: {actions[:220]}")
+        if needs:
+            lines.append(f"    layout needs: {needs[:220]}")
+    for prior in priors[:2]:
+        text = str(prior.get("text") or "").strip()
+        if text:
+            lines.append(f"  - live prior excerpt: {text[:700]}")
+    return "\n".join(lines)
+
+
 def _build_seed(context: Any) -> str:
     """Deterministic state summary used as the LLM grounding."""
     parts: list[str] = []
@@ -602,6 +654,10 @@ def _build_seed(context: Any) -> str:
         )
         if isinstance(beat, str) and beat:
             parts.append(f"Programme narrative beat: {beat}")
+
+        live_prior_context = _render_live_prior_context(prog)
+        if live_prior_context:
+            parts.append(live_prior_context)
 
         # Resolve structured assets for segmented-content roles.
         # Enriches the seed with concrete vault / Qdrant / content-resolver
@@ -786,41 +842,21 @@ def _call_llm_grounded(
     seed: str,
     max_tokens: int = _GROUNDED_MAX_TOKENS,
 ) -> str | None:
-    """Production LLM call via the local grounded tier (Command-R/Qwen3.5, TabbyAPI).
+    """Production LLM call via resident Command-R on TabbyAPI.
 
-    Grounding acts route to ``local-fast`` (TabbyAPI). Per
-    feedback_grounding_exhaustive + feedback_director_grounding —
-    grounding acts stay on the local grounded model, not cloud.
+    Grounding acts stay on the resident local grounded model, not cloud,
+    not LiteLLM fallback, and not a model-swapped TabbyAPI process.
 
     ``max_tokens`` is elevated during segment mode (500 vs 220) so the
     host prompt can produce 3-6 sentences of professional delivery.
     """
-    try:
-        import litellm  # noqa: PLC0415
-    except ImportError:
-        return None
-
-    import os  # noqa: PLC0415
-
-    from shared.config import MODELS  # noqa: PLC0415
 
     def _one_call(temp: float) -> str | None:
-        response = litellm.completion(
-            model=f"openai/{MODELS['local-fast']}",
-            api_base=os.environ.get("LITELLM_API_BASE", "http://127.0.0.1:4000"),
-            api_key=os.environ.get("LITELLM_API_KEY", "not-set"),
-            messages=[{"role": "user", "content": prompt}],
+        return call_resident_command_r(
+            prompt,
             max_tokens=max_tokens,
             temperature=temp,
         )
-        choices = getattr(response, "choices", None)
-        if not choices:
-            return None
-        message = getattr(choices[0], "message", None)
-        content = getattr(message, "content", None) if message else None
-        if not isinstance(content, str):
-            return None
-        return content.strip()
 
     try:
         text = _one_call(_GROUNDED_TEMPERATURE)

@@ -1,0 +1,11 @@
+[Unit]
+Description=Hapax audio routing invariant check
+After=pipewire.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/hapax/projects/hapax-council/scripts/audio-routing-check.sh
+StandardOutput=journal
+StandardError=journal
+# On failure, log prominently but don't crash anything
+SuccessExitStatus=1 2

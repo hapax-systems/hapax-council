@@ -123,8 +123,9 @@ _DEFAULT_CAMERAS: list[dict[str, Any]] = [
     {
         "role": "brio-synths",
         "device": "/dev/v4l/by-id/usb-046d_Logitech_BRIO_9726C031-video-index0",
-        "width": 1280,
-        "height": 720,
+        "width": 640,
+        "height": 480,
+        "framerate": 15,
         "input_format": "mjpeg",
         "semantic_role": "turntables",
         "subject_ontology": ["turntable", "vinyl"],

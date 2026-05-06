@@ -170,7 +170,16 @@ class PwAudioOutput:
                 "--media-role",
                 media_role,
             ]
-            if target:
+            # 2026-05-05: Do NOT pass --target when media_role is
+            # "Broadcast". WirePlumber's role-based loopback
+            # (loopback.sink.role.broadcast) already has
+            # preferred-target = hapax-voice-fx-capture. Passing
+            # --target simultaneously creates a SECOND direct link to
+            # the same node, and PipeWire's mixer sums both paths =
+            # +6dB transient spike every time WirePlumber re-evaluates
+            # routing policy. This was the root cause of the recurring
+            # broadcast crackle.
+            if target and media_role != "Broadcast":
                 cmd.extend(["--target", target])
             cmd.append("-")
             proc = subprocess.Popen(
@@ -317,7 +326,8 @@ def play_pcm(
             "--media-role",
             media_role,
         ]
-        if target:
+        # See _ensure_process comment — same double-path prevention.
+        if target and media_role != "Broadcast":
             cmd.extend(["--target", target])
         cmd.append("-")
         result = subprocess.run(

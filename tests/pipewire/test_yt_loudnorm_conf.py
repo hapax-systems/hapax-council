@@ -1,7 +1,7 @@
-"""Regression pin for B2 / H#13 YT-bed loudnorm conf.
+"""Regression pin for the YT-bed loudnorm conf.
 
 Pins the conf shape so a future edit can't silently break the
-LUFS / dBTP target the voice-vs-YT level invariant depends on.
+LUFS / dBTP target or reintroduce the retired software ducker path.
 """
 
 from __future__ import annotations
@@ -30,10 +30,16 @@ def test_sink_name_fixed_point(raw_config: str) -> None:
     assert 'node.name = "hapax-yt-loudnorm"' in raw_config
 
 
-def test_chains_into_ytube_ducker(raw_config: str) -> None:
-    """The whole point — normalised output must target the ducker so
-    the voice sidechain attenuates the normalised (not raw) level."""
-    assert 'target.object = "hapax-ytube-ducked"' in raw_config
+def test_playback_is_reconciler_owned_mpc_handoff(raw_config: str) -> None:
+    """Software ducking is retired; reconciler maps FL/FR to MPC AUX6/AUX7."""
+    body = _strip_comments(raw_config)
+    playback_idx = body.find("playback.props")
+    assert playback_idx >= 0, "missing playback.props block"
+    tail = body[playback_idx:]
+    assert "target.object" not in tail
+    assert "node.autoconnect = false" in tail
+    assert 'node.description = "Hapax YT Loudnorm → MPC USB IN 7/8"' in tail
+    assert "hapax-ytube-ducked" not in tail
 
 
 def test_uses_filter_chain_module(raw_config: str) -> None:

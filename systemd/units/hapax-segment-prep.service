@@ -1,0 +1,20 @@
+[Unit]
+Description=Hapax daily segment prep - Command-R residency checked
+After=network-online.target hapax-secrets.service tabbyapi.service
+Wants=network-online.target tabbyapi.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+Environment=HAPAX_TABBY_URL=http://localhost:5000/v1/chat/completions
+Environment=HAPAX_SEGMENT_PREP_MODEL=command-r-08-2024-exl3-5.0bpw
+ExecStartPre=%h/.local/bin/uv run python -m shared.resident_command_r --check
+ExecStart=%h/.local/bin/uv run python -m agents.hapax_daimonion.daily_segment_prep
+TimeoutStartSec=2400
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-segment-prep

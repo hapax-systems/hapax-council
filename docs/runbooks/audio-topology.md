@@ -18,6 +18,7 @@ direction, and the exact diagnostics to run when any piece misbehaves.
 |----------------------------------------------------------|------------------------------------------------------|------------------------------------------------------------------|
 | `alsa_input.usb-Blue_Microphones_Yeti...`                | Blue Yeti                                            | Operator primary voice mic (raw). Feeds `module-echo-cancel`.     |
 | `alsa_input.usb-PreSonus_Studio_24c...`                  | PreSonus Studio 24c Input 2                          | Cortado MKIII contact-mic (desk DSP, presence engine).           |
+| `alsa_input.usb-Seeed_Studio_ReSpeaker_XVF3800...`       | ReSpeaker XVF3800 USB 4-Mic Array                    | Optional far-field desk-side operator capture; complements Rode, not default. |
 | `echo_cancel_capture` *(virtual)*                        | — (derived from Yeti + default-sink reference)       | **Authoritative operator source** for VAD / STT / multi_mic.     |
 | `yeti_cancelled` *(virtual, alias)*                      | — (same graph node as `echo_cancel_capture`)         | Alias exposed by `module-echo-cancel`'s `source.props`.          |
 | `hapax-operator-mic-tap` *(virtual)*                     | — (tap on operator mic, LRR Phase 9 §3.8)            | Sidechain key for `hapax-ytube-ducked` compressor.               |
@@ -30,6 +31,7 @@ monitor); it is not a PipeWire source.
 | PipeWire node / name                                     | Consumer                                                       | Notes                                                              |
 |----------------------------------------------------------|----------------------------------------------------------------|--------------------------------------------------------------------|
 | `alsa_output.usb-PreSonus_Studio_24c...`                 | Studio monitors (default sink)                                 | Kokoro TTS lands here when `HAPAX_TTS_TARGET` is unset.            |
+| `alsa_output.usb-Seeed_Studio_ReSpeaker_XVF3800...`      | ReSpeaker XVF3800 2ch playback endpoint                        | Optional AEC far-end reference only; not a monitor/default sink.   |
 | `hapax-voice-fx-capture` *(virtual, optional)*           | TTS FX chain (`hapax-voice-fx-chain.conf`)                     | Installed only if operator opts in. See `config/pipewire/README.md`. |
 | `hapax-ytube-ducked` *(virtual)*                         | OBS / browser YouTube bed                                      | LADSPA sidechain; operator voice ducks the bed.                    |
 | `hapax-24c-ducked` *(virtual, optional)*                 | Studio 24c backing sources (DAW returns, synth strip)          | Driven by `AudioDuckingController` FSM; ducks backing when YT audio is active. CVS #145. |
@@ -86,6 +88,82 @@ monitor); it is not a PipeWire source.
 promotes `echo_cancel_capture` as the preferred source. Default off; flip
 once the drop-in is installed and verified via
 `scripts/audio-topology-check.sh`.
+
+### ReSpeaker XVF3800 introduction
+
+The ReSpeaker XVF3800 is introduced as `respeaker-xvf3800-array-source` in
+`config/audio-topology.yaml` and as the `hapax-array-mic` capture role in
+`config/pipewire/hapax-respeaker-xvf3800-array-mic.conf`. It is optional
+hardware at introduction time: the current broadcast operator mic remains the
+Rode Wireless Pro on L-12 CH5/AUX4.
+
+**Placement decision:** plug the array into the host AMD/front-case controller
+(`0000:09:00.0`), not the CalDigit/L-12 hub. The array is operator-side,
+far-field, and potentially 4-in/2-out UAC2; keeping it off the CalDigit path
+preserves the L-12/M8/Erica broadcast chain and follows the 2026-05-02 USB
+hardening rule to preflight high-bandwidth devices before adding them:
+
+```fish
+scripts/hapax-usb-bandwidth-preflight --device 2886:001a/0000:09:00.0
+```
+
+**Routing matrix:**
+
+| Surface | Direction | Channels | Use |
+|---------|-----------|----------|-----|
+| `respeaker-xvf3800-array-source` | capture | 4ch `[AUX0..AUX3]` | Raw/processed array capture for desk-side sidechat, VAD experiments, and research A/B. |
+| `respeaker-xvf3800-aec-reference-output` | playback | 2ch `[FL, FR]` | Optional far-end AEC reference fed from `hapax-livestream-tap.monitor`; never an operator monitor or default sink. |
+
+**AEC reference path:** if hardware AEC requires far-end playback, create an
+explicit loopback from the broadcast monitor sum to the array's 2ch output:
+
+```fish
+pw-loopback --capture hapax-livestream-tap.monitor \
+    --playback alsa_output.usb-Seeed_Studio_ReSpeaker_XVF3800-00.multichannel-output \
+    --name hapax-respeaker-xvf3800-aec-reference
+```
+
+Use the actual `pactl list short sinks | grep -Ei 'respeaker|xvf3800|xmos'`
+name if the firmware exposes the XMOS reference product string instead of the
+Seeed string.
+
+**Governance:** the array is an ambient room microphone. It must stay out of
+default-source selection and out of the L-12 broadcast path until promoted by an
+explicit operator decision. It may support operator sidechat and research
+capture, but private deliberation audio must not be captured or persisted
+because the beam can hear the room. The descriptor records
+`replaces_broadcast_rode: false`, `default_source: false`, and
+`forbidden_default_route: l12-broadcast` to keep this posture machine-visible.
+
+**VAD wiring:** the XVF3800 exposes VAD/DoA through vendor controls on supported
+firmware, but this task does not wire that side channel into the ducker. Treat
+hardware VAD as `vendor-control-unwired` until a follow-up adds a small reader
+and proves it is more stable than the current software VAD/sidechain paths.
+
+**17-use-case delta:** the transient `/tmp/routing-discovery-2026-05-02.md`
+artifact is not durable in this checkout, so this table pins the current
+introduction decision against the known routing-discovery surfaces and the
+livestream source inventory.
+
+| # | Use case / surface | XVF3800 delta |
+|---|--------------------|---------------|
+| 1 | Always-on Hapax voice character | Unchanged; TTS still routes through the existing voice/Evil Pet path. |
+| 2 | Vinyl through Evil Pet | Unchanged; no array route touches vinyl. |
+| 3 | Full broadcast mix through Evil Pet | Unchanged; array reference listens to the monitor sum only when explicitly looped. |
+| 4 | Sampler chops with Evil Pet texture | Unchanged. |
+| 5 | Live voice + sequencer | Changes trigger quality: beamformed/VAD signal can later key sequenced effects. |
+| 6 | Duet mode, operator voice + Hapax voice | Complements Rode for desk sidechat; does not replace the broadcast Rode mic yet. |
+| 7 | Emergency clean fallback | Unchanged; array must not become a default source/sink. |
+| 8 | Operator practice mode | Unblocks far-field private practice capture, gated by privacy consent. |
+| 9 | Research capture, dry archive + wet broadcast | Unblocks 4ch array archive plus DSP/AEC comparison. |
+| 10 | Hapax-FX-driven ward behavior | Unblocks VAD/DoA as a future audio-reactive control signal. |
+| 11 | Kokoro TTS bleed-back into operator capture | Improves once the 2ch AEC reference loopback is active. |
+| 12 | Local music bed | Unchanged route; included in AEC reference only if it reaches the monitor sum. |
+| 13 | Browser/YouTube audio | Improves VAD false-fire rejection once AEC reference is active. |
+| 14 | `yt-player.service` video audio | Same as browser/YouTube: reference only, no route change. |
+| 15 | Rode Wireless Pro broadcast operator mic | Complement only; Rode remains primary broadcast input. |
+| 16 | Yeti/private monitor path | Unchanged; array output is not an operator monitor. |
+| 17 | Private assistant / notification audio | Blocked by policy; array must not capture private room audio by default. |
 
 ## 5. Ducking rules
 

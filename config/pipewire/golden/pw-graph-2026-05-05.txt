@@ -1,0 +1,353 @@
+hapax-notification-private:monitor_FL
+  |-> hapax-notification-private-monitor-capture:input_FL
+hapax-notification-private:monitor_FR
+  |-> hapax-notification-private-monitor-capture:input_FR
+hapax-notification-private:playback_FL
+  |<- output.loopback.sink.role.notification:output_FL
+hapax-notification-private:playback_FR
+  |<- output.loopback.sink.role.notification:output_FR
+hapax-livestream:playback_FL
+  |<- output.loopback-165446-13:output_FL
+hapax-livestream:playback_FR
+  |<- output.loopback-165446-13:output_FR
+hapax-private:monitor_FL
+  |-> hapax-private-monitor-capture:input_FL
+  |-> parec:input_FL
+hapax-private:monitor_FR
+  |-> hapax-private-monitor-capture:input_FR
+  |-> parec:input_FR
+hapax-private:playback_FL
+  |<- output.loopback.sink.role.assistant:output_FL
+hapax-private:playback_FR
+  |<- output.loopback.sink.role.assistant:output_FR
+input.loopback-165420-29:input_1
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX0
+mixer_master:capture_MONO
+  |-> pw-cat:input_MONO
+  |-> pw-cat:input_MONO
+input.loopback-165420-30:input_1
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX0
+hapax-broadcast-master:capture_FL
+  |-> hapax-broadcast-normalized-capture:input_FL
+hapax-broadcast-master:capture_FR
+  |-> hapax-broadcast-normalized-capture:input_FR
+hapax-broadcast-master-capture:input_FL
+  |<- hapax-livestream-tap:monitor_FL
+hapax-broadcast-master-capture:input_FR
+  |<- hapax-livestream-tap:monitor_FR
+hapax-broadcast-normalized-capture:input_FL
+  |<- hapax-broadcast-master:capture_FL
+hapax-broadcast-normalized-capture:input_FR
+  |<- hapax-broadcast-master:capture_FR
+hapax-broadcast-normalized:capture_FL
+  |-> hapax-obs-broadcast-remap-capture:input_FL
+  |-> parec:input_FL
+hapax-broadcast-normalized:capture_FR
+  |-> hapax-obs-broadcast-remap-capture:input_FR
+  |-> parec:input_FR
+input.loopback-165420-33:input_1
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX0
+input.loopback-165420-34:input_1
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX0
+hapax-l12-evilpet-capture:input_AUX1
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX1
+hapax-l12-evilpet-capture:input_AUX3
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX3
+hapax-l12-evilpet-capture:input_AUX4
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX4
+hapax-l12-evilpet-capture:input_AUX5
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX5
+hapax-l12-evilpet-playback:output_FL
+  |-> hapax-livestream-tap:playback_FL
+hapax-l12-evilpet-playback:output_FR
+  |-> hapax-livestream-tap:playback_FR
+hapax-l12-usb-return-capture:input_AUX8
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX8
+hapax-l12-usb-return-capture:input_AUX9
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX9
+hapax-l12-usb-return-capture:input_AUX10
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX10
+hapax-l12-usb-return-capture:input_AUX11
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX11
+hapax-l12-usb-return-playback:output_FL
+  |-> hapax-livestream-tap:playback_FL
+hapax-l12-usb-return-playback:output_FR
+  |-> hapax-livestream-tap:playback_FR
+hapax-m8-loudnorm-playback:output_FL
+  |-> alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FL
+hapax-m8-loudnorm-playback:output_FR
+  |-> alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FR
+hapax-m8-instrument-capture:input_1
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX0
+hapax-m8-instrument-capture:input_2
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX1
+hapax-music-loudnorm:playback_FL
+  |<- pw-cat:output_FL
+hapax-music-loudnorm:playback_FR
+  |<- pw-cat:output_FR
+hapax-music-loudnorm-playback:output_FL
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX0
+hapax-music-loudnorm-playback:output_FR
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX1
+hapax-obs-broadcast-remap:capture_FL
+  |-> OBS:input_FL
+hapax-obs-broadcast-remap:capture_FR
+  |-> OBS:input_FR
+hapax-obs-broadcast-remap-capture:input_FL
+  |<- hapax-broadcast-normalized:capture_FL
+hapax-obs-broadcast-remap-capture:input_FR
+  |<- hapax-broadcast-normalized:capture_FR
+hapax-pc-loudnorm:playback_FL
+  |<- output.loopback.sink.role.multimedia:output_FL
+hapax-pc-loudnorm:playback_FR
+  |<- output.loopback.sink.role.multimedia:output_FR
+hapax-pc-loudnorm-playback:output_FL
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX4
+hapax-pc-loudnorm-playback:output_FR
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX5
+hapax-private-playback:output_FL
+  |-> alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output:playback_AUX0
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX8
+hapax-private-playback:output_FR
+  |-> alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output:playback_AUX1
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX9
+hapax-private-monitor-capture:input_FL
+  |<- hapax-private:monitor_FL
+hapax-private-monitor-capture:input_FR
+  |<- hapax-private:monitor_FR
+hapax-notification-private-playback:output_FL
+  |-> alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output:playback_AUX0
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX8
+hapax-notification-private-playback:output_FR
+  |-> alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output:playback_AUX1
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX9
+hapax-notification-private-monitor-capture:input_FL
+  |<- hapax-notification-private:monitor_FL
+hapax-notification-private-monitor-capture:input_FR
+  |<- hapax-notification-private:monitor_FR
+hapax-yt-loudnorm-playback:output_FL
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX6
+hapax-yt-loudnorm-playback:output_FR
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX7
+hapax-voice-fx-capture:playback_FL
+  |<- output.loopback.sink.role.broadcast:output_FL
+hapax-voice-fx-capture:playback_FR
+  |<- output.loopback.sink.role.broadcast:output_FR
+hapax-voice-fx-playback:output_FL
+  |-> hapax-loudnorm-capture:playback_FL
+hapax-voice-fx-playback:output_FR
+  |-> hapax-loudnorm-capture:playback_FR
+hapax-loudnorm-capture:playback_FL
+  |<- hapax-voice-fx-playback:output_FL
+hapax-loudnorm-capture:playback_FR
+  |<- hapax-voice-fx-playback:output_FR
+hapax-loudnorm-playback:output_FL
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX2
+hapax-loudnorm-playback:output_FR
+  |-> alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX3
+output.loopback.sink.role.multimedia:output_FL
+  |-> hapax-pc-loudnorm:playback_FL
+output.loopback.sink.role.multimedia:output_FR
+  |-> hapax-pc-loudnorm:playback_FR
+output.loopback.sink.role.notification:output_FL
+  |-> hapax-notification-private:playback_FL
+output.loopback.sink.role.notification:output_FR
+  |-> hapax-notification-private:playback_FR
+output.loopback.sink.role.assistant:output_FL
+  |-> hapax-private:playback_FL
+output.loopback.sink.role.assistant:output_FR
+  |-> hapax-private:playback_FR
+output.loopback.sink.role.broadcast:output_FL
+  |-> hapax-voice-fx-capture:playback_FL
+output.loopback.sink.role.broadcast:output_FR
+  |-> hapax-voice-fx-capture:playback_FR
+alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output:playback_AUX0
+  |<- hapax-private-playback:output_FL
+  |<- hapax-notification-private-playback:output_FL
+alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output:playback_AUX1
+  |<- hapax-private-playback:output_FR
+  |<- hapax-notification-private-playback:output_FR
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX0
+  |<- hapax-music-loudnorm-playback:output_FL
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX1
+  |<- hapax-music-loudnorm-playback:output_FR
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX2
+  |<- hapax-loudnorm-playback:output_FL
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX3
+  |<- hapax-loudnorm-playback:output_FR
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX4
+  |<- hapax-pc-loudnorm-playback:output_FL
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX5
+  |<- hapax-pc-loudnorm-playback:output_FR
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX6
+  |<- hapax-yt-loudnorm-playback:output_FL
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX7
+  |<- hapax-yt-loudnorm-playback:output_FR
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX8
+  |<- hapax-private-playback:output_FL
+  |<- hapax-notification-private-playback:output_FL
+alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX9
+  |<- hapax-private-playback:output_FR
+  |<- hapax-notification-private-playback:output_FR
+alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FL
+  |<- hapax-m8-loudnorm-playback:output_FL
+alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FR
+  |<- hapax-m8-loudnorm-playback:output_FR
+alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX0
+  |-> input.loopback-165420-29:input_1
+  |-> input.loopback-165420-30:input_1
+  |-> input.loopback-165420-33:input_1
+  |-> input.loopback-165420-34:input_1
+  |-> pw-cat:input_1
+  |-> hapax-m8-instrument-capture:input_1
+  |-> parec:input_AUX0
+  |-> pw-record:input_FL
+alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX1
+  |-> hapax-l12-evilpet-capture:input_AUX1
+  |-> pw-cat:input_2
+  |-> hapax-m8-instrument-capture:input_2
+  |-> parec:input_AUX1
+  |-> pw-record:input_FR
+alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX2
+  |-> pw-cat:input_3
+  |-> parec:input_AUX2
+alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX3
+  |-> hapax-l12-evilpet-capture:input_AUX3
+  |-> pw-cat:input_4
+  |-> parec:input_AUX3
+alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX4
+  |-> hapax-l12-evilpet-capture:input_AUX4
+  |-> pw-cat:input_5
+  |-> parec:input_AUX4
+alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX5
+  |-> hapax-l12-evilpet-capture:input_AUX5
+  |-> pw-cat:input_6
+  |-> parec:input_AUX5
+alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX6
+  |-> pw-cat:input_7
+  |-> parec:input_AUX6
+alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX7
+  |-> pw-cat:input_8
+  |-> parec:input_AUX7
+alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX8
+  |-> hapax-l12-usb-return-capture:input_AUX8
+  |-> pw-cat:input_9
+  |-> parec:input_FL
+alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX9
+  |-> hapax-l12-usb-return-capture:input_AUX9
+  |-> pw-cat:input_10
+  |-> parec:input_FLC
+alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX10
+  |-> hapax-l12-usb-return-capture:input_AUX10
+  |-> pw-cat:input_11
+  |-> parec:input_FC
+alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX11
+  |-> hapax-l12-usb-return-capture:input_AUX11
+  |-> pw-cat:input_12
+  |-> parec:input_FR
+alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX12
+  |-> pw-cat:input_13
+  |-> parec:input_FRC
+alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX13
+  |-> pw-cat:input_14
+  |-> parec:input_RC
+pw-cat:input_MONO
+  |<- mixer_master:capture_MONO
+pw-cat:input_1
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX0
+pw-cat:input_2
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX1
+pw-cat:input_3
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX2
+pw-cat:input_4
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX3
+pw-cat:input_5
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX4
+pw-cat:input_6
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX5
+pw-cat:input_7
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX6
+pw-cat:input_8
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX7
+pw-cat:input_9
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX8
+pw-cat:input_10
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX9
+pw-cat:input_11
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX10
+pw-cat:input_12
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX11
+pw-cat:input_13
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX12
+pw-cat:input_14
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX13
+hapax-livestream-tap:monitor_FL
+  |-> hapax-broadcast-master-capture:input_FL
+  |-> input.loopback-165446-13:input_FL
+hapax-livestream-tap:monitor_FR
+  |-> hapax-broadcast-master-capture:input_FR
+  |-> input.loopback-165446-13:input_FR
+hapax-livestream-tap:playback_FL
+  |<- hapax-l12-evilpet-playback:output_FL
+  |<- hapax-l12-usb-return-playback:output_FL
+hapax-livestream-tap:playback_FR
+  |<- hapax-l12-evilpet-playback:output_FR
+  |<- hapax-l12-usb-return-playback:output_FR
+output.loopback-165446-13:output_FL
+  |-> hapax-livestream:playback_FL
+output.loopback-165446-13:output_FR
+  |-> hapax-livestream:playback_FR
+input.loopback-165446-13:input_FL
+  |<- hapax-livestream-tap:monitor_FL
+input.loopback-165446-13:input_FR
+  |<- hapax-livestream-tap:monitor_FR
+OBS:input_FL
+  |<- hapax-obs-broadcast-remap:capture_FL
+OBS:input_FR
+  |<- hapax-obs-broadcast-remap:capture_FR
+pw-cat:output_FL
+  |-> hapax-music-loudnorm:playback_FL
+pw-cat:output_FR
+  |-> hapax-music-loudnorm:playback_FR
+parec:input_FL
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX8
+parec:input_FLC
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX9
+parec:input_FC
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX10
+parec:input_FR
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX11
+parec:input_FRC
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX12
+parec:input_RC
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX13
+parec:input_AUX0
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX0
+parec:input_AUX1
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX1
+parec:input_AUX2
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX2
+parec:input_AUX3
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX3
+parec:input_AUX4
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX4
+parec:input_AUX5
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX5
+parec:input_AUX6
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX6
+parec:input_AUX7
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX7
+parec:input_FL
+  |<- hapax-broadcast-normalized:capture_FL
+parec:input_FR
+  |<- hapax-broadcast-normalized:capture_FR
+parec:input_FL
+  |<- hapax-private:monitor_FL
+parec:input_FR
+  |<- hapax-private:monitor_FR
+pw-record:input_FL
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX0
+pw-record:input_FR
+  |<- alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input:capture_AUX1
+pw-cat:input_MONO
+  |<- mixer_master:capture_MONO

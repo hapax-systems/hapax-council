@@ -16,16 +16,15 @@
     "scanlines_grid": {
       "type": "scanlines",
       "params": {
-        "amount": 0.4,
-        "frequency": 480,
-        "speed": 0.0
+        "opacity": 0.4,
+        "spacing": 480,
+        "thickness": 0.0
       }
     },
     "edge_grid": {
       "type": "edge_detect",
       "params": {
-        "threshold": 0.16,
-        "amount": 0.5
+        "threshold": 0.16
       }
     },
     "chroma_neon": {

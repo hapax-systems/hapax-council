@@ -23,7 +23,7 @@
     "tunnel_kaleido": {
       "type": "tunnel",
       "params": {
-        "depth": 0.3,
+        "distortion": 0.3,
         "speed": 0.12,
         "twist": 0.18
       }

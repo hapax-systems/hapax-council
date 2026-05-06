@@ -347,11 +347,17 @@ class CameraPipeline:
 
     # A+ Stage 3 (2026-04-17): sample one frame every N ticks into the
     # last-good-frame cache so the fallback pipeline can render that
-    # frame instead of a black card when the primary drops. 15 @ 30fps
-    # = 2 Hz sampling — fresh enough for freeze-frame UX, cheap enough
-    # (~1.4 MiB NV12 copy 2×/sec per camera) that it doesn't add
-    # measurable load on the streaming-thread pad probe.
-    _FRAME_CACHE_SAMPLE_EVERY_N = 15
+    # frame instead of a black card when the primary drops.
+    #
+    # 2026-05-05: reduced from 15 (2 Hz at 30fps) to 3 (10 Hz at 30fps).
+    # The PackedCamerasCairoSource renders at 6fps and reuses cached
+    # surfaces when id(frame.data) hasn't changed. At 2 Hz, 4 out of 6
+    # render ticks showed stale content; the glfeedback shader chain's
+    # temporal feedback accumulated the slow-updating tiles into visible
+    # horizontal banding on the livestream. 10 Hz keeps the cache fresh
+    # relative to the 6fps runner cadence. Cost: ~1.4 MiB NV12 copy
+    # ×10/sec/camera = ~14 MiB/s/camera bandwidth — negligible on tmpfs.
+    _FRAME_CACHE_SAMPLE_EVERY_N = 3
 
     def _on_buffer_probe(self, pad: Any, info: Any) -> Any:
         """GStreamer pad probe: note frame arrival, update Phase 4 metrics,

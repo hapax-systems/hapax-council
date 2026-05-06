@@ -33,6 +33,9 @@ EXPECTED_DEVICES: tuple[tuple[str, str, str, bool], ...] = (
     ("1d6b", "0104", "S4", True),  # serial fedcba9876543220*
     ("b58e", "9e84", "Yeti", False),
     ("16c0", "048a", "M8", False),
+    ("2886", "001a", "XVF3800", False),  # Seeed firmware
+    ("20b1", "4f00", "XVF3800", False),  # XMOS 48 kHz reference firmware
+    ("20b1", "4f01", "XVF3800", False),  # XMOS 16 kHz reference firmware
     ("381a", "1003", "Dispatch", False),
 )
 
@@ -114,11 +117,11 @@ def test_card_ids_are_unique() -> None:
     seen = set()
     duplicates: list[str] = []
     for cid in ids:
-        if cid in seen and cid not in {"C920a", "C920b", "C920c"}:
+        if cid in seen and cid not in {"C920a", "C920b", "C920c", "XVF3800"}:
             # C920a/b/c each appear twice (once for 082d, once for 08e5)
             # because the C920 plain and C920 PRO share the same serial pool.
-            # That's intentional aliasing across vid:pid for the same physical
-            # unit, not a collision between distinct devices.
+            # XVF3800 appears under multiple possible firmware IDs. Both are
+            # intentional aliases, not collisions between distinct devices.
             duplicates.append(cid)
         seen.add(cid)
     assert not duplicates, f"duplicate card ids: {duplicates}"
@@ -179,6 +182,7 @@ def test_audio_topology_yaml_uses_symbolic_card_ids() -> None:
     assert "surround40:CARD=L12" in text
     assert "front:CARD=Yeti" in text
     assert "hw:CARD=S4" in text
+    assert "hw:CARD=XVF3800" in text
 
 
 def test_audio_topology_schema_version_bumped_for_symbolic_migration() -> None:

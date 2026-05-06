@@ -157,6 +157,30 @@ _PROFILES: tuple[UsbDeviceProfile, ...] = (
         bandwidth_mbps=3.0,
         notes="44.1 kHz / 16-bit + serial",
     ),
+    UsbDeviceProfile(
+        vid="2886",
+        pid="001a",
+        name="ReSpeaker XVF3800 USB 4-Mic Array",
+        device_class="UAC2 audio (4ch in / 2ch out) + vendor control",
+        bandwidth_mbps=10.0,
+        notes="48 kHz multichannel capture plus stereo AEC reference; Seeed firmware",
+    ),
+    UsbDeviceProfile(
+        vid="20b1",
+        pid="4f00",
+        name="XMOS XVF3800 Voice Processor",
+        device_class="UAC2 audio (4ch in / 2ch out) + vendor control",
+        bandwidth_mbps=10.0,
+        notes="48 kHz XMOS reference firmware",
+    ),
+    UsbDeviceProfile(
+        vid="20b1",
+        pid="4f01",
+        name="XMOS XVF3800 Voice Processor",
+        device_class="UAC2 audio (4ch in / 2ch out) + vendor control",
+        bandwidth_mbps=10.0,
+        notes="16 kHz XMOS reference firmware",
+    ),
     # --- MIDI-only devices ------------------------------------------------
     UsbDeviceProfile(
         vid="381a",

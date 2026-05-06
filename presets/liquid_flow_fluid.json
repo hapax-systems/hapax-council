@@ -23,15 +23,12 @@
     },
     "syrup_thick": {
       "type": "syrup",
-      "params": {
-        "thickness": 0.35,
-        "speed": 0.18
-      }
+      "params": {}
     },
     "vignette": {
       "type": "vignette",
       "params": {
-        "intensity": 0.3,
+        "strength": 0.3,
         "radius": 0.78
       }
     },

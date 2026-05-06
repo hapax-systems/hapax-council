@@ -53,6 +53,13 @@ ATTRS{idVendor}=="b58e", ATTRS{idProduct}=="9e84", ATTR{id}="Yeti"
 # M8 — Dirtywave (16c0:048a, serial 16558390). Class-compliant audio + CDC.
 ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="048a", ATTR{id}="M8"
 
+# ReSpeaker XVF3800 — Seeed-branded firmware (2886:001a) and XMOS
+# reference firmware (20b1:4f00/4f01). One array in inventory; all
+# supported firmware IDs intentionally converge to the same stable card id.
+ATTRS{idVendor}=="2886", ATTRS{idProduct}=="001a", ATTR{id}="XVF3800"
+ATTRS{idVendor}=="20b1", ATTRS{idProduct}=="4f00", ATTR{id}="XVF3800"
+ATTRS{idVendor}=="20b1", ATTRS{idProduct}=="4f01", ATTR{id}="XVF3800"
+
 # Erica MIDI Dispatch (381a:1003, serial E6611C51E3331533). Single instance.
 ATTRS{idVendor}=="381a", ATTRS{idProduct}=="1003", ATTR{id}="Dispatch"
 

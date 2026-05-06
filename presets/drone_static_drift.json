@@ -17,8 +17,7 @@
       "type": "noise_overlay",
       "params": {
         "intensity": 0.28,
-        "scale": 1500,
-        "speed": 0.05
+        "animated": 1.0
       }
     },
     "drift_drone": {
@@ -31,7 +30,7 @@
     "vignette_heavy": {
       "type": "vignette",
       "params": {
-        "intensity": 0.55,
+        "strength": 0.55,
         "radius": 0.55
       }
     },

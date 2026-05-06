@@ -64,6 +64,8 @@ def test_canonical_has_current_livestream_node_ids() -> None:
         "s4-loopback",
         "m8-instrument-capture",
         "m8-loudnorm",
+        "respeaker-xvf3800-array-source",
+        "respeaker-xvf3800-aec-reference-output",
     }
     assert expected.issubset(ids), f"missing expected node ids: {expected - ids}"
 
@@ -301,6 +303,50 @@ def test_m8_loudnorm_bypasses_l12_and_missing_hardware_is_classified() -> None:
         and {edge.source, edge.target} & {"m8-instrument-capture", "m8-loudnorm"}
     ]
     assert forbidden_edges == [], "M8 descriptor path must not touch L-12 hardware"
+
+
+def test_respeaker_xvf3800_is_optional_sidechat_capture_not_rode_replacement() -> None:
+    d = _descriptor()
+    source = d.node_by_id("respeaker-xvf3800-array-source")
+    reference = d.node_by_id("respeaker-xvf3800-aec-reference-output")
+    edge_pairs = {(edge.source, edge.target) for edge in d.edges}
+
+    assert source.kind == "alsa_source"
+    assert source.hw == "hw:CARD=XVF3800"
+    assert source.channels.count == 4
+    assert source.channels.positions == ["AUX0", "AUX1", "AUX2", "AUX3"]
+    assert source.params["audit_classification"] == "external-hardware-optional"
+    assert source.params["capture_role"] == "hapax-array-mic"
+    assert source.params["operator_voice_candidate"] is True
+    assert source.params["complements_rode"] is True
+    assert source.params["replaces_broadcast_rode"] is False
+    assert source.params["default_source"] is False
+    assert source.params["forbidden_default_route"] == "l12-broadcast"
+    assert source.params["usb_host_controller"] == "0000:09:00.0"
+    assert source.params["hardware_vad"] == "vendor-control-unwired"
+
+    assert reference.kind == "alsa_sink"
+    assert reference.hw == "hw:CARD=XVF3800"
+    assert reference.channels.positions == ["FL", "FR"]
+    assert reference.params["aec_reference_endpoint"] is True
+    assert reference.params["aec_reference_source"] == "hapax-livestream-tap.monitor"
+    assert reference.params["not_operator_monitor"] is True
+    assert reference.params["not_broadcast_egress"] is True
+    assert reference.params["default_sink"] is False
+
+    assert ("livestream-tap", "respeaker-xvf3800-aec-reference-output") in edge_pairs
+
+    forbidden_edges = [
+        edge
+        for edge in d.edges
+        if {edge.source, edge.target}
+        & {
+            "respeaker-xvf3800-array-source",
+            "respeaker-xvf3800-aec-reference-output",
+        }
+        and {edge.source, edge.target} & {"l12-capture", "l12-usb-return"}
+    ]
+    assert forbidden_edges == [], "XVF3800 descriptor path must not touch L-12 hardware"
 
 
 def test_l12_forward_invariant_static_guard_passes() -> None:

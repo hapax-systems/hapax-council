@@ -13,6 +13,7 @@ from shared.programme import (
     Programme,
     ProgrammeConstraintEnvelope,
     ProgrammeContent,
+    ProgrammeDeliveryMode,
     ProgrammeDisplayDensity,
     ProgrammeRitual,
     ProgrammeRole,
@@ -224,6 +225,7 @@ class TestProgrammeContent:
         c = ProgrammeContent()
         assert c.music_track_ids == []
         assert c.narrative_beat is None
+        assert c.delivery_mode is ProgrammeDeliveryMode.LIVE_PRIOR
 
     def test_narrative_beat_stripped(self) -> None:
         c = ProgrammeContent(narrative_beat="  direction here  ")
@@ -237,6 +239,213 @@ class TestProgrammeContent:
         """500-char cap prevents scripted utterances from sneaking in."""
         with pytest.raises(ValueError, match="not a scripted utterance"):
             ProgrammeContent(narrative_beat="x" * 501)
+
+    def test_responsible_hosting_rejects_executable_segment_cues(self) -> None:
+        with pytest.raises(ValueError, match="executable segment_cues"):
+            ProgrammeContent(
+                hosting_context="hapax_responsible_live",
+                segment_cues=["camera.hero tight"],
+            )
+
+    def test_missing_hosting_context_fails_closed_for_segment_cues(self) -> None:
+        with pytest.raises(ValueError, match="executable segment_cues"):
+            ProgrammeContent(segment_cues=["camera.hero tight"])
+
+    def test_layout_intents_cannot_mix_with_legacy_segment_cues(self) -> None:
+        with pytest.raises(ValueError, match="cannot mix"):
+            ProgrammeContent(
+                segment_cues=["legacy cue"],
+                beat_layout_intents=[
+                    {
+                        "beat_id": "hook",
+                        "needs": ["evidence_visible"],
+                    }
+                ],
+            )
+
+    def test_layout_intents_reject_concrete_runtime_authority_fields(self) -> None:
+        with pytest.raises(ValueError, match="concrete layout authority"):
+            ProgrammeContent(
+                beat_layout_intents=[
+                    {
+                        "beat_id": "hook",
+                        "needs": ["evidence_visible"],
+                        "surfaceId": "main",
+                    }
+                ]
+            )
+
+    def test_layout_decision_receipts_rejected_at_planner_boundary(self) -> None:
+        with pytest.raises(ValueError, match="layout_decision_receipts"):
+            ProgrammeContent(
+                layout_decision_receipts=[
+                    {
+                        "receipt_id": "receipt.layout_state_rendered",
+                        "source": "layout_state",
+                    }
+                ]
+            )
+
+    @pytest.mark.parametrize(
+        "bad_value",
+        [
+            "surface:main",
+            "layout:balanced-v2",
+            "cue:camera.hero tight",
+            "camera.hero tight",
+            "camera:operator-subject",
+            "/dev/shm/hapax-layout.json",
+            "default_static",
+            "config/compositor-layouts/default.json",
+        ],
+    )
+    def test_layout_intents_reject_command_like_nested_string_values(self, bad_value: str) -> None:
+        with pytest.raises(ValueError, match="command-like layout authority"):
+            ProgrammeContent(
+                beat_layout_intents=[
+                    {
+                        "beat_id": "hook",
+                        "action_intent_kinds": ["show_evidence"],
+                        "needs": ["evidence_visible"],
+                        "proposed_postures": ["asset_front"],
+                        "expected_effects": ["evidence_on_screen"],
+                        "evidence_refs": ["vault:source-note-1"],
+                        "source_affordances": ["asset:evidence-card", bad_value],
+                        "default_static_success_allowed": False,
+                    }
+                ]
+            )
+
+    def test_layout_intents_accept_declarative_refs_and_evidence_ids(self) -> None:
+        content = ProgrammeContent(
+            beat_layout_intents=[
+                {
+                    "beat_id": "hook",
+                    "action_intent_kinds": ["show_evidence", "cite_source"],
+                    "needs": ["evidence_visible", "source_visible"],
+                    "proposed_postures": ["asset_front", "camera_subject"],
+                    "expected_effects": ["evidence_on_screen", "source_context_legible"],
+                    "evidence_refs": ["vault:source-note-1", "rag:proof-42"],
+                    "source_affordances": ["asset:evidence-card", "resolver:source-card"],
+                    "default_static_success_allowed": False,
+                }
+            ]
+        )
+
+        assert content.beat_layout_intents[0]["evidence_refs"] == [
+            "vault:source-note-1",
+            "rag:proof-42",
+        ]
+
+    def test_prepared_script_defaults_to_live_prior_contract(self) -> None:
+        content = ProgrammeContent(
+            hosting_context="hapax_responsible_live",
+            prepared_script=["Place Alpha in S-tier because the ranking makes it visible."],
+            beat_cards=[
+                {
+                    "beat_index": 0,
+                    "beat_id": "beat-1",
+                    "title": "rank alpha",
+                    "prior_summary": "Use Alpha as a prepared prior, then compose live.",
+                    "prepared_artifact_ref": "prepared_artifact:" + "a" * 64,
+                    "action_intent_kinds": ["tier_chart"],
+                    "layout_needs": ["tier_visual"],
+                    "expected_effects": ["tier_chart.place:Alpha:S"],
+                    "evidence_refs": ["prepared_artifact:" + "a" * 64],
+                }
+            ],
+            live_priors=[
+                {
+                    "prior_id": "prepared-script-beat-1",
+                    "beat_index": 0,
+                    "text": "Prepared excerpt used as a prior, not as TTS authority.",
+                    "prepared_artifact_ref": "prepared_artifact:" + "a" * 64,
+                    "evidence_refs": ["prepared_artifact:" + "a" * 64],
+                }
+            ],
+        )
+
+        assert content.delivery_mode is ProgrammeDeliveryMode.LIVE_PRIOR
+        assert content.beat_cards[0].layout_needs == ["tier_visual"]
+        assert content.live_priors[0].kind == "prepared_script_excerpt"
+
+    def test_live_prior_cards_reject_runtime_command_fields(self) -> None:
+        with pytest.raises(ValueError):
+            ProgrammeContent(
+                beat_cards=[
+                    {
+                        "beat_index": 0,
+                        "title": "bad",
+                        "prior_summary": "bad",
+                        "surfaceId": "main",
+                    }
+                ]
+            )
+
+    def test_delivery_mode_accepts_explicit_legacy_value(self) -> None:
+        content = ProgrammeContent(delivery_mode="verbatim_legacy")
+        assert content.delivery_mode is ProgrammeDeliveryMode.VERBATIM_LEGACY
+
+    def test_responsible_layout_intents_reject_default_static_success_true(self) -> None:
+        with pytest.raises(ValueError, match="default/static layout success"):
+            ProgrammeContent(
+                hosting_context="hapax_responsible_live",
+                beat_layout_intents=[
+                    {
+                        "beat_id": "hook",
+                        "action_intent_kinds": ["show_evidence"],
+                        "needs": ["evidence_visible"],
+                        "proposed_postures": ["asset_front"],
+                        "expected_effects": ["evidence_on_screen"],
+                        "evidence_refs": ["vault:source-note-1"],
+                        "source_affordances": ["asset:evidence-card"],
+                        "default_static_success_allowed": True,
+                    }
+                ],
+            )
+
+    @pytest.mark.parametrize("truthy_value", ["on", "enabled", "allowed", "yes", "1", "maybe"])
+    def test_responsible_layout_intents_reject_truthy_default_static_success_strings(
+        self, truthy_value: str
+    ) -> None:
+        with pytest.raises(ValueError, match="default/static layout success"):
+            ProgrammeContent(
+                hosting_context="hapax_responsible_live",
+                beat_layout_intents=[
+                    {
+                        "beat_id": "hook",
+                        "action_intent_kinds": ["show_evidence"],
+                        "needs": ["evidence_visible"],
+                        "proposed_postures": ["asset_front"],
+                        "expected_effects": ["evidence_on_screen"],
+                        "evidence_refs": ["vault:source-note-1"],
+                        "source_affordances": ["asset:evidence-card"],
+                        "default_static_success_allowed": truthy_value,
+                    }
+                ],
+            )
+
+    @pytest.mark.parametrize("falsey_value", ["off", "disabled", "false", "no", "0", "none", ""])
+    def test_responsible_layout_intents_accept_falsey_default_static_success_strings(
+        self, falsey_value: str
+    ) -> None:
+        content = ProgrammeContent(
+            hosting_context="hapax_responsible_live",
+            beat_layout_intents=[
+                {
+                    "beat_id": "hook",
+                    "action_intent_kinds": ["show_evidence"],
+                    "needs": ["evidence_visible"],
+                    "proposed_postures": ["asset_front"],
+                    "expected_effects": ["evidence_on_screen"],
+                    "evidence_refs": ["vault:source-note-1"],
+                    "source_affordances": ["asset:evidence-card"],
+                    "default_static_success_allowed": falsey_value,
+                }
+            ],
+        )
+
+        assert content.beat_layout_intents[0]["default_static_success_allowed"] == falsey_value
 
 
 class TestProgrammeRitual:
