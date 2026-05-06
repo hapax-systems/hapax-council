@@ -420,6 +420,7 @@ def _proposal_needs_to_intents(
         return (), ()
 
     out: list[SegmentActionIntent] = []
+    deduped_intent_indexes: dict[tuple[str, tuple[str, ...]], int] = {}
     refusals: list[dict[str, object]] = []
     read_mtime = _optional_float(proposal.get("read_mtime")) or now
     proposal_forbidden = _forbidden_segment_layout_fields(
@@ -482,23 +483,38 @@ def _proposal_needs_to_intents(
         stable_id = _optional_str(need.get("intent_id")) or (
             f"{root.get('programme_id')}:{current_beat_index}:layout-need-{index}-{need_index}"
         )
-        out.append(
-            SegmentActionIntent(
-                intent_id=stable_id,
-                kind=mapped_kind,
-                requested_at=read_mtime,
-                priority=priority,
-                evidence_refs=evidence_refs,
-                ttl_s=ttl_s,
-                programme_id=_optional_str(root.get("programme_id")),
-                beat_index=current_beat_index,
-                target_ref=_target_ref_for_need(need),
-                authority_ref=prepared_artifact_ref,
-                requested_layout=None,
-                expected_effects=_expected_effects_for_need(need, mapped_kind=mapped_kind),
-                spoken_text_ref=None,
-            )
+        expected_effects = _expected_effects_for_need(need, mapped_kind=mapped_kind)
+        intent = SegmentActionIntent(
+            intent_id=stable_id,
+            kind=mapped_kind,
+            requested_at=read_mtime,
+            priority=priority,
+            evidence_refs=evidence_refs,
+            ttl_s=ttl_s,
+            programme_id=_optional_str(root.get("programme_id")),
+            beat_index=current_beat_index,
+            target_ref=_target_ref_for_need(need),
+            authority_ref=prepared_artifact_ref,
+            requested_layout=None,
+            expected_effects=expected_effects,
+            spoken_text_ref=None,
         )
+        dedupe_key = (intent.kind, intent.expected_effects)
+        if dedupe_key in deduped_intent_indexes:
+            existing_index = deduped_intent_indexes[dedupe_key]
+            existing = out[existing_index]
+            out[existing_index] = replace(
+                existing,
+                evidence_refs=tuple(
+                    dict.fromkeys((*existing.evidence_refs, *intent.evidence_refs))
+                ),
+                priority=max(existing.priority, intent.priority),
+                ttl_s=max(existing.ttl_s, intent.ttl_s),
+                target_ref=existing.target_ref or intent.target_ref,
+            )
+            continue
+        deduped_intent_indexes[dedupe_key] = len(out)
+        out.append(intent)
     return tuple(out), tuple(refusals)
 
 
