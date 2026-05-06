@@ -1011,10 +1011,12 @@ def _check_no_error_spikes() -> tuple[bool, str]:
                 continue
             try:
                 entry = _json.loads(line)
-                ident = entry.get("SYSLOG_IDENTIFIER", "unknown")
-                counts[ident] = counts.get(ident, 0) + 1
             except _json.JSONDecodeError:
                 continue
+            if not isinstance(entry, dict):
+                continue
+            ident = entry.get("SYSLOG_IDENTIFIER", "unknown")
+            counts[ident] = counts.get(ident, 0) + 1
 
         spikes = {k: v for k, v in counts.items() if v > 10}
         if not spikes:
