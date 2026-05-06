@@ -19,6 +19,7 @@ config/systemd/hapax-segment-prep.timer).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -396,6 +397,7 @@ def prep_segment(programme: Any, prep_dir: Path) -> Path | None:
         "avg_chars_per_beat": round(final_avg),
         "refinement_applied": True,
     }
+    payload.update(_parent_layout_metadata_for_programme(programme))
     tmp = out_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(out_path)
@@ -413,6 +415,21 @@ def prep_segment(programme: Any, prep_dir: Path) -> Path | None:
     _emit_self_evaluation(prog_id, role, script, beats)
 
     return out_path
+
+
+def _parent_layout_metadata_for_programme(programme: Any) -> dict[str, Any]:
+    content = getattr(programme, "content", None)
+    layout_decision_contract = dict(getattr(content, "layout_decision_contract", {}) or {})
+    layout_decision_contract.setdefault("may_command_layout", False)
+    return {
+        "parent_show_id": getattr(programme, "parent_show_id", None),
+        "parent_condition_id": getattr(programme, "parent_condition_id", None),
+        "hosting_context": getattr(content, "hosting_context", None) or "hapax_responsible_live",
+        "authority": getattr(content, "authority", None) or "prior_only",
+        "beat_layout_intents": getattr(content, "beat_layout_intents", []) or [],
+        "layout_decision_contract": layout_decision_contract,
+        "runtime_layout_validation": getattr(content, "runtime_layout_validation", {}) or {},
+    }
 
 
 def _emit_self_evaluation(
@@ -724,11 +741,39 @@ def load_prepped_programmes(prep_dir: Path | None = None) -> list[dict]:
         if f.name == "manifest.json":
             continue
         try:
-            data = json.loads(f.read_text(encoding="utf-8"))
+            raw = f.read_bytes()
+            artifact_sha256 = hashlib.sha256(raw).hexdigest()
+            data = json.loads(raw.decode("utf-8"))
+            data["artifact_path_diagnostic"] = str(f)
+            data["artifact_sha256"] = artifact_sha256
             if data.get("prepared_script"):
+                from agents.hapax_daimonion.segment_layout_contract import (
+                    validate_prepared_segment_artifact,
+                )
+
+                contract = validate_prepared_segment_artifact(
+                    data,
+                    artifact_path=str(f),
+                    artifact_sha256=artifact_sha256,
+                )
+                data["prepared_artifact_ref"] = {
+                    "ref": f"prepared_artifact:{artifact_sha256}",
+                    "artifact_sha256": artifact_sha256,
+                    "prep_session_id": data.get("prep_session_id"),
+                    "model_id": data.get("model_id"),
+                    "authority": data.get("authority"),
+                    "projected_authority": contract.artifact_authority,
+                }
+                data["projected_layout_contract"] = contract.model_dump(
+                    mode="json",
+                    by_alias=True,
+                )
+                data["beat_layout_intents"] = data["projected_layout_contract"][
+                    "beat_layout_intents"
+                ]
                 results.append(data)
         except Exception:
-            log.debug("load_prepped: failed to read %s", f, exc_info=True)
+            log.warning("load_prepped: rejected %s", f, exc_info=True)
     return results
 
 

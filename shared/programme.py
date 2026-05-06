@@ -24,7 +24,7 @@ from __future__ import annotations
 import math
 import time
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -303,10 +303,10 @@ class ProgrammeContent(BaseModel):
     advance that beat. Beat transitions happen via
     ``programme.beat_advance`` intent family.
 
-    ``segment_cues`` (optional) carries compositional cues paired 1:1
-    with segment_beats. Each cue is a short directive for the
-    compositor — camera cuts, graphic overlays, mood shifts — that
-    fire when the corresponding beat activates.
+    ``segment_cues`` is legacy executable compositor authority. It may
+    remain on non-responsible/static rehearsals, but responsible hosting
+    content must use proposal-only ``beat_layout_intents`` and runtime
+    receipts instead.
     """
 
     music_track_ids: list[str] = Field(default_factory=list)
@@ -315,6 +315,14 @@ class ProgrammeContent(BaseModel):
     narrative_beat: str | None = None
     segment_beats: list[str] = Field(default_factory=list)
     segment_cues: list[str] = Field(default_factory=list)
+    hosting_context: str | dict[str, Any] | None = None
+    authority: str | None = None
+    beat_layout_intents: list[dict[str, Any]] = Field(default_factory=list)
+    layout_decision_contract: dict[str, Any] = Field(default_factory=dict)
+    runtime_layout_validation: dict[str, Any] = Field(default_factory=dict)
+    layout_decision_receipts: list[dict[str, Any]] = Field(default_factory=list)
+    prepared_artifact_ref: dict[str, Any] | str | None = None
+    artifact_path_diagnostic: str | None = None
     segment_beat_durations: list[float] = Field(default_factory=list)
     """Seconds per beat, paired 1:1 with segment_beats.
 
@@ -374,12 +382,107 @@ class ProgrammeContent(BaseModel):
             raise ValueError(f"segment_cues has {len(v)} entries — max 30 per programme")
         return [c.strip() for c in v if c.strip()]
 
+    @field_validator("beat_layout_intents")
+    @classmethod
+    def _beat_layout_intents_are_needs_only(cls, v: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        _reject_layout_authority_fields(v)
+        return v
+
+    @field_validator("layout_decision_contract")
+    @classmethod
+    def _layout_decision_contract_is_non_authoritative(cls, v: dict[str, Any]) -> dict[str, Any]:
+        if not v:
+            return {}
+        _reject_layout_authority_fields(v)
+        if v.get("may_command_layout") is not False:
+            raise ValueError("layout_decision_contract may only declare may_command_layout=false")
+        return {"may_command_layout": False}
+
+    @field_validator("runtime_layout_validation")
+    @classmethod
+    def _runtime_layout_validation_is_code_owned(cls, v: dict[str, Any]) -> dict[str, Any]:
+        _reject_layout_authority_fields(v)
+        return {}
+
     @field_validator("segment_beat_durations")
     @classmethod
     def _segment_beat_durations_reasonable(cls, v: list[float]) -> list[float]:
         if len(v) > 30:
             raise ValueError(f"segment_beat_durations has {len(v)} entries — max 30 per programme")
         return [max(15.0, d) for d in v]  # Floor of 15s per beat
+
+    @model_validator(mode="after")
+    def _responsible_hosting_quarantines_segment_cues(self) -> ProgrammeContent:
+        if self.segment_cues and self.beat_layout_intents:
+            raise ValueError(
+                "ProgrammeContent cannot mix executable segment_cues with beat_layout_intents"
+            )
+        if self.segment_cues and _content_hosting_context_is_responsible(self.hosting_context):
+            raise ValueError(
+                "responsible hosting ProgrammeContent cannot carry executable segment_cues; "
+                "use proposal-only beat_layout_intents"
+            )
+        return self
+
+
+def _content_hosting_context_is_responsible(value: str | dict[str, Any] | None) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return _hosting_context_token(value) not in {
+            "nonresponsiblestatic",
+            "internalrehearsal",
+        }
+    mode = value.get("mode") or value.get("hosting_context")
+    return _content_hosting_context_is_responsible(mode if isinstance(mode, str) else None)
+
+
+def _hosting_context_token(value: str) -> str:
+    return "".join(ch for ch in value.lower() if ch.isalnum())
+
+
+_FORBIDDEN_LAYOUT_AUTHORITY_KEY_TOKENS = frozenset(
+    {
+        "layout",
+        "layoutid",
+        "layoutname",
+        "requestedlayout",
+        "selectedlayout",
+        "targetlayout",
+        "activelayout",
+        "surface",
+        "surfaces",
+        "surfaceid",
+        "coordinates",
+        "coordinate",
+        "shm",
+        "shmpath",
+        "segmentcues",
+        "cue",
+        "cues",
+        "command",
+        "commands",
+        "camera",
+        "zorder",
+    }
+)
+
+
+def _reject_layout_authority_fields(value: Any, *, prefix: str = "") -> None:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if not isinstance(key, str):
+                continue
+            path = f"{prefix}.{key}" if prefix else key
+            token = _hosting_context_token(key)
+            if token in _FORBIDDEN_LAYOUT_AUTHORITY_KEY_TOKENS:
+                raise ValueError(
+                    f"ProgrammeContent layout proposals cannot carry concrete layout authority: {path}"
+                )
+            _reject_layout_authority_fields(nested, prefix=path)
+    elif isinstance(value, list):
+        for index, nested in enumerate(value):
+            _reject_layout_authority_fields(nested, prefix=f"{prefix}[{index}]")
 
 
 class ProgrammeRitual(BaseModel):

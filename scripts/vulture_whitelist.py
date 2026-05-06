@@ -765,14 +765,24 @@ from agents.hapax_daimonion.segment_layout_contract import (
     RuntimeLayoutDecision as _RuntimeLayoutDecision,
 )
 from agents.hapax_daimonion.segment_layout_contract import (
+    RuntimeLayoutReceipt as _RuntimeLayoutReceipt,
+)
+from agents.hapax_daimonion.segment_layout_contract import (
+    RuntimeReadbackRef as _RuntimeReadbackRef,
+)
+from agents.hapax_daimonion.segment_layout_contract import (
     SegmentActionIntent as _SegmentLayoutActionIntent,
 )
 
 _SegmentLayoutHostingContext._static_success_requires_explicit_non_responsibility
 _SegmentLayoutActionIntent._visible_action_intents_need_sources
 _SegmentLayoutDecisionContract._bounded_contract_is_complete
+_PreparedSegmentLayoutContract._adapt_parent_hosting_context
+_PreparedSegmentLayoutContract._prepared_artifact_sha_is_hex
 _PreparedSegmentLayoutContract._responsible_hosting_needs_visible_work
 _RuntimeLayoutDecision._decision_ttl_covers_dwell
+_RuntimeLayoutReceipt._layout_state_hash_is_sha256
+_RuntimeReadbackRef._digest_is_sha256
 
 # Bridge governor validators are invoked dynamically by Pydantic.
 # The evaluator is the sole public path from private to public.
@@ -2429,7 +2439,11 @@ from shared.programme import ProgrammeContent as _PrgContent
 
 _PrgContent._segment_beats_reasonable
 _PrgContent._segment_cues_reasonable
+_PrgContent._beat_layout_intents_are_needs_only
+_PrgContent._layout_decision_contract_is_non_authoritative
+_PrgContent._runtime_layout_validation_is_code_owned
 _PrgContent._segment_beat_durations_reasonable
+_PrgContent._responsible_hosting_quarantines_segment_cues
 _PrgContent._durations_ordered
 
 # Segment prompt helpers are called dynamically by the compose module's
