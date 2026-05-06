@@ -39,7 +39,9 @@ def _is_duplicate(title: str, message: str) -> bool:
     state: dict = {}
     try:
         if _DEDUP_FILE.exists():
-            state = _json.loads(_DEDUP_FILE.read_text())
+            parsed = _json.loads(_DEDUP_FILE.read_text())
+            if isinstance(parsed, dict):
+                state = parsed
     except Exception:
         pass
     last_sent = state.get(key, 0)
