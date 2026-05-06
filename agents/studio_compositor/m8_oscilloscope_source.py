@@ -63,6 +63,13 @@ ACTIVE_ALPHA: float = 0.75
 # of its mtime-driven alpha so a connected-but-quiet M8 stays legibly
 # present. Loud waveforms scale linearly up to 1.0×.
 AMPLITUDE_ALPHA_FLOOR: float = 0.5
+# Additional Cairo line width (in pixels) at full ±128 amplitude. The
+# rendered stroke is ``DEFAULT_LINE_WIDTH + amplitude × this`` — silent
+# midline draws at the base width; loud waveforms thicken proportionally
+# so peaks read as bold strokes against a thin idle baseline. Mirrors
+# the sierpinski waveform's ``1.5 + audio_energy × 2.0`` precedent at a
+# more conservative scale (the M8 osc is a thinner ward by default).
+LINE_WIDTH_AMPLITUDE_SCALE: float = 1.0
 
 
 def _fallback_package() -> HomagePackage:
@@ -180,6 +187,7 @@ class M8OscilloscopeCairoSource(HomageTransitionalSource):
         silence_fade_duration_s: float = SILENCE_FADE_DURATION_S,
         active_alpha: float = ACTIVE_ALPHA,
         amplitude_alpha_floor: float = AMPLITUDE_ALPHA_FLOOR,
+        line_width_amplitude_scale: float = LINE_WIDTH_AMPLITUDE_SCALE,
     ) -> None:
         super().__init__(source_id=self.source_id)
         self._ring_path = ring_path
@@ -188,6 +196,7 @@ class M8OscilloscopeCairoSource(HomageTransitionalSource):
         self._silence_fade_duration_s = silence_fade_duration_s
         self._active_alpha = active_alpha
         self._amplitude_alpha_floor = amplitude_alpha_floor
+        self._line_width_amplitude_scale = line_width_amplitude_scale
 
     def render_content(
         self,
@@ -225,7 +234,8 @@ class M8OscilloscopeCairoSource(HomageTransitionalSource):
         r, g, b, a = _resolve_waveform_tint(pkg, alpha)
 
         cr.save()
-        cr.set_line_width(self._line_width)
+        line_width = self._line_width + amplitude * self._line_width_amplitude_scale
+        cr.set_line_width(line_width)
         cr.set_source_rgba(r, g, b, a)
 
         n = len(samples)

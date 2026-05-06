@@ -30,6 +30,8 @@ from agents.studio_compositor import m8_oscilloscope_source as mod
 from agents.studio_compositor.m8_oscilloscope_source import (
     ACTIVE_ALPHA,
     AMPLITUDE_ALPHA_FLOOR,
+    DEFAULT_LINE_WIDTH,
+    LINE_WIDTH_AMPLITUDE_SCALE,
     M8OscilloscopeCairoSource,
     _amplitude_normalized,
     _amplitude_scaled_alpha,
@@ -213,6 +215,27 @@ class TestRenderContent:
         cr = MagicMock()
         # Must not raise into the compositor's render thread.
         source.render_content(cr, canvas_w=1280, canvas_h=128, t=0.0, state={})
+
+    def test_loud_waveform_paints_with_thicker_stroke_than_silent(self, tmp_path: Path) -> None:
+        # Silent: midline samples → amplitude 0 → line_width = base.
+        silent_path = tmp_path / "silent_lw.bin"
+        _write_ring(silent_path, samples=bytes([128] * 32))
+        # Loud: full ±128 swing → amplitude 1 → line_width = base + scale.
+        loud_path = tmp_path / "loud_lw.bin"
+        _write_ring(loud_path, samples=bytes([0, 255] * 16))
+
+        def _paint_line_width(path: Path) -> float:
+            source = M8OscilloscopeCairoSource(ring_path=path)
+            cr = MagicMock()
+            source.render_content(cr, canvas_w=1280, canvas_h=128, t=0.0, state={})
+            cr.set_line_width.assert_called_once()
+            return float(cr.set_line_width.call_args.args[0])
+
+        silent_lw = _paint_line_width(silent_path)
+        loud_lw = _paint_line_width(loud_path)
+        assert silent_lw == pytest.approx(DEFAULT_LINE_WIDTH)
+        assert loud_lw == pytest.approx(DEFAULT_LINE_WIDTH + LINE_WIDTH_AMPLITUDE_SCALE)
+        assert loud_lw > silent_lw
 
     def test_loud_waveform_paints_with_higher_alpha_than_silent(self, tmp_path: Path) -> None:
         # Silent waveform: all samples at the midline.
