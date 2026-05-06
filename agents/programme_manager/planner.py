@@ -80,6 +80,24 @@ DEFAULT_MAX_RETRIES = 1
 LLMCallable = Callable[[str], str]
 
 
+def _normalized_target_programmes(target_programmes: int | None) -> int | None:
+    if target_programmes is None:
+        return None
+    return max(1, min(5, int(target_programmes)))
+
+
+def _render_target_directive(target_programmes: int | None) -> str:
+    if target_programmes is None:
+        return ""
+    noun = "programme" if target_programmes == 1 else "programmes"
+    return (
+        "## Per-run programme target\n\n"
+        f"For this prep run, emit exactly {target_programmes} segmented-content {noun}. "
+        "This is a run-size constraint inside the normal schema range, not a runtime "
+        "authority transfer. Keep all planner outputs as soft-prior programme proposals."
+    )
+
+
 class ProgrammePlanner:
     """Emits a ``ProgrammePlan`` for the next 2-5 programmes.
 
@@ -116,6 +134,7 @@ class ProgrammePlanner:
         profile: dict | None = None,
         condition_history: dict | None = None,
         content_state: dict | None = None,
+        target_programmes: int | None = None,
     ) -> ProgrammePlan | None:
         """Compose a context block, call the LLM, validate + return.
 
@@ -132,6 +151,7 @@ class ProgrammePlanner:
             profile=profile,
             condition_history=condition_history,
             content_state=content_state,
+            target_programmes=target_programmes,
         )
 
         prompt = base_prompt
@@ -176,9 +196,12 @@ class ProgrammePlanner:
         profile: dict | None,
         condition_history: dict | None,
         content_state: dict | None,
+        target_programmes: int | None,
     ) -> str:
         """Render the prompt template + per-call context."""
         template = self._read_prompt_template()
+        target = _normalized_target_programmes(target_programmes)
+        target_directive = _render_target_directive(target)
         context = self._render_context(
             show_id=show_id,
             perception=perception,
@@ -188,7 +211,9 @@ class ProgrammePlanner:
             condition_history=condition_history,
             content_state=content_state,
         )
-        return f"{template}\n\n## Per-call context\n\n{context}"
+        blocks = [block for block in (target_directive, template) if block]
+        prompt_body = "\n\n".join(blocks)
+        return f"{prompt_body}\n\n## Per-call context\n\n{context}"
 
     def _build_retry_prompt(self, base_prompt: str, error_message: str) -> str:
         """Re-prompt with the validation error message appended.
