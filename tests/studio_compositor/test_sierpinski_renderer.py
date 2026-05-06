@@ -31,6 +31,35 @@ def renderer() -> SierpinskiCairoSource:
     return SierpinskiCairoSource()
 
 
+def test_audio_line_width_has_bounded_attack_lift(renderer: SierpinskiCairoSource) -> None:
+    from agents.studio_compositor.sierpinski_renderer import (
+        AUDIO_LINE_WIDTH_BASE_PX,
+        AUDIO_LINE_WIDTH_MAX_PX,
+        AUDIO_LINE_WIDTH_SCALE_PX,
+    )
+
+    renderer.set_audio_energy(0.0)
+    assert renderer._audio_line_width() == pytest.approx(AUDIO_LINE_WIDTH_BASE_PX)  # noqa: SLF001
+
+    renderer.set_audio_energy(1.0)
+    smoothed_only_width = (
+        AUDIO_LINE_WIDTH_BASE_PX + renderer._audio_energy_smoothed * AUDIO_LINE_WIDTH_SCALE_PX  # noqa: SLF001
+    )
+    attack_width = renderer._audio_line_width()  # noqa: SLF001
+
+    assert attack_width > smoothed_only_width
+    assert attack_width < AUDIO_LINE_WIDTH_MAX_PX
+
+
+def test_audio_line_width_keeps_existing_max_footprint(renderer: SierpinskiCairoSource) -> None:
+    from agents.studio_compositor.sierpinski_renderer import AUDIO_LINE_WIDTH_MAX_PX
+
+    renderer._audio_energy = 9.0  # noqa: SLF001
+    renderer._audio_energy_smoothed = 9.0  # noqa: SLF001
+
+    assert renderer._audio_line_width() == pytest.approx(AUDIO_LINE_WIDTH_MAX_PX)  # noqa: SLF001
+
+
 def test_geometry_cache_l2_default(renderer: SierpinskiCairoSource) -> None:
     geom = renderer.geometry_cache(target_depth=2, canvas_w=1280, canvas_h=720)
     # L0 + L1 corners + L2 corners = 1 + 3 + 9 = 13
