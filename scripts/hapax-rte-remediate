@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+# hapax-rte-remediate — RTE auto-recovery for failed systemd user units
+#
+# Operator directive 2026-05-06: RTE must not just observe — it must
+# attempt remediation on every tick. This script is the canonical
+# one-shot remediation pass for failed systemd user units.
+#
+# Algorithm:
+#   1. List all failed user units
+#   2. Skip sandboxed scopes (chrome, chromium, foot tabs, etc.) — those
+#      are user-app crashes, not RTE concerns
+#   3. For each remaining failed unit:
+#      - reset-failed (clears the failure counter)
+#      - attempt restart with 15s timeout
+#      - re-check is-active
+#   4. Classify outcomes: recovered / persistent-fail / not-applicable
+#   5. For persistent-fail units, write an inflection to
+#      ~/.cache/hapax/relay/inflections/<utc>-rte-to-operator-<unit>.md
+#      with the journal tail as evidence (one-shot per unit per day to
+#      avoid spam)
+#   6. Print a summary table; return JSON via --json
+#
+# Modes:
+#   hapax-rte-remediate           # human-readable, takes action
+#   hapax-rte-remediate --json    # machine-readable for tick-log embed
+#   hapax-rte-remediate --dry-run # report only, no action
+#
+# Exit codes:
+#   0  no failed units (or all recovered)
+#   1  some persistent failures still
+#   2  emergency: load-bearing service failed (compositor/daimonion/logos-api)
+
+set -euo pipefail
+
+JSON=0
+DRY_RUN=0
+RESTART_TIMEOUT=15
+INFLECTION_DIR="$HOME/.cache/hapax/relay/inflections"
+DEDUP_DIR="$HOME/.cache/hapax/rte-remediate-dedup"
+mkdir -p "$INFLECTION_DIR" "$DEDUP_DIR"
+
+# Skip patterns: scopes that systemd marks failed but are user-app crashes,
+# not RTE concerns
+SKIP_PATTERN='^(app-com\.google\.Chrome|app-org\.chromium\.Chromium|app-org\.gnome|app-com\.discordapp|app-org\.signal|app-com\.spotify|app-tv\.plex|gvfs-|user@|init\.scope|notify-failure@)'
+
+# Load-bearing units — failure of any → emergency exit code 2
+LOAD_BEARING='^(studio-compositor|hapax-daimonion|hapax-imagination|logos-api|tabbyapi|hapax-secrets)\.service$'
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --json) JSON=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --help|-h)
+      sed -n '2,30p' "$0"
+      exit 0 ;;
+    *) echo "hapax-rte-remediate: unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+declare -a recovered=()
+declare -a persistent=()
+declare -a load_bearing_fail=()
+declare -a skipped=()
+
+# Snapshot failed units (use --no-legend for stable parse)
+mapfile -t failed_units < <(systemctl --user list-units --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}')
+
+emit_progress() {
+  if [ "$JSON" -eq 0 ]; then
+    echo "$@" >&2
+  fi
+}
+
+write_inflection() {
+  local unit="$1"
+  local cause="$2"
+  local dedup_file="$DEDUP_DIR/${unit}-$(date -u +%Y%m%d).flag"
+  if [ -f "$dedup_file" ]; then
+    return 0  # already escalated today
+  fi
+  touch "$dedup_file"
+  local utc; utc="$(date -u +%Y%m%dT%H%M%SZ)"
+  local slug
+  slug="$(echo "$unit" | sed 's/\.service$//; s/\.timer$//; s/[^a-zA-Z0-9-]/-/g')"
+  local target="$INFLECTION_DIR/${utc}-rte-to-operator-failed-${slug}.md"
+  cat > "$target" <<EOF
+# ${utc} — for: operator
+
+from: hapax-rte-remediate (auto)
+severity: P2
+
+## Failed unit: \`${unit}\`
+
+Persistent failure detected. Auto-restart attempted and failed. Cause:
+
+\`\`\`
+${cause}
+\`\`\`
+
+## Recent journal tail
+
+\`\`\`
+$(journalctl --user -u "$unit" --since '5 minutes ago' --no-pager 2>&1 | tail -15)
+\`\`\`
+
+## Actions tried
+
+- \`systemctl --user reset-failed ${unit}\`
+- \`systemctl --user restart ${unit}\` (timeout ${RESTART_TIMEOUT}s)
+
+Operator action required to investigate. Dedupped per-day.
+EOF
+  emit_progress "  → escalated to inflection: $(basename "$target")"
+}
+
+for unit in "${failed_units[@]}"; do
+  [ -z "$unit" ] && continue
+  if [[ "$unit" =~ $SKIP_PATTERN ]]; then
+    skipped+=("$unit")
+    continue
+  fi
+
+  is_load_bearing=0
+  if [[ "$unit" =~ $LOAD_BEARING ]]; then
+    is_load_bearing=1
+  fi
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    emit_progress "  [DRY-RUN] would attempt: ${unit}"
+    persistent+=("$unit")
+    continue
+  fi
+
+  emit_progress "  attempting: ${unit}"
+  systemctl --user reset-failed "$unit" 2>/dev/null || true
+
+  # Try restart with timeout
+  if timeout "$RESTART_TIMEOUT" systemctl --user restart "$unit" 2>/dev/null; then
+    # Verify it stayed up
+    sleep 1
+    state="$(systemctl --user is-active "$unit" 2>/dev/null || echo unknown)"
+    if [ "$state" = "active" ] || [ "$state" = "activating" ]; then
+      recovered+=("$unit")
+      emit_progress "  ✓ recovered: ${unit} (state=${state})"
+      continue
+    fi
+  fi
+
+  # Persistent failure
+  cause="$(journalctl --user -u "$unit" --since '5 minutes ago' --no-pager 2>&1 | grep -E 'Failed|exit-code|status=' | tail -3 | tr '\n' '; ')"
+  persistent+=("$unit")
+  if [ "$is_load_bearing" -eq 1 ]; then
+    load_bearing_fail+=("$unit")
+    emit_progress "  ✗ LOAD-BEARING FAILURE: ${unit} — ${cause}"
+  else
+    emit_progress "  ✗ persistent: ${unit} — ${cause}"
+  fi
+  write_inflection "$unit" "${cause:-no cause captured}"
+done
+
+# Output
+if [ "$JSON" -eq 1 ]; then
+  printf '{"ts":"%s","total_failed":%d,"recovered":[' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${#failed_units[@]}"
+  for i in "${!recovered[@]}"; do
+    [ "$i" -gt 0 ] && printf ','
+    printf '"%s"' "${recovered[$i]}"
+  done
+  printf '],"persistent":['
+  for i in "${!persistent[@]}"; do
+    [ "$i" -gt 0 ] && printf ','
+    printf '"%s"' "${persistent[$i]}"
+  done
+  printf '],"load_bearing_failures":['
+  for i in "${!load_bearing_fail[@]}"; do
+    [ "$i" -gt 0 ] && printf ','
+    printf '"%s"' "${load_bearing_fail[$i]}"
+  done
+  printf '],"skipped":%d}\n' "${#skipped[@]}"
+else
+  echo
+  echo "RTE remediation summary:"
+  echo "  total failed:   ${#failed_units[@]}"
+  echo "  skipped (apps): ${#skipped[@]}"
+  echo "  recovered:      ${#recovered[@]}"
+  echo "  persistent:     ${#persistent[@]}"
+  if [ "${#load_bearing_fail[@]}" -gt 0 ]; then
+    echo "  ⚠ LOAD-BEARING FAILURES: ${load_bearing_fail[*]}"
+  fi
+  if [ "${#persistent[@]}" -gt 0 ]; then
+    echo
+    echo "Persistent failures (escalated to operator inflections, dedupped per-day):"
+    for u in "${persistent[@]}"; do
+      echo "    $u"
+    done
+  fi
+fi
+
+# Exit code
+if [ "${#load_bearing_fail[@]}" -gt 0 ]; then
+  exit 2
+fi
+if [ "${#persistent[@]}" -gt 0 ]; then
+  exit 1
+fi
+exit 0
