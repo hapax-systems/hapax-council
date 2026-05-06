@@ -40,20 +40,43 @@ def _read_perception() -> dict | None:
 
 
 def _read_stimmung() -> str:
-    """Read current stimmung stance."""
+    """Read current stimmung stance.
+
+    Validates the JSON root is a mapping. ``data.get(\"overall_stance\")``
+    is called outside the ``(FileNotFoundError, json.JSONDecodeError)``
+    catch — a writer producing valid JSON whose root is null, a list,
+    a string, or a number would raise AttributeError out of the flow
+    journal tick. Same shape as the other recent SHM-read fixes.
+    """
     try:
         data = json.loads(STIMMUNG_STATE.read_text())
-        return data.get("overall_stance", "unknown")
     except (FileNotFoundError, json.JSONDecodeError):
         return "unknown"
+    if not isinstance(data, dict):
+        return "unknown"
+    return data.get("overall_stance", "unknown")
 
 
 def _load_state() -> dict:
-    """Load journal state (last known flow state, today's transitions)."""
+    """Load journal state (last known flow state, today's transitions).
+
+    Validates the JSON root is a mapping. The default state object
+    (``{\"last_flow_state\": \"idle\", \"last_activity_mode\": \"unknown\",
+    \"transitions\": []}``) is consumed via ``state.get(\"last_flow_state\")``
+    in the journal tick — a non-dict root previously raised
+    AttributeError downstream. Falling back to the default keeps the
+    journal running through corruption.
+    """
+    default_state = {
+        "last_flow_state": "idle",
+        "last_activity_mode": "unknown",
+        "transitions": [],
+    }
     try:
-        return json.loads(STATE_FILE.read_text())
+        data = json.loads(STATE_FILE.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
-        return {"last_flow_state": "idle", "last_activity_mode": "unknown", "transitions": []}
+        return default_state
+    return data if isinstance(data, dict) else default_state
 
 
 def _save_state(state: dict) -> None:
