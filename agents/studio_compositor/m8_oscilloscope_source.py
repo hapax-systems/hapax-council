@@ -70,6 +70,13 @@ AMPLITUDE_ALPHA_FLOOR: float = 0.5
 # the sierpinski waveform's ``1.5 + audio_energy × 2.0`` precedent at a
 # more conservative scale (the M8 osc is a thinner ward by default).
 LINE_WIDTH_AMPLITUDE_SCALE: float = 1.0
+# One-pole IIR coefficient on the modulation amplitude. Per-frame
+# ``smoothed = smoothed × (1 − α) + raw × α``. The waveform DRAW
+# continues to read raw samples — that surface IS the audio. Only the
+# alpha + line-width MODULATIONS see the smoothed envelope so percussive
+# transients don't whip those parameters frame-to-frame. Matches the
+# sierpinski IIR alpha (#2639) for cross-ward consistency.
+AMPLITUDE_IIR_ALPHA: float = 0.3
 
 
 def _fallback_package() -> HomagePackage:
@@ -188,6 +195,7 @@ class M8OscilloscopeCairoSource(HomageTransitionalSource):
         active_alpha: float = ACTIVE_ALPHA,
         amplitude_alpha_floor: float = AMPLITUDE_ALPHA_FLOOR,
         line_width_amplitude_scale: float = LINE_WIDTH_AMPLITUDE_SCALE,
+        amplitude_iir_alpha: float = AMPLITUDE_IIR_ALPHA,
     ) -> None:
         super().__init__(source_id=self.source_id)
         self._ring_path = ring_path
@@ -197,6 +205,8 @@ class M8OscilloscopeCairoSource(HomageTransitionalSource):
         self._active_alpha = active_alpha
         self._amplitude_alpha_floor = amplitude_alpha_floor
         self._line_width_amplitude_scale = line_width_amplitude_scale
+        self._amplitude_iir_alpha = amplitude_iir_alpha
+        self._amplitude_smoothed = 0.0
 
     def render_content(
         self,
@@ -224,9 +234,16 @@ class M8OscilloscopeCairoSource(HomageTransitionalSource):
             return
 
         amplitude = _amplitude_normalized(samples)
+        # One-pole IIR — feeds the alpha + line-width MODULATIONS only.
+        # The waveform draw below uses the raw samples because that
+        # surface IS the audio. Mirrors the sierpinski IIR pattern (#2639).
+        self._amplitude_smoothed = (
+            self._amplitude_smoothed * (1.0 - self._amplitude_iir_alpha)
+            + amplitude * self._amplitude_iir_alpha
+        )
         alpha = _amplitude_scaled_alpha(
             base_alpha,
-            amplitude,
+            self._amplitude_smoothed,
             floor=self._amplitude_alpha_floor,
         )
 
@@ -234,7 +251,7 @@ class M8OscilloscopeCairoSource(HomageTransitionalSource):
         r, g, b, a = _resolve_waveform_tint(pkg, alpha)
 
         cr.save()
-        line_width = self._line_width + amplitude * self._line_width_amplitude_scale
+        line_width = self._line_width + self._amplitude_smoothed * self._line_width_amplitude_scale
         cr.set_line_width(line_width)
         cr.set_source_rgba(r, g, b, a)
 
