@@ -1,0 +1,19 @@
+[Unit]
+Description=Hapax RAG Edge — Pi-side document preprocessor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/hapax-edge
+ExecStart=/usr/bin/python3 %h/hapax-edge/hapax-rag-edge.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-rag-edge
+Environment=RAG_EDGE_POLL_INTERVAL_S=30
+Environment=RAG_EDGE_WORKSTATION_HOST=hapax-podium.local
+
+[Install]
+WantedBy=default.target

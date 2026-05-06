@@ -1,0 +1,14 @@
+[Unit]
+Description=Hapax Gdrive Pull — pull workstation gdrive-drop into local rag-staging
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash %h/hapax-edge/hapax-gdrive-pull.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-gdrive-pull
+
+[Install]
+WantedBy=default.target
