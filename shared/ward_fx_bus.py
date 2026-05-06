@@ -120,10 +120,14 @@ class FXEvent:
 
     ``preset_family`` is ``""`` for non-family events (``audio_kick_onset``,
     ``intensity_spike``) so consumers can always read the field safely.
+    ``strength`` is a normalized [0.0, 1.0] event magnitude. Producers that only
+    know that an event happened can omit it and retain the historical full-strength
+    ward reaction.
     """
 
     kind: FXEventKind
     preset_family: str = ""
+    strength: float = 1.0
     ts: float = field(default_factory=time.monotonic)
 
 

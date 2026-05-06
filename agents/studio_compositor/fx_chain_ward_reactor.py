@@ -188,7 +188,10 @@ class WardFxReactor:
             if event.kind == "preset_family_change":
                 self._pulse_all_wards(_PRESET_CHANGE_ACCENT_HZ, _PRESET_CHANGE_TTL_S)
             elif event.kind == "audio_kick_onset":
-                self._bump_audio_reactive_wards(_AUDIO_KICK_SCALE_BUMP, _AUDIO_KICK_TTL_S)
+                self._bump_audio_reactive_wards(
+                    _AUDIO_KICK_SCALE_BUMP * _clamp(event.strength, 0.0, 1.0),
+                    _AUDIO_KICK_TTL_S,
+                )
             elif event.kind == "chain_swap":
                 self._bump_specific_wards(
                     _CHAIN_SWAP_RESPONSE_WARDS,
@@ -196,7 +199,10 @@ class WardFxReactor:
                     _CHAIN_SWAP_TTL_S,
                 )
             elif event.kind == "intensity_spike":
-                self._pulse_audio_reactive_wards(_INTENSITY_SPIKE_PULSE_HZ, _INTENSITY_SPIKE_TTL_S)
+                self._pulse_audio_reactive_wards(
+                    _INTENSITY_SPIKE_PULSE_HZ * _clamp(event.strength, 0.0, 1.0),
+                    _INTENSITY_SPIKE_TTL_S,
+                )
         except Exception:
             log.warning("WardFxReactor: fx event handler failed", exc_info=True)
         finally:
