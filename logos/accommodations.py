@@ -77,7 +77,19 @@ def load_accommodations() -> AccommodationSet:
 
     try:
         data = json.loads(_ACCOMMODATIONS_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return result
+    if not isinstance(data, dict):
+        # Schema drift: a writer producing valid JSON whose root is null,
+        # a list, a string, or a number raises AttributeError out of
+        # ``data.get(\"accommodations\", [])`` — the existing
+        # ``(json.JSONDecodeError, KeyError)`` catch missed it. Same
+        # shape as the other recent SHM-read fixes.
+        return result
+    try:
         for item in data.get("accommodations", []):
+            if not isinstance(item, dict):
+                continue
             result.accommodations.append(
                 Accommodation(
                     id=item["id"],
@@ -88,7 +100,7 @@ def load_accommodations() -> AccommodationSet:
                     confirmed_at=item.get("confirmed_at", ""),
                 )
             )
-    except (json.JSONDecodeError, KeyError):
+    except KeyError:
         return result
 
     # Derive convenience flags from active accommodations
@@ -100,7 +112,8 @@ def load_accommodations() -> AccommodationSet:
     # Parse energy hours if energy_aware
     if result.energy_aware:
         try:
-            hours_data = data.get("energy_hours", {})
+            hours_raw = data.get("energy_hours", {})
+            hours_data = hours_raw if isinstance(hours_raw, dict) else {}
             result.peak_hours = hours_data.get("peak", [])
             result.low_hours = hours_data.get("low", [])
         except Exception:
