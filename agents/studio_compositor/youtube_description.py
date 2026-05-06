@@ -63,14 +63,20 @@ def _pacific_date_now() -> str:
 
 
 def _read_quota_state(quota_file: Path) -> dict[str, Any]:
+    fresh = {"date": _pacific_date_now(), "units_spent": 0, "stream_updates": {}}
     if not quota_file.exists():
-        return {"date": _pacific_date_now(), "units_spent": 0, "stream_updates": {}}
+        return fresh
     try:
         state = json.loads(quota_file.read_text())
     except (OSError, json.JSONDecodeError):
-        return {"date": _pacific_date_now(), "units_spent": 0, "stream_updates": {}}
+        return fresh
+    # Same defensive pattern as the campaign of `fix(X): reject non-dict
+    # root` PRs across SHM/JSON readers — a quota file containing a JSON
+    # list/string/null would otherwise crash `state.get` with AttributeError.
+    if not isinstance(state, dict):
+        return fresh
     if state.get("date") != _pacific_date_now():
-        return {"date": _pacific_date_now(), "units_spent": 0, "stream_updates": {}}
+        return fresh
     return state
 
 
