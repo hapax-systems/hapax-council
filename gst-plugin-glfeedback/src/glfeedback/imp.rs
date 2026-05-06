@@ -42,6 +42,10 @@ struct State {
     height: i32,
     /// Compiled GL shader program.
     shader: gst_gl::GLShader,
+    /// When true, seed both accum buffers from the current input frame
+    /// before the next shader pass. Set on shader recompile to avoid
+    /// the new shader reading stale accum data from the old shader.
+    seed_accum_from_input: bool,
 }
 
 /// Properties exposed to GStreamer (set from Python via set_property).
@@ -193,6 +197,7 @@ impl GLBaseFilterImpl for GlFeedback {
             width: 0,
             height: 0,
             shader,
+            seed_accum_from_input: false,
         });
 
         Ok(())
@@ -265,18 +270,16 @@ impl GLFilterImpl for GlFeedback {
                                 let mut guard = self.state.lock().unwrap();
                                 let s = guard.as_mut().unwrap();
                                 s.shader = new_shader;
-                                // Clear accumulation buffers on shader change to prevent
-                                // stale frame data from previous shader bleeding through.
-                                for i in 0..2 {
-                                    unsafe {
-                                        gl::BindFramebuffer(gl::FRAMEBUFFER, s.accum_fbos[i]);
-                                        gl::ClearColor(0.0, 0.0, 0.0, 0.0);
-                                        gl::Clear(gl::COLOR_BUFFER_BIT);
-                                    }
-                                }
-                                unsafe { gl::BindFramebuffer(gl::FRAMEBUFFER, 0); }
+                                // 2026-05-04: Seed accum from the current input
+                                // frame on the next render pass. Preserving stale
+                                // accum from the prior shader caused visible flashes
+                                // (the new shader interprets old accum data as garbage).
+                                // Clearing to black also flashed. Seeding from input
+                                // gives the new shader a clean, visually-coherent
+                                // starting frame.
+                                s.seed_accum_from_input = true;
                                 drop(guard);
-                                gst::info!(gst::CAT_RUST, "Shader recompiled OK ({} chars), accum cleared", frag_src.len());
+                                gst::info!(gst::CAT_RUST, "Shader recompiled OK ({} chars), accum will seed from input", frag_src.len());
                             }
                             Err(e) => {
                                 gst::error!(gst::CAT_RUST, "Shader recompile FAILED: {:?}", e);
@@ -292,6 +295,34 @@ impl GLFilterImpl for GlFeedback {
 
         // Check if this is a passthrough shader (skip accum blit to avoid artifacts)
         let skip_blit = self.props.lock().unwrap().is_passthrough;
+
+        // Seed accum from input if flagged (shader was just recompiled)
+        {
+            let mut guard = self.state.lock().unwrap();
+            let s = guard.as_mut().unwrap();
+            if s.seed_accum_from_input {
+                s.seed_accum_from_input = false;
+                let in_tex = input.texture_id();
+                let w = input.texture_width();
+                let h = input.texture_height();
+                unsafe {
+                    gl::BindFramebuffer(gl::READ_FRAMEBUFFER, s.blit_read_fbo);
+                    gl::FramebufferTexture2D(
+                        gl::READ_FRAMEBUFFER,
+                        gl::COLOR_ATTACHMENT0,
+                        gl::TEXTURE_2D,
+                        in_tex,
+                        0,
+                    );
+                    for i in 0..2 {
+                        gl::BindFramebuffer(gl::DRAW_FRAMEBUFFER, s.accum_fbos[i]);
+                        gl::BlitFramebuffer(0, 0, w, h, 0, 0, w, h, gl::COLOR_BUFFER_BIT, gl::NEAREST);
+                    }
+                    gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
+                }
+                gst::info!(gst::CAT_RUST, "Accum seeded from input frame ({}x{})", w, h);
+            }
+        }
 
         // Snapshot what we need from state (minimise lock duration)
         let (prev_tex, next_fbo, next_idx, blit_fbo, uniforms) = {
@@ -476,7 +507,7 @@ impl GlFeedback {
                     0,
                 );
             }
-            // Clear both to black
+            // Clear both to opaque black on initial allocation.
             for i in 0..2 {
                 gl::BindFramebuffer(gl::FRAMEBUFFER, state.accum_fbos[i]);
                 gl::ClearColor(0.0, 0.0, 0.0, 1.0);

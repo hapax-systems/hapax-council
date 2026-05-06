@@ -16,9 +16,9 @@
     "tile_grid": {
       "type": "tile",
       "params": {
-        "rows": 8,
-        "cols": 16,
-        "border": 0.04
+        "count_y": 8,
+        "count_x": 16,
+        "gap": 0.04
       }
     },
     "glitch_subtle": {

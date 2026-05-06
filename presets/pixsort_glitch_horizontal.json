@@ -16,16 +16,16 @@
     "pixsort_h": {
       "type": "pixsort",
       "params": {
-        "axis": "horizontal",
-        "threshold": 0.3,
-        "amount": 0.55
+        "direction": 0.0,
+        "threshold_low": 0.3,
+        "sort_length": 0.55
       }
     },
     "slitscan_h": {
       "type": "slitscan",
       "params": {
-        "amount": 0.18,
-        "frequency": 12
+        "speed": 0.18,
+        "direction": 12
       }
     },
     "chroma_pixsort": {

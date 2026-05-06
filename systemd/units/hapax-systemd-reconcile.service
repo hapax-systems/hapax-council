@@ -5,10 +5,10 @@ OnFailure=notify-failure@%n.service
 # Run as dry-run by default. Operator opts into --apply via a drop-in
 # override if they want automatic disable+unlink; safer default is to
 # detect drift + rely on the non-zero exit code propagating to ntfy.
-ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-systemd-reconcile.sh
 
 [Service]
 Type=oneshot
+ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-systemd-reconcile.sh
 Nice=19
 StandardOutput=journal
 StandardError=journal

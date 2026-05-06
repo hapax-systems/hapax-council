@@ -16,15 +16,14 @@
     "feedback_breath": {
       "type": "feedback",
       "params": {
-        "amount": 0.45,
         "decay": 0.93
       }
     },
     "breathing_chamber": {
       "type": "breathing",
       "params": {
-        "frequency": 0.22,
-        "depth": 0.32
+        "rate": 0.22,
+        "amplitude": 0.32
       }
     },
     "drift_chamber": {

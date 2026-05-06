@@ -17,8 +17,7 @@ args = ["--directory", "__HAPAX_MCP_DIR__", "run", "hapax-mcp"]
 LOGOS_BASE_URL = "http://localhost:8051/api"
 
 [mcp_servers.context7]
-url = "https://mcp.context7.com/mcp"
-bearer_token_env_var = "CONTEXT7_API_KEY"
+command = "__HAPAX_COUNCIL_DIR__/scripts/hapax-context7-mcp"
 
 [mcp_servers.playwright]
 command = "__HAPAX_COUNCIL_DIR__/scripts/hapax-playwright-mcp"

@@ -18,7 +18,12 @@ from __future__ import annotations
 
 import cairo
 
-from agents.studio_compositor.fx_chain import blit_scaled, pip_draw_from_layout
+from agents.studio_compositor.fx_chain import (
+    blit_scaled,
+    clear_blit_readbacks,
+    pip_draw_from_layout,
+    recent_blit_readbacks,
+)
 from agents.studio_compositor.layout_state import LayoutState
 from agents.studio_compositor.source_registry import SourceRegistry
 from shared.compositor_model import (
@@ -455,6 +460,29 @@ def test_blit_records_source_surface_pixels(monkeypatch) -> None:
     by_ward = dict(set_calls)
     assert by_ward.get("red") == 20 * 30
     assert by_ward.get("green") == 40 * 50
+
+
+def test_blit_records_recent_readback_for_responsible_layout() -> None:
+    clear_blit_readbacks()
+    try:
+        state = LayoutState(_layout_with_two_rect_surfaces())
+        registry = SourceRegistry()
+        registry.register("red", _CannedBackend(_solid_surface(20, 30, (1.0, 0.0, 0.0))))
+        registry.register("green", _CannedBackend(_solid_surface(40, 50, (0.0, 1.0, 0.0))))
+
+        canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, 200, 200)
+        cr = _paint_black(canvas)
+        pip_draw_from_layout(cr, state, registry)
+
+        readbacks = recent_blit_readbacks(("red", "green"), ttl_s=60.0)
+        assert readbacks["red"]["source_pixels"] == 20 * 30
+        assert readbacks["green"]["source_pixels"] == 40 * 50
+        assert readbacks["red"]["effective_alpha"] > 0.0
+
+        observed_at = float(readbacks["red"]["observed_at"])
+        assert recent_blit_readbacks(("red",), now=observed_at + 3.0, ttl_s=1.0) == {}
+    finally:
+        clear_blit_readbacks()
 
 
 def test_blit_observability_does_not_break_on_metric_failure(monkeypatch) -> None:

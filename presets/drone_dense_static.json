@@ -17,8 +17,7 @@
       "type": "noise_overlay",
       "params": {
         "intensity": 0.42,
-        "scale": 1100,
-        "speed": 0.08
+        "animated": 1.0
       }
     },
     "grain_dense": {

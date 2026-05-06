@@ -105,6 +105,28 @@ def start_compositor(compositor: Any) -> None:
 
     compositor.pipeline = build_pipeline(compositor)
 
+    # Hero small overlay: PIP "raw monitor" inset of the hero camera's
+    # snapshot, drawn on the post-FX cairooverlay. The _hero_small tile
+    # rect is added by _balanced_layout when a hero camera exists.
+    compositor._hero_small = None
+    try:
+        from .hero_small_overlay import HeroSmallOverlay
+        from .layout import compute_tile_layout
+
+        layout = compute_tile_layout(compositor.config.cameras)
+        small_rect = layout.get("_hero_small")
+        heroes = [c for c in compositor.config.cameras if c.hero]
+        if small_rect is not None and heroes:
+            compositor._hero_small = HeroSmallOverlay(
+                heroes[0].role,
+                small_rect.x,
+                small_rect.y,
+                small_rect.w,
+                small_rect.h,
+            )
+    except Exception:
+        log.exception("HeroSmallOverlay init failed (non-fatal)")
+
     # Read initial consent state
     try:
         if PERCEPTION_STATE_PATH.exists():

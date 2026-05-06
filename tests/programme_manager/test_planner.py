@@ -75,6 +75,19 @@ def _well_formed_plan_payload(
     }
 
 
+def _declarative_beat_layout_intent() -> dict:
+    return {
+        "beat_id": "hook",
+        "action_intent_kinds": ["show_evidence", "cite_source"],
+        "needs": ["evidence_visible", "source_visible"],
+        "proposed_postures": ["asset_front", "camera_subject"],
+        "expected_effects": ["evidence_on_screen", "source_context_legible"],
+        "evidence_refs": ["vault:source-note-1", "rag:proof-42"],
+        "source_affordances": ["asset:evidence-card", "resolver:source-card"],
+        "default_static_success_allowed": False,
+    }
+
+
 def _stub_llm(payload: dict | str) -> Callable[[str], str]:
     """LLM stub that always returns the given payload (dict → JSON, str → as-is)."""
 
@@ -151,6 +164,36 @@ class TestHappyPath:
         )
         if "HAPAX_PROGRAMME_PLANNER_MODEL" not in __import__("os").environ:
             assert DEFAULT_MODEL == "command-r-08-2024-exl3-5.0bpw"
+
+    def test_prompt_uses_proposal_only_layout_intents(self) -> None:
+        prompt = Path("agents/programme_manager/prompts/programme_plan.md").read_text(
+            encoding="utf-8"
+        )
+
+        assert "beat_layout_intents" in prompt
+        assert "responsible layout is a witnessed runtime control loop" in prompt
+        assert "proposals, not runtime authority" in prompt
+        assert '"may_command_layout": false' in prompt
+        forbidden = [
+            "segment_cues",
+            "camera.",
+            "front.",
+            "composition.",
+            "transition.",
+            "media.",
+            "/dev/shm",
+            "surface_id",
+            "coordinates",
+            "layout_name",
+            "host_presence",
+            "spoken_argument",
+            "spoken_only_fallback",
+            "garage-door",
+            "default.json",
+            "balanced-v2",
+        ]
+        found = [term for term in forbidden if term in prompt]
+        assert found == []
 
 
 # ── Failure modes — first attempt ───────────────────────────────────────
@@ -274,6 +317,43 @@ class TestHardGateRejection:
         )
         plan = planner.plan(show_id="show-test-001")
         assert plan is not None  # retry succeeded
+
+
+# ── Planner ProgrammeContent boundary ─────────────────────────────────
+
+
+class TestPlannerProgrammeContentBoundary:
+    def test_planner_rejects_content_layout_decision_receipts(self) -> None:
+        payload = _well_formed_plan_payload()
+        payload["programmes"][0]["content"]["layout_decision_receipts"] = [
+            {
+                "receipt_id": "receipt.layout_state_rendered",
+                "source": "layout_state",
+            }
+        ]
+        planner = ProgrammePlanner(llm_fn=_stub_llm(payload), max_retries=0)
+        plan = planner.plan(show_id="show-test-001")
+        assert plan is None
+
+    def test_planner_rejects_command_like_values_hidden_in_layout_intents(self) -> None:
+        payload = _well_formed_plan_payload()
+        intent = _declarative_beat_layout_intent()
+        intent["source_affordances"] = ["asset:evidence-card", "surface:main"]
+        payload["programmes"][0]["content"]["beat_layout_intents"] = [intent]
+        planner = ProgrammePlanner(llm_fn=_stub_llm(payload), max_retries=0)
+        plan = planner.plan(show_id="show-test-001")
+        assert plan is None
+
+    def test_planner_accepts_declarative_layout_refs_and_evidence_ids(self) -> None:
+        payload = _well_formed_plan_payload()
+        payload["programmes"][0]["content"]["beat_layout_intents"] = [
+            _declarative_beat_layout_intent()
+        ]
+        planner = ProgrammePlanner(llm_fn=_stub_llm(payload), max_retries=0)
+        plan = planner.plan(show_id="show-test-001")
+        assert plan is not None
+        intents = plan.programmes[0].content.beat_layout_intents
+        assert intents[0]["evidence_refs"] == ["vault:source-note-1", "rag:proof-42"]
 
 
 # ── show_id cross-check ────────────────────────────────────────────────

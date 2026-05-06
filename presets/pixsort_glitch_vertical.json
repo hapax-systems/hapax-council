@@ -16,9 +16,9 @@
     "pixsort_v": {
       "type": "pixsort",
       "params": {
-        "axis": "vertical",
-        "threshold": 0.42,
-        "amount": 0.5
+        "direction": 1.0,
+        "threshold_low": 0.42,
+        "sort_length": 0.5
       }
     },
     "glitch_pixsort": {

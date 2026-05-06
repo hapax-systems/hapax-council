@@ -1,0 +1,61 @@
+{
+  "name": "segment-chat",
+  "description": "Responsible hosted segment layout for chat-response beats.",
+  "sources": [
+    {
+      "id": "chat-panel",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "SegmentContentWard",
+        "natural_w": 1440,
+        "natural_h": 760
+      },
+      "update_cadence": "rate",
+      "rate_hz": 1.0,
+      "tags": [
+        "segment",
+        "responsible-layout",
+        "chat"
+      ],
+      "ward_id": "chat-panel"
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "chat-panel-surface",
+      "geometry": {
+        "kind": "rect",
+        "x": 240,
+        "y": 120,
+        "w": 1440,
+        "h": 760
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 900,
+      "update_cadence": "always"
+    },
+    {
+      "id": "video_out_v4l2_loopback",
+      "geometry": {
+        "kind": "video_out",
+        "target": "/dev/video42",
+        "render_target": "main"
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 100,
+      "update_cadence": "always"
+    }
+  ],
+  "assignments": [
+    {
+      "source": "chat-panel",
+      "surface": "chat-panel-surface",
+      "opacity": 1.0,
+      "non_destructive": true,
+      "render_stage": "post_fx"
+    }
+  ]
+}

@@ -253,7 +253,6 @@ def test_repo_wide_execstart_in_unit_section_is_caught() -> None:
         # so these services fail to start. Pre-existing pre-canonicalisation
         # bugs; tracked for a separate cleanup PR.
         "hapax-egress-audit-rotate.service",
-        "hapax-systemd-reconcile.service",
     }
     service_only_keys = {"ExecStart", "ExecStartPre", "ExecStartPost", "ExecStop"}
     new_offenders: list[tuple[str, str]] = []

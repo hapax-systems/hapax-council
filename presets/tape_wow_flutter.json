@@ -23,15 +23,14 @@
     "warp_flutter": {
       "type": "warp",
       "params": {
-        "amplitude": 0.018,
-        "frequency": 0.7,
-        "speed": 0.32
+        "slice_amplitude": 0.018,
+        "slice_count": 0.7,
+        "breath": 0.32
       }
     },
     "feedback_wow": {
       "type": "feedback",
       "params": {
-        "amount": 0.28,
         "decay": 0.88
       }
     },

@@ -9,10 +9,9 @@ WorkingDirectory=%h/projects/tabbyAPI
 ExecStart=%h/projects/tabbyAPI/venv/bin/python3 main.py
 Restart=on-failure
 RestartSec=15
-# LRR Phase 3 item 8: raised from 120 → 180 seconds. Qwen3.5-9B EXL3
-# loads in ~40-50 s and would fit a 120 s timeout; the 180 s ceiling
-# is held as conservative headroom for substrate swaps that load more
-# safetensors shards from disk than the current Qwen 9B substrate.
+# Content-prep residency policy expects Command-R to stay loaded on :5000.
+# Keep enough startup headroom for Command-R shard load and CUDA allocation;
+# this is not a normal-path model swap or unload/reload mechanism.
 TimeoutStartSec=180
 Environment=PYTORCH_ALLOC_CONF=backend:cudaMallocAsync
 

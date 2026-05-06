@@ -17,7 +17,7 @@
       "type": "mirror",
       "params": {
         "axis": "vertical",
-        "amount": 0.45
+        "position": 0.45
       }
     },
     "chroma_chrome": {
@@ -30,7 +30,7 @@
     "bloom_chrome": {
       "type": "bloom",
       "params": {
-        "intensity": 0.42,
+        "alpha": 0.42,
         "threshold": 0.55,
         "radius": 0.14
       }

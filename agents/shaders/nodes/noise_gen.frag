@@ -9,7 +9,7 @@ uniform float u_octaves;
 uniform float u_amplitude;
 uniform float u_speed;
 uniform float u_time;
-float hash(vec2 p) {
+float hash(vec2 p) {
     p = fract(p * vec2(0.1031, 0.1030));
     p += dot(p, p.yx + 33.33);
     return fract((p.x + p.y) * p.x);
