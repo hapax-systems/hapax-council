@@ -16,13 +16,13 @@
     "palette_extract_arcade": {
       "type": "palette_extract",
       "params": {
-        "size": 12
+        "swatch_count": 12
       }
     },
     "palette_remap_arcade": {
       "type": "palette_remap",
       "params": {
-        "amount": 0.85
+        "blend": 0.85
       }
     },
     "posterize_arcade": {

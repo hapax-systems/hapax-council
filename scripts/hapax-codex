@@ -722,10 +722,12 @@ fi
 unset GITHUB_PERSONAL_ACCESS_TOKEN
 unset CODEX_GITHUB_PERSONAL_ACCESS_TOKEN
 unset TAVILY_API_KEY
+unset CONTEXT7_API_KEY
 
-load_first_available_pass_secret CONTEXT7_API_KEY context7/api-key \
-  || load_header_from_claude_mcp CONTEXT7_API_KEY context7 CONTEXT7_API_KEY \
-  || true
+MCP_CONFIG_SCRUB="$COUNCIL_DIR/scripts/hapax-codex-mcp-config-scrub"
+if [ -x "$MCP_CONFIG_SCRUB" ]; then
+  "$MCP_CONFIG_SCRUB"
+fi
 
 HOOK="$COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh"
 if [ ! -x "$HOOK" ]; then
@@ -762,8 +764,7 @@ CODEX_ARGS=(
   -c "mcp_servers.hapax.command=\"$HOME/.local/bin/uv\""
   -c "mcp_servers.hapax.args=[\"--directory\",\"$HOME/projects/hapax-mcp\",\"run\",\"hapax-mcp\"]"
   -c 'mcp_servers.hapax.env.LOGOS_BASE_URL="http://localhost:8051/api"'
-  -c 'mcp_servers.context7.url="https://mcp.context7.com/mcp"'
-  -c 'mcp_servers.context7.bearer_token_env_var="CONTEXT7_API_KEY"'
+  -c "mcp_servers.context7.command=\"$COUNCIL_DIR/scripts/hapax-context7-mcp\""
   -c "mcp_servers.github.command=\"$COUNCIL_DIR/scripts/hapax-github-mcp\""
   -c "mcp_servers.playwright.command=\"$COUNCIL_DIR/scripts/hapax-playwright-mcp\""
   -c "mcp_servers.gemini-cli.command=\"$COUNCIL_DIR/scripts/hapax-gemini-mcp\""

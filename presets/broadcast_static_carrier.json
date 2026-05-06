@@ -16,29 +16,28 @@
     "vhs_static": {
       "type": "vhs",
       "params": {
-        "intensity": 0.45,
-        "tracking_drift": 0.42
+        "chroma_shift": 0.45,
+        "noise_band_y": 0.42
       }
     },
     "noise_static": {
       "type": "noise_overlay",
       "params": {
         "intensity": 0.42,
-        "scale": 600,
-        "speed": 0.95
+        "animated": 1.0
       }
     },
     "thermal_carrier": {
       "type": "thermal",
       "params": {
         "intensity": 0.28,
-        "palette": "warm"
+        "palette": 2.0
       }
     },
     "vignette": {
       "type": "vignette",
       "params": {
-        "intensity": 0.5,
+        "strength": 0.5,
         "radius": 0.62
       }
     },

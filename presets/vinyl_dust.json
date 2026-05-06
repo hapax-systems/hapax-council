@@ -17,8 +17,7 @@
       "type": "noise_overlay",
       "params": {
         "intensity": 0.18,
-        "scale": 1200,
-        "speed": 0.4
+        "animated": 1.0
       }
     },
     "grain": {
@@ -30,7 +29,7 @@
     "vignette": {
       "type": "vignette",
       "params": {
-        "intensity": 0.35,
+        "strength": 0.35,
         "radius": 0.7
       }
     },

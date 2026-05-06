@@ -2,22 +2,16 @@
 
 Defect #2 from `/tmp/audio-research-topology-audit.md` (2026-05-03):
 the deployed `~/.config/pipewire/pipewire.conf.d/hapax-music-loudnorm.conf`
-was hand-edited to bypass `hapax-music-duck` (target.object = L-12 USB
-sink directly) and to raise the limiter ceiling to -3.0 dBFS (+15 dB
-hotter than designed). Both edits silently break the Phase 4 audio
-architecture: the duck mixer receives no signal, operator-VAD and
-TTS sidechain ducking become non-functional for music, and downstream
-program level runs near-clip.
+was hand-edited to bypass the governed routing plane (target.object =
+L-12 USB sink directly) and to raise the limiter ceiling to -3.0 dBFS
+(+15 dB hotter than designed). Both edits silently break the current
+MPC-first audio architecture: music leaves the reconciled link map,
+operator-visible routing drifts, and downstream program level runs
+near-clip.
 
 This test pins the canonical values in the repo conf so the next time
 someone hand-edits the deployed copy out of band, regenerating from
 the repo (the canonical workflow) restores correct behavior.
-
-The duck-target pin is also exercised by
-`tests/pipewire/test_broadcast_chain_end_to_end.py::TestStage1MusicLoudnormToDuck::test_loudnorm_playback_targets_duck`.
-This file adds the limiter-ceiling pin and a tighter duck-target
-assertion that stays valid across the line-driver retirement
-(open PR #2304 deletes `hapax-music-usb-line-driver.conf`).
 """
 
 from __future__ import annotations
@@ -47,12 +41,12 @@ class TestLimiterCeiling:
     """The fast_lookahead_limiter ceiling MUST stay at -18.0 dBFS.
 
     Anything hotter (closer to 0) sends near-clip program material into
-    the duck mixer and downstream chain. The -18 dBFS calibration is
-    sized for the L-12 LINE TRIM stage (which the USB IN path does not
-    have) plus the broadcast master makeup (+14 dB per
+    the MPC input and downstream chain. The -18 dBFS calibration is
+    sized for the MPC USB input path plus the broadcast master makeup
+    (+14 dB per
     `MASTER_INPUT_MAKEUP_DB` in `shared/audio_loudness.py`). Hand-edits
     to the deployed conf bypassing this calibration produce broadcast
-    overshoot AND defeat the duck mixer's headroom assumption.
+    overshoot and defeat the per-source headroom assumption.
     """
 
     def test_limit_db_is_minus_18(self, loudnorm_conf_text: str) -> None:
@@ -82,44 +76,35 @@ class TestLimiterCeiling:
         )
 
 
-class TestDuckHandoff:
-    """The playback target MUST be `hapax-music-duck`.
+class TestMpcHandoff:
+    """The playback target is owned by the MPC link map, not target.object.
 
-    Pointing directly at the L-12 USB sink (the deployed-conf failure
-    mode in audit Defect #2) bypasses the duck mixer and starves
-    hapax-music-duck of its signal source — operator-VAD and TTS
-    sidechain ducking become non-functional for music.
+    Audio ducking is retired for the MPC Live III baseline. This node
+    must expose stable FL/FR playback ports with autoconnect disabled;
+    the reconciler maps those ports to MPC USB IN 1/2.
     """
 
-    def test_playback_target_is_music_duck(self, loudnorm_conf_text: str) -> None:
+    def test_playback_target_is_reconciler_owned(self, loudnorm_conf_text: str) -> None:
         stripped = _strip_comments(loudnorm_conf_text)
-        # Find the playback.props block, then the target.object inside it.
         playback_idx = stripped.find("playback.props")
         assert playback_idx >= 0, "loudnorm conf missing playback.props block"
         rest = stripped[playback_idx:]
         target_match = re.search(r'target\.object\s*=\s*"([^"]+)"', rest)
-        assert target_match is not None, "loudnorm playback.props missing target.object"
-        target = target_match.group(1)
-        assert target == "hapax-music-duck", (
-            f"music-loudnorm MUST hand off to hapax-music-duck (got {target!r}); "
-            "pointing direct to the L-12 USB sink bypasses operator-VAD/TTS "
-            "sidechain ducking — see /tmp/audio-research-topology-audit.md Defect #2"
+        assert target_match is None, (
+            "music-loudnorm playback.props must not declare target.object; "
+            "the MPC-first routing contract is owned by hapax-audio-reconciler"
         )
+        assert "node.autoconnect = false" in rest
+        assert 'node.description = "Hapax Music Loudnorm → MPC USB IN 1/2"' in rest
 
-    def test_playback_target_is_not_l12_alsa_sink(self, loudnorm_conf_text: str) -> None:
+    def test_playback_target_is_not_duck_or_l12_alsa_sink(self, loudnorm_conf_text: str) -> None:
         """Explicit negative pin: the deployed conf's failure mode was
-        target.object = an alsa_output.usb-ZOOM_Corporation_L-12... sink
-        name. Catch that exact regression shape head-on.
+        target.object = a duck node or an alsa_output.usb-ZOOM_Corporation_L-12...
+        sink name. Catch both retired routing shapes head-on.
         """
         stripped = _strip_comments(loudnorm_conf_text)
         playback_idx = stripped.find("playback.props")
         assert playback_idx >= 0
         rest = stripped[playback_idx:]
-        target_match = re.search(r'target\.object\s*=\s*"([^"]+)"', rest)
-        assert target_match is not None
-        target = target_match.group(1)
-        assert not target.startswith("alsa_output."), (
-            f"music-loudnorm target {target!r} is an ALSA hardware sink name; "
-            "the canonical chain routes loudnorm → duck → L-12, not loudnorm → L-12. "
-            "Audit Defect #2 regression."
-        )
+        assert "hapax-music-duck" not in rest
+        assert "alsa_output.usb-ZOOM_Corporation_L-12" not in rest

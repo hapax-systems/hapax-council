@@ -17,16 +17,15 @@
       "type": "reaction_diffusion",
       "params": {
         "feed_rate": 0.058,
-        "kill_rate": 0.062,
-        "iterations": 4
+        "kill_rate": 0.062
       }
     },
     "voronoi_cells": {
       "type": "voronoi_overlay",
       "params": {
-        "scale": 0.05,
-        "amount": 0.3,
-        "speed": 0.12
+        "cell_count": 0.05,
+        "edge_width": 0.3,
+        "animation_speed": 0.12
       }
     },
     "out": {

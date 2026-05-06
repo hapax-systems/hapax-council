@@ -22,16 +22,15 @@
     "dither_arcade": {
       "type": "dither",
       "params": {
-        "amount": 0.42,
-        "palette_size": 16
+        "color_levels": 0.42
       }
     },
     "scanlines_crt": {
       "type": "scanlines",
       "params": {
-        "amount": 0.32,
-        "frequency": 320,
-        "speed": 0.0
+        "opacity": 0.32,
+        "spacing": 320,
+        "thickness": 0.0
       }
     },
     "out": {

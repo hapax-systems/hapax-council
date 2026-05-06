@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""CLI wrapper for ``agents.jr_spark_auto_consumer``."""
+
+from agents.jr_spark_auto_consumer import main
+
+raise SystemExit(main())

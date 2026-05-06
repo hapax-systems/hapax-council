@@ -43,6 +43,7 @@ class _FakeProgramme:
     role: Any = None
     narrative_beat: str = ""
     programme_id: str = "prog-x"
+    content: Any = None
 
 
 @dataclass
@@ -107,6 +108,53 @@ def test_prompt_includes_seed_state() -> None:
     assert "focused" in seed
     assert "create" in seed
     assert "side B started" in seed
+
+
+def test_seed_includes_live_priors_without_treating_them_as_script_authority() -> None:
+    from shared.programme import ProgrammeContent
+
+    seen = []
+
+    def stub(*, prompt: str, seed: str, **kwargs) -> str:
+        seen.append(seed)
+        return "The Alpha ranking uses the visible tier change as its evidence."
+
+    content = ProgrammeContent(
+        narrative_beat="rank Alpha",
+        delivery_mode="live_prior",
+        segment_beats=["rank Alpha with evidence"],
+        beat_cards=[
+            {
+                "beat_index": 0,
+                "title": "rank Alpha",
+                "prior_summary": "Alpha belongs in S-tier because the evidence is visible.",
+                "action_intent_kinds": ["tier_chart"],
+                "layout_needs": ["tier_visual"],
+            }
+        ],
+        live_priors=[
+            {
+                "prior_id": "prepared-script-beat-1",
+                "beat_index": 0,
+                "text": "Use Alpha as prepared context, then compose the moment live.",
+            }
+        ],
+    )
+    ctx = _FakeContext(
+        programme=_FakeProgramme(
+            role=_FakeRole(value="showcase"),
+            narrative_beat="rank Alpha",
+            content=content,
+        )
+    )
+
+    compose.compose_narrative(ctx, llm_call=stub)
+
+    seed = seen[0]
+    assert "Prepared live priors" in seed
+    assert "compose live, do not read as a script" in seed
+    assert "Alpha belongs in S-tier" in seed
+    assert "tier_visual" in seed
 
 
 def test_prompt_includes_open_triad_continuity() -> None:

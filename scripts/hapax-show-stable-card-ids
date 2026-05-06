@@ -25,6 +25,7 @@ EXPECTED=(
     "S4:Torso Electronics S-4 (1d6b:0104)"
     "Yeti:Blue Microphones Yeti (b58e:9e84)"
     "M8:Dirtywave M8 (16c0:048a)"
+    "XVF3800:ReSpeaker XVF3800 (2886:001a or 20b1:4f00/4f01)"
     "Dispatch:Erica MIDI Dispatch (381a:1003)"
     "Brio0:Logitech BRIO #43B0576A"
     "Brio1:Logitech BRIO #5342C819"

@@ -16,7 +16,7 @@
     "emboss_fold": {
       "type": "emboss",
       "params": {
-        "amount": 0.65,
+        "strength": 0.65,
         "angle": 60
       }
     },

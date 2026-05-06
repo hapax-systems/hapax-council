@@ -9,8 +9,8 @@ reduction) in successive phases:
 
 - music-loudnorm — Phase 1.5
 - voice-fx-loudnorm — Phase 1.7
-- pc-loudnorm — Audit B #10 (this PR)
-- yt-loudnorm — Audit B #10 (this PR)
+- pc-loudnorm — Audit B #10
+- yt-loudnorm — Audit B #10
 
 This regression test scans every loudnorm conf in the repo and
 fails fast if `hard_limiter_1413` reappears anywhere — comments

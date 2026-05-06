@@ -16,3 +16,5 @@ enable hapax-private-monitor-recover.timer
 enable hapax-mail-monitor-fallback.timer
 enable hapax-daimonion-quarantine-watchdog.timer
 enable hapax-audio-topology-verify.timer
+enable hapax-visual-pool-snapshot-harvester.timer
+enable hapax-segment-prep.timer

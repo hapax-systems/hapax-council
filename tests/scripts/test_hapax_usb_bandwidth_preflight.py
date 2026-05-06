@@ -128,6 +128,17 @@ def test_unknown_device_falls_back_to_default(preflight: types.ModuleType, tmp_p
     assert dev.profile.bandwidth_mbps == pytest.approx(2.0)
 
 
+@pytest.mark.parametrize("vid,pid", [("2886", "001a"), ("20b1", "4f00"), ("20b1", "4f01")])
+def test_respeaker_xvf3800_profiles_are_known(vid: str, pid: str) -> None:
+    """The array introduction must be preflightable before plug-in."""
+    from shared.usb_bandwidth_table import lookup
+
+    profile = lookup(vid, pid)
+    assert profile is not None
+    assert "XVF3800" in profile.name
+    assert profile.bandwidth_mbps == pytest.approx(10.0)
+
+
 # ---------------------------------------------------------------------------
 # Tests — capacity inference
 # ---------------------------------------------------------------------------

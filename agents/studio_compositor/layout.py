@@ -67,6 +67,19 @@ def _balanced_layout(
         for i, cam in enumerate(others):
             sx, sy, sw, sh = _fit_16x9(right_w, slot_h)
             layout[cam.role] = TileRect(x=right_x + sx, y=i * slot_h + sy, w=sw, h=sh)
+
+        # Virtual tile (underscore prefix → no GStreamer pad). HeroSmallOverlay
+        # draws the raw hero JPEG snapshot here as a PIP "raw monitor" inset
+        # in the bottom-right of the hero rect. ~25% of hero width.
+        small_w = hw // 4
+        small_h = int(small_w * 9 / 16)
+        margin = max(8, hw // 80)
+        layout["_hero_small"] = TileRect(
+            x=hx + hw - small_w - margin,
+            y=hy + hh - small_h - margin,
+            w=small_w,
+            h=small_h,
+        )
     else:
         cols = math.ceil(math.sqrt(n))
         rows = math.ceil(n / cols)
@@ -206,6 +219,53 @@ def _sierpinski_layout(
     return layout
 
 
+def _packed_layout(cameras: list[CameraSpec], canvas_w: int, canvas_h: int) -> dict[str, TileRect]:
+    """Compositor-native camera packing — all cameras on cudacompositor.
+
+    Hero upper-left (~30% width). 4 non-hero cameras in 2x2 grid below
+    hero. Remaining cameras stacked right of hero. All non-hero tiles
+    same size. Virtual `_hero_small` PIP slot in the right column for
+    HeroSmallOverlay.
+    """
+    layout: dict[str, TileRect] = {}
+    if not cameras:
+        return layout
+
+    heroes = [c for c in cameras if c.hero]
+    hero = heroes[0] if heroes else cameras[0]
+    others = [c for c in cameras if c.role != hero.role]
+
+    margin = 10
+    gap = 4
+    hero_w = int(canvas_w * 0.30)
+    hero_h = int(hero_w * 9 / 16)
+    layout[hero.role] = TileRect(x=margin, y=margin, w=hero_w, h=hero_h)
+
+    tile_w = (hero_w - gap) // 2
+    tile_h = int(tile_w * 9 / 16)
+
+    grid_y = margin + hero_h + gap
+    grid_cameras = others[:4]
+    for i, cam in enumerate(grid_cameras):
+        col = i % 2
+        row = i // 2
+        tx = margin + col * (tile_w + gap)
+        ty = grid_y + row * (tile_h + gap)
+        layout[cam.role] = TileRect(x=tx, y=ty, w=tile_w, h=tile_h)
+
+    right_x = margin + hero_w + gap
+    right_idx = 0
+    for cam in others[4:]:
+        ty = margin + right_idx * (tile_h + gap)
+        layout[cam.role] = TileRect(x=right_x, y=ty, w=tile_w, h=tile_h)
+        right_idx += 1
+
+    hero_small_y = margin + right_idx * (tile_h + gap)
+    layout["_hero_small"] = TileRect(x=right_x, y=hero_small_y, w=tile_w, h=tile_h)
+
+    return layout
+
+
 def compute_tile_layout(
     cameras: list[CameraSpec],
     canvas_w: int = OUTPUT_WIDTH,
@@ -220,8 +280,18 @@ def compute_tile_layout(
         mode: Layout mode. One of:
             - "balanced" — grid layout, honors CameraSpec.hero flag (default)
             - "hero/{role}" — named camera dominant, others stacked right
+            - "packed/{role}" — named camera as hero in packed constellation
             - "sierpinski" — 3 cameras in triangle corners, rest hidden
+            - "packed" — hero upper-left + 2x2 grid + stacked right column
     """
+    if mode == "packed":
+        return _packed_layout(cameras, canvas_w, canvas_h)
+    if mode.startswith("packed/"):
+        hero_role = mode[len("packed/") :]
+        # Constellation layout with named hero — set hero flag on the
+        # requested camera so _packed_layout picks it for upper-left.
+        repinned = [c.model_copy(update={"hero": (c.role == hero_role)}) for c in cameras]
+        return _packed_layout(repinned, canvas_w, canvas_h)
     if mode == "sierpinski":
         return _sierpinski_layout(cameras, canvas_w, canvas_h)
     if mode.startswith("hero/"):
