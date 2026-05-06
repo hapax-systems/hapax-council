@@ -70,6 +70,7 @@ def test_provider_schema_pins_evidence_envelope_and_policy_constants() -> None:
     schema = _json(PROVIDER_SCHEMA)
     policy = schema["properties"]["routing_policy"]["properties"]
     evidence_fields = set(schema["$defs"]["evidence_field"]["enum"])
+    grounded_claim_types = set(schema["$defs"]["grounding_required_claim_type"]["enum"])
 
     for field in (
         "provider_id",
@@ -96,6 +97,8 @@ def test_provider_schema_pins_evidence_envelope_and_policy_constants() -> None:
     assert policy["older_model_exception_required"]["const"] is True
     assert policy["command_r_source_supplied_only"]["const"] is True
     assert policy["director_model_swap_requires_eval_pass"]["const"] is True
+    assert "knowledge_recruitment_guidance_request" in grounded_claim_types
+    assert "`knowledge_recruitment_guidance_request`" in _body()
 
 
 def test_live_route_policy_records_required_latest_aliases() -> None:
@@ -137,6 +140,7 @@ def test_eval_suite_has_30_to_50_items_and_all_required_categories() -> None:
 
     assert 30 <= len(items) <= 50
     assert {item["category"] for item in items} >= {
+        "global_competence_gap_guidance",
         "current_model_release_scouting",
         "content_opportunity_discovery",
         "tier_list_react_video_evidence_packets",
