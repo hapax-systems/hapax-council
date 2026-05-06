@@ -1,7 +1,7 @@
 """Gem-frame append-only log — one record per gem-producer emission.
 
 The compositor reads the *current* gem-frame sequence from
-``/dev/shm/hapax-compositor/gem-frames.json`` (overwritten on each
+``/dev/shm/hapax-gem/gem-frames.json`` (overwritten on each
 emission). That live file is great for the renderer, useless for
 trend analysis: by the time the operator wonders whether Hapax is
 saying the same thing over and over, the prior frames are gone.
