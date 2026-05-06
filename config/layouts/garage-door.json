@@ -662,6 +662,17 @@
         "h": 40
       },
       "z_order": 52
+    },
+    {
+      "id": "activity-header-top-mid",
+      "geometry": {
+        "kind": "rect",
+        "x": 400,
+        "y": 86,
+        "w": 800,
+        "h": 56
+      },
+      "z_order": 52
     }
   ],
   "assignments": [
@@ -797,6 +808,13 @@
     {
       "source": "grounding_provenance_ticker",
       "surface": "grounding-ticker-right-column",
+      "opacity": 0.92,
+      "non_destructive": true,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "activity_header",
+      "surface": "activity-header-top-mid",
       "opacity": 0.92,
       "non_destructive": true,
       "render_stage": "post_fx"
