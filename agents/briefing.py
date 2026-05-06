@@ -155,6 +155,8 @@ def should_deliver_briefing(
         data = json.loads(activity_file.read_text())
     except (json.JSONDecodeError, OSError):
         return True  # graceful degradation
+    if not isinstance(data, dict):
+        return True  # corrupt activity file → graceful degradation
 
     _KNOWN_STATES = {"STILL", "WALKING", "RUNNING", "UNKNOWN"}
     state = data.get("state", "UNKNOWN")
@@ -308,8 +310,11 @@ def _collect_profile_health() -> str | None:
             digest = json.loads(digest_path.read_text())
         except (OSError, json.JSONDecodeError):
             return None
+        if not isinstance(digest, dict):
+            return None
         total = digest.get("total_facts", 0)
-        dims = digest.get("dimensions", {})
+        dims_raw = digest.get("dimensions", {})
+        dims = dims_raw if isinstance(dims_raw, dict) else {}
         if not total:
             return None
         low_conf = [
