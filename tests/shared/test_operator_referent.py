@@ -91,27 +91,31 @@ def test_pick_for_vod_segment_is_deterministic() -> None:
 
 
 def test_equal_weight_distribution_over_ten_thousand_seeds() -> None:
-    """SHA-256 mod 3 should be indistinguishable from uniform over N=10_000.
+    """SHA-256 mod len(REFERENTS) should be indistinguishable from uniform.
 
-    Each bucket's expected count is ~3333. We allow a generous ±333 (~10%)
-    tolerance — this is a smoke test against gross bias, not a χ² proof.
+    With N=4 referents, expected count per bucket is ~2500. Tolerance is
+    proportional (±10%) — smoke test against gross bias, not a χ² proof.
     """
     counts: Counter[str] = Counter(OperatorReferentPicker.pick(f"seed-{i}") for i in range(10_000))
     assert set(counts.keys()) == set(REFERENTS)
+    expected = 10_000 // len(REFERENTS)
+    tolerance = expected // 10
     for referent in REFERENTS:
-        assert 3000 <= counts[referent] <= 3666, (
-            f"{referent}: expected ~3333, got {counts[referent]}"
+        assert expected - tolerance <= counts[referent] <= expected + tolerance, (
+            f"{referent}: expected ~{expected}, got {counts[referent]}"
         )
 
 
 def test_equal_weight_distribution_over_tick_ids() -> None:
     """Tick ids should also produce uniform distribution — they seed the
     same SHA-256 path with a different prefix, so this checks that the
-    prefix doesn't induce bias in the lower 2 bits of the digest.
+    prefix doesn't induce bias in the digest modulo len(REFERENTS).
     """
     counts: Counter[str] = Counter(OperatorReferentPicker.pick_for_tick(i) for i in range(10_000))
+    expected = 10_000 // len(REFERENTS)
+    tolerance = expected // 10
     for referent in REFERENTS:
-        assert 3000 <= counts[referent] <= 3666
+        assert expected - tolerance <= counts[referent] <= expected + tolerance
 
 
 def test_empty_string_seed_is_valid() -> None:
