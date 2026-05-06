@@ -371,10 +371,9 @@ class CBIPDualIrDisplacementCairoSource(CairoSource):
         cr.save()
         cr.set_source_rgb(0.015, 0.018, 0.02)
         cr.paint()
+        line_opacity = 0.045
         for i in range(0, canvas_w, max(12, canvas_w // 40)):
-            phase = (i / max(1, canvas_w)) * math.tau + t * 0.10
-            alpha = 0.035 + 0.015 * (math.sin(phase) + 1.0)
-            cr.set_source_rgba(0.1, 0.55, 0.62, alpha)
+            cr.set_source_rgba(0.1, 0.55, 0.62, line_opacity)
             cr.rectangle(i, 0, 1, canvas_h)
             cr.fill()
         cr.restore()
