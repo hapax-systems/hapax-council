@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 QUALITY_RUBRIC_VERSION = 1
-ACTIONABILITY_RUBRIC_VERSION = 1
+ACTIONABILITY_RUBRIC_VERSION = 2
 LAYOUT_RESPONSIBILITY_VERSION = 1
 LAYOUT_RESPONSIBILITY_RUBRIC_VERSION = LAYOUT_RESPONSIBILITY_VERSION
 RESPONSIBLE_HOSTING_CONTEXT = "hapax_responsible_live"
@@ -95,6 +95,11 @@ ACTIONABILITY_RUBRIC: tuple[dict[str, str], ...] = (
         "trigger": "Compare, contrast, versus, ranking, or tradeoff language",
         "expected_effect": "The beat should make the comparison explicit in speech or an available surface.",
     },
+    {
+        "kind": "source_citation",
+        "trigger": "According to [source]... or [Source] argues/writes/shows...",
+        "expected_effect": "The cited source or evidence context should become visible or legible.",
+    },
 )
 
 LAYOUT_RESPONSIBILITY_DOCTRINE = {
@@ -160,6 +165,12 @@ LAYOUT_NEED_RUBRIC: tuple[dict[str, str], ...] = (
         "source_action_kind": "comparison",
         "source_affordance": "comparison",
         "expected_visible_effect": "ward:compare-panel",
+    },
+    {
+        "kind": "source_visible",
+        "source_action_kind": "source_citation",
+        "source_affordance": "source_context",
+        "expected_visible_effect": "ward:artifact-detail-panel",
     },
 )
 
@@ -278,6 +289,12 @@ _CAMERA_COMMAND_TARGET_RE = (
     + _CAMERA_CONTEXT_TARGET_RE
     + r"\s+(?:view|shot|angle|feed)\b)"
 )
+_SOURCE_CITATION_RE = re.compile(
+    r"\b(?:[Aa]ccording to|[Dd]rawing on|[Bb]ased on|[Cc]iting)\s+"
+    r"(?P<prefix_target>[^,.;:!?]{3,80})"
+    r"|\b(?P<verb_target>[A-Z][A-Za-z0-9'’.-]*(?:\s+[A-Z][A-Za-z0-9'’.-]*){0,5})\s+"
+    r"(?:argues|writes|says|shows|demonstrates|documents|finds|warns|claims)\b"
+)
 _UNSUPPORTED_ACTION_RE = re.compile(
     r"\b(?:watch this|watch the clip|play the clip|roll the clip|show the clip|"
     r"show this clip|pull up (?:the )?(?:video|image|screenshot|chart|graph)|"
@@ -319,6 +336,78 @@ _MOOD_TRIGGERS: tuple[tuple[str, str], ...] = (
     ("exactly", "revelation"),
     ("nailed it", "revelation"),
 )
+
+_SOURCE_TARGET_BAD_PREFIXES: tuple[str, ...] = (
+    "beat direction",
+    "direction",
+    "from here",
+    "here",
+    "i ",
+    "now",
+    "our ",
+    "that ",
+    "the beat",
+    "the direction",
+    "the script",
+    "the segment",
+    "these ",
+    "this ",
+    "today",
+    "tonight",
+    "we ",
+)
+_SOURCE_TARGET_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "Beat",
+        "Direction",
+        "Here",
+        "Now",
+        "Script",
+        "Segment",
+        "That",
+        "These",
+        "This",
+        "Today",
+        "Tonight",
+        "We",
+    }
+)
+_SOURCE_OBJECT_RE = re.compile(
+    r"\b(?:archive|article|book|chapter|chart|dataset|document|essay|filing|"
+    r"graph|interview|journal|letter|memo|paper|report|source|study|survey|"
+    r"table|transcript)\b",
+    re.IGNORECASE,
+)
+_SOURCE_TOKEN_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9'’.-]*\b")
+
+
+def _source_target_is_citable(target: str) -> bool:
+    clean = re.sub(r"\s+", " ", target).strip(" \t\n\r\"'“”‘’")
+    if not clean:
+        return False
+    lower = clean.lower()
+    if any(
+        lower == prefix or lower.startswith(f"{prefix} ") for prefix in _SOURCE_TARGET_BAD_PREFIXES
+    ):
+        return False
+
+    tokens = _SOURCE_TOKEN_RE.findall(clean)
+    if not tokens:
+        return False
+    proper_tokens = [
+        token
+        for token in tokens
+        if ((token[:1].isupper() and len(token) >= 3) or (token.isupper() and len(token) >= 2))
+        and token not in _SOURCE_TARGET_STOPWORDS
+    ]
+    has_specific_marker = bool(
+        proper_tokens
+        or re.search(r"\d", clean)
+        or re.search(r"[\"“”'‘’]", target)
+        or any(token.isupper() and len(token) >= 2 for token in tokens)
+    )
+    has_source_object = bool(_SOURCE_OBJECT_RE.search(clean))
+    return bool(proper_tokens or (has_source_object and has_specific_marker))
 
 
 def render_quality_prompt_block() -> str:
@@ -442,6 +531,22 @@ def _intents_for_text(text: str) -> list[dict[str, Any]]:
                 kind="comparison",
                 trigger="comparison language",
                 expected_effect="spoken.comparison.explicit",
+            )
+        )
+
+    seen_source_targets: set[str] = set()
+    for match in _SOURCE_CITATION_RE.finditer(text):
+        target = (match.group("prefix_target") or match.group("verb_target") or "").strip()
+        target_key = target.lower()
+        if not target or target_key in seen_source_targets or not _source_target_is_citable(target):
+            continue
+        seen_source_targets.add(target_key)
+        intents.append(
+            _intent(
+                kind="source_citation",
+                trigger=match.group(0),
+                target=target,
+                expected_effect=f"source.visible:{target}",
             )
         )
 
@@ -593,9 +698,13 @@ def build_beat_layout_intents(
             if key in seen:
                 continue
             seen.add(key)
-            needs.append(str(need["kind"]))
+            need_kind = str(need["kind"])
+            if need_kind not in needs:
+                needs.append(need_kind)
             evidence_refs.append(str(need["evidence_ref"]))
-            source_affordances.append(str(need["source_affordance"]))
+            source_affordance = str(need["source_affordance"])
+            if source_affordance not in source_affordances:
+                source_affordances.append(source_affordance)
         if not needs:
             needs.append(
                 str(
