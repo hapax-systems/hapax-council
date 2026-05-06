@@ -24,11 +24,11 @@ import httpx
 import numpy as np  # noqa: TC002 — Pi-side code
 from cadence_controller import CadenceController, load_config
 from cbip_calibration import CbipCameraCalibration, crop_to_roi, load_camera_calibration
-from ir_album import detect_album_cover, extract_album_crop
 from ir_biometrics import BiometricTracker
 from ir_hands import detect_hands_nir, detect_screens_nir
 from ir_inference import FaceLandmarkDetector, YoloDetector
 from ir_models import IrDetectionReport  # noqa: TC002 — Pi-side code
+from ir_platter import detect_platter_objects, extract_platter_crop
 from ir_report import build_report
 
 logging.basicConfig(
@@ -257,6 +257,8 @@ class IrEdgeDaemon:
 
         self._latest_jpeg: bytes = b""
         self._latest_jpegs_by_cam: dict[str, bytes] = {}
+        self._latest_platter_jpeg: bytes = b""
+        self._latest_platter_objects: list[dict] = []
         self._latest_album_jpeg: bytes = b""
         self._latest_album_detection: dict | None = None
         self._latest_jpeg_lock = __import__("threading").Lock()
@@ -491,18 +493,30 @@ class IrEdgeDaemon:
             hands = detect_hands_nir(grey, motion_delta=motion_delta)
             screens = detect_screens_nir(grey)
 
-            # Album cover detection remains on the primary overhead stream.
+            # Platter object detection remains on the primary overhead stream.
             if self._role == "overhead" and cam_id == "primary":
-                album_det = detect_album_cover(grey)
-                if album_det is not None:
-                    crop = extract_album_crop(color, album_det, output_size=640)
+                platter_objects = detect_platter_objects(grey)
+                if platter_objects:
+                    primary = max(platter_objects, key=lambda d: d["area_pct"])
+                    crop = extract_platter_crop(color, primary, output_size=640)
                     if crop is not None:
                         _, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
                         with self._latest_jpeg_lock:
+                            self._latest_platter_jpeg = buf.tobytes()
+                            self._latest_platter_objects = list(platter_objects)
                             self._latest_album_jpeg = buf.tobytes()
-                            self._latest_album_detection = album_det
+                            self._latest_album_detection = primary
+                    else:
+                        with self._latest_jpeg_lock:
+                            self._latest_platter_jpeg = b""
+                            self._latest_platter_objects = list(platter_objects)
+                            self._latest_album_jpeg = b""
+                            self._latest_album_detection = None
                 else:
                     with self._latest_jpeg_lock:
+                        self._latest_platter_jpeg = b""
+                        self._latest_platter_objects = []
+                        self._latest_album_jpeg = b""
                         self._latest_album_detection = None
 
             inference_ms = int((time.monotonic() - t_infer) * 1000)
@@ -686,9 +700,13 @@ class _FrameHandler:
             start_response("404 No Frame", [("Content-Type", "text/plain")])
             return [b"no frame for cam_id"]
 
-        if path == "/album.jpg":
+        if path in ("/platter.jpg", "/album.jpg"):
             with self._daemon._latest_jpeg_lock:
-                data = self._daemon._latest_album_jpeg
+                data = (
+                    self._daemon._latest_platter_jpeg
+                    if path == "/platter.jpg"
+                    else self._daemon._latest_album_jpeg
+                )
             if data:
                 start_response(
                     "200 OK",
@@ -699,8 +717,26 @@ class _FrameHandler:
                     ],
                 )
                 return [data]
-            start_response("404 No Album", [("Content-Type", "text/plain")])
-            return [b"no album detected"]
+            start_response("404 No Platter Object", [("Content-Type", "text/plain")])
+            return [b"no platter object detected"]
+
+        if path == "/platter.json":
+            import json as _json
+
+            with self._daemon._latest_jpeg_lock:
+                objects = list(self._daemon._latest_platter_objects)
+            if objects:
+                body = _json.dumps({"objects": objects, "count": len(objects)}).encode()
+                start_response(
+                    "200 OK",
+                    [
+                        ("Content-Type", "application/json"),
+                        ("Content-Length", str(len(body))),
+                    ],
+                )
+                return [body]
+            start_response("404 No Platter Object", [("Content-Type", "text/plain")])
+            return [b"no platter object detected"]
 
         if path == "/album.json":
             import json as _json
@@ -717,8 +753,8 @@ class _FrameHandler:
                     ],
                 )
                 return [body]
-            start_response("404 No Album", [("Content-Type", "text/plain")])
-            return [b"no album detected"]
+            start_response("404 No Platter Object", [("Content-Type", "text/plain")])
+            return [b"no platter object detected"]
 
         start_response("404 Not Found", [("Content-Type", "text/plain")])
         return [b"not found"]

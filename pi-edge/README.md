@@ -13,7 +13,8 @@ backend is `agents/hapax_daimonion/backends/ir_presence.py`.
 | `hapax-heartbeat.py` | System-vitals reporter — CPU temp, memory, disk, service status; POSTs to council every 60s via systemd timer |
 | `cadence_controller.py` | Adaptive capture-cadence controller — backs off when nothing changes, speeds up under motion |
 | `cbip_calibration.py` | Fixed-platter calibration loader — applies per-camera ROI crop plus locked exposure / white balance capture args |
-| `ir_album.py` | NIR-band album-cover detection (vinyl ID for the operator's turntable surface) |
+| `ir_platter.py` | NIR-band interpretative-platter object detection for the overhead surface |
+| `ir_album.py` | Compatibility aliases for older edge clients |
 | `ir_biometrics.py` | Face-landmark biometric tracker (heart rate via rPPG, blink rate, drowsiness, head pose) — runs only when a face is detected |
 | `ir_hands.py` | NIR-thresholded hand and screen detection (hand-zone classification feeds the workstation contact-mic fusion path) |
 | `ir_inference.py` | Inference wrappers — YOLOv8n ONNX/TFLite + face landmark + InsightFace SCRFD |
@@ -55,7 +56,7 @@ Pi camera (rpicam-still)
    │      ├── cbip_calibration.py fixed ROI crop + capture controls
    │      ├── ir_biometrics.py rPPG + landmarks (gated on face detected)
    │      ├── ir_hands.py NIR threshold + hand-zone classification
-   │      ├── ir_album.py NIR album-cover detection
+   │      ├── ir_platter.py NIR interpretative-platter object detection
    │      └── ir_report.py compose IrDetectionReport
    │              │
    │              POST /api/pi/{role}/ir

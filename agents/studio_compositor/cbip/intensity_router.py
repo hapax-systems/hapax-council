@@ -30,7 +30,7 @@ DEGRADED_COHERENCE_THRESHOLD = 0.30
 
 
 class CbipIntensity(StrEnum):
-    """Three levels of CBIP enhancement applied to the album cover."""
+    """Three levels of CBIP enhancement applied to platter imagery."""
 
     OFF = "off"
     MID = "mid"
