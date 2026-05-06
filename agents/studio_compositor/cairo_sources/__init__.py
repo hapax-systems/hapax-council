@@ -310,6 +310,14 @@ def _register_builtins() -> None:
     from agents.studio_compositor.packed_cameras_source import PackedCamerasCairoSource
 
     register("PackedCamerasCairoSource", PackedCamerasCairoSource)
+    # CBIP relocated dual-IR platter source (2026-05-06) — consumes
+    # cam_primary/cam_secondary Pi-NoIR JSON streams and renders an
+    # opt-in displacement/chroma/difference visual source for layout JSON.
+    from agents.studio_compositor.cbip_dual_ir_displacement import (
+        CBIPDualIrDisplacementCairoSource,
+    )
+
+    register("CBIPDualIrDisplacementCairoSource", CBIPDualIrDisplacementCairoSource)
 
 
 _register_builtins()

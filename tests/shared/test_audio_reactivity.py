@@ -423,6 +423,60 @@ class TestJsonRoundTrip:
         bad.write_text("not json at all {{{")
         assert read_shm_snapshot(bad) is None
 
+    def test_read_blended_is_string_returns_none(self, tmp_path: Path) -> None:
+        """Schema drift: ``blended`` written as a string instead of a
+        mapping previously raised AttributeError out of from_dict, escaping
+        the (TypeError, ValueError) catch in read_shm_snapshot. Pin the
+        documented contract: malformed → None."""
+        bad = tmp_path / "blended_string.json"
+        bad.write_text('{"blended": "wrong-shape", "per_source": {}, "active_sources": []}')
+        assert read_shm_snapshot(bad) is None
+
+    def test_read_per_source_is_list_returns_none(self, tmp_path: Path) -> None:
+        """Schema drift: ``per_source`` written as a list instead of a
+        mapping previously raised AttributeError on .items(). Pin
+        malformed → None."""
+        bad = tmp_path / "per_source_list.json"
+        bad.write_text('{"blended": {}, "per_source": ["mixer", "desk"], "active_sources": []}')
+        assert read_shm_snapshot(bad) is None
+
+    def test_read_active_sources_is_string_does_not_char_split(self, tmp_path: Path) -> None:
+        """Schema drift: ``active_sources`` written as a string previously
+        char-split via ``list("mixer,desk") == ['m','i','x',...]``. Pin
+        malformed → None instead of silent garbage."""
+        bad = tmp_path / "active_sources_string.json"
+        bad.write_text('{"blended": {}, "per_source": {}, "active_sources": "mixer,desk"}')
+        assert read_shm_snapshot(bad) is None
+
+    @pytest.mark.parametrize(
+        "payload,kind",
+        [
+            ("null", "null"),
+            ('"a string"', "string"),
+            ("42", "int"),
+            ("[1, 2, 3]", "list"),
+        ],
+    )
+    def test_read_top_level_non_dict_returns_none(
+        self, tmp_path: Path, payload: str, kind: str
+    ) -> None:
+        """Schema drift: SHM file containing valid JSON whose root is not
+        an object (null, string, number, list) previously raised
+        AttributeError at ``data.get(...)`` before any of the per-field
+        isinstance checks could fire. Pin malformed → None at the root."""
+        bad = tmp_path / f"root_{kind}.json"
+        bad.write_text(payload)
+        assert read_shm_snapshot(bad) is None, f"root={kind} must return None"
+
+    def test_from_dict_rejects_non_mapping_with_typeerror(self) -> None:
+        """AudioSignals.from_dict on a non-dict payload raises TypeError.
+        read_shm_snapshot relies on this to translate corruption into None
+        rather than letting AttributeError leak out of the boundary."""
+        with pytest.raises(TypeError, match="expected mapping"):
+            AudioSignals.from_dict("not-a-dict")  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="expected mapping"):
+            AudioSignals.from_dict(["rms", "onset"])  # type: ignore[arg-type]
+
     def test_publish_is_atomic(self, tmp_path: Path) -> None:
         """No partial-write artifacts should remain after publish."""
         shm_path = tmp_path / "u.json"

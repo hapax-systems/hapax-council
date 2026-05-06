@@ -371,3 +371,37 @@ class TestStoreIntegration:
         tick_env["mock_store"].flush.assert_called_once()
         cache_file = tick_env["cache_dir"] / "self-model.json"
         assert cache_file.exists()
+
+
+# ── Defensive readers — non-dict JSON root ──────────────────────────────
+
+
+class TestReadersRejectNonDictRoot:
+    """Pin that the SHM readers in apperception_tick.py survive a writer
+    producing valid JSON whose root is not a mapping. Three sites previously
+    let AttributeError escape the narrow (OSError, JSONDecodeError) catch
+    and crashed the apperception tick loop: cross-resonance (line 274),
+    pattern-shifts (line 292), stimmung (line 318)."""
+
+    @pytest.mark.parametrize(
+        "payload,kind",
+        [("null", "null"), ('"string"', "string"), ("[1,2]", "list"), ("42", "int")],
+    )
+    def test_read_stimmung_non_dict_root(
+        self,
+        tick_env: dict,
+        monkeypatch: pytest.MonkeyPatch,
+        payload: str,
+        kind: str,
+    ):
+        from shared import apperception_tick as at
+
+        # Redirect STIMMUNG_FILE through the test fixture path.
+        stimmung_path = tick_env["stimmung_dir"] / "state.json"
+        stimmung_path.write_text(payload)
+        monkeypatch.setattr(at, "STIMMUNG_FILE", stimmung_path)
+        tick = _make_tick(tick_env)
+        # Hot-path call inside the apperception tick — must not raise.
+        stance, data = tick._read_stimmung()
+        assert stance == "nominal", f"root={kind} must yield nominal stance"
+        assert data is None, f"root={kind} must yield None data"

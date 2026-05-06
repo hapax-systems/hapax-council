@@ -483,6 +483,31 @@ class TestDomainPresetFamilyMapping:
         assert domain_for_ward("album") == "music"
         assert domain_for_ward("objectives_overlay") == "director"
 
+    def test_legibility_wards_classified_not_falling_back_to_perception(self):
+        """The four legibility Cairo sources emit ward_ids in
+        legibility_sources.py; each must have an explicit domain so the
+        per-domain accent resolver in homage/rendering.py paints them in
+        the operator-intended hue rather than silently green."""
+        from agents.studio_compositor.ward_fx_mapping import domain_for_ward
+
+        assert domain_for_ward("activity_header") == "cognition"
+        assert domain_for_ward("stance_indicator") == "presence"
+        assert domain_for_ward("grounding_provenance_ticker") == "director"
+        assert domain_for_ward("chat_keyword_legend") == "communication"
+
+    def test_compositor_dynamic_wards_classified(self):
+        """Wards constructed in compositor.py (m8-display, programme-banner,
+        precedent-ticker, programme-history, research-instrument-dashboard)
+        emit hyphen-separated ward_ids; pin their domain so the border-pulse
+        accent and preset-family selection don't fall back to perception."""
+        from agents.studio_compositor.ward_fx_mapping import domain_for_ward
+
+        assert domain_for_ward("m8-display") == "music"
+        assert domain_for_ward("programme-banner") == "director"
+        assert domain_for_ward("precedent-ticker") == "director"
+        assert domain_for_ward("programme-history") == "cognition"
+        assert domain_for_ward("research-instrument-dashboard") == "cognition"
+
     def test_audio_reactive_set_matches_expected_wards(self):
         from agents.studio_compositor.ward_fx_mapping import (
             AUDIO_REACTIVE_WARDS,

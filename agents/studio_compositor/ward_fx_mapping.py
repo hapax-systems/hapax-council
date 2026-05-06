@@ -55,29 +55,44 @@ DOMAIN_PRESET_FAMILY: dict[WardDomain, PresetFamily] = {
 # Ward → domain classification. Hand-authored from the current ward
 # inventory: the Cairo sources under ``cairo_sources/``, the FSM wards
 # in ``homage/``, the overlay zones, and the PiP/youtube wards.
+#
+# When a ward emits a ward_id but lacks a row here, ``domain_for_ward``
+# falls back to ``"perception"`` and the accent-colour resolver in
+# ``homage/rendering.py::_domain_accent`` paints it green. Add new wards
+# explicitly so border-pulses and preset-family routing land in the
+# operator-intended hue.
 WARD_DOMAIN: dict[str, WardDomain] = {
     # Communication surface
     "chat_ambient": "communication",
     "captions": "communication",
     "stream_overlay": "communication",
     "impingement_cascade": "communication",
+    "chat_keyword_legend": "communication",
     # Presence
     "whos_here": "presence",
     "thinking_indicator": "presence",
     "pressure_gauge": "presence",
+    "stance_indicator": "presence",
     # Token
     "token_pole": "token",
     # Music
     "album": "music",
     "vinyl_platter": "music",
+    "m8-display": "music",
     # Cognition
     "activity_variety_log": "cognition",
     "recruitment_candidate_panel": "cognition",
     "music_candidate_surfacer": "cognition",
+    "activity_header": "cognition",
+    "programme-history": "cognition",
+    "research-instrument-dashboard": "cognition",
     # Director
     "objectives_overlay": "director",
     "scene_director": "director",
     "structural_director": "director",
+    "grounding_provenance_ticker": "director",
+    "programme-banner": "director",
+    "precedent-ticker": "director",
     # Perception
     "sierpinski": "perception",
 }

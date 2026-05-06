@@ -57,7 +57,7 @@ GENERIC_SCRIPT = [
 ONE_ACTION_KIND_SCRIPT = [
     (
         "Compare the canary method with the final-nine method because the stream needs a "
-        "visible reason to pause before scaling. Shoshana Zuboff argues that systems earn "
+        "visible reason to pause before scaling. The Zuboff study finds that systems earn "
         "trust only when their operations can be inspected, and that gives this bit its "
         "stakes: the host cannot treat a polished segment as production-ready until the "
         "canary receipt is visible. Compare the prepared artifact to the runtime review "

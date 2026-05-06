@@ -29,7 +29,12 @@ import pytest
 from agents.studio_compositor import m8_oscilloscope_source as mod
 from agents.studio_compositor.m8_oscilloscope_source import (
     ACTIVE_ALPHA,
+    AMPLITUDE_ALPHA_FLOOR,
+    DEFAULT_LINE_WIDTH,
+    LINE_WIDTH_AMPLITUDE_SCALE,
     M8OscilloscopeCairoSource,
+    _amplitude_normalized,
+    _amplitude_scaled_alpha,
     _read_ring,
     _silence_alpha,
 )
@@ -119,6 +124,47 @@ class TestSilenceAlpha:
         assert alpha == pytest.approx(expected, abs=1e-6)
 
 
+# ── 2b. Amplitude-driven alpha modulation ──────────────────────────────
+
+
+class TestAmplitudeNormalized:
+    def test_empty_returns_zero(self) -> None:
+        assert _amplitude_normalized(b"") == 0.0
+
+    def test_flat_midline_is_silence(self) -> None:
+        # All samples at 128 → no deviation from centre → amplitude 0.
+        assert _amplitude_normalized(bytes([128] * 32)) == 0.0
+
+    def test_full_swing_saturates_to_one(self) -> None:
+        # Mix of 0 and 255 → peak deviation 128 → amplitude 1.0.
+        assert _amplitude_normalized(bytes([0, 255, 128, 64, 192])) == pytest.approx(1.0)
+
+    def test_partial_swing_proportional(self) -> None:
+        # Peak deviation of 64 from 128 → 0.5.
+        assert _amplitude_normalized(bytes([128, 192, 128, 64])) == pytest.approx(0.5)
+
+
+class TestAmplitudeScaledAlpha:
+    def test_zero_amplitude_yields_floor(self) -> None:
+        assert _amplitude_scaled_alpha(0.75, 0.0, floor=0.5) == pytest.approx(0.375)
+
+    def test_full_amplitude_yields_base(self) -> None:
+        assert _amplitude_scaled_alpha(0.75, 1.0, floor=0.5) == pytest.approx(0.75)
+
+    def test_clamps_above_one(self) -> None:
+        # Out-of-band amplitude must not push alpha above the silence-fade
+        # ceiling — defends the mtime-driven cap.
+        assert _amplitude_scaled_alpha(0.75, 1.5, floor=0.5) == pytest.approx(0.75)
+
+    def test_clamps_below_zero(self) -> None:
+        assert _amplitude_scaled_alpha(0.75, -0.5, floor=0.5) == pytest.approx(0.375)
+
+    def test_zero_base_alpha_stays_zero(self) -> None:
+        # When silence-fade has finished, amplitude modulation cannot
+        # resurrect the ward.
+        assert _amplitude_scaled_alpha(0.0, 1.0, floor=0.5) == 0.0
+
+
 # ── 3. Cairo render path ────────────────────────────────────────────────
 
 
@@ -169,6 +215,54 @@ class TestRenderContent:
         cr = MagicMock()
         # Must not raise into the compositor's render thread.
         source.render_content(cr, canvas_w=1280, canvas_h=128, t=0.0, state={})
+
+    def test_loud_waveform_paints_with_thicker_stroke_than_silent(self, tmp_path: Path) -> None:
+        # Silent: midline samples → amplitude 0 → line_width = base.
+        silent_path = tmp_path / "silent_lw.bin"
+        _write_ring(silent_path, samples=bytes([128] * 32))
+        # Loud: full ±128 swing → amplitude 1 → line_width = base + scale.
+        loud_path = tmp_path / "loud_lw.bin"
+        _write_ring(loud_path, samples=bytes([0, 255] * 16))
+
+        def _paint_line_width(path: Path) -> float:
+            source = M8OscilloscopeCairoSource(ring_path=path)
+            cr = MagicMock()
+            source.render_content(cr, canvas_w=1280, canvas_h=128, t=0.0, state={})
+            cr.set_line_width.assert_called_once()
+            return float(cr.set_line_width.call_args.args[0])
+
+        silent_lw = _paint_line_width(silent_path)
+        loud_lw = _paint_line_width(loud_path)
+        assert silent_lw == pytest.approx(DEFAULT_LINE_WIDTH)
+        assert loud_lw == pytest.approx(DEFAULT_LINE_WIDTH + LINE_WIDTH_AMPLITUDE_SCALE)
+        assert loud_lw > silent_lw
+
+    def test_loud_waveform_paints_with_higher_alpha_than_silent(self, tmp_path: Path) -> None:
+        # Silent waveform: all samples at the midline.
+        silent_path = tmp_path / "silent.bin"
+        _write_ring(silent_path, samples=bytes([128] * 32))
+        # Loud waveform: full ±128 swing.
+        loud_path = tmp_path / "loud.bin"
+        _write_ring(loud_path, samples=bytes([0, 255] * 16))
+
+        def _paint_alpha(path: Path) -> float:
+            source = M8OscilloscopeCairoSource(ring_path=path)
+            cr = MagicMock()
+            source.render_content(cr, canvas_w=1280, canvas_h=128, t=0.0, state={})
+            # set_source_rgba(r, g, b, alpha) — last positional is alpha.
+            cr.set_source_rgba.assert_called_once()
+            args = cr.set_source_rgba.call_args.args
+            return float(args[3])
+
+        silent_alpha = _paint_alpha(silent_path)
+        loud_alpha = _paint_alpha(loud_path)
+        # Both render (silence-fade is mtime-driven, ring is fresh), but
+        # the loud waveform must read brighter than the silent midline.
+        assert loud_alpha > silent_alpha
+        # The silent waveform sits at the configured floor of the active
+        # alpha — never invisible while the M8 is connected and sending.
+        assert silent_alpha == pytest.approx(ACTIVE_ALPHA * AMPLITUDE_ALPHA_FLOOR)
+        assert loud_alpha == pytest.approx(ACTIVE_ALPHA)
 
 
 # ── 4. Affordance + cairo registry registration ─────────────────────────
