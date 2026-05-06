@@ -639,6 +639,7 @@ def validate_prepared_artifact_layout_metadata(
     """Validate prepared-artifact metadata and reject layout commands."""
 
     _reject_prepared_layout_commands(metadata)
+    _reject_prepared_runtime_policy_overrides(metadata)
     if embedding_metadata is not None:
         _reject_parent_metadata_overrides(embedding_metadata)
     contract = PreparedSegmentLayoutContract.model_validate(metadata)
@@ -649,6 +650,32 @@ def validate_prepared_artifact_layout_metadata(
     if parent_condition_id and contract.parent_condition_id not in {None, parent_condition_id}:
         raise ValueError("prepared layout contract parent_condition_id does not match parent")
     return contract
+
+
+def _reject_prepared_runtime_policy_overrides(metadata: Mapping[str, Any]) -> None:
+    """Prepared metadata may include code-owned defaults, not author them."""
+
+    contract = _mapping_or_none(metadata.get("layout_decision_contract"))
+    if contract is not None:
+        if contract.get("may_command_layout") is not False:
+            raise ValueError("prepared layout_decision_contract.may_command_layout must be false")
+        defaults = LayoutDecisionContract().model_dump(mode="json")
+        for key, value in contract.items():
+            if key == "may_command_layout":
+                continue
+            if defaults.get(str(key)) != value:
+                raise ValueError(
+                    f"prepared layout_decision_contract cannot override code-owned runtime policy: {key}"
+                )
+
+    runtime_validation = _mapping_or_none(metadata.get("runtime_layout_validation"))
+    if runtime_validation is not None:
+        defaults = PreparedRuntimeLayoutValidation().model_dump(mode="json")
+        for key, value in runtime_validation.items():
+            if defaults.get(str(key)) != value:
+                raise ValueError(
+                    f"prepared runtime_layout_validation cannot override code-owned runtime policy: {key}"
+                )
 
 
 def project_parent_prepared_artifact_layout_contract(

@@ -62,6 +62,20 @@ def test_responsible_contract_metadata_is_proposal_only() -> None:
     assert "layout_name" not in json.dumps(metadata)
 
 
+def test_prepared_metadata_rejects_runtime_policy_overrides() -> None:
+    metadata = prepared_artifact_layout_metadata(_responsible_contract())
+    metadata["layout_decision_contract"]["ttl_s"] = 1
+
+    with pytest.raises(ValueError, match="code-owned runtime policy"):
+        validate_prepared_artifact_layout_metadata(metadata)
+
+    metadata = prepared_artifact_layout_metadata(_responsible_contract())
+    metadata["runtime_layout_validation"]["readback_kinds_required"] = []
+
+    with pytest.raises(ValueError, match="code-owned runtime policy"):
+        validate_prepared_artifact_layout_metadata(metadata)
+
+
 def test_parent_emitted_field_names_project_to_blue_contract_without_mutating_parent() -> None:
     parent = _parent_artifact(
         programme_id="prog-1",
