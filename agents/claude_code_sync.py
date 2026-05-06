@@ -166,6 +166,8 @@ def _parse_transcript(path: Path) -> list[tuple[str, str, str]]:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(entry, dict):
+                    continue
 
                 entry_type = entry.get("type", "")
                 timestamp = entry.get("timestamp", "")
