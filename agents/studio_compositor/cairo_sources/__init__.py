@@ -193,6 +193,14 @@ def _register_builtins() -> None:
     )
 
     register("PrecedentTickerCairoSource", PrecedentTickerCairoSource)
+    # activity-reveal-ward P5 (2026-05-05) — Polyend instrument reveal.
+    # Unlike M8/Steam Deck this is Cairo-native: no display protocol,
+    # just UAC waveform + MIDI note grid.
+    from agents.studio_compositor.polyend_instrument_reveal import (
+        PolyendInstrumentReveal,
+    )
+
+    register("PolyendInstrumentReveal", PolyendInstrumentReveal)
     # ytb-LORE-EXT-future-wards (cc-task ward-interactive-lore-query-bitchx-repl,
     # 2026-05-04) — chat-driven !lore REPL ward. Allowlist gate is load-bearing:
     # the ward only renders queries from operator-curated chat-authority
@@ -274,9 +282,10 @@ def _register_builtins() -> None:
     from agents.studio_compositor.segment_content_ward import SegmentContentWard
 
     register("SegmentContentWard", SegmentContentWard)
+
     # Vitruvian Man human glyph explosion overlay (2026-05-04) —
     # full-frame transparent overlay that renders the token-pole
-    # explosion particles.  Separate from the 300×300 token_pole
+    # explosion particles. Separate from the 300x300 token_pole
     # source so particles can cover 2/3 of the broadcast frame.
     from agents.studio_compositor.token_explosion_overlay import (
         TokenExplosionOverlayCairoSource,
@@ -285,7 +294,7 @@ def _register_builtins() -> None:
     register("TokenExplosionOverlayCairoSource", TokenExplosionOverlayCairoSource)
     # Sierpinski-centered camera packing (2026-05-05) — renders 5 non-hero
     # camera frames from frame_cache at pre-computed positions around the
-    # Sierpinski triangle with slight rotation.  Hero stays on cudacompositor.
+    # Sierpinski triangle with slight rotation. Hero stays on cudacompositor.
     from agents.studio_compositor.packed_cameras_source import PackedCamerasCairoSource
 
     register("PackedCamerasCairoSource", PackedCamerasCairoSource)

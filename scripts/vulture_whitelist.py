@@ -2567,3 +2567,13 @@ _HeroEffectRotator.current_effect_name
 _HeroEffectRotator.effect_count
 _HeroEffectRotator.set_slot
 _HeroEffectRotator.update_hero_tile
+
+# token_pole backward-compat path-mode helpers (added 2026-05-06): tests in
+# tests/studio_compositor/test_token_pole_geometry.py + test_token_pole_task_186.py
+# import _resolve_path_mode + _build_linear_path; vulture's production-only
+# scan doesn't see test imports.
+from agents.studio_compositor.token_pole import _build_linear_path as _TokenPoleBuildLinear
+from agents.studio_compositor.token_pole import _resolve_path_mode as _TokenPoleResolvePathMode
+
+_TokenPoleBuildLinear
+_TokenPoleResolvePathMode

@@ -81,6 +81,55 @@ _LANDMARKS: list[tuple[float, float, str]] = [
 ]
 
 
+# Backward-compat constants for the linear-path mode (operator directive
+# 2026-04-19): NAVEL_TO_CRANIUM is the default path; SPIRAL (golden ratio
+# Catmull-Rom over all _LANDMARKS) is reachable via env override.
+NAVEL_X = 0.500
+NAVEL_Y = 0.520
+CRANIUM_X = 0.498
+CRANIUM_Y = 0.072
+
+
+import enum  # noqa: E402
+
+
+class PathMode(enum.Enum):
+    """Path geometry over the Vitruvian figure.
+
+    NAVEL_TO_CRANIUM: linear segment from navel anchor to cranium anchor.
+    SPIRAL: Catmull-Rom spline through all _LANDMARKS (golden-ratio path).
+    """
+
+    NAVEL_TO_CRANIUM = "navel_to_cranium"
+    SPIRAL = "spiral"
+
+
+def _resolve_path_mode() -> PathMode:
+    """Resolve PathMode from HAPAX_TOKEN_POLE_PATH env var; default NAVEL_TO_CRANIUM."""
+    import os
+
+    raw = os.environ.get("HAPAX_TOKEN_POLE_PATH", "").strip().lower()
+    if raw == "spiral":
+        return PathMode.SPIRAL
+    return PathMode.NAVEL_TO_CRANIUM
+
+
+def _build_linear_path(size: int, num_points: int) -> list[tuple[float, float]]:
+    """Linear path from navel to cranium scaled to a square of `size` px.
+
+    Returns `num_points` (x, y) pairs evenly spaced along the segment.
+    Pixel y decreases monotonically (navel below cranium on the figure).
+    """
+    if num_points < 2:
+        return [(NAVEL_X * size, NAVEL_Y * size)]
+    x0, y0 = NAVEL_X * size, NAVEL_Y * size
+    x1, y1 = CRANIUM_X * size, CRANIUM_Y * size
+    return [
+        (x0 + (x1 - x0) * (i / (num_points - 1)), y0 + (y1 - y0) * (i / (num_points - 1)))
+        for i in range(num_points)
+    ]
+
+
 # --- Palette role names (HOMAGE spec §4.4) ---------------------------------
 # The token-pole resolves all colour state through the active
 # ``HomagePackage.palette`` at draw time; no hardcoded hex. The six
