@@ -8,6 +8,7 @@ the director's last family live past its cooldown would go unnoticed.
 
 from __future__ import annotations
 
+import copy
 import json
 import time
 from pathlib import Path
@@ -26,6 +27,20 @@ def fake_shm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def _write_recruitment(shm: Path, payload: object) -> None:
     (shm / "recent-recruitment.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _cycle_graph() -> dict:
+    return {
+        "name": "cycle-fixture",
+        "nodes": {
+            "colorgrade": {
+                "type": "colorgrade",
+                "params": {"brightness": 1.0, "contrast": 1.2, "enabled": True},
+            },
+            "out": {"type": "output", "params": {}},
+        },
+        "edges": [["colorgrade", "out"]],
+    }
 
 
 def test_missing_file_returns_none(fake_shm: Path) -> None:
@@ -88,3 +103,37 @@ def test_unknown_family_string_returned_verbatim(fake_shm: Path) -> None:
         },
     )
     assert random_mode._read_recruited_family() == "not-a-real-family"
+
+
+def test_cycle_graph_loader_mutates_autonomous_cycle_presets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = _cycle_graph()
+    monkeypatch.delenv("HAPAX_PRESET_VARIETY_ACTIVE", raising=False)
+    monkeypatch.setattr(random_mode, "load_preset_graph", lambda _name: copy.deepcopy(raw))
+
+    first = random_mode._load_cycle_graph("cycle-fixture", seed=42)
+    second = random_mode._load_cycle_graph("cycle-fixture", seed=42)
+
+    assert first == second
+    assert first is not None
+    assert first != raw
+    assert first["nodes"]["colorgrade"]["params"]["enabled"] is True
+    assert first["edges"] == raw["edges"]
+
+
+def test_cycle_graph_loader_respects_variety_feature_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = _cycle_graph()
+    monkeypatch.setenv("HAPAX_PRESET_VARIETY_ACTIVE", "0")
+    monkeypatch.setattr(random_mode, "load_preset_graph", lambda _name: copy.deepcopy(raw))
+
+    assert random_mode._load_cycle_graph("cycle-fixture", seed=42) == raw
+
+
+def test_cycle_graph_loader_returns_none_for_missing_preset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(random_mode, "load_preset_graph", lambda _name: None)
+    assert random_mode._load_cycle_graph("missing") is None
