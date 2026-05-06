@@ -208,3 +208,24 @@ class TestEnvironmentFlag:
         for val in ("0", "false", "no", "off", ""):
             monkeypatch.setenv(audio_ducking.FEATURE_FLAG_ENV, val)
             assert audio_ducking._read_feature_flag() is False
+
+
+# ── Defensive read_yt_audio_active — non-dict JSON root ────────────────
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_read_yt_audio_active_non_dict_returns_none(tmp_path, payload, kind):
+    """Pin ``read_yt_audio_active`` against non-dict JSON roots. The
+    audio-ducking decision path calls ``data.get(\"yt_audio_active\")``
+    after ``json.loads`` — a non-dict root raised AttributeError out
+    of the duck poll cadence. Same corruption-class as the recent
+    SHM-read fixes."""
+    path = tmp_path / "yt-state.json"
+    path.write_text(payload)
+    assert read_yt_audio_active(path) is None, f"non-dict root={kind} must yield None"

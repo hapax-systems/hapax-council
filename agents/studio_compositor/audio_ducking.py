@@ -301,13 +301,22 @@ def set_yt_audio_active(active: bool, *, path: Path | None = None) -> None:
 
 
 def read_yt_audio_active(path: Path | None = None) -> bool | None:
-    """Read the current YT audio-activity state, or None if unavailable."""
+    """Read the current YT audio-activity state, or None if unavailable.
+
+    Validates the JSON root is a mapping. ``data.get(\"yt_audio_active\")``
+    is called outside the json.loads try/except; a writer producing
+    valid JSON whose root is null, a list, a string, or a number
+    previously raised AttributeError out of the audio-ducking decision
+    path. Same corruption-class as the recent SHM-read fixes.
+    """
     target = path if path is not None else YT_AUDIO_STATE_FILE
     if not target.exists():
         return None
     try:
         data = json.loads(target.read_text())
     except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
         return None
     val = data.get("yt_audio_active")
     return bool(val) if isinstance(val, bool) else None
