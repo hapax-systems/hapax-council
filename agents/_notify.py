@@ -120,13 +120,22 @@ def _dedup_key(title: str, message: str) -> str:
 
 
 def _is_duplicate(title: str, message: str) -> bool:
-    """Return True if this exact notification was sent within the cooldown window."""
+    """Return True if this exact notification was sent within the cooldown window.
+
+    Validates the dedup-state JSON root is a mapping. ``state.get(key, 0)``
+    is called outside the try/except — a writer producing valid JSON
+    whose root is null, a list, a string, or a number previously raised
+    AttributeError out of the notification dedup gate. Same shape as
+    the other recent SHM-read fixes.
+    """
     key = _dedup_key(title, message)
     now = time.time()
     state: dict = {}
     try:
         if _DEDUP_FILE.exists():
-            state = _json.loads(_DEDUP_FILE.read_text())
+            loaded = _json.loads(_DEDUP_FILE.read_text())
+            if isinstance(loaded, dict):
+                state = loaded
     except Exception:
         pass
     last_sent = state.get(key, 0)
