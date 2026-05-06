@@ -437,22 +437,6 @@
       "ward_id": "research-instrument-dashboard"
     },
     {
-      "id": "token_explosion_overlay",
-      "kind": "cairo",
-      "backend": "cairo",
-      "params": {
-        "class_name": "TokenExplosionOverlayCairoSource",
-        "natural_w": 1920,
-        "natural_h": 1080
-      },
-      "update_cadence": "always",
-      "rate_hz": null,
-      "tags": [],
-      "pair_role": "solo",
-      "pair_leg": null,
-      "ward_id": null
-    },
-    {
       "id": "packed_cameras",
       "kind": "cairo",
       "backend": "cairo",
@@ -677,7 +661,7 @@
         "kind": "rect",
         "x": 16,
         "y": 840,
-        "w": 280,
+        "w": 300,
         "h": 200,
         "mask": null,
         "binding_name": null,
@@ -866,7 +850,7 @@
       },
       "effect_chain": [],
       "blend_mode": "over",
-      "z_order": 40,
+      "z_order": 25,
       "update_cadence": "always"
     },
     {
@@ -884,7 +868,7 @@
       },
       "effect_chain": [],
       "blend_mode": "over",
-      "z_order": 40,
+      "z_order": 25,
       "update_cadence": "always"
     },
     {
@@ -975,24 +959,6 @@
       "effect_chain": [],
       "blend_mode": "over",
       "z_order": 102,
-      "update_cadence": "always"
-    },
-    {
-      "id": "explosion-overlay",
-      "geometry": {
-        "kind": "rect",
-        "x": 0,
-        "y": 0,
-        "w": 1920,
-        "h": 1080,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 35,
       "update_cadence": "always"
     },
     {
@@ -1239,15 +1205,6 @@
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "pre_fx"
-    },
-    {
-      "source": "token_explosion_overlay",
-      "surface": "explosion-overlay",
-      "transform": {},
-      "opacity": 1.0,
-      "per_assignment_effects": [],
-      "non_destructive": false,
-      "render_stage": "post_fx"
     },
     {
       "source": "packed_cameras",
