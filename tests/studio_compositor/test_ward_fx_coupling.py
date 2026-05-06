@@ -652,6 +652,25 @@ class TestDomainPresetFamilyMapping:
             f"(would default to 'perception'): {missing}"
         )
 
+    def test_album_overlay_classified_and_audio_reactive(self):
+        """The album overlay ward emits ``ward_id="album_overlay"`` from
+        ``HomageAlbumOverlay`` (default in ``album_overlay.py``); the layout
+        catalog separately uses the bare ``"album"`` key. Both spellings
+        must classify as ``music`` so accent colour, preset family routing,
+        and FX coupling all land on the music side regardless of which
+        label the upstream call site happens to use. The reactor pulses
+        the cover with the beat alongside ``vinyl_platter``."""
+        from agents.studio_compositor.ward_fx_mapping import (
+            AUDIO_REACTIVE_WARDS,
+            domain_for_ward,
+            is_audio_reactive,
+        )
+
+        assert domain_for_ward("album") == "music"
+        assert domain_for_ward("album_overlay") == "music"
+        assert "album_overlay" in AUDIO_REACTIVE_WARDS
+        assert is_audio_reactive("album_overlay")
+
     def test_m8_oscilloscope_is_audio_reactive(self):
         """The M8 oscilloscope ward renders the M8's SLIP-packet waveform
         directly (intrinsic audio reactivity) AND participates in
