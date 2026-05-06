@@ -1,0 +1,21 @@
+[Unit]
+Description=Hapax Sentinel — out-of-band workstation watchdog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/hapax-edge
+ExecStart=/usr/bin/python3 %h/hapax-edge/hapax-sentinel.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-sentinel
+Environment=WORKSTATION_URL=http://hapax-podium.local:8051
+Environment=NTFY_URL=https://ntfy.sh/hapax-alerts
+Environment=SENTINEL_POLL_INTERVAL_S=300
+Environment=SENTINEL_FAIL_THRESHOLD=3
+
+[Install]
+WantedBy=default.target

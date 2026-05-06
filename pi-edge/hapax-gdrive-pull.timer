@@ -1,0 +1,10 @@
+[Unit]
+Description=Hapax Gdrive Pull Timer (every 5 min)
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=300
+AccuracySec=10
+
+[Install]
+WantedBy=timers.target

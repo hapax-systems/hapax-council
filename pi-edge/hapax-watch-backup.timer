@@ -1,0 +1,10 @@
+[Unit]
+Description=Hapax Watch Backup Timer (daily 04:30 local)
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
