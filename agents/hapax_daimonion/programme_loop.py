@@ -605,10 +605,10 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
                 daemon.programme_manager = manager  # type: ignore[attr-defined]
                 log.info("programme_manager_loop: ProgrammeManager constructed")
 
-                # Prep-to-store bridge: load today's prepped segments from
-                # disk, create Programme objects, and add+activate them.
-                # When prepped segments exist, they replace the auto-planner
-                # — the content was composed offline, ready for delivery.
+                # Prep-to-store bridge: load today's accepted prep artifacts,
+                # create Programme objects, and add+activate them. Prepared
+                # scripts are projected into live priors by default; they are
+                # not direct TTS authority for responsible live delivery.
                 try:
                     from agents.hapax_daimonion.daily_segment_prep import (
                         load_prepped_programmes,
@@ -638,8 +638,12 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
                                 narrative_beat=p.get("topic", "")[:500],
                                 segment_beats=p.get("segment_beats", []),
                                 prepared_script=list(script),
+                                delivery_mode=p.get("delivery_mode") or "live_prior",
+                                beat_cards=_prepped_beat_cards(p),
+                                live_priors=_prepped_live_priors(p),
                                 hosting_context=p.get("hosting_context"),
                                 authority=p.get("authority") or p.get("artifact_authority"),
+                                beat_action_intents=p.get("beat_action_intents", []),
                                 beat_layout_intents=p.get("beat_layout_intents", []),
                                 layout_decision_contract=p.get("layout_decision_contract", {}),
                                 runtime_layout_validation=p.get("runtime_layout_validation", {}),
@@ -655,7 +659,7 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
                             )
                             manager.store.add(prog)
                             log.info(
-                                "prep-to-store: added %s (%s, %d beats, script ready)",
+                                "prep-to-store: added %s (%s, %d beats, live priors ready)",
                                 pid,
                                 role_str,
                                 len(script),
@@ -837,6 +841,162 @@ def _current_beat_layout_proposals(content: Any, beat_index: int) -> list[dict[s
         return []
 
 
+def _prepped_artifact_ref_text(payload: dict[str, Any]) -> str | None:
+    ref = payload.get("prepared_artifact_ref")
+    if isinstance(ref, dict) and isinstance(ref.get("ref"), str):
+        return ref["ref"]
+    if isinstance(ref, str) and ref.startswith("prepared_artifact:"):
+        return ref
+    sha = payload.get("artifact_sha256")
+    if isinstance(sha, str) and sha:
+        return f"prepared_artifact:{sha}"
+    return None
+
+
+def _compact_prior_text(value: Any, *, limit: int = 900) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _unique_strings(values: list[Any]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _declaration_for_beat(
+    declarations: Any,
+    beat_index: int,
+) -> dict[str, Any]:
+    if not isinstance(declarations, list):
+        return {}
+    for item in declarations:
+        if isinstance(item, dict) and item.get("beat_index") == beat_index:
+            return item
+    if 0 <= beat_index < len(declarations) and isinstance(declarations[beat_index], dict):
+        return declarations[beat_index]
+    return {}
+
+
+def _prepped_beat_cards(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    existing = payload.get("beat_cards")
+    if isinstance(existing, list) and existing:
+        return [item for item in existing if isinstance(item, dict)]
+
+    script = payload.get("prepared_script") or []
+    beats = payload.get("segment_beats") or []
+    if not isinstance(script, list):
+        return []
+    artifact_ref = _prepped_artifact_ref_text(payload)
+    cards: list[dict[str, Any]] = []
+    for index, block in enumerate(script[:30]):
+        action_decl = _declaration_for_beat(payload.get("beat_action_intents"), index)
+        layout_decl = _declaration_for_beat(payload.get("beat_layout_intents"), index)
+        action_intents = action_decl.get("intents") if isinstance(action_decl, dict) else []
+        action_kinds = [
+            item.get("kind")
+            for item in action_intents or []
+            if isinstance(item, dict) and item.get("kind")
+        ]
+        expected_effects = [
+            item.get("expected_effect")
+            for item in action_intents or []
+            if isinstance(item, dict) and item.get("expected_effect")
+        ]
+        evidence_refs = [artifact_ref] if artifact_ref else []
+        if isinstance(layout_decl, dict):
+            evidence_refs.extend(layout_decl.get("evidence_refs") or [])
+        title = (
+            beats[index] if isinstance(beats, list) and index < len(beats) else f"Beat {index + 1}"
+        )
+        cards.append(
+            {
+                "beat_index": index,
+                "beat_id": str(layout_decl.get("beat_id") or f"beat-{index + 1}")
+                if isinstance(layout_decl, dict)
+                else f"beat-{index + 1}",
+                "title": _compact_prior_text(title, limit=150),
+                "prior_summary": _compact_prior_text(block),
+                "prepared_artifact_ref": artifact_ref,
+                "action_intent_kinds": _unique_strings(action_kinds),
+                "layout_needs": _unique_strings(
+                    list(layout_decl.get("needs") or []) if isinstance(layout_decl, dict) else []
+                ),
+                "expected_effects": _unique_strings(expected_effects),
+                "evidence_refs": _unique_strings(evidence_refs),
+            }
+        )
+    return cards
+
+
+def _prepped_live_priors(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    existing = payload.get("live_priors")
+    if isinstance(existing, list) and existing:
+        return [item for item in existing if isinstance(item, dict)]
+
+    script = payload.get("prepared_script") or []
+    if not isinstance(script, list):
+        return []
+    artifact_ref = _prepped_artifact_ref_text(payload)
+    priors: list[dict[str, Any]] = []
+    for index, block in enumerate(script[:30]):
+        text = _compact_prior_text(block, limit=1200)
+        if not text:
+            continue
+        evidence_refs = [artifact_ref] if artifact_ref else []
+        priors.append(
+            {
+                "prior_id": f"prepared-script-beat-{index + 1}",
+                "beat_index": index,
+                "kind": "prepared_script_excerpt",
+                "text": text,
+                "prepared_artifact_ref": artifact_ref,
+                "evidence_refs": _unique_strings(evidence_refs),
+            }
+        )
+    return priors
+
+
+def _current_beat_action_intents(content: Any, beat_index: int) -> list[dict[str, Any]]:
+    intents = getattr(content, "beat_action_intents", None)
+    if not isinstance(intents, list):
+        return []
+    declaration = _declaration_for_beat(intents, beat_index)
+    return [dict(declaration)] if declaration else []
+
+
+def _current_beat_cards(content: Any, beat_index: int) -> list[dict[str, Any]]:
+    cards = getattr(content, "beat_cards", None)
+    if not isinstance(cards, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for card in cards:
+        beat_card = card.model_dump(mode="json") if hasattr(card, "model_dump") else card
+        if isinstance(beat_card, dict) and beat_card.get("beat_index") == beat_index:
+            out.append(beat_card)
+    return out
+
+
+def _current_beat_live_priors(content: Any, beat_index: int) -> list[dict[str, Any]]:
+    priors = getattr(content, "live_priors", None)
+    if not isinstance(priors, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for prior in priors:
+        live_prior = prior.model_dump(mode="json") if hasattr(prior, "model_dump") else prior
+        if isinstance(live_prior, dict) and live_prior.get("beat_index") == beat_index:
+            out.append(live_prior)
+    return out
+
+
 def _active_segment_payload(active: Any, role_value: str, beat_index: int) -> dict[str, Any]:
     content = getattr(active, "content", None)
     beats = getattr(content, "segment_beats", []) or [] if content else []
@@ -855,6 +1015,10 @@ def _active_segment_payload(active: Any, role_value: str, beat_index: int) -> di
         "artifact_path_diagnostic": getattr(content, "artifact_path_diagnostic", None),
         "hosting_context": getattr(content, "hosting_context", None),
         "authority": getattr(content, "authority", None),
+        "delivery_mode": str(getattr(content, "delivery_mode", "live_prior")),
+        "current_beat_action_intents": _current_beat_action_intents(content, beat_index),
+        "current_beat_cards": _current_beat_cards(content, beat_index),
+        "current_beat_live_priors": _current_beat_live_priors(content, beat_index),
         "current_beat_layout_intents": _current_beat_layout_proposals(content, beat_index),
     }
 

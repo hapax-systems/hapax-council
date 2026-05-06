@@ -586,6 +586,57 @@ def _render_assets_context(assets: Any) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
+def _mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        dumped = value.model_dump(mode="json")
+        return dumped if isinstance(dumped, dict) else {}
+    return {}
+
+
+def _delivery_mode_value(content: Any) -> str:
+    mode = getattr(content, "delivery_mode", "live_prior")
+    return str(getattr(mode, "value", mode) or "live_prior").strip().lower().replace("-", "_")
+
+
+def _render_live_prior_context(prog: Any) -> str:
+    content = getattr(prog, "content", None)
+    if content is None or _delivery_mode_value(content) != "live_prior":
+        return ""
+
+    beat_index = _get_beat_index(prog)
+    cards = [_mapping(item) for item in getattr(content, "beat_cards", []) or []]
+    priors = [_mapping(item) for item in getattr(content, "live_priors", []) or []]
+    cards = [item for item in cards if item.get("beat_index") in {None, beat_index}]
+    priors = [item for item in priors if item.get("beat_index") in {None, beat_index}]
+    if not cards and not priors:
+        return ""
+
+    lines = [
+        "Prepared live priors (proposal-only; compose live, do not read as a script):",
+        f"  current beat index: {beat_index}",
+    ]
+    for card in cards[:2]:
+        title = str(card.get("title") or card.get("beat_id") or "beat").strip()
+        summary = str(card.get("prior_summary") or "").strip()
+        needs = ", ".join(str(item) for item in card.get("layout_needs") or [] if item)
+        actions = ", ".join(str(item) for item in card.get("action_intent_kinds") or [] if item)
+        if title:
+            lines.append(f"  - beat card: {title[:140]}")
+        if summary:
+            lines.append(f"    prior: {summary[:700]}")
+        if actions:
+            lines.append(f"    action intents: {actions[:220]}")
+        if needs:
+            lines.append(f"    layout needs: {needs[:220]}")
+    for prior in priors[:2]:
+        text = str(prior.get("text") or "").strip()
+        if text:
+            lines.append(f"  - live prior excerpt: {text[:700]}")
+    return "\n".join(lines)
+
+
 def _build_seed(context: Any) -> str:
     """Deterministic state summary used as the LLM grounding."""
     parts: list[str] = []
@@ -603,6 +654,10 @@ def _build_seed(context: Any) -> str:
         )
         if isinstance(beat, str) and beat:
             parts.append(f"Programme narrative beat: {beat}")
+
+        live_prior_context = _render_live_prior_context(prog)
+        if live_prior_context:
+            parts.append(live_prior_context)
 
         # Resolve structured assets for segmented-content roles.
         # Enriches the seed with concrete vault / Qdrant / content-resolver

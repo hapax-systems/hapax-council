@@ -13,6 +13,7 @@ from shared.programme import (
     Programme,
     ProgrammeConstraintEnvelope,
     ProgrammeContent,
+    ProgrammeDeliveryMode,
     ProgrammeDisplayDensity,
     ProgrammeRitual,
     ProgrammeRole,
@@ -224,6 +225,7 @@ class TestProgrammeContent:
         c = ProgrammeContent()
         assert c.music_track_ids == []
         assert c.narrative_beat is None
+        assert c.delivery_mode is ProgrammeDeliveryMode.LIVE_PRIOR
 
     def test_narrative_beat_stripped(self) -> None:
         c = ProgrammeContent(narrative_beat="  direction here  ")
@@ -334,6 +336,55 @@ class TestProgrammeContent:
             "vault:source-note-1",
             "rag:proof-42",
         ]
+
+    def test_prepared_script_defaults_to_live_prior_contract(self) -> None:
+        content = ProgrammeContent(
+            hosting_context="hapax_responsible_live",
+            prepared_script=["Place Alpha in S-tier because the ranking makes it visible."],
+            beat_cards=[
+                {
+                    "beat_index": 0,
+                    "beat_id": "beat-1",
+                    "title": "rank alpha",
+                    "prior_summary": "Use Alpha as a prepared prior, then compose live.",
+                    "prepared_artifact_ref": "prepared_artifact:" + "a" * 64,
+                    "action_intent_kinds": ["tier_chart"],
+                    "layout_needs": ["tier_visual"],
+                    "expected_effects": ["tier_chart.place:Alpha:S"],
+                    "evidence_refs": ["prepared_artifact:" + "a" * 64],
+                }
+            ],
+            live_priors=[
+                {
+                    "prior_id": "prepared-script-beat-1",
+                    "beat_index": 0,
+                    "text": "Prepared excerpt used as a prior, not as TTS authority.",
+                    "prepared_artifact_ref": "prepared_artifact:" + "a" * 64,
+                    "evidence_refs": ["prepared_artifact:" + "a" * 64],
+                }
+            ],
+        )
+
+        assert content.delivery_mode is ProgrammeDeliveryMode.LIVE_PRIOR
+        assert content.beat_cards[0].layout_needs == ["tier_visual"]
+        assert content.live_priors[0].kind == "prepared_script_excerpt"
+
+    def test_live_prior_cards_reject_runtime_command_fields(self) -> None:
+        with pytest.raises(ValueError):
+            ProgrammeContent(
+                beat_cards=[
+                    {
+                        "beat_index": 0,
+                        "title": "bad",
+                        "prior_summary": "bad",
+                        "surfaceId": "main",
+                    }
+                ]
+            )
+
+    def test_delivery_mode_accepts_explicit_legacy_value(self) -> None:
+        content = ProgrammeContent(delivery_mode="verbatim_legacy")
+        assert content.delivery_mode is ProgrammeDeliveryMode.VERBATIM_LEGACY
 
     def test_responsible_layout_intents_reject_default_static_success_true(self) -> None:
         with pytest.raises(ValueError, match="default/static layout success"):
