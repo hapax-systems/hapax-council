@@ -68,17 +68,6 @@ nodes:
     params:
       l12_return_pair: RL RR
 
-  - id: mpc-live-iii-output
-    kind: alsa_sink
-    pipewire_name: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
-    description: Akai MPC Live III multichannel USB input bus
-    hw: hw:CARD=MPC,0
-    channels:
-      count: 24
-      positions: [AUX0, AUX1, AUX2, AUX3, AUX4, AUX5, AUX6, AUX7, AUX8, AUX9, AUX10, AUX11, AUX12, AUX13, AUX14, AUX15, AUX16, AUX17, AUX18, AUX19, AUX20, AUX21, AUX22, AUX23]
-    params:
-      audit_role: mpc-live-iii-hardware-ducking-bus
-
   - id: yeti-headphone-output
     kind: alsa_sink
     pipewire_name: alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo
@@ -401,24 +390,34 @@ nodes:
   - id: tts-loudnorm
     kind: filter_chain
     pipewire_name: hapax-loudnorm-capture
-    description: TTS loudnorm capture side, output routed to MPC USB IN 3/4
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+    description: TTS loudnorm capture side, output routed to TTS duck
+    target_object: hapax-tts-duck
     channels:
       count: 2
       positions: [FL, FR]
     chain_kind: loudnorm
     limit_db: -18.0
     release_s: 0.20
+
+  - id: tts-duck
+    kind: filter_chain
+    pipewire_name: hapax-tts-duck
+    description: TTS sidechain duck, parallel output to L-12 return and broadcast tap
+    target_object: alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40
+    channels:
+      count: 2
+      positions: [FL, FR]
+    chain_kind: duck
     params:
-      playback_target: mpc-live-iii-output
-      playback_positions: AUX2 AUX3
+      playback_target: l12-usb-return
+      playback_positions: RL RR
       broadcast_forward_path: hapax-tts-broadcast-capture hapax-tts-broadcast-playback hapax-livestream-tap
 
   - id: tts-broadcast-capture
     kind: filter_chain
     pipewire_name: hapax-tts-broadcast-capture
     description: TTS broadcast loopback capture side
-    target_object: hapax-loudnorm
+    target_object: hapax-tts-duck
     channels:
       count: 2
       positions: [FL, FR]
@@ -436,8 +435,8 @@ nodes:
   - id: pc-loudnorm
     kind: filter_chain
     pipewire_name: hapax-pc-loudnorm
-    description: PC-wide loudnorm sink routed to MPC USB IN 5/6
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+    description: PC-wide loudnorm sink routed to L-12 USB return
+    target_object: alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40
     channels:
       count: 2
       positions: [FL, FR]
@@ -445,8 +444,7 @@ nodes:
     limit_db: -18.0
     release_s: 0.20
     params:
-      playback_target: mpc-live-iii-output
-      playback_positions: AUX4 AUX5
+      playback_positions: RL RR
       notification_excluded: true
 
   - id: pc-router
@@ -503,32 +501,47 @@ nodes:
   - id: music-loudnorm
     kind: filter_chain
     pipewire_name: hapax-music-loudnorm
-    description: Music loudnorm capture side routed to MPC USB IN 1/2
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+    description: Music loudnorm capture side routed to music duck
+    target_object: hapax-music-duck
     channels:
       count: 2
       positions: [FL, FR]
     chain_kind: loudnorm
     limit_db: -18.0
     release_s: 0.20
+
+  - id: music-duck
+    kind: filter_chain
+    pipewire_name: hapax-music-duck
+    description: Music duck output routed to L-12 USB return
+    target_object: alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40
+    channels:
+      count: 2
+      positions: [FL, FR]
+    chain_kind: duck
     params:
-      playback_target: mpc-live-iii-output
-      playback_positions: AUX0 AUX1
+      playback_positions: RL RR
 
   - id: yt-loudnorm
     kind: filter_chain
     pipewire_name: hapax-yt-loudnorm
-    description: YouTube bed loudnorm routed to MPC USB IN 7/8
-    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+    description: YouTube bed loudnorm routed to YouTube ducker
+    target_object: hapax-ytube-ducked
     channels:
       count: 2
       positions: [FL, FR]
     chain_kind: loudnorm
     limit_db: -18.0
     release_s: 0.20
-    params:
-      playback_target: mpc-live-iii-output
-      playback_positions: AUX6 AUX7
+
+  - id: ytube-ducked
+    kind: filter_chain
+    pipewire_name: hapax-ytube-ducked
+    description: YouTube bed ducker sink
+    channels:
+      count: 2
+      positions: [FL, FR]
+    chain_kind: duck
 
   - id: s4-source
     kind: alsa_source
@@ -620,6 +633,17 @@ nodes:
       bypasses_l12: true
       playback_target: hapax-livestream-tap
 
+  - id: polyend-instrument-source
+    kind: alsa_source
+    pipewire_name: alsa_input.usb-Polyend_Tracker_Mini-00.analog-stereo
+    description: Polyend USB audio source, optional hardware endpoint
+    hw: hw:Polyend,0
+    channels:
+      count: 2
+      positions: [FL, FR]
+    params:
+      audit_classification: external-hardware-optional
+
   - id: polyend-instrument-capture
     kind: filter_chain
     pipewire_name: hapax-polyend-instrument-capture
@@ -660,10 +684,19 @@ edges:
   - source: livestream-tap
     target: broadcast-master-capture
 
-  - source: tts-loudnorm
+  - source: tts-duck
     target: tts-broadcast-capture
 
   - source: tts-broadcast-playback
+    target: livestream-tap
+
+  - source: polyend-instrument-source
+    target: polyend-instrument-capture
+
+  - source: polyend-instrument-capture
+    target: polyend-loudnorm
+
+  - source: polyend-loudnorm
     target: livestream-tap
 
   - source: private-sink
@@ -710,9 +743,3 @@ edges:
 
   - source: pc-router
     target: pc-broadcast
-
-  - source: polyend-instrument-capture
-    target: polyend-loudnorm
-
-  - source: polyend-loudnorm
-    target: livestream-tap

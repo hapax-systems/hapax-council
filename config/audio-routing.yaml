@@ -125,8 +125,7 @@ routes:
     target_chain:
       - hapax-voice-fx-capture
       - hapax-loudnorm-capture
-      - mpc-live-iii-usb-in-3-4
-      - hapax-tts-broadcast-tap
+      - hapax-tts-duck
       - hapax-livestream-tap
     route_class: broadcast_voice
     broadcast_eligible: true
@@ -145,13 +144,14 @@ routes:
     pre_normalization:
       target_lufs_i: -18.0
       constant_ref: PRE_NORM_TARGET_LUFS_I
-    ducked_by: []
+    ducked_by:
+      - operator_voice
     generated_artifact_owner: hand_mirrored
     artifact_refs:
       - config/wireplumber/50-hapax-voice-duck.conf
       - config/pipewire/hapax-voice-fx-chain.conf
       - config/pipewire/hapax-voice-fx-loudnorm.conf
-      - config/pipewire/hapax-tts-broadcast-tap.conf
+      - config/pipewire/hapax-tts-duck.conf
 
   - source_id: multimedia-default
     producer: desktop-session
@@ -159,7 +159,7 @@ routes:
     pipewire_node: input.loopback.sink.role.multimedia
     target_chain:
       - hapax-pc-loudnorm
-      - mpc-live-iii-usb-in-5-6
+      - l12-usb-return
     route_class: default_multimedia
     broadcast_eligible: false
     public_claim_allowed: false
@@ -175,7 +175,9 @@ routes:
     pre_normalization:
       target_lufs_i: -18.0
       constant_ref: PRE_NORM_TARGET_LUFS_I
-    ducked_by: []
+    ducked_by:
+      - operator_voice
+      - tts
     generated_artifact_owner: hand_mirrored
     artifact_refs:
       - config/wireplumber/50-hapax-voice-duck.conf
@@ -187,7 +189,8 @@ routes:
     pipewire_node: hapax-music-loudnorm
     target_chain:
       - hapax-music-loudnorm
-      - mpc-live-iii-usb-in-1-2
+      - hapax-music-duck
+      - l12-usb-return
     route_class: broadcast_content
     broadcast_eligible: true
     public_claim_allowed: false
@@ -205,10 +208,13 @@ routes:
     pre_normalization:
       target_lufs_i: -18.0
       constant_ref: PRE_NORM_TARGET_LUFS_I
-    ducked_by: []
+    ducked_by:
+      - operator_voice
+      - tts
     generated_artifact_owner: hand_mirrored
     artifact_refs:
       - config/pipewire/hapax-music-loudnorm.conf
+      - config/pipewire/hapax-music-duck.conf
 
   - source_id: youtube-bed
     producer: youtube-player
@@ -216,7 +222,7 @@ routes:
     pipewire_node: hapax-yt-loudnorm
     target_chain:
       - hapax-yt-loudnorm
-      - mpc-live-iii-usb-in-7-8
+      - hapax-ytube-ducked
     route_class: broadcast_content
     broadcast_eligible: false
     public_claim_allowed: false
@@ -231,10 +237,14 @@ routes:
     pre_normalization:
       target_lufs_i: -18.0
       constant_ref: PRE_NORM_TARGET_LUFS_I
-    ducked_by: []
+    ducked_by:
+      - operator_voice
+      - tts
     generated_artifact_owner: hand_mirrored
     artifact_refs:
       - config/pipewire/hapax-yt-loudnorm.conf
+      - config/pipewire/hapax-backing-ducked-sidechain.conf
+      - config/pipewire/hapax-backing-ducked.conf
 
   - source_id: l12-evilpet-capture
     producer: l12-aux-capture
@@ -296,7 +306,7 @@ routes:
       - tts
     generated_artifact_owner: hand_mirrored
     artifact_refs:
-      - config/pipewire/s4-usb-sink.conf
+      - config/pipewire/hapax-s4-usb-sink.conf
       - config/pipewire/hapax-s4-loopback.conf
 
   - source_id: m8-instrument
@@ -368,10 +378,10 @@ artifacts:
     status: hand_mirrored
     owner: config/audio-routing.yaml#broadcast-tts
     reason: TTS loudnorm constants must cite shared/audio_loudness.py.
-  - path: config/pipewire/hapax-tts-broadcast-tap.conf
+  - path: config/pipewire/hapax-tts-duck.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#broadcast-tts
-    reason: TTS post-loudnorm tap mirrors explicit broadcast voice route while MPC owns ducking.
+    reason: TTS duck chain mirrors explicit broadcast voice route.
   - path: config/pipewire/hapax-pc-loudnorm.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#multimedia-default
@@ -380,15 +390,27 @@ artifacts:
     status: hand_mirrored
     owner: config/audio-routing.yaml#music-bed
     reason: Music pre-normalization mirrors policy and loudness constants.
+  - path: config/pipewire/hapax-music-duck.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#music-bed
+    reason: Music ducking mirrors shared ducking constants.
   - path: config/pipewire/hapax-yt-loudnorm.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#youtube-bed
     reason: YouTube bed remains blocked from broadcast eligibility until real-content smoke and provenance pass.
+  - path: config/pipewire/hapax-backing-ducked-sidechain.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#youtube-bed
+    reason: Backing-mix sidechain duck chain is policy-covered but not broadcast-eligible by default.
+  - path: config/pipewire/hapax-backing-ducked.conf
+    status: hand_mirrored
+    owner: config/audio-routing.yaml#youtube-bed
+    reason: Controller-driven backing-mix duck artifact remains policy-covered while migration settles.
   - path: config/pipewire/hapax-l12-evilpet-capture.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#l12-evilpet-capture
     reason: Narrowed L-12 capture is policy-bearing and mirrored from topology until route generator parity.
-  - path: config/pipewire/s4-usb-sink.conf
+  - path: config/pipewire/hapax-s4-usb-sink.conf
     status: non_round_trippable
     owner: config/audio-routing.yaml#s4-content
     reason: S-4 hardware endpoint depends on live enumeration and host profile; policy row owns eligibility but conf generation waits.

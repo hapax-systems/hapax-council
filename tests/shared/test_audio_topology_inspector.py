@@ -140,13 +140,6 @@ def _l12_contract_fixture() -> TopologyDescriptor:
             channels:
               count: 4
               positions: [FL, FR, RL, RR]
-          - id: mpc-live-iii-output
-            kind: alsa_sink
-            pipewire_name: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
-            hw: hw:MPC,0
-            channels:
-              count: 24
-              positions: [AUX0, AUX1, AUX2, AUX3, AUX4, AUX5, AUX6, AUX7, AUX8, AUX9, AUX10, AUX11, AUX12, AUX13, AUX14, AUX15, AUX16, AUX17, AUX18, AUX19, AUX20, AUX21, AUX22, AUX23]
           - id: livestream-tap
             kind: tap
             pipewire_name: hapax-livestream-tap
@@ -229,7 +222,7 @@ def _l12_contract_fixture() -> TopologyDescriptor:
           - id: pc-loudnorm
             kind: filter_chain
             pipewire_name: hapax-pc-loudnorm
-            target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+            target_object: alsa_output.usb-ZOOM_Corporation_L-12-00.analog-surround-40
             params:
               notification_excluded: true
           - id: voice-fx
@@ -239,15 +232,18 @@ def _l12_contract_fixture() -> TopologyDescriptor:
           - id: tts-loudnorm
             kind: filter_chain
             pipewire_name: hapax-loudnorm-capture
-            target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+            target_object: hapax-tts-duck
+          - id: tts-duck
+            kind: filter_chain
+            pipewire_name: hapax-tts-duck
+            target_object: alsa_output.usb-ZOOM_Corporation_L-12-00.analog-surround-40
             params:
-              playback_target: mpc-live-iii-output
-              playback_positions: AUX2 AUX3
+              playback_target: l12-usb-return
               broadcast_forward_path: hapax-tts-broadcast-capture hapax-tts-broadcast-playback hapax-livestream-tap
           - id: tts-broadcast-capture
             kind: filter_chain
             pipewire_name: hapax-tts-broadcast-capture
-            target_object: hapax-loudnorm
+            target_object: hapax-tts-duck
           - id: tts-broadcast-playback
             kind: loopback
             pipewire_name: hapax-tts-broadcast-playback
@@ -255,7 +251,7 @@ def _l12_contract_fixture() -> TopologyDescriptor:
         edges:
           - source: l12-capture
             target: l12-evilpet-capture
-          - source: tts-loudnorm
+          - source: tts-duck
             target: tts-broadcast-capture
           - source: tts-broadcast-playback
             target: livestream-tap
@@ -367,7 +363,7 @@ class TestClassifyNodeKind:
         assert (
             _classify_node_kind(
                 {
-                    "node.name": "hapax-generic-playback",
+                    "node.name": "hapax-tts-duck-playback",
                     "media.class": "Stream/Output/Audio",
                     "target.object": "hapax-livestream-tap",
                 }
@@ -575,11 +571,11 @@ class TestPwDumpToDescriptor:
 
 
 class TestTtsBroadcastPathCheck:
-    def test_ok_when_tts_loudnorm_bridges_to_livestream_tap(self) -> None:
+    def test_ok_when_tts_duck_bridges_to_livestream_tap(self) -> None:
         dump = [
             _pw_node(
                 id=100,
-                node_name="hapax-loudnorm",
+                node_name="hapax-tts-duck",
                 media_class="Audio/Sink",
                 factory="filter-chain",
             ),
@@ -607,7 +603,7 @@ class TestTtsBroadcastPathCheck:
         dump = [
             _pw_node(
                 id=100,
-                node_name="hapax-loudnorm",
+                node_name="hapax-tts-duck",
                 media_class="Audio/Sink",
                 factory="filter-chain",
             ),
@@ -626,7 +622,7 @@ class TestTtsBroadcastPathCheck:
         dump = [
             _pw_node(
                 id=100,
-                node_name="hapax-loudnorm",
+                node_name="hapax-tts-duck",
                 media_class="Audio/Sink",
                 factory="filter-chain",
             ),
@@ -652,7 +648,7 @@ class TestTtsBroadcastPathCheck:
         dump = [
             _pw_node(
                 id=100,
-                node_name="hapax-loudnorm",
+                node_name="hapax-tts-duck",
                 media_class="Audio/Sink",
                 factory="filter-chain",
             ),
@@ -660,7 +656,7 @@ class TestTtsBroadcastPathCheck:
                 id=101,
                 node_name="hapax-tts-broadcast-capture",
                 media_class="Stream/Input/Audio",
-                target="hapax-loudnorm",
+                target="hapax-tts-duck",
             ),
             _pw_node(
                 id=102,
@@ -756,10 +752,10 @@ class TestL12ForwardInvariantCheck:
 
     def test_fails_when_tts_l12_return_lacks_broadcast_forward_bridge(self) -> None:
         descriptor = _l12_contract_fixture()
-        tts = descriptor.node_by_id("tts-loudnorm")
+        tts = descriptor.node_by_id("tts-duck")
         descriptor = _replace_node(
             descriptor,
-            "tts-loudnorm",
+            "tts-duck",
             params={k: v for k, v in tts.params.items() if k != "broadcast_forward_path"},
         )
 
@@ -855,7 +851,6 @@ class TestL12ForwardInvariantCheck:
             update={
                 "id": "unclassified-monitor-bridge",
                 "pipewire_name": "hapax-unclassified-monitor-bridge",
-                "target_object": "alsa_output.usb-ZOOM_Corporation_L-12-00.analog-surround-40",
                 "params": {},
             }
         )
