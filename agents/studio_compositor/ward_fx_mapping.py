@@ -77,6 +77,7 @@ WARD_DOMAIN: dict[str, WardDomain] = {
     "token_pole": "token",
     # Music
     "album": "music",
+    "album_overlay": "music",
     "vinyl_platter": "music",
     "m8-display": "music",
     "m8_oscilloscope": "music",
@@ -107,12 +108,17 @@ AUDIO_REACTIVE_WARDS: frozenset[str] = frozenset(
         "vinyl_platter",
         "m8_oscilloscope",
         "m8-display",
+        "album_overlay",
     }
 )
 """Wards whose render responds to FX audio signals (kick onsets,
 intensity spikes). The reactor modulates these via the ward_properties
 SHM path (``scale_bump_pct`` / ``border_pulse_hz``) so the ward renders
 the beat without hard-coding audio state in every Cairo source.
+
+The ``album_overlay`` ward joins ``vinyl_platter`` so the cover art
+pulses with the broadcast beat alongside the platter — both surfaces
+represent the same playing track and should breathe together.
 
 The M8 oscilloscope already renders the M8 device's own SLIP-packet
 amplitudes directly — that surface IS its audio. Inclusion here adds
