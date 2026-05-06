@@ -640,6 +640,39 @@
         "render_target": null
       },
       "z_order": 15
+    },
+    {
+      "id": "activity-header-top",
+      "geometry": {
+        "kind": "rect",
+        "x": 340,
+        "y": 84,
+        "w": 800,
+        "h": 56
+      },
+      "z_order": 30
+    },
+    {
+      "id": "stance-indicator-right",
+      "geometry": {
+        "kind": "rect",
+        "x": 1800,
+        "y": 400,
+        "w": 100,
+        "h": 40
+      },
+      "z_order": 35
+    },
+    {
+      "id": "grounding-ticker-right",
+      "geometry": {
+        "kind": "rect",
+        "x": 1380,
+        "y": 460,
+        "w": 480,
+        "h": 40
+      },
+      "z_order": 22
     }
   ],
   "assignments": [
@@ -762,6 +795,24 @@
     {
       "source": "reverie",
       "surface": "reverie-upper-right",
+      "opacity": 1.0,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "activity_header",
+      "surface": "activity-header-top",
+      "opacity": 1.0,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "stance_indicator",
+      "surface": "stance-indicator-right",
+      "opacity": 1.0,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "grounding_provenance_ticker",
+      "surface": "grounding-ticker-right",
       "opacity": 1.0,
       "render_stage": "post_fx"
     }
