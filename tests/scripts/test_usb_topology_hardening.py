@@ -101,16 +101,27 @@ def test_witness_accepts_current_nested_s4_caldigit_path(tmp_path: Path) -> None
     assert status["issues"] == []
 
 
-def test_witness_rejects_unapproved_s4_path(tmp_path: Path) -> None:
+def test_witness_warns_on_unapproved_s4_path(tmp_path: Path) -> None:
+    """Path drift surfaces as a warning, not a failure.
+
+    S-4 routing is pinned by serial+vid:pid via the persistent ALSA
+    card-id rules (PR #2222). Sink/source identity is what drives
+    routing, so a fresh enumeration path (e.g. moving between CalDigit
+    ports) should not flap the witness into a failed unit state — the
+    operator gets the new path in `warnings` for promotion or cabling
+    investigation. Mirrors the L-12 path-drift policy.
+    """
     snapshot = known_good_snapshot()
     snapshot["s4"]["device"] = "1-9"
     snapshot["s4"]["path"] = "pci-0000:09:00.0-usb-0:9"
 
     result = run_witness(tmp_path, snapshot)
 
-    assert result.returncode == 2
+    assert result.returncode == 0, result.stdout
     status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
-    assert "s4_path_drift:pci-0000:09:00.0-usb-0:9" in status["issues"]
+    assert status["ok"] is True
+    assert "s4_path_drift:pci-0000:09:00.0-usb-0:9" in status["warnings"]
+    assert not any(issue.startswith("s4_path_drift") for issue in status["issues"])
 
 
 def test_witness_reports_kernel_policy_and_camera_drift(tmp_path: Path) -> None:

@@ -244,7 +244,16 @@ def validate(snapshot: dict[str, Any], repair: bool = False) -> dict[str, Any]:
     if not s4.get("device"):
         issues.append("s4_usb_missing")
     elif s4.get("path") not in S4_EXPECTED_PATHS:
-        issues.append(f"s4_path_drift:{s4.get('path', '')}")
+        # Path drift is observability-only — same logic as the L-12 path
+        # drift handling below. PR #2222 (persistent ALSA card-id rules)
+        # pins the S-4 by serial+vid:pid → stable `hw:CARD=S4` + PipeWire
+        # serial-keyed node names. Sink/source identity (S4_SINK,
+        # S4_SOURCE) is what drives routing; the bus path is surfaced so
+        # the operator can promote it to S4_EXPECTED_PATHS or investigate
+        # cabling. Demoted from `issues` (flips ok=False, exits 2) to
+        # `warnings` so the systemd timer doesn't restart-storm on
+        # benign re-plugs (e.g. moving the S-4 between CalDigit ports).
+        warnings.append(f"s4_path_drift:{s4.get('path', '')}")
     if s4.get("power_control") != "on":
         issues.append(f"s4_power_control_drift:{s4.get('power_control', '')}")
 
