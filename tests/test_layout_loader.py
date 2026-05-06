@@ -287,3 +287,20 @@ class TestGarageDoorIntegration:
         # Has the expected counts from Phase 2a
         camera_sources = [s for s in layout.sources if s.kind == "camera"]
         assert len(camera_sources) == 6
+
+    def test_garage_door_includes_m8_oscilloscope_ward(self):
+        store = LayoutStore()
+        assert store.set_active("garage-door") is True
+        layout = store.get_active()
+        assert layout is not None
+
+        m8_sources = [s for s in layout.sources if s.id == "m8_oscilloscope"]
+        assert len(m8_sources) == 1
+        assert m8_sources[0].params.get("class_name") == "M8OscilloscopeCairoSource"
+
+        m8_surfaces = [s for s in layout.surfaces if s.id == "m8-oscilloscope-rightcol"]
+        assert len(m8_surfaces) == 1
+
+        m8_assignments = [a for a in layout.assignments if a.source == "m8_oscilloscope"]
+        assert len(m8_assignments) == 1
+        assert m8_assignments[0].surface == "m8-oscilloscope-rightcol"
