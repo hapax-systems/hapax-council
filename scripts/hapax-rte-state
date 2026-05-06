@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+"""hapax-rte-state — read latest RTE tick log + return current authority state.
+
+The RTE writes tick logs to ``~/.cache/hapax/relay/rte-tick-<utc>.yaml``. This
+tool reads the most recent one and emits the current status (green/yellow/red/
+ops-distress) plus a normalized JSON summary.
+
+Used by:
+  * send-scripts (hapax-claude-send, hapax-codex-send, hapax-vibe-send,
+    hapax-antigrav-send) as a pre-flight gate — refuse non-essential
+    dispatches when status is red/ops-distress
+  * peer/codex/vibe lane sessions as a self-poll — check on every wake before
+    starting substantive work
+  * humans (operator, alpha) for at-a-glance status
+
+Modes:
+  hapax-rte-state                  # human-readable summary
+  hapax-rte-state --json           # machine-readable for scripting
+  hapax-rte-state --status-only    # just the status keyword (green/yellow/red/ops-distress/unknown)
+  hapax-rte-state --gate           # exit 0 if green/yellow, 1 if red, 2 if ops-distress
+
+Exit codes:
+  0  green or yellow (proceed)
+  1  red (RTE has paused new dispatches; defer)
+  2  ops-distress (system protect — pause team entirely)
+  3  unknown (no recent RTE tick — treat as yellow caution)
+
+Operator directive (2026-05-06): RTE recommendations are AUTHORITATIVE. Lanes
+must follow without operator intervention. Send-scripts use this gate to
+prevent new work from flooding a paused team.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+RELAY_DIR = Path.home() / ".cache" / "hapax" / "relay"
+TICK_RE = re.compile(r"^rte-tick-(\d{8}T\d{6}Z)\.yaml$")
+STALE_AFTER_S = 600.0  # 10 minutes — RTE cadence is 270s, so 2 missed ticks = stale
+
+
+def find_latest_tick() -> Path | None:
+    """Return the most recent rte-tick-*.yaml file."""
+    if not RELAY_DIR.exists():
+        return None
+    candidates: list[tuple[float, Path]] = []
+    for p in RELAY_DIR.iterdir():
+        if not p.is_file():
+            continue
+        m = TICK_RE.match(p.name)
+        if not m:
+            continue
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue
+        candidates.append((mtime, p))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
+def parse_yaml_minimal(text: str) -> dict[str, Any]:
+    """Tiny YAML reader for the tick-log subset we care about.
+
+    Avoids a PyYAML dep so the script is no-deps. Handles:
+      key: value
+      key: |
+        block string
+      nested.subkey: value (dotted via key.subkey)
+      key:
+        nested_key: value
+    """
+    out: dict[str, Any] = {}
+    lines = text.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            i += 1
+            continue
+        # Skip block-string continuations (indent > 0 after a `|` line)
+        if line.startswith("  ") and ":" not in stripped:
+            i += 1
+            continue
+        if ":" not in stripped:
+            i += 1
+            continue
+        leading = len(line) - len(line.lstrip(" "))
+        key, _, value = stripped.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if value == "|":
+            # block string — skip
+            i += 1
+            while i < len(lines) and (lines[i].startswith("  ") or not lines[i].strip()):
+                i += 1
+            continue
+        if not value:
+            # nested map — collect "first-level" subkeys only
+            i += 1
+            sub: dict[str, str] = {}
+            while i < len(lines):
+                sub_line = lines[i]
+                sub_strip = sub_line.strip()
+                if not sub_strip or sub_strip.startswith("#"):
+                    i += 1
+                    continue
+                sub_lead = len(sub_line) - len(sub_line.lstrip(" "))
+                if sub_lead <= leading:
+                    break
+                if ":" not in sub_strip:
+                    i += 1
+                    continue
+                sk, _, sv = sub_strip.partition(":")
+                sub[sk.strip()] = sv.strip().strip('"').strip("'")
+                i += 1
+            if sub:
+                out[key] = sub
+            continue
+        # Strip quotes
+        out[key] = value.strip('"').strip("'")
+        i += 1
+    return out
+
+
+def read_tick(path: Path) -> dict[str, Any]:
+    try:
+        text = path.read_text()
+    except OSError:
+        return {}
+    return parse_yaml_minimal(text)
+
+
+def evaluate() -> dict[str, Any]:
+    """Read latest tick, derive current authority state."""
+    latest = find_latest_tick()
+    now = time.time()
+    if latest is None:
+        return {
+            "status": "unknown",
+            "reasons": ["no RTE tick log found in ~/.cache/hapax/relay/"],
+            "tick_age_s": None,
+            "tick_path": None,
+        }
+    tick_mtime = latest.stat().st_mtime
+    tick_age_s = now - tick_mtime
+    parsed = read_tick(latest)
+
+    # Status: prefer team_load.status if embedded, else fall back to a
+    # heuristic from any field named "status" in the tick.
+    status = "unknown"
+    reasons: list[str] = []
+
+    team_load = parsed.get("team_load")
+    if isinstance(team_load, dict):
+        status = (team_load.get("status") or "unknown").lower()
+        # Reasons may not be parseable from minimal YAML — emit a generic note
+        if status in ("red", "ops-distress"):
+            reasons.append(f"RTE tick at {latest.name} reports team-load status={status}")
+
+    # Stale-tick gate: if no tick in last 10 min, treat as unknown/yellow
+    if tick_age_s > STALE_AFTER_S:
+        return {
+            "status": "unknown",
+            "reasons": [f"latest RTE tick is {tick_age_s:.0f}s stale (>{STALE_AFTER_S:.0f}s threshold)"],
+            "tick_age_s": tick_age_s,
+            "tick_path": str(latest),
+            "tick_summary": parsed.get("summary", ""),
+        }
+
+    if not reasons:
+        reasons.append(f"RTE tick fresh ({tick_age_s:.0f}s old), status={status}")
+
+    return {
+        "status": status,
+        "reasons": reasons,
+        "tick_age_s": tick_age_s,
+        "tick_path": str(latest),
+        "tick_summary": parsed.get("summary", ""),
+        "rte": parsed.get("rte", "unknown"),
+    }
+
+
+def status_to_exit(status: str) -> int:
+    if status in ("green", "yellow"):
+        return 0
+    if status == "red":
+        return 1
+    if status == "ops-distress":
+        return 2
+    return 3  # unknown
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--json", action="store_true", help="machine-readable JSON")
+    ap.add_argument("--status-only", action="store_true", help="print only the status keyword")
+    ap.add_argument("--gate", action="store_true", help="exit-code-only (0=green/yellow, 1=red, 2=ops-distress, 3=unknown)")
+    args = ap.parse_args()
+
+    state = evaluate()
+    status = state["status"]
+
+    if args.gate:
+        return status_to_exit(status)
+
+    if args.status_only:
+        print(status)
+        return status_to_exit(status)
+
+    if args.json:
+        print(json.dumps(state, indent=2))
+        return status_to_exit(status)
+
+    age = state["tick_age_s"]
+    age_str = f"{age:.0f}s ago" if age is not None else "never"
+    print(f"RTE state: {status.upper()}")
+    print(f"  rte: {state.get('rte', 'unknown')}")
+    print(f"  tick: {state.get('tick_path', '(none)')}")
+    print(f"  tick age: {age_str}")
+    print(f"  summary: {state.get('tick_summary', '')}")
+    for r in state["reasons"]:
+        print(f"  • {r}")
+    if status in ("red", "ops-distress"):
+        print()
+        print(f"  RTE AUTHORITY: dispatches deferred, lanes hold pattern.")
+        print(f"  Override only with --rte-bypass on send scripts (operator emergency).")
+    return status_to_exit(status)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
