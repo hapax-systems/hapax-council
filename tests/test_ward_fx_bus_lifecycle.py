@@ -24,6 +24,31 @@ def _bus() -> WardFxBus:
     return WardFxBus(jsonl_path=None)
 
 
+class TestFXEventStrengthClampInvariant:
+    """Pin: ``FXEvent.strength`` is the single canonical [0,1] attenuation site.
+
+    Producers and consumers depend on the invariant being enforced at
+    construction (gap #9 — double-attenuation collapse). If this contract
+    breaks, multi-clamping creeps back in elsewhere.
+    """
+
+    def test_above_one_clamps_to_one(self) -> None:
+        ev = FXEvent(kind="audio_kick_onset", strength=2.5)
+        assert ev.strength == 1.0
+
+    def test_below_zero_clamps_to_zero(self) -> None:
+        ev = FXEvent(kind="audio_kick_onset", strength=-0.4)
+        assert ev.strength == 0.0
+
+    def test_in_range_passthrough(self) -> None:
+        ev = FXEvent(kind="audio_kick_onset", strength=0.42)
+        assert ev.strength == 0.42
+
+    def test_default_full_strength(self) -> None:
+        ev = FXEvent(kind="audio_kick_onset")
+        assert ev.strength == 1.0
+
+
 class TestSubscriberCounts:
     def test_empty_bus_reports_zero(self) -> None:
         bus = _bus()

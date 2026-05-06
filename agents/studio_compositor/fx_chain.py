@@ -1013,9 +1013,8 @@ def _maybe_publish_audio_fx_events(compositor: Any, audio: dict[str, float]) -> 
     if kick_strength >= _AUDIO_KICK_FX_THRESHOLD and (now - last_kick) >= _AUDIO_KICK_FX_COOLDOWN_S:
         compositor._fx_ward_kick_last_pub = now
         try:
-            get_bus().publish_fx(
-                FXEvent(kind="audio_kick_onset", strength=_clamp_audio_fx_strength(kick_strength))
-            )
+            # FXEvent.__post_init__ clamps strength to [0,1] (single canonical site).
+            get_bus().publish_fx(FXEvent(kind="audio_kick_onset", strength=kick_strength))
         except Exception:
             log.debug("ward_fx_bus publish_fx (audio_kick_onset) failed", exc_info=True)
 
@@ -1027,12 +1026,7 @@ def _maybe_publish_audio_fx_events(compositor: Any, audio: dict[str, float]) -> 
     ):
         compositor._fx_ward_spike_last_pub = now
         try:
-            get_bus().publish_fx(
-                FXEvent(kind="intensity_spike", strength=_clamp_audio_fx_strength(mixer_energy))
-            )
+            # FXEvent.__post_init__ clamps strength to [0,1] (single canonical site).
+            get_bus().publish_fx(FXEvent(kind="intensity_spike", strength=mixer_energy))
         except Exception:
             log.debug("ward_fx_bus publish_fx (intensity_spike) failed", exc_info=True)
-
-
-def _clamp_audio_fx_strength(value: float) -> float:
-    return max(0.0, min(1.0, float(value)))
