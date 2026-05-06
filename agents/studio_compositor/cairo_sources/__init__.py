@@ -295,6 +295,14 @@ def _register_builtins() -> None:
     from agents.studio_compositor.segment_content_ward import SegmentContentWard
 
     register("SegmentContentWard", SegmentContentWard)
+    # M8 oscilloscope reactive surface (cc-task
+    # m8-oscilloscope-reactive-surface, 2026-05-05) — reads the 0xFC
+    # waveform ring file written by the m8c-hapax carry-fork and draws
+    # the M8's on-screen oscilloscope at HOMAGE-aesthetic scale (1280×128
+    # by default), distinct from the small pixel-art LCD reveal ward.
+    from agents.studio_compositor.m8_oscilloscope_source import M8OscilloscopeCairoSource
+
+    register("M8OscilloscopeCairoSource", M8OscilloscopeCairoSource)
 
     # Sierpinski-centered camera packing (2026-05-05) — renders 5 non-hero
     # camera frames from frame_cache at pre-computed positions around the
