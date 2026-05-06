@@ -19,6 +19,7 @@ def enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(_wsm.ENABLE_ENV, "1")
     monkeypatch.delenv(_wsm.MAX_ALPHA_STEP_ENV, raising=False)
     monkeypatch.delenv(_wsm.MAX_Z_INDEX_STEP_ENV, raising=False)
+    monkeypatch.delenv(_wsm.DEPTH_CONTRAST_ENV, raising=False)
 
 
 @pytest.fixture
@@ -150,6 +151,41 @@ def test_beyond_scrim_attenuates_alpha_with_depth(enabled: None, current_path: P
     # depth=1.0 targets 0.5, but the live surface takes an enveloped
     # step per tick rather than popping instantly.
     assert sample.alpha == pytest.approx(1.0 - _wsm.MAX_ALPHA_STEP)
+
+
+def test_depth_contrast_recovers_midrange_alpha_variance(enabled: None, current_path: Path) -> None:
+    """Mid-range depth shifts expand before alpha mapping, but stay enveloped."""
+    _write_current(current_path, {"depth": 0.75, "coherence": 0.5})
+    mod = WardStimmungModulator(current_path=current_path, tick_every_n=1)
+    base = WardProperties(z_plane="beyond-scrim", alpha=0.68, z_index_float=0.5)
+    captured: dict[str, WardProperties] = {}
+
+    def _capture(ward_id: str, props: WardProperties, ttl_s: float) -> None:
+        captured[ward_id] = props
+
+    with (
+        patch.object(_wsm, "get_specific_ward_properties", return_value=base),
+        patch.object(_wsm, "set_ward_properties", side_effect=_capture),
+    ):
+        mod.maybe_tick()
+    sample = next(iter(captured.values()))
+    unamplified_target = 0.5 + 0.5 * (1.0 - 0.75)
+    assert sample.alpha < unamplified_target
+    assert base.alpha - sample.alpha <= _wsm.MAX_ALPHA_STEP
+
+
+def test_depth_contrast_env_is_safety_clamped(
+    enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Operator gain knob cannot escape the bounded contrast range."""
+    monkeypatch.setenv(_wsm.DEPTH_CONTRAST_ENV, "99")
+    assert _wsm._depth_contrast() == pytest.approx(_wsm.DEPTH_CONTRAST_MAX)
+
+    monkeypatch.setenv(_wsm.DEPTH_CONTRAST_ENV, "0.01")
+    assert _wsm._depth_contrast() == pytest.approx(_wsm.DEPTH_CONTRAST_MIN)
+
+    monkeypatch.setenv(_wsm.DEPTH_CONTRAST_ENV, "not-a-number")
+    assert _wsm._depth_contrast() == pytest.approx(_wsm.DEPTH_CONTRAST)
 
 
 def test_alpha_step_env_bounds_depth_transition(

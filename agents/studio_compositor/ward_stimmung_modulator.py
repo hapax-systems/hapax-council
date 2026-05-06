@@ -68,6 +68,13 @@ MAX_ALPHA_STEP: float = 0.16
 MAX_Z_INDEX_STEP: float = 0.12
 MAX_ALPHA_STEP_ENV: str = "HAPAX_WARD_MODULATOR_MAX_ALPHA_STEP"
 MAX_Z_INDEX_STEP_ENV: str = "HAPAX_WARD_MODULATOR_MAX_Z_INDEX_STEP"
+# Variance recovery after smoothing: amplify mid-range depth excursions
+# before mapping them to bounded alpha targets. The downstream MAX_*_STEP
+# envelope still limits per-tick motion, and alpha remains clamped [0, 1].
+DEPTH_CONTRAST: float = 1.18
+DEPTH_CONTRAST_MIN: float = 0.5
+DEPTH_CONTRAST_MAX: float = 1.6
+DEPTH_CONTRAST_ENV: str = "HAPAX_WARD_MODULATOR_DEPTH_CONTRAST"
 
 
 @dataclass
@@ -162,7 +169,7 @@ class WardStimmungModulator:
         z_plane = base.z_plane
         if z_plane == "on-scrim":
             return base
-        depth_val = _clip01(_safe_float(dims.get("depth"), 0.5))
+        depth_val = _contrast_depth(_clip01(_safe_float(dims.get("depth"), 0.5)))
         coherence_val = _clip01(_safe_float(dims.get("coherence"), 0.5))
         z_base = _Z_INDEX_BASE.get(z_plane, _Z_INDEX_BASE["on-scrim"])
         # Coherence pulls deeper-plane wards forward at high coherence
@@ -222,6 +229,31 @@ def _max_alpha_step() -> float:
 
 def _max_z_index_step() -> float:
     return _positive_env_float(MAX_Z_INDEX_STEP_ENV, MAX_Z_INDEX_STEP)
+
+
+def _depth_contrast() -> float:
+    return _bounded_env_float(
+        DEPTH_CONTRAST_ENV,
+        DEPTH_CONTRAST,
+        min_value=DEPTH_CONTRAST_MIN,
+        max_value=DEPTH_CONTRAST_MAX,
+    )
+
+
+def _contrast_depth(depth: float) -> float:
+    depth = _clip01(depth)
+    return _clip01(0.5 + (depth - 0.5) * _depth_contrast())
+
+
+def _bounded_env_float(name: str, default: float, *, min_value: float, max_value: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return max(min_value, min(max_value, value))
 
 
 def _positive_env_float(name: str, default: float) -> float:
