@@ -70,13 +70,26 @@ AMPLITUDE_ALPHA_FLOOR: float = 0.5
 # the sierpinski waveform's ``1.5 + audio_energy × 2.0`` precedent at a
 # more conservative scale (the M8 osc is a thinner ward by default).
 LINE_WIDTH_AMPLITUDE_SCALE: float = 1.0
-# One-pole IIR coefficient on the modulation amplitude. Per-frame
+# Bounded-amplitude clamp ceiling. Per operator directive 2026-05-06
+# (`feedback_audio_reactivity_must_be_tight_speech_representation`):
+# audio reactivity must be TIGHT. Replacing the prior one-pole IIR
+# (#2651 α=0.3, ~3-5 frame lag) with bounded-amplitude — modulations
+# respond INSTANTLY but a peak above this ceiling is clamped so per-frame
+# transients still don't whip line-width into pathological territory.
+# Default 0.85 keeps healthy audio peaks responsive while bounding the
+# outlier ±128 percussive samples that motivated the original IIR.
+AMPLITUDE_BURST_CLAMP: float = 0.85
+
+# One-pole IIR coefficient — DEPRECATED but retained for backwards-compat
+# with `__init__` plumbing. Default 1.0 = no smoothing (raw amplitude).
+# Build path per never-remove: kept the parameter knob in case future
+# need calls for partial smoothing on a per-instance basis.
 # ``smoothed = smoothed × (1 − α) + raw × α``. The waveform DRAW
 # continues to read raw samples — that surface IS the audio. Only the
 # alpha + line-width MODULATIONS see the smoothed envelope so percussive
 # transients don't whip those parameters frame-to-frame. Matches the
 # sierpinski IIR alpha (#2639) for cross-ward consistency.
-AMPLITUDE_IIR_ALPHA: float = 0.3
+AMPLITUDE_IIR_ALPHA: float = 1.0
 
 
 def _fallback_package() -> HomagePackage:
@@ -234,12 +247,21 @@ class M8OscilloscopeCairoSource(HomageTransitionalSource):
             return
 
         amplitude = _amplitude_normalized(samples)
-        # One-pole IIR — feeds the alpha + line-width MODULATIONS only.
-        # The waveform draw below uses the raw samples because that
-        # surface IS the audio. Mirrors the sierpinski IIR pattern (#2639).
+        # Bounded-amplitude clamp on the modulation envelope. Per operator
+        # directive 2026-05-06 (audio reactivity MUST be TIGHT), the prior
+        # one-pole IIR (#2651 α=0.3) introduced ~3-5 frame lag on alpha +
+        # line-width MODULATIONS. Replaced with instant-response clamped
+        # at AMPLITUDE_BURST_CLAMP so percussive transients still don't
+        # whip the parameters into pathological territory but the visual
+        # response to audio is single-frame tight. The waveform draw
+        # below already uses raw samples (that surface IS the audio).
+        clamped = min(amplitude, AMPLITUDE_BURST_CLAMP)
+        # _amplitude_smoothed retained as the rendering input variable so
+        # downstream alpha/line-width math is unchanged. With IIR α=1.0
+        # default this becomes a per-frame bounded passthrough.
         self._amplitude_smoothed = (
             self._amplitude_smoothed * (1.0 - self._amplitude_iir_alpha)
-            + amplitude * self._amplitude_iir_alpha
+            + clamped * self._amplitude_iir_alpha
         )
         alpha = _amplitude_scaled_alpha(
             base_alpha,

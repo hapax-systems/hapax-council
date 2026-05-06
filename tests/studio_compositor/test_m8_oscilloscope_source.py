@@ -220,27 +220,29 @@ class TestRenderContent:
         # Silent: midline samples → amplitude 0 → line_width = base.
         silent_path = tmp_path / "silent_lw.bin"
         _write_ring(silent_path, samples=bytes([128] * 32))
-        # Loud: full ±128 swing → amplitude 1 → line_width = base + scale.
+        # Loud: full ±128 swing → amplitude 1 → bounded by AMPLITUDE_BURST_CLAMP
+        # so line_width = base + clamp × scale.
         loud_path = tmp_path / "loud_lw.bin"
         _write_ring(loud_path, samples=bytes([0, 255] * 16))
 
         def _paint_line_width_steady_state(path: Path) -> float:
-            # The amplitude IIR lags the raw input — render enough frames
-            # for the smoothed envelope to converge before sampling.
             source = M8OscilloscopeCairoSource(ring_path=path, amplitude_iir_alpha=1.0)
             cr = MagicMock()
             source.render_content(cr, canvas_w=1280, canvas_h=128, t=0.0, state={})
             cr.set_line_width.assert_called_once()
             return float(cr.set_line_width.call_args.args[0])
 
-        # ``amplitude_iir_alpha=1.0`` disables smoothing so the per-frame
-        # amplitude flows through unattenuated — preserves the original
-        # endpoint test (silent → base, loud → base + scale) while the IIR
-        # lag pattern is pinned separately in TestAmplitudeIIR below.
+        from agents.studio_compositor.m8_oscilloscope_source import AMPLITUDE_BURST_CLAMP
+
         silent_lw = _paint_line_width_steady_state(silent_path)
         loud_lw = _paint_line_width_steady_state(loud_path)
         assert silent_lw == pytest.approx(DEFAULT_LINE_WIDTH)
-        assert loud_lw == pytest.approx(DEFAULT_LINE_WIDTH + LINE_WIDTH_AMPLITUDE_SCALE)
+        # Per operator tightness directive 2026-05-06, full ±128 swing
+        # gets bounded by AMPLITUDE_BURST_CLAMP (replaces the prior IIR
+        # transient-whip prevention with instant-response clamping).
+        assert loud_lw == pytest.approx(
+            DEFAULT_LINE_WIDTH + AMPLITUDE_BURST_CLAMP * LINE_WIDTH_AMPLITUDE_SCALE
+        )
         assert loud_lw > silent_lw
 
     def test_loud_waveform_paints_with_higher_alpha_than_silent(self, tmp_path: Path) -> None:
@@ -262,6 +264,8 @@ class TestRenderContent:
             args = cr.set_source_rgba.call_args.args
             return float(args[3])
 
+        from agents.studio_compositor.m8_oscilloscope_source import AMPLITUDE_BURST_CLAMP
+
         silent_alpha = _paint_alpha(silent_path)
         loud_alpha = _paint_alpha(loud_path)
         # Both render (silence-fade is mtime-driven, ring is fresh), but
@@ -270,63 +274,79 @@ class TestRenderContent:
         # The silent waveform sits at the configured floor of the active
         # alpha — never invisible while the M8 is connected and sending.
         assert silent_alpha == pytest.approx(ACTIVE_ALPHA * AMPLITUDE_ALPHA_FLOOR)
-        assert loud_alpha == pytest.approx(ACTIVE_ALPHA)
+        # Loud waveform: per operator tightness directive 2026-05-06 the
+        # amplitude is bounded by AMPLITUDE_BURST_CLAMP so the alpha
+        # interpolates between floor and ACTIVE_ALPHA at the clamp
+        # endpoint — not all the way to ACTIVE_ALPHA on raw ±128 swings.
+        expected_loud_alpha = ACTIVE_ALPHA * (
+            AMPLITUDE_ALPHA_FLOOR + (1.0 - AMPLITUDE_ALPHA_FLOOR) * AMPLITUDE_BURST_CLAMP
+        )
+        assert loud_alpha == pytest.approx(expected_loud_alpha)
 
 
 # ── 3b. Amplitude IIR smoothing ────────────────────────────────────────
 
 
-class TestAmplitudeIIR:
-    """The modulation amplitude is one-pole IIR-smoothed across renders.
+class TestAmplitudeBoundedClamp:
+    """The modulation amplitude is bounded by AMPLITUDE_BURST_CLAMP.
 
-    Mirrors the sierpinski IIR pattern (#2639): the waveform DRAW reads
-    raw samples (the surface IS the audio) but the ALPHA + LINE-WIDTH
-    modulations consume the smoothed envelope so percussive transients
-    don't whip those parameters frame-to-frame.
+    Per operator directive 2026-05-06 (audio reactivity must be TIGHT),
+    the prior one-pole IIR (#2651 α=0.3, ~3-5 frame lag on alpha + line-
+    width modulations) was replaced with instant-response clamping. The
+    waveform DRAW still reads raw samples (that surface IS the audio).
+    Cross-ward consistency: same approach used in sierpinski_renderer.
     """
 
-    def test_default_iir_alpha_matches_sierpinski(self) -> None:
-        # Cross-ward consistency pin — both wards smooth modulations at
-        # the same rate so audience perception of audio responsiveness
-        # is uniform across the broadcast.
-        from agents.studio_compositor.m8_oscilloscope_source import AMPLITUDE_IIR_ALPHA
+    def test_default_iir_alpha_is_one_for_tightness(self) -> None:
+        from agents.studio_compositor.m8_oscilloscope_source import (
+            AMPLITUDE_BURST_CLAMP,
+            AMPLITUDE_IIR_ALPHA,
+        )
 
-        assert pytest.approx(0.3) == AMPLITUDE_IIR_ALPHA
+        assert AMPLITUDE_IIR_ALPHA == 1.0
+        assert 0.0 < AMPLITUDE_BURST_CLAMP <= 1.0
 
-    def test_amplitude_smoothed_lags_raw_on_impulse(self, tmp_path: Path) -> None:
+    def test_amplitude_responds_instantly_under_burst_clamp(self, tmp_path: Path) -> None:
         # Two ring fixtures: full-amplitude impulse and silent midline.
+        from agents.studio_compositor.m8_oscilloscope_source import AMPLITUDE_BURST_CLAMP
+
         loud_path = tmp_path / "loud.bin"
         _write_ring(loud_path, samples=bytes([0, 255] * 16))
         silent_path = tmp_path / "silent.bin"
         _write_ring(silent_path, samples=bytes([128] * 32))
 
-        source = M8OscilloscopeCairoSource(amplitude_iir_alpha=0.3)
+        source = M8OscilloscopeCairoSource(amplitude_iir_alpha=1.0)
         cr = MagicMock()
 
-        # Frame 1 — loud impulse from rest. IIR: 0 × 0.7 + 1 × 0.3 = 0.30.
+        # Frame 1 — loud impulse from rest. With α=1.0 the smoothed
+        # envelope tracks the per-frame amplitude exactly, but the
+        # amplitude is clamped at AMPLITUDE_BURST_CLAMP first so a raw
+        # 1.0 (full ±128 swing) lands at clamp on frame 1.
         source._ring_path = loud_path
         source.render_content(cr, canvas_w=1280, canvas_h=128, t=0.0, state={})
-        assert source._amplitude_smoothed == pytest.approx(0.30)
+        assert source._amplitude_smoothed == pytest.approx(AMPLITUDE_BURST_CLAMP)
 
-        # Frame 2 — loud sustained. IIR: 0.30 × 0.7 + 1 × 0.3 = 0.51.
+        # Frame 2 — loud sustained. Same instant-response endpoint.
         source.render_content(cr, canvas_w=1280, canvas_h=128, t=0.033, state={})
-        assert source._amplitude_smoothed == pytest.approx(0.51)
+        assert source._amplitude_smoothed == pytest.approx(AMPLITUDE_BURST_CLAMP)
 
-        # Frame 3 — silence. IIR: 0.51 × 0.7 + 0 × 0.3 = 0.357.
+        # Frame 3 — silence. Instant drop to 0 (no decay tail).
         source._ring_path = silent_path
         source.render_content(cr, canvas_w=1280, canvas_h=128, t=0.066, state={})
-        assert source._amplitude_smoothed == pytest.approx(0.357)
+        assert source._amplitude_smoothed == pytest.approx(0.0)
 
-    def test_iir_alpha_one_disables_smoothing(self, tmp_path: Path) -> None:
-        # ``amplitude_iir_alpha=1.0`` makes the smoothed envelope track
-        # the raw amplitude exactly — useful for tests that need to pin
-        # the alpha-floor / line-width endpoint without lag interfering.
+    def test_iir_alpha_one_with_burst_clamp(self, tmp_path: Path) -> None:
+        # ``amplitude_iir_alpha=1.0`` is the instant-response default.
+        # A raw 1.0 amplitude (full ±128 swing) is clamped to
+        # AMPLITUDE_BURST_CLAMP before reaching _amplitude_smoothed.
+        from agents.studio_compositor.m8_oscilloscope_source import AMPLITUDE_BURST_CLAMP
+
         loud_path = tmp_path / "loud_alpha1.bin"
         _write_ring(loud_path, samples=bytes([0, 255] * 16))
         source = M8OscilloscopeCairoSource(ring_path=loud_path, amplitude_iir_alpha=1.0)
         cr = MagicMock()
         source.render_content(cr, canvas_w=1280, canvas_h=128, t=0.0, state={})
-        assert source._amplitude_smoothed == pytest.approx(1.0)
+        assert source._amplitude_smoothed == pytest.approx(AMPLITUDE_BURST_CLAMP)
 
 
 # ── 4. Affordance + cairo registry registration ─────────────────────────
