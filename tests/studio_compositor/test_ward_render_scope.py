@@ -65,6 +65,43 @@ class TestWardRenderScope:
         # Negative alpha < 0.999 → group path; paint_with_alpha clamped to 0.0
         cr.paint_with_alpha.assert_called_once_with(0.0)
 
+    def test_scale_bump_alone_does_not_push_group(self):
+        """``scale_bump_pct`` is not a render-active emphasis field.
+
+        ``_finalize_ward_emphasis`` ignores ``scale_bump_pct`` entirely
+        (canvas-safe scale clamp pending — the painter's scale path is
+        disabled until the off-canvas regression is fixed). Including it
+        in ``needs_emphasis`` would wrap every audio-reactive ward's draw
+        in a Cairo group push/pop on every kick that the finalizer
+        no-ops anyway. Pin: a ward with ONLY ``scale_bump_pct`` set and
+        no other emphasis fields must not push a group."""
+        wp.set_ward_properties("kicker", wp.WardProperties(scale_bump_pct=0.08), ttl_s=10.0)
+        wp.clear_ward_properties_cache()
+        cr = MagicMock()
+        with wp.ward_render_scope(cr, "kicker") as props:
+            assert props is not None
+            assert props.scale_bump_pct == pytest.approx(0.08)
+        cr.push_group.assert_not_called()
+        cr.pop_group_to_source.assert_not_called()
+        cr.paint_with_alpha.assert_not_called()
+
+    def test_scale_bump_with_border_pulse_still_pushes(self):
+        """When ``scale_bump_pct`` is set alongside an active emphasis
+        field (here ``border_pulse_hz``), the group still pushes —
+        because the border-pulse path needs it. Pin both directions of
+        the new compound rule."""
+        wp.set_ward_properties(
+            "both",
+            wp.WardProperties(scale_bump_pct=0.08, border_pulse_hz=4.0),
+            ttl_s=10.0,
+        )
+        wp.clear_ward_properties_cache()
+        cr = MagicMock()
+        with wp.ward_render_scope(cr, "both") as props:
+            assert props is not None
+        cr.push_group.assert_called_once()
+        cr.pop_group_to_source.assert_called_once()
+
     def test_exception_in_block_still_pops_group(self):
         wp.set_ward_properties("err", wp.WardProperties(alpha=0.5), ttl_s=10.0)
         wp.clear_ward_properties_cache()

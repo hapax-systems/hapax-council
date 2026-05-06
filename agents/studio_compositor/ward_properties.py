@@ -407,11 +407,15 @@ def ward_render_scope(cr: Any, ward_id: str, *, canvas_w: int = 0, canvas_h: int
     if not props.visible:
         yield None
         return
+    # ``scale_bump_pct`` deliberately omitted: ``_finalize_ward_emphasis``
+    # ignores that field (canvas-safe scale clamp pending — see
+    # ``_finalize_ward_emphasis`` below). Every audio kick writes a non-zero
+    # scale_bump_pct on every audio-reactive ward; including it here would
+    # wrap each ward's draw in a Cairo group push/pop per kick that the
+    # finalizer no-ops anyway. Re-add this term when the safe-clamp scale
+    # path is restored on the painter side.
     needs_emphasis = (
-        props.alpha < 0.999
-        or props.glow_radius_px > 0.1
-        or props.border_pulse_hz > 0.01
-        or props.scale_bump_pct > 0.001
+        props.alpha < 0.999 or props.glow_radius_px > 0.1 or props.border_pulse_hz > 0.01
     )
     if needs_emphasis:
         cr.push_group()
