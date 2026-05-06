@@ -760,6 +760,17 @@ def _summary_metrics(envelopes: list[NarrationTriadEnvelope]) -> dict[str, Any]:
     }
 
 
+_TRIAD_EVENT_SALIENCE: dict[str, float] = {
+    # All values >= 0.7 (the chronicle-ticker ward's _SALIENCE_THRESHOLD).
+    # ``closed`` ranks highest — the moment a triad resolves into
+    # satisfied / partially_satisfied lore. ``opened`` and ``updated``
+    # are still surface-worthy but rank lower.
+    "narration.triad.closed": 0.85,
+    "narration.triad.opened": 0.8,
+    "narration.triad.updated": 0.75,
+}
+
+
 def _record_triad_chronicle_event(envelope: NarrationTriadEnvelope) -> None:
     event_type = "narration.triad.opened"
     if envelope.status in _CLOSED_STATUSES:
@@ -782,6 +793,7 @@ def _record_triad_chronicle_event(envelope: NarrationTriadEnvelope) -> None:
                     "speech_event_id": envelope.speech_event_id,
                     "programme_id": envelope.programme_id,
                     "source_path": envelope.source_path,
+                    "salience": _TRIAD_EVENT_SALIENCE.get(event_type, 0.75),
                 },
             )
         )
