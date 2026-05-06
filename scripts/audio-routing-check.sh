@@ -196,6 +196,55 @@ for NODE_NAME in hapax-voice-fx-capture hapax-loudnorm-capture; do
     fi
 done
 
+
+# ── Invariant 8: .conf safety pattern (room-mic-hijack regression) ──
+echo ""
+echo "Chain 8: PipeWire .conf Safety Pattern"
+
+# Filter-chains targeting specific ALSA hardware MUST set either
+# node.passive=true OR node.dont-reconnect=true. Without this, when the
+# target ALSA device is missing, WirePlumber's auto-link policy binds
+# the filter-chain to the default source (typically a webcam mic), causing
+# a class of leak documented in 10-contact-mic.conf as "the whole
+# room-mic-hijack class of bugs".
+#
+# Incident 2026-05-06: hapax-l12-usb-return-capture had dont-reconnect=false
+# and no node.passive=true; when L-12 USB was detached, C920 webcam mic
+# leaked into broadcast.
+
+UNSAFE_CONFS=""
+for conf in ~/.config/pipewire/pipewire.conf.d/*.conf; do
+    [ -f "$conf" ] || continue
+    if grep -qE 'target\.object\s*=\s*"alsa_|node\.target\s*=\s*"alsa_' "$conf" 2>/dev/null; then
+        if ! grep -qE 'node\.passive\s*=\s*true' "$conf" && ! grep -qE 'node\.dont-reconnect\s*=\s*true' "$conf"; then
+            UNSAFE_CONFS="$UNSAFE_CONFS $(basename $conf)"
+        fi
+    fi
+done
+if [ -n "$UNSAFE_CONFS" ]; then
+    check ".conf safety pattern (passive=true OR dont-reconnect=true)" "UNSAFE:$UNSAFE_CONFS"
+else
+    check ".conf safety pattern (passive=true OR dont-reconnect=true)" "PASS"
+fi
+
+
+# ── Invariant 9: webcam mic NEVER feeds broadcast filter-chains ──
+echo ""
+echo "Chain 9: Webcam Mic Broadcast Leak Guard"
+
+# Per 2026-05-06 incident: C920 webcam mic leaked into broadcast via
+# hapax-l12-usb-return-capture filter-chain when L-12 USB was missing.
+# Regression check: NO webcam (C920/Brio) capture pad should be linked
+# into hapax-l12-usb-return-capture, hapax-l12-evilpet-capture,
+# hapax-m8-instrument-capture, or directly into livestream-feeding chains.
+
+WEBCAM_LEAK=$(pw-link -l 2>/dev/null | grep -B 1 -E "hapax-(l12-usb-return-capture|l12-evilpet-capture|m8-instrument-capture):input_AUX" 2>/dev/null | grep -E "C920|Brio|Logitech" 2>/dev/null || true)
+if [ -n "$WEBCAM_LEAK" ]; then
+    check "no webcam mic in L-12/M-8 capture filter-chains" "LEAK:${WEBCAM_LEAK:0:80}..."
+else
+    check "no webcam mic in L-12/M-8 capture filter-chains" "PASS"
+fi
+
 echo ""
 echo "=== Result ==="
 if [ "$FAILURES" -eq 0 ]; then
