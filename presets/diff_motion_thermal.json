@@ -40,6 +40,12 @@
     "content_layer": {
       "type": "content_layer",
       "params": {}
+    },
+    "posterize_subtle": {
+      "type": "posterize",
+      "params": {
+        "levels": 8
+      }
     }
   },
   "edges": [
@@ -49,6 +55,10 @@
     ],
     [
       "colorgrade",
+      "posterize_subtle"
+    ],
+    [
+      "posterize_subtle",
       "diff_thermal"
     ],
     [

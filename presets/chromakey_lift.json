@@ -40,6 +40,12 @@
     "content_layer": {
       "type": "content_layer",
       "params": {}
+    },
+    "posterize_subtle": {
+      "type": "posterize",
+      "params": {
+        "levels": 8
+      }
     }
   },
   "modulations": [],
@@ -50,6 +56,10 @@
     ],
     [
       "colorgrade",
+      "posterize_subtle"
+    ],
+    [
+      "posterize_subtle",
       "chroma_key_lift:a"
     ],
     [

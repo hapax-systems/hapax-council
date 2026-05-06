@@ -1,7 +1,10 @@
 {
   "name": "Ambient",
   "description": "Warm atmospheric wash",
-  "tags": ["atmospheric", "minimal"],
+  "tags": [
+    "atmospheric",
+    "minimal"
+  ],
   "transition_ms": 1000,
   "nodes": {
     "colorgrade": {
@@ -56,6 +59,12 @@
       "params": {
         "intensity": 0.12
       }
+    },
+    "posterize_subtle": {
+      "type": "posterize",
+      "params": {
+        "levels": 8
+      }
     }
   },
   "edges": [
@@ -65,6 +74,10 @@
     ],
     [
       "colorgrade",
+      "posterize_subtle"
+    ],
+    [
+      "posterize_subtle",
       "bloom"
     ],
     [
