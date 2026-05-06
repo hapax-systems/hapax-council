@@ -16,7 +16,7 @@
     "noise_drone": {
       "type": "noise_overlay",
       "params": {
-        "intensity": 0.28,
+        "intensity": 0.18,
         "animated": 1.0
       }
     },
@@ -30,7 +30,7 @@
     "vignette_heavy": {
       "type": "vignette",
       "params": {
-        "strength": 0.55,
+        "strength": 0.45,
         "radius": 0.55
       }
     },
@@ -41,6 +41,12 @@
     "content_layer": {
       "type": "content_layer",
       "params": {}
+    },
+    "posterize_drone": {
+      "type": "posterize",
+      "params": {
+        "levels": 7
+      }
     }
   },
   "edges": [
@@ -50,6 +56,10 @@
     ],
     [
       "colorgrade",
+      "posterize_drone"
+    ],
+    [
+      "posterize_drone",
       "noise_drone"
     ],
     [
