@@ -16,7 +16,7 @@
     "halftone_fine": {
       "type": "halftone",
       "params": {
-        "dot_size": 0.008
+        "dot_size": 0.014
       }
     },
     "posterize_print": {
