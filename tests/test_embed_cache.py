@@ -67,3 +67,39 @@ class TestDiskEmbeddingCache:
         assert hits == {0: [1.0, 2.0, 3.0, 4.0], 1: [5.0, 6.0, 7.0, 8.0]}
         assert miss_indices == [2]
         assert miss_texts == ["c"]
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_load_non_dict_starts_fresh(tmp_path: Path, payload: str, kind: str) -> None:
+    """Pin DiskEmbeddingCache._load against non-dict JSON. The
+    data.get('model') call outside try/except let AttributeError
+    escape on non-dict roots."""
+    cache_path = tmp_path / "cache.json"
+    cache_path.write_text(payload)
+    # Must not crash; cache starts fresh.
+    cache = DiskEmbeddingCache(cache_path=cache_path, model="test", dimension=4)
+    assert cache.get("any-text") is None, f"non-dict root={kind} must yield empty cache"
+
+
+def test_load_non_dict_entries_field_yields_empty(tmp_path: Path) -> None:
+    """Pin: dict root with non-dict 'entries' field falls back to {}."""
+    import json
+
+    cache_path = tmp_path / "cache.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "model": "test",
+                "dimension": 4,
+                "entries": "not-a-dict",
+            }
+        )
+    )
+    cache = DiskEmbeddingCache(cache_path=cache_path, model="test", dimension=4)
+    assert cache.get("any") is None

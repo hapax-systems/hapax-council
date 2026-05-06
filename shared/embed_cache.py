@@ -75,12 +75,26 @@ class DiskEmbeddingCache:
         self._path.write_text(json.dumps(data), encoding="utf-8")
 
     def _load(self) -> None:
+        """Load the embed cache from disk.
+
+        Validates the JSON root is a mapping. ``data.get(\"model\")``
+        and the subsequent ``data.get(...)`` calls would raise
+        AttributeError on non-dict roots — the
+        ``(json.JSONDecodeError, OSError)`` catch missed it. Same
+        shape as the other recent SHM-read fixes.
+        """
         if not self._path.exists():
             return
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             log.warning("Corrupt embed cache at %s, starting fresh", self._path)
+            return
+        if not isinstance(data, dict):
+            log.warning(
+                "Embed cache root is %s, expected mapping; starting fresh",
+                type(data).__name__,
+            )
             return
         if data.get("model") != self._model or data.get("dimension") != self._dimension:
             log.info(
@@ -91,5 +105,6 @@ class DiskEmbeddingCache:
                 self._dimension,
             )
             return
-        self._entries = data.get("entries", {})
+        entries_raw = data.get("entries", {})
+        self._entries = entries_raw if isinstance(entries_raw, dict) else {}
         log.info("Loaded %d cached embeddings from %s", len(self._entries), self._path)
