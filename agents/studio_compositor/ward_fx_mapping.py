@@ -106,6 +106,7 @@ AUDIO_REACTIVE_WARDS: frozenset[str] = frozenset(
         "activity_variety_log",
         "vinyl_platter",
         "m8_oscilloscope",
+        "m8-display",
     }
 )
 """Wards whose render responds to FX audio signals (kick onsets,
@@ -119,7 +120,9 @@ bus-level FX-event coupling on top of that, so the ward gets the same
 ``scale_bump`` / ``border_pulse`` on broader-mix kicks as the other
 music-domain wards (``vinyl_platter``). The two signal paths compose:
 the waveform reflects the M8 instantaneously, while the FX reactor
-synchronises the ward's chrome to the broadcast's overall beat."""
+synchronises the ward's chrome to the broadcast's overall beat. The
+``m8-display`` ward (sibling IR surface for the same device) joins on
+the same FX path so both M8 surfaces breathe with the broadcast beat."""
 
 
 def domain_for_ward(ward_id: str) -> WardDomain:

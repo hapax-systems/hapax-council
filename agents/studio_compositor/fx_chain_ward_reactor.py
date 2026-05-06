@@ -20,7 +20,12 @@ Direction 2 — FX chain → ward
     * ``preset_family_change`` → every ward gets a 0.5s accent-pulse
       via ``ward_properties.set_ward_properties`` (``border_pulse_hz``).
     * ``audio_kick_onset`` → audio-reactive wards (see
-      :mod:`ward_fx_mapping`) get a single-frame ``scale_bump_pct``.
+      :mod:`ward_fx_mapping`) get a single-frame ``scale_bump_pct``
+      AND a single-cycle ``border_pulse_hz`` flash. The scale_bump
+      path is currently a no-op in the painter (see
+      ``ward_properties.py:444`` — disabled until the canvas-safe
+      scale clamp lands); the border-pulse path is the visible
+      audio-coupling channel for kicks until then.
     * ``chain_swap`` → ``token_pole`` + ``activity_variety_log`` get a
       brief ``scale`` bump.
     * ``intensity_spike`` → audio-reactive wards boost ``border_pulse_hz``.
@@ -82,6 +87,13 @@ _PRESET_CHANGE_ACCENT_HZ: float = 2.0
 _PRESET_CHANGE_TTL_S: float = 0.5
 _AUDIO_KICK_SCALE_BUMP: float = 0.08
 _AUDIO_KICK_TTL_S: float = 0.15
+# Single-cycle border flash inside the kick TTL: hz × ttl ≈ 1 cycle.
+# 6.67 × 0.15 ≈ 1.0 — the border pulses once per kick rather than
+# sustaining a multi-cycle ring. Pairs with _AUDIO_KICK_SCALE_BUMP
+# (which the painter currently no-ops, see ward_properties.py:444);
+# the border pulse is the visible audio-coupling channel for kicks
+# until the canvas-safe scale clamp is restored.
+_AUDIO_KICK_PULSE_HZ: float = 6.67
 _CHAIN_SWAP_SCALE_BUMP: float = 0.12
 _CHAIN_SWAP_TTL_S: float = 0.4
 _INTENSITY_SPIKE_PULSE_HZ: float = 4.0
@@ -188,8 +200,17 @@ class WardFxReactor:
             if event.kind == "preset_family_change":
                 self._pulse_all_wards(_PRESET_CHANGE_ACCENT_HZ, _PRESET_CHANGE_TTL_S)
             elif event.kind == "audio_kick_onset":
+                strength = _clamp(event.strength, 0.0, 1.0)
                 self._bump_audio_reactive_wards(
-                    _AUDIO_KICK_SCALE_BUMP * _clamp(event.strength, 0.0, 1.0),
+                    _AUDIO_KICK_SCALE_BUMP * strength,
+                    _AUDIO_KICK_TTL_S,
+                )
+                # Border-pulse path: visible single-cycle flash on each
+                # kick. Composes with the (currently painter-disabled)
+                # scale_bump so when the safe-clamp scale path is
+                # restored, both modulations fire together.
+                self._pulse_audio_reactive_wards(
+                    _AUDIO_KICK_PULSE_HZ * strength,
                     _AUDIO_KICK_TTL_S,
                 )
             elif event.kind == "chain_swap":

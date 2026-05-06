@@ -285,6 +285,37 @@ class TestFxEventToWardProperties:
         chat = ward_properties.get_specific_ward_properties("chat_ambient")
         assert chat is None or chat.scale_bump_pct == 0.0
 
+    def test_audio_kick_onset_also_fires_border_pulse(
+        self,
+        uniforms_path,
+        substrate_hint_path,
+        recent_recruitment_path,
+        ward_properties_isolated,
+    ):
+        """The painter currently no-ops ``scale_bump_pct`` (canvas-safe
+        clamp pending — see ``ward_properties.py:444``), so the kick's
+        only visible chrome modulation is the paired border pulse.
+        Pin: every kick writes BOTH ``scale_bump_pct`` (forward-compat
+        for when the scale path is restored) AND ``border_pulse_hz``
+        (the visible channel today)."""
+        from agents.studio_compositor import ward_properties
+        from agents.studio_compositor.fx_chain_ward_reactor import WardFxReactor
+        from shared.ward_fx_bus import FXEvent, get_bus
+
+        reactor = WardFxReactor(
+            uniforms_path=uniforms_path,
+            substrate_hint_path=substrate_hint_path,
+            recent_recruitment_path=recent_recruitment_path,
+        )
+        reactor.connect()
+
+        get_bus().publish_fx(FXEvent(kind="audio_kick_onset", strength=1.0))
+        ward_properties.clear_ward_properties_cache()
+        props = ward_properties.get_specific_ward_properties("pressure_gauge")
+        assert props is not None
+        assert props.scale_bump_pct > 0.0
+        assert props.border_pulse_hz > 0.0
+
     def test_audio_kick_onset_scales_bump_by_event_strength(
         self,
         uniforms_path,
@@ -637,6 +668,21 @@ class TestDomainPresetFamilyMapping:
         assert "m8_oscilloscope" in AUDIO_REACTIVE_WARDS
         assert is_audio_reactive("m8_oscilloscope")
         assert domain_for_ward("m8_oscilloscope") == "music"
+
+    def test_m8_display_is_audio_reactive(self):
+        """The sibling ``m8-display`` IR surface (separate from the
+        oscilloscope) joins the audio-reactive set so both M8 surfaces
+        breathe with the broadcast beat. Pin domain=music + audio-reactive
+        in the same shape as the oscilloscope test."""
+        from agents.studio_compositor.ward_fx_mapping import (
+            AUDIO_REACTIVE_WARDS,
+            domain_for_ward,
+            is_audio_reactive,
+        )
+
+        assert "m8-display" in AUDIO_REACTIVE_WARDS
+        assert is_audio_reactive("m8-display")
+        assert domain_for_ward("m8-display") == "music"
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
