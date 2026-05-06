@@ -1,6 +1,6 @@
 {
   "name": "default",
-  "description": "Default studio compositor layout \u2014 constellation arrangement. Sierpinski avatar centered as visual anchor. Identity/lore wards form left column, telemetry/research wards form right column. Optimized 2026-05-04 from original grid layout.",
+  "description": "Default studio compositor layout \u2014 constellation arrangement. Sierpinski triangle centered as visual anchor. Identity/lore wards form left column, telemetry/research wards form right column. Optimized 2026-05-04 from original grid layout.",
   "sources": [
     {
       "id": "token_pole",
