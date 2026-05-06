@@ -112,6 +112,9 @@ _OVERLAY_ALPHA_OVERRIDES = Path("/dev/shm/hapax-compositor/overlay-alpha-overrid
 _RECENT_RECRUITMENT = Path("/dev/shm/hapax-compositor/recent-recruitment.json")
 _YOUTUBE_DIRECTION = Path("/dev/shm/hapax-compositor/youtube-direction.json")
 _STREAM_MODE_INTENT = Path("/dev/shm/hapax-compositor/stream-mode-intent.json")
+_GEM_FRAMES = Path("/dev/shm/hapax-gem/gem-frames.json")
+_GEM_RECRUITMENT = Path("/dev/shm/hapax-gem/recruitment.json")
+_GEM_LEGACY_FRAMES = Path("/dev/shm/hapax-compositor/gem-frames.json")
 
 # Vision Phase 3 (#150): per_camera_person_count hero-gate. Read the
 # daimonion perception-state snapshot (1 Hz writer) so we can reject a
@@ -1119,19 +1122,50 @@ def dispatch_transition(capability_name: str, ttl_s: float) -> bool:
     return True
 
 
-def dispatch_gem(capability_name: str, ttl_s: float) -> bool:
-    """gem.* → recent-recruitment marker.
+def dispatch_gem(
+    capability_name: str,
+    ttl_s: float,
+    *,
+    narrative: str = "",
+    score: float = 1.0,
+) -> bool:
+    """gem.* → recruited mural frames under ``/dev/shm/hapax-gem/``.
 
-    The GEM producer (``agents/hapax_daimonion/gem_producer.py``) tails
-    the impingement bus; the recruitment marker is the signal it reads
-    to decide which gem.emphasis.* / gem.composition.* / gem.spawn.*
-    keyframe to render. lssh-002 (P0 GEM rendering redesign) will
-    define the live visual contract; the dispatcher here keeps the
-    catalog-completeness invariant green and the recruitment surface
-    alive.
+    The producer still tails the impingement bus, but this dispatcher is
+    the direct impingement→affordance hook: the recruited capability and
+    impingement narrative become GEM text pressure immediately. It writes
+    bounded CP437 mural frames only, never layout/cue/SHM commands.
     """
-    _mark_recruitment(capability_name, extra={"ttl_s": ttl_s})
-    return True
+    if not capability_name.startswith("gem."):
+        return False
+    _mark_recruitment(
+        capability_name,
+        extra={"ttl_s": ttl_s, "score": score, "narrative": narrative[:240]},
+    )
+    try:
+        from agents.hapax_daimonion.gem_producer import frames_for_recruitment, write_frames_atomic
+
+        frames = frames_for_recruitment(capability_name, narrative=narrative, score=score)
+        if not frames:
+            return False
+        write_frames_atomic(frames, _GEM_FRAMES)
+        if _GEM_LEGACY_FRAMES != _GEM_FRAMES:
+            write_frames_atomic(frames, _GEM_LEGACY_FRAMES)
+        _atomic_write_json(
+            _GEM_RECRUITMENT,
+            {
+                "capability": capability_name,
+                "narrative": narrative[:240],
+                "score": score,
+                "ttl_s": ttl_s,
+                "updated_at": time.time(),
+                "frames_path": str(_GEM_FRAMES),
+            },
+        )
+        return True
+    except Exception:
+        log.warning("gem dispatch failed for %s", capability_name, exc_info=True)
+        return False
 
 
 # ── Director micromove vocabulary expansion (cc-task ────────────────────────
@@ -1656,7 +1690,16 @@ def dispatch(
     if name.startswith("transition."):
         return "transition" if dispatch_transition(name, record.ttl_s) else "unknown"
     if name.startswith("gem."):
-        return "gem" if dispatch_gem(name, record.ttl_s) else "unknown"
+        return (
+            "gem"
+            if dispatch_gem(
+                name,
+                record.ttl_s,
+                narrative=record.impingement_narrative,
+                score=record.score,
+            )
+            else "unknown"
+        )
     if name.startswith("composition.reframe."):
         return (
             "composition.reframe" if dispatch_composition_reframe(name, record.ttl_s) else "unknown"
