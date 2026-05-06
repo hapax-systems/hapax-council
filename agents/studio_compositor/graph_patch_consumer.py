@@ -515,6 +515,12 @@ def process_graph_patch_recruitment() -> bool:
         payload = json.loads(RECRUITMENT_FILE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
+    if not isinstance(payload, dict):
+        # Schema drift: a writer producing valid JSON whose root is null,
+        # a list, a string, or a number raises AttributeError out of
+        # _build_patch_from_recruitment / _family_timestamps. Same shape
+        # as the other recent SHM-read fixes (#2638 preset-recruitment).
+        return False
 
     current = _get_current_graph()
     patch, newest_ts = _build_patch_from_recruitment(payload, current)
