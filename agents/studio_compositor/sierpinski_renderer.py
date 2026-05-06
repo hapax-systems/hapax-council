@@ -147,6 +147,7 @@ class SierpinskiCairoSource(HomageTransitionalSource):
         self._frame_mtimes: dict[int, float] = {}
         self._active_slot = 0
         self._audio_energy = 0.0
+        self._audio_energy_smoothed = 0.0
         # Phase 2 yt-feature state — most-recent featured-yt-slot read.
         # Refreshed each tick from FEATURED_YT_SLOT_FILE; the value here
         # decays to "no feature" once its `ts` is older than
@@ -171,6 +172,11 @@ class SierpinskiCairoSource(HomageTransitionalSource):
 
     def set_audio_energy(self, energy: float) -> None:
         self._audio_energy = energy
+        # One-pole IIR (alpha=0.3) on the line-width-modulating energy.
+        # Raw energy still drives the waveform draw — that surface IS the
+        # audio. Triangle line width was jittering on percussive content
+        # because each set_audio_energy call replaced the value cliff-style.
+        self._audio_energy_smoothed = self._audio_energy_smoothed * 0.7 + energy * 0.3
 
     def _refresh_featured_yt_slot(self) -> None:
         """Phase 2 yt-feature: read FEATURED_YT_SLOT_FILE if it changed.
@@ -264,8 +270,10 @@ class SierpinskiCairoSource(HomageTransitionalSource):
         # Waveform in center
         self._draw_waveform(cr, self._cached_center_rect, self._audio_energy, t)
 
-        # Draw line work with audio-reactive width
-        line_w = 1.5 + self._audio_energy * 2.0
+        # Draw line work with audio-reactive width — smoothed so per-frame
+        # transients don't whip the line thickness around. Waveform above
+        # uses the raw value because the waveform IS the audio.
+        line_w = 1.5 + self._audio_energy_smoothed * 2.0
         self._draw_triangle_lines(cr, self._cached_all_triangles, line_w, t)
 
         # GEAL §5.1 — publish video_attention every tick so GEAL and the
