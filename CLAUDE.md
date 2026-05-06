@@ -299,7 +299,7 @@ PreToolUse hooks enforce branch discipline and safety at the tool-call level:
 | Hook | Gates | Blocks when |
 |------|-------|-------------|
 | `work-resolution-gate.sh` | Edit, Write | Feature branch with commits but no PR; on main with open PRs whose branch is local |
-| `no-stale-branches.sh` | Bash | **Branch creation**: any unmerged branches exist. **Session worktree limit:** max 4 (alpha + beta + delta + 1 spontaneous); infrastructure worktrees under `~/.cache/` not counted. **Destructive commands** (`git reset --hard`, `git checkout .`, `git branch -f`, `git worktree remove`): on a feature branch with commits ahead of main |
+| `no-stale-branches.sh` | Bash | **Branch creation**: any unmerged branches exist. **Session worktree limit:** max 20 (1 canonical + 4 Claude peers + 7 Codex lanes + sub-lane variants + 1 Gemini + 2 Vibe + 1 Antigrav + ~3 spontaneous); infrastructure worktrees under `~/.cache/`, `.claude/worktrees/`, and `.codex/worktrees/` not counted. **Destructive commands** (`git reset --hard`, `git checkout .`, `git branch -f`, `git worktree remove`): on a feature branch with commits ahead of main |
 | `push-gate.sh` | Bash | Push without passing tests |
 | `pii-guard.sh` | Edit, Write | PII patterns in file content |
 | `axiom-commit-scan.sh` | Bash | Commit messages violating axiom patterns |
