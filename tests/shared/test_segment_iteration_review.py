@@ -262,6 +262,41 @@ def test_one_segment_review_accepts_after_automation_and_team_receipts() -> None
     }
 
 
+def test_one_segment_review_accepts_multi_phase_resident_call_provenance() -> None:
+    artifact = _artifact(EXCELLENT_SCRIPT)
+    artifact["llm_calls"].extend(
+        [
+            {
+                "call_index": 2,
+                "phase": "refine",
+                "programme_id": artifact["programme_id"],
+                "model_id": prep.RESIDENT_PREP_MODEL,
+                "prompt_sha256": prep._sha256_text("refine prompt"),
+                "prompt_chars": 1220,
+                "called_at": "2026-05-06T04:01:00+00:00",
+            },
+            {
+                "call_index": 3,
+                "phase": "layout_repair",
+                "programme_id": artifact["programme_id"],
+                "model_id": prep.RESIDENT_PREP_MODEL,
+                "prompt_sha256": prep._sha256_text("layout repair prompt"),
+                "prompt_chars": 1330,
+                "called_at": "2026-05-06T04:02:00+00:00",
+            },
+        ]
+    )
+    _rehash_artifact(artifact)
+
+    receipt = review_one_segment_iteration(
+        [artifact],
+        team_critique_receipts=_team_receipts_for(artifact),
+    )
+
+    assert receipt["ready_for_next_nine"] is True
+    assert "artifact.prior_source_binding" not in _failed_criteria(receipt)
+
+
 def test_one_segment_review_accepts_real_loader_objects_without_enriched_hash_mismatch(
     tmp_path: Path,
 ) -> None:

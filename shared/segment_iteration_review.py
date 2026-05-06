@@ -194,12 +194,31 @@ def _source_binding_ok(
         return False
     if source_hashes.get("seed_sha256") != artifact.get("seed_sha256"):
         return False
-    return all(
-        isinstance(call, Mapping)
-        and call.get("prompt_sha256") == artifact.get("prompt_sha256")
-        and call.get("programme_id") == artifact.get("programme_id")
-        for call in llm_calls
-    )
+    if not llm_calls:
+        return False
+
+    programme_id = artifact.get("programme_id")
+    compose_prompt_seen = False
+    last_call_index = 0
+    for call in llm_calls:
+        if not isinstance(call, Mapping):
+            return False
+        call_index = call.get("call_index")
+        if not isinstance(call_index, int) or call_index <= last_call_index:
+            return False
+        last_call_index = call_index
+        if call.get("programme_id") != programme_id:
+            return False
+        if call.get("model_id") != RESIDENT_COMMAND_R_MODEL:
+            return False
+        if not isinstance(call.get("phase"), str) or not call.get("phase"):
+            return False
+        prompt_sha256 = call.get("prompt_sha256")
+        if not _is_sha256_hex(prompt_sha256):
+            return False
+        if call.get("phase") == "compose" and prompt_sha256 == artifact.get("prompt_sha256"):
+            compose_prompt_seen = True
+    return compose_prompt_seen
 
 
 def _concrete_action_bindings(
