@@ -417,6 +417,24 @@
         "visual",
         "wgpu"
       ]
+    },
+    {
+      "id": "m8_oscilloscope",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "M8OscilloscopeCairoSource",
+        "natural_w": 1280,
+        "natural_h": 128
+      },
+      "update_cadence": "rate",
+      "rate_hz": 30,
+      "tags": [
+        "cairo",
+        "m8",
+        "audio-reactive",
+        "post-fx"
+      ]
     }
   ],
   "surfaces": [
@@ -673,6 +691,17 @@
         "h": 56
       },
       "z_order": 52
+    },
+    {
+      "id": "m8-oscilloscope-rightcol",
+      "geometry": {
+        "kind": "rect",
+        "x": 1350,
+        "y": 396,
+        "w": 500,
+        "h": 128
+      },
+      "z_order": 3
     }
   ],
   "assignments": [
@@ -817,6 +846,12 @@
       "surface": "activity-header-top-mid",
       "opacity": 0.92,
       "non_destructive": true,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "m8_oscilloscope",
+      "surface": "m8-oscilloscope-rightcol",
+      "opacity": 1.0,
       "render_stage": "post_fx"
     }
   ]
