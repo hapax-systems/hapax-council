@@ -11,7 +11,6 @@ in :mod:`state` and :mod:`overlay` keep working.
 from __future__ import annotations
 
 import logging
-import math
 import os
 import time
 from pathlib import Path
@@ -31,45 +30,6 @@ log = logging.getLogger(__name__)
 SNAPSHOT_DIR = Path("/dev/shm/hapax-compositor")
 RENDER_FPS = 10
 
-# Synthwave palette for ticker-tape colour cycling.  Non-uniform spacing
-# so the hue lingers in the pink/cyan/purple range.
-_SYNTHWAVE_PALETTE: list[tuple[float, float, float]] = [
-    (1.00, 0.20, 0.60),  # hot pink
-    (0.93, 0.12, 0.85),  # magenta
-    (0.58, 0.12, 0.95),  # electric purple
-    (0.30, 0.60, 1.00),  # cool blue
-    (0.00, 0.95, 0.90),  # electric cyan
-    (0.00, 0.90, 0.55),  # teal
-    (0.95, 0.55, 0.10),  # warm orange
-    (1.00, 0.20, 0.60),  # hot pink (wrap)
-]
-
-
-def _synthwave_color_at(t: float) -> tuple[float, float, float, float]:
-    """Return an RGBA colour cycling through the synthwave palette.
-
-    ``t`` is monotonic seconds.  The cycle is non-uniform: a warped sine
-    makes the hue linger in the pink/purple band and sweep quickly
-    through orange/teal.
-    """
-    n = len(_SYNTHWAVE_PALETTE) - 1  # last entry = first (wrap)
-    # Non-uniform: warp time with a sin² bias toward the low indices
-    # (pink/magenta/purple).
-    cycle_period = 12.0  # full cycle every 12 seconds
-    phase = (t % cycle_period) / cycle_period  # 0..1
-    warped = phase + 0.15 * math.sin(phase * math.pi * 2.0)  # linger in pink band
-    warped = warped % 1.0
-    idx_f = warped * n
-    idx = int(idx_f)
-    frac = idx_f - idx
-    a = _SYNTHWAVE_PALETTE[idx]
-    b = _SYNTHWAVE_PALETTE[min(idx + 1, n)]
-    r = a[0] + (b[0] - a[0]) * frac
-    g = a[1] + (b[1] - a[1]) * frac
-    bl = a[2] + (b[2] - a[2]) * frac
-    return (r, g, bl, 1.0)
-
-
 # LRR Phase 8 item 12: the ``active_when_activities`` field gates a zone on
 # whether any active research objective lists at least one of those
 # activities in its ``activities_that_advance`` list. When the gate is
@@ -87,13 +47,17 @@ ZONES: list[dict[str, Any]] = [
         "folder": "~/Documents/Personal/30-areas/stream-overlays/",
         "suffixes": (".md", ".txt", ".ansi"),
         "cycle_seconds": 15,
-        "x": 300,
-        "y": 510,
-        "max_width": 4000,  # wide for ticker — single long line
-        "font": "JetBrains Mono Bold 14",
+        "x": 40,
+        "y": 200,
+        "max_width": 1000,
+        "font": "JetBrains Mono Bold 20",
         "color": (1.0, 0.97, 0.90, 1.0),
-        "scroll_horizontal": True,
-        "scroll_h_speed": 1.5,  # pixels per tick — smooth ticker-tape
+        # 2026-04-23 operator "wards off screen" (intermittent, drift-cycle
+        # dependent). _tick_float drifts wards near canvas edges on a DVD
+        # bounce; when Pango overflows ``max_width`` on a long token the
+        # oversized surface clips at the right edge during the bounce
+        # window. Disabled until a proper repositioning story ships with
+        # the video-container epic. Wards stay at declared x/y anchor.
         "randomize_position": False,
     },
     {
@@ -204,9 +168,6 @@ class OverlayZone:
         self._scroll = config.get("scroll", False)
         self._scroll_speed = config.get("scroll_speed", 0.5)  # pixels per tick
         self._scroll_offset = 0.0
-        self._scroll_h = config.get("scroll_horizontal", False)
-        self._scroll_h_speed = config.get("scroll_h_speed", 1.5)
-        self._scroll_h_offset = 0.0
         self._is_image = False
         self._image_surface: Any = None
         self._pango_markup: str = ""
@@ -256,8 +217,6 @@ class OverlayZone:
             self._tick_float()
         elif self._scroll:
             self._tick_scroll()
-        if self._scroll_h:
-            self._tick_scroll_h()
 
     def _init_float(self) -> None:
         """Initialize DVD-screensaver-style floating motion."""
@@ -275,14 +234,6 @@ class OverlayZone:
         # When text scrolls completely off the top, reset to bottom
         if self._scroll_offset > text_h + canvas_h:
             self._scroll_offset = 0.0
-
-    def _tick_scroll_h(self, canvas_w: int = 1920) -> None:
-        """Scroll text leftward like a news ticker. Wraps when off-screen."""
-        self._scroll_h_offset += self._scroll_h_speed
-        text_w = self._cached_surface_size[0] if self._cached_surface_size[0] else 400
-        # When text fully exits the left edge, reset to enter from the right
-        if self._scroll_h_offset > text_w + canvas_w:
-            self._scroll_h_offset = 0.0
 
     def _tick_float(self, canvas_w: int = 1920, canvas_h: int = 1080) -> None:
         """Move position and bounce off screen edges."""
@@ -560,45 +511,17 @@ class OverlayZone:
         # tests/studio_compositor/test_no_ward_position_drift.py.
         offset_x = 0
         offset_y = 0
-        if self._scroll_h:
-            # Horizontal ticker: text starts at canvas right edge, scrolls left
-            _ = self._cached_surface_size[0] if self._cached_surface_size[0] else 400
-            scroll_x = canvas_w - self._scroll_h_offset
-            cr.save()
-            # Clip to the ticker band so text doesn't bleed outside
-            band_h = self._cached_surface_size[1] + 8
-            cr.rectangle(0, self.y - 4, canvas_w, band_h)
-            cr.clip()
-            # Paint the cached text surface
-            cr.set_source_surface(self._cached_surface, scroll_x, self.y - 2)
-            if props.alpha < 0.999:
-                cr.paint_with_alpha(max(0.0, min(1.0, props.alpha)))
-            else:
-                cr.paint()
-            # Synthwave colour tint via ATOP — only colours text pixels
-            import cairo as _cairo
-
-            sw_r, sw_g, sw_b, _sw_a = _synthwave_color_at(time.monotonic())
-            cr.set_operator(_cairo.OPERATOR_ATOP)
-            cr.set_source_rgba(sw_r, sw_g, sw_b, 0.85)
-            cr.rectangle(0, self.y - 4, canvas_w, band_h)
-            cr.fill()
-            cr.restore()
-        elif self._scroll:
+        if self._scroll:
             scroll_y = canvas_h - self._scroll_offset
             cr.set_source_surface(self._cached_surface, self.x - 2 + offset_x, scroll_y + offset_y)
-            if props.alpha < 0.999:
-                cr.paint_with_alpha(max(0.0, min(1.0, props.alpha)))
-            else:
-                cr.paint()
         else:
             cr.set_source_surface(
                 self._cached_surface, self.x - 2 + offset_x, self.y - 2 + offset_y
             )
-            if props.alpha < 0.999:
-                cr.paint_with_alpha(max(0.0, min(1.0, props.alpha)))
-            else:
-                cr.paint()
+        if props.alpha < 0.999:
+            cr.paint_with_alpha(max(0.0, min(1.0, props.alpha)))
+        else:
+            cr.paint()
 
     def _render_image(self, cr: Any, canvas_w: int, canvas_h: int, alpha_mod: float = 1.0) -> None:
         """Render a PNG image overlay, scaled to fit max_width.

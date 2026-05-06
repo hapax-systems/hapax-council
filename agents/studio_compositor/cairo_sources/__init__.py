@@ -283,18 +283,9 @@ def _register_builtins() -> None:
 
     register("SegmentContentWard", SegmentContentWard)
 
-    # Vitruvian Man human glyph explosion overlay (2026-05-04) —
-    # full-frame transparent overlay that renders the token-pole
-    # explosion particles. Separate from the 300x300 token_pole
-    # source so particles can cover 2/3 of the broadcast frame.
-    from agents.studio_compositor.token_explosion_overlay import (
-        TokenExplosionOverlayCairoSource,
-    )
-
-    register("TokenExplosionOverlayCairoSource", TokenExplosionOverlayCairoSource)
     # Sierpinski-centered camera packing (2026-05-05) — renders 5 non-hero
     # camera frames from frame_cache at pre-computed positions around the
-    # Sierpinski triangle with slight rotation. Hero stays on cudacompositor.
+    # Sierpinski triangle with slight rotation.
     from agents.studio_compositor.packed_cameras_source import PackedCamerasCairoSource
 
     register("PackedCamerasCairoSource", PackedCamerasCairoSource)
