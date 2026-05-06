@@ -144,7 +144,15 @@ class AudioSignals:
 
     @classmethod
     def from_dict(cls, data: dict[str, float]) -> AudioSignals:
-        """Inverse of ``to_dict`` — used by consumers reading SHM."""
+        """Inverse of ``to_dict`` — used by consumers reading SHM.
+
+        Raises ``TypeError`` when ``data`` is not a mapping (caller should
+        treat this as schema drift and fall back to the zero signal). The
+        caller in :func:`read_shm_snapshot` catches the TypeError so a
+        corrupt writer cannot propagate AttributeError up to consumer code.
+        """
+        if not isinstance(data, dict):
+            raise TypeError(f"AudioSignals.from_dict expected mapping, got {type(data).__name__}")
         return cls(**{k: float(data.get(k, 0.0)) for k in _SIGNAL_FIELDS})
 
 
@@ -422,11 +430,22 @@ def read_shm_snapshot(path: Path | None = None) -> BusSnapshot | None:
     except json.JSONDecodeError:
         log.debug("unified-reactivity: malformed SHM snapshot")
         return None
+    if not isinstance(data, dict):
+        log.debug(
+            "unified-reactivity: SHM root is %s, expected mapping",
+            type(data).__name__,
+        )
+        return None
     try:
         blended = AudioSignals.from_dict(data.get("blended", {}))
         per_source_raw = data.get("per_source", {}) or {}
+        if not isinstance(per_source_raw, dict):
+            raise TypeError(f"per_source must be a mapping, got {type(per_source_raw).__name__}")
         per_source = {name: AudioSignals.from_dict(sig) for name, sig in per_source_raw.items()}
-        active = list(data.get("active_sources", []))
+        active_raw = data.get("active_sources", [])
+        if not isinstance(active_raw, list):
+            raise TypeError(f"active_sources must be a list, got {type(active_raw).__name__}")
+        active = [str(item) for item in active_raw]
     except (TypeError, ValueError):
         log.debug("unified-reactivity: SHM snapshot schema drift", exc_info=True)
         return None
