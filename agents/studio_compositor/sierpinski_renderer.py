@@ -38,6 +38,8 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 RENDER_FPS = 10
+SIERPINSKI_AUDIO_ATTACK_ALPHA = 0.45
+SIERPINSKI_AUDIO_RELEASE_ALPHA = 0.22
 
 # Phase 2 of yt-content-reverie-sierpinski-separation (2026-04-21).
 # The reverie mixer's affordance pipeline writes this state file when
@@ -172,11 +174,16 @@ class SierpinskiCairoSource(HomageTransitionalSource):
 
     def set_audio_energy(self, energy: float) -> None:
         self._audio_energy = energy
-        # One-pole IIR (alpha=0.3) on the line-width-modulating energy.
-        # Raw energy still drives the waveform draw — that surface IS the
-        # audio. Triangle line width was jittering on percussive content
-        # because each set_audio_energy call replaced the value cliff-style.
-        self._audio_energy_smoothed = self._audio_energy_smoothed * 0.7 + energy * 0.3
+        # One-pole envelope on the line-width-modulating energy. Fast
+        # attack restores visible transient lift, while slower release keeps
+        # the triangle from snapping back frame-to-frame. Raw energy still
+        # drives the waveform draw — that surface IS the audio.
+        alpha = (
+            SIERPINSKI_AUDIO_ATTACK_ALPHA
+            if energy > self._audio_energy_smoothed
+            else SIERPINSKI_AUDIO_RELEASE_ALPHA
+        )
+        self._audio_energy_smoothed = self._audio_energy_smoothed * (1.0 - alpha) + energy * alpha
 
     def _refresh_featured_yt_slot(self) -> None:
         """Phase 2 yt-feature: read FEATURED_YT_SLOT_FILE if it changed.

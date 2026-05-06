@@ -276,9 +276,10 @@ def test_sierpinski_cairo_source_render_into_small_canvas():
 
 
 def test_sierpinski_audio_energy_smoothed_lags_raw():
-    """One-pole IIR keeps a smoothed envelope of the audio energy so the
-    triangle line-width modulation isn't whipped around by per-frame
-    percussive transients. Raw energy is still preserved for the waveform.
+    """The line-width envelope has fast attack and slower release.
+
+    That restores visible transient lift without reintroducing hard
+    frame-to-frame snapback. Raw energy is still preserved for the waveform.
     """
     from agents.studio_compositor.sierpinski_renderer import SierpinskiCairoSource
 
@@ -289,16 +290,17 @@ def test_sierpinski_audio_energy_smoothed_lags_raw():
     # First impulse at full level: smoothed lags raw.
     source.set_audio_energy(1.0)
     assert source._audio_energy == 1.0
-    assert source._audio_energy_smoothed == pytest.approx(0.3)
+    assert source._audio_energy_smoothed == pytest.approx(0.45)
 
     # Second tick at full level continues to converge upward.
     source.set_audio_energy(1.0)
-    assert source._audio_energy_smoothed == pytest.approx(0.51)
+    assert source._audio_energy_smoothed == pytest.approx(0.6975)
 
-    # Sudden drop to zero: raw goes to 0 immediately, smoothed decays.
+    # Sudden drop to zero: raw goes to 0 immediately, smoothed releases
+    # more slowly than it attacked.
     source.set_audio_energy(0.0)
     assert source._audio_energy == 0.0
-    assert source._audio_energy_smoothed == pytest.approx(0.357)
+    assert source._audio_energy_smoothed == pytest.approx(0.54405)
 
 
 # ---------------------------------------------------------------------------
