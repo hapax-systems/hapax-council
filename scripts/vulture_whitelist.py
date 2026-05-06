@@ -2552,3 +2552,18 @@ from agents.auto_clip.segment_detection import SegmentCandidate as _AutoClipSegm
 
 _AutoClipSegmentCandidate._end_after_start
 _AutoClipSegmentCandidate._dedupe_channels
+
+# cc-task ``hero-effect-rotator-shaders`` (2026-05-05). Antigrav 8h scope:
+# HeroEffectRotator + 8 region-masked hero-tile shaders ship as orphan
+# landing — the rotator is not yet imported by compositor.py because the
+# glfeedback hero_effect_slot wiring is a follow-up PR. Until that
+# wiring lands, ``_pick_next``, ``current_effect_name``, and
+# ``effect_count`` are reachable only via the planned compositor tick
+# loop and dashboard-style introspection paths that vulture cannot see.
+from agents.studio_compositor.hero_effect_rotator import HeroEffectRotator as _HeroEffectRotator
+
+_HeroEffectRotator._pick_next
+_HeroEffectRotator.current_effect_name
+_HeroEffectRotator.effect_count
+_HeroEffectRotator.set_slot
+_HeroEffectRotator.update_hero_tile
