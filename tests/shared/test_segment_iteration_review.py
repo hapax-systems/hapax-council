@@ -21,9 +21,10 @@ EXCELLENT_SCRIPT = [
         "Zuboff argues that measurement systems become social systems when nobody can inspect "
         "their extraction, and that is the exact problem for livestream craft: the audience hears "
         "confidence while the runtime still owes proof. The stakes are practical, not ceremonial. "
-        "If the segment says a ranked panel changed, the manifest, prompt hash, and source hash "
-        "have to stay visible enough that the claim can be checked. Remember that opening rule, "
-        "because the final nine should inherit this gate rather than trusting a polished voice."
+        "Place the Command-R manifest gate in S-tier because the manifest, prompt hash, and "
+        "source hash have to stay visible enough that the claim can be checked. Remember that "
+        "opening rule, because the final nine should inherit this gate rather than trusting a "
+        "polished voice."
     ),
     (
         "Now compare that with the layout responsibility gate, because StudioCompositor and "

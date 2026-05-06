@@ -86,6 +86,20 @@ _FORBIDDEN_PREPARED_COMMAND_RE = re.compile(
     r"(?<![a-z0-9_])(?:camera|front|composition|transition|media|scrim|mood|gem)\.",
     re.IGNORECASE,
 )
+_PREPARED_CAMERA_CONTEXT_TARGET_RE = r"(?:overhead|desk|room|operator|brio|c920|director)"
+_PREPARED_CAMERA_COMMAND_TARGET_RE = (
+    r"(?:[^.?!]{0,80}\b(?:camera|cam|feed)\b|"
+    r"(?:overhead|desk|room|operator|brio|c920)\b|"
+    + _PREPARED_CAMERA_CONTEXT_TARGET_RE
+    + r"\s+(?:view|shot|angle|feed)\b)"
+)
+_FORBIDDEN_PREPARED_CAMERA_COMMAND_RE = re.compile(
+    r"\b(?:switch|cut|go|jump|take|move|pan|zoom|push|pull)\s+"
+    r"(?:(?:to|into|over|onto|on)\s+)?(?:the\s+)?" + _PREPARED_CAMERA_COMMAND_TARGET_RE + r"|"
+    r"\b(?:show|bring up|pull up|put)\s+(?:the\s+)?" + _PREPARED_CAMERA_COMMAND_TARGET_RE + r"|"
+    r"\bbring\s+(?:the\s+)?" + _PREPARED_CAMERA_COMMAND_TARGET_RE + r"\s+up\b",
+    re.IGNORECASE,
+)
 _FORBIDDEN_PREPARED_LAYOUT_VALUES = (
     STATIC_DEFAULT_LAYOUTS
     | SAFETY_FALLBACK_LAYOUTS
@@ -1351,6 +1365,7 @@ def _is_forbidden_prepared_layout_value(value: str) -> bool:
 def _contains_forbidden_command_text(value: str) -> bool:
     return bool(
         _FORBIDDEN_PREPARED_COMMAND_RE.search(value)
+        or _FORBIDDEN_PREPARED_CAMERA_COMMAND_RE.search(value)
         or "/dev/shm" in value
         or "compositor.surface." in value.lower()
     )

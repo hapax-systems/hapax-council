@@ -122,7 +122,10 @@ def _string_list(value: Any) -> list[str]:
 _ROLE_VISUAL_HOOKS: dict[str, str] = {
     "tier_list": (
         "TIER CHART HOOKS — the stream renders a live tier chart:\n"
-        "  Use the EXACT phrase 'Place [item] in [S/A/B/C/D]-tier' to update it.\n"
+        "  MANDATORY: every ranking/body beat must include at least one exact\n"
+        "  tier placement phrase: 'Place [item] in [S/A/B/C/D]-tier'.\n"
+        "  Generic history, summary, or analysis without a placement is not a\n"
+        "  responsible tier-list beat and will be quarantined.\n"
         "  Items appear on the tier chart as you place them. The audience sees\n"
         "  your rankings build in real time.\n"
         "  Example: 'Place Popcorn Sutton's still craft in S-tier.'\n\n"
@@ -401,7 +404,22 @@ def _parse_script(raw: str) -> list[str]:
         log.warning("segment prep: LLM response is not a JSON array")
         return []
 
-    return [str(item).strip() for item in parsed if str(item).strip()]
+    beats: list[str] = []
+    for item in parsed:
+        text: str
+        if isinstance(item, dict):
+            text = str(
+                item.get("draft")
+                or item.get("spoken_text")
+                or item.get("narration")
+                or item.get("text")
+                or ""
+            ).strip()
+        else:
+            text = str(item).strip()
+        if text:
+            beats.append(text)
+    return beats
 
 
 def _build_seed(programme: Any) -> str:
@@ -470,6 +488,199 @@ def _build_refinement_prompt(script: list[str], programme: Any) -> str:
         "Output ONLY the JSON array. No preamble, no markdown fences. "
         "Start with [ and end with ]."
     )
+
+
+def _layout_repair_required(layout_responsibility: dict[str, Any]) -> bool:
+    """Return True when the draft failed only by leaving repairable layout gaps."""
+    violations = layout_responsibility.get("violations")
+    if not isinstance(violations, list) or not violations:
+        return False
+    repairable_reasons = {"unsupported_layout_need", "missing_tier_placement_phrase"}
+    return all(
+        isinstance(item, dict) and item.get("reason") in repairable_reasons for item in violations
+    )
+
+
+_TIER_BODY_DIRECTION_RE = re.compile(
+    r"\b(?:body|item[_ -]?\d+|entry[_ -]?\d+|rank|ranking|place|placing|tier placement)\b",
+    re.IGNORECASE,
+)
+_TIER_SKIP_DIRECTION_RE = re.compile(
+    r"\b(?:hook|intro|open|opener|criteria|rubric|close|closing|recap|wrap|chat)\b",
+    re.IGNORECASE,
+)
+
+
+def _tier_list_placement_violations(
+    *,
+    role: str,
+    segment_beats: list[str],
+    beat_action_intents: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Require tier-chart placements for every non-skip tier-list beat."""
+    if role != "tier_list":
+        return []
+    violations: list[dict[str, Any]] = []
+    for index, declaration in enumerate(beat_action_intents):
+        if not isinstance(declaration, dict):
+            continue
+        direction = (
+            str(segment_beats[index])
+            if index < len(segment_beats)
+            else str(declaration.get("beat_direction") or "")
+        )
+        body_or_rank_direction = bool(_TIER_BODY_DIRECTION_RE.search(direction))
+        skip_direction = bool(_TIER_SKIP_DIRECTION_RE.search(direction))
+        if not body_or_rank_direction and skip_direction:
+            continue
+        intents = declaration.get("intents") or []
+        has_placement = any(
+            isinstance(intent, dict) and intent.get("kind") == "tier_chart" for intent in intents
+        )
+        if not has_placement:
+            violations.append(
+                {
+                    "reason": "missing_tier_placement_phrase",
+                    "beat_index": declaration.get("beat_index", index),
+                    "beat_direction": direction,
+                    "required_trigger": "Place [item] in [S/A/B/C/D]-tier",
+                    "required_action_kind": "tier_chart",
+                }
+            )
+    return violations
+
+
+def _with_tier_list_placement_gate(
+    layout_responsibility: dict[str, Any],
+    *,
+    role: str,
+    segment_beats: list[str],
+    beat_action_intents: list[dict[str, Any]],
+) -> dict[str, Any]:
+    violations = _tier_list_placement_violations(
+        role=role,
+        segment_beats=segment_beats,
+        beat_action_intents=beat_action_intents,
+    )
+    if not violations:
+        return layout_responsibility
+    gated = json.loads(json.dumps(layout_responsibility))
+    gated["ok"] = False
+    gated["violations"] = list(gated.get("violations") or []) + violations
+    runtime_validation = gated.get("runtime_layout_validation")
+    if isinstance(runtime_validation, dict):
+        runtime_validation["ok"] = False
+    return gated
+
+
+def _build_layout_repair_prompt(
+    script: list[str],
+    programme: Any,
+    layout_responsibility: dict[str, Any],
+) -> str:
+    role = getattr(getattr(programme, "role", None), "value", "rant")
+    content = getattr(programme, "content", None)
+    narrative_beat = getattr(content, "narrative_beat", "") or "" if content else ""
+    beats = getattr(content, "segment_beats", []) or [] if content else []
+    visual_hooks = _ROLE_VISUAL_HOOKS.get(role, "")
+    failed = {
+        int(item["beat_index"])
+        for item in layout_responsibility.get("violations", [])
+        if isinstance(item, dict)
+        and isinstance(item.get("beat_index"), int)
+        and item.get("reason") in {"unsupported_layout_need", "missing_tier_placement_phrase"}
+    }
+
+    mandatory_lines: list[str] = []
+    beat_review = ""
+    for i, (direction, text) in enumerate(zip(beats, script, strict=False)):
+        status = "FAILED: missing supported visible/doable placement" if i in failed else "ok"
+        beat_review += f"\n--- Beat {i + 1} ({status}) ---\n"
+        beat_review += f"Direction: {direction}\n"
+        if role == "tier_list" and i in failed:
+            mandatory_lines.append(
+                f"- Beat {i + 1}: include a literal sentence that starts with "
+                "'Place ' and matches `Place [item] in [S/A/B/C/D]-tier`."
+            )
+            beat_review += (
+                "Mandatory visible trigger: write an exact placement sentence like "
+                "'Place Sutton's moonshine craft in S-tier.'\n"
+            )
+        beat_review += f"Draft: {text}\n"
+
+    mandatory_block = ""
+    if mandatory_lines:
+        mandatory_block = (
+            "== MANDATORY FAILED-BEAT REPAIRS ==\n" + "\n".join(mandatory_lines) + "\n\n"
+        )
+
+    return (
+        f"You are repairing a {role.upper().replace('_', ' ')} segment for Hapax's "
+        "responsible livestream layout contract.\n\n"
+        f"Topic: {narrative_beat}\n\n"
+        "The previous draft failed because some beats only made spoken arguments. "
+        "For Hapax-hosted responsible segments, spoken-only beats do not satisfy "
+        "layout responsibility. Rewrite the full script with the same beat count "
+        "so every failed beat includes a supported visible/doable trigger in the "
+        "spoken words.\n\n"
+        f"{render_quality_prompt_block()}"
+        "== ROLE-SPECIFIC VISIBLE ACTIONS ==\n"
+        f"{visual_hooks}"
+        f"{mandatory_block}"
+        "If this is a tier-list segment, every failed item/ranking/body beat must "
+        "say an exact placement phrase that matches the runtime trigger regex:\n"
+        "  Place [item] in [S/A/B/C/D]-tier\n"
+        "The sentence must begin with the word 'Place', include the word 'in' "
+        "before the tier, and use S-tier, A-tier, B-tier, C-tier, or D-tier. "
+        "VALID: 'Place Popcorn Sutton's moonshine craft in S-tier.' "
+        "INVALID: 'Let's kick things off by placing Popcorn Sutton in S-tier.' "
+        "INVALID: 'Sutton belongs in A-tier.' "
+        "Do not merely discuss history; make a ranking the audience can see.\n\n"
+        "Do not invent camera shots, screenshots, clips, direct layout commands, "
+        "coordinates, cue strings, or stage directions. Keep the prose live-host "
+        "spoken text only.\n\n"
+        "== DRAFT TO REPAIR ==\n"
+        f"{beat_review}\n\n"
+        "Return ONLY a JSON array of rewritten spoken beats, same count as the "
+        "input. No preamble, no markdown fences. Start with [ and end with ]."
+    )
+
+
+def _repair_layout_actionability(
+    script: list[str],
+    programme: Any,
+    layout_responsibility: dict[str, Any],
+    *,
+    prep_session: dict[str, Any] | None = None,
+    programme_id: str = "",
+) -> list[str]:
+    """Give resident Command-R one chance to turn spoken-only beats into visible actions."""
+    if not _layout_repair_required(layout_responsibility):
+        return script
+    prompt = _build_layout_repair_prompt(script, programme, layout_responsibility)
+    try:
+        raw = _call_llm(
+            prompt,
+            prep_session=prep_session,
+            phase="layout_repair",
+            programme_id=programme_id,
+        )
+        repaired = _parse_script(raw)
+        if repaired and len(repaired) >= len(script):
+            log.info(
+                "layout repair: rewrote %d beats for %s after spoken-only layout failure",
+                len(script),
+                programme_id or "unknown",
+            )
+            return repaired[: len(script)]
+        log.warning(
+            "layout repair: got %d beats (expected %d), keeping refined draft",
+            len(repaired) if repaired else 0,
+            len(script),
+        )
+    except Exception:
+        log.warning("layout repair: LLM call failed, keeping refined draft", exc_info=True)
+    return script
 
 
 def _refine_script(
@@ -677,6 +888,57 @@ def prep_segment(
     layout_responsibility = validate_layout_responsibility(
         actionability["beat_action_intents"],
     )
+    segment_beat_strings = [str(item) for item in beats]
+    layout_responsibility = _with_tier_list_placement_gate(
+        layout_responsibility,
+        role=role,
+        segment_beats=segment_beat_strings,
+        beat_action_intents=actionability["beat_action_intents"],
+    )
+    if layout_responsibility["ok"] is not True and _layout_repair_required(layout_responsibility):
+        repaired_script = _repair_layout_actionability(
+            script,
+            programme,
+            layout_responsibility,
+            prep_session=prep_session,
+            programme_id=prog_id,
+        )
+        if repaired_script != script:
+            repaired_actionability = validate_segment_actionability(
+                repaired_script,
+                [str(item) for item in beats],
+            )
+            if repaired_actionability["ok"] is True:
+                repaired_layout = validate_layout_responsibility(
+                    repaired_actionability["beat_action_intents"],
+                )
+                repaired_layout = _with_tier_list_placement_gate(
+                    repaired_layout,
+                    role=role,
+                    segment_beats=segment_beat_strings,
+                    beat_action_intents=repaired_actionability["beat_action_intents"],
+                )
+                if repaired_layout["ok"] is True:
+                    log.info(
+                        "prep_segment: layout repair made %s responsible-layout loadable",
+                        prog_id,
+                    )
+                    script = list(repaired_actionability["prepared_script"])
+                    actionability = repaired_actionability
+                    layout_responsibility = repaired_layout
+                else:
+                    log.warning(
+                        "prep_segment: layout repair for %s still violates layout "
+                        "responsibility: %s",
+                        prog_id,
+                        [item.get("reason") for item in repaired_layout["violations"]],
+                    )
+            else:
+                log.warning(
+                    "prep_segment: layout repair for %s introduced unsupported action "
+                    "claims; keeping refined draft",
+                    prog_id,
+                )
     quality_report = score_segment_quality(script, [str(item) for item in beats])
     if layout_responsibility["ok"] is not True:
         log.warning(
@@ -1315,6 +1577,16 @@ def _layout_rejection_reason(data: dict[str, Any]) -> str | None:
         for need in needs:
             if not isinstance(need, str) or not need:
                 return "invalid declared layout need"
+
+    tier_placement_violations = _tier_list_placement_violations(
+        role=str(data.get("role") or ""),
+        segment_beats=_string_list(data.get("segment_beats")),
+        beat_action_intents=data.get("beat_action_intents")
+        if isinstance(data.get("beat_action_intents"), list)
+        else [],
+    )
+    if tier_placement_violations:
+        return "tier list missing exact placement phrases"
 
     contract = data.get("layout_decision_contract")
     if not isinstance(contract, dict):
