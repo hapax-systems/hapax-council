@@ -123,6 +123,12 @@ class WardStimmungModulator:
         except Exception:
             log.debug("modulator: current.json read failed", exc_info=True)
             return None
+        if not isinstance(raw, dict):
+            log.debug(
+                "modulator: current.json root is %s, expected mapping",
+                type(raw).__name__,
+            )
+            return None
         ts = raw.get("timestamp")
         if isinstance(ts, (int, float)) and (time.time() - float(ts)) > _staleness_cutoff():
             return None
