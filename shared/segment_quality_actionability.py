@@ -502,6 +502,20 @@ def _layout_need_from_intent(
     responsibility_mode: str,
 ) -> dict[str, Any]:
     action_kind = str(intent.get("kind") or "spoken_argument")
+    if responsibility_mode == RESPONSIBLE_HOSTING_CONTEXT and action_kind == "spoken_argument":
+        return {
+            "kind": "unsupported_layout_need",
+            "source_action_kind": action_kind,
+            "source_affordance": "spoken_argument_only",
+            "expected_visible_effect": "layout.refusal.visible",
+            "evidence_ref": f"beat_action_intents[{beat_index}].intents[{intent_index}]",
+            "priority": "low",
+            "ttl_ms": 8000,
+            "hysteresis_key": "unsupported:spoken_argument_only",
+            "fallback_posture": "explicit_fallback_spoken_focus",
+            "readback_required": True,
+            "status": "spoken_only_not_responsible",
+        }
     rubric = _LAYOUT_NEED_BY_ACTION_KIND.get(action_kind)
     if rubric is None:
         return {
@@ -675,6 +689,17 @@ def validate_layout_responsibility(
                 violations.append(
                     {
                         "reason": "unsupported_layout_need",
+                        "beat_index": beat["beat_index"],
+                    }
+                )
+            if (
+                responsibility_mode == RESPONSIBLE_HOSTING_CONTEXT
+                and need == "action_visible"
+                and "spoken_argument_only" in beat.get("source_affordances", [])
+            ):
+                violations.append(
+                    {
+                        "reason": "spoken_only_not_responsible_layout",
                         "beat_index": beat["beat_index"],
                     }
                 )
@@ -853,7 +878,7 @@ def score_segment_quality(
         need
         for beat in layout["beat_layout_intents"]
         for need in beat["needs"]
-        if need != "host_presence"
+        if need not in {"host_presence", "unsupported_layout_need"}
     }
 
     scores = {
