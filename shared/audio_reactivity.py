@@ -430,6 +430,12 @@ def read_shm_snapshot(path: Path | None = None) -> BusSnapshot | None:
     except json.JSONDecodeError:
         log.debug("unified-reactivity: malformed SHM snapshot")
         return None
+    if not isinstance(data, dict):
+        log.debug(
+            "unified-reactivity: SHM root is %s, expected mapping",
+            type(data).__name__,
+        )
+        return None
     try:
         blended = AudioSignals.from_dict(data.get("blended", {}))
         per_source_raw = data.get("per_source", {}) or {}

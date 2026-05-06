@@ -448,6 +448,26 @@ class TestJsonRoundTrip:
         bad.write_text('{"blended": {}, "per_source": {}, "active_sources": "mixer,desk"}')
         assert read_shm_snapshot(bad) is None
 
+    @pytest.mark.parametrize(
+        "payload,kind",
+        [
+            ("null", "null"),
+            ('"a string"', "string"),
+            ("42", "int"),
+            ("[1, 2, 3]", "list"),
+        ],
+    )
+    def test_read_top_level_non_dict_returns_none(
+        self, tmp_path: Path, payload: str, kind: str
+    ) -> None:
+        """Schema drift: SHM file containing valid JSON whose root is not
+        an object (null, string, number, list) previously raised
+        AttributeError at ``data.get(...)`` before any of the per-field
+        isinstance checks could fire. Pin malformed → None at the root."""
+        bad = tmp_path / f"root_{kind}.json"
+        bad.write_text(payload)
+        assert read_shm_snapshot(bad) is None, f"root={kind} must return None"
+
     def test_from_dict_rejects_non_mapping_with_typeerror(self) -> None:
         """AudioSignals.from_dict on a non-dict payload raises TypeError.
         read_shm_snapshot relies on this to translate corruption into None
