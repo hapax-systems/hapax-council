@@ -62,14 +62,21 @@ TICK_EVERY_N: int = 6
 # next tick. Epsilon applied to alpha AND z_index_float.
 MIN_DELTA: float = 0.02
 ENABLE_ENV: str = "HAPAX_WARD_MODULATOR_ACTIVE"
-# At ~5 Hz, 0.16 alpha/tick crosses a 0.5 alpha span in ~600 ms:
-# fast enough to read as live response, slow enough to avoid hard pops.
-MAX_ALPHA_STEP: float = 0.16
-# 2026-05-06 variance recovery: z-plane movement was reading over-damped
-# after the blink-kill pass. Raising only the depth envelope restores
-# spatial variance while leaving alpha untouched; through blit_with_depth
-# this is still at most ~1.5% opacity multiplier movement per 5 Hz tick.
-MAX_Z_INDEX_STEP: float = 0.18
+# 2026-05-06 (operator directive: variance/coherence + tightness):
+# codifying the env-knock that operator landed via
+# `systemctl --user set-environment HAPAX_WARD_MODULATOR_MAX_ALPHA_STEP=0.5`
+# during variance recovery. The 0.16 default was over-damped after the
+# blink-kill pass; 0.5 lets a meaningful state shift propagate in ~200 ms
+# at 5 Hz. The no-global-flash invariant is preserved separately by the
+# per-event clamp + the alpha envelope being bounded to [0, 1] in
+# `blit_with_depth`, so this raises responsiveness without crossing the
+# directive. Knob retained via env override for future tuning.
+MAX_ALPHA_STEP: float = 0.5
+# Codifying the matching z-index env-knock. Per-tick spatial variance is
+# amplified within the bounded alpha envelope; `blit_with_depth`
+# constrains the resulting opacity multiplier so this contributes
+# spatial variance, not luma flash. Knob retained via env override.
+MAX_Z_INDEX_STEP: float = 0.4
 MAX_ALPHA_STEP_ENV: str = "HAPAX_WARD_MODULATOR_MAX_ALPHA_STEP"
 MAX_Z_INDEX_STEP_ENV: str = "HAPAX_WARD_MODULATOR_MAX_Z_INDEX_STEP"
 # Variance recovery after smoothing: amplify mid-range depth excursions
