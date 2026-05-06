@@ -259,3 +259,29 @@ class TestBuildOpsDbEmpty:
         result = run_sql(conn, "SELECT * FROM drift_items")
         assert result == "No results."
         conn.close()
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [
+        ("null", "null"),
+        ('"a string"', "string"),
+        ("[1, 2, 3]", "list"),
+        ("42", "int"),
+    ],
+)
+def test_build_ops_db_survives_non_dict_drift_report(tmp_path, payload, kind):
+    """Pin build_ops_db against a non-dict drift-report.json. The
+    _load_json -> _insert_drift_items chain previously crashed on
+    non-empty non-dict roots (passed the `if not report` check then
+    raised AttributeError on report.get('drift_items'))."""
+    drift_path = tmp_path / "drift-report.json"
+    drift_path.write_text(payload)
+    # Must not raise — _load_json's isinstance gate now coerces non-dict to None.
+    conn = build_ops_db(tmp_path)
+    result = run_sql(conn, "SELECT * FROM drift_items")
+    assert result == "No results.", f"non-dict root={kind} must yield empty drift_items"
+    conn.close()
