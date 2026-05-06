@@ -97,41 +97,63 @@ def _load_domain_registry() -> dict[str, dict]:
 
 
 def _get_sprint_summary() -> SprintSummary | None:
-    """Read sprint state from /dev/shm and return SprintSummary or None."""
+    """Read sprint state from /dev/shm and return SprintSummary or None.
+
+    Validates the JSON root is a mapping. The chained ``data.get(...)``
+    calls (current_sprint, measures_completed, etc.) raise AttributeError
+    on non-dict roots — the ``(OSError, json.JSONDecodeError)`` catch
+    missed it. Same shape as the other recent SHM-read fixes.
+    """
     sprint_path = Path("/dev/shm/hapax-sprint/state.json")
     try:
         data = json.loads(sprint_path.read_text())
-        return SprintSummary(
-            current_sprint=data.get("current_sprint", 0),
-            measures_completed=data.get("measures_completed", 0),
-            measures_total=data.get("measures_total", 0),
-            blocking_gate=data.get("blocking_gate"),
-            next_measure=data.get("next_measure"),
-            next_measure_title=data.get("next_measure_title"),
-            models=data.get("models", {}),
-        )
     except (OSError, json.JSONDecodeError):
         return None
+    if not isinstance(data, dict):
+        return None
+    models_raw = data.get("models", {})
+    return SprintSummary(
+        current_sprint=data.get("current_sprint", 0),
+        measures_completed=data.get("measures_completed", 0),
+        measures_total=data.get("measures_total", 0),
+        blocking_gate=data.get("blocking_gate"),
+        next_measure=data.get("next_measure"),
+        next_measure_title=data.get("next_measure_title"),
+        models=models_raw if isinstance(models_raw, dict) else {},
+    )
 
 
 def _sprint_measure_statuses() -> dict[str, str]:
-    """Read sprint measure statuses from /dev/shm."""
+    """Read sprint measure statuses from /dev/shm.
+
+    Same isinstance gate as :func:`_get_sprint_summary`.
+    """
     sprint_path = Path("/dev/shm/hapax-sprint/state.json")
     try:
         data = json.loads(sprint_path.read_text())
-        return data.get("measure_statuses", {})
     except (OSError, json.JSONDecodeError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    statuses = data.get("measure_statuses", {})
+    return statuses if isinstance(statuses, dict) else {}
 
 
 def _get_stimmung_stance() -> str:
-    """Read stimmung stance from /dev/shm."""
+    """Read stimmung stance from /dev/shm.
+
+    Same isinstance gate as :func:`_get_sprint_summary`. Default
+    ``"nominal"`` keeps the orientation panel rendering through
+    corruption.
+    """
     stimmung_path = Path("/dev/shm/hapax-stimmung/state.json")
     try:
         data = json.loads(stimmung_path.read_text())
-        return data.get("stance", "nominal")
     except (OSError, json.JSONDecodeError):
         return "nominal"
+    if not isinstance(data, dict):
+        return "nominal"
+    return data.get("stance", "nominal")
 
 
 def _get_briefing() -> tuple[str | None, str | None]:
