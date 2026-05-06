@@ -467,7 +467,8 @@ def _layout_intent_allows_default_static_success(intent: dict[str, Any]) -> bool
     if isinstance(raw, bool):
         return raw
     if isinstance(raw, str):
-        return _hosting_context_token(raw) in {"1", "allowed", "true", "yes"}
+        token = _hosting_context_token(raw)
+        return token not in {"", "0", "disallowed", "disabled", "false", "no", "none", "off"}
     return raw is not None and bool(raw)
 
 
@@ -553,6 +554,7 @@ _FORBIDDEN_LAYOUT_AUTHORITY_VALUE_TOKENS = frozenset(
 _FORBIDDEN_LAYOUT_AUTHORITY_VALUE_SUBSTRINGS = frozenset(
     {
         "broadcastbypass",
+        "camerahero",
         "compositorlayouts",
         "defaultjson",
         "defaultlayout",
@@ -572,6 +574,7 @@ _FORBIDDEN_LAYOUT_AUTHORITY_VALUE_SUBSTRINGS = frozenset(
 
 
 _FORBIDDEN_LAYOUT_AUTHORITY_VALUE_PATTERNS = (
+    re.compile(r"(^|[\s:/=._-])camera\s*[:=.]"),
     re.compile(r"(^|[\s:/=._-])(?:command|cue|layout|shm|surface)\s*[:=.]"),
     re.compile(r"\b(?:x|y|w|h|width|height|z|z_index|z-index|zindex)\s*[:=]\s*-?\d"),
     re.compile(r"\bswitch(?:_to)?(?:_layout)?\b"),
