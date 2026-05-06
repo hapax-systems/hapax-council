@@ -14,6 +14,10 @@ otherwise it samples uniformly across the 5 primitives so transition
 entropy stays well above the 0.6-bit acceptance bar without an
 ordered rotation. See :mod:`agents.studio_compositor.transition_primitives`
 for the primitive implementations.
+
+Variance-recovery pass (2026-05-06): autonomous cycling also jitters the
+post-transition hold by a bounded amount. The configured interval remains the
+mean, but changes no longer land on a fixed metronome.
 """
 
 import json
@@ -44,6 +48,9 @@ MUTATION_FILE = SHM / "graph-mutation.json"
 # If the director recruited a ``transition.*`` capability within this
 # window, defer to it; otherwise sample uniformly.
 _TRANSITION_BIAS_COOLDOWN_S = 20.0
+_TRANSITION_RUNTIME_RESERVE_S = 2.0
+_CYCLE_INTERVAL_JITTER_FRACTION = 0.18
+_CYCLE_INTERVAL_JITTER_MAX_S = 4.0
 
 
 def get_preset_names() -> list[str]:
@@ -89,6 +96,23 @@ def _load_cycle_graph(
 def _write_mutation(graph: dict) -> None:
     """Write a graph dict to the SHM mutation file (primitive callback)."""
     MUTATION_FILE.write_text(json.dumps(graph))
+
+
+def _cycle_sleep_duration(interval: float, *, rng: random.Random | None = None) -> float:
+    """Return the next autonomous-cycle hold duration.
+
+    ``interval`` remains the average wall-clock cadence after reserving
+    transition runtime, but each cycle gets bounded jitter so the preset
+    mutator does not read as a mechanical 30s timer. This avoids alpha or
+    camera/obscure changes entirely; variance is in when the next already-safe
+    transition begins.
+    """
+    hold = max(0.0, interval - _TRANSITION_RUNTIME_RESERVE_S)
+    jitter = min(hold * _CYCLE_INTERVAL_JITTER_FRACTION, _CYCLE_INTERVAL_JITTER_MAX_S)
+    if jitter <= 0.0:
+        return hold
+    chooser = rng if rng is not None else random
+    return max(0.0, hold + chooser.uniform(-jitter, jitter))
 
 
 def _read_recruited_transition() -> str | None:
@@ -262,10 +286,12 @@ def run(interval: float = 30.0) -> None:
         transition_fn(current_graph, new_graph, _write_mutation)
         current_graph = new_graph
 
-        # Hold at full brightness for the interval (transition runtime
+        # Hold at full brightness for the interval. Transition runtime is
         # bounded by primitive constants — at most ~1.4 s for the longest
-        # primitive, well within the original 2 s subtraction).
-        time.sleep(max(0, interval - 2.0))
+        # primitive, within the 2 s reserve. The hold itself gets bounded
+        # jitter so autonomous mutation cadence regains variance without
+        # changing any blink/privacy-sensitive render paths.
+        time.sleep(_cycle_sleep_duration(interval))
 
 
 if __name__ == "__main__":

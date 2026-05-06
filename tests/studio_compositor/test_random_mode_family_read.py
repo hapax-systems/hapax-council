@@ -137,3 +137,23 @@ def test_cycle_graph_loader_returns_none_for_missing_preset(
 ) -> None:
     monkeypatch.setattr(random_mode, "load_preset_graph", lambda _name: None)
     assert random_mode._load_cycle_graph("missing") is None
+
+
+def test_cycle_sleep_duration_jitters_hold_without_changing_average() -> None:
+    samples = [
+        random_mode._cycle_sleep_duration(30.0, rng=random_mode.random.Random(seed))
+        for seed in range(100)
+    ]
+
+    # 30s interval reserves 2s for transition runtime, then jitters the
+    # 28s hold by the capped +/-4s window. This restores cadence variance
+    # without touching alpha, camera, or face-obscure paths.
+    assert min(samples) >= 24.0
+    assert max(samples) <= 32.0
+    assert any(sample < 27.0 for sample in samples)
+    assert any(sample > 29.0 for sample in samples)
+    assert sum(samples) / len(samples) == pytest.approx(28.0, abs=0.8)
+
+
+def test_cycle_sleep_duration_preserves_zero_hold_for_short_intervals() -> None:
+    assert random_mode._cycle_sleep_duration(1.5, rng=random_mode.random.Random(1)) == 0.0
