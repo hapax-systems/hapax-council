@@ -318,10 +318,11 @@ def test_overlay_zones_cairo_source_render_into_empty_canvas():
     cr = cairo.Context(surface)
     source.render(cr, 640, 360, t=0.0, state={})
     surface.flush()  # must not raise
-    # Default configs yield three zones: main + lyrics + research (the
-    # latter added in PR #989 for LRR Phase 8 §12 — research overlay
-    # zone gated on the active objective).
-    assert len(source.zones) == 3
+    # Default configs yield four zones: main + research + lyrics +
+    # right_marker. ``research`` (LRR Phase 8 §12) gates on the active
+    # objective; ``right_marker`` fills the right column when the
+    # lyrics file is empty.
+    assert len(source.zones) == 4
 
 
 def test_overlay_zone_manager_facade_render_is_a_noop_when_surface_missing():
