@@ -64,15 +64,7 @@ class GraphRuntime:
     def apply_patch(self, patch: GraphPatch) -> None:
         if not self._current_graph:
             return
-        g = copy.deepcopy(self._current_graph)
-        for nid in patch.remove_nodes:
-            g.nodes.pop(nid, None)
-        for nid, n in patch.add_nodes.items():
-            g.nodes[nid] = n
-        for e in patch.remove_edges:
-            if e in g.edges:
-                g.edges.remove(e)
-        g.edges.extend(patch.add_edges)
+        g = copy.deepcopy(self._current_graph).apply_patch(patch)
         old = self._current_plan
         plan = self._compiler.compile(g)
         self._current_graph = g

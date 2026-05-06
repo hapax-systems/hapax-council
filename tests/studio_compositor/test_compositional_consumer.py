@@ -23,6 +23,8 @@ def tmp_shm(monkeypatch, tmp_path):
     monkeypatch.setattr(cc, "_RECENT_RECRUITMENT", tmp_path / "recent-recruitment.json")
     monkeypatch.setattr(cc, "_YOUTUBE_DIRECTION", tmp_path / "youtube-direction.json")
     monkeypatch.setattr(cc, "_STREAM_MODE_INTENT", tmp_path / "stream-mode-intent.json")
+    monkeypatch.setattr(cc, "_PARAMETRIC_ENVELOPES", tmp_path / "parametric-envelopes.json")
+    monkeypatch.setattr(cc, "_SEGMENT_CUE_HOLD", tmp_path / "segment-cue-hold.json")
     return tmp_path
 
 
@@ -176,6 +178,7 @@ class TestStructuralIntentAggressiveEmphasis:
         import agents.studio_compositor.ward_properties as wp
 
         monkeypatch.setattr(wp, "WARD_PROPERTIES_PATH", tmp_path / "ward-properties.json")
+        monkeypatch.setattr(cc, "_SEGMENT_CUE_HOLD", tmp_path / "segment-cue-hold.json")
         wp.clear_ward_properties_cache()
 
         original_atomic = cc._atomic_write_json
@@ -407,6 +410,7 @@ class TestB2IntentFamilyRoutingAggressiveEnvelope:
             cc, "_OVERLAY_ALPHA_OVERRIDES", tmp_path / "overlay-alpha-overrides.json"
         )
         monkeypatch.setattr(cc, "_RECENT_RECRUITMENT", tmp_path / "recent-recruitment.json")
+        monkeypatch.setattr(cc, "_SEGMENT_CUE_HOLD", tmp_path / "segment-cue-hold.json")
         return tmp_path
 
     def _read_ward(self, tmp_path, ward_id):
