@@ -1,6 +1,6 @@
 {
   "name": "Modulation Pulse Strobe",
-  "description": "Modulation-pulse lineage (1/2): strobe + breathing + scanlines \u2014 analog pulse-width-modulation aesthetic. Channels FM-radio analog modulation into visible light pulses. Lineage: modulation-pulse.",
+  "description": "Modulation-pulse lineage (1/2): smooth breathing + scanlines — analog pulse-width-modulation aesthetic via amplitude swell, NOT hard flash. Operator invariant feedback_no_blinking_homage_wards forbids strobe nodes; pulse character preserved via faster breathing rate. Lineage: modulation-pulse.",
   "lineage": "modulation-pulse",
   "transition_ms": 1100,
   "nodes": {
@@ -13,27 +13,19 @@
         "hue_rotate": 0
       }
     },
-    "strobe_pulse": {
-      "type": "strobe",
-      "params": {
-        "frequency": 4.5,
-        "duty_cycle": 0.4,
-        "depth": 0.55
-      }
-    },
-    "breathing_slow": {
+    "breathing_pulse": {
       "type": "breathing",
       "params": {
-        "frequency": 0.25,
-        "depth": 0.18
+        "rate": 0.85,
+        "amplitude": 0.32
       }
     },
     "scanlines_pulse": {
       "type": "scanlines",
       "params": {
-        "amount": 0.22,
-        "frequency": 480,
-        "speed": 0.3
+        "opacity": 0.22,
+        "spacing": 480,
+        "thickness": 0.3
       }
     },
     "out": {
@@ -52,14 +44,10 @@
     ],
     [
       "colorgrade",
-      "strobe_pulse"
+      "breathing_pulse"
     ],
     [
-      "strobe_pulse",
-      "breathing_slow"
-    ],
-    [
-      "breathing_slow",
+      "breathing_pulse",
       "scanlines_pulse"
     ],
     [
