@@ -79,6 +79,25 @@ def test_claim_routing_excludes_command_r_for_open_world_without_supplied_eviden
     }
 
 
+def test_knowledge_recruitment_guidance_is_grounded_but_not_local_source_acquired() -> None:
+    without_supplied = route_candidates_for_claim(
+        "knowledge_recruitment_guidance_request",
+        supplied_evidence=False,
+    )
+    with_supplied = route_candidates_for_claim(
+        "knowledge_recruitment_guidance_request",
+        supplied_evidence=True,
+    )
+
+    assert claim_requires_grounding("knowledge_recruitment_guidance_request") is True
+    assert "local_supplied_evidence_command_r" not in {
+        provider.provider_id for provider in without_supplied
+    }
+    assert "local_supplied_evidence_command_r" in {
+        provider.provider_id for provider in with_supplied
+    }
+
+
 def test_eval_suite_validator_accepts_seed_suite_and_required_categories() -> None:
     suite = _eval_suite()
     items = suite["eval_items"]
