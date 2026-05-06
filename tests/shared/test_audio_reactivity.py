@@ -400,11 +400,13 @@ class TestJsonRoundTrip:
         data = json.loads(shm_path.read_text())
         assert "blended" in data
         assert "per_source" in data
+        assert isinstance(data["published_at"], (int, float))
         assert data["active_sources"] == ["mixer"]
 
         # read_shm_snapshot reconstructs all 9 fields
-        restored = read_shm_snapshot(shm_path)
+        restored = read_shm_snapshot(shm_path, max_age_s=None)
         assert restored is not None
+        assert restored.published_at == pytest.approx(float(data["published_at"]))
         assert restored.blended.rms == pytest.approx(0.123)
         assert restored.blended.onset == pytest.approx(0.234)
         assert restored.blended.centroid == pytest.approx(0.345)
@@ -447,6 +449,54 @@ class TestJsonRoundTrip:
         bad = tmp_path / "active_sources_string.json"
         bad.write_text('{"blended": {}, "per_source": {}, "active_sources": "mixer,desk"}')
         assert read_shm_snapshot(bad) is None
+
+    def test_read_stale_timestamped_snapshot_returns_none(self, tmp_path: Path) -> None:
+        old = tmp_path / "old.json"
+        old.write_text(
+            json.dumps(
+                {
+                    "blended": AudioSignals.zero().to_dict(),
+                    "per_source": {},
+                    "active_sources": [],
+                    "published_at": 100.0,
+                }
+            )
+        )
+
+        assert read_shm_snapshot(old, max_age_s=0.1, now=100.2) is None
+
+    def test_read_fresh_timestamped_snapshot_returns_snapshot(self, tmp_path: Path) -> None:
+        fresh = tmp_path / "fresh.json"
+        fresh.write_text(
+            json.dumps(
+                {
+                    "blended": AudioSignals.zero().to_dict(),
+                    "per_source": {},
+                    "active_sources": [],
+                    "published_at": 100.0,
+                }
+            )
+        )
+
+        restored = read_shm_snapshot(fresh, max_age_s=0.1, now=100.05)
+        assert restored is not None
+        assert restored.published_at == pytest.approx(100.0)
+
+    def test_read_legacy_untimestamped_snapshot_remains_accepted(self, tmp_path: Path) -> None:
+        legacy = tmp_path / "legacy.json"
+        legacy.write_text(
+            json.dumps(
+                {
+                    "blended": AudioSignals.zero().to_dict(),
+                    "per_source": {},
+                    "active_sources": [],
+                }
+            )
+        )
+
+        restored = read_shm_snapshot(legacy, max_age_s=0.1, now=999.0)
+        assert restored is not None
+        assert restored.published_at is None
 
     @pytest.mark.parametrize(
         "payload,kind",
