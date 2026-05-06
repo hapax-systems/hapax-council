@@ -71,6 +71,17 @@ class TestPickFamilyWithRoleBias:
         result = pick_family_with_role_bias("calm-textural", "wind_down", rng=rng)
         assert result == "calm-textural"
 
+    def test_aligned_alias_resolves_before_bias(self) -> None:
+        """Aliases are aligned by their canonical family.
+
+        ``audio-abstract`` resolves to ``neutral-ambient``; roles that
+        prefer neutral ambient must not treat the alias as misaligned
+        and reroll away from it.
+        """
+        rng = Random(0)
+        result = pick_family_with_role_bias("audio-abstract", "interlude", rng=rng)
+        assert result == "neutral-ambient"
+
     def test_no_role_passes_through(self) -> None:
         """No active programme (role=None) → no bias."""
         result = pick_family_with_role_bias("glitch-dense", None)
