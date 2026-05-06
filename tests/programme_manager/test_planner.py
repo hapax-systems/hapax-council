@@ -137,6 +137,20 @@ class TestHappyPath:
         assert plan is not None
         assert len(plan.programmes) == 2
 
+    def test_one_programme_target_is_explicit_in_prompt(self) -> None:
+        prompts: list[str] = []
+
+        def capture(prompt: str) -> str:
+            prompts.append(prompt)
+            return json.dumps(_well_formed_plan_payload(role=ProgrammeRole.TIER_LIST))
+
+        planner = ProgrammePlanner(llm_fn=capture)
+        plan = planner.plan(show_id="show-test-001", target_programmes=1)
+
+        assert plan is not None
+        assert "emit exactly 1 segmented-content programme" in prompts[0]
+        assert "soft-prior programme proposals" in prompts[0]
+
     def test_default_model_is_resident_command_r(self) -> None:
         """Pin the only production planner model.
 
