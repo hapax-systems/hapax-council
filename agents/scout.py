@@ -145,12 +145,14 @@ def load_decisions(path: Path | None = None) -> dict[str, dict]:
             continue
         try:
             record = json.loads(line)
-            component = record.get("component", "")
-            existing = decisions.get(component)
-            if existing is None or record.get("timestamp", "") > existing.get("timestamp", ""):
-                decisions[component] = record
         except json.JSONDecodeError:
             continue
+        if not isinstance(record, dict):
+            continue
+        component = record.get("component", "")
+        existing = decisions.get(component)
+        if existing is None or record.get("timestamp", "") > existing.get("timestamp", ""):
+            decisions[component] = record
     return decisions
 
 
