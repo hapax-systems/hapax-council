@@ -160,3 +160,22 @@ class TestResolveUrl:
             )
         )
         assert browser_services.resolve_url("gh", "static") == "https://github.com/static"
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_load_registry_non_dict_root_returns_empty(fake_registry, payload, kind):
+    """Pin load_registry against non-dict JSON. is_allowed and
+    resolve_url immediately call registry.values() / registry.get() —
+    a non-dict root previously raised AttributeError out of browser
+    allowlist enforcement."""
+    fake_registry.write_text(payload)
+    assert browser_services.load_registry() == {}, f"non-dict root={kind} must yield empty dict"
+    # Critical: downstream callers must work without raising.
+    assert browser_services.is_allowed("https://example.com") is False
+    assert browser_services.resolve_url("any", "any") is None
