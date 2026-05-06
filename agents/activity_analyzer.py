@@ -412,10 +412,11 @@ def _collect_drift_trend_impl(since: datetime) -> DriftTrend:
     if DRIFT_REPORT.is_file():
         try:
             report = json.loads(DRIFT_REPORT.read_text())
+        except (json.JSONDecodeError, OSError):
+            report = None
+        if isinstance(report, dict):
             trend.latest_drift_count = len(report.get("drift_items", []))
             trend.latest_summary = report.get("summary", "")[:200]
-        except (json.JSONDecodeError, OSError):
-            pass
 
     # History count
     if DRIFT_HISTORY.is_file():
@@ -442,10 +443,13 @@ def collect_digest_trend(since: datetime) -> DigestTrend:
     if DIGEST_REPORT.is_file():
         try:
             report = json.loads(DIGEST_REPORT.read_text())
-            trend.latest_headline = report.get("headline", "")[:200]
-            trend.latest_new_documents = report.get("stats", {}).get("new_documents", 0)
         except (json.JSONDecodeError, OSError):
-            pass
+            report = None
+        if isinstance(report, dict):
+            trend.latest_headline = report.get("headline", "")[:200]
+            stats = report.get("stats", {})
+            if isinstance(stats, dict):
+                trend.latest_new_documents = stats.get("new_documents", 0)
 
     # History count
     if DIGEST_HISTORY.is_file():
@@ -472,11 +476,12 @@ def collect_knowledge_maint_trend(since: datetime) -> KnowledgeMaintTrend:
     if KNOWLEDGE_MAINT_REPORT.is_file():
         try:
             report = json.loads(KNOWLEDGE_MAINT_REPORT.read_text())
+        except (json.JSONDecodeError, OSError):
+            report = None
+        if isinstance(report, dict):
             trend.latest_pruned = report.get("total_pruned", 0)
             trend.latest_merged = report.get("total_merged", 0)
             trend.latest_warnings = len(report.get("warnings", []))
-        except (json.JSONDecodeError, OSError):
-            pass
 
     # History count
     if KNOWLEDGE_MAINT_HISTORY.is_file():
@@ -689,9 +694,11 @@ def _manifest_age() -> str:
         return ""
     try:
         data = json.loads(manifest_path.read_text())
-        return data.get("timestamp", "")
     except (json.JSONDecodeError, OSError):
         return ""
+    if not isinstance(data, dict):
+        return ""
+    return data.get("timestamp", "")
 
 
 # ── Main collector ───────────────────────────────────────────────────────────
