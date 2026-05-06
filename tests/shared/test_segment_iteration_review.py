@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 from agents.hapax_daimonion import daily_segment_prep as prep
+from scripts.review_one_segment_iteration import main as review_cli_main
 from shared.segment_iteration_review import review_one_segment_iteration
 from shared.segment_quality_actionability import (
     LAYOUT_RESPONSIBILITY_VERSION,
@@ -106,34 +109,6 @@ WEAK_SOURCE_SCRIPT = [
 ]
 
 
-TEAM_RECEIPTS = [
-    {
-        "role": "script_quality",
-        "verdict": "approved",
-        "reviewer": "cx-gold",
-        "checked_at": "2026-05-06T04:00:00Z",
-        "receipt_id": "script-quality-pass",
-        "notes": "Script clears canary fidelity bar.",
-    },
-    {
-        "role": "actionability_layout",
-        "verdict": "approved",
-        "reviewer": "cx-gold",
-        "checked_at": "2026-05-06T04:00:00Z",
-        "receipt_id": "actionability-layout-pass",
-        "notes": "Visible/doable claims align to layout needs.",
-    },
-    {
-        "role": "layout_responsibility",
-        "verdict": "approved",
-        "reviewer": "cx-gold",
-        "checked_at": "2026-05-06T04:00:00Z",
-        "receipt_id": "layout-responsibility-pass",
-        "notes": "Prepared artifact remains proposal-only pending runtime readback.",
-    },
-]
-
-
 def _artifact(script: list[str]) -> dict[str, Any]:
     beats = ["manifest gate", "layout responsibility", "actionability close"]
     prompt_sha256 = prep._sha256_text("prompt")
@@ -157,6 +132,7 @@ def _artifact(script: list[str]) -> dict[str, Any]:
         "segment_beats": beats,
         "prepared_script": script,
         "segment_quality_rubric_version": QUALITY_RUBRIC_VERSION,
+        "actionability_rubric_version": prep.ACTIONABILITY_RUBRIC_VERSION,
         "layout_responsibility_version": LAYOUT_RESPONSIBILITY_VERSION,
         "hosting_context": layout["hosting_context"],
         "segment_quality_report": prep.score_segment_quality(script, beats),
@@ -195,6 +171,43 @@ def _artifact(script: list[str]) -> dict[str, Any]:
     return payload
 
 
+def _team_receipts_for(artifact: dict[str, Any]) -> list[dict[str, str]]:
+    base = {
+        "artifact_sha256": artifact["artifact_sha256"],
+        "programme_id": artifact["programme_id"],
+        "iteration_id": artifact["prep_session_id"],
+    }
+    return [
+        {
+            **base,
+            "role": "script_quality",
+            "verdict": "approved",
+            "reviewer": "cx-gold",
+            "checked_at": "2026-05-06T04:00:00Z",
+            "receipt_id": "script-quality-pass",
+            "notes": "Script clears canary fidelity with concrete stakes and grounded prior.",
+        },
+        {
+            **base,
+            "role": "actionability_layout",
+            "verdict": "approved",
+            "reviewer": "cx-gold",
+            "checked_at": "2026-05-06T04:00:00Z",
+            "receipt_id": "actionability-layout-pass",
+            "notes": "Visible and doable claims align to layout needs and evidence refs.",
+        },
+        {
+            **base,
+            "role": "layout_responsibility",
+            "verdict": "approved",
+            "reviewer": "cx-gold",
+            "checked_at": "2026-05-06T04:00:00Z",
+            "receipt_id": "layout-responsibility-pass",
+            "notes": "Prepared artifact stays proposal-only pending witnessed runtime readback.",
+        },
+    ]
+
+
 def _failed_criteria(receipt: dict[str, Any]) -> set[str]:
     return {
         item["name"] for item in receipt["automated_gate"]["criteria"] if item["passed"] is False
@@ -204,6 +217,17 @@ def _failed_criteria(receipt: dict[str, Any]) -> set[str]:
 def _rehash_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
     artifact["artifact_sha256"] = prep._artifact_hash(artifact)
     return artifact
+
+
+def _write_manifest_artifact(tmp_path: Path, artifact: dict[str, Any]) -> Path:
+    today = prep._today_dir(tmp_path)
+    path = today / prep._programme_artifact_name(artifact["programme_id"])
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+    (today / "manifest.json").write_text(
+        json.dumps({"programmes": [path.name]}),
+        encoding="utf-8",
+    )
+    return path
 
 
 def test_one_segment_review_blocks_until_team_critique_receipts_pass() -> None:
@@ -220,20 +244,114 @@ def test_one_segment_review_blocks_until_team_critique_receipts_pass() -> None:
 
 
 def test_one_segment_review_accepts_after_automation_and_team_receipts() -> None:
+    artifact = _artifact(EXCELLENT_SCRIPT)
     receipt = review_one_segment_iteration(
-        [_artifact(EXCELLENT_SCRIPT)],
-        team_critique_receipts=TEAM_RECEIPTS,
+        [artifact],
+        team_critique_receipts=_team_receipts_for(artifact),
     )
 
     assert receipt["automated_gate"]["passed"] is True
     assert receipt["team_critique_loop"]["passed"] is True
     assert receipt["ready_for_next_nine"] is True
     assert receipt["decision"] == "ready_for_next_nine"
+    assert receipt["next_nine_gate_mode"] == "blocking_review_receipt"
     assert receipt["resident_model_continuity"] == {
         "expected_model": prep.RESIDENT_PREP_MODEL,
         "no_qwen": True,
         "no_unload_or_swap": True,
     }
+
+
+def test_one_segment_review_accepts_real_loader_objects_without_enriched_hash_mismatch(
+    tmp_path: Path,
+) -> None:
+    artifact = _artifact(EXCELLENT_SCRIPT)
+    path = _write_manifest_artifact(tmp_path, artifact)
+    loaded = prep.load_prepped_programmes(tmp_path)
+
+    assert len(loaded) == 1
+    assert loaded[0]["acceptance_gate"] == "daily_segment_prep.load_prepped_programmes"
+    assert loaded[0]["artifact_path"] == str(path)
+    assert loaded[0]["runtime_layout_validation"] != artifact["runtime_layout_validation"]
+
+    receipt = review_one_segment_iteration(
+        loaded,
+        team_critique_receipts=_team_receipts_for(artifact),
+    )
+
+    assert receipt["automated_gate"]["passed"] is True
+    assert receipt["ready_for_next_nine"] is True
+    assert receipt["artifact_path"] == str(path)
+    assert not {
+        "artifact.hash_receipt",
+        "layout.responsible_proposal_only",
+        "layout.intent_receipt_freshness",
+    } & _failed_criteria(receipt)
+    assert receipt["artifact_extraction"] == {
+        "accepted_artifact_count": 1,
+        "manifest_gate": True,
+        "loader_acceptance_gate": "daily_segment_prep.load_prepped_programmes",
+        "raw_loader_separation": True,
+    }
+
+
+def test_review_cli_uses_loader_path_but_reviews_saved_raw_artifact(
+    tmp_path: Path,
+) -> None:
+    artifact = _artifact(EXCELLENT_SCRIPT)
+    _write_manifest_artifact(tmp_path, artifact)
+    team_path = tmp_path / "team-receipts.json"
+    receipt_path = tmp_path / "review-receipt.json"
+    team_path.write_text(
+        json.dumps({"team_critique_receipts": _team_receipts_for(artifact)}),
+        encoding="utf-8",
+    )
+
+    assert (
+        review_cli_main(
+            [
+                "--prep-dir",
+                str(tmp_path),
+                "--team-receipts",
+                str(team_path),
+                "--receipt-out",
+                str(receipt_path),
+            ]
+        )
+        == 0
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+
+    assert receipt["automated_gate"]["passed"] is True
+    assert receipt["ready_for_next_nine"] is True
+    assert "artifact.hash_receipt" not in _failed_criteria(receipt)
+
+
+def test_team_critique_receipts_bind_to_artifact_programme_and_iteration() -> None:
+    artifact = _artifact(EXCELLENT_SCRIPT)
+    receipts = _team_receipts_for(artifact)
+    receipts[0]["artifact_sha256"] = "0" * 64
+    receipts[1]["iteration_id"] = "stale-iteration"
+    receipts[2]["notes"] = "approved"
+
+    receipt = review_one_segment_iteration(
+        [artifact],
+        team_critique_receipts=receipts,
+    )
+
+    assert receipt["automated_gate"]["passed"] is True
+    assert receipt["ready_for_next_nine"] is False
+    assert receipt["team_critique_loop"]["passed"] is False
+    assert receipt["team_critique_loop"]["pending_roles"] == [
+        "script_quality",
+        "actionability_layout",
+        "layout_responsibility",
+    ]
+    assert receipt["team_critique_loop"]["malformed_receipts"] == [
+        "receipt[0] artifact_sha256 does not match canary artifact",
+        "receipt[1] iteration_id does not match canary iteration",
+        "receipt[2] notes are not substantive",
+    ]
 
 
 def test_one_segment_review_requires_exactly_one_manifest_accepted_artifact() -> None:
@@ -249,9 +367,10 @@ def test_one_segment_review_requires_exactly_one_manifest_accepted_artifact() ->
 
 
 def test_one_segment_review_rejects_generic_script_even_with_team_receipts() -> None:
+    artifact = _artifact(GENERIC_SCRIPT)
     receipt = review_one_segment_iteration(
-        [_artifact(GENERIC_SCRIPT)],
-        team_critique_receipts=TEAM_RECEIPTS,
+        [artifact],
+        team_critique_receipts=_team_receipts_for(artifact),
     )
 
     assert receipt["ready_for_next_nine"] is False
@@ -259,9 +378,10 @@ def test_one_segment_review_rejects_generic_script_even_with_team_receipts() -> 
 
 
 def test_one_segment_review_rejects_single_action_kind_even_if_script_is_sourceful() -> None:
+    artifact = _artifact(ONE_ACTION_KIND_SCRIPT)
     receipt = review_one_segment_iteration(
-        [_artifact(ONE_ACTION_KIND_SCRIPT)],
-        team_critique_receipts=TEAM_RECEIPTS,
+        [artifact],
+        team_critique_receipts=_team_receipts_for(artifact),
     )
 
     assert receipt["ready_for_next_nine"] is False
@@ -269,9 +389,10 @@ def test_one_segment_review_rejects_single_action_kind_even_if_script_is_sourcef
 
 
 def test_one_segment_review_rejects_weak_source_fidelity() -> None:
+    artifact = _artifact(WEAK_SOURCE_SCRIPT)
     receipt = review_one_segment_iteration(
-        [_artifact(WEAK_SOURCE_SCRIPT)],
-        team_critique_receipts=TEAM_RECEIPTS,
+        [artifact],
+        team_critique_receipts=_team_receipts_for(artifact),
     )
 
     assert receipt["ready_for_next_nine"] is False
@@ -290,7 +411,7 @@ def test_one_segment_review_rejects_wrong_model_and_layout_success_laundering() 
 
     receipt = review_one_segment_iteration(
         [artifact],
-        team_critique_receipts=TEAM_RECEIPTS,
+        team_critique_receipts=_team_receipts_for(artifact),
     )
 
     assert receipt["ready_for_next_nine"] is False
@@ -311,7 +432,7 @@ def test_one_segment_review_rejects_stale_prior_source_binding() -> None:
 
     receipt = review_one_segment_iteration(
         [artifact],
-        team_critique_receipts=TEAM_RECEIPTS,
+        team_critique_receipts=_team_receipts_for(artifact),
     )
 
     assert receipt["ready_for_next_nine"] is False
@@ -327,8 +448,26 @@ def test_one_segment_review_rejects_camera_or_spoken_only_layout_laundering() ->
 
     receipt = review_one_segment_iteration(
         [artifact],
-        team_critique_receipts=TEAM_RECEIPTS,
+        team_critique_receipts=_team_receipts_for(artifact),
     )
 
     assert receipt["ready_for_next_nine"] is False
     assert "layout.no_static_camera_spoken_laundering" in _failed_criteria(receipt)
+
+
+def test_one_segment_review_replays_hard_layout_contract_for_bounded_vocabulary() -> None:
+    for forbidden_posture in ("camera_subject", "spoken_only_fallback"):
+        artifact = _artifact(EXCELLENT_SCRIPT)
+        artifact["layout_decision_contract"] = {
+            **artifact["layout_decision_contract"],
+            "bounded_vocabulary": ["segment_primary", forbidden_posture],
+        }
+        _rehash_artifact(artifact)
+
+        receipt = review_one_segment_iteration(
+            [artifact],
+            team_critique_receipts=_team_receipts_for(artifact),
+        )
+
+        assert receipt["ready_for_next_nine"] is False
+        assert "layout.hard_contract_replay" in _failed_criteria(receipt)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from shared.resident_command_r import RESIDENT_COMMAND_R_MODEL
@@ -53,6 +54,7 @@ REQUIRED_TEAM_CRITIQUE_ROLES = (
 )
 PASSING_TEAM_VERDICTS = frozenset({"approved", "pass", "passed"})
 MIN_CONCRETE_ACTION_KINDS = 2
+MIN_TEAM_CRITIQUE_NOTE_WORDS = 6
 FORBIDDEN_LAYOUT_LAUNDERING_TERMS = frozenset(
     {
         "camera",
@@ -65,6 +67,18 @@ FORBIDDEN_LAYOUT_LAUNDERING_TERMS = frozenset(
         "default",
         "garage-door",
         "garage_door",
+    }
+)
+LOADER_ACCEPTANCE_GATE = "daily_segment_prep.load_prepped_programmes"
+_LOADER_METADATA_KEYS = frozenset(
+    {
+        "accepted",
+        "acceptance_gate",
+        "artifact_path",
+        "artifact_path_diagnostic",
+        "prepared_artifact_ref",
+        "projected_layout_contract",
+        "runtime_actionability_validation",
     }
 )
 
@@ -111,6 +125,53 @@ def _string_list(value: Any) -> list[str]:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _artifact_iteration_id(artifact: Mapping[str, Any]) -> str:
+    for key in ("segment_iteration_id", "iteration_id", "prep_session_id"):
+        value = artifact.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _loader_metadata(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: candidate[key] for key in _LOADER_METADATA_KEYS if key in candidate}
+
+
+def _read_raw_artifact(path_value: Any) -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(path_value, str) or not path_value.strip():
+        return None, "loader-accepted artifact did not expose artifact_path"
+    path = Path(path_value)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return None, f"could not read raw artifact at {path}: {exc}"
+    if not isinstance(data, dict):
+        return None, f"raw artifact at {path} is not a JSON object"
+    return data, None
+
+
+def _separate_review_artifact(
+    candidate: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], str | None]:
+    """Return saved raw artifact bytes separate from loader acceptance metadata."""
+
+    raw_artifact = candidate.get("raw_artifact")
+    if isinstance(raw_artifact, Mapping):
+        metadata = _loader_metadata(_mapping(candidate.get("loader_metadata")))
+        metadata.update(_loader_metadata(candidate))
+        return dict(raw_artifact), metadata, None
+
+    metadata = _loader_metadata(candidate)
+    if candidate.get("acceptance_gate") == LOADER_ACCEPTANCE_GATE:
+        path = candidate.get("artifact_path") or candidate.get("artifact_path_diagnostic")
+        raw, error = _read_raw_artifact(path)
+        if raw is not None:
+            return raw, metadata, None
+        return dict(candidate), metadata, error
+
+    return dict(candidate), metadata, None
 
 
 def _score_floor_failures(scores: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
@@ -213,8 +274,65 @@ def _layout_laundering_terms(value: Any, *, path: str = "$") -> list[dict[str, s
     return found
 
 
+def _forbidden_bounded_vocabulary_terms(
+    artifact: Mapping[str, Any],
+) -> list[dict[str, str]]:
+    contract = _mapping(artifact.get("layout_decision_contract"))
+    vocabulary = contract.get("bounded_vocabulary")
+    if not isinstance(vocabulary, list):
+        return []
+    forbidden = {"camera_subject", "spoken_only_fallback"}
+    return [
+        {
+            "path": f"$.layout_decision_contract.bounded_vocabulary[{index}]",
+            "value": item,
+        }
+        for index, item in enumerate(vocabulary)
+        if isinstance(item, str) and item in forbidden
+    ]
+
+
+def _prepared_layout_contract_replay(
+    artifact: Mapping[str, Any],
+    loader_metadata: Mapping[str, Any],
+) -> dict[str, Any]:
+    forbidden_bounded_vocabulary = _forbidden_bounded_vocabulary_terms(artifact)
+    if forbidden_bounded_vocabulary:
+        return {
+            "ok": False,
+            "error": "responsible layout_decision_contract advertises forbidden bounded_vocabulary",
+            "forbidden_bounded_vocabulary": forbidden_bounded_vocabulary,
+        }
+    try:
+        from agents.hapax_daimonion.segment_layout_contract import (
+            validate_prepared_segment_artifact,
+        )
+
+        contract = validate_prepared_segment_artifact(
+            artifact,
+            artifact_path=str(
+                loader_metadata.get("artifact_path")
+                or loader_metadata.get("artifact_path_diagnostic")
+                or ""
+            )
+            or None,
+            artifact_sha256=str(artifact.get("artifact_sha256") or "") or None,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+    return {
+        "ok": True,
+        "contract": contract.model_dump(mode="json", by_alias=True),
+    }
+
+
 def _team_critique_loop(
     receipts: Sequence[Mapping[str, Any]] | None,
+    *,
+    artifact_sha256: str,
+    programme_id: str,
+    iteration_id: str,
 ) -> dict[str, Any]:
     normalized: list[dict[str, Any]] = []
     approved_roles: set[str] = set()
@@ -228,12 +346,18 @@ def _team_critique_loop(
         checked_at = str(receipt.get("checked_at") or "").strip()
         receipt_id = str(receipt.get("receipt_id") or receipt.get("id") or "").strip()
         notes = str(receipt.get("notes") or "").strip()
+        receipt_artifact_sha256 = str(receipt.get("artifact_sha256") or "").strip()
+        receipt_programme_id = str(receipt.get("programme_id") or "").strip()
+        receipt_iteration_id = str(receipt.get("iteration_id") or "").strip()
         entry = {
             "role": role,
             "verdict": verdict,
             "reviewer": reviewer,
             "checked_at": checked_at,
             "receipt_id": receipt_id,
+            "artifact_sha256": receipt_artifact_sha256,
+            "programme_id": receipt_programme_id,
+            "iteration_id": receipt_iteration_id,
             "notes": notes,
         }
         normalized.append(entry)
@@ -246,11 +370,27 @@ def _team_critique_loop(
                 "reviewer": reviewer,
                 "checked_at": checked_at,
                 "receipt_id": receipt_id,
+                "artifact_sha256": receipt_artifact_sha256,
+                "programme_id": receipt_programme_id,
+                "iteration_id": receipt_iteration_id,
+                "notes": notes,
             }.items()
             if not value
         ]
         if missing:
             malformed.append(f"receipt[{index}] missing {','.join(missing)}")
+            continue
+        if receipt_artifact_sha256 != artifact_sha256:
+            malformed.append(f"receipt[{index}] artifact_sha256 does not match canary artifact")
+            continue
+        if receipt_programme_id != programme_id:
+            malformed.append(f"receipt[{index}] programme_id does not match canary artifact")
+            continue
+        if receipt_iteration_id != iteration_id:
+            malformed.append(f"receipt[{index}] iteration_id does not match canary iteration")
+            continue
+        if len(notes.split()) < MIN_TEAM_CRITIQUE_NOTE_WORDS:
+            malformed.append(f"receipt[{index}] notes are not substantive")
             continue
         if role not in REQUIRED_TEAM_CRITIQUE_ROLES:
             malformed.append(f"receipt[{index}] has unsupported role {role!r}")
@@ -270,7 +410,7 @@ def _team_critique_loop(
         "passed": not pending_roles and not malformed and not blocking,
         "instructions": [
             "Review the single canary artifact before any next-nine generation.",
-            "Each reviewer records a receipt with role, verdict, reviewer, checked_at, receipt_id, and notes.",
+            "Each reviewer records a receipt with role, verdict, reviewer, checked_at, receipt_id, artifact_sha256, programme_id, iteration_id, and substantive notes.",
             "Approvals must cover script quality, actionability/layout fit, and layout-responsibility doctrine.",
             "Any revise/block verdict sends the method back to one-segment iteration.",
         ],
@@ -293,9 +433,15 @@ def review_one_segment_iteration(
         )
     ]
     if len(accepted_artifacts) != 1:
-        team = _team_critique_loop(team_critique_receipts)
+        team = _team_critique_loop(
+            team_critique_receipts,
+            artifact_sha256="",
+            programme_id="",
+            iteration_id="",
+        )
         return _receipt(
             artifact={},
+            loader_metadata={},
             accepted_artifact_count=len(accepted_artifacts),
             criteria=criteria,
             quality_report={},
@@ -304,12 +450,34 @@ def review_one_segment_iteration(
             team_critique_loop=team,
         )
 
-    artifact = dict(accepted_artifacts[0])
-    artifact_criteria, quality, actionability, layout = _review_artifact(artifact)
+    artifact, loader_metadata, separation_error = _separate_review_artifact(accepted_artifacts[0])
+    criteria.append(
+        _criterion(
+            "artifact.raw_loader_separation",
+            separation_error is None,
+            "review must hash/check the saved raw artifact separately from loader enrichment",
+            observed={
+                "loader_acceptance_gate": loader_metadata.get("acceptance_gate"),
+                "artifact_path": loader_metadata.get("artifact_path")
+                or loader_metadata.get("artifact_path_diagnostic"),
+                "error": separation_error,
+            },
+        )
+    )
+    artifact_criteria, quality, actionability, layout = _review_artifact(
+        artifact,
+        loader_metadata=loader_metadata,
+    )
     criteria.extend(artifact_criteria)
-    team = _team_critique_loop(team_critique_receipts)
+    team = _team_critique_loop(
+        team_critique_receipts,
+        artifact_sha256=str(artifact.get("artifact_sha256") or ""),
+        programme_id=str(artifact.get("programme_id") or ""),
+        iteration_id=_artifact_iteration_id(artifact),
+    )
     return _receipt(
         artifact=artifact,
+        loader_metadata=loader_metadata,
         accepted_artifact_count=1,
         criteria=criteria,
         quality_report=quality,
@@ -321,6 +489,8 @@ def review_one_segment_iteration(
 
 def _review_artifact(
     artifact: Mapping[str, Any],
+    *,
+    loader_metadata: Mapping[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], dict[str, Any]]:
     script = _string_list(artifact.get("prepared_script"))
     beats = _string_list(artifact.get("segment_beats"))
@@ -336,6 +506,7 @@ def _review_artifact(
     layout_contract = _mapping(artifact.get("layout_decision_contract"))
     actionability_alignment = _mapping(artifact.get("actionability_alignment"))
     source_hashes = _mapping(artifact.get("source_hashes"))
+    hard_contract_replay = _prepared_layout_contract_replay(artifact, loader_metadata)
     raw_llm_calls = artifact.get("llm_calls")
     llm_calls: list[Any] = raw_llm_calls if isinstance(raw_llm_calls, list) else []
     forbidden_layout_fields = forbidden_layout_authority_fields(dict(artifact))
@@ -409,6 +580,20 @@ def _review_artifact(
                 "prompt_sha256": artifact.get("prompt_sha256"),
                 "seed_sha256": artifact.get("seed_sha256"),
                 "llm_call_count": len(llm_calls),
+            },
+        ),
+        _criterion(
+            "layout.hard_contract_replay",
+            hard_contract_replay.get("ok") is True,
+            "review must replay the prepared segment layout contract gates before next-nine release",
+            observed={
+                "error": hard_contract_replay.get("error"),
+                "forbidden_bounded_vocabulary": hard_contract_replay.get(
+                    "forbidden_bounded_vocabulary"
+                ),
+                "bounded_vocabulary": _mapping(
+                    _mapping(hard_contract_replay.get("contract")).get("layout_decision_contract")
+                ).get("bounded_vocabulary"),
             },
         ),
         _criterion(
@@ -529,6 +714,7 @@ def _review_artifact(
 def _receipt(
     *,
     artifact: Mapping[str, Any],
+    loader_metadata: Mapping[str, Any],
     accepted_artifact_count: int,
     criteria: list[dict[str, Any]],
     quality_report: dict[str, Any],
@@ -550,10 +736,20 @@ def _receipt(
         "segment_iteration_review_version": SEGMENT_ITERATION_REVIEW_VERSION,
         "programme_id": artifact.get("programme_id"),
         "artifact_sha256": artifact.get("artifact_sha256"),
-        "artifact_path": artifact.get("artifact_path") or artifact.get("artifact_path_diagnostic"),
+        "iteration_id": _artifact_iteration_id(artifact),
+        "artifact_path": loader_metadata.get("artifact_path")
+        or loader_metadata.get("artifact_path_diagnostic")
+        or artifact.get("artifact_path")
+        or artifact.get("artifact_path_diagnostic"),
         "artifact_extraction": {
             "accepted_artifact_count": accepted_artifact_count,
             "manifest_gate": accepted_artifact_count == 1,
+            "loader_acceptance_gate": loader_metadata.get("acceptance_gate"),
+            "raw_loader_separation": any(
+                item["name"] == "artifact.raw_loader_separation" and item["passed"]
+                for item in criteria
+            )
+            or not loader_metadata,
         },
         "automated_gate": {
             "passed": automation_passed,
@@ -577,6 +773,7 @@ def _receipt(
         },
         "team_critique_loop": team_critique_loop,
         "ready_for_next_nine": ready_for_next_nine,
+        "next_nine_gate_mode": "blocking_review_receipt",
         "decision": decision,
         "resident_model_continuity": {
             "expected_model": RESIDENT_COMMAND_R_MODEL,
