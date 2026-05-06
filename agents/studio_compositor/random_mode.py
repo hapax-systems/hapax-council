@@ -22,6 +22,11 @@ import random
 import time
 from pathlib import Path
 
+from agents.studio_compositor.preset_mutator import (
+    DEFAULT_VARIANCE,
+    mutate_preset,
+    variety_enabled,
+)
 from agents.studio_compositor.transition_primitives import (
     PRIMITIVES,
     TRANSITION_NAMES,
@@ -56,6 +61,29 @@ def load_preset_graph(name: str) -> dict | None:
     if not path.exists():
         return None
     return json.loads(path.read_text())
+
+
+def _load_cycle_graph(
+    name: str,
+    *,
+    seed: int | None = None,
+    variance: float = DEFAULT_VARIANCE,
+    mutate: bool | None = None,
+) -> dict | None:
+    """Load a preset for the automatic livestream cycle path.
+
+    Manual/chat preset requests still use :func:`load_preset_graph` and get
+    the canonical graph. The autonomous cycler uses bounded parametric
+    mutation so repeated family picks do not render as identical chain states.
+    """
+    graph = load_preset_graph(name)
+    if graph is None:
+        return None
+    do_mutate = variety_enabled() if mutate is None else mutate
+    if not do_mutate:
+        return graph
+    rng = random.Random(seed) if seed is not None else random.Random()
+    return mutate_preset(graph, rng=rng, variance=variance)
 
 
 def _write_mutation(graph: dict) -> None:
@@ -217,7 +245,7 @@ def run(interval: float = 30.0) -> None:
             pass
         last = pick
 
-        new_graph = load_preset_graph(pick)
+        new_graph = _load_cycle_graph(pick, seed=time.time_ns())
         if new_graph is None:
             continue
 
