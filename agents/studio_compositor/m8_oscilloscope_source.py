@@ -58,6 +58,18 @@ DEFAULT_LINE_WIDTH: float = 1.4
 SILENCE_FADE_AFTER_S: float = 1.0
 SILENCE_FADE_DURATION_S: float = 0.5
 ACTIVE_ALPHA: float = 0.75
+# Floor of the amplitude-driven alpha modulation — when the waveform is
+# silent (samples all near 128), the ward still renders at this fraction
+# of its mtime-driven alpha so a connected-but-quiet M8 stays legibly
+# present. Loud waveforms scale linearly up to 1.0×.
+AMPLITUDE_ALPHA_FLOOR: float = 0.5
+# Additional Cairo line width (in pixels) at full ±128 amplitude. The
+# rendered stroke is ``DEFAULT_LINE_WIDTH + amplitude × this`` — silent
+# midline draws at the base width; loud waveforms thicken proportionally
+# so peaks read as bold strokes against a thin idle baseline. Mirrors
+# the sierpinski waveform's ``1.5 + audio_energy × 2.0`` precedent at a
+# more conservative scale (the M8 osc is a thinner ward by default).
+LINE_WIDTH_AMPLITUDE_SCALE: float = 1.0
 
 
 def _fallback_package() -> HomagePackage:
@@ -130,6 +142,31 @@ def _silence_alpha(
     return active_alpha * (1.0 - (fade_elapsed / fade_duration_s))
 
 
+def _amplitude_normalized(samples: bytes) -> float:
+    """Peak-normalized amplitude of the M8 waveform in [0, 1].
+
+    M8 sends samples as 0..255 unsigned, centred at 128. The peak of
+    ``max(abs(sample - 128))`` divided by 128 gives the normalized
+    amplitude — 0 when the waveform is a flat midline, 1 at full ±128
+    swing. Empty input yields 0 so callers never see NaN.
+    """
+    if not samples:
+        return 0.0
+    peak = max(abs(int(s) - 128) for s in samples)
+    return min(peak / 128.0, 1.0)
+
+
+def _amplitude_scaled_alpha(base_alpha: float, amplitude: float, *, floor: float) -> float:
+    """Scale a base alpha by amplitude, clamped at the configured floor.
+
+    At ``amplitude=0`` returns ``base_alpha * floor``; at ``amplitude=1``
+    returns ``base_alpha``. Clamps amplitude to [0, 1] defensively so an
+    out-of-band caller cannot drive alpha above the silence-fade ceiling.
+    """
+    a = max(0.0, min(1.0, amplitude))
+    return base_alpha * (floor + (1.0 - floor) * a)
+
+
 class M8OscilloscopeCairoSource(HomageTransitionalSource):
     """M8 0xFC waveform rendered as a tinted line at audience scale.
 
@@ -149,6 +186,8 @@ class M8OscilloscopeCairoSource(HomageTransitionalSource):
         silence_fade_after_s: float = SILENCE_FADE_AFTER_S,
         silence_fade_duration_s: float = SILENCE_FADE_DURATION_S,
         active_alpha: float = ACTIVE_ALPHA,
+        amplitude_alpha_floor: float = AMPLITUDE_ALPHA_FLOOR,
+        line_width_amplitude_scale: float = LINE_WIDTH_AMPLITUDE_SCALE,
     ) -> None:
         super().__init__(source_id=self.source_id)
         self._ring_path = ring_path
@@ -156,6 +195,8 @@ class M8OscilloscopeCairoSource(HomageTransitionalSource):
         self._silence_fade_after_s = silence_fade_after_s
         self._silence_fade_duration_s = silence_fade_duration_s
         self._active_alpha = active_alpha
+        self._amplitude_alpha_floor = amplitude_alpha_floor
+        self._line_width_amplitude_scale = line_width_amplitude_scale
 
     def render_content(
         self,
@@ -172,21 +213,29 @@ class M8OscilloscopeCairoSource(HomageTransitionalSource):
         if not samples:
             return
 
-        alpha = _silence_alpha(
+        base_alpha = _silence_alpha(
             mtime,
             time.time(),
             fade_after_s=self._silence_fade_after_s,
             fade_duration_s=self._silence_fade_duration_s,
             active_alpha=self._active_alpha,
         )
-        if alpha <= 0.0:
+        if base_alpha <= 0.0:
             return
+
+        amplitude = _amplitude_normalized(samples)
+        alpha = _amplitude_scaled_alpha(
+            base_alpha,
+            amplitude,
+            floor=self._amplitude_alpha_floor,
+        )
 
         pkg = get_active_package() or _fallback_package()
         r, g, b, a = _resolve_waveform_tint(pkg, alpha)
 
         cr.save()
-        cr.set_line_width(self._line_width)
+        line_width = self._line_width + amplitude * self._line_width_amplitude_scale
+        cr.set_line_width(line_width)
         cr.set_source_rgba(r, g, b, a)
 
         n = len(samples)
