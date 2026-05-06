@@ -134,6 +134,65 @@ def test_unsatisfied_non_ward_visible_effect_blocks_acceptance() -> None:
     assert "action:visible-claim" in receipt.receipt_metadata["critical_unsatisfied_effects"]
 
 
+def test_visible_ward_without_expected_payload_effect_is_held() -> None:
+    receipt = decide_layout_responsibility(
+        [
+            _intent(
+                expected_effects=(
+                    "ward:ranked-list-panel",
+                    "source.visible:Shoshana Zuboff",
+                )
+            )
+        ],
+        available_layouts=_available(),
+        readback=_readback(),
+        state=SegmentLayoutState(current_layout="segment-list"),
+        now=NOW,
+    )
+
+    assert receipt.status is LayoutDecisionStatus.HELD
+    assert receipt.reason is LayoutDecisionReason.RENDERED_READBACK_MISMATCH
+    assert "ward:ranked-list-panel" in receipt.satisfied_effects
+    assert "source.visible:Shoshana Zuboff" in receipt.unsatisfied_effects
+    assert receipt.receipt_metadata["payload_missing_effects"] == ["source.visible:Shoshana Zuboff"]
+
+
+def test_visible_ward_with_payload_effect_readback_can_accept() -> None:
+    receipt = decide_layout_responsibility(
+        [
+            _intent(
+                expected_effects=(
+                    "ward:ranked-list-panel",
+                    "source.visible:Shoshana Zuboff",
+                    "payload_digest:sha256:zuboff-card",
+                )
+            )
+        ],
+        available_layouts=_available(),
+        readback=_readback(
+            ward_properties={
+                "ranked-list-panel": {
+                    "visible": True,
+                    "rendered_blit": True,
+                    "payload_digest": "sha256:zuboff-card",
+                    "payload_effects": ("source.visible:Shoshana Zuboff",),
+                    "payload_ref": "segment-payload:beat-3",
+                }
+            },
+        ),
+        state=SegmentLayoutState(current_layout="segment-list"),
+        now=NOW,
+    )
+
+    assert receipt.status is LayoutDecisionStatus.ACCEPTED
+    assert "source.visible:Shoshana Zuboff" in receipt.satisfied_effects
+    assert "payload_digest:sha256:zuboff-card" in receipt.satisfied_effects
+    payload_readback = receipt.receipt_metadata["payload_readbacks"]["ranked-list-panel"]
+    assert payload_readback["payload_digest"] == "sha256:zuboff-card"
+    assert payload_readback["payload_effects"] == ["source.visible:Shoshana Zuboff"]
+    assert payload_readback["payload_ref"] == "segment-payload:beat-3"
+
+
 @pytest.mark.parametrize("static_layout", ["default", "default-legacy", "garage-door"])
 def test_static_default_readback_fails_responsible_hosting(static_layout: str) -> None:
     receipt = decide_layout_responsibility(

@@ -950,6 +950,165 @@ def test_runtime_readback_uses_fresh_blit_evidence(
     assert readback.readback_ref.startswith("rendered-blit-readback:segment-list:")
 
 
+def test_runtime_readback_merges_fresh_payload_effect_sidecar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    segment_list = _load_layout("config/compositor-layouts/segment-list.json")
+    store = _FakeStore(layouts={"segment-list": segment_list}, _active="segment-list")
+    rendered_state = LayoutState(segment_list)
+    adapter = _RenderedLayoutStateAdapter(store, rendered_state)
+
+    monkeypatch.setattr(
+        layout_tick_driver,
+        "_recent_blit_readbacks",
+        lambda _wards, *, now: {
+            "ranked-list-panel": {
+                "observed_at": now - 0.25,
+                "source_pixels": 400,
+                "effective_alpha": 0.9,
+            }
+        },
+    )
+
+    readback = layout_tick_driver._runtime_layout_readback(
+        layout_state=adapter,
+        state={
+            "ward_payload_readbacks": {
+                "ranked-list-panel": {
+                    "payload_digest": "sha256:source-card",
+                    "payload_effects": ["source.visible:Shoshana Zuboff"],
+                    "payload_ref": "segment-payload:beat-4",
+                    "payload_observed_at": NOW - 0.2,
+                }
+            }
+        },
+        now=NOW,
+    )
+
+    ranked = readback.ward_properties["ranked-list-panel"]
+    assert ranked["visible"] is True
+    assert ranked["payload_digest"] == "sha256:source-card"
+    assert ranked["payload_effects"] == ("source.visible:Shoshana Zuboff",)
+    assert readback.payload_readbacks["ranked-list-panel"]["payload_ref"] == (
+        "segment-payload:beat-4"
+    )
+
+
+def test_payload_sidecar_is_fresh_ttl_bound(tmp_path: Path) -> None:
+    sidecar = tmp_path / "segment-ward-payload-readback.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "wards": {
+                    "ranked-list-panel": {
+                        "payload_digest": "sha256:source-card",
+                        "payload_effects": ["source.visible:Shoshana Zuboff"],
+                        "payload_observed_at": NOW - 1.0,
+                    },
+                    "stale-panel": {
+                        "payload_digest": "sha256:stale",
+                        "payload_effects": ["source.visible:Stale"],
+                        "payload_observed_at": NOW - 10.0,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    readbacks = layout_tick_driver._read_segment_ward_payload_readbacks(
+        sidecar,
+        now=NOW,
+        ttl_s=5.0,
+    )
+
+    assert set(readbacks) == {"ranked-list-panel"}
+    assert readbacks["ranked-list-panel"]["payload_digest"] == "sha256:source-card"
+    assert readbacks["ranked-list-panel"]["payload_effects"] == ("source.visible:Shoshana Zuboff",)
+
+
+def test_responsible_tick_holds_visible_ward_until_payload_effect_is_witnessed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    segment_list = _load_layout("config/compositor-layouts/segment-list.json")
+    store = _FakeStore(layouts={"segment-list": segment_list}, _active="segment-list")
+    rendered_state = LayoutState(segment_list)
+    adapter = _RenderedLayoutStateAdapter(store, rendered_state)
+    switcher = LayoutSwitcher(initial_layout="segment-list")
+    switcher._responsible_segment_state = {}
+    intent = SegmentActionIntent(
+        intent_id="programme:seg-1:4:layout-need-0-0",
+        kind=LayoutNeedKind.RANKED_LIST.value,
+        requested_at=NOW - 1.0,
+        priority=80,
+        ttl_s=30.0,
+        evidence_refs=("prior:ranked-list", "prepared_artifact:sha256:abc123"),
+        programme_id="programme:seg-1",
+        beat_index=4,
+        target_ref="artifact:ranked",
+        authority_ref="prepared_artifact:sha256:abc123",
+        expected_effects=("ward:ranked-list-panel", "source.visible:Shoshana Zuboff"),
+    )
+    state: dict[str, object] = {
+        "consent_safe_active": False,
+        "vinyl_playing": False,
+        "director_activity": None,
+        "stream_mode": None,
+        "segment_layout_intents": (intent,),
+        "ward_properties": {"ranked-list-panel": {"visible": True, "alpha": 1.0}},
+    }
+    monkeypatch.setattr(
+        layout_tick_driver,
+        "_recent_blit_readbacks",
+        lambda wards, *, now: (
+            {
+                "ranked-list-panel": {
+                    "observed_at": now - 0.25,
+                    "source_pixels": 400,
+                    "effective_alpha": 1.0,
+                }
+            }
+            if "ranked-list-panel" in wards
+            else {}
+        ),
+    )
+    monkeypatch.setattr(layout_tick_driver.time, "time", lambda: NOW)
+
+    held = _driver_tick(
+        state_provider=lambda: dict(state),
+        layout_state=adapter,
+        loader=adapter,
+        switcher=switcher,
+    )
+
+    assert held.status is LayoutDecisionStatus.HELD
+    assert held.reason is LayoutDecisionReason.RENDERED_READBACK_MISMATCH
+    assert "ward:ranked-list-panel" in held.satisfied_effects
+    assert "source.visible:Shoshana Zuboff" in held.unsatisfied_effects
+
+    state["ward_payload_readbacks"] = {
+        "ranked-list-panel": {
+            "payload_digest": "sha256:source-card",
+            "payload_effects": ["source.visible:Shoshana Zuboff"],
+            "payload_ref": "segment-payload:beat-4",
+            "payload_observed_at": NOW - 0.2,
+        }
+    }
+    accepted = _driver_tick(
+        state_provider=lambda: dict(state),
+        layout_state=adapter,
+        loader=adapter,
+        switcher=switcher,
+    )
+
+    assert accepted.status is LayoutDecisionStatus.ACCEPTED
+    assert "source.visible:Shoshana Zuboff" in accepted.satisfied_effects
+    assert (
+        accepted.receipt_metadata["payload_readbacks"]["ranked-list-panel"]["payload_digest"]
+        == "sha256:source-card"
+    )
+
+
 def test_stop_event_breaks_loop() -> None:
     stop_event = threading.Event()
     stop_event.set()  # already set — first iteration check breaks
