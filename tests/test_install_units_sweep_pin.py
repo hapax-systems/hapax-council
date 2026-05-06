@@ -235,18 +235,11 @@ class TestPhase3DropInsPresent:
         )
 
     def test_tabbyapi_service_timeout_180(self) -> None:
-        """Phase 3 item 8: TimeoutStartSec held at 180 s as substrate-swap headroom.
-
-        Qwen 9B alone would fit a 120 s timeout, but 180 s is preserved as
-        conservative headroom so any future substrate swap with a longer
-        safetensors-shard load path does not silently start failing under
-        a too-tight default.
-        """
+        """TimeoutStartSec is held at 180 s as Command-R startup headroom."""
         svc = REPO_ROOT / "systemd" / "units" / "tabbyapi.service"
         body = svc.read_text(encoding="utf-8")
         assert "TimeoutStartSec=180" in body, (
-            "tabbyapi.service TimeoutStartSec must be 180 s as substrate-swap "
-            "headroom (Qwen 9B fits under this; longer-loading substrates need it)"
+            "tabbyapi.service TimeoutStartSec must be 180 s as Command-R startup headroom"
         )
 
 
