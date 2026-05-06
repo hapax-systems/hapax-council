@@ -8,6 +8,7 @@ handle broker responses + failures gracefully.
 from __future__ import annotations
 
 import json
+import random
 import time
 from unittest.mock import MagicMock, patch
 
@@ -31,7 +32,10 @@ from shared.bayesian_camera_salience_world_surface import (
     ProducerKind,
 )
 from shared.camera_salience_singleton import (
+    _ApertureExplorationConfig,
+    _ApertureOutcomePosterior,
     _BrokerSingleton,
+    _exploration_config_from_env,
     _reset_for_testing,
     broker,
 )
@@ -121,6 +125,34 @@ def _outcome_posterior_snapshot(broker_singleton: _BrokerSingleton) -> dict[str,
             }
             for aperture_id, posterior in broker_singleton._aperture_posteriors.items()
         }
+
+
+class _DeterministicRng(random.Random):
+    def __init__(self, random_value: float) -> None:
+        super().__init__(0)
+        self._random_value = random_value
+
+    def random(self) -> float:
+        return self._random_value
+
+    def betavariate(self, alpha: float, beta: float) -> float:
+        return alpha / (alpha + beta)
+
+
+def _explore_probe_aperture_id(probe: str) -> str | None:
+    if not probe.startswith("explore_aperture:"):
+        return None
+    return probe.removeprefix("explore_aperture:").rsplit(":", 1)[0]
+
+
+def _explorable_aperture_ids(broker_singleton: _BrokerSingleton) -> set[str]:
+    evidence = {EvidenceClass.FRAME, EvidenceClass.IR_PRESENCE, EvidenceClass.COMPOSED_LIVESTREAM}
+    return {
+        aperture.aperture_id
+        for aperture in broker_singleton._apertures
+        if aperture.kind.value != "future_sensor"
+        and evidence.intersection(aperture.supported_evidence_classes)
+    }
 
 
 # ── Singleton tests ────────────────────────────────────────────────────
@@ -294,6 +326,113 @@ class TestBrokerSingleton:
         assert 1.0 <= failure_saturated["beta"] <= 10.0
         assert failure_saturated["alpha"] == pytest.approx(1.0)
         assert failure_saturated["beta"] == pytest.approx(10.0)
+
+    def test_exploration_env_knobs_are_clamped_and_configurable(self, monkeypatch) -> None:
+        monkeypatch.setenv("HAPAX_CAMERA_SALIENCE_EXPLORATION_EPSILON", "1.5")
+        monkeypatch.setenv("HAPAX_CAMERA_SALIENCE_SEEKING_MULTIPLIER", "0.5")
+        monkeypatch.setenv("HAPAX_CAMERA_SALIENCE_MAX_UNEXPLORED_S", "0")
+
+        config = _exploration_config_from_env()
+
+        assert config.epsilon_rate == 1.0
+        assert config.seeking_multiplier == 1.0
+        assert config.max_unexplored_s == 1.0
+
+    def test_exploration_anti_saturation_covers_all_explorable_apertures(self) -> None:
+        b = _BrokerSingleton(
+            broker()._apertures,
+            exploration_config=_ApertureExplorationConfig(
+                epsilon_rate=0.0,
+                max_unexplored_s=1800.0,
+            ),
+            rng=_DeterministicRng(random_value=1.0),
+        )
+        b.ingest(_make_test_observation())
+        expected = _explorable_aperture_ids(b)
+        seen: set[str] = set()
+
+        for tick in range(len(expected) + 2):
+            bundle = b.query(
+                consumer="affordance",
+                decision_context="test_exploration_coverage",
+                candidate_action="fx.family.audio-reactive",
+                time_budget_ms=500,
+                now_s=1000.0 + tick,
+            )
+            assert bundle is not None
+            seen.update(row.aperture_id for row in bundle.ranked_observations)
+            probe_aperture_id = _explore_probe_aperture_id(bundle.recommended_next_probe)
+            if probe_aperture_id is not None:
+                seen.add(probe_aperture_id)
+            if seen == expected:
+                break
+
+        assert seen == expected
+
+        followup = b.query(
+            consumer="affordance",
+            decision_context="test_exploration_coverage",
+            candidate_action="fx.family.audio-reactive",
+            time_budget_ms=500,
+            now_s=1015.0,
+        )
+        assert followup is not None
+        assert _explore_probe_aperture_id(followup.recommended_next_probe) is None
+
+    def test_seeking_boosts_epsilon_and_targets_low_posterior_aperture(self) -> None:
+        b = _BrokerSingleton(
+            broker()._apertures,
+            exploration_config=_ApertureExplorationConfig(
+                epsilon_rate=0.4,
+                seeking_multiplier=3.0,
+                max_unexplored_s=1800.0,
+            ),
+            rng=_DeterministicRng(random_value=0.5),
+        )
+        b.ingest(_make_test_observation())
+        eligible = sorted(_explorable_aperture_ids(b))
+        low_posterior_aperture = next(
+            aperture_id
+            for aperture_id in eligible
+            if aperture_id != "aperture:studio-rgb.brio-operator"
+        )
+        with b._exploration_lock:
+            b._last_explored_at = {aperture_id: 1000.0 for aperture_id in eligible}
+        with b._posterior_lock:
+            for aperture_id in eligible:
+                b._aperture_posteriors[aperture_id] = _ApertureOutcomePosterior(
+                    alpha=10.0,
+                    beta=1.0,
+                )
+            b._aperture_posteriors[low_posterior_aperture] = _ApertureOutcomePosterior(
+                alpha=1.0,
+                beta=10.0,
+            )
+
+        nominal = b.query(
+            consumer="affordance",
+            decision_context="test_seeking_exploration",
+            candidate_action="fx.family.audio-reactive",
+            time_budget_ms=500,
+            seeking=False,
+            now_s=1001.0,
+        )
+        assert nominal is not None
+        assert _explore_probe_aperture_id(nominal.recommended_next_probe) is None
+
+        seeking = b.query(
+            consumer="affordance",
+            decision_context="test_seeking_exploration",
+            candidate_action="fx.family.audio-reactive",
+            time_budget_ms=500,
+            seeking=True,
+            now_s=1002.0,
+        )
+
+        assert seeking is not None
+        assert _explore_probe_aperture_id(seeking.recommended_next_probe) == (
+            low_posterior_aperture
+        )
 
 
 # ── Producer wiring tests ──────────────────────────────────────────────

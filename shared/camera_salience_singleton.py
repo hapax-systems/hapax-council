@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import random
 import threading
 import time
 from dataclasses import dataclass
@@ -76,6 +78,12 @@ _CAMERA_OUTCOME_PRIOR_ALPHA = 2.0
 _CAMERA_OUTCOME_PRIOR_BETA = 1.0
 _ALPHA_OUTCOME_STATUSES = frozenset({"success", "public_event_accepted"})
 _BETA_OUTCOME_STATUSES = frozenset({"failure", "blocked", "refused", "stale", "missing"})
+_CAMERA_EXPLORATION_EPSILON_ENV = "HAPAX_CAMERA_SALIENCE_EXPLORATION_EPSILON"
+_CAMERA_EXPLORATION_SEEKING_MULTIPLIER_ENV = "HAPAX_CAMERA_SALIENCE_SEEKING_MULTIPLIER"
+_CAMERA_EXPLORATION_MAX_UNEXPLORED_S_ENV = "HAPAX_CAMERA_SALIENCE_MAX_UNEXPLORED_S"
+_CAMERA_EXPLORATION_DEFAULT_EPSILON = 0.05
+_CAMERA_EXPLORATION_DEFAULT_SEEKING_MULTIPLIER = 2.0
+_CAMERA_EXPLORATION_DEFAULT_MAX_UNEXPLORED_S = 1800.0
 
 
 @dataclass
@@ -99,6 +107,24 @@ class _ApertureOutcomePosterior:
         self.beta = min(_CAMERA_OUTCOME_TS_CAP, self.beta * gamma + 1.0)
 
 
+@dataclass(frozen=True)
+class _ApertureExplorationConfig:
+    """Runtime knobs for camera-aperture exploration pressure."""
+
+    epsilon_rate: float = _CAMERA_EXPLORATION_DEFAULT_EPSILON
+    seeking_multiplier: float = _CAMERA_EXPLORATION_DEFAULT_SEEKING_MULTIPLIER
+    max_unexplored_s: float = _CAMERA_EXPLORATION_DEFAULT_MAX_UNEXPLORED_S
+
+
+@dataclass(frozen=True)
+class _ApertureExplorationDecision:
+    """One probe recommendation from the aperture explorer."""
+
+    aperture_id: str
+    reason: str
+    effective_epsilon: float
+
+
 def _record_query_metric(consumer: str) -> None:
     try:
         if _METRICS_AVAILABLE and _QUERY_COUNTER is not None:
@@ -110,7 +136,13 @@ def _record_query_metric(consumer: str) -> None:
 class _BrokerSingleton:
     """Wrapper holding apertures + rolling observation window."""
 
-    def __init__(self, apertures: tuple[ObservationAperture, ...]) -> None:
+    def __init__(
+        self,
+        apertures: tuple[ObservationAperture, ...],
+        *,
+        exploration_config: _ApertureExplorationConfig | None = None,
+        rng: random.Random | None = None,
+    ) -> None:
         self._apertures = apertures
         self._observations: list[CameraObservationEnvelope] = []
         self._obs_lock = threading.Lock()
@@ -123,6 +155,10 @@ class _BrokerSingleton:
         self._max_query_apertures = 500
         self._aperture_posteriors: dict[str, _ApertureOutcomePosterior] = {}
         self._posterior_lock = threading.Lock()
+        self._exploration_config = exploration_config or _exploration_config_from_env()
+        self._exploration_rng = rng or random.Random()
+        self._exploration_lock = threading.Lock()
+        self._last_explored_at: dict[str, float] = {}
 
     def ingest(self, envelope: CameraObservationEnvelope | None) -> None:
         """Ingest a producer envelope into the rolling window.
@@ -148,6 +184,9 @@ class _BrokerSingleton:
         max_images: int = 0,
         max_tokens: int = 200,
         privacy_mode: PrivacyMode = PrivacyMode.PRIVATE,
+        stimmung_stance: str | None = None,
+        seeking: bool | None = None,
+        now_s: float | None = None,
     ) -> CameraSalienceBundle | None:
         """Query the broker. Returns ``None`` on any error (fail-closed)."""
         _record_query_metric(consumer)
@@ -156,6 +195,11 @@ class _BrokerSingleton:
                 observations = tuple(self._observations)
             if not observations:
                 return None
+            evidence_class_filter = evidence_classes or (
+                EvidenceClass.FRAME,
+                EvidenceClass.IR_PRESENCE,
+                EvidenceClass.COMPOSED_LIVESTREAM,
+            )
 
             broker = CameraSalienceBroker(
                 apertures=self._apertures,
@@ -169,12 +213,7 @@ class _BrokerSingleton:
                 time_budget_ms=time_budget_ms,
                 privacy_mode=privacy_mode,
                 public_claim_mode=PublicClaimMode.NONE,
-                evidence_classes=evidence_classes
-                or (
-                    EvidenceClass.FRAME,
-                    EvidenceClass.IR_PRESENCE,
-                    EvidenceClass.COMPOSED_LIVESTREAM,
-                ),
+                evidence_classes=evidence_class_filter,
                 max_images=max_images,
                 max_tokens=max_tokens,
             )
@@ -182,7 +221,22 @@ class _BrokerSingleton:
                 query_obj,
                 aperture_success_priors=self._aperture_success_priors(),
             )
-            self._remember_query_apertures(bundle)
+            exploration = self._exploration_decision(
+                query_obj,
+                ranked_apertures=tuple(row.aperture_id for row in bundle.ranked_observations),
+                stimmung_stance=stimmung_stance,
+                seeking=seeking,
+                now_s=now_s,
+            )
+            if exploration is not None:
+                bundle = bundle.model_copy(
+                    update={
+                        "recommended_next_probe": (
+                            f"explore_aperture:{exploration.aperture_id}:{exploration.reason}"
+                        )
+                    }
+                )
+            self._remember_query_apertures(bundle, exploration)
             return bundle
         except (ValidationError, ValueError, KeyError, TypeError):
             log.debug("camera salience query failed", exc_info=True)
@@ -222,8 +276,14 @@ class _BrokerSingleton:
                 for aperture_id, posterior in self._aperture_posteriors.items()
             }
 
-    def _remember_query_apertures(self, bundle: CameraSalienceBundle) -> None:
+    def _remember_query_apertures(
+        self,
+        bundle: CameraSalienceBundle,
+        exploration: _ApertureExplorationDecision | None = None,
+    ) -> None:
         apertures = tuple(dict.fromkeys(row.aperture_id for row in bundle.ranked_observations))
+        if exploration is not None:
+            apertures = tuple(dict.fromkeys((*apertures, exploration.aperture_id)))
         with self._query_lock:
             self._query_apertures[bundle.query.query_id] = apertures
             while len(self._query_apertures) > self._max_query_apertures:
@@ -252,6 +312,88 @@ class _BrokerSingleton:
                 else:
                     posterior.record_failure()
         return aperture_ids
+
+    def _exploration_decision(
+        self,
+        query: CameraSalienceQuery,
+        *,
+        ranked_apertures: tuple[str, ...],
+        stimmung_stance: str | None,
+        seeking: bool | None,
+        now_s: float | None,
+    ) -> _ApertureExplorationDecision | None:
+        now = time.monotonic() if now_s is None else now_s
+        candidates = self._explorable_apertures(query.evidence_classes)
+        if not candidates:
+            return None
+
+        is_seeking = bool(seeking) or (stimmung_stance or "").strip().lower() == "seeking"
+        effective_epsilon = _clamp_float(
+            self._exploration_config.epsilon_rate
+            * (self._exploration_config.seeking_multiplier if is_seeking else 1.0),
+            0.0,
+            1.0,
+        )
+
+        with self._exploration_lock:
+            for aperture_id in ranked_apertures:
+                self._last_explored_at[aperture_id] = now
+
+            stale_candidates = [
+                aperture
+                for aperture in candidates
+                if now - self._last_explored_at.get(aperture.aperture_id, float("-inf"))
+                >= self._exploration_config.max_unexplored_s
+            ]
+            if stale_candidates:
+                selected = self._lowest_thompson_aperture(stale_candidates)
+                self._last_explored_at[selected.aperture_id] = now
+                return _ApertureExplorationDecision(
+                    aperture_id=selected.aperture_id,
+                    reason="anti_saturation",
+                    effective_epsilon=effective_epsilon,
+                )
+
+            if self._exploration_rng.random() >= effective_epsilon:
+                return None
+
+            selected = self._lowest_thompson_aperture(candidates)
+            self._last_explored_at[selected.aperture_id] = now
+            return _ApertureExplorationDecision(
+                aperture_id=selected.aperture_id,
+                reason="epsilon_thompson",
+                effective_epsilon=effective_epsilon,
+            )
+
+    def _explorable_apertures(
+        self, evidence_classes: tuple[EvidenceClass, ...]
+    ) -> tuple[ObservationAperture, ...]:
+        evidence_class_set = set(evidence_classes)
+        return tuple(
+            aperture
+            for aperture in self._apertures
+            if evidence_class_set.intersection(aperture.supported_evidence_classes)
+            and aperture.kind.value != "future_sensor"
+        )
+
+    def _lowest_thompson_aperture(
+        self, apertures: list[ObservationAperture]
+    ) -> ObservationAperture:
+        with self._posterior_lock:
+            scores = []
+            for aperture in apertures:
+                posterior = self._aperture_posteriors.get(
+                    aperture.aperture_id,
+                    _ApertureOutcomePosterior(),
+                )
+                scores.append(
+                    (
+                        self._exploration_rng.betavariate(posterior.alpha, posterior.beta),
+                        aperture.aperture_id,
+                        aperture,
+                    )
+                )
+        return min(scores, key=lambda row: (row[0], row[1]))[2]
 
 
 _OUTCOME_STATUS_ALIASES = {
@@ -346,6 +488,44 @@ def _outcome_learning_signal(status: object) -> bool | None:
     if status in _BETA_OUTCOME_STATUSES:
         return False
     return None
+
+
+def _exploration_config_from_env() -> _ApertureExplorationConfig:
+    return _ApertureExplorationConfig(
+        epsilon_rate=_env_float(
+            _CAMERA_EXPLORATION_EPSILON_ENV,
+            _CAMERA_EXPLORATION_DEFAULT_EPSILON,
+            floor=0.0,
+            ceiling=1.0,
+        ),
+        seeking_multiplier=_env_float(
+            _CAMERA_EXPLORATION_SEEKING_MULTIPLIER_ENV,
+            _CAMERA_EXPLORATION_DEFAULT_SEEKING_MULTIPLIER,
+            floor=1.0,
+            ceiling=10.0,
+        ),
+        max_unexplored_s=_env_float(
+            _CAMERA_EXPLORATION_MAX_UNEXPLORED_S_ENV,
+            _CAMERA_EXPLORATION_DEFAULT_MAX_UNEXPLORED_S,
+            floor=1.0,
+            ceiling=86400.0,
+        ),
+    )
+
+
+def _env_float(env_name: str, default: float, *, floor: float, ceiling: float) -> float:
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return default
+    try:
+        return _clamp_float(float(raw), floor, ceiling)
+    except ValueError:
+        log.warning("Invalid %s=%r; using default %.3f", env_name, raw, default)
+        return default
+
+
+def _clamp_float(value: float, floor: float, ceiling: float) -> float:
+    return max(floor, min(ceiling, value))
 
 
 def broker() -> _BrokerSingleton:
