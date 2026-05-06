@@ -206,3 +206,21 @@ class TestReadPendingQuestion:
         qfile.write_text(json.dumps(q.model_dump()))
         with patch("shared.active_correction.QUESTION_FILE", qfile):
             assert read_pending_question() is None
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_read_pending_question_non_dict_root_returns_none(tmp_path, payload, kind):
+    """Pin read_pending_question against non-dict JSON. Pydantic
+    model_validate raises ValidationError on non-dict — the
+    (OSError, JSONDecodeError) catch missed it. Same shape as the
+    other recent SHM-read fixes."""
+    qfile = tmp_path / "question.json"
+    qfile.write_text(payload)
+    with patch("shared.active_correction.QUESTION_FILE", qfile):
+        assert read_pending_question() is None, f"non-dict root={kind} must yield None"
