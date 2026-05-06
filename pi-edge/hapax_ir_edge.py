@@ -21,6 +21,7 @@ import cv2
 import httpx
 import numpy as np  # noqa: TC002 — Pi-side code
 from cadence_controller import CadenceController, load_config
+from cbip_calibration import crop_to_roi, load_camera_calibration
 from ir_album import detect_album_cover, extract_album_crop
 from ir_biometrics import BiometricTracker
 from ir_hands import detect_hands_nir, detect_screens_nir
@@ -111,6 +112,30 @@ class IrEdgeDaemon:
         self._biometrics = BiometricTracker(fps=30.0)
         # #143 — activity-gated cadence controller.
         self._cadence = CadenceController(config=load_config())
+        self._cbip_calibration = load_camera_calibration(self._role, hostname=self._hostname)
+        self._rpicam_calibration_args = self._cbip_calibration.rpicam_still_args()
+        if self._cbip_calibration.source_paths:
+            log.info(
+                "CBIP calibration loaded for %s from %s",
+                self._role,
+                ", ".join(self._cbip_calibration.source_paths),
+            )
+        if self._cbip_calibration.roi is not None:
+            roi = self._cbip_calibration.roi
+            log.info(
+                "CBIP ROI locked for %s: x=%d y=%d width=%d height=%d",
+                self._role,
+                roi.x,
+                roi.y,
+                roi.width,
+                roi.height,
+            )
+        if self._rpicam_calibration_args:
+            log.info(
+                "CBIP capture controls locked for %s: %s",
+                self._role,
+                " ".join(self._rpicam_calibration_args),
+            )
 
         self._client = httpx.AsyncClient(
             base_url=workstation_url,
@@ -158,19 +183,21 @@ class IrEdgeDaemon:
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=True) as f:
             path = f.name
 
+        command = [
+            "rpicam-still",
+            "-o",
+            path,
+            "--immediate",
+            "--width",
+            str(DEFAULT_CAPTURE_SIZE[0]),
+            "--height",
+            str(DEFAULT_CAPTURE_SIZE[1]),
+            *self._rpicam_calibration_args,
+            "--nopreview",
+            "-n",
+        ]
         subprocess.run(
-            [
-                "rpicam-still",
-                "-o",
-                path,
-                "--immediate",
-                "--width",
-                str(DEFAULT_CAPTURE_SIZE[0]),
-                "--height",
-                str(DEFAULT_CAPTURE_SIZE[1]),
-                "--nopreview",
-                "-n",
-            ],
+            command,
             capture_output=True,
             timeout=10,
         )
@@ -195,6 +222,8 @@ class IrEdgeDaemon:
                 self._role,
                 rotation_deg,
             )
+        if self._cbip_calibration.roi is not None:
+            color = crop_to_roi(color, self._cbip_calibration)
         grey = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
         return color, grey
 

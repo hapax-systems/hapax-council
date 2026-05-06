@@ -12,6 +12,7 @@ backend is `agents/hapax_daimonion/backends/ir_presence.py`.
 | `hapax_ir_edge.py` | Main IR inference daemon — captures frames via `rpicam-still`, runs YOLOv8n person detection, face landmarks, hand + screen detection (NIR-thresholded), POSTs structured JSON reports to the council API every ~3s |
 | `hapax-heartbeat.py` | System-vitals reporter — CPU temp, memory, disk, service status; POSTs to council every 60s via systemd timer |
 | `cadence_controller.py` | Adaptive capture-cadence controller — backs off when nothing changes, speeds up under motion |
+| `cbip_calibration.py` | Fixed-platter calibration loader — applies per-camera ROI crop plus locked exposure / white balance capture args |
 | `ir_album.py` | NIR-band album-cover detection (vinyl ID for the operator's turntable surface) |
 | `ir_biometrics.py` | Face-landmark biometric tracker (heart rate via rPPG, blink rate, drowsiness, head pose) — runs only when a face is detected |
 | `ir_hands.py` | NIR-thresholded hand and screen detection (hand-zone classification feeds the workstation contact-mic fusion path) |
@@ -51,6 +52,7 @@ Pi camera (rpicam-still)
    ├── hapax_ir_edge.py — inference daemon (3s cadence)
    │      │
    │      ├── YOLOv8n person detection
+   │      ├── cbip_calibration.py fixed ROI crop + capture controls
    │      ├── ir_biometrics.py rPPG + landmarks (gated on face detected)
    │      ├── ir_hands.py NIR threshold + hand-zone classification
    │      ├── ir_album.py NIR album-cover detection
@@ -98,6 +100,12 @@ Per `docs/superpowers/specs/2026-03-31-ir-perception-remediation-design.md`:
 
 - `kill -USR1 $(pgrep -f hapax_ir_edge)` — saves a greyscale frame to
   `/tmp/ir_debug_{role}.jpg` for visual inspection.
+- `scripts/cbip-calibrate-roi.py --cam-id overhead --image /tmp/ir_debug_overhead.jpg`
+  — click the four fixed platter corners and write
+  `~/.config/hapax/cbip-roi-overhead.json`. Use
+  `--corners x,y x,y x,y x,y` for non-interactive calibration. Versioned
+  defaults live in `config/cbip-calibration.yaml`; local JSON overrides are
+  applied on daemon startup before downstream inference.
 - `--save-frames N` — saves every Nth frame to `~/hapax-edge/captures/`
   for training data collection.
 - Workstation health monitor: `agents/health_monitor/checks/pi_fleet.py`
