@@ -88,3 +88,33 @@ class TestShmRgbaReaderMalformed:
         sidecar.write_text(json.dumps({"w": 4, "h": 3, "stride": 16, "frame_id": 1}))
         reader = ShmRgbaReader(path)
         assert reader.get_current_surface() is None
+
+
+# ── Defensive sidecar reader — non-dict JSON root ──────────────────────
+
+
+import pytest
+
+
+class TestShmRgbaReaderSidecarNonDictRoot:
+    """Pin ``_read_sidecar`` against a writer producing valid JSON whose
+    root is not a mapping. The ``get_current_surface`` callsite calls
+    ``meta.get("frame_id")`` and indexes ``meta["w"]`` / ``meta["h"]`` /
+    ``meta["stride"]`` immediately on the returned value; previously a
+    non-dict root raised AttributeError or TypeError out of the reverie
+    surface render path. Same corruption-class as #2627, #2631, #2632,
+    #2636 (merged) and #2640, #2642 (in flight)."""
+
+    @pytest.mark.parametrize(
+        "payload,kind",
+        [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+    )
+    def test_non_dict_sidecar_root_yields_none(self, tmp_path: Path, payload: str, kind: str):
+        path = tmp_path / "reverie.rgba"
+        path.write_bytes(b"\x00" * 48)
+        sidecar = path.with_suffix(".rgba.json")
+        sidecar.write_text(payload)
+        reader = ShmRgbaReader(path)
+        assert reader.get_current_surface() is None, (
+            f"sidecar root={kind} must yield None — never crash"
+        )
