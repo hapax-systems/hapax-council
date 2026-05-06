@@ -1,88 +1,114 @@
+#!/usr/bin/env python3
+"""One-shot PipeWire link-map applicator for audio stack startup.
+
+This script used to hard-code the old L-12 USB return routing. The live
+audio baseline is now MPC Live III first: desired links live in
+``~/.config/hapax/audio-link-map.conf`` and forbidden dry/private paths
+live in ``~/.config/hapax/audio-forbidden-links.conf``. This oneshot keeps
+its systemd boot hook but delegates all routing truth to those files.
+The continuous ``hapax-audio-reconciler`` service remains authoritative.
+"""
+
+from __future__ import annotations
+
+import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
-BROADCAST_SINKS = ["hapax-pc-loudnorm-playback", "hapax-loudnorm-playback"]
-
-PRIVATE_SINKS = ["hapax-private-playback"]
-
-TARGET = (
-    "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"
-)
+DEFAULT_LINK_MAP = Path("~/.config/hapax/audio-link-map.conf").expanduser()
+DEFAULT_FORBIDDEN_LINKS = Path("~/.config/hapax/audio-forbidden-links.conf").expanduser()
 
 
-def get_links():
+def _configured_path(env_name: str, default: Path) -> Path:
+    return Path(os.environ.get(env_name, str(default))).expanduser()
+
+
+def _read_links(path: Path) -> list[tuple[str, str]]:
+    links: list[tuple[str, str]] = []
+    if not path.exists():
+        return links
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if "|" not in line:
+            print(f"skip malformed link-map line in {path}: {raw_line}", file=sys.stderr)
+            continue
+        src, dst = (part.strip() for part in line.split("|", 1))
+        if src and dst:
+            links.append((src, dst))
+    return links
+
+
+def _run_pw_link(args: list[str]) -> tuple[bool, str]:
     try:
-        return subprocess.check_output(["pw-link", "-l"]).decode()
-    except Exception:
-        return ""
-
-
-def get_inputs():
-    try:
-        return subprocess.check_output(["pw-link", "-i"]).decode()
-    except Exception:
-        return ""
-
-
-def get_outputs():
-    try:
-        return subprocess.check_output(["pw-link", "-o"]).decode()
-    except Exception:
-        return ""
-
-
-def link(src, dst):
-    try:
-        subprocess.run(
-            ["pw-link", src, dst], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        proc = subprocess.run(
+            ["pw-link", *args],
+            text=True,
+            capture_output=True,
+            timeout=2,
+            check=False,
         )
-        print(f"Linked {src} -> {dst}", flush=True)
-    except Exception as e:
-        print(f"Failed to link {src} -> {dst}: {e}", file=sys.stderr, flush=True)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)
+    if proc.returncode == 0:
+        return True, ""
+    return False, (proc.stderr or proc.stdout or "").strip()
 
 
-def main():
-    print("USB Router oneshot started.", flush=True)
-    # Wait for target sink to appear
+def _apply_desired(links: list[tuple[str, str]]) -> int:
+    failures = 0
+    for src, dst in links:
+        ok, err = _run_pw_link([src, dst])
+        if ok or "File exists" in err:
+            continue
+        failures += 1
+    return failures
+
+
+def _apply_forbidden(links: list[tuple[str, str]]) -> int:
+    removed = 0
+    for src, dst in links:
+        ok, _ = _run_pw_link(["-d", src, dst])
+        if ok:
+            removed += 1
+    return removed
+
+
+def main() -> int:
+    link_map = _configured_path("HAPAX_RECONCILER_LINK_MAP", DEFAULT_LINK_MAP)
+    forbidden = _configured_path("HAPAX_RECONCILER_FORBIDDEN_LINKS", DEFAULT_FORBIDDEN_LINKS)
+    desired_links = _read_links(link_map)
+    forbidden_links = _read_links(forbidden)
+
+    if not desired_links:
+        print(f"USB router: no desired links found at {link_map}; nothing to apply.")
+        return 0
+
+    print(f"USB router: applying {len(desired_links)} desired links from {link_map}.")
+    final_failures = len(desired_links)
+    removed = 0
     for _ in range(15):
-        outputs = get_outputs()
-        inputs = get_inputs()
-        if f"{TARGET}:playback_RL" in inputs or f"{TARGET}:playback_FL" in inputs:
+        final_failures = _apply_desired(desired_links)
+        removed += _apply_forbidden(forbidden_links)
+        if final_failures == 0:
             break
         time.sleep(1)
+
+    if removed:
+        print(f"USB router: removed {removed} forbidden stale link(s).")
+    if final_failures:
+        print(
+            f"USB router: {final_failures}/{len(desired_links)} links unresolved; "
+            "continuous reconciler will retry.",
+            file=sys.stderr,
+        )
     else:
-        print("Target sink not found after 15s. Exiting.")
-        sys.exit(1)
-
-    links_output = get_links()
-
-    for sink in BROADCAST_SINKS:
-        if f"{sink}:output_FL" in outputs:
-            if f"{sink}:output_FL\n  |-> {TARGET}:playback_RL" not in links_output:
-                link(f"{sink}:output_FL", f"{TARGET}:playback_RL")
-        if f"{sink}:output_FR" in outputs:
-            if f"{sink}:output_FR\n  |-> {TARGET}:playback_RR" not in links_output:
-                link(f"{sink}:output_FR", f"{TARGET}:playback_RR")
-
-    for sink in PRIVATE_SINKS:
-        if f"{sink}:output_FL" in outputs:
-            if f"{sink}:output_FL\n  |-> {TARGET}:playback_FL" not in links_output:
-                subprocess.run(
-                    ["pw-link", "-d", f"{sink}:output_FL", f"{TARGET}:playback_RL"],
-                    stderr=subprocess.DEVNULL,
-                )
-                link(f"{sink}:output_FL", f"{TARGET}:playback_FL")
-        if f"{sink}:output_FR" in outputs:
-            if f"{sink}:output_FR\n  |-> {TARGET}:playback_FR" not in links_output:
-                subprocess.run(
-                    ["pw-link", "-d", f"{sink}:output_FR", f"{TARGET}:playback_RR"],
-                    stderr=subprocess.DEVNULL,
-                )
-                link(f"{sink}:output_FR", f"{TARGET}:playback_FR")
-
-    print("USB Router finished links. Exiting.")
+        print("USB router: link-map applied.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
