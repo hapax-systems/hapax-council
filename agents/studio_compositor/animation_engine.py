@@ -264,9 +264,24 @@ def _parse_transitions() -> list[Transition]:
 
 
 def _safe_load_raw() -> dict:
+    """Load ``ward-animation-state.json`` as a dict, or {} on any failure.
+
+    Validates the JSON root is a mapping. Two callers
+    (``publish_transitions`` line 180, ``_load_active_transitions`` line
+    254) call ``raw.get(\"transitions\")`` immediately on the returned
+    value; a writer producing valid JSON whose root is null, a list, a
+    string, or a number previously raised AttributeError. Same
+    corruption-class as the other recent SHM-read fixes.
+    """
     try:
         if WARD_ANIMATION_STATE_PATH.exists():
-            return json.loads(WARD_ANIMATION_STATE_PATH.read_text(encoding="utf-8"))
+            data = json.loads(WARD_ANIMATION_STATE_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+            log.debug(
+                "ward-animation-state.json root is %s, expected mapping",
+                type(data).__name__,
+            )
     except Exception:
         log.debug("ward-animation-state.json read failed", exc_info=True)
     return {}
