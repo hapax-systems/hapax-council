@@ -302,7 +302,7 @@ class AudioVisualModulationGovernor:
         recovery_windows: int = 1,
         minimum_coupling_gain: float = 0.30,
         dampen_rate: float = 0.85,
-        recovery_rate: float = 1.05,
+        recovery_rate: float = 1.15,
         silence_floor: float = 1e-4,
     ) -> None:
         self.threshold = threshold
