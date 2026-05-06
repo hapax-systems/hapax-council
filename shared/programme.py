@@ -27,7 +27,7 @@ import time
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Re-declared from agents.studio_compositor.structural_director to avoid
 # the compositor → shared import cycle (same pattern shared/director_intent.py
@@ -105,6 +105,13 @@ class ProgrammeStatus(StrEnum):
     ACTIVE = "active"
     COMPLETED = "completed"
     ABORTED = "aborted"
+
+
+class ProgrammeDeliveryMode(StrEnum):
+    """How prepared programme content is treated at delivery time."""
+
+    LIVE_PRIOR = "live_prior"
+    VERBATIM_LEGACY = "verbatim_legacy"
 
 
 class ProgrammeConstraintEnvelope(BaseModel):
@@ -278,6 +285,49 @@ class SegmentAsset(BaseModel):
     block_index: int | None = None  # which script block this belongs to
 
 
+class ProgrammeBeatCard(BaseModel):
+    """A per-beat prior card for live composition.
+
+    Beat cards summarize prepared work into proposal-only context. They
+    are not spoken verbatim and they do not carry layout/runtime authority.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    beat_index: int | None = Field(default=None, ge=0, le=29)
+    beat_id: str | None = None
+    title: str | None = Field(default=None, max_length=160)
+    prior_summary: str | None = Field(default=None, max_length=1200)
+    prepared_artifact_ref: str | None = None
+    action_intent_kinds: list[str] = Field(default_factory=list)
+    layout_needs: list[str] = Field(default_factory=list)
+    expected_effects: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _proposal_only(self) -> ProgrammeBeatCard:
+        _reject_layout_authority_fields(self.model_dump(exclude={"prior_summary"}))
+        return self
+
+
+class ProgrammeLivePrior(BaseModel):
+    """A compact prepared prior for the live narrative composer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    prior_id: str | None = None
+    beat_index: int | None = Field(default=None, ge=0, le=29)
+    kind: str = Field(default="prepared_script_excerpt", max_length=80)
+    text: str = Field(max_length=1600)
+    prepared_artifact_ref: str | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _proposal_only(self) -> ProgrammeLivePrior:
+        _reject_layout_authority_fields(self.model_dump(exclude={"text"}))
+        return self
+
+
 class ProgrammeContent(BaseModel):
     """Concrete content grounding — perception inputs, never scripted text.
 
@@ -308,6 +358,11 @@ class ProgrammeContent(BaseModel):
     remain on non-responsible/static rehearsals, but responsible hosting
     content must use proposal-only ``beat_layout_intents`` and runtime
     receipts instead.
+
+    ``prepared_script`` is retained as a prior artifact for provenance
+    and evaluation. Responsible live delivery composes from
+    ``beat_cards``/``live_priors`` at runtime; direct verbatim playback is
+    legacy-only and must be explicitly gated by the delivery loop.
     """
 
     music_track_ids: list[str] = Field(default_factory=list)
@@ -318,12 +373,16 @@ class ProgrammeContent(BaseModel):
     segment_cues: list[str] = Field(default_factory=list)
     hosting_context: str | dict[str, Any] | None = None
     authority: str | None = None
+    beat_action_intents: list[dict[str, Any]] = Field(default_factory=list)
     beat_layout_intents: list[dict[str, Any]] = Field(default_factory=list)
     layout_decision_contract: dict[str, Any] = Field(default_factory=dict)
     runtime_layout_validation: dict[str, Any] = Field(default_factory=dict)
     layout_decision_receipts: list[dict[str, Any]] = Field(default_factory=list)
     prepared_artifact_ref: dict[str, Any] | str | None = None
     artifact_path_diagnostic: str | None = None
+    delivery_mode: ProgrammeDeliveryMode = ProgrammeDeliveryMode.LIVE_PRIOR
+    beat_cards: list[ProgrammeBeatCard] = Field(default_factory=list)
+    live_priors: list[ProgrammeLivePrior] = Field(default_factory=list)
     segment_beat_durations: list[float] = Field(default_factory=list)
     """Seconds per beat, paired 1:1 with segment_beats.
 
@@ -334,16 +393,16 @@ class ProgrammeContent(BaseModel):
     (planned_duration_s / len(segment_beats)).
     """
     prepared_script: list[str] = Field(default_factory=list)
-    """Pre-composed narration text, one entry per segment_beat.
+    """Prepared narration prior, one entry per segment_beat.
 
     Populated by the daily prep runner BEFORE the programme activates.
-    During delivery, the programme loop reads these chunks sequentially
-    and feeds them to TTS.  No LLM calls during delivery.
+    During responsible live delivery these chunks are not direct TTS
+    authority; the live narrative composer receives bounded beat cards
+    and live priors derived from them.
 
-    Each entry is 8-20 sentences (800-2000 characters) of broadcast-
-    ready prose — the actual words Hapax will speak for that beat.
-    Unlike segment_beats (which are director cues / rundown notes),
-    these are composed and iteratively refined output.
+    Legacy verbatim playback is available only when the runtime
+    explicitly opts into ``delivery_mode=verbatim_legacy`` and the
+    delivery loop's environment gate is enabled.
     """
     segment_assets: list[SegmentAsset] = Field(default_factory=list)
     """Per-block media assets for DURF ward display during playback.
@@ -389,6 +448,12 @@ class ProgrammeContent(BaseModel):
         _reject_layout_authority_fields(v)
         return v
 
+    @field_validator("beat_action_intents")
+    @classmethod
+    def _beat_action_intents_are_proposals(cls, v: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        _reject_layout_authority_fields(v)
+        return v
+
     @field_validator("layout_decision_contract")
     @classmethod
     def _layout_decision_contract_is_non_authoritative(cls, v: dict[str, Any]) -> dict[str, Any]:
@@ -416,6 +481,34 @@ class ProgrammeContent(BaseModel):
                 "planner/prepared content may not carry layout receipts"
             )
         return []
+
+    @field_validator("delivery_mode", mode="before")
+    @classmethod
+    def _delivery_mode_normalized(cls, v: Any) -> ProgrammeDeliveryMode:
+        if v is None or v == "":
+            return ProgrammeDeliveryMode.LIVE_PRIOR
+        if isinstance(v, ProgrammeDeliveryMode):
+            return v
+        token = str(v).strip().lower().replace("-", "_")
+        if token in {"live_prior", "live_priors", "prior", "prior_only"}:
+            return ProgrammeDeliveryMode.LIVE_PRIOR
+        if token in {"verbatim_legacy", "legacy_verbatim", "prepared_script_verbatim"}:
+            return ProgrammeDeliveryMode.VERBATIM_LEGACY
+        raise ValueError(f"unsupported ProgrammeContent delivery_mode: {v!r}")
+
+    @field_validator("beat_cards")
+    @classmethod
+    def _beat_cards_reasonable(cls, v: list[ProgrammeBeatCard]) -> list[ProgrammeBeatCard]:
+        if len(v) > 30:
+            raise ValueError(f"beat_cards has {len(v)} entries — max 30 per programme")
+        return v
+
+    @field_validator("live_priors")
+    @classmethod
+    def _live_priors_reasonable(cls, v: list[ProgrammeLivePrior]) -> list[ProgrammeLivePrior]:
+        if len(v) > 60:
+            raise ValueError(f"live_priors has {len(v)} entries — max 60 per programme")
+        return v
 
     @field_validator("segment_beat_durations")
     @classmethod

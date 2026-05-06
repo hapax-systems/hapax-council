@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -370,6 +371,7 @@ def _effective_refractory_s(daemon: object) -> float:
 _delivered_beats: dict[str, int] = {}  # programme_id → last delivered beat index
 _prepped_loaded: bool = False
 _DELIVERY_WAIT = "__DELIVERY_WAIT__"  # sentinel: script exists, beat already delivered
+PREP_VERBATIM_LEGACY_ENV = "HAPAX_PREP_VERBATIM_LEGACY"
 
 
 def _ensure_prepped_loaded() -> None:
@@ -388,12 +390,28 @@ def _ensure_prepped_loaded() -> None:
         log.debug("delivery: failed to load prepped segments", exc_info=True)
 
 
-def _try_prepared_delivery(context: object) -> str | None:
-    """Return _DELIVERY_WAIT when the dedicated playback loop handles this programme.
+def _truthy_env(name: str) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
-    The prepared_playback_loop owns all TTS for prepped content.
-    This function prevents the dispatch path from composing live narration
-    over a programme being played back directly.
+
+def _delivery_mode_value(content: object) -> str:
+    mode = getattr(content, "delivery_mode", "live_prior")
+    return str(getattr(mode, "value", mode) or "live_prior").strip().lower().replace("-", "_")
+
+
+def _prepared_verbatim_legacy_allowed(content: object) -> bool:
+    return _truthy_env(PREP_VERBATIM_LEGACY_ENV) and _delivery_mode_value(content) == (
+        "verbatim_legacy"
+    )
+
+
+def _try_prepared_delivery(context: object) -> str | None:
+    """Return _DELIVERY_WAIT only for explicit legacy verbatim playback.
+
+    Live-prior prepared artifacts must enrich composition, not suppress it.
+    Direct prepared-script TTS is retained only for explicit legacy
+    playback mode with the runtime env gate enabled.
     """
     _ensure_prepped_loaded()
 
@@ -409,18 +427,23 @@ def _try_prepared_delivery(context: object) -> str | None:
     if not script:
         return None
 
+    if not _prepared_verbatim_legacy_allowed(content):
+        return None
+
     return _DELIVERY_WAIT
 
 
 async def prepared_playback_loop(daemon: object) -> None:
-    """Dedicated playback loop for pre-composed scripts.
+    """Dedicated legacy playback loop for pre-composed scripts.
 
     Drives TTS synthesis + audio playback directly, block by block,
     with only a 1s breath between paragraphs. Uses resolve_playback_decision
     for correct PipeWire routing (same as the CPAL autonomous narrative path).
 
     Eliminates the narrative_drive → affordance_pipeline → recruitment →
-    CPAL chain overhead that causes 10-20s gaps between blocks.
+    CPAL chain overhead that causes 10-20s gaps between blocks. This path
+    is legacy-only: content must request ``delivery_mode=verbatim_legacy``
+    and the operator/runtime must set ``HAPAX_PREP_VERBATIM_LEGACY``.
     """
     _ensure_prepped_loaded()
 
@@ -436,7 +459,10 @@ async def prepared_playback_loop(daemon: object) -> None:
         log.warning("prepared_playback_loop: CPAL runner or TTS not available, exiting")
         return
 
-    log.info("prepared_playback_loop: started — direct TTS with route resolution")
+    log.info(
+        "prepared_playback_loop: started — legacy direct TTS gated by %s",
+        PREP_VERBATIM_LEGACY_ENV,
+    )
 
     while getattr(daemon, "_running", True):
         try:
@@ -445,15 +471,19 @@ async def prepared_playback_loop(daemon: object) -> None:
             store = default_store()
             active = store.active_programme()
 
-            # Only handle programmes with prepared scripts
-            if active is None or not getattr(
-                getattr(active, "content", None), "prepared_script", None
+            content = getattr(active, "content", None) if active is not None else None
+            # Only handle programmes with explicit legacy prepared-script playback.
+            if (
+                active is None
+                or content is None
+                or not getattr(content, "prepared_script", None)
+                or not _prepared_verbatim_legacy_allowed(content)
             ):
                 await asyncio.sleep(2.0)
                 continue
 
             prog_id = str(active.programme_id)
-            script = active.content.prepared_script
+            script = content.prepared_script
             role = getattr(active.role, "value", str(active.role))
 
             # Resolve route directly via classify + resolve_route, bypassing
