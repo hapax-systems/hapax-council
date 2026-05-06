@@ -12,9 +12,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agents.studio_compositor.gem_source import (
+    DEFAULT_FRAMES_PATH,
     FALLBACK_FRAME_TEXT,
+    LEGACY_FRAMES_PATH,
+    MIN_FRAME_HOLD_MS,
     GemCairoSource,
     GemFrame,
+    GemLayer,
+    build_graffiti_layers,
     contains_emoji,
 )
 
@@ -41,16 +46,16 @@ def test_contains_emoji_passes_cp437_only() -> None:
 def test_render_replaces_emoji_with_fallback(tmp_path: Path) -> None:
     """An emoji-containing frame triggers the fallback at render time."""
     src = GemCairoSource(frames_path=tmp_path / "absent.json")
-    rendered: dict[str, str] = {}
+    rendered: list[str] = []
 
     with patch.object(
         src,
         "_render_text_centered",
-        lambda cr, w, h, text: rendered.setdefault("text", text),
+        lambda cr, w, h, text, **_kwargs: rendered.append(text),
     ):
         src.render_content(cr=None, canvas_w=1840, canvas_h=240, t=0.0, state={"text": "yo 😀"})
 
-    assert rendered["text"] == FALLBACK_FRAME_TEXT
+    assert any(FALLBACK_FRAME_TEXT in text for text in rendered)
 
 
 # ── Frame loading + advancement ─────────────────────────────────────────
@@ -61,6 +66,7 @@ def test_state_falls_back_when_no_frames_file(tmp_path: Path) -> None:
     state = src.state()
     assert state["text"] == FALLBACK_FRAME_TEXT
     assert state["frame_count"] == 0
+    assert len(state["layers"]) >= 2
 
 
 def test_state_loads_frames_from_file(tmp_path: Path) -> None:
@@ -79,6 +85,54 @@ def test_state_loads_frames_from_file(tmp_path: Path) -> None:
     assert state["text"] == "first"
     assert state["frame_count"] == 2
     assert state["frame_index"] == 0
+    assert len(state["layers"]) >= 2
+
+
+def test_state_loads_explicit_multilayer_frames(tmp_path: Path) -> None:
+    frames_path = tmp_path / "frames.json"
+    _write_frames(
+        frames_path,
+        [
+            {
+                "text": "first",
+                "hold_ms": 1000,
+                "layers": [
+                    {"text": "first back", "opacity": 0.35, "offset_x_px": -20},
+                    {"text": "first front", "opacity": 0.9, "offset_y_px": 12},
+                ],
+            }
+        ],
+    )
+
+    src = GemCairoSource(frames_path=frames_path)
+    state = src.state()
+
+    assert [layer["text"] for layer in state["layers"]] == ["first back", "first front"]
+    assert state["layers"][0]["opacity"] == 0.35
+
+
+def test_default_source_falls_back_to_legacy_frames_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    canonical = tmp_path / "hapax-gem" / "gem-frames.json"
+    legacy = tmp_path / "hapax-compositor" / "gem-frames.json"
+    legacy.parent.mkdir(parents=True)
+    _write_frames(legacy, [{"text": "legacy mural", "hold_ms": 1000}])
+
+    monkeypatch.setattr(
+        "agents.studio_compositor.gem_source.DEFAULT_FRAMES_PATH",
+        canonical,
+    )
+    monkeypatch.setattr(
+        "agents.studio_compositor.gem_source.LEGACY_FRAMES_PATH",
+        legacy,
+    )
+
+    src = GemCairoSource()
+    assert src._frames_path == canonical
+    assert src._legacy_frames_path == legacy
+    assert src.state()["text"] == "legacy mural"
 
 
 def test_frame_advances_after_hold(tmp_path: Path) -> None:
@@ -161,8 +215,8 @@ def test_negative_hold_ms_clamped_to_minimum(tmp_path: Path) -> None:
 
     src = GemCairoSource(frames_path=frames_path)
     src.state()
-    # GemFrame should have a clamped hold_ms; minimum is 50ms per _read_frames.
-    assert src._frames[0].hold_ms == 50
+    # GemFrame should have a clamped hold_ms; short legacy frames can blink.
+    assert src._frames[0].hold_ms == MIN_FRAME_HOLD_MS
 
 
 def test_frames_reload_on_mtime_change(tmp_path: Path) -> None:
@@ -211,6 +265,23 @@ def test_gem_frame_default_hold_ms() -> None:
 def test_gem_frame_is_hashable() -> None:
     """frozen=True dataclass — usable as dict key / set member."""
     {GemFrame(text="x"), GemFrame(text="y")}
+
+
+def test_gem_frame_layers_are_hashable() -> None:
+    {GemFrame(text="x", layers=(GemLayer(text="x", opacity=0.5),))}
+
+
+def test_build_graffiti_layers_is_dense_not_chiron() -> None:
+    layers = build_graffiti_layers("signal")
+    assert len(layers) >= 2
+    assert len({layer.opacity for layer in layers}) >= 2
+    assert any(layer.offset_x_px or layer.offset_y_px for layer in layers)
+    assert not any(layer.text.startswith(">>>") for layer in layers)
+
+
+def test_default_paths_use_hapax_gem_with_legacy_compat() -> None:
+    assert Path("/dev/shm/hapax-gem/gem-frames.json") == DEFAULT_FRAMES_PATH
+    assert Path("/dev/shm/hapax-compositor/gem-frames.json") == LEGACY_FRAMES_PATH
 
 
 # ── GEM Rooms (Layer 2) ──────────────────────────────────────────────────

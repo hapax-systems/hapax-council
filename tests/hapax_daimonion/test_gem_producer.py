@@ -14,8 +14,10 @@ from agents.hapax_daimonion.gem_producer import (
     _frame_text_safe,
     _intent_matches,
     frames_for_impingement,
+    frames_for_recruitment,
     render_composition_template,
     render_emphasis_template,
+    render_spawn_template,
     write_frames_atomic,
 )
 from agents.studio_compositor.gem_source import GemFrame
@@ -48,6 +50,11 @@ def test_intent_matches_emphasis_prefix() -> None:
 def test_intent_matches_composition_prefix() -> None:
     assert _intent_matches(_make_impingement(intent_family="gem.composition"))
     assert _intent_matches(_make_impingement(intent_family="gem.composition.tree"))
+
+
+def test_intent_matches_spawn_prefix() -> None:
+    assert _intent_matches(_make_impingement(intent_family="gem.spawn"))
+    assert _intent_matches(_make_impingement(intent_family="gem.spawn.fresh-mural"))
 
 
 def test_intent_rejects_non_gem() -> None:
@@ -98,9 +105,9 @@ def test_frame_text_safe_preserves_short_cp437() -> None:
 def test_emphasis_template_produces_three_frames() -> None:
     frames = render_emphasis_template("ACIDIC")
     assert len(frames) == 3
-    # First frame is empty banner, second has the text, third is post-fade
-    assert "ACIDIC" in frames[1].text
-    assert "ACIDIC" in frames[2].text
+    assert all("ACIDIC" in frame.text for frame in frames)
+    assert all(len(frame.layers) >= 2 for frame in frames)
+    assert all(len({layer.opacity for layer in frame.layers}) >= 2 for frame in frames)
 
 
 def test_emphasis_template_returns_empty_on_emoji() -> None:
@@ -110,7 +117,16 @@ def test_emphasis_template_returns_empty_on_emoji() -> None:
 def test_composition_template_single_frame() -> None:
     frames = render_composition_template("spectral drift")
     assert len(frames) == 1
-    assert frames[0].text.startswith(">>> ")
+    assert "spectral drift" in frames[0].text
+    assert not frames[0].text.startswith(">>>")
+    assert len(frames[0].layers) >= 2
+
+
+def test_spawn_template_produces_fresh_mural_frames() -> None:
+    frames = render_spawn_template("new pressure")
+    assert len(frames) == 2
+    assert all("new pressure" in frame.text for frame in frames)
+    assert all(len(frame.layers) >= 2 for frame in frames)
 
 
 # ── frames_for_impingement integration ──────────────────────────────────
@@ -129,7 +145,41 @@ def test_frames_for_impingement_composition_routes_to_composition_template() -> 
     )
     frames = frames_for_impingement(imp)
     assert len(frames) == 1
-    assert frames[0].text == ">>> growing branches"
+    assert "growing branches" in frames[0].text
+
+
+def test_frames_for_impingement_spawn_routes_to_spawn_template() -> None:
+    imp = _make_impingement(intent_family="gem.spawn.fresh", content={"narrative": "fresh mark"})
+    frames = frames_for_impingement(imp)
+    assert len(frames) == 2
+    assert all("fresh mark" in frame.text for frame in frames)
+
+
+def test_frames_for_recruitment_uses_impingement_narrative() -> None:
+    frames = frames_for_recruitment(
+        "gem.emphasis.event-marker",
+        narrative="operator changed topic",
+        score=0.7,
+    )
+    assert len(frames) == 3
+    assert any("operator changed topic" in frame.text for frame in frames)
+    assert all(len(frame.layers) >= 2 for frame in frames)
+
+
+def test_frames_for_recruitment_falls_back_to_capability_suffix() -> None:
+    frames = frames_for_recruitment("gem.spawn.fresh-mural", narrative="")
+    assert len(frames) == 2
+    assert any("fresh mural" in frame.text for frame in frames)
+
+
+def test_frames_for_recruitment_rejects_meta_narration() -> None:
+    frames = frames_for_recruitment(
+        "gem.emphasis.event-marker",
+        narrative="Compose a minimal CP437 glyph sequence to mark the current system status.",
+    )
+    joined = " ".join(frame.text for frame in frames)
+    assert "Compose a minimal" not in joined
+    assert "event marker" in joined
 
 
 def test_frames_for_impingement_caps_at_max() -> None:
@@ -163,6 +213,7 @@ def test_write_frames_atomic_roundtrip(tmp_path: Path) -> None:
     assert len(payload["frames"]) == 2
     assert payload["frames"][0]["text"] == "a"
     assert payload["frames"][0]["hold_ms"] == 400
+    assert len(payload["frames"][0]["layers"]) >= 2
     assert payload["frames"][1]["hold_ms"] == 1500
     assert "written_ts" in payload
 

@@ -23,6 +23,13 @@ def tmp_shm(monkeypatch, tmp_path):
     monkeypatch.setattr(cc, "_RECENT_RECRUITMENT", tmp_path / "recent-recruitment.json")
     monkeypatch.setattr(cc, "_YOUTUBE_DIRECTION", tmp_path / "youtube-direction.json")
     monkeypatch.setattr(cc, "_STREAM_MODE_INTENT", tmp_path / "stream-mode-intent.json")
+    monkeypatch.setattr(cc, "_GEM_FRAMES", tmp_path / "hapax-gem" / "gem-frames.json")
+    monkeypatch.setattr(cc, "_GEM_RECRUITMENT", tmp_path / "hapax-gem" / "recruitment.json")
+    monkeypatch.setattr(
+        cc,
+        "_GEM_LEGACY_FRAMES",
+        tmp_path / "hapax-compositor" / "gem-frames.json",
+    )
     monkeypatch.setattr(cc, "_PARAMETRIC_ENVELOPES", tmp_path / "parametric-envelopes.json")
     monkeypatch.setattr(cc, "_SEGMENT_CUE_HOLD", tmp_path / "segment-cue-hold.json")
     return tmp_path
@@ -110,6 +117,42 @@ class TestStreamModeTransition:
         assert data["target_mode"] == "public-research"
 
 
+class TestGemDispatch:
+    def test_gem_dispatch_writes_recruited_mural_frames(self, tmp_shm):
+        assert cc.dispatch_gem(
+            "gem.emphasis.event-marker",
+            ttl_s=4.0,
+            narrative="patch pressure becomes critique",
+            score=0.8,
+        )
+
+        payload = json.loads((tmp_shm / "hapax-gem" / "gem-frames.json").read_text())
+        assert any(
+            "patch pressure becomes critique" in frame["text"] for frame in payload["frames"]
+        )
+        assert all(len(frame["layers"]) >= 2 for frame in payload["frames"])
+        assert all(
+            len({layer["opacity"] for layer in frame["layers"]}) >= 2 for frame in payload["frames"]
+        )
+        assert (tmp_shm / "hapax-compositor" / "gem-frames.json").exists()
+
+        recruitment = json.loads((tmp_shm / "hapax-gem" / "recruitment.json").read_text())
+        assert recruitment["capability"] == "gem.emphasis.event-marker"
+        assert recruitment["score"] == 0.8
+
+    def test_top_level_dispatch_threads_impingement_narrative_to_gem(self, tmp_shm):
+        rec = cc.RecruitmentRecord(
+            name="gem.spawn.fresh-mural",
+            ttl_s=2.0,
+            score=0.6,
+            impingement_narrative="fresh studio pressure",
+        )
+
+        assert cc.dispatch(rec) == "gem"
+        payload = json.loads((tmp_shm / "hapax-gem" / "gem-frames.json").read_text())
+        assert any("fresh studio pressure" in frame["text"] for frame in payload["frames"])
+
+
 class TestTopLevelDispatch:
     def test_dispatch_routes_each_family(self, tmp_shm):
         for name, expected_family in [
@@ -118,6 +161,7 @@ class TestTopLevelDispatch:
             ("overlay.foreground.album", "overlay.emphasis"),
             ("youtube.cut-to", "youtube.direction"),
             ("stream.mode.public-research.transition", "stream_mode.transition"),
+            ("gem.emphasis.event-marker", "gem"),
         ]:
             rec = cc.RecruitmentRecord(name=name)
             assert cc.dispatch(rec) == expected_family
