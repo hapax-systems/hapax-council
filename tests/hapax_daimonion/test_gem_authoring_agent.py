@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from agents.hapax_daimonion.gem_authoring_agent import (
     GEM_LLM_AUTHORING_ENV,
+    GEM_SYSTEM_PROMPT,
     MAX_FRAME_TEXT_CHARS,
     GemFramePayload,
     GemSequence,
@@ -103,6 +104,12 @@ def test_payload_rejects_hold_ms_below_floor() -> None:
 def test_payload_rejects_hold_ms_above_ceiling() -> None:
     with pytest.raises(ValidationError):
         GemFramePayload(text="x", hold_ms=10_000)
+
+
+def test_system_prompt_rejects_chiron_ticker_grammar() -> None:
+    assert "No chiron" in GEM_SYSTEM_PROMPT
+    assert ">>>" in GEM_SYSTEM_PROMPT
+    assert "* BitchX prefix" not in GEM_SYSTEM_PROMPT
 
 
 # ── GemSequence container ───────────────────────────────────────────────

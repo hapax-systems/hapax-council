@@ -4,7 +4,7 @@ Phase 3 follow-on per ``docs/superpowers/plans/2026-04-21-gem-ward-activation-pl
 
 The template-driven authoring path in ``gem_producer.render_emphasis_template``
 + ``render_composition_template`` produces serviceable but rigid output:
-3-frame banner for emphasis; single ``>>> text`` for composition. Hapax
+overlapping graffiti layers for emphasis/composition. Hapax
 should be able to author richer mural sequences — abstract glyph
 animation, frame-by-frame box-draw narrative, BitchX-grammar emphasis
 — without operator authoring each frame by hand.
@@ -103,6 +103,8 @@ Constraints (non-negotiable):
   selectors (U+FE0F).
 * No humanoid figures. No faces. No eyes/mouths/expressions. The frame
   is a flat glyph mural, never a character.
+* No chiron, ticker-tape, caption strip, or ``>>>`` single-row status line.
+  GEM must read as dense lower-band graffiti, not a scrolling information bar.
 * Each frame text must be ≤ 80 characters (multiple lines OK).
 * Each frame's hold_ms in 200..3000.
 * Sequence is 1..5 frames total. Default to 3 frames for emphasis,
@@ -110,7 +112,6 @@ Constraints (non-negotiable):
 
 Grammar moves available:
 * Banner emphasis:  ┌──[ TEXT ]──┐ ... └────────────┘
-* BitchX prefix:    >>> emphasis fragment
 * Arrow markers:    » keyword «
 * Box-draw frames:  ╔══════╗ over ║ TEXT ║ over ╚══════╝
 * Block density:    ▓▒░ shadow under ASCII text
