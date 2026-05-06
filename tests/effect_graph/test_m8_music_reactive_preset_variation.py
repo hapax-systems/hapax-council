@@ -6,9 +6,12 @@ import json
 from pathlib import Path
 
 from agents.effect_graph.audio_visual_modulation import (
+    AntiVisualizerObservation,
     AudioVisualizerRegister,
+    AudioVisualModulationGovernor,
     AudioVisualSourceRole,
     PublicClaimPolicy,
+    VisualModulationAxis,
 )
 from agents.effect_graph.compiler import GraphCompiler
 from agents.effect_graph.modulator import UniformModulator
@@ -59,6 +62,7 @@ def test_m8_music_reactive_transport_governor_allows_tonal_and_spatial_music() -
             "mixer_bass": 0.72,
             "mixer_energy": 0.54,
             "mixer_high": 0.31,
+            "mixer_mid": 0.58,
             "spectral_centroid": 0.63,
         }
     )
@@ -73,3 +77,34 @@ def test_m8_music_reactive_transport_governor_allows_tonal_and_spatial_music() -
         assert decision.public_claim_policy is PublicClaimPolicy.NO_CLAIM_AUTHORITY
         assert "source:audio-reactivity:programme_music" in decision.source_refs
         assert "health:scrim:anti_visualizer" in decision.health_refs
+
+
+def test_m8_music_reactive_transport_midband_trail_drift_is_bounded_geometry() -> None:
+    graph = _load_preset()
+    binding = next(
+        b for b in graph.modulations if b.node == "trail_transport" and b.param == "drift_y"
+    )
+
+    assert binding.source == "music.mid"
+    assert binding.scale <= 0.04
+    assert -0.02 <= binding.offset <= 0.0
+    assert binding.attack is not None and binding.attack >= 0.10
+    assert binding.decay is not None and binding.decay >= 0.80
+
+    governor = AudioVisualModulationGovernor(
+        hysteresis_windows=1,
+        dampen_rate=0.5,
+        minimum_coupling_gain=0.5,
+    )
+    governor.observe(AntiVisualizerObservation(score=0.9, audio_rms=0.6, fresh=True))
+    modulator = UniformModulator(audio_visual_governor=governor)
+    modulator.replace_all([binding])
+
+    updates = modulator.tick({"mixer_mid": 1.0})
+
+    decision = modulator.last_modulation_decisions[0]
+    assert decision.allowed is True
+    assert decision.visual_axis is VisualModulationAxis.GEOMETRY
+    assert decision.register is AudioVisualizerRegister.STRUCTURAL_MOTION
+    assert decision.coupling_gain == 0.5
+    assert updates[("trail_transport", "drift_y")] == 0.0

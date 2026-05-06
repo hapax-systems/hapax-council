@@ -1,6 +1,6 @@
 {
   "name": "M8 Music Reactive Transport",
-  "description": "M8/music-reactive preset variation: bass and RMS move the live frame through transport-like drift and warp while treble and centroid shift tone. Uses namespaced music.* sources and avoids brightness, opacity, strobe, and waveform-register modulation.",
+  "description": "M8/music-reactive preset variation: bass and RMS move the live frame through transport-like drift and warp, midband steers trace drift, and treble plus centroid shift tone. Uses namespaced music.* sources and avoids brightness, opacity, strobe, and waveform-register modulation.",
   "lineage": "m8-music-reactive",
   "transition_ms": 1800,
   "nodes": {
@@ -147,6 +147,15 @@
       "offset": 0.12,
       "attack": 0.12,
       "decay": 0.86
+    },
+    {
+      "node": "trail_transport",
+      "param": "drift_y",
+      "source": "music.mid",
+      "scale": 0.036,
+      "offset": -0.018,
+      "attack": 0.18,
+      "decay": 0.88
     }
   ]
 }
