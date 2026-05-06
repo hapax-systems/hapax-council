@@ -417,6 +417,98 @@ def test_active_segment_payload_uses_plural_layout_intents_and_authority_ref() -
     assert "fallback_active" not in payload
 
 
+def test_prepped_payload_projects_prepared_script_to_live_priors() -> None:
+    from agents.hapax_daimonion.programme_loop import (
+        _prepped_beat_cards,
+        _prepped_live_priors,
+    )
+
+    artifact_ref = {"ref": "prepared_artifact:" + "b" * 64}
+    payload = {
+        "artifact_sha256": "b" * 64,
+        "prepared_artifact_ref": artifact_ref,
+        "segment_beats": ["rank Alpha with a visible tier decision"],
+        "prepared_script": [
+            "Place Alpha in S-tier because the ranking makes the evidence legible."
+        ],
+        "beat_action_intents": [
+            {
+                "beat_index": 0,
+                "intents": [
+                    {
+                        "kind": "tier_chart",
+                        "expected_effect": "tier_chart.place:Alpha:S",
+                    }
+                ],
+            }
+        ],
+        "beat_layout_intents": [
+            {
+                "beat_id": "beat-1",
+                "beat_index": 0,
+                "needs": ["tier_visual"],
+                "evidence_refs": ["beat_action_intents[0].intents[0]"],
+            }
+        ],
+    }
+
+    cards = _prepped_beat_cards(payload)
+    priors = _prepped_live_priors(payload)
+
+    assert cards[0]["prepared_artifact_ref"] == artifact_ref["ref"]
+    assert cards[0]["action_intent_kinds"] == ["tier_chart"]
+    assert cards[0]["layout_needs"] == ["tier_visual"]
+    assert cards[0]["prior_summary"].startswith("Place Alpha")
+    assert priors[0]["prepared_artifact_ref"] == artifact_ref["ref"]
+    assert priors[0]["text"].startswith("Place Alpha")
+
+
+def test_active_segment_payload_includes_live_prior_proposals() -> None:
+    from agents.hapax_daimonion.programme_loop import _active_segment_payload
+    from shared.programme import ProgrammeContent
+
+    content = ProgrammeContent(
+        delivery_mode="live_prior",
+        segment_beats=["hook"],
+        beat_action_intents=[
+            {
+                "beat_index": 0,
+                "intents": [{"kind": "tier_chart", "expected_effect": "tier_chart.place:X:S"}],
+            }
+        ],
+        beat_cards=[
+            {
+                "beat_index": 0,
+                "title": "hook",
+                "prior_summary": "Prepared prior, not script authority.",
+                "action_intent_kinds": ["tier_chart"],
+                "layout_needs": ["tier_visual"],
+            }
+        ],
+        live_priors=[
+            {
+                "prior_id": "prepared-script-beat-1",
+                "beat_index": 0,
+                "text": "Prepared prior excerpt.",
+            }
+        ],
+    )
+    active = SimpleNamespace(
+        programme_id="prog-live",
+        actual_started_at=123.0,
+        planned_duration_s=600.0,
+        topic="topic",
+        content=content,
+    )
+
+    payload = _active_segment_payload(active, "tier_list", 0)
+
+    assert payload["delivery_mode"] == "live_prior"
+    assert payload["current_beat_action_intents"][0]["beat_index"] == 0
+    assert payload["current_beat_cards"][0]["prior_summary"].startswith("Prepared prior")
+    assert payload["current_beat_live_priors"][0]["text"] == "Prepared prior excerpt."
+
+
 def test_programme_loop_checks_beat_transition_once_per_tick() -> None:
     from pathlib import Path
 

@@ -198,6 +198,25 @@ from shared.segment_quality_layout_eval import (
 _evaluate_segment_quality_layout_fixture
 _build_beat_layout_needs
 
+# Pydantic v2 validators for the programme live-prior contract. They are
+# invoked by model validation, not by direct static calls.
+from shared.programme import (
+    ProgrammeBeatCard as _ProgrammeBeatCard,
+)
+from shared.programme import (
+    ProgrammeContent as _ProgrammeContent,
+)
+from shared.programme import (
+    ProgrammeLivePrior as _ProgrammeLivePrior,
+)
+
+_ProgrammeBeatCard._proposal_only
+_ProgrammeLivePrior._proposal_only
+_ProgrammeContent._beat_action_intents_are_proposals
+_ProgrammeContent._delivery_mode_normalized
+_ProgrammeContent._beat_cards_reasonable
+_ProgrammeContent._live_priors_reasonable
+
 # Test-only reset hook for the in-process rendered-blit readback cache. The
 # production read path is recent_blit_readbacks(); vulture does not scan tests.
 from agents.studio_compositor.fx_chain import clear_blit_readbacks as _clear_blit_readbacks
