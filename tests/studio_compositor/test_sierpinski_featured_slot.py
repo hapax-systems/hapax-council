@@ -148,3 +148,31 @@ def test_featured_constants_are_in_legible_band() -> None:
     assert sr.FEATURED_FALLBACK_OPACITY > sr.FEATURED_IDLE_OPACITY
     assert 0.0 <= sr.FEATURED_IDLE_OPACITY <= 1.0
     assert 0.0 <= sr.FEATURED_OPACITY_BOOST <= 1.0
+
+
+# ── Defensive featured-slot reader — non-dict JSON root ─────────────────
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_refresh_featured_handles_non_dict_root(tmp_path: Path, payload: str, kind: str) -> None:
+    """Pin ``_refresh_featured_yt_slot`` against a writer producing valid
+    JSON whose root is not a mapping. Lines 197-199 call ``data.get(...)``
+    inside an ``except (TypeError, ValueError)`` — but a non-dict root
+    raises AttributeError on the very first ``.get`` call, escaping the
+    catch entirely. Same corruption-class as #2627, #2631, #2632, #2636
+    (merged) and #2640, #2642, #2644 (in flight)."""
+    target = tmp_path / "featured-yt-slot"
+    target.write_text(payload)
+    # Set a known prior state so we can detect the reset.
+    r = _make_renderer()
+    r._featured_slot_id = 7
+    with patch.object(sr, "FEATURED_YT_SLOT_FILE", target):
+        # The crash path: must not raise even on a corrupt sidecar.
+        r._refresh_featured_yt_slot()
+    assert r._featured_slot_id is None, f"non-dict root={kind} must clear featured state"
