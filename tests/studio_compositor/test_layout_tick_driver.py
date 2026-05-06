@@ -354,6 +354,73 @@ def test_active_segment_pressure_maps_blue_contract_needs(tmp_path: Path) -> Non
     assert intents[2].expected_effects == ("ward:compare-panel",)
 
 
+def test_active_segment_pressure_uses_blue_posture_hints(tmp_path: Path) -> None:
+    state_file = tmp_path / "active-segment.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "programme_id": "programme:seg-1",
+                "current_beat_index": 1,
+                "hosting_context": "hapax_responsible_live",
+                "prepared_artifact_ref": "sha256:abc123",
+                "current_beat_layout_intents": [
+                    {
+                        "beat_id": "body",
+                        "needs": ["comparison_visible"],
+                        "proposed_postures": ["ranked_visual"],
+                        "evidence_refs": ["prepared_artifact:sha256:abc123", "vault:ranked"],
+                    },
+                    {
+                        "beat_id": "chat",
+                        "needs": ["referent_visible"],
+                        "proposed_postures": ["chat_prompt"],
+                        "evidence_refs": ["prepared_artifact:sha256:abc123", "chat:prompt"],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pressure = _read_segment_layout_pressure(state_file, now=NOW)
+    intents = pressure["segment_layout_intents"]
+
+    assert pressure["segment_layout_refusals"] == ()
+    assert [intent.kind for intent in intents] == [
+        LayoutNeedKind.RANKED_LIST.value,
+        LayoutNeedKind.CHAT_RESPONSE.value,
+    ]
+    assert [intent.expected_effects for intent in intents] == [
+        ("ward:ranked-list-panel",),
+        ("ward:chat-panel",),
+    ]
+
+
+def test_responsible_hosting_without_proposals_suppresses_legacy_pressure(
+    tmp_path: Path,
+) -> None:
+    state_file = tmp_path / "active-segment.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "programme_id": "programme:seg-1",
+                "current_beat_index": 1,
+                "hosting_context": "hapax_responsible_live",
+                "prepared_artifact_ref": "sha256:abc123",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pressure = _read_segment_layout_pressure(state_file, now=NOW)
+
+    assert pressure["segment_layout_pressure_seen"] is True
+    assert pressure["segment_layout_intents"] == ()
+    refusals = pressure["segment_layout_refusals"]
+    assert isinstance(refusals, tuple)
+    assert refusals[0]["reason"] == "missing_current_beat_layout_intents"
+
+
 def test_active_segment_pressure_refuses_unsupported_and_forbidden_needs(tmp_path: Path) -> None:
     state_file = tmp_path / "active-segment.json"
     state_file.write_text(

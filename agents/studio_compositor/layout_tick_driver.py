@@ -285,9 +285,10 @@ def _read_segment_layout_pressure(
 
     prepared_artifact_ref = _prepared_artifact_ref(raw.get("prepared_artifact_ref"))
     current_beat_index = _optional_int(raw.get("current_beat_index"))
+    responsible_hosting, hosting_refusals = _segment_hosting_pressure(raw)
     proposals = _dict_items(raw.get("current_beat_layout_intents"))
     intents: list[Any] = []
-    refusals: list[dict[str, object]] = []
+    refusals: list[dict[str, object]] = list(hosting_refusals if not proposals else ())
     for index, proposal in enumerate(proposals):
         proposal_intents, proposal_refusals = _proposal_needs_to_intents(
             proposal,
@@ -299,10 +300,23 @@ def _read_segment_layout_pressure(
         )
         intents.extend(proposal_intents)
         refusals.extend(proposal_refusals)
+    if responsible_hosting and not proposals:
+        refusals.append(
+            {
+                "programme_id": _optional_str(raw.get("programme_id")),
+                "beat_index": current_beat_index,
+                "need_index": None,
+                "need_kind": None,
+                "reason": "missing_current_beat_layout_intents",
+                "supported_kinds": sorted(SUPPORTED_SEGMENT_LAYOUT_PRESSURE_KINDS),
+                "forbidden_fields": (),
+                "authority_ref": prepared_artifact_ref,
+            }
+        )
     return {
         "segment_layout_intents": tuple(intents),
         "segment_layout_refusals": tuple(refusals),
-        "segment_layout_pressure_seen": bool(proposals),
+        "segment_layout_pressure_seen": bool(proposals) or responsible_hosting,
         "prepared_artifact_ref": prepared_artifact_ref,
         "segment_action_intents_ref": _segment_action_intents_ref(
             path=path,
@@ -365,7 +379,7 @@ def _proposal_needs_to_intents(
                 }
             )
             continue
-        mapped_kind = _need_to_segment_intent_kind(need)
+        mapped_kind = _need_to_segment_intent_kind(need, proposal=proposal)
         if mapped_kind is None:
             refusals.append(
                 {
@@ -406,19 +420,32 @@ def _proposal_needs_to_intents(
                 target_ref=_target_ref_for_need(need),
                 authority_ref=prepared_artifact_ref,
                 requested_layout=None,
-                expected_effects=_expected_effects_for_need(need),
+                expected_effects=_expected_effects_for_need(need, mapped_kind=mapped_kind),
                 spoken_text_ref=None,
             )
         )
     return tuple(out), tuple(refusals)
 
 
-def _need_to_segment_intent_kind(need: dict[str, object]) -> str | None:
+def _need_to_segment_intent_kind(
+    need: dict[str, object],
+    *,
+    proposal: dict[str, object] | None = None,
+) -> str | None:
     from agents.studio_compositor.segment_layout_control import LayoutNeedKind
 
     kind = _optional_str(need.get("kind")) or _optional_str(need.get("need"))
     if kind is None:
         return None
+    posture_hints = _proposal_posture_hints(need, proposal)
+    if "chatprompt" in posture_hints:
+        return LayoutNeedKind.CHAT_RESPONSE.value
+    if "tierstatus" in posture_hints or (
+        "rankedvisual" in posture_hints and _proposal_mentions(need, proposal, "tier")
+    ):
+        return LayoutNeedKind.TIER_STATUS.value
+    if "rankedvisual" in posture_hints:
+        return LayoutNeedKind.RANKED_LIST.value
     mapping = {
         "tier": LayoutNeedKind.TIER_STATUS,
         "tier_status": LayoutNeedKind.TIER_STATUS,
@@ -448,7 +475,42 @@ def _need_to_segment_intent_kind(need: dict[str, object]) -> str | None:
     return None
 
 
-def _expected_effects_for_need(need: dict[str, object]) -> tuple[str, ...]:
+def _proposal_posture_hints(
+    need: dict[str, object],
+    proposal: dict[str, object] | None,
+) -> frozenset[str]:
+    values: list[str] = []
+    values.extend(_string_tuple(need.get("proposed_postures")))
+    values.extend(_string_tuple(need.get("proposed_posture")))
+    values.extend(_string_tuple(need.get("posture")))
+    if proposal is not None:
+        values.extend(_string_tuple(proposal.get("proposed_postures")))
+        values.extend(_string_tuple(proposal.get("proposed_posture")))
+        values.extend(_string_tuple(proposal.get("posture")))
+    return frozenset(_token(value) for value in values)
+
+
+def _proposal_mentions(
+    need: dict[str, object],
+    proposal: dict[str, object] | None,
+    token: str,
+) -> bool:
+    needle = _token(token)
+    for value in _walk_strings(need):
+        if needle in _token(value):
+            return True
+    if proposal is not None:
+        for value in _walk_strings(proposal):
+            if needle in _token(value):
+                return True
+    return False
+
+
+def _expected_effects_for_need(
+    need: dict[str, object],
+    *,
+    mapped_kind: str | None = None,
+) -> tuple[str, ...]:
     explicit = (
         _string_tuple(need.get("expected_effects"))
         or _string_tuple(need.get("expected_effect"))
@@ -456,6 +518,18 @@ def _expected_effects_for_need(need: dict[str, object]) -> tuple[str, ...]:
     )
     if explicit:
         return explicit
+    if mapped_kind == "show_tier_status":
+        return ("ward:tier-panel",)
+    if mapped_kind == "show_ranked_list":
+        return ("ward:ranked-list-panel",)
+    if mapped_kind == "show_chat_response":
+        return ("ward:chat-panel",)
+    if mapped_kind == "show_source_comparison":
+        return ("ward:compare-panel",)
+    if mapped_kind == "show_programme_context":
+        return ("ward:programme-context",)
+    if mapped_kind == "show_artifact_detail":
+        return ("ward:artifact-detail-panel",)
     kind = _optional_str(need.get("kind")) or ""
     if "tier" in kind:
         return ("ward:tier-panel",)
@@ -500,6 +574,59 @@ def _forbidden_segment_layout_fields(value: object, *, prefix: str = "") -> tupl
         for index, nested in enumerate(value):
             found.extend(_forbidden_segment_layout_fields(nested, prefix=f"{prefix}[{index}]"))
     return tuple(dict.fromkeys(found))
+
+
+def _segment_hosting_pressure(raw: dict[str, object]) -> tuple[bool, tuple[dict[str, object], ...]]:
+    hosting_context = raw.get("hosting_context")
+    token = _hosting_context_token(hosting_context)
+    if token in {"nonresponsiblestatic", "legacydefault", "nonresponsible"}:
+        return False, ()
+    if token in {
+        "hapaxresponsiblelive",
+        "responsiblehosting",
+        "responsiblelive",
+        "responsible",
+        "explicitfallback",
+    }:
+        return True, ()
+    return True, (
+        {
+            "programme_id": _optional_str(raw.get("programme_id")),
+            "beat_index": _optional_int(raw.get("current_beat_index")),
+            "need_index": None,
+            "need_kind": None,
+            "reason": "missing_or_unsupported_hosting_context",
+            "supported_kinds": sorted(SUPPORTED_SEGMENT_LAYOUT_PRESSURE_KINDS),
+            "forbidden_fields": (),
+            "authority_ref": _prepared_artifact_ref(raw.get("prepared_artifact_ref")),
+        },
+    )
+
+
+def _hosting_context_token(value: object) -> str:
+    if isinstance(value, dict):
+        nested = value.get("mode") or value.get("hosting_context")
+        return _token(str(nested or ""))
+    if isinstance(value, str):
+        return _token(value)
+    return ""
+
+
+def _walk_strings(value: object) -> tuple[str, ...]:
+    out: list[str] = []
+    if isinstance(value, str):
+        out.append(value)
+    elif isinstance(value, dict):
+        for nested in value.values():
+            out.extend(_walk_strings(nested))
+    elif isinstance(value, list | tuple):
+        for nested in value:
+            out.extend(_walk_strings(nested))
+    return tuple(out)
+
+
+def _token(value: str) -> str:
+    return "".join(ch for ch in value.lower() if ch.isalnum())
 
 
 def _dict_items(value: object) -> tuple[dict[str, object], ...]:

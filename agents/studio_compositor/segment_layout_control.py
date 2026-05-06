@@ -850,7 +850,9 @@ def _split_effects(
 
 def _critical_unsatisfied_effects(effects: Iterable[str]) -> tuple[str, ...]:
     return tuple(
-        effect for effect in effects if effect.startswith("layout:") or effect.startswith("ward:")
+        effect
+        for effect in effects
+        if not effect.startswith("posture:") and not effect.startswith("candidate_posture:")
     )
 
 

@@ -36,7 +36,7 @@ def _intent(
     requested_at: float = NOW - 1.0,
     evidence_refs: tuple[str, ...] = ("prior:ranked-list",),
     requested_layout: str | None = None,
-    expected_effects: tuple[str, ...] = ("ward:ranked-list-panel", "action:visible-claim"),
+    expected_effects: tuple[str, ...] = ("ward:ranked-list-panel",),
 ) -> SegmentActionIntent:
     return SegmentActionIntent(
         intent_id=intent_id,
@@ -114,10 +114,24 @@ def test_responsible_acceptance_requires_rendered_readback_receipt_refs() -> Non
     assert "segment-action-intents:sha256" in receipt.readback_refs
     assert "layout:segment-list" in receipt.satisfied_effects
     assert "ward:ranked-list-panel" in receipt.satisfied_effects
-    assert "action:visible-claim" in receipt.unsatisfied_effects
     assert receipt.grants_playback_authority is False
     assert receipt.grants_audio_authority is False
     assert receipt.spoken_text_altered is False
+
+
+def test_unsatisfied_non_ward_visible_effect_blocks_acceptance() -> None:
+    receipt = decide_layout_responsibility(
+        [_intent(expected_effects=("ward:ranked-list-panel", "action:visible-claim"))],
+        available_layouts=_available(),
+        readback=_readback(),
+        state=SegmentLayoutState(current_layout="segment-list"),
+        now=NOW,
+    )
+
+    assert receipt.status is LayoutDecisionStatus.HELD
+    assert receipt.reason is LayoutDecisionReason.RENDERED_READBACK_MISMATCH
+    assert "action:visible-claim" in receipt.unsatisfied_effects
+    assert "action:visible-claim" in receipt.receipt_metadata["critical_unsatisfied_effects"]
 
 
 @pytest.mark.parametrize("static_layout", ["default", "default-legacy", "garage-door"])
