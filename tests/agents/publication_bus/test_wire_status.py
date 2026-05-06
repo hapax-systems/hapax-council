@@ -96,6 +96,43 @@ def test_each_cred_blocked_entry_has_rationale():
             assert entry.rationale, f"{module} CRED_BLOCKED but no rationale"
 
 
+def test_each_cred_blocked_entry_documents_disposition():
+    """CRED_BLOCKED is a dormant-by-default state. Per cc-task
+    ``crossref-credential-bootstrap-pipeline`` (and aligned with the
+    operator's ``never stall, no dormant default`` posture): every
+    CRED_BLOCKED entry must explicitly document **what operator action
+    unblocks it** AND **when the surface should be re-evaluated**.
+
+    The check is rationale-text-based on purpose: the WireEntry shape
+    stays minimal (no schema migration) but new CRED_BLOCKED additions
+    that omit either signal fail CI before merging. Two regression pins:
+
+    * The rationale references the operator action explicitly — at
+      minimum a literal pass-store insert command (``pass insert
+      <key>``) or the phrase ``operator-action`` so a future auditor
+      can grep the codebase for who-needs-to-do-what.
+    * The rationale carries a review-by ISO-8601 date so a perpetual
+      CRED_BLOCKED state surfaces audit pressure when the date passes.
+    """
+    import re
+
+    iso_date = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+    for module, entry in PUBLISHER_WIRE_REGISTRY.items():
+        if entry.status != "CRED_BLOCKED":
+            continue
+        rationale_lc = entry.rationale.lower()
+        assert "operator-action" in rationale_lc or "pass insert" in rationale_lc, (
+            f"{module}: CRED_BLOCKED rationale must reference the operator "
+            f"action (e.g. 'operator-action: pass insert <key>') so "
+            f"who-unblocks-this is greppable. Got: {entry.rationale!r}"
+        )
+        assert iso_date.search(entry.rationale), (
+            f"{module}: CRED_BLOCKED rationale must carry a review-by "
+            f"ISO-8601 date (YYYY-MM-DD) so a perpetual hold surfaces "
+            f"audit pressure when the date passes. Got: {entry.rationale!r}"
+        )
+
+
 def test_graph_publisher_slug_matches_surface_registry():
     entry = PUBLISHER_WIRE_REGISTRY["agents.publication_bus.graph_publisher"]
     assert entry.surface_slug == "datacite-graphql-mirror"
