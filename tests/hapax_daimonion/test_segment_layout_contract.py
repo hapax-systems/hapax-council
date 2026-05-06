@@ -587,6 +587,12 @@ def test_prepared_metadata_rejects_canonicalized_direct_layout_command_keys(
         "default-live",
         "balanced-v2",
         "camera.hero tight",
+        "Switch to the overhead camera now.",
+        "Cut to the director view while I explain the tradeoff.",
+        "Show the desk camera feed for proof.",
+        "Take overhead while I explain the tradeoff.",
+        "Bring overhead up while chat votes.",
+        "Take desk cam while I explain the tradeoff.",
         "front.youtube https://example.invalid/video",
         "/dev/shm/hapax-compositor/layout-mode.txt",
     ],
@@ -599,6 +605,21 @@ def test_prepared_metadata_rejects_concrete_layouts_and_cue_strings(
 
     with pytest.raises(ValueError, match="prepared artifact layout metadata cannot"):
         validate_prepared_artifact_layout_metadata(metadata)
+
+
+def test_prepared_segment_artifact_allows_neutral_camera_descriptions() -> None:
+    artifact = _parent_artifact(
+        prepared_script=[
+            "The overhead camera feed has a color cast in the source record; "
+            "that sentence is descriptive context, not a layout instruction. "
+            "Take the long view on the tradeoff, move the argument into view, "
+            "and push the comparison angle harder."
+        ]
+    )
+
+    parsed = validate_prepared_segment_artifact(artifact, artifact_sha256="6" * 64)
+
+    assert parsed.segment_id == "seg-1"
 
 
 def test_prepared_segment_artifact_rejects_segment_cues_in_responsible_hosting() -> None:

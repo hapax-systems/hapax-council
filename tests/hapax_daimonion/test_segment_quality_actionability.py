@@ -140,6 +140,173 @@ def test_actionability_declares_expected_visible_or_doable_effects() -> None:
     assert alignment["removed_unsupported_action_lines"] == []
 
 
+def test_actionability_rejects_direct_layout_command_prose() -> None:
+    alignment = validate_segment_actionability(
+        ["Place FORTRAN in A-tier, then cue the tier panel and switch to the ranking layout."],
+        ["rank FORTRAN"],
+    )
+
+    assert alignment["ok"] is False
+    assert alignment["removed_unsupported_action_lines"] == [
+        {
+            "beat_index": 0,
+            "line": "Place FORTRAN in A-tier, then cue the tier panel and switch to the ranking layout.",
+        }
+    ]
+
+
+def test_actionability_rejects_common_layout_command_variants() -> None:
+    script = [
+        "Switch layout to the tier panel.",
+        "Switch the layout to the tier panel.",
+        "Cue up the tier chart.",
+        "Place FORTRAN in A-tier, then switch the layout to the tier panel.",
+    ]
+
+    alignment = validate_segment_actionability(
+        script,
+        ["command 1", "command 2", "command 3", "command 4"],
+    )
+
+    assert alignment["ok"] is False
+    assert [item["line"] for item in alignment["removed_unsupported_action_lines"]] == script
+
+
+def test_tier_chart_requires_sentence_initial_place_trigger() -> None:
+    invalid_script = [
+        "I would place FORTRAN in A-tier because the evidence is visible.",
+        "Please place COBOL in B-tier because the tradeoff still matters.",
+    ]
+    invalid_alignment = validate_segment_actionability(
+        invalid_script,
+        ["rank FORTRAN", "rank COBOL"],
+    )
+
+    invalid_kinds = {
+        intent["kind"]
+        for beat in invalid_alignment["beat_action_intents"]
+        for intent in beat["intents"]
+    }
+    assert "tier_chart" not in invalid_kinds
+    assert "comparison" in invalid_kinds
+
+    valid_alignment = validate_segment_actionability(
+        ["Place FORTRAN in A-tier because the evidence is visible."],
+        ["rank FORTRAN"],
+    )
+    valid_kinds = {
+        intent["kind"]
+        for beat in valid_alignment["beat_action_intents"]
+        for intent in beat["intents"]
+    }
+    assert "tier_chart" in valid_kinds
+
+    gated = prep._with_tier_list_placement_gate(
+        {"ok": True, "violations": [], "runtime_layout_validation": {"ok": True}},
+        role="tier_list",
+        segment_beats=["rank FORTRAN", "rank COBOL"],
+        beat_action_intents=invalid_alignment["beat_action_intents"],
+    )
+
+    assert gated["ok"] is False
+    assert "missing_tier_placement_phrase" in {
+        violation["reason"] for violation in gated["violations"]
+    }
+
+
+def test_tier_list_gate_requires_final_non_skip_candidate_placement() -> None:
+    alignment = validate_segment_actionability(
+        [
+            "This opening names the rubric and the stakes for the tier list.",
+            "Place FORTRAN in A-tier because the legacy is visible in the ranking.",
+            "Java belongs in B-tier because the enterprise tradeoff is real.",
+        ],
+        [
+            "criteria intro",
+            "second candidate: FORTRAN",
+            "third candidate: Java",
+        ],
+    )
+
+    gated = prep._with_tier_list_placement_gate(
+        {"ok": True, "violations": [], "runtime_layout_validation": {"ok": True}},
+        role="tier_list",
+        segment_beats=["criteria intro", "second candidate: FORTRAN", "third candidate: Java"],
+        beat_action_intents=alignment["beat_action_intents"],
+    )
+
+    assert gated["ok"] is False
+    assert [
+        violation["beat_index"]
+        for violation in gated["violations"]
+        if violation["reason"] == "missing_tier_placement_phrase"
+    ] == [2]
+
+
+def test_actionability_rejects_camera_director_command_prose() -> None:
+    script = [
+        "Place FORTRAN in A-tier because the ranking is legible. "
+        "Switch to the overhead camera now.",
+        "Cut to the director view while I explain the tradeoff.",
+        "Show the desk camera feed for proof.",
+        "Take overhead while I explain the tradeoff.",
+        "Bring overhead up while chat votes.",
+        "Take desk cam while I explain the tradeoff.",
+    ]
+
+    alignment = validate_segment_actionability(
+        script,
+        [
+            "rank FORTRAN",
+            "reject director cue",
+            "reject desk camera cue",
+            "reject overhead shorthand",
+            "reject bring-up shorthand",
+            "reject desk-cam shorthand",
+        ],
+    )
+
+    assert alignment["ok"] is False
+    assert [item["line"] for item in alignment["removed_unsupported_action_lines"]] == [
+        "Switch to the overhead camera now.",
+        "Cut to the director view while I explain the tradeoff.",
+        "Show the desk camera feed for proof.",
+        "Take overhead while I explain the tradeoff.",
+        "Bring overhead up while chat votes.",
+        "Take desk cam while I explain the tradeoff.",
+    ]
+    assert alignment["prepared_script"][0] == (
+        "Place FORTRAN in A-tier because the ranking is legible."
+    )
+
+
+def test_actionability_allows_neutral_camera_descriptions_without_commands() -> None:
+    script = [
+        "The overhead camera feed has a color cast; that is source context, not "
+        "a director instruction. Place FORTRAN in A-tier because the ranking is legible.",
+        "A director view of the argument is not the same thing as directing the "
+        "runtime layout. What do you think? Drop it in chat.",
+        "Take the long view on this tradeoff before the ranking. "
+        "Move the argument into view, then push the comparison angle harder.",
+    ]
+
+    alignment = validate_segment_actionability(
+        script,
+        [
+            "rank FORTRAN with source context",
+            "ask chat about the distinction",
+            "allow ordinary idioms",
+        ],
+    )
+
+    assert alignment["ok"] is True
+    assert alignment["removed_unsupported_action_lines"] == []
+    kinds = {
+        intent["kind"] for beat in alignment["beat_action_intents"] for intent in beat["intents"]
+    }
+    assert {"tier_chart", "chat_poll"}.issubset(kinds)
+
+
 def test_layout_responsibility_derives_needs_from_action_intents() -> None:
     alignment = validate_segment_actionability(EXCELLENT_SCRIPT, ["hook", "body", "close"])
 

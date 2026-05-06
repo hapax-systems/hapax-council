@@ -37,6 +37,22 @@ def test_prep_llm_timeout_preserves_long_resident_generation() -> None:
     assert prep._PREP_LLM_TIMEOUT_S >= 900
 
 
+def test_parse_script_extracts_spoken_text_from_object_array() -> None:
+    raw = json.dumps(
+        [
+            {"beat_number": 1, "direction": "hook", "draft": "First spoken beat."},
+            {"beat_number": 2, "spoken_text": "Second spoken beat."},
+            "Third spoken beat.",
+        ]
+    )
+
+    assert prep._parse_script(raw) == [
+        "First spoken beat.",
+        "Second spoken beat.",
+        "Third spoken beat.",
+    ]
+
+
 def test_daily_prep_source_has_no_model_swap_or_fallback_paths() -> None:
     source = Path(prep.__file__).read_text(encoding="utf-8")
     forbidden = [
@@ -604,6 +620,247 @@ def test_prep_segment_quarantines_responsible_spoken_only_script(
     assert "unsupported_layout_need" in {
         item["reason"] for item in diagnostic["layout_responsibility"]["violations"]
     }
+
+
+def test_prep_segment_repairs_spoken_only_tier_list_into_visible_placements(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    programme = SimpleNamespace(
+        programme_id="prog-tier-repair",
+        role=SimpleNamespace(value="tier_list"),
+        content=SimpleNamespace(
+            narrative_beat="Tier list on programming languages",
+            segment_beats=[
+                "hook with a tier rubric",
+                "rank the early language",
+                "rank the modern language",
+            ],
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+    draft = [
+        "This beat compares language eras and explains the stakes of abstraction.",
+        "FORTRAN and COBOL matter because they changed business computing.",
+        "Java matters because object-oriented design reshaped enterprise software.",
+    ]
+    repaired = [
+        "Place the abstraction rubric in S-tier because the audience needs to see "
+        "that we are ranking language eras by leverage, not nostalgia.",
+        "Place FORTRAN in A-tier because its scientific-computing legacy made high "
+        "level programming visible as a practical working method.",
+        "Place Java in B-tier because its enterprise reach is enormous, but the "
+        "tradeoff is a heavier object model that chat can dispute.",
+    ]
+    prompts: list[str] = []
+    phases: list[str] = []
+
+    monkeypatch.setattr(prep, "_build_seed", lambda _programme: "seed")
+    monkeypatch.setattr(
+        prep,
+        "_build_full_segment_prompt",
+        lambda _programme, _seed: "prompt",
+    )
+
+    def fake_call(prompt: str, **kwargs: Any) -> str:
+        prompts.append(prompt)
+        phase = kwargs.get("phase")
+        phases.append(str(phase))
+        call_session = kwargs.get("prep_session")
+        if isinstance(call_session, dict):
+            call_session["llm_calls"].append(
+                {
+                    "call_index": len(call_session["llm_calls"]) + 1,
+                    "phase": str(phase),
+                    "programme_id": str(kwargs.get("programme_id") or "prog-tier-repair"),
+                    "model_id": prep.RESIDENT_PREP_MODEL,
+                    "prompt_sha256": prep._sha256_text(prompt),
+                    "prompt_chars": len(prompt),
+                    "called_at": "2026-05-05T00:00:00+00:00",
+                }
+            )
+        if phase == "compose":
+            return json.dumps(draft)
+        if phase == "layout_repair":
+            return json.dumps(repaired)
+        raise AssertionError(f"unexpected phase {phase!r}")
+
+    monkeypatch.setattr(prep, "_call_llm", fake_call)
+    monkeypatch.setattr(prep, "_refine_script", lambda script, _programme, **_kwargs: script)
+    monkeypatch.setattr(prep, "_emit_self_evaluation", lambda *_args, **_kwargs: None)
+
+    saved = prep.prep_segment(programme, tmp_path, prep_session=session)
+
+    assert saved == tmp_path / "prog-tier-repair.json"
+    payload = json.loads(saved.read_text(encoding="utf-8"))
+    assert payload["prepared_script"] == repaired
+    assert payload["runtime_layout_validation"]["status"] == "pending_runtime_readback"
+    assert payload["runtime_layout_validation"]["layout_success"] is False
+    assert payload["beat_layout_intents"]
+    assert not payload["layout_decision_receipts"]
+    action_kinds = {
+        intent["kind"] for beat in payload["beat_action_intents"] for intent in beat["intents"]
+    }
+    layout_needs = {need for beat in payload["beat_layout_intents"] for need in beat["needs"]}
+    assert "tier_chart" in action_kinds
+    assert "spoken_argument" not in action_kinds
+    assert "tier_visual" in layout_needs
+    assert "unsupported_layout_need" not in layout_needs
+    assert any("spoken-only beats do not satisfy" in prompt for prompt in prompts)
+    assert any("INVALID: 'Let's kick things off by placing" in prompt for prompt in prompts)
+    assert any("MANDATORY FAILED-BEAT REPAIRS" in prompt for prompt in prompts)
+    assert phases == ["compose", "layout_repair"]
+    assert [call["phase"] for call in payload["llm_calls"]] == ["compose", "layout_repair"]
+    load_root = tmp_path / "load"
+    today = prep._today_dir(load_root)
+    load_path = today / "prog-tier-repair.json"
+    load_path.write_text(json.dumps(payload), encoding="utf-8")
+    (today / "manifest.json").write_text(
+        json.dumps({"programmes": [load_path.name]}),
+        encoding="utf-8",
+    )
+    assert [item["programme_id"] for item in prep.load_prepped_programmes(load_root)] == [
+        "prog-tier-repair"
+    ]
+
+
+def test_prep_segment_rejects_tier_list_repair_without_exact_placements(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    programme = SimpleNamespace(
+        programme_id="prog-tier-generic-repair",
+        role=SimpleNamespace(value="tier_list"),
+        content=SimpleNamespace(
+            narrative_beat="Tier list on programming languages",
+            segment_beats=[
+                "hook with a tier rubric",
+                "item_1: rank the early language",
+                "item_2: rank the modern language",
+            ],
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+    draft = [
+        "This beat compares language eras and explains the stakes of abstraction.",
+        "FORTRAN and COBOL matter because they changed business computing.",
+        "Java matters because object-oriented design reshaped enterprise software.",
+    ]
+    repaired = [
+        "This tier list ranks language eras by leverage, not nostalgia.",
+        "FORTRAN belongs in A-tier because its scientific-computing legacy made "
+        "high level programming visible as a practical working method.",
+        "Java belongs in B-tier because its enterprise reach is enormous, but the "
+        "tradeoff is a heavier object model that chat can dispute.",
+    ]
+
+    monkeypatch.setattr(prep, "_build_seed", lambda _programme: "seed")
+    monkeypatch.setattr(
+        prep,
+        "_build_full_segment_prompt",
+        lambda _programme, _seed: "prompt",
+    )
+
+    def fake_call(_prompt: str, **kwargs: Any) -> str:
+        phase = kwargs.get("phase")
+        if phase == "compose":
+            return json.dumps(draft)
+        if phase == "layout_repair":
+            return json.dumps(repaired)
+        raise AssertionError(f"unexpected phase {phase!r}")
+
+    monkeypatch.setattr(prep, "_call_llm", fake_call)
+    monkeypatch.setattr(prep, "_refine_script", lambda script, _programme, **_kwargs: script)
+    monkeypatch.setattr(prep, "_emit_self_evaluation", lambda *_args, **_kwargs: None)
+
+    saved = prep.prep_segment(programme, tmp_path, prep_session=session)
+
+    assert saved is None
+    diagnostic_path = tmp_path / "prog-tier-generic-repair.layout-invalid.json"
+    diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+    assert "missing_tier_placement_phrase" in {
+        item["reason"] for item in diagnostic["layout_responsibility"]["violations"]
+    }
+
+
+def test_load_prepped_programmes_rejects_tier_list_without_exact_placements(
+    tmp_path: Path,
+) -> None:
+    payload = _valid_artifact_for(
+        "prog-tier-generic",
+        topic="Tier list with generic ranking language",
+        segment_beats=[
+            "hook with a tier rubric",
+            "item_1: rank the early language against the rubric",
+            "item_2: rank the modern language",
+        ],
+        prepared_script=[
+            "This tier list ranks language eras by leverage, not nostalgia.",
+            "FORTRAN belongs in A-tier because its scientific-computing legacy matters.",
+            "Java belongs in B-tier because its enterprise reach is enormous.",
+        ],
+    )
+    payload["role"] = "tier_list"
+    payload["source_hashes"] = prep._source_hashes_from_fields(
+        programme_id="prog-tier-generic",
+        role="tier_list",
+        topic=str(payload["topic"]),
+        segment_beats=list(payload["segment_beats"]),
+        seed_sha256=str(payload["seed_sha256"]),
+        prompt_sha256=str(payload["prompt_sha256"]),
+    )
+    payload["source_provenance_sha256"] = prep._sha256_json(payload["source_hashes"])
+    payload["artifact_sha256"] = prep._artifact_hash(payload)
+    _write_artifact(tmp_path, payload)
+
+    assert prep.load_prepped_programmes(tmp_path) == []
+
+
+def test_load_prepped_programmes_rejects_final_candidate_without_exact_placement(
+    tmp_path: Path,
+) -> None:
+    payload = _valid_artifact_for(
+        "prog-tier-final-candidate",
+        topic="Tier list with a final candidate beat",
+        segment_beats=[
+            "criteria intro",
+            "second candidate: FORTRAN",
+            "third candidate: Java",
+        ],
+        prepared_script=[
+            "This opening names the rubric and the stakes for the tier list.",
+            "Place FORTRAN in A-tier because the legacy is visible in the ranking.",
+            "Java belongs in B-tier because the enterprise tradeoff is real.",
+        ],
+    )
+    payload["role"] = "tier_list"
+    payload["source_hashes"] = prep._source_hashes_from_fields(
+        programme_id="prog-tier-final-candidate",
+        role="tier_list",
+        topic=str(payload["topic"]),
+        segment_beats=list(payload["segment_beats"]),
+        seed_sha256=str(payload["seed_sha256"]),
+        prompt_sha256=str(payload["prompt_sha256"]),
+    )
+    payload["source_provenance_sha256"] = prep._sha256_json(payload["source_hashes"])
+    payload["artifact_sha256"] = prep._artifact_hash(payload)
+    today = prep._today_dir(tmp_path)
+    path = today / "prog-tier-final-candidate.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    (today / "manifest.json").write_text(
+        json.dumps({"programmes": [path.name]}),
+        encoding="utf-8",
+    )
+
+    assert prep.load_prepped_programmes(tmp_path) == []
 
 
 def test_prep_segment_rejects_unsafe_programme_id_before_writing(
