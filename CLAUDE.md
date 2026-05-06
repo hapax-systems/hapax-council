@@ -173,7 +173,51 @@ Live `jq 'keys | length' /dev/shm/hapax-imagination/uniforms.json` should be ≥
 
 ## Voice FX Chain
 
-Hapax TTS output (Kokoro 82M CPU) can be routed through a user-configurable PipeWire `filter-chain` before being normalised by `hapax-loudnorm-capture` and reaching the L-12 → Evil Pet → broadcast path. (Historical: prior to the 24c retirement 2026-05-03, the chain terminated at the PreSonus Studio 24c analog output.) Presets at `config/pipewire/voice-fx-*.conf`; install into `~/.config/pipewire/pipewire.conf.d/`, restart pipewire, export `HAPAX_TTS_TARGET=hapax-voice-fx-capture` before starting `hapax-daimonion.service`. Unset falls through to default wireplumber routing. All presets share the same sink name so swapping does not require restarting daimonion. Details: `config/pipewire/README.md`.
+Hapax TTS output (Kokoro 82M CPU) can be routed through a user-configurable PipeWire `filter-chain` before being normalised by `hapax-loudnorm-capture` and reaching the L-12 → Evil Pet → broadcast path. Presets at `config/pipewire/voice-fx-*.conf`; install into `~/.config/pipewire/pipewire.conf.d/`, restart pipewire, export `HAPAX_TTS_TARGET=hapax-voice-fx-capture` before starting `hapax-daimonion.service`. Unset falls through to default wireplumber routing. All presets share the same sink name so swapping does not require restarting daimonion. Details: `config/pipewire/README.md`.
+
+## Audio Routing — PROTECTED INVARIANTS (2026-05-05)
+
+**⚠️ MANDATORY FOR ALL AGENTS: Claude Code, Codex, Gemini CLI, and any other automated tool.**
+
+The audio routing chain is the single most fragile subsystem. It has been broken repeatedly by well-intentioned changes. The following rules are NON-NEGOTIABLE.
+
+### Golden Chain (DO NOT BREAK)
+
+```
+TTS (play_pcm) → role.broadcast → hapax-voice-fx-capture → hapax-voice-fx-playback
+  → hapax-loudnorm-capture → hapax-loudnorm-playback → MPC Live III (AUX2/3)
+  → [analog out] → L-12 mixer [analog in] → L-12 USB return (AUX8-11)
+  → hapax-livestream-tap → hapax-broadcast-master → hapax-broadcast-normalized
+  → hapax-obs-broadcast-remap → OBS
+```
+
+### Before/After Protocol
+
+**BEFORE** any change to PipeWire configs, voice routing, `pw-link`, `play_pcm`, `voice_output_router`, `destination_channel`, or any file in `~/.config/pipewire/`:
+
+1. Run `scripts/audio-routing-check.sh` — must pass ALL invariants
+2. Save the output as your baseline
+
+**AFTER** any such change:
+
+1. Run `scripts/audio-routing-check.sh` again
+2. If ANY invariant fails, **REVERT IMMEDIATELY** — do not attempt to fix forward
+3. If PipeWire was restarted, re-run the check after 5 seconds (links take time to establish)
+
+### Absolute Prohibitions
+
+1. **NEVER create a PipeWire loopback that targets `hapax-livestream-tap` playback** unless it is one of the two legitimate sources: `hapax-l12-evilpet-playback` or `hapax-l12-usb-return-playback`. This is the #1 cause of bypass bugs.
+2. **NEVER create a "shortcut" or "workaround"** that bypasses the MPC or L12. If the analog chain is broken, fix the analog chain — do not add a digital bypass.
+3. **NEVER modify `~/.config/pipewire/pipewire.conf.d/` without operator approval.** These are system-level routing configs and a single bad file will break all audio.
+4. **NEVER call `systemctl --user restart pipewire`** without running the invariant check afterward.
+5. **NEVER add a `target.object` pointing at `hapax-livestream-tap` in a `playback.props` section** of any PipeWire config.
+
+### Health Monitoring
+
+- **Timer:** `hapax-audio-routing-check.timer` runs every 5 minutes and logs invariant results to the journal.
+- **Script:** `scripts/audio-routing-check.sh` — 6 invariant chains, exits 0 on pass, 1 on violation.
+- **Golden snapshot:** `config/pipewire/golden/pw-graph-2026-05-05.txt` — full `pw-link -l` dump of the known-good state.
+- **Disabled bypasses:** `~/.config/pipewire/pipewire.conf.d/hapax-tts-broadcast-tap.conf.disabled` — historical bypass, MUST stay disabled.
 
 ## CC Task Tracking (Obsidian SSOT — D-30)
 
@@ -309,7 +353,7 @@ Destructive command detection strips quoted strings before matching to prevent f
 
 **Keyboard input:** `EvdevInputBackend` reads `/dev/input/event*` directly (Keychron, Logitech USB Receiver), filtering virtual devices (RustDesk UInput, mouce-library-fake-mouse, ydotoold) by name. Replaces logind-based detection which was polluted by Claude Code subprocess activity.
 
-**Contact mic:** Cortado MKIII on the L-12 mixer XLR input (CH2, AUX1; 48V phantom). Captured via `pw-cat --record --target "Contact Microphone"` at 16kHz mono int16. DSP: RMS energy, onset detection, spectral centroid, autocorrelation, gesture classification. Provides `desk_activity` (idle/typing/tapping/drumming/active), `desk_energy`, `desk_onset_rate`, `desk_tap_gesture`. (Historical: prior to the 24c retirement 2026-05-03, the contact mic landed on PreSonus Studio 24c Input 2.)
+**Contact mic:** Cortado MKIII on the L-12 mixer XLR input (CH2, AUX1; 48V phantom). Captured via `pw-cat --record --target "Contact Microphone"` at 16kHz mono int16. DSP: RMS energy, onset detection, spectral centroid, autocorrelation, gesture classification. Provides `desk_activity` (idle/typing/tapping/drumming/active), `desk_energy`, `desk_onset_rate`, `desk_tap_gesture`.
 
 **Prediction monitor:** `agents/reverie_prediction_monitor.py` (1-min systemd timer) tracks 6 behavioral predictions + live operational metrics. Grafana dashboard at `localhost:3001/d/reverie-predictions/`. Prometheus scrape at 30s. Metrics at `/api/predictions/metrics`.
 
