@@ -90,5 +90,30 @@
       "out"
     ]
   ],
-  "modulations": []
+  "modulations": [
+    {
+      "node": "colorgrade",
+      "param": "brightness",
+      "source": "audio_rms",
+      "scale": 0.08,
+      "offset": 0.0,
+      "smoothing": 0.6
+    },
+    {
+      "node": "vignette",
+      "param": "strength",
+      "source": "audio_beat",
+      "scale": 0.1,
+      "offset": 0.0,
+      "smoothing": 0.4
+    },
+    {
+      "node": "noise_static",
+      "param": "intensity",
+      "source": "audio_energy",
+      "scale": 0.08,
+      "offset": 0.0,
+      "smoothing": 0.5
+    }
+  ]
 }
