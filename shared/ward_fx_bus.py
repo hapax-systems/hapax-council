@@ -123,12 +123,21 @@ class FXEvent:
     ``strength`` is a normalized [0.0, 1.0] event magnitude. Producers that only
     know that an event happened can omit it and retain the historical full-strength
     ward reaction.
+
+    The [0.0, 1.0] invariant on ``strength`` is enforced at construction
+    (``__post_init__``) — this is the SINGLE canonical attenuation site.
+    Producers and consumers trust the invariant; neither needs to re-clamp.
     """
 
     kind: FXEventKind
     preset_family: str = ""
     strength: float = 1.0
     ts: float = field(default_factory=time.monotonic)
+
+    def __post_init__(self) -> None:
+        clamped = max(0.0, min(1.0, float(self.strength)))
+        if clamped != self.strength:
+            object.__setattr__(self, "strength", clamped)
 
 
 # ── Bus ──────────────────────────────────────────────────────────────────

@@ -200,9 +200,10 @@ class WardFxReactor:
             if event.kind == "preset_family_change":
                 self._pulse_all_wards(_PRESET_CHANGE_ACCENT_HZ, _PRESET_CHANGE_TTL_S)
             elif event.kind == "audio_kick_onset":
-                strength = _clamp(event.strength, 0.0, 1.0)
+                # event.strength is FXEvent-canonical clamped to [0,1]
+                # at construction in shared.ward_fx_bus. No re-clamp here.
                 self._bump_audio_reactive_wards(
-                    _AUDIO_KICK_SCALE_BUMP * strength,
+                    _AUDIO_KICK_SCALE_BUMP * event.strength,
                     _AUDIO_KICK_TTL_S,
                 )
                 # Border-pulse path: visible single-cycle flash on each
@@ -210,7 +211,7 @@ class WardFxReactor:
                 # scale_bump so when the safe-clamp scale path is
                 # restored, both modulations fire together.
                 self._pulse_audio_reactive_wards(
-                    _AUDIO_KICK_PULSE_HZ * strength,
+                    _AUDIO_KICK_PULSE_HZ * event.strength,
                     _AUDIO_KICK_TTL_S,
                 )
             elif event.kind == "chain_swap":
@@ -221,7 +222,7 @@ class WardFxReactor:
                 )
             elif event.kind == "intensity_spike":
                 self._pulse_audio_reactive_wards(
-                    _INTENSITY_SPIKE_PULSE_HZ * _clamp(event.strength, 0.0, 1.0),
+                    _INTENSITY_SPIKE_PULSE_HZ * event.strength,
                     _INTENSITY_SPIKE_TTL_S,
                 )
         except Exception:
