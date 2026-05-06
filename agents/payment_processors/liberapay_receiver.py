@@ -282,6 +282,11 @@ def _record_chronicle(event: PaymentEvent) -> None:
                 "rail": event.rail,
                 "amount_eur": event.amount_eur,
                 "external_id": event.external_id,
+                # Sibling to ``payment_processors.lightning`` (#2697)
+                # and ``payment_processors.nostr_zap`` (#2706). Source
+                # isn't in the chronicle-ticker allow-list, so 0.95
+                # surfaces sponsorship receipts via the salience path.
+                "salience": 0.95,
             },
         )
     )
