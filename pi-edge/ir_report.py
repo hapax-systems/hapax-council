@@ -28,6 +28,7 @@ def build_report(
     cadence_state: str = "IDLE",
     cadence_interval_s: float = 3.0,
     hand_semantics: dict | None = None,
+    cam_id: str = "primary",
 ) -> IrDetectionReport:
     """Build detection report from inference results.
 
@@ -47,6 +48,7 @@ def build_report(
     return IrDetectionReport(
         pi=hostname,
         role=role,
+        cam_id=cam_id,
         ts=datetime.now(UTC).isoformat(),
         motion_delta=round(motion_delta, 4),
         persons=[

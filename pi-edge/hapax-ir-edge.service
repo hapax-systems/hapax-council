@@ -15,6 +15,9 @@ WorkingDirectory=%h/hapax-edge
 Restart=always
 RestartSec=5
 Environment=LIBCAMERA_LOG_LEVELS=*:ERROR
+# One daemon may drive both onboard/USB IR cameras. Override per Pi, e.g.
+# HAPAX_IR_CAMERA_MAP=primary=rpicam:0,secondary=usb:/dev/video2
+Environment=HAPAX_IR_CAMERA_MAP=primary=rpicam:0
 
 [Install]
 WantedBy=multi-user.target

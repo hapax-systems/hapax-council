@@ -62,6 +62,7 @@ class HandSemantics(BaseModel):
 class IrDetectionReport(BaseModel):
     pi: str
     role: str
+    cam_id: str = "primary"
     ts: str
     motion_delta: float = 0.0
     persons: list[IrPerson] = Field(default_factory=list)

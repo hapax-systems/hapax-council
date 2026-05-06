@@ -11,9 +11,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import signal
 import sys
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,7 +23,7 @@ import cv2
 import httpx
 import numpy as np  # noqa: TC002 — Pi-side code
 from cadence_controller import CadenceController, load_config
-from cbip_calibration import crop_to_roi, load_camera_calibration
+from cbip_calibration import CbipCameraCalibration, crop_to_roi, load_camera_calibration
 from ir_album import detect_album_cover, extract_album_crop
 from ir_biometrics import BiometricTracker
 from ir_hands import detect_hands_nir, detect_screens_nir
@@ -79,9 +81,111 @@ _CV2_ROTATE_FOR: dict[int, int] = {
 # #143 — fallback POST interval.  The cadence controller drives the real post
 # rate; this is only used when the controller is unavailable (e.g. test mode).
 POST_INTERVAL_S = 2.0
+CAMERA_MAP_ENV = "HAPAX_IR_CAMERA_MAP"
 
 # Metric label for prometheus scraping: hapax_ir_cadence_state{pi_role="..."}.
 _METRIC_PATH = Path.home() / "hapax-edge" / "metrics" / "cadence.prom"
+
+
+@dataclass(frozen=True)
+class RawCameraSpec:
+    cam_id: str
+    backend: str
+    selector: str
+
+
+@dataclass(frozen=True)
+class EdgeCamera:
+    cam_id: str
+    backend: str
+    selector: str
+    calibration: CbipCameraCalibration
+    rpicam_args: tuple[str, ...]
+
+
+@dataclass
+class ProcessedFrame:
+    cam_id: str
+    grey: np.ndarray
+    motion_delta: float
+    persons: list[dict]
+    hands: list[dict]
+    screens: list[dict]
+    inference_ms: int
+
+
+def parse_camera_map(raw: str | None) -> tuple[RawCameraSpec, ...]:
+    """Parse HAPAX_IR_CAMERA_MAP.
+
+    Format: ``primary=rpicam:0,secondary=usb:/dev/video2``. The default
+    preserves the pre-existing single Pi camera behavior.
+    """
+    if raw is None or not raw.strip():
+        return (RawCameraSpec(cam_id="primary", backend="rpicam", selector="0"),)
+
+    specs: list[RawCameraSpec] = []
+    seen: set[str] = set()
+    for token in raw.split(","):
+        item = token.strip()
+        if not item:
+            continue
+        if "=" in item:
+            cam_id, source = item.split("=", 1)
+        else:
+            parts = item.split(":", 1)
+            if len(parts) != 2:
+                continue
+            cam_id, source = parts
+        cam_id = _normalize_cam_id(cam_id)
+        if not cam_id or cam_id in seen:
+            continue
+        backend, _, selector = source.partition(":")
+        backend = backend.strip().lower()
+        selector = selector.strip()
+        if backend not in {"rpicam", "usb"}:
+            continue
+        if backend == "rpicam" and not selector:
+            selector = "0"
+        specs.append(RawCameraSpec(cam_id=cam_id, backend=backend, selector=selector))
+        seen.add(cam_id)
+    return tuple(specs or (RawCameraSpec(cam_id="primary", backend="rpicam", selector="0"),))
+
+
+def _normalize_cam_id(value: str) -> str:
+    out = value.strip().lower().replace("_", "-")
+    if not out:
+        return ""
+    if not all(ch.isalnum() or ch == "-" for ch in out):
+        return ""
+    return out[:32]
+
+
+def build_edge_cameras(
+    role: str,
+    hostname: str,
+    raw_camera_map: str | None = None,
+) -> tuple[EdgeCamera, ...]:
+    cameras: list[EdgeCamera] = []
+    for raw in parse_camera_map(
+        raw_camera_map if raw_camera_map is not None else os.getenv(CAMERA_MAP_ENV)
+    ):
+        if raw.cam_id == "primary":
+            calibration = load_camera_calibration(role, hostname=hostname)
+        else:
+            calibration = load_camera_calibration(
+                f"{role}-{raw.cam_id}",
+                hostname=f"{hostname}-{raw.cam_id}",
+            )
+        cameras.append(
+            EdgeCamera(
+                cam_id=raw.cam_id,
+                backend=raw.backend,
+                selector=raw.selector,
+                calibration=calibration,
+                rpicam_args=tuple(calibration.rpicam_still_args()),
+            )
+        )
+    return tuple(cameras)
 
 
 class IrEdgeDaemon:
@@ -98,8 +202,8 @@ class IrEdgeDaemon:
         self._hostname = hostname
         self._workstation_url = workstation_url
         self._running = False
-        self._prev_frame: np.ndarray | None = None
-        self._last_detection_time: float = 0.0
+        self._prev_frames: dict[str, np.ndarray] = {}
+        self._last_detection_time_by_cam: dict[str, float] = {}
         self._save_debug_frame = False
         self._save_interval = save_frame_interval
         self._frame_count = 0
@@ -112,30 +216,38 @@ class IrEdgeDaemon:
         self._biometrics = BiometricTracker(fps=30.0)
         # #143 — activity-gated cadence controller.
         self._cadence = CadenceController(config=load_config())
-        self._cbip_calibration = load_camera_calibration(self._role, hostname=self._hostname)
-        self._rpicam_calibration_args = self._cbip_calibration.rpicam_still_args()
-        if self._cbip_calibration.source_paths:
-            log.info(
-                "CBIP calibration loaded for %s from %s",
-                self._role,
-                ", ".join(self._cbip_calibration.source_paths),
-            )
-        if self._cbip_calibration.roi is not None:
-            roi = self._cbip_calibration.roi
-            log.info(
-                "CBIP ROI locked for %s: x=%d y=%d width=%d height=%d",
-                self._role,
-                roi.x,
-                roi.y,
-                roi.width,
-                roi.height,
-            )
-        if self._rpicam_calibration_args:
-            log.info(
-                "CBIP capture controls locked for %s: %s",
-                self._role,
-                " ".join(self._rpicam_calibration_args),
-            )
+        self._cameras = build_edge_cameras(self._role, self._hostname)
+        log.info(
+            "IR camera map for %s: %s",
+            self._role,
+            ", ".join(f"{cam.cam_id}={cam.backend}:{cam.selector}" for cam in self._cameras),
+        )
+        for cam in self._cameras:
+            if cam.calibration.source_paths:
+                log.info(
+                    "CBIP calibration loaded for %s/%s from %s",
+                    self._role,
+                    cam.cam_id,
+                    ", ".join(cam.calibration.source_paths),
+                )
+            if cam.calibration.roi is not None:
+                roi = cam.calibration.roi
+                log.info(
+                    "CBIP ROI locked for %s/%s: x=%d y=%d width=%d height=%d",
+                    self._role,
+                    cam.cam_id,
+                    roi.x,
+                    roi.y,
+                    roi.width,
+                    roi.height,
+                )
+            if cam.rpicam_args:
+                log.info(
+                    "CBIP capture controls locked for %s/%s: %s",
+                    self._role,
+                    cam.cam_id,
+                    " ".join(cam.rpicam_args),
+                )
 
         self._client = httpx.AsyncClient(
             base_url=workstation_url,
@@ -144,6 +256,7 @@ class IrEdgeDaemon:
         )
 
         self._latest_jpeg: bytes = b""
+        self._latest_jpegs_by_cam: dict[str, bytes] = {}
         self._latest_album_jpeg: bytes = b""
         self._latest_album_detection: dict | None = None
         self._latest_jpeg_lock = __import__("threading").Lock()
@@ -174,9 +287,17 @@ class IrEdgeDaemon:
             loop.run_until_complete(self._client.aclose())
             loop.close()
 
-    def _capture_frame(self) -> tuple[np.ndarray, np.ndarray]:
-        """Capture a frame via rpicam-still. Returns (color, greyscale)."""
-        import os
+    def _capture_frame(self, camera: EdgeCamera) -> tuple[str, np.ndarray, np.ndarray]:
+        """Capture one configured camera. Returns (cam_id, color, greyscale)."""
+        if camera.backend == "usb":
+            color = self._capture_usb_frame(camera)
+        else:
+            color = self._capture_rpicam_frame(camera)
+        color = self._prepare_captured_color(camera, color)
+        grey = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
+        return camera.cam_id, color, grey
+
+    def _capture_rpicam_frame(self, camera: EdgeCamera) -> np.ndarray:
         import subprocess
         import tempfile
 
@@ -192,23 +313,45 @@ class IrEdgeDaemon:
             str(DEFAULT_CAPTURE_SIZE[0]),
             "--height",
             str(DEFAULT_CAPTURE_SIZE[1]),
-            *self._rpicam_calibration_args,
-            "--nopreview",
-            "-n",
+            *camera.rpicam_args,
         ]
+        if camera.selector and camera.selector != "default":
+            command.extend(["--camera", camera.selector])
+        command.extend(["--nopreview", "-n"])
         subprocess.run(
             command,
             capture_output=True,
             timeout=10,
         )
 
-        empty = np.zeros(DEFAULT_CAPTURE_SIZE[::-1], dtype=np.uint8)
         if not os.path.exists(path):
-            return cv2.cvtColor(empty, cv2.COLOR_GRAY2BGR), empty
+            return self._empty_color_frame()
         color = cv2.imread(path, cv2.IMREAD_COLOR)
         os.unlink(path)
-        if color is None:
-            return cv2.cvtColor(empty, cv2.COLOR_GRAY2BGR), empty
+        return color if color is not None else self._empty_color_frame()
+
+    def _capture_usb_frame(self, camera: EdgeCamera) -> np.ndarray:
+        selector: str | int = int(camera.selector) if camera.selector.isdigit() else camera.selector
+        cap = cv2.VideoCapture(selector)
+        try:
+            if not cap.isOpened():
+                return self._empty_color_frame()
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, DEFAULT_CAPTURE_SIZE[0])
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, DEFAULT_CAPTURE_SIZE[1])
+            if camera.calibration.exposure_locked:
+                cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+                if camera.calibration.exposure_time_us is not None:
+                    cap.set(cv2.CAP_PROP_EXPOSURE, float(camera.calibration.exposure_time_us))
+            if camera.calibration.white_balance_locked:
+                cap.set(cv2.CAP_PROP_AUTO_WB, 0)
+            ok, color = cap.read()
+            if not ok or color is None:
+                return self._empty_color_frame()
+            return color
+        finally:
+            cap.release()
+
+    def _prepare_captured_color(self, camera: EdgeCamera, color: np.ndarray) -> np.ndarray:
         # Per-role rotation correction (2026-04-21). Cameras are mounted
         # at non-standard angles; rotate captured frames upright before
         # downstream processing so YOLO + hand detection + saved debug
@@ -222,77 +365,38 @@ class IrEdgeDaemon:
                 self._role,
                 rotation_deg,
             )
-        if self._cbip_calibration.roi is not None:
-            color = crop_to_roi(color, self._cbip_calibration)
-        grey = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
-        return color, grey
+        return crop_to_roi(color, camera.calibration)
+
+    def _empty_color_frame(self) -> np.ndarray:
+        empty = np.zeros(DEFAULT_CAPTURE_SIZE[::-1], dtype=np.uint8)
+        return cv2.cvtColor(empty, cv2.COLOR_GRAY2BGR)
 
     async def _main_loop(self) -> None:
         """Main inference + POST loop."""
         last_post = 0.0
-        log.info("Camera capture via rpicam-still at %s", DEFAULT_CAPTURE_SIZE)
+        log.info(
+            "Camera capture at %s across %d configured camera(s)",
+            DEFAULT_CAPTURE_SIZE,
+            len(self._cameras),
+        )
 
         while self._running:
             t0 = time.monotonic()
 
-            color, grey = await asyncio.get_event_loop().run_in_executor(None, self._capture_frame)
-
-            self._handle_frame_saves(grey)
-            motion_delta = self._compute_motion(grey)
-
-            time_since_detection = time.monotonic() - self._last_detection_time
-            skip_inference = (
-                motion_delta < MOTION_THRESHOLD and time_since_detection > MOTION_TIMEOUT_S
-            )
-
-            persons: list[dict] = []
-            hands: list[dict] = []
-            screens: list[dict] = []
-            inference_ms = 0
-
-            if not skip_inference:
-                t_infer = time.monotonic()
-
-                # Use color for YOLO (trained on RGB), greyscale for hand/screen detection
-                raw_persons = self._yolo.detect_persons(color)
-
-                for p in raw_persons:
-                    face_data = self._face.detect(grey, p["bbox"])
-                    if face_data is not None:
-                        p.update(face_data)
-                        avg_ear = (face_data.get("ear_left", 0) + face_data.get("ear_right", 0)) / 2
-                        self._biometrics.update_ear(avg_ear, time.monotonic())
-                    persons.append(p)
-
-                if persons:
-                    self._last_detection_time = time.monotonic()
-
-                hands = detect_hands_nir(grey, motion_delta=motion_delta)
-                screens = detect_screens_nir(grey)
-
-                # Album cover detection (overhead camera only)
-                if self._role == "overhead":
-                    album_det = detect_album_cover(grey)
-                    if album_det is not None:
-                        crop = extract_album_crop(color, album_det, output_size=640)
-                        if crop is not None:
-                            _, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
-                            with self._latest_jpeg_lock:
-                                self._latest_album_jpeg = buf.tobytes()
-                                self._latest_album_detection = album_det
-                    else:
-                        with self._latest_jpeg_lock:
-                            self._latest_album_detection = None
-
-                inference_ms = int((time.monotonic() - t_infer) * 1000)
-
-            # rPPG: only update when face landmarks produced head_pose data
-            self._update_rppg(persons, grey)
+            captured = await self._capture_all_frames()
+            processed = [
+                self._process_captured_frame(cam_id, color, grey)
+                for cam_id, color, grey in captured
+            ]
+            if not processed:
+                await asyncio.sleep(0.5)
+                continue
 
             # #143 — feed cadence controller with observed activity and let it
             # decide the post/sleep interval for this tick.
-            hand_count = sum(1 for h in hands if h)
-            person_count = len(persons)
+            hand_count = sum(1 for frame in processed for h in frame.hands if h)
+            person_count = sum(len(frame.persons) for frame in processed)
+            motion_delta = max(frame.motion_delta for frame in processed)
             self._cadence.record_activity(
                 persons=person_count,
                 hands=hand_count,
@@ -309,18 +413,24 @@ class IrEdgeDaemon:
                 # the runner's motion gate / cache / failure paths
                 # decline to call the VLM this tick.
                 with self._latest_jpeg_lock:
-                    latest_jpeg = self._latest_jpeg
+                    latest_jpeg = (
+                        self._latest_jpegs_by_cam.get("primary")
+                        or self._latest_jpeg
+                        or next(iter(self._latest_jpegs_by_cam.values()), b"")
+                    )
                 tick = self._vlm_runner.tick(latest_jpeg)
-                report = self._build_report(
-                    motion_delta,
-                    persons,
-                    hands,
-                    screens,
-                    grey,
-                    inference_ms,
-                    hand_semantics=tick.semantics,
-                )
-                await self._post_report(report)
+                for frame in processed:
+                    report = self._build_report(
+                        frame.motion_delta,
+                        frame.persons,
+                        frame.hands,
+                        frame.screens,
+                        frame.grey,
+                        frame.inference_ms,
+                        hand_semantics=tick.semantics if frame.cam_id == "primary" else None,
+                        cam_id=frame.cam_id,
+                    )
+                    await self._post_report(report)
                 last_post = now
                 self._write_cadence_metric()
 
@@ -328,30 +438,115 @@ class IrEdgeDaemon:
             sleep_time = max(0.05, cadence_interval_s - elapsed)
             await asyncio.sleep(sleep_time)
 
-    def _compute_motion(self, grey: np.ndarray) -> float:
+    async def _capture_all_frames(self) -> list[tuple[str, np.ndarray, np.ndarray]]:
+        loop = asyncio.get_event_loop()
+        tasks = [
+            loop.run_in_executor(None, self._capture_frame, camera) for camera in self._cameras
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        captured: list[tuple[str, np.ndarray, np.ndarray]] = []
+        for camera, result in zip(self._cameras, results, strict=True):
+            if isinstance(result, Exception):
+                log.warning(
+                    "capture failed for %s/%s",
+                    self._role,
+                    camera.cam_id,
+                    exc_info=(type(result), result, result.__traceback__),
+                )
+                continue
+            captured.append(result)
+        return captured
+
+    def _process_captured_frame(
+        self, cam_id: str, color: np.ndarray, grey: np.ndarray
+    ) -> ProcessedFrame:
+        self._handle_frame_saves(cam_id, grey)
+        motion_delta = self._compute_motion(cam_id, grey)
+
+        time_since_detection = time.monotonic() - self._last_detection_time_by_cam.get(cam_id, 0.0)
+        skip_inference = motion_delta < MOTION_THRESHOLD and time_since_detection > MOTION_TIMEOUT_S
+
+        persons: list[dict] = []
+        hands: list[dict] = []
+        screens: list[dict] = []
+        inference_ms = 0
+
+        if not skip_inference:
+            t_infer = time.monotonic()
+
+            # Use color for YOLO (trained on RGB), greyscale for hand/screen detection.
+            raw_persons = self._yolo.detect_persons(color)
+
+            for p in raw_persons:
+                face_data = self._face.detect(grey, p["bbox"])
+                if face_data is not None:
+                    p.update(face_data)
+                    avg_ear = (face_data.get("ear_left", 0) + face_data.get("ear_right", 0)) / 2
+                    self._biometrics.update_ear(avg_ear, time.monotonic())
+                persons.append(p)
+
+            if persons:
+                self._last_detection_time_by_cam[cam_id] = time.monotonic()
+
+            hands = detect_hands_nir(grey, motion_delta=motion_delta)
+            screens = detect_screens_nir(grey)
+
+            # Album cover detection remains on the primary overhead stream.
+            if self._role == "overhead" and cam_id == "primary":
+                album_det = detect_album_cover(grey)
+                if album_det is not None:
+                    crop = extract_album_crop(color, album_det, output_size=640)
+                    if crop is not None:
+                        _, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                        with self._latest_jpeg_lock:
+                            self._latest_album_jpeg = buf.tobytes()
+                            self._latest_album_detection = album_det
+                else:
+                    with self._latest_jpeg_lock:
+                        self._latest_album_detection = None
+
+            inference_ms = int((time.monotonic() - t_infer) * 1000)
+
+        # rPPG: only update when face landmarks produced head_pose data.
+        self._update_rppg(persons, grey)
+        return ProcessedFrame(
+            cam_id=cam_id,
+            grey=grey,
+            motion_delta=motion_delta,
+            persons=persons,
+            hands=hands,
+            screens=screens,
+            inference_ms=inference_ms,
+        )
+
+    def _compute_motion(self, cam_id: str, grey: np.ndarray) -> float:
         """Frame differencing for motion detection."""
-        if self._prev_frame is None:
-            self._prev_frame = grey.copy()
+        prev = self._prev_frames.get(cam_id)
+        if prev is None:
+            self._prev_frames[cam_id] = grey.copy()
             return 1.0
 
-        diff = cv2.absdiff(grey, self._prev_frame)
-        self._prev_frame = grey.copy()
+        diff = cv2.absdiff(grey, prev)
+        self._prev_frames[cam_id] = grey.copy()
         return float(np.mean(diff)) / 255.0
 
-    def _handle_frame_saves(self, grey: np.ndarray) -> None:
+    def _handle_frame_saves(self, cam_id: str, grey: np.ndarray) -> None:
         # Always cache latest frame as JPEG for HTTP serving
         _, buf = cv2.imencode(".jpg", grey, [cv2.IMWRITE_JPEG_QUALITY, 85])
         with self._latest_jpeg_lock:
-            self._latest_jpeg = buf.tobytes()
+            jpeg = buf.tobytes()
+            self._latest_jpegs_by_cam[cam_id] = jpeg
+            if cam_id == "primary":
+                self._latest_jpeg = jpeg
 
         if self._save_debug_frame:
-            cv2.imwrite(f"/tmp/ir_debug_{self._role}.jpg", grey)
-            log.info("Debug frame saved to /tmp/ir_debug_%s.jpg", self._role)
+            cv2.imwrite(f"/tmp/ir_debug_{self._role}_{cam_id}.jpg", grey)
+            log.info("Debug frame saved to /tmp/ir_debug_%s_%s.jpg", self._role, cam_id)
             self._save_debug_frame = False
         self._frame_count += 1
         if self._save_interval > 0 and self._frame_count % self._save_interval == 0:
             ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
-            cv2.imwrite(str(self._captures_dir / f"{self._role}_{ts}.jpg"), grey)
+            cv2.imwrite(str(self._captures_dir / f"{self._role}_{cam_id}_{ts}.jpg"), grey)
 
     def _update_rppg(self, persons: list[dict], grey: np.ndarray) -> None:
         self._biometrics.face_detected = False
@@ -379,6 +574,7 @@ class IrEdgeDaemon:
         grey,
         inference_ms,
         hand_semantics: dict | None = None,
+        cam_id: str = "primary",
     ) -> IrDetectionReport:
         return build_report(
             self._hostname,
@@ -393,6 +589,7 @@ class IrEdgeDaemon:
             cadence_state=self._cadence.state,
             cadence_interval_s=self._cadence.get_sleep_duration(),
             hand_semantics=hand_semantics,
+            cam_id=cam_id,
         )
 
     def _write_cadence_metric(self) -> None:
@@ -456,7 +653,9 @@ class _FrameHandler:
 
         if path == "/frame.jpg":
             with self._daemon._latest_jpeg_lock:
-                data = self._daemon._latest_jpeg
+                data = self._daemon._latest_jpeg or next(
+                    iter(self._daemon._latest_jpegs_by_cam.values()), b""
+                )
             if data:
                 start_response(
                     "200 OK",
@@ -469,6 +668,23 @@ class _FrameHandler:
                 return [data]
             start_response("503 No Frame", [("Content-Type", "text/plain")])
             return [b"no frame yet"]
+
+        if path.startswith("/frame/") and path.endswith(".jpg"):
+            cam_id = path.removeprefix("/frame/").removesuffix(".jpg")
+            with self._daemon._latest_jpeg_lock:
+                data = self._daemon._latest_jpegs_by_cam.get(cam_id, b"")
+            if data:
+                start_response(
+                    "200 OK",
+                    [
+                        ("Content-Type", "image/jpeg"),
+                        ("Content-Length", str(len(data))),
+                        ("Cache-Control", "no-cache"),
+                    ],
+                )
+                return [data]
+            start_response("404 No Frame", [("Content-Type", "text/plain")])
+            return [b"no frame for cam_id"]
 
         if path == "/album.jpg":
             with self._daemon._latest_jpeg_lock:
