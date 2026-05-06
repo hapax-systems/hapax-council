@@ -91,6 +91,27 @@ ZONES: list[dict[str, Any]] = [
         "scroll": True,
         "scroll_speed": 0.5,
     },
+    {
+        # Right-column fill. Lyrics owns the right column whenever a
+        # track is playing; this zone surfaces a slow-cycle marker
+        # (aphorism / philosophical line) into the dead air the rest
+        # of the time, so the audience side of the broadcast is never
+        # blank in that pixel real estate. ``gate_when_file_empty``
+        # closes this zone whenever the lyrics file has content.
+        "id": "right_marker",
+        "use_text_repo": True,
+        "folder": "~/Documents/Personal/30-areas/stream-overlays/markers/",
+        "suffixes": (".md", ".txt", ".ansi"),
+        "cycle_seconds": 30,
+        "x": 1350,
+        "y": 0,
+        "max_width": 500,
+        "font": "JetBrains Mono Bold 16",
+        "color": (0.92, 0.86, 0.70, 0.9),
+        "randomize_position": False,
+        "gate_when_file_empty": "/dev/shm/hapax-compositor/track-lyrics.txt",
+        "text_repo_context": ("aphorism", "marker", "philosophical"),
+    },
 ]
 
 
@@ -184,6 +205,15 @@ class OverlayZone:
         self._active_when_activities: tuple[str, ...] = tuple(active_when)
         self._gate_last_check: float = 0
         self._gate_open: bool = not self._active_when_activities
+        # Right-column-fill gate: when set to a path, this zone is OPEN
+        # only while that path is missing or zero bytes. Used by the
+        # ``right_marker`` zone to fill the right column whenever the
+        # lyrics zone is silent (no current track) without overlapping
+        # lyrics whenever a track IS playing.
+        gate_file = config.get("gate_when_file_empty")
+        self._gate_when_file_empty: Path | None = (
+            Path(os.path.expanduser(gate_file)) if gate_file else None
+        )
         # Task #126: Hapax-managed text repo as primary content source.
         # When the repo is empty / missing, ``_tick_repo`` falls through
         # to the legacy folder scan so the Obsidian content keeps
@@ -196,6 +226,10 @@ class OverlayZone:
 
     def tick(self) -> None:
         now = time.monotonic()
+        if self._gate_when_file_empty is not None and self._is_gate_file_populated():
+            self._pango_markup = ""
+            self._cached_surface = None
+            return
         if self._active_when_activities and now - self._gate_last_check > _ACTIVITY_CACHE_TTL_S:
             active = _read_active_objective_activities()
             self._gate_open = any(a in active for a in self._active_when_activities)
@@ -217,6 +251,21 @@ class OverlayZone:
             self._tick_float()
         elif self._scroll:
             self._tick_scroll()
+
+    def _is_gate_file_populated(self) -> bool:
+        """Return True when the gate file exists with non-zero size.
+
+        A populated gate file closes ``gate_when_file_empty`` zones —
+        i.e., the lyrics file having content closes the right-column
+        marker. Missing files are treated as empty so the gate is open
+        while the producer hasn't created the path yet.
+        """
+        if self._gate_when_file_empty is None:
+            return False
+        try:
+            return self._gate_when_file_empty.stat().st_size > 0
+        except OSError:
+            return False
 
     def _init_float(self) -> None:
         """Initialize DVD-screensaver-style floating motion."""
