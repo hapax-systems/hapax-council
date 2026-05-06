@@ -204,6 +204,40 @@ _STANCE_ORDER: dict[Stance, int] = {
 
 _STALE_THRESHOLD_S = 120.0  # dimensions older than this are excluded from stance
 
+# Chronicle salience floor for stance transitions, by destination stance.
+# All values >= 0.7 (the chronicle-ticker ward's _SALIENCE_THRESHOLD) so
+# every stance change surfaces; severity lifts the value so downstream
+# consumers that rank by salience can prefer transitions toward critical
+# over routine recoveries.
+_STANCE_TRANSITION_SALIENCE: dict[str, float] = {
+    "critical": 1.0,
+    "degraded": 0.9,
+    "cautious": 0.8,
+    "nominal": 0.75,
+}
+
+
+def dimension_spike_salience(value: float) -> float:
+    """Salience for a ``dimension.spike`` chronicle event.
+
+    Spikes only fire when ``value`` is in [0, 0.3] ∪ [0.7, 1.0], so
+    ``0.5 + |value − 0.5|`` always lands in [0.7, 1.0] — at or above
+    the 0.7 floor the chronicle-ticker ward's ``_is_lore_worthy``
+    helper requires. Values further from the 0.5 baseline rank higher.
+    """
+    return round(min(1.0, 0.5 + abs(value - 0.5)), 3)
+
+
+def stance_transition_salience(to_stance: str) -> float:
+    """Salience for a ``stance.changed`` chronicle event.
+
+    Lookup by destination stance, defaulting to 0.85 for any stance
+    name not in :data:`_STANCE_TRANSITION_SALIENCE`. The default
+    keeps every transition surface-worthy under the 0.7 floor.
+    """
+    return _STANCE_TRANSITION_SALIENCE.get(to_stance, 0.85)
+
+
 # ── Baseline Constants ───────────────────────────────────────────────────────
 
 _ENGINE_EVENTS_PER_MIN_BASELINE = 500.0  # expected events/min at nominal load (inotify is chatty)
@@ -503,6 +537,10 @@ class StimmungCollector:
                     prev = _prev_dims.get(name)
                     if prev is None or abs(reading.value - prev) > 0.15:
                         _tid, _sid = current_otel_ids()
+                        # ``salience`` is read by the chronicle-ticker
+                        # ward (``_is_lore_worthy``) and any downstream
+                        # consumer that filters / ranks events.
+                        spike_salience = dimension_spike_salience(reading.value)
                         chronicle_record(
                             ChronicleEvent(
                                 ts=time.time(),
@@ -518,6 +556,7 @@ class StimmungCollector:
                                     "sigma": round(reading.sigma, 4),
                                     "n": reading.n,
                                     "previous_value": round(prev, 3) if prev is not None else None,
+                                    "salience": spike_salience,
                                 },
                             )
                         )
@@ -544,6 +583,11 @@ class StimmungCollector:
         if _prev_stance != stance:
             try:
                 _tid, _sid = current_otel_ids()
+                # Salience by destination severity — every stance
+                # transition is lore-worthy (>= 0.7), but transitions
+                # toward critical / degraded carry more weight than
+                # routine recoveries.
+                stance_salience = stance_transition_salience(stance)
                 chronicle_record(
                     ChronicleEvent(
                         ts=time.time(),
@@ -559,6 +603,7 @@ class StimmungCollector:
                                 name: round(reading.value, 3)
                                 for name, reading in dimensions.items()
                             },
+                            "salience": stance_salience,
                         },
                     )
                 )
