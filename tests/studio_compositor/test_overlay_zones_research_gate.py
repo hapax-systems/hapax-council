@@ -170,3 +170,94 @@ class TestShippedZoneConfig:
         assert "active_when_activities" not in by_id["main"]
         assert "lyrics" in by_id
         assert "active_when_activities" not in by_id["lyrics"]
+
+    def test_right_marker_zone_registered_and_gated_on_lyrics(self):
+        """``right_marker`` fills the right column whenever lyrics is silent."""
+        from agents.studio_compositor.overlay_zones import ZONES
+
+        by_id = {z["id"]: z for z in ZONES}
+        assert "right_marker" in by_id
+        marker = by_id["right_marker"]
+        assert marker.get("gate_when_file_empty") == "/dev/shm/hapax-compositor/track-lyrics.txt"
+        # Anchored to the right column at the same x as lyrics.
+        lyrics = by_id["lyrics"]
+        assert marker["x"] == lyrics["x"]
+        assert marker["max_width"] == lyrics["max_width"]
+
+
+class TestFileEmptyGate:
+    """``gate_when_file_empty`` closes a zone whenever the named file has size > 0."""
+
+    def _make_marker_zone(self, gate_path: Path):
+        from agents.studio_compositor.overlay_zones import OverlayZone
+
+        return OverlayZone(
+            {
+                "id": "right_marker",
+                "folder": "/tmp/does-not-matter",
+                "x": 1350,
+                "y": 0,
+                "max_width": 500,
+                "gate_when_file_empty": str(gate_path),
+            }
+        )
+
+    def test_default_no_gate_attribute(self):
+        from agents.studio_compositor.overlay_zones import OverlayZone
+
+        z = OverlayZone({"id": "m", "folder": "/tmp", "x": 0, "y": 0})
+        assert z._gate_when_file_empty is None
+        assert z._is_gate_file_populated() is False
+
+    def test_open_when_file_missing(self, tmp_path: Path):
+        z = self._make_marker_zone(tmp_path / "nope.txt")
+        assert z._is_gate_file_populated() is False
+
+    def test_open_when_file_empty(self, tmp_path: Path):
+        gate = tmp_path / "track-lyrics.txt"
+        gate.write_text("", encoding="utf-8")
+        z = self._make_marker_zone(gate)
+        assert z._is_gate_file_populated() is False
+
+    def test_closed_when_file_has_content(self, tmp_path: Path):
+        gate = tmp_path / "track-lyrics.txt"
+        gate.write_text("Some lyric line\n", encoding="utf-8")
+        z = self._make_marker_zone(gate)
+        assert z._is_gate_file_populated() is True
+
+    def test_tick_short_circuits_when_gate_closed(self, tmp_path: Path):
+        gate = tmp_path / "track-lyrics.txt"
+        gate.write_text("active track\n", encoding="utf-8")
+        z = self._make_marker_zone(gate)
+        z._pango_markup = "STALE CONTENT"
+        z._cached_surface = object()  # placeholder non-None sentinel
+        z.tick()
+        assert z._pango_markup == ""
+        assert z._cached_surface is None
+
+    def test_tick_proceeds_when_gate_open(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """Open gate lets tick fall through to content readers."""
+        gate = tmp_path / "missing.txt"  # never created → gate stays open
+        z = self._make_marker_zone(gate)
+        called = {"folder": 0}
+        monkeypatch.setattr(
+            z, "_tick_folder", lambda *_a, **_kw: called.__setitem__("folder", called["folder"] + 1)
+        )
+        z.tick()
+        assert called["folder"] == 1
+
+    def test_path_user_expansion(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        """``~`` in the gate path is expanded at construction time."""
+        from agents.studio_compositor.overlay_zones import OverlayZone
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        z = OverlayZone(
+            {
+                "id": "m",
+                "folder": "/tmp",
+                "x": 0,
+                "y": 0,
+                "gate_when_file_empty": "~/lyrics.txt",
+            }
+        )
+        assert z._gate_when_file_empty == tmp_path / "lyrics.txt"
