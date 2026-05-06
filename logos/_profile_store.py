@@ -219,25 +219,46 @@ class ProfileStore:
         """Load the pre-computed profile digest from disk.
 
         Returns None if the digest file doesn't exist.
+
+        Validates the JSON root is a mapping. Callers
+        (``get_dimension_summary``) immediately call ``digest.get(\"dimensions\",
+        {}).get(dimension)`` and ``dim_data.get(\"summary\")`` on the
+        returned value — a writer producing valid JSON whose root is
+        null, a list, a string, or a number previously raised
+        AttributeError out of profile-summary lookups. Same shape as
+        the other recent SHM-read fixes.
         """
         digest_path = PROFILES_DIR / "operator-digest.json"
         if not digest_path.exists():
             return None
         try:
-            return json.loads(digest_path.read_text())
+            data = json.loads(digest_path.read_text())
         except (json.JSONDecodeError, OSError) as e:
             log.warning("Failed to load digest: %s", e)
             return None
+        if not isinstance(data, dict):
+            log.warning(
+                "Digest root is %s, expected mapping",
+                type(data).__name__,
+            )
+            return None
+        return data
 
     def get_dimension_summary(self, dimension: str) -> str | None:
         """Get the pre-computed summary for a specific dimension.
 
         Returns None if digest missing or dimension not found.
+        Coerces the chained ``digest.get(\"dimensions\", {})`` intermediary
+        to {} when non-dict so a malformed dimensions field can't crash
+        the lookup.
         """
         digest = self.get_digest()
         if not digest:
             return None
-        dim_data = digest.get("dimensions", {}).get(dimension)
-        if not dim_data:
+        dimensions = digest.get("dimensions", {})
+        if not isinstance(dimensions, dict):
+            return None
+        dim_data = dimensions.get(dimension)
+        if not isinstance(dim_data, dict):
             return None
         return dim_data.get("summary")
