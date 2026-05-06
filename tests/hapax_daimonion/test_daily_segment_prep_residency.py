@@ -303,6 +303,21 @@ def test_load_prepped_programmes_accepts_valid_provenance(tmp_path: Path) -> Non
     assert loaded[0]["acceptance_gate"] == "daily_segment_prep.load_prepped_programmes"
 
 
+def test_load_prepped_programmes_rejects_old_actionability_semantics(tmp_path: Path) -> None:
+    payload = _valid_artifact()
+    payload["actionability_rubric_version"] = prep.ACTIONABILITY_RUBRIC_VERSION - 1
+    path = tmp_path / "prog-1.json"
+
+    assert (
+        prep._artifact_rejection_reason(
+            payload,
+            path=path,
+            manifest_programmes={path.name},
+        )
+        == "unsupported actionability rubric"
+    )
+
+
 @pytest.mark.parametrize(
     ("payload", "manifest"),
     [
