@@ -49,7 +49,12 @@ def _load_operator() -> dict:
         raw = json.loads(path.read_text())
         OperatorSchema.model_validate(raw)
         _operator_cache = raw
-    except (json.JSONDecodeError, ValidationError) as e:
+    except (json.JSONDecodeError, ValidationError, OSError) as e:
+        # OSError catches PermissionError + the read_text race where
+        # path.exists() passed but the read failed (file removed between
+        # the exists check and the read, or backing FS hiccup). Without
+        # OSError every caller crashes on a transient read failure even
+        # though defaults would suffice. Sister to agents/_operator.py.
         log.warning("operator.json validation failed: %s -- using defaults", e)
         _operator_cache = {}
     return _operator_cache

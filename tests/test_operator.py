@@ -270,6 +270,26 @@ def test_load_operator_corrupt_json(tmp_path, monkeypatch):
     monkeypatch.setattr(op_mod, "_operator_cache", None)
 
 
+def test_load_operator_unreadable_file_returns_defaults(tmp_path, monkeypatch):
+    """A path that exists but raises OSError on read (PermissionError,
+    backing FS hiccup, file replaced with a directory) must return
+    defaults rather than crash. Every caller of get_operator() /
+    get_axioms() / etc would otherwise crash on a transient read
+    failure even though empty-defaults would suffice.
+
+    Simulates the failure by making operator.json a DIRECTORY, so
+    ``path.exists()`` is True but ``path.read_text()`` raises
+    IsADirectoryError (an OSError subclass)."""
+    import shared.operator as op_mod
+
+    monkeypatch.setattr(op_mod, "_operator_cache", None)
+    monkeypatch.setattr(op_mod, "PROFILES_DIR", tmp_path)
+    (tmp_path / "operator.json").mkdir()  # exists() True; read_text() → OSError
+    result = op_mod._load_operator()
+    assert result == {}
+    monkeypatch.setattr(op_mod, "_operator_cache", None)
+
+
 def test_load_operator_invalid_schema(tmp_path, monkeypatch):
     import json
 
