@@ -556,7 +556,12 @@ class OverlayZone:
             self._render_image(cr, canvas_w, canvas_h, props.alpha)
             return
 
-        if not self._pango_markup:
+        if not self._pango_markup or not self._pango_markup.strip():
+            # Whitespace-only markup (an .ansi file that's empty padding,
+            # a repo entry whose body is just newlines) would otherwise
+            # build a cached surface and paint it every frame even though
+            # the visible result is blank. Skipping renders nothing
+            # measurably different but spares the surface build + paint.
             return
 
         if self._cached_surface is None:
