@@ -256,7 +256,9 @@ def test_default_z_index_step_recovers_spatial_variance_without_alpha_flash(
     sample = next(iter(captured.values()))
     assert sample.alpha == pytest.approx(base.alpha)
     assert sample.z_index_float == pytest.approx(0.8 - _wsm.MAX_Z_INDEX_STEP)
-    assert pytest.approx(0.18) == _wsm.MAX_Z_INDEX_STEP
+    # Codified at 0.4 per operator's variance-recovery env-knock
+    # (`HAPAX_WARD_MODULATOR_MAX_Z_INDEX_STEP=0.4`); previously 0.18.
+    assert pytest.approx(0.4) == _wsm.MAX_Z_INDEX_STEP
 
 
 def test_does_not_override_z_plane(enabled: None, current_path: Path) -> None:
