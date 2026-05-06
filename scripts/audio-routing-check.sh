@@ -245,6 +245,54 @@ else
     check "no webcam mic in L-12/M-8 capture filter-chains" "PASS"
 fi
 
+# ── Invariant 10: L-12 completeness ──
+echo "Chain 10: L-12 Completeness (every active USB return channel reaches broadcast)"
+
+# Per feedback_l12_equals_livestream_invariant (operator directive
+# 2026-04-21): "anything entering the L-12 (input OR USB playback)
+# MUST reach broadcast. Monitor / private / non-broadcast audio must
+# leave L-12 entirely. No carve-outs."
+#
+# This checks that hapax-livestream-tap (the broadcast aggregation
+# point) has ACTIVE input links from both legitimate L-12 sources:
+# hapax-l12-evilpet-playback and hapax-l12-usb-return-playback.
+# If either is disconnected, L-12 audio is silently dropped from
+# broadcast — the invariant violation is a silent failure mode.
+
+L12_COMPLETENESS_OK=true
+
+# Check l12-evilpet → livestream-tap link
+EVILPET_TO_TAP=$(pw-link -l 2>/dev/null | grep -A 5 "hapax-l12-evilpet-playback" 2>/dev/null | grep "hapax-livestream-tap" 2>/dev/null || true)
+if [ -z "$EVILPET_TO_TAP" ]; then
+    check "l12-evilpet-playback → livestream-tap linked" "MISSING"
+    L12_COMPLETENESS_OK=false
+else
+    check "l12-evilpet-playback → livestream-tap linked" "PASS"
+fi
+
+# Check l12-usb-return → livestream-tap link
+USB_RETURN_TO_TAP=$(pw-link -l 2>/dev/null | grep -A 5 "hapax-l12-usb-return-playback" 2>/dev/null | grep "hapax-livestream-tap" 2>/dev/null || true)
+if [ -z "$USB_RETURN_TO_TAP" ]; then
+    check "l12-usb-return-playback → livestream-tap linked" "MISSING"
+    L12_COMPLETENESS_OK=false
+else
+    check "l12-usb-return-playback → livestream-tap linked" "PASS"
+fi
+
+# Check that livestream-tap itself has at least one output going to
+# broadcast-master (the normalization stage before OBS).
+TAP_TO_MASTER=$(pw-link -l 2>/dev/null | grep -A 5 "hapax-livestream-tap" 2>/dev/null | grep "hapax-broadcast-master" 2>/dev/null || true)
+if [ -z "$TAP_TO_MASTER" ]; then
+    check "livestream-tap → broadcast-master linked" "MISSING"
+    L12_COMPLETENESS_OK=false
+else
+    check "livestream-tap → broadcast-master linked" "PASS"
+fi
+
+if [ "$L12_COMPLETENESS_OK" = true ]; then
+    echo "  L-12 completeness: ALL L-12 sources reach broadcast ✓"
+fi
+
 echo ""
 echo "=== Result ==="
 if [ "$FAILURES" -eq 0 ]; then
