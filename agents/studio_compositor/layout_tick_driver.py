@@ -867,12 +867,17 @@ def _runtime_layout_readback(
     active_layout_name = active_layout if isinstance(active_layout, str) else None
     active_wards = _active_ward_ids(layout)
     safety_state = "consent_safe_active" if bool(state.get("consent_safe_active", False)) else None
+    ward_properties = _ward_property_readbacks(active_wards, state, now=now)
     return RuntimeLayoutReadback(
-        readback_ref=f"rendered-layout-state:{active_layout_name or 'none'}:{int(now)}",
+        readback_ref=_runtime_readback_ref(
+            active_layout_name=active_layout_name,
+            ward_properties=ward_properties,
+            now=now,
+        ),
         observed_at=now,
         active_layout=active_layout_name,
         active_wards=active_wards,
-        ward_properties=_ward_property_readbacks(active_wards, state),
+        ward_properties=ward_properties,
         camera_available=_optional_bool(state.get("camera_available")),
         safety_state=safety_state,
         chat_available=_optional_bool(state.get("chat_available")),
@@ -919,6 +924,8 @@ def _active_ward_ids(layout: Any) -> tuple[str, ...]:
 def _ward_property_readbacks(
     active_wards: tuple[str, ...],
     state: dict[str, object],
+    *,
+    now: float,
 ) -> dict[str, dict[str, object]]:
     supplied = state.get("ward_properties")
     if isinstance(supplied, dict):
@@ -927,6 +934,9 @@ def _ward_property_readbacks(
             for ward_id, values in supplied.items()
             if isinstance(values, dict)
         }
+    blit_readbacks = _recent_blit_readbacks(active_wards, now=now)
+    if not blit_readbacks:
+        return {}
     try:
         from agents.studio_compositor.ward_properties import resolve_ward_properties
     except Exception:
@@ -935,6 +945,9 @@ def _ward_property_readbacks(
 
     out: dict[str, dict[str, object]] = {}
     for ward_id in active_wards:
+        blit = blit_readbacks.get(ward_id)
+        if blit is None:
+            continue
         try:
             props = resolve_ward_properties(ward_id)
         except Exception:
@@ -944,7 +957,56 @@ def _ward_property_readbacks(
             out[ward_id] = asdict(props)
         elif isinstance(props, dict):
             out[ward_id] = dict(props)
+        else:
+            out[ward_id] = {}
+        source_pixels = _optional_float(blit.get("source_pixels"))
+        effective_alpha = _optional_float(blit.get("effective_alpha"))
+        out[ward_id].update(
+            {
+                "visible": bool(out[ward_id].get("visible") is True)
+                and source_pixels is not None
+                and source_pixels > 0
+                and effective_alpha is not None
+                and effective_alpha > 0.0,
+                "rendered_blit": True,
+                "rendered_at": blit.get("observed_at"),
+                "source_pixels": source_pixels,
+                "effective_alpha": effective_alpha,
+            }
+        )
     return out
+
+
+def _recent_blit_readbacks(
+    active_wards: tuple[str, ...],
+    *,
+    now: float,
+) -> dict[str, dict[str, object]]:
+    try:
+        from agents.studio_compositor.fx_chain import recent_blit_readbacks
+    except Exception:
+        log.debug("layout-tick: blit readback import failed", exc_info=True)
+        return {}
+    try:
+        return recent_blit_readbacks(active_wards, now=now)
+    except Exception:
+        log.debug("layout-tick: blit readback read failed", exc_info=True)
+        return {}
+
+
+def _runtime_readback_ref(
+    *,
+    active_layout_name: str | None,
+    ward_properties: dict[str, dict[str, object]],
+    now: float,
+) -> str:
+    rendered_wards = sorted(
+        ward_id for ward_id, props in ward_properties.items() if props.get("rendered_blit") is True
+    )
+    if rendered_wards:
+        rendered_hash = hashlib.sha256(",".join(rendered_wards).encode("utf-8")).hexdigest()[:12]
+        return f"rendered-blit-readback:{active_layout_name or 'none'}:{rendered_hash}:{int(now)}"
+    return f"rendered-layout-state:{active_layout_name or 'none'}:no-fresh-blit:{int(now)}"
 
 
 def _available_layout_names(loader: Any) -> tuple[str, ...]:

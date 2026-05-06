@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import random
+import threading
 import time
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -29,6 +30,34 @@ log = logging.getLogger(__name__)
 # ``1.0 - NONDESTRUCTIVE_ALPHA_CEILING`` visibility. 0.6 chosen so the
 # operator-facing video remains ≥0.4 visible under any informational ward.
 NONDESTRUCTIVE_ALPHA_CEILING: float = 0.6
+DEFAULT_BLIT_READBACK_TTL_S: float = 2.0
+_BLIT_READBACK_LOCK = threading.Lock()
+_BLIT_READBACKS: dict[str, dict[str, object]] = {}
+
+
+def clear_blit_readbacks() -> None:
+    """Clear in-process ward blit readbacks. Used by focused tests."""
+    with _BLIT_READBACK_LOCK:
+        _BLIT_READBACKS.clear()
+
+
+def recent_blit_readbacks(
+    ward_ids: Any,
+    *,
+    now: float | None = None,
+    ttl_s: float = DEFAULT_BLIT_READBACK_TTL_S,
+) -> dict[str, dict[str, object]]:
+    """Return fresh final-frame blit evidence for the requested wards."""
+    ts = time.time() if now is None else now
+    requested = {str(ward_id) for ward_id in ward_ids if isinstance(ward_id, str)}
+    with _BLIT_READBACK_LOCK:
+        return {
+            ward_id: dict(readback)
+            for ward_id, readback in _BLIT_READBACKS.items()
+            if ward_id in requested
+            and isinstance(readback.get("observed_at"), int | float)
+            and ts - float(readback["observed_at"]) <= ttl_s
+        }
 
 
 def apply_nondestructive_clamp(
@@ -284,14 +313,41 @@ def _record_blit_observability(
     breaking the render path, and the cairo surface accessors can raise
     on a degenerate / freed surface — both swallowed at DEBUG level.
     """
+    src_w: int | None = None
+    src_h: int | None = None
+    source_pixels: int | None = None
+    try:
+        src_w = src.get_width()
+        src_h = src.get_height()
+        source_pixels = src_w * src_h
+    except Exception:
+        log.debug("ward blit readback: surface size read failed", exc_info=True)
+
+    if source_pixels is not None:
+        with _BLIT_READBACK_LOCK:
+            _BLIT_READBACKS[ward_id] = {
+                "ward_id": ward_id,
+                "observed_at": time.time(),
+                "source_width": src_w,
+                "source_height": src_h,
+                "source_pixels": source_pixels,
+                "effective_alpha": effective_alpha,
+                "surface_kind": geom.kind,
+                "surface_x": geom.x,
+                "surface_y": geom.y,
+                "surface_w": geom.w,
+                "surface_h": geom.h,
+            }
+
     try:
         from agents.studio_compositor import metrics as _metrics
 
         if _metrics.WARD_SOURCE_SURFACE_PIXELS is not None:
             try:
-                src_w = src.get_width()
-                src_h = src.get_height()
-                _metrics.WARD_SOURCE_SURFACE_PIXELS.labels(ward=ward_id).set(float(src_w * src_h))
+                if source_pixels is not None:
+                    _metrics.WARD_SOURCE_SURFACE_PIXELS.labels(ward=ward_id).set(
+                        float(source_pixels)
+                    )
             except Exception:
                 log.debug("ward source-surface gauge: surface size read failed", exc_info=True)
     except Exception:

@@ -194,6 +194,12 @@ from shared.segment_quality_layout_eval import (
 
 _evaluate_segment_quality_layout_fixture
 
+# Test-only reset hook for the in-process rendered-blit readback cache. The
+# production read path is recent_blit_readbacks(); vulture does not scan tests.
+from agents.studio_compositor.fx_chain import clear_blit_readbacks as _clear_blit_readbacks
+
+_clear_blit_readbacks
+
 from shared.self_grounding_envelope import (
     SelfPresenceEnvelopeProjection,
     build_envelope_projection,

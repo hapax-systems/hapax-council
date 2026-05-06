@@ -633,6 +633,64 @@ def test_responsible_segment_tick_escapes_static_then_accepts_rendered_readback(
     assert receipt_payload["selected_layout"] == "segment-list"
 
 
+def test_runtime_readback_requires_fresh_blit_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    segment_list = _load_layout("config/compositor-layouts/segment-list.json")
+    store = _FakeStore(layouts={"segment-list": segment_list}, _active="segment-list")
+    rendered_state = LayoutState(segment_list)
+    adapter = _RenderedLayoutStateAdapter(store, rendered_state)
+
+    monkeypatch.setattr(
+        layout_tick_driver,
+        "_recent_blit_readbacks",
+        lambda _wards, *, now: {},
+    )
+
+    readback = layout_tick_driver._runtime_layout_readback(
+        layout_state=adapter,
+        state={},
+        now=NOW,
+    )
+
+    assert "ranked-list-panel" in readback.active_wards
+    assert readback.ward_properties == {}
+    assert "no-fresh-blit" in readback.readback_ref
+
+
+def test_runtime_readback_uses_fresh_blit_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    segment_list = _load_layout("config/compositor-layouts/segment-list.json")
+    store = _FakeStore(layouts={"segment-list": segment_list}, _active="segment-list")
+    rendered_state = LayoutState(segment_list)
+    adapter = _RenderedLayoutStateAdapter(store, rendered_state)
+
+    monkeypatch.setattr(
+        layout_tick_driver,
+        "_recent_blit_readbacks",
+        lambda _wards, *, now: {
+            "ranked-list-panel": {
+                "observed_at": now - 0.25,
+                "source_pixels": 400,
+                "effective_alpha": 0.9,
+            }
+        },
+    )
+
+    readback = layout_tick_driver._runtime_layout_readback(
+        layout_state=adapter,
+        state={},
+        now=NOW,
+    )
+
+    ranked = readback.ward_properties["ranked-list-panel"]
+    assert ranked["visible"] is True
+    assert ranked["rendered_blit"] is True
+    assert ranked["source_pixels"] == 400
+    assert readback.readback_ref.startswith("rendered-blit-readback:segment-list:")
+
+
 def test_stop_event_breaks_loop() -> None:
     stop_event = threading.Event()
     stop_event.set()  # already set — first iteration check breaks
