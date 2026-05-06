@@ -83,6 +83,9 @@ DIRECTOR_INTENT_JSONL: Path = Path(
 )
 SEGMENT_STATE_FILE: Path = Path("/dev/shm/hapax-compositor/active-segment.json")
 SEGMENT_LAYOUT_RECEIPT_FILE: Path = Path("/dev/shm/hapax-compositor/segment-layout-receipt.json")
+SEGMENT_WARD_PAYLOAD_READBACK_FILE: Path = Path(
+    "/dev/shm/hapax-compositor/segment-ward-payload-readback.json"
+)
 SUPPORTED_SEGMENT_LAYOUT_PRESSURE_KINDS: frozenset[str] = frozenset(
     {
         "tier",
@@ -328,10 +331,55 @@ def build_state_provider() -> Any:
             "vinyl_playing": _read_vinyl_playing(),
             "director_activity": _read_director_activity(),
             "stream_mode": _read_stream_mode(),
+            "ward_payload_readbacks": _read_segment_ward_payload_readbacks(),
             **segment_pressure,
         }
 
     return _provider
+
+
+def _read_segment_ward_payload_readbacks(
+    path: Path = SEGMENT_WARD_PAYLOAD_READBACK_FILE,
+    *,
+    now: float | None = None,
+    ttl_s: float = 5.0,
+) -> dict[str, dict[str, object]]:
+    """Read optional payload/effect witness metadata for segment wards.
+
+    The sidecar is a readback surface, not layout authority. It may only
+    help satisfy non-layout payload/effect expectations after the same ward
+    also has fresh rendered-blit evidence.
+    """
+
+    ts = time.time() if now is None else now
+    try:
+        stat = path.stat()
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    wards = raw.get("wards") if isinstance(raw.get("wards"), dict) else raw
+    if not isinstance(wards, dict):
+        return {}
+    out: dict[str, dict[str, object]] = {}
+    for ward_id, value in wards.items():
+        if not isinstance(ward_id, str) or not ward_id or not isinstance(value, dict):
+            continue
+        observed_at = _optional_float(value.get("payload_observed_at")) or _optional_float(
+            value.get("observed_at")
+        )
+        if observed_at is None:
+            observed_at = stat.st_mtime
+        if ts - observed_at > max(0.0, ttl_s):
+            continue
+        fields = _payload_readback_fields(value)
+        if not fields:
+            continue
+        fields.setdefault("payload_observed_at", observed_at)
+        fields.setdefault("payload_source", "segment-ward-payload-readback")
+        out[ward_id] = fields
+    return out
 
 
 def _read_segment_layout_pressure(
@@ -1121,6 +1169,22 @@ def _runtime_layout_readback(
     active_wards = _active_ward_ids(layout)
     safety_state = "consent_safe_active" if bool(state.get("consent_safe_active", False)) else None
     ward_properties = _ward_property_readbacks(active_wards, state, now=now)
+    payload_readbacks = {
+        ward_id: {
+            key: value
+            for key, value in props.items()
+            if key
+            in {
+                "payload_digest",
+                "payload_effects",
+                "payload_ref",
+                "payload_observed_at",
+                "payload_source",
+            }
+        }
+        for ward_id, props in ward_properties.items()
+        if any(str(key).startswith("payload_") for key in props)
+    }
     return RuntimeLayoutReadback(
         readback_ref=_runtime_readback_ref(
             active_layout_name=active_layout_name,
@@ -1131,6 +1195,7 @@ def _runtime_layout_readback(
         active_layout=active_layout_name,
         active_wards=active_wards,
         ward_properties=ward_properties,
+        payload_readbacks=payload_readbacks,
         camera_available=_optional_bool(state.get("camera_available")),
         safety_state=safety_state,
         chat_available=_optional_bool(state.get("chat_available")),
@@ -1181,6 +1246,7 @@ def _ward_property_readbacks(
     now: float,
 ) -> dict[str, dict[str, object]]:
     supplied = state.get("ward_properties")
+    payload_readbacks = _payload_readbacks_from_state(state.get("ward_payload_readbacks"))
     blit_readbacks = _recent_blit_readbacks(active_wards, now=now)
     if not blit_readbacks:
         return {}
@@ -1224,6 +1290,55 @@ def _ward_property_readbacks(
                 "effective_alpha": effective_alpha,
             }
         )
+        payload_fields = _payload_readback_fields(blit)
+        payload_fields.update(_payload_readback_fields(payload_readbacks.get(ward_id)))
+        out[ward_id].update(payload_fields)
+    return out
+
+
+def _payload_readbacks_from_state(value: object) -> dict[str, dict[str, object]]:
+    if not isinstance(value, dict):
+        return {}
+    wards = value.get("wards") if isinstance(value.get("wards"), dict) else value
+    if not isinstance(wards, dict):
+        return {}
+    out: dict[str, dict[str, object]] = {}
+    for ward_id, metadata in wards.items():
+        if isinstance(ward_id, str) and isinstance(metadata, dict):
+            fields = _payload_readback_fields(metadata)
+            if fields:
+                out[ward_id] = fields
+    return out
+
+
+def _payload_readback_fields(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, object] = {}
+    digest = _optional_str(value.get("payload_digest")) or _optional_str(value.get("digest"))
+    if digest:
+        out["payload_digest"] = digest
+    effects = (
+        _string_tuple(value.get("payload_effects"))
+        or _string_tuple(value.get("effects"))
+        or _string_tuple(value.get("effect_refs"))
+        or _string_tuple(value.get("rendered_effects"))
+    )
+    if effects:
+        out["payload_effects"] = effects
+    payload_ref = _optional_str(value.get("payload_ref")) or _optional_str(value.get("ref"))
+    if payload_ref:
+        out["payload_ref"] = payload_ref
+    observed_at = _optional_float(value.get("payload_observed_at")) or _optional_float(
+        value.get("observed_at")
+    )
+    if observed_at is not None:
+        out["payload_observed_at"] = observed_at
+    payload_source = _optional_str(value.get("payload_source")) or _optional_str(
+        value.get("source")
+    )
+    if payload_source:
+        out["payload_source"] = payload_source
     return out
 
 
@@ -1254,7 +1369,19 @@ def _runtime_readback_ref(
         ward_id for ward_id, props in ward_properties.items() if props.get("rendered_blit") is True
     )
     if rendered_wards:
-        rendered_hash = hashlib.sha256(",".join(rendered_wards).encode("utf-8")).hexdigest()[:12]
+        rendered_parts = []
+        for ward_id in rendered_wards:
+            props = ward_properties.get(ward_id, {})
+            payload = _payload_readback_fields(props)
+            if payload:
+                rendered_parts.append(
+                    f"{ward_id}:"
+                    f"{payload.get('payload_digest', '')}:"
+                    f"{','.join(_string_tuple(payload.get('payload_effects')))}"
+                )
+            else:
+                rendered_parts.append(ward_id)
+        rendered_hash = hashlib.sha256(",".join(rendered_parts).encode("utf-8")).hexdigest()[:12]
         return f"rendered-blit-readback:{active_layout_name or 'none'}:{rendered_hash}:{int(now)}"
     return f"rendered-layout-state:{active_layout_name or 'none'}:no-fresh-blit:{int(now)}"
 

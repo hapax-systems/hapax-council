@@ -155,6 +155,7 @@ class RuntimeLayoutReadback:
     active_layout: str | None
     active_wards: tuple[str, ...] = ()
     ward_properties: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    payload_readbacks: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
     camera_available: bool | None = None
     safety_state: str | None = None
     chat_available: bool | None = None
@@ -527,6 +528,8 @@ def decide_layout_responsibility(
                 "required_layout_readback": selected.layout,
                 "active_wards": list(readback.active_wards),
                 "critical_unsatisfied_effects": list(critical_unsatisfied),
+                "payload_readbacks": _payload_readback_metadata(readback),
+                "payload_missing_effects": list(_payload_missing_effects(critical_unsatisfied)),
                 "message": (
                     "default/static layout is not responsible-hosting success; "
                     "LayoutStore active layout alone is advisory and rendered readback "
@@ -561,6 +564,7 @@ def decide_layout_responsibility(
             "ward_properties": {
                 ward_id: dict(values) for ward_id, values in readback.ward_properties.items()
             },
+            "payload_readbacks": _payload_readback_metadata(readback),
             "camera_available": readback.camera_available,
             "chat_available": readback.chat_available,
             "media_available": readback.media_available,
@@ -844,7 +848,8 @@ def _split_effects(
             )
             target.append(effect)
             continue
-        unsatisfied.append(effect)
+        target = satisfied if _payload_effect_satisfied(effect, readback) else unsatisfied
+        target.append(effect)
     return tuple(satisfied), tuple(unsatisfied)
 
 
@@ -870,6 +875,81 @@ def _ward_is_visible(
         return False
     alpha = props.get("alpha")
     return not (isinstance(alpha, int | float) and float(alpha) <= 0.0)
+
+
+def _payload_effect_satisfied(effect: str, readback: RuntimeLayoutReadback) -> bool:
+    """Return True when a rendered active ward witnessed this payload/effect."""
+
+    for ward_id in readback.active_wards:
+        if not _ward_is_visible(ward_id, readback.ward_properties):
+            continue
+        metadata = _merged_payload_readback_for_ward(ward_id, readback)
+        if effect in _string_values(metadata.get("payload_effects")):
+            return True
+        if effect in _string_values(metadata.get("effects")):
+            return True
+        if effect.startswith("payload_digest:") and effect.split(":", 1)[1] in _string_values(
+            metadata.get("payload_digest")
+        ):
+            return True
+        if effect.startswith("payload_ref:") and effect.split(":", 1)[1] in _string_values(
+            metadata.get("payload_ref")
+        ):
+            return True
+    return False
+
+
+def _merged_payload_readback_for_ward(
+    ward_id: str,
+    readback: RuntimeLayoutReadback,
+) -> Mapping[str, object]:
+    merged: dict[str, object] = {}
+    sidecar = readback.payload_readbacks.get(ward_id)
+    if sidecar is not None:
+        merged.update(dict(sidecar))
+    props = readback.ward_properties.get(ward_id)
+    if props is not None:
+        merged.update(dict(props))
+    return merged
+
+
+def _payload_readback_metadata(readback: RuntimeLayoutReadback) -> dict[str, dict[str, object]]:
+    out: dict[str, dict[str, object]] = {}
+    for ward_id in readback.active_wards:
+        metadata = _merged_payload_readback_for_ward(ward_id, readback)
+        payload: dict[str, object] = {}
+        for key in (
+            "payload_digest",
+            "payload_effects",
+            "payload_ref",
+            "payload_observed_at",
+            "payload_source",
+        ):
+            value = metadata.get(key)
+            if isinstance(value, str | int | float | bool) or value is None:
+                if value is not None:
+                    payload[key] = value
+            elif isinstance(value, list | tuple):
+                payload[key] = [str(item) for item in value if isinstance(item, str)]
+        if payload:
+            out[ward_id] = payload
+    return out
+
+
+def _payload_missing_effects(effects: Iterable[str]) -> tuple[str, ...]:
+    return tuple(
+        effect
+        for effect in effects
+        if not effect.startswith(("layout:", "ward:", "readback:", "posture:"))
+    )
+
+
+def _string_values(value: object) -> tuple[str, ...]:
+    if isinstance(value, str) and value:
+        return (value,)
+    if isinstance(value, list | tuple | set | frozenset):
+        return tuple(str(item) for item in value if isinstance(item, str) and item)
+    return ()
 
 
 def _safety_fallback_receipt(
