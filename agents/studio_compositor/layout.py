@@ -67,6 +67,19 @@ def _balanced_layout(
         for i, cam in enumerate(others):
             sx, sy, sw, sh = _fit_16x9(right_w, slot_h)
             layout[cam.role] = TileRect(x=right_x + sx, y=i * slot_h + sy, w=sw, h=sh)
+
+        # Virtual tile (underscore prefix → no GStreamer pad). HeroSmallOverlay
+        # draws the raw hero JPEG snapshot here as a PIP "raw monitor" inset
+        # in the bottom-right of the hero rect. ~25% of hero width.
+        small_w = hw // 4
+        small_h = int(small_w * 9 / 16)
+        margin = max(8, hw // 80)
+        layout["_hero_small"] = TileRect(
+            x=hx + hw - small_w - margin,
+            y=hy + hh - small_h - margin,
+            w=small_w,
+            h=small_h,
+        )
     else:
         cols = math.ceil(math.sqrt(n))
         rows = math.ceil(n / cols)
