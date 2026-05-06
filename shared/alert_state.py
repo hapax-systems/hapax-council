@@ -154,10 +154,25 @@ def process_report(
 
 
 def _load_state(path: Path) -> dict:
-    """Load alert state from JSON file, returning empty dict on any error."""
+    """Load alert state from JSON file, returning empty dict on any error.
+
+    Validates the JSON root is a mapping. Callers immediately use
+    ``state.get(check_name, {})`` and ``state[check_name] = ...`` on
+    the returned value; a writer producing valid JSON whose root is
+    null, a list, a string, or a number previously raised
+    AttributeError or TypeError out of the alert state evaluation.
+    Same shape as the other recent SHM-read fixes.
+    """
     try:
         if path.exists():
-            return json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+            _log.warning(
+                "Alert state %s root is %s, expected mapping; resetting",
+                path,
+                type(data).__name__,
+            )
     except Exception as exc:
         _log.warning("Corrupt alert state file %s, resetting: %s", path, exc)
     return {}

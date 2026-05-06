@@ -249,3 +249,21 @@ class TestRecoveryTags:
         )
         actions = process_report(_report([("c1", "healthy", "ok")]), state_path=state_path)
         assert "white_check_mark" in actions[0]["tags"]
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_process_report_non_dict_state_does_not_crash(tmp_path, payload, kind):
+    """Pin process_report against non-dict alert-state JSON. Callers
+    use state.get(check_name, {}) and state[check_name] = ... — non-
+    dict roots crashed those operations."""
+    state_path = tmp_path / "s.json"
+    state_path.write_text(payload)
+    # Must not raise — corrupt state resets to empty.
+    actions = process_report(_report([("check-a", "healthy", "ok")]), state_path=state_path)
+    assert isinstance(actions, list), f"non-dict root={kind} must not crash"
