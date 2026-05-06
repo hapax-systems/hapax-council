@@ -270,9 +270,11 @@ def _build_full_segment_prompt(
     )
 
 
-# LLM timeout — raised from 180s to 300s to accommodate longer, richer
-# output from the expanded prompt (800-2000 chars per beat × 10-15 beats).
-_PREP_LLM_TIMEOUT_S = 600
+# Resident Command-R calls can be slow when producing long, grounded programme
+# plans and 800-2000 char beat scripts. Keep the client timeout above observed
+# local inference latency so prep preserves call continuity instead of killing a
+# still-productive resident generation.
+_PREP_LLM_TIMEOUT_S = float(os.environ.get("HAPAX_SEGMENT_PREP_LLM_TIMEOUT_S", "1200"))
 
 # Content prep is a single-resident-model path.  Evidence acquisition can
 # happen elsewhere, but plan/draft/refine must run on the same grounded local
@@ -571,6 +573,10 @@ def prep_segment(
             prog_id,
             suffix=".actionability-invalid.json",
         )
+        layout_diagnostic_name = _programme_artifact_name(
+            prog_id,
+            suffix=".layout-invalid.json",
+        )
     except ValueError as exc:
         log.warning("prep_segment: skipping unsafe programme_id %r: %s", prog_id, exc)
         return None
@@ -672,6 +678,44 @@ def prep_segment(
         actionability["beat_action_intents"],
     )
     quality_report = score_segment_quality(script, [str(item) for item in beats])
+    if layout_responsibility["ok"] is not True:
+        log.warning(
+            "prep_segment: quarantining %s with layout responsibility violations: %s",
+            prog_id,
+            [item.get("reason") for item in layout_responsibility["violations"]],
+        )
+        diagnostic_path = prep_dir / layout_diagnostic_name
+        diagnostic = {
+            "schema_version": PREP_ARTIFACT_SCHEMA_VERSION,
+            "authority": PREP_ARTIFACT_AUTHORITY,
+            "programme_id": prog_id,
+            "role": role,
+            "topic": getattr(content, "narrative_beat", "") or "",
+            "segment_beats": list(beats),
+            "prepared_script_candidate": script,
+            "segment_quality_rubric_version": QUALITY_RUBRIC_VERSION,
+            "segment_quality_report": quality_report,
+            "actionability_rubric_version": ACTIONABILITY_RUBRIC_VERSION,
+            "actionability_alignment": {
+                "ok": actionability["ok"],
+                "removed_unsupported_action_lines": actionability[
+                    "removed_unsupported_action_lines"
+                ],
+            },
+            "layout_responsibility_version": LAYOUT_RESPONSIBILITY_VERSION,
+            "layout_responsibility": layout_responsibility,
+            "prepped_at": datetime.now(tz=UTC).isoformat(),
+            "prep_session_id": prep_session["prep_session_id"],
+            "model_id": prep_session["model_id"],
+            "prompt_sha256": source_hashes["prompt_sha256"],
+            "seed_sha256": source_hashes["seed_sha256"],
+            "not_loadable_reason": "layout responsibility failed",
+        }
+        diagnostic["artifact_sha256"] = _artifact_hash(diagnostic)
+        tmp = diagnostic_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(diagnostic, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(diagnostic_path)
+        return None
 
     # Save to disk
     out_path = prep_dir / artifact_name
@@ -1235,6 +1279,8 @@ def _layout_rejection_reason(data: dict[str, Any]) -> str | None:
         return "missing runtime layout validation"
     if runtime_validation.get("status") != "pending_runtime_readback":
         return "runtime layout validation is not pending readback"
+    if runtime_validation.get("ok") is not True:
+        return "layout responsibility failed"
     if runtime_validation.get("layout_success") is not False:
         return "prep artifact claims layout success"
     receipts = data.get("layout_decision_receipts")

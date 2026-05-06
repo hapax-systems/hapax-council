@@ -203,7 +203,6 @@ DEFAULT_POSTURE_VOCABULARY: tuple[LayoutPosture, ...] = (
     LayoutPosture.RANKED_VISUAL,
     LayoutPosture.COUNTDOWN_VISUAL,
     LayoutPosture.DEPTH_VISUAL,
-    LayoutPosture.CAMERA_SUBJECT,
     LayoutPosture.CHAT_PROMPT,
     LayoutPosture.ASSET_FRONT,
     LayoutPosture.COMPARISON,
@@ -468,6 +467,16 @@ class PreparedSegmentLayoutContract(BaseModel):
                         f"{beat.beat_id}: spoken_only_fallback cannot be proposed "
                         "for responsible_hosting"
                     )
+                if LayoutPosture.CAMERA_SUBJECT in beat.proposed_postures:
+                    raise ValueError(
+                        f"{beat.beat_id}: camera_subject cannot be proposed "
+                        "for responsible_hosting until a witnessed camera loop owns readback"
+                    )
+                if any(_source_affordance_is_camera(item) for item in beat.source_affordances):
+                    raise ValueError(
+                        f"{beat.beat_id}: camera source affordances cannot be proposed "
+                        "for responsible_hosting until a witnessed camera loop owns readback"
+                    )
             if LayoutPosture.NON_RESPONSIBLE_STATIC in (
                 self.layout_decision_contract.bounded_vocabulary
             ):
@@ -481,6 +490,10 @@ class PreparedSegmentLayoutContract(BaseModel):
                 raise ValueError(
                     "responsible_hosting layout_decision_contract cannot advertise "
                     "spoken_only_fallback"
+                )
+            if LayoutPosture.CAMERA_SUBJECT in self.layout_decision_contract.bounded_vocabulary:
+                raise ValueError(
+                    "responsible_hosting layout_decision_contract cannot advertise camera_subject"
                 )
         else:
             for beat in self.beat_layout_intents:
@@ -910,8 +923,6 @@ def _postures_for_source_affordances(
     out: list[LayoutPosture] = []
     for affordance in source_affordances:
         lowered = affordance.lower()
-        if "camera" in lowered or "cam." in lowered:
-            out.append(LayoutPosture.CAMERA_SUBJECT)
         if "chat" in lowered:
             out.append(LayoutPosture.CHAT_PROMPT)
         if "countdown" in lowered:
@@ -919,6 +930,11 @@ def _postures_for_source_affordances(
         if "rank" in lowered or "tier" in lowered:
             out.append(LayoutPosture.RANKED_VISUAL)
     return _dedupe(out)
+
+
+def _source_affordance_is_camera(value: str) -> bool:
+    lowered = value.lower()
+    return "camera" in lowered or "cam." in lowered
 
 
 def _dedupe[T](items: Sequence[T]) -> tuple[T, ...]:
@@ -1107,12 +1123,17 @@ def _project_parent_need(
             LayoutPosture.DEPTH_VISUAL,
             ExpectedVisibleEffect.DETAIL_READABLE,
         )
-    if token in {"referentvisible", "camerasubject"}:
+    if token == "referentvisible":
         return (
             ActionIntentKind.SHOW_EVIDENCE,
             LayoutNeedKind.REFERENT_VISIBLE,
-            LayoutPosture.CAMERA_SUBJECT,
+            LayoutPosture.ASSET_FRONT,
             ExpectedVisibleEffect.REFERENT_AVAILABLE,
+        )
+    if token == "camerasubject":
+        raise ValueError(
+            "camera_subject is not accepted for responsible prepared layout "
+            "until a witnessed runtime camera loop owns readback"
         )
     if token in _PARENT_IGNORED_RESPONSIBLE_NEEDS:
         return (

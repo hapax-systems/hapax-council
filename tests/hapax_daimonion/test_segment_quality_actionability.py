@@ -155,6 +155,23 @@ def test_layout_responsibility_derives_needs_from_action_intents() -> None:
     )
 
 
+def test_responsible_layout_rejects_spoken_only_beats() -> None:
+    alignment = validate_segment_actionability(
+        [
+            "This is a spoken argument about programme quality. "
+            "It names the problem, states the consequence, and makes no visible or doable claim."
+        ],
+        ["argue the point"],
+    )
+
+    layout = validate_layout_responsibility(alignment["beat_action_intents"])
+
+    assert layout["ok"] is False
+    assert layout["beat_layout_intents"][0]["needs"] == ["unsupported_layout_need"]
+    assert "spoken_argument_only" in layout["beat_layout_intents"][0]["source_affordances"]
+    assert "unsupported_layout_need" in {item["reason"] for item in layout["violations"]}
+
+
 def test_responsible_hosting_rejects_unreceipted_static_default_layout() -> None:
     alignment = validate_segment_actionability(EXCELLENT_SCRIPT, ["hook", "body", "close"])
 

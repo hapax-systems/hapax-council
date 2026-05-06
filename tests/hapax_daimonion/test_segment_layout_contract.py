@@ -53,10 +53,7 @@ def test_responsible_contract_metadata_is_proposal_only() -> None:
     assert metadata["parent_artifact_authority"] == "prior_only"
     assert metadata["layout_decision_contract"]["receipt_required"] is True
     assert metadata["layout_decision_contract"]["may_command_layout"] is False
-    assert metadata["beat_layout_intents"][0]["proposed_postures"] == [
-        "asset_front",
-        "camera_subject",
-    ]
+    assert metadata["beat_layout_intents"][0]["proposed_postures"] == ["asset_front"]
     assert metadata["beat_layout_intents"][0]["needs"] == ["evidence_visible"]
     assert "canonical_broadcast_runtime" not in json.dumps(metadata)
     assert "layout_name" not in json.dumps(metadata)
@@ -96,7 +93,7 @@ def test_parent_emitted_field_names_project_to_blue_contract_without_mutating_pa
         ],
         layout_decision_contract={
             "may_command_layout": False,
-            "bounded_vocabulary": ["asset_front", "camera_subject"],
+            "bounded_vocabulary": ["asset_front"],
             "min_dwell_s": 8,
             "ttl_s": 30,
             "conflict_order": ["safety", "action_visibility", "readability"],
@@ -169,6 +166,26 @@ def test_parent_spoken_needs_are_dropped_when_visual_need_remains() -> None:
     )
 
     assert [need.value for need in parsed.beat_layout_intents[0].needs] == ["evidence_visible"]
+
+
+def test_parent_camera_subject_need_is_rejected_for_responsible_hosting() -> None:
+    parent = _parent_artifact(
+        beat_layout_intents=[
+            {
+                "beat_id": "hook",
+                "beat_index": 0,
+                "needs": ["camera_subject"],
+                "evidence_refs": ["vault:source-note"],
+                "source_affordances": ["asset:source-card"],
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="camera_subject"):
+        project_parent_prepared_artifact_layout_contract(
+            parent,
+            artifact_sha256="3" * 64,
+        )
 
 
 def test_parent_tier_chat_comparison_needs_project_with_artifact_evidence() -> None:
@@ -467,6 +484,23 @@ def test_responsible_contract_rejects_spoken_only_fallback_posture() -> None:
     payload = _responsible_contract().model_dump(mode="json")
     payload["layout_decision_contract"]["bounded_vocabulary"] = ["spoken_only_fallback"]
     with pytest.raises(ValueError, match="spoken_only_fallback"):
+        PreparedSegmentLayoutContract.model_validate(payload)
+
+
+def test_responsible_contract_rejects_camera_posture_and_affordance() -> None:
+    payload = _responsible_contract().model_dump(mode="json")
+    payload["beat_layout_intents"][0]["proposed_postures"] = ["camera_subject"]
+    with pytest.raises(ValueError, match="camera_subject"):
+        PreparedSegmentLayoutContract.model_validate(payload)
+
+    payload = _responsible_contract().model_dump(mode="json")
+    payload["layout_decision_contract"]["bounded_vocabulary"] = ["camera_subject"]
+    with pytest.raises(ValueError, match="camera_subject"):
+        PreparedSegmentLayoutContract.model_validate(payload)
+
+    payload = _responsible_contract().model_dump(mode="json")
+    payload["beat_layout_intents"][0]["source_affordances"] = ["camera:overhead"]
+    with pytest.raises(ValueError, match="camera source affordances"):
         PreparedSegmentLayoutContract.model_validate(payload)
 
 
@@ -805,7 +839,6 @@ def _parent_artifact(**overrides: object) -> dict[str, object]:
                 "ranked_visual",
                 "countdown_visual",
                 "depth_visual",
-                "camera_subject",
                 "chat_prompt",
                 "asset_front",
                 "comparison",
@@ -844,7 +877,7 @@ def _responsible_contract() -> PreparedSegmentLayoutContract:
                 intent_id="cite-source",
                 kind=ActionIntentKind.SHOW_EVIDENCE,
                 evidence_refs=("artifact:source-card",),
-                source_affordances=("asset:source-card", "camera:overhead"),
+                source_affordances=("asset:source-card",),
             ),
         )
     )
