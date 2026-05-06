@@ -150,8 +150,30 @@ def _is_lore_worthy(event: ChronicleEvent) -> bool:
     return event.source in _LORE_SOURCES
 
 
+def _event_rank_key(event: ChronicleEvent) -> tuple[float, float]:
+    """Sort key for ranking lore-worthy events.
+
+    Returns ``(-salience, -ts)`` so the highest-salience newest events
+    sort first when fed to ``sorted``. Events without a numeric
+    ``salience`` field are treated as ``_SALIENCE_THRESHOLD`` (0.7) —
+    just enough to clear the floor but never outrank an explicitly
+    tagged event of equal age.
+    """
+    salience = event.payload.get("salience")
+    if not isinstance(salience, (int, float)):
+        salience = _SALIENCE_THRESHOLD
+    return (-float(salience), -event.ts)
+
+
 def _collect_rows(now: float) -> list[str]:
-    """Read the chronicle and return up to ``_MAX_ROWS`` formatted lines."""
+    """Read the chronicle and return up to ``_MAX_ROWS`` formatted lines.
+
+    Lore-worthy events are ranked by ``(salience desc, ts desc)`` before
+    truncation — so a critical stance transition that landed 30s ago
+    outranks a 5s-old routine event of the same source. Events without
+    salience get a 0.7 floor for ranking; they only displace newer
+    salience-tagged events when both share that floor.
+    """
     try:
         events = query(
             since=now - _WINDOW_SECONDS,
@@ -163,14 +185,9 @@ def _collect_rows(now: float) -> list[str]:
         log.debug("chronicle query failed", exc_info=True)
         return []
 
-    kept: list[str] = []
-    for event in events:  # query returns newest-first
-        if not _is_lore_worthy(event):
-            continue
-        kept.append(_fmt_row(event))
-        if len(kept) >= _MAX_ROWS:
-            break
-    return kept
+    kept = [event for event in events if _is_lore_worthy(event)]
+    kept.sort(key=_event_rank_key)
+    return [_fmt_row(event) for event in kept[:_MAX_ROWS]]
 
 
 def _fallback_package() -> HomagePackage:
