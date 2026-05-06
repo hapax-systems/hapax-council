@@ -106,17 +106,40 @@ def graph_topology_fingerprint(snapshot_path: Path) -> str | None:
 def _extract_topology_nodes(data: dict) -> list[tuple[str, int]]:
     """Pull (doi, citation_count) tuples from a DataCite GraphQL response."""
     nodes: list[tuple[str, int]] = []
-    works = data.get("data", {}).get("works", {}).get("nodes", [])
+    data_block = data.get("data", {})
+    works: object = None
+    works_block = data_block.get("works")
+    if isinstance(works_block, dict):
+        works = works_block.get("nodes")
+    if not isinstance(works, list):
+        person = data_block.get("person")
+        if isinstance(person, dict):
+            person_works = person.get("works")
+            if isinstance(person_works, dict):
+                works = person_works.get("nodes")
     if not isinstance(works, list):
         return nodes
     for work in works:
         if not isinstance(work, dict):
             continue
         doi = work.get("doi")
-        cites = work.get("citationCount", 0)
+        cites = _topology_citation_count(work)
         if isinstance(doi, str) and isinstance(cites, int):
             nodes.append((doi, cites))
     return nodes
+
+
+def _topology_citation_count(work: dict) -> int:
+    """Return citation count across legacy and current DataCite snapshot shapes."""
+    raw = work.get("citationCount")
+    if isinstance(raw, int):
+        return raw
+    citations = work.get("citations")
+    if isinstance(citations, dict):
+        total = citations.get("totalCount")
+        if isinstance(total, int):
+            return total
+    return 0
 
 
 def material_change_detected(graph_dir: Path, current_fingerprint: str) -> bool:

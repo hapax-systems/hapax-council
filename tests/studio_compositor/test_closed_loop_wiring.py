@@ -13,11 +13,22 @@ Three invariants:
 
 from __future__ import annotations
 
+import pytest
+
 from agents.studio_compositor.compositional_consumer import (
     RecruitmentRecord,
     dispatch,
 )
 from agents.studio_compositor.random_mode import _PRESET_BIAS_COOLDOWN_S
+
+
+@pytest.fixture(autouse=True)
+def isolate_runtime_hold(monkeypatch, tmp_path):
+    """Keep dispatcher tests independent from live compositor segment holds."""
+    import agents.studio_compositor.compositional_consumer as cc
+
+    monkeypatch.setattr(cc, "_SEGMENT_CUE_HOLD", tmp_path / "segment-cue-hold.json")
+    monkeypatch.setattr(cc, "_PARAMETRIC_ENVELOPES", tmp_path / "parametric-envelopes.json")
 
 
 class TestCompositionalPrefixes:

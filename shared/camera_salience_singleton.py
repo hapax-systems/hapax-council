@@ -7,7 +7,9 @@ loading apertures from the canonical fixture file.
 Phase B of cc-task ``bayesian-camera-salience-broker-production-wiring``.
 
 Thread-safe: the singleton is protected by a module-level lock and the
-broker's ``evaluate()`` is a pure function of its inputs (no mutation).
+broker's ``evaluate()`` is a pure function of its inputs. Outcome feedback
+mutates only the singleton's bounded per-aperture Beta posterior cache, which
+is then passed into the next query as a VOI prior.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import json
 import logging
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import ValidationError
@@ -66,6 +69,36 @@ except Exception:
     log.info("prometheus_client unavailable; camera salience query metric disabled")
 
 
+_CAMERA_OUTCOME_GAMMA = 0.99
+_CAMERA_OUTCOME_TS_CAP = 10.0
+_CAMERA_OUTCOME_TS_FLOOR = 1.0
+_CAMERA_OUTCOME_PRIOR_ALPHA = 2.0
+_CAMERA_OUTCOME_PRIOR_BETA = 1.0
+_ALPHA_OUTCOME_STATUSES = frozenset({"success", "public_event_accepted"})
+_BETA_OUTCOME_STATUSES = frozenset({"failure", "blocked", "refused", "stale", "missing"})
+
+
+@dataclass
+class _ApertureOutcomePosterior:
+    """Per-aperture Beta posterior for engagement/outcome feedback."""
+
+    alpha: float = _CAMERA_OUTCOME_PRIOR_ALPHA
+    beta: float = _CAMERA_OUTCOME_PRIOR_BETA
+
+    @property
+    def mean(self) -> float:
+        total = self.alpha + self.beta
+        return self.alpha / total if total > 0 else 0.5
+
+    def record_success(self, gamma: float = _CAMERA_OUTCOME_GAMMA) -> None:
+        self.alpha = min(_CAMERA_OUTCOME_TS_CAP, self.alpha * gamma + 1.0)
+        self.beta = max(_CAMERA_OUTCOME_TS_FLOOR, self.beta * gamma)
+
+    def record_failure(self, gamma: float = _CAMERA_OUTCOME_GAMMA) -> None:
+        self.alpha = max(_CAMERA_OUTCOME_TS_FLOOR, self.alpha * gamma)
+        self.beta = min(_CAMERA_OUTCOME_TS_CAP, self.beta * gamma + 1.0)
+
+
 def _record_query_metric(consumer: str) -> None:
     try:
         if _METRICS_AVAILABLE and _QUERY_COUNTER is not None:
@@ -85,6 +118,11 @@ class _BrokerSingleton:
         self._outcomes: list[dict[str, Any]] = []
         self._outcome_lock = threading.Lock()
         self._max_outcomes = 500  # bounded calibration evidence window
+        self._query_apertures: dict[str, tuple[str, ...]] = {}
+        self._query_lock = threading.Lock()
+        self._max_query_apertures = 500
+        self._aperture_posteriors: dict[str, _ApertureOutcomePosterior] = {}
+        self._posterior_lock = threading.Lock()
 
     def ingest(self, envelope: CameraObservationEnvelope | None) -> None:
         """Ingest a producer envelope into the rolling window.
@@ -140,7 +178,12 @@ class _BrokerSingleton:
                 max_images=max_images,
                 max_tokens=max_tokens,
             )
-            return broker.evaluate(query_obj)
+            bundle = broker.evaluate(
+                query_obj,
+                aperture_success_priors=self._aperture_success_priors(),
+            )
+            self._remember_query_apertures(bundle)
+            return bundle
         except (ValidationError, ValueError, KeyError, TypeError):
             log.debug("camera salience query failed", exc_info=True)
             return None
@@ -158,6 +201,9 @@ class _BrokerSingleton:
         record = _normalize_outcome_record(query_id, observed_outcome)
         if record is None:
             return False
+        updated_apertures = self._apply_outcome_to_posteriors(record)
+        if updated_apertures:
+            record = {**record, "updated_apertures": list(updated_apertures)}
         with self._outcome_lock:
             self._outcomes.append(record)
             if len(self._outcomes) > self._max_outcomes:
@@ -168,6 +214,44 @@ class _BrokerSingleton:
     def observation_count(self) -> int:
         with self._obs_lock:
             return len(self._observations)
+
+    def _aperture_success_priors(self) -> dict[str, float]:
+        with self._posterior_lock:
+            return {
+                aperture_id: posterior.mean
+                for aperture_id, posterior in self._aperture_posteriors.items()
+            }
+
+    def _remember_query_apertures(self, bundle: CameraSalienceBundle) -> None:
+        apertures = tuple(dict.fromkeys(row.aperture_id for row in bundle.ranked_observations))
+        with self._query_lock:
+            self._query_apertures[bundle.query.query_id] = apertures
+            while len(self._query_apertures) > self._max_query_apertures:
+                oldest = next(iter(self._query_apertures))
+                del self._query_apertures[oldest]
+
+    def _apertures_for_query(self, query_id: str) -> tuple[str, ...]:
+        with self._query_lock:
+            return self._query_apertures.get(query_id, ())
+
+    def _apply_outcome_to_posteriors(self, record: dict[str, Any]) -> tuple[str, ...]:
+        signal = _outcome_learning_signal(record.get("observed_outcome"))
+        if signal is None:
+            return ()
+        aperture_ids = self._apertures_for_query(str(record.get("query_id", "")))
+        if not aperture_ids:
+            return ()
+        with self._posterior_lock:
+            for aperture_id in aperture_ids:
+                posterior = self._aperture_posteriors.setdefault(
+                    aperture_id,
+                    _ApertureOutcomePosterior(),
+                )
+                if signal:
+                    posterior.record_success()
+                else:
+                    posterior.record_failure()
+        return aperture_ids
 
 
 _OUTCOME_STATUS_ALIASES = {
@@ -252,6 +336,16 @@ def _status_from_string(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     return _OUTCOME_STATUS_ALIASES.get(value.strip().lower())
+
+
+def _outcome_learning_signal(status: object) -> bool | None:
+    if not isinstance(status, str):
+        return None
+    if status in _ALPHA_OUTCOME_STATUSES:
+        return True
+    if status in _BETA_OUTCOME_STATUSES:
+        return False
+    return None
 
 
 def broker() -> _BrokerSingleton:

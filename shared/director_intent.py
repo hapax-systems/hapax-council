@@ -150,6 +150,22 @@ IntentFamily = Literal[
     # composition. The director recognises when the current programme
     # has played out and emits this family to mark the boundary.
     "programme.beat_advance",
+    # Director parametric vocabulary expansion tranche 2. Operator
+    # constraint remains: NO presets. These families recruit bounded
+    # parametric envelopes only; consumers ease surface/node parameters
+    # within authored bounds rather than selecting preset families.
+    #
+    # intensity.surge: temporary lift across all nine visual-chain
+    # dimensions with bounded Reverie node-param targets.
+    "intensity.surge",
+    # silence.invitation: quiets narration/motion/chrome/visual-chain
+    # surfaces into a low-activity hold while the frame remains directed.
+    "silence.invitation",
+    # chrome.density: sparser / denser ward chrome density envelope.
+    "chrome.density",
+    # attention.refocus: soft camera-weight rebalancing without a hard
+    # camera.hero swap.
+    "attention.refocus",
     # YouTube viewer-telemetry impingements (ytb-005). Emitted by
     # ``agents.youtube_telemetry`` from Analytics + Reporting APIs at a
     # 3-min cadence (under the 500-req/day soft cap). Salience is a
