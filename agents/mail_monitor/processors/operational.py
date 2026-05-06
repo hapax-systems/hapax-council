@@ -41,6 +41,18 @@ OPERATIONAL_KIND_TLS = "tls_expiry"
 OPERATIONAL_KIND_DEPENDABOT = "dependabot"
 OPERATIONAL_KIND_DNS = "dns"
 
+# Chronicle salience floor for operational events, by kind. All values
+# >= 0.7 (the chronicle-ticker ward's _SALIENCE_THRESHOLD) so every
+# operational event surfaces; severity ranks by infrastructure impact.
+_OPERATIONAL_EVENT_SALIENCE: dict[str, float] = {
+    # Security alerts are top priority — Dependabot CVE notices.
+    OPERATIONAL_KIND_DEPENDABOT: 0.9,
+    # Cert renewal notices — expired certs break HTTPS.
+    OPERATIONAL_KIND_TLS: 0.85,
+    # DNS changes — notable for routing diagnosis.
+    OPERATIONAL_KIND_DNS: 0.8,
+}
+
 _LETSENCRYPT_SENDER = "noreply@letsencrypt.org"
 _GITHUB_SENDER = "noreply@github.com"
 _PORKBUN_SENDER = "support@porkbun.com"
@@ -192,6 +204,7 @@ def _emit_chronicle(event: dict[str, Any]) -> None:
                         str(event.get("message_id") or "").encode("utf-8"),
                         usedforsecurity=False,
                     ).hexdigest()[:8],
+                    "salience": _OPERATIONAL_EVENT_SALIENCE.get(event["kind"], 0.75),
                 },
             )
         )
