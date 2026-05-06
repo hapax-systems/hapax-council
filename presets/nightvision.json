@@ -68,5 +68,14 @@
       "out"
     ]
   ],
-  "modulations": []
+  "modulations": [
+    {
+      "node": "noise",
+      "param": "intensity",
+      "source": "audio_energy",
+      "scale": 0.08,
+      "offset": 0.0,
+      "smoothing": 0.5
+    }
+  ]
 }

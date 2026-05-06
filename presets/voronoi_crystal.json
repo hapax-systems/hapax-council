@@ -1,7 +1,11 @@
 {
   "name": "Voronoi Crystal",
   "description": "Voronoi crystal",
-  "tags": ["geometric", "textural", "detail"],
+  "tags": [
+    "geometric",
+    "textural",
+    "detail"
+  ],
   "transition_ms": 500,
   "nodes": {
     "voronoi": {
@@ -70,5 +74,14 @@
       "out"
     ]
   ],
-  "modulations": []
+  "modulations": [
+    {
+      "node": "colorgrade",
+      "param": "brightness",
+      "source": "audio_rms",
+      "scale": 0.08,
+      "offset": 0.0,
+      "smoothing": 0.6
+    }
+  ]
 }
