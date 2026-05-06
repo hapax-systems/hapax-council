@@ -253,17 +253,28 @@ class OverlayZone:
             self._tick_scroll()
 
     def _is_gate_file_populated(self) -> bool:
-        """Return True when the gate file exists with non-zero size.
+        """Return True when the gate file exists with non-whitespace content.
 
         A populated gate file closes ``gate_when_file_empty`` zones —
         i.e., the lyrics file having content closes the right-column
         marker. Missing files are treated as empty so the gate is open
         while the producer hasn't created the path yet.
+
+        Whitespace-only content (a single newline, a blank line, a few
+        spaces) counts as empty: a 1-byte ``\\n`` placeholder file
+        previously passed ``st_size > 0`` and closed the right_marker
+        gate even though nothing visible would render in the lyrics
+        zone. The right column then went dark for the silent track,
+        which is precisely the underutilization the right_marker
+        exists to prevent. The gate file lives in ``/dev/shm`` so
+        the read is RAM-fast.
         """
         if self._gate_when_file_empty is None:
             return False
         try:
-            return self._gate_when_file_empty.stat().st_size > 0
+            return bool(
+                self._gate_when_file_empty.read_text(encoding="utf-8", errors="replace").strip()
+            )
         except OSError:
             return False
 
