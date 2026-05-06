@@ -83,12 +83,19 @@ def _run(
     )
 
 
+# Card description matches what pactl exposes on current Linux 6.x +
+# PipeWire stacks for the AMD Ryzen on-board HDA. The legacy pattern
+# "Family 17h/19h HD Audio" was a kernel-level designation that no
+# longer surfaces through PulseAudio/PipeWire properties. Fixtures use
+# the canonical "Ryzen HD Audio Controller" string from
+# device.product.name / device.description.
 CANONICAL_LONG = """\
 Card #0
 \tName: alsa_card.pci-0000_03_00.6
 \tDriver: alsa
 \tProperties:
-\t\talsa.card_name = "Family 17h/19h HD Audio Controller"
+\t\talsa.card_name = "HD-Audio Generic"
+\t\tdevice.description = "Ryzen HD Audio Controller"
 \tActive Profile: output:analog-stereo
 """
 
@@ -97,11 +104,16 @@ Card #0
 \tName: alsa_card.pci-0000_03_00.6
 \tDriver: alsa
 \tProperties:
-\t\talsa.card_name = "Family 17h/19h HD Audio Controller"
+\t\talsa.card_name = "HD-Audio Generic"
+\t\tdevice.description = "Ryzen HD Audio Controller"
 \tActive Profile: output:hdmi-stereo
 """
 
-CARDS_SHORT = "0\talsa_card.pci-0000_03_00.6\tmodule-alsa-card.c\tFamily 17h/19h HD Audio\toutput:analog-stereo"
+# `pactl list cards short` emits index, name, module-name (no product
+# description) — the script's primary lookup path always falls through
+# to the long-form fallback regex on real systems. Fixture mirrors the
+# fields the script's grep filter expects (alsa_card.pci-*).
+CARDS_SHORT = "0\talsa_card.pci-0000_03_00.6\tmodule-alsa-card.c\toutput:analog-stereo"
 
 
 class TestScriptShape:
