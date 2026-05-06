@@ -24,7 +24,7 @@
     "bloom_caustic": {
       "type": "bloom",
       "params": {
-        "intensity": 0.42,
+        "alpha": 0.42,
         "threshold": 0.6,
         "radius": 0.12
       }

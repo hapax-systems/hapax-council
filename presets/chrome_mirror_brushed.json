@@ -17,20 +17,20 @@
       "type": "mirror",
       "params": {
         "axis": "horizontal",
-        "amount": 0.32
+        "position": 0.32
       }
     },
     "slitscan_brushed": {
       "type": "slitscan",
       "params": {
-        "amount": 0.08,
-        "frequency": 4
+        "speed": 0.08,
+        "direction": 4
       }
     },
     "emboss_brushed": {
       "type": "emboss",
       "params": {
-        "amount": 0.32,
+        "strength": 0.32,
         "angle": 90
       }
     },

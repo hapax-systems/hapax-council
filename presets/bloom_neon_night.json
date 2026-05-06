@@ -16,7 +16,7 @@
     "bloom_neon": {
       "type": "bloom",
       "params": {
-        "intensity": 0.6,
+        "alpha": 0.6,
         "threshold": 0.5,
         "radius": 0.18
       }
@@ -31,7 +31,7 @@
     "vignette": {
       "type": "vignette",
       "params": {
-        "intensity": 0.42,
+        "strength": 0.42,
         "radius": 0.6
       }
     },

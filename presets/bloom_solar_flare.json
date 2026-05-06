@@ -16,7 +16,7 @@
     "bloom_intense": {
       "type": "bloom",
       "params": {
-        "intensity": 0.85,
+        "alpha": 0.85,
         "threshold": 0.4,
         "radius": 0.24
       }
@@ -24,14 +24,14 @@
     "emboss_relief": {
       "type": "emboss",
       "params": {
-        "amount": 0.15,
+        "strength": 0.15,
         "angle": 45
       }
     },
     "vignette": {
       "type": "vignette",
       "params": {
-        "intensity": 0.5,
+        "strength": 0.5,
         "radius": 0.55
       }
     },

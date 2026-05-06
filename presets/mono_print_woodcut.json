@@ -16,15 +16,14 @@
     "threshold_woodcut": {
       "type": "threshold",
       "params": {
-        "threshold": 0.45,
-        "smoothness": 0.04
+        "level": 0.45,
+        "softness": 0.04
       }
     },
     "halftone_coarse": {
       "type": "halftone",
       "params": {
-        "scale": 0.018,
-        "angle": 30
+        "dot_size": 0.018
       }
     },
     "sharpen_edge": {
