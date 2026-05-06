@@ -87,3 +87,24 @@ class TestContentResolverRefusalEmission:
 
         # Must not raise.
         _emit_content_refusal(surface="content_resolver:fragment_skip", reason="any")
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_check_for_new_fragment_non_dict_root(tmp_path, payload, kind):
+    """Pin check_for_new_fragment against non-dict JSON. Previously the
+    data.get('id', '') call inside the (OSError, JSONDecodeError) catch
+    let AttributeError escape on non-dict roots, crashing the
+    content-resolver poll loop."""
+    from agents.content_resolver.__main__ import check_for_new_fragment
+
+    current = tmp_path / "current.json"
+    current.write_text(payload)
+    frag_id, data = check_for_new_fragment(last_id="", path=current)
+    assert frag_id is None, f"non-dict root={kind} must yield (None, None)"
+    assert data is None

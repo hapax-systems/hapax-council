@@ -61,15 +61,25 @@ def _emit_content_refusal(*, surface: str, reason: str) -> None:
 def check_for_new_fragment(
     last_id: str, *, path: Path = CURRENT_PATH
 ) -> tuple[str | None, dict | None]:
-    """Check for a new imagination fragment. Returns (id, data) or (None, None)."""
+    """Check for a new imagination fragment. Returns (id, data) or (None, None).
+
+    Validates the JSON root is a mapping. ``data.get(\"id\", \"\")`` is
+    called inside the ``(OSError, json.JSONDecodeError)`` catch — but
+    AttributeError on a non-dict root escapes that catch. A writer
+    producing valid JSON whose root is null, a list, a string, or a
+    number previously crashed the content-resolver poll loop. Same
+    shape as the other recent SHM-read fixes.
+    """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        frag_id = data.get("id", "")
-        if frag_id and frag_id != last_id:
-            return frag_id, data
-        return None, None
     except (OSError, json.JSONDecodeError):
         return None, None
+    if not isinstance(data, dict):
+        return None, None
+    frag_id = data.get("id", "")
+    if frag_id and frag_id != last_id:
+        return frag_id, data
+    return None, None
 
 
 class ContentResolverDaemon:
