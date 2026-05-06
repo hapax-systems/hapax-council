@@ -54,6 +54,7 @@ REQUIRED_TEAM_CRITIQUE_ROLES = (
 )
 PASSING_TEAM_VERDICTS = frozenset({"approved", "pass", "passed"})
 MIN_CONCRETE_ACTION_KINDS = 2
+ACTIONABILITY_DIVERSITY_EXCLUDED_KINDS = frozenset({"source_citation", "spoken_argument"})
 MIN_TEAM_CRITIQUE_NOTE_WORDS = 6
 FORBIDDEN_LAYOUT_LAUNDERING_TERMS = frozenset(
     {
@@ -542,7 +543,8 @@ def _review_artifact(
             str(intent.get("kind"))
             for beat in beat_action_intents or []
             for intent in (beat.get("intents") or [])
-            if isinstance(intent, Mapping) and intent.get("kind") != "spoken_argument"
+            if isinstance(intent, Mapping)
+            and str(intent.get("kind")) not in ACTIONABILITY_DIVERSITY_EXCLUDED_KINDS
         }
     )
     expected_artifact_hash = artifact.get("artifact_sha256")
