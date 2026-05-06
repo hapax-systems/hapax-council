@@ -100,14 +100,24 @@ class LogosPerceptionStateBridge:
         self._has_observed_window: bool = False
 
     def _load(self) -> dict | None:
+        """Load perception-state.json as a dict, or None on any failure.
+
+        Validates the JSON root is a mapping. Callers
+        (``keyboard_active``, ``desk_active``) use ``\"key\" in data``
+        and ``data[\"key\"]`` lookups — a writer producing valid JSON
+        whose root is a list, string, or number would pass the
+        ``in`` check (with surprising semantics) and then crash on the
+        item-access. Same shape as the other recent SHM-read fixes.
+        """
         import json
         from pathlib import Path
 
         path = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
         try:
-            return json.loads(path.read_text())
+            data = json.loads(path.read_text())
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return None
+        return data if isinstance(data, dict) else None
 
     def keyboard_active(self) -> bool | None:
         data = self._load()
