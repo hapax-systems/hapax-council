@@ -399,16 +399,26 @@ def _emit_gate_nudge(gate_fm: dict) -> None:
 
 
 def _clear_nudge_if_acknowledged() -> bool:
-    """Check if operator acknowledged a gate nudge. Returns True if cleared."""
+    """Check if operator acknowledged a gate nudge. Returns True if cleared.
+
+    Validates the JSON root is a mapping before calling
+    ``nudge.get(\"acknowledged\")``. The ``(json.JSONDecodeError, OSError)``
+    catch did not cover AttributeError on non-dict roots — a writer
+    producing valid JSON whose root is null, a list, a string, or a
+    number previously crashed the sprint-tracker tick. Same shape as
+    the other recent SHM-read fixes.
+    """
     if not NUDGE_FILE.exists():
         return False
     try:
         nudge = json.loads(NUDGE_FILE.read_text(encoding="utf-8"))
-        if nudge.get("acknowledged"):
-            NUDGE_FILE.unlink(missing_ok=True)
-            return True
     except (json.JSONDecodeError, OSError):
-        pass
+        return False
+    if not isinstance(nudge, dict):
+        return False
+    if nudge.get("acknowledged"):
+        NUDGE_FILE.unlink(missing_ok=True)
+        return True
     return False
 
 
