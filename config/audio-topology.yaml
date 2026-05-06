@@ -644,6 +644,7 @@ nodes:
     release_s: 0.20
     params:
       bypasses_l12: true
+      playback_target: hapax-livestream-tap
 
 edges:
   # Live edges the inspector can observe directly.
