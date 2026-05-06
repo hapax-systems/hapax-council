@@ -1,0 +1,47 @@
+[
+  {
+    "id": "receipt.store_switch",
+    "source": "layout_store",
+    "need_ids": ["ranking_chart", "manifest_panel"],
+    "visible_effects": ["ranking chart visible", "manifest panel visible"],
+    "rendered": false,
+    "ttl_s": 30,
+    "reason": "Advisory store says layout switched."
+  },
+  {
+    "id": "receipt.gauge_active",
+    "source": "gauge",
+    "need_ids": ["ranking_chart", "manifest_panel"],
+    "visible_effects": ["ranking chart visible", "manifest panel visible"],
+    "rendered": false,
+    "ttl_s": 30,
+    "reason": "Metric reports the layout as active."
+  },
+  {
+    "id": "receipt.layout_state_rendered",
+    "source": "layout_state",
+    "need_ids": ["ranking_chart", "manifest_panel"],
+    "visible_effects": ["ranking chart visible", "manifest panel visible"],
+    "rendered": true,
+    "ttl_s": 30,
+    "reason": "Rendered LayoutState confirms visible assignments."
+  },
+  {
+    "id": "receipt.ward_readback_rendered",
+    "source": "ward_readback",
+    "need_ids": ["ranking_chart", "manifest_panel"],
+    "visible_effects": ["ranking chart visible", "manifest panel visible"],
+    "rendered": true,
+    "ttl_s": 30,
+    "reason": "Ward readback confirms the visible effect."
+  },
+  {
+    "id": "receipt.boot_safety_fallback",
+    "source": "fallback_receipt",
+    "need_ids": ["speech_only"],
+    "visible_effects": ["speech only fallback active"],
+    "rendered": false,
+    "ttl_s": 10,
+    "reason": "Boot safety posture while rendered layout is unavailable."
+  }
+]
