@@ -53,6 +53,7 @@ REQUIRES_GROUNDING_CLAIM_TYPES = frozenset(
     {
         "open_world_factual_claim",
         "current_event_claim",
+        "knowledge_recruitment_guidance_request",
         "model_vendor_comparison",
         "rights_provenance_claim",
         "public_content_programming_assertion",
@@ -61,6 +62,7 @@ REQUIRES_GROUNDING_CLAIM_TYPES = frozenset(
 
 REQUIRED_EVAL_CATEGORIES = frozenset(
     {
+        "global_competence_gap_guidance",
         "current_model_release_scouting",
         "content_opportunity_discovery",
         "tier_list_react_video_evidence_packets",
@@ -194,6 +196,15 @@ def validate_provider_registry(payload: dict[str, Any]) -> list[str]:
         errors.append("older cloud models must require exception records")
     if policy.get("director_model_swap_requires_eval_pass") is not True:
         errors.append("director swaps must require eval harness pass")
+    policy_claim_types = policy.get("grounding_required_claim_types", [])
+    if not isinstance(policy_claim_types, list):
+        errors.append("grounding_required_claim_types must be a list")
+        policy_claim_types = []
+    policy_claim_type_set = {str(item) for item in policy_claim_types}
+    for claim_type in sorted(REQUIRES_GROUNDING_CLAIM_TYPES - policy_claim_type_set):
+        errors.append(f"missing grounded claim type: {claim_type}")
+    for claim_type in sorted(policy_claim_type_set - REQUIRES_GROUNDING_CLAIM_TYPES):
+        errors.append(f"unknown grounded claim type: {claim_type}")
 
     for item in providers:
         provider = GroundingProviderSpec.from_mapping(item)
