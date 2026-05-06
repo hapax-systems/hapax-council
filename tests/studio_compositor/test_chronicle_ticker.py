@@ -151,6 +151,37 @@ class TestCollectRows:
         assert "newer" in rows[0]
         assert "older" in rows[1]
 
+    def test_high_salience_outranks_recent_lower_salience(self, _env_and_paths):
+        """Salience ranks above recency: a 30s-old critical event outranks
+        a 5s-old routine one when both are lore-worthy."""
+        now = time.time()
+        _write_events(
+            _env_and_paths,
+            [
+                _ev(ts=now - 30, salience=1.0, event_type="critical"),
+                _ev(ts=now - 5, salience=0.75, event_type="routine"),
+            ],
+        )
+        rows = _collect_rows(now)
+        assert len(rows) == 2
+        assert "critical" in rows[0]
+        assert "routine" in rows[1]
+
+    def test_equal_salience_preserves_newest_first(self, _env_and_paths):
+        """Newest-first tie-break holds when salience values match."""
+        now = time.time()
+        _write_events(
+            _env_and_paths,
+            [
+                _ev(ts=now - 30, salience=0.85, event_type="elder"),
+                _ev(ts=now - 5, salience=0.85, event_type="junior"),
+            ],
+        )
+        rows = _collect_rows(now)
+        assert len(rows) == 2
+        assert "junior" in rows[0]
+        assert "elder" in rows[1]
+
     def test_window_excludes_old_events(self, _env_and_paths):
         now = time.time()
         old = now - 2 * ct._WINDOW_SECONDS  # well outside the 10-min window
