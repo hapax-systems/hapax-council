@@ -400,7 +400,12 @@ def test_active_segment_pressure_maps_blue_contract_needs(tmp_path: Path) -> Non
                 "current_beat_layout_intents": [
                     {
                         "beat_id": "body",
-                        "needs": ["evidence_visible", "action_visible", "comparison_visible"],
+                        "needs": [
+                            "evidence_visible",
+                            "action_visible",
+                            "comparison_visible",
+                            "source_visible",
+                        ],
                         "evidence_refs": ["prepared_artifact:sha256:abc123", "vault:source"],
                     }
                 ],
@@ -417,11 +422,13 @@ def test_active_segment_pressure_maps_blue_contract_needs(tmp_path: Path) -> Non
         LayoutNeedKind.ARTIFACT_DETAIL.value,
         LayoutNeedKind.PROGRAMME_CONTEXT.value,
         LayoutNeedKind.SOURCE_COMPARISON.value,
+        LayoutNeedKind.ARTIFACT_DETAIL.value,
     ]
-    assert [intent.priority for intent in intents] == [50, 49, 48]
+    assert [intent.priority for intent in intents] == [50, 49, 48, 47]
     assert intents[0].expected_effects == ("ward:artifact-detail-panel",)
     assert intents[1].expected_effects == ("ward:programme-context",)
     assert intents[2].expected_effects == ("ward:compare-panel",)
+    assert intents[3].expected_effects == ("ward:artifact-detail-panel",)
 
 
 def test_active_segment_pressure_uses_blue_posture_hints(tmp_path: Path) -> None:

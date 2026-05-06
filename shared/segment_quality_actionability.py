@@ -95,6 +95,11 @@ ACTIONABILITY_RUBRIC: tuple[dict[str, str], ...] = (
         "trigger": "Compare, contrast, versus, ranking, or tradeoff language",
         "expected_effect": "The beat should make the comparison explicit in speech or an available surface.",
     },
+    {
+        "kind": "source_citation",
+        "trigger": "According to [source]... or [Source] argues/writes/shows...",
+        "expected_effect": "The cited source or evidence context should become visible or legible.",
+    },
 )
 
 LAYOUT_RESPONSIBILITY_DOCTRINE = {
@@ -160,6 +165,12 @@ LAYOUT_NEED_RUBRIC: tuple[dict[str, str], ...] = (
         "source_action_kind": "comparison",
         "source_affordance": "comparison",
         "expected_visible_effect": "ward:compare-panel",
+    },
+    {
+        "kind": "source_visible",
+        "source_action_kind": "source_citation",
+        "source_affordance": "source_context",
+        "expected_visible_effect": "ward:artifact-detail-panel",
     },
 )
 
@@ -270,6 +281,12 @@ _CHAT_RE = re.compile(
 _COMPARISON_RE = re.compile(
     r"\b(?:compare|contrast|versus|vs\.?|tradeoff|ranking|ranked|tier)\b",
     re.IGNORECASE,
+)
+_SOURCE_CITATION_RE = re.compile(
+    r"\b(?:[Aa]ccording to|[Dd]rawing on|[Ff]rom)\s+"
+    r"(?P<prefix_target>[^,.;:!?]{3,80})"
+    r"|\b(?P<verb_target>[A-Z][A-Za-z0-9'’.-]*(?:\s+[A-Z][A-Za-z0-9'’.-]*){0,5})\s+"
+    r"(?:argues|writes|says|shows|demonstrates|documents|finds|warns|claims)\b"
 )
 _UNSUPPORTED_ACTION_RE = re.compile(
     r"\b(?:watch this|watch the clip|play the clip|roll the clip|show the clip|"
@@ -427,6 +444,22 @@ def _intents_for_text(text: str) -> list[dict[str, Any]]:
             )
         )
 
+    seen_source_targets: set[str] = set()
+    for match in _SOURCE_CITATION_RE.finditer(text):
+        target = (match.group("prefix_target") or match.group("verb_target") or "").strip()
+        target_key = target.lower()
+        if not target or target_key in seen_source_targets:
+            continue
+        seen_source_targets.add(target_key)
+        intents.append(
+            _intent(
+                kind="source_citation",
+                trigger=match.group(0),
+                target=target,
+                expected_effect=f"source.visible:{target}",
+            )
+        )
+
     if not intents:
         intents.append(
             _intent(
@@ -575,9 +608,13 @@ def build_beat_layout_intents(
             if key in seen:
                 continue
             seen.add(key)
-            needs.append(str(need["kind"]))
+            need_kind = str(need["kind"])
+            if need_kind not in needs:
+                needs.append(need_kind)
             evidence_refs.append(str(need["evidence_ref"]))
-            source_affordances.append(str(need["source_affordance"]))
+            source_affordance = str(need["source_affordance"])
+            if source_affordance not in source_affordances:
+                source_affordances.append(source_affordance)
         if not needs:
             needs.append(
                 str(
