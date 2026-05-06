@@ -24,14 +24,14 @@
       "type": "mirror",
       "params": {
         "axis": "horizontal",
-        "amount": 0.4
+        "position": 0.4
       }
     },
     "droste_recursive": {
       "type": "droste",
       "params": {
-        "depth": 2,
-        "scale": 0.78
+        "branches": 2,
+        "zoom_speed": 0.78
       }
     },
     "out": {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -329,3 +330,188 @@ def test_maybe_author_plan_handles_planner_exception(monkeypatch: pytest.MonkeyP
 
     assert ts > 0.0
     manager.store.add.assert_not_called()
+
+
+def test_execute_segment_cue_quarantines_responsible_layout_contract() -> None:
+    from agents.hapax_daimonion.programme_loop import _execute_segment_cue_if_allowed
+
+    active = SimpleNamespace(
+        programme_id="prog-responsible",
+        content=SimpleNamespace(
+            hosting_context="hapax_responsible_live",
+            beat_layout_intents=[{"beat_id": "hook", "needs": ["evidence_visible"]}],
+            segment_cues=["camera.hero tight"],
+        ),
+    )
+    execute_cue = MagicMock()
+
+    assert _execute_segment_cue_if_allowed(active, 0, execute_cue) is False
+    execute_cue.assert_not_called()
+
+
+def test_execute_segment_cue_allows_legacy_non_responsible_content() -> None:
+    from agents.hapax_daimonion.programme_loop import _execute_segment_cue_if_allowed
+
+    active = SimpleNamespace(
+        programme_id="prog-legacy",
+        content=SimpleNamespace(
+            hosting_context="non_responsible_static",
+            beat_layout_intents=[],
+            segment_cues=["legacy safe cue"],
+        ),
+    )
+    execute_cue = MagicMock()
+
+    assert _execute_segment_cue_if_allowed(active, 0, execute_cue) is True
+    execute_cue.assert_called_once_with("legacy safe cue")
+
+
+def test_active_segment_payload_uses_plural_layout_intents_and_authority_ref() -> None:
+    from agents.hapax_daimonion.programme_loop import _active_segment_payload
+
+    artifact_ref = {
+        "ref": "prepared_artifact:" + "a" * 64,
+        "artifact_sha256": "a" * 64,
+        "prep_session_id": "prep-1",
+        "model_id": "command-r-08-2024-exl3-5.0bpw",
+        "authority": "prior_only",
+        "projected_authority": "declares_layout_needs_only",
+    }
+    active = SimpleNamespace(
+        programme_id="prog-responsible",
+        actual_started_at=123.0,
+        planned_duration_s=3600.0,
+        topic="topic",
+        content=SimpleNamespace(
+            narrative_beat="topic",
+            segment_beats=["hook: open", "body: show evidence"],
+            prepared_artifact_ref=artifact_ref,
+            artifact_path_diagnostic="/tmp/prog-responsible.json",
+            hosting_context="hapax_responsible_live",
+            authority="prior_only",
+            beat_layout_intents=[
+                {
+                    "beat_id": "body",
+                    "parent_beat_index": 1,
+                    "needs": ["evidence_visible"],
+                    "expected_effects": ["evidence_on_screen"],
+                    "evidence_refs": ["prepared_artifact:" + "a" * 64, "vault:source"],
+                    "source_affordances": ["asset:source-card"],
+                }
+            ],
+            layout_decision_contract={"receipt_required": True, "may_command_layout": False},
+            runtime_layout_validation={"receipt_required": True},
+        ),
+    )
+
+    payload = _active_segment_payload(active, "rant", 1)
+
+    assert "current_beat_layout_intents" in payload
+    assert "current_beat_layout_intent" not in payload
+    assert payload["current_beat_layout_intents"][0]["beat_id"] == "body"
+    assert payload["current_beat_layout_intents"][0]["needs"] == ["evidence_visible"]
+    assert payload["prepared_artifact_ref"] == artifact_ref
+    assert payload["artifact_path_diagnostic"] == "/tmp/prog-responsible.json"
+    assert "layout_decision_contract" not in payload
+    assert "runtime_layout_validation" not in payload
+    assert "fallback_active" not in payload
+
+
+def test_prepped_payload_projects_prepared_script_to_live_priors() -> None:
+    from agents.hapax_daimonion.programme_loop import (
+        _prepped_beat_cards,
+        _prepped_live_priors,
+    )
+
+    artifact_ref = {"ref": "prepared_artifact:" + "b" * 64}
+    payload = {
+        "artifact_sha256": "b" * 64,
+        "prepared_artifact_ref": artifact_ref,
+        "segment_beats": ["rank Alpha with a visible tier decision"],
+        "prepared_script": [
+            "Place Alpha in S-tier because the ranking makes the evidence legible."
+        ],
+        "beat_action_intents": [
+            {
+                "beat_index": 0,
+                "intents": [
+                    {
+                        "kind": "tier_chart",
+                        "expected_effect": "tier_chart.place:Alpha:S",
+                    }
+                ],
+            }
+        ],
+        "beat_layout_intents": [
+            {
+                "beat_id": "beat-1",
+                "beat_index": 0,
+                "needs": ["tier_visual"],
+                "evidence_refs": ["beat_action_intents[0].intents[0]"],
+            }
+        ],
+    }
+
+    cards = _prepped_beat_cards(payload)
+    priors = _prepped_live_priors(payload)
+
+    assert cards[0]["prepared_artifact_ref"] == artifact_ref["ref"]
+    assert cards[0]["action_intent_kinds"] == ["tier_chart"]
+    assert cards[0]["layout_needs"] == ["tier_visual"]
+    assert cards[0]["prior_summary"].startswith("Place Alpha")
+    assert priors[0]["prepared_artifact_ref"] == artifact_ref["ref"]
+    assert priors[0]["text"].startswith("Place Alpha")
+
+
+def test_active_segment_payload_includes_live_prior_proposals() -> None:
+    from agents.hapax_daimonion.programme_loop import _active_segment_payload
+    from shared.programme import ProgrammeContent
+
+    content = ProgrammeContent(
+        delivery_mode="live_prior",
+        segment_beats=["hook"],
+        beat_action_intents=[
+            {
+                "beat_index": 0,
+                "intents": [{"kind": "tier_chart", "expected_effect": "tier_chart.place:X:S"}],
+            }
+        ],
+        beat_cards=[
+            {
+                "beat_index": 0,
+                "title": "hook",
+                "prior_summary": "Prepared prior, not script authority.",
+                "action_intent_kinds": ["tier_chart"],
+                "layout_needs": ["tier_visual"],
+            }
+        ],
+        live_priors=[
+            {
+                "prior_id": "prepared-script-beat-1",
+                "beat_index": 0,
+                "text": "Prepared prior excerpt.",
+            }
+        ],
+    )
+    active = SimpleNamespace(
+        programme_id="prog-live",
+        actual_started_at=123.0,
+        planned_duration_s=600.0,
+        topic="topic",
+        content=content,
+    )
+
+    payload = _active_segment_payload(active, "tier_list", 0)
+
+    assert payload["delivery_mode"] == "live_prior"
+    assert payload["current_beat_action_intents"][0]["beat_index"] == 0
+    assert payload["current_beat_cards"][0]["prior_summary"].startswith("Prepared prior")
+    assert payload["current_beat_live_priors"][0]["text"] == "Prepared prior excerpt."
+
+
+def test_programme_loop_checks_beat_transition_once_per_tick() -> None:
+    from pathlib import Path
+
+    source = Path("agents/hapax_daimonion/programme_loop.py").read_text(encoding="utf-8")
+
+    assert source.count("check_beat_transition(active)") == 1

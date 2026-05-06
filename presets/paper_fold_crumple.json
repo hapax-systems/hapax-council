@@ -16,15 +16,15 @@
     "emboss_crumple": {
       "type": "emboss",
       "params": {
-        "amount": 0.42,
+        "strength": 0.42,
         "angle": 30
       }
     },
     "displacement_crumple": {
       "type": "displacement_map",
       "params": {
-        "amount": 0.14,
-        "scale": 0.65
+        "strength_x": 0.14,
+        "strength_y": 0.65
       }
     },
     "grain_paper": {

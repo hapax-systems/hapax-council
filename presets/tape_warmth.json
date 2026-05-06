@@ -16,22 +16,21 @@
     "warp_flutter": {
       "type": "warp",
       "params": {
-        "amplitude": 0.012,
-        "frequency": 0.4,
-        "speed": 0.18
+        "slice_amplitude": 0.012,
+        "slice_count": 0.4,
+        "breath": 0.18
       }
     },
     "feedback_warm": {
       "type": "feedback",
       "params": {
-        "amount": 0.18,
         "decay": 0.94
       }
     },
     "vignette": {
       "type": "vignette",
       "params": {
-        "intensity": 0.3,
+        "strength": 0.3,
         "radius": 0.78
       }
     },

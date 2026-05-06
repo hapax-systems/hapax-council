@@ -16,22 +16,19 @@
     "ascii_glyph": {
       "type": "ascii",
       "params": {
-        "scale": 0.02,
-        "char_set_size": 16
+        "cell_size": 0.02
       }
     },
     "dither_arcane": {
       "type": "dither",
       "params": {
-        "amount": 0.32,
-        "palette_size": 8
+        "color_levels": 0.32
       }
     },
     "edge_arcane": {
       "type": "edge_detect",
       "params": {
-        "threshold": 0.22,
-        "amount": 0.4
+        "threshold": 0.22
       }
     },
     "out": {

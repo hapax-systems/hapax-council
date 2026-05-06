@@ -11,7 +11,7 @@ uniform float u_color_b;
 uniform float u_color_a;
 uniform float u_scale;
 uniform float u_time;
-float hash(vec2 p) {
+float hash(vec2 p) {
     p = fract(p * vec2(0.1031, 0.1030));
     p += dot(p, p.yx + 33.33);
     return fract((p.x + p.y) * p.x);

@@ -1,13 +1,19 @@
 {
   "name": "Thermal IR",
   "description": "FLIR iron bow thermography",
-  "tags": ["electric", "detail", "macro"],
+  "tags": [
+    "electric",
+    "detail",
+    "macro"
+  ],
   "transition_ms": 500,
   "nodes": {
     "thermal": {
       "type": "thermal",
       "params": {
-        "edge_glow": 0.6
+        "edge_glow": 0.6,
+        "intensity": 0.4,
+        "palette": 0.0
       }
     },
     "colorgrade": {

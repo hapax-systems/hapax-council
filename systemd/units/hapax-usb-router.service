@@ -1,5 +1,5 @@
 [Unit]
-Description=Hapax L-12 USB Router (forces stereo apps to RL/RR)
+Description=Hapax audio link-map bootstrap (MPC Live III baseline)
 After=pipewire.service wireplumber.service
 Requires=pipewire.service wireplumber.service
 BindsTo=pipewire.service

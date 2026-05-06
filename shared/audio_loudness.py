@@ -71,7 +71,7 @@ DUCK_LOOKAHEAD_MS: float = 5.0
 # the release time here for tunability. 50 ms = quick recovery on
 # transient catches without audible pumping on sustained content.
 MASTER_LIMITER_LOOKAHEAD_MS: float = 5.0
-MASTER_LIMITER_RELEASE_MS: float = 50.0
+MASTER_LIMITER_RELEASE_MS: float = 500.0
 
 # Master input makeup gain (Phase 1.5 calibration, recalibrated 2026-05-02).
 #
@@ -100,7 +100,7 @@ MASTER_LIMITER_RELEASE_MS: float = 50.0
 # downstream stages, and stays well within the LADSPA accepted range.
 # Phase 3 per-source pre-normalizers will replace this single constant
 # with proper per-source LUFS targeting.
-MASTER_INPUT_MAKEUP_DB: float = 14.0
+MASTER_INPUT_MAKEUP_DB: float = 8.0
 
 # ── Per-source line-output ceiling for L-12 USB return (Phase 1.5) ────
 #

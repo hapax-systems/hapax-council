@@ -117,15 +117,24 @@ outline.
       },
       "content": {
         "narrative_beat": "<1-2 sentence direction for the narrative director>",
+        "hosting_context": "hapax_responsible_live",
+        "authority": "prior_only",
         "segment_beats": [
           "hook: <what to open with — topic frame, why it matters NOW>",
           "item_N: <beat-by-beat directions, NOT scripted lines>",
           "close: <how to land the segment — chat invite, tease next>"
         ],
-        "segment_cues": [
-          "camera.hero tight, captions foreground",
-          "transition.cut between items, gem.emphasis stamp",
-          "composition.reframe wide, mood.tone_pivot warm"
+        "beat_layout_intents": [
+          {
+            "beat_id": "hook",
+            "action_intent_kinds": ["show_evidence"],
+            "needs": ["evidence_visible"],
+            "proposed_postures": ["asset_front"],
+            "expected_effects": ["evidence_on_screen"],
+            "evidence_refs": ["vault:<specific-source-note-or-rag-hit>"],
+            "source_affordances": ["asset:<specific-visual-or-source-card>"],
+            "default_static_success_allowed": false
+          }
         ]
       },
       "ritual": {
@@ -144,12 +153,13 @@ outline.
 }
 ```
 
-**segment_beats and segment_cues** — For segmented-content roles
-(tier_list, top_10, rant, react, iceberg, interview, lecture), you
-MUST emit `segment_beats`. These are the show rundown — an ordered
-list of beat directions the director advances through. Each beat is
-a DIRECTION for what to deliver, NOT a scripted line. The director
-composes spontaneous delivery from assets + perception at each beat.
+**segment_beats and beat_layout_intents** — For segmented-content
+roles (tier_list, top_10, rant, react, iceberg, interview, lecture),
+you MUST emit `segment_beats` and proposal-only `beat_layout_intents`.
+These are the show rundown plus the layout responsibility proposal for
+each beat. Each beat is a DIRECTION for what to deliver, NOT a
+scripted line. The layout intents say what needs to be seen or done for
+that beat to be responsible; they are proposals, not runtime authority.
 
 ### Segment beat structure (MANDATORY for segmented-content roles)
 
@@ -192,46 +202,47 @@ thought about this topic before, not encountering it for the first
 time. Draw on operator profile facts, prior corrections, and
 vault notes to compose a take — not just a summary.
 
-### segment_cues — compositor control vocabulary
+### Layout responsibility — proposal only
 
-`segment_cues` is paired 1:1 with `segment_beats`. Each cue tells the
-compositor what to do visually when that beat activates. Available
-compositor capabilities:
+responsible layout is a witnessed runtime control loop, not a template
+choice. Prepared programme metadata proposes layout needs and expected
+visible effects. The runtime resolver, using current LayoutState and
+readbacks, decides and receipts the concrete layout action.
 
-**Camera**: `camera.hero tight` (close-up), `camera.hero wide` (pull back),
-`camera.hero standard` (default framing)
+For each beat, emit a `beat_layout_intents` entry with:
+- `beat_id`: matches the corresponding segment beat id/prefix.
+- `action_intent_kinds`: use only `narrate`, `show_evidence`,
+  `demonstrate_action`, `compare_referents`, `cite_source`,
+  `read_detail`.
+- `needs`: use only `evidence_visible`, `action_visible`,
+  `comparison_visible`, `ranked_list_visible`, `source_visible`,
+  `readability_held`, `referent_visible`.
+- `proposed_postures`: use only `segment_primary`, `ranked_visual`,
+  `countdown_visual`, `depth_visual`, `chat_prompt`, `asset_front`,
+  `comparison`.
+- `expected_effects`: use only `evidence_on_screen`,
+  `action_on_screen`, `comparison_legible`, `ranked_list_legible`,
+  `source_context_legible`, `detail_readable`, `referent_available`.
+- `evidence_refs`: cite specific source notes, RAG hits, resolver ids,
+  profile facts, or asset ids. Do not leave this generic.
+- `source_affordances`: name the source affordance class or asset class,
+  not a concrete runtime surface.
+- `default_static_success_allowed`: always `false` for responsible live
+  segments.
+- Do not emit camera-directed source affordances or camera postures for
+  responsible live segments. Camera control is not accepted as segment prep
+  authority until a witnessed runtime camera loop owns the decision and
+  readback. Prefer `asset_front`, `ranked_visual`, `countdown_visual`,
+  `depth_visual`, `chat_prompt`, `comparison`, or `segment_primary`.
 
-**Assets — FRONT something**: `front.youtube <url>` (play a YouTube video),
-`front.homage <name>` (bring an homage to foreground),
-`front.image <url>` (display an image), `front.glyph <text>` (display text/glyph),
-`front.cam` (bring camera to foreground)
-
-**Depth**: `scrim.push` (push current content deeper into background),
-`scrim.pull` (bring content forward from background)
-
-**Composition**: `composition.reframe wide|tight|standard`,
-`mood.tone_pivot warm|cool|neutral|intense`
-
-**Transitions**: `transition.cut` (hard cut), `transition.dissolve` (soft blend)
-
-**GEM overlays**: `gem.emphasis stamp <text>` (overlay emphasis glyph),
-`gem.spawn` (trigger GEM animation)
-
-**React-specific media control**: For react segments, use these cues:
-- `front.youtube <url>, media.play` — start playing the source
-- `media.pause` — pause source for react commentary
-- `media.resume` — resume source after commentary
-
-Example segment_cues for a react segment:
-```
-["front.youtube https://..., camera.hero standard",
- "media.play",
- "media.pause, camera.hero tight",
- "media.resume",
- "media.pause, camera.hero tight, gem.emphasis stamp 'KEY POINT'",
- "media.resume",
- "media.pause, camera.hero wide, scrim.push"]
-```
+Never emit executable compositor directives, final layout names, pixel
+geometry, control-file paths, concrete runtime surfaces, or cue strings.
+Do not use presence-only or spoken-only labels as layout needs. A
+responsible live segment must have actual visual/action needs; a
+purely spoken prepared artifact is invalid. Do not emit
+`layout_decision_contract` or `runtime_layout_validation`; runtime code
+owns policy and readback requirements. If an adapter asks whether layout
+commands are allowed, the only valid value is `"may_command_layout": false`.
 
 ### segment_beat_durations — programming the pacing
 
@@ -267,13 +278,27 @@ Example for a 10-minute (600s) rant:
     "close: Acknowledge nuance. Invite pushback. Tease next topic."
   ],
   "segment_beat_durations": [40, 90, 120, 150, 120, 80],
-  "segment_cues": [
-    "camera.hero tight, mood.tone_pivot sharp",
-    "composition.reframe standard",
-    "camera.hero wide, mood.tone_pivot intense",
-    "camera.hero tight, scrim.push",
-    "gem.emphasis stamp 'HERE IT IS', camera.hero tight",
-    "camera.hero wide, mood.tone_pivot warm, scrim.pull"
+  "beat_layout_intents": [
+    {
+      "beat_id": "hook",
+      "action_intent_kinds": ["show_evidence"],
+      "needs": ["evidence_visible"],
+      "proposed_postures": ["asset_front"],
+      "expected_effects": ["evidence_on_screen"],
+      "evidence_refs": ["vault:example-trigger-note"],
+      "source_affordances": ["asset:source-card"],
+      "default_static_success_allowed": false
+    },
+    {
+      "beat_id": "peak",
+      "action_intent_kinds": ["demonstrate_action", "cite_source"],
+      "needs": ["action_visible", "source_visible"],
+      "proposed_postures": ["segment_primary", "asset_front"],
+      "expected_effects": ["action_on_screen", "source_context_legible"],
+      "evidence_refs": ["rag:example-proof-point"],
+      "source_affordances": ["asset:evidence-card", "asset:programme-context"],
+      "default_static_success_allowed": false
+    }
   ]
 }
 ```
@@ -286,7 +311,7 @@ alternates between long watch segments and short intense reactions.
 Program the beats like a director programs scenes — every choice in
 duration communicates urgency, importance, and energy.
 
-For operator-context roles, omit all three segment fields.
+For operator-context roles, omit the segmented-content fields.
 
 Segments exist to GROUND Hapax in real content. Available sources:
 - **253k+ documents** in the RAG store (Qdrant `documents` collection)
@@ -294,7 +319,8 @@ Segments exist to GROUND Hapax in real content. Available sources:
 - **YouTube content** via the content-resolver daemon — any public
   YouTube video can be resolved, referenced, and reacted to. The
   operator's curated playlist is available for topical inspiration.
-  For `react` segments, use `front.youtube <url>` cues.
+  For `react` segments, cite the resolved media id in `evidence_refs`
+  and propose source/media visibility through `beat_layout_intents`.
 - **Vault notes** spanning literature, permanent notes, bookmarks,
   stream overlays, project documentation, and personal areas
 - **Profile facts** (20 curated operator positions), **operator

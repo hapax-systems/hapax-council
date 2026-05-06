@@ -23,16 +23,16 @@
     "warp_pulse": {
       "type": "warp",
       "params": {
-        "amplitude": 0.026,
-        "frequency": 1.8,
-        "speed": 0.6
+        "slice_amplitude": 0.026,
+        "slice_count": 1.8,
+        "breath": 0.6
       }
     },
     "breathing_carrier": {
       "type": "breathing",
       "params": {
-        "frequency": 1.1,
-        "depth": 0.22
+        "rate": 1.1,
+        "amplitude": 0.22
       }
     },
     "out": {

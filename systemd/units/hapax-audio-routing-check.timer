@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic audio routing invariant check (every 5 min)
+After=pipewire.service
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=300
+Persistent=false
+
+[Install]
+WantedBy=timers.target

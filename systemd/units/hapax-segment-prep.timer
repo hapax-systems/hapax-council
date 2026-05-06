@@ -1,10 +1,11 @@
 [Unit]
-Description=Hapax daily segment prep timer — runs at 04:00 UTC daily
+Description=Hapax daily segment prep timer - Command-R-only prepared artifacts
 
 [Timer]
 OnCalendar=*-*-* 04:00:00 UTC
 Persistent=true
 RandomizedDelaySec=300
+Unit=hapax-segment-prep.service
 
 [Install]
 WantedBy=timers.target

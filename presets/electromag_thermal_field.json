@@ -17,22 +17,21 @@
       "type": "thermal",
       "params": {
         "intensity": 0.55,
-        "palette": "cool"
+        "palette": 1.0
       }
     },
     "particle_field": {
       "type": "particle_system",
       "params": {
-        "count": 200,
-        "speed": 0.45,
+        "emit_rate": 200,
         "lifetime": 1.2
       }
     },
     "displacement_field": {
       "type": "displacement_map",
       "params": {
-        "amount": 0.12,
-        "scale": 0.8
+        "strength_x": 0.12,
+        "strength_y": 0.8
       }
     },
     "out": {

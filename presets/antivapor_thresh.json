@@ -16,15 +16,14 @@
     "threshold_bin": {
       "type": "threshold",
       "params": {
-        "threshold": 0.5,
-        "smoothness": 0.1
+        "level": 0.5,
+        "softness": 0.1
       }
     },
     "halftone_grid": {
       "type": "halftone",
       "params": {
-        "scale": 0.012,
-        "angle": 45
+        "dot_size": 0.012
       }
     },
     "posterize_mono": {

@@ -16,23 +16,20 @@
     "feedback_chamber": {
       "type": "feedback",
       "params": {
-        "amount": 0.62,
         "decay": 0.91
       }
     },
     "trail_chamber": {
       "type": "trail",
       "params": {
-        "decay": 0.88,
-        "amount": 0.4
+        "fade": 0.88,
+        "opacity": 0.4
       }
     },
     "echo_chamber": {
       "type": "echo",
       "params": {
-        "delay": 0.32,
-        "feedback": 0.42,
-        "wet": 0.3
+        "decay_curve": 0.42
       }
     },
     "out": {
