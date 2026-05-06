@@ -39,11 +39,12 @@ def check_doc_freshness() -> list[DriftItem]:
                         last_lines = f.read().decode("utf-8", errors="replace").strip().splitlines()
                         if last_lines:
                             entry = json.loads(last_lines[-1])
-                            ts = entry.get("timestamp", "")
-                            if ts:
-                                dt = datetime.fromisoformat(ts)
-                                if latest_system_change is None or dt > latest_system_change:
-                                    latest_system_change = dt
+                            if isinstance(entry, dict):
+                                ts = entry.get("timestamp", "")
+                                if ts:
+                                    dt = datetime.fromisoformat(ts)
+                                    if latest_system_change is None or dt > latest_system_change:
+                                        latest_system_change = dt
             except (OSError, json.JSONDecodeError, ValueError):
                 pass
 
