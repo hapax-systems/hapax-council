@@ -273,6 +273,41 @@ class TestFileEmptyGate:
         z.tick()
         assert called["folder"] == 1
 
+    @pytest.mark.parametrize(
+        "whitespace,kind",
+        [
+            ("\n", "single newline"),
+            ("\n\n\n", "blank lines"),
+            ("   ", "spaces only"),
+            ("\t\t", "tabs only"),
+            (" \t \n", "mixed whitespace"),
+        ],
+    )
+    def test_render_skips_whitespace_only_pango_markup(self, whitespace: str, kind: str) -> None:
+        """Render path must skip whitespace-only ``_pango_markup``.
+
+        An ANSI file consisting only of whitespace (``ansi_to_pango``
+        does not strip its output) or a repo entry whose body parses
+        to whitespace-only markup previously passed the render gate's
+        truthiness check and triggered ``_rebuild_surface`` plus a
+        Cairo paint every frame even though nothing visible renders.
+        Skipping the rebuild + paint is wasted work prevention; the
+        visible result is identical."""
+        from agents.studio_compositor.overlay_zones import OverlayZone
+
+        z = OverlayZone({"id": "z", "folder": "/tmp", "x": 0, "y": 0})
+        z._pango_markup = whitespace
+        rebuild_calls = {"n": 0}
+
+        def fake_rebuild(_cr) -> None:  # noqa: ANN001
+            rebuild_calls["n"] += 1
+
+        z._rebuild_surface = fake_rebuild  # type: ignore[method-assign]
+        z.render(cr=None, canvas_w=1920, canvas_h=1080)
+        assert rebuild_calls["n"] == 0, (
+            f"whitespace-only ({kind}) markup must not trigger surface rebuild"
+        )
+
     def test_path_user_expansion(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         """``~`` in the gate path is expanded at construction time."""
         from agents.studio_compositor.overlay_zones import OverlayZone
