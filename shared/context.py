@@ -150,10 +150,20 @@ class ContextAssembler:
         self._cache = None
 
     def _read_stimmung_raw(self) -> dict:
+        """Read stimmung state as a dict, or {} on any failure.
+
+        Validates the JSON root is a mapping. ``snapshot()`` /
+        ``assemble()`` immediately call ``stimmung_raw.get("overall_stance",
+        "nominal")`` on the returned value — a writer producing valid
+        JSON whose root is null, a list, a string, or a number
+        previously raised AttributeError out of the enrichment-context
+        assembly path. Same shape as the other recent SHM-read fixes.
+        """
         try:
-            return json.loads(self._stimmung_path.read_text(encoding="utf-8"))
+            data = json.loads(self._stimmung_path.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return {}
+        return data if isinstance(data, dict) else {}
 
     def _read_dmn_buffer(self) -> list[str]:
         try:
@@ -163,11 +173,19 @@ class ContextAssembler:
             return []
 
     def _read_imagination(self) -> list[dict]:
+        """Read the imagination fragment as a single-element list, or [].
+
+        Wraps ``[raw]`` only when ``raw`` is a dict — otherwise returns
+        []. Without this guard a non-dict imagination payload (e.g.
+        ``null``, a list, a string) would land in
+        ``imagination_fragments`` as ``[non-dict]`` and crash downstream
+        consumers that call ``fragment.get(...)`` on each element.
+        """
         try:
             raw = json.loads(self._imagination_path.read_text(encoding="utf-8"))
-            return [raw] if raw else []
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return []
+        return [raw] if isinstance(raw, dict) else []
 
     @staticmethod
     def _safe_call(fn, default):

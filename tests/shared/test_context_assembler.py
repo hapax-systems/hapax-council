@@ -59,3 +59,44 @@ class TestCachedAssembly:
         assembler.flush()
         assembler.snapshot()
         assert call_count == 2
+
+
+# ── Defensive readers — non-dict JSON root ─────────────────────────────
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_read_stimmung_raw_non_dict_returns_empty(tmp_path, payload, kind):
+    """Pin _read_stimmung_raw against non-dict JSON. snapshot() and
+    assemble() immediately call stimmung_raw.get('overall_stance') —
+    a non-dict root previously raised AttributeError out of the
+    enrichment-context assembly path."""
+    stimmung_path = tmp_path / "stimmung.json"
+    stimmung_path.write_text(payload)
+    assembler = ContextAssembler(stimmung_path=stimmung_path)
+    snap = assembler.snapshot()
+    # Default stance is "nominal" when stimmung_raw is empty.
+    assert snap.stimmung_stance == "nominal", f"non-dict root={kind} must yield default"
+    assert snap.stimmung_raw == {}
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_read_imagination_non_dict_yields_empty_list(tmp_path, payload, kind):
+    """Pin _read_imagination: non-dict imagination payload should yield
+    an empty list, not [non-dict] which would crash downstream
+    fragment.get(...) consumers."""
+    imagination_path = tmp_path / "imagination.json"
+    imagination_path.write_text(payload)
+    assembler = ContextAssembler(imagination_path=imagination_path)
+    snap = assembler.snapshot()
+    assert snap.imagination_fragments == [], (
+        f"non-dict root={kind} must yield empty list (not [non-dict])"
+    )
