@@ -518,10 +518,10 @@
       "id": "obsidian-overlay-region",
       "geometry": {
         "kind": "rect",
-        "x": 40,
-        "y": 200,
-        "w": 1000,
-        "h": 600
+        "x": 400,
+        "y": 820,
+        "w": 1120,
+        "h": 200
       },
       "z_order": 2
     },
