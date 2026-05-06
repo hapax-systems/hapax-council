@@ -380,29 +380,48 @@ class ReactiveEngine:
             self._watcher.ignore_fn(path)
 
     def _read_stimmung_stance(self) -> str:
-        """Read current stimmung stance from /dev/shm. Returns 'nominal' on error or stale data."""
+        """Read current stimmung stance from /dev/shm. Returns 'nominal' on error or stale data.
+
+        Validates the JSON root is a mapping. ``data.get(\"timestamp\", 0)``
+        and ``data.get(\"overall_stance\", \"nominal\")`` are called inside
+        the ``(OSError, json.JSONDecodeError)`` catch — AttributeError on
+        a non-dict root escapes that catch and crashes the reactive
+        engine's stimmung read. Same shape as the other recent SHM-read
+        fixes.
+        """
         import json
 
         stimmung_path = Path("/dev/shm/hapax-stimmung/state.json")
         try:
             data = json.loads(stimmung_path.read_text(encoding="utf-8"))
-            ts = data.get("timestamp", 0)
-            if ts > 0 and (time.time() - ts) > 300:
-                return "nominal"
-            return data.get("overall_stance", "nominal")
         except (OSError, json.JSONDecodeError):
             return "nominal"
+        if not isinstance(data, dict):
+            return "nominal"
+        ts = data.get("timestamp", 0)
+        if ts > 0 and (time.time() - ts) > 300:
+            return "nominal"
+        return data.get("overall_stance", "nominal")
 
     def _read_presence_state(self) -> str:
-        """Read current Bayesian presence state. Returns 'PRESENT' on error (fail-open)."""
+        """Read current Bayesian presence state. Returns 'PRESENT' on error (fail-open).
+
+        Validates the JSON root is a mapping (same shape as
+        :func:`_read_stimmung_stance`). The narrow ``(OSError,
+        json.JSONDecodeError)`` catch missed AttributeError on
+        non-dict roots; failing fail-OPEN to ``\"PRESENT\"`` keeps the
+        reactive engine running through corruption.
+        """
         import json
 
         state_path = Path.home() / ".cache" / "hapax-daimonion" / "perception-state.json"
         try:
             data = json.loads(state_path.read_text(encoding="utf-8"))
-            return data.get("presence_state", "PRESENT") or "PRESENT"
         except (OSError, json.JSONDecodeError):
             return "PRESENT"
+        if not isinstance(data, dict):
+            return "PRESENT"
+        return data.get("presence_state", "PRESENT") or "PRESENT"
 
     async def _handle_change(self, event: ChangeEvent) -> None:
         """Core event handler: evaluate rules → execute plan → log results.

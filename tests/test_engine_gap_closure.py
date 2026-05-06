@@ -599,3 +599,53 @@ class TestRuleCount:
         from logos.engine.reactive_rules import ALL_RULES
 
         assert len(ALL_RULES) == 13
+
+
+# ── Defensive SHM-state readers — non-dict JSON root ───────────────────
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_read_stimmung_stance_non_dict_returns_nominal(tmp_path, payload, kind, monkeypatch):
+    """Pin _read_stimmung_stance against non-dict JSON. The
+    data.get('timestamp', 0) call inside (OSError, JSONDecodeError)
+    catch let AttributeError escape on non-dict roots, crashing the
+    reactive engine's stimmung read."""
+    from logos.engine import ReactiveEngine
+
+    engine = ReactiveEngine(data_dir=tmp_path, watch_paths=[tmp_path], debounce_ms=100)
+    stimmung_path = tmp_path / "stimmung.json"
+    stimmung_path.write_text(payload)
+    with patch("logos.engine.Path") as MockPath:
+        MockPath.return_value = stimmung_path
+        result = engine._read_stimmung_stance()
+    assert result == "nominal", f"non-dict root={kind} must yield nominal"
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_read_presence_state_non_dict_returns_present(tmp_path, payload, kind, monkeypatch):
+    """Pin _read_presence_state against non-dict JSON. Fails fail-OPEN
+    to PRESENT — keeps reactive engine running through corruption
+    rather than blocking on a presumed-AWAY operator."""
+    from logos.engine import ReactiveEngine
+
+    engine = ReactiveEngine(data_dir=tmp_path, watch_paths=[tmp_path], debounce_ms=100)
+    state_path = tmp_path / "presence.json"
+    state_path.write_text(payload)
+    # Patch Path.home() so the engine looks at our tmp file.
+    with patch("logos.engine.Path") as MockPath:
+        MockPath.home.return_value = tmp_path / "home"
+        # Build the same path the engine constructs: home/.cache/hapax-daimonion/perception-state.json
+        target = tmp_path / "home" / ".cache" / "hapax-daimonion" / "perception-state.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(payload)
+        # The engine builds the path freshly each call, so configure MockPath
+        # to behave like Path() for path construction.
+        MockPath.side_effect = lambda *args: Path(*args) if args else target
+        result = engine._read_presence_state()
+    assert result == "PRESENT", f"non-dict root={kind} must fail-open to PRESENT"
