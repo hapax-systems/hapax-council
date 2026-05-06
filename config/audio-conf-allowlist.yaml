@@ -73,6 +73,25 @@ orphans:
   - hapax-backing-ducked-sidechain.conf  # renamed 2026-05-03 from ytube-over-24c-duck.conf (24c retirement)
   - hapax-voice-over-ytube-duck.conf
 
+  # MPC Live III TTS broadcast tap. Software ducker retired (MPC owns
+  # ducking). hapax-loudnorm → hapax-livestream-tap loopback keeps
+  # broadcast TTS audible when the hardware MPC/L-12 return path is
+  # not represented as a simple PipeWire edge. Operator-authorized
+  # 2026-05-05 as part of antigrav 8h MPC-III topology rebaseline.
+  # Distinct from .disabled-bypass file (unchanged; MUST stay disabled).
+  - hapax-tts-broadcast-tap.conf
+
+  # Pre-existing software-ducker remnants — superseded by MPC Live III
+  # hardware ducking 2026-05-03. Files kept on disk for rollback only;
+  # no yaml chain because they're functionally retired. Do not re-enable.
+  - hapax-music-duck.conf  # software music ducker (retired)
+  - hapax-tts-duck.conf  # software TTS ducker (retired)
+
+  # Polyend Tracker loudnorm — operator-curated input chain, not
+  # part of the broadcast yaml graph (Tracker output routes to
+  # operator monitor only).
+  - hapax-polyend-loudnorm.conf
+
 known_missing:
   # tts-loudnorm + ytube-ducked are declared in audio-topology.yaml
   # with chain_kind set, but no `hapax-*.conf` exists yet. Tracked
