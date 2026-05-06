@@ -6,13 +6,14 @@
 # ZOOM (1686) — LiveTrak L-6/L-12
 # Rode (19f7) — Wireless Pro + charge cases
 # Zoom MIDI (381a) — Erica Synths (uses 381a not 1686 despite being audio)
-# Torso Electronics (1fc9 / alt) — S-4
+# Polyend / Torso-class USB instruments (1fc9) — activity reveal + S-4 alt VID
 
 ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="046d", ATTR{power/control}="on"
 ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="b58e", ATTR{power/control}="on"
 ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1686", ATTR{power/control}="on"
 ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="19f7", ATTR{power/control}="on"
 ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="381a", ATTR{power/control}="on"
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1fc9", ATTR{power/control}="on"
 
 # Catch-all for any USB interface that declares Audio or Video class
 # (fallback if vendor match misses something new).

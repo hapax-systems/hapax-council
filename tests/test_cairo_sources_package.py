@@ -28,6 +28,7 @@ class TestCairoSourcesRegistry:
         assert "TokenPoleCairoSource" in names
         assert "AlbumOverlayCairoSource" in names
         assert "SierpinskiCairoSource" in names
+        assert "PolyendInstrumentReveal" in names
 
     def test_lookup_returns_a_cairo_source_subclass(self):
         cls = get_cairo_source_class("TokenPoleCairoSource")

@@ -74,6 +74,7 @@ FAIL_CLOSED_POLICY = {
 }
 
 _BANNED_PRODUCERS = frozenset({"parallel_vision_stack", "standalone_camera_classifier"})
+_DEFAULT_APERTURE_OUTCOME_MEAN = 2.0 / 3.0
 
 
 class CameraSalienceError(ValueError):
@@ -601,6 +602,7 @@ class CameraSalienceBroker:
         query: CameraSalienceQuery,
         *,
         priors: dict[str, float] | None = None,
+        aperture_success_priors: dict[str, float] | None = None,
         generated_at: str | None = None,
     ) -> CameraSalienceBundle:
         now = generated_at or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -628,7 +630,12 @@ class CameraSalienceBroker:
             self._posterior_for_hypothesis(hypothesis, row_pairs, priors or {})
             for hypothesis, row_pairs in sorted(rows_by_hypothesis.items())
         )
-        ranked = self._rank_posteriors(query, posterior_summary, rows_by_hypothesis)
+        ranked = self._rank_posteriors(
+            query,
+            posterior_summary,
+            rows_by_hypothesis,
+            aperture_success_priors or {},
+        )
         selected_ranked = tuple(row for row in ranked if row.value_of_information.selected)
         evidence_refs = tuple(
             dict.fromkeys(ref for row in selected_ranked for ref in row.evidence_refs)
@@ -708,6 +715,7 @@ class CameraSalienceBroker:
         query: CameraSalienceQuery,
         posterior_summary: tuple[CameraSaliencePosterior, ...],
         rows_by_hypothesis: dict[str, list[tuple[CameraEvidenceRow, CameraObservationEnvelope]]],
+        aperture_success_priors: dict[str, float],
     ) -> tuple[RankedCameraObservation, ...]:
         ranked: list[RankedCameraObservation] = []
         rank = 1
@@ -723,6 +731,7 @@ class CameraSalienceBroker:
                 posterior,
                 first_observation,
                 self.apertures[first_observation.aperture_id],
+                aperture_success_priors.get(first_observation.aperture_id),
             )
             if not voi.selected:
                 continue
@@ -1038,10 +1047,13 @@ def _value_of_information(
     posterior: CameraSaliencePosterior,
     observation: CameraObservationEnvelope,
     aperture: ObservationAperture,
+    aperture_success_prior: float | None = None,
 ) -> ValueOfInformation:
     decision_change = max(0.0, posterior.posterior - query.min_posterior)
     decision_change *= max(0.0, 1.0 - posterior.uncertainty * 0.35)
-    utility = _consumer_utility(query.consumer)
+    utility = _consumer_utility(query.consumer) * _aperture_success_multiplier(
+        aperture_success_prior
+    )
     sensing_cost = aperture.resource_cost * 0.08
     latency_cost = (
         min(1.0, aperture.latency_cost_ms / max(1, query.time_budget_ms)) * 0.20
@@ -1168,6 +1180,13 @@ def _consumer_utility(consumer: ConsumerKind) -> float:
         ConsumerKind.ARCHIVE: 0.75,
         ConsumerKind.VISUAL_VARIANCE: 0.80,
     }[consumer]
+
+
+def _aperture_success_multiplier(aperture_success_prior: float | None) -> float:
+    if aperture_success_prior is None:
+        return 1.0
+    success_prior = _clamp_probability(aperture_success_prior)
+    return max(0.25, min(1.5, success_prior / _DEFAULT_APERTURE_OUTCOME_MEAN))
 
 
 def _posterior_uncertainty(

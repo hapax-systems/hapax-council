@@ -22,7 +22,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -322,23 +322,28 @@ def dispatch_preset_bias(capability_name: str, ttl_s: float) -> bool:
 
 @observe_dispatch("node.patch")
 def dispatch_node_patch(capability_name: str, ttl_s: float) -> bool:
-    """node.add.<type> | node.remove.<id> → recent-recruitment.json.
+    """node.<primitive>.<suffix> → recent-recruitment.json.
 
     Architectural fix per memory ``feedback_no_presets_use_parametric_modulation``:
-    the chain-composition primitive (add/remove a specific shader node)
-    is the architecturally-correct mutation path, parallel to preset.bias
-    but finer-grained. The graph_patch_consumer reads this file and
-    applies the resulting ``GraphPatch`` to the live ``EffectGraph``.
+    chain-composition primitives are the architecturally-correct mutation
+    path, parallel to preset.bias but finer-grained. The graph_patch_consumer
+    reads this file and applies the resulting ``GraphPatch`` to the live
+    ``EffectGraph``.
 
     Each recruitment is appended to a per-family ``items`` list under
-    the family key so multiple add / remove recruitments within the
-    cooldown coalesce into a single patch when the consumer fires.
+    the family key so multiple node recruitments within the cooldown
+    coalesce into a single patch when the consumer fires.
     """
     parts = capability_name.split(".", 2)
-    if len(parts) < 3 or parts[0] != "node" or parts[1] not in ("add", "remove"):
+    primitive = parts[1] if len(parts) >= 2 else ""
+    if (
+        len(parts) < 3
+        or parts[0] != "node"
+        or primitive not in ("add", "remove", "compose", "fork", "merge", "route")
+    ):
         log.warning("malformed node-patch name: %s", capability_name)
         return False
-    family = f"node.{parts[1]}"
+    family = f"node.{primitive}"
     suffix = parts[2]
     if not suffix:
         log.warning("node-patch capability has empty suffix: %s", capability_name)
@@ -1142,6 +1147,45 @@ _COMPOSITION_STATE = Path("/dev/shm/hapax-compositor/composition-state.json")
 _PACE_STATE = Path("/dev/shm/hapax-compositor/pace-state.json")
 _MOOD_STATE = Path("/dev/shm/hapax-compositor/mood-state.json")
 _PROGRAMME_ADVANCE_INTENT = Path("/dev/shm/hapax-compositor/programme-advance-intent.json")
+_PARAMETRIC_ENVELOPES = Path("/dev/shm/hapax-compositor/parametric-envelopes.json")
+
+_VISUAL_CHAIN_DIMENSION_FALLBACK: tuple[str, ...] = (
+    "visual_chain.intensity",
+    "visual_chain.tension",
+    "visual_chain.diffusion",
+    "visual_chain.degradation",
+    "visual_chain.depth",
+    "visual_chain.pitch_displacement",
+    "visual_chain.temporal_distortion",
+    "visual_chain.spectral_color",
+    "visual_chain.coherence",
+)
+
+_INTENSITY_SURGE_LEVELS: dict[str, float] = {
+    "lift": 0.65,
+    "crest": 0.85,
+}
+
+_SILENCE_INVITATION_LEVELS: dict[str, float] = {
+    "soft": 0.12,
+    "hold": 0.0,
+}
+
+_CHROME_DENSITY_LEVELS: dict[str, float] = {
+    "sparser": 0.25,
+    "baseline": 0.50,
+    "denser": 0.75,
+}
+
+_ATTENTION_REFOCUS_TARGETS: dict[str, str | None] = {
+    "overhead": "c920-overhead",
+    "synths-brio": "brio-synths",
+    "operator-brio": "brio-operator",
+    "desk-c920": "c920-desk",
+    "room-c920": "c920-room",
+    "room-brio": "brio-room",
+    "reset": None,
+}
 
 
 def _capability_variant(capability_name: str, family_prefix: str) -> str:
@@ -1150,6 +1194,121 @@ def _capability_variant(capability_name: str, family_prefix: str) -> str:
     if capability_name.startswith(prefix):
         return capability_name[len(prefix) :].split(".", 1)[0]
     return ""
+
+
+def _clamp_float(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, float(value)))
+
+
+def _visual_chain_dimension_names() -> tuple[str, ...]:
+    """Return the canonical nine visual-chain dimensions, fail-safe to static names."""
+    try:
+        from agents.visual_chain import VISUAL_DIMENSIONS
+
+        names = tuple(VISUAL_DIMENSIONS.keys())
+        if names:
+            return names
+    except Exception:
+        log.debug("visual-chain dimension import failed; using fallback", exc_info=True)
+    return _VISUAL_CHAIN_DIMENSION_FALLBACK
+
+
+def _bounded_scalar_target(
+    key: str,
+    target: float,
+    *,
+    lower: float = 0.0,
+    upper: float = 1.0,
+    smoothness: float = 0.05,
+) -> dict[str, object]:
+    """Describe a bounded non-node target for a parametric envelope."""
+    clipped = _clamp_float(target, lower, upper)
+    return {
+        "kind": "scalar",
+        "key": key,
+        "target": clipped,
+        "min": lower,
+        "max": upper,
+        "smoothness": smoothness,
+    }
+
+
+def _bounded_node_target(key: str, target: float) -> dict[str, object]:
+    """Describe a bounded Reverie node-param target using shared envelopes."""
+    try:
+        from shared.parameter_envelopes import envelope_by_key
+
+        envelope = envelope_by_key(key)
+    except Exception:
+        log.debug("parameter envelope lookup failed for %s", key, exc_info=True)
+        envelope = None
+    if envelope is None:
+        return _bounded_scalar_target(key, target)
+    return {
+        "kind": "node_param",
+        "key": key,
+        "target": envelope.clip(target),
+        "min": envelope.min_value,
+        "max": envelope.max_value,
+        "smoothness": envelope.smoothness,
+    }
+
+
+def _dimension_targets(level: float) -> dict[str, dict[str, object]]:
+    """Build a target entry for all nine visual-chain dimensions."""
+    return {
+        name: _bounded_scalar_target(name, level, smoothness=0.12)
+        for name in _visual_chain_dimension_names()
+    }
+
+
+def _write_parametric_envelope(
+    family: str,
+    capability_name: str,
+    ttl_s: float,
+    *,
+    variant: str,
+    dimension_targets: dict[str, dict[str, object]] | None = None,
+    surface_targets: dict[str, dict[str, object]] | None = None,
+    node_params: dict[str, dict[str, object]] | None = None,
+    curve: str = "ease_in_out",
+) -> None:
+    """Upsert a bounded parametric envelope for downstream surface consumers.
+
+    This is intentionally not a preset surface: it records targets, bounds,
+    and a curve for consumers to apply gradually. Stale envelope entries are
+    dropped on every write so the file remains small across long streams.
+    """
+    now = time.time()
+    current = _safe_load_json(_PARAMETRIC_ENVELOPES)
+    envelopes = current.get("envelopes") if isinstance(current, dict) else {}
+    if not isinstance(envelopes, dict):
+        envelopes = {}
+    fresh: dict[str, Any] = {}
+    for key, value in envelopes.items():
+        if not isinstance(value, dict):
+            continue
+        expires_at = value.get("expires_at")
+        if isinstance(expires_at, (int, float)) and float(expires_at) < now:
+            continue
+        fresh[str(key)] = value
+    fresh[family] = {
+        "kind": "parametric_envelope",
+        "family": family,
+        "source_capability": capability_name,
+        "variant": variant,
+        "curve": curve,
+        "ttl_s": ttl_s,
+        "set_at": now,
+        "expires_at": now + ttl_s,
+        "dimension_targets": dimension_targets or {},
+        "surface_targets": surface_targets or {},
+        "node_params": node_params or {},
+    }
+    _atomic_write_json(
+        _PARAMETRIC_ENVELOPES,
+        {"envelopes": fresh, "updated_at": now},
+    )
 
 
 # Tempo multiplier table for pace.tempo_shift. Multipliers are applied
@@ -1258,6 +1417,148 @@ def dispatch_programme_beat_advance(capability_name: str, ttl_s: float) -> bool:
     return True
 
 
+@observe_dispatch("intensity.surge")
+def dispatch_intensity_surge(capability_name: str, ttl_s: float) -> bool:
+    """intensity.surge.* → temporary boost across all visual-chain dimensions."""
+    variant = _capability_variant(capability_name, "intensity.surge") or "lift"
+    level = _INTENSITY_SURGE_LEVELS.get(variant, _INTENSITY_SURGE_LEVELS["lift"])
+    node_params = {
+        "content.intensity": _bounded_node_target("content.intensity", level),
+        "noise.amplitude": _bounded_node_target("noise.amplitude", 0.70 + level * 0.15),
+        "color.brightness": _bounded_node_target("color.brightness", 0.95 + level * 0.25),
+        "color.saturation": _bounded_node_target("color.saturation", 0.75 + level * 0.35),
+        "drift.speed": _bounded_node_target("drift.speed", 0.10 + level * 0.20),
+        "breath.amplitude": _bounded_node_target("breath.amplitude", 0.12 + level * 0.22),
+        "fb.decay": _bounded_node_target("fb.decay", 0.12 + level * 0.22),
+        "post.vignette_strength": _bounded_node_target(
+            "post.vignette_strength", 0.45 - level * 0.20
+        ),
+    }
+    _write_parametric_envelope(
+        "intensity.surge",
+        capability_name,
+        ttl_s,
+        variant=variant,
+        dimension_targets=_dimension_targets(level),
+        node_params=node_params,
+        curve="fast_attack_slow_release",
+    )
+    _mark_recruitment("intensity.surge", extra={"ttl_s": ttl_s, "variant": variant})
+    return True
+
+
+@observe_dispatch("silence.invitation")
+def dispatch_silence_invitation(capability_name: str, ttl_s: float) -> bool:
+    """silence.invitation.* → hold expressive surfaces in a low-activity envelope."""
+    variant = _capability_variant(capability_name, "silence.invitation") or "hold"
+    level = _SILENCE_INVITATION_LEVELS.get(variant, _SILENCE_INVITATION_LEVELS["hold"])
+    surface_targets = {
+        "surface.narration.rate": _bounded_scalar_target(
+            "surface.narration.rate", level, smoothness=0.20
+        ),
+        "surface.motion.cadence": _bounded_scalar_target(
+            "surface.motion.cadence", max(0.10, level), smoothness=0.08
+        ),
+        "chrome.density": _bounded_scalar_target("chrome.density", 0.25, smoothness=0.08),
+    }
+    node_params = {
+        "content.intensity": _bounded_node_target("content.intensity", level),
+        "noise.amplitude": _bounded_node_target("noise.amplitude", 0.42),
+        "color.brightness": _bounded_node_target("color.brightness", 0.74),
+        "color.saturation": _bounded_node_target("color.saturation", 0.45),
+        "drift.speed": _bounded_node_target("drift.speed", 0.02),
+        "breath.amplitude": _bounded_node_target("breath.amplitude", 0.05),
+        "fb.decay": _bounded_node_target("fb.decay", 0.10),
+        "post.vignette_strength": _bounded_node_target("post.vignette_strength", 0.55),
+    }
+    _write_parametric_envelope(
+        "silence.invitation",
+        capability_name,
+        ttl_s,
+        variant=variant,
+        dimension_targets=_dimension_targets(level),
+        surface_targets=surface_targets,
+        node_params=node_params,
+        curve="slow_release_hold",
+    )
+    _mark_recruitment("silence.invitation", extra={"ttl_s": ttl_s, "variant": variant})
+    return True
+
+
+@observe_dispatch("chrome.density")
+def dispatch_chrome_density(capability_name: str, ttl_s: float) -> bool:
+    """chrome.density.* → sparser / denser ward chrome via bounded envelope."""
+    variant = _capability_variant(capability_name, "chrome.density") or "baseline"
+    density = _CHROME_DENSITY_LEVELS.get(variant, _CHROME_DENSITY_LEVELS["baseline"])
+    surface_targets = {
+        "chrome.density": _bounded_scalar_target("chrome.density", density, smoothness=0.08),
+        "ward.chrome.alpha": _bounded_scalar_target(
+            "ward.chrome.alpha", 0.30 + density * 0.65, smoothness=0.08
+        ),
+        "ward.chrome.spacing": _bounded_scalar_target(
+            "ward.chrome.spacing", 1.0 - density * 0.55, smoothness=0.08
+        ),
+    }
+    node_params = {
+        "noise.amplitude": _bounded_node_target("noise.amplitude", 0.45 + density * 0.25),
+        "color.contrast": _bounded_node_target("color.contrast", 0.70 + density * 0.40),
+        "color.brightness": _bounded_node_target("color.brightness", 0.80 + density * 0.20),
+        "post.vignette_strength": _bounded_node_target(
+            "post.vignette_strength", 0.52 - density * 0.22
+        ),
+    }
+    _write_parametric_envelope(
+        "chrome.density",
+        capability_name,
+        ttl_s,
+        variant=variant,
+        surface_targets=surface_targets,
+        node_params=node_params,
+        curve="ease_in_out",
+    )
+    _mark_recruitment("chrome.density", extra={"ttl_s": ttl_s, "variant": variant})
+    return True
+
+
+@observe_dispatch("attention.refocus")
+def dispatch_attention_refocus(capability_name: str, ttl_s: float) -> bool:
+    """attention.refocus.* → soft camera-weight rebalance, not a camera cut."""
+    variant = _capability_variant(capability_name, "attention.refocus") or "reset"
+    focused_role = _ATTENTION_REFOCUS_TARGETS.get(variant)
+    camera_roles = tuple(role for role in _ATTENTION_REFOCUS_TARGETS.values() if role is not None)
+    if focused_role is None:
+        weight_targets = {
+            f"camera.{role}.weight": _bounded_scalar_target(f"camera.{role}.weight", 0.50)
+            for role in camera_roles
+        }
+    else:
+        weight_targets = {
+            f"camera.{role}.weight": _bounded_scalar_target(
+                f"camera.{role}.weight",
+                0.72 if role == focused_role else 0.34,
+                smoothness=0.10,
+            )
+            for role in camera_roles
+        }
+    node_params = {
+        "content.intensity": _bounded_node_target("content.intensity", 0.42),
+        "drift.coherence": _bounded_node_target("drift.coherence", 0.76),
+        "fb.decay": _bounded_node_target("fb.decay", 0.18),
+        "post.vignette_strength": _bounded_node_target("post.vignette_strength", 0.34),
+    }
+    _write_parametric_envelope(
+        "attention.refocus",
+        capability_name,
+        ttl_s,
+        variant=variant,
+        surface_targets=weight_targets,
+        node_params=node_params,
+        curve="soft_crossfade",
+    )
+    _mark_recruitment("attention.refocus", extra={"ttl_s": ttl_s, "variant": variant})
+    return True
+
+
 def dispatch(
     record: RecruitmentRecord,
 ) -> Literal[
@@ -1287,6 +1588,10 @@ def dispatch(
     "pace.tempo_shift",
     "mood.tone_pivot",
     "programme.beat_advance",
+    "intensity.surge",
+    "silence.invitation",
+    "chrome.density",
+    "attention.refocus",
     "node.patch",
     "unknown",
 ]:
@@ -1366,7 +1671,26 @@ def dispatch(
             if dispatch_programme_beat_advance(name, record.ttl_s)
             else "unknown"
         )
-    if name.startswith("node.add.") or name.startswith("node.remove."):
+    if name.startswith("intensity.surge."):
+        return "intensity.surge" if dispatch_intensity_surge(name, record.ttl_s) else "unknown"
+    if name.startswith("silence.invitation."):
+        return (
+            "silence.invitation" if dispatch_silence_invitation(name, record.ttl_s) else "unknown"
+        )
+    if name.startswith("chrome.density."):
+        return "chrome.density" if dispatch_chrome_density(name, record.ttl_s) else "unknown"
+    if name.startswith("attention.refocus."):
+        return "attention.refocus" if dispatch_attention_refocus(name, record.ttl_s) else "unknown"
+    if name.startswith(
+        (
+            "node.add.",
+            "node.remove.",
+            "node.compose.",
+            "node.fork.",
+            "node.merge.",
+            "node.route.",
+        )
+    ):
         return "node.patch" if dispatch_node_patch(name, record.ttl_s) else "unknown"
     log.warning("unknown compositional capability family: %s", name)
     return "unknown"
@@ -1849,6 +2173,10 @@ __all__ = [
     "dispatch_pace_tempo_shift",
     "dispatch_mood_tone_pivot",
     "dispatch_programme_beat_advance",
+    "dispatch_intensity_surge",
+    "dispatch_silence_invitation",
+    "dispatch_chrome_density",
+    "dispatch_attention_refocus",
     "dispatch_node_patch",
     "recent_recruitment_age_s",
 ]

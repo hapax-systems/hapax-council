@@ -49,6 +49,7 @@ from agents.publication_bus.publisher_kit.legal_name_guard import (
     LegalNameLeak,
     assert_no_leak,
 )
+from agents.publication_bus.witness_log import append_publication_witness
 
 log = logging.getLogger(__name__)
 
@@ -249,6 +250,22 @@ class Publisher(ABC):
         if counter is not None:
             label = "ok" if result.ok else ("refused" if result.refused else "error")
             counter.labels(surface=self.surface_name, result=label).inc()
+
+        # Closes cc-task ``witness-rail-publication-log-producer``
+        # (WSJF 9.0). Append one canonical witness row per dispatched
+        # publish so the ``publication-tree-effect`` braid rail
+        # recovers from braid_recomputed=0. Best-effort — writer
+        # failures are swallowed so observability never breaks the
+        # publish path.
+        result_label = "ok" if result.ok else ("refused" if result.refused else "error")
+        try:
+            append_publication_witness(
+                surface=self.surface_name,
+                target=payload.target,
+                result=result_label,
+            )
+        except Exception:  # noqa: BLE001 — best-effort, never breaks publish
+            log.debug("publication_bus: witness append raised", exc_info=True)
 
         return result
 

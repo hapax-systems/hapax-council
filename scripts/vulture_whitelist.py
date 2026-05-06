@@ -741,6 +741,31 @@ SelfPresenceEnvelopeProjection._fail_closed_public_speech
 build_envelope_projection
 render_compact_prompt_block
 
+# Segment layout responsibility contract validators are invoked dynamically by
+# Pydantic while prepared artifacts and runtime receipts are validated. The
+# contract lands before downstream prep/runtime consumers wire it in.
+from agents.hapax_daimonion.segment_layout_contract import (
+    HostingContext as _SegmentLayoutHostingContext,
+)
+from agents.hapax_daimonion.segment_layout_contract import (
+    LayoutDecisionContract as _SegmentLayoutDecisionContract,
+)
+from agents.hapax_daimonion.segment_layout_contract import (
+    PreparedSegmentLayoutContract as _PreparedSegmentLayoutContract,
+)
+from agents.hapax_daimonion.segment_layout_contract import (
+    RuntimeLayoutDecision as _RuntimeLayoutDecision,
+)
+from agents.hapax_daimonion.segment_layout_contract import (
+    SegmentActionIntent as _SegmentLayoutActionIntent,
+)
+
+_SegmentLayoutHostingContext._static_success_requires_explicit_non_responsibility
+_SegmentLayoutActionIntent._visible_action_intents_need_sources
+_SegmentLayoutDecisionContract._bounded_contract_is_complete
+_PreparedSegmentLayoutContract._responsible_hosting_needs_visible_work
+_RuntimeLayoutDecision._decision_ttl_covers_dwell
+
 # Bridge governor validators are invoked dynamically by Pydantic.
 # The evaluator is the sole public path from private to public.
 BridgeResult._no_public_without_authorization
@@ -2499,3 +2524,23 @@ FramedPackage.framed_approach
 from agents.payment_processors.usdc_receiver import USDCReceiver as _UsdcReceiver
 
 _UsdcReceiver.run_forever
+
+# cc-task ``eu-ai-act-art-50-c2pa-watermark-fingerprint-mvp`` (2026-05-05).
+# Pydantic invokes the request validators reflectively, and the webhook
+# receiver/route integration calls the idempotency store through the dispatcher
+# path; vulture's production-only scan cannot see either dynamic call path yet.
+from agents.art_50_provenance.models import Art50CredentialRequest as _Art50CredentialRequest
+from agents.art_50_provenance.webhook import MemoryIdempotencyStore as _Art50IdempotencyStore
+
+_Art50CredentialRequest._no_obvious_pii
+_Art50CredentialRequest._domain_shape
+_Art50IdempotencyStore.accept_once
+
+# cc-task ``auto-clip-shorts-llm-segment-detection`` (2026-05-05).
+# SegmentCandidate.{end_after_start, dedupe_channels} are pydantic
+# field_validator hooks invoked at construction time by pydantic-core,
+# not by direct call sites; vulture cannot see the dispatch.
+from agents.auto_clip.segment_detection import SegmentCandidate as _AutoClipSegmentCandidate
+
+_AutoClipSegmentCandidate._end_after_start
+_AutoClipSegmentCandidate._dedupe_channels

@@ -1405,9 +1405,10 @@ ACTIVITY_CAPABILITIES = (
     "compositional impingements name what the AUDIENCE sees you doing.\n"
     "Operator constraint: NO presets — the director never picks a preset\n"
     "family. Use parametric modulation (mood.tone_pivot, pace.tempo_shift,\n"
-    "composition.reframe) and chain composition (transition.fade,\n"
-    "transition.cut, gem.*, homage.*) instead. The system handles preset\n"
-    "selection autonomously from your parametric signals.\n"
+    "composition.reframe, intensity.surge, silence.invitation,\n"
+    "chrome.density, attention.refocus) and chain composition\n"
+    "(transition.fade, transition.cut, gem.*, homage.*) instead. Downstream\n"
+    "consumers apply bounded envelope values from your parametric signals.\n"
     "\n"
     "- react: respond to the video content in the triangle display. What\n"
     "  caught you? PAIRS WITH: camera.hero (operator-brio.reacting to show\n"
@@ -1434,7 +1435,7 @@ ACTIVITY_CAPABILITIES = (
     "  visual effects. PAIRS WITH: camera.hero (room-c920.ambient for the\n"
     "  wide), composition.reframe.widen for context, ward.highlight on\n"
     "  whichever ward you're calling attention to. The reverie chain\n"
-    "  picks its own preset from your parametric signals — comment on\n"
+    "  applies graph parameters from your parametric signals — comment on\n"
     "  what you SEE, do not pick a family for it.\n"
     "- draft / reflect / critique / patch / compose_drop / synthesize /\n"
     "  exemplar_review (HSEA Phase 2): treat like study with sharper focus —\n"
@@ -1442,8 +1443,8 @@ ACTIVITY_CAPABILITIES = (
     "  grounding ticker foregrounded, hothouse panels staged in.\n"
     '- silence: say nothing. Let the music carry. Return {"activity": "silence"}.\n'
     "  EVEN IN SILENCE: emit at least one compositional_impingement saying\n"
-    "  what the silent surface should look like (which parametric pivot,\n"
-    "  whether to dim chrome, which ward is foregrounded). Silence is a\n"
+    "  what the silent surface should look like (usually silence.invitation,\n"
+    "  chrome.density.sparser, or a ward foreground). Silence is a\n"
     "  voice choice; it is not a compositional choice. The frame is still\n"
     "  yours to direct.\n"
 )
@@ -1553,8 +1554,9 @@ def _render_director_programme_context(
             preset_priors = list(getattr(constraints, "preset_family_priors", []) or [])
             if preset_priors:
                 lines.append(
-                    "- prefers preset families: "
-                    f"{', '.join(str(value) for value in preset_priors)} (soft prior)"
+                    "- legacy visual-family priors: "
+                    f"{', '.join(str(value) for value in preset_priors)} "
+                    "(translate into parametric envelopes; no preset.bias emission)"
                 )
             rotation_modes = list(getattr(constraints, "homage_rotation_modes", []) or [])
             if rotation_modes:
@@ -1588,8 +1590,9 @@ def _render_director_programme_context(
 # Each entry shape: ``(intent_family, narrative, material, ward_emphasis,
 # rotation_mode)``. Per the operator constraint NO presets, the families
 # below are parametric modulation (``mood.tone_pivot``, ``pace.tempo_shift``,
-# ``composition.reframe``) and chain composition (``transition.*``,
-# ``gem.*``, ``homage.*``, ``ward.*``) only — the director never picks
+# ``composition.reframe``, ``intensity.surge``, ``silence.invitation``,
+# ``chrome.density``, ``attention.refocus``) and chain composition
+# (``transition.*``, ``gem.*``, ``homage.*``, ``ward.*``) only — the director never picks
 # a preset family from this fallback path either.
 #
 # The ``narrative`` text is a Gibson-verb description of the COMPOSITIONAL
@@ -1634,7 +1637,7 @@ _MICROMOVE_BASELINE: list[_MicromoveEntry] = [
         "weighted_by_salience",
     ),
     (
-        "overlay.emphasis",
+        "chrome.density",
         "dim the chrome half a step so the reverie breathes",
         "void",
         ["impingement_cascade", "recruitment_candidate_panel"],
@@ -2918,8 +2921,9 @@ class DirectorLoop:
         programme active, the role-agnostic baseline cycle drives.
         Operator constraint: NO presets — the cycle is parametric
         modulation (``mood.tone_pivot``, ``pace.tempo_shift``,
-        ``composition.reframe``) and chain composition (``transition.*``,
-        ``gem.*``, ``homage.*``) only. The director NEVER picks a preset.
+        ``composition.reframe``, ``chrome.density``) and chain
+        composition (``transition.*``, ``gem.*``, ``homage.*``) only.
+        The director NEVER picks a preset.
 
         The micromove's ``DirectorIntent`` is written to the same JSONL +
         narrative-state + DMN impingement stream as a real tick via
@@ -3487,7 +3491,8 @@ class DirectorLoop:
                     parts.append("## Structural Direction")
                     parts.append(
                         f"scene_mode: {struct.get('scene_mode')} · "
-                        f"preset_family_hint: {struct.get('preset_family_hint')}"
+                        "legacy_visual_family_hint: "
+                        f"{struct.get('preset_family_hint')} (translate to envelopes)"
                     )
                     parts.append(f"→ {struct['long_horizon_direction']}")
         except Exception:
@@ -3574,7 +3579,7 @@ class DirectorLoop:
             "not just the voice over it. Every tick you own three coupled "
             "decisions: ACTIVITY (what you're doing), NARRATIVE (what you say "
             "or the silence you choose), COMPOSITIONAL INTENT (what appears "
-            "on the surface — camera, preset family, wards, choreography). "
+            "on the surface — camera, parametric envelope, wards, choreography). "
             "If you do not recruit compositional intent, the system runs on "
             "neutral defaults; that is a real choice, not a delegation. "
             "**Idle is the cardinal sin** — every silent unrecruited tick is "
@@ -3617,24 +3622,21 @@ class DirectorLoop:
 
         # Parametric modulation vocabulary. Cc-task
         # `director-moves-richness-expansion` (2026-05-04): operator
-        # constraint — NO presets. The director never picks a preset
-        # family; instead it emits parametric modulation
-        # (mood.tone_pivot, pace.tempo_shift, composition.reframe) and
-        # chain composition (transition.fade, transition.cut, gem.*,
-        # homage.*). The system reads these from the recruitment surface
-        # and picks presets autonomously. Replaces the prior "Preset
-        # Family Vocabulary" prompt section, which violated the
-        # operator's constraint by asking the director to pick a family.
+        # constraint — NO presets. The director emits parametric modulation
+        # (mood.tone_pivot, pace.tempo_shift, composition.reframe,
+        # intensity.surge, silence.invitation, chrome.density,
+        # attention.refocus) and chain composition (transition.fade,
+        # transition.cut, gem.*, homage.*). Downstream consumers read
+        # bounded envelope targets from the recruitment surface.
         parts.append("")
         parts.append("## Parametric modulation vocabulary (NO presets)")
         parts.append(
             "Operator constraint (cc-task `director-moves-richness-expansion`): "
-            "the director NEVER picks a preset family. Preset selection "
-            "is handled autonomously by the system from your parametric "
-            "signals. Instead of biasing a preset family, emit one of "
-            "the parametric modulations below — the system reads them "
-            "from the recruitment surface and picks presets that match. "
-            "Show the move with parameters, not the family name."
+            "the director NEVER picks a preset family. Emit one of the "
+            "parametric modulations below; downstream consumers read the "
+            "bounded envelope targets from the recruitment surface and "
+            "apply them gradually. Show the move with parameters, not "
+            "a fixed visual family."
         )
         parts.append(
             "  - **mood.tone_pivot** — parametric color/warmth/saturation. "
@@ -3654,6 +3656,20 @@ class DirectorLoop:
             "  - **programme.beat_advance** — structural cue that the "
             "current programme has run its course. Use when the show "
             "plan should walk forward.\n"
+            "  - **intensity.surge** — temporary bounded lift across all "
+            "nine visual-chain dimensions. Variants: lift, crest. Use "
+            "for a punctuation swell, not as a standing state.\n"
+            "  - **silence.invitation** — bounded low-activity envelope "
+            "across narration, motion, chrome, and visual-chain surfaces. "
+            "Variants: hold, soft. Use when silence should be directed, "
+            "not empty.\n"
+            "  - **chrome.density** — ward chrome density envelope. "
+            "Variants: sparser, baseline, denser. Use when diagnostic "
+            "chrome should retreat or become the subject.\n"
+            "  - **attention.refocus** — soft camera-weight rebalancing "
+            "without a camera.hero cut. Variants target overhead, "
+            "synths-brio, operator-brio, desk-c920, room-c920, "
+            "room-brio, or reset.\n"
             "Parametric repetition without signal-change is still a "
             "pattern the director must feel necessary to break — vary "
             "the variant, the salience, or the family across consecutive ticks."
@@ -3693,8 +3709,9 @@ class DirectorLoop:
             "Reverie / shader effects are a SECONDARY companion to the "
             "livestream surface, never the primary destination of a "
             "directorial move. The reverie chain reads the parametric "
-            "modulations (mood.tone_pivot, pace.tempo_shift) from the "
-            "recruitment surface and adapts its presets autonomously — "
+            "modulations (mood.tone_pivot, pace.tempo_shift, intensity.surge, "
+            "silence.invitation, chrome.density, attention.refocus) from the "
+            "recruitment surface and adapts graph parameters autonomously — "
             "the primary surface (cameras, wards, overlays) must be "
             "recruited first. Do not let the shader chain be the only "
             "thing you drive, and do not pick presets directly."
@@ -3979,7 +3996,7 @@ class DirectorLoop:
             '  "compositional_impingements": [\n'
             "    {\n"
             '      "narrative": "<gibson-verb description of the compositional move (used for cosine retrieval against the affordance catalog — not displayed to viewers; do NOT write content for any ward here, write what the move IS)>",\n'
-            '      "intent_family": "<camera.hero|overlay.emphasis|youtube.direction|attention.winner|stream_mode.transition|ward.size|ward.position|ward.staging|ward.highlight|ward.appearance|ward.cadence|ward.choreography|homage.rotation|homage.emergence|homage.swap|homage.cycle|homage.recede|homage.expand|gem.emphasis|gem.composition|gem.spawn|transition.fade|transition.cut|composition.reframe|pace.tempo_shift|mood.tone_pivot|programme.beat_advance>",\n'
+            '      "intent_family": "<camera.hero|overlay.emphasis|youtube.direction|attention.winner|stream_mode.transition|ward.size|ward.position|ward.staging|ward.highlight|ward.appearance|ward.cadence|ward.choreography|homage.rotation|homage.emergence|homage.swap|homage.cycle|homage.recede|homage.expand|gem.emphasis|gem.composition|gem.spawn|transition.fade|transition.cut|composition.reframe|pace.tempo_shift|mood.tone_pivot|programme.beat_advance|intensity.surge|silence.invitation|chrome.density|attention.refocus>",\n'
             '      "material": "<water|fire|earth|air|void>",\n'
             '      "salience": 0.0..1.0,\n'
             '      "grounding_provenance": ["<signal.path.that.made.this.impingement.felt-necessary>", ...]\n'
@@ -4032,6 +4049,14 @@ class DirectorLoop:
             '"stimmung.dimensions.exploration_deficit", "presence.state"]\n'
             '  - transition.cut ← ["audio.midi.beat_position", '
             '"tendency.desk_energy_rate", "stimmung.overall_stance"]\n'
+            '  - intensity.surge ← ["audio.midi.beat_position", '
+            '"tendency.chat_heating_rate", "stimmung.dimensions.audience_engagement"]\n'
+            '  - silence.invitation ← ["presence.state", '
+            '"stimmung.dimensions.coherence", "audio.midi.rest"]\n'
+            '  - chrome.density ← ["context.stream_live", '
+            '"stimmung.dimensions.resource_pressure", "context.active_objective_ids"]\n'
+            '  - attention.refocus ← ["visual.per_camera_person_count.<role>", '
+            '"visual.gaze_direction", "ir.ir_hand_zone"]\n'
             "  - gem.emphasis / gem.composition / gem.spawn ← "
             '["chat.tier_counts", "audio.contact_mic.desk_tap_gesture", '
             '"visual.top_emotion"]\n'
@@ -4047,9 +4072,11 @@ class DirectorLoop:
             "the closest available signal or the stance-derived context "
             "that motivates the move — never leave grounding_provenance empty. "
             "**Operator constraint** (cc-task `director-moves-richness-expansion`): "
-            "do NOT emit ``preset.bias``. Preset selection is handled "
-            "autonomously by the system from your parametric signals "
-            "(``mood.tone_pivot``, ``pace.tempo_shift``, ``composition.reframe``); "
+            "do NOT emit ``preset.bias``. Downstream consumers apply bounded "
+            "envelope targets from your parametric signals "
+            "(``mood.tone_pivot``, ``pace.tempo_shift``, ``composition.reframe``, "
+            "``intensity.surge``, ``silence.invitation``, ``chrome.density``, "
+            "``attention.refocus``); "
             "the director NEVER picks a preset. Emit the parametric "
             "modulation instead and let the system choose."
         )

@@ -2107,6 +2107,7 @@ audio = [
     { name = "pyaudio" },
     { name = "python-rtmidi" },
     { name = "silero-vad" },
+    { name = "sounddevice" },
     { name = "soundfile" },
     { name = "torchaudio" },
 ]
@@ -2163,6 +2164,7 @@ host = [
     { name = "pytest-xdist" },
     { name = "python-rtmidi" },
     { name = "silero-vad" },
+    { name = "sounddevice" },
     { name = "soundfile" },
     { name = "sse-starlette" },
     { name = "torchaudio" },
@@ -2288,6 +2290,7 @@ requires-dist = [
     { name = "sdnotify", specifier = ">=0.3.2" },
     { name = "silero-vad", marker = "extra == 'audio'", specifier = ">=5.1" },
     { name = "soundcloud-lib", specifier = ">=0.6.1" },
+    { name = "sounddevice", marker = "extra == 'audio'", specifier = ">=0.5.0" },
     { name = "soundfile", marker = "extra == 'audio'", specifier = ">=0.13.0" },
     { name = "sse-starlette", marker = "extra == 'logos-api'", specifier = ">=2.0.0" },
     { name = "torchaudio", marker = "extra == 'audio'", specifier = ">=2.0.0" },
