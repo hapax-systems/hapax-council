@@ -108,6 +108,11 @@ def collect_last_queries(project_path: str, n: int = 3) -> list[dict]:
                 break
             try:
                 entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            try:
                 proj = entry.get("project", "")
                 if project_path in proj:
                     ts = entry.get("timestamp", 0)
@@ -122,7 +127,7 @@ def collect_last_queries(project_path: str, n: int = 3) -> list[dict]:
                             ),
                         }
                     )
-            except (json.JSONDecodeError, ValueError):
+            except ValueError:
                 continue
     except Exception:
         log.debug("Failed to read Claude Code history", exc_info=True)

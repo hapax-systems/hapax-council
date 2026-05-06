@@ -365,3 +365,56 @@ class TestFormatContext(unittest.TestCase):
         ctx = ContextSnapshot(deep_work_window_hours=3.5)
         text = format_context(ctx)
         assert "uninterrupted" in text
+
+
+class TestCollectLastQueriesNonDictHarden(unittest.TestCase):
+    """Defensive parsing — non-dict JSONL lines are skipped.
+
+    Same campaign as the broader `fix(X): reject non-dict root` series —
+    a stray non-dict line in the Claude Code history would have crashed
+    `entry.get("project", "")` with AttributeError before this hardening,
+    since the existing try/except only caught `json.JSONDecodeError` and
+    `ValueError`.
+    """
+
+    def test_non_dict_lines_are_skipped(self):
+        now_ms = int(time.time() * 1000)
+        history = "\n".join(
+            [
+                "[1, 2, 3]",  # non-dict
+                "null",
+                '"a string"',
+                "42",
+                "true",
+                json.dumps(
+                    {
+                        "display": "real query",
+                        "project": "/home/hapax/projects/hapax-council",
+                        "timestamp": now_ms,
+                    }
+                ),
+            ]
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            f.write(history)
+            path = Path(f.name)
+
+        try:
+            with patch("agents.context_restore.CC_HISTORY", path):
+                queries = collect_last_queries("/home/hapax/projects/hapax-council", n=10)
+            assert len(queries) == 1
+            assert queries[0]["query"] == "real query"
+        finally:
+            path.unlink()
+
+    def test_all_non_dict_returns_empty(self):
+        history = "\n".join(["[]", "null", '"x"', "42", "true"])
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            f.write(history)
+            path = Path(f.name)
+
+        try:
+            with patch("agents.context_restore.CC_HISTORY", path):
+                assert collect_last_queries("/anywhere", n=3) == []
+        finally:
+            path.unlink()
