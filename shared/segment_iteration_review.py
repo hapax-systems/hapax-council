@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from shared.segment_quality_actionability import (
     forbidden_layout_authority_fields,
     score_segment_quality,
     validate_layout_responsibility,
+    validate_nonhuman_personage,
     validate_segment_actionability,
 )
 
@@ -32,7 +34,7 @@ IDEAL_SCRIPT_SCORE_FLOORS = {
     "pacing": 3,
     "stakes": 3,
     "callbacks": 3,
-    "audience_address": 3,
+    "public_pressure": 3,
     "source_fidelity": 3,
     "ending": 3,
     "actionability": 4,
@@ -45,6 +47,7 @@ REQUIRED_SOURCE_HASH_KEYS = frozenset(
         "segment_beats_sha256",
         "seed_sha256",
         "prompt_sha256",
+        "content_state_sha256",
     }
 )
 REQUIRED_TEAM_CRITIQUE_ROLES = (
@@ -54,6 +57,7 @@ REQUIRED_TEAM_CRITIQUE_ROLES = (
 )
 PASSING_TEAM_VERDICTS = frozenset({"approved", "pass", "passed"})
 MIN_CONCRETE_ACTION_KINDS = 2
+WEAK_CONCRETE_ACTION_KINDS = frozenset({"comparison", "mood_shift"})
 MIN_TEAM_CRITIQUE_NOTE_WORDS = 6
 FORBIDDEN_LAYOUT_LAUNDERING_TERMS = frozenset(
     {
@@ -194,11 +198,17 @@ def _source_binding_ok(
         return False
     if source_hashes.get("seed_sha256") != artifact.get("seed_sha256"):
         return False
+    if source_hashes.get("content_state_sha256") != artifact.get("prep_content_state_sha256"):
+        return False
+    prep_content_state_sha256 = artifact.get("prep_content_state_sha256")
+    if not _is_sha256_hex(prep_content_state_sha256):
+        return False
     if not llm_calls:
         return False
 
     programme_id = artifact.get("programme_id")
     compose_prompt_seen = False
+    compose_beat_count = 0
     last_call_index = 0
     for call in llm_calls:
         if not isinstance(call, Mapping):
@@ -218,7 +228,128 @@ def _source_binding_ok(
             return False
         if call.get("phase") == "compose" and prompt_sha256 == artifact.get("prompt_sha256"):
             compose_prompt_seen = True
-    return compose_prompt_seen
+        if call.get("phase") == "compose_beat":
+            compose_beat_count += 1
+    if compose_prompt_seen:
+        return True
+    beats = _string_list(artifact.get("segment_beats"))
+    return bool(beats) and compose_beat_count >= len(beats)
+
+
+def _content_state_target_failures(
+    artifact: Mapping[str, Any],
+    script: Sequence[str],
+) -> list[dict[str, Any]]:
+    def _normalize(value: Any) -> str:
+        return re.sub(r"\s+", " ", str(value or "").strip().lower().strip("\"'“”‘’"))
+
+    state = artifact.get("prep_content_state")
+    if not isinstance(state, Mapping):
+        return []
+    packets = state.get("source_packets")
+    if not isinstance(packets, list):
+        return []
+    segment_beats = _string_list(artifact.get("segment_beats"))
+    expected: dict[str, dict[str, Any]] = {}
+    ordered_expected: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for packet in packets:
+        if not isinstance(packet, Mapping):
+            continue
+        items = packet.get("items")
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            name = item.get("name") or item.get("item")
+            tier = item.get("target_tier") or item.get("tier")
+            if not isinstance(name, str) or not name.strip() or not isinstance(tier, str):
+                continue
+            target = {
+                "item": name.strip(),
+                "tier": tier.strip(),
+                "source_packet_id": packet.get("id"),
+            }
+            expected[_normalize(name)] = target
+            ordered_expected.append(target)
+
+    if not expected:
+        return []
+
+    item_direction_re = re.compile(r"\bitem[_ -]?(\d+)\b", re.IGNORECASE)
+    expected_beat_by_item: dict[str, int] = {}
+    for beat_index, direction in enumerate(segment_beats):
+        match = item_direction_re.search(direction)
+        if not match:
+            continue
+        item_index = int(match.group(1)) - 1
+        if 0 <= item_index < len(ordered_expected):
+            expected_beat_by_item[_normalize(ordered_expected[item_index]["item"])] = beat_index
+
+    placement_pattern = re.compile(
+        r"\bPlace\s+(?P<item>.+?)\s+in\s+(?P<tier>[SABCD]-tier)\b",
+        re.IGNORECASE,
+    )
+    placements: dict[str, set[str]] = {}
+    placement_beats: dict[tuple[str, str], set[int]] = {}
+    for beat_index, text in enumerate(script):
+        for match in placement_pattern.finditer(text):
+            item_name = match.group("item").strip(" \"'“”‘’.")
+            normalized = _normalize(item_name)
+            tier = match.group("tier").lower()
+            placements.setdefault(normalized, set()).add(tier)
+            placement_beats.setdefault((normalized, tier), set()).add(beat_index)
+            if normalized not in expected:
+                failures.append(
+                    {
+                        "item": item_name,
+                        "tier": match.group("tier"),
+                        "reason": "extra_target_not_in_content_state",
+                    }
+                )
+
+    for normalized, target in expected.items():
+        target_tier = str(target["tier"]).lower()
+        tiers = placements.get(normalized, set())
+        if target_tier not in tiers:
+            failures.append(
+                {
+                    "item": target["item"],
+                    "target_tier": target["tier"],
+                    "source_packet_id": target["source_packet_id"],
+                    "observed_tiers": sorted(tiers),
+                    "reason": "missing_or_misplaced_target",
+                }
+            )
+            continue
+        expected_beat = expected_beat_by_item.get(normalized)
+        if expected_beat is not None:
+            observed_beats = sorted(placement_beats.get((normalized, target_tier), set()))
+            if expected_beat not in observed_beats:
+                failures.append(
+                    {
+                        "item": target["item"],
+                        "target_tier": target["tier"],
+                        "source_packet_id": target["source_packet_id"],
+                        "expected_beat_index": expected_beat,
+                        "observed_beat_indices": observed_beats,
+                        "reason": "target_placement_wrong_beat",
+                    }
+                )
+            extra_beats = [index for index in observed_beats if index != expected_beat]
+            if extra_beats:
+                failures.append(
+                    {
+                        "item": target["item"],
+                        "target_tier": target["tier"],
+                        "source_packet_id": target["source_packet_id"],
+                        "expected_beat_index": expected_beat,
+                        "observed_extra_beat_indices": extra_beats,
+                        "reason": "target_placement_extra_beat",
+                    }
+                )
+    return failures
 
 
 def _concrete_action_bindings(
@@ -241,7 +372,8 @@ def _concrete_action_bindings(
         concrete_intents = [
             intent
             for intent in beat.get("intents") or []
-            if isinstance(intent, Mapping) and intent.get("kind") != "spoken_argument"
+            if isinstance(intent, Mapping)
+            and intent.get("kind") not in {"spoken_argument", *WEAK_CONCRETE_ACTION_KINDS}
         ]
         if not concrete_intents:
             continue
@@ -428,7 +560,7 @@ def _team_critique_loop(
         "blocking_roles": sorted(set(blocking)),
         "passed": not pending_roles and not malformed and not blocking,
         "instructions": [
-            "Review the single canary artifact before any next-nine generation.",
+            "Review the single canary artifact before any pool release.",
             "Each reviewer records a receipt with role, verdict, reviewer, checked_at, receipt_id, artifact_sha256, programme_id, iteration_id, and substantive notes.",
             "Approvals must cover script quality, actionability/layout fit, and layout-responsibility doctrine.",
             "Any revise/block verdict sends the method back to one-segment iteration.",
@@ -441,7 +573,7 @@ def review_one_segment_iteration(
     *,
     team_critique_receipts: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Review the canary set and return a receipt for the next-nine gate."""
+    """Review the canary set and return a receipt for the pool-release gate."""
 
     criteria = [
         _criterion(
@@ -506,6 +638,51 @@ def review_one_segment_iteration(
     )
 
 
+def review_segment_batch(
+    accepted_artifacts: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Review every manifest-accepted prepared segment before pool release."""
+    artifact_receipts: list[dict[str, Any]] = []
+    extraction_errors: list[str] = []
+    for index, candidate in enumerate(accepted_artifacts):
+        artifact, loader_metadata, extraction_error = _separate_review_artifact(candidate)
+        if extraction_error:
+            extraction_errors.append(f"artifact[{index}]: {extraction_error}")
+        criteria, quality, actionability, layout = _review_artifact(
+            artifact,
+            loader_metadata=loader_metadata,
+        )
+        passed = all(item["passed"] for item in criteria)
+        artifact_receipts.append(
+            {
+                "programme_id": artifact.get("programme_id"),
+                "artifact_sha256": artifact.get("artifact_sha256"),
+                "artifact_path": loader_metadata.get("artifact_path")
+                or loader_metadata.get("artifact_path_diagnostic"),
+                "passed": passed,
+                "failed_criteria": [item["name"] for item in criteria if item["passed"] is False],
+                "criteria": criteria,
+                "quality_report": quality,
+                "actionability_report": actionability,
+                "layout_report": layout,
+            }
+        )
+    passed = (
+        bool(artifact_receipts)
+        and not extraction_errors
+        and all(item["passed"] for item in artifact_receipts)
+    )
+    return {
+        "review_version": SEGMENT_ITERATION_REVIEW_VERSION,
+        "mode": "batch",
+        "artifact_count": len(artifact_receipts),
+        "passed": passed,
+        "ready_for_pool": passed,
+        "extraction_errors": extraction_errors,
+        "artifacts": artifact_receipts,
+    }
+
+
 def _review_artifact(
     artifact: Mapping[str, Any],
     *,
@@ -514,6 +691,8 @@ def _review_artifact(
     script = _string_list(artifact.get("prepared_script"))
     beats = _string_list(artifact.get("segment_beats"))
     quality = score_segment_quality(script, beats) if script else {}
+    personage = validate_nonhuman_personage(script) if script else {}
+    stored_personage = _mapping(artifact.get("personage_alignment"))
     actionability = validate_segment_actionability(script, beats) if script else {}
     beat_action_intents = actionability.get("beat_action_intents") if actionability else []
     layout = (
@@ -542,7 +721,8 @@ def _review_artifact(
             str(intent.get("kind"))
             for beat in beat_action_intents or []
             for intent in (beat.get("intents") or [])
-            if isinstance(intent, Mapping) and intent.get("kind") != "spoken_argument"
+            if isinstance(intent, Mapping)
+            and intent.get("kind") not in {"spoken_argument", *WEAK_CONCRETE_ACTION_KINDS}
         }
     )
     expected_artifact_hash = artifact.get("artifact_sha256")
@@ -554,6 +734,7 @@ def _review_artifact(
         recomputed_layout_intents,
     )
     score_failures = _score_floor_failures(_mapping(quality.get("scores")) if quality else {})
+    content_state_target_failures = _content_state_target_failures(artifact, script)
 
     criteria = [
         _criterion(
@@ -604,7 +785,7 @@ def _review_artifact(
         _criterion(
             "layout.hard_contract_replay",
             hard_contract_replay.get("ok") is True,
-            "review must replay the prepared segment layout contract gates before next-nine release",
+            "review must replay the prepared segment layout contract gates before pool release",
             observed={
                 "error": hard_contract_replay.get("error"),
                 "forbidden_bounded_vocabulary": hard_contract_replay.get(
@@ -656,6 +837,21 @@ def _review_artifact(
                 "proper_noun_count": _mapping(quality.get("diagnostics")).get("proper_noun_count")
                 if quality
                 else None,
+            },
+        ),
+        _criterion(
+            "script.content_state_target_fidelity",
+            not content_state_target_failures,
+            "when prep content_state names target items/tiers, the script must preserve those exact placements",
+            observed={"missing_or_misplaced_targets": content_state_target_failures},
+        ),
+        _criterion(
+            "script.nonhuman_personage",
+            personage.get("ok") is True and stored_personage == personage,
+            "review must recompute non-human personage alignment from the script",
+            observed={
+                "ok": personage.get("ok"),
+                "violations": personage.get("violations"),
             },
         ),
         _criterion(
@@ -743,10 +939,10 @@ def _receipt(
 ) -> dict[str, Any]:
     automation_passed = all(item["passed"] for item in criteria)
     team_passed = bool(team_critique_loop.get("passed"))
-    ready_for_next_nine = automation_passed and team_passed
+    ready_for_pool_release = automation_passed and team_passed
     decision = (
-        "ready_for_next_nine"
-        if ready_for_next_nine
+        "ready_for_pool_release"
+        if ready_for_pool_release
         else "team_critique_required"
         if automation_passed
         else "revise_canary_artifact"
@@ -791,8 +987,8 @@ def _receipt(
             "layout_decision_contract": layout_report.get("layout_decision_contract"),
         },
         "team_critique_loop": team_critique_loop,
-        "ready_for_next_nine": ready_for_next_nine,
-        "next_nine_gate_mode": "blocking_review_receipt",
+        "ready_for_pool_release": ready_for_pool_release,
+        "pool_release_gate_mode": "blocking_review_receipt",
         "decision": decision,
         "resident_model_continuity": {
             "expected_model": RESIDENT_COMMAND_R_MODEL,

@@ -66,6 +66,7 @@ def call_resident_command_r(
     max_tokens: int = 8192,
     temperature: float = 0.7,
     timeout_s: float = 300.0,
+    verify_resident: bool = True,
 ) -> str:
     """Call TabbyAPI only after verifying resident Command-R.
 
@@ -73,7 +74,8 @@ def call_resident_command_r(
     should fail closed rather than silently route to a different model.
     """
     chat_url = chat_url or tabby_chat_url()
-    assert_resident_command_r(chat_url)
+    if verify_resident:
+        assert_resident_command_r(chat_url)
     body = json.dumps(
         {
             "model": RESIDENT_COMMAND_R_MODEL,

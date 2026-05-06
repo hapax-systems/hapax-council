@@ -6,11 +6,14 @@
 
 set -euo pipefail
 
-TOTAL="${1:-10}"
+ACCEPTED_LIMIT="${1:-0}"
 BATCH_SIZE="${HAPAX_SEGMENT_PREP_BATCH_SIZE:-3}"
+QUALITY_FIRST="${HAPAX_SEGMENT_PREP_QUALITY_FIRST:-1}"
+PREP_BUDGET_S="${HAPAX_SEGMENT_PREP_BUDGET_S:-3600}"
 TABBY_CHAT_URL="${HAPAX_TABBY_URL:-http://localhost:5000/v1/chat/completions}"
 TABBY_MODEL_URL="${TABBY_CHAT_URL%/chat/completions}/model"
-PROJECT_DIR="/home/hapax/projects/hapax-council"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="${HAPAX_SEGMENT_PREP_PROJECT_DIR:-$(cd -- "${SCRIPT_DIR}/.." && pwd)}"
 PREP_BASE="${HAPAX_SEGMENT_PREP_DIR:-${HOME}/.cache/hapax/segment-prep}"
 PREP_DIR="${PREP_BASE}/$(date +%Y-%m-%d)"
 RESIDENT_PREP_MODEL="command-r-08-2024-exl3-5.0bpw"
@@ -58,31 +61,66 @@ list_existing() {
 }
 
 echo "=== Batch Segment Prep ==="
-echo "Target: ${TOTAL} segments"
+if [[ "$ACCEPTED_LIMIT" -gt 0 ]]; then
+    echo "Optional accepted cap: ${ACCEPTED_LIMIT} segments"
+else
+    echo "Accepted cap: none (budget-first)"
+fi
 echo "Batch size: ${BATCH_SIZE}"
+echo "Budget: ${PREP_BUDGET_S}s"
+echo "Quality-first: ${QUALITY_FIRST}"
 echo "Model: ${RESIDENT_PREP_MODEL}"
 echo "Existing: $(count_existing) segments"
 echo ""
 
 verify_resident_model
 
-generated="$(count_existing)"
+(
+    cd "$PROJECT_DIR"
+    uv run python -c 'from pathlib import Path; import agents.hapax_daimonion.daily_segment_prep as prep; root=Path.cwd().resolve(); path=Path(prep.__file__).resolve(); assert root in path.parents, f"daily_segment_prep imported from {path}, expected under {root}"; print(f"[ok] prep module: {path}")'
+)
+
+accepted="$(count_existing)"
 batch=0
 max_failures=3
 failures=0
+started_at="$(date +%s)"
 
-while [[ "$generated" -lt "$TOTAL" && "$failures" -lt "$max_failures" ]]; do
+while true; do
+    now="$(date +%s)"
+    elapsed=$((now - started_at))
+    if [[ "$elapsed" -ge "$PREP_BUDGET_S" ]]; then
+        echo "[budget] prep window exhausted after ${elapsed}s"
+        break
+    fi
+    if [[ "$ACCEPTED_LIMIT" -gt 0 && "$accepted" -ge "$ACCEPTED_LIMIT" ]]; then
+        echo "[cap] accepted segment cap reached (${accepted}/${ACCEPTED_LIMIT})"
+        break
+    fi
+    if [[ "$QUALITY_FIRST" != "1" && "$failures" -ge "$max_failures" ]]; then
+        break
+    fi
+
     batch=$((batch + 1))
-    remaining=$((TOTAL - generated))
-    this_batch=$((remaining < BATCH_SIZE ? remaining : BATCH_SIZE))
+    if [[ "$ACCEPTED_LIMIT" -gt 0 ]]; then
+        remaining=$((ACCEPTED_LIMIT - accepted))
+        this_batch=$((remaining < BATCH_SIZE ? remaining : BATCH_SIZE))
+    else
+        this_batch="$BATCH_SIZE"
+    fi
 
     echo ""
-    echo "[batch ${batch}] Generating ${this_batch} more segments (have ${generated}/${TOTAL})..."
+    if [[ "$ACCEPTED_LIMIT" -gt 0 ]]; then
+        echo "[batch ${batch}] Trying up to ${this_batch} candidates (accepted ${accepted}/${ACCEPTED_LIMIT}, elapsed ${elapsed}s)..."
+    else
+        echo "[batch ${batch}] Trying up to ${this_batch} candidates (accepted ${accepted}, elapsed ${elapsed}s)..."
+    fi
     verify_resident_model
 
     cd "$PROJECT_DIR"
     HAPAX_SEGMENT_PREP_MAX="$this_batch" \
-    HAPAX_SEGMENT_PREP_BUDGET_S="${HAPAX_SEGMENT_PREP_BUDGET_S:-1800}" \
+    HAPAX_SEGMENT_PREP_SEQUENTIAL_BEATS="${HAPAX_SEGMENT_PREP_SEQUENTIAL_BEATS:-1}" \
+    HAPAX_SEGMENT_PREP_BUDGET_S="${PREP_BUDGET_S}" \
     HAPAX_SEGMENT_PREP_DIR="${PREP_BASE}" \
     HAPAX_TABBY_URL="${TABBY_CHAT_URL}" \
     HAPAX_SEGMENT_PREP_MODEL="${RESIDENT_PREP_MODEL}" \
@@ -90,20 +128,28 @@ while [[ "$generated" -lt "$TOTAL" && "$failures" -lt "$max_failures" ]]; do
 
     verify_resident_model
 
-    new_count="$(count_existing)"
-    new_this_batch=$((new_count - generated))
-    echo "[batch ${batch}] Generated ${new_this_batch} new segments (total on disk: ${new_count})"
+    new_accepted_count="$(count_existing)"
+    new_accepted_this_batch=$((new_accepted_count - accepted))
+    echo "[batch ${batch}] Accepted ${new_accepted_this_batch} new segments (total on disk: ${new_accepted_count})"
 
-    if [[ "$new_this_batch" -eq 0 ]]; then
+    if [[ "$new_accepted_this_batch" -eq 0 ]]; then
         failures=$((failures + 1))
-        echo "[batch ${batch}] No new segments - failure ${failures}/${max_failures}"
+        if [[ "$QUALITY_FIRST" == "1" ]]; then
+            echo "[batch ${batch}] No accepted segments; continuing until budget expires"
+        else
+            echo "[batch ${batch}] No new segments - failure ${failures}/${max_failures}"
+        fi
     else
         failures=0
     fi
 
-    generated="$new_count"
+    accepted="$new_accepted_count"
 done
 
 echo ""
-echo "=== DONE: ${generated} segments in ${PREP_DIR} ==="
+if [[ "$ACCEPTED_LIMIT" -gt 0 ]]; then
+    echo "=== DONE: ${accepted}/${ACCEPTED_LIMIT} accepted segments before optional cap in ${PREP_DIR} ==="
+else
+    echo "=== DONE: ${accepted} accepted segments in ${PREP_DIR} ==="
+fi
 list_existing

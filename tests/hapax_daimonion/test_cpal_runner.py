@@ -9,6 +9,7 @@ import pytest
 from agents.hapax_daimonion.cpal.destination_channel import DestinationChannel
 from agents.hapax_daimonion.cpal.runner import CpalRunner, SpeechEventKind
 from agents.hapax_daimonion.cpal.types import ConversationalRegion
+from shared.programme import ProgrammeContent
 
 
 class TestCpalRunnerLifecycle:
@@ -373,6 +374,115 @@ class TestCpalRunnerLifecycle:
         assert "broadcast_bias_soft_prior" not in imp.content
         assert "voice_output_destination" not in imp.content
         assert "broadcast_intent" not in imp.content
+
+    @pytest.mark.asyncio
+    async def test_live_prior_prepared_segment_does_not_suppress_autonomous_narration(
+        self,
+        monkeypatch,
+    ):
+        runner = self._make_runner()
+        daemon = MagicMock()
+        daemon.tts.synthesize.return_value = b"\x00\x01" * 100
+        runner._daemon = daemon
+        runner._impingement_adapter.adapt = MagicMock(
+            return_value=SimpleNamespace(
+                gain_update=None,
+                should_surface=False,
+                narrative="Composed live-prior narration.",
+                error_boost=0.0,
+            )
+        )
+        imp = MagicMock()
+        imp.source = "autonomous_narrative"
+        imp.content = {
+            "narrative": "Composed live-prior narration.",
+            "impulse_id": "impulse-live-prior",
+        }
+        active = SimpleNamespace(
+            content=ProgrammeContent(
+                delivery_mode="live_prior",
+                prepared_script=["Prepared text is prior context, not TTS ownership."],
+            )
+        )
+        decision = SimpleNamespace(
+            allowed=True,
+            destination=DestinationChannel.PRIVATE,
+            reason_code="private_assistant_monitor_bound",
+            safety_gate={"context_default": "private_or_drop"},
+            target="hapax-private",
+            media_role="Assistant",
+        )
+        playback_result = SimpleNamespace(
+            status="completed",
+            completed=True,
+            returncode=0,
+            duration_s=0.1,
+            timeout_s=5.0,
+            error=None,
+        )
+
+        async def no_sleep(_delay: float) -> None:
+            return None
+
+        monkeypatch.delenv("HAPAX_PREP_VERBATIM_LEGACY", raising=False)
+        monkeypatch.setattr(asyncio, "sleep", no_sleep)
+        with (
+            patch(
+                "agents.hapax_daimonion.cpal.runner.resolve_playback_decision",
+                return_value=decision,
+            ),
+            patch("shared.programme_store.default_store") as default_store,
+            patch("agents.hapax_daimonion.pw_audio_output.play_pcm", return_value=playback_result),
+            patch("agents.hapax_daimonion.cpal.runner.record_destination_decision"),
+            patch("agents.hapax_daimonion.cpal.runner.record_tts_synthesis"),
+            patch("agents.hapax_daimonion.cpal.runner.record_playback_result"),
+        ):
+            default_store.return_value.active_programme.return_value = active
+            await runner.process_impingement(imp)
+
+        daemon.tts.synthesize.assert_called_once_with(
+            "Composed live-prior narration.",
+            "proactive",
+        )
+
+    @pytest.mark.asyncio
+    async def test_legacy_verbatim_prepared_segment_suppresses_autonomous_narration(
+        self,
+        monkeypatch,
+    ):
+        runner = self._make_runner()
+        daemon = MagicMock()
+        runner._daemon = daemon
+        runner._impingement_adapter.adapt = MagicMock(
+            return_value=SimpleNamespace(
+                gain_update=None,
+                should_surface=False,
+                narrative="Composed narration.",
+                error_boost=0.0,
+            )
+        )
+        imp = MagicMock()
+        imp.source = "autonomous_narrative"
+        imp.content = {"narrative": "Composed narration."}
+        active = SimpleNamespace(
+            content=ProgrammeContent(
+                delivery_mode="verbatim_legacy",
+                prepared_script=["Legacy direct playback owns this TTS path."],
+            )
+        )
+
+        monkeypatch.setenv("HAPAX_PREP_VERBATIM_LEGACY", "1")
+        with (
+            patch("shared.programme_store.default_store") as default_store,
+            patch(
+                "agents.hapax_daimonion.cpal.runner.resolve_playback_decision"
+            ) as resolve_decision,
+        ):
+            default_store.return_value.active_programme.return_value = active
+            await runner.process_impingement(imp)
+
+        daemon.tts.synthesize.assert_not_called()
+        resolve_decision.assert_not_called()
 
     def test_presynthesize_signals(self):
         runner = self._make_runner()

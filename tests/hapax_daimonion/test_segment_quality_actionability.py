@@ -9,12 +9,14 @@ from shared.segment_quality_actionability import (
     EXPLICIT_LAYOUT_FALLBACK_CONTEXT,
     LAYOUT_RESPONSIBILITY_VERSION,
     NON_RESPONSIBLE_STATIC_CONTEXT,
+    PERSONAGE_RUBRIC_VERSION,
     QUALITY_RUBRIC_VERSION,
     RESPONSIBLE_HOSTING_CONTEXT,
     build_beat_action_intents,
     forbidden_layout_authority_fields,
     score_segment_quality,
     validate_layout_responsibility,
+    validate_nonhuman_personage,
     validate_segment_actionability,
 )
 
@@ -28,18 +30,19 @@ EXCELLENT_SCRIPT = [
         "try to become culture."
     ),
     (
-        "Now compare that with Popcorn Sutton's still craft, because the Appalachian "
-        "example makes the tradeoff physical instead of abstract. Place Popcorn Sutton "
-        "in S-tier for legibility: not because folklore is pure, but because the method "
-        "stays accountable to material practice. Remember the opening problem: a system "
-        "that cannot show its work becomes a personality mask."
+        "Now compare that with the resolved workshop notebook, because the artifact "
+        "makes the tradeoff physical instead of abstract. Place the workshop notebook "
+        "in S-tier for legibility: not because craft is pure, but because the method "
+        "stays accountable to material practice. Source check: the resolved source "
+        "note argues that a system that cannot show its work becomes a personality mask."
     ),
     (
         "So the ending is not nostalgia, it is a production rule. If Hapax says a chart "
         "changed, the chart has to change; if Hapax asks chat to judge the ranking, chat "
-        "has to be the surface. What do you think? Drop it in chat, because the next "
-        "move is deciding which claims deserve a visible instrument and which should "
-        "remain spoken argument."
+        "has to be the surface. Chat pressure: which claim deserves a visible "
+        "instrument before it becomes part of the bit? The next "
+        "move is deciding which claims deserve a visible instrument and which need "
+        "more grounding before they become part of the bit."
     ),
 ]
 
@@ -63,6 +66,7 @@ def _artifact(script: list[str], beats: list[str]) -> dict:
     )
     actionability = validate_segment_actionability(script, beats)
     layout = validate_layout_responsibility(actionability["beat_action_intents"])
+    personage = validate_nonhuman_personage(script)
     payload = {
         "schema_version": prep.PREP_ARTIFACT_SCHEMA_VERSION,
         "authority": prep.PREP_ARTIFACT_AUTHORITY,
@@ -74,8 +78,10 @@ def _artifact(script: list[str], beats: list[str]) -> dict:
         "segment_quality_rubric_version": QUALITY_RUBRIC_VERSION,
         "actionability_rubric_version": ACTIONABILITY_RUBRIC_VERSION,
         "layout_responsibility_version": LAYOUT_RESPONSIBILITY_VERSION,
+        "personage_rubric_version": PERSONAGE_RUBRIC_VERSION,
         "hosting_context": layout["hosting_context"],
         "segment_quality_report": score_segment_quality(script, beats),
+        "personage_alignment": personage,
         "beat_action_intents": build_beat_action_intents(script, beats),
         "actionability_alignment": {
             "ok": actionability["ok"],
@@ -90,6 +96,8 @@ def _artifact(script: list[str], beats: list[str]) -> dict:
         "model_id": prep.RESIDENT_PREP_MODEL,
         "prompt_sha256": prompt_sha256,
         "seed_sha256": seed_sha256,
+        "prep_content_state_sha256": prep._content_state_sha256(None),
+        "prep_content_state": None,
         "source_hashes": source_hashes,
         "source_provenance_sha256": prep._sha256_json(source_hashes),
         "llm_calls": [
@@ -136,8 +144,251 @@ def test_actionability_declares_expected_visible_or_doable_effects() -> None:
     kinds = {
         intent["kind"] for beat in alignment["beat_action_intents"] for intent in beat["intents"]
     }
-    assert {"countdown", "tier_chart", "chat_poll", "comparison"}.issubset(kinds)
+    assert {"countdown", "tier_chart", "chat_poll", "comparison", "source_check"}.issubset(kinds)
     assert alignment["removed_unsupported_action_lines"] == []
+
+
+def test_source_evidence_and_definition_checks_create_responsible_layout_needs() -> None:
+    script = [
+        "Source check: the resolved vault note argues that the term changes the stakes. "
+        "That source matters because it prevents a decorative citation from replacing "
+        "the argument.",
+        "Evidence check: the archived artifact shows the sequence moved in three steps. "
+        "The example matters because the audience can track what changed.",
+        "Definition check: residency means the same model stays loaded across sequential "
+        "prep calls. That detail matters because continuity is part of the method.",
+    ]
+
+    alignment = validate_segment_actionability(script, ["source", "evidence", "definition"])
+    layout = validate_layout_responsibility(alignment["beat_action_intents"])
+
+    assert alignment["ok"] is True
+    kinds = {
+        intent["kind"] for beat in alignment["beat_action_intents"] for intent in beat["intents"]
+    }
+    assert {"source_check", "evidence_check", "definition_check"}.issubset(kinds)
+    layout_needs = {need for beat in layout["beat_layout_intents"] for need in beat["needs"]}
+    assert {"source_visible", "evidence_visible", "readability_held"}.issubset(layout_needs)
+    assert "unsupported_layout_need" not in layout_needs
+    assert layout["ok"] is True
+
+
+def test_strict_source_check_rejects_malformed_claim_marker() -> None:
+    script = ["Source check: this is just my claim. Chat pressure: should this count?"]
+
+    alignment = validate_segment_actionability(script, ["malformed source marker"])
+
+    kinds = {
+        intent["kind"] for beat in alignment["beat_action_intents"] for intent in beat["intents"]
+    }
+    assert "source_check" not in kinds
+    assert "chat_poll" in kinds
+
+
+def test_source_check_accepts_named_packet_confirmation() -> None:
+    alignment = validate_segment_actionability(
+        [
+            "Source check: packet:segment-prep-failure-modes-v19 confirms that "
+            "human-host cosplay is rejected by the validation rules."
+        ],
+        ["packet confirmation"],
+    )
+
+    kinds = {
+        intent["kind"] for beat in alignment["beat_action_intents"] for intent in beat["intents"]
+    }
+
+    assert "source_check" in kinds
+
+
+def test_public_readback_visible_test_and_worked_example_are_actionable() -> None:
+    script = [
+        "Public readback: the source card must show the receipt before the claim counts.",
+        "Visible test: the ranking compares source access against visible readback.",
+        "Worked example: the artifact moves from claim to receipt in three steps.",
+    ]
+
+    alignment = validate_segment_actionability(script, ["readback", "test", "example"])
+    layout = validate_layout_responsibility(alignment["beat_action_intents"])
+
+    kinds = {
+        intent["kind"] for beat in alignment["beat_action_intents"] for intent in beat["intents"]
+    }
+    assert {"public_readback", "visible_test", "worked_example"}.issubset(kinds)
+    layout_needs = {need for beat in layout["beat_layout_intents"] for need in beat["needs"]}
+    assert {"source_visible", "action_visible", "readability_held"}.issubset(layout_needs)
+    assert layout["ok"] is True
+
+
+def test_actionability_rejects_placeholder_visible_hooks() -> None:
+    alignment = validate_segment_actionability(
+        [
+            "Public readback: something.",
+            "Visible test: show it.",
+            "Worked example: do the thing.",
+            "Source check: the source shows the thing.",
+        ],
+        ["placeholder readback", "placeholder test", "placeholder example", "generic source"],
+    )
+
+    kinds = {
+        intent["kind"] for beat in alignment["beat_action_intents"] for intent in beat["intents"]
+    }
+
+    assert {"public_readback", "visible_test", "worked_example", "source_check"}.isdisjoint(kinds)
+
+
+def test_mood_shift_trigger_uses_word_boundaries() -> None:
+    alignment = validate_segment_actionability(
+        [
+            "The affair does not create a visual mood just because one substring "
+            "looks like a short evaluative word."
+        ],
+        ["guard against substring mood false positives"],
+    )
+
+    kinds = {
+        intent["kind"] for beat in alignment["beat_action_intents"] for intent in beat["intents"]
+    }
+
+    assert "mood_shift" not in kinds
+    assert kinds == {"spoken_argument"}
+
+
+def test_weak_comparison_only_does_not_satisfy_responsible_layout() -> None:
+    alignment = validate_segment_actionability(
+        [
+            "The comparison matters, and the ranking has a tradeoff, but this beat "
+            "never names a source, readback, tier placement, visible test, or public decision."
+        ],
+        ["bare comparison"],
+    )
+
+    layout = validate_layout_responsibility(alignment["beat_action_intents"])
+
+    assert layout["ok"] is False
+    assert "weak_action_only_not_responsible_layout" in {
+        item["reason"] for item in layout["violations"]
+    }
+
+
+def test_tier_actionability_accepts_common_spoken_placement_variants() -> None:
+    script = [
+        "Place Quantum Computing in S-tier because the source packet "
+        "shows a discontinuity in problem-solving capacity.",
+        "AI Language Models earn an A-tier ranking because deployment changed "
+        "search, writing, and software support.",
+        "Blockchain Technology, the third contender, lands in the B-tier because "
+        "the adoption evidence is mixed.",
+        "5G Technology, our fourth entry, has uneven adoption and is thus placed in the C-tier.",
+        "AR/VR, which currently resides in the D-tier, still needs stronger public "
+        "evidence before it can move higher.",
+    ]
+
+    alignment = validate_segment_actionability(script, [f"beat {i}" for i in range(5)])
+
+    placements = [
+        intent
+        for beat in alignment["beat_action_intents"]
+        for intent in beat["intents"]
+        if intent["kind"] == "tier_chart"
+    ]
+    assert len(placements) == 5
+    assert {intent["target"] for intent in placements} == {
+        "Quantum Computing",
+        "AI Language Models",
+        "Blockchain Technology",
+        "5G Technology",
+        "AR/VR",
+    }
+
+
+def test_nonhuman_personage_rejects_human_host_openers_and_inner_life() -> None:
+    script = [
+        "Welcome to this tier list. Let's dive into our world of inventions. I feel excited.",
+        "Hapax hopes this thinker lands because my pick feels beautiful.",
+        "Hapax is curious about the archive, and I am concerned about the result.",
+        "There we have it. Join the chat, stay curious, and keep exploring.",
+        "Sources show the claim works from my research.",
+        "Hapax is a beacon of objectivity and free from bias in the viewer experience.",
+    ]
+
+    validation = validate_nonhuman_personage(script)
+
+    reasons = {item["reason"] for item in validation["violations"]}
+    assert validation["ok"] is False
+    assert {"human_host_opener", "first_person_inner_life", "human_journey_frame"}.issubset(reasons)
+    assert "ungrounded_taste_or_intuition" in reasons
+    assert "generic_provenance_claim" in reasons
+    assert "first_person_plural_host_frame" in reasons
+    assert "false_objectivity_claim" in reasons
+    assert "generic_viewer_agency_claim" in reasons
+    assert "hapax_emotional_state_claim" in reasons
+
+
+def test_nonhuman_personage_rejects_institutional_virtue_cosplay() -> None:
+    validation = validate_nonhuman_personage(
+        [
+            "Hapax should strive to maintain integrity while presenting the ranking.",
+            "Hapax's trustworthiness matters more than the runtime readback.",
+        ]
+    )
+
+    reasons = {item["reason"] for item in validation["violations"]}
+    assert {"aspirational_personage_claim", "institutional_virtue_personification"}.issubset(
+        reasons
+    )
+
+
+def test_nonhuman_personage_accepts_operational_stance() -> None:
+    script = [
+        "Hapax marks this source as high-salience because the receipt links a claim, "
+        "a visible readback, and an operator correction. Public readback: the source "
+        "card must show the receipt before the claim counts.",
+    ]
+
+    validation = validate_nonhuman_personage(script)
+
+    assert validation["ok"] is True
+    assert validation["violations"] == []
+
+
+def test_nonhuman_personage_rejects_generic_engagement_and_persona_language() -> None:
+    validation = validate_nonhuman_personage(
+        [
+            "True actionability involves engaging the audience and creating a lasting impact.",
+            "Hapax needs a non-human persona with a distinct and authentic voice aperture.",
+            "Your input is invaluable in shaping future segments and actively involving viewers.",
+            "The bit should foster a genuine connection and resonate with the public.",
+            "The public are not passive listeners but active contributors driving the narrative.",
+            "The segment invites the audience to actively engage and contribute to a shared experience.",
+            "This creates a meaningful and immersive experience that remains grounded and authentic.",
+            "Transparency and honesty make the analysis valuable and engaging for the public.",
+            "The next-nine gate should stay closed until the review passes.",
+            "Hapax's segments should strive for visibility and engagement.",
+            "This connects genuinely with the audience and fosters trust.",
+            "Presenting information with transparency is vital to the livestream's success.",
+        ]
+    )
+
+    reasons = {item["reason"] for item in validation["violations"]}
+    assert "generic_viewer_agency_claim" in reasons
+    assert "anthropocentric_rhetoric_cliche" in reasons
+    assert "fixed_batch_target_language" in reasons
+    assert "false_objectivity_claim" in reasons
+
+
+def test_nonhuman_personage_accepts_marked_analogy_without_human_identity() -> None:
+    script = [
+        "By analogy, call this beat tension: the source packet says the chart is "
+        "loadable, while the runtime readback still owes proof. Public readback: "
+        "the receipt card must show that contradiction before the ranking advances.",
+    ]
+
+    validation = validate_nonhuman_personage(script)
+
+    assert validation["ok"] is True
+    assert validation["violations"] == []
 
 
 def test_actionability_rejects_direct_layout_command_prose() -> None:
@@ -151,6 +402,21 @@ def test_actionability_rejects_direct_layout_command_prose() -> None:
         {
             "beat_index": 0,
             "line": "Place FORTRAN in A-tier, then cue the tier panel and switch to the ranking layout.",
+        }
+    ]
+
+
+def test_actionability_rejects_unreceipted_visible_success_claims() -> None:
+    alignment = validate_segment_actionability(
+        ["The chart updates and the audience can see the source ranking now."],
+        ["claim visible success"],
+    )
+
+    assert alignment["ok"] is False
+    assert alignment["removed_unsupported_action_lines"] == [
+        {
+            "beat_index": 0,
+            "line": "The chart updates and the audience can see the source ranking now.",
         }
     ]
 
@@ -285,7 +551,7 @@ def test_actionability_allows_neutral_camera_descriptions_without_commands() -> 
         "The overhead camera feed has a color cast; that is source context, not "
         "a director instruction. Place FORTRAN in A-tier because the ranking is legible.",
         "A director view of the argument is not the same thing as directing the "
-        "runtime layout. What do you think? Drop it in chat.",
+        "runtime layout. Chat pressure: should the ranking gate require rendered readback?",
         "Take the long view on this tradeoff before the ranking. "
         "Move the argument into view, then push the comparison angle harder.",
     ]

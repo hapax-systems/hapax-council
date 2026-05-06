@@ -10,6 +10,7 @@ from programme/stimmung/activity alone).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -155,6 +156,73 @@ def test_seed_includes_live_priors_without_treating_them_as_script_authority() -
     assert "compose live, do not read as a script" in seed
     assert "Alpha belongs in S-tier" in seed
     assert "tier_visual" in seed
+
+
+def test_segment_prompt_uses_nonhuman_voice_protocol() -> None:
+    seen: list[str] = []
+
+    def stub(*, prompt: str, seed: str, **kwargs) -> str:
+        seen.append(prompt)
+        return "Source Alpha constrains the ranking because the receipt is visible."
+
+    compose._set_last_segment_compose(0.0)
+    ctx = _FakeContext(
+        programme=_FakeProgramme(
+            role=_FakeRole(value="tier_list"),
+            narrative_beat="Rank Alpha with receipts",
+            content=SimpleNamespace(
+                narrative_beat="Rank Alpha with receipts",
+                segment_beats=["hook: rank Alpha with evidence"],
+                segment_beat_durations=[120],
+            ),
+        )
+    )
+
+    compose.compose_narrative(ctx, llm_call=stub)
+
+    prompt = seen[0]
+    lower = prompt.lower()
+    assert "non-human personage contract" in lower
+    assert "voice aperture" in lower
+    for phrase in (
+        "late-night monologue",
+        "specialist host",
+        "welcome back",
+        "let's get into it",
+        "hosting a tier list",
+        "audience can see",
+        "here's what i found",
+        "what do we get",
+        "now we're getting into it",
+        "which brings us to",
+        "what did we learn",
+        "what we still don't know",
+    ):
+        assert phrase not in lower
+
+
+def test_segment_mode_does_not_relax_human_host_openers() -> None:
+    def stub(*, prompt: str, seed: str, **kwargs) -> str:
+        return "Welcome back to the broadcast. Source Alpha constrains the ranking."
+
+    compose._set_last_segment_compose(0.0)
+    ctx = _FakeContext(
+        programme=_FakeProgramme(
+            role=_FakeRole(value="tier_list"),
+            narrative_beat="Rank Alpha",
+            content=SimpleNamespace(
+                narrative_beat="Rank Alpha",
+                segment_beats=["hook"],
+                segment_beat_durations=[120],
+            ),
+        )
+    )
+
+    out = compose.compose_narrative(ctx, llm_call=stub)
+
+    assert out is not None
+    assert "Welcome back" not in out
+    assert "Source Alpha" in out
 
 
 def test_prompt_includes_open_triad_continuity() -> None:

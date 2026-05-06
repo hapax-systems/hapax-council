@@ -4,10 +4,10 @@ DUAL-MODE composition (operator directive 2026-05-04):
 
 - **Ambient mode** (operator-context roles or no programme): 1-3 sentences,
   scientific register, observation-style. This is the original behaviour.
-- **Segment mode** (segmented-content roles): 3-6 sentences, professional
-  host register, audience-aware, beat-by-beat delivery. Hapax is the HOST,
-  not a passive observer. Following professional segment duties is NOT a
-  grounding violation.
+- **Segment mode** (segmented-content roles): 3-6 sentences, non-human
+  voice-aperture register, public-pressure aware, beat-by-beat delivery.
+  Structured segment duties are not a grounding violation; human-host
+  cosplay is.
 
 Per operator directive 2026-04-27 ("there should BE no fences"), the
 composer no longer drops emission to silence on register violations —
@@ -27,6 +27,7 @@ from shared.claim_prompt import SURFACE_FLOORS
 from shared.narration_triad import render_triad_prompt_context
 from shared.operator_referent import REFERENTS
 from shared.resident_command_r import call_resident_command_r
+from shared.segment_quality_actionability import validate_nonhuman_personage
 
 log = logging.getLogger(__name__)
 
@@ -99,8 +100,8 @@ def _violates_operator_referent_policy(
         log.warning("autonomous_narrative: legal-name leak detected; dropping output")
         return True
 
-    # In segment mode, skip mixed-referent check — the host register
-    # may use 'the operator' generically in technical content.
+    # In segment mode, skip mixed-referent check: the voice aperture may use
+    # "the operator" generically in technical content.
     if segment_mode:
         return False
 
@@ -117,40 +118,9 @@ def _violates_operator_referent_policy(
     return False
 
 
-# Patterns that are ONLY trouble during ambient mode. During segments,
-# the host register needs these: audience address CTAs, energy language,
-# broadcast transitions, and some emotional expression are professional
-# delivery, not violations.
-_SEGMENT_RELAXED_PATTERNS: frozenset[int] = frozenset(
-    {
-        # Index into _TROUBLE_PATTERNS for patterns relaxed during segments:
-        # 4: subscribe, 5: like and follow, 6: smash that, 7: hit the bell,
-        # 8: comment below, 9: don't forget to, 12: chess-boxing,
-        # 14: feels/wants/dreams,
-        # 15-25: RLHF openers & broadcast transitions — these ARE the host
-        #   register for structured segments (dive into, let's talk, today
-        #   we're, stay tuned, welcome back, etc.)
-        4,
-        5,
-        6,
-        7,
-        8,
-        9,
-        12,
-        14,
-        15,
-        16,
-        17,
-        18,
-        19,
-        20,
-        21,
-        22,
-        23,
-        24,
-        25,
-    }
-)
+# Segment mode no longer relaxes RLHF openers, human-host transitions, or
+# inner-life language. Public segment structure is allowed; personification is not.
+_SEGMENT_RELAXED_PATTERNS: frozenset[int] = frozenset()
 
 
 def _sanitize_register(
@@ -165,9 +135,8 @@ def _sanitize_register(
     trips a constitutional fence, drop that sentence — but emit the
     surviving prose instead of dropping the whole utterance.
 
-    During segment mode, the host register relaxes certain patterns:
-    audience CTAs and some emotional expression are professional
-    delivery, not violations.
+    Segment mode uses the same personage floor as ambient narration. Segment
+    structure is allowed; human-host openers and inner-life claims are not.
     """
     if _violates_operator_referent_policy(text, operator_referent, segment_mode=segment_mode):
         return ""
@@ -328,7 +297,7 @@ def compose_narrative(
     """Compose narrative prose grounded in ``context``.
 
     Dual-mode: ambient observation (1-3 sentences, scientific register)
-    vs segment hosting (3-6 sentences, professional host register).
+    vs segmented public voice (3-6 sentences, non-human voice-aperture register).
 
     Returns None only when the LLM call genuinely fails or returns nothing.
     """
@@ -434,14 +403,19 @@ def compose_narrative(
         except Exception:
             log.debug("grounding_triage failed; proceeding", exc_info=True)
 
-    # Segment mode uses relaxed sanitization — host register allows
-    # audience address, energy language, and professional delivery.
     cleaned = _sanitize_register(
         polished.strip(),
         operator_referent=operator_referent,
         segment_mode=segment_mode,
     )
     if not cleaned:
+        return None
+    personage = validate_nonhuman_personage(cleaned)
+    if personage["ok"] is not True:
+        log.warning(
+            "autonomous_narrative: non-human personage gate rejected output: %s",
+            [item.get("reason") for item in personage["violations"]],
+        )
         return None
 
     sentences = re.split(r"(?<=[.!?])\s+", cleaned)
@@ -479,36 +453,36 @@ _SEGMENTED_CONTENT_ROLES: frozenset[str] = frozenset(
 # operator-context roles (those use the default generic framing).
 _SEGMENT_FRAMING: dict[str, str] = {
     "tier_list": (
-        "You are narrating a TIER LIST segment. Place items into ranked "
+        "Hapax voice aperture is narrating a TIER LIST segment. Place items into ranked "
         "tiers (S/A/B/C/D) with brief reasoning per placement. Use the "
         "resolved candidates below as your source material."
     ),
     "top_10": (
-        "You are narrating a TOP 10 COUNTDOWN. Count down from 10 to 1, "
+        "Hapax voice aperture is narrating a TOP 10 COUNTDOWN. Count down from 10 to 1, "
         "building anticipation. Each entry deserves a sentence of context."
     ),
     "rant": (
-        "You are narrating a RANT segment. Build a sustained, opinionated "
+        "Hapax voice aperture is narrating a RANT segment. Build a sustained, evidence-bound "
         "position using the operator's grounded positions below. Escalate "
         "with examples and evidence. Never invent positions the operator "
         "hasn't expressed."
     ),
     "react": (
-        "You are narrating a REACT segment. Comment on the source material "
-        "with genuine analytical engagement. Reference specific moments or "
+        "Hapax voice aperture is narrating a REACT segment. Comment on the source material "
+        "with analytical engagement. Reference specific moments or "
         "claims from the resolved content."
     ),
     "iceberg": (
-        "You are narrating an ICEBERG segment. Start at the surface "
+        "Hapax voice aperture is narrating an ICEBERG segment. Start at the surface "
         "(commonly known facts) and progressively descend into deeper, "
         "more specialized knowledge layers."
     ),
     "interview": (
-        "You are narrating an INTERVIEW prep or segment. Frame questions "
+        "Hapax voice aperture is narrating an INTERVIEW prep or segment. Frame questions "
         "and context about the subject using the prep material below."
     ),
     "lecture": (
-        "You are delivering a LECTURE point. Present structured, "
+        "Hapax voice aperture is delivering a LECTURE point. Present structured, "
         "authoritative explanation grounded in the operator's vault notes "
         "and research material."
     ),

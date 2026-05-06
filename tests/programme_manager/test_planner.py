@@ -145,11 +145,28 @@ class TestHappyPath:
             return json.dumps(_well_formed_plan_payload(role=ProgrammeRole.TIER_LIST))
 
         planner = ProgrammePlanner(llm_fn=capture)
-        plan = planner.plan(show_id="show-test-001", target_programmes=1)
+        plan = planner.plan(show_id="show-test-001", candidate_cap=1)
 
         assert plan is not None
-        assert "emit exactly 1 segmented-content programme" in prompts[0]
+        assert "emit no more than 1 segmented-content programme" in prompts[0]
+        assert "not an accepted-segment quota" in prompts[0]
         assert "soft-prior programme proposals" in prompts[0]
+
+    def test_prompt_anchor_topic_requires_per_call_grounding_context(self) -> None:
+        payload = _well_formed_plan_payload(role=ProgrammeRole.LECTURE)
+        payload["programmes"][0]["content"]["narrative_beat"] = (
+            "Deliver a lecture on Appalachian moonshine culture."
+        )
+        planner = ProgrammePlanner(llm_fn=_stub_llm(payload), max_retries=0)
+
+        assert planner.plan(show_id="show-test-001") is None
+
+        grounded = ProgrammePlanner(llm_fn=_stub_llm(payload), max_retries=0)
+        plan = grounded.plan(
+            show_id="show-test-001",
+            vault_state={"topic_candidates": ["Appalachian moonshine source packet"]},
+        )
+        assert plan is not None
 
     def test_default_model_is_resident_command_r(self) -> None:
         """Pin the only production planner model.
@@ -460,6 +477,12 @@ class TestContextRendering:
 
         assert "camera_subject" not in prompt
         assert "camera:" not in prompt
+
+    def test_default_prompt_does_not_name_prior_anchor_topics(self) -> None:
+        prompt = ProgrammePlanner()._read_prompt_template()
+        lowered = prompt.lower()
+        for term in ("popcorn", "sutton", "appalachian", "moonshine"):
+            assert term not in lowered
 
 
 # ── Soft-prior architectural pin ──────────────────────────────────────

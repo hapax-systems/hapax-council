@@ -75,26 +75,33 @@ _LLM_TIMEOUT_S: float = float(os.environ.get("HAPAX_PROGRAMME_PLANNER_LLM_TIMEOU
 # Max number of corrective retries after the first call. Spec mandates
 # "retries once" (one corrective re-call), so default is 1.
 DEFAULT_MAX_RETRIES = 1
+_PROMPT_ANCHOR_TOPIC_GROUPS = (
+    ("popcorn", "sutton"),
+    ("appalachian", "moonshine"),
+    ("appalachian", "culture"),
+)
 
 
 LLMCallable = Callable[[str], str]
 
 
-def _normalized_target_programmes(target_programmes: int | None) -> int | None:
-    if target_programmes is None:
+def _normalized_candidate_cap(candidate_cap: int | None) -> int | None:
+    if candidate_cap is None:
         return None
-    return max(1, min(5, int(target_programmes)))
+    return max(1, min(5, int(candidate_cap)))
 
 
-def _render_target_directive(target_programmes: int | None) -> str:
-    if target_programmes is None:
+def _render_candidate_cap_directive(candidate_cap: int | None) -> str:
+    if candidate_cap is None:
         return ""
-    noun = "programme" if target_programmes == 1 else "programmes"
+    noun = "programme" if candidate_cap == 1 else "programmes"
     return (
-        "## Per-run programme target\n\n"
-        f"For this prep run, emit exactly {target_programmes} segmented-content {noun}. "
-        "This is a run-size constraint inside the normal schema range, not a runtime "
-        "authority transfer. Keep all planner outputs as soft-prior programme proposals."
+        "## Per-run programme candidate cap\n\n"
+        f"For this prep run, emit no more than {candidate_cap} segmented-content {noun}. "
+        "This is a batch-size cap so the prep budget can go to sequential composition, "
+        "critique, repair, and rejection. It is not an accepted-segment quota and not "
+        "a runtime authority transfer. Keep all planner outputs as soft-prior "
+        "programme proposals."
     )
 
 
@@ -134,6 +141,7 @@ class ProgrammePlanner:
         profile: dict | None = None,
         condition_history: dict | None = None,
         content_state: dict | None = None,
+        candidate_cap: int | None = None,
         target_programmes: int | None = None,
     ) -> ProgrammePlan | None:
         """Compose a context block, call the LLM, validate + return.
@@ -151,7 +159,15 @@ class ProgrammePlanner:
             profile=profile,
             condition_history=condition_history,
             content_state=content_state,
-            target_programmes=target_programmes,
+            candidate_cap=candidate_cap if candidate_cap is not None else target_programmes,
+        )
+        grounding_context = _topic_grounding_context(
+            perception=perception,
+            working_mode=working_mode,
+            vault_state=vault_state,
+            profile=profile,
+            condition_history=condition_history,
+            content_state=content_state,
         )
 
         prompt = base_prompt
@@ -170,7 +186,13 @@ class ProgrammePlanner:
 
             parsed = self._parse_plan(raw, show_id=show_id)
             if isinstance(parsed, ProgrammePlan):
-                return parsed
+                anchor_error = _prompt_anchor_topic_error(
+                    parsed,
+                    grounding_context=grounding_context,
+                )
+                if anchor_error is None:
+                    return parsed
+                parsed = anchor_error
             last_error = parsed
             log.warning(
                 "programme plan validation failed (attempt %d): %s", attempt + 1, last_error
@@ -196,12 +218,12 @@ class ProgrammePlanner:
         profile: dict | None,
         condition_history: dict | None,
         content_state: dict | None,
-        target_programmes: int | None,
+        candidate_cap: int | None,
     ) -> str:
         """Render the prompt template + per-call context."""
         template = self._read_prompt_template()
-        target = _normalized_target_programmes(target_programmes)
-        target_directive = _render_target_directive(target)
+        candidate_cap = _normalized_candidate_cap(candidate_cap)
+        target_directive = _render_candidate_cap_directive(candidate_cap)
         context = self._render_context(
             show_id=show_id,
             perception=perception,
@@ -362,6 +384,73 @@ def _default_llm_fn(prompt: str) -> str:
     )
     log.info("planner LLM: served by resident Command-R")
     return result
+
+
+def _topic_grounding_context(
+    *,
+    perception: dict | None,
+    working_mode: str | None,
+    vault_state: dict | None,
+    profile: dict | None,
+    condition_history: dict | None,
+    content_state: dict | None,
+) -> str:
+    try:
+        return json.dumps(
+            {
+                "perception": perception,
+                "working_mode": working_mode,
+                "vault_state": vault_state,
+                "profile": profile,
+                "condition_history": condition_history,
+                "content_state": content_state,
+            },
+            default=str,
+            sort_keys=True,
+        ).lower()
+    except Exception:
+        return str(
+            (perception, working_mode, vault_state, profile, condition_history, content_state)
+        ).lower()
+
+
+def _prompt_anchor_topic_error(
+    plan: ProgrammePlan,
+    *,
+    grounding_context: str,
+) -> str | None:
+    if _has_prompt_anchor_topic(grounding_context):
+        return None
+    for programme in plan.programmes:
+        content = programme.content
+        topic_text = " ".join(
+            [
+                str(getattr(content, "narrative_beat", "") or ""),
+                " ".join(str(item) for item in getattr(content, "segment_beats", []) or []),
+            ]
+        ).lower()
+        matched = _matched_prompt_anchor_topic_groups(topic_text)
+        if matched:
+            return (
+                "programme selected prompt-anchor topic terms without per-call grounding "
+                f"context: {', '.join(matched)}. Prompt examples are syntax "
+                "only; choose a topic evidenced by vault_state/profile/content_state or "
+                "provide explicit source refs in context."
+            )
+    return None
+
+
+def _matched_prompt_anchor_topic_groups(text: str) -> list[str]:
+    lowered = text.lower()
+    return [
+        " + ".join(group)
+        for group in _PROMPT_ANCHOR_TOPIC_GROUPS
+        if all(term in lowered for term in group)
+    ]
+
+
+def _has_prompt_anchor_topic(text: str) -> bool:
+    return bool(_matched_prompt_anchor_topic_groups(text))
 
 
 __all__ = ["DEFAULT_MAX_RETRIES", "DEFAULT_MODEL", "LLMCallable", "ProgrammePlanner"]

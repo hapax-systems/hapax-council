@@ -17,6 +17,7 @@ import asyncio
 import enum
 import json
 import logging
+import os
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -51,6 +52,7 @@ from shared.voice_register import VoiceRegister
 log = logging.getLogger(__name__)
 
 TICK_INTERVAL_S = 0.15  # 150ms cognitive tick
+PREP_VERBATIM_LEGACY_ENV = "HAPAX_PREP_VERBATIM_LEGACY"
 
 # --- Shared Speech Event Ring ---
 # Minimum viable aperture unification: a shared in-memory ring that all
@@ -67,6 +69,24 @@ class SpeechEventKind(enum.Enum):
     RESPONSE = "response"  # conversational response to operator speech
     NARRATION = "narration"  # autonomous narrative drive
     EXPLORATION = "exploration"  # exploration surfacing
+
+
+def _truthy_env(name: str) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _delivery_mode_value(content: object) -> str:
+    mode = getattr(content, "delivery_mode", "live_prior")
+    return str(getattr(mode, "value", mode) or "live_prior").strip().lower().replace("-", "_")
+
+
+def _legacy_prepared_playback_owns_tts(content: object | None) -> bool:
+    if content is None or not getattr(content, "prepared_script", None):
+        return False
+    return _truthy_env(PREP_VERBATIM_LEGACY_ENV) and _delivery_mode_value(content) == (
+        "verbatim_legacy"
+    )
 
 
 @dataclass(frozen=True)
@@ -979,17 +999,16 @@ class CpalRunner:
         # the resolved destination decision accepts the route.
         source = getattr(impingement, "source", "")
         if source == "autonomous_narrative" and self._daemon is not None:
-            # When the dedicated prepared_playback_loop is driving TTS for a
-            # prepped programme, skip CPAL's autonomous narrative path entirely.
-            # The dedicated loop uses resolve_playback_decision for correct routing.
+            # Only explicit legacy verbatim playback owns TTS. Live-prior prepared
+            # artifacts enrich autonomous composition and must not suppress it.
             try:
                 from shared.programme_store import default_store as _ds
 
                 _ap = _ds().active_programme()
-                if _ap is not None and getattr(
-                    getattr(_ap, "content", None), "prepared_script", None
+                if _ap is not None and _legacy_prepared_playback_owns_tts(
+                    getattr(_ap, "content", None)
                 ):
-                    log.debug("Autonomous narrative skipped: prepared_playback_loop owns TTS")
+                    log.debug("Autonomous narrative skipped: legacy prepared playback owns TTS")
                     return
             except Exception:
                 pass  # fail-open: let it through if store is unavailable

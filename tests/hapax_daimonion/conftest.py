@@ -118,6 +118,7 @@ def _stub_hardware_modules():
         "insightface.app.common",
         "googleapiclient",
         "googleapiclient.discovery",
+        "googleapiclient.errors",
     ]:
         if mod_name not in sys.modules:
             sys.modules[mod_name] = MagicMock()

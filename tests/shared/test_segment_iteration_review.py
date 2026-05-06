@@ -6,7 +6,7 @@ from typing import Any
 
 from agents.hapax_daimonion import daily_segment_prep as prep
 from scripts.review_one_segment_iteration import main as review_cli_main
-from shared.segment_iteration_review import review_one_segment_iteration
+from shared.segment_iteration_review import review_one_segment_iteration, review_segment_batch
 from shared.segment_quality_actionability import (
     LAYOUT_RESPONSIBILITY_VERSION,
     QUALITY_RUBRIC_VERSION,
@@ -39,10 +39,10 @@ EXCELLENT_SCRIPT = [
     (
         "So the actionability test is simple and uncomfortable: what the script says should have "
         "a visible or doable counterpart, and what cannot be witnessed should be spoken as argument "
-        "rather than advertised as a screen event. What do you think? Drop it in chat if the ranking "
-        "gate is stricter than the content needs, because that response is itself a supported surface "
+        "rather than advertised as a screen event. Chat pressure: should the ranking "
+        "gate be stricter than the content needs? That response is itself a supported surface "
         "instead of an imaginary clip. The callback is Zuboff again: systems become trustworthy only "
-        "when their operations can be inspected. The next move is not the next nine segments; it is "
+        "when their operations can be inspected. The next move is not a count target; it is "
         "one canary receipt that proves the script, action intents, and layout posture all agree."
     ),
 ]
@@ -56,14 +56,14 @@ GENERIC_SCRIPT = [
 
 ONE_ACTION_KIND_SCRIPT = [
     (
-        "Compare the canary method with the final-nine method because the stream needs a "
+        "Compare the canary method with the pool-release method because the stream needs a "
         "visible reason to pause before scaling. Shoshana Zuboff argues that systems earn "
         "trust only when their operations can be inspected, and that gives this bit its "
-        "stakes: the host cannot treat a polished segment as production-ready until the "
+        "stakes: the runtime cannot treat a polished segment as production-ready until the "
         "canary receipt is visible. Compare the prepared artifact to the runtime review "
         "again, because the audience should hear why one segment is a gate rather than a "
         "sample. Remember the opening constraint: the method has to show its work before "
-        "the next nine inherit it."
+        "pool release inherits it."
     ),
     (
         "Now compare the script prior with the actionability prior, because a good segment "
@@ -75,10 +75,10 @@ ONE_ACTION_KIND_SCRIPT = [
     ),
     (
         "So compare the final decision with the first sentence and make the callback explicit. "
-        "If the canary cannot show why it is safer than the final-nine path, the method is not "
+        "If the canary cannot show why it is safer than the pool-release path, the method is not "
         "ready. Zuboff's argument returns as a craft rule: inspectable systems make better "
         "livestream promises. Compare the review receipt with the segment itself, then hold "
-        "the next nine until the script, source prior, and visible runtime responsibility agree."
+        "pool release until the script, source prior, and visible runtime responsibility agree."
     ),
 ]
 
@@ -102,8 +102,8 @@ WEAK_SOURCE_SCRIPT = [
     ),
     (
         "so the closing move is to ask the audience to check the method rather than admire "
-        "the confidence. what do you think? drop it in chat if the review should be stricter "
-        "before the next nine. the callback is the first rule again: a good canary needs a "
+        "the confidence. chat pressure: should the review be stricter before pool release? "
+        "the callback is the first rule again: a good canary needs a "
         "visible receipt and a real grounded prior. this version has enough motion to look "
         "like a bit, but it still lacks reference fidelity and should not pass the ideal gate."
     ),
@@ -116,6 +116,7 @@ def _artifact(script: list[str]) -> dict[str, Any]:
     seed_sha256 = prep._sha256_text("seed")
     actionability = validate_segment_actionability(script, beats)
     layout = validate_layout_responsibility(actionability["beat_action_intents"])
+    personage = prep.validate_nonhuman_personage(script)
     source_hashes = prep._source_hashes_from_fields(
         programme_id="prog-canary",
         role="tier_list",
@@ -135,8 +136,10 @@ def _artifact(script: list[str]) -> dict[str, Any]:
         "segment_quality_rubric_version": QUALITY_RUBRIC_VERSION,
         "actionability_rubric_version": prep.ACTIONABILITY_RUBRIC_VERSION,
         "layout_responsibility_version": LAYOUT_RESPONSIBILITY_VERSION,
+        "personage_rubric_version": prep.PERSONAGE_RUBRIC_VERSION,
         "hosting_context": layout["hosting_context"],
         "segment_quality_report": prep.score_segment_quality(script, beats),
+        "personage_alignment": personage,
         "beat_action_intents": actionability["beat_action_intents"],
         "actionability_alignment": {
             "ok": actionability["ok"],
@@ -151,6 +154,8 @@ def _artifact(script: list[str]) -> dict[str, Any]:
         "model_id": prep.RESIDENT_PREP_MODEL,
         "prompt_sha256": prompt_sha256,
         "seed_sha256": seed_sha256,
+        "prep_content_state_sha256": prep._content_state_sha256(None),
+        "prep_content_state": None,
         "source_hashes": source_hashes,
         "source_provenance_sha256": prep._sha256_json(source_hashes),
         "llm_calls": [
@@ -220,6 +225,23 @@ def _rehash_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
     return artifact
 
 
+def _bind_content_state(artifact: dict[str, Any], content_state: dict[str, Any]) -> dict[str, Any]:
+    content_state_sha256 = prep._content_state_sha256(content_state)
+    artifact["prep_content_state"] = content_state
+    artifact["prep_content_state_sha256"] = content_state_sha256
+    artifact["source_hashes"] = prep._source_hashes_from_fields(
+        programme_id=str(artifact["programme_id"]),
+        role=str(artifact["role"]),
+        topic=str(artifact["topic"]),
+        segment_beats=list(artifact["segment_beats"]),
+        seed_sha256=str(artifact["seed_sha256"]),
+        prompt_sha256=str(artifact["prompt_sha256"]),
+        content_state_sha256=content_state_sha256,
+    )
+    artifact["source_provenance_sha256"] = prep._sha256_json(artifact["source_hashes"])
+    return _rehash_artifact(artifact)
+
+
 def _write_manifest_artifact(tmp_path: Path, artifact: dict[str, Any]) -> Path:
     today = prep._today_dir(tmp_path)
     path = today / prep._programme_artifact_name(artifact["programme_id"])
@@ -235,7 +257,7 @@ def test_one_segment_review_blocks_until_team_critique_receipts_pass() -> None:
     receipt = review_one_segment_iteration([_artifact(EXCELLENT_SCRIPT)])
 
     assert receipt["automated_gate"]["passed"] is True
-    assert receipt["ready_for_next_nine"] is False
+    assert receipt["ready_for_pool_release"] is False
     assert receipt["decision"] == "team_critique_required"
     assert receipt["team_critique_loop"]["pending_roles"] == [
         "script_quality",
@@ -253,14 +275,40 @@ def test_one_segment_review_accepts_after_automation_and_team_receipts() -> None
 
     assert receipt["automated_gate"]["passed"] is True
     assert receipt["team_critique_loop"]["passed"] is True
-    assert receipt["ready_for_next_nine"] is True
-    assert receipt["decision"] == "ready_for_next_nine"
-    assert receipt["next_nine_gate_mode"] == "blocking_review_receipt"
+    assert receipt["ready_for_pool_release"] is True
+    assert receipt["decision"] == "ready_for_pool_release"
+    assert receipt["pool_release_gate_mode"] == "blocking_review_receipt"
     assert receipt["resident_model_continuity"] == {
         "expected_model": prep.RESIDENT_PREP_MODEL,
         "no_qwen": True,
         "no_unload_or_swap": True,
     }
+
+
+def test_batch_review_checks_every_accepted_artifact() -> None:
+    first = _artifact(EXCELLENT_SCRIPT)
+    second = _artifact(GENERIC_SCRIPT)
+    second["programme_id"] = "prog-second"
+    second["llm_calls"][0]["programme_id"] = "prog-second"
+    second["source_hashes"] = prep._source_hashes_from_fields(
+        programme_id="prog-second",
+        role=str(second["role"]),
+        topic=str(second["topic"]),
+        segment_beats=list(second["segment_beats"]),
+        seed_sha256=str(second["seed_sha256"]),
+        prompt_sha256=str(second["prompt_sha256"]),
+        content_state_sha256=str(second["prep_content_state_sha256"]),
+    )
+    second["source_provenance_sha256"] = prep._sha256_json(second["source_hashes"])
+    _rehash_artifact(second)
+
+    receipt = review_segment_batch([first, second])
+
+    assert receipt["ready_for_pool"] is False
+    assert receipt["artifact_count"] == 2
+    assert receipt["artifacts"][0]["passed"] is True
+    assert receipt["artifacts"][1]["passed"] is False
+    assert "script.quality_floor" in receipt["artifacts"][1]["failed_criteria"]
 
 
 def test_one_segment_review_accepts_multi_phase_resident_call_provenance() -> None:
@@ -294,8 +342,129 @@ def test_one_segment_review_accepts_multi_phase_resident_call_provenance() -> No
         team_critique_receipts=_team_receipts_for(artifact),
     )
 
-    assert receipt["ready_for_next_nine"] is True
+    assert receipt["ready_for_pool_release"] is True
     assert "artifact.prior_source_binding" not in _failed_criteria(receipt)
+
+
+def test_one_segment_review_accepts_sequential_beat_resident_call_provenance() -> None:
+    artifact = _artifact(EXCELLENT_SCRIPT)
+    artifact["llm_calls"] = [
+        {
+            "call_index": index + 1,
+            "phase": "compose_beat",
+            "programme_id": artifact["programme_id"],
+            "model_id": prep.RESIDENT_PREP_MODEL,
+            "prompt_sha256": prep._sha256_text(f"beat prompt {index}"),
+            "prompt_chars": 1220 + index,
+            "called_at": "2026-05-06T04:01:00+00:00",
+        }
+        for index, _beat in enumerate(artifact["segment_beats"])
+    ]
+    _rehash_artifact(artifact)
+
+    receipt = review_one_segment_iteration(
+        [artifact],
+        team_critique_receipts=_team_receipts_for(artifact),
+    )
+
+    assert receipt["ready_for_pool_release"] is True
+    assert "artifact.prior_source_binding" not in _failed_criteria(receipt)
+
+
+def test_one_segment_review_rejects_content_state_target_tier_drift() -> None:
+    artifact = _artifact(EXCELLENT_SCRIPT)
+    _bind_content_state(
+        artifact,
+        {
+            "source_packets": [
+                {
+                    "id": "packet:canary-targets",
+                    "items": [
+                        {
+                            "name": "the Command-R manifest gate",
+                            "target_tier": "D-tier",
+                            "why": "test intentionally contradicts the script placement",
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+
+    receipt = review_one_segment_iteration(
+        [artifact],
+        team_critique_receipts=_team_receipts_for(artifact),
+    )
+
+    assert receipt["ready_for_pool_release"] is False
+    assert "script.content_state_target_fidelity" in _failed_criteria(receipt)
+
+
+def test_one_segment_review_rejects_content_state_target_wrong_beat() -> None:
+    artifact = _artifact(
+        [
+            (
+                "Source check: packet:canary-targets argues that the opening must name "
+                "beat-level drift because a global target phrase can hide a misplaced "
+                "ranking. Public readback: the receipt must expose the target beat."
+            ),
+            (
+                "Source check: packet:canary-targets shows that the Command-R manifest "
+                "gate is under judgment, but this beat does not place it. Visible test: "
+                "the chart must show whether item one received its declared slot."
+            ),
+            (
+                "Place the Command-R manifest gate in S-tier because this phrase appears "
+                "on the wrong beat. Place rendered LayoutState in S-tier because the "
+                "layout receipt remains visible. Chat pressure: should wrong-beat target "
+                "presence block the pool-release gate?"
+            ),
+        ]
+    )
+    artifact["segment_beats"] = [
+        "hook: introduce wrong-beat target drift",
+        "item_1: rank the Command-R manifest gate",
+        "item_2: rank rendered LayoutState",
+    ]
+    artifact["source_hashes"] = prep._source_hashes_from_fields(
+        programme_id=str(artifact["programme_id"]),
+        role=str(artifact["role"]),
+        topic=str(artifact["topic"]),
+        segment_beats=list(artifact["segment_beats"]),
+        seed_sha256=str(artifact["seed_sha256"]),
+        prompt_sha256=str(artifact["prompt_sha256"]),
+        content_state_sha256=str(artifact["prep_content_state_sha256"]),
+    )
+    artifact["source_provenance_sha256"] = prep._sha256_json(artifact["source_hashes"])
+    _rehash_artifact(artifact)
+    _bind_content_state(
+        artifact,
+        {
+            "source_packets": [
+                {
+                    "id": "packet:canary-targets",
+                    "items": [
+                        {
+                            "name": "the Command-R manifest gate",
+                            "target_tier": "S-tier",
+                        },
+                        {
+                            "name": "rendered LayoutState",
+                            "target_tier": "S-tier",
+                        },
+                    ],
+                }
+            ]
+        },
+    )
+
+    receipt = review_one_segment_iteration(
+        [artifact],
+        team_critique_receipts=_team_receipts_for(artifact),
+    )
+
+    assert receipt["ready_for_pool_release"] is False
+    assert "script.content_state_target_fidelity" in _failed_criteria(receipt)
 
 
 def test_one_segment_review_accepts_real_loader_objects_without_enriched_hash_mismatch(
@@ -316,7 +485,7 @@ def test_one_segment_review_accepts_real_loader_objects_without_enriched_hash_mi
     )
 
     assert receipt["automated_gate"]["passed"] is True
-    assert receipt["ready_for_next_nine"] is True
+    assert receipt["ready_for_pool_release"] is True
     assert receipt["artifact_path"] == str(path)
     assert not {
         "artifact.hash_receipt",
@@ -359,7 +528,7 @@ def test_review_cli_uses_loader_path_but_reviews_saved_raw_artifact(
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
 
     assert receipt["automated_gate"]["passed"] is True
-    assert receipt["ready_for_next_nine"] is True
+    assert receipt["ready_for_pool_release"] is True
     assert "artifact.hash_receipt" not in _failed_criteria(receipt)
 
 
@@ -376,7 +545,7 @@ def test_team_critique_receipts_bind_to_artifact_programme_and_iteration() -> No
     )
 
     assert receipt["automated_gate"]["passed"] is True
-    assert receipt["ready_for_next_nine"] is False
+    assert receipt["ready_for_pool_release"] is False
     assert receipt["team_critique_loop"]["passed"] is False
     assert receipt["team_critique_loop"]["pending_roles"] == [
         "script_quality",
@@ -392,13 +561,13 @@ def test_team_critique_receipts_bind_to_artifact_programme_and_iteration() -> No
 
 def test_one_segment_review_requires_exactly_one_manifest_accepted_artifact() -> None:
     receipt = review_one_segment_iteration([])
-    assert receipt["ready_for_next_nine"] is False
+    assert receipt["ready_for_pool_release"] is False
     assert "artifact.exactly_one_manifest_accepted" in _failed_criteria(receipt)
 
     receipt = review_one_segment_iteration(
         [_artifact(EXCELLENT_SCRIPT), _artifact(EXCELLENT_SCRIPT)]
     )
-    assert receipt["ready_for_next_nine"] is False
+    assert receipt["ready_for_pool_release"] is False
     assert "artifact.exactly_one_manifest_accepted" in _failed_criteria(receipt)
 
 
@@ -409,7 +578,7 @@ def test_one_segment_review_rejects_generic_script_even_with_team_receipts() -> 
         team_critique_receipts=_team_receipts_for(artifact),
     )
 
-    assert receipt["ready_for_next_nine"] is False
+    assert receipt["ready_for_pool_release"] is False
     assert "script.quality_floor" in _failed_criteria(receipt)
 
 
@@ -420,7 +589,7 @@ def test_one_segment_review_rejects_single_action_kind_even_if_script_is_sourcef
         team_critique_receipts=_team_receipts_for(artifact),
     )
 
-    assert receipt["ready_for_next_nine"] is False
+    assert receipt["ready_for_pool_release"] is False
     assert "actionability.visible_or_doable_counterpart" in _failed_criteria(receipt)
 
 
@@ -431,7 +600,7 @@ def test_one_segment_review_rejects_weak_source_fidelity() -> None:
         team_critique_receipts=_team_receipts_for(artifact),
     )
 
-    assert receipt["ready_for_next_nine"] is False
+    assert receipt["ready_for_pool_release"] is False
     assert "script.source_fidelity" in _failed_criteria(receipt)
 
 
@@ -450,7 +619,7 @@ def test_one_segment_review_rejects_wrong_model_and_layout_success_laundering() 
         team_critique_receipts=_team_receipts_for(artifact),
     )
 
-    assert receipt["ready_for_next_nine"] is False
+    assert receipt["ready_for_pool_release"] is False
     assert {
         "artifact.command_r_model",
         "layout.responsible_proposal_only",
@@ -471,7 +640,7 @@ def test_one_segment_review_rejects_stale_prior_source_binding() -> None:
         team_critique_receipts=_team_receipts_for(artifact),
     )
 
-    assert receipt["ready_for_next_nine"] is False
+    assert receipt["ready_for_pool_release"] is False
     assert "artifact.prior_source_binding" in _failed_criteria(receipt)
 
 
@@ -487,7 +656,7 @@ def test_one_segment_review_rejects_camera_or_spoken_only_layout_laundering() ->
         team_critique_receipts=_team_receipts_for(artifact),
     )
 
-    assert receipt["ready_for_next_nine"] is False
+    assert receipt["ready_for_pool_release"] is False
     assert "layout.no_static_camera_spoken_laundering" in _failed_criteria(receipt)
 
 
@@ -505,5 +674,5 @@ def test_one_segment_review_replays_hard_layout_contract_for_bounded_vocabulary(
             team_critique_receipts=_team_receipts_for(artifact),
         )
 
-        assert receipt["ready_for_next_nine"] is False
+        assert receipt["ready_for_pool_release"] is False
         assert "layout.hard_contract_replay" in _failed_criteria(receipt)

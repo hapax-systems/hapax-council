@@ -24,11 +24,10 @@ def test_load_prepped_programmes_accepts_prior_only_responsible_artifact(tmp_pat
     )
     assert loaded[0]["projected_layout_contract"]["authority"] == "declares_layout_needs_only"
     assert loaded[0]["projected_layout_contract"]["parent_artifact_authority"] == "prior_only"
-    assert loaded[0]["beat_layout_intents"][0]["needs"] == ["comparison_visible"]
-    assert set(loaded[0]["beat_layout_intents"][0]["proposed_postures"]) == {
-        "ranked_visual",
-        "comparison",
-    }
+    assert "comparison_visible" in loaded[0]["beat_layout_intents"][0]["needs"]
+    assert {"ranked_visual", "comparison"}.issubset(
+        set(loaded[0]["beat_layout_intents"][0]["proposed_postures"])
+    )
 
 
 def test_load_prepped_programmes_rejects_missing_contract(tmp_path: Path) -> None:
@@ -82,10 +81,22 @@ def test_load_prepped_programmes_rejects_camera_command_prose(tmp_path: Path) ->
 def _artifact(programme_id: str) -> dict:
     prompt_sha256 = prep._sha256_text("prompt")
     seed_sha256 = prep._sha256_text("seed")
-    segment_beats = ["rank alpha with a visible tier decision"]
-    prepared_script = ["Place Alpha in S-tier because the ranking makes the evidence legible."]
+    segment_beats = ["rank Alpha with visible source pressure"]
+    prepared_script = [
+        "Source check: the layout contract fixture argues that Alpha only counts "
+        "when the source hash, prompt hash, and pending runtime readback stay bound. "
+        "Place Alpha in S-tier because the ranking makes the evidence legible "
+        "without granting prepared layout authority. Visible test: the tier chart "
+        "must show Alpha, the S-tier placement, and the pending readback before the "
+        "claim becomes more than speech. But the problem is that static defaults can "
+        "look stable while hiding failure, so the stakes are concrete for "
+        "StudioCompositor and LayoutState. Remember the opening receipt because it "
+        "returns at the close. Chat pressure: should Alpha fall if any receipt goes "
+        "missing? So the segment closes by keeping layout success pending."
+    ]
     actionability = prep.validate_segment_actionability(prepared_script, segment_beats)
     layout = prep.validate_layout_responsibility(actionability["beat_action_intents"])
+    personage = prep.validate_nonhuman_personage(prepared_script)
     source_hashes = prep._source_hashes_from_fields(
         programme_id=programme_id,
         role="tier_list",
@@ -109,7 +120,9 @@ def _artifact(programme_id: str) -> dict:
         "segment_quality_rubric_version": prep.QUALITY_RUBRIC_VERSION,
         "actionability_rubric_version": prep.ACTIONABILITY_RUBRIC_VERSION,
         "layout_responsibility_version": prep.LAYOUT_RESPONSIBILITY_VERSION,
+        "personage_rubric_version": prep.PERSONAGE_RUBRIC_VERSION,
         "segment_quality_report": prep.score_segment_quality(prepared_script, segment_beats),
+        "personage_alignment": personage,
         "beat_action_intents": actionability["beat_action_intents"],
         "actionability_alignment": {
             "ok": actionability["ok"],
@@ -124,6 +137,8 @@ def _artifact(programme_id: str) -> dict:
         "model_id": prep.RESIDENT_PREP_MODEL,
         "prompt_sha256": prompt_sha256,
         "seed_sha256": seed_sha256,
+        "prep_content_state_sha256": prep._content_state_sha256(None),
+        "prep_content_state": None,
         "source_hashes": source_hashes,
         "source_provenance_sha256": prep._sha256_json(source_hashes),
         "llm_calls": [

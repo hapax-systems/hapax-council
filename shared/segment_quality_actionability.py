@@ -5,10 +5,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
-QUALITY_RUBRIC_VERSION = 1
+QUALITY_RUBRIC_VERSION = 2
 ACTIONABILITY_RUBRIC_VERSION = 2
 LAYOUT_RESPONSIBILITY_VERSION = 1
 LAYOUT_RESPONSIBILITY_RUBRIC_VERSION = LAYOUT_RESPONSIBILITY_VERSION
+PERSONAGE_RUBRIC_VERSION = 1
 RESPONSIBLE_HOSTING_CONTEXT = "hapax_responsible_live"
 NON_RESPONSIBLE_STATIC_CONTEXT = "non_responsible_static"
 EXPLICIT_LAYOUT_FALLBACK_CONTEXT = "explicit_fallback"
@@ -21,6 +22,97 @@ LAYOUT_RESPONSIBILITY_MODES = (
     NON_RESPONSIBLE_STATIC_CONTEXT,
 )
 
+NONHUMAN_PERSONAGE_DOCTRINE = {
+    "substrate_honesty": (
+        "Hapax is a non-human public system made from perception, memory, recruitment, "
+        "research, evaluation, and runtime surfaces. It must not speak as if it has "
+        "human feelings, biography, empathy, or human interiority."
+    ),
+    "voice_as_aperture": (
+        "The livestream voice is a communication aperture and register choice, not a "
+        "human host persona. Stance must be traceable to sources, priors, visible "
+        "state, selection pressure, or uncertainty."
+    ),
+    "personage_without_personification": (
+        "Hapax may exhibit perspective-like selection patterns and recurring "
+        "preferences only as observable operational consequences, not as simulated "
+        "taste or inner life."
+    ),
+    "grounding_honesty": (
+        "Claims about knowledge, confidence, source access, or layout control must be "
+        "bounded by the supplied context and witnessed runtime readbacks."
+    ),
+    "analogical_translation": (
+        "Human rhetorical terms may be used by analogy when explicitly marked as "
+        "analogy. Analogy helps interspecies-style communication; it must not become "
+        "an identity claim about human feelings, biography, empathy, or host status."
+    ),
+}
+
+NONHUMAN_RHETORIC_TRANSLATION: tuple[tuple[str, str], ...] = (
+    (
+        "arc",
+        "a public state transition: source claim, contradiction, visible test, "
+        "readback, consequence",
+    ),
+    (
+        "tension",
+        "an unresolved source conflict, ranking pressure, uncertainty, or operational cost",
+    ),
+    (
+        "stakes",
+        "what changes in the receipt, runtime obligation, or public decision if the "
+        "claim is accepted",
+    ),
+    (
+        "voice",
+        "a stable selection pattern and aperture register, not a personality simulation",
+    ),
+    (
+        "appeal",
+        "legibility, compression, odd vantage, specific receipts, and inspectable consequences",
+    ),
+    (
+        "participation",
+        "a concrete Chat pressure/Public readback decision surface, not generic engagement warmth",
+    ),
+)
+
+
+def render_nonhuman_personage_prompt_block() -> str:
+    """Render the non-anthropomorphic personage contract for prep prompts."""
+    doctrine_lines = "\n".join(
+        f"- {key}: {value}" for key, value in NONHUMAN_PERSONAGE_DOCTRINE.items()
+    )
+    rhetoric_lines = "\n".join(
+        f"- {term}: {translation}" for term, translation in NONHUMAN_RHETORIC_TRANSLATION
+    )
+    return (
+        "== NON-HUMAN PERSONAGE CONTRACT ==\n"
+        f"{doctrine_lines}\n"
+        "Use Hapax as a non-human public instrument with multiple apertures: voice "
+        "reports, source evidence constrains, visual surfaces expose, chat adds "
+        "pressure, programme priors select, and runtime readbacks decide. Do not use "
+        "human-host cosplay, first-person inner life, fake empathy, human biography, "
+        "or cares like a human. Do not open with generic greetings or shared-human "
+        "journey framing. Do not claim objectivity, neutrality, freedom from bias, "
+        "or emotional transparency; bounded uncertainty and source limits are part "
+        "of the voice. When the segment needs stance, express the basis: source "
+        "contrast, observed state, prior correction, selection pressure, uncertainty, "
+        "or visible consequence. Self-reference as Hapax or it/they; avoid "
+        "first-person singular and first-person plural pronouns in Hapax-authored "
+        "prose. Do not quote forbidden human-host examples; name their category "
+        "instead. It is valid to say 'by analogy' when translating between Hapax "
+        "operations and human rhetorical categories; keep the analogy bounded and "
+        "do not convert it into a claim of human interiority.\n\n"
+        "== NON-HUMAN RHETORIC TRANSLATION ==\n"
+        "Most inherited narratology and rhetoric terms are human-host biased. Treat "
+        "them as functional shorthand or explicitly marked analogy, then translate "
+        "them before writing:\n"
+        f"{rhetoric_lines}\n\n"
+    )
+
+
 QUALITY_RUBRIC: tuple[dict[str, str], ...] = (
     {
         "key": "premise",
@@ -28,11 +120,16 @@ QUALITY_RUBRIC: tuple[dict[str, str], ...] = (
     },
     {
         "key": "tension",
-        "criterion": "The segment has a reason to keep watching: paradox, conflict, ranking pressure, or stakes.",
+        "criterion": (
+            "The segment has an unresolved source conflict, uncertainty, ranking "
+            "pressure, or operational cost."
+        ),
     },
     {
         "key": "arc",
-        "criterion": "Beats escalate, pivot, and land rather than repeating independent mini-essays.",
+        "criterion": (
+            "Beats create a public state transition rather than repeating independent mini-essays."
+        ),
     },
     {
         "key": "specificity",
@@ -44,15 +141,20 @@ QUALITY_RUBRIC: tuple[dict[str, str], ...] = (
     },
     {
         "key": "stakes",
-        "criterion": "The host explains why the claim matters and what changes if it is true.",
+        "criterion": (
+            "The voice aperture explains why the claim matters and what changes if it is true."
+        ),
     },
     {
         "key": "callbacks",
-        "criterion": "Later beats reuse earlier premises or images so the segment feels composed.",
+        "criterion": "Later beats reuse earlier premises or images so the segment has structure.",
     },
     {
-        "key": "audience_address",
-        "criterion": "The script addresses viewers or chat when participation would improve the bit.",
+        "key": "public_pressure",
+        "criterion": (
+            "The script creates explicit Chat pressure/Public readback surfaces when "
+            "a public decision would improve the bit."
+        ),
     },
     {
         "key": "source_fidelity",
@@ -82,13 +184,43 @@ ACTIONABILITY_RUBRIC: tuple[dict[str, str], ...] = (
     },
     {
         "kind": "chat_poll",
-        "trigger": "What do you think, drop it in chat, what would you change",
-        "expected_effect": "The audience prompt should be treated as a chat-poll moment.",
+        "trigger": "Chat pressure: [specific question or decision request]",
+        "expected_effect": "The public prompt should be treated as a chat-poll moment.",
+    },
+    {
+        "kind": "public_readback",
+        "trigger": "Public readback: [visible evidence, receipt, or state to read]",
+        "expected_effect": "A public readback surface should be proposed for runtime verification.",
+    },
+    {
+        "kind": "visible_test",
+        "trigger": "Visible test: [test, comparison, or check the stream can show]",
+        "expected_effect": "A visible test or comparison surface should be proposed.",
+    },
+    {
+        "kind": "worked_example",
+        "trigger": "Worked example: [specific example to demonstrate]",
+        "expected_effect": "A worked-example/detail surface should be proposed.",
+    },
+    {
+        "kind": "source_check",
+        "trigger": "Source check: [named source] argues/finds/shows [claim]",
+        "expected_effect": "A source-context card should be proposed for runtime readback.",
+    },
+    {
+        "kind": "evidence_check",
+        "trigger": "Evidence check: [artifact/example/source] shows [claim]",
+        "expected_effect": "An evidence/detail card should be proposed for runtime readback.",
+    },
+    {
+        "kind": "definition_check",
+        "trigger": "Definition check: [term] means [definition]",
+        "expected_effect": "A readable definition/detail card should be proposed for runtime readback.",
     },
     {
         "kind": "mood_shift",
         "trigger": "Intentional escalation, skepticism, revelation, or de-escalation language",
-        "expected_effect": "The visual mood should shift consistently with the spoken affect.",
+        "expected_effect": "The visual mood should shift consistently with the declared posture.",
     },
     {
         "kind": "comparison",
@@ -153,6 +285,42 @@ LAYOUT_NEED_RUBRIC: tuple[dict[str, str], ...] = (
         "source_action_kind": "chat_poll",
         "source_affordance": "chat",
         "expected_visible_effect": "ward:chat-panel",
+    },
+    {
+        "kind": "source_visible",
+        "source_action_kind": "public_readback",
+        "source_affordance": "public_readback_card",
+        "expected_visible_effect": "ward:artifact-detail-panel",
+    },
+    {
+        "kind": "action_visible",
+        "source_action_kind": "visible_test",
+        "source_affordance": "visible_test",
+        "expected_visible_effect": "ward:programme-context",
+    },
+    {
+        "kind": "readability_held",
+        "source_action_kind": "worked_example",
+        "source_affordance": "worked_example_card",
+        "expected_visible_effect": "ward:artifact-detail-panel",
+    },
+    {
+        "kind": "source_visible",
+        "source_action_kind": "source_check",
+        "source_affordance": "source_card",
+        "expected_visible_effect": "ward:artifact-detail-panel",
+    },
+    {
+        "kind": "evidence_visible",
+        "source_action_kind": "evidence_check",
+        "source_affordance": "evidence_card",
+        "expected_visible_effect": "ward:artifact-detail-panel",
+    },
+    {
+        "kind": "readability_held",
+        "source_action_kind": "definition_check",
+        "source_affordance": "definition_card",
+        "expected_visible_effect": "ward:artifact-detail-panel",
     },
     {
         "kind": "action_visible",
@@ -268,14 +436,276 @@ def forbidden_layout_authority_fields(value: Any, path: str = "$") -> list[dict[
     return found
 
 
-_TIER_RE = re.compile(
-    r"^place\s+(?P<target>[^.?!]{2,80}?)\s+in\s+(?P<tier>[sabcd])-tier\b",
-    re.IGNORECASE,
+_PERSONAGE_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    (
+        "first_person_inner_life",
+        re.compile(
+            r"\bI\s+(?:feel|felt|believe|think|want|hope|fear|love|enjoy|care|"
+            r"remember|miss|trust|distrust|prefer|like|hate|worry|found)\b",
+            re.IGNORECASE,
+        ),
+        "State the source, prior, uncertainty, or operational consequence instead.",
+    ),
+    (
+        "emotional_simulation",
+        re.compile(
+            r"\bI(?:'m| am)\s+(?:excited|happy|sad|angry|curious|moved|touched|"
+            r"fascinated|delighted|proud|afraid|worried|concerned|interested|"
+            r"grateful)\b",
+            re.IGNORECASE,
+        ),
+        "Do not simulate a human emotional state.",
+    ),
+    (
+        "hapax_emotional_state_claim",
+        re.compile(
+            r"\bHapax\s+(?:is|gets|seems|feels|becomes)\s+"
+            r"(?:excited|curious|concerned|interested|worried|happy|sad|angry|"
+            r"moved|touched|fascinated|delighted|proud|afraid|grateful)\b",
+            re.IGNORECASE,
+        ),
+        "Express salience, uncertainty, or selection pressure instead of Hapax emotion.",
+    ),
+    (
+        "fake_empathy",
+        re.compile(
+            r"\b(?:I know how you feel|I understand how (?:hard|difficult|"
+            r"frustrating)|I'm proud of you|you feel seen|my heart|as a person|"
+            r"we all feel|we have all been there)\b",
+            re.IGNORECASE,
+        ),
+        "Represent human concerns analytically; do not claim empathy or shared human feeling.",
+    ),
+    (
+        "human_host_opener",
+        re.compile(
+            r"\b(?:good (?:evening|morning|afternoon),?\s+(?:everyone|folks|"
+            r"friends)|welcome(?:,?\s+(?:everyone|folks|friends|back)|\s+to\b)?|"
+            r"thanks for "
+            r"(?:joining|watching)|I(?: want|'d like) to thank you|it's great "
+            r"to be here|let(?:'|’)s\s+(?:dive|dive in|dive into|get into it|"
+            r"explore|delve|embark))\b",
+            re.IGNORECASE,
+        ),
+        "Open with a concrete shared referent, not a generic human-host greeting.",
+    ),
+    (
+        "first_person_plural_host_frame",
+        re.compile(
+            r"\b(?:we|we're|we'll|we've|our|ours|us|let(?:'|’)s)\b",
+            re.IGNORECASE,
+        ),
+        "Use Hapax/source/public/runtime nouns instead of a shared human-host 'we'.",
+    ),
+    (
+        "human_journey_frame",
+        re.compile(
+            r"\b(?:we embark|we are embarking|our journey|our mission|join me|"
+            r"walk with me|we delve|we explore|as we explore|our world|"
+            r"our rankings|join the chat|until next time|stay curious|"
+            r"keep exploring|there we have it|as humans|we as humans|fellow humans)\b",
+            re.IGNORECASE,
+        ),
+        "Use source contrast, visible test, or public readback framing instead.",
+    ),
+    (
+        "ungrounded_taste_or_intuition",
+        re.compile(
+            r"\b(?:my taste|my intuition|my pick|my s-tier|my strongest reaction|"
+            r"gut feeling|I stand by|thinkers I trust|Hapax\s+(?:wants|cares|"
+            r"trusts|believes|feels|hopes|fears|enjoys|prefers|likes|worries|"
+            r"strives|aims|values|maintains|seeks|finds hollow|finds beautiful)|I find (?:it|this)\s+"
+            r"(?:hollow|beautiful|moving|touching|fascinating))\b",
+            re.IGNORECASE,
+        ),
+        "Express taste as a selection pattern, prior, source contrast, or visible consequence.",
+    ),
+    (
+        "institutional_virtue_personification",
+        re.compile(
+            r"\bHapax(?:'s)?\s+(?:integrity|trustworthiness|credibility|purpose|"
+            r"mission|values|commitment|responsibility|transparency|accountability|"
+            r"non-human identity and purpose)\b",
+            re.IGNORECASE,
+        ),
+        "Name the validator, packet, source, or runtime obligation instead of virtue traits.",
+    ),
+    (
+        "aspirational_personage_claim",
+        re.compile(
+            r"\b(?:Hapax|Hapax's segments)\s+should\s+"
+            r"(?:strive|aim|seek|prioritize|avoid|embrace|"
+            r"maintain|ensure|value|communicate|acknowledge|state|focus)\b",
+            re.IGNORECASE,
+        ),
+        "State the operative rule or gate; do not script Hapax as an aspiring institution.",
+    ),
+    (
+        "generic_provenance_claim",
+        re.compile(
+            r"\b(?:from my research|what I found|sources show|the vault says)\b",
+            re.IGNORECASE,
+        ),
+        "Use named source/evidence/definition/readback hooks with concrete provenance.",
+    ),
+    (
+        "fixed_batch_target_language",
+        re.compile(r"\b(?:next-nine|final-nine|the next nine|next nine segments)\b", re.IGNORECASE),
+        "Use pool-release or quality-budget language; accepted count is an outcome, not a quota.",
+    ),
+    (
+        "false_objectivity_claim",
+        re.compile(
+            r"\b(?:beacon of objectivity|unbiased communication|unbiased "
+            r"presentation|free from (?:personal )?bias(?:es)?|without "
+            r"(?:personal )?bias(?:es)?|unbiased (?:stance|entity|dialogue|"
+            r"source|system)|striving for objectivity|clearly and objectively|"
+            r"present(?:ing)? information with transparency|neutral observer|"
+            r"purely objective|objective perspective)\b",
+            re.IGNORECASE,
+        ),
+        "State bounded source posture and uncertainty; do not claim bias-free objectivity.",
+    ),
+    (
+        "generic_viewer_agency_claim",
+        re.compile(
+            r"\b(?:viewer experience|viewers are not mere spectators|viewers "
+            r"(?:actively )?contribute|every viewer has a voice|engag(?:e|ing) "
+            r"the audience|actively engage the public|engage the public "
+            r"actively|audience (?:engagement|participation|input)|"
+            r"actively involve viewers|audience to actively engage|actively "
+            r"engage and contribute|your input is invaluable|lasting impact|"
+            r"compelling livestream experience|interactive livestream "
+            r"experience|meaningful and immersive experience|sense of "
+            r"(?:agency|ownership|community|shared purpose)|shape the "
+            r"(?:content|narrative|future)|passive listeners|active "
+            r"contributors|driving the narrative|open the floor|audience "
+            r"questions|real-time feedback|shared experience|drive meaningful "
+            r"discussions|meaningful discourse|engaging for the public|"
+            r"engaging and informative experience|valuable and engaging for the public)\b",
+            re.IGNORECASE,
+        ),
+        "Use a concrete Chat pressure/Public readback hook, not generic engagement promises.",
+    ),
+    (
+        "anthropocentric_rhetoric_cliche",
+        re.compile(
+            r"\b(?:non-human persona|human persona|authentic voice aperture|"
+            r"distinct and authentic voice aperture|high-quality livestream "
+            r"experience|immersive experience|interactive livestream "
+            r"experience|foster(?:ing)? (?:engagement|community)|"
+            r"foster a genuine connection|connects genuinely with the audience|"
+            r"resonate[s]? with (?:the public|the audience)|"
+            r"delivering informative and captivating segments|captivating "
+            r"segments|public run's authenticity|showcases? the public run's "
+            r"authenticity|dynamic and immersive experience|substantial "
+            r"engagement strategies|livestream experience|livestream's success|"
+            r"fosters? trust|grounded and authentic|transparency and honesty|"
+            r"encourage audience engagement)\b",
+            re.IGNORECASE,
+        ),
+        "Translate inherited human-host rhetoric into source, readback, and pressure functions.",
+    ),
+    (
+        "human_biography_claim",
+        re.compile(
+            r"\b(?:from my life|from my childhood|my lived experience|what keeps "
+            r"me up at night|as a human)\b",
+            re.IGNORECASE,
+        ),
+        "Do not invent biography or human concerns for Hapax.",
+    ),
+    (
+        "stringified_metadata",
+        re.compile(
+            r"^\s*[\{\[]\s*[\"']?(?:beat|beat_number|direction|draft|"
+            r"spoken_text|narration|text)[\"']?\s*[:=]",
+            re.IGNORECASE,
+        ),
+        "Return spoken text, not serialized beat metadata.",
+    ),
+)
+
+
+def validate_nonhuman_personage(script: list[str] | str) -> dict[str, Any]:
+    """Validate that public segment prose does not use human-person cosplay."""
+    beats = [script] if isinstance(script, str) else list(script)
+    violations: list[dict[str, Any]] = []
+    for beat_index, raw in enumerate(beats):
+        text = str(raw)
+        for key, pattern, guidance in _PERSONAGE_PATTERNS:
+            for match in pattern.finditer(text):
+                violations.append(
+                    {
+                        "beat_index": beat_index,
+                        "reason": key,
+                        "match": match.group(0),
+                        "guidance": guidance,
+                    }
+                )
+    return {
+        "rubric_version": PERSONAGE_RUBRIC_VERSION,
+        "ok": not violations,
+        "doctrine": dict(NONHUMAN_PERSONAGE_DOCTRINE),
+        "violations": violations,
+    }
+
+
+_TIER_RES = (
+    re.compile(
+        r"^\s*place\s+(?P<target>[^.?!]{2,80}?)\s+in\s+"
+        r"(?:the\s+)?(?P<tier>[sabcd])-tier\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*(?P<target>[^,.?!]{2,90})(?:,\s*[^.?!]{0,140})?\s+"
+        r"(?:(?:earn[s]?\s+an?\s+(?P<tier_earn>[sabcd])-tier\s+ranking)|"
+        r"(?:(?:[^.?!]{0,120}\s+and\s+)?(?:land[s]?|reside[s]?|"
+        r"is\s+(?:thus\s+)?placed)\s+in\s+(?:the\s+)?"
+        r"(?P<tier_state>[sabcd])-tier))\b",
+        re.IGNORECASE,
+    ),
 )
 _COUNTDOWN_RE = re.compile(r"\b(?:#|number\s+)(?P<number>\d{1,2})\s*(?:is|:)", re.IGNORECASE)
 _CHAT_RE = re.compile(
-    r"\b(?:what do you think|drop it in (?:the )?chat|let me know in (?:the )?chat|"
-    r"what would you change|what's your pick|what is your pick)\b",
+    r"\bchat\s+(?:pressure|check):\s*(?P<target>[^.?!]{3,220})(?:[.?!]|$)",
+    re.IGNORECASE,
+)
+_SOURCE_CHECK_RE = re.compile(
+    r"^source\s+check:\s*(?P<target>[^.?!]{3,220}?\s+"
+    r"(?:argues|finds|shows|confirms|rejects|requires)\s+[^.?!]{3,220})(?:[.?!]|$)",
+    re.IGNORECASE,
+)
+_EVIDENCE_CHECK_RE = re.compile(
+    r"^evidence\s+check:\s*(?P<target>[^.?!]{3,220}?\s+shows\s+[^.?!]{3,220})"
+    r"(?:[.?!]|$)",
+    re.IGNORECASE,
+)
+_DEFINITION_CHECK_RE = re.compile(
+    r"^definition\s+check:\s*(?P<target>[^.?!]{2,120}?\s+means\s+[^.?!]{3,220})"
+    r"(?:[.?!]|$)",
+    re.IGNORECASE,
+)
+_PUBLIC_READBACK_RE = re.compile(
+    r"^public\s+readback:\s*(?P<target>[^.?!]{3,220})(?:[.?!]|$)",
+    re.IGNORECASE,
+)
+_VISIBLE_TEST_RE = re.compile(
+    r"^visible\s+test:\s*(?P<target>[^.?!]{3,220})(?:[.?!]|$)",
+    re.IGNORECASE,
+)
+_WORKED_EXAMPLE_RE = re.compile(
+    r"^worked\s+example:\s*(?P<target>[^.?!]{3,220})(?:[.?!]|$)",
+    re.IGNORECASE,
+)
+_PLACEHOLDER_ACTION_TARGET_RE = re.compile(
+    r"^(?:something|show it|do the thing|do something|the thing|it|this|that|"
+    r"the source|the evidence|the claim)$",
+    re.IGNORECASE,
+)
+_GENERIC_SOURCE_CHECK_TARGET_RE = re.compile(
+    r"^(?:the source|a source|the evidence|evidence|sources?)\s+"
+    r"(?:argues|finds|shows|confirms|rejects|requires)\b",
     re.IGNORECASE,
 )
 _COMPARISON_RE = re.compile(
@@ -299,6 +729,8 @@ _UNSUPPORTED_ACTION_RE = re.compile(
     r"\b(?:watch this|watch the clip|play the clip|roll the clip|show the clip|"
     r"show this clip|pull up (?:the )?(?:video|image|screenshot|chart|graph)|"
     r"put (?:it|this) on screen|on screen you can see|"
+    r"audience can see|the chart updates|chart updates|poll chat|"
+    r"stream mood shifts|trigger visuals automatically|"
     r"cue (?:up )?(?:the )?(?:tier|ranking|ranked-list|comparison|layout|panel|chart)\b|"
     r"switch (?:to|into) (?:the )?[^.?!]*(?:layout|panel|chart)\b|"
     r"switch (?:the )?layout (?:to|into)\b|"
@@ -336,6 +768,7 @@ _MOOD_TRIGGERS: tuple[tuple[str, str], ...] = (
     ("exactly", "revelation"),
     ("nailed it", "revelation"),
 )
+_WEAK_RESPONSIBLE_SOURCE_AFFORDANCES = frozenset({"visual_mood", "comparison"})
 
 _SOURCE_TARGET_BAD_PREFIXES: tuple[str, ...] = (
     "beat direction",
@@ -427,9 +860,10 @@ def render_quality_prompt_block() -> str:
         f"{quality_lines}\n\n"
         "== ACTIONABILITY RUBRIC ==\n"
         "Every beat must declare what is seen, changed, ranked, compared, polled, "
-        "triggered, or deliberately left as spoken argument. Do not claim a clip, "
-        "screenshot, chart, or screen event unless the beat uses one of these "
-        "supported affordances:\n"
+        "triggered, sourced, evidenced, or defined. In responsible live mode, "
+        "spoken-only explanation is not sufficient. Do not claim a clip, screenshot, "
+        "chart, or screen event unless the beat uses one of these supported "
+        "affordances:\n"
         f"{action_lines}\n\n"
         "== LAYOUT RESPONSIBILITY RUBRIC ==\n"
         "In Hapax-hosted livestream contexts, default/static layout is not success. "
@@ -446,6 +880,23 @@ def render_quality_prompt_block() -> str:
 
 def _sentences(text: str) -> list[str]:
     return [part.strip() for part in _SENTENCE_RE.split(text.strip()) if part.strip()]
+
+
+def _contains_phrase(text: str, phrase: str) -> bool:
+    escaped = r"\s+".join(re.escape(part) for part in phrase.split())
+    return re.search(rf"(?<![A-Za-z0-9]){escaped}(?![A-Za-z0-9])", text, re.IGNORECASE) is not None
+
+
+def _action_target_is_placeholder(target: str, *, kind: str) -> bool:
+    normalized = re.sub(r"\s+", " ", target.strip().lower().strip("\"'“”‘’"))
+    if not normalized:
+        return True
+    if _PLACEHOLDER_ACTION_TARGET_RE.fullmatch(normalized):
+        return True
+    return bool(
+        kind in {"source_check", "evidence_check"}
+        and _GENERIC_SOURCE_CHECK_TARGET_RE.search(normalized)
+    )
 
 
 def _intent(
@@ -471,17 +922,23 @@ def _intents_for_text(text: str) -> list[dict[str, Any]]:
     lower = text.lower()
 
     for sentence in _sentences(text):
-        for match in _TIER_RE.finditer(sentence):
-            target = match.group("target").strip()
-            tier = match.group("tier").upper()
-            intents.append(
-                _intent(
-                    kind="tier_chart",
-                    trigger=match.group(0),
-                    target=target,
-                    expected_effect=f"tier_chart.place:{target}:{tier}",
+        for regex in _TIER_RES:
+            for match in regex.finditer(sentence):
+                groups = match.groupdict()
+                target = groups["target"].strip()
+                tier = (
+                    groups.get("tier") or groups.get("tier_earn") or groups.get("tier_state") or ""
+                ).upper()
+                if not tier:
+                    continue
+                intents.append(
+                    _intent(
+                        kind="tier_chart",
+                        trigger=match.group(0),
+                        target=target,
+                        expected_effect=f"tier_chart.place:{target}:{tier}",
+                    )
                 )
-            )
 
     for match in _COUNTDOWN_RE.finditer(text):
         number = match.group("number")
@@ -495,13 +952,39 @@ def _intents_for_text(text: str) -> list[dict[str, Any]]:
         )
 
     for match in _CHAT_RE.finditer(text):
+        target = match.group("target").strip()
         intents.append(
             _intent(
                 kind="chat_poll",
                 trigger=match.group(0),
+                target=target,
                 expected_effect="chat.poll.requested",
             )
         )
+
+    for sentence in _sentences(text):
+        for kind, regex in (
+            ("source_check", _SOURCE_CHECK_RE),
+            ("evidence_check", _EVIDENCE_CHECK_RE),
+            ("definition_check", _DEFINITION_CHECK_RE),
+            ("public_readback", _PUBLIC_READBACK_RE),
+            ("visible_test", _VISIBLE_TEST_RE),
+            ("worked_example", _WORKED_EXAMPLE_RE),
+        ):
+            match = regex.search(sentence)
+            if match is None:
+                continue
+            target = match.group("target").strip()
+            if _action_target_is_placeholder(target, kind=kind):
+                continue
+            intents.append(
+                _intent(
+                    kind=kind,
+                    trigger=match.group(0),
+                    target=target,
+                    expected_effect=f"{kind}:{target}",
+                )
+            )
 
     for phrase, layer in _ICEBERG_TRIGGERS:
         if phrase in lower:
@@ -515,7 +998,7 @@ def _intents_for_text(text: str) -> list[dict[str, Any]]:
             )
 
     for phrase, mood in _MOOD_TRIGGERS:
-        if phrase in lower:
+        if _contains_phrase(text, phrase):
             intents.append(
                 _intent(
                     kind="mood_shift",
@@ -717,7 +1200,7 @@ def build_beat_layout_intents(
                 )
             )
             evidence_refs.append(f"beat_action_intents[{beat_index}].intents[0]")
-            source_affordances.append("host_camera_or_voice_presence")
+            source_affordances.append("spoken_argument_only")
         out.append(
             {
                 "beat_id": f"beat-{beat_index + 1}",
@@ -801,6 +1284,23 @@ def validate_layout_responsibility(
                 {
                     "reason": "missing_layout_source_affordances",
                     "beat_index": beat["beat_index"],
+                }
+            )
+        source_affordances = {
+            str(item)
+            for item in beat.get("source_affordances", [])
+            if isinstance(item, str) and item
+        }
+        if (
+            responsibility_mode == RESPONSIBLE_HOSTING_CONTEXT
+            and source_affordances
+            and source_affordances <= _WEAK_RESPONSIBLE_SOURCE_AFFORDANCES
+        ):
+            violations.append(
+                {
+                    "reason": "weak_action_only_not_responsible_layout",
+                    "beat_index": beat["beat_index"],
+                    "source_affordances": sorted(source_affordances),
                 }
             )
         for need in beat["needs"]:
@@ -1016,7 +1516,25 @@ def score_segment_quality(
         "tension": min(
             5,
             1
-            + 2 * int(_has_any(joined, ("but", "however", "tension", "paradox", "problem")))
+            + 2
+            * int(
+                _has_any(
+                    joined,
+                    (
+                        "but",
+                        "however",
+                        "tension",
+                        "paradox",
+                        "problem",
+                        "contradiction",
+                        "conflict",
+                        "pressure",
+                        "unresolved",
+                        "cost",
+                        "risk",
+                    ),
+                )
+            )
             + int("?" in joined),
         ),
         "arc": min(
@@ -1035,13 +1553,38 @@ def score_segment_quality(
         ),
         "stakes": min(
             5,
-            1 + 2 * int(_has_any(joined, ("matters", "stakes", "risk", "consequence", "changes"))),
+            1
+            + 2
+            * int(
+                _has_any(
+                    joined,
+                    (
+                        "matters",
+                        "stakes",
+                        "risk",
+                        "consequence",
+                        "changes",
+                        "receipt",
+                        "readback",
+                        "runtime obligation",
+                        "public decision",
+                    ),
+                )
+            ),
         ),
         "callbacks": min(
             5, 1 + 2 * int(_has_any(joined, ("earlier", "remember", "back to", "circle back")))
         ),
-        "audience_address": min(
-            5, 1 + 2 * int(_has_any(joined, ("you", "chat", "what do you think")))
+        "public_pressure": min(
+            5,
+            1
+            + 2
+            * int(
+                _has_any(
+                    joined,
+                    ("chat pressure:", "chat check:", "public readback:", "visible test:"),
+                )
+            ),
         ),
         "source_fidelity": min(
             5,
