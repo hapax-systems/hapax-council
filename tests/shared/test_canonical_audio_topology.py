@@ -57,12 +57,10 @@ def test_canonical_has_current_livestream_node_ids() -> None:
         "notification-private-monitor-output",
         "voice-fx",
         "tts-loudnorm",
+        "tts-duck",
         "tts-broadcast-capture",
         "tts-broadcast-playback",
         "pc-loudnorm",
-        "mpc-live-iii-output",
-        "music-loudnorm",
-        "yt-loudnorm",
         "s4-loopback",
         "m8-instrument-capture",
         "m8-loudnorm",
@@ -79,9 +77,6 @@ def test_retired_l6_ryzen_nodes_are_not_canonical() -> None:
         "ryzen-analog-out",
         "private-loopback",
         "livestream-duck",
-        "tts-duck",
-        "music-duck",
-        "ytube-ducked",
     }
     assert ids.isdisjoint(retired), f"retired nodes still present: {ids & retired}"
 
@@ -242,45 +237,38 @@ def test_private_and_notification_sinks_are_fail_closed() -> None:
     ) in edge_pairs
 
 
-def test_tts_broadcast_path_uses_mpc_and_livestream_forward_path() -> None:
+def test_tts_broadcast_path_has_l12_return_and_livestream_forward_path() -> None:
     d = _descriptor()
     role_broadcast = d.node_by_id("role-broadcast")
     voice_fx = d.node_by_id("voice-fx")
     loudnorm = d.node_by_id("tts-loudnorm")
+    duck = d.node_by_id("tts-duck")
     broadcast_capture = d.node_by_id("tts-broadcast-capture")
     broadcast_playback = d.node_by_id("tts-broadcast-playback")
-    mpc = d.node_by_id("mpc-live-iii-output")
 
     assert role_broadcast.target_object == "hapax-voice-fx-capture"
     assert voice_fx.target_object == "hapax-loudnorm-capture"
-    assert loudnorm.target_object == mpc.pipewire_name
-    assert loudnorm.params["playback_target"] == "mpc-live-iii-output"
-    assert loudnorm.params["playback_positions"] == "AUX2 AUX3"
-    assert broadcast_capture.target_object == "hapax-loudnorm"
+    assert loudnorm.target_object == "hapax-tts-duck"
+    assert duck.target_object == L12_RETURN_NAME
+    assert duck.params["playback_positions"] == "RL RR"
+    assert broadcast_capture.target_object == "hapax-tts-duck"
     assert broadcast_playback.target_object == "hapax-livestream-tap"
 
     edge_pairs = {(edge.source, edge.target) for edge in d.edges}
-    assert ("tts-loudnorm", "tts-broadcast-capture") in edge_pairs
+    assert ("tts-duck", "tts-broadcast-capture") in edge_pairs
     assert ("tts-broadcast-playback", "livestream-tap") in edge_pairs
 
 
-def test_pc_music_youtube_loudnorm_land_on_mpc_not_l12_return() -> None:
+def test_pc_loudnorm_lands_on_l12_return_but_notifications_do_not() -> None:
     d = _descriptor()
-    mpc = d.node_by_id("mpc-live-iii-output")
     pc = d.node_by_id("pc-loudnorm")
-    music = d.node_by_id("music-loudnorm")
-    yt = d.node_by_id("yt-loudnorm")
     role_multimedia = d.node_by_id("role-multimedia")
     role_notification = d.node_by_id("role-notification")
 
     assert role_multimedia.target_object == "hapax-pc-loudnorm"
-    assert pc.target_object == mpc.pipewire_name
-    assert pc.params["playback_positions"] == "AUX4 AUX5"
+    assert pc.target_object == L12_RETURN_NAME
+    assert pc.params["playback_positions"] == "RL RR"
     assert pc.params["notification_excluded"] is True
-    assert music.target_object == mpc.pipewire_name
-    assert music.params["playback_positions"] == "AUX0 AUX1"
-    assert yt.target_object == mpc.pipewire_name
-    assert yt.params["playback_positions"] == "AUX6 AUX7"
     assert role_notification.target_object == "hapax-notification-private"
 
 
