@@ -105,19 +105,41 @@ SUPPORTED_SEGMENT_LAYOUT_PRESSURE_KINDS: frozenset[str] = frozenset(
 FORBIDDEN_SEGMENT_LAYOUT_PROPOSAL_FIELDS: frozenset[str] = frozenset(
     {
         "layout",
+        "layout_id",
+        "layoutId",
         "layout_name",
+        "requested_layout",
+        "selected_layout",
+        "target_layout",
+        "active_layout",
+        "layout_command",
+        "surface",
+        "surfaces",
         "surface_id",
+        "surfaceId",
         "coordinates",
         "coordinate",
         "x",
         "y",
         "w",
         "h",
+        "width",
+        "height",
         "shm",
         "shm_path",
+        "segment_cues",
         "cues",
         "cue",
+        "command",
+        "commands",
+        "preset",
+        "z_order",
+        "z-order",
     }
+)
+FORBIDDEN_SEGMENT_LAYOUT_PROPOSAL_KEY_TOKENS: frozenset[str] = frozenset(
+    "".join(ch for ch in field.lower() if ch.isalnum())
+    for field in FORBIDDEN_SEGMENT_LAYOUT_PROPOSAL_FIELDS
 )
 
 
@@ -247,9 +269,9 @@ def _read_segment_layout_pressure(
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"segment_layout_intents": ()}
+        return {"segment_layout_intents": (), "segment_layout_pressure_seen": False}
     if not isinstance(raw, dict) or not raw.get("programme_id"):
-        return {"segment_layout_intents": ()}
+        return {"segment_layout_intents": (), "segment_layout_pressure_seen": False}
     try:
         file_mtime = path.stat().st_mtime
     except OSError:
@@ -274,6 +296,7 @@ def _read_segment_layout_pressure(
     return {
         "segment_layout_intents": tuple(intents),
         "segment_layout_refusals": tuple(refusals),
+        "segment_layout_pressure_seen": bool(proposals),
         "prepared_artifact_ref": prepared_artifact_ref,
         "segment_action_intents_ref": _segment_action_intents_ref(
             path=path,
@@ -304,7 +327,38 @@ def _proposal_needs_to_intents(
     out: list[SegmentActionIntent] = []
     refusals: list[dict[str, object]] = []
     read_mtime = _optional_float(proposal.get("read_mtime")) or now
+    proposal_forbidden = _forbidden_segment_layout_fields(
+        {key: value for key, value in proposal.items() if key != "needs"}
+    )
+    if proposal_forbidden:
+        return (), (
+            {
+                "programme_id": _optional_str(root.get("programme_id")),
+                "beat_index": current_beat_index,
+                "need_index": None,
+                "need_kind": None,
+                "reason": "forbidden_segment_layout_authority_field",
+                "supported_kinds": sorted(SUPPORTED_SEGMENT_LAYOUT_PRESSURE_KINDS),
+                "forbidden_fields": proposal_forbidden,
+                "authority_ref": prepared_artifact_ref,
+            },
+        )
     for need_index, need in enumerate(needs):
+        forbidden_fields = _forbidden_segment_layout_fields(need)
+        if forbidden_fields:
+            refusals.append(
+                {
+                    "programme_id": _optional_str(root.get("programme_id")),
+                    "beat_index": current_beat_index,
+                    "need_index": need_index,
+                    "need_kind": _optional_str(need.get("kind")) or _optional_str(need.get("need")),
+                    "reason": "forbidden_segment_layout_authority_field",
+                    "supported_kinds": sorted(SUPPORTED_SEGMENT_LAYOUT_PRESSURE_KINDS),
+                    "forbidden_fields": forbidden_fields,
+                    "authority_ref": prepared_artifact_ref,
+                }
+            )
+            continue
         mapped_kind = _need_to_segment_intent_kind(need)
         if mapped_kind is None:
             refusals.append(
@@ -315,9 +369,7 @@ def _proposal_needs_to_intents(
                     "need_kind": _optional_str(need.get("kind")) or _optional_str(need.get("need")),
                     "reason": "unsupported_segment_layout_need",
                     "supported_kinds": sorted(SUPPORTED_SEGMENT_LAYOUT_PRESSURE_KINDS),
-                    "forbidden_fields": sorted(
-                        field for field in FORBIDDEN_SEGMENT_LAYOUT_PROPOSAL_FIELDS if field in need
-                    ),
+                    "forbidden_fields": forbidden_fields,
                     "authority_ref": prepared_artifact_ref,
                 }
             )
@@ -392,8 +444,10 @@ def _expected_effects_for_need(need: dict[str, object]) -> tuple[str, ...]:
     if explicit:
         return explicit
     kind = _optional_str(need.get("kind")) or ""
-    if "tier" in kind or "rank" in kind:
+    if "tier" in kind:
         return ("ward:tier-panel",)
+    if "rank" in kind or "list" in kind:
+        return ("ward:ranked-list-panel",)
     if "chat" in kind:
         return ("ward:chat-panel",)
     if "compar" in kind:
@@ -412,6 +466,23 @@ def _target_ref_for_need(need: dict[str, object]) -> str | None:
         or _optional_str(need.get("source_action_kind"))
         or _optional_str(need.get("source_affordance"))
     )
+
+
+def _forbidden_segment_layout_fields(value: object, *, prefix: str = "") -> tuple[str, ...]:
+    found: list[str] = []
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if not isinstance(key, str):
+                continue
+            field_path = f"{prefix}.{key}" if prefix else key
+            canonical = "".join(ch for ch in key.lower() if ch.isalnum())
+            if canonical in FORBIDDEN_SEGMENT_LAYOUT_PROPOSAL_KEY_TOKENS:
+                found.append(field_path)
+            found.extend(_forbidden_segment_layout_fields(nested, prefix=field_path))
+    elif isinstance(value, list | tuple):
+        for index, nested in enumerate(value):
+            found.extend(_forbidden_segment_layout_fields(nested, prefix=f"{prefix}[{index}]"))
+    return tuple(dict.fromkeys(found))
 
 
 def _dict_items(value: object) -> tuple[dict[str, object], ...]:
@@ -644,8 +715,10 @@ def _maybe_apply_responsible_segment_layout(
     now: float,
 ) -> Any | None:
     intents = state.get("segment_layout_intents")
-    if not isinstance(intents, tuple) or not intents:
-        return None
+    intent_tuple = intents if isinstance(intents, tuple) else ()
+    pressure_seen = bool(state.get("segment_layout_pressure_seen")) or bool(
+        state.get("segment_layout_refusals")
+    )
 
     from agents.studio_compositor.segment_layout_control import (
         LayoutDecisionReason,
@@ -660,6 +733,8 @@ def _maybe_apply_responsible_segment_layout(
         "_responsible_segment_state",
         {},
     )
+    if not hasattr(switcher, "_responsible_segment_state"):
+        switcher._responsible_segment_state = responsible_state
     readback = _runtime_layout_readback(
         layout_state=layout_state,
         state=state,
@@ -673,10 +748,38 @@ def _maybe_apply_responsible_segment_layout(
         active_priority=_optional_int(responsible_state.get("active_priority")) or 0,
         switched_at=_optional_float(responsible_state.get("switched_at")),
     )
+    if not intent_tuple:
+        if not pressure_seen:
+            return None
+        refusal_items = state.get("segment_layout_refusals")
+        proposal_refusals = (
+            tuple(dict(item) for item in refusal_items if isinstance(item, dict))
+            if isinstance(refusal_items, tuple | list)
+            else ()
+        )
+        receipt = LayoutResponsibilityController(
+            available_layouts=_available_layout_names(loader),
+        ).decide(
+            (),
+            readback=readback,
+            state=decision_state,
+            now=now,
+        )
+        return replace(
+            receipt,
+            refusal_metadata={
+                **dict(receipt.refusal_metadata),
+                "proposal_refusals": proposal_refusals,
+                "message": (
+                    "active segment supplied layout pressure, but no supported proposal-only "
+                    "need survived validation; legacy/default layout is suppressed for this tick"
+                ),
+            },
+        )
     receipt = LayoutResponsibilityController(
         available_layouts=_available_layout_names(loader),
     ).decide(
-        intents,
+        intent_tuple,
         readback=readback,
         state=decision_state,
         now=now,
@@ -687,7 +790,7 @@ def _maybe_apply_responsible_segment_layout(
             {
                 "current_posture": receipt.selected_posture,
                 "active_need_id": receipt.need_id,
-                "active_priority": _intent_priority(intents, receipt.need_id),
+                "active_priority": _intent_priority(intent_tuple, receipt.need_id),
                 "switched_at": responsible_state.get("switched_at") or now,
             }
         )
@@ -734,7 +837,7 @@ def _maybe_apply_responsible_segment_layout(
             if receipt.selected_posture is not LayoutPosture.NON_RESPONSIBLE_FALLBACK
             else None,
             "active_need_id": receipt.need_id,
-            "active_priority": _intent_priority(intents, receipt.need_id),
+            "active_priority": _intent_priority(intent_tuple, receipt.need_id),
             "switched_at": now,
         }
     )

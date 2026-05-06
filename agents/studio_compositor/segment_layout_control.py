@@ -860,9 +860,9 @@ def _ward_is_visible(
 ) -> bool:
     props = ward_properties.get(ward_id)
     if props is None:
-        return True
+        return False
     visible = props.get("visible")
-    if visible is False:
+    if visible is not True:
         return False
     alpha = props.get("alpha")
     return not (isinstance(alpha, int | float) and float(alpha) <= 0.0)

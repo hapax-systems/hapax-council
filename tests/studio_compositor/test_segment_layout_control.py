@@ -263,6 +263,7 @@ def test_matching_layout_without_required_ward_is_held() -> None:
 @pytest.mark.parametrize(
     "ward_properties",
     [
+        {"ranked-list-panel": {}},
         {"ranked-list-panel": {"visible": False}},
         {"ranked-list-panel": {"visible": True, "alpha": 0.0}},
     ],

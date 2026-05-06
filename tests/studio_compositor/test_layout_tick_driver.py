@@ -188,8 +188,6 @@ def test_active_segment_pressure_derives_bounded_runtime_intents(tmp_path: Path)
                             "evidence_ref": "beat:4:intent:chat_poll",
                             "expected_visible_effect": "layout.surface.chat_prompt.visible",
                             "ttl_ms": 12000,
-                            "layout_name": "garage-door",
-                            "surface_id": "unsafe-surface",
                         }
                     ],
                 },
@@ -220,6 +218,47 @@ def test_active_segment_pressure_derives_bounded_runtime_intents(tmp_path: Path)
     assert intent.expected_effects == ("layout.surface.chat_prompt.visible",)
     assert intent.requested_layout is None
     assert intent.spoken_text_ref is None
+
+
+def test_active_segment_pressure_refuses_supported_need_with_forbidden_fields(
+    tmp_path: Path,
+) -> None:
+    state_file = tmp_path / "active-segment.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "programme_id": "programme:seg-1",
+                "current_beat_index": 4,
+                "prepared_artifact_ref": "sha256:abc123",
+                "current_beat_layout_intents": {
+                    "needs": [
+                        {
+                            "kind": "chat_participation_surface",
+                            "evidence_ref": "beat:4:intent:chat_poll",
+                            "requested_layout": "segment-chat",
+                            "surface": {"surface_id": "unsafe-surface"},
+                            "z_order": 5,
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pressure = _read_segment_layout_pressure(state_file, now=NOW)
+
+    assert pressure["segment_layout_intents"] == ()
+    refusals = pressure["segment_layout_refusals"]
+    assert isinstance(refusals, tuple)
+    assert refusals[0]["reason"] == "forbidden_segment_layout_authority_field"
+    assert refusals[0]["need_kind"] == "chat_participation_surface"
+    assert refusals[0]["forbidden_fields"] == (
+        "requested_layout",
+        "surface",
+        "surface.surface_id",
+        "z_order",
+    )
 
 
 def test_active_segment_pressure_maps_tier_chat_comparison_aliases(tmp_path: Path) -> None:
@@ -255,6 +294,31 @@ def test_active_segment_pressure_maps_tier_chat_comparison_aliases(tmp_path: Pat
     ]
 
 
+def test_active_segment_pressure_maps_ranked_list_to_ranked_ward(tmp_path: Path) -> None:
+    state_file = tmp_path / "active-segment.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "programme_id": "programme:seg-1",
+                "current_beat_index": 6,
+                "prepared_artifact_ref": "sha256:abc123",
+                "current_beat_layout_intents": {
+                    "needs": [{"kind": "ranked_list_surface", "evidence_ref": "prior:ranked"}]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pressure = _read_segment_layout_pressure(state_file, now=NOW)
+    intents = pressure["segment_layout_intents"]
+
+    assert isinstance(intents, tuple)
+    assert len(intents) == 1
+    assert intents[0].kind == LayoutNeedKind.RANKED_LIST.value
+    assert intents[0].expected_effects == ("ward:ranked-list-panel",)
+
+
 def test_active_segment_pressure_refuses_unsupported_and_forbidden_needs(tmp_path: Path) -> None:
     state_file = tmp_path / "active-segment.json"
     state_file.write_text(
@@ -283,10 +347,49 @@ def test_active_segment_pressure_refuses_unsupported_and_forbidden_needs(tmp_pat
     refusals = pressure["segment_layout_refusals"]
     assert isinstance(refusals, tuple)
     assert [item["need_kind"] for item in refusals] == ["countdown", "camera", "mood"]
-    assert all(item["reason"] == "unsupported_segment_layout_need" for item in refusals)
-    assert refusals[0]["forbidden_fields"] == ["layout_name"]
-    assert refusals[1]["forbidden_fields"] == ["coordinates"]
-    assert refusals[2]["forbidden_fields"] == ["cues"]
+    assert all(item["reason"] == "forbidden_segment_layout_authority_field" for item in refusals)
+    assert refusals[0]["forbidden_fields"] == ("layout_name",)
+    assert refusals[1]["forbidden_fields"] == ("coordinates",)
+    assert refusals[2]["forbidden_fields"] == ("cues",)
+
+
+def test_refused_only_segment_pressure_suppresses_legacy_default_switch() -> None:
+    store = _FakeStore(
+        layouts={
+            "default": _FakeLayout("default"),
+            "vinyl-focus": _FakeLayout("vinyl-focus"),
+        },
+        _active="default",
+    )
+    adapter = _LayoutStoreAdapter(store)
+    switcher = LayoutSwitcher(initial_layout="default")
+    state_provider = lambda: {  # noqa: E731
+        "consent_safe_active": False,
+        "vinyl_playing": True,
+        "director_activity": None,
+        "stream_mode": None,
+        "segment_layout_intents": (),
+        "segment_layout_pressure_seen": True,
+        "segment_layout_refusals": (
+            {
+                "need_kind": "chat_participation_surface",
+                "reason": "forbidden_segment_layout_authority_field",
+                "forbidden_fields": ("requested_layout",),
+            },
+        ),
+    }
+
+    receipt = _driver_tick(
+        state_provider=state_provider,
+        layout_state=adapter,
+        loader=adapter,
+        switcher=switcher,
+    )
+
+    assert receipt.status is LayoutDecisionStatus.REFUSED
+    assert receipt.reason is LayoutDecisionReason.NO_LAYOUT_NEEDS
+    assert store.set_active_calls == []
+    assert store.active_name() == "default"
 
 
 # ── adapter contract ───────────────────────────────────────────────
