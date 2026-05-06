@@ -16,16 +16,16 @@
     "vhs_decay": {
       "type": "vhs",
       "params": {
-        "intensity": 0.55,
-        "tracking_drift": 0.22
+        "chroma_shift": 0.55,
+        "noise_band_y": 0.22
       }
     },
     "scanlines_broadcast": {
       "type": "scanlines",
       "params": {
-        "amount": 0.32,
-        "frequency": 540,
-        "speed": 0.15
+        "opacity": 0.32,
+        "spacing": 540,
+        "thickness": 0.15
       }
     },
     "chroma_broadcast": {

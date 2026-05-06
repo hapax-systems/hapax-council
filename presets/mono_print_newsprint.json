@@ -16,8 +16,7 @@
     "halftone_fine": {
       "type": "halftone",
       "params": {
-        "scale": 0.008,
-        "angle": 45
+        "dot_size": 0.008
       }
     },
     "posterize_print": {
@@ -35,7 +34,7 @@
     "vignette": {
       "type": "vignette",
       "params": {
-        "intensity": 0.4,
+        "strength": 0.4,
         "radius": 0.7
       }
     },

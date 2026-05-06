@@ -16,7 +16,7 @@
     "tunnel_dub": {
       "type": "tunnel",
       "params": {
-        "depth": 0.45,
+        "distortion": 0.45,
         "speed": 0.12,
         "twist": 0.08
       }
@@ -24,21 +24,20 @@
     "droste_recursive": {
       "type": "droste",
       "params": {
-        "depth": 3,
-        "scale": 0.85
+        "branches": 3,
+        "zoom_speed": 0.85
       }
     },
     "feedback_chamber": {
       "type": "feedback",
       "params": {
-        "amount": 0.42,
         "decay": 0.88
       }
     },
     "vignette": {
       "type": "vignette",
       "params": {
-        "intensity": 0.4,
+        "strength": 0.4,
         "radius": 0.65
       }
     },

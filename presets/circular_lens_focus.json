@@ -17,15 +17,13 @@
       "type": "circular_mask",
       "params": {
         "radius": 0.42,
-        "softness": 0.18,
-        "center_x": 0.5,
-        "center_y": 0.5
+        "softness": 0.18
       }
     },
     "bloom_focus": {
       "type": "bloom",
       "params": {
-        "intensity": 0.4,
+        "alpha": 0.4,
         "threshold": 0.5,
         "radius": 0.12
       }
@@ -33,7 +31,7 @@
     "vignette_heavy": {
       "type": "vignette",
       "params": {
-        "intensity": 0.55,
+        "strength": 0.55,
         "radius": 0.5
       }
     },
