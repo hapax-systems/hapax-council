@@ -17,8 +17,8 @@
       "type": "fluid_sim",
       "params": {
         "viscosity": 0.45,
-        "speed": 0.32,
-        "amount": 0.28
+        "speed": 0.18,
+        "amount": 0.1
       }
     },
     "drift_water": {
@@ -43,6 +43,12 @@
     "content_layer": {
       "type": "content_layer",
       "params": {}
+    },
+    "posterize_water": {
+      "type": "posterize",
+      "params": {
+        "levels": 8
+      }
     }
   },
   "edges": [
@@ -52,6 +58,10 @@
     ],
     [
       "colorgrade",
+      "posterize_water"
+    ],
+    [
+      "posterize_water",
       "fluid_ripple"
     ],
     [
