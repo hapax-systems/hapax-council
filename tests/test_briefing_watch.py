@@ -58,3 +58,24 @@ class TestActivityGating:
             )
         )
         assert should_deliver_briefing(watch_dir=tmp_path, current_hour=9, current_minute=1) is True
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_should_deliver_briefing_non_dict_activity_returns_true(tmp_path, payload, kind):
+    """Pin should_deliver_briefing against non-dict activity.json. The
+    data.get('state', ...) call inside (json.JSONDecodeError, OSError)
+    catch let AttributeError escape on non-dict roots — gracefully
+    degrade to True (deliver briefing) instead of crashing."""
+    from agents.briefing import should_deliver_briefing
+
+    activity = tmp_path / "activity.json"
+    activity.write_text(payload)
+    # Must not crash; graceful degradation returns True.
+    result = should_deliver_briefing(watch_dir=tmp_path, current_hour=9, current_minute=1)
+    assert result is True, f"non-dict root={kind} must yield True (degraded)"
