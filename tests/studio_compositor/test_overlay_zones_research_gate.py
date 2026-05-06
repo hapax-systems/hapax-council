@@ -10,10 +10,8 @@ objective takes visible effect without restarting the compositor.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    import pytest
+import pytest
 
 
 class TestReadActiveObjectiveActivities:
@@ -224,6 +222,35 @@ class TestFileEmptyGate:
         gate.write_text("Some lyric line\n", encoding="utf-8")
         z = self._make_marker_zone(gate)
         assert z._is_gate_file_populated() is True
+
+    @pytest.mark.parametrize(
+        "whitespace,kind",
+        [
+            ("\n", "single newline"),
+            ("\n\n\n", "blank lines"),
+            ("   ", "spaces only"),
+            ("\t\t", "tabs only"),
+            (" \t \n", "mixed whitespace"),
+        ],
+    )
+    def test_open_when_file_is_whitespace_only(
+        self, tmp_path: Path, whitespace: str, kind: str
+    ) -> None:
+        """A lyrics file containing only whitespace (a placeholder
+        ``\\n`` from a producer that hasn't fetched real lyrics yet,
+        or a track with no operator-curated lyric content) previously
+        passed ``st_size > 0`` and closed the right_marker gate even
+        though nothing visible would render — leaving the right
+        column dark for the silent track. The gate now treats
+        whitespace-only content as empty so the right_marker
+        aphorism fills the column instead."""
+        gate = tmp_path / "track-lyrics.txt"
+        gate.write_text(whitespace, encoding="utf-8")
+        z = self._make_marker_zone(gate)
+        assert z._is_gate_file_populated() is False, (
+            f"whitespace-only ({kind}) lyrics should leave the gate open so the "
+            f"right_marker aphorism can fill the column"
+        )
 
     def test_tick_short_circuits_when_gate_closed(self, tmp_path: Path):
         gate = tmp_path / "track-lyrics.txt"
