@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Remove stale MCP remote-only keys that conflict with Hapax stdio wrappers.
+
+set -euo pipefail
+
+CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
+CONFIG_FILE="${CODEX_HOME_DIR}/config.toml"
+
+if [ ! -f "$CONFIG_FILE" ]; then
+  exit 0
+fi
+
+tmp_file="$(mktemp)"
+trap 'rm -f "$tmp_file"' EXIT
+
+awk '
+  function is_section(line) {
+    return line ~ /^\[[^]]+\][[:space:]]*$/
+  }
+  function is_context7_section(line) {
+    return line ~ /^\[mcp_servers[.]context7\][[:space:]]*$/
+  }
+  function is_context7_child_section(line) {
+    return line ~ /^\[mcp_servers[.]context7[.][^]]+\][[:space:]]*$/
+  }
+  {
+    if (is_context7_section($0)) {
+      in_context7 = 1
+      skip_context7_child = 0
+      print
+      next
+    }
+    if (is_context7_child_section($0)) {
+      in_context7 = 0
+      skip_context7_child = 1
+      next
+    }
+    if (is_section($0)) {
+      in_context7 = 0
+      skip_context7_child = 0
+      print
+      next
+    }
+    if (skip_context7_child) {
+      next
+    }
+    if (in_context7 && $0 ~ /^[[:space:]]*(url|bearer_token_env_var|bearer_token|headers)[[:space:]]*=/) {
+      next
+    }
+    print
+  }
+' "$CONFIG_FILE" >"$tmp_file"
+
+if ! cmp -s "$CONFIG_FILE" "$tmp_file"; then
+  cp -p "$CONFIG_FILE" "$CONFIG_FILE.backup-context7-scrub"
+  install -m 0600 "$tmp_file" "$CONFIG_FILE"
+  echo "hapax-codex-mcp-config-scrub: removed stale Context7 remote MCP keys from $CONFIG_FILE" >&2
+fi

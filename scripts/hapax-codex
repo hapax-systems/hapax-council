@@ -724,6 +724,11 @@ unset CODEX_GITHUB_PERSONAL_ACCESS_TOKEN
 unset TAVILY_API_KEY
 unset CONTEXT7_API_KEY
 
+MCP_CONFIG_SCRUB="$COUNCIL_DIR/scripts/hapax-codex-mcp-config-scrub"
+if [ -x "$MCP_CONFIG_SCRUB" ]; then
+  "$MCP_CONFIG_SCRUB"
+fi
+
 HOOK="$COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh"
 if [ ! -x "$HOOK" ]; then
   echo "hapax-codex: hook adapter is not executable: $HOOK" >&2
