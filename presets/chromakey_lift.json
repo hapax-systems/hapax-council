@@ -51,15 +51,15 @@
   "modulations": [
     {
       "node": "colorgrade",
-      "param": "brightness",
+      "param": "saturation",
       "source": "audio_rms",
-      "scale": 0.08,
+      "scale": 0.1,
       "offset": 0.0,
       "smoothing": 0.6
     },
     {
       "node": "vignette",
-      "param": "strength",
+      "param": "radius",
       "source": "audio_beat",
       "scale": 0.1,
       "offset": 0.0,
