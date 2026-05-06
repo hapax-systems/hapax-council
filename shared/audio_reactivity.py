@@ -35,6 +35,7 @@ import math
 import os
 import tempfile
 import threading
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -63,6 +64,7 @@ SHM_PATH = SHM_DIR / "unified-reactivity.json"
 # compositor render rate. Consumers that poll directly should treat any
 # snapshot older than ~100 ms as stale.
 PUBLISH_PERIOD_S = 1.0 / 60.0
+SNAPSHOT_STALE_S = 0.100
 
 # RMS floor below which a source is considered inactive and excluded from
 # the blend. Matches the DSP AGC floor used in ``audio_capture.py``.
@@ -216,12 +218,14 @@ class BusSnapshot:
     ``per_source`` preserves attribution for consumers that want to route
     a specific source (e.g. director logic reading only ``desk.onset``).
     ``blended`` is the max-per-band merge used for the shader uniform
-    bridge by default.
+    bridge by default. ``published_at`` is Unix epoch seconds from the
+    writer and lets SHM readers reject stale control input.
     """
 
     blended: AudioSignals
     per_source: dict[str, AudioSignals] = field(default_factory=dict)
     active_sources: list[str] = field(default_factory=list)
+    published_at: float | None = None
 
     def to_json(self) -> str:
         payload = {
@@ -229,6 +233,8 @@ class BusSnapshot:
             "per_source": {name: sig.to_dict() for name, sig in self.per_source.items()},
             "active_sources": self.active_sources,
         }
+        if self.published_at is not None and math.isfinite(self.published_at):
+            payload["published_at"] = float(self.published_at)
         return json.dumps(payload, separators=(",", ":"))
 
 
@@ -334,6 +340,7 @@ class UnifiedReactivityBus:
             blended=blended,
             per_source=per_source,
             active_sources=active,
+            published_at=time.time(),
         )
         self._last_snapshot = snapshot
 
@@ -411,14 +418,23 @@ class UnifiedReactivityBus:
         return self._last_snapshot
 
 
-def read_shm_snapshot(path: Path | None = None) -> BusSnapshot | None:
+def read_shm_snapshot(
+    path: Path | None = None,
+    *,
+    max_age_s: float | None = SNAPSHOT_STALE_S,
+    now: float | None = None,
+) -> BusSnapshot | None:
     """Read and deserialize the last published bus snapshot.
 
     Returns None when:
     - SHM file missing (bus not running)
     - SHM file malformed (mid-write race, filesystem corruption)
+    - SHM file has a timestamp older than ``max_age_s``
     - SHM file contains the zero signal across the board (caller may
       prefer direct-AudioCapture fallback in that case)
+
+    Legacy snapshots without ``published_at`` are still accepted during
+    rollout. Pass ``max_age_s=None`` to bypass freshness checking.
     """
     shm_path = path or SHM_PATH
     try:
@@ -437,6 +453,21 @@ def read_shm_snapshot(path: Path | None = None) -> BusSnapshot | None:
         )
         return None
     try:
+        published_at_raw = data.get("published_at")
+        published_at: float | None = None
+        if published_at_raw is not None:
+            published_at = float(published_at_raw)
+            if not math.isfinite(published_at):
+                raise ValueError("published_at must be finite")
+            if max_age_s is not None:
+                effective_now = time.time() if now is None else float(now)
+                if effective_now - published_at > max_age_s:
+                    log.debug(
+                        "unified-reactivity: stale SHM snapshot age %.3fs > %.3fs",
+                        effective_now - published_at,
+                        max_age_s,
+                    )
+                    return None
         blended = AudioSignals.from_dict(data.get("blended", {}))
         per_source_raw = data.get("per_source", {}) or {}
         if not isinstance(per_source_raw, dict):
@@ -449,7 +480,12 @@ def read_shm_snapshot(path: Path | None = None) -> BusSnapshot | None:
     except (TypeError, ValueError):
         log.debug("unified-reactivity: SHM snapshot schema drift", exc_info=True)
         return None
-    return BusSnapshot(blended=blended, per_source=per_source, active_sources=active)
+    return BusSnapshot(
+        blended=blended,
+        per_source=per_source,
+        active_sources=active,
+        published_at=published_at,
+    )
 
 
 # ── Singleton accessor ──────────────────────────────────────────────────────
