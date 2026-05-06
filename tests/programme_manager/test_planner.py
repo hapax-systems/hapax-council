@@ -174,6 +174,7 @@ class TestHappyPath:
             "layout_name",
             "host_presence",
             "spoken_argument",
+            "spoken_only_fallback",
             "garage-door",
             "default.json",
             "balanced-v2",

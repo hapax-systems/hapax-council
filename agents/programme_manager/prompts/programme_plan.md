@@ -135,39 +135,7 @@ outline.
             "source_affordances": ["asset:<specific-visual-or-source-card>"],
             "default_static_success_allowed": false
           }
-        ],
-        "layout_decision_contract": {
-          "bounded_vocabulary": [
-            "segment_primary",
-            "ranked_visual",
-            "countdown_visual",
-            "depth_visual",
-            "camera_subject",
-            "chat_prompt",
-            "asset_front",
-            "comparison",
-            "spoken_only_fallback"
-          ],
-          "min_dwell_s": 8,
-          "ttl_s": 30,
-          "conflict_order": [
-            "safety",
-            "operator_override",
-            "source_availability",
-            "action_visibility",
-            "readability",
-            "continuity"
-          ],
-          "receipt_required": true,
-          "may_command_layout": false
-        },
-        "runtime_layout_validation": {
-          "receipt_required": true,
-          "layout_state_hash_required": true,
-          "layout_state_signature_required": true,
-          "ward_visibility_required": true,
-          "readback_kinds_required": ["wcs", "layout_state", "ward_visibility"]
-        }
+        ]
       },
       "ritual": {
         "boundary_freeze_s": 4.0
@@ -251,7 +219,7 @@ For each beat, emit a `beat_layout_intents` entry with:
   `referent_visible`.
 - `proposed_postures`: use only `segment_primary`, `ranked_visual`,
   `countdown_visual`, `depth_visual`, `camera_subject`, `chat_prompt`,
-  `asset_front`, `comparison`, `spoken_only_fallback`.
+  `asset_front`, `comparison`.
 - `expected_effects`: use only `evidence_on_screen`,
   `action_on_screen`, `comparison_legible`, `source_context_legible`,
   `detail_readable`, `referent_available`.
@@ -266,9 +234,10 @@ Never emit executable compositor directives, final layout names, pixel
 geometry, control-file paths, concrete runtime surfaces, or cue strings.
 Do not use presence-only or spoken-only labels as layout needs. A
 responsible live segment must have actual visual/action needs; a
-purely spoken prepared artifact is invalid. `spoken_only_fallback` is
-available only as an explicit fallback posture, not as responsible
-layout success.
+purely spoken prepared artifact is invalid. Do not emit
+`layout_decision_contract` or `runtime_layout_validation`; runtime code
+owns policy and readback requirements. If an adapter asks whether layout
+commands are allowed, the only valid value is `"may_command_layout": false`.
 
 ### segment_beat_durations — programming the pacing
 

@@ -288,6 +288,37 @@ def test_parent_projection_rejects_missing_non_command_authority_gate() -> None:
         project_parent_prepared_artifact_layout_contract(parent, artifact_sha256="8" * 64)
 
 
+def test_parent_projection_ignores_parent_runtime_policy_fields() -> None:
+    parent = _parent_artifact(
+        layout_decision_contract={
+            "may_command_layout": False,
+            "bounded_vocabulary": ["spoken_only_fallback"],
+            "min_dwell_s": 1,
+            "ttl_s": 1,
+            "receipt_required": True,
+        },
+        runtime_layout_validation={
+            "receipt_required": False,
+            "layout_state_hash_required": False,
+            "readback_kinds_required": [],
+        },
+    )
+
+    parsed = project_parent_prepared_artifact_layout_contract(
+        parent,
+        artifact_sha256="9" * 64,
+    )
+
+    assert LayoutPosture.SPOKEN_ONLY_FALLBACK not in (
+        parsed.layout_decision_contract.bounded_vocabulary
+    )
+    assert parsed.layout_decision_contract.ttl_s == 30
+    assert parsed.layout_decision_contract.min_dwell_s == 8
+    assert parsed.runtime_layout_validation.receipt_required is True
+    assert parsed.runtime_layout_validation.layout_state_hash_required is True
+    assert parsed.runtime_layout_validation.readback_kinds_required
+
+
 def test_parent_projection_requires_non_positional_beat_key() -> None:
     parent = _parent_artifact(
         beat_layout_intents=[
@@ -387,6 +418,18 @@ def test_spoken_only_action_intent_does_not_create_responsible_layout_success() 
     )
 
     assert intents == ()
+
+
+def test_responsible_contract_rejects_spoken_only_fallback_posture() -> None:
+    payload = _responsible_contract().model_dump(mode="json")
+    payload["beat_layout_intents"][0]["proposed_postures"] = ["spoken_only_fallback"]
+    with pytest.raises(ValueError, match="spoken_only_fallback"):
+        PreparedSegmentLayoutContract.model_validate(payload)
+
+    payload = _responsible_contract().model_dump(mode="json")
+    payload["layout_decision_contract"]["bounded_vocabulary"] = ["spoken_only_fallback"]
+    with pytest.raises(ValueError, match="spoken_only_fallback"):
+        PreparedSegmentLayoutContract.model_validate(payload)
 
 
 def test_responsible_hosting_requires_explicit_visible_layout_intents() -> None:
@@ -576,7 +619,7 @@ def test_runtime_receipt_requires_matching_decision_identity_and_beat() -> None:
 
 
 def test_runtime_receipt_rejects_laundered_readbacks_and_unchanged_state() -> None:
-    with pytest.raises(ValueError, match="required ward visible=true"):
+    with pytest.raises(ValueError, match="missing required ward visibility"):
         validate_runtime_layout_receipt(
             _responsible_contract(),
             _receipt().model_copy(update={"ward_visibility": {"source-card": False}}),
@@ -619,6 +662,17 @@ def test_runtime_receipt_rejects_laundered_readbacks_and_unchanged_state() -> No
             _responsible_contract(),
             _receipt().model_copy(update={"observed_effects": ()}),
             decision=_decision(),
+        )
+
+
+def test_runtime_receipt_requires_all_required_wards_visible() -> None:
+    decision = _decision().model_copy(update={"required_ward_ids": ("source-card", "chart")})
+
+    with pytest.raises(ValueError, match="chart"):
+        validate_runtime_layout_receipt(
+            _responsible_contract(),
+            _receipt().model_copy(update={"ward_visibility": {"source-card": True}}),
+            decision=decision,
         )
 
 

@@ -245,6 +245,10 @@ class TestProgrammeContent:
                 segment_cues=["camera.hero tight"],
             )
 
+    def test_missing_hosting_context_fails_closed_for_segment_cues(self) -> None:
+        with pytest.raises(ValueError, match="executable segment_cues"):
+            ProgrammeContent(segment_cues=["camera.hero tight"])
+
     def test_layout_intents_cannot_mix_with_legacy_segment_cues(self) -> None:
         with pytest.raises(ValueError, match="cannot mix"):
             ProgrammeContent(
@@ -255,6 +259,18 @@ class TestProgrammeContent:
                         "needs": ["evidence_visible"],
                     }
                 ],
+            )
+
+    def test_layout_intents_reject_concrete_runtime_authority_fields(self) -> None:
+        with pytest.raises(ValueError, match="concrete layout authority"):
+            ProgrammeContent(
+                beat_layout_intents=[
+                    {
+                        "beat_id": "hook",
+                        "needs": ["evidence_visible"],
+                        "surfaceId": "main",
+                    }
+                ]
             )
 
 

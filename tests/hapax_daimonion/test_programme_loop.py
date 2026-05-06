@@ -412,6 +412,9 @@ def test_active_segment_payload_uses_plural_layout_intents_and_authority_ref() -
     assert payload["current_beat_layout_intents"][0]["needs"] == ["evidence_visible"]
     assert payload["prepared_artifact_ref"] == artifact_ref
     assert payload["artifact_path_diagnostic"] == "/tmp/prog-responsible.json"
+    assert "layout_decision_contract" not in payload
+    assert "runtime_layout_validation" not in payload
+    assert "fallback_active" not in payload
 
 
 def test_programme_loop_checks_beat_transition_once_per_tick() -> None:

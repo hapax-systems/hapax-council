@@ -205,7 +205,6 @@ DEFAULT_POSTURE_VOCABULARY: tuple[LayoutPosture, ...] = (
     LayoutPosture.CHAT_PROMPT,
     LayoutPosture.ASSET_FRONT,
     LayoutPosture.COMPARISON,
-    LayoutPosture.SPOKEN_ONLY_FALLBACK,
 )
 DEFAULT_DECISION_VOCABULARY = DEFAULT_POSTURE_VOCABULARY
 DEFAULT_CONFLICT_ORDER: tuple[LayoutConflictPriority, ...] = (
@@ -462,12 +461,24 @@ class PreparedSegmentLayoutContract(BaseModel):
                         f"{beat.beat_id}: non_responsible_static posture cannot be "
                         "proposed for responsible_hosting"
                     )
+                if LayoutPosture.SPOKEN_ONLY_FALLBACK in beat.proposed_postures:
+                    raise ValueError(
+                        f"{beat.beat_id}: spoken_only_fallback cannot be proposed "
+                        "for responsible_hosting"
+                    )
             if LayoutPosture.NON_RESPONSIBLE_STATIC in (
                 self.layout_decision_contract.bounded_vocabulary
             ):
                 raise ValueError(
                     "responsible_hosting layout_decision_contract cannot advertise "
                     "non_responsible_static"
+                )
+            if LayoutPosture.SPOKEN_ONLY_FALLBACK in (
+                self.layout_decision_contract.bounded_vocabulary
+            ):
+                raise ValueError(
+                    "responsible_hosting layout_decision_contract cannot advertise "
+                    "spoken_only_fallback"
                 )
         else:
             for beat in self.beat_layout_intents:
@@ -740,10 +751,11 @@ def validate_runtime_layout_decision(
         missing = ", ".join(sorted(effect.value for effect in missing_effects))
         raise ValueError(f"layout decision expected_effects outside prepared beat: {missing}")
     if contract.hosting_context.mode is HostingMode.RESPONSIBLE_HOSTING:
-        if decision.posture is LayoutPosture.NON_RESPONSIBLE_STATIC:
-            raise ValueError(
-                "responsible_hosting decision cannot use non_responsible_static posture"
-            )
+        if decision.posture in {
+            LayoutPosture.NON_RESPONSIBLE_STATIC,
+            LayoutPosture.SPOKEN_ONLY_FALLBACK,
+        }:
+            raise ValueError("responsible_hosting decision cannot use fallback/static posture")
         if not decision.layout_state_hash_before:
             raise ValueError("responsible_hosting decision requires layout_state_hash_before")
         if not decision.required_ward_ids:
@@ -760,6 +772,20 @@ def validate_runtime_layout_receipt(
 
     if receipt.segment_id != contract.segment_id:
         raise ValueError("layout receipt segment_id does not match prepared contract")
+    mode = contract.hosting_context.mode
+    if mode is HostingMode.EXPLICIT_FALLBACK:
+        if receipt.status is not LayoutReceiptStatus.FALLBACK_ACTIVE:
+            raise ValueError("explicit_fallback success requires fallback_active receipt")
+        if receipt.posture not in {
+            LayoutPosture.SPOKEN_ONLY_FALLBACK,
+            LayoutPosture.NON_RESPONSIBLE_STATIC,
+        }:
+            raise ValueError("explicit_fallback receipt requires fallback posture")
+        return
+
+    if mode is HostingMode.RESPONSIBLE_HOSTING and decision is None:
+        raise ValueError("responsible_hosting receipt validation requires matching decision")
+
     if receipt.posture not in contract.layout_decision_contract.bounded_vocabulary:
         raise ValueError(f"layout receipt posture {receipt.posture.value!r} is outside contract")
     if receipt.status in {LayoutReceiptStatus.PENDING, LayoutReceiptStatus.MISMATCHED}:
@@ -767,16 +793,16 @@ def validate_runtime_layout_receipt(
             f"layout receipt status {receipt.status.value!r} is not successful readback"
         )
 
-    mode = contract.hosting_context.mode
     if mode is HostingMode.RESPONSIBLE_HOSTING:
-        if decision is None:
-            raise ValueError("responsible_hosting receipt validation requires matching decision")
         validate_runtime_layout_decision(contract, decision)
         _validate_receipt_matches_decision(decision, receipt)
         if receipt.status is LayoutReceiptStatus.FALLBACK_ACTIVE:
             raise ValueError("responsible_hosting cannot count fallback-active layout as success")
-        if receipt.posture is LayoutPosture.NON_RESPONSIBLE_STATIC:
-            raise ValueError("responsible_hosting cannot count non_responsible_static as success")
+        if receipt.posture in {
+            LayoutPosture.NON_RESPONSIBLE_STATIC,
+            LayoutPosture.SPOKEN_ONLY_FALLBACK,
+        }:
+            raise ValueError("responsible_hosting cannot count fallback/static posture as success")
         if _is_static_default_layout(receipt.observed_layout or ""):
             raise ValueError(
                 "static/default layout cannot be responsible_hosting success even with receipt"
@@ -791,14 +817,17 @@ def validate_runtime_layout_receipt(
             raise ValueError("responsible_hosting receipt did not change LayoutState hash")
         if not receipt.layout_state_signature:
             raise ValueError("responsible_hosting receipt requires signed LayoutState hash")
-        if not any(
-            receipt.ward_visibility.get(ward_id) is True for ward_id in decision.required_ward_ids
-        ):
-            raise ValueError("responsible_hosting receipt requires a required ward visible=true")
+        missing_wards = tuple(
+            ward_id
+            for ward_id in decision.required_ward_ids
+            if receipt.ward_visibility.get(ward_id) is not True
+        )
+        if missing_wards:
+            missing = ", ".join(missing_wards)
+            raise ValueError(
+                f"responsible_hosting receipt missing required ward visibility: {missing}"
+            )
         _validate_typed_readbacks(contract, receipt)
-    elif mode is HostingMode.EXPLICIT_FALLBACK:
-        if receipt.status is not LayoutReceiptStatus.FALLBACK_ACTIVE:
-            raise ValueError("explicit_fallback success requires fallback_active receipt")
     elif (
         mode is HostingMode.NON_RESPONSIBLE_STATIC
         and not contract.hosting_context.static_layout_success_allowed
@@ -904,28 +933,15 @@ def _project_parent_hosting_context(value: Any) -> HostingContext:
 
 
 def _project_parent_layout_decision_contract(parent: Mapping[str, Any]) -> LayoutDecisionContract:
-    allowed: dict[str, Any] = {"may_command_layout": False}
-    for key in ("bounded_vocabulary", "min_dwell_s", "ttl_s", "conflict_order", "receipt_required"):
-        if key in parent:
-            allowed[key] = parent[key]
-    return LayoutDecisionContract.model_validate(allowed)
+    if parent.get("may_command_layout") is not False:
+        raise ValueError("parent layout_decision_contract.may_command_layout must be false")
+    return LayoutDecisionContract()
 
 
 def _project_parent_runtime_validation(
     parent: Mapping[str, Any],
 ) -> PreparedRuntimeLayoutValidation:
-    allowed = {
-        key: parent[key]
-        for key in (
-            "receipt_required",
-            "layout_state_hash_required",
-            "layout_state_signature_required",
-            "ward_visibility_required",
-            "readback_kinds_required",
-        )
-        if key in parent
-    }
-    return PreparedRuntimeLayoutValidation.model_validate(allowed)
+    return PreparedRuntimeLayoutValidation()
 
 
 def _project_parent_beat_layout_intents(
@@ -1120,16 +1136,16 @@ def programme_content_has_responsible_layout_contract(content: Any) -> bool:
     hosting_context = getattr(content, "hosting_context", None)
     if isinstance(hosting_context, Mapping):
         mode = hosting_context.get("mode") or hosting_context.get("hosting_context")
-        return _hosting_context_token(str(mode or "")) in {
-            _hosting_context_token(HostingMode.RESPONSIBLE_HOSTING.value),
-            *(_hosting_context_token(v) for v in _RESPONSIBLE_HOSTING_CONTEXT_STRINGS),
+        token = _hosting_context_token(str(mode or ""))
+        return token not in {
+            _hosting_context_token(v) for v in _NON_RESPONSIBLE_STATIC_CONTEXT_STRINGS
         }
     if isinstance(hosting_context, str):
-        return _hosting_context_token(hosting_context) in {
-            _hosting_context_token(HostingMode.RESPONSIBLE_HOSTING.value),
-            *(_hosting_context_token(v) for v in _RESPONSIBLE_HOSTING_CONTEXT_STRINGS),
+        token = _hosting_context_token(hosting_context)
+        return token not in {
+            _hosting_context_token(v) for v in _NON_RESPONSIBLE_STATIC_CONTEXT_STRINGS
         }
-    return bool(getattr(content, "beat_layout_intents", None))
+    return True
 
 
 def current_beat_layout_proposal(

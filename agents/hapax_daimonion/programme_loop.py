@@ -856,9 +856,6 @@ def _active_segment_payload(active: Any, role_value: str, beat_index: int) -> di
         "hosting_context": getattr(content, "hosting_context", None),
         "authority": getattr(content, "authority", None),
         "current_beat_layout_intents": _current_beat_layout_proposals(content, beat_index),
-        "layout_decision_contract": getattr(content, "layout_decision_contract", {}),
-        "runtime_layout_validation": getattr(content, "runtime_layout_validation", {}),
-        "fallback_active": False,
     }
 
 
