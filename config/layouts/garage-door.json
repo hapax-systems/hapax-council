@@ -209,7 +209,7 @@
       "params": {
         "folder": "~/Documents/Personal/30-areas/stream-overlays/",
         "cycle_seconds": 15,
-        "font": "JetBrains Mono Bold 20"
+        "font": "JetBrains Mono Bold 14"
       },
       "tags": [
         "text",
