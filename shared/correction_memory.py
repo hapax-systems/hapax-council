@@ -240,6 +240,8 @@ def check_for_corrections(
         data = json.loads(CORRECTION_INTAKE_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    if not isinstance(data, dict):
+        return None
 
     corrected_label = data.get("label", "")
     current_activity = current_state.get("production_activity", "")
