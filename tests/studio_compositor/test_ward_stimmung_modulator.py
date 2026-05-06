@@ -288,3 +288,27 @@ def test_blit_with_depth_and_modulator_round_trip(enabled: None, current_path: P
         )
         opacity = blit_scaled.call_args.args[3]
     assert opacity < 0.7  # beyond-scrim, well below the on-scrim ~0.96
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [
+        ("null", "null"),
+        ('"a string"', "string"),
+        ("[1, 2, 3]", "list"),
+        ("42", "int"),
+    ],
+)
+def test_read_dims_rejects_non_dict_root(tmp_path, payload, kind):
+    """Schema drift: current.json with valid JSON whose root is not a
+    mapping previously raised AttributeError out of ``raw.get(...)`` —
+    the modulator runs in the compositor tick loop, so a corrupt
+    writer would cascade through every ward's modulation pass. Pin
+    malformed → None for each non-dict shape."""
+    current_path = tmp_path / "current.json"
+    current_path.write_text(payload)
+    mod = _wsm.WardStimmungModulator(
+        current_path=current_path,
+        ward_properties_ttl_s=10.0,
+    )
+    assert mod._read_dims() is None, f"root={kind} must yield None"
