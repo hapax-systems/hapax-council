@@ -1,0 +1,44 @@
+version: 1
+
+# Upright-frame coordinates after ROLE_ROTATION_CW_DEG has been applied.
+# Per-camera local overrides live at ~/.config/hapax/cbip-roi-{cam_id}.json.
+cameras:
+  overhead:
+    frame_width: 1920
+    frame_height: 1080
+    roi_x: 0
+    roi_y: 0
+    roi_width: 1920
+    roi_height: 1080
+    exposure_locked: true
+    exposure_time_us: 12000
+    analogue_gain: 1.0
+    white_balance_locked: true
+    colour_gain_red: 1.25
+    colour_gain_blue: 1.85
+  overhead-left:
+    frame_width: 1920
+    frame_height: 1080
+    roi_x: 0
+    roi_y: 0
+    roi_width: 1920
+    roi_height: 1080
+    exposure_locked: true
+    exposure_time_us: 12000
+    analogue_gain: 1.0
+    white_balance_locked: true
+    colour_gain_red: 1.25
+    colour_gain_blue: 1.85
+  overhead-right:
+    frame_width: 1920
+    frame_height: 1080
+    roi_x: 0
+    roi_y: 0
+    roi_width: 1920
+    roi_height: 1080
+    exposure_locked: true
+    exposure_time_us: 12000
+    analogue_gain: 1.0
+    white_balance_locked: true
+    colour_gain_red: 1.25
+    colour_gain_blue: 1.85
