@@ -421,6 +421,8 @@ def read_phone_health_summary(watch_dir: Path) -> list[dict]:
         data = json.loads(summary_file.read_text())
     except (json.JSONDecodeError, OSError):
         return []
+    if not isinstance(data, dict):
+        return []
 
     # Only use today's data
     from datetime import date as _date
@@ -498,7 +500,9 @@ def read_watch_facts(watch_dir: Path | None = None) -> list[dict]:
     if hr_file.exists() and "health.resting_hr" not in phone_keys:
         try:
             data = json.loads(hr_file.read_text())
-            current = data.get("current", {})
+            if not isinstance(data, dict):
+                data = {}
+            current = data.get("current") if isinstance(data.get("current"), dict) else {}
             if current.get("bpm") is not None:
                 facts.append(
                     {
@@ -517,7 +521,9 @@ def read_watch_facts(watch_dir: Path | None = None) -> list[dict]:
     if hrv_file.exists():
         try:
             data = json.loads(hrv_file.read_text())
-            window = data.get("window_1h", {})
+            if not isinstance(data, dict):
+                data = {}
+            window = data.get("window_1h") if isinstance(data.get("window_1h"), dict) else {}
             if window.get("mean") is not None:
                 facts.append(
                     {
@@ -536,6 +542,8 @@ def read_watch_facts(watch_dir: Path | None = None) -> list[dict]:
     if activity_file.exists() and "health.active_minutes" not in phone_keys:
         try:
             data = json.loads(activity_file.read_text())
+            if not isinstance(data, dict):
+                data = {}
             active_min = data.get("active_minutes_today")
             if active_min is not None:
                 facts.append(
