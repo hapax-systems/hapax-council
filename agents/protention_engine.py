@@ -415,17 +415,31 @@ class ProtentionEngine:
             log.debug("Failed to save protention state", exc_info=True)
 
     def load(self, path: Path | None = None) -> bool:
-        """Load previously learned state. Returns True if loaded."""
+        """Load previously learned state. Returns True if loaded.
+
+        Validates the JSON root is a mapping. ``data.get(\"activity_chain\",
+        {})`` and the other field reads happen inside the
+        ``(OSError, json.JSONDecodeError, KeyError)`` clause, which does
+        not catch AttributeError — a writer producing valid JSON whose
+        root is null, a list, a string, or a number previously crashed
+        the protention-engine startup load. Same shape as the other
+        recent SHM-read fixes.
+        """
         path = path or PROTENTION_STATE_PATH
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        try:
             self._activity_chain = MarkovChain.from_dict(data.get("activity_chain", {}))
             self._flow_timing = FlowTimingModel.from_dict(data.get("flow_timing", {}))
             self._circadian = CircadianModel.from_dict(data.get("circadian", {}))
-            log.info(
-                "Loaded protention state: %d activity transitions",
-                self._activity_chain.total_observations,
-            )
-            return True
-        except (OSError, json.JSONDecodeError, KeyError):
+        except KeyError:
             return False
+        log.info(
+            "Loaded protention state: %d activity transitions",
+            self._activity_chain.total_observations,
+        )
+        return True
