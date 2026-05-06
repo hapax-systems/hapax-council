@@ -44,19 +44,35 @@ DIMENSION_NAMES = [
 
 
 def _read_stimmung() -> dict | None:
-    """Read current stimmung state."""
+    """Read current stimmung state.
+
+    Validates the JSON root is a mapping. Downstream consumers in the
+    sync loop call ``.get(...)`` on the returned value — a writer
+    producing valid JSON whose root is null, a list, a string, or a
+    number previously raised AttributeError out of the stimmung sync
+    daemon. Same shape as the other recent SHM-read fixes.
+    """
     try:
-        return json.loads(STIMMUNG_STATE.read_text())
+        data = json.loads(STIMMUNG_STATE.read_text())
     except (FileNotFoundError, json.JSONDecodeError) as e:
         log.warning("Cannot read stimmung state: %s", e)
         return None
+    return data if isinstance(data, dict) else None
 
 
 def _load_state() -> dict:
+    """Load sync-state file as dict, or canonical default on failure.
+
+    Same isinstance contract as :func:`_read_stimmung`. The default
+    state object is the canonical schema the sync loop writes back,
+    so a corrupt persist file gets overwritten on the next save.
+    """
+    default = {"last_stance": "unknown", "readings": []}
     try:
-        return json.loads(STATE_FILE.read_text())
+        data = json.loads(STATE_FILE.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
-        return {"last_stance": "unknown", "readings": []}
+        return default
+    return data if isinstance(data, dict) else default
 
 
 def _save_state(state: dict) -> None:
