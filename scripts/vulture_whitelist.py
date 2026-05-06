@@ -186,6 +186,14 @@ from shared.segment_observability import SegmentRecorder as _SegmentRecorder
 
 _SegmentRecorder
 
+# Deterministic fixture evaluator for segment quality/action/layout contract tests.
+# Test call sites are intentionally outside vulture's production scan.
+from shared.segment_quality_layout_eval import (
+    evaluate_segment_quality_layout_fixture as _evaluate_segment_quality_layout_fixture,
+)
+
+_evaluate_segment_quality_layout_fixture
+
 from shared.self_grounding_envelope import (
     SelfPresenceEnvelopeProjection,
     build_envelope_projection,
