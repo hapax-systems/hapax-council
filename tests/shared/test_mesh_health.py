@@ -14,6 +14,8 @@ import json
 import time
 from pathlib import Path
 
+import pytest
+
 from shared.mesh_health import aggregate_mesh_health
 
 
@@ -139,3 +141,43 @@ class TestCustomThresholds:
         result = aggregate_mesh_health(shm_root=tmp_path, stale_s=5.0)
         assert result["component_count"] == 1
         assert "y" in result["components"]
+
+
+class TestMalformedFieldsDoNotCrashAggregator:
+    """Regression — string timestamps + non-numeric error fields used to
+    crash the entire aggregator with TypeError, blocking the
+    `agents.health_monitor` snapshot path. Per never-remove: malformed
+    files are skipped, healthy ones still report.
+    """
+
+    def test_string_timestamp_skipped_does_not_crash(self, tmp_path: Path) -> None:
+        target = tmp_path / "hapax-bad" / "health.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps({"component": "bad", "error": 0.5, "timestamp": "2026-05-06T20:00:00Z"})
+        )
+        _write_component_health(tmp_path, "ok", 0.3)
+        result = aggregate_mesh_health(shm_root=tmp_path)
+        assert "bad" not in result["components"]
+        assert "ok" in result["components"]
+
+    def test_non_numeric_error_skipped_does_not_crash(self, tmp_path: Path) -> None:
+        target = tmp_path / "hapax-bad" / "health.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps({"component": "bad", "error": "n/a", "timestamp": time.time()})
+        )
+        _write_component_health(tmp_path, "ok", 0.3)
+        result = aggregate_mesh_health(shm_root=tmp_path)
+        assert "bad" not in result["components"]
+        assert "ok" in result["components"]
+
+    def test_string_numeric_timestamp_coerces_cleanly(self, tmp_path: Path) -> None:
+        target = tmp_path / "hapax-stringts" / "health.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps({"component": "stringts", "error": 0.4, "timestamp": str(time.time())})
+        )
+        result = aggregate_mesh_health(shm_root=tmp_path)
+        assert "stringts" in result["components"]
+        assert result["components"]["stringts"] == pytest.approx(0.4)

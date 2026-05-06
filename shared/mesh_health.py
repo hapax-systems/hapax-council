@@ -26,10 +26,24 @@ def aggregate_mesh_health(*, shm_root: Path = Path("/dev/shm"), stale_s: float =
     for health_file in sorted(shm_root.glob("hapax-*/health.json")):
         try:
             data = json.loads(health_file.read_text(encoding="utf-8"))
-            ts = data.get("timestamp", 0)
+            # Coerce timestamp/error to float — some producers write
+            # ISO strings or numeric strings into these fields. Without
+            # the coercion the subtraction below raises TypeError and
+            # the entire mesh-health aggregation crashes, blocking the
+            # whole `agents.health_monitor` snapshot path. Per
+            # never-remove: skip the offending file but keep the loop
+            # alive so other components still report.
+            try:
+                ts = float(data.get("timestamp", 0) or 0)
+            except (TypeError, ValueError):
+                continue
             if now - ts > stale_s:
                 continue
-            components[data["component"]] = data["error"]
+            try:
+                err = float(data["error"])
+            except (TypeError, ValueError):
+                continue
+            components[data["component"]] = err
         except (OSError, json.JSONDecodeError, KeyError):
             continue
 
