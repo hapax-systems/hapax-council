@@ -55,10 +55,23 @@ def _read_text(path: Path) -> str:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
+    """Return a JSON file as a dict, or {} on any failure.
+
+    Validates the JSON root is a mapping. The ``_format_viewers`` and
+    ``_format_chat`` callers downstream call ``ledger.get(...)`` /
+    ``state.get(...)`` directly on the returned value; a writer
+    producing valid JSON whose root is null, a list, a string, or a
+    number previously raised AttributeError out of the stream-overlay
+    cairooverlay callback. Same corruption-class as #2627, #2631,
+    #2632, #2636 (merged) and #2640, #2642, #2644, #2646 (in flight).
+    """
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    return data
 
 
 def _format_preset(raw: str) -> str:
