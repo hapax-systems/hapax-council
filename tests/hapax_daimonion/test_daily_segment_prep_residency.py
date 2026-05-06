@@ -196,9 +196,16 @@ def _valid_artifact(**overrides: Any) -> dict[str, Any]:
     prompt_sha256 = prep._sha256_text("prompt")
     seed_sha256 = prep._sha256_text("seed")
     segment_beats = ["Beat one"]
-    prepared_script = ["Place Test item in S-tier because the ranking makes the claim visible."]
+    prepared_script = [
+        "Place Test item in S-tier because Zuboff argues measurement needs visible proof, "
+        "which means the ranking makes the claim visible."
+    ]
     actionability = prep.validate_segment_actionability(prepared_script, segment_beats)
     layout = prep.validate_layout_responsibility(actionability["beat_action_intents"])
+    source_consequence_map = prep.build_source_consequence_map(
+        prepared_script,
+        actionability["beat_action_intents"],
+    )
     source_hashes = prep._source_hashes_from_fields(
         programme_id="prog-1",
         role="rant",
@@ -220,10 +227,21 @@ def _valid_artifact(**overrides: Any) -> dict[str, Any]:
         "layout_responsibility_version": prep.LAYOUT_RESPONSIBILITY_VERSION,
         "hosting_context": layout["hosting_context"],
         "segment_quality_report": prep.score_segment_quality(prepared_script, segment_beats),
+        "consultation_manifest": prep.build_consultation_manifest("rant"),
+        "source_consequence_map": source_consequence_map,
+        "live_event_viability": prep.build_live_event_viability(
+            prepared_script,
+            actionability=actionability,
+            layout=layout,
+            role="rant",
+        ),
+        "readback_obligations": prep.build_readback_obligations(layout["beat_layout_intents"]),
         "beat_action_intents": actionability["beat_action_intents"],
         "actionability_alignment": {
             "ok": actionability["ok"],
             "removed_unsupported_action_lines": actionability["removed_unsupported_action_lines"],
+            "personage_violations": actionability["personage_violations"],
+            "detector_theater_lines": actionability["detector_theater_lines"],
         },
         "beat_layout_intents": layout["beat_layout_intents"],
         "layout_decision_contract": layout["layout_decision_contract"],
@@ -266,7 +284,8 @@ def _valid_artifact_for(
     topic = topic or f"Topic for {programme_id}"
     segment_beats = segment_beats or ["Beat one"]
     prepared_script = prepared_script or [
-        f"Place {programme_id} in S-tier because the ranking makes the claim visible."
+        f"Place {programme_id} in S-tier because Zuboff argues measurement needs visible proof, "
+        "which means the ranking makes the claim visible."
     ]
     payload = _valid_artifact(
         programme_id=programme_id,
@@ -276,6 +295,10 @@ def _valid_artifact_for(
     )
     actionability = prep.validate_segment_actionability(prepared_script, segment_beats)
     layout = prep.validate_layout_responsibility(actionability["beat_action_intents"])
+    source_consequence_map = prep.build_source_consequence_map(
+        prepared_script,
+        actionability["beat_action_intents"],
+    )
     source_hashes = prep._source_hashes_from_fields(
         programme_id=programme_id,
         role=str(payload["role"]),
@@ -288,7 +311,18 @@ def _valid_artifact_for(
     payload["actionability_alignment"] = {
         "ok": actionability["ok"],
         "removed_unsupported_action_lines": actionability["removed_unsupported_action_lines"],
+        "personage_violations": actionability["personage_violations"],
+        "detector_theater_lines": actionability["detector_theater_lines"],
     }
+    payload["consultation_manifest"] = prep.build_consultation_manifest(str(payload["role"]))
+    payload["source_consequence_map"] = source_consequence_map
+    payload["live_event_viability"] = prep.build_live_event_viability(
+        prepared_script,
+        actionability=actionability,
+        layout=layout,
+        role=str(payload["role"]),
+    )
+    payload["readback_obligations"] = prep.build_readback_obligations(layout["beat_layout_intents"])
     payload["beat_layout_intents"] = layout["beat_layout_intents"]
     payload["layout_decision_contract"] = layout["layout_decision_contract"]
     payload["runtime_layout_validation"] = layout["runtime_layout_validation"]
@@ -729,12 +763,12 @@ def test_prep_segment_repairs_spoken_only_tier_list_into_visible_placements(
         "Java matters because object-oriented design reshaped enterprise software.",
     ]
     repaired = [
-        "Place the abstraction rubric in S-tier because the audience needs to see "
-        "that we are ranking language eras by leverage, not nostalgia.",
-        "Place FORTRAN in A-tier because its scientific-computing legacy made high "
-        "level programming visible as a practical working method.",
-        "Place Java in B-tier because its enterprise reach is enormous, but the "
-        "tradeoff is a heavier object model that chat can dispute.",
+        "Place the abstraction rubric in S-tier because the archive shows leverage, "
+        "not nostalgia, changes the chart and the result is visible criteria.",
+        "Place FORTRAN in A-tier because the archive shows scientific computing made "
+        "high level programming visible, which means the ranking needs context.",
+        "Place Java in B-tier because the source documents enterprise reach, but the "
+        "tradeoff changes the result toward a heavier object model chat can dispute.",
     ]
     prompts: list[str] = []
     phases: list[str] = []

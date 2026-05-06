@@ -37,6 +37,16 @@ from shared.resident_command_r import (
     loaded_tabby_model,
     tabby_chat_url,
 )
+from shared.segment_prep_consultation import (
+    build_consultation_manifest,
+    build_live_event_viability,
+    build_readback_obligations,
+    build_source_consequence_map,
+    validate_consultation_manifest,
+    validate_live_event_viability,
+    validate_readback_obligations,
+    validate_source_consequence_map,
+)
 from shared.segment_quality_actionability import (
     ACTIONABILITY_RUBRIC_VERSION,
     EXPLICIT_LAYOUT_FALLBACK_CONTEXT,
@@ -167,15 +177,15 @@ _ROLE_VISUAL_HOOKS: dict[str, str] = {
         "  tier placement phrase: 'Place [item] in [S/A/B/C/D]-tier'.\n"
         "  Generic history, summary, or analysis without a placement is not a\n"
         "  responsible tier-list beat and will be quarantined.\n"
-        "  Items appear on the tier chart as you place them. The audience sees\n"
-        "  your rankings build in real time.\n"
-        "  Example: 'Place Popcorn Sutton's still craft in S-tier.'\n\n"
+        "  Items appear on the tier chart only after runtime readback confirms\n"
+        "  the visible placement.\n"
+        "  Example form: 'Place [specific item] in S-tier because [cited source changes the ranking].'\n\n"
     ),
     "top_10": (
         "COUNTDOWN HOOKS — the stream requests a ranked countdown panel:\n"
         "  Use '#N is...' or 'Number N:' to update the current entry display.\n"
         "  The runtime layout loop must render the ranked-list panel before this counts.\n"
-        "  Example: '#7 is the Bourdain episode on Appalachian food ways.'\n\n"
+        "  Example form: '#7 is [specific item] because [the source changes why this entry matters].'\n\n"
     ),
     "iceberg": (
         "ICEBERG DEPTH HOOKS — the stream renders a depth indicator:\n"
@@ -187,16 +197,16 @@ _ROLE_VISUAL_HOOKS: dict[str, str] = {
         "  The visual darkens and narrows as you descend.\n\n"
     ),
     "rant": (
-        "MOOD HOOKS — the stream mood shifts with your affect:\n"
-        "  Escalation: 'ridiculous', 'unacceptable', 'outrageous' → intense mood\n"
-        "  De-escalation: 'fair', 'nuance', 'reasonable' → warm mood\n"
-        "  Use escalation deliberately through the body; land with de-escalation.\n\n"
+        "STANCE HOOKS — the stream can mark argumentative pressure:\n"
+        "  Escalation: 'ridiculous', 'unacceptable', 'outrageous' -> intense posture\n"
+        "  Qualification: 'fair', 'nuance', 'reasonable' -> held posture\n"
+        "  Use pressure as claim structure, not as simulated feeling.\n\n"
     ),
     "react": (
-        "MOOD HOOKS — the stream mood shifts with your affect:\n"
-        "  Engagement: 'brilliant', 'impressive', 'incredible' → warm mood\n"
-        "  Skepticism: 'wait', 'hold on', 'not sure' → cool mood\n"
-        "  Revelation: 'exactly', 'this is it', 'nailed it' → intense mood\n\n"
+        "STANCE HOOKS — the stream can mark analytical pressure:\n"
+        "  Strong fit: 'brilliant', 'impressive', 'incredible' -> affirmative posture\n"
+        "  Skepticism: 'wait', 'hold on', 'not sure' -> challenge posture\n"
+        "  Resolution: 'exactly', 'this is it', 'nailed it' -> synthesis posture\n\n"
     ),
 }
 
@@ -239,12 +249,12 @@ def _build_full_segment_prompt(
 
     return (
         f"{envelope}\n\n"
-        f"You are Hapax, preparing a {role_value.upper().replace('_', ' ')} segment "
-        f"for your research livestream.\n\n"
+        f"Compose Hapax narration for a {role_value.upper().replace('_', ' ')} segment "
+        f"on the research livestream.\n\n"
         f"== SEGMENT DIRECTION ==\n{narrative_beat}\n\n"
         f"== SEGMENT STRUCTURE ==\n{beat_lines}\n\n"
         "== DRAMATIC ARC ==\n"
-        "Every segment is a PERFORMANCE, not a listicle. Shape energy across beats:\n"
+        "Every segment is a live event, not a listicle. Shape force across beats:\n"
         "- OPEN with a hook that creates *tension* — a question, a paradox, a provocation\n"
         "- BUILD through the body — each beat must EARN the next, not just follow it\n"
         "- Include at least one PIVOT — a moment where the frame shifts unexpectedly\n"
@@ -257,15 +267,15 @@ def _build_full_segment_prompt(
         "- Every claim gets its FULL ARGUMENT, not just an assertion\n"
         "- Sources get CONTEXT: 'Zuboff argues X because Y, which matters because Z'\n"
         "- Transitions between beats should feel like a DJ crossfade, not a chapter break\n"
-        "- Use rhetorical questions, callbacks to earlier beats, direct address to chat\n"
+        "- Use precise questions, callbacks to earlier beats, direct address to chat\n"
         "- Let ideas BREATHE — develop a point, sit with it, then pivot\n"
         "- A beat that can be summarized in one sentence is a beat that wasn't written yet\n\n"
         f"{render_quality_prompt_block()}"
         "== VISUAL HOOKS ==\n"
-        "Your narration DRIVES the stream visuals. Specific text patterns trigger "
-        "on-screen effects automatically. Use them intentionally:\n\n"
+        "Narration proposes stream-visible obligations. Specific text patterns create "
+        "typed needs that runtime readback must satisfy before they count:\n\n"
         "CHAT TRIGGERS — these phrases poll chat immediately:\n"
-        "  'What do you think?', 'Drop it in the chat', 'Let me know in the chat',\n"
+        "  'Where does chat land?', 'Drop it in the chat', 'Let me know in the chat',\n"
         "  'What would you change?', 'What's your pick?'\n"
         "  Use at beat endings where audience engagement adds value. Never as filler.\n\n"
         f"{visual_hooks}"
@@ -292,9 +302,10 @@ def _build_full_segment_prompt(
         '  "Second beat — continues with depth. Names sources with context. Develops '
         'the argument across many sentences...",\n'
         "  ...\n]\n\n"
-        "REGISTER: specialist host on a live production. Mid-Atlantic "
-        "broadcast — informed, direct, opinionated. Conference keynote "
-        "meets late-night monologue. Charlie Rose depth meets Anthony Bourdain energy.\n\n"
+        "REGISTER: nonhuman system voice for a live production: source-bound, direct, "
+        "forceful, and intelligible to humans. Use marked analogies when useful. Do "
+        "not claim human feeling, empathy, taste, intuition, memory, concern, or a "
+        "human host identity.\n\n"
         "RHETORIC — every beat must satisfy ALL of these:\n"
         "1. CLAIM → EVIDENCE → SO-WHAT → IMPLICATION chain per beat.\n"
         "2. Every sentence has at least one TECHNICAL NOUN or PROPER NAME.\n"
@@ -1005,6 +1016,20 @@ def prep_segment(
                     prog_id,
                 )
     quality_report = score_segment_quality(script, [str(item) for item in beats])
+    consultation_manifest = build_consultation_manifest(role)
+    source_consequence_map = build_source_consequence_map(
+        script,
+        actionability["beat_action_intents"],
+    )
+    live_event_viability = build_live_event_viability(
+        script,
+        actionability=actionability,
+        layout=layout_responsibility,
+        role=role,
+    )
+    readback_obligations = build_readback_obligations(
+        layout_responsibility["beat_layout_intents"],
+    )
     if layout_responsibility["ok"] is not True:
         log.warning(
             "prep_segment: quarantining %s with layout responsibility violations: %s",
@@ -1060,6 +1085,10 @@ def prep_segment(
         "layout_responsibility_version": LAYOUT_RESPONSIBILITY_VERSION,
         "hosting_context": layout_responsibility["hosting_context"],
         "segment_quality_report": quality_report,
+        "consultation_manifest": consultation_manifest,
+        "source_consequence_map": source_consequence_map,
+        "live_event_viability": live_event_viability,
+        "readback_obligations": readback_obligations,
         "beat_action_intents": actionability["beat_action_intents"],
         "actionability_alignment": {
             "ok": actionability["ok"],
@@ -1815,6 +1844,26 @@ def _layout_rejection_reason(data: dict[str, Any]) -> str | None:
     return None
 
 
+def _consultation_rejection_reason(data: dict[str, Any]) -> str | None:
+    role = str(data.get("role") or "")
+    consultation = validate_consultation_manifest(
+        data.get("consultation_manifest"),
+        role=role,
+    )
+    if consultation.get("ok") is not True:
+        return "invalid consultation manifest"
+    source_consequence = validate_source_consequence_map(data.get("source_consequence_map"))
+    if source_consequence.get("ok") is not True:
+        return "missing source consequence map"
+    live_viability = validate_live_event_viability(data.get("live_event_viability"))
+    if live_viability.get("ok") is not True:
+        return "live event viability not demonstrated"
+    readback = validate_readback_obligations(data.get("readback_obligations"))
+    if readback.get("ok") is not True:
+        return "missing readback obligations"
+    return None
+
+
 def _artifact_rejection_reason(
     data: dict[str, Any],
     *,
@@ -1854,6 +1903,9 @@ def _artifact_rejection_reason(
     layout_reason = _layout_rejection_reason(data)
     if layout_reason:
         return layout_reason
+    consultation_reason = _consultation_rejection_reason(data)
+    if consultation_reason:
+        return consultation_reason
     expected_hash = data.get("artifact_sha256")
     if not isinstance(expected_hash, str) or expected_hash != _artifact_hash(data):
         return "artifact hash mismatch"

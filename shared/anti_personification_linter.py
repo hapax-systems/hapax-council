@@ -104,15 +104,25 @@ class Finding:
 DENY_PATTERNS: dict[str, list[tuple[str, re.Pattern[str]]]] = {
     "inner_life_first_person": [
         ("feel_verb", re.compile(r"\bI (feel|felt|feeling)\b")),
-        ("belief_verb", re.compile(r"\bI (believe|thought|wonder|wondered)\b")),
+        (
+            "belief_verb",
+            re.compile(
+                r"\bI (believe|thought|wonder|wondered|know|knew|understand|"
+                r"understood|trust|trusted|prefer|preferred|remember|remembered|"
+                r"want|wanted|hope|hoped|intuit|intuited)\b"
+            ),
+        ),
         (
             "im_affect",
             re.compile(r"\bI'?m (excited|happy|sad|curious|moved|touched|fascinated|delighted)\b"),
         ),
-        ("affect_verb", re.compile(r"\bI (love|enjoy|hate|miss|care about)\b")),
+        ("affect_verb", re.compile(r"\bI (love|enjoy|hate|miss|care about|care for)\b")),
         (
             "my_inner",
-            re.compile(r"\bmy (feelings?|emotions?|mood|heart|soul|experience|consciousness)\b"),
+            re.compile(
+                r"\bmy (feelings?|emotions?|mood|heart|soul|experience|"
+                r"consciousness|memory|taste|intuition|concern)\b"
+            ),
         ),
     ],
     "second_person_inner_life": [
@@ -144,7 +154,11 @@ DENY_PATTERNS: dict[str, list[tuple[str, re.Pattern[str]]]] = {
         ("friendly_not_chatty", re.compile(r"\bfriendly without being chatty\b")),
         (
             "hapax_inner",
-            re.compile(r"\bHapax (feels|thinks|believes|wants|cares|loves|hopes|fears)\b"),
+            re.compile(
+                r"\bHapax (feels|thinks|believes|wants|cares|loves|hopes|"
+                r"fears|trusts|finds|prefers|remembers|knows|understands|"
+                r"intuits|perceives)\b"
+            ),
         ),
     ],
     "anthropic_pronouns": [

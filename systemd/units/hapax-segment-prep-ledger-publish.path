@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch the segment-prep prediction ledger and enqueue weblog publication
+
+[Path]
+PathChanged=%h/Documents/Personal/20-projects/hapax-research/ledgers/segment-prep-framework-prediction-ledger.md
+Unit=hapax-segment-prep-ledger-publish.service
+
+[Install]
+WantedBy=default.target

@@ -14,6 +14,14 @@ from pathlib import Path
 from typing import Any
 
 from shared.resident_command_r import RESIDENT_COMMAND_R_MODEL
+from shared.segment_prep_consultation import (
+    framework_vocabulary_hits,
+    nonsterile_force_ok,
+    validate_consultation_manifest,
+    validate_live_event_viability,
+    validate_readback_obligations,
+    validate_source_consequence_map,
+)
 from shared.segment_quality_actionability import (
     RESPONSIBLE_HOSTING_CONTEXT,
     forbidden_layout_authority_fields,
@@ -52,10 +60,19 @@ REQUIRED_TEAM_CRITIQUE_ROLES = (
     "actionability_layout",
     "layout_responsibility",
 )
+REQUIRED_POSITIVE_EXCELLENCE_EVIDENCE = (
+    "live_bit_viability",
+    "source_consequence",
+    "role_standard_fit",
+    "non_anthropomorphic_force",
+    "no_detector_trigger_theater",
+    "framework_vocabulary_leakage",
+)
 PASSING_TEAM_VERDICTS = frozenset({"approved", "pass", "passed"})
 MIN_CONCRETE_ACTION_KINDS = 2
 ACTIONABILITY_DIVERSITY_EXCLUDED_KINDS = frozenset({"source_citation", "spoken_argument"})
 MIN_TEAM_CRITIQUE_NOTE_WORDS = 6
+MIN_EXCELLENCE_EVIDENCE_NOTE_WORDS = 5
 FORBIDDEN_LAYOUT_LAUNDERING_TERMS = frozenset(
     {
         "camera",
@@ -68,6 +85,21 @@ FORBIDDEN_LAYOUT_LAUNDERING_TERMS = frozenset(
         "default",
         "garage-door",
         "garage_door",
+    }
+)
+EXCELLENCE_CRITERION_NAMES = frozenset(
+    {
+        "script.quality_floor",
+        "script.ideal_livestream_bit",
+        "script.source_fidelity",
+        "consultation.role_standards_exemplars_counterexamples",
+        "consultation.source_consequence_map",
+        "consultation.live_event_viability",
+        "consultation.readback_obligations",
+        "script.non_anthropomorphic_force",
+        "script.framework_vocabulary_not_prompt_facing",
+        "actionability.visible_or_doable_counterpart",
+        "actionability.claim_layout_binding",
     }
 )
 LOADER_ACCEPTANCE_GATE = "daily_segment_prep.load_prepped_programmes"
@@ -294,6 +326,31 @@ def _layout_laundering_terms(value: Any, *, path: str = "$") -> list[dict[str, s
     return found
 
 
+def _positive_excellence_evidence_errors(receipt: Mapping[str, Any], index: int) -> list[str]:
+    evidence = receipt.get("positive_excellence_evidence") or receipt.get("review_evidence")
+    if not isinstance(evidence, Mapping):
+        return [f"receipt[{index}] missing positive_excellence_evidence"]
+    errors: list[str] = []
+    for key in REQUIRED_POSITIVE_EXCELLENCE_EVIDENCE:
+        item = evidence.get(key)
+        if not isinstance(item, Mapping):
+            errors.append(f"receipt[{index}] evidence {key} missing")
+            continue
+        if item.get("passed") is not True:
+            errors.append(f"receipt[{index}] evidence {key} did not pass")
+        notes = str(item.get("notes") or "").strip()
+        if len(notes.split()) < MIN_EXCELLENCE_EVIDENCE_NOTE_WORDS:
+            errors.append(f"receipt[{index}] evidence {key} notes are not substantive")
+        refs = item.get("evidence_refs")
+        if not isinstance(refs, list) or not any(isinstance(ref, str) and ref for ref in refs):
+            errors.append(f"receipt[{index}] evidence {key} missing evidence_refs")
+    return errors
+
+
+def _detector_theater_ok(actionability: Mapping[str, Any]) -> bool:
+    return actionability.get("detector_theater_lines") == []
+
+
 def _forbidden_bounded_vocabulary_terms(
     artifact: Mapping[str, Any],
 ) -> list[dict[str, str]]:
@@ -369,6 +426,9 @@ def _team_critique_loop(
         receipt_artifact_sha256 = str(receipt.get("artifact_sha256") or "").strip()
         receipt_programme_id = str(receipt.get("programme_id") or "").strip()
         receipt_iteration_id = str(receipt.get("iteration_id") or "").strip()
+        positive_excellence_evidence = receipt.get("positive_excellence_evidence") or receipt.get(
+            "review_evidence"
+        )
         entry = {
             "role": role,
             "verdict": verdict,
@@ -379,6 +439,9 @@ def _team_critique_loop(
             "programme_id": receipt_programme_id,
             "iteration_id": receipt_iteration_id,
             "notes": notes,
+            "positive_excellence_evidence": positive_excellence_evidence
+            if isinstance(positive_excellence_evidence, Mapping)
+            else {},
         }
         normalized.append(entry)
 
@@ -412,6 +475,10 @@ def _team_critique_loop(
         if len(notes.split()) < MIN_TEAM_CRITIQUE_NOTE_WORDS:
             malformed.append(f"receipt[{index}] notes are not substantive")
             continue
+        evidence_errors = _positive_excellence_evidence_errors(receipt, index)
+        if evidence_errors:
+            malformed.extend(evidence_errors)
+            continue
         if role not in REQUIRED_TEAM_CRITIQUE_ROLES:
             malformed.append(f"receipt[{index}] has unsupported role {role!r}")
             continue
@@ -432,6 +499,7 @@ def _team_critique_loop(
             "Review the single canary artifact before any next-nine generation.",
             "Each reviewer records a receipt with role, verdict, reviewer, checked_at, receipt_id, artifact_sha256, programme_id, iteration_id, and substantive notes.",
             "Approvals must cover script quality, actionability/layout fit, and layout-responsibility doctrine.",
+            "Approvals must include bound positive-excellence evidence for live bit viability, source consequence, role-standard fit, personage honesty, detector-theater absence, and framework-vocabulary leakage.",
             "Any revise/block verdict sends the method back to one-segment iteration.",
         ],
     }
@@ -556,6 +624,18 @@ def _review_artifact(
         recomputed_layout_intents,
     )
     score_failures = _score_floor_failures(_mapping(quality.get("scores")) if quality else {})
+    consultation_manifest = validate_consultation_manifest(
+        artifact.get("consultation_manifest"),
+        role=str(artifact.get("role") or ""),
+    )
+    source_consequence = validate_source_consequence_map(artifact.get("source_consequence_map"))
+    live_event_viability = validate_live_event_viability(artifact.get("live_event_viability"))
+    readback_obligations = validate_readback_obligations(artifact.get("readback_obligations"))
+    framework_hits = framework_vocabulary_hits(" ".join(script))
+    nonsterile_force = nonsterile_force_ok(
+        script,
+        personage_violations=actionability.get("personage_violations") or [],
+    )
 
     criteria = [
         _criterion(
@@ -661,6 +741,42 @@ def _review_artifact(
             },
         ),
         _criterion(
+            "consultation.role_standards_exemplars_counterexamples",
+            consultation_manifest.get("ok") is True,
+            "artifact must bind advisory role standards, exemplars, counterexamples, and quality ranges without granting authority",
+            observed=consultation_manifest,
+        ),
+        _criterion(
+            "consultation.source_consequence_map",
+            source_consequence.get("ok") is True,
+            "sources must change claim, ranking, scope, action, or visible/doable obligation rather than decorate prose",
+            observed=source_consequence,
+        ),
+        _criterion(
+            "consultation.live_event_viability",
+            live_event_viability.get("ok") is True,
+            "canary must carry a reviewable live-event viability plan, not only a loadable script",
+            observed=live_event_viability,
+        ),
+        _criterion(
+            "consultation.readback_obligations",
+            readback_obligations.get("ok") is True,
+            "prepared action/layout claims must specify runtime readback obligations without claiming success",
+            observed=readback_obligations,
+        ),
+        _criterion(
+            "script.non_anthropomorphic_force",
+            nonsterile_force.get("ok") is True,
+            "script must be forceful and source-bound without fake human feeling, taste, memory, empathy, or inner life",
+            observed=nonsterile_force,
+        ),
+        _criterion(
+            "script.framework_vocabulary_not_prompt_facing",
+            not framework_hits,
+            "review framework vocabulary must not leak into prepared spoken prose",
+            observed={"hits": framework_hits},
+        ),
+        _criterion(
             "actionability.supported",
             actionability.get("ok") is True
             and actionability_alignment.get("ok") is True
@@ -670,6 +786,18 @@ def _review_artifact(
                 "removed": actionability.get("removed_unsupported_action_lines"),
                 "artifact_alignment": actionability_alignment,
             },
+        ),
+        _criterion(
+            "actionability.personage_honesty",
+            actionability.get("personage_violations") == [],
+            "prepared script must not claim human feeling, empathy, taste, intuition, memory, concern, or Hapax inner life",
+            observed=actionability.get("personage_violations"),
+        ),
+        _criterion(
+            "actionability.no_detector_trigger_theater",
+            _detector_theater_ok(actionability),
+            "detector/readback language must not become dramatic proof or runtime authority without payload-bound receipts",
+            observed=actionability.get("detector_theater_lines"),
         ),
         _criterion(
             "actionability.visible_or_doable_counterpart",
@@ -743,9 +871,17 @@ def _receipt(
     layout_report: dict[str, Any],
     team_critique_loop: dict[str, Any],
 ) -> dict[str, Any]:
-    automation_passed = all(item["passed"] for item in criteria)
+    eligibility_criteria = [
+        item for item in criteria if item.get("name") not in EXCELLENCE_CRITERION_NAMES
+    ]
+    excellence_criteria = [
+        item for item in criteria if item.get("name") in EXCELLENCE_CRITERION_NAMES
+    ]
+    eligibility_passed = all(item["passed"] for item in eligibility_criteria)
+    excellence_automation_passed = all(item["passed"] for item in excellence_criteria)
+    automation_passed = eligibility_passed and excellence_automation_passed
     team_passed = bool(team_critique_loop.get("passed"))
-    ready_for_next_nine = automation_passed and team_passed
+    ready_for_next_nine = eligibility_passed and excellence_automation_passed and team_passed
     decision = (
         "ready_for_next_nine"
         if ready_for_next_nine
@@ -776,6 +912,26 @@ def _receipt(
             "passed": automation_passed,
             "minimum_script_score": MIN_AUTOMATED_SCRIPT_SCORE,
             "criteria": criteria,
+        },
+        "eligibility_gate": {
+            "passed": eligibility_passed,
+            "criteria": eligibility_criteria,
+            "meaning": (
+                "safety, model, provenance, source-binding, layout-authority, and "
+                "personage hard gates passed; this is not excellence approval"
+            ),
+        },
+        "excellence_selection": {
+            "passed": excellence_automation_passed and team_passed,
+            "automation_passed": excellence_automation_passed,
+            "team_passed": team_passed,
+            "criteria": excellence_criteria,
+            "required_positive_excellence_evidence": list(REQUIRED_POSITIVE_EXCELLENCE_EVIDENCE),
+            "meaning": (
+                "canary release requires live-bit viability, source consequence, "
+                "role-standard calibration, non-anthropomorphic force, detector-theater "
+                "rejection, framework-vocabulary hygiene, and bound team evidence"
+            ),
         },
         "script_quality": quality_report,
         "actionability": {

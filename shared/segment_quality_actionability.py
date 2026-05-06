@@ -5,8 +5,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
-QUALITY_RUBRIC_VERSION = 1
-ACTIONABILITY_RUBRIC_VERSION = 2
+from shared.segment_prep_consultation import (
+    build_source_consequence_map,
+    nonsterile_force_ok,
+)
+
+QUALITY_RUBRIC_VERSION = 2
+ACTIONABILITY_RUBRIC_VERSION = 3
 LAYOUT_RESPONSIBILITY_VERSION = 1
 LAYOUT_RESPONSIBILITY_RUBRIC_VERSION = LAYOUT_RESPONSIBILITY_VERSION
 RESPONSIBLE_HOSTING_CONTEXT = "hapax_responsible_live"
@@ -59,6 +64,24 @@ QUALITY_RUBRIC: tuple[dict[str, str], ...] = (
         "criterion": "Sources are represented as arguments with context, not decorative name-drops.",
     },
     {
+        "key": "source_consequence",
+        "criterion": (
+            "At least one source changes claim shape, ranking, scope, action, or visible obligation."
+        ),
+    },
+    {
+        "key": "live_bit_viability",
+        "criterion": (
+            "The segment can play as a live bit with tension, payoff, and seen or doable moves."
+        ),
+    },
+    {
+        "key": "non_anthropomorphic_force",
+        "criterion": (
+            "The voice has source-bound force without fake human feeling, taste, memory, or empathy."
+        ),
+    },
+    {
         "key": "ending",
         "criterion": "The final beat resolves, reframes, or tees up a concrete next move.",
     },
@@ -82,7 +105,7 @@ ACTIONABILITY_RUBRIC: tuple[dict[str, str], ...] = (
     },
     {
         "kind": "chat_poll",
-        "trigger": "What do you think, drop it in chat, what would you change",
+        "trigger": "Where does chat land, drop it in chat, what would you change",
         "expected_effect": "The audience prompt should be treated as a chat-poll moment.",
     },
     {
@@ -274,7 +297,7 @@ _TIER_RE = re.compile(
 )
 _COUNTDOWN_RE = re.compile(r"\b(?:#|number\s+)(?P<number>\d{1,2})\s*(?:is|:)", re.IGNORECASE)
 _CHAT_RE = re.compile(
-    r"\b(?:what do you think|drop it in (?:the )?chat|let me know in (?:the )?chat|"
+    r"\b(?:what do\s+you\s+think|drop it in (?:the )?chat|let me know in (?:the )?chat|"
     r"what would you change|what's your pick|what is your pick)\b",
     re.IGNORECASE,
 )
@@ -310,6 +333,22 @@ _UNSUPPORTED_ACTION_RE = re.compile(
     re.IGNORECASE,
 )
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
+_PERSONAGE_RE = re.compile(
+    r"\b(?:"
+    r"I (?:feel|felt|believe|think|thought|wonder|wondered|hope|want|wanted|"
+    r"prefer|remember|know|trust|care|love|hate|enjoy|sense|intuit)|"
+    r"my (?:feelings?|emotions?|mood|memory|taste|intuition|experience|concern)|"
+    r"Hapax (?:feels|felt|believes|thinks|thought|wonders|hopes|wants|"
+    r"prefers|remembers|knows|understands|trusts|finds|cares|loves|hates|"
+    r"enjoys|senses|intuits|perceives)"
+    r")\b",
+    re.IGNORECASE,
+)
+_DETECTOR_THEATER_RE = re.compile(
+    r"\b(?:detector|classifier|sensor|gauge|readback|layoutstore)\s+"
+    r"(?:saw|sees|proved|proves|triggered|changed|guarantees|confirms|certifies)\b",
+    re.IGNORECASE,
+)
 
 _ICEBERG_TRIGGERS: tuple[tuple[str, str], ...] = (
     ("surface level", "surface"),
@@ -431,6 +470,12 @@ def render_quality_prompt_block() -> str:
         "screenshot, chart, or screen event unless the beat uses one of these "
         "supported affordances:\n"
         f"{action_lines}\n\n"
+        "== SOURCE USE AND PERSONAGE ==\n"
+        "A cited source must change a claim, ranking, scope, refusal, audience action, "
+        "or visible/doable obligation. Do not cite sources as decoration. Hapax's "
+        "segment voice should be operational and forceful without pretending to have "
+        "human feelings, empathy, taste, intuition, memory, or concern. Mark analogies "
+        "as analogies when useful; do not perform a human host persona.\n\n"
         "== LAYOUT RESPONSIBILITY RUBRIC ==\n"
         "In Hapax-hosted livestream contexts, default/static layout is not success. "
         "Each beat should create typed layout needs from action intents, with runtime "
@@ -565,6 +610,14 @@ def _unsupported_action_lines(text: str) -> list[str]:
     return [sentence for sentence in _sentences(text) if _UNSUPPORTED_ACTION_RE.search(sentence)]
 
 
+def _personage_violation_lines(text: str) -> list[str]:
+    return [sentence for sentence in _sentences(text) if _PERSONAGE_RE.search(sentence)]
+
+
+def _detector_theater_lines(text: str) -> list[str]:
+    return [sentence for sentence in _sentences(text) if _DETECTOR_THEATER_RE.search(sentence)]
+
+
 def _remove_unsupported_action_lines(text: str) -> tuple[str, list[str]]:
     removed = _unsupported_action_lines(text)
     if not removed:
@@ -603,17 +656,25 @@ def validate_segment_actionability(
     """Return sanitized script plus beat action declarations."""
     sanitized: list[str] = []
     removed: list[dict[str, Any]] = []
+    personage_violations: list[dict[str, Any]] = []
+    detector_theater_lines: list[dict[str, Any]] = []
     for index, text in enumerate(script):
         clean, removed_lines = _remove_unsupported_action_lines(text)
         sanitized.append(clean)
         for line in removed_lines:
             removed.append({"beat_index": index, "line": line})
+        for line in _personage_violation_lines(text):
+            personage_violations.append({"beat_index": index, "line": line})
+        for line in _detector_theater_lines(text):
+            detector_theater_lines.append({"beat_index": index, "line": line})
     return {
         "rubric_version": ACTIONABILITY_RUBRIC_VERSION,
-        "ok": not removed,
+        "ok": not removed and not personage_violations and not detector_theater_lines,
         "prepared_script": sanitized,
         "beat_action_intents": build_beat_action_intents(sanitized, segment_beats),
         "removed_unsupported_action_lines": removed,
+        "personage_violations": personage_violations,
+        "detector_theater_lines": detector_theater_lines,
     }
 
 
@@ -995,6 +1056,12 @@ def score_segment_quality(
     thin_beats = sum(1 for item in script if len(item) < 450)
     actionability = validate_segment_actionability(script, segment_beats)
     layout = validate_layout_responsibility(actionability["beat_action_intents"])
+    source_consequence_map = build_source_consequence_map(
+        script,
+        actionability["beat_action_intents"],
+    )
+    personage_violations = actionability.get("personage_violations") or []
+    nonsterile_force = nonsterile_force_ok(script, personage_violations=personage_violations)
     concrete_action_kinds = {
         intent["kind"]
         for beat in actionability["beat_action_intents"]
@@ -1040,13 +1107,33 @@ def score_segment_quality(
         "callbacks": min(
             5, 1 + 2 * int(_has_any(joined, ("earlier", "remember", "back to", "circle back")))
         ),
-        "audience_address": min(
-            5, 1 + 2 * int(_has_any(joined, ("you", "chat", "what do you think")))
-        ),
+        "audience_address": min(5, 1 + 2 * int(_has_any(joined, ("you", "chat", "audience")))),
         "source_fidelity": min(
             5,
             int(proper_nouns >= 4)
             + 2 * int(_has_any(joined, ("argues", "writes", "finds", "study", "report", "source"))),
+        ),
+        "source_consequence": min(
+            5,
+            1
+            + 2 * int(bool(source_consequence_map))
+            + int(_has_any(joined, ("consequence", "changes", "which means", "therefore")))
+            + int(_has_any(joined, ("place", "rank", "tier", "visible", "layout", "chat"))),
+        ),
+        "live_bit_viability": min(
+            5,
+            1
+            + int(len(concrete_action_kinds) >= 2)
+            + int(len(concrete_layout_kinds) >= 2)
+            + int(_has_any(joined, ("but", "problem", "stakes", "tension")))
+            + int(_has_any(joined, ("so", "therefore", "next", "remember", "callback"))),
+        ),
+        "non_anthropomorphic_force": min(
+            5,
+            1
+            + 2 * int(nonsterile_force["ok"])
+            + int(not personage_violations)
+            + int(_has_any(joined, ("refuse", "reject", "claim", "evidence", "consequence"))),
         ),
         "ending": min(
             5,
@@ -1071,5 +1158,8 @@ def score_segment_quality(
             "thin_beats": thin_beats,
             "proper_noun_count": proper_nouns,
             "word_count": word_count,
+            "source_consequence_count": len(source_consequence_map),
+            "personage_violation_count": len(personage_violations),
+            "nonsterile_force_markers": nonsterile_force["markers"],
         },
     }

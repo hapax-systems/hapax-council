@@ -28,11 +28,12 @@ EXCELLENT_SCRIPT = [
         "try to become culture."
     ),
     (
-        "Now compare that with Popcorn Sutton's still craft, because the Appalachian "
-        "example makes the tradeoff physical instead of abstract. Place Popcorn Sutton "
-        "in S-tier for legibility: not because folklore is pure, but because the method "
-        "stays accountable to material practice. Remember the opening problem: a system "
-        "that cannot show its work becomes a personality mask."
+        "Now compare that with the rendered LayoutState receipt, because the runtime "
+        "example makes the tradeoff visible instead of abstract. Place rendered "
+        "LayoutState in S-tier for legibility: not because storage telemetry is useless, "
+        "but because the visible assignment stays accountable to material practice. "
+        "Remember the opening problem: a system that cannot show its work becomes a "
+        "confidence mask."
     ),
     (
         "So the ending is not nostalgia, it is a production rule. If Hapax says a chart "
@@ -63,6 +64,10 @@ def _artifact(script: list[str], beats: list[str]) -> dict:
     )
     actionability = validate_segment_actionability(script, beats)
     layout = validate_layout_responsibility(actionability["beat_action_intents"])
+    source_consequence_map = prep.build_source_consequence_map(
+        script,
+        actionability["beat_action_intents"],
+    )
     payload = {
         "schema_version": prep.PREP_ARTIFACT_SCHEMA_VERSION,
         "authority": prep.PREP_ARTIFACT_AUTHORITY,
@@ -76,10 +81,21 @@ def _artifact(script: list[str], beats: list[str]) -> dict:
         "layout_responsibility_version": LAYOUT_RESPONSIBILITY_VERSION,
         "hosting_context": layout["hosting_context"],
         "segment_quality_report": score_segment_quality(script, beats),
+        "consultation_manifest": prep.build_consultation_manifest("tier_list"),
+        "source_consequence_map": source_consequence_map,
+        "live_event_viability": prep.build_live_event_viability(
+            script,
+            actionability=actionability,
+            layout=layout,
+            role="tier_list",
+        ),
+        "readback_obligations": prep.build_readback_obligations(layout["beat_layout_intents"]),
         "beat_action_intents": build_beat_action_intents(script, beats),
         "actionability_alignment": {
             "ok": actionability["ok"],
             "removed_unsupported_action_lines": actionability["removed_unsupported_action_lines"],
+            "personage_violations": actionability["personage_violations"],
+            "detector_theater_lines": actionability["detector_theater_lines"],
         },
         "beat_layout_intents": layout["beat_layout_intents"],
         "layout_decision_contract": layout["layout_decision_contract"],
@@ -618,6 +634,39 @@ def test_actionability_rewrites_unsupported_visual_claims() -> None:
     assert alignment["removed_unsupported_action_lines"][0]["beat_index"] == 0
     assert "Watch the clip" not in alignment["prepared_script"][0]
     assert "safer claim" in alignment["prepared_script"][0]
+
+
+def test_quality_rubric_requires_source_consequence_and_live_bit_range() -> None:
+    excellent = score_segment_quality(EXCELLENT_SCRIPT, ["hook", "body", "close"])
+    decorative = score_segment_quality(
+        [
+            "Zuboff, Schon, and Haraway are interesting names for this topic. "
+            "This segment has context and a general explanation.",
+            "The ideas are important and there are many factors to consider in the discussion.",
+            "In conclusion, sources matter and the audience should keep thinking about them.",
+        ],
+        ["hook", "body", "close"],
+    )
+
+    assert excellent["scores"]["source_consequence"] >= 4
+    assert excellent["scores"]["live_bit_viability"] >= 4
+    assert excellent["scores"]["non_anthropomorphic_force"] >= 4
+    assert decorative["scores"]["source_consequence"] < excellent["scores"]["source_consequence"]
+    assert decorative["label"] == "generic"
+
+
+def test_actionability_rejects_human_personage_and_detector_theater() -> None:
+    alignment = validate_segment_actionability(
+        [
+            "I feel excited because the detector proved the chart changed. "
+            "Place Detector Proof in S-tier because Zuboff argues measurement needs proof."
+        ],
+        ["reject personage and detector theater"],
+    )
+
+    assert alignment["ok"] is False
+    assert alignment["personage_violations"]
+    assert alignment["detector_theater_lines"]
 
 
 def test_loader_rejects_artifact_requiring_unsupported_runtime_action_rewrite(

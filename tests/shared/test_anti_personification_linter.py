@@ -30,9 +30,14 @@ CANONICAL_OFFENDERS: list[tuple[str, str]] = [
     # (rule_id suffix, offender text)
     ("inner_life_first_person.feel_verb", "I feel wonder at this."),
     ("inner_life_first_person.belief_verb", "I wondered if it matters."),
+    ("inner_life_first_person.belief_verb", "I trust this source."),
+    ("inner_life_first_person.belief_verb", "I remember this moment."),
+    ("inner_life_first_person.belief_verb", "I prefer the second ranking."),
     ("inner_life_first_person.im_affect", "I'm excited about this."),
     ("inner_life_first_person.affect_verb", "I love this beat."),
     ("inner_life_first_person.my_inner", "my feelings on this are mixed."),
+    ("inner_life_first_person.my_inner", "my taste says this belongs in S-tier."),
+    ("inner_life_first_person.my_inner", "my memory of this source is clear."),
     ("second_person_inner_life.you_feel", "you feel the room shift."),
     ("second_person_inner_life.your_inner", "your personality shines."),
     ("second_person_inner_life.you_have_personality", "you have personality here."),
@@ -46,6 +51,9 @@ CANONICAL_OFFENDERS: list[tuple[str, str]] = [
     ("personification_nouns.warm_but_concise", "Be warm but concise please."),
     ("personification_nouns.friendly_not_chatty", "Be friendly without being chatty."),
     ("personification_nouns.hapax_inner", "Hapax feels wonder about this."),
+    ("personification_nouns.hapax_inner", "Hapax trusts this thinker."),
+    ("personification_nouns.hapax_inner", "Hapax finds this framing hollow."),
+    ("personification_nouns.hapax_inner", "Hapax remembers the source."),
     ("anthropic_pronouns.hapax_gendered", "Hapax, he is ready."),
 ]
 
@@ -69,6 +77,9 @@ CANONICAL_CLEAN: list[str] = [
     "Hapax IS an executive-function prosthetic for a single operator.",
     "The recruitment threshold drops when boredom rises.",
     "Curious translates the SEEKING architectural state.",
+    "By analogy, curiosity pressure means the recruitment threshold drops.",
+    "Hapax rejects that framing because the cited source changes the claim scope.",
+    "The segment voice can be forceful without claiming a human feeling state.",
     "Stimmung dimensions modulate the affordance pipeline score.",
     "Qdrant stores the affordances collection for retrieval.",
 ]
