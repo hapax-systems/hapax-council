@@ -488,10 +488,20 @@ def _update_audio_sidecar(sidecar_path: Path, new_score: float) -> bool:
 
 
 def _update_video_sidecar(sidecar_path: Path, new_score: float) -> bool:
-    """Update the value_score in a video .classified JSON sidecar."""
+    """Update the value_score in a video .classified JSON sidecar.
+
+    Validates the JSON root is a mapping. ``data.get(\"value_score\")``
+    and the ``data[...]`` writes assume dict — a writer producing
+    valid JSON whose root is null, a list, a string, or a number
+    previously raised AttributeError or TypeError out of the
+    av-correlator's sidecar update path. Same shape as the other
+    recent SHM-read fixes.
+    """
     try:
         data = json.loads(sidecar_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict):
         return False
 
     old_score = data.get("value_score", 0.0)
