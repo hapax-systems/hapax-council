@@ -67,7 +67,8 @@ def _readback(
         observed_at=observed_at,
         active_layout=active_layout,
         active_wards=active_wards,
-        ward_properties=ward_properties or {"ranked-list-panel": {"visible": True}},
+        ward_properties=ward_properties
+        or {"ranked-list-panel": {"visible": True, "rendered_blit": True}},
         camera_available=True,
         safety_state=safety_state,
         chat_available=True,
@@ -266,6 +267,7 @@ def test_matching_layout_without_required_ward_is_held() -> None:
         {"ranked-list-panel": {}},
         {"ranked-list-panel": {"visible": False}},
         {"ranked-list-panel": {"visible": True, "alpha": 0.0}},
+        {"ranked-list-panel": {"visible": True, "rendered_blit": False}},
     ],
 )
 def test_matching_layout_with_invisible_required_ward_is_held(

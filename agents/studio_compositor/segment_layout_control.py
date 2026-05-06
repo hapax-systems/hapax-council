@@ -861,6 +861,8 @@ def _ward_is_visible(
     props = ward_properties.get(ward_id)
     if props is None:
         return False
+    if props.get("rendered_blit") is not True:
+        return False
     visible = props.get("visible")
     if visible is not True:
         return False

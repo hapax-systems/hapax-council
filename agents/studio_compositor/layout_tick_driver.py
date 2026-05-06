@@ -387,6 +387,9 @@ def _proposal_needs_to_intents(
             evidence_refs = (*evidence_refs, prepared_artifact_ref)
         if not evidence_refs:
             continue
+        priority = _optional_int(need.get("priority"))
+        if priority is None:
+            priority = (_optional_int(proposal.get("priority")) or 50) - need_index
         stable_id = _optional_str(need.get("intent_id")) or (
             f"{root.get('programme_id')}:{current_beat_index}:layout-need-{index}-{need_index}"
         )
@@ -395,9 +398,7 @@ def _proposal_needs_to_intents(
                 intent_id=stable_id,
                 kind=mapped_kind,
                 requested_at=read_mtime,
-                priority=_optional_int(need.get("priority"))
-                or _optional_int(proposal.get("priority"))
-                or 50,
+                priority=priority,
                 evidence_refs=evidence_refs,
                 ttl_s=ttl_s,
                 programme_id=_optional_str(root.get("programme_id")),
@@ -944,12 +945,6 @@ def _ward_property_readbacks(
     now: float,
 ) -> dict[str, dict[str, object]]:
     supplied = state.get("ward_properties")
-    if isinstance(supplied, dict):
-        return {
-            str(ward_id): dict(values)
-            for ward_id, values in supplied.items()
-            if isinstance(values, dict)
-        }
     blit_readbacks = _recent_blit_readbacks(active_wards, now=now)
     if not blit_readbacks:
         return {}
@@ -964,17 +959,20 @@ def _ward_property_readbacks(
         blit = blit_readbacks.get(ward_id)
         if blit is None:
             continue
-        try:
-            props = resolve_ward_properties(ward_id)
-        except Exception:
-            log.debug("layout-tick: ward property read failed for %s", ward_id, exc_info=True)
-            continue
-        if is_dataclass(props):
-            out[ward_id] = asdict(props)
-        elif isinstance(props, dict):
-            out[ward_id] = dict(props)
+        if isinstance(supplied, dict) and isinstance(supplied.get(ward_id), dict):
+            out[ward_id] = dict(supplied[ward_id])
         else:
-            out[ward_id] = {}
+            try:
+                props = resolve_ward_properties(ward_id)
+            except Exception:
+                log.debug("layout-tick: ward property read failed for %s", ward_id, exc_info=True)
+                continue
+            if is_dataclass(props):
+                out[ward_id] = asdict(props)
+            elif isinstance(props, dict):
+                out[ward_id] = dict(props)
+            else:
+                out[ward_id] = {}
         source_pixels = _optional_float(blit.get("source_pixels"))
         effective_alpha = _optional_float(blit.get("effective_alpha"))
         out[ward_id].update(

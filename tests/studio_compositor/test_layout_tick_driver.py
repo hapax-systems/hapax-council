@@ -348,6 +348,7 @@ def test_active_segment_pressure_maps_blue_contract_needs(tmp_path: Path) -> Non
         LayoutNeedKind.PROGRAMME_CONTEXT.value,
         LayoutNeedKind.SOURCE_COMPARISON.value,
     ]
+    assert [intent.priority for intent in intents] == [50, 49, 48]
     assert intents[0].expected_effects == ("ward:artifact-detail-panel",)
     assert intents[1].expected_effects == ("ward:programme-context",)
     assert intents[2].expected_effects == ("ward:compare-panel",)
@@ -628,6 +629,21 @@ def test_responsible_segment_tick_escapes_static_then_accepts_rendered_readback(
         "segment_playback_ref": "segment-playback:beat-4",
         "ward_properties": {"ranked-list-panel": {"visible": True, "alpha": 1.0}},
     }
+    monkeypatch.setattr(
+        layout_tick_driver,
+        "_recent_blit_readbacks",
+        lambda wards, *, now: (
+            {
+                "ranked-list-panel": {
+                    "observed_at": now - 0.25,
+                    "source_pixels": 400,
+                    "effective_alpha": 1.0,
+                }
+            }
+            if "ranked-list-panel" in wards
+            else {}
+        ),
+    )
 
     monkeypatch.setattr(layout_tick_driver.time, "time", lambda: NOW)
     first = _driver_tick(
@@ -657,7 +673,7 @@ def test_responsible_segment_tick_escapes_static_then_accepts_rendered_readback(
     assert second.status is LayoutDecisionStatus.ACCEPTED
     assert second.reason is LayoutDecisionReason.ACCEPTED
     assert second.selected_layout == "segment-list"
-    assert "rendered-layout-state:segment-list" in second.readback_refs[0]
+    assert second.readback_refs[0].startswith("rendered-blit-readback:segment-list")
     assert "ward:ranked-list-panel" in second.satisfied_effects
 
     receipt_payload = json.loads(
@@ -683,7 +699,7 @@ def test_runtime_readback_requires_fresh_blit_evidence(
 
     readback = layout_tick_driver._runtime_layout_readback(
         layout_state=adapter,
-        state={},
+        state={"ward_properties": {"ranked-list-panel": {"visible": True, "alpha": 1.0}}},
         now=NOW,
     )
 
