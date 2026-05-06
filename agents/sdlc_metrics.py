@@ -107,6 +107,11 @@ def _read_events(since: datetime | None = None) -> list[dict]:
             continue
         try:
             entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        try:
             if entry.get("dry_run", False):
                 continue
             if since:
@@ -114,7 +119,7 @@ def _read_events(since: datetime | None = None) -> list[dict]:
                 if ts < since:
                     continue
             entries.append(entry)
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:
             continue
     return entries
 

@@ -1,0 +1,528 @@
+#!/usr/bin/env python3
+"""hapax-team-load — RTE resource dashboard for coordinated team + operational layer.
+
+Walks tmux sessions matching ``hapax-(claude|codex|gemini|vibe|antigrav)-*``,
+collects descendant process resource consumption (CPU, RSS, swap), classifies
+operational services separately, and prints a per-session breakdown plus
+totals + a green/yellow/red recommendation.
+
+Used by RTE on every 270s tick (per ``train-maintenance`` skill) to balance
+team activity against operational needs.
+
+Modes:
+  hapax-team-load            # default: per-session table + totals + recommendation
+  hapax-team-load --json     # machine-readable for tick-log embedding
+  hapax-team-load --watch    # continuous (refreshes every 10s)
+  hapax-team-load --critical-only  # only print red-zone items
+
+Exit codes:
+  0  green/yellow (safe to proceed)
+  1  red (RTE must throttle)
+  2  operational distress (RTE must pause team)
+
+Thresholds (research/rnd mode — fortress tightens these via working_mode hook):
+  green:  team_cpu < 100% AND team_swap < 2GB AND system_load_per_core < 1.5
+  yellow: team_cpu in 100-300% OR team_swap in 2-5GB OR load_per_core 1.5-3.0
+  red:    team_cpu > 300% OR team_swap > 5GB OR load_per_core > 3.0
+  ops-distress: any operational service has watchdog warning, OR system swap > 90%
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+# Operational services (slice them out from team accounting)
+OPERATIONAL_PROCS: tuple[str, ...] = (
+    "studio-compositor",
+    "hapax-daimonion",
+    "hapax-imagination",
+    "hapax-reverie",
+    "hapax-content-resolver",
+    "hapax-watch-receiver",
+    "logos-api",
+    "officium-api",
+    "tabbyAPI",
+    "tabbyapi",
+    "ollama",
+    "visual-layer-aggregator",
+    "hapax-dmn",
+    "studio-person-detector",
+    "hapax-audio-router",
+    "hapax-operator-awareness",
+    "hapax-imagination-loop",
+)
+
+TEAM_SESSION_PATTERN = re.compile(r"^hapax-(claude|codex|gemini|vibe|antigrav)-(\S+)$")
+
+
+@dataclass
+class ProcStat:
+    pid: int
+    cmd: str
+    cpu_pct: float = 0.0
+    rss_kb: int = 0
+    swap_kb: int = 0
+
+
+@dataclass
+class SessionAccount:
+    interface: str  # claude, codex, gemini, vibe, antigrav
+    role: str  # beta, cx-amber, iota, ...
+    pids: list[int] = field(default_factory=list)
+    cpu_pct: float = 0.0
+    rss_kb: int = 0
+    swap_kb: int = 0
+    procs: list[ProcStat] = field(default_factory=list)
+
+
+def read_pid_status(pid: int) -> dict[str, str]:
+    """Read /proc/<pid>/status into a dict; empty if process exited."""
+    try:
+        with open(f"/proc/{pid}/status") as fh:
+            out: dict[str, str] = {}
+            for line in fh:
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    out[k.strip()] = v.strip()
+            return out
+    except (FileNotFoundError, PermissionError, ProcessLookupError):
+        return {}
+
+
+def read_pid_cmdline(pid: int) -> str:
+    """Read /proc/<pid>/comm (short command name)."""
+    try:
+        with open(f"/proc/{pid}/comm") as fh:
+            return fh.read().strip()
+    except (FileNotFoundError, PermissionError, ProcessLookupError):
+        return "?"
+
+
+def descendants_of(pid: int, seen: set[int] | None = None) -> set[int]:
+    """Recursively collect all descendant PIDs under pid (incl. self)."""
+    if seen is None:
+        seen = set()
+    if pid in seen:
+        return seen
+    seen.add(pid)
+    children_path = f"/proc/{pid}/task/{pid}/children"
+    try:
+        with open(children_path) as fh:
+            children = [int(c) for c in fh.read().split() if c.isdigit()]
+        for child in children:
+            descendants_of(child, seen)
+    except (FileNotFoundError, PermissionError, ProcessLookupError):
+        pass
+    return seen
+
+
+def proc_cpu_sample(pids: list[int], duration: float = 0.5) -> dict[int, float]:
+    """Sample CPU% for each PID over `duration` seconds via /proc/<pid>/stat."""
+
+    def jiffies(pid: int) -> int | None:
+        try:
+            with open(f"/proc/{pid}/stat") as fh:
+                parts = fh.read().split()
+            # utime + stime (fields 14, 15 0-indexed) — but the "comm" field can
+            # contain spaces/parens, so re-parse from end of last `)`.
+            stat = open(f"/proc/{pid}/stat").read()
+            paren_end = stat.rfind(")")
+            if paren_end < 0:
+                return None
+            after = stat[paren_end + 2 :].split()
+            utime = int(after[11])  # field 14 (1-based), shifted by 3
+            stime = int(after[12])
+            return utime + stime
+        except (FileNotFoundError, PermissionError, ValueError, IndexError):
+            return None
+
+    before = {p: jiffies(p) for p in pids}
+    time.sleep(duration)
+    after = {p: jiffies(p) for p in pids}
+    clk_tck = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
+    out: dict[int, float] = {}
+    for pid in pids:
+        b, a = before.get(pid), after.get(pid)
+        if b is None or a is None:
+            continue
+        delta_jiffies = max(0, a - b)
+        cpu_pct = 100.0 * (delta_jiffies / clk_tck) / duration
+        out[pid] = cpu_pct
+    return out
+
+
+def system_load() -> tuple[float, int]:
+    """Return (1-min load average, online CPU count)."""
+    try:
+        with open("/proc/loadavg") as fh:
+            load_1 = float(fh.read().split()[0])
+        ncpu = os.cpu_count() or 1
+        return (load_1, ncpu)
+    except OSError:
+        return (0.0, 1)
+
+
+def system_swap() -> tuple[int, int]:
+    """Return (used_kb, total_kb) for swap."""
+    try:
+        with open("/proc/meminfo") as fh:
+            info = {}
+            for line in fh:
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    info[k.strip()] = v.strip()
+        total = int(info["SwapTotal"].split()[0])
+        free = int(info["SwapFree"].split()[0])
+        return (total - free, total)
+    except (OSError, KeyError, ValueError):
+        return (0, 1)
+
+
+def working_mode() -> str:
+    """Read ~/.cache/hapax/working-mode (research/rnd/fortress)."""
+    p = Path.home() / ".cache" / "hapax" / "working-mode"
+    try:
+        return p.read_text().strip()
+    except OSError:
+        return "research"
+
+
+def list_team_sessions() -> list[tuple[str, str, list[int]]]:
+    """Return list of (interface, role, pane_pids) for matched tmux sessions."""
+    try:
+        out = subprocess.check_output(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return []
+    sessions: list[tuple[str, str, list[int]]] = []
+    for line in out.splitlines():
+        m = TEAM_SESSION_PATTERN.match(line.strip())
+        if not m:
+            continue
+        interface, role = m.group(1), m.group(2)
+        try:
+            pids_out = subprocess.check_output(
+                ["tmux", "list-panes", "-t", line.strip(), "-F", "#{pane_pid}"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            pids = [int(p) for p in pids_out.split() if p.isdigit()]
+        except (subprocess.CalledProcessError, ValueError):
+            pids = []
+        sessions.append((interface, role, pids))
+    return sessions
+
+
+def list_operational_pids() -> list[int]:
+    """Return PIDs whose comm matches an operational service."""
+    pids: list[int] = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        comm = read_pid_cmdline(pid)
+        if any(op in comm for op in OPERATIONAL_PROCS):
+            pids.append(pid)
+        else:
+            # Also check the command line for python -m hapax_daimonion etc.
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                    cmdline = fh.read().replace(b"\x00", b" ").decode("utf-8", errors="replace")
+                if any(op in cmdline for op in OPERATIONAL_PROCS):
+                    pids.append(pid)
+            except (FileNotFoundError, PermissionError, ProcessLookupError):
+                continue
+    return pids
+
+
+def aggregate(pids: list[int], cpu_samples: dict[int, float]) -> tuple[float, int, int]:
+    """Sum cpu_pct, rss_kb, swap_kb across pids."""
+    cpu = 0.0
+    rss = 0
+    swap = 0
+    for pid in pids:
+        cpu += cpu_samples.get(pid, 0.0)
+        st = read_pid_status(pid)
+        if st:
+            try:
+                rss += int(st.get("VmRSS", "0 kB").split()[0])
+            except (ValueError, IndexError):
+                pass
+            try:
+                swap += int(st.get("VmSwap", "0 kB").split()[0])
+            except (ValueError, IndexError):
+                pass
+    return (cpu, rss, swap)
+
+
+def collect() -> dict[str, Any]:
+    """Collect a full snapshot."""
+    sessions = list_team_sessions()
+    op_pids = list_operational_pids()
+
+    # Expand pane_pids → all descendants
+    accounts: list[SessionAccount] = []
+    all_team_pids: list[int] = []
+    for interface, role, pane_pids in sessions:
+        all_pids: set[int] = set()
+        for ppid in pane_pids:
+            all_pids |= descendants_of(ppid)
+        accounts.append(SessionAccount(interface=interface, role=role, pids=sorted(all_pids)))
+        all_team_pids.extend(all_pids)
+
+    # Sample CPU for everything we care about
+    sample_pids = list({*all_team_pids, *op_pids})
+    cpu_samples = proc_cpu_sample(sample_pids, duration=0.5)
+
+    # Per-account aggregate
+    for acct in accounts:
+        acct.cpu_pct, acct.rss_kb, acct.swap_kb = aggregate(acct.pids, cpu_samples)
+
+    # Operational aggregate
+    op_cpu, op_rss_kb, op_swap_kb = aggregate(op_pids, cpu_samples)
+
+    # System state
+    load_1, ncpu = system_load()
+    swap_used, swap_total = system_swap()
+
+    # Team totals
+    team_cpu = sum(a.cpu_pct for a in accounts)
+    team_rss_kb = sum(a.rss_kb for a in accounts)
+    team_swap_kb = sum(a.swap_kb for a in accounts)
+
+    return {
+        "ts": time.time(),
+        "working_mode": working_mode(),
+        "system": {
+            "load_1": load_1,
+            "load_per_core": load_1 / max(ncpu, 1),
+            "ncpu": ncpu,
+            "swap_used_kb": swap_used,
+            "swap_total_kb": swap_total,
+            "swap_pct": 100.0 * swap_used / max(swap_total, 1),
+        },
+        "team": {
+            "cpu_pct": team_cpu,
+            "rss_kb": team_rss_kb,
+            "swap_kb": team_swap_kb,
+            "session_count": len(accounts),
+            "process_count": sum(len(a.pids) for a in accounts),
+        },
+        "operational": {
+            "cpu_pct": op_cpu,
+            "rss_kb": op_rss_kb,
+            "swap_kb": op_swap_kb,
+            "process_count": len(op_pids),
+        },
+        "sessions": [
+            {
+                "interface": a.interface,
+                "role": a.role,
+                "session_name": f"hapax-{a.interface}-{a.role}",
+                "cpu_pct": a.cpu_pct,
+                "rss_kb": a.rss_kb,
+                "swap_kb": a.swap_kb,
+                "process_count": len(a.pids),
+            }
+            for a in accounts
+        ],
+    }
+
+
+def classify(snapshot: dict[str, Any]) -> tuple[str, list[str]]:
+    """Return (level, reasons) where level ∈ {green,yellow,red,ops-distress}."""
+    mode = snapshot["working_mode"]
+    sys_ = snapshot["system"]
+    team = snapshot["team"]
+
+    # Fortress mode tightens thresholds (livestream protection)
+    if mode == "fortress":
+        team_cpu_red = 100.0
+        team_cpu_yellow = 50.0
+        team_swap_red_gb = 2.0
+        team_swap_yellow_gb = 1.0
+        load_red = 2.0
+        load_yellow = 1.0
+    else:  # research / rnd
+        team_cpu_red = 300.0
+        team_cpu_yellow = 100.0
+        team_swap_red_gb = 5.0
+        team_swap_yellow_gb = 2.0
+        load_red = 3.0
+        load_yellow = 1.5
+
+    reasons_red: list[str] = []
+    reasons_yellow: list[str] = []
+
+    # Operational distress always wins
+    if sys_["swap_pct"] > 90.0:
+        return ("ops-distress", [f"system swap {sys_['swap_pct']:.0f}% > 90% — system thrashing"])
+
+    # Red checks
+    if team["cpu_pct"] > team_cpu_red:
+        reasons_red.append(f"team CPU {team['cpu_pct']:.0f}% > {team_cpu_red:.0f}% red threshold")
+    team_swap_gb = team["swap_kb"] / 1024 / 1024
+    if team_swap_gb > team_swap_red_gb:
+        reasons_red.append(
+            f"team swap {team_swap_gb:.1f}GB > {team_swap_red_gb:.1f}GB red threshold"
+        )
+    if sys_["load_per_core"] > load_red:
+        reasons_red.append(f"load/core {sys_['load_per_core']:.2f} > {load_red:.1f} red threshold")
+
+    if reasons_red:
+        return ("red", reasons_red)
+
+    # Yellow checks
+    if team["cpu_pct"] > team_cpu_yellow:
+        reasons_yellow.append(
+            f"team CPU {team['cpu_pct']:.0f}% > {team_cpu_yellow:.0f}% yellow threshold"
+        )
+    if team_swap_gb > team_swap_yellow_gb:
+        reasons_yellow.append(
+            f"team swap {team_swap_gb:.1f}GB > {team_swap_yellow_gb:.1f}GB yellow threshold"
+        )
+    if sys_["load_per_core"] > load_yellow:
+        reasons_yellow.append(
+            f"load/core {sys_['load_per_core']:.2f} > {load_yellow:.1f} yellow threshold"
+        )
+
+    if reasons_yellow:
+        return ("yellow", reasons_yellow)
+
+    return ("green", ["system has headroom"])
+
+
+COLORS = {
+    "green": "\033[32m",
+    "yellow": "\033[33m",
+    "red": "\033[31m",
+    "ops-distress": "\033[35m",
+    "reset": "\033[0m",
+    "dim": "\033[2m",
+    "bold": "\033[1m",
+}
+
+
+def fmt_kb(kb: int) -> str:
+    if kb >= 1024 * 1024:
+        return f"{kb / 1024 / 1024:.1f}G"
+    if kb >= 1024:
+        return f"{kb / 1024:.0f}M"
+    return f"{kb}K"
+
+
+def render(snapshot: dict[str, Any], level: str, reasons: list[str], use_color: bool) -> str:
+    c = COLORS if use_color else {k: "" for k in COLORS}
+    out: list[str] = []
+    sys_ = snapshot["system"]
+    team = snapshot["team"]
+    op = snapshot["operational"]
+
+    out.append(
+        f"{c['bold']}TEAM LOAD SNAPSHOT — {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(snapshot['ts']))} — mode={snapshot['working_mode']}{c['reset']}"
+    )
+    out.append(
+        f"  system: load {sys_['load_1']:.2f} ({sys_['load_per_core']:.2f}/core×{sys_['ncpu']})  swap {sys_['swap_pct']:.0f}% ({fmt_kb(sys_['swap_used_kb'])}/{fmt_kb(sys_['swap_total_kb'])})"
+    )
+    out.append("")
+
+    # Sort sessions by CPU descending
+    sessions = sorted(snapshot["sessions"], key=lambda s: -s["cpu_pct"])
+    out.append(f"  {'SESSION':<24} {'CPU%':>6} {'RSS':>7} {'SWAP':>7} {'PROCS':>5}")
+    out.append(f"  {'-' * 56}")
+    for s in sessions:
+        out.append(
+            f"  {s['interface'] + '-' + s['role']:<24} {s['cpu_pct']:>5.1f}% {fmt_kb(s['rss_kb']):>7} {fmt_kb(s['swap_kb']):>7} {s['process_count']:>5}"
+        )
+    out.append(f"  {'-' * 56}")
+    out.append(
+        f"  {c['bold']}TEAM{c['reset']}                     {team['cpu_pct']:>5.1f}% {fmt_kb(team['rss_kb']):>7} {fmt_kb(team['swap_kb']):>7} {team['process_count']:>5}"
+    )
+    out.append(
+        f"  {c['dim']}OPERATIONAL{c['reset']}              {op['cpu_pct']:>5.1f}% {fmt_kb(op['rss_kb']):>7} {fmt_kb(op['swap_kb']):>7} {op['process_count']:>5}"
+    )
+    out.append("")
+    color = c.get(level, "")
+    out.append(f"  {color}{c['bold']}STATUS: {level.upper()}{c['reset']}")
+    for r in reasons:
+        out.append(f"    {color}•{c['reset']} {r}")
+    out.append("")
+
+    # Recommendation
+    rec_map = {
+        "green": "Dispatch freely. Encourage parallel work.",
+        "yellow": "Hold new dispatches. Let in-flight work complete. Drain merge ripe PRs.",
+        "red": "PAUSE all new dispatches. Request peers wind down current tool calls. Drain only.",
+        "ops-distress": "EMERGENCY: pause team entirely. Identify swap eater + restart. Do NOT add new load.",
+    }
+    out.append(f"  {color}RTE recommendation:{c['reset']} {rec_map.get(level, '')}")
+    return "\n".join(out)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("--json", action="store_true", help="machine-readable JSON output")
+    ap.add_argument(
+        "--watch",
+        type=float,
+        metavar="SECS",
+        const=10.0,
+        nargs="?",
+        help="continuous refresh every SECS (default 10)",
+    )
+    ap.add_argument(
+        "--critical-only",
+        action="store_true",
+        help="only print red/ops-distress (silent on green/yellow)",
+    )
+    ap.add_argument("--no-color", action="store_true", help="disable ANSI color")
+    args = ap.parse_args()
+
+    use_color = not args.no_color and sys.stdout.isatty()
+
+    def emit() -> int:
+        snapshot = collect()
+        level, reasons = classify(snapshot)
+        if args.critical_only and level not in ("red", "ops-distress"):
+            return 0 if level in ("green", "yellow") else 1
+        if args.json:
+            snapshot["status"] = level
+            snapshot["status_reasons"] = reasons
+            print(json.dumps(snapshot, indent=2))
+        else:
+            print(render(snapshot, level, reasons, use_color))
+        if level == "red":
+            return 1
+        if level == "ops-distress":
+            return 2
+        return 0
+
+    if args.watch is not None:
+        delay = args.watch if args.watch else 10.0
+        try:
+            while True:
+                if not args.json:
+                    print("\033[2J\033[H", end="")  # clear screen
+                emit()
+                time.sleep(delay)
+        except KeyboardInterrupt:
+            return 0
+    return emit()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
