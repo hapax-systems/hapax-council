@@ -458,3 +458,17 @@ class TestManifestAge:
         manifest.write_text("not json")
         monkeypatch.setattr("agents.activity_analyzer.PROFILES_DIR", tmp_path)
         assert _manifest_age() == ""
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_manifest_age_non_dict_returns_empty(tmp_path, monkeypatch, payload, kind):
+    """Pin _manifest_age against non-dict JSON. data.get('timestamp')
+    inside (json.JSONDecodeError, OSError) catch let AttributeError
+    escape on non-dict roots."""
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(payload)
+    monkeypatch.setattr("agents.activity_analyzer.PROFILES_DIR", tmp_path)
+    assert _manifest_age() == "", f"non-dict root={kind} must yield empty"
