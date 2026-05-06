@@ -141,7 +141,6 @@ FAMILY_PRESETS: dict[str, tuple[str, ...]] = {
         "ascii_preset",
         # Audit pools 2026-05-03
         "mono_print_woodcut",
-        "mono_print_newsprint",
         "arcade_8bit_pixel",
         "arcade_palette_remap",
         "bloom_neon_night",
