@@ -38,8 +38,21 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 RENDER_FPS = 10
-SIERPINSKI_AUDIO_ATTACK_ALPHA = 0.45
-SIERPINSKI_AUDIO_RELEASE_ALPHA = 0.22
+# Per operator directive 2026-05-06
+# (`feedback_audio_reactivity_must_be_tight_speech_representation`):
+# audio reactivity must be TIGHT. The Sierpinski center waveform is
+# Hapax's speech representation and MUST stay raw (it does — see
+# `_draw_waveform` call which uses `self._audio_energy`). The
+# line-width / alpha MODULATIONS previously used asymmetric IIR
+# (attack=0.45, release=0.22) for transient-whip prevention. Replaced
+# with instant-response bounded amplitude — peaks above the burst
+# clamp don't whip the line into pathological territory, but response
+# to audio is single-frame tight. Default alphas now 1.0 (no
+# smoothing); attack/release knobs retained for backward-compat with
+# any instance that requests explicit smoothing.
+SIERPINSKI_AUDIO_ATTACK_ALPHA = 1.0
+SIERPINSKI_AUDIO_RELEASE_ALPHA = 1.0
+SIERPINSKI_AUDIO_BURST_CLAMP = 0.85
 
 # Phase 2 of yt-content-reverie-sierpinski-separation (2026-04-21).
 # The reverie mixer's affordance pipeline writes this state file when
@@ -183,16 +196,24 @@ class SierpinskiCairoSource(HomageTransitionalSource):
 
     def set_audio_energy(self, energy: float) -> None:
         self._audio_energy = energy
-        # One-pole envelope on the line-width-modulating energy. Fast
-        # attack restores visible transient lift, while slower release keeps
-        # the triangle from snapping back frame-to-frame. Raw energy still
-        # drives the waveform draw — that surface IS the audio.
+        # Bounded-amplitude clamp on the line-width-modulating energy.
+        # Per operator directive 2026-05-06 (audio reactivity MUST be
+        # TIGHT), the prior asymmetric IIR was replaced with instant-
+        # response amplitude clamped at SIERPINSKI_AUDIO_BURST_CLAMP so
+        # the line doesn't whip on percussive ±1.0 transients but the
+        # visual response to audio is single-frame tight. The waveform
+        # draw still uses raw self._audio_energy — that surface IS the
+        # audio. With both attack/release alphas defaulted to 1.0 the
+        # smoother is effectively a per-frame bounded passthrough; the
+        # alpha knobs stay in the API for any instance that wants
+        # explicit smoothing.
+        clamped = min(energy, SIERPINSKI_AUDIO_BURST_CLAMP)
         alpha = (
             SIERPINSKI_AUDIO_ATTACK_ALPHA
-            if energy > self._audio_energy_smoothed
+            if clamped > self._audio_energy_smoothed
             else SIERPINSKI_AUDIO_RELEASE_ALPHA
         )
-        self._audio_energy_smoothed = self._audio_energy_smoothed * (1.0 - alpha) + energy * alpha
+        self._audio_energy_smoothed = self._audio_energy_smoothed * (1.0 - alpha) + clamped * alpha
 
     def _refresh_featured_yt_slot(self) -> None:
         """Phase 2 yt-feature: read FEATURED_YT_SLOT_FILE if it changed.
