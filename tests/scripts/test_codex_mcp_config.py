@@ -14,6 +14,7 @@ TAVILY_WRAPPER = REPO_ROOT / "scripts" / "hapax-tavily-mcp"
 PLAYWRIGHT_WRAPPER = REPO_ROOT / "scripts" / "hapax-playwright-mcp"
 GITHUB_WRAPPER = REPO_ROOT / "scripts" / "hapax-github-mcp"
 GEMINI_WRAPPER = REPO_ROOT / "scripts" / "hapax-gemini-mcp"
+CONTEXT7_WRAPPER = REPO_ROOT / "scripts" / "hapax-context7-mcp"
 
 
 def _installed_config(tmp_path: Path) -> dict:
@@ -116,17 +117,18 @@ def test_github_mcp_uses_secret_loading_wrapper(tmp_path: Path) -> None:
     assert "--log-driver none" in wrapper
 
 
-def test_context7_mcp_uses_env_var_not_literal_bearer(tmp_path: Path) -> None:
+def test_context7_mcp_uses_secret_loading_wrapper(tmp_path: Path) -> None:
     config = _installed_config(tmp_path)
     launcher = CODEX_LAUNCHER.read_text()
+    wrapper = CONTEXT7_WRAPPER.read_text()
 
-    assert config["mcp_servers"]["context7"] == {
-        "url": "https://mcp.context7.com/mcp",
-        "bearer_token_env_var": "CONTEXT7_API_KEY",
-    }
-    assert 'mcp_servers.context7.bearer_token_env_var="CONTEXT7_API_KEY"' in launcher
-    assert "load_first_available_pass_secret CONTEXT7_API_KEY context7/api-key" in launcher
+    assert config["mcp_servers"]["context7"] == {"command": str(CONTEXT7_WRAPPER)}
+    assert 'mcp_servers.context7.command=\\"$COUNCIL_DIR/scripts/hapax-context7-mcp\\"' in launcher
+    assert "mcp_servers.context7.bearer_token_env_var" not in launcher
     assert "mcp_servers.context7.bearer_token=" not in launcher
+    assert "unset CONTEXT7_API_KEY" in launcher
+    assert "load_first_available_pass_secret CONTEXT7_API_KEY context7/api-key" in wrapper
+    assert "CONTEXT7_API_KEY" not in str(config["mcp_servers"]["context7"])
 
 
 def test_codex_mcp_scripts_are_valid_bash() -> None:
@@ -139,6 +141,7 @@ def test_codex_mcp_scripts_are_valid_bash() -> None:
             str(PLAYWRIGHT_WRAPPER),
             str(GITHUB_WRAPPER),
             str(GEMINI_WRAPPER),
+            str(CONTEXT7_WRAPPER),
         ],
         capture_output=True,
         text=True,
