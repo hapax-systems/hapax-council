@@ -155,3 +155,28 @@ class TestNoEmissionsWhenStanceUnsafe:
         _write_narrative(tmp_path, stance="cautious")
         t = td.TwitchDirector()
         assert t._cadence_or_none() == 10.0
+
+
+# ── Defensive narrative-state reader ──────────────────────────────────
+
+
+class TestNarrativeStateReaderRejectsNonDictRoot:
+    """Pin ``_read_narrative_state`` against a writer producing valid
+    JSON whose root is not a mapping. The TwitchDirector loop calls
+    ``ns.get("stance")`` and ``ns.get("condition_id")`` directly on
+    the returned value; previously a non-dict root raised AttributeError
+    out of the 3-4s twitch loop. Same shape as #2627, #2631, #2632."""
+
+    @pytest.mark.parametrize(
+        "payload,kind",
+        [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+    )
+    def test_non_dict_root_returns_empty(self, tmp_path, monkeypatch, payload, kind):
+        narrative_path = tmp_path / "narrative-state.json"
+        narrative_path.write_text(payload)
+        monkeypatch.setattr(td, "_NARRATIVE_STATE", narrative_path)
+        result = td._read_narrative_state()
+        assert result == {}, f"non-dict root={kind} must yield empty dict"
+        # Critical regression pin: the .get(...) callsites must not raise.
+        result.get("stance")
+        result.get("condition_id")
