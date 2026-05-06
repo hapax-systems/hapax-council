@@ -544,9 +544,24 @@ def _build_snapshot(now_monotonic: float) -> _CachedSnapshot:
 
 
 def _safe_load_raw() -> dict:
+    """Load ``ward-properties.json`` as a dict, or {} on any failure.
+
+    Validates the JSON root is a mapping. A writer that produces valid
+    JSON with a non-dict root (``null``, ``[...]``, a string, a number)
+    previously propagated AttributeError up through ``_build_snapshot``
+    into the Cairo render callback hot-path; the gate here keeps the
+    contract the type signature promises and lets the cache fall back
+    to defaults instead of crashing the source.
+    """
     try:
         if WARD_PROPERTIES_PATH.exists():
-            return json.loads(WARD_PROPERTIES_PATH.read_text(encoding="utf-8"))
+            data = json.loads(WARD_PROPERTIES_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+            log.debug(
+                "ward-properties.json root is %s, expected mapping",
+                type(data).__name__,
+            )
     except Exception:
         log.debug("ward-properties.json read failed", exc_info=True)
     return {}

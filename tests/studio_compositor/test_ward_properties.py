@@ -33,6 +33,28 @@ class TestDefaults:
         wp.clear_ward_properties_cache()
         assert wp.resolve_ward_properties("unrelated").alpha == 1.0
 
+    @pytest.mark.parametrize(
+        "payload,kind",
+        [
+            ("null", "null"),
+            ('"a string"', "string"),
+            ("[1, 2, 3]", "list"),
+            ("42", "int"),
+        ],
+    )
+    def test_non_dict_root_falls_back_to_defaults(self, payload, kind):
+        """Schema drift: a writer producing valid JSON whose root is not
+        a mapping previously raised AttributeError out of
+        ``_build_snapshot``'s ``raw.get(...)`` call into the Cairo render
+        callback. The cache now falls back to defaults instead of
+        crashing the source."""
+        wp.WARD_PROPERTIES_PATH.write_text(payload)
+        wp.clear_ward_properties_cache()
+        # Hot-path call in cairo render — must not raise.
+        props = wp.resolve_ward_properties("token_pole")
+        assert props.alpha == 1.0, f"root={kind} must yield default WardProperties"
+        assert props.visible is True
+
 
 class TestSetAndResolve:
     def test_set_then_resolve_returns_value(self):
