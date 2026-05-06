@@ -109,10 +109,20 @@ class ShmRgbaReader:
         return elem
 
     def _read_sidecar(self) -> dict[str, Any] | None:
+        """Return the sidecar JSON as a dict, or None on any failure.
+
+        Validates the JSON root is a mapping. The ``get_current_surface``
+        callsite immediately calls ``meta.get(\"frame_id\")`` and indexes
+        ``meta[\"w\"]`` / ``meta[\"h\"]`` / ``meta[\"stride\"]``; a writer
+        producing valid JSON whose root is null, a list, a string, or a
+        number previously raised AttributeError out of the reverie surface
+        render path. Same corruption-class as #2627, #2631, #2632, #2636
+        (already merged) and #2640, #2642 (in flight).
+        """
         if not self._sidecar_path.exists():
             return None
         try:
-            return json.loads(self._sidecar_path.read_text())
+            data = json.loads(self._sidecar_path.read_text())
         except (OSError, json.JSONDecodeError):
             log.debug(
                 "ShmRgbaReader failed to read sidecar %s",
@@ -120,6 +130,14 @@ class ShmRgbaReader:
                 exc_info=True,
             )
             return None
+        if not isinstance(data, dict):
+            log.debug(
+                "ShmRgbaReader sidecar %s root is %s, expected mapping",
+                self._sidecar_path,
+                type(data).__name__,
+            )
+            return None
+        return data
 
     def get_current_surface(self) -> cairo.ImageSurface | None:
         """Return the current frame as a cairo.ImageSurface, or None.

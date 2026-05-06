@@ -167,3 +167,47 @@ class TestDensityWordLimit:
         assert _DENSITY_WORD_LIMITS["presenting"] < _DENSITY_WORD_LIMITS["focused"]
         assert _DENSITY_WORD_LIMITS["focused"] < _DENSITY_WORD_LIMITS["ambient"]
         assert _DENSITY_WORD_LIMITS["ambient"] < _DENSITY_WORD_LIMITS["receptive"]
+
+
+# ── Defensive _density_word_limit + _stimmung_downgrade ────────────────
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_density_word_limit_non_dict_root_returns_default(payload, kind):
+    """Pin _density_word_limit against non-dict JSON. Previously the
+    ``vls.get('display_density')`` call escaped the (FileNotFoundError,
+    JSONDecodeError, OSError) catch with AttributeError on non-dict root."""
+    with patch.object(Path, "read_text", return_value=payload):
+        # Default for "ambient" density (missing key on dict) is 35; same
+        # safe fallback used here means the function returns 35 regardless
+        # of payload shape.
+        assert _density_word_limit() == _DENSITY_WORD_LIMITS["ambient"], (
+            f"non-dict root={kind} must yield ambient default"
+        )
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_stimmung_downgrade_non_dict_root_returns_input(payload, kind):
+    """Pin _stimmung_downgrade against non-dict JSON. The function reads
+    /dev/shm/hapax-stimmung/state.json then calls raw.get(...) outside
+    the try; previously a non-dict root crashed voice-model selection."""
+    from agents.hapax_daimonion.conversation_helpers import _stimmung_downgrade
+    from agents.hapax_daimonion.model_router import ModelTier
+
+    initial_model = "claude-sonnet"
+    initial_tier = ModelTier.STRONG
+
+    # Patch the file content via Path.read_text just like other tests.
+    with patch.object(Path, "read_text", return_value=payload):
+        m, t = _stimmung_downgrade(initial_model, initial_tier)
+    assert m == initial_model
+    assert t == initial_tier

@@ -539,7 +539,15 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
     _seg_cache_mtime: float = 0.0
 
     def _read_segment_state(self) -> dict[str, Any] | None:
-        """Read segment-playback.json from SHM with mtime-based caching."""
+        """Read segment-playback.json from SHM with mtime-based caching.
+
+        Validates the JSON root is a mapping before returning it. The
+        ``_render_segment_content`` callsite calls ``seg.get(...)``
+        repeatedly, so a writer producing valid JSON whose root is
+        null, a list, a string, or a number would raise AttributeError
+        out of the cairooverlay callback. Same corruption-class as
+        #2627, #2631, #2632, #2633, #2636.
+        """
         try:
             st = self._SEGMENT_SHM_PATH.stat()
             if st.st_mtime_ns == self._seg_cache_mtime and self._seg_cache is not None:
@@ -547,6 +555,9 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
             import json
 
             data = json.loads(self._SEGMENT_SHM_PATH.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                self._seg_cache = None
+                return None
             self._seg_cache = data
             self._seg_cache_mtime = st.st_mtime_ns
             return data

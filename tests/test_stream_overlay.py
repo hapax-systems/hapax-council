@@ -202,3 +202,23 @@ def test_render_tick_respects_canvas_size(populated_shm):
         assert surface.get_format() == cairo.FORMAT_ARGB32
         assert surface.get_width() == w
         assert surface.get_height() == h
+
+
+# ── Defensive _read_json — non-dict JSON root ──────────────────────────
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a string"', "string"), ("[1, 2, 3]", "list"), ("42", "int")],
+)
+def test_read_json_non_dict_root_returns_empty(tmp_path: Path, payload: str, kind: str):
+    """Pin ``_read_json`` against non-dict JSON roots. The ``_format_viewers``
+    and ``_format_chat`` callers call ``ledger.get(\"active_viewers\")`` /
+    ``state.get(\"total_messages\")`` directly on the returned value — a
+    non-dict root previously raised AttributeError out of the stream-overlay
+    cairo callback."""
+    path = tmp_path / "ledger.json"
+    path.write_text(payload)
+    assert so._read_json(path) == {}, f"non-dict root={kind} must yield empty dict"
+    # Critical: the callsite contract.
+    so._read_json(path).get("active_viewers")

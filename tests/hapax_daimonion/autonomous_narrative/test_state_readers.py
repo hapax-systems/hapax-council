@@ -240,3 +240,59 @@ def test_assemble_context_pulls_programme_from_daemon(monkeypatch, tmp_path) -> 
     assert ctx.director_activity == "observe"  # default
     assert ctx.chronicle_events == ()
     assert ctx.triad_continuity == {}
+
+
+# ── Defensive readers — non-dict JSON root ───────────────────────────
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_read_stimmung_tone_non_dict_returns_default(monkeypatch, tmp_path, payload, kind):
+    """Pin read_stimmung_tone against non-dict JSON. The except clause
+    only catches (OSError, ValueError); a non-dict root previously
+    raised AttributeError on data.get(...)."""
+    path = tmp_path / "stimmung.json"
+    path.write_text(payload)
+    monkeypatch.setattr(state_readers, "_STIMMUNG_PATH", path)
+    assert state_readers.read_stimmung_tone() == "ambient", (
+        f"non-dict root={kind} must yield default"
+    )
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_read_director_activity_non_dict_marker_returns_default(
+    monkeypatch, tmp_path, payload, kind
+):
+    """Pin read_director_activity against non-dict research-marker JSON."""
+    marker_path = tmp_path / "research-marker.json"
+    marker_path.write_text(payload)
+    monkeypatch.setattr(state_readers, "_RESEARCH_MARKER_PATH", marker_path)
+    monkeypatch.setattr(state_readers, "_DIRECTOR_INTENT_PATH", tmp_path / "missing.jsonl")
+    assert state_readers.read_director_activity() == "observe", (
+        f"non-dict marker root={kind} must yield default"
+    )
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_read_director_activity_non_dict_intent_tail_returns_default(
+    monkeypatch, tmp_path, payload, kind
+):
+    """Pin read_director_activity against non-dict director-intent JSONL tail."""
+    intent_path = tmp_path / "director-intent.jsonl"
+    intent_path.write_text(payload + "\n")
+    monkeypatch.setattr(state_readers, "_RESEARCH_MARKER_PATH", tmp_path / "missing.json")
+    monkeypatch.setattr(state_readers, "_DIRECTOR_INTENT_PATH", intent_path)
+    assert state_readers.read_director_activity() == "observe", (
+        f"non-dict tail root={kind} must yield default"
+    )

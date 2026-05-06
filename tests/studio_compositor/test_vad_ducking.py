@@ -95,3 +95,39 @@ class TestDuckController:
             self._tick_once(controller)  # state hasn't changed
             self._tick_once(controller)
         audio.duck.assert_called_once()
+
+
+# ── Defensive readers — non-dict JSON root ──────────────────────────────
+
+
+import pytest
+
+
+class TestReadersRejectNonDictRoot:
+    """Pin both ``_read_vad_state`` and ``_read_tts_state`` against
+    non-dict JSON roots. The DuckController polls these every 30 ms;
+    a writer producing valid JSON whose root is null, a list, a string,
+    or a number previously raised AttributeError on ``data.get(...)``
+    and tore down the duck controller thread."""
+
+    @pytest.mark.parametrize(
+        "payload,kind",
+        [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+    )
+    def test_read_vad_state_non_dict_returns_none(self, tmp_path, payload, kind):
+        target = tmp_path / "voice-state.json"
+        target.write_text(payload)
+        with patch.object(vad_ducking, "VOICE_STATE_FILE", target):
+            assert _read_vad_state() is None, f"non-dict root={kind} must yield None"
+
+    @pytest.mark.parametrize(
+        "payload,kind",
+        [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+    )
+    def test_read_tts_state_non_dict_returns_none(self, tmp_path, payload, kind):
+        from agents.studio_compositor.vad_ducking import _read_tts_state
+
+        target = tmp_path / "voice-state.json"
+        target.write_text(payload)
+        with patch.object(vad_ducking, "VOICE_STATE_FILE", target):
+            assert _read_tts_state() is None, f"non-dict root={kind} must yield None"

@@ -9,6 +9,7 @@ import pytest
 from agents.studio_compositor.youtube_description import (
     QuotaExhausted,
     _pacific_date_now,
+    _read_quota_state,
     assemble_description,
     check_and_debit,
     update_video_description,
@@ -253,3 +254,41 @@ class TestAttributionRendering:
         assert "Substrate: qwen3" in desc
         # Attribution section appears AFTER the rest.
         assert desc.index("Sources:") > desc.index("Substrate:")
+
+
+class TestReadQuotaState:
+    """Defensive parsing — non-dict JSON roots fall back to a fresh state."""
+
+    def _expected_fresh(self) -> dict:
+        return {"date": _pacific_date_now(), "units_spent": 0, "stream_updates": {}}
+
+    def test_missing_file_returns_fresh(self, tmp_path):
+        state = _read_quota_state(tmp_path / "missing.json")
+        assert state == self._expected_fresh()
+
+    def test_truncated_json_returns_fresh(self, tmp_path):
+        path = tmp_path / "trunc.json"
+        path.write_text("{not valid json")
+        assert _read_quota_state(path) == self._expected_fresh()
+
+    @pytest.mark.parametrize(
+        "payload",
+        ["[]", "null", '"a string"', "42", "true"],
+    )
+    def test_non_dict_root_returns_fresh(self, tmp_path, payload):
+        path = tmp_path / "nondict.json"
+        path.write_text(payload)
+        assert _read_quota_state(path) == self._expected_fresh()
+
+    def test_dict_with_stale_date_returns_fresh(self, tmp_path):
+        path = tmp_path / "stale.json"
+        path.write_text(
+            json.dumps({"date": "1970-01-01", "units_spent": 999, "stream_updates": {}})
+        )
+        assert _read_quota_state(path) == self._expected_fresh()
+
+    def test_dict_with_today_returns_persisted_state(self, tmp_path):
+        path = tmp_path / "today.json"
+        persisted = {"date": _pacific_date_now(), "units_spent": 150, "stream_updates": {"v1": 3}}
+        path.write_text(json.dumps(persisted))
+        assert _read_quota_state(path) == persisted

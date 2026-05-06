@@ -198,3 +198,41 @@ def test_copilot_no_accommodations():
     engine = CopilotEngine()
     msg = engine.evaluate(ctx)
     assert "m in)" not in msg
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_load_accommodations_non_dict_root(tmp_path, payload, kind, monkeypatch):
+    """Pin load_accommodations against non-dict JSON. The for loop calls
+    data.get('accommodations', []) and item['id']; the existing
+    (json.JSONDecodeError, KeyError) catch missed AttributeError on
+    non-dict roots."""
+    from logos import accommodations as acc
+
+    path = tmp_path / "accommodations.json"
+    path.write_text(payload)
+    monkeypatch.setattr(acc, "_ACCOMMODATIONS_PATH", path)
+    result = acc.load_accommodations()
+    assert result.accommodations == [], f"non-dict root={kind} must yield empty"
+    assert result.time_anchor_enabled is False
+    assert result.energy_aware is False
+
+
+def test_load_accommodations_non_dict_entry_skipped(tmp_path, monkeypatch):
+    """If the root is dict but an individual accommodation entry is
+    non-dict (schema drift), skip that entry instead of crashing on
+    item['id']."""
+    from logos import accommodations as acc
+
+    path = tmp_path / "accommodations.json"
+    path.write_text('{"accommodations": [{"id": "valid", "active": true},"garbage-string-entry"]}')
+    monkeypatch.setattr(acc, "_ACCOMMODATIONS_PATH", path)
+    result = acc.load_accommodations()
+    # Only the valid entry survives.
+    assert len(result.accommodations) == 1
+    assert result.accommodations[0].id == "valid"

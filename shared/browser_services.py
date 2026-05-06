@@ -17,15 +17,30 @@ REGISTRY_PATH = Path.home() / ".hapax" / "browser-services.json"
 
 
 def load_registry() -> dict[str, Any]:
-    """Load service registry from disk. Returns empty dict if missing."""
+    """Load service registry from disk. Returns empty dict if missing.
+
+    Validates the JSON root is a mapping. Callers (``is_allowed``,
+    ``resolve_url``) immediately call ``registry.values()`` /
+    ``registry.get(service)`` on the returned value — a writer
+    producing valid JSON whose root is null, a list, a string, or a
+    number previously raised AttributeError out of browser allowlist
+    enforcement. Same shape as the other recent SHM-read fixes.
+    """
     if not REGISTRY_PATH.exists():
         log.info("No browser-services.json found at %s", REGISTRY_PATH)
         return {}
     try:
-        return json.loads(REGISTRY_PATH.read_text())
+        data = json.loads(REGISTRY_PATH.read_text())
     except Exception:
         log.warning("Failed to parse browser-services.json", exc_info=True)
         return {}
+    if not isinstance(data, dict):
+        log.warning(
+            "browser-services.json root is %s, expected mapping",
+            type(data).__name__,
+        )
+        return {}
+    return data
 
 
 def is_allowed(url: str) -> bool:

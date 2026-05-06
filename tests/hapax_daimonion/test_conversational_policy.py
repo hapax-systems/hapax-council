@@ -318,3 +318,27 @@ class TestChildConsent:
         assert "presence" in simon.scope
         assert "transcription" in simon.scope
         assert "video" in simon.scope
+
+
+# ── Defensive _load_operator_profile_summary ────────────────────────
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_load_operator_profile_summary_non_dict_returns_none(monkeypatch, tmp_path, payload, kind):
+    """Pin _load_operator_profile_summary against non-dict JSON. The
+    (FileNotFoundError, KeyError, JSONDecodeError) catch did not cover
+    AttributeError on data.get('overall_summary'); a non-dict root
+    previously crashed the operator-profile read path used by the LLM
+    voice loop."""
+    from agents.hapax_daimonion import conversational_policy as cp
+
+    digest = tmp_path / "digest.json"
+    digest.write_text(payload)
+    monkeypatch.setattr(cp, "_DIGEST_PATH", digest)
+    assert cp._load_profile_summary() is None, f"non-dict root={kind} must yield None"

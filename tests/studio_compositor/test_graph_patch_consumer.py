@@ -651,3 +651,25 @@ def test_node_patch_capability_descriptions_are_gibson_verb() -> None:
         # The description shouldn't be just the technical type name.
         suffix = c.name.split(".", 2)[2]
         assert c.description.lower() != suffix.lower()
+
+
+# ── Defensive recruitment reader — non-dict JSON root ──────────────────
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_process_recruitment_non_dict_root_returns_false(
+    tmp_path: Path, payload: str, kind: str, monkeypatch: pytest.MonkeyPatch
+):
+    """Pin process_graph_patch_recruitment against non-dict JSON roots.
+    _build_patch_from_recruitment and _family_timestamps both call
+    payload.get(...) — a non-dict root previously raised AttributeError.
+    Same corruption-class as #2638 (preset-recruitment, in flight)."""
+    from agents.studio_compositor import graph_patch_consumer as gpc
+
+    path = tmp_path / "recruitment.json"
+    path.write_text(payload)
+    monkeypatch.setattr(gpc, "RECRUITMENT_FILE", path)
+    assert gpc.process_graph_patch_recruitment() is False, f"non-dict root={kind} must yield False"

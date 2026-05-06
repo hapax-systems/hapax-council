@@ -101,3 +101,40 @@ class TestAppendAndEvaluate:
         raw = json.loads(ae.WARD_ANIMATION_STATE_PATH.read_text())
         assert len(raw["transitions"]) == 1
         assert raw["transitions"][0]["property"] == "scale"
+
+
+# ── Defensive _safe_load_raw — non-dict JSON root ──────────────────────
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_safe_load_raw_non_dict_returns_empty(tmp_path, payload, kind):
+    """Pin _safe_load_raw against non-dict JSON roots. Two callers
+    (publish_transitions, _load_active_transitions) call raw.get('transitions')
+    immediately; non-dict root previously raised AttributeError."""
+    ae.WARD_ANIMATION_STATE_PATH.write_text(payload)
+    ae.clear_animation_cache()
+    assert ae._safe_load_raw() == {}, f"non-dict root={kind} must yield {{}}"
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_publish_transitions_survives_corrupt_existing_state(tmp_path, payload, kind):
+    """End-to-end: publish_transitions reads existing state via _safe_load_raw.
+    A corrupt non-dict existing state must not crash the publish."""
+    ae.WARD_ANIMATION_STATE_PATH.write_text(payload)
+    ae.clear_animation_cache()
+    # Must not raise — the corrupt file gets overwritten on first publish.
+    now = time.time()
+    fresh = ae.Transition("album", "alpha", 0.0, 1.0, 1.0, "linear", now)
+    ae.append_transitions([fresh])
+    # Verify the publish succeeded.
+    import json
+
+    raw = json.loads(ae.WARD_ANIMATION_STATE_PATH.read_text())
+    assert "transitions" in raw
+    assert any(t["property"] == "alpha" for t in raw["transitions"])

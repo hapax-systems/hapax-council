@@ -40,3 +40,21 @@ def test_read_corrupt_json(tmp_path):
 
 def test_default_state_dir():
     assert "pi-noir" in str(IR_STATE_DIR)
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a string"', "string"), ("[1, 2, 3]", "list"), ("42", "int")],
+)
+def test_read_non_dict_root_returns_none(tmp_path, payload, kind):
+    """Pin read_ir_signal against non-dict JSON roots. The ir_presence
+    backend at line 233 calls report.get('cadence_interval_s')
+    immediately on the returned value — a non-dict root previously
+    raised AttributeError and crashed the IR fleet poll. Same shape
+    as the other recent SHM-read fixes."""
+    f = tmp_path / "report.json"
+    f.write_text(payload)
+    assert read_ir_signal(f, max_age_seconds=10) is None, f"non-dict root={kind} must yield None"

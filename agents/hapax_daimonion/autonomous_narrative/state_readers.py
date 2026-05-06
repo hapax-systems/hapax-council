@@ -136,34 +136,54 @@ def read_active_programme(daemon: Any) -> Any | None:
 
 
 def read_stimmung_tone() -> str:
+    """Read tone/stance from stimmung state, default ``"ambient"``.
+
+    Validates the JSON root is a mapping before calling ``.get``; the
+    ``except (OSError, ValueError)`` clause does not catch AttributeError,
+    so a writer producing valid JSON whose root is null, a list, a
+    string, or a number previously raised AttributeError out of the
+    autonomous-narrative emit path. Same shape as the other recent
+    SHM-read fixes (#2627, #2631, #2632, #2633, #2636 merged).
+    """
     try:
         data = json.loads(_STIMMUNG_PATH.read_text(encoding="utf-8"))
-        for key in ("tone", "stance", "overall_stance"):
-            v = data.get(key)
-            if isinstance(v, str):
-                return v
     except (OSError, ValueError) as exc:
         log.debug("stimmung read failed: %s", exc)
+        return "ambient"
+    if not isinstance(data, dict):
+        return "ambient"
+    for key in ("tone", "stance", "overall_stance"):
+        v = data.get(key)
+        if isinstance(v, str):
+            return v
     return "ambient"
 
 
 def read_director_activity() -> str:
-    """Best-effort read of the compositor's last-known activity label."""
+    """Best-effort read of the compositor's last-known activity label.
+
+    Validates JSON roots are mappings before calling ``.get`` on them
+    (same rationale as :func:`read_stimmung_tone`). Two readers here
+    — the research marker and the director-intent JSONL tail — both
+    needed the gate.
+    """
     try:
         data = json.loads(_RESEARCH_MARKER_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = None
+    if isinstance(data, dict):
         v = data.get("activity")
         if isinstance(v, str):
             return v
-    except (OSError, ValueError):
-        pass
     try:
         with _DIRECTOR_INTENT_PATH.open("r", encoding="utf-8") as fh:
             lines = fh.readlines()
         if lines:
             last = json.loads(lines[-1])
-            v = last.get("activity") or last.get("intent")
-            if isinstance(v, str):
-                return v
+            if isinstance(last, dict):
+                v = last.get("activity") or last.get("intent")
+                if isinstance(v, str):
+                    return v
     except (OSError, ValueError) as exc:
         log.debug("director intent read failed: %s", exc)
     return "observe"
