@@ -344,6 +344,11 @@ def _record_chronicle(event: PaymentEvent) -> None:
                 "rail": event.rail,
                 "amount_sats": event.amount_sats,
                 "external_id": event.external_id,
+                # Sibling to ``payment_processors.lightning`` (#2697):
+                # zaps are structurally high-salience receipts. Source
+                # isn't in the chronicle-ticker allow-list, so 0.95
+                # surfaces them via the salience path.
+                "salience": 0.95,
             },
         )
     )
