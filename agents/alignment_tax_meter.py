@@ -78,6 +78,8 @@ def measure_sdlc_overhead(lookback_days: int = 14) -> dict:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(event, dict):
+            continue
 
         ts_str = event.get("timestamp", "")
         try:
