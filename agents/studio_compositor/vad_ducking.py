@@ -89,12 +89,22 @@ def publish_tts_state(tts_active: bool) -> None:
 
 
 def _read_vad_state() -> bool | None:
-    """Read the current VAD state, or None if file missing/unreadable."""
+    """Read the current VAD state, or None if file missing/unreadable.
+
+    Validates the JSON root is a mapping. The DuckController thread
+    polls this every 30 ms; a writer producing valid JSON whose root
+    is null, a list, a string, or a number previously raised
+    AttributeError out of ``data.get(...)``, killing the duck
+    controller thread. Same corruption-class as the other recent
+    SHM-read fixes (#2627, #2631, #2632, #2636 merged; queue open).
+    """
     if not VOICE_STATE_FILE.exists():
         return None
     try:
         data = json.loads(VOICE_STATE_FILE.read_text())
     except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
         return None
     val = data.get("operator_speech_active")
     return bool(val) if isinstance(val, bool) else None
@@ -147,12 +157,20 @@ class DuckController:
 
 
 def _read_tts_state() -> bool | None:
-    """Read tts_active from voice-state.json, or None if unreadable."""
+    """Read tts_active from voice-state.json, or None if unreadable.
+
+    Validates the JSON root is a mapping (same shape as
+    :func:`_read_vad_state`). The TTS-driven broadcast ducker polls
+    this on a 30 ms cadence; non-dict JSON would raise AttributeError
+    on ``data.get(...)`` and tear down the ducker.
+    """
     if not VOICE_STATE_FILE.exists():
         return None
     try:
         data = json.loads(VOICE_STATE_FILE.read_text())
     except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
         return None
     val = data.get("tts_active")
     return bool(val) if isinstance(val, bool) else None
