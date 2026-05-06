@@ -520,6 +520,25 @@ class TestDomainPresetFamilyMapping:
         assert is_audio_reactive("token_pole")
         assert not is_audio_reactive("captions")
 
+    def test_audio_reactive_wards_all_have_domain_assignment(self):
+        """Every member of ``AUDIO_REACTIVE_WARDS`` must also appear in
+        ``WARD_DOMAIN`` — otherwise ``domain_for_ward`` returns the
+        ``perception`` fallback for an audio-reactive ward, which
+        contradicts the reactor's "music-domain ward gets bus-level
+        beat coupling" pattern. A future addition to the audio-reactive
+        set without a paired domain entry would silently misclassify
+        the new ward."""
+        from agents.studio_compositor.ward_fx_mapping import (
+            AUDIO_REACTIVE_WARDS,
+            WARD_DOMAIN,
+        )
+
+        missing = sorted(w for w in AUDIO_REACTIVE_WARDS if w not in WARD_DOMAIN)
+        assert not missing, (
+            f"AUDIO_REACTIVE_WARDS members missing from WARD_DOMAIN "
+            f"(would default to 'perception'): {missing}"
+        )
+
     def test_m8_oscilloscope_is_audio_reactive(self):
         """The M8 oscilloscope ward renders the M8's SLIP-packet waveform
         directly (intrinsic audio reactivity) AND participates in
