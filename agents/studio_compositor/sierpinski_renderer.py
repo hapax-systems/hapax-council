@@ -69,6 +69,11 @@ COLORS = [
     (1.0, 0.4, 0.8),  # hot pink
 ]
 
+AUDIO_LINE_WIDTH_BASE_PX = 1.5
+AUDIO_LINE_WIDTH_SCALE_PX = 2.0
+AUDIO_LINE_WIDTH_ATTACK_LIFT = 0.35
+AUDIO_LINE_WIDTH_MAX_PX = AUDIO_LINE_WIDTH_BASE_PX + AUDIO_LINE_WIDTH_SCALE_PX
+
 # GEAL spec §4.2 — per-level stroke width + alpha table for the extended
 # geometry cache. Indexed by depth. Tuple is
 # ``(core_stroke_px, glow_stroke_px, core_alpha, glow_alpha)``. L4 has no
@@ -87,6 +92,10 @@ LEVEL_STROKE_ALPHA: dict[int, tuple[float, float, float, float]] = {
 
 Point = tuple[float, float]
 Polygon = list[Point]
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
 
 
 @dataclass
@@ -276,7 +285,7 @@ class SierpinskiCairoSource(HomageTransitionalSource):
         # Draw line work with audio-reactive width — smoothed so per-frame
         # transients don't whip the line thickness around. Waveform above
         # uses the raw value because the waveform IS the audio.
-        line_w = 1.5 + self._audio_energy_smoothed * 2.0
+        line_w = self._audio_line_width()
         self._draw_triangle_lines(cr, self._cached_all_triangles, line_w, t)
 
         # GEAL §5.1 — publish video_attention every tick so GEAL and the
@@ -722,6 +731,21 @@ class SierpinskiCairoSource(HomageTransitionalSource):
             cr.line_to(*tri[2])
             cr.close_path()
             cr.stroke()
+
+    def _audio_line_width(self) -> float:
+        """Line width with bounded attack lift for percussive onsets.
+
+        Smoothing stays in charge of the steady state, but rising raw
+        energy can pull the line width partway forward. The old max
+        width remains the ceiling, so this adds variance without growing
+        the Sierpinski footprint or introducing an alpha flash.
+        """
+        raw = _clamp01(self._audio_energy)
+        smoothed = _clamp01(self._audio_energy_smoothed)
+        attack = max(0.0, raw - smoothed) * AUDIO_LINE_WIDTH_ATTACK_LIFT
+        energy = min(1.0, smoothed + attack)
+        line_width = AUDIO_LINE_WIDTH_BASE_PX + energy * AUDIO_LINE_WIDTH_SCALE_PX
+        return min(AUDIO_LINE_WIDTH_MAX_PX, line_width)
 
     def _draw_waveform(
         self,
