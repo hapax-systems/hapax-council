@@ -23,6 +23,7 @@ import hashlib
 import random
 
 REFERENTS: tuple[str, ...] = (
+    "The Operator",
     "Oudepode",
     "Oudepode The Operator",
     "OTO",
