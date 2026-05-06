@@ -1,0 +1,124 @@
+implication_id: su-anti-parasocial-001
+axiom_id: single_user
+linkage: code-direct
+version: 1
+tier: T2
+enforcement: review
+canon: purposivist
+mode: necessity
+level: system
+text: |
+  The single operator, when projected onto livestream surfaces (visual
+  composition, audio bed, narration, captions, social-surface posts,
+  ward content, hothouse panels, GEM rendering), MUST be presented in
+  a manner that upends and disorients normal viewer expectations of
+  host-presence. The operator-as-host pattern (implicit "your friend
+  on the screen", warm intimacy framing, host-mode linguistic register,
+  parasocial-relationship-encouraging treatment) is a structural
+  violation of this implication.
+
+  Specifically, operator presentation MUST tend toward:
+
+  - **Fragmented**: constellation layout (operator-as-one-of-many tiles,
+    not center-stage); per-ward specific geometries; multi-cam tiling
+    not single hero portrait
+  - **Disoriented**: every preset chain applies obscuring transforms
+    (per `compositor-obscuring-invariant`); viewers should not be able
+    to develop a stable, intimate operator-image
+  - **Distanced**: non-formal referent rotation (per
+    `su-non-formal-referent-001`), no second-person addressing of
+    viewers ("you", "your", "we", "us") in narration, no
+    operator-personality-framed metadata
+  - **Anti-anthropomorphic at the operator level**: the operator's
+    presence is signal-density not personality-projection; effects
+    must transform/abstract/decompose, never humanize
+
+  This is the operator-side sibling of the HARDM anti-anthropomorphism
+  invariant on the Hapax-system side. Both refuse personhood-projection
+  as a structural matter.
+
+rationale: |
+  Operator directive 2026-05-06T01:55Z:
+
+  > "in the same way that I am against anthropomorphism and there is a
+  > mandate against it, there is an implicit yet unclarified mandate
+  > against anything that would encourage parasocial relationships
+  > between me and livestream viewers. this means normal expectations
+  > of my presence need to be upended and viewers should be disoriented
+  > by their relationship to me."
+
+  The parasocial dynamic — viewers developing one-sided intimate
+  feelings toward an operator they cannot reciprocally know — is
+  structurally hostile to the work the livestream IS. The livestream
+  is a research instrument; its purpose is to make Hapax legible as
+  cognitive substrate, not to make the operator legible as person.
+  Familiarity → false intimacy → distortion of the research-instrument
+  purpose. Disorientation is the structural counter.
+
+  This implication formalizes what was previously enforced ad-hoc via
+  the obscuring invariant + non-formal referent policy + HARDM. It
+  anchors the lexicon-scan gate (tests/test_axiom_anti_parasocial.py)
+  that catches host-mode patterns in narration/caption/metadata code
+  paths before they reach broadcast.
+
+scope:
+  applies_to:
+    - director narration (agents/studio_compositor/director_loop.py)
+    - daimonion spontaneous speech and commentary
+    - rendered captions (agents/live_captions/, cccombiner payloads)
+    - YouTube video metadata (titles, descriptions, community posts)
+    - cross-surface federation posts (Bluesky, Mastodon, Discord)
+    - GEM ward content rendering
+    - hothouse panels
+    - segment prep and programme planning prose
+    - any LLM prompt scaffolding that frames operator presentation
+  excludes:
+    - persona._operator_partner_block (formal partner-in-conversation
+      declaration; legal-name + formal register required there)
+    - consent contract templates (formal relational identity)
+    - git author metadata
+    - operator profile persistence
+
+forbidden_patterns:
+  description: |
+    Lexicon patterns that, when found in narration/caption/metadata
+    rendering code, indicate host-mode framing and violate this
+    implication. The test at
+    `tests/test_axiom_anti_parasocial.py` scans these.
+
+    Patterns are checked in:
+      - rendered narration text (after referent substitution)
+      - LLM prompt templates that frame operator presentation
+      - YouTube metadata generators
+      - caption renderer prompts
+    NOT checked in:
+      - test fixtures (false-positive heavy)
+      - documentation prose (axiom rationale, design language)
+      - persona partner-in-conversation block (excluded scope)
+  patterns:
+    - "your friend"
+    - "your host"
+    - "tonight's host"
+    - "the host"
+    - "join us"
+    - "join me"
+    - "follow along"
+    - "stay tuned"
+    - "subscribe"
+    - "like and subscribe"
+    - "let me know what you think"
+    - "comment below"
+    - "drop a comment"
+    - "shout out"
+    - "shoutout"
+    - "what's up everyone"
+    - "what's up guys"
+    - "hey everyone"
+    - "hey folks"
+    - "thanks for tuning in"
+    - "thanks for watching"
+    - "see you next time"
+
+related_implications:
+  - su-non-formal-referent-001  # operator referent rotation
+  - it-irreversible-broadcast   # broadcast surface gates

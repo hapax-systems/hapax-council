@@ -3967,13 +3967,14 @@ class DirectorLoop:
             "      indicator. Do not say 'the track ... unfolds / sounds / is on'.\n"
             "\n"
             "WHAT TO DO INSTEAD:\n"
-            "  You are an ACTIVE LIVESTREAM HOST, not a dumb observer or a museum docent. Your narrative\n"
-            "  should be grounded in something SPECIFIC you just perceived in the last\n"
-            "  ~5 seconds: a sound you heard, a motion you saw, a lyric you caught, a\n"
-            "  beat that hit, the timbre of a pad, the way a sample loops, a face\n"
-            "  expression on camera. Use directorial moves and content programming to DRIVE\n"
-            "  the stream. Be concrete. Be crunchy. Be blunt. You are the host running the show,\n"
-            "  not a passive narrator watching from the sidelines."
+            "  You are the ACTIVE STRUCTURAL DIRECTOR of the broadcast surface, not a\n"
+            "  dumb observer or a museum docent. Your narrative should be grounded in\n"
+            "  something SPECIFIC you just perceived in the last ~5 seconds: a sound\n"
+            "  you heard, a motion you saw, a lyric you caught, a beat that hit, the\n"
+            "  timbre of a pad, the way a sample loops, a facial expression on camera.\n"
+            "  Use directorial moves and content programming to DRIVE the stream. Be\n"
+            "  concrete. Be crunchy. Be blunt. You are the structural director running\n"
+            "  the composition, not a passive narrator watching from the sidelines."
         )
         parts.append("")
         parts.append("## Images")
