@@ -74,19 +74,36 @@ def _get_deploy_ts() -> float:
 
 
 def _load_activation_state() -> dict:
+    """Load the activation map from ACTIVATION_STATE.
+
+    Validates the JSON root is a mapping. ``data.get(\"activations\", {})``
+    is called outside the ``(FileNotFoundError, json.JSONDecodeError)``
+    catch — a writer producing valid JSON whose root is null, a list,
+    a string, or a number raised AttributeError out of the reverie
+    prediction monitor's tick. Same shape as the other recent SHM-read
+    fixes.
+    """
     try:
         data = json.loads(ACTIVATION_STATE.read_text())
-        return data.get("activations", {})
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    activations = data.get("activations", {})
+    return activations if isinstance(activations, dict) else {}
 
 
 def _load_associations() -> dict:
+    """Load the associations map (same isinstance contract as
+    :func:`_load_activation_state`)."""
     try:
         data = json.loads(ACTIVATION_STATE.read_text())
-        return data.get("associations", {})
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    associations = data.get("associations", {})
+    return associations if isinstance(associations, dict) else {}
 
 
 def _load_perception() -> dict:
