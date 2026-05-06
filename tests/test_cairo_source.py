@@ -275,32 +275,39 @@ def test_sierpinski_cairo_source_render_into_small_canvas():
     assert any(b != 0 for b in data)
 
 
-def test_sierpinski_audio_energy_smoothed_lags_raw():
-    """The line-width envelope has fast attack and slower release.
+def test_sierpinski_audio_energy_smoothed_clamped_instant():
+    """The line-width-modulating energy is clamped at SIERPINSKI_AUDIO_BURST_CLAMP
+    and responds instantly (attack/release alphas default to 1.0 since #2743).
 
-    That restores visible transient lift without reintroducing hard
-    frame-to-frame snapback. Raw energy is still preserved for the waveform.
-    """
-    from agents.studio_compositor.sierpinski_renderer import SierpinskiCairoSource
+    Per operator directive 2026-05-06 (audio reactivity must be TIGHT), the
+    prior asymmetric IIR (attack=0.45, release=0.22) was replaced with a
+    single-frame bounded passthrough: the line doesn't whip on percussive
+    ±1.0 transients (clamped at 0.85) but the visual response to audio is
+    single-frame tight. Raw energy is still preserved for the waveform draw."""
+    from agents.studio_compositor.sierpinski_renderer import (
+        SIERPINSKI_AUDIO_BURST_CLAMP,
+        SierpinskiCairoSource,
+    )
 
     source = SierpinskiCairoSource()
     assert source._audio_energy == 0.0
     assert source._audio_energy_smoothed == 0.0
 
-    # First impulse at full level: smoothed lags raw.
+    # First impulse at full level: smoothed clamps at burst-clamp instantly.
     source.set_audio_energy(1.0)
     assert source._audio_energy == 1.0
-    assert source._audio_energy_smoothed == pytest.approx(0.45)
+    assert source._audio_energy_smoothed == pytest.approx(SIERPINSKI_AUDIO_BURST_CLAMP)
 
-    # Second tick at full level continues to converge upward.
+    # Second tick at full level: stays clamped (no IIR convergence anymore).
     source.set_audio_energy(1.0)
-    assert source._audio_energy_smoothed == pytest.approx(0.6975)
+    assert source._audio_energy_smoothed == pytest.approx(SIERPINSKI_AUDIO_BURST_CLAMP)
 
-    # Sudden drop to zero: raw goes to 0 immediately, smoothed releases
-    # more slowly than it attacked.
+    # Sudden drop to zero: raw goes to 0; smoothed releases instantly too
+    # (release alpha = 1.0 since #2743). The clamp prevents transient whip
+    # at peak; on release the modulation tracks raw immediately.
     source.set_audio_energy(0.0)
     assert source._audio_energy == 0.0
-    assert source._audio_energy_smoothed == pytest.approx(0.54405)
+    assert source._audio_energy_smoothed == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------

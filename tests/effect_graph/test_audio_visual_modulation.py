@@ -363,5 +363,3 @@ def test_known_banned_violations_set_does_not_regrow() -> None:
         f"KNOWN_BANNED_VIOLATIONS grew to {len(KNOWN_BANNED_VIOLATIONS)} — "
         "retarget the new violation to an ALLOW-list param instead of exempting."
     )
-
-
