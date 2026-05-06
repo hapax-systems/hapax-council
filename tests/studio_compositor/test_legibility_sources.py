@@ -400,3 +400,53 @@ class TestNoRoundedRectChrome:
         assert arcs_during_bg["n"] == 0, (
             f"{cls.__name__} bg chrome invoked {arcs_during_bg['n']} arcs"
         )
+
+
+# ── Defensive readers — non-dict JSON root ────────────────────────────────
+
+
+class TestReadersRejectNonDictRoot:
+    """Pin that ``_read_narrative_state`` and ``_read_latest_intent``
+    survive a writer that produces valid JSON whose root is not a
+    mapping. The Cairo callsites at lines 396–398 and 748 do
+    ``ns.get(...)`` immediately, so a non-dict return previously raised
+    AttributeError into the render callback for activity_header,
+    stance_indicator, chat_keyword_legend, and grounding_provenance_ticker.
+    """
+
+    @pytest.mark.parametrize(
+        "payload,kind",
+        [
+            ("null", "null"),
+            ('"a string"', "string"),
+            ("[1, 2, 3]", "list"),
+            ("42", "int"),
+        ],
+    )
+    def test_narrative_state_non_dict_root_returns_empty(
+        self, payload, kind, tmp_path, monkeypatch
+    ):
+        path = tmp_path / "narrative.json"
+        path.write_text(payload)
+        monkeypatch.setattr(ls, "_NARRATIVE_STATE", path)
+        result = ls._read_narrative_state()
+        assert result == {}, f"narrative root={kind} must yield empty dict"
+        # Critical regression pin: callsite must not raise.
+        result.get("activity")  # would raise AttributeError on a non-dict
+
+    @pytest.mark.parametrize(
+        "payload,kind",
+        [
+            ("null", "null"),
+            ('"a string"', "string"),
+            ("[1, 2, 3]", "list"),
+            ("42", "int"),
+        ],
+    )
+    def test_latest_intent_non_dict_root_returns_empty(self, payload, kind, tmp_path, monkeypatch):
+        path = tmp_path / "intent.jsonl"
+        path.write_text(payload + "\n")
+        monkeypatch.setattr(ls, "_DIRECTOR_INTENT_JSONL", path)
+        result = ls._read_latest_intent()
+        assert result == {}, f"intent root={kind} must yield empty dict"
+        result.get("activity")  # would raise AttributeError on a non-dict
