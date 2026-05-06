@@ -129,12 +129,13 @@ def test_call_llm_refuses_wrong_resident_model(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.delenv("HAPAX_SEGMENT_PREP_MODEL", raising=False)
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
-    with pytest.raises(RuntimeError, match="already serving"):
+    with pytest.raises(RuntimeError, match="resident Command-R required"):
         prep._call_llm("hello")
 
 
 def test_call_llm_uses_resident_command_r_body_and_records_call(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     bodies: list[dict[str, Any]] = []
     chat_timeouts: list[float] = []
@@ -150,7 +151,10 @@ def test_call_llm_uses_resident_command_r_body_and_records_call(
     monkeypatch.delenv("HAPAX_SEGMENT_PREP_MODEL", raising=False)
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
+    status_path = tmp_path / "prep-status.json"
     session = prep._new_prep_session()
+    session["prep_status_path"] = str(status_path)
+    session["prep_status"] = {"status": "in_progress", "phase": "test"}
     assert (
         prep._call_llm(
             "hello",
@@ -182,6 +186,10 @@ def test_call_llm_uses_resident_command_r_body_and_records_call(
             "called_at": session["llm_calls"][0]["called_at"],
         }
     ]
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status["current_llm_call"]["status"] == "returned"
+    assert status["current_llm_call"]["max_tokens"] == 77
+    assert status["current_llm_call"]["timeout_s"] == prep._PREP_LLM_TIMEOUT_S
 
 
 def _valid_artifact(**overrides: Any) -> dict[str, Any]:
@@ -472,7 +480,12 @@ def test_run_prep_appends_manifest_without_readmitting_invalid_or_unlisted_artif
         def __init__(self, **_kwargs: Any) -> None:
             pass
 
-        def plan(self, *, show_id: str) -> SimpleNamespace:  # noqa: ARG002
+        def plan(
+            self,
+            *,
+            show_id: str,  # noqa: ARG002
+            target_programmes: int | None = None,  # noqa: ARG002
+        ) -> SimpleNamespace:
             return SimpleNamespace(programmes=planned_programmes)
 
     def fake_prep_segment(
@@ -520,6 +533,58 @@ def test_run_prep_appends_manifest_without_readmitting_invalid_or_unlisted_artif
         "prog-2",
         "prog-3",
     ]
+
+
+def test_run_prep_one_segment_writes_status_and_exact_planner_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import agents.programme_manager.planner as planner_module
+
+    captured_targets: list[int | None] = []
+
+    class FakePlanner:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def plan(
+            self,
+            *,
+            show_id: str,  # noqa: ARG002
+            target_programmes: int | None = None,
+        ) -> None:
+            captured_targets.append(target_programmes)
+            return None
+
+    monkeypatch.setattr(prep, "MAX_SEGMENTS", 1)
+    monkeypatch.setattr(
+        prep,
+        "_new_prep_session",
+        lambda: {
+            "prep_session_id": "segment-prep-canary-status",
+            "model_id": prep.RESIDENT_PREP_MODEL,
+            "llm_calls": [],
+        },
+    )
+    monkeypatch.setattr(prep, "_assert_resident_prep_model", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(planner_module, "ProgrammePlanner", FakePlanner)
+    monkeypatch.setattr(prep, "_upsert_programmes_to_qdrant", lambda *_args, **_kwargs: None)
+
+    saved = prep.run_prep(tmp_path)
+
+    today = prep._today_dir(tmp_path)
+    status = json.loads((today / prep.PREP_STATUS_FILENAME).read_text(encoding="utf-8"))
+    manifest = json.loads((today / "manifest.json").read_text(encoding="utf-8"))
+    assert saved == []
+    assert captured_targets == [1]
+    assert status["status"] == "completed_no_programmes"
+    assert status["target_segments"] == 1
+    assert status["max_rounds"] == 1
+    assert status["planner_target_programmes"] == 1
+    assert status["phase"] == "completed_no_programmes"
+    assert status["manifest_path"].endswith("manifest.json")
+    assert manifest["programmes"] == []
+    assert manifest["run_saved_programmes"] == []
 
 
 def test_prep_segment_quarantines_actionability_invalid_script(
