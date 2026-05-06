@@ -179,12 +179,21 @@ _VLS_PATH = "/dev/shm/hapax-compositor/visual-layer-state.json"
 
 
 def _density_word_limit() -> int:
-    """Read display density from visual layer state and return word limit."""
+    """Read display density from visual layer state and return word limit.
+
+    Validates the JSON root is a mapping before calling ``.get`` — the
+    ``except (FileNotFoundError, json.JSONDecodeError, OSError)`` clause
+    does not catch AttributeError, so a writer producing valid JSON
+    whose root is null, a list, a string, or a number previously raised
+    AttributeError out of voice-model word-limit selection. Same
+    corruption-class as the other recent SHM-read fixes.
+    """
     try:
         vls = json.loads(Path(_VLS_PATH).read_text())
-        density = vls.get("display_density", "ambient")
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         density = "ambient"
+    else:
+        density = vls.get("display_density", "ambient") if isinstance(vls, dict) else "ambient"
     return _DENSITY_WORD_LIMITS.get(density, _MAX_SPOKEN_WORDS)
 
 
@@ -200,13 +209,21 @@ def _stimmung_downgrade(model: str, tier: object) -> tuple[str, object]:
         raw = json.loads(Path("/dev/shm/hapax-stimmung/state.json").read_text(encoding="utf-8"))
     except Exception:
         return model, tier
+    if not isinstance(raw, dict):
+        return model, tier
 
     stance = raw.get("overall_stance", "nominal")
-    resource = raw.get("resource_pressure", {}).get("value", 0.0)
-    cost = raw.get("llm_cost_pressure", {}).get("value", 0.0)
+    # raw.get("resource_pressure") could be None, a list, etc. — coerce
+    # to {} for the chained .get() to keep working without an
+    # AttributeError on the inner read.
+    resource_pressure = raw.get("resource_pressure")
+    resource = resource_pressure.get("value", 0.0) if isinstance(resource_pressure, dict) else 0.0
+    cost_pressure = raw.get("llm_cost_pressure")
+    cost = cost_pressure.get("value", 0.0) if isinstance(cost_pressure, dict) else 0.0
 
     if stance == "critical":
-        health = raw.get("health", {}).get("value", 0.0)
+        health_value = raw.get("health")
+        health = health_value.get("value", 0.0) if isinstance(health_value, dict) else 0.0
         if health >= 0.85 or resource >= 0.85:
             log.info("Stimmung critical (health/resource) -> voice downgrade to LOCAL")
             return TIER_ROUTES[ModelTier.LOCAL], ModelTier.LOCAL
