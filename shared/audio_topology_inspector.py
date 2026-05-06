@@ -193,14 +193,14 @@ _REQUIRED_L12_DIRECTIONALITY_NODES = {
     "role-notification",
     "role-assistant",
     "role-broadcast",
+    "mpc-live-iii-output",
     "pc-loudnorm",
     "voice-fx",
     "tts-loudnorm",
-    "tts-duck",
     "tts-broadcast-capture",
     "tts-broadcast-playback",
 }
-_ALLOWED_L12_RETURN_PRODUCERS = {"tts-duck", "pc-loudnorm", "music-duck"}
+_ALLOWED_L12_RETURN_PRODUCERS: set[str] = set()
 _ALLOWED_L12_RETURN_DIRECTIONS = {"broadcast"}
 _PRIVATE_ONLY_ROOTS = {
     "role-assistant",
@@ -225,7 +225,6 @@ _PRIVATE_FORBIDDEN_REACHABILITY = {
     "pc-loudnorm",
     "voice-fx",
     "tts-loudnorm",
-    "tts-duck",
     "tts-broadcast-capture",
     "tts-broadcast-playback",
 }
@@ -527,7 +526,7 @@ def descriptor_from_dump_file(path: str | Path) -> TopologyDescriptor:
 def check_tts_broadcast_path(
     descriptor: TopologyDescriptor,
     *,
-    source_name: str = "hapax-tts-duck",
+    source_name: str = "hapax-loudnorm",
     bridge_prefix: str = "hapax-tts-broadcast-",
     target_name: str = "hapax-livestream-tap",
 ) -> TtsBroadcastPathCheck:
@@ -535,7 +534,7 @@ def check_tts_broadcast_path(
 
     The static config can declare the loopback while the live graph is still
     missing one side after deployment/restart. This checks the live shape:
-    ``hapax-tts-duck -> hapax-tts-broadcast-* -> hapax-livestream-tap``.
+    ``hapax-loudnorm -> hapax-tts-broadcast-* -> hapax-livestream-tap``.
     """
     by_name = {node.pipewire_name: node for node in descriptor.nodes}
     bridge_nodes = [
@@ -967,9 +966,9 @@ def check_l12_forward_invariant(descriptor: TopologyDescriptor) -> L12ForwardInv
             )
         )
 
-    tts_duck = node("tts-duck")
-    if tts_duck is not None:
-        forward_path = _param_words(tts_duck.params.get("broadcast_forward_path"))
+    tts_loudnorm = node("tts-loudnorm")
+    if tts_loudnorm is not None:
+        forward_path = _param_words(tts_loudnorm.params.get("broadcast_forward_path"))
         expected_forward_path = [
             "hapax-tts-broadcast-capture",
             "hapax-tts-broadcast-playback",
@@ -980,16 +979,16 @@ def check_l12_forward_invariant(descriptor: TopologyDescriptor) -> L12ForwardInv
                 L12ForwardInvariantViolation(
                     code="tts_broadcast_forward_path_not_declared",
                     message=(
-                        "tts-duck must declare broadcast_forward_path="
+                        "tts-loudnorm must declare broadcast_forward_path="
                         + " ".join(expected_forward_path)
                     ),
                 )
             )
-        if not _can_reach(graph, "tts-duck", "livestream-tap"):
+        if not _can_reach(graph, "tts-loudnorm", "livestream-tap"):
             violations.append(
                 L12ForwardInvariantViolation(
                     code="tts_l12_missing_livestream_forward_path",
-                    message=("tts-duck targets L-12 return but does not also reach livestream-tap"),
+                    message=("tts-loudnorm must forward a broadcast copy to livestream-tap"),
                 )
             )
 
