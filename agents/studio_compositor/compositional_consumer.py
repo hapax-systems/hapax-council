@@ -322,23 +322,28 @@ def dispatch_preset_bias(capability_name: str, ttl_s: float) -> bool:
 
 @observe_dispatch("node.patch")
 def dispatch_node_patch(capability_name: str, ttl_s: float) -> bool:
-    """node.add.<type> | node.remove.<id> → recent-recruitment.json.
+    """node.<primitive>.<suffix> → recent-recruitment.json.
 
     Architectural fix per memory ``feedback_no_presets_use_parametric_modulation``:
-    the chain-composition primitive (add/remove a specific shader node)
-    is the architecturally-correct mutation path, parallel to preset.bias
-    but finer-grained. The graph_patch_consumer reads this file and
-    applies the resulting ``GraphPatch`` to the live ``EffectGraph``.
+    chain-composition primitives are the architecturally-correct mutation
+    path, parallel to preset.bias but finer-grained. The graph_patch_consumer
+    reads this file and applies the resulting ``GraphPatch`` to the live
+    ``EffectGraph``.
 
     Each recruitment is appended to a per-family ``items`` list under
-    the family key so multiple add / remove recruitments within the
-    cooldown coalesce into a single patch when the consumer fires.
+    the family key so multiple node recruitments within the cooldown
+    coalesce into a single patch when the consumer fires.
     """
     parts = capability_name.split(".", 2)
-    if len(parts) < 3 or parts[0] != "node" or parts[1] not in ("add", "remove"):
+    primitive = parts[1] if len(parts) >= 2 else ""
+    if (
+        len(parts) < 3
+        or parts[0] != "node"
+        or primitive not in ("add", "remove", "compose", "fork", "merge", "route")
+    ):
         log.warning("malformed node-patch name: %s", capability_name)
         return False
-    family = f"node.{parts[1]}"
+    family = f"node.{primitive}"
     suffix = parts[2]
     if not suffix:
         log.warning("node-patch capability has empty suffix: %s", capability_name)
@@ -1676,7 +1681,16 @@ def dispatch(
         return "chrome.density" if dispatch_chrome_density(name, record.ttl_s) else "unknown"
     if name.startswith("attention.refocus."):
         return "attention.refocus" if dispatch_attention_refocus(name, record.ttl_s) else "unknown"
-    if name.startswith("node.add.") or name.startswith("node.remove."):
+    if name.startswith(
+        (
+            "node.add.",
+            "node.remove.",
+            "node.compose.",
+            "node.fork.",
+            "node.merge.",
+            "node.route.",
+        )
+    ):
         return "node.patch" if dispatch_node_patch(name, record.ttl_s) else "unknown"
     log.warning("unknown compositional capability family: %s", name)
     return "unknown"

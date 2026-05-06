@@ -111,6 +111,18 @@ def _counter_value(counter: object, *, consumer: str) -> float:
     return 0.0
 
 
+def _outcome_posterior_snapshot(broker_singleton: _BrokerSingleton) -> dict[str, dict[str, float]]:
+    with broker_singleton._posterior_lock:
+        return {
+            aperture_id: {
+                "alpha": posterior.alpha,
+                "beta": posterior.beta,
+                "mean": posterior.mean,
+            }
+            for aperture_id, posterior in broker_singleton._aperture_posteriors.items()
+        }
+
+
 # ── Singleton tests ────────────────────────────────────────────────────
 
 
@@ -201,6 +213,87 @@ class TestBrokerSingleton:
         assert len(rows) == 1
         assert rows[0]["observed_outcome"] == "failure"
         assert b.record_outcome("not-a-query", True) is False
+
+    def test_outcome_stream_updates_aperture_posterior_and_next_selection(self) -> None:
+        b = broker()
+        b.ingest(_make_test_observation())
+
+        first = b.query(
+            consumer="affordance",
+            decision_context="test_feedback_loop",
+            candidate_action="fx.family.audio-reactive",
+            time_budget_ms=500,
+        )
+
+        assert first is not None
+        assert first.ranked_observations
+        aperture_id = first.ranked_observations[0].aperture_id
+        base_utility = first.ranked_observations[0].value_of_information.decision_utility
+
+        assert b.record_outcome(
+            first.query.query_id,
+            {"success": True, "capability_name": "fx.family.audio-reactive"},
+        )
+        after_success = _outcome_posterior_snapshot(b)[aperture_id]
+        assert after_success["alpha"] == pytest.approx(2.98)
+        assert after_success["beta"] == pytest.approx(1.0)
+
+        second = b.query(
+            consumer="affordance",
+            decision_context="test_feedback_loop",
+            candidate_action="fx.family.audio-reactive",
+            time_budget_ms=500,
+        )
+
+        assert second is not None
+        assert second.ranked_observations
+        boosted_utility = second.ranked_observations[0].value_of_information.decision_utility
+        assert second.ranked_observations[0].aperture_id == aperture_id
+        assert boosted_utility > base_utility
+
+        assert b.record_outcome(second.query.query_id, False)
+        after_failure = _outcome_posterior_snapshot(b)[aperture_id]
+        assert after_failure["alpha"] == pytest.approx(2.9502)
+        assert after_failure["beta"] == pytest.approx(1.99)
+
+        third = b.query(
+            consumer="affordance",
+            decision_context="test_feedback_loop",
+            candidate_action="fx.family.audio-reactive",
+            time_budget_ms=500,
+        )
+        assert third is not None
+        assert third.ranked_observations
+        assert third.ranked_observations[0].value_of_information.decision_utility < boosted_utility
+
+    def test_aperture_posterior_preserves_alpha_beta_clamps(self) -> None:
+        b = broker()
+        b.ingest(_make_test_observation())
+        bundle = b.query(
+            consumer="affordance",
+            decision_context="test_feedback_loop_clamps",
+            candidate_action="fx.family.audio-reactive",
+            time_budget_ms=100,
+        )
+        assert bundle is not None
+        assert bundle.ranked_observations
+        aperture_id = bundle.ranked_observations[0].aperture_id
+
+        for _ in range(40):
+            assert b.record_outcome(bundle.query.query_id, True)
+        success_saturated = _outcome_posterior_snapshot(b)[aperture_id]
+        assert success_saturated["alpha"] <= 10.0
+        assert success_saturated["beta"] >= 1.0
+        assert success_saturated["alpha"] == pytest.approx(10.0)
+        assert success_saturated["beta"] == pytest.approx(1.0)
+
+        for _ in range(400):
+            assert b.record_outcome(bundle.query.query_id, False)
+        failure_saturated = _outcome_posterior_snapshot(b)[aperture_id]
+        assert 1.0 <= failure_saturated["alpha"] <= 10.0
+        assert 1.0 <= failure_saturated["beta"] <= 10.0
+        assert failure_saturated["alpha"] == pytest.approx(1.0)
+        assert failure_saturated["beta"] == pytest.approx(10.0)
 
 
 # ── Producer wiring tests ──────────────────────────────────────────────

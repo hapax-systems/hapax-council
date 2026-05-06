@@ -2,10 +2,9 @@
 
 Architectural fix per researcher audit + memory
 ``feedback_no_presets_use_parametric_modulation``: the consumer reads
-``recent-recruitment.json`` for fresh ``node.add.<type>`` and
-``node.remove.<id>`` entries, builds a ``GraphPatch``, applies it to
-the live ``EffectGraph``, and writes the patched graph as a mutation
-file. These tests exercise the consumer's parsing + dispatch shape
+``recent-recruitment.json`` for fresh ``node.*`` patch entries, builds
+a ``GraphPatch``, applies it to the live ``EffectGraph``, and writes the
+patched graph as a mutation file. These tests exercise the consumer's parsing + dispatch shape
 without leaning on a live SHM surface or a real GraphRuntime.
 """
 
@@ -18,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from agents.effect_graph.types import EffectGraph, NodeInstance
+from agents.effect_graph.types import EffectGraph, GraphPatch, NodeInstance
 from agents.studio_compositor import graph_patch_consumer as gpc
 
 
@@ -37,6 +36,9 @@ def _base_graph() -> EffectGraph:
 @pytest.fixture(autouse=True)
 def _isolated_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Each test gets a fresh module-state + tmp paths."""
+    from agents.studio_compositor import compositional_consumer as cc
+
+    monkeypatch.setattr(cc, "_SEGMENT_CUE_HOLD", tmp_path / "segment-cue-hold.json")
     monkeypatch.setattr(gpc, "RECRUITMENT_FILE", tmp_path / "recent-recruitment.json")
     monkeypatch.setattr(gpc, "MUTATION_FILE", tmp_path / "graph-mutation.json")
     gpc._reset_state_for_tests()
@@ -87,6 +89,26 @@ def _write_recruitment(
         ]
         families["node.remove"] = {"last_recruited_ts": ts, "items": items}
     path.write_text(json.dumps({"families": families}), encoding="utf-8")
+
+
+def _node_payload(family: str, suffix: str, ts: float | None = None) -> dict:
+    if ts is None:
+        ts = time.time()
+    return {
+        "families": {
+            family: {
+                "last_recruited_ts": ts,
+                "items": [
+                    {
+                        "capability": f"{family}.{suffix}",
+                        "suffix": suffix,
+                        "last_recruited_ts": ts,
+                        "ttl_s": 30.0,
+                    },
+                ],
+            },
+        },
+    }
 
 
 # ── _build_patch_from_recruitment parsing ───────────────────────────────────
@@ -187,6 +209,131 @@ def test_build_patch_coalesces_multiple_add_recruitments() -> None:
     patch, _ = gpc._build_patch_from_recruitment(payload)
     assert "sat_halftone" in patch.add_nodes
     assert "sat_kaleidoscope" in patch.add_nodes
+
+
+def test_build_patch_composes_two_existing_nodes() -> None:
+    base = _base_graph()
+    patch, _ = gpc._build_patch_from_recruitment(_node_payload("node.compose", "c,b"), base)
+
+    assert "meta_c_b" in patch.add_nodes
+    assert patch.add_nodes["meta_c_b"].type == "blend"
+    assert ["c", "meta_c_b:a"] in patch.add_edges
+    assert ["b", "meta_c_b:b"] in patch.add_edges
+    assert ["meta_c_b", "o"] in patch.add_edges
+    assert ["b", "o"] in patch.remove_edges
+
+
+def test_build_patch_forks_existing_node() -> None:
+    base = _base_graph()
+    patch, _ = gpc._build_patch_from_recruitment(_node_payload("node.fork", "c"), base)
+
+    assert "fork_c" in patch.add_nodes
+    assert patch.add_nodes["fork_c"].type == base.nodes["c"].type
+    assert ["@live", "fork_c"] in patch.add_edges
+    assert ["fork_c", "b"] in patch.add_edges
+
+
+def test_build_patch_merges_parallel_branches() -> None:
+    base = _base_graph().apply_patch(
+        GraphPatch(
+            add_nodes={"fork_c": NodeInstance(type="colorgrade")},
+            add_edges=[["@live", "fork_c"], ["fork_c", "b"]],
+        )
+    )
+    patch, _ = gpc._build_patch_from_recruitment(_node_payload("node.merge", "c,fork_c"), base)
+
+    assert "merge_c_fork_c" in patch.add_nodes
+    assert patch.add_nodes["merge_c_fork_c"].type == "blend"
+    assert ["c", "merge_c_fork_c:a"] in patch.add_edges
+    assert ["fork_c", "merge_c_fork_c:b"] in patch.add_edges
+    assert ["merge_c_fork_c", "b"] in patch.add_edges
+    assert ["c", "b"] in patch.remove_edges
+    assert ["fork_c", "b"] in patch.remove_edges
+
+
+def test_build_patch_routes_source_to_existing_target() -> None:
+    base = _base_graph()
+    patch, _ = gpc._build_patch_from_recruitment(_node_payload("node.route", "c,o"), base)
+
+    assert ["c", "b"] in patch.remove_edges
+    assert ["c", "o"] in patch.add_edges
+
+
+def test_build_patch_smoke_advances_through_all_structural_primitives() -> None:
+    graph = EffectGraph(
+        name="reverie-core",
+        nodes={
+            "color": NodeInstance(type="colorgrade"),
+            "drift": NodeInstance(type="drift"),
+            "fb": NodeInstance(type="feedback"),
+            "content": NodeInstance(type="content_layer"),
+            "post": NodeInstance(type="postprocess"),
+            "out": NodeInstance(type="output"),
+        },
+        edges=[
+            ["@live", "color"],
+            ["color", "drift"],
+            ["drift", "fb"],
+            ["fb", "content"],
+            ["content", "post"],
+            ["post", "out"],
+        ],
+    )
+    for family, suffix in (
+        ("node.compose", "color,drift"),
+        ("node.fork", "fb"),
+        ("node.merge", "fb,fork_fb"),
+        ("node.route", "content,out"),
+    ):
+        patch, _ = gpc._build_patch_from_recruitment(_node_payload(family, suffix), graph)
+        assert not patch.is_empty, f"{family}.{suffix} did not produce a patch"
+        graph = graph.apply_patch(patch)
+
+    assert "meta_color_drift" in graph.nodes
+    assert "fork_fb" in graph.nodes
+    assert "merge_fb_fork_fb" in graph.nodes
+    assert ["content", "post"] not in graph.edges
+    assert ["content", "out"] in graph.edges
+
+
+def test_build_patch_coalesces_structural_primitives_in_one_window() -> None:
+    ts = time.time()
+    payload = {"families": {}}
+    for family, suffix in (
+        ("node.compose", "color,drift"),
+        ("node.fork", "fb"),
+        ("node.merge", "fb,fork_fb"),
+        ("node.route", "content,out"),
+    ):
+        payload["families"].update(_node_payload(family, suffix, ts)["families"])
+    graph = EffectGraph(
+        name="reverie-core",
+        nodes={
+            "color": NodeInstance(type="colorgrade"),
+            "drift": NodeInstance(type="drift"),
+            "fb": NodeInstance(type="feedback"),
+            "content": NodeInstance(type="content_layer"),
+            "post": NodeInstance(type="postprocess"),
+            "out": NodeInstance(type="output"),
+        },
+        edges=[
+            ["@live", "color"],
+            ["color", "drift"],
+            ["drift", "fb"],
+            ["fb", "content"],
+            ["content", "post"],
+            ["post", "out"],
+        ],
+    )
+
+    patch, _ = gpc._build_patch_from_recruitment(payload, graph)
+    graph = graph.apply_patch(patch)
+
+    assert "meta_color_drift" in graph.nodes
+    assert "fork_fb" in graph.nodes
+    assert "merge_fb_fork_fb" in graph.nodes
+    assert ["content", "post"] not in graph.edges
+    assert ["content", "out"] in graph.edges
 
 
 # ── process_graph_patch_recruitment integration ─────────────────────────────
@@ -377,6 +524,35 @@ def test_dispatch_node_patch_routes_remove_family(
     assert items[0]["suffix"] == "last_satellite"
 
 
+@pytest.mark.parametrize(
+    ("capability", "family", "suffix"),
+    [
+        ("node.compose.color,drift", "node.compose", "color,drift"),
+        ("node.fork.fb", "node.fork", "fb"),
+        ("node.merge.fb,fork_fb", "node.merge", "fb,fork_fb"),
+        ("node.route.content,out", "node.route", "content,out"),
+    ],
+)
+def test_dispatch_node_patch_routes_structural_families(
+    capability: str,
+    family: str,
+    suffix: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agents.studio_compositor import compositional_consumer as cc
+
+    rfile = tmp_path / "recent-recruitment.json"
+    monkeypatch.setattr(cc, "_RECENT_RECRUITMENT", rfile)
+
+    assert cc.dispatch_node_patch(capability, 30.0) is True
+    payload = json.loads(rfile.read_text(encoding="utf-8"))
+    assert family in payload["families"]
+    items = payload["families"][family]["items"]
+    assert items[0]["suffix"] == suffix
+    assert items[0]["capability"] == capability
+
+
 def test_dispatch_node_patch_rejects_malformed_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -415,18 +591,47 @@ def test_dispatch_routes_node_remove_to_dispatch_node_patch(
     assert cc.dispatch(rec) == "node.patch"
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "node.compose.color,drift",
+        "node.fork.fb",
+        "node.merge.fb,fork_fb",
+        "node.route.content,out",
+    ],
+)
+def test_dispatch_routes_structural_node_primitives_to_dispatch_node_patch(
+    name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agents.studio_compositor import compositional_consumer as cc
+
+    rfile = tmp_path / "recent-recruitment.json"
+    monkeypatch.setattr(cc, "_RECENT_RECRUITMENT", rfile)
+
+    rec = cc.RecruitmentRecord(name=name, ttl_s=30.0)
+    assert cc.dispatch(rec) == "node.patch"
+
+
 # ── catalog / affordance registration ──────────────────────────────────────
 
 
 def test_node_patch_capabilities_registered_in_catalog() -> None:
-    """At least 5 node.add.* + 1 node.remove.* in the catalog (operator
-    minimum per task spec)."""
+    """Node-patch vocabulary includes add/remove plus structural primitives."""
     from shared.compositional_affordances import COMPOSITIONAL_CAPABILITIES
 
     add_names = {c.name for c in COMPOSITIONAL_CAPABILITIES if c.name.startswith("node.add.")}
     remove_names = {c.name for c in COMPOSITIONAL_CAPABILITIES if c.name.startswith("node.remove.")}
+    names = {c.name for c in COMPOSITIONAL_CAPABILITIES}
     assert len(add_names) >= 5, f"expected ≥5 node.add.* capabilities, got {add_names}"
     assert len(remove_names) >= 1, f"expected ≥1 node.remove.* capability, got {remove_names}"
+    assert {
+        "node.compose.color,drift",
+        "node.fork.fb",
+        "node.merge.fb,fork_fb",
+        "node.route.content,out",
+    }.issubset(names)
 
 
 def test_node_patch_capability_descriptions_are_gibson_verb() -> None:
@@ -436,7 +641,7 @@ def test_node_patch_capability_descriptions_are_gibson_verb() -> None:
     from shared.compositional_affordances import COMPOSITIONAL_CAPABILITIES
 
     for c in COMPOSITIONAL_CAPABILITIES:
-        if not (c.name.startswith("node.add.") or c.name.startswith("node.remove.")):
+        if not c.name.startswith("node."):
             continue
         words = c.description.split()
         assert len(words) >= 15, (
