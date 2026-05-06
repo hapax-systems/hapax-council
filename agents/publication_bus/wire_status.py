@@ -291,14 +291,15 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "publication-bus-monetization-rails-surfaces). Substrate complete "
             "and tested at shared/omg_lol_pay_receive_only_rail.py + this "
             "publisher; surface registry entry registered as CONDITIONAL_ENGAGE. "
-            "Awaiting operator-side bootstrap: configure omg.lol Pay webhook "
-            "target at logos.api.routes.payment_rails:receive_omg_lol_pay_webhook "
-            "and mint OMG_LOL_PAY_WEBHOOK_SECRET via pass "
-            "`omg-lol-pay/webhook-secret`. Wire decision flips to WIRED via a "
-            "follow-up adapter PR (mirroring the github_sponsors_publisher "
-            "/ liberapay_publisher / open_collective_publisher / "
-            "stripe_payment_link_publisher CRED_BLOCKED → WIRED transition) "
-            "after the FastAPI route lands and the secret is available. "
+            "Operator-action: configure omg.lol Pay webhook target at "
+            "logos.api.routes.payment_rails:receive_omg_lol_pay_webhook and "
+            "mint OMG_LOL_PAY_WEBHOOK_SECRET via pass "
+            "`omg-lol-pay/webhook-secret`. Disposition: review-by 2026-08-01. "
+            "Wire decision flips to WIRED via a follow-up adapter PR "
+            "(mirroring the github_sponsors_publisher / liberapay_publisher / "
+            "open_collective_publisher / stripe_payment_link_publisher "
+            "CRED_BLOCKED → WIRED transition) after the FastAPI route lands "
+            "and the secret is available. "
             "Refund + subscription-cancellation events emit a RefusalEvent "
             "to the canonical refusal log under axiom full_auto_or_nothing "
             "for the refusal_annex_renderer to aggregate."
@@ -331,7 +332,13 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
         pass_key_required="crossref/depositor-credentials",
         rationale=(
             "Crossref DOI depositor (sibling to Zenodo). Substrate complete + "
-            "tested. Wire on Crossref membership creds (operator-action gated)."
+            "tested (agents/attribution/crossref_depositor.py, 223 LOC). "
+            "Operator-action: `pass insert crossref/depositor-credentials` — "
+            "requires Crossref membership (institutional affiliation OR paid). "
+            "Disposition: review-by 2026-08-01 — if creds not bootstrapped by "
+            "that date, re-evaluate retire vs continued hold. DataCite mirror "
+            "via agents.publication_bus.graph_publisher already provides "
+            "load-bearing citation-graph coverage; Crossref is additive."
         ),
     ),
     "agents.publication_bus.graph_publisher": WireEntry(
@@ -353,12 +360,13 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
         rationale=(
             "Wired via agents.hapax_daimonion.cpal.response_dispatch.dispatch_response "
             "for cc-task chat-response-verbal-and-text (operator outcome 5/5). "
-            "CRED_BLOCKED until operator (1) mints a Google OAuth token with "
-            "youtube.force-ssl scope through shared.google_auth and (2) populates "
-            "config/publication-bus/youtube-live-chat.yaml or sets "
-            "HAPAX_YOUTUBE_LIVE_CHAT_ALLOWLIST with the active broadcast's liveChatId. "
-            "Once epsilon's youtube_chat_reader (cc-task "
-            "youtube-chat-ingestion-impingement) registers a concrete reader, "
+            "Operator-action: (1) mint a Google OAuth token with youtube.force-ssl "
+            "scope through shared.google_auth and (2) populate "
+            "config/publication-bus/youtube-live-chat.yaml (or set "
+            "HAPAX_YOUTUBE_LIVE_CHAT_ALLOWLIST) with the active broadcast's "
+            "liveChatId. Disposition: review-by 2026-08-01. Once epsilon's "
+            "youtube_chat_reader (cc-task youtube-chat-ingestion-impingement) "
+            "registers a concrete reader and the operator-action above lands, "
             "the chat-post path activates automatically."
         ),
     ),
