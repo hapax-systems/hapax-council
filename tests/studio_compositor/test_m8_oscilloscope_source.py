@@ -224,15 +224,21 @@ class TestRenderContent:
         loud_path = tmp_path / "loud_lw.bin"
         _write_ring(loud_path, samples=bytes([0, 255] * 16))
 
-        def _paint_line_width(path: Path) -> float:
-            source = M8OscilloscopeCairoSource(ring_path=path)
+        def _paint_line_width_steady_state(path: Path) -> float:
+            # The amplitude IIR lags the raw input — render enough frames
+            # for the smoothed envelope to converge before sampling.
+            source = M8OscilloscopeCairoSource(ring_path=path, amplitude_iir_alpha=1.0)
             cr = MagicMock()
             source.render_content(cr, canvas_w=1280, canvas_h=128, t=0.0, state={})
             cr.set_line_width.assert_called_once()
             return float(cr.set_line_width.call_args.args[0])
 
-        silent_lw = _paint_line_width(silent_path)
-        loud_lw = _paint_line_width(loud_path)
+        # ``amplitude_iir_alpha=1.0`` disables smoothing so the per-frame
+        # amplitude flows through unattenuated — preserves the original
+        # endpoint test (silent → base, loud → base + scale) while the IIR
+        # lag pattern is pinned separately in TestAmplitudeIIR below.
+        silent_lw = _paint_line_width_steady_state(silent_path)
+        loud_lw = _paint_line_width_steady_state(loud_path)
         assert silent_lw == pytest.approx(DEFAULT_LINE_WIDTH)
         assert loud_lw == pytest.approx(DEFAULT_LINE_WIDTH + LINE_WIDTH_AMPLITUDE_SCALE)
         assert loud_lw > silent_lw
@@ -246,7 +252,9 @@ class TestRenderContent:
         _write_ring(loud_path, samples=bytes([0, 255] * 16))
 
         def _paint_alpha(path: Path) -> float:
-            source = M8OscilloscopeCairoSource(ring_path=path)
+            # Disable IIR (alpha=1.0) so this test pins the alpha-floor
+            # endpoint behavior without the amplitude lag interfering.
+            source = M8OscilloscopeCairoSource(ring_path=path, amplitude_iir_alpha=1.0)
             cr = MagicMock()
             source.render_content(cr, canvas_w=1280, canvas_h=128, t=0.0, state={})
             # set_source_rgba(r, g, b, alpha) — last positional is alpha.
@@ -263,6 +271,62 @@ class TestRenderContent:
         # alpha — never invisible while the M8 is connected and sending.
         assert silent_alpha == pytest.approx(ACTIVE_ALPHA * AMPLITUDE_ALPHA_FLOOR)
         assert loud_alpha == pytest.approx(ACTIVE_ALPHA)
+
+
+# ── 3b. Amplitude IIR smoothing ────────────────────────────────────────
+
+
+class TestAmplitudeIIR:
+    """The modulation amplitude is one-pole IIR-smoothed across renders.
+
+    Mirrors the sierpinski IIR pattern (#2639): the waveform DRAW reads
+    raw samples (the surface IS the audio) but the ALPHA + LINE-WIDTH
+    modulations consume the smoothed envelope so percussive transients
+    don't whip those parameters frame-to-frame.
+    """
+
+    def test_default_iir_alpha_matches_sierpinski(self) -> None:
+        # Cross-ward consistency pin — both wards smooth modulations at
+        # the same rate so audience perception of audio responsiveness
+        # is uniform across the broadcast.
+        from agents.studio_compositor.m8_oscilloscope_source import AMPLITUDE_IIR_ALPHA
+
+        assert pytest.approx(0.3) == AMPLITUDE_IIR_ALPHA
+
+    def test_amplitude_smoothed_lags_raw_on_impulse(self, tmp_path: Path) -> None:
+        # Two ring fixtures: full-amplitude impulse and silent midline.
+        loud_path = tmp_path / "loud.bin"
+        _write_ring(loud_path, samples=bytes([0, 255] * 16))
+        silent_path = tmp_path / "silent.bin"
+        _write_ring(silent_path, samples=bytes([128] * 32))
+
+        source = M8OscilloscopeCairoSource(amplitude_iir_alpha=0.3)
+        cr = MagicMock()
+
+        # Frame 1 — loud impulse from rest. IIR: 0 × 0.7 + 1 × 0.3 = 0.30.
+        source._ring_path = loud_path
+        source.render_content(cr, canvas_w=1280, canvas_h=128, t=0.0, state={})
+        assert source._amplitude_smoothed == pytest.approx(0.30)
+
+        # Frame 2 — loud sustained. IIR: 0.30 × 0.7 + 1 × 0.3 = 0.51.
+        source.render_content(cr, canvas_w=1280, canvas_h=128, t=0.033, state={})
+        assert source._amplitude_smoothed == pytest.approx(0.51)
+
+        # Frame 3 — silence. IIR: 0.51 × 0.7 + 0 × 0.3 = 0.357.
+        source._ring_path = silent_path
+        source.render_content(cr, canvas_w=1280, canvas_h=128, t=0.066, state={})
+        assert source._amplitude_smoothed == pytest.approx(0.357)
+
+    def test_iir_alpha_one_disables_smoothing(self, tmp_path: Path) -> None:
+        # ``amplitude_iir_alpha=1.0`` makes the smoothed envelope track
+        # the raw amplitude exactly — useful for tests that need to pin
+        # the alpha-floor / line-width endpoint without lag interfering.
+        loud_path = tmp_path / "loud_alpha1.bin"
+        _write_ring(loud_path, samples=bytes([0, 255] * 16))
+        source = M8OscilloscopeCairoSource(ring_path=loud_path, amplitude_iir_alpha=1.0)
+        cr = MagicMock()
+        source.render_content(cr, canvas_w=1280, canvas_h=128, t=0.0, state={})
+        assert source._amplitude_smoothed == pytest.approx(1.0)
 
 
 # ── 4. Affordance + cairo registry registration ─────────────────────────
