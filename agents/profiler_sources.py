@@ -421,6 +421,13 @@ def read_phone_health_summary(watch_dir: Path) -> list[dict]:
         data = json.loads(summary_file.read_text())
     except (json.JSONDecodeError, OSError):
         return []
+    if not isinstance(data, dict):
+        # Schema drift: a writer producing valid JSON whose root is null,
+        # a list, a string, or a number raises AttributeError out of
+        # ``data.get(\"date\")`` and the subsequent fact-extraction
+        # ``data.get(...)`` chain. Same shape as the other recent SHM-read
+        # fixes.
+        return []
 
     # Only use today's data
     from datetime import date as _date
@@ -498,7 +505,10 @@ def read_watch_facts(watch_dir: Path | None = None) -> list[dict]:
     if hr_file.exists() and "health.resting_hr" not in phone_keys:
         try:
             data = json.loads(hr_file.read_text())
-            current = data.get("current", {})
+            if not isinstance(data, dict):
+                raise json.JSONDecodeError("non-dict root", "", 0)
+            current_raw = data.get("current", {})
+            current = current_raw if isinstance(current_raw, dict) else {}
             if current.get("bpm") is not None:
                 facts.append(
                     {
@@ -517,7 +527,10 @@ def read_watch_facts(watch_dir: Path | None = None) -> list[dict]:
     if hrv_file.exists():
         try:
             data = json.loads(hrv_file.read_text())
-            window = data.get("window_1h", {})
+            if not isinstance(data, dict):
+                raise json.JSONDecodeError("non-dict root", "", 0)
+            window_raw = data.get("window_1h", {})
+            window = window_raw if isinstance(window_raw, dict) else {}
             if window.get("mean") is not None:
                 facts.append(
                     {
@@ -536,6 +549,8 @@ def read_watch_facts(watch_dir: Path | None = None) -> list[dict]:
     if activity_file.exists() and "health.active_minutes" not in phone_keys:
         try:
             data = json.loads(activity_file.read_text())
+            if not isinstance(data, dict):
+                raise json.JSONDecodeError("non-dict root", "", 0)
             active_min = data.get("active_minutes_today")
             if active_min is not None:
                 facts.append(
