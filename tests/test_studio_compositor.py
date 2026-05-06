@@ -227,7 +227,9 @@ class TestTileLayout:
             CameraSpec(role="hero", device="/dev/video0", hero=True),
         ] + [CameraSpec(role=f"cam{i}", device=f"/dev/video{i}") for i in range(6)]
         layout = compute_tile_layout(cams, 1920, 1080)
-        assert len(layout) == 7
+        # Count physical tiles (exclude virtual _hero_small PIP overlay).
+        physical_tiles = {role: rect for role, rect in layout.items() if not role.startswith("_")}
+        assert len(physical_tiles) == 7
         # Hero: 16:9 fitted in left half
         assert layout["hero"].w == 960
         assert layout["hero"].h == 540

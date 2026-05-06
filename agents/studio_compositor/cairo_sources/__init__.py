@@ -283,5 +283,12 @@ def _register_builtins() -> None:
 
     register("SegmentContentWard", SegmentContentWard)
 
+    # Sierpinski-centered camera packing (2026-05-05) — renders 5 non-hero
+    # camera frames from frame_cache at pre-computed positions around the
+    # Sierpinski triangle with slight rotation.
+    from agents.studio_compositor.packed_cameras_source import PackedCamerasCairoSource
+
+    register("PackedCamerasCairoSource", PackedCamerasCairoSource)
+
 
 _register_builtins()

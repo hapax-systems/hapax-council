@@ -1,6 +1,6 @@
 # LLM Composer Prompt — Research-Instrument Metadata
 
-This template is the prose passed to the `balanced` tier when polishing
+This template is the prose passed to resident Command-R when polishing
 deterministic seed strings into final title or description copy. The
 runtime version is built by `framing.build_llm_prompt(seed, scope, kind)`
 — this file documents the prompt for review and version control.
@@ -42,6 +42,7 @@ signal name. Return only the polished prose, no preamble.
 - **Preserve every fact** — the seed already includes the working
   mode, programme role, stimmung tone, and director activity. The LLM
   is rewriting voice, not adding or removing signals.
-- **`balanced` tier** (Claude Sonnet via LiteLLM) — best fit for prose
-  rewrites that need register discipline. Cost is negligible
-  (~2 calls / VOD boundary, ~2 / day).
+- **Resident Command-R** — keeps metadata polish on the same local,
+  source-conditioned content-programming substrate as segment prep.
+  If the resident call fails or the wrong model is loaded, runtime falls
+  back to the deterministic seed rather than using a cloud fallback.

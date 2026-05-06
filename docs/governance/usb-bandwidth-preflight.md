@@ -131,6 +131,13 @@ to succeed; if it reports SATURATED, the plug is very likely to fail.
   catch slow drift in topology.
 - **Before plugging a new high-bandwidth device** — `--device <vid>:<pid>`
   to simulate.
+- **Before introducing the ReSpeaker XVF3800** — simulate the Seeed firmware
+  ID on the chosen host AMD/front-case controller:
+
+  ```console
+  $ hapax-usb-bandwidth-preflight --device 2886:001a/0000:09:00.0
+  ```
+
 - **As part of post-incident triage** — pair with
   `scripts/hapax-usb-topology-witness` to confirm whether a failed
   plug was a bandwidth issue versus a controller-mortality issue

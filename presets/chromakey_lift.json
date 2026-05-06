@@ -16,22 +16,20 @@
     "chroma_key_lift": {
       "type": "chroma_key",
       "params": {
-        "key_color": "green",
         "tolerance": 0.3,
-        "edge_softness": 0.06
+        "softness": 0.06
       }
     },
     "color_map_replace": {
       "type": "color_map",
       "params": {
-        "amount": 0.6,
-        "palette": "warm"
+        "blend": 0.6
       }
     },
     "vignette": {
       "type": "vignette",
       "params": {
-        "intensity": 0.32,
+        "strength": 0.32,
         "radius": 0.72
       }
     },

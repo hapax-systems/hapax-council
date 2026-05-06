@@ -121,7 +121,7 @@ while IFS=$'\t' read -r monitor expected tolerance; do
     else
       tmpwav=$(mktemp --suffix=.wav)
       pw-cat --record --target "$monitor" "$tmpwav" \
-        --format=s16 --rate=48000 --channels=1 \
+        --format=s16 --rate=48000 --channels=2 \
         --duration=2 >/dev/null 2>&1 || true
       if [ -s "$tmpwav" ]; then
         measured=$(python3 - "$tmpwav" <<'PY'
@@ -129,10 +129,14 @@ import math, sys, wave
 import array
 
 with wave.open(sys.argv[1], "rb") as wf:
+    nch = wf.getnchannels()
     raw = wf.readframes(wf.getnframes())
 samples = array.array("h", raw)
 if not samples:
     print("null"); sys.exit(0)
+# Downmix to mono if stereo to avoid PipeWire channelmix gain artifacts
+if nch == 2:
+    samples = array.array("h", [(samples[i] + samples[i+1]) // 2 for i in range(0, len(samples) - 1, 2)])
 sq_sum = sum(s * s for s in samples) / len(samples)
 rms = math.sqrt(sq_sum)
 if rms == 0:

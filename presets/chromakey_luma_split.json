@@ -23,14 +23,13 @@
     "color_map_luma": {
       "type": "color_map",
       "params": {
-        "amount": 0.55,
-        "palette": "cool"
+        "blend": 0.55
       }
     },
     "invert_dark": {
       "type": "invert",
       "params": {
-        "amount": 0.32
+        "strength": 0.32
       }
     },
     "out": {

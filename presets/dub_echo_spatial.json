@@ -16,29 +16,27 @@
     "echo_dub": {
       "type": "echo",
       "params": {
-        "delay": 0.42,
-        "feedback": 0.55,
-        "wet": 0.4
+        "decay_curve": 0.55
       }
     },
     "trail_long": {
       "type": "trail",
       "params": {
-        "decay": 0.93,
-        "amount": 0.35
+        "fade": 0.93,
+        "opacity": 0.35
       }
     },
     "mirror_spatial": {
       "type": "mirror",
       "params": {
         "axis": "vertical",
-        "amount": 0.18
+        "position": 0.18
       }
     },
     "vignette": {
       "type": "vignette",
       "params": {
-        "intensity": 0.32,
+        "strength": 0.32,
         "radius": 0.72
       }
     },

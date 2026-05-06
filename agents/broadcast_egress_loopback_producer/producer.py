@@ -108,7 +108,7 @@ def _default_capture(source: str, duration_s: float, sample_rate: int) -> bytes:
     a virtual / loopback / remap source, not just a sink monitor.
     """
     n_samples = int(round(sample_rate * duration_s))
-    n_bytes = n_samples * 2  # int16 = 2 bytes/sample
+    n_bytes = n_samples * 2 * 2  # int16 = 2 bytes/sample, 2 channels
     cmd = [
         "parec",
         "--device",
@@ -116,7 +116,7 @@ def _default_capture(source: str, duration_s: float, sample_rate: int) -> bytes:
         "--rate",
         str(sample_rate),
         "--channels",
-        "1",
+        "2",
         "--format",
         "s16le",
         "--raw",
@@ -157,7 +157,15 @@ def _default_capture(source: str, duration_s: float, sample_rate: int) -> bytes:
             f"parec short read: got {len(buf)} of {n_bytes} bytes "
             f"(rc={proc.returncode}, stderr={err.decode(errors='replace')!r})"
         )
-    return buf
+    # Downmix stereo to mono in software: average L+R per sample.
+    # This avoids forcing PipeWire to inject a channelmix matrix,
+    # which can transiently apply +6dB gain on stereo nodes.
+    stereo = array.array("h")
+    stereo.frombytes(buf[: len(buf) - (len(buf) % 4)])
+    mono_buf = array.array(
+        "h", [(stereo[i] + stereo[i + 1]) // 2 for i in range(0, len(stereo), 2)]
+    )
+    return mono_buf.tobytes()
 
 
 def compute_loopback_metrics(

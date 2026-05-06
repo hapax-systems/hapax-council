@@ -16,8 +16,8 @@
     "threshold_xerox": {
       "type": "threshold",
       "params": {
-        "threshold": 0.55,
-        "smoothness": 0.05
+        "level": 0.35,
+        "softness": 0.15
       }
     },
     "grain_xerox": {

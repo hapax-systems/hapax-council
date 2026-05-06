@@ -94,7 +94,7 @@ def record_pair(
                     target,
                     str(out),
                     "--format=s16",
-                    "--channels=1",
+                    "--channels=2",
                     "--rate=48000",
                 ],
                 stdout=subprocess.DEVNULL,
@@ -121,15 +121,21 @@ def record_pair(
 
 
 def parse_wav_pcm(buf: bytes) -> list[int]:
-    """Parse a 16-bit PCM mono WAV buffer into a list of int samples.
+    """Parse a 16-bit PCM WAV buffer into a list of int samples (mono).
 
-    Avoids the numpy dependency for the script's per-tick path; the math
-    we need (mean, sumprod, std) is short and clear in pure Python.
+    If the input is stereo, channels are averaged to mono. Avoids the
+    numpy dependency for the script's per-tick path; the math we need
+    (mean, sumprod, std) is short and clear in pure Python.
     """
     with wave.open(__import__("io").BytesIO(buf), "rb") as wf:
+        nch = wf.getnchannels()
         n = wf.getnframes()
         raw = wf.readframes(n)
-    return list(__import__("array").array("h", raw))
+    samples = list(__import__("array").array("h", raw))
+    if nch == 2 and len(samples) >= 2:
+        # Downmix stereo→mono by averaging pairs
+        samples = [(samples[i] + samples[i + 1]) // 2 for i in range(0, len(samples) - 1, 2)]
+    return samples
 
 
 def normalized_peak_xcorr(a: list[int], b: list[int]) -> float:

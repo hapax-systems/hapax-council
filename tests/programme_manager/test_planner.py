@@ -25,6 +25,8 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
+
 from agents.programme_manager.planner import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_MODEL,
@@ -135,22 +137,57 @@ class TestHappyPath:
         assert plan is not None
         assert len(plan.programmes) == 2
 
-    def test_default_model_alias_routes_through_balanced_tier(self) -> None:
-        """Pin the model alias the production planner uses.
+    def test_default_model_is_resident_command_r(self) -> None:
+        """Pin the only production planner model.
 
-        The alias migrated from ``claude-opus-4-7`` to a TabbyAPI
-        local-served Command-R EXL3 model
-        (``command-r-08-2024-exl3-5.0bpw``) for cost + latency.
-        Operator-tunable via ``HAPAX_PROGRAMME_PLANNER_MODEL``.
+        Programme planning is content programming, so the default route is
+        resident Command-R. Non-Command-R environment overrides fail in the
+        production caller instead of silently falling back through LiteLLM.
         """
-        assert DEFAULT_MODEL in (
-            "balanced",
-            "claude-sonnet",
-            "claude-opus-4-7",
-            "command-r-08-2024-exl3-5.0bpw",
-        )
-        if "HAPAX_PROGRAMME_PLANNER_MODEL" not in __import__("os").environ:
-            assert DEFAULT_MODEL == "command-r-08-2024-exl3-5.0bpw"
+        assert DEFAULT_MODEL == "command-r-08-2024-exl3-5.0bpw"
+
+    def test_default_timeout_preserves_long_resident_generation(self) -> None:
+        from agents.programme_manager import planner as planner_mod
+
+        assert planner_mod._LLM_TIMEOUT_S >= 900
+
+    def test_default_llm_rejects_non_resident_model_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.programme_manager import planner as planner_mod
+
+        monkeypatch.setenv("HAPAX_PROGRAMME_PLANNER_MODEL", "qwen-not-allowed")
+
+        with pytest.raises(RuntimeError, match="resident Command-R"):
+            planner_mod._default_llm_fn("plan prompt")
+
+    def test_default_llm_calls_resident_command_r_helper(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.programme_manager import planner as planner_mod
+
+        calls: list[tuple[str, dict]] = []
+
+        def fake_call(prompt: str, **kwargs: object) -> str:
+            calls.append((prompt, kwargs))
+            return json.dumps(_well_formed_plan_payload())
+
+        monkeypatch.delenv("HAPAX_PROGRAMME_PLANNER_MODEL", raising=False)
+        monkeypatch.setenv("HAPAX_TABBY_URL", "http://tabby.test/v1/chat/completions")
+        monkeypatch.setattr(planner_mod, "call_resident_command_r", fake_call)
+
+        assert planner_mod._default_llm_fn("plan prompt")
+        assert calls == [
+            (
+                "plan prompt",
+                {
+                    "chat_url": "http://tabby.test/v1/chat/completions",
+                    "max_tokens": 8192,
+                    "temperature": 0.7,
+                    "timeout_s": planner_mod._LLM_TIMEOUT_S,
+                },
+            )
+        ]
 
 
 # ── Failure modes — first attempt ───────────────────────────────────────
@@ -395,6 +432,20 @@ class TestContextRendering:
         planner = ProgrammePlanner(llm_fn=capture, prompt_path=custom_template)
         planner.plan(show_id="show-test-001")
         assert "CUSTOM TEMPLATE MARKER" in captured[0]
+
+    def test_default_prompt_does_not_invite_camera_layout_authority(self) -> None:
+        captured: list[str] = []
+
+        def capture(prompt: str) -> str:
+            captured.append(prompt)
+            return json.dumps(_well_formed_plan_payload())
+
+        planner = ProgrammePlanner(llm_fn=capture)
+        planner.plan(show_id="show-test-001")
+        prompt = captured[0]
+
+        assert "camera_subject" not in prompt
+        assert "camera:" not in prompt
 
 
 # ── Soft-prior architectural pin ──────────────────────────────────────

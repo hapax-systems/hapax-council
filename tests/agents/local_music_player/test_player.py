@@ -22,12 +22,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agents.local_music_player.player import (
-    _LOUDNORM_DUCK_LINKS,
+    _LOUDNORM_MPC_LINKS,
     LocalMusicPlayer,
     PlayerConfig,
     _build_local_pwcat,
     _build_url_pipeline,
-    _ensure_loudnorm_duck_links,
+    _ensure_loudnorm_mpc_links,
     format_attribution,
     is_url,
     write_attribution,
@@ -474,50 +474,48 @@ def test_kill_current_idempotent_when_nothing_playing(tmp_path: Path) -> None:
     assert player._current_proc is None
 
 
-# ── loudnorm-duck cross-channel link self-heal ──────────────────────────────
+# ── loudnorm-MPC link self-heal ─────────────────────────────────────────────
 
 
-def test_loudnorm_duck_link_pairs_cover_both_channels() -> None:
-    # Both channels must be present; the link is FL→RL and FR→RR
-    # because music-loudnorm declares FL/FR positions while
-    # music-duck declares RL/RR positions.
-    sources = {src for src, _ in _LOUDNORM_DUCK_LINKS}
-    targets = {dst for _, dst in _LOUDNORM_DUCK_LINKS}
+def test_loudnorm_mpc_link_pairs_cover_both_channels() -> None:
+    # Both channels must be present; the link is FL/FR → MPC AUX0/AUX1.
+    sources = {src for src, _ in _LOUDNORM_MPC_LINKS}
+    targets = {dst for _, dst in _LOUDNORM_MPC_LINKS}
     assert sources == {
         "hapax-music-loudnorm-playback:output_FL",
         "hapax-music-loudnorm-playback:output_FR",
     }
     assert targets == {
-        "hapax-music-duck:playback_RL",
-        "hapax-music-duck:playback_RR",
+        "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX0",
+        "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output:playback_AUX1",
     }
 
 
-def test_ensure_loudnorm_duck_links_invokes_pwlink_per_pair() -> None:
+def test_ensure_loudnorm_mpc_links_invokes_pwlink_per_pair() -> None:
     completed = MagicMock()
     completed.returncode = 0
     completed.stderr = ""
     with patch("agents.local_music_player.player.subprocess.run", return_value=completed) as run:
-        _ensure_loudnorm_duck_links()
-    assert run.call_count == len(_LOUDNORM_DUCK_LINKS)
+        _ensure_loudnorm_mpc_links()
+    assert run.call_count == len(_LOUDNORM_MPC_LINKS)
     # Each call's argv[0] should be the pw-link command for the pair.
-    for call_args, (src, dst) in zip(run.call_args_list, _LOUDNORM_DUCK_LINKS, strict=True):
+    for call_args, (src, dst) in zip(run.call_args_list, _LOUDNORM_MPC_LINKS, strict=True):
         argv = call_args[0][0]
         assert argv == ["pw-link", src, dst]
 
 
-def test_ensure_loudnorm_duck_links_tolerates_already_linked() -> None:
+def test_ensure_loudnorm_mpc_links_tolerates_already_linked() -> None:
     completed = MagicMock()
     completed.returncode = 1
     completed.stderr = "failed to link ports: File exists"
     with patch("agents.local_music_player.player.subprocess.run", return_value=completed):
         # Must not raise — duplicate-link is the steady-state.
-        _ensure_loudnorm_duck_links()
+        _ensure_loudnorm_mpc_links()
 
 
-def test_ensure_loudnorm_duck_links_tolerates_missing_pwlink_binary() -> None:
+def test_ensure_loudnorm_mpc_links_tolerates_missing_pwlink_binary() -> None:
     with patch(
         "agents.local_music_player.player.subprocess.run", side_effect=FileNotFoundError("pw-link")
     ):
         # Must not raise — pw-link missing in test env is expected.
-        _ensure_loudnorm_duck_links()
+        _ensure_loudnorm_mpc_links()

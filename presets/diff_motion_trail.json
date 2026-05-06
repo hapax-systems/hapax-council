@@ -16,22 +16,20 @@
     "diff_motion": {
       "type": "diff",
       "params": {
-        "threshold": 0.12,
-        "amount": 0.85
+        "threshold": 0.12
       }
     },
     "trail_motion": {
       "type": "trail",
       "params": {
-        "decay": 0.85,
-        "amount": 0.55
+        "fade": 0.85,
+        "opacity": 0.55
       }
     },
     "edge_motion": {
       "type": "edge_detect",
       "params": {
-        "threshold": 0.2,
-        "amount": 0.32
+        "threshold": 0.2
       }
     },
     "out": {

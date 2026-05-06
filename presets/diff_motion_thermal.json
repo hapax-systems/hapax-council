@@ -16,22 +16,21 @@
     "diff_thermal": {
       "type": "diff",
       "params": {
-        "threshold": 0.16,
-        "amount": 0.72
+        "threshold": 0.16
       }
     },
     "thermal_motion": {
       "type": "thermal",
       "params": {
         "intensity": 0.55,
-        "palette": "warm"
+        "palette": 2.0
       }
     },
     "trail_thermal": {
       "type": "trail",
       "params": {
-        "decay": 0.78,
-        "amount": 0.45
+        "fade": 0.78,
+        "opacity": 0.45
       }
     },
     "out": {
