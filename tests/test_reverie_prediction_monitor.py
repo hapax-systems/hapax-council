@@ -260,3 +260,36 @@ class TestP8UniformsCoverage:
         assert result.healthy is False
         assert result.alert is not None
         assert "plan.json missing" in result.alert
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_load_activation_state_non_dict_returns_empty(tmp_path, payload, kind, monkeypatch):
+    """Pin _load_activation_state against non-dict JSON. data.get()
+    after json.loads inside narrow catch let AttributeError escape on
+    non-dict roots."""
+    from agents import reverie_prediction_monitor as rpm
+
+    state = tmp_path / "activation.json"
+    state.write_text(payload)
+    monkeypatch.setattr(rpm, "ACTIVATION_STATE", state)
+    assert rpm._load_activation_state() == {}, f"non-dict root={kind} must yield empty"
+
+
+@pytest.mark.parametrize(
+    "payload,kind",
+    [("null", "null"), ('"a"', "string"), ("[1,2]", "list"), ("42", "int")],
+)
+def test_load_associations_non_dict_returns_empty(tmp_path, payload, kind, monkeypatch):
+    """Pin _load_associations against non-dict JSON. Same shape."""
+    from agents import reverie_prediction_monitor as rpm
+
+    state = tmp_path / "activation.json"
+    state.write_text(payload)
+    monkeypatch.setattr(rpm, "ACTIVATION_STATE", state)
+    assert rpm._load_associations() == {}, f"non-dict root={kind} must yield empty"
