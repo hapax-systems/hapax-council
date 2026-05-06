@@ -68,6 +68,17 @@ def test_load_prepped_programmes_rejects_responsible_segment_cues(tmp_path: Path
     assert load_prepped_programmes(tmp_path) == []
 
 
+def test_load_prepped_programmes_rejects_camera_command_prose(tmp_path: Path) -> None:
+    artifact = _artifact("prog-1")
+    artifact["prepared_script"] = [
+        "Place Alpha in S-tier because the ranking makes the evidence legible. "
+        "Switch to the overhead camera now."
+    ]
+    _write_artifact(tmp_path, artifact)
+
+    assert load_prepped_programmes(tmp_path) == []
+
+
 def _artifact(programme_id: str) -> dict:
     prompt_sha256 = prep._sha256_text("prompt")
     seed_sha256 = prep._sha256_text("seed")
