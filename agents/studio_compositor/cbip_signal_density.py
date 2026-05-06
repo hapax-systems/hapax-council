@@ -9,8 +9,8 @@ retired SHM cover-art chain that ``album_overlay.py`` consumes.
 This Phase 1 slice lands the **layered renderer scaffold** plus two
 of the five layers per the plan §5:
 
-* **Layer 1 — cover-art texture base.** Palette-quantized tile
-  background of the album cover. Reads from the same
+* **Layer 1 — platter/media texture base.** Palette-quantized tile
+  background of the current platter media image. Reads from the same
   ``/dev/shm/hapax-compositor/album-cover.png`` chain
   ``album_overlay.py`` reads today (the chain is retired in a
   follow-up — see :ref:`out-of-scope` below). Quantization to the
@@ -72,14 +72,16 @@ from .homage.transitional_source import HomageTransitionalSource
 
 log = logging.getLogger(__name__)
 
-#: Same SHM cover-art path the legacy ward reads. Retirement of this
+#: Same SHM media-image path the legacy ward reads. Retirement of this
 #: producer chain is deferred (separate slice).
-COVER_PATH: Final[Path] = Path("/dev/shm/hapax-compositor/album-cover.png")
+PLATTER_IMAGE_PATH: Final[Path] = Path("/dev/shm/hapax-compositor/album-cover.png")
+COVER_PATH: Final[Path] = PLATTER_IMAGE_PATH
 
-#: Album metadata sidecar written by ``scripts/album-identifier.py``.
-ALBUM_STATE_PATH: Final[Path] = Path("/dev/shm/hapax-compositor/album-state.json")
+#: Metadata sidecar for the current platter/media image.
+PLATTER_STATE_PATH: Final[Path] = Path("/dev/shm/hapax-compositor/album-state.json")
+ALBUM_STATE_PATH: Final[Path] = PLATTER_STATE_PATH
 
-#: Cover-art-base layer alpha — kept low so the texture reads as
+#: Texture-base layer alpha — kept low so the texture reads as
 #: ambient background rather than ward chrome.
 COVER_BASE_ALPHA: Final[float] = 0.35
 

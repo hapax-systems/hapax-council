@@ -56,29 +56,37 @@ GENERIC_SCRIPT = [
 
 ONE_ACTION_KIND_SCRIPT = [
     (
-        "Compare the canary method with the final-nine method because the stream needs a "
-        "visible reason to pause before scaling. The Zuboff study finds that systems earn "
+        "Compare the canary method with the pool-release method because the stream needs a "
+        "visible reason to pause before scaling. Shoshana Zuboff argues that systems earn "
         "trust only when their operations can be inspected, and that gives this bit its "
-        "stakes: the host cannot treat a polished segment as production-ready until the "
-        "canary receipt is visible. Compare the prepared artifact to the runtime review "
+        "stakes: the runtime cannot treat a polished segment as production-ready until the "
+        "canary receipt is visible. But the problem is not merely bureaucratic; it changes "
+        "what you can trust in the room. Compare the prepared artifact to the runtime review "
         "again, because the audience should hear why one segment is a gate rather than a "
         "sample. Remember the opening constraint: the method has to show its work before "
-        "the next nine inherit it."
+        "pool release inherits it, and chat should be able to follow the reason without "
+        "being asked to accept a hidden approval."
     ),
     (
         "Now compare the script prior with the actionability prior, because a good segment "
         "can still fail if every spoken move remains invisible. Zuboff's measurement warning "
         "matters here: confident narration can hide the fact that no surface changed and no "
         "viewer action became possible. Compare the receipt fields one by one and keep the "
-        "pressure on the same question: what did the audience actually see or do? The turn is "
-        "that comparison alone can be coherent without being rich enough for an ideal bit."
+        "pressure on the same question: what did the audience actually see or do? Donald "
+        "Schon writes about reflection-in-action as knowledge tested inside practice, and "
+        "that source pressure keeps the beat from becoming a slogan. The turn is that "
+        "comparison alone can be coherent without being rich enough for an ideal bit, because "
+        "it explains the gap but gives the runtime only one kind of visible claim to witness."
     ),
     (
         "So compare the final decision with the first sentence and make the callback explicit. "
-        "If the canary cannot show why it is safer than the final-nine path, the method is not "
+        "If the canary cannot show why it is safer than the pool-release path, the method is not "
         "ready. Zuboff's argument returns as a craft rule: inspectable systems make better "
-        "livestream promises. Compare the review receipt with the segment itself, then hold "
-        "the next nine until the script, source prior, and visible runtime responsibility agree."
+        "livestream promises, and Schon gives the same pressure a craft vocabulary for testing "
+        "a move while it is being made. Back to the first constraint: the audience should hear "
+        "why the pause matters before the pipeline scales. Compare the review receipt with the "
+        "segment itself, then hold pool release until the script, source prior, and visible "
+        "runtime responsibility agree."
     ),
 ]
 

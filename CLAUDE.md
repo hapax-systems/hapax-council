@@ -130,7 +130,7 @@ Everything that appears — visual content, tool invocation, vocal expression, d
 
 ## Studio Compositor
 
-GStreamer-based livestream pipeline. Distinct from Reverie (the wgpu visual surface) — two separate render paths. The compositor reads USB cameras, composites them into a single 1920x1080 frame, applies a GL shader chain, draws Cairo overlays (Sierpinski triangle with YouTube frames, token pole, album cover, content zones), and writes to `/dev/video42` (OBS V4L2 source) plus an HLS playlist.
+GStreamer-based livestream pipeline. Distinct from Reverie (the wgpu visual surface) — two separate render paths. The compositor reads USB cameras, composites them into a single 1920x1080 frame, applies a GL shader chain, draws Cairo overlays (Sierpinski triangle with YouTube frames, token pole, CBIP/platter imagery, content zones), and writes to `/dev/video42` (OBS V4L2 source) plus an HLS playlist.
 
 **Architecture (compositor unification epic complete):** typed `Source` / `Surface` / `Assignment` / `Layout` data model (`shared/compositor_model.py`), `CairoSource` protocol driving all Python Cairo content on background threads (`cairo_source.py::CairoSourceRunner` with its own render cadence and cached output surface the cairooverlay callback blits synchronously), multi-target render loop, transient texture pool, per-frame budget enforcement with degraded-signal publishing. **No Cairo rendering on the GStreamer streaming thread.**
 
