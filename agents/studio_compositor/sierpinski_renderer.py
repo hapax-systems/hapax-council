@@ -199,6 +199,9 @@ class SierpinskiCairoSource(HomageTransitionalSource):
             data = _json.loads(FEATURED_YT_SLOT_FILE.read_text())
         except (OSError, ValueError):
             return
+        if not isinstance(data, dict):
+            self._featured_slot_id = None
+            return
         try:
             self._featured_slot_id = int(data.get("slot_id"))
             self._featured_ts = float(data.get("ts", 0.0))
