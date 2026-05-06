@@ -27,9 +27,12 @@ from agents.studio_compositor.programme_context import ProgrammeProvider
 from agents.studio_compositor.tts_client import DaimonionTtsClient
 from shared.claim import Claim
 from shared.claim_prompt import SURFACE_FLOORS, render_envelope
-from shared.config import LITELLM_KEY
 from shared.director_intent import CompositionalImpingement, DirectorIntent
 from shared.persona_prompt_composer import compose_persona_prompt, role_scope_line
+from shared.resident_command_r import (
+    call_resident_command_r,
+    configured_resident_model,
+)
 from shared.stimmung import Stance
 
 
@@ -354,7 +357,7 @@ def _parse_intent_from_llm(
             tier=tier,
             condition_id=condition_id,
         )
-    # Prose fallback. Local models (Qwen3.5 via TabbyAPI etc.) sometimes
+    # Prose fallback. Local TabbyAPI models can occasionally
     # emit markdown-formatted prose like:
     #   **Activity:** music
     #   **Stance:** nominal
@@ -801,20 +804,14 @@ def _jsonl_log_path(now: datetime | None = None) -> Path:
     return LEGOMENA_DIR / f"reactor-log-{now.strftime('%Y-%m')}.jsonl"
 
 
-LITELLM_URL = "http://localhost:4000/v1/chat/completions"
-
-# Director commentary model. Default is the local Qwen3.5-9B substrate via
-# LiteLLM (`local-fast`) — no cloud billing dependency; keeps the stream
-# reacting even when cloud routes are billed-out or denied. Override via
-# HAPAX_DIRECTOR_MODEL env var. If set to a known multimodal route
-# (e.g. "fast"/gemini or "balanced"/claude), images are forwarded; otherwise
-# the director strips images before the call.
-DIRECTOR_MODEL = os.environ.get("HAPAX_DIRECTOR_MODEL", "local-fast")
+# Director commentary model. Content-programming output is resident
+# Command-R-only. Image-derived evidence must be converted to text before this
+# call path; the director does not route multimodal/cloud models as a fallback.
+DIRECTOR_MODEL = configured_resident_model("HAPAX_DIRECTOR_MODEL", purpose="studio director")
 
 # Director watchdog Phase 2 (§8.2): process-wide single-flight lock keyed on
-# the LLM route. Prevents director + structural-director (also `local-fast`
-# per agents/studio_compositor/structural_director.py:333) from racing on
-# the same TabbyAPI cache — two concurrent 8K+ token prompts saturate the
+# the resident Command-R route. Prevents director + structural-director from
+# racing on the same TabbyAPI cache — two concurrent 8K+ token prompts saturate the
 # 16K cache_size and queue subsequent jobs, the dominant timeout cause per
 # docs/research/2026-04-20-livestream-halt-investigation.md §8.1. Acquired
 # non-blocking inside _call_activity_llm; on contention the call returns
@@ -829,20 +826,9 @@ _DIRECTOR_LLM_LOCK = threading.Lock()
 # narratives.
 _MICROMOVE_SPEAK_EVERY_N = 5
 
-# Routes known to accept ``image_url`` content in the OpenAI-compatible
-# messages body. Anything else → images stripped at the call site.
-MULTIMODAL_ROUTES: frozenset[str] = frozenset(
-    {
-        "fast",
-        "balanced",
-        "claude-opus",
-        "claude-sonnet",
-        "claude-haiku",
-        "gemini-flash",
-        "gemini-pro",
-        "long-context",
-    }
-)
+# Resident Command-R director calls are text-only. Visual evidence reaches this
+# prompt through deterministic scene/context readers, not image_url payloads.
+MULTIMODAL_ROUTES: frozenset[str] = frozenset()
 
 # Narrative cadence. Epic 2 Phase E (2026-04-17) tightened 20.0 → 12.0 so
 # the stream feels like an engaged hot-house of pressure rather than a
@@ -1405,10 +1391,9 @@ ACTIVITY_CAPABILITIES = (
     "compositional impingements name what the AUDIENCE sees you doing.\n"
     "Operator constraint: NO presets — the director never picks a preset\n"
     "family. Use parametric modulation (mood.tone_pivot, pace.tempo_shift,\n"
-    "composition.reframe, intensity.surge, silence.invitation,\n"
-    "chrome.density, attention.refocus) and chain composition\n"
-    "(transition.fade, transition.cut, gem.*, homage.*) instead. Downstream\n"
-    "consumers apply bounded envelope values from your parametric signals.\n"
+    "composition.reframe) and chain composition (transition.fade,\n"
+    "transition.cut, gem.*, homage.*) instead. The system handles preset\n"
+    "selection autonomously from your parametric signals.\n"
     "\n"
     "- react: respond to the video content in the triangle display. What\n"
     "  caught you? PAIRS WITH: camera.hero (operator-brio.reacting to show\n"
@@ -1435,7 +1420,7 @@ ACTIVITY_CAPABILITIES = (
     "  visual effects. PAIRS WITH: camera.hero (room-c920.ambient for the\n"
     "  wide), composition.reframe.widen for context, ward.highlight on\n"
     "  whichever ward you're calling attention to. The reverie chain\n"
-    "  applies graph parameters from your parametric signals — comment on\n"
+    "  picks its own preset from your parametric signals — comment on\n"
     "  what you SEE, do not pick a family for it.\n"
     "- draft / reflect / critique / patch / compose_drop / synthesize /\n"
     "  exemplar_review (HSEA Phase 2): treat like study with sharper focus —\n"
@@ -1443,8 +1428,8 @@ ACTIVITY_CAPABILITIES = (
     "  grounding ticker foregrounded, hothouse panels staged in.\n"
     '- silence: say nothing. Let the music carry. Return {"activity": "silence"}.\n'
     "  EVEN IN SILENCE: emit at least one compositional_impingement saying\n"
-    "  what the silent surface should look like (usually silence.invitation,\n"
-    "  chrome.density.sparser, or a ward foreground). Silence is a\n"
+    "  what the silent surface should look like (which parametric pivot,\n"
+    "  whether to dim chrome, which ward is foregrounded). Silence is a\n"
     "  voice choice; it is not a compositional choice. The frame is still\n"
     "  yours to direct.\n"
 )
@@ -1554,9 +1539,8 @@ def _render_director_programme_context(
             preset_priors = list(getattr(constraints, "preset_family_priors", []) or [])
             if preset_priors:
                 lines.append(
-                    "- legacy visual-family priors: "
-                    f"{', '.join(str(value) for value in preset_priors)} "
-                    "(translate into parametric envelopes; no preset.bias emission)"
+                    "- prefers preset families: "
+                    f"{', '.join(str(value) for value in preset_priors)} (soft prior)"
                 )
             rotation_modes = list(getattr(constraints, "homage_rotation_modes", []) or [])
             if rotation_modes:
@@ -1590,9 +1574,8 @@ def _render_director_programme_context(
 # Each entry shape: ``(intent_family, narrative, material, ward_emphasis,
 # rotation_mode)``. Per the operator constraint NO presets, the families
 # below are parametric modulation (``mood.tone_pivot``, ``pace.tempo_shift``,
-# ``composition.reframe``, ``intensity.surge``, ``silence.invitation``,
-# ``chrome.density``, ``attention.refocus``) and chain composition
-# (``transition.*``, ``gem.*``, ``homage.*``, ``ward.*``) only — the director never picks
+# ``composition.reframe``) and chain composition (``transition.*``,
+# ``gem.*``, ``homage.*``, ``ward.*``) only — the director never picks
 # a preset family from this fallback path either.
 #
 # The ``narrative`` text is a Gibson-verb description of the COMPOSITIONAL
@@ -1637,7 +1620,7 @@ _MICROMOVE_BASELINE: list[_MicromoveEntry] = [
         "weighted_by_salience",
     ),
     (
-        "chrome.density",
+        "overlay.emphasis",
         "dim the chrome half a step so the reverie breathes",
         "void",
         ["impingement_cascade", "recruitment_candidate_panel"],
@@ -1951,7 +1934,7 @@ _MICROMOVE_BY_ROLE: dict[str, list[_MicromoveEntry]] = {
         (
             "composition.reframe",
             "recompose the active hero camera's framing — the same subject viewed "
-            "from a re-balanced composition, the move when the experiment is testing "
+            "from an adjusted composition, the move when the experiment is testing "
             "a new spatial register",
             "earth",
             ["sierpinski"],
@@ -2921,9 +2904,8 @@ class DirectorLoop:
         programme active, the role-agnostic baseline cycle drives.
         Operator constraint: NO presets — the cycle is parametric
         modulation (``mood.tone_pivot``, ``pace.tempo_shift``,
-        ``composition.reframe``, ``chrome.density``) and chain
-        composition (``transition.*``, ``gem.*``, ``homage.*``) only.
-        The director NEVER picks a preset.
+        ``composition.reframe``) and chain composition (``transition.*``,
+        ``gem.*``, ``homage.*``) only. The director NEVER picks a preset.
 
         The micromove's ``DirectorIntent`` is written to the same JSONL +
         narrative-state + DMN impingement stream as a real tick via
@@ -3491,8 +3473,7 @@ class DirectorLoop:
                     parts.append("## Structural Direction")
                     parts.append(
                         f"scene_mode: {struct.get('scene_mode')} · "
-                        "legacy_visual_family_hint: "
-                        f"{struct.get('preset_family_hint')} (translate to envelopes)"
+                        f"preset_family_hint: {struct.get('preset_family_hint')}"
                     )
                     parts.append(f"→ {struct['long_horizon_direction']}")
         except Exception:
@@ -3579,7 +3560,7 @@ class DirectorLoop:
             "not just the voice over it. Every tick you own three coupled "
             "decisions: ACTIVITY (what you're doing), NARRATIVE (what you say "
             "or the silence you choose), COMPOSITIONAL INTENT (what appears "
-            "on the surface — camera, parametric envelope, wards, choreography). "
+            "on the surface — camera, preset family, wards, choreography). "
             "If you do not recruit compositional intent, the system runs on "
             "neutral defaults; that is a real choice, not a delegation. "
             "**Idle is the cardinal sin** — every silent unrecruited tick is "
@@ -3622,21 +3603,24 @@ class DirectorLoop:
 
         # Parametric modulation vocabulary. Cc-task
         # `director-moves-richness-expansion` (2026-05-04): operator
-        # constraint — NO presets. The director emits parametric modulation
-        # (mood.tone_pivot, pace.tempo_shift, composition.reframe,
-        # intensity.surge, silence.invitation, chrome.density,
-        # attention.refocus) and chain composition (transition.fade,
-        # transition.cut, gem.*, homage.*). Downstream consumers read
-        # bounded envelope targets from the recruitment surface.
+        # constraint — NO presets. The director never picks a preset
+        # family; instead it emits parametric modulation
+        # (mood.tone_pivot, pace.tempo_shift, composition.reframe) and
+        # chain composition (transition.fade, transition.cut, gem.*,
+        # homage.*). The system reads these from the recruitment surface
+        # and picks presets autonomously. Replaces the prior "Preset
+        # Family Vocabulary" prompt section, which violated the
+        # operator's constraint by asking the director to pick a family.
         parts.append("")
         parts.append("## Parametric modulation vocabulary (NO presets)")
         parts.append(
             "Operator constraint (cc-task `director-moves-richness-expansion`): "
-            "the director NEVER picks a preset family. Emit one of the "
-            "parametric modulations below; downstream consumers read the "
-            "bounded envelope targets from the recruitment surface and "
-            "apply them gradually. Show the move with parameters, not "
-            "a fixed visual family."
+            "the director NEVER picks a preset family. Preset selection "
+            "is handled autonomously by the system from your parametric "
+            "signals. Instead of biasing a preset family, emit one of "
+            "the parametric modulations below — the system reads them "
+            "from the recruitment surface and picks presets that match. "
+            "Show the move with parameters, not the family name."
         )
         parts.append(
             "  - **mood.tone_pivot** — parametric color/warmth/saturation. "
@@ -3656,20 +3640,6 @@ class DirectorLoop:
             "  - **programme.beat_advance** — structural cue that the "
             "current programme has run its course. Use when the show "
             "plan should walk forward.\n"
-            "  - **intensity.surge** — temporary bounded lift across all "
-            "nine visual-chain dimensions. Variants: lift, crest. Use "
-            "for a punctuation swell, not as a standing state.\n"
-            "  - **silence.invitation** — bounded low-activity envelope "
-            "across narration, motion, chrome, and visual-chain surfaces. "
-            "Variants: hold, soft. Use when silence should be directed, "
-            "not empty.\n"
-            "  - **chrome.density** — ward chrome density envelope. "
-            "Variants: sparser, baseline, denser. Use when diagnostic "
-            "chrome should retreat or become the subject.\n"
-            "  - **attention.refocus** — soft camera-weight rebalancing "
-            "without a camera.hero cut. Variants target overhead, "
-            "synths-brio, operator-brio, desk-c920, room-c920, "
-            "room-brio, or reset.\n"
             "Parametric repetition without signal-change is still a "
             "pattern the director must feel necessary to break — vary "
             "the variant, the salience, or the family across consecutive ticks."
@@ -3709,9 +3679,8 @@ class DirectorLoop:
             "Reverie / shader effects are a SECONDARY companion to the "
             "livestream surface, never the primary destination of a "
             "directorial move. The reverie chain reads the parametric "
-            "modulations (mood.tone_pivot, pace.tempo_shift, intensity.surge, "
-            "silence.invitation, chrome.density, attention.refocus) from the "
-            "recruitment surface and adapts graph parameters autonomously — "
+            "modulations (mood.tone_pivot, pace.tempo_shift) from the "
+            "recruitment surface and adapts its presets autonomously — "
             "the primary surface (cameras, wards, overlays) must be "
             "recruited first. Do not let the shader chain be the only "
             "thing you drive, and do not pick presets directly."
@@ -3996,7 +3965,7 @@ class DirectorLoop:
             '  "compositional_impingements": [\n'
             "    {\n"
             '      "narrative": "<gibson-verb description of the compositional move (used for cosine retrieval against the affordance catalog — not displayed to viewers; do NOT write content for any ward here, write what the move IS)>",\n'
-            '      "intent_family": "<camera.hero|overlay.emphasis|youtube.direction|attention.winner|stream_mode.transition|ward.size|ward.position|ward.staging|ward.highlight|ward.appearance|ward.cadence|ward.choreography|homage.rotation|homage.emergence|homage.swap|homage.cycle|homage.recede|homage.expand|gem.emphasis|gem.composition|gem.spawn|transition.fade|transition.cut|composition.reframe|pace.tempo_shift|mood.tone_pivot|programme.beat_advance|intensity.surge|silence.invitation|chrome.density|attention.refocus>",\n'
+            '      "intent_family": "<camera.hero|overlay.emphasis|youtube.direction|attention.winner|stream_mode.transition|ward.size|ward.position|ward.staging|ward.highlight|ward.appearance|ward.cadence|ward.choreography|homage.rotation|homage.emergence|homage.swap|homage.cycle|homage.recede|homage.expand|gem.emphasis|gem.composition|gem.spawn|transition.fade|transition.cut|composition.reframe|pace.tempo_shift|mood.tone_pivot|programme.beat_advance>",\n'
             '      "material": "<water|fire|earth|air|void>",\n'
             '      "salience": 0.0..1.0,\n'
             '      "grounding_provenance": ["<signal.path.that.made.this.impingement.felt-necessary>", ...]\n'
@@ -4049,14 +4018,6 @@ class DirectorLoop:
             '"stimmung.dimensions.exploration_deficit", "presence.state"]\n'
             '  - transition.cut ← ["audio.midi.beat_position", '
             '"tendency.desk_energy_rate", "stimmung.overall_stance"]\n'
-            '  - intensity.surge ← ["audio.midi.beat_position", '
-            '"tendency.chat_heating_rate", "stimmung.dimensions.audience_engagement"]\n'
-            '  - silence.invitation ← ["presence.state", '
-            '"stimmung.dimensions.coherence", "audio.midi.rest"]\n'
-            '  - chrome.density ← ["context.stream_live", '
-            '"stimmung.dimensions.resource_pressure", "context.active_objective_ids"]\n'
-            '  - attention.refocus ← ["visual.per_camera_person_count.<role>", '
-            '"visual.gaze_direction", "ir.ir_hand_zone"]\n'
             "  - gem.emphasis / gem.composition / gem.spawn ← "
             '["chat.tier_counts", "audio.contact_mic.desk_tap_gesture", '
             '"visual.top_emotion"]\n'
@@ -4072,11 +4033,9 @@ class DirectorLoop:
             "the closest available signal or the stance-derived context "
             "that motivates the move — never leave grounding_provenance empty. "
             "**Operator constraint** (cc-task `director-moves-richness-expansion`): "
-            "do NOT emit ``preset.bias``. Downstream consumers apply bounded "
-            "envelope targets from your parametric signals "
-            "(``mood.tone_pivot``, ``pace.tempo_shift``, ``composition.reframe``, "
-            "``intensity.surge``, ``silence.invitation``, ``chrome.density``, "
-            "``attention.refocus``); "
+            "do NOT emit ``preset.bias``. Preset selection is handled "
+            "autonomously by the system from your parametric signals "
+            "(``mood.tone_pivot``, ``pace.tempo_shift``, ``composition.reframe``); "
             "the director NEVER picks a preset. Emit the parametric "
             "modulation instead and let the system choose."
         )
@@ -4162,15 +4121,11 @@ class DirectorLoop:
         (tokens, coherence, activity) are tagged with stream-experiment.
 
         Director watchdog Phase 2 (§8.2): non-blocking acquire on
-        ``_DIRECTOR_LLM_LOCK`` — if a prior call is in flight (typically
-        the structural-director on the same `local-fast` route), return
-        empty so the caller's existing micromove fallback fires. The
+        ``_DIRECTOR_LLM_LOCK`` — if a prior resident Command-R call is
+        in flight, return empty so the caller's existing micromove fallback fires. The
         empty-return path is identical to a normal LLM timeout, so the
         broadcast still gets a compositional impingement on every tick.
         """
-        if not LITELLM_KEY:
-            return ""
-
         if not _DIRECTOR_LLM_LOCK.acquire(blocking=False):
             from shared.director_observability import emit_director_tick_skipped_in_flight
 
@@ -4190,40 +4145,9 @@ class DirectorLoop:
         """Body of _call_activity_llm split out so the lock acquire/release
         wrap is unambiguous. All return paths from this method are still
         covered by the parent's try/finally release."""
-        content: list[dict] = []
-        # Only forward images when the configured route is known multimodal.
-        # Text-only routes (e.g. local Qwen3.5-9B) timeout or error when fed
-        # base64-encoded JPEGs via the OpenAI-compat image_url shape.
-        if images and DIRECTOR_MODEL in MULTIMODAL_ROUTES:
-            import base64
-
-            from agents.studio_compositor.llm_frame_album_mask import mask_if_not_playing
-
-            for img_path in images:
-                try:
-                    if Path(img_path).exists():
-                        raw = Path(img_path).read_bytes()
-                        # Apply album-cover redaction to the LLM_FRAME path
-                        # specifically — chat-reaction surfaces also forward
-                        # the camera frame, so the same false-grounding leak
-                        # would otherwise reach the model on the gather_images
-                        # path (only _capture_snapshot_b64 was wrapped before).
-                        if Path(img_path) == LLM_FRAME:
-                            raw, _decision = mask_if_not_playing(raw)
-                        b64 = base64.b64encode(raw).decode()
-                        content.append(
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-                            }
-                        )
-                except Exception:
-                    pass
-        content.append({"type": "text", "text": "Respond."})
-
         messages = [
             {"role": "system", "content": prompt},
-            {"role": "user", "content": content},
+            {"role": "user", "content": "Respond."},
         ]
 
         # 2026-05-04 latency cap: max_tokens 2048 → 512.
@@ -4234,15 +4158,6 @@ class DirectorLoop:
         # compositional_impingements + structural_intent) is structurally
         # bounded; if it ever genuinely exceeds 512, the schema needs trimming
         # not the cap raised.
-        body = json.dumps(
-            {
-                "model": DIRECTOR_MODEL,
-                "messages": messages,
-                "max_tokens": 512,
-                "temperature": 0.7,
-            }
-        ).encode()
-
         try:
             from shared.telemetry import hapax_score, hapax_span
         except ImportError:
@@ -4293,63 +4208,42 @@ class DirectorLoop:
                 metrics_ctx as metrics_span,
                 _LLMInFlight(tier="narrative", model=DIRECTOR_MODEL),
             ):
-                req = urllib.request.Request(
-                    LITELLM_URL,
-                    body,
-                    {"Content-Type": "application/json", "Authorization": f"Bearer {LITELLM_KEY}"},
-                )
                 try:
                     # 2026-04-17 director-LLM timeout sweep:
                     # 30s baseline → 8s over-correction → 20s → 40s.
-                    # 20s was too tight once Command-R-08-2024 (35B,
-                    # 5bpw) replaced Qwen3.5-9B as local-fast: a
+                    # 20s was too tight for Command-R-08-2024 (35B,
+                    # 5bpw) on the resident TabbyAPI route: a
                     # 10-15 kB prompt + 150 tokens out sits at ~25 s
                     # even on an unloaded RTX 3090. 40s fits that,
                     # and the narrative cadence is HAPAX_NARRATIVE_CADENCE_S
                     # (default 30s since 2026-04-17) so a single stall
                     # can't queue up. Env override: HAPAX_DIRECTOR_LLM_TIMEOUT_S.
                     timeout_s = float(os.environ.get("HAPAX_DIRECTOR_LLM_TIMEOUT_S", "40"))
-                    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-                        data = json.loads(resp.read())
+                    raw_content = call_resident_command_r(
+                        prompt,
+                        messages=messages,
+                        max_tokens=512,
+                        temperature=0.7,
+                        timeout_s=timeout_s,
+                    )
                 except TimeoutError:
                     # re-raise so llm_call_span tags outcome="timeout"
                     raise
                 except urllib.error.HTTPError as exc:
-                    # 4xx/5xx from LiteLLM → refused outcome (distinct from
+                    # 4xx/5xx from TabbyAPI → refused outcome (distinct from
                     # transport error). Caller sees empty string; metrics
                     # record the distinction.
                     if metrics_span is not None:
                         metrics_span.set_outcome("refused")
                     log.warning(
-                        "LiteLLM HTTP %s — %s",
+                        "resident Command-R HTTP %s — %s",
                         getattr(exc, "code", "?"),
                         getattr(exc, "reason", "?"),
                     )
                     return ""
 
-                try:
-                    import sys
-
-                    sys.path.insert(
-                        0, str(Path(__file__).resolve().parent.parent.parent / "scripts")
-                    )
-                    from token_ledger import record_spend
-
-                    usage = data.get("usage", {})
-                    record_spend(
-                        "hapax",
-                        usage.get("prompt_tokens", 0),
-                        usage.get("completion_tokens", 0),
-                    )
-                except Exception:
-                    pass
-
-                raw_content = data["choices"][0]["message"].get("content")
                 if not raw_content:
-                    log.warning(
-                        "LLM returned empty content field (finish_reason=%s)",
-                        data["choices"][0].get("finish_reason", "?"),
-                    )
+                    log.warning("LLM returned empty content field")
                     return ""
                 log.info(
                     "LLM raw content (%d chars): %r",
@@ -4399,58 +4293,43 @@ class DirectorLoop:
                         # compositional_impingements + structural_intent) is structurally
                         # bounded; if it ever genuinely exceeds 512, the schema needs trimming
                         # not the cap raised.
-                        reroll_body = json.dumps(
-                            {
-                                "model": DIRECTOR_MODEL,
-                                "messages": reroll_messages,
-                                "max_tokens": 512,
-                                "temperature": 0.7,
-                            }
-                        ).encode()
-                        reroll_req = urllib.request.Request(
-                            LITELLM_URL,
-                            reroll_body,
-                            {
-                                "Content-Type": "application/json",
-                                "Authorization": f"Bearer {LITELLM_KEY}",
-                            },
-                        )
                         try:
-                            with urllib.request.urlopen(
-                                reroll_req, timeout=timeout_s
-                            ) as reroll_resp:
-                                reroll_data = json.loads(reroll_resp.read())
+                            reroll_content = call_resident_command_r(
+                                prompt,
+                                messages=reroll_messages,
+                                max_tokens=512,
+                                temperature=0.7,
+                                timeout_s=timeout_s,
+                            )
                         except Exception:
                             log.warning(
                                 "refusal-gate re-roll request failed; passing first-pass emission",
                                 exc_info=True,
                             )
-                            reroll_data = None
-                        if reroll_data is not None:
-                            reroll_content = reroll_data["choices"][0]["message"].get("content")
-                            if reroll_content:
-                                reroll_check = RefusalGate(surface="director").check(
-                                    reroll_content,
-                                    available_claims=available_claims,
+                            reroll_content = None
+                        if reroll_content:
+                            reroll_check = RefusalGate(surface="director").check(
+                                reroll_content,
+                                available_claims=available_claims,
+                            )
+                            if reroll_check.accepted:
+                                raw_content = reroll_content
+                                reroll_outcome = "accepted_after_reroll"
+                                gate_result = reroll_check
+                            else:
+                                reroll_outcome = "dropped_after_reroll"
+                                log.warning(
+                                    "claim-discipline reroll also failed; "
+                                    "dropping emission. rejected: %r",
+                                    reroll_check.rejected_propositions[:2],
                                 )
-                                if reroll_check.accepted:
-                                    raw_content = reroll_content
-                                    reroll_outcome = "accepted_after_reroll"
-                                    gate_result = reroll_check
-                                else:
-                                    reroll_outcome = "dropped_after_reroll"
-                                    log.warning(
-                                        "claim-discipline reroll also failed; "
-                                        "dropping emission. rejected: %r",
-                                        reroll_check.rejected_propositions[:2],
-                                    )
-                                    _refusal_brief_log(
-                                        surface="director",
-                                        rejected=reroll_check.rejected_propositions,
-                                        raw_first_pass=raw_content,
-                                        raw_reroll=reroll_content,
-                                    )
-                                    return ""
+                                _refusal_brief_log(
+                                    surface="director",
+                                    rejected=reroll_check.rejected_propositions,
+                                    raw_first_pass=raw_content,
+                                    raw_reroll=reroll_content,
+                                )
+                                return ""
                     if hapax_score is not None and span is not None:
                         hapax_score(
                             span,
@@ -4477,7 +4356,7 @@ class DirectorLoop:
 
                 # Langfuse per-reaction scoring (spec: stream research infra).
                 if hapax_score is not None and span is not None:
-                    usage = data.get("usage", {})
+                    usage: dict[str, int] = {}
                     hapax_score(
                         span,
                         "reaction_tokens",

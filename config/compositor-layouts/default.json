@@ -1,6 +1,6 @@
 {
   "name": "default",
-  "description": "Default studio compositor layout \u2014 post-epic operator defaults. Reverie upper-right, Vitruvian Man (token_pole) upper-left, album lower-left, chat stats (stream_overlay) lower-right. These assignments are a starting point; Hapax content programming ultimately drives which sources feed which quadrants via the affordance pipeline + command registry. Phase 4/5 legibility surfaces added (activity_header, stance_indicator, chat_keyword_legend, grounding_provenance_ticker) per volitional-director epic \u00a73.5. Captions ward removed 2026-04-20 per operator (no captions on broadcast).",
+  "description": "Default studio compositor layout \u2014 constellation arrangement. Sierpinski avatar centered as visual anchor. Identity/lore wards form left column, telemetry/research wards form right column. Optimized 2026-05-04 from original grid layout.",
   "sources": [
     {
       "id": "token_pole",
@@ -56,8 +56,8 @@
       "backend": "cairo",
       "params": {
         "class_name": "SierpinskiCairoSource",
-        "natural_w": 640,
-        "natural_h": 640
+        "natural_w": 840,
+        "natural_h": 840
       },
       "update_cadence": "always",
       "rate_hz": null,
@@ -88,8 +88,8 @@
       "backend": "cairo",
       "params": {
         "class_name": "ActivityHeaderCairoSource",
-        "natural_w": 800,
-        "natural_h": 56
+        "natural_w": 540,
+        "natural_h": 200
       },
       "update_cadence": "rate",
       "rate_hz": 2.0,
@@ -279,8 +279,8 @@
       "backend": "cairo",
       "params": {
         "class_name": "DURFCairoSource",
-        "natural_w": 1920,
-        "natural_h": 1080
+        "natural_w": 530,
+        "natural_h": 180
       },
       "update_cadence": "rate",
       "rate_hz": 6.0,
@@ -358,8 +358,8 @@
       "backend": "cairo",
       "params": {
         "class_name": "ProgrammeBannerWard",
-        "natural_w": 900,
-        "natural_h": 120
+        "natural_w": 540,
+        "natural_h": 280
       },
       "update_cadence": "rate",
       "rate_hz": 1.0,
@@ -435,6 +435,41 @@
       "pair_role": "solo",
       "pair_leg": null,
       "ward_id": "research-instrument-dashboard"
+    },
+    {
+      "id": "token_explosion_overlay",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "TokenExplosionOverlayCairoSource",
+        "natural_w": 1920,
+        "natural_h": 1080
+      },
+      "update_cadence": "always",
+      "rate_hz": null,
+      "tags": [],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
+    },
+    {
+      "id": "packed_cameras",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "PackedCamerasCairoSource",
+        "natural_w": 1920,
+        "natural_h": 1080
+      },
+      "update_cadence": "rate",
+      "rate_hz": 15.0,
+      "tags": [
+        "camera",
+        "packing"
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": null
     }
   ],
   "surfaces": [
@@ -442,10 +477,10 @@
       "id": "pip-ul",
       "geometry": {
         "kind": "rect",
-        "x": 20,
-        "y": 20,
-        "w": 300,
-        "h": 300,
+        "x": 16,
+        "y": 350,
+        "w": 200,
+        "h": 200,
         "mask": null,
         "binding_name": null,
         "target": null,
@@ -457,13 +492,13 @@
       "update_cadence": "always"
     },
     {
-      "id": "pip-ur",
+      "id": "activity-header-top",
       "geometry": {
         "kind": "rect",
-        "x": 1448,
-        "y": 20,
-        "w": 448,
-        "h": 252,
+        "x": 540,
+        "y": 8,
+        "w": 840,
+        "h": 36,
         "mask": null,
         "binding_name": null,
         "target": null,
@@ -471,17 +506,17 @@
       },
       "effect_chain": [],
       "blend_mode": "over",
-      "z_order": 10,
+      "z_order": 25,
       "update_cadence": "always"
     },
     {
-      "id": "pip-ll",
+      "id": "programme-banner-top",
       "geometry": {
         "kind": "rect",
-        "x": 20,
-        "y": 540,
-        "w": 400,
-        "h": 280,
+        "x": 555,
+        "y": 780,
+        "w": 810,
+        "h": 160,
         "mask": null,
         "binding_name": null,
         "target": null,
@@ -489,17 +524,89 @@
       },
       "effect_chain": [],
       "blend_mode": "over",
-      "z_order": 10,
+      "z_order": 28,
+      "update_cadence": "rate"
+    },
+    {
+      "id": "recruitment-candidate-top",
+      "geometry": {
+        "kind": "rect",
+        "x": 555,
+        "y": 836,
+        "w": 810,
+        "h": 48,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 26,
+      "update_cadence": "rate"
+    },
+    {
+      "id": "thinking-indicator-tr",
+      "geometry": {
+        "kind": "rect",
+        "x": 1580,
+        "y": 10,
+        "w": 160,
+        "h": 36,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 30,
+      "update_cadence": "rate"
+    },
+    {
+      "id": "whos-here-tr",
+      "geometry": {
+        "kind": "rect",
+        "x": 1750,
+        "y": 52,
+        "w": 160,
+        "h": 36,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 30,
+      "update_cadence": "rate"
+    },
+    {
+      "id": "stance-indicator-tr",
+      "geometry": {
+        "kind": "rect",
+        "x": 1750,
+        "y": 10,
+        "w": 100,
+        "h": 36,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 30,
       "update_cadence": "always"
     },
     {
       "id": "pip-lr",
       "geometry": {
         "kind": "rect",
-        "x": 1620,
-        "y": 16,
-        "w": 280,
-        "h": 56,
+        "x": 1580,
+        "y": 52,
+        "w": 160,
+        "h": 36,
         "mask": null,
         "binding_name": null,
         "target": null,
@@ -508,6 +615,312 @@
       "effect_chain": [],
       "blend_mode": "over",
       "z_order": 10,
+      "update_cadence": "always"
+    },
+    {
+      "id": "pressure-gauge-ul",
+      "geometry": {
+        "kind": "rect",
+        "x": 16,
+        "y": 560,
+        "w": 240,
+        "h": 40,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 20,
+      "update_cadence": "rate"
+    },
+    {
+      "id": "lore-programme-history",
+      "geometry": {
+        "kind": "rect",
+        "x": 16,
+        "y": 612,
+        "w": 340,
+        "h": 90,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 22,
+      "update_cadence": "rate"
+    },
+    {
+      "id": "lore-precedent-ticker",
+      "geometry": {
+        "kind": "rect",
+        "x": 16,
+        "y": 712,
+        "w": 340,
+        "h": 110,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 22,
+      "update_cadence": "rate"
+    },
+    {
+      "id": "pip-ll",
+      "geometry": {
+        "kind": "rect",
+        "x": 16,
+        "y": 840,
+        "w": 280,
+        "h": 200,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 10,
+      "update_cadence": "always"
+    },
+    {
+      "id": "sierpinski-center",
+      "geometry": {
+        "kind": "rect",
+        "x": 540,
+        "y": 140,
+        "w": 840,
+        "h": 840,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 15,
+      "update_cadence": "always"
+    },
+    {
+      "id": "pip-ur",
+      "geometry": {
+        "kind": "rect",
+        "x": 1400,
+        "y": 100,
+        "w": 500,
+        "h": 140,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 10,
+      "update_cadence": "always"
+    },
+    {
+      "id": "impingement-cascade-midright",
+      "geometry": {
+        "kind": "rect",
+        "x": 1400,
+        "y": 260,
+        "w": 500,
+        "h": 260,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 20,
+      "update_cadence": "rate"
+    },
+    {
+      "id": "activity-variety-log-mid",
+      "geometry": {
+        "kind": "rect",
+        "x": 1400,
+        "y": 540,
+        "w": 500,
+        "h": 100,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 20,
+      "update_cadence": "rate"
+    },
+    {
+      "id": "lore-research-instrument-dashboard",
+      "geometry": {
+        "kind": "rect",
+        "x": 1400,
+        "y": 660,
+        "w": 500,
+        "h": 180,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 22,
+      "update_cadence": "rate"
+    },
+    {
+      "id": "grounding-ticker-bl",
+      "geometry": {
+        "kind": "rect",
+        "x": 300,
+        "y": 950,
+        "w": 1320,
+        "h": 32,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 24,
+      "update_cadence": "always"
+    },
+    {
+      "id": "gem-mural-bottom",
+      "geometry": {
+        "kind": "rect",
+        "x": 0,
+        "y": 950,
+        "w": 1920,
+        "h": 90,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 18,
+      "update_cadence": "always"
+    },
+    {
+      "id": "egress-footer-bottom",
+      "geometry": {
+        "kind": "rect",
+        "x": 0,
+        "y": 1050,
+        "w": 1920,
+        "h": 30,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 60,
+      "update_cadence": "rate"
+    },
+    {
+      "id": "durf-fullframe",
+      "geometry": {
+        "kind": "rect",
+        "x": 1380,
+        "y": 760,
+        "w": 530,
+        "h": 180,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 5,
+      "update_cadence": "always"
+    },
+    {
+      "id": "m8-display-surface",
+      "geometry": {
+        "kind": "rect",
+        "x": 480,
+        "y": 80,
+        "w": 960,
+        "h": 720,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 40,
+      "update_cadence": "always"
+    },
+    {
+      "id": "m8-display-tiny-surface",
+      "geometry": {
+        "kind": "rect",
+        "x": 440,
+        "y": 336,
+        "w": 320,
+        "h": 240,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 40,
+      "update_cadence": "always"
+    },
+    {
+      "id": "steamdeck-display-pip",
+      "geometry": {
+        "kind": "rect",
+        "x": 960,
+        "y": 60,
+        "w": 920,
+        "h": 580,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 42,
+      "update_cadence": "always"
+    },
+    {
+      "id": "steamdeck-display-fullscreen",
+      "geometry": {
+        "kind": "rect",
+        "x": 0,
+        "y": 0,
+        "w": 1920,
+        "h": 1080,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 42,
       "update_cadence": "always"
     },
     {
@@ -565,31 +978,13 @@
       "update_cadence": "always"
     },
     {
-      "id": "activity-header-top",
+      "id": "explosion-overlay",
       "geometry": {
         "kind": "rect",
-        "x": 560,
-        "y": 16,
-        "w": 800,
-        "h": 56,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 30,
-      "update_cadence": "always"
-    },
-    {
-      "id": "stance-indicator-tr",
-      "geometry": {
-        "kind": "rect",
-        "x": 1800,
-        "y": 290,
-        "w": 100,
-        "h": 40,
+        "x": 0,
+        "y": 0,
+        "w": 1920,
+        "h": 1080,
         "mask": null,
         "binding_name": null,
         "target": null,
@@ -601,151 +996,7 @@
       "update_cadence": "always"
     },
     {
-      "id": "gem-mural-bottom",
-      "geometry": {
-        "kind": "rect",
-        "x": 40,
-        "y": 810,
-        "w": 1840,
-        "h": 240,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 30,
-      "update_cadence": "always"
-    },
-    {
-      "id": "grounding-ticker-bl",
-      "geometry": {
-        "kind": "rect",
-        "x": 440,
-        "y": 770,
-        "w": 480,
-        "h": 40,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 22,
-      "update_cadence": "always"
-    },
-    {
-      "id": "impingement-cascade-midright",
-      "geometry": {
-        "kind": "rect",
-        "x": 1260,
-        "y": 400,
-        "w": 480,
-        "h": 360,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 24,
-      "update_cadence": "rate"
-    },
-    {
-      "id": "recruitment-candidate-top",
-      "geometry": {
-        "kind": "rect",
-        "x": 560,
-        "y": 80,
-        "w": 800,
-        "h": 60,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 24,
-      "update_cadence": "rate"
-    },
-    {
-      "id": "thinking-indicator-tr",
-      "geometry": {
-        "kind": "rect",
-        "x": 1380,
-        "y": 20,
-        "w": 170,
-        "h": 44,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 32,
-      "update_cadence": "rate"
-    },
-    {
-      "id": "pressure-gauge-ul",
-      "geometry": {
-        "kind": "rect",
-        "x": 20,
-        "y": 336,
-        "w": 300,
-        "h": 52,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 24,
-      "update_cadence": "rate"
-    },
-    {
-      "id": "activity-variety-log-mid",
-      "geometry": {
-        "kind": "rect",
-        "x": 440,
-        "y": 540,
-        "w": 400,
-        "h": 140,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 24,
-      "update_cadence": "rate"
-    },
-    {
-      "id": "whos-here-tr",
-      "geometry": {
-        "kind": "rect",
-        "x": 1380,
-        "y": 80,
-        "w": 150,
-        "h": 46,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 32,
-      "update_cadence": "rate"
-    },
-    {
-      "id": "durf-fullframe",
+      "id": "packed-cameras-fullframe",
       "geometry": {
         "kind": "rect",
         "x": 0,
@@ -759,188 +1010,8 @@
       },
       "effect_chain": [],
       "blend_mode": "over",
-      "z_order": 50,
+      "z_order": 8,
       "update_cadence": "rate"
-    },
-    {
-      "id": "m8-display-surface",
-      "geometry": {
-        "kind": "rect",
-        "x": 480,
-        "y": 80,
-        "w": 960,
-        "h": 720,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 25,
-      "update_cadence": "always"
-    },
-    {
-      "id": "m8-display-tiny-surface",
-      "geometry": {
-        "kind": "rect",
-        "x": 440,
-        "y": 336,
-        "w": 320,
-        "h": 240,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 25,
-      "update_cadence": "always"
-    },
-    {
-      "id": "steamdeck-display-pip",
-      "geometry": {
-        "kind": "rect",
-        "x": 960,
-        "y": 60,
-        "w": 920,
-        "h": 580,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 22,
-      "update_cadence": "always"
-    },
-    {
-      "id": "steamdeck-display-fullscreen",
-      "geometry": {
-        "kind": "rect",
-        "x": 0,
-        "y": 0,
-        "w": 1920,
-        "h": 1080,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 22,
-      "update_cadence": "always"
-    },
-    {
-      "id": "egress-footer-bottom",
-      "geometry": {
-        "kind": "rect",
-        "x": 0,
-        "y": 1050,
-        "w": 1920,
-        "h": 30,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 60,
-      "update_cadence": "rate"
-    },
-    {
-      "id": "programme-banner-top",
-      "geometry": {
-        "kind": "rect",
-        "x": 510,
-        "y": 40,
-        "w": 900,
-        "h": 120,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 28,
-      "update_cadence": "rate"
-    },
-    {
-      "id": "lore-precedent-ticker",
-      "geometry": {
-        "kind": "rect",
-        "x": 40,
-        "y": 840,
-        "w": 460,
-        "h": 140,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 22,
-      "update_cadence": "rate"
-    },
-    {
-      "id": "lore-programme-history",
-      "geometry": {
-        "kind": "rect",
-        "x": 40,
-        "y": 400,
-        "w": 460,
-        "h": 110,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 22,
-      "update_cadence": "rate"
-    },
-    {
-      "id": "lore-research-instrument-dashboard",
-      "geometry": {
-        "kind": "rect",
-        "x": 1340,
-        "y": 840,
-        "w": 540,
-        "h": 220,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 22,
-      "update_cadence": "rate"
-    },
-    {
-      "id": "sierpinski-center",
-      "geometry": {
-        "kind": "rect",
-        "x": 640,
-        "y": 220,
-        "w": 640,
-        "h": 640,
-        "mask": null,
-        "binding_name": null,
-        "target": null,
-        "render_target": null
-      },
-      "effect_chain": [],
-      "blend_mode": "over",
-      "z_order": 15,
-      "update_cadence": "always"
     }
   ],
   "assignments": [
@@ -1168,6 +1239,24 @@
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "pre_fx"
+    },
+    {
+      "source": "token_explosion_overlay",
+      "surface": "explosion-overlay",
+      "transform": {},
+      "opacity": 1.0,
+      "per_assignment_effects": [],
+      "non_destructive": false,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "packed_cameras",
+      "surface": "packed-cameras-fullframe",
+      "transform": {},
+      "opacity": 0.0,
+      "per_assignment_effects": [],
+      "non_destructive": false,
+      "render_stage": "post_fx"
     }
   ]
 }

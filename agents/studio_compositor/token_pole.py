@@ -1,31 +1,28 @@
-"""token_pole.py — Golden Spiral token tracker over Vitruvian Man.
+"""token_pole.py — Golden Ratio token tracker over Vitruvian Man.
 
-Da Vinci's Vitruvian Man (1490, public domain) as background. A golden
-spiral overlaid on the figure — the token follows the spiral path from
-outside in. Geometry is preserved pixel-for-pixel (spiral center,
-navel anchor, 3 turns, 250 points) from the pre-HOMAGE revision; what
-changed in #125 is purely aesthetic: the candy-rainbow palette is
-replaced with the active :class:`HomagePackage`'s BitchX grammar —
-Gruvbox/mIRC-grey skeleton + bright-identity accents. The rounded-
-corner sepia card becomes a flat dark-terminal rectangle per HOMAGE
-spec §5.5 (``rounded-corners`` is a refused anti-pattern).
+Da Vinci's Vitruvian Man (1490, public domain) as background. The token
+follows a golden ratio path — a Fibonacci spiral anchored to the figure's
+anatomical φ-proportions: feet → knees → navel → chest → throat → cranium.
+At the cranium, the token spawns an explosion of human-representative
+Unicode glyphs (faces, hands, runners, hearts, brains) covering 2/3 of
+the livestream frame. During the explosion, the token resets to the feet
+and begins climbing again.
 
-Upper-left quadrant of the frame.
+Path ahead (token → cranium) renders as dim muted stroke with φ-landmark
+dots. Path behind (feet → token) renders as bright emissive gradient
+trail. All rendering is pre-fx so the GL shader chain (chromatic
+aberration, bloom, tunnel, etc.) applies to every element.
 
-The per-tick logic lives in :class:`TokenPoleCairoSource`, which
-conforms to the :class:`CairoSource` protocol and is driven by a
-:class:`CairoSourceRunner` at 30fps on a background thread. The
-pre-Phase-9 ``TokenPole`` wrapper was removed alongside the
-``fx_chain._pip_draw`` legacy path in Phase 9 Task 29.
+Canvas is 1080×1080 transparent overlay — the Vitruvian figure occupies
+the upper-left quadrant (~300×300 region) while the explosion radiates
+across the full surface.
 """
 
 from __future__ import annotations
 
-import enum
 import json
 import logging
 import math
-import os
 import random
 import time
 from pathlib import Path
@@ -46,57 +43,42 @@ RENDER_FPS = 30
 LEDGER_FILE = Path("/dev/shm/hapax-compositor/token-ledger.json")
 VITRUVIAN_PATH = Path(__file__).parent.parent.parent / "assets" / "vitruvian_man_overlay.png"
 
-# Natural size of the token-pole source — drawn at local origin (0, 0).
-# The compositor places this surface at its assigned SurfaceSchema.geometry
-# rather than hardcoding a canvas-relative position. The :class:`TokenPole`
-# facade blits the output at (20, 20) for the legacy ``fx_chain._pip_draw``
-# path until Phase 3 of the source-registry completion epic flips the
-# render loop to walk LayoutState.
+# Natural size of the token-pole source — 300×300 as original. The
+# Vitruvian figure fills this canvas. Explosion particles are rendered
+# by a separate full-frame overlay (token_explosion_overlay.py) that
+# reads from the module-level _SHARED_PARTICLES list.
 NATURAL_SIZE = 300
 
-# Geometry invariants. These define the two path modes available to the
-# token pole. Operator directive 2026-04-19: default path is navel→cranium
-# with the full route visible and traveled/untraveled visually contradistinct,
-# explosion on cranium arrival. SPIRAL retained for regression only.
-SPIRAL_CENTER_X = 0.50
-SPIRAL_CENTER_Y = 0.52  # navel is slightly below center
-SPIRAL_MAX_R = 0.45  # relative to overlay size
+# The Vitruvian figure fills the full 300×300 canvas.
+_VIT_SIZE = 300
+_VIT_OFFSET_X = 0
+_VIT_OFFSET_Y = 0
 
-# Navel→cranium anchors measured 2026-04-20 from assets/vitruvian_man_overlay.png
-# (500×500 RGBA) by sweeping alpha-row widths from the top: the head silhouette
-# emerges at y≈36 (norm 0.072) where width jumps from ~124 (circle border only)
-# to ~196 (head crown becoming visible). The earlier "widest row in top 1/6"
-# heuristic picked y=81 (0.162) — that's the cheek/chin level, not the crown,
-# producing a path that ended at the chin (operator complaint 2026-04-20).
-# x-axis is effectively vertical (Δx=0.002 = within rounding) so the path is
-# treated as a straight vertical line; the subtle midline arc is deferred.
-NAVEL_X = SPIRAL_CENTER_X  # 0.500
-NAVEL_Y = SPIRAL_CENTER_Y  # 0.520
-CRANIUM_X = 0.498
-CRANIUM_Y = 0.072
-
-NUM_POINTS = 250
 PHI = (1 + math.sqrt(5)) / 2
+NUM_POINTS = 300
 
 
-class PathMode(enum.Enum):
-    """Which geometric path the token traverses."""
-
-    SPIRAL = "spiral"
-    NAVEL_TO_CRANIUM = "navel_to_cranium"
-
-
-def _resolve_path_mode() -> PathMode:
-    """Read ``HAPAX_TOKEN_POLE_PATH`` from env with safe fallback.
-
-    Default is NAVEL_TO_CRANIUM per operator directive 2026-04-19.
-    Set ``HAPAX_TOKEN_POLE_PATH=spiral`` to force the legacy spiral
-    path (regression comparison / back-compat).
-    """
-    raw = (os.environ.get("HAPAX_TOKEN_POLE_PATH") or "").strip().lower()
-    if raw == "spiral":
-        return PathMode.SPIRAL
-    return PathMode.NAVEL_TO_CRANIUM
+# ── Golden ratio anatomical landmarks (normalised to 500×500 PNG) ─────────
+# These are the φ-proportional points on the Vitruvian Man figure.
+# Da Vinci's drawing encodes φ: navel divides total height at 1/φ from
+# the ground. We trace through nested golden rectangles anchored to these.
+#
+# Coordinates are normalised [0, 1] relative to the 500×500 PNG, then
+# scaled to _VIT_SIZE at path build time.
+_LANDMARKS: list[tuple[float, float, str]] = [
+    (0.540, 0.880, "right_foot"),  # start: right foot, lower body
+    (0.580, 0.780, "right_shin"),  # ascending shin
+    (0.560, 0.680, "right_knee"),  # knee bend — φ from ground to navel
+    (0.540, 0.600, "right_thigh"),  # inner thigh
+    (0.500, 0.520, "navel"),  # the great φ-division
+    (0.460, 0.460, "lower_abdomen"),  # ascending torso
+    (0.440, 0.400, "chest_base"),  # ribcage
+    (0.480, 0.340, "sternum"),  # sternum / chest center
+    (0.500, 0.280, "throat"),  # throat — φ from navel to crown
+    (0.498, 0.220, "chin"),  # jawline
+    (0.498, 0.160, "forehead"),  # forehead
+    (0.498, 0.072, "cranium"),  # crown — terminal
+]
 
 
 # --- Palette role names (HOMAGE spec §4.4) ---------------------------------
@@ -128,52 +110,224 @@ _EXPLOSION_ROLES: tuple[str, ...] = (
 )
 
 
-def _build_spiral(cx: float, cy: float, max_r: float, n: int) -> list[tuple[float, float]]:
-    """Golden spiral from outside in, in pixel coordinates."""
-    points = []
-    max_turns = 3.0
-    max_theta = max_turns * 2 * math.pi
-    for i in range(n):
-        t = i / (n - 1)
-        theta = max_theta * (1 - t)
-        r = max_r * math.exp(-0.2 * theta)
-        x = cx + r * math.cos(theta + 0.5)  # offset so spiral starts upper-right
-        y = cy + r * math.sin(theta + 0.5)
-        points.append((x, y))
-    return points
+def _build_golden_ratio_path(n: int) -> list[tuple[float, float]]:
+    """Build a golden ratio spiral path through the Vitruvian Man's anatomy.
 
+    Uses cubic Bézier interpolation through the anatomical φ-landmarks
+    to produce a smooth ascending curve. The path starts at the right
+    foot and spirals upward through knees, navel, chest, throat to the
+    cranium crown. Quarter-arc curvature between landmarks gives the
+    path a natural golden-spiral feel.
 
-def _build_linear_path(size: int, n: int) -> list[tuple[float, float]]:
-    """Linear navel→cranium path in pixel coordinates.
-
-    Produces ``n`` evenly-spaced points from the navel anchor (bottom)
-    to the cranium anchor (top) on the Vitruvian figure. Index 0 is the
-    starting anchor (navel), index n-1 is the terminal anchor (cranium).
+    Returns ``n`` evenly-spaced (by arc length) pixel coordinates in
+    the _VIT_SIZE coordinate space, offset by (_VIT_OFFSET_X, _VIT_OFFSET_Y).
     """
-    x0 = NAVEL_X * size
-    y0 = NAVEL_Y * size
-    x1 = CRANIUM_X * size
-    y1 = CRANIUM_Y * size
-    return [(x0 + (x1 - x0) * (i / (n - 1)), y0 + (y1 - y0) * (i / (n - 1))) for i in range(n)]
+    # Convert normalised landmarks to pixel coords in the Vitruvian region.
+    anchors: list[tuple[float, float]] = []
+    for nx, ny, _name in _LANDMARKS:
+        px = _VIT_OFFSET_X + nx * _VIT_SIZE
+        py = _VIT_OFFSET_Y + ny * _VIT_SIZE
+        anchors.append((px, py))
+
+    if len(anchors) < 2:
+        return [(anchors[0][0], anchors[0][1])] * n if anchors else [(0, 0)] * n
+
+    # Build a smooth curve through the anchors using Catmull-Rom → Bézier.
+    # First, densely sample between each pair of anchors with cubic interp.
+    dense: list[tuple[float, float]] = []
+    steps_per_seg = 40
+    for seg in range(len(anchors) - 1):
+        p0 = anchors[max(0, seg - 1)]
+        p1 = anchors[seg]
+        p2 = anchors[min(len(anchors) - 1, seg + 1)]
+        p3 = anchors[min(len(anchors) - 1, seg + 2)]
+        for step in range(steps_per_seg):
+            t = step / steps_per_seg
+            t2 = t * t
+            t3 = t2 * t
+            # Catmull-Rom coefficients (tension=0.5)
+            x = 0.5 * (
+                (2 * p1[0])
+                + (-p0[0] + p2[0]) * t
+                + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2
+                + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3
+            )
+            y = 0.5 * (
+                (2 * p1[1])
+                + (-p0[1] + p2[1]) * t
+                + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2
+                + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3
+            )
+            dense.append((x, y))
+    # Add the terminal anchor.
+    dense.append(anchors[-1])
+
+    # Re-parameterise by arc length to get evenly-spaced output points.
+    # Compute cumulative arc length.
+    arc_lengths = [0.0]
+    for i in range(1, len(dense)):
+        dx = dense[i][0] - dense[i - 1][0]
+        dy = dense[i][1] - dense[i - 1][1]
+        arc_lengths.append(arc_lengths[-1] + math.hypot(dx, dy))
+
+    total_length = arc_lengths[-1]
+    if total_length < 1e-6:
+        return [dense[0]] * n
+
+    result: list[tuple[float, float]] = []
+    for i in range(n):
+        target = (i / (n - 1)) * total_length
+        # Binary search for the segment containing this arc length.
+        lo, hi = 0, len(arc_lengths) - 1
+        while lo < hi - 1:
+            mid = (lo + hi) // 2
+            if arc_lengths[mid] <= target:
+                lo = mid
+            else:
+                hi = mid
+        seg_len = arc_lengths[hi] - arc_lengths[lo]
+        if seg_len > 1e-6:
+            frac = (target - arc_lengths[lo]) / seg_len
+        else:
+            frac = 0.0
+        x = dense[lo][0] + (dense[hi][0] - dense[lo][0]) * frac
+        y = dense[lo][1] + (dense[hi][1] - dense[lo][1]) * frac
+        result.append((x, y))
+
+    return result
 
 
 def _resolve_package() -> HomagePackage:
-    """Return the active HomagePackage, or the BitchX fallback.
-
-    The runtime returns ``None`` under the consent-safe layout
-    (HOMAGE disabled per axiom ``it-irreversible-broadcast``). The
-    token-pole still has to paint *something*, so we fall through to
-    the baseline BitchX package — its greyscale grammar is already
-    consent-safe by construction (no operator-identity accent that
-    could leak into the broadcast; the consent-safe variant collapses
-    all accents to the same grey).
-    """
+    """Return the active HomagePackage, or the BitchX fallback."""
     pkg = get_active_package()
     if pkg is not None:
         return pkg
     from .homage.bitchx import BITCHX_PACKAGE
 
     return BITCHX_PACKAGE
+
+
+# ── Human glyph palette for the cranium explosion ────────────────────────
+# Curated Unicode glyphs representing diverse aspects of humanity.
+# Rendered via Pango so emoji / symbol fonts resolve through fontconfig.
+_HUMAN_GLYPHS: tuple[str, ...] = (
+    # Faces — diverse representation
+    "🧑",
+    "👶",
+    "🧒",
+    "👦",
+    "👧",
+    "🧔",
+    "👩",
+    "👨",
+    "🧑\u200d🦱",
+    "🧑\u200d🦰",
+    "🧑\u200d🦳",
+    # Body parts — the Vitruvian anatomy
+    "🤲",
+    "🙌",
+    "👐",
+    "💪",
+    "🦶",
+    "🦵",
+    "👁️",
+    "🧠",
+    "❤️",
+    "🫀",
+    # Movement — the human in motion
+    "🏃",
+    "🧘",
+    "🤸",
+    "💃",
+    "🕺",
+    "🧗",
+    "🏊",
+    "🚶",
+    # Hands — Da Vinci's studies
+    "✋",
+    "🤚",
+    "👋",
+    "🖐️",
+    "✌️",
+    "🤞",
+    "👆",
+    "👇",
+    "👈",
+    "👉",
+    # Connection
+    "🤝",
+    "🫂",
+    # Abstract human
+    "⭐",
+    "✨",
+    "💫",
+    "🌟",
+)
+
+# Blast radius in pixels: 2/3 of the 1080 canvas = 720px.
+_BLAST_RADIUS_PX: float = 720.0
+
+# Number of glyphs spawned per explosion.
+_GLYPH_COUNT: int = 120
+
+# Glyph lifetime in seconds.
+_GLYPH_LIFETIME_S: float = 2.8
+
+
+class HumanGlyphParticle:
+    """A single human glyph in the cranium explosion."""
+
+    __slots__ = (
+        "glyph",
+        "x",
+        "y",
+        "vx",
+        "vy",
+        "role_index",
+        "alpha",
+        "size",
+        "rotation",
+        "rot_speed",
+        "born",
+    )
+
+    def __init__(self, cx: float, cy: float) -> None:
+        self.glyph = random.choice(_HUMAN_GLYPHS)
+        angle = random.uniform(0, 2 * math.pi)
+        # Speed scaled so particles reach 2/3 frame in ~1.5s.
+        speed = random.uniform(8, 38)
+        self.x = cx
+        self.y = cy
+        self.vx = math.cos(angle) * speed
+        self.vy = math.sin(angle) * speed - random.uniform(2, 8)
+        self.role_index = random.randrange(len(_EXPLOSION_ROLES))
+        self.alpha = 1.0
+        self.size = random.uniform(14, 36)
+        self.rotation = random.uniform(0, 2 * math.pi)
+        self.rot_speed = random.uniform(-2.0, 2.0)
+        self.born = time.monotonic()
+
+    def tick(self) -> bool:
+        """Advance physics. Returns False when the particle should be culled."""
+        self.x += self.vx
+        self.y += self.vy
+        self.vy += 0.12  # gentle gravity
+        self.vx *= 0.985  # air drag
+        self.vy *= 0.985
+        self.rotation += self.rot_speed * 0.033  # ~30fps
+        age = time.monotonic() - self.born
+        # Smooth ease-out fade.
+        t = min(1.0, age / _GLYPH_LIFETIME_S)
+        self.alpha = max(0.0, 1.0 - t * t)
+        return self.alpha > 0.02
+
+
+# ── Shared explosion state ────────────────────────────────────────────────
+# Module-level list shared between TokenPoleCairoSource (spawns particles)
+# and TokenExplosionOverlayCairoSource (renders them at full-frame).
+# Both sources run in the same process on background threads; the list
+# is append/filter only, so races produce at most a skipped frame.
+_SHARED_PARTICLES: list[HumanGlyphParticle] = []
 
 
 # --- Task #146: chat-contribution reward mechanic ---------------------------
@@ -307,44 +461,14 @@ class EmojiSpewEffect:
         return cascade_marker_text(self.explosion_number, self.contributor_count)
 
 
-class Particle:
-    __slots__ = ("x", "y", "vx", "vy", "role_index", "alpha", "size", "born")
-
-    def __init__(self, x: float, y: float) -> None:
-        angle = random.uniform(0, 2 * math.pi)
-        speed = random.uniform(3, 14)
-        self.x = x
-        self.y = y
-        self.vx = math.cos(angle) * speed
-        self.vy = math.sin(angle) * speed - random.uniform(1, 4)
-        # Palette-role index; resolved at draw time so a mid-flight
-        # package swap recolours particles in place.
-        self.role_index = random.randrange(len(_EXPLOSION_ROLES))
-        self.alpha = 1.0
-        self.size = random.uniform(3, 10)
-        self.born = time.monotonic()
-
-    def tick(self) -> bool:
-        self.x += self.vx
-        self.y += self.vy
-        self.vy += 0.2
-        self.vx *= 0.97
-        self.vy *= 0.97
-        age = time.monotonic() - self.born
-        self.alpha = max(0, 1.0 - age / 1.5)
-        self.size *= 0.98
-        return self.alpha > 0.03
-
-
 class TokenPoleCairoSource(HomageTransitionalSource):
     """HomageTransitionalSource implementation for the token-pole overlay.
 
-    Owns the spiral path, animation state (position easing, pulse
-    phase), particle system, ledger cache and background image. The
-    runner calls :meth:`render_content` once per tick on a background
-    thread — this drives the internal tick-state update (ledger I/O,
-    easing, particle physics) AND the drawing, so the animation cadence
-    matches the runner's target FPS (30).
+    Golden ratio path from feet→cranium over the Vitruvian Man. At cranium
+    arrival, spawns ~120 human-representative Unicode glyphs covering 2/3
+    of the frame. Token resets and cycles. Path ahead is dim muted; path
+    behind is bright gradient. All elements rendered pre-fx so the GL
+    shader chain (bloom, chromatic aberration, tunnel) processes them.
     """
 
     def __init__(self) -> None:
@@ -354,30 +478,29 @@ class TokenPoleCairoSource(HomageTransitionalSource):
         self._explosions: int = 0
         self._total_tokens: int = 0
         self._threshold: int = 0
-        self._particles: list[Particle] = []
+        self._particles: list[HumanGlyphParticle] = []
         self._last_read: float = 0
         self._last_explosion_count: int = 0
         self._pulse: float = 0.0
         self._bg_surface: Any = None
         self._bg_loaded = False
-        # Build the token path in local natural-size coordinates (origin at
-        # 0, 0). Mode selection is env-gated at construction; default is the
-        # navel→cranium linear path per operator directive 2026-04-19.
-        self._path_mode = _resolve_path_mode()
-        if self._path_mode is PathMode.SPIRAL:
-            cx = NATURAL_SIZE * SPIRAL_CENTER_X
-            cy = NATURAL_SIZE * SPIRAL_CENTER_Y
-            max_r = NATURAL_SIZE * SPIRAL_MAX_R
-            self._path = _build_spiral(cx, cy, max_r, NUM_POINTS)
-        else:
-            self._path = _build_linear_path(NATURAL_SIZE, NUM_POINTS)
-        # Backwards-compat alias so external code reading ``_spiral`` keeps
-        # working while ``_path`` is the canonical name. New code should
-        # reference ``_path`` directly.
-        self._spiral = self._path
-        # Task #146 chat-contribution cascade. Drives optional trigger()
-        # calls from the wiring layer (scripts/chat-monitor.py) via a
-        # setter method. Kept as an attribute so tests can poke state.
+        # Golden ratio path through anatomical landmarks.
+        self._path = _build_golden_ratio_path(NUM_POINTS)
+        self._spiral = self._path  # backwards-compat alias
+        # Pre-compute landmark indices for φ-marker rendering.
+        self._landmark_indices: list[int] = []
+        for _i, (nx, ny, _name) in enumerate(_LANDMARKS):
+            px = _VIT_OFFSET_X + nx * _VIT_SIZE
+            py = _VIT_OFFSET_Y + ny * _VIT_SIZE
+            best_idx = 0
+            best_dist = float("inf")
+            for j, (ppx, ppy) in enumerate(self._path):
+                d = (ppx - px) ** 2 + (ppy - py) ** 2
+                if d < best_dist:
+                    best_dist = d
+                    best_idx = j
+            self._landmark_indices.append(best_idx)
+        # Task #146 chat-contribution cascade.
         self.emoji_spew = EmojiSpewEffect()
 
     def render_content(
@@ -408,7 +531,8 @@ class TokenPoleCairoSource(HomageTransitionalSource):
         diff = self._target_position - self._position
         self._position += diff * 0.06
         self._pulse += 0.1
-        self._particles = [p for p in self._particles if p.tick()]
+        # Tick shared explosion particles (culled by the overlay source).
+        _SHARED_PARTICLES[:] = [p for p in _SHARED_PARTICLES if p.tick()]
         # Task #146: advance chat-contribution emoji cascade (if armed).
         self.emoji_spew.tick(NATURAL_SIZE, NATURAL_SIZE)
 
@@ -437,19 +561,25 @@ class TokenPoleCairoSource(HomageTransitionalSource):
             pass
 
     def _spawn_explosion(self) -> None:
-        # Explode at the path's terminal anchor — cranium in linear mode,
-        # spiral centre (navel) in legacy spiral mode. For the operator-
-        # directed NAVEL_TO_CRANIUM path this fires at the head-crown
-        # when the token reaches it; feels like completion rather than
-        # a burst at the starting anchor.
-        if self._path_mode is PathMode.NAVEL_TO_CRANIUM:
-            cx = NATURAL_SIZE * CRANIUM_X
-            cy = NATURAL_SIZE * CRANIUM_Y
-        else:
-            cx = NATURAL_SIZE * SPIRAL_CENTER_X
-            cy = NATURAL_SIZE * SPIRAL_CENTER_Y
-        for _ in range(60):
-            self._particles.append(Particle(cx, cy))
+        """Spawn human glyph explosion at the cranium and reset token to feet.
+
+        Particles are spawned in frame-space coordinates (1920×1080) so
+        the separate full-frame overlay can render them. The cranium
+        position is converted from the 300px canvas → 240px pip-ul →
+        frame position.
+        """
+        # Cranium point in canvas coords → frame coords.
+        # pip-ul: x=16, y=12, 240×240 surface, source=300×300.
+        canvas_cx = _VIT_OFFSET_X + _LANDMARKS[-1][0] * _VIT_SIZE
+        canvas_cy = _VIT_OFFSET_Y + _LANDMARKS[-1][1] * _VIT_SIZE
+        scale = 240.0 / NATURAL_SIZE  # 0.8
+        frame_cx = 16 + canvas_cx * scale
+        frame_cy = 12 + canvas_cy * scale
+        for _ in range(_GLYPH_COUNT):
+            _SHARED_PARTICLES.append(HumanGlyphParticle(frame_cx, frame_cy))
+        # Reset token to start of path (feet) for cycling.
+        self._position = 0.0
+        self._target_position = 0.0
 
     def _load_bg(self, cr: Any) -> None:
         """Load Vitruvian Man as cairo surface (once).
@@ -484,12 +614,6 @@ class TokenPoleCairoSource(HomageTransitionalSource):
         pkg = _resolve_package()
         palette = pkg.palette
 
-        # Phase A4 (homage-completion-plan §2): the token-pole is now a
-        # point-of-light emissive surface. Smiley face DELETED; token
-        # glyph is centre dot + halo + outer bloom; spiral guide is 32
-        # emissive points along the path; particles route through
-        # ``paint_emissive_point``; status row + cascade marker render
-        # through Pango Px437 via ``text_render``.
         from .homage.emissive_base import (
             paint_emissive_bg,
             paint_emissive_point,
@@ -501,75 +625,78 @@ class TokenPoleCairoSource(HomageTransitionalSource):
         stance = self._read_stance()
         pulse_hz = stance_hz(stance, fallback=1.0)
 
-        # --- Gruvbox ground (emissive base) -------------------------------
-        # Spec §5.5 refuses ``rounded-corners`` — flat background. Use the
-        # package's ``background`` role so consent-safe variant collapses
-        # to its muted flavour.
+        # --- Transparent ground (no container bg) -------------------------
         bg_r, bg_g, bg_b, bg_a = palette.background
         paint_emissive_bg(cr, NATURAL_SIZE, NATURAL_SIZE, ground_rgba=(bg_r, bg_g, bg_b, bg_a))
 
-        # --- Vitruvian engraving ------------------------------------------
-        # Per success-def §1.2: paint the PNG at alpha=0.55 multiplied with
-        # ``terminal_default × shimmer`` — reads as a grey engraving, not
-        # sepia ink. The package-scoped tint ensures a palette swap carries
-        # the figure.
+        # --- Vitruvian engraving in the _VIT_SIZE region ------------------
         if self._bg_surface is not None:
-            # 2026-04-23 operator "no flashing of any kind" — previously
-            # ``shimmer = paint_breathing_alpha(t_now, hz=pulse_hz, phase=0.0)``
-            # modulated the Vitruvian tint per frame. paint_breathing_alpha
-            # itself now returns a static baseline, so the effect is
-            # constant — but the expression ``0.55 * shimmer`` remained
-            # as a lint target. Replaced with the static product
-            # ``0.55 * 0.85 = 0.4675`` so the static-scan regression test
-            # passes and the intent is explicit.
-            _TINT_ALPHA = 0.4675  # 0.55 * paint_breathing_alpha baseline
+            _TINT_ALPHA = 0.4675
             td_r, td_g, td_b, _ = palette.terminal_default
             cr.save()
             sw = self._bg_surface.get_width()
             sh = self._bg_surface.get_height()
-            scale = NATURAL_SIZE / max(sw, sh) if max(sw, sh) > 0 else 1
+            scale = _VIT_SIZE / max(sw, sh) if max(sw, sh) > 0 else 1
+            cr.translate(_VIT_OFFSET_X, _VIT_OFFSET_Y)
             cr.scale(scale, scale)
             cr.set_source_surface(self._bg_surface, 0, 0)
             cr.paint_with_alpha(_TINT_ALPHA)
             cr.restore()
-            # Tinting pass — multiply the figure with terminal_default so
-            # the ink reads grey rather than raw.
+            # Tinting pass.
             cr.save()
             cr.set_operator(__import__("cairo").OPERATOR_MULTIPLY)
             cr.set_source_rgba(td_r, td_g, td_b, _TINT_ALPHA)
-            cr.rectangle(0, 0, NATURAL_SIZE, NATURAL_SIZE)
+            cr.rectangle(_VIT_OFFSET_X, _VIT_OFFSET_Y, _VIT_SIZE, _VIT_SIZE)
             cr.fill()
             cr.restore()
 
-        # --- Path backbone — continuous muted line across the full path ---
-        # #186 (operator 2026-04-19): full route visible always. Replaces
-        # the prior 32-point dotted skeleton, which read as gappy and
-        # ambiguous about which way the road went. The continuous stroke
-        # is a flat cairo line at the muted role's emissive ground
-        # (no per-segment shimmer — the bright trail overlay below carries
-        # all the breathing). Kept under the trail so the traveled portion
-        # of the path still reads bright; the untraveled portion shows as
-        # a clean grey road from token glyph to terminal anchor.
         muted_rgba = pkg.resolve_colour("muted")
-        m_r, m_g, m_b, m_a = muted_rgba
-        cr.save()
-        cr.set_source_rgba(m_r, m_g, m_b, m_a * 0.55)
-        cr.set_line_width(1.4)
-        cr.set_line_cap(__import__("cairo").LINE_CAP_ROUND)
-        cr.set_line_join(__import__("cairo").LINE_JOIN_ROUND)
-        first_x, first_y = self._path[0]
-        cr.move_to(first_x, first_y)
-        for px, py in self._path[1:]:
-            cr.line_to(px, py)
-        cr.stroke()
-        cr.restore()
+        accent_yellow = pkg.resolve_colour("accent_yellow")
+        accent_magenta = pkg.resolve_colour("accent_magenta")
+        accent_cyan = pkg.resolve_colour("accent_cyan")
+        bright_rgba = pkg.resolve_colour("bright")
 
-        # --- Trail — muted→bright gradient via accent emissive strokes ----
         idx = int(self._position * (NUM_POINTS - 1))
+        idx = min(idx, NUM_POINTS - 1)
+
+        # --- Path ahead (token → cranium): dim muted stroke ---------------
+        m_r, m_g, m_b, m_a = muted_rgba
+        if idx < NUM_POINTS - 1:
+            cr.save()
+            cr.set_source_rgba(m_r, m_g, m_b, m_a * 0.35)
+            cr.set_line_width(1.2)
+            cr.set_line_cap(__import__("cairo").LINE_CAP_ROUND)
+            cr.set_line_join(__import__("cairo").LINE_JOIN_ROUND)
+            ax, ay = self._path[idx]
+            cr.move_to(ax, ay)
+            for px, py in self._path[idx + 1 :]:
+                cr.line_to(px, py)
+            cr.stroke()
+            cr.restore()
+            # Dim landmark dots ahead of token.
+            for li in self._landmark_indices:
+                if li > idx:
+                    lx, ly = self._path[li]
+                    paint_emissive_point(
+                        cr,
+                        lx,
+                        ly,
+                        muted_rgba,
+                        t=t_now,
+                        phase=li * 0.17,
+                        baseline_alpha=0.4,
+                        centre_radius_px=2.0,
+                        halo_radius_px=5.0,
+                        outer_glow_radius_px=8.0,
+                        shimmer_hz=pulse_hz,
+                    )
+
+        # --- Path behind (start → token): bright gradient trail -----------
         if idx > 1:
-            trail_rgba = tuple(pkg.resolve_colour(role) for role in _TRAIL_ROLES)  # type: ignore[arg-type]
+            trail_rgba = tuple(pkg.resolve_colour(role) for role in _TRAIL_ROLES)
             num_c = len(trail_rgba)
-            for i in range(1, idx):
+            # Draw every 2nd segment for performance on the 300-point path.
+            for i in range(1, idx, 2):
                 progress = i / idx
                 ci = progress * (num_c - 1)
                 c0 = trail_rgba[int(ci) % num_c]
@@ -579,7 +706,7 @@ class TokenPoleCairoSource(HomageTransitionalSource):
                 g = c0[1] + (c1[1] - c0[1]) * f
                 b = c0[2] + (c1[2] - c0[2]) * f
                 a = c0[3] + (c1[3] - c0[3]) * f
-                baseline = 0.15 + 0.65 * (progress**1.5)
+                baseline = 0.20 + 0.60 * (progress**1.3)
                 x0, y0 = self._path[i - 1]
                 x1, y1 = self._path[i]
                 paint_emissive_stroke(
@@ -592,30 +719,40 @@ class TokenPoleCairoSource(HomageTransitionalSource):
                     t=t_now,
                     phase=i * 0.13,
                     baseline_alpha=baseline,
-                    width_px=2.0,
+                    width_px=2.2,
                     shimmer_hz=pulse_hz,
                 )
+            # Bright landmark dots behind token.
+            for li in self._landmark_indices:
+                if li <= idx:
+                    lx, ly = self._path[li]
+                    paint_emissive_point(
+                        cr,
+                        lx,
+                        ly,
+                        accent_cyan,
+                        t=t_now,
+                        phase=li * 0.17,
+                        baseline_alpha=0.9,
+                        centre_radius_px=3.0,
+                        halo_radius_px=7.0,
+                        outer_glow_radius_px=11.0,
+                        shimmer_hz=pulse_hz,
+                    )
 
         # --- Token glyph — centre dot + halo + outer bloom ----------------
-        # Success-def §1.2: centre dot (accent_yellow), halo (accent_magenta
-        # α=0.45), outer bloom (accent_yellow α=0.12). No cheeks. No eyes.
-        # No smile. Reads as a point of light at the navel.
         if idx < len(self._path):
             gx, gy = self._path[idx]
         else:
-            gx = NATURAL_SIZE * SPIRAL_CENTER_X
-            gy = NATURAL_SIZE * SPIRAL_CENTER_Y
+            gx, gy = self._path[-1]
 
         pulse_r = math.sin(self._pulse) * 1.5
         bounce_y = math.sin(self._pulse * 1.7) * 1.0
         glyph_cx = gx
         glyph_cy = gy + bounce_y
 
-        accent_yellow = pkg.resolve_colour("accent_yellow")
-        accent_magenta = pkg.resolve_colour("accent_magenta")
-        bright_rgba = pkg.resolve_colour("bright")
-        # Outer bloom — accent_yellow at low alpha.
         ay_r, ay_g, ay_b, ay_a = accent_yellow
+        # Outer bloom.
         paint_emissive_point(
             cr,
             glyph_cx,
@@ -629,7 +766,7 @@ class TokenPoleCairoSource(HomageTransitionalSource):
             outer_glow_radius_px=22.0 + pulse_r,
             shimmer_hz=pulse_hz,
         )
-        # Halo — accent_magenta α=0.45.
+        # Halo.
         am_r, am_g, am_b, am_a = accent_magenta
         paint_emissive_point(
             cr,
@@ -644,8 +781,7 @@ class TokenPoleCairoSource(HomageTransitionalSource):
             outer_glow_radius_px=0.0,
             shimmer_hz=pulse_hz,
         )
-        # Centre dot — accent_yellow at full alpha. Slim sparkle trail
-        # in bright, emissive.
+        # Centre dot.
         paint_emissive_point(
             cr,
             glyph_cx,
@@ -660,7 +796,7 @@ class TokenPoleCairoSource(HomageTransitionalSource):
             shimmer_hz=pulse_hz,
         )
 
-        # Sparkle trail — bright, thinning, emissive.
+        # Sparkle trail — bright, thinning.
         for i in range(1, 4):
             trail_idx = max(0, idx - i * 5)
             if trail_idx < len(self._path):
@@ -680,29 +816,7 @@ class TokenPoleCairoSource(HomageTransitionalSource):
                     shimmer_hz=pulse_hz,
                 )
 
-        # --- Particles — emissive points, role-resolved colour -------------
-        # Mid-flight package swap recolours particles already in flight.
-        for p in self._particles:
-            role = _EXPLOSION_ROLES[p.role_index]
-            pr, pg, pb, pa = pkg.resolve_colour(role)  # type: ignore[arg-type]
-            paint_emissive_point(
-                cr,
-                p.x,
-                p.y,
-                (pr, pg, pb, pa * p.alpha),
-                t=t_now,
-                phase=p.born % math.tau,
-                baseline_alpha=1.0,
-                centre_radius_px=max(0.5, p.size * 0.4),
-                halo_radius_px=max(1.0, p.size * 0.9),
-                outer_glow_radius_px=max(1.2, p.size * 1.4),
-                shimmer_hz=pulse_hz,
-            )
-
-        # --- Status row (Px437) ------------------------------------------
-        # Per success-def: ``>>> [TOKEN | <value>/<threshold>]`` rendered
-        # through Pango via text_render so Px437 IBM VGA 8x16 resolves via
-        # fontconfig rather than Cairo's toy fallback.
+        # --- Status row (Px437) -------------------------------------------
         self._draw_status_row(cr, pkg)
 
         # --- Task #146: chat-contribution emoji cascade ------------------
@@ -724,6 +838,82 @@ class TokenPoleCairoSource(HomageTransitionalSource):
         except Exception:
             pass
         return "nominal"
+
+    def _draw_glyph_particles(self, cr: Any, pkg: Any, t_now: float, pulse_hz: float) -> None:
+        """Render human glyph explosion particles via Pango.
+
+        Each glyph gets an emissive halo underneath (via paint_emissive_point)
+        and a rotated Pango-rendered Unicode glyph on top. The rotation and
+        alpha are per-particle. No-op when no particles are active or Pango
+        is unavailable.
+        """
+        if not self._particles:
+            return
+        try:
+            import gi
+
+            gi.require_version("Pango", "1.0")
+            gi.require_version("PangoCairo", "1.0")
+            from gi.repository import Pango, PangoCairo
+        except Exception:
+            # Fallback: render as emissive dots only (no glyph text).
+            from .homage.emissive_base import paint_emissive_point
+
+            for p in self._particles:
+                role = _EXPLOSION_ROLES[p.role_index]
+                pr, pg, pb, pa = pkg.resolve_colour(role)
+                paint_emissive_point(
+                    cr,
+                    p.x,
+                    p.y,
+                    (pr, pg, pb, pa * p.alpha),
+                    t=t_now,
+                    phase=p.born % math.tau,
+                    baseline_alpha=1.0,
+                    centre_radius_px=max(1.0, p.size * 0.3),
+                    halo_radius_px=max(2.0, p.size * 0.6),
+                    outer_glow_radius_px=max(3.0, p.size * 0.9),
+                    shimmer_hz=pulse_hz,
+                )
+            return
+
+        from .homage.emissive_base import paint_emissive_point
+
+        for p in self._particles:
+            role = _EXPLOSION_ROLES[p.role_index]
+            pr, pg, pb, pa = pkg.resolve_colour(role)
+            glyph_alpha = p.alpha
+
+            # Emissive halo under the glyph.
+            paint_emissive_point(
+                cr,
+                p.x,
+                p.y,
+                (pr, pg, pb, pa * glyph_alpha * 0.5),
+                t=t_now,
+                phase=p.born % math.tau,
+                baseline_alpha=1.0,
+                centre_radius_px=0.0,
+                halo_radius_px=max(2.0, p.size * 0.4),
+                outer_glow_radius_px=max(4.0, p.size * 0.8),
+                shimmer_hz=pulse_hz,
+            )
+
+            # Pango glyph with rotation.
+            cr.save()
+            cr.translate(p.x, p.y)
+            cr.rotate(p.rotation)
+            layout = PangoCairo.create_layout(cr)
+            font = Pango.FontDescription.from_string(f"Noto Color Emoji {int(p.size)}")
+            layout.set_font_description(font)
+            layout.set_text(p.glyph, -1)
+            _w, _h = layout.get_pixel_size()
+            cr.move_to(-_w / 2.0, -_h / 2.0)
+            cr.push_group()
+            PangoCairo.show_layout(cr, layout)
+            cr.pop_group_to_source()
+            cr.paint_with_alpha(glyph_alpha)
+            cr.restore()
 
     def _draw_status_row(self, cr: Any, pkg: Any) -> None:
         """Render the top-row ``>>> [TOKEN | <value>/<threshold>]`` strip.

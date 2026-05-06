@@ -115,7 +115,18 @@ def apply_layout_mode(compositor: Any, mode: str) -> None:
     Runtime layout switch: no pipeline rebuild, no caps renegotiation.
     GStreamer compositor scales each camera input to fit its pad's
     width/height automatically.
+
+    When the initial layout mode is ``"packed"``, hero-override and
+    follow-mode switches are suppressed — packed mode manages camera
+    placement via the PackedCamerasCairoSource overlay, not cudacompositor
+    pad geometry.
     """
+    # Guard: packed mode is not overridable by hero switches
+    initial_mode = getattr(compositor, "_initial_layout_mode", None)
+    if initial_mode == "packed" and mode != "packed":
+        log.debug("Layout mode %s suppressed — packed mode is active", mode)
+        return
+
     cameras = list(getattr(compositor, "_camera_specs", {}).values())
     if not cameras:
         return

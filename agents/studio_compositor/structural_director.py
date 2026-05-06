@@ -13,8 +13,8 @@ The narrative director reads it alongside the PerceptualField block.
 
 Under the grounding-exhaustive axiom, structural moves are grounding
 moves of the slowest frequency — scene shifts, preset-family
-transitions, YouTube direction. They use the grounded model (Command R
-via LiteLLM) just like the narrative director, but with a smaller prompt
+transitions, YouTube direction. They use resident Command-R just like the
+narrative director, but with a smaller prompt
 (no compositional-impingement demand; just scene_mode + family_hint +
 long_horizon_direction free text).
 """
@@ -30,6 +30,12 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+from shared.resident_command_r import (
+    RESIDENT_COMMAND_R_MODEL,
+    call_resident_command_r,
+    configured_resident_model,
+)
 
 log = logging.getLogger(__name__)
 
@@ -380,49 +386,24 @@ def _render_programme_context(programme) -> list[str]:
 
 
 def _default_llm_fn(prompt: str) -> str:
-    """Fallback LLM call — reuses the narrative director's LiteLLM route.
+    """Fallback LLM call — resident Command-R only.
 
     Best-effort: imports are lazy so tests can stub this without pulling
     in the heavy director_loop module.
     """
-    import subprocess
-    import urllib.request
-
-    litellm_url = "http://localhost:4000/v1/chat/completions"
-    # Reuse the same key fetch as director_loop._get_litellm_key
-    try:
-        result = subprocess.run(
-            ["pass", "show", "litellm/master-key"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        key = result.stdout.strip()
-    except Exception:
-        key = ""
-    body = json.dumps(
-        {
-            "model": os.environ.get("HAPAX_STRUCTURAL_MODEL", "local-fast"),
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 320,
-            "temperature": 0.7,
-        }
-    ).encode()
-    req = urllib.request.Request(
-        litellm_url,
-        body,
-        {"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
-    )
+    configured_resident_model("HAPAX_STRUCTURAL_MODEL", purpose="structural director")
     started = time.time()
     # Publish LLM-in-flight marker so the ThinkingIndicator Cairo source
     # pulses while the structural tier is mid-call.
     from agents.studio_compositor.director_loop import _LLMInFlight
 
-    with _LLMInFlight(
-        tier="structural", model=os.environ.get("HAPAX_STRUCTURAL_MODEL", "local-fast")
-    ):
-        with urllib.request.urlopen(req, timeout=90) as resp:
-            data = json.loads(resp.read())
+    with _LLMInFlight(tier="structural", model=RESIDENT_COMMAND_R_MODEL):
+        content = call_resident_command_r(
+            prompt,
+            max_tokens=320,
+            temperature=0.7,
+            timeout_s=90,
+        )
     elapsed = time.time() - started
     try:
         from shared.director_observability import observe_llm_latency
@@ -430,10 +411,7 @@ def _default_llm_fn(prompt: str) -> str:
         observe_llm_latency(elapsed, tier="structural", condition_id=_read_condition_id())
     except Exception:
         pass
-    try:
-        return data["choices"][0]["message"]["content"] or ""
-    except (KeyError, IndexError, TypeError):
-        return ""
+    return content
 
 
 __all__ = [

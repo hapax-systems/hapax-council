@@ -778,8 +778,6 @@ class StudioCompositor:
         self._element_to_role: dict[str, str] = {}
         self._status_timer_id: int | None = None
         self._broadcast_mode_timer_id: int | None = None
-        self._activity_router_timer_id: int | None = None
-        self._activity_router: Any | None = None
         self._broadcast_mode: str = self._resolve_broadcast_mode()
         self._egress_manifest_gate: Any | None = None
         self._egress_compose_safe_active = False
@@ -820,7 +818,15 @@ class StudioCompositor:
 
         self._budget_tracker = BudgetTracker()
         self._overlay_zone_manager = OverlayZoneManager(budget_tracker=self._budget_tracker)
-        self._audio_capture = CompositorAudioCapture()
+        # 2026-05-05: changed default from ``mixer_master`` (mono L-12 AUX0
+        # loopback with near-zero signal) to ``hapax-broadcast-master``
+        # which carries the full broadcast mix at proper levels (-18 dBFS
+        # peak). ``hapax-livestream-tap`` was tried first but it sits at
+        # -72 dBFS — too low for onset detection.  pw-cat --record
+        # auto-connects to the sink's monitor port.
+        # Override via HAPAX_COMPOSITOR_AUDIO_TARGET for testing.
+        _audio_target = os.environ.get("HAPAX_COMPOSITOR_AUDIO_TARGET", "hapax-broadcast-master")
+        self._audio_capture = CompositorAudioCapture(target=_audio_target)
 
         # CVS #145 — bidirectional 24c audio ducking controller. Runs on
         # its own background thread polling VAD + YT-audio state files at
@@ -897,64 +903,6 @@ class StudioCompositor:
         except OSError:
             log.debug("camera-classifications.json write failed", exc_info=True)
         return classifications
-
-    def _build_activity_router(self, layout: Any, registry: Any) -> Any | None:
-        """Build the activity-reveal router from registered family wards."""
-        try:
-            from agents.studio_compositor.activity_reveal_ward import ActivityRevealMixin
-            from agents.studio_compositor.activity_router import ActivityRouter, RouterConfig
-            from agents.studio_compositor.m8_instrument_reveal import M8InstrumentReveal
-        except Exception:
-            log.debug("activity router imports failed", exc_info=True)
-            return None
-
-        wards: list[ActivityRevealMixin] = []
-        seen: set[str] = set()
-        for source_id in registry.ids():
-            backend = getattr(registry, "_backends", {}).get(source_id)
-            source = getattr(backend, "_source", None)
-            if isinstance(source, ActivityRevealMixin):
-                ward_id = type(source).WARD_ID
-                if ward_id not in seen:
-                    wards.append(source)
-                    seen.add(ward_id)
-
-        for source in getattr(layout, "sources", ()):
-            if getattr(source, "ward_id", None) != M8InstrumentReveal.WARD_ID:
-                continue
-            if M8InstrumentReveal.WARD_ID in seen:
-                continue
-            shm_path = source.params.get("shm_path") if hasattr(source, "params") else None
-            wards.append(
-                M8InstrumentReveal(
-                    shm_path=Path(shm_path) if shm_path else None,
-                    start_poll_thread=False,
-                )
-            )
-            seen.add(M8InstrumentReveal.WARD_ID)
-
-        if not wards:
-            log.info("activity router not started: no activity-reveal wards registered")
-            return None
-        router = ActivityRouter(wards=wards, config=RouterConfig())
-        log.info(
-            "activity router ready: policy=%s wards=%s",
-            router.policy.value,
-            ",".join(type(ward).WARD_ID for ward in wards),
-        )
-        return router
-
-    def _activity_router_tick(self) -> bool:
-        if not self._running:
-            return False
-        router = self._activity_router
-        if router is None:
-            return True
-        try:
-            router.tick()
-        except Exception:
-            log.exception("activity router tick failed")
-        return self._running
 
     def _publish_broadcast_manifest_and_gate(self) -> None:
         """Publish the provenance manifest and apply the egress gate."""
@@ -1461,7 +1409,6 @@ class StudioCompositor:
         # silently skipped them. See SourceRegistry.start_all docstring
         # for the full analysis.
         registry.start_all()
-        self._activity_router = self._build_activity_router(layout, registry)
 
         # LRR Phase 2 item 10b: populate CairoSourceRegistry from the
         # zone catalog at `config/compositor-zones.yaml`. This is the
