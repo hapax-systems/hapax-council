@@ -60,13 +60,33 @@ class IncidentTracker:
         self._load()
 
     def _load(self) -> None:
+        """Load the incidents log.
+
+        Validates the JSON root is a list. ``[Incident.model_validate(d)
+        for d in data]`` raises TypeError when iterating a non-list
+        (None, int, dict-with-no-iter) — the
+        ``(json.JSONDecodeError, OSError)`` catch missed it. Pydantic's
+        ValidationError on a malformed entry is also caught per-entry
+        so one bad entry doesn't tank the whole load. Same shape as
+        the other recent SHM-read fixes.
+        """
+        from pydantic import ValidationError
+
         if not self.state_path.exists():
             return
         try:
             data = json.loads(self.state_path.read_text())
-            self._incidents = [Incident.model_validate(d) for d in data]
         except (json.JSONDecodeError, OSError):
-            pass
+            return
+        if not isinstance(data, list):
+            return
+        loaded: list[Incident] = []
+        for d in data:
+            try:
+                loaded.append(Incident.model_validate(d))
+            except ValidationError:
+                continue
+        self._incidents = loaded
 
     def save(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
