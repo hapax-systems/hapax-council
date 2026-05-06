@@ -1,0 +1,152 @@
+{
+  "name": "M8 Music Reactive Transport",
+  "description": "M8/music-reactive preset variation: bass and RMS move the live frame through transport-like drift and warp while treble and centroid shift tone. Uses namespaced music.* sources and avoids brightness, opacity, strobe, and waveform-register modulation.",
+  "lineage": "m8-music-reactive",
+  "transition_ms": 1800,
+  "nodes": {
+    "colorgrade_transport": {
+      "type": "colorgrade",
+      "params": {
+        "brightness": 1.0,
+        "contrast": 1.08,
+        "saturation": 1.05,
+        "hue_rotate": -6.0
+      }
+    },
+    "drift_bass": {
+      "type": "drift",
+      "params": {
+        "speed": 0.7,
+        "amplitude": 0.04,
+        "frequency": 1.2,
+        "coherence": 0.72
+      }
+    },
+    "warp_transport": {
+      "type": "warp",
+      "params": {
+        "slice_amplitude": 0.006,
+        "slice_count": 1.35,
+        "breath": 0.18,
+        "zoom": 1.0
+      }
+    },
+    "feedback_memory": {
+      "type": "feedback",
+      "params": {
+        "decay": 0.13,
+        "zoom": 1.012,
+        "rotate": 0.006,
+        "hue_shift": 3.0
+      }
+    },
+    "trail_transport": {
+      "type": "trail",
+      "params": {
+        "fade": 0.09,
+        "blend_mode": "screen",
+        "opacity": 0.26,
+        "drift_x": 0.0,
+        "drift_y": 0.0
+      }
+    },
+    "content_layer": {
+      "type": "content_layer",
+      "params": {
+        "salience": 0.22,
+        "intensity": 0.16,
+        "material": 1.0
+      }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
+    }
+  },
+  "edges": [
+    [
+      "@live",
+      "colorgrade_transport"
+    ],
+    [
+      "colorgrade_transport",
+      "drift_bass"
+    ],
+    [
+      "drift_bass",
+      "warp_transport"
+    ],
+    [
+      "warp_transport",
+      "feedback_memory"
+    ],
+    [
+      "feedback_memory",
+      "trail_transport"
+    ],
+    [
+      "trail_transport",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
+  ],
+  "modulations": [
+    {
+      "node": "colorgrade_transport",
+      "param": "saturation",
+      "source": "music.bass",
+      "scale": 0.55,
+      "offset": 0.85,
+      "attack": 0.05,
+      "decay": 0.75
+    },
+    {
+      "node": "colorgrade_transport",
+      "param": "hue_rotate",
+      "source": "music.centroid",
+      "scale": 28.0,
+      "offset": -14.0,
+      "attack": 0.18,
+      "decay": 0.9
+    },
+    {
+      "node": "drift_bass",
+      "param": "amplitude",
+      "source": "music.bass",
+      "scale": 0.18,
+      "offset": 0.02,
+      "attack": 0.0,
+      "decay": 0.64
+    },
+    {
+      "node": "drift_bass",
+      "param": "speed",
+      "source": "music.rms",
+      "scale": 1.6,
+      "offset": 0.4,
+      "attack": 0.08,
+      "decay": 0.82
+    },
+    {
+      "node": "warp_transport",
+      "param": "slice_amplitude",
+      "source": "music.treble",
+      "scale": 0.018,
+      "offset": 0.004,
+      "attack": 0.08,
+      "decay": 0.65
+    },
+    {
+      "node": "warp_transport",
+      "param": "breath",
+      "source": "music.rms",
+      "scale": 0.18,
+      "offset": 0.12,
+      "attack": 0.12,
+      "decay": 0.86
+    }
+  ]
+}
