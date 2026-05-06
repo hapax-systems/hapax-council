@@ -39,9 +39,9 @@ from pathlib import Path
 from typing import Any
 
 from .preset_family_selector import (
-    family_names,
     pick_and_load_mutated,
     pick_family_with_role_bias,
+    presets_for_family,
 )
 from .random_mode import MUTATION_FILE
 from .transition_primitives import PRIMITIVES, TRANSITION_NAMES, TransitionFn, fade_smooth
@@ -231,7 +231,7 @@ def process_preset_recruitment(compositor: Any | None = None) -> bool:
     last_recruited_ts = bias.get("last_recruited_ts")
     if not isinstance(family, str) or not isinstance(last_recruited_ts, (int, float)):
         return False
-    if family not in family_names():
+    if not presets_for_family(family):
         log.debug("preset recruitment family unknown: %r", family)
         return False
     # Two short-circuits before doing the picker work:

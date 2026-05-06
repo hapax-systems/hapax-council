@@ -172,6 +172,40 @@ def test_process_unknown_family_returns_false(tmp_path: Path) -> None:
     assert prc.process_preset_recruitment() is False
 
 
+def test_process_accepts_selector_family_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The live consumer must accept selector-supported aliases.
+
+    ``audio-abstract`` is offered by the director prompt and resolves to
+    ``neutral-ambient`` in ``preset_family_selector``. The consumer used
+    to reject it before the selector could see it, making the live
+    recruitment path narrower than the tested catalog.
+    """
+    _write_recruitment(prc.RECRUITMENT_FILE, "audio-abstract")
+    fake_graph: dict[str, Any] = {"nodes": {}, "marker": "alias-graph"}
+    seen_families: list[str] = []
+
+    def _fake_pick(family: str, **_kwargs: Any) -> tuple[str, dict[str, Any]]:
+        seen_families.append(family)
+        return "nightvision", fake_graph
+
+    monkeypatch.setenv("HAPAX_SEGMENT_BIAS_DISABLED", "1")
+    monkeypatch.setattr(prc, "pick_and_load_mutated", _fake_pick)
+    monkeypatch.setattr(
+        prc,
+        "_select_transition",
+        lambda: ("transition.cut.hard", PRIMITIVES["transition.cut.hard"]),
+    )
+    captured_writes: list[dict] = []
+    monkeypatch.setattr(prc, "_write_mutation", captured_writes.append)
+
+    assert prc.process_preset_recruitment() is True
+    _wait_for_thread()
+    assert seen_families == ["audio-abstract"]
+    assert any(g.get("marker") == "alias-graph" for g in captured_writes)
+
+
 def test_process_dispatches_transition_on_first_recruitment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

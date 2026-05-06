@@ -264,14 +264,15 @@ def pick_family_with_role_bias(
     rng
         Optional seeded RNG for deterministic tests.
     """
+    canonical = _resolve_family(family)
     if role is None:
-        return family
+        return canonical
     bias = family_bias_for_role(role)
     if not bias:
-        return family
+        return canonical
     # If the family is in the preferred set, pass through (already aligned)
-    if family in bias:
-        return family
+    if canonical in bias:
+        return canonical
     # Compute role-match strength: higher = family more role-aligned.
     # An unbiased family has strength 0.0; the reroll probability is
     # 1 - role_match_strength = 1.0 for completely misaligned families.
@@ -280,7 +281,7 @@ def pick_family_with_role_bias(
     # This is the soft-prior: unaligned families still have a 40% chance
     # of surviving, preserving grounding diversity.
     if chooser.random() > 0.6:
-        return family  # the original family survives
+        return canonical  # the original canonical family survives
     # Weighted random pick from the preferred families
     preferred_families = list(bias.keys())
     preferred_weights = [bias[f] for f in preferred_families]
