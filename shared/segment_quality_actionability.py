@@ -258,7 +258,7 @@ def forbidden_layout_authority_fields(value: Any, path: str = "$") -> list[dict[
 
 
 _TIER_RE = re.compile(
-    r"\bplace\s+(?P<target>[^.?!]{2,80}?)\s+in\s+(?P<tier>[sabcd])-tier\b",
+    r"^place\s+(?P<target>[^.?!]{2,80}?)\s+in\s+(?P<tier>[sabcd])-tier\b",
     re.IGNORECASE,
 )
 _COUNTDOWN_RE = re.compile(r"\b(?:#|number\s+)(?P<number>\d{1,2})\s*(?:is|:)", re.IGNORECASE)
@@ -271,10 +271,25 @@ _COMPARISON_RE = re.compile(
     r"\b(?:compare|contrast|versus|vs\.?|tradeoff|ranking|ranked|tier)\b",
     re.IGNORECASE,
 )
+_CAMERA_CONTEXT_TARGET_RE = r"(?:overhead|desk|room|operator|brio|c920|director)"
+_CAMERA_COMMAND_TARGET_RE = (
+    r"(?:[^.?!]{0,80}\b(?:camera|cam|feed)\b|"
+    r"(?:overhead|desk|room|operator|brio|c920)\b|"
+    + _CAMERA_CONTEXT_TARGET_RE
+    + r"\s+(?:view|shot|angle|feed)\b)"
+)
 _UNSUPPORTED_ACTION_RE = re.compile(
     r"\b(?:watch this|watch the clip|play the clip|roll the clip|show the clip|"
     r"show this clip|pull up (?:the )?(?:video|image|screenshot|chart|graph)|"
-    r"put (?:it|this) on screen|on screen you can see)\b",
+    r"put (?:it|this) on screen|on screen you can see|"
+    r"cue (?:up )?(?:the )?(?:tier|ranking|ranked-list|comparison|layout|panel|chart)\b|"
+    r"switch (?:to|into) (?:the )?[^.?!]*(?:layout|panel|chart)\b|"
+    r"switch (?:the )?layout (?:to|into)\b|"
+    r"(?:switch|cut|go|jump|take|move|pan|zoom|push|pull)\s+"
+    r"(?:(?:to|into|over|onto|on)\s+)?(?:the\s+)?" + _CAMERA_COMMAND_TARGET_RE + r"|"
+    r"(?:show|bring up|pull up|put)\s+(?:the\s+)?" + _CAMERA_COMMAND_TARGET_RE + r"|"
+    r"bring\s+(?:the\s+)?" + _CAMERA_COMMAND_TARGET_RE + r"\s+up\b|"
+    r"(?:change|load|set|trigger) (?:the )?[^.?!]*layouts?\b)\b",
     re.IGNORECASE,
 )
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
@@ -333,7 +348,9 @@ def render_quality_prompt_block() -> str:
         "readbacks required before a responsible layout decision counts as witnessed. "
         "Static layout is only an explicit fallback or non-responsible posture. "
         "Responsible layout is a witnessed runtime control loop, not a template choice. "
-        "Do not emit direct layout commands in prose.\n"
+        "Do not emit direct layout commands in prose. A beat that only explains an "
+        "idea in speech, without a supported visible/doable trigger, is an "
+        "unsupported responsible-layout beat and must be rewritten before it can load.\n"
         f"{layout_lines}\n\n"
     )
 
@@ -364,17 +381,18 @@ def _intents_for_text(text: str) -> list[dict[str, Any]]:
     intents: list[dict[str, Any]] = []
     lower = text.lower()
 
-    for match in _TIER_RE.finditer(text):
-        target = match.group("target").strip()
-        tier = match.group("tier").upper()
-        intents.append(
-            _intent(
-                kind="tier_chart",
-                trigger=match.group(0),
-                target=target,
-                expected_effect=f"tier_chart.place:{target}:{tier}",
+    for sentence in _sentences(text):
+        for match in _TIER_RE.finditer(sentence):
+            target = match.group("target").strip()
+            tier = match.group("tier").upper()
+            intents.append(
+                _intent(
+                    kind="tier_chart",
+                    trigger=match.group(0),
+                    target=target,
+                    expected_effect=f"tier_chart.place:{target}:{tier}",
+                )
             )
-        )
 
     for match in _COUNTDOWN_RE.finditer(text):
         number = match.group("number")
