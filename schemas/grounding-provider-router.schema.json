@@ -115,6 +115,7 @@
       "enum": [
         "open_world_factual_claim",
         "current_event_claim",
+        "knowledge_recruitment_guidance_request",
         "model_vendor_comparison",
         "rights_provenance_claim",
         "public_content_programming_assertion"

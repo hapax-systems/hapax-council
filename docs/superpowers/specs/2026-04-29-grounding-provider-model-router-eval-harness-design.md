@@ -78,6 +78,7 @@ Grounding is required for:
 
 - `open_world_factual_claim`
 - `current_event_claim`
+- `knowledge_recruitment_guidance_request`
 - `model_vendor_comparison`
 - `rights_provenance_claim`
 - `public_content_programming_assertion`
@@ -85,6 +86,13 @@ Grounding is required for:
 The local Command-R route is allowed only for supplied-evidence local/private
 grounding and the current director substrate. It may not satisfy open-world
 claims by itself.
+
+When Hapax detects thin internal know-how in any domain, the
+`knowledge_recruitment_guidance_request` claim type requires grounded guidance
+recruitment before the system treats outside input as a usable prior. That
+guidance remains evaluated evidence pressure only: it cannot authorize script
+playback, static/default layout success, public claims, or runtime actions
+without the existing downstream grounding and readback gates.
 
 Cloud routes must require privacy/egress preflight. Older, cheaper, or
 lower-intelligence cloud routes require an exception record with route scope,
@@ -118,8 +126,9 @@ The machine-readable eval suite lives at:
 - `config/grounding-eval-suite.json`
 - `schemas/grounding-eval-suite.schema.json`
 
-The suite contains 34 items. Required categories:
+The suite contains 35 items. Required categories:
 
+- `global_competence_gap_guidance`
 - `current_model_release_scouting`
 - `content_opportunity_discovery`
 - `tier_list_react_video_evidence_packets`
