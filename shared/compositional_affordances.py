@@ -740,10 +740,10 @@ _TRANSITION: list[CapabilityRecord] = [
 # satisfy the family-completeness audit (every IntentFamily must have at
 # least one capability) and give the recruitment pipeline targets for
 # gem.* impingements emitted by the producer at
-# ``agents/hapax_daimonion/gem_producer.py``. The descriptions are
-# placeholders — lssh-002 (P0 GEM rendering redesign) will rework the
-# actual visual contract; the catalog rows here keep the
-# wiring-completeness invariant green in the meantime.
+# ``agents/hapax_daimonion/gem_producer.py`` and the compositor's
+# ``dispatch_gem`` recruitment hook. GEM writes bounded CP437 mural frames
+# under ``/dev/shm/hapax-gem/``; it is graffiti density, not a chiron/ticker
+# or layout-command channel.
 
 _GEM: list[CapabilityRecord] = [
     _record(

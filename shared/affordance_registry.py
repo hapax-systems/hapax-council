@@ -1472,10 +1472,11 @@ CONTENT_AFFORDANCES = [
 # names start with content." invariant in tests/test_reverie_mixer.py stays
 # intact. Both still flow into ALL_AFFORDANCES below for pipeline recruitment.
 #
-# Hapax authors mural keyframes that land on /dev/shm/hapax-compositor/
+# Hapax authors mural keyframes that land on /dev/shm/hapax-gem/
 # gem-frames.json, picked up by GemCairoSource at the gem-mural-bottom
-# surface. See docs/superpowers/plans/2026-04-21-gem-ward-activation-plan.md
-# and docs/research/2026-04-19-gem-ward-design.md.
+# surface with legacy reader compatibility for /dev/shm/hapax-compositor/.
+# See docs/superpowers/plans/2026-04-21-gem-ward-activation-plan.md and
+# docs/research/2026-04-19-gem-ward-design.md.
 # ---------------------------------------------------------------------------
 
 GEM_AFFORDANCES = [
@@ -1501,6 +1502,23 @@ GEM_AFFORDANCES = [
         description=(
             "Compose abstract glyph sequence — ASCII drawings, frame-by-frame "
             "animation, box-draw containers — in the mural surface"
+        ),
+        daemon="hapax_daimonion",
+        operational=_public_operational(
+            latency_class="fast",
+            medium="visual",
+            monetization_risk="low",
+            risk_reason=(
+                "Hapax-authored CP437-only raster; AntiPatternKind enforced "
+                "(emoji rejected) + HARDM Pearson <0.6 face-correlation gate at render"
+            ),
+        ),
+    ),
+    CapabilityRecord(
+        name="gem.spawn",
+        description=(
+            "Mint a fresh CP437 graffiti mark in the GEM mural when a moment "
+            "deserves its own lower-band fragment"
         ),
         daemon="hapax_daimonion",
         operational=_public_operational(
