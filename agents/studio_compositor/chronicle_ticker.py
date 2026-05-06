@@ -56,12 +56,14 @@ _DEFAULT_NATURAL_H: int = 140
 
 # Salience threshold — chronicle events carry an optional ``salience``
 # float in their payload. Any event whose payload salience meets this
-# bar is accepted regardless of source. As of 2026-04-24 no in-tree
-# emitter sets salience (12 h scan of /dev/shm/hapax-chronicle/events.jsonl
-# found 0 of 40 K events tagged), so the source allow-list below does
-# the heavy lifting; keeping the threshold as forward-compatible
-# structure means emitters that start tagging salience are picked up
-# automatically without ward-code changes.
+# bar is accepted regardless of source. After the 2026-05-06 salience
+# tagging series (PRs #2637, #2661, #2669, #2682, #2697, #2706, #2717)
+# the following emitters tag salience and surface independent of the
+# source allow-list: ``stimmung`` (dimension/stance), ``m8_stem_recorder``,
+# ``narration_triad``, ``mail_monitor_operational``, and all three
+# payment rails (``payment_processors.lightning`` / ``.nostr_zap`` /
+# ``.liberapay``). The allow-list still backs sources that emit
+# without salience.
 _SALIENCE_THRESHOLD: float = 0.7
 
 # Source allow-list — events from these sources surface without a
