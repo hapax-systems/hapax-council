@@ -575,6 +575,33 @@ class TestDomainPresetFamilyMapping:
         assert is_audio_reactive("token_pole")
         assert not is_audio_reactive("captions")
 
+    def test_audio_reactive_wards_never_classified_as_perception(self):
+        """An audio-reactive ward must not be classified as ``perception``
+        — the perception domain is the calm-textural fallback for
+        unclassified wards. A ward in ``AUDIO_REACTIVE_WARDS`` whose
+        domain is ``perception`` either drifted classification or the
+        operator forgot to update both sides at once. Either way, the
+        FX reactor's "music-domain ward gets bus-level beat coupling"
+        intent is broken if the ward is classified as perception.
+
+        Sister to
+        ``test_audio_reactive_wards_all_have_domain_assignment`` —
+        same family of cohesion check, stricter (excludes the
+        perception fallback explicitly)."""
+        from agents.studio_compositor.ward_fx_mapping import (
+            AUDIO_REACTIVE_WARDS,
+            domain_for_ward,
+        )
+
+        misclassified = sorted(
+            w for w in AUDIO_REACTIVE_WARDS if domain_for_ward(w) == "perception"
+        )
+        assert not misclassified, (
+            f"AUDIO_REACTIVE_WARDS members classified as 'perception' "
+            f"(should be in a more energetic domain — music, cognition, "
+            f"director, etc.): {misclassified}"
+        )
+
     def test_audio_reactive_wards_all_have_domain_assignment(self):
         """Every member of ``AUDIO_REACTIVE_WARDS`` must also appear in
         ``WARD_DOMAIN`` — otherwise ``domain_for_ward`` returns the
