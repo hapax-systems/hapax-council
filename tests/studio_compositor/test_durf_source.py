@@ -465,9 +465,12 @@ class TestLayoutIntegration:
         surf = next(s for s in data["surfaces"] if s["id"] == "durf-fullframe")
         assert surf["geometry"]["w"] == 1920
         assert surf["geometry"]["h"] == 1080
-        # z_order migrated up to clear the new lore-band scrim;
-        # 50 is the documented "above background, below content" tier.
-        assert surf["z_order"] == 50
+        # z=5 per antigrav constellation intent: DURF is a BACKGROUND
+        # substrate (faint full-frame text under Sierpinski + cameras +
+        # wards), not a foreground occluder. Earlier z=50 was a draft
+        # contract that contradicted the constellation aesthetic and made
+        # DURF dominate the frame (operator visual feedback 2026-05-06).
+        assert surf["z_order"] == 5
 
 
 # ── Cc-task ``activity-reveal-ward-p1-durf-migration`` ──────────────────────
