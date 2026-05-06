@@ -203,6 +203,25 @@ Per operator directive "let's not wait on the avail of the bayes capabilities":
 - Parallax on reverie substrate (3.5 option 4)
 - Bayesian-gate migration (once ClaimEngine lands, Phase 2b)
 
+### 2026-05-05 Phase 3 follow-up status
+
+- Reflection layer: implemented live by default in
+  `CodingActivityReveal._render_reflection_layer`. It mirrors the last two
+  already-redacted pane lines into the bottom 30% of each pane, fades alpha
+  linearly, and applies the slow 0.05 Hz horizontal warp bounded to 4 px.
+- Foreground rotation: implemented by salience-ranked lane selection in
+  `durf_source._select_lanes` and the foreground/stack geometry in
+  `_layout_for_count`. The most salient eligible lane receives the foreground
+  rectangle; lower-ranked visible lanes occupy the side stack.
+- Bayesian gate migration: DURF no longer owns a DURF-specific hardcoded
+  Bayesian table. The live gate feeds `ActivityRevealMixin` claim state through
+  `CodingActivityReveal`, and router-side static ceiling tables were retired by
+  the activity-reveal governance migration.
+- Per-region pixel masking: superseded on the live public path. DURF now
+  broadcasts bounded tmux text only; unsafe raw/pixel capture bypasses fail
+  closed before capture, so there are no default public pixels requiring
+  per-region masks.
+
 ### Claim-before-parallel
 
 DURF is cross-lane (compositor lane belongs to delta; research+ship-ASAP was delegated to beta as side-mission). Per `feedback_claim_before_parallel_work`, beta announces the claim in the broadcast inflection and coordinates with delta to avoid conflict with delta's active compositor work (Phase 2b livestream classifiers). DURF's `SourceKind=fullframe` slot doesn't collide with Phase 2b's `frame_for_llm` split (different composition stages).
