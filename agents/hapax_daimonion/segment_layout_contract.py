@@ -153,6 +153,7 @@ class LayoutNeedKind(StrEnum):
     EVIDENCE_VISIBLE = "evidence_visible"
     ACTION_VISIBLE = "action_visible"
     COMPARISON_VISIBLE = "comparison_visible"
+    RANKED_LIST_VISIBLE = "ranked_list_visible"
     SOURCE_VISIBLE = "source_visible"
     READABILITY_HELD = "readability_held"
     REFERENT_VISIBLE = "referent_visible"
@@ -162,6 +163,7 @@ class ExpectedVisibleEffect(StrEnum):
     EVIDENCE_ON_SCREEN = "evidence_on_screen"
     ACTION_ON_SCREEN = "action_on_screen"
     COMPARISON_LEGIBLE = "comparison_legible"
+    RANKED_LIST_LEGIBLE = "ranked_list_legible"
     SOURCE_CONTEXT_LEGIBLE = "source_context_legible"
     DETAIL_READABLE = "detail_readable"
     REFERENT_AVAILABLE = "referent_available"
@@ -1068,7 +1070,14 @@ def _project_parent_need(
             LayoutPosture.SEGMENT_PRIMARY,
             ExpectedVisibleEffect.ACTION_ON_SCREEN,
         )
-    if token in {"comparison", "comparisonvisible", "compare", "tiervisual", "rankedvisual"}:
+    if token in {"rankedvisual"}:
+        return (
+            ActionIntentKind.COMPARE_REFERENTS,
+            LayoutNeedKind.RANKED_LIST_VISIBLE,
+            LayoutPosture.RANKED_VISUAL,
+            ExpectedVisibleEffect.RANKED_LIST_LEGIBLE,
+        )
+    if token in {"comparison", "comparisonvisible", "compare", "tiervisual"}:
         return (
             ActionIntentKind.COMPARE_REFERENTS,
             LayoutNeedKind.COMPARISON_VISIBLE,
@@ -1087,9 +1096,9 @@ def _project_parent_need(
     if token in {"countdownvisual", "countdown"}:
         return (
             ActionIntentKind.COMPARE_REFERENTS,
-            LayoutNeedKind.COMPARISON_VISIBLE,
+            LayoutNeedKind.RANKED_LIST_VISIBLE,
             LayoutPosture.COUNTDOWN_VISUAL,
-            ExpectedVisibleEffect.COMPARISON_LEGIBLE,
+            ExpectedVisibleEffect.RANKED_LIST_LEGIBLE,
         )
     if token in {"depthvisual", "readabilityheld", "readdetail"}:
         return (
@@ -1148,6 +1157,21 @@ def validate_prepared_segment_artifact(
         parent_show_id=parent_show_id,
         parent_condition_id=parent_condition_id,
     )
+    script = artifact.get("prepared_script")
+    if contract.hosting_context.mode is HostingMode.RESPONSIBLE_HOSTING:
+        if not isinstance(script, Sequence) or isinstance(script, str):
+            raise ValueError("responsible_hosting prepared artifact requires script beats")
+        expected_indexes = set(range(len(script)))
+        covered_indexes = {
+            beat.parent_beat_index
+            for beat in contract.beat_layout_intents
+            if beat.parent_beat_index is not None
+        }
+        if covered_indexes != expected_indexes:
+            raise ValueError(
+                "responsible_hosting requires runtime-compatible beat_layout_intents "
+                "for every prepared_script beat"
+            )
     if contract.hosting_context.mode is HostingMode.RESPONSIBLE_HOSTING and artifact.get(
         "segment_cues"
     ):

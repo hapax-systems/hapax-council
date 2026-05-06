@@ -11,10 +11,9 @@ Three scopes:
     * ``cross_surface`` — Bluesky / Discord / Mastodon variants, usually
       triggered by a high-salience chronicle event.
 
-LLM use is opt-in: if ``litellm`` is reachable for the configured
-``balanced`` model, the narrative prose for title + description goes
-through the model with a scientific-register prompt. If the call fails
-(network, quota, missing key), the composer falls back to the
+LLM use is opt-in: if resident Command-R is reachable, the narrative
+prose for title + description goes through the local grounded model with
+a scientific-register prompt. If the call fails, the composer falls back to the
 deterministic prose assembled from ``framing``. The structured outputs
 (tags, chapters, char-limited variants) are always deterministic.
 """
@@ -29,6 +28,7 @@ from pydantic import BaseModel, Field
 from agents.metadata_composer import chapters as _chapters
 from agents.metadata_composer import framing, redaction, state_readers
 from agents.metadata_composer.chapters import ChapterMarker
+from shared.resident_command_r import call_resident_command_r
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ def compose_metadata(
     in pinned-comment context but not load-bearing).
 
     ``llm_call`` is a test-injection hook. Production callers leave it
-    None and the composer dispatches to ``_call_llm_balanced``; tests can
+    None and the composer dispatches to ``_call_llm_resident_command_r``; tests can
     pass a stub returning the deterministic prose they expect.
 
     The composer picks one operator referent per call via
@@ -324,7 +324,7 @@ def _maybe_llm_polish(
 ) -> str:
     """Return the LLM-polished string or the seed on any failure."""
     if llm_call is None:
-        llm_call = _call_llm_balanced
+        llm_call = _call_llm_resident_command_r
     try:
         polished = llm_call(seed=seed, scope=scope, kind=kind, referent=referent)
         if polished and isinstance(polished, str):
@@ -334,45 +334,20 @@ def _maybe_llm_polish(
     return seed
 
 
-def _call_llm_balanced(
+def _call_llm_resident_command_r(
     *, seed: str, scope: Scope, kind: str, referent: str | None = None
 ) -> str | None:
-    """Best-effort LLM polish via the ``balanced`` tier.
+    """Best-effort LLM polish via resident Command-R.
 
-    Returns None on any litellm failure so callers fall back to the seed.
-    Loaded lazily so tests don't import litellm.
+    Returns None on failure so callers fall back to the deterministic seed.
     """
-    try:
-        import litellm  # noqa: PLC0415
-    except ImportError:
-        return None
-
-    import os  # noqa: PLC0415
-
-    from shared.config import MODELS  # noqa: PLC0415
-
     prompt = framing.build_llm_prompt(seed=seed, scope=scope, kind=kind, referent=referent)
-    # Raw litellm.completion needs an explicit provider prefix +
-    # api_base / api_key; the bare model alias hits the gateway with
-    # "LLM Provider NOT provided" 400. The balanced route lives behind
-    # the LiteLLM proxy at :4000, which is OpenAI-compatible.
     try:
-        response = litellm.completion(
-            model=f"openai/{MODELS['balanced']}",
-            api_base=os.environ.get("LITELLM_API_BASE", "http://127.0.0.1:4000"),
-            api_key=os.environ.get("LITELLM_API_KEY", "not-set"),
-            messages=[{"role": "user", "content": prompt}],
+        return call_resident_command_r(
+            prompt,
             max_tokens=512,
             temperature=0.5,
         )
-        # litellm.ModelResponse supports both attribute and index access; pyright
-        # narrows on attribute paths so we use those.
-        choices = getattr(response, "choices", None)
-        if not choices:
-            return None
-        message = getattr(choices[0], "message", None)
-        content = getattr(message, "content", None) if message else None
-        return content if isinstance(content, str) else None
     except Exception as exc:
-        log.info("litellm balanced polish failed: %s", exc)
+        log.info("resident Command-R metadata polish failed: %s", exc)
         return None

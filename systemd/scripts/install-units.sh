@@ -20,6 +20,11 @@ DECOMMISSIONED_UNITS=(
     logos-dev.service
     tabbyapi-hermes8b.service
     hapax-discord-webhook.service
+    # Retired 2026-05-05: the old break-prep path swapped TabbyAPI model
+    # residency for content prep. Prepared content is now resident
+    # Command-R-only via hapax-segment-prep.{service,timer}.
+    hapax-break-prep.service
+    hapax-break-prep.timer
     # Superseded 2026-05-02 by hapax-parametric-modulation-heartbeat.service.
     # Per memory `feedback_no_presets_use_parametric_modulation`: preset-pulse
     # heartbeats (PR #2239) are the wrong unit. Parametric modulation at the

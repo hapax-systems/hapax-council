@@ -100,9 +100,12 @@ SUPPORTED_SEGMENT_LAYOUT_PRESSURE_KINDS: frozenset[str] = frozenset(
         "compare",
         "source_comparison",
         "source_comparison_surface",
+        "countdown",
+        "countdown_visual",
         "evidence_visible",
         "action_visible",
         "comparison_visible",
+        "ranked_list_visible",
         "source_visible",
         "readability_held",
         "referent_visible",
@@ -510,8 +513,12 @@ def _need_to_segment_intent_kind(
     if kind is None:
         return None
     posture_hints = _proposal_posture_hints(need, proposal)
+    if "camerasubject" in posture_hints:
+        return None
     if "chatprompt" in posture_hints:
         return LayoutNeedKind.CHAT_RESPONSE.value
+    if "countdownvisual" in posture_hints:
+        return LayoutNeedKind.RANKED_LIST.value
     if "tierstatus" in posture_hints or (
         "rankedvisual" in posture_hints and _proposal_mentions(need, proposal, "tier")
     ):
@@ -534,9 +541,12 @@ def _need_to_segment_intent_kind(
         "compare": LayoutNeedKind.SOURCE_COMPARISON,
         "source_comparison": LayoutNeedKind.SOURCE_COMPARISON,
         "source_comparison_surface": LayoutNeedKind.SOURCE_COMPARISON,
+        "countdown": LayoutNeedKind.RANKED_LIST,
+        "countdown_visual": LayoutNeedKind.RANKED_LIST,
         "evidence_visible": LayoutNeedKind.ARTIFACT_DETAIL,
         "action_visible": LayoutNeedKind.PROGRAMME_CONTEXT,
         "comparison_visible": LayoutNeedKind.SOURCE_COMPARISON,
+        "ranked_list_visible": LayoutNeedKind.RANKED_LIST,
         "source_visible": LayoutNeedKind.ARTIFACT_DETAIL,
         "readability_held": LayoutNeedKind.ARTIFACT_DETAIL,
         "referent_visible": LayoutNeedKind.ARTIFACT_DETAIL,

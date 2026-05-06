@@ -466,6 +466,69 @@ def test_active_segment_pressure_uses_blue_posture_hints(tmp_path: Path) -> None
     ]
 
 
+def test_active_segment_pressure_maps_countdown_to_ranked_list_ward(tmp_path: Path) -> None:
+    state_file = tmp_path / "active-segment.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "programme_id": "programme:seg-1",
+                "current_beat_index": 2,
+                "hosting_context": "hapax_responsible_live",
+                "prepared_artifact_ref": "sha256:abc123",
+                "current_beat_layout_intents": [
+                    {
+                        "beat_id": "countdown",
+                        "needs": ["ranked_list_visible"],
+                        "proposed_postures": ["countdown_visual"],
+                        "evidence_refs": ["prepared_artifact:sha256:abc123"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pressure = _read_segment_layout_pressure(state_file, now=NOW)
+    intents = pressure["segment_layout_intents"]
+
+    assert pressure["segment_layout_refusals"] == ()
+    assert [intent.kind for intent in intents] == [LayoutNeedKind.RANKED_LIST.value]
+    assert intents[0].expected_effects == ("ward:ranked-list-panel",)
+
+
+def test_active_segment_pressure_refuses_camera_subject_without_runtime_camera_loop(
+    tmp_path: Path,
+) -> None:
+    state_file = tmp_path / "active-segment.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "programme_id": "programme:seg-1",
+                "current_beat_index": 2,
+                "hosting_context": "hapax_responsible_live",
+                "prepared_artifact_ref": "sha256:abc123",
+                "current_beat_layout_intents": [
+                    {
+                        "beat_id": "camera",
+                        "needs": ["referent_visible"],
+                        "proposed_postures": ["camera_subject"],
+                        "evidence_refs": ["prepared_artifact:sha256:abc123"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pressure = _read_segment_layout_pressure(state_file, now=NOW)
+
+    assert pressure["segment_layout_intents"] == ()
+    refusals = pressure["segment_layout_refusals"]
+    assert isinstance(refusals, tuple)
+    assert refusals[0]["reason"] == "unsupported_segment_layout_need"
+    assert refusals[0]["need_kind"] == "referent_visible"
+
+
 def test_responsible_hosting_without_proposals_suppresses_legacy_pressure(
     tmp_path: Path,
 ) -> None:

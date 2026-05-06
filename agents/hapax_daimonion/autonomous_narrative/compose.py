@@ -26,6 +26,7 @@ from typing import Any
 from shared.claim_prompt import SURFACE_FLOORS
 from shared.narration_triad import render_triad_prompt_context
 from shared.operator_referent import REFERENTS
+from shared.resident_command_r import call_resident_command_r
 
 log = logging.getLogger(__name__)
 
@@ -786,41 +787,21 @@ def _call_llm_grounded(
     seed: str,
     max_tokens: int = _GROUNDED_MAX_TOKENS,
 ) -> str | None:
-    """Production LLM call via the local grounded tier (Command-R/Qwen3.5, TabbyAPI).
+    """Production LLM call via resident Command-R on TabbyAPI.
 
-    Grounding acts route to ``local-fast`` (TabbyAPI). Per
-    feedback_grounding_exhaustive + feedback_director_grounding —
-    grounding acts stay on the local grounded model, not cloud.
+    Grounding acts stay on the resident local grounded model, not cloud,
+    not LiteLLM fallback, and not a model-swapped TabbyAPI process.
 
     ``max_tokens`` is elevated during segment mode (500 vs 220) so the
     host prompt can produce 3-6 sentences of professional delivery.
     """
-    try:
-        import litellm  # noqa: PLC0415
-    except ImportError:
-        return None
-
-    import os  # noqa: PLC0415
-
-    from shared.config import MODELS  # noqa: PLC0415
 
     def _one_call(temp: float) -> str | None:
-        response = litellm.completion(
-            model=f"openai/{MODELS['local-fast']}",
-            api_base=os.environ.get("LITELLM_API_BASE", "http://127.0.0.1:4000"),
-            api_key=os.environ.get("LITELLM_API_KEY", "not-set"),
-            messages=[{"role": "user", "content": prompt}],
+        return call_resident_command_r(
+            prompt,
             max_tokens=max_tokens,
             temperature=temp,
         )
-        choices = getattr(response, "choices", None)
-        if not choices:
-            return None
-        message = getattr(choices[0], "message", None)
-        content = getattr(message, "content", None) if message else None
-        if not isinstance(content, str):
-            return None
-        return content.strip()
 
     try:
         text = _one_call(_GROUNDED_TEMPERATURE)

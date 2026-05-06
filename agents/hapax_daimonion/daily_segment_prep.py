@@ -13,7 +13,7 @@ Usage:
     uv run python -m agents.hapax_daimonion.daily_segment_prep --prep-dir ~/.cache/hapax/segment-prep
 
 The runner can also be triggered by a systemd timer (see
-config/systemd/hapax-segment-prep.timer).
+systemd/units/hapax-segment-prep.timer).
 """
 
 from __future__ import annotations
@@ -23,10 +23,33 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from shared.resident_command_r import (
+    RESIDENT_COMMAND_R_MODEL,
+    call_resident_command_r,
+    clean_local_model_text,
+    configured_resident_model,
+    loaded_tabby_model,
+    tabby_chat_url,
+)
+from shared.segment_quality_actionability import (
+    ACTIONABILITY_RUBRIC_VERSION,
+    EXPLICIT_LAYOUT_FALLBACK_CONTEXT,
+    LAYOUT_RESPONSIBILITY_VERSION,
+    NON_RESPONSIBLE_STATIC_CONTEXT,
+    QUALITY_RUBRIC_VERSION,
+    RESPONSIBLE_HOSTING_CONTEXT,
+    forbidden_layout_authority_fields,
+    render_quality_prompt_block,
+    score_segment_quality,
+    validate_layout_responsibility,
+    validate_segment_actionability,
+)
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +68,8 @@ PREP_BUDGET_S = float(os.environ.get("HAPAX_SEGMENT_PREP_BUDGET_S", "1800"))  # 
 # segment for iterative refinement.  Each segment gets an initial
 # composition pass PLUS a critic/rewrite pass.
 MAX_SEGMENTS = int(os.environ.get("HAPAX_SEGMENT_PREP_MAX", "4"))
+PREP_ARTIFACT_SCHEMA_VERSION = 1
+PREP_ARTIFACT_AUTHORITY = "prior_only"
 
 
 def _today_dir(base: Path) -> Path:
@@ -52,6 +77,84 @@ def _today_dir(base: Path) -> Path:
     d = base / today
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _today_path(base: Path) -> Path:
+    today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+    return base / today
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _sha256_json(payload: Any) -> str:
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return _sha256_text(text)
+
+
+def _is_sha256_hex(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(ch in "0123456789abcdef" for ch in value.lower())
+    )
+
+
+def _artifact_hash(payload: dict[str, Any]) -> str:
+    body = {k: v for k, v in payload.items() if k != "artifact_sha256"}
+    return _sha256_json(body)
+
+
+def _json_equal(left: Any, right: Any) -> bool:
+    return _sha256_json(left) == _sha256_json(right)
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+# Per-role visual hook guidance for the prep prompt.  Tells the LLM which
+# text patterns trigger role-specific on-screen visuals so it can use them
+# intentionally rather than accidentally.
+_ROLE_VISUAL_HOOKS: dict[str, str] = {
+    "tier_list": (
+        "TIER CHART HOOKS — the stream renders a live tier chart:\n"
+        "  Use the EXACT phrase 'Place [item] in [S/A/B/C/D]-tier' to update it.\n"
+        "  Items appear on the tier chart as you place them. The audience sees\n"
+        "  your rankings build in real time.\n"
+        "  Example: 'Place Popcorn Sutton's still craft in S-tier.'\n\n"
+    ),
+    "top_10": (
+        "COUNTDOWN HOOKS — the stream requests a ranked countdown panel:\n"
+        "  Use '#N is...' or 'Number N:' to update the current entry display.\n"
+        "  The runtime layout loop must render the ranked-list panel before this counts.\n"
+        "  Example: '#7 is the Bourdain episode on Appalachian food ways.'\n\n"
+    ),
+    "iceberg": (
+        "ICEBERG DEPTH HOOKS — the stream renders a depth indicator:\n"
+        "  Use layer keywords to visually advance through layers:\n"
+        "  'surface level' / 'commonly known' → top layer\n"
+        "  'going deeper' / 'specialist knowledge' → mid layers\n"
+        "  'obscure' / 'almost nobody talks about' → deep layers\n"
+        "  'the deepest' / 'bottom of the iceberg' → abyss\n"
+        "  The visual darkens and narrows as you descend.\n\n"
+    ),
+    "rant": (
+        "MOOD HOOKS — the stream mood shifts with your affect:\n"
+        "  Escalation: 'ridiculous', 'unacceptable', 'outrageous' → intense mood\n"
+        "  De-escalation: 'fair', 'nuance', 'reasonable' → warm mood\n"
+        "  Use escalation deliberately through the body; land with de-escalation.\n\n"
+    ),
+    "react": (
+        "MOOD HOOKS — the stream mood shifts with your affect:\n"
+        "  Engagement: 'brilliant', 'impressive', 'incredible' → warm mood\n"
+        "  Skepticism: 'wait', 'hold on', 'not sure' → cool mood\n"
+        "  Revelation: 'exactly', 'this is it', 'nailed it' → intense mood\n\n"
+    ),
+}
 
 
 def _build_full_segment_prompt(
@@ -87,6 +190,9 @@ def _build_full_segment_prompt(
             f"Other referents: {referents}.\n"
         )
 
+    # Build role-specific visual hook guidance
+    visual_hooks = _ROLE_VISUAL_HOOKS.get(role_value, "")
+
     return (
         f"{envelope}\n\n"
         f"You are Hapax, preparing a {role_value.upper().replace('_', ' ')} segment "
@@ -110,6 +216,28 @@ def _build_full_segment_prompt(
         "- Use rhetorical questions, callbacks to earlier beats, direct address to chat\n"
         "- Let ideas BREATHE — develop a point, sit with it, then pivot\n"
         "- A beat that can be summarized in one sentence is a beat that wasn't written yet\n\n"
+        f"{render_quality_prompt_block()}"
+        "== VISUAL HOOKS ==\n"
+        "Your narration DRIVES the stream visuals. Specific text patterns trigger "
+        "on-screen effects automatically. Use them intentionally:\n\n"
+        "CHAT TRIGGERS — these phrases poll chat immediately:\n"
+        "  'What do you think?', 'Drop it in the chat', 'Let me know in the chat',\n"
+        "  'What would you change?', 'What's your pick?'\n"
+        "  Use at beat endings where audience engagement adds value. Never as filler.\n\n"
+        f"{visual_hooks}"
+        "== CRITICAL: SPOKEN PROSE ONLY ==\n"
+        "Write ONLY words you would SAY OUT LOUD on a live broadcast.\n"
+        "NEVER include stage directions, beat labels, action cues, or meta-instructions.\n"
+        "WRONG: 'We pivot. Challenge the S-tier placement. Discuss the complexity.'\n"
+        "WRONG: 'We close. Recap the final tier chart. Invite chat to disagree.'\n"
+        "RIGHT: 'But here is where the chart gets uncomfortable. Because Sutton — '\n"
+        "RIGHT: 'So let me pull this back together. The final chart tells a story...'\n"
+        "If a sentence reads like a screenplay direction, DELETE IT and write dialogue.\n\n"
+        "== CRITICAL: NO REPETITION ==\n"
+        "NEVER repeat the same phrase, sentence, or paragraph across beats.\n"
+        "Each beat must be ENTIRELY UNIQUE prose. If you find yourself writing\n"
+        "'The chart is live' or 'Let\\'s see the dissent' more than once, STOP.\n"
+        "Repetition is the single worst failure mode. Every beat must advance.\n\n"
         "== YOUR TASK ==\n"
         "Compose the COMPLETE narration for this segment — one SUBSTANTIAL block of "
         "broadcast-ready prose per beat. Return a JSON array where each element is "
@@ -144,74 +272,115 @@ def _build_full_segment_prompt(
 
 # LLM timeout — raised from 180s to 300s to accommodate longer, richer
 # output from the expanded prompt (800-2000 chars per beat × 10-15 beats).
-_PREP_LLM_TIMEOUT_S = 300
+_PREP_LLM_TIMEOUT_S = 600
+
+# Content prep is a single-resident-model path.  Evidence acquisition can
+# happen elsewhere, but plan/draft/refine must run on the same grounded local
+# generator so prep artifacts have a coherent model provenance.
+RESIDENT_PREP_MODEL = RESIDENT_COMMAND_R_MODEL
+_ALLOWED_PREP_MODELS = {RESIDENT_PREP_MODEL}
 
 
-def _call_llm(prompt: str) -> str:
-    """Call the LLM — TabbyAPI primary, LiteLLM fallback.
+def _prep_model() -> str:
+    return configured_resident_model("HAPAX_SEGMENT_PREP_MODEL", purpose="segment prep")
 
-    Mirrors the programme planner's local-first routing: TabbyAPI at
-    localhost:5000 for zero external dependency, LiteLLM at localhost:4000
-    as fallback.
-    """
-    import urllib.request
 
-    tabby_url = os.environ.get("HAPAX_TABBY_URL", "http://localhost:5000/v1/chat/completions")
-    litellm_url = os.environ.get("HAPAX_LITELLM_URL", "http://localhost:4000/v1/chat/completions")
-    litellm_key = os.environ.get("LITELLM_API_KEY", "")
-    model = os.environ.get("HAPAX_SEGMENT_PREP_MODEL", "command-r-08-2024-exl3-5.0bpw")
+def _tabby_chat_url() -> str:
+    return tabby_chat_url()
 
-    body = json.dumps(
-        {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 16384,
-            "temperature": 0.7,
-            "chat_template_kwargs": {"enable_thinking": False},
-        }
-    ).encode()
 
-    # Primary: TabbyAPI (local, no auth)
-    try:
-        req = urllib.request.Request(tabby_url, body, {"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=_PREP_LLM_TIMEOUT_S) as resp:
-            data = json.loads(resp.read())
-        content = data["choices"][0]["message"]["content"] or ""
-        if content:
-            content = _strip_think_tags(content)
-            log.info("segment prep LLM: served by TabbyAPI (local)")
-            return content
-    except Exception:
-        log.info("segment prep LLM: TabbyAPI unavailable, trying LiteLLM")
+def _loaded_tabby_model() -> str | None:
+    return loaded_tabby_model(_tabby_chat_url())
 
-    # Fallback: LiteLLM
-    try:
-        req = urllib.request.Request(
-            litellm_url,
-            body,
-            {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {litellm_key}",
-            },
+
+def _assert_resident_prep_model(expected: str | None = None) -> str:
+    expected = expected or _prep_model()
+    loaded = _loaded_tabby_model()
+    if loaded != expected:
+        raise RuntimeError(
+            "segment prep refuses to run unless TabbyAPI is already serving "
+            f"{expected!r}; current model is {loaded!r}"
         )
-        with urllib.request.urlopen(req, timeout=_PREP_LLM_TIMEOUT_S) as resp:
-            data = json.loads(resp.read())
-        return _strip_think_tags(data["choices"][0]["message"]["content"] or "")
+    return loaded
+
+
+def _new_prep_session() -> dict[str, Any]:
+    return {
+        "prep_session_id": f"segment-prep-{datetime.now(tz=UTC).strftime('%Y%m%dT%H%M%SZ')}",
+        "model_id": _prep_model(),
+        "llm_calls": [],
+    }
+
+
+def _record_llm_call(
+    prep_session: dict[str, Any] | None,
+    *,
+    phase: str,
+    programme_id: str,
+    prompt: str,
+) -> dict[str, Any] | None:
+    if prep_session is None:
+        return None
+    calls = prep_session.setdefault("llm_calls", [])
+    record = {
+        "call_index": len(calls) + 1,
+        "phase": phase,
+        "programme_id": programme_id,
+        "model_id": prep_session.get("model_id", _prep_model()),
+        "prompt_sha256": _sha256_text(prompt),
+        "prompt_chars": len(prompt),
+        "called_at": datetime.now(tz=UTC).isoformat(),
+    }
+    calls.append(record)
+    return record
+
+
+def _call_llm(
+    prompt: str,
+    *,
+    prep_session: dict[str, Any] | None = None,
+    phase: str = "compose",
+    programme_id: str = "",
+    max_tokens: int = 16384,
+) -> str:
+    """Call the resident Command-R TabbyAPI endpoint.
+
+    This path intentionally has no model-load, unload, or LiteLLM fallback.
+    A residency mismatch is a hard failure because a wrong-model prep artifact
+    is worse than no prep artifact.
+    """
+    model = _prep_model()
+    _assert_resident_prep_model(model)
+    _record_llm_call(
+        prep_session,
+        phase=phase,
+        programme_id=programme_id,
+        prompt=prompt,
+    )
+
+    try:
+        content = call_resident_command_r(
+            prompt,
+            chat_url=_tabby_chat_url(),
+            max_tokens=max_tokens,
+            temperature=0.7,
+            timeout_s=_PREP_LLM_TIMEOUT_S,
+        )
+        log.info("segment prep LLM: served by resident Command-R")
+        return content
     except Exception:
-        log.warning("segment prep LLM: both TabbyAPI and LiteLLM failed", exc_info=True)
+        log.warning("segment prep LLM: resident Command-R call failed", exc_info=True)
         raise
 
 
-def _strip_think_tags(text: str) -> str:
-    """Strip Qwen3's <think>...</think> chain-of-thought from responses."""
-    import re
-
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+def _clean_llm_text(text: str) -> str:
+    """Clean leaked hidden-reasoning tags from compatible local backends."""
+    return clean_local_model_text(text)
 
 
 def _parse_script(raw: str) -> list[str]:
     """Parse the LLM response into a list of beat narration blocks."""
-    text = _strip_think_tags(raw.strip())
+    text = _clean_llm_text(raw.strip())
     # Strip markdown fences
     if text.startswith("```"):
         lines = text.split("\n")
@@ -282,7 +451,12 @@ def _build_refinement_prompt(script: list[str], programme: Any) -> str:
         "3. ARC: Does it earn the next beat, or just stop and start a new topic?\n"
         "4. RHETORIC: Does it vary sentence length? Use direct address? Callbacks?\n"
         "5. ENERGY: Does the beat breathe, or does it rush through its material?\n"
-        "6. DEPTH: Could a Wikipedia article make this same point? If yes, it's too shallow.\n\n"
+        "6. DEPTH: Could a Wikipedia article make this same point? If yes, it's too shallow.\n"
+        "7. STAGE DIRECTIONS: Does the beat contain meta-instructions like 'We pivot',\n"
+        "   'We close', 'Recap the chart', 'Invite chat'? These are FATAL — rewrite as\n"
+        "   actual spoken prose that a host would say out loud.\n"
+        "8. REPETITION: Is the same phrase or paragraph copy-pasted across beats?\n"
+        "   Any repeated text block is a FATAL error — each beat must be unique.\n\n"
         "== THE DRAFT ==\n"
         f"{beat_review}\n\n"
         "== YOUR TASK ==\n"
@@ -299,6 +473,9 @@ def _build_refinement_prompt(script: list[str], programme: Any) -> str:
 def _refine_script(
     script: list[str],
     programme: Any,
+    *,
+    prep_session: dict[str, Any] | None = None,
+    programme_id: str = "",
 ) -> list[str]:
     """Iterative refinement pass — critic + rewrite.
 
@@ -308,7 +485,12 @@ def _refine_script(
     """
     prompt = _build_refinement_prompt(script, programme)
     try:
-        raw = _call_llm(prompt)
+        raw = _call_llm(
+            prompt,
+            prep_session=prep_session,
+            phase="refine",
+            programme_id=programme_id,
+        )
         refined = _parse_script(raw)
         if refined and len(refined) >= len(script):
             # Log improvement stats
@@ -331,7 +513,49 @@ def _refine_script(
     return script
 
 
-def prep_segment(programme: Any, prep_dir: Path) -> Path | None:
+def _source_hashes_from_fields(
+    *,
+    programme_id: str,
+    role: str,
+    topic: str,
+    segment_beats: list[str],
+    seed_sha256: str,
+    prompt_sha256: str,
+) -> dict[str, str]:
+    source_payload = {
+        "programme_id": programme_id,
+        "role": role,
+        "topic": topic,
+        "segment_beats": segment_beats,
+    }
+    return {
+        "programme_sha256": _sha256_json(source_payload),
+        "topic_sha256": _sha256_text(str(topic)),
+        "segment_beats_sha256": _sha256_json(segment_beats),
+        "seed_sha256": seed_sha256,
+        "prompt_sha256": prompt_sha256,
+    }
+
+
+def _source_hashes(programme: Any, *, seed: str, prompt: str) -> dict[str, str]:
+    content = getattr(programme, "content", None)
+    beat_values = getattr(content, "segment_beats", []) or [] if content else []
+    return _source_hashes_from_fields(
+        programme_id=str(getattr(programme, "programme_id", "unknown")),
+        role=str(getattr(getattr(programme, "role", None), "value", "unknown")),
+        topic=str(getattr(content, "narrative_beat", "") or "" if content else ""),
+        segment_beats=[str(item) for item in beat_values],
+        seed_sha256=_sha256_text(seed),
+        prompt_sha256=_sha256_text(prompt),
+    )
+
+
+def prep_segment(
+    programme: Any,
+    prep_dir: Path,
+    *,
+    prep_session: dict[str, Any] | None = None,
+) -> Path | None:
     """Compose the full narration script for one programme and save it.
 
     Two-pass process:
@@ -340,7 +564,18 @@ def prep_segment(programme: Any, prep_dir: Path) -> Path | None:
 
     Returns the path to the saved JSON file, or None on failure.
     """
-    prog_id = getattr(programme, "programme_id", "unknown")
+    prog_id = str(getattr(programme, "programme_id", "unknown"))
+    try:
+        artifact_name = _programme_artifact_name(prog_id)
+        diagnostic_name = _programme_artifact_name(
+            prog_id,
+            suffix=".actionability-invalid.json",
+        )
+    except ValueError as exc:
+        log.warning("prep_segment: skipping unsafe programme_id %r: %s", prog_id, exc)
+        return None
+    if prep_session is None:
+        prep_session = _new_prep_session()
     role = getattr(getattr(programme, "role", None), "value", "unknown")
     content = getattr(programme, "content", None)
     beats = getattr(content, "segment_beats", []) or [] if content else []
@@ -354,7 +589,13 @@ def prep_segment(programme: Any, prep_dir: Path) -> Path | None:
     # Pass 1: Initial composition
     seed = _build_seed(programme)
     prompt = _build_full_segment_prompt(programme, seed)
-    raw = _call_llm(prompt)
+    source_hashes = _source_hashes(programme, seed=seed, prompt=prompt)
+    raw = _call_llm(
+        prompt,
+        prep_session=prep_session,
+        phase="compose",
+        programme_id=prog_id,
+    )
     script = _parse_script(raw)
 
     if not script:
@@ -381,23 +622,99 @@ def prep_segment(programme: Any, prep_dir: Path) -> Path | None:
     )
 
     # Pass 2: Iterative refinement
-    script = _refine_script(script, programme)
+    script = _refine_script(
+        script,
+        programme,
+        prep_session=prep_session,
+        programme_id=prog_id,
+    )
+    actionability = validate_segment_actionability(
+        script,
+        [str(item) for item in beats],
+    )
+    if actionability["ok"] is not True:
+        log.warning(
+            "prep_segment: quarantining %s with %d unsupported action claims",
+            prog_id,
+            len(actionability["removed_unsupported_action_lines"]),
+        )
+        diagnostic_path = prep_dir / diagnostic_name
+        diagnostic = {
+            "schema_version": PREP_ARTIFACT_SCHEMA_VERSION,
+            "authority": PREP_ARTIFACT_AUTHORITY,
+            "programme_id": prog_id,
+            "role": role,
+            "topic": getattr(content, "narrative_beat", "") or "",
+            "segment_beats": list(beats),
+            "prepared_script_candidate": script,
+            "sanitized_script_candidate": actionability["prepared_script"],
+            "actionability_rubric_version": ACTIONABILITY_RUBRIC_VERSION,
+            "actionability_alignment": {
+                "ok": False,
+                "removed_unsupported_action_lines": actionability[
+                    "removed_unsupported_action_lines"
+                ],
+            },
+            "prepped_at": datetime.now(tz=UTC).isoformat(),
+            "prep_session_id": prep_session["prep_session_id"],
+            "model_id": prep_session["model_id"],
+            "prompt_sha256": source_hashes["prompt_sha256"],
+            "seed_sha256": source_hashes["seed_sha256"],
+            "not_loadable_reason": "actionability alignment failed",
+        }
+        diagnostic["artifact_sha256"] = _artifact_hash(diagnostic)
+        tmp = diagnostic_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(diagnostic, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(diagnostic_path)
+        return None
+    script = list(actionability["prepared_script"])
+    layout_responsibility = validate_layout_responsibility(
+        actionability["beat_action_intents"],
+    )
+    quality_report = score_segment_quality(script, [str(item) for item in beats])
 
     # Save to disk
-    out_path = prep_dir / f"{prog_id}.json"
+    out_path = prep_dir / artifact_name
     final_avg = sum(len(b) for b in script) / max(len(script), 1)
     payload = {
+        "schema_version": PREP_ARTIFACT_SCHEMA_VERSION,
+        "authority": PREP_ARTIFACT_AUTHORITY,
         "programme_id": prog_id,
         "role": role,
         "topic": getattr(content, "narrative_beat", "") or "",
         "segment_beats": list(beats),
         "prepared_script": script,
+        "segment_quality_rubric_version": QUALITY_RUBRIC_VERSION,
+        "actionability_rubric_version": ACTIONABILITY_RUBRIC_VERSION,
+        "layout_responsibility_version": LAYOUT_RESPONSIBILITY_VERSION,
+        "hosting_context": layout_responsibility["hosting_context"],
+        "segment_quality_report": quality_report,
+        "beat_action_intents": actionability["beat_action_intents"],
+        "actionability_alignment": {
+            "ok": actionability["ok"],
+            "removed_unsupported_action_lines": actionability["removed_unsupported_action_lines"],
+        },
+        "beat_layout_intents": layout_responsibility["beat_layout_intents"],
+        "layout_decision_contract": layout_responsibility["layout_decision_contract"],
+        "runtime_layout_validation": layout_responsibility["runtime_layout_validation"],
+        "layout_decision_receipts": layout_responsibility["layout_decision_receipts"],
         "prepped_at": datetime.now(tz=UTC).isoformat(),
+        "prep_session_id": prep_session["prep_session_id"],
+        "model_id": prep_session["model_id"],
+        "prompt_sha256": source_hashes["prompt_sha256"],
+        "seed_sha256": source_hashes["seed_sha256"],
+        "source_hashes": source_hashes,
+        "source_provenance_sha256": _sha256_json(source_hashes),
+        "llm_calls": [
+            call
+            for call in prep_session.get("llm_calls", [])
+            if call.get("programme_id") == prog_id
+        ],
         "beat_count": len(beats),
         "avg_chars_per_beat": round(final_avg),
         "refinement_applied": True,
     }
-    payload.update(_parent_layout_metadata_for_programme(programme))
+    payload["artifact_sha256"] = _artifact_hash(payload)
     tmp = out_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(out_path)
@@ -415,21 +732,6 @@ def prep_segment(programme: Any, prep_dir: Path) -> Path | None:
     _emit_self_evaluation(prog_id, role, script, beats)
 
     return out_path
-
-
-def _parent_layout_metadata_for_programme(programme: Any) -> dict[str, Any]:
-    content = getattr(programme, "content", None)
-    layout_decision_contract = dict(getattr(content, "layout_decision_contract", {}) or {})
-    layout_decision_contract.setdefault("may_command_layout", False)
-    return {
-        "parent_show_id": getattr(programme, "parent_show_id", None),
-        "parent_condition_id": getattr(programme, "parent_condition_id", None),
-        "hosting_context": getattr(content, "hosting_context", None) or "hapax_responsible_live",
-        "authority": getattr(content, "authority", None) or "prior_only",
-        "beat_layout_intents": getattr(content, "beat_layout_intents", []) or [],
-        "layout_decision_contract": layout_decision_contract,
-        "runtime_layout_validation": getattr(content, "runtime_layout_validation", {}) or {},
-    }
 
 
 def _emit_self_evaluation(
@@ -520,23 +822,38 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
     if prep_dir is None:
         prep_dir = DEFAULT_PREP_DIR
     today = _today_dir(prep_dir)
+    existing_manifest_names = _accepted_manifest_programme_names(
+        today,
+        _manifest_programme_names(today) or [],
+    )
+    existing_programme_ids = _accepted_manifest_programme_ids(today, existing_manifest_names)
 
     start = time.monotonic()
     saved: list[Path] = []
+    prep_session = _new_prep_session()
+    _assert_resident_prep_model(prep_session["model_id"])
 
     # Step 1: Plan — call the planner in rounds until we have enough
     # segmented programmes. Each round yields ~3 programmes; for 10
     # segments we typically need 4 rounds.
     log.info("daily_segment_prep: planning programmes (target=%d)...", MAX_SEGMENTS)
     segmented: list[Any] = []
-    seen_ids: set[str] = set()
+    seen_ids: set[str] = set(existing_programme_ids)
     plan_round = 0
     max_rounds = (MAX_SEGMENTS // 2) + 2  # generous ceiling
 
     try:
         from agents.programme_manager.planner import ProgrammePlanner
 
-        planner = ProgrammePlanner()
+        planner = ProgrammePlanner(
+            llm_fn=lambda prompt: _call_llm(
+                prompt,
+                prep_session=prep_session,
+                phase="plan",
+                programme_id="planner",
+                max_tokens=8192,
+            )
+        )
     except Exception:
         log.error("daily_segment_prep: planner construction failed", exc_info=True)
         return saved
@@ -587,31 +904,51 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
         plan_round,
     )
 
-    # Step 2: Compose each segmented-content programme
+    # Step 2: Compose each segmented-content programme on the same resident model.
     for prog in segmented[:MAX_SEGMENTS]:
         elapsed = time.monotonic() - start
         if elapsed >= PREP_BUDGET_S:
             log.warning("daily_segment_prep: prep budget exhausted (%.0fs)", elapsed)
             break
 
-        path = prep_segment(prog, today)
+        try:
+            path = prep_segment(prog, today, prep_session=prep_session)
+        except Exception:
+            prog_id = getattr(prog, "programme_id", "?")
+            log.warning("daily_segment_prep: segment %s failed, continuing", prog_id, exc_info=True)
+            path = None
         if path:
             saved.append(path)
 
-    # Step 3: Write manifest
+    _assert_resident_prep_model(prep_session["model_id"])
+
+    # Step 3: Write manifest.  The manifest is the loader allow-list, so
+    # repeated prep runs must append newly accepted artifacts without
+    # re-admitting stale files that no longer pass the current load gates.
     manifest = today / "manifest.json"
-    manifest.write_text(
+    manifest_programmes = _accepted_manifest_programme_names(
+        today,
+        [*existing_manifest_names, *(p.name for p in saved)],
+    )
+    manifest_payload = {
+        "date": datetime.now(tz=UTC).strftime("%Y-%m-%d"),
+        "prepped_at": datetime.now(tz=UTC).isoformat(),
+        "prep_session_id": prep_session["prep_session_id"],
+        "model_id": prep_session["model_id"],
+        "llm_calls": prep_session.get("llm_calls", []),
+        "programmes": manifest_programmes,
+        "run_saved_programmes": [p.name for p in saved],
+        "total_elapsed_s": round(time.monotonic() - start, 1),
+    }
+    manifest_tmp = manifest.with_suffix(".json.tmp")
+    manifest_tmp.write_text(
         json.dumps(
-            {
-                "date": datetime.now(tz=UTC).strftime("%Y-%m-%d"),
-                "prepped_at": datetime.now(tz=UTC).isoformat(),
-                "programmes": [p.name for p in saved],
-                "total_elapsed_s": round(time.monotonic() - start, 1),
-            },
+            manifest_payload,
             indent=2,
         ),
         encoding="utf-8",
     )
+    manifest_tmp.replace(manifest)
 
     # Step 4: Upsert programme summaries into Qdrant so the affordance
     # pipeline can semantically match impingements against available
@@ -651,26 +988,47 @@ def _upsert_programmes_to_qdrant(
         )
         from shared.config import get_qdrant
 
-        # Build semantic summaries for each programme
+        saved_by_id: dict[str, tuple[Path, dict[str, Any]]] = {}
+        for path in saved_paths:
+            try:
+                artifact = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                log.debug("prep qdrant: failed to read saved artifact %s", path, exc_info=True)
+                continue
+            if not isinstance(artifact, dict):
+                continue
+            reason = _artifact_rejection_reason(
+                artifact,
+                path=path,
+                manifest_programmes=_manifest_programmes(path.parent),
+            )
+            if reason:
+                log.warning("prep qdrant: refusing %s: %s", path.name, reason)
+                continue
+            pid = str(artifact.get("programme_id") or "")
+            if pid:
+                saved_by_id[pid] = (path, artifact)
+
+        # Build semantic summaries for successfully saved programmes only.
         texts: list[str] = []
         prog_ids: list[str] = []
         prog_meta: list[dict] = []
         for prog in programmes:
             pid = getattr(prog, "programme_id", None) or ""
-            if not pid:
+            if not pid or pid not in saved_by_id:
                 continue
+            artifact_path, artifact = saved_by_id[pid]
             content = getattr(prog, "content", None)
             role_value = getattr(getattr(prog, "role", None), "value", "rant")
             topic = getattr(content, "narrative_beat", "") or "" if content else ""
             beats = getattr(content, "segment_beats", []) or [] if content else []
-            script = getattr(content, "prepared_script", []) or [] if content else []
 
             # Build a rich text summary for embedding
             beat_summary = " → ".join(str(b)[:60] for b in beats[:8])
             text = (
                 f"Programme {pid}: {role_value} segment about {topic[:200]}. "
                 f"Beats: {beat_summary}. "
-                f"{'Pre-composed script available.' if script else 'No script yet.'}"
+                "Accepted prepared artifact candidate available."
             )
             texts.append(text)
             prog_ids.append(pid)
@@ -680,8 +1038,29 @@ def _upsert_programmes_to_qdrant(
                     "role": role_value,
                     "topic": str(topic)[:500],
                     "beat_count": len(beats),
-                    "has_script": bool(script),
-                    "prepped_at": datetime.now(tz=UTC).isoformat(),
+                    "has_script": True,
+                    "artifact_type": "prepared_script",
+                    "accepted": True,
+                    "acceptance_gate": "daily_segment_prep._upsert_programmes_to_qdrant",
+                    "authority": artifact.get("authority"),
+                    "artifact_path": str(artifact_path),
+                    "artifact_sha256": artifact.get("artifact_sha256"),
+                    "model_id": artifact.get("model_id"),
+                    "prep_session_id": artifact.get("prep_session_id"),
+                    "llm_call_count": len(artifact.get("llm_calls") or []),
+                    "prompt_sha256": artifact.get("prompt_sha256"),
+                    "seed_sha256": artifact.get("seed_sha256"),
+                    "source_hashes": artifact.get("source_hashes"),
+                    "source_provenance_sha256": artifact.get("source_provenance_sha256"),
+                    "segment_quality_label": (artifact.get("segment_quality_report") or {}).get(
+                        "label"
+                    ),
+                    "actionability_ok": (artifact.get("actionability_alignment") or {}).get("ok"),
+                    "beat_action_intents": artifact.get("beat_action_intents"),
+                    "hosting_context": artifact.get("hosting_context"),
+                    "runtime_layout_validation": artifact.get("runtime_layout_validation"),
+                    "beat_layout_intents": artifact.get("beat_layout_intents"),
+                    "prepped_at": artifact.get("prepped_at"),
                 }
             )
 
@@ -726,6 +1105,409 @@ def _upsert_programmes_to_qdrant(
         log.warning("prep qdrant: upsert failed (non-fatal)", exc_info=True)
 
 
+_PROGRAMME_ID_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _programme_artifact_name(value: Any, *, suffix: str = ".json") -> str:
+    programme_id = str(value)
+    if not _PROGRAMME_ID_FILENAME_RE.fullmatch(programme_id):
+        raise ValueError("programme_id is not safe for a prep artifact filename")
+    name = f"{programme_id}{suffix}"
+    if _safe_manifest_name(name) != name:
+        raise ValueError("programme_id does not produce a manifest-safe artifact name")
+    return name
+
+
+def _safe_manifest_name(value: Any) -> str | None:
+    name = str(value)
+    if not name or name == "manifest.json":
+        return None
+    if Path(name).name != name:
+        return None
+    if not name.endswith(".json"):
+        return None
+    return name
+
+
+def _manifest_programme_names(today: Path) -> list[str] | None:
+    manifest_path = today / "manifest.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        log.debug("load_prepped: failed to read manifest %s", manifest_path, exc_info=True)
+        return []
+    programmes = manifest.get("programmes")
+    if not isinstance(programmes, list):
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in programmes:
+        name = _safe_manifest_name(item)
+        if name is None or name in seen:
+            continue
+        names.append(name)
+        seen.add(name)
+    return names
+
+
+def _manifest_programmes(today: Path) -> set[str] | None:
+    names = _manifest_programme_names(today)
+    if names is None:
+        return None
+    return set(names)
+
+
+def _llm_calls_rejection_reason(calls: Any) -> str | None:
+    if not isinstance(calls, list) or not calls:
+        return "missing llm_calls"
+    last_index = 0
+    for call in calls:
+        if not isinstance(call, dict):
+            return "invalid llm_calls"
+        call_index = call.get("call_index")
+        if not isinstance(call_index, int) or call_index <= last_index:
+            return "non-monotonic llm_calls"
+        last_index = call_index
+        if call.get("model_id") != RESIDENT_PREP_MODEL:
+            return "llm call model mismatch"
+        if not call.get("phase") or not call.get("programme_id") or not call.get("called_at"):
+            return "incomplete llm call provenance"
+        if not _is_sha256_hex(call.get("prompt_sha256")):
+            return "missing llm call prompt hash"
+    return None
+
+
+def _actionability_rejection_reason(data: dict[str, Any]) -> str | None:
+    if data.get("segment_quality_rubric_version") != QUALITY_RUBRIC_VERSION:
+        return "unsupported segment quality rubric"
+    if data.get("actionability_rubric_version") != ACTIONABILITY_RUBRIC_VERSION:
+        return "unsupported actionability rubric"
+    if not isinstance(data.get("segment_quality_report"), dict):
+        return "missing segment quality report"
+
+    intents = data.get("beat_action_intents")
+    script = data.get("prepared_script")
+    if not isinstance(intents, list) or not isinstance(script, list):
+        return "missing beat action intents"
+    if len(intents) != len(script):
+        return "beat action intent count mismatch"
+    for expected_index, declaration in enumerate(intents):
+        if not isinstance(declaration, dict):
+            return "invalid beat action intent"
+        if declaration.get("beat_index") != expected_index:
+            return "beat action index mismatch"
+        declared_intents = declaration.get("intents")
+        if not isinstance(declared_intents, list) or not declared_intents:
+            return "missing declared beat intent"
+        for intent in declared_intents:
+            if not isinstance(intent, dict):
+                return "invalid declared beat intent"
+            if not intent.get("kind") or not intent.get("expected_effect"):
+                return "incomplete declared beat intent"
+
+    alignment = data.get("actionability_alignment")
+    if not isinstance(alignment, dict):
+        return "missing actionability alignment"
+    if not isinstance(alignment.get("removed_unsupported_action_lines", []), list):
+        return "invalid actionability alignment"
+    if alignment.get("ok") is not True:
+        return "actionability alignment failed"
+    return None
+
+
+def _layout_rejection_reason(data: dict[str, Any]) -> str | None:
+    if data.get("layout_responsibility_version") != LAYOUT_RESPONSIBILITY_VERSION:
+        return "unsupported layout responsibility version"
+    hosting_context = data.get("hosting_context")
+    if hosting_context not in {
+        RESPONSIBLE_HOSTING_CONTEXT,
+        EXPLICIT_LAYOUT_FALLBACK_CONTEXT,
+        NON_RESPONSIBLE_STATIC_CONTEXT,
+    }:
+        return "unsupported hosting context"
+    if forbidden_layout_authority_fields(data):
+        return "layout metadata contains direct authority fields"
+
+    runtime_validation = data.get("runtime_layout_validation")
+    if not isinstance(runtime_validation, dict):
+        return "missing runtime layout validation"
+    if runtime_validation.get("status") != "pending_runtime_readback":
+        return "runtime layout validation is not pending readback"
+    if runtime_validation.get("layout_success") is not False:
+        return "prep artifact claims layout success"
+    receipts = data.get("layout_decision_receipts")
+    if not isinstance(receipts, list):
+        return "invalid layout decision receipts"
+    if hosting_context == RESPONSIBLE_HOSTING_CONTEXT and receipts:
+        return "responsible prep artifact contains layout decision receipts"
+
+    if hosting_context in {EXPLICIT_LAYOUT_FALLBACK_CONTEXT, NON_RESPONSIBLE_STATIC_CONTEXT}:
+        return None
+
+    script = data.get("prepared_script")
+    beat_layout_intents = data.get("beat_layout_intents")
+    if not isinstance(script, list) or not isinstance(beat_layout_intents, list):
+        return "missing beat layout intents"
+    if len(beat_layout_intents) != len(script):
+        return "beat layout intent count mismatch"
+    for expected_index, declaration in enumerate(beat_layout_intents):
+        if not isinstance(declaration, dict):
+            return "invalid beat layout intent"
+        if declaration.get("beat_index") != expected_index:
+            return "beat layout intent index mismatch"
+        needs = declaration.get("needs")
+        if not isinstance(needs, list) or not needs:
+            return "missing declared layout needs"
+        if declaration.get("default_static_success_allowed") is True:
+            return "responsible beat allows static default success"
+        if not _string_list(declaration.get("evidence_refs")):
+            return "missing layout evidence refs"
+        if not _string_list(declaration.get("source_affordances")):
+            return "missing layout source affordances"
+        for need in needs:
+            if not isinstance(need, str) or not need:
+                return "invalid declared layout need"
+
+    contract = data.get("layout_decision_contract")
+    if not isinstance(contract, dict):
+        return "missing layout decision contract"
+    if contract.get("may_command_layout") is not False:
+        return "layout decision contract may command layout"
+    if contract.get("authority_boundary") != "canonical_broadcast_runtime_decides":
+        return "invalid layout authority boundary"
+
+    try:
+        from agents.hapax_daimonion.segment_layout_contract import (
+            validate_prepared_segment_artifact,
+        )
+
+        validate_prepared_segment_artifact(
+            data,
+            artifact_path=str(data.get("artifact_path") or ""),
+            artifact_sha256=str(data.get("artifact_sha256") or ""),
+        )
+    except Exception as exc:
+        return f"invalid projected layout contract: {exc}"
+    return None
+
+
+def _artifact_rejection_reason(
+    data: dict[str, Any],
+    *,
+    path: Path,
+    manifest_programmes: set[str] | None,
+) -> str | None:
+    if manifest_programmes is None:
+        return "missing manifest"
+    if path.name not in manifest_programmes:
+        return "not listed in manifest"
+    if data.get("schema_version") != PREP_ARTIFACT_SCHEMA_VERSION:
+        return "unsupported schema_version"
+    if data.get("authority") != PREP_ARTIFACT_AUTHORITY:
+        return "invalid authority"
+    if data.get("model_id") != RESIDENT_PREP_MODEL:
+        return "wrong model_id"
+    if not data.get("prep_session_id"):
+        return "missing prep_session_id"
+    call_reason = _llm_calls_rejection_reason(data.get("llm_calls"))
+    if call_reason:
+        return call_reason
+    script = data.get("prepared_script")
+    if (
+        not isinstance(script, list)
+        or not script
+        or not all(isinstance(item, str) for item in script)
+    ):
+        return "invalid prepared_script"
+    beats = data.get("segment_beats")
+    if not isinstance(beats, list) or not all(isinstance(item, str) for item in beats):
+        return "invalid segment_beats"
+    if beats and len(script) != len(beats):
+        return "script beat count mismatch"
+    actionability_reason = _actionability_rejection_reason(data)
+    if actionability_reason:
+        return actionability_reason
+    layout_reason = _layout_rejection_reason(data)
+    if layout_reason:
+        return layout_reason
+    expected_hash = data.get("artifact_sha256")
+    if not isinstance(expected_hash, str) or expected_hash != _artifact_hash(data):
+        return "artifact hash mismatch"
+    if not _is_sha256_hex(data.get("prompt_sha256")) or not _is_sha256_hex(data.get("seed_sha256")):
+        return "missing prompt or seed hash"
+    source_hashes = data.get("source_hashes")
+    if not isinstance(source_hashes, dict):
+        return "missing source hashes"
+    for key in (
+        "programme_sha256",
+        "topic_sha256",
+        "segment_beats_sha256",
+        "seed_sha256",
+        "prompt_sha256",
+    ):
+        if not _is_sha256_hex(source_hashes.get(key)):
+            return f"missing source hash {key}"
+    if source_hashes.get("seed_sha256") != data.get("seed_sha256") or source_hashes.get(
+        "prompt_sha256"
+    ) != data.get("prompt_sha256"):
+        return "source hash mismatch"
+    programme_id = data.get("programme_id")
+    role = data.get("role")
+    topic = data.get("topic")
+    if not isinstance(programme_id, str) or not isinstance(role, str) or not isinstance(topic, str):
+        return "missing programme source identity"
+    try:
+        expected_name = _programme_artifact_name(programme_id)
+    except ValueError:
+        return "unsafe programme_id"
+    if expected_name != path.name:
+        return "programme_id filename mismatch"
+    if source_hashes != _source_hashes_from_fields(
+        programme_id=programme_id,
+        role=role,
+        topic=topic,
+        segment_beats=beats,
+        seed_sha256=data["seed_sha256"],
+        prompt_sha256=data["prompt_sha256"],
+    ):
+        return "source hash mismatch"
+    source_provenance_sha256 = data.get("source_provenance_sha256")
+    if not _is_sha256_hex(source_provenance_sha256) or source_provenance_sha256 != _sha256_json(
+        source_hashes
+    ):
+        return "source provenance hash mismatch"
+    return None
+
+
+def _accepted_artifact_or_reason(
+    path: Path,
+    *,
+    manifest_programmes: set[str] | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, "listed file missing"
+    except Exception:
+        log.debug("load_prepped: failed to read %s", path, exc_info=True)
+        return None, "failed to read artifact"
+    if not isinstance(data, dict):
+        return None, "top-level is not object"
+
+    reason = _artifact_rejection_reason(
+        data,
+        path=path,
+        manifest_programmes=manifest_programmes,
+    )
+    if reason:
+        return None, reason
+
+    runtime_actionability = validate_segment_actionability(
+        list(data["prepared_script"]),
+        list(data["segment_beats"]),
+    )
+    if runtime_actionability["ok"] is not True:
+        return None, "runtime actionability alignment failed"
+    if not _json_equal(
+        data.get("beat_action_intents"),
+        runtime_actionability["beat_action_intents"],
+    ):
+        return None, "beat action intents do not match script"
+
+    runtime_layout = validate_layout_responsibility(
+        runtime_actionability["beat_action_intents"],
+        responsibility_mode=str(data.get("hosting_context") or RESPONSIBLE_HOSTING_CONTEXT),
+    )
+    if not _json_equal(data.get("beat_layout_intents"), runtime_layout["beat_layout_intents"]):
+        return None, "beat layout intents do not match script"
+
+    try:
+        from agents.hapax_daimonion.segment_layout_contract import (
+            validate_prepared_segment_artifact,
+        )
+
+        contract = validate_prepared_segment_artifact(
+            data,
+            artifact_path=str(path),
+            artifact_sha256=str(data.get("artifact_sha256") or ""),
+        )
+    except Exception as exc:
+        return None, f"projected layout contract failed: {exc}"
+    projected_layout_contract = contract.model_dump(mode="json", by_alias=True)
+
+    data["runtime_actionability_validation"] = {
+        "rubric_version": ACTIONABILITY_RUBRIC_VERSION,
+        "ok": runtime_actionability["ok"],
+        "beat_action_intents": runtime_actionability["beat_action_intents"],
+    }
+    data["runtime_layout_validation"] = runtime_layout["runtime_layout_validation"] | {
+        "layout_responsibility_version": LAYOUT_RESPONSIBILITY_VERSION,
+        "hosting_context": runtime_layout["hosting_context"],
+        "beat_layout_intents": runtime_layout["beat_layout_intents"],
+        "violations": runtime_layout["violations"],
+    }
+    data["prepared_artifact_ref"] = {
+        "ref": f"prepared_artifact:{data.get('artifact_sha256')}",
+        "artifact_sha256": data.get("artifact_sha256"),
+        "prep_session_id": data.get("prep_session_id"),
+        "model_id": data.get("model_id"),
+        "authority": data.get("authority"),
+        "projected_authority": contract.artifact_authority,
+    }
+    data["projected_layout_contract"] = projected_layout_contract
+    data["beat_layout_intents"] = projected_layout_contract["beat_layout_intents"]
+    data["layout_decision_contract"] = projected_layout_contract["layout_decision_contract"]
+    data["layout_decision_receipts"] = runtime_layout["layout_decision_receipts"]
+    data["artifact_path_diagnostic"] = str(path)
+    data["artifact_path"] = str(path)
+    data["accepted"] = True
+    data["acceptance_gate"] = "daily_segment_prep.load_prepped_programmes"
+    return data, None
+
+
+def _accepted_manifest_programme_names(today: Path, candidate_names: list[str]) -> list[str]:
+    accepted: list[str] = []
+    seen: set[str] = set()
+    ordered_candidates: list[str] = []
+    for item in candidate_names:
+        name = _safe_manifest_name(item)
+        if name is None or name in seen:
+            continue
+        ordered_candidates.append(name)
+        seen.add(name)
+
+    manifest_programmes = set(ordered_candidates)
+    for name in ordered_candidates:
+        path = today / name
+        _, reason = _accepted_artifact_or_reason(
+            path,
+            manifest_programmes=manifest_programmes,
+        )
+        if reason:
+            log.warning("daily_segment_prep: dropping %s from manifest: %s", name, reason)
+            continue
+        accepted.append(name)
+    return accepted
+
+
+def _accepted_manifest_programme_ids(today: Path, accepted_names: list[str]) -> set[str]:
+    manifest_programmes = set(accepted_names)
+    programme_ids: set[str] = set()
+    for name in accepted_names:
+        data, reason = _accepted_artifact_or_reason(
+            today / name,
+            manifest_programmes=manifest_programmes,
+        )
+        if reason or data is None:
+            continue
+        programme_id = data.get("programme_id")
+        if isinstance(programme_id, str) and programme_id:
+            programme_ids.add(programme_id)
+    return programme_ids
+
+
 def load_prepped_programmes(prep_dir: Path | None = None) -> list[dict]:
     """Load today's prepped segments from disk.
 
@@ -734,46 +1516,26 @@ def load_prepped_programmes(prep_dir: Path | None = None) -> list[dict]:
     """
     if prep_dir is None:
         prep_dir = DEFAULT_PREP_DIR
-    today = _today_dir(prep_dir)
+    today = _today_path(prep_dir)
+    if not today.exists():
+        return []
+    manifest_names = _manifest_programme_names(today)
+    manifest_programmes = set(manifest_names) if manifest_names is not None else None
 
     results = []
-    for f in sorted(today.glob("*.json")):
+    for name in manifest_names or []:
+        f = today / name
         if f.name == "manifest.json":
             continue
-        try:
-            raw = f.read_bytes()
-            artifact_sha256 = hashlib.sha256(raw).hexdigest()
-            data = json.loads(raw.decode("utf-8"))
-            data["artifact_path_diagnostic"] = str(f)
-            data["artifact_sha256"] = artifact_sha256
-            if data.get("prepared_script"):
-                from agents.hapax_daimonion.segment_layout_contract import (
-                    validate_prepared_segment_artifact,
-                )
-
-                contract = validate_prepared_segment_artifact(
-                    data,
-                    artifact_path=str(f),
-                    artifact_sha256=artifact_sha256,
-                )
-                data["prepared_artifact_ref"] = {
-                    "ref": f"prepared_artifact:{artifact_sha256}",
-                    "artifact_sha256": artifact_sha256,
-                    "prep_session_id": data.get("prep_session_id"),
-                    "model_id": data.get("model_id"),
-                    "authority": data.get("authority"),
-                    "projected_authority": contract.artifact_authority,
-                }
-                data["projected_layout_contract"] = contract.model_dump(
-                    mode="json",
-                    by_alias=True,
-                )
-                data["beat_layout_intents"] = data["projected_layout_contract"][
-                    "beat_layout_intents"
-                ]
-                results.append(data)
-        except Exception:
-            log.warning("load_prepped: rejected %s", f, exc_info=True)
+        data, reason = _accepted_artifact_or_reason(
+            f,
+            manifest_programmes=manifest_programmes,
+        )
+        if reason:
+            log.warning("load_prepped: rejecting %s: %s", f.name, reason)
+            continue
+        if data is not None:
+            results.append(data)
     return results
 
 
