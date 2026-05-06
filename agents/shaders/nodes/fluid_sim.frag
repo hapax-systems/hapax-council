@@ -17,7 +17,7 @@ uniform float u_height;
 // Procedural water-ripple displacement applied to the camera image.
 //
 // Previous version stored raw velocity/density simulation state in
-// gl_FragColor — blue/white wash when placed inline in the shader
+// gl_FragColor -- blue/white wash when placed inline in the shader
 // chain because downstream nodes received sim data, not image data.
 //
 // This version runs a lightweight displacement field via tex_accum
@@ -27,22 +27,22 @@ uniform float u_height;
 void main() {
     vec2 texel = vec2(1.0 / u_width, 1.0 / u_height);
 
-    // ── Read previous velocity field from tex_accum (RG channels) ──
+    // -- Read previous velocity field from tex_accum (RG channels) --
     vec4 prev = texture2D(tex_accum, v_texcoord);
     vec2 vel = prev.rg * 2.0 - 1.0;
 
-    // ── Advect ──
+    // -- Advect --
     vec2 advected_uv = v_texcoord - vel * texel * u_speed;
     vec4 advected = texture2D(tex_accum, advected_uv);
 
-    // ── Diffusion: average with neighbors ──
+    // -- Diffusion: average with neighbors --
     vec4 l = texture2D(tex_accum, v_texcoord - vec2(texel.x, 0.0));
     vec4 r = texture2D(tex_accum, v_texcoord + vec2(texel.x, 0.0));
     vec4 t = texture2D(tex_accum, v_texcoord - vec2(0.0, texel.y));
     vec4 b = texture2D(tex_accum, v_texcoord + vec2(0.0, texel.y));
     vec4 diffused = mix(advected, (l + r + t + b) * 0.25, u_viscosity * 10.0);
 
-    // ── Vorticity confinement ──
+    // -- Vorticity confinement --
     float curl = (r.g - l.g) - (t.r - b.r);
     vec2 vort = vec2(
         abs(texture2D(tex_accum, v_texcoord + vec2(0.0, texel.y)).r) -
@@ -52,7 +52,7 @@ void main() {
     );
     vort = normalize(vort + vec2(0.0001)) * curl * u_vorticity * texel.x;
 
-    // ── Inject from input luminance gradient ──
+    // -- Inject from input luminance gradient --
     float lum_c = dot(texture2D(tex, v_texcoord).rgb, vec3(0.299, 0.587, 0.114));
     float lum_l = dot(texture2D(tex, v_texcoord - vec2(texel.x * 3.0, 0.0)).rgb, vec3(0.299, 0.587, 0.114));
     float lum_r = dot(texture2D(tex, v_texcoord + vec2(texel.x * 3.0, 0.0)).rgb, vec3(0.299, 0.587, 0.114));
@@ -60,20 +60,20 @@ void main() {
     float lum_b = dot(texture2D(tex, v_texcoord + vec2(0.0, texel.y * 3.0)).rgb, vec3(0.299, 0.587, 0.114));
     vec2 grad = vec2(lum_r - lum_l, lum_b - lum_t) * 0.15;
 
-    // ── Update velocity ──
+    // -- Update velocity --
     vec2 new_vel = (diffused.rg * 2.0 - 1.0 + vort + grad) * u_dissipation;
 
-    // ── Apply velocity as displacement to the INPUT image ──
+    // -- Apply velocity as displacement to the INPUT image --
     float amt = u_amount;
     vec2 displacement = new_vel * amt;
     vec2 displaced_uv = v_texcoord + displacement;
     displaced_uv = clamp(displaced_uv, vec2(0.0), vec2(1.0));
     vec4 displaced_color = texture2D(tex, displaced_uv);
 
-    // ── Pack output: displaced image in RGB, velocity in RG of a ──
-    // ── separate encoding. We use a blend: the output is mostly   ──
-    // ── the displaced image, but we encode velocity into the alpha ──
-    // ── channel region by mixing a tiny amount of sim state.       ──
+    // -- Pack output: displaced image in RGB, velocity in RG of a --
+    // -- separate encoding. We use a blend: the output is mostly   --
+    // -- the displaced image, but we encode velocity into the alpha --
+    // -- channel region by mixing a tiny amount of sim state.       --
     //
     // Since glfeedback stores our output as next frame's tex_accum,
     // we need velocity info to survive. Strategy: store velocity

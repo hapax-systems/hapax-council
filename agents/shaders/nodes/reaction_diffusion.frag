@@ -17,7 +17,7 @@ uniform float u_height;
 // Gray-Scott reaction-diffusion applied to camera image.
 //
 // Previous version stored raw A/B chemical concentrations in
-// gl_FragColor (green/black wash) — downstream nodes received
+// gl_FragColor (green/black wash) -- downstream nodes received
 // sim data, not image data.
 //
 // This version runs the simulation in tex_accum (A in R, B in G)
@@ -28,14 +28,14 @@ uniform float u_height;
 void main() {
     vec2 texel = vec2(1.0 / u_width, 1.0 / u_height);
 
-    // ── Read simulation state from tex_accum ──
-    // Previous output had image blended with sim — extract sim
+    // -- Read simulation state from tex_accum --
+    // Previous output had image blended with sim -- extract sim
     // from the RG channels where we encoded it.
     vec4 c = texture2D(tex_accum, v_texcoord);
     float A = c.r;
     float B = c.g;
 
-    // ── 5-point Laplacian stencil ──
+    // -- 5-point Laplacian stencil --
     vec4 l = texture2D(tex_accum, v_texcoord - vec2(texel.x, 0.0));
     vec4 r = texture2D(tex_accum, v_texcoord + vec2(texel.x, 0.0));
     vec4 t = texture2D(tex_accum, v_texcoord - vec2(0.0, texel.y));
@@ -43,7 +43,7 @@ void main() {
     float lap_A = (l.r + r.r + t.r + b.r - 4.0 * A);
     float lap_B = (l.g + r.g + t.g + b.g - 4.0 * B);
 
-    // ── Gray-Scott equations ──
+    // -- Gray-Scott equations --
     float reaction = A * B * B;
     float dA = u_diffusion_a * lap_A - reaction + u_feed_rate * (1.0 - A);
     float dB = u_diffusion_b * lap_B + reaction - (u_kill_rate + u_feed_rate) * B;
@@ -51,7 +51,7 @@ void main() {
     A += dA * u_speed * 0.1;
     B += dB * u_speed * 0.1;
 
-    // ── Seed from camera input luminance ──
+    // -- Seed from camera input luminance --
     vec4 input_color = texture2D(tex, v_texcoord);
     float seed = dot(input_color.rgb, vec3(0.299, 0.587, 0.114));
     if (A < 0.01 && seed > 0.8) {
@@ -61,7 +61,7 @@ void main() {
     A = clamp(A, 0.0, 1.0);
     B = clamp(B, 0.0, 1.0);
 
-    // ── Apply RD pattern to camera image ──
+    // -- Apply RD pattern to camera image --
     // B concentration creates the visible pattern (spots/stripes).
     // Use it to modulate the input image rather than replacing it.
     float pattern = B * u_amount;
@@ -75,7 +75,7 @@ void main() {
     float edge = abs(B - 0.5) * 2.0;
     pattern_color += vec3(0.05, 0.08, 0.12) * edge * pattern;
 
-    // ── Pack output: image with sim state encoded ──
+    // -- Pack output: image with sim state encoded --
     // Blend a small amount of sim state into RG so the simulation
     // can bootstrap from tex_accum next frame.
     float sim_mix = 0.1;
