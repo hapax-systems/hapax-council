@@ -236,6 +236,29 @@ def test_z_index_step_env_bounds_depth_transition(
     assert sample.z_index_float == pytest.approx(0.75)
 
 
+def test_default_z_index_step_recovers_spatial_variance_without_alpha_flash(
+    enabled: None, current_path: Path
+) -> None:
+    """Default depth movement is less damped while alpha stays fixed."""
+    _write_current(current_path, {"depth": 0.0, "coherence": 1.0})
+    mod = WardStimmungModulator(current_path=current_path, tick_every_n=1)
+    base = WardProperties(z_plane="beyond-scrim", alpha=1.0, z_index_float=0.8)
+    captured: dict[str, WardProperties] = {}
+
+    def _capture(ward_id: str, props: WardProperties, ttl_s: float) -> None:
+        captured[ward_id] = props
+
+    with (
+        patch.object(_wsm, "get_specific_ward_properties", return_value=base),
+        patch.object(_wsm, "set_ward_properties", side_effect=_capture),
+    ):
+        mod.maybe_tick()
+    sample = next(iter(captured.values()))
+    assert sample.alpha == pytest.approx(base.alpha)
+    assert sample.z_index_float == pytest.approx(0.8 - _wsm.MAX_Z_INDEX_STEP)
+    assert pytest.approx(0.18) == _wsm.MAX_Z_INDEX_STEP
+
+
 def test_does_not_override_z_plane(enabled: None, current_path: Path) -> None:
     """Modulator must never write a different ``z_plane`` than the input ward had."""
     _write_current(current_path, {"depth": 0.5, "coherence": 0.5})

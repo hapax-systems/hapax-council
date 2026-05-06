@@ -65,7 +65,11 @@ ENABLE_ENV: str = "HAPAX_WARD_MODULATOR_ACTIVE"
 # At ~5 Hz, 0.16 alpha/tick crosses a 0.5 alpha span in ~600 ms:
 # fast enough to read as live response, slow enough to avoid hard pops.
 MAX_ALPHA_STEP: float = 0.16
-MAX_Z_INDEX_STEP: float = 0.12
+# 2026-05-06 variance recovery: z-plane movement was reading over-damped
+# after the blink-kill pass. Raising only the depth envelope restores
+# spatial variance while leaving alpha untouched; through blit_with_depth
+# this is still at most ~1.5% opacity multiplier movement per 5 Hz tick.
+MAX_Z_INDEX_STEP: float = 0.18
 MAX_ALPHA_STEP_ENV: str = "HAPAX_WARD_MODULATOR_MAX_ALPHA_STEP"
 MAX_Z_INDEX_STEP_ENV: str = "HAPAX_WARD_MODULATOR_MAX_Z_INDEX_STEP"
 # Variance recovery after smoothing: amplify mid-range depth excursions
