@@ -97,6 +97,11 @@ orphans:
   # operator monitor only).
   - hapax-polyend-loudnorm.conf
 
+  # Dirtywave M8 sampler input staging sink. The runtime loopback into
+  # the M8 USB audio sink is pactl-owned by agents/m8_control/sample_capture.py
+  # so the route can be restored after each bounded capture.
+  - hapax-m8-sample-input.conf
+
 known_missing:
   # tts-loudnorm + ytube-ducked are declared in audio-topology.yaml
   # with chain_kind set, but no `hapax-*.conf` exists yet. Tracked

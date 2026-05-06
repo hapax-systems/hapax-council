@@ -2541,6 +2541,15 @@ if _M8_SMOKE_SPEC is not None and _M8_SMOKE_SPEC.loader is not None:
     _m8_smoke_module.run_checks
     _m8_smoke_module._is_feature_flag_enabled
 
+# cc-task ``m8-sample-upload-via-usb-audio`` (2026-05-06):
+# M8SampleCapture is recruited dynamically via the studio.m8_sample_capture
+# affordance and operator dry-run snippets. The dispatcher integration lands
+# behind the affordance registry, so the production static scan cannot see
+# the class constructor yet.
+from agents.m8_control.sample_capture import M8SampleCapture as _M8SampleCapture
+
+_M8SampleCapture
+
 # cc-task ``publication-bus-monetization-rails-surfaces`` (2026-05-04).
 # omg.lol Pay publisher methods are dispatched via the FastAPI route
 # at ``logos.api.routes.payment_rails:receive_omg_lol_pay_webhook``

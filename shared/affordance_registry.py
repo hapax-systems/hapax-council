@@ -448,6 +448,25 @@ STUDIO_AFFORDANCES = [
             consent_required=False,
         ),
     ),
+    # cc-task m8-sample-upload-via-usb-audio. Bounded hardware-actuation
+    # affordance: routes an operator-owned software audio source into
+    # the M8 USB audio input, then uses the m8_control daemon to press
+    # the sampler START/STOP sequence. Persistent only in the bounded
+    # sense that the M8 writes the resulting WAV to its SD card.
+    CapabilityRecord(
+        name="studio.m8_sample_capture",
+        description=(
+            "Capture a Hapax-owned audio source into the Dirtywave M8 sampler "
+            "through USB audio and a bounded button-driven record sequence"
+        ),
+        daemon="m8_control",
+        operational=_public_operational(
+            latency_class="slow",
+            persistence="bounded",
+            medium="audio",
+            consent_required=False,
+        ),
+    ),
     # Re-Splay Homage Ward — Steam Deck HDMI reveal. cc-task
     # re-splay-homage-ward-steam-deck. Mirrors the M8 LCD reveal
     # contract: the ward becomes recruitable when the steamdeck bridge
