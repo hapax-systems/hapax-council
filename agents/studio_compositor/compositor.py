@@ -571,6 +571,11 @@ _FALLBACK_LAYOUT = Layout(
             z_order=22,
             update_cadence="rate",
         ),
+        SurfaceSchema(
+            id="sierpinski-center",
+            geometry=SurfaceGeometry(kind="rect", x=640, y=220, w=640, h=640),
+            z_order=15,
+        ),
     ],
     assignments=[
         Assignment(source="token_pole", surface="pip-ul"),
@@ -636,6 +641,7 @@ _FALLBACK_LAYOUT = Layout(
             surface="lore-research-instrument-dashboard",
             opacity=0.92,
         ),
+        Assignment(source="sierpinski", surface="sierpinski-center"),
     ],
 )
 

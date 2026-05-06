@@ -112,6 +112,7 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "lore-precedent-ticker",
         "lore-programme-history",
         "lore-research-instrument-dashboard",
+        "sierpinski-center",
     }
 
     assignment_pairs = {(a.source, a.surface) for a in layout.assignments}
@@ -149,6 +150,7 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         ("precedent_ticker", "lore-precedent-ticker"),
         ("programme_history", "lore-programme-history"),
         ("research_instrument_dashboard", "lore-research-instrument-dashboard"),
+        ("sierpinski", "sierpinski-center"),
     }
 
 
