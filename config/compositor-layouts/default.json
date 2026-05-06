@@ -768,9 +768,9 @@
       "geometry": {
         "kind": "rect",
         "x": 300,
-        "y": 950,
+        "y": 1045,
         "w": 1320,
-        "h": 32,
+        "h": 30,
         "mask": null,
         "binding_name": null,
         "target": null,
@@ -832,7 +832,7 @@
       },
       "effect_chain": [],
       "blend_mode": "over",
-      "z_order": 5,
+      "z_order": 50,
       "update_cadence": "always"
     },
     {
