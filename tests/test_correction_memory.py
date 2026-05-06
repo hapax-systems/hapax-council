@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from shared.correction_memory import (
     COLLECTION,
     Correction,
@@ -273,6 +275,25 @@ class TestCheckForCorrections:
         correction_file.write_text(
             json.dumps({"label": "writing", "timestamp": time.time() - 600})  # 10 min old
         )
+
+        with patch("shared.correction_memory.CORRECTION_INTAKE_PATH", correction_file):
+            result = check_for_corrections(store, {"production_activity": "coding"})
+        assert result is None
+
+    @pytest.mark.parametrize(
+        "payload",
+        ["[]", "null", '"string"', "42", "true"],
+    )
+    def test_non_dict_root_returns_none(self, tmp_path: Path, payload: str):
+        """Same defensive pattern as the broader non-dict-root campaign —
+        a correction intake file containing a JSON list/string/null/
+        number/bool would have crashed `data.get("label", "")` with
+        AttributeError before this hardening."""
+        client = _mock_qdrant()
+        store = CorrectionStore(client=client)
+
+        correction_file = tmp_path / "correction.json"
+        correction_file.write_text(payload)
 
         with patch("shared.correction_memory.CORRECTION_INTAKE_PATH", correction_file):
             result = check_for_corrections(store, {"production_activity": "coding"})
