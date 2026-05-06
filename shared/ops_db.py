@@ -73,14 +73,26 @@ _INDEXES = [
 
 
 def _load_json(path: Path) -> dict | None:
-    """Load a JSON file, returning None if missing or invalid."""
+    """Load a JSON file as a dict, returning None if missing or invalid.
+
+    Validates the JSON root is a mapping. Callers (``_insert_drift_items``,
+    others) call ``report.get(\"drift_items\", [])`` directly on the
+    returned value, with only a ``if not report`` truthy check — a
+    non-empty non-dict (e.g. a non-empty list, a non-empty string)
+    passes that check then raises AttributeError. Same shape as the
+    other recent SHM-read fixes.
+    """
     if not path.is_file():
         return None
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         log.debug("Failed to load %s", path.name)
         return None
+    if not isinstance(data, dict):
+        log.debug("%s root is %s, expected mapping", path.name, type(data).__name__)
+        return None
+    return data
 
 
 def _load_jsonl(path: Path) -> list[dict]:
