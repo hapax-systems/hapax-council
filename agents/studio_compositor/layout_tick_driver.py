@@ -43,11 +43,13 @@ already a typed declarative policy (priority order, no thresholds).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import threading
 import time
+from dataclasses import asdict, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +80,44 @@ ALBUM_STATE_FILE: Path = Path("/dev/shm/hapax-compositor/album-state.json")
 VINYL_OPERATOR_OVERRIDE_FLAG: Path = Path("/dev/shm/hapax-compositor/vinyl-operator-active.flag")
 DIRECTOR_INTENT_JSONL: Path = Path(
     os.path.expanduser("~/hapax-state/stream-experiment/director-intent.jsonl")
+)
+SEGMENT_STATE_FILE: Path = Path("/dev/shm/hapax-compositor/active-segment.json")
+SEGMENT_LAYOUT_RECEIPT_FILE: Path = Path("/dev/shm/hapax-compositor/segment-layout-receipt.json")
+SUPPORTED_SEGMENT_LAYOUT_PRESSURE_KINDS: frozenset[str] = frozenset(
+    {
+        "tier",
+        "tier_status",
+        "tier_status_surface",
+        "tier_list_surface",
+        "ranked",
+        "ranked_list",
+        "ranked_list_surface",
+        "chat",
+        "chat_response",
+        "chat_participation_surface",
+        "comparison",
+        "comparison_surface",
+        "compare",
+        "source_comparison",
+        "source_comparison_surface",
+    }
+)
+FORBIDDEN_SEGMENT_LAYOUT_PROPOSAL_FIELDS: frozenset[str] = frozenset(
+    {
+        "layout",
+        "layout_name",
+        "surface_id",
+        "coordinates",
+        "coordinate",
+        "x",
+        "y",
+        "w",
+        "h",
+        "shm",
+        "shm_path",
+        "cues",
+        "cue",
+    }
 )
 
 
@@ -179,14 +219,270 @@ def build_state_provider() -> Any:
     """
 
     def _provider() -> dict[str, object]:
+        segment_pressure = _read_segment_layout_pressure()
         return {
             "consent_safe_active": _read_consent_safe_active(),
             "vinyl_playing": _read_vinyl_playing(),
             "director_activity": _read_director_activity(),
             "stream_mode": _read_stream_mode(),
+            **segment_pressure,
         }
 
     return _provider
+
+
+def _read_segment_layout_pressure(
+    path: Path = SEGMENT_STATE_FILE,
+    *,
+    now: float | None = None,
+) -> dict[str, object]:
+    """Read current-beat proposal-only layout pressure from active segment SHM.
+
+    The prepared artifact is not layout authority. We only consume
+    ``current_beat_layout_intents[].needs`` as bounded pressure, then the
+    runtime controller decides from rendered readback.
+    """
+
+    ts = time.time() if now is None else now
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"segment_layout_intents": ()}
+    if not isinstance(raw, dict) or not raw.get("programme_id"):
+        return {"segment_layout_intents": ()}
+    try:
+        file_mtime = path.stat().st_mtime
+    except OSError:
+        file_mtime = ts
+
+    prepared_artifact_ref = _prepared_artifact_ref(raw.get("prepared_artifact_ref"))
+    current_beat_index = _optional_int(raw.get("current_beat_index"))
+    proposals = _dict_items(raw.get("current_beat_layout_intents"))
+    intents: list[Any] = []
+    refusals: list[dict[str, object]] = []
+    for index, proposal in enumerate(proposals):
+        proposal_intents, proposal_refusals = _proposal_needs_to_intents(
+            proposal,
+            root=raw,
+            index=index,
+            now=file_mtime,
+            prepared_artifact_ref=prepared_artifact_ref,
+            current_beat_index=current_beat_index,
+        )
+        intents.extend(proposal_intents)
+        refusals.extend(proposal_refusals)
+    return {
+        "segment_layout_intents": tuple(intents),
+        "segment_layout_refusals": tuple(refusals),
+        "prepared_artifact_ref": prepared_artifact_ref,
+        "segment_action_intents_ref": _segment_action_intents_ref(
+            path=path,
+            raw=raw,
+            prepared_artifact_ref=prepared_artifact_ref,
+        ),
+        "segment_playback_ref": _optional_str(raw.get("segment_playback_ref")),
+    }
+
+
+def _proposal_needs_to_intents(
+    proposal: dict[str, object],
+    *,
+    root: dict[str, object],
+    index: int,
+    now: float,
+    prepared_artifact_ref: str | None,
+    current_beat_index: int | None,
+) -> tuple[tuple[Any, ...], tuple[dict[str, object], ...]]:
+    from agents.studio_compositor.segment_layout_control import SegmentActionIntent
+
+    needs = _dict_items(proposal.get("needs"))
+    if not needs and isinstance(proposal.get("needs"), list | tuple):
+        needs = tuple({"kind": item} for item in proposal["needs"] if isinstance(item, str))  # type: ignore[index]
+    if not needs:
+        return (), ()
+
+    out: list[SegmentActionIntent] = []
+    refusals: list[dict[str, object]] = []
+    read_mtime = _optional_float(proposal.get("read_mtime")) or now
+    for need_index, need in enumerate(needs):
+        mapped_kind = _need_to_segment_intent_kind(need)
+        if mapped_kind is None:
+            refusals.append(
+                {
+                    "programme_id": _optional_str(root.get("programme_id")),
+                    "beat_index": current_beat_index,
+                    "need_index": need_index,
+                    "need_kind": _optional_str(need.get("kind")) or _optional_str(need.get("need")),
+                    "reason": "unsupported_segment_layout_need",
+                    "supported_kinds": sorted(SUPPORTED_SEGMENT_LAYOUT_PRESSURE_KINDS),
+                    "forbidden_fields": sorted(
+                        field for field in FORBIDDEN_SEGMENT_LAYOUT_PROPOSAL_FIELDS if field in need
+                    ),
+                    "authority_ref": prepared_artifact_ref,
+                }
+            )
+            continue
+        ttl_ms = _optional_float(need.get("ttl_ms")) or _optional_float(proposal.get("ttl_ms"))
+        ttl_s = (ttl_ms / 1000.0) if ttl_ms is not None else 30.0
+        evidence_refs = _evidence_refs(need) or _evidence_refs(proposal)
+        if prepared_artifact_ref:
+            evidence_refs = (*evidence_refs, prepared_artifact_ref)
+        if not evidence_refs:
+            continue
+        stable_id = _optional_str(need.get("intent_id")) or (
+            f"{root.get('programme_id')}:{current_beat_index}:layout-need-{index}-{need_index}"
+        )
+        out.append(
+            SegmentActionIntent(
+                intent_id=stable_id,
+                kind=mapped_kind,
+                requested_at=read_mtime,
+                priority=_optional_int(need.get("priority"))
+                or _optional_int(proposal.get("priority"))
+                or 50,
+                evidence_refs=evidence_refs,
+                ttl_s=ttl_s,
+                programme_id=_optional_str(root.get("programme_id")),
+                beat_index=current_beat_index,
+                target_ref=_target_ref_for_need(need),
+                authority_ref=prepared_artifact_ref,
+                requested_layout=None,
+                expected_effects=_expected_effects_for_need(need),
+                spoken_text_ref=None,
+            )
+        )
+    return tuple(out), tuple(refusals)
+
+
+def _need_to_segment_intent_kind(need: dict[str, object]) -> str | None:
+    from agents.studio_compositor.segment_layout_control import LayoutNeedKind
+
+    kind = _optional_str(need.get("kind")) or _optional_str(need.get("need"))
+    if kind is None:
+        return None
+    mapping = {
+        "tier": LayoutNeedKind.TIER_STATUS,
+        "tier_status": LayoutNeedKind.TIER_STATUS,
+        "tier_status_surface": LayoutNeedKind.TIER_STATUS,
+        "tier_list_surface": LayoutNeedKind.TIER_STATUS,
+        "ranked": LayoutNeedKind.RANKED_LIST,
+        "ranked_list": LayoutNeedKind.RANKED_LIST,
+        "ranked_list_surface": LayoutNeedKind.RANKED_LIST,
+        "chat": LayoutNeedKind.CHAT_RESPONSE,
+        "chat_response": LayoutNeedKind.CHAT_RESPONSE,
+        "chat_participation_surface": LayoutNeedKind.CHAT_RESPONSE,
+        "comparison": LayoutNeedKind.SOURCE_COMPARISON,
+        "comparison_surface": LayoutNeedKind.SOURCE_COMPARISON,
+        "compare": LayoutNeedKind.SOURCE_COMPARISON,
+        "source_comparison": LayoutNeedKind.SOURCE_COMPARISON,
+        "source_comparison_surface": LayoutNeedKind.SOURCE_COMPARISON,
+    }
+    mapped = mapping.get(kind)
+    if mapped is not None:
+        return mapped.value
+    return None
+
+
+def _expected_effects_for_need(need: dict[str, object]) -> tuple[str, ...]:
+    explicit = (
+        _string_tuple(need.get("expected_effects"))
+        or _string_tuple(need.get("expected_effect"))
+        or _string_tuple(need.get("expected_visible_effect"))
+    )
+    if explicit:
+        return explicit
+    kind = _optional_str(need.get("kind")) or ""
+    if "tier" in kind or "rank" in kind:
+        return ("ward:tier-panel",)
+    if "chat" in kind:
+        return ("ward:chat-panel",)
+    if "compar" in kind:
+        return ("ward:compare-panel",)
+    return ()
+
+
+def _evidence_refs(value: dict[str, object]) -> tuple[str, ...]:
+    return _string_tuple(value.get("evidence_refs")) or _string_tuple(value.get("evidence_ref"))
+
+
+def _target_ref_for_need(need: dict[str, object]) -> str | None:
+    return (
+        _optional_str(need.get("target_ref"))
+        or _optional_str(need.get("target"))
+        or _optional_str(need.get("source_action_kind"))
+        or _optional_str(need.get("source_affordance"))
+    )
+
+
+def _dict_items(value: object) -> tuple[dict[str, object], ...]:
+    if isinstance(value, dict):
+        return (value,)
+    if isinstance(value, list | tuple):
+        return tuple(item for item in value if isinstance(item, dict))
+    return ()
+
+
+def _string_tuple(value: object) -> tuple[str, ...]:
+    if isinstance(value, str) and value:
+        return (value,)
+    if isinstance(value, list | tuple):
+        return tuple(str(item) for item in value if isinstance(item, str) and item)
+    return ()
+
+
+def _optional_str(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _optional_int(value: object) -> int | None:
+    try:
+        if isinstance(value, bool) or value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_float(value: object) -> float | None:
+    try:
+        if isinstance(value, bool) or value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _prepared_artifact_ref(value: object) -> str | None:
+    if isinstance(value, dict):
+        sha = (
+            _optional_str(value.get("artifact_sha256"))
+            or _optional_str(value.get("sha256"))
+            or _optional_str(value.get("sha"))
+        )
+        if sha is None:
+            return None
+        return f"prepared_artifact:{sha}"
+    text = _optional_str(value)
+    if text is None:
+        return None
+    return text if text.startswith("prepared_artifact:") else f"prepared_artifact:{text}"
+
+
+def _segment_action_intents_ref(
+    *,
+    path: Path,
+    raw: dict[str, object],
+    prepared_artifact_ref: str | None,
+) -> str:
+    try:
+        stat = path.stat()
+        file_ref = f"active-segment:{stat.st_mtime_ns}"
+    except OSError:
+        file_ref = "active-segment:unstatable"
+    segment_id = _optional_str(raw.get("programme_id")) or "unknown-segment"
+    if prepared_artifact_ref:
+        return f"{file_ref}:{segment_id}:{prepared_artifact_ref}"
+    return f"{file_ref}:{segment_id}"
 
 
 class _LayoutStoreAdapter:
@@ -231,6 +527,41 @@ class _LayoutStoreAdapter:
             raise ValueError("layout returned from mutate() lacks a 'name' attribute")
         self._store.set_active(name)
 
+    def get_active(self) -> Any:
+        return self._store.get_active()
+
+    def active_name(self) -> str | None:
+        return self._store.active_name()
+
+    def list_available(self) -> list[str]:
+        return self._store.list_available()
+
+
+class _RenderedLayoutStateAdapter(_LayoutStoreAdapter):
+    """Bridge LayoutStore templates into rendered LayoutState authority."""
+
+    def __init__(self, store: Any, rendered_layout_state: Any) -> None:
+        super().__init__(store)
+        self._rendered_layout_state = rendered_layout_state
+
+    def get_active(self) -> Any:
+        return self._rendered_layout_state.get()
+
+    def active_name(self) -> str | None:
+        layout = self.get_active()
+        name = getattr(layout, "name", None)
+        return name if isinstance(name, str) and name else None
+
+    def mutate(self, fn: Any) -> None:
+        previous = self._rendered_layout_state.get()
+        new_layout = fn(previous)
+        name = getattr(new_layout, "name", None)
+        if not isinstance(name, str) or not name:
+            raise ValueError("layout returned from mutate() lacks a 'name' attribute")
+        self._rendered_layout_state.mutate(lambda _previous: new_layout)
+        if not self._store.set_active(name):
+            raise KeyError(f"layout {name!r} not loaded in LayoutStore")
+
 
 def _emit_dispatch_counter(layout_name: str, reason: str) -> None:
     """Increment ``hapax_layout_switch_dispatched_total`` if available."""
@@ -250,14 +581,30 @@ def _driver_tick(
     layout_state: Any,
     loader: Any,
     switcher: Any,
-) -> None:
-    """One iteration: read state, select, dispatch counter, attempt apply."""
+) -> Any | None:
+    """One iteration: segment-responsible tick first, then legacy switcher."""
     from agents.studio_compositor.layout_switcher import (
         apply_layout_switch,
         select_layout,
     )
 
     state = state_provider()
+    tick_now = time.time()
+    responsible_receipt = _maybe_apply_responsible_segment_layout(
+        state=state,
+        layout_state=layout_state,
+        loader=loader,
+        switcher=switcher,
+        now=tick_now,
+    )
+    if responsible_receipt is not None:
+        _emit_dispatch_counter(
+            responsible_receipt.selected_layout or "none",
+            responsible_receipt.reason.value,
+        )
+        _write_segment_layout_receipt(responsible_receipt)
+        return responsible_receipt
+
     selection = select_layout(
         consent_safe_active=bool(state.get("consent_safe_active", False)),
         vinyl_playing=bool(state.get("vinyl_playing", False)),
@@ -285,6 +632,276 @@ def _driver_tick(
             "install-compositor-layouts.sh deploys the missing JSON",
             selection.layout_name,
         )
+    return None
+
+
+def _maybe_apply_responsible_segment_layout(
+    *,
+    state: dict[str, object],
+    layout_state: Any,
+    loader: Any,
+    switcher: Any,
+    now: float,
+) -> Any | None:
+    intents = state.get("segment_layout_intents")
+    if not isinstance(intents, tuple) or not intents:
+        return None
+
+    from agents.studio_compositor.segment_layout_control import (
+        LayoutDecisionReason,
+        LayoutDecisionStatus,
+        LayoutPosture,
+        LayoutResponsibilityController,
+        SegmentLayoutState,
+    )
+
+    responsible_state: dict[str, object] = getattr(
+        switcher,
+        "_responsible_segment_state",
+        {},
+    )
+    readback = _runtime_layout_readback(
+        layout_state=layout_state,
+        state=state,
+        now=now,
+    )
+    decision_state = SegmentLayoutState(
+        current_layout=readback.active_layout,
+        current_posture=responsible_state.get("current_posture")
+        or _posture_for_layout(readback.active_layout),
+        active_need_id=_optional_str(responsible_state.get("active_need_id")),
+        active_priority=_optional_int(responsible_state.get("active_priority")) or 0,
+        switched_at=_optional_float(responsible_state.get("switched_at")),
+    )
+    receipt = LayoutResponsibilityController(
+        available_layouts=_available_layout_names(loader),
+    ).decide(
+        intents,
+        readback=readback,
+        state=decision_state,
+        now=now,
+    )
+
+    if receipt.status is LayoutDecisionStatus.ACCEPTED:
+        responsible_state.update(
+            {
+                "current_posture": receipt.selected_posture,
+                "active_need_id": receipt.need_id,
+                "active_priority": _intent_priority(intents, receipt.need_id),
+                "switched_at": responsible_state.get("switched_at") or now,
+            }
+        )
+        return receipt
+
+    mutation_reasons = {
+        LayoutDecisionReason.DEFAULT_STATIC_LAYOUT_IN_RESPONSIBLE_HOSTING,
+        LayoutDecisionReason.RENDERED_READBACK_MISMATCH,
+        LayoutDecisionReason.SAFETY_FALLBACK,
+        LayoutDecisionReason.EXPLICIT_FALLBACK,
+    }
+    if (
+        receipt.status not in {LayoutDecisionStatus.HELD, LayoutDecisionStatus.FALLBACK}
+        or receipt.reason not in mutation_reasons
+        or receipt.selected_layout is None
+    ):
+        return receipt
+
+    previous_rendered_layout = _active_rendered_layout(layout_state)
+    before_hash = _layout_state_hash(previous_rendered_layout)
+    try:
+        new_layout = loader.load(receipt.selected_layout)
+        layout_state.mutate(lambda _previous: new_layout)
+    except KeyError:
+        return replace(
+            receipt,
+            status=LayoutDecisionStatus.HELD,
+            reason=LayoutDecisionReason.UNSUPPORTED_LAYOUT,
+            applied_layout_changes=(),
+            unsatisfied_effects=tuple(
+                dict.fromkeys((*receipt.unsatisfied_effects, f"layout:{receipt.selected_layout}"))
+            ),
+            refusal_metadata={
+                **dict(receipt.refusal_metadata),
+                "missing_layout": receipt.selected_layout,
+                "message": "selected responsible layout is unavailable in runtime loader",
+            },
+        )
+
+    after_hash = _layout_state_hash(_active_rendered_layout(layout_state))
+    responsible_state.update(
+        {
+            "current_posture": receipt.selected_posture
+            if receipt.selected_posture is not LayoutPosture.NON_RESPONSIBLE_FALLBACK
+            else None,
+            "active_need_id": receipt.need_id,
+            "active_priority": _intent_priority(intents, receipt.need_id),
+            "switched_at": now,
+        }
+    )
+    return replace(
+        receipt,
+        applied_layout_changes=(receipt.selected_layout,),
+        receipt_metadata={
+            **dict(receipt.receipt_metadata),
+            "runtime_mutation": "rendered_layout_state",
+            "accepted_requires_future_readback": True,
+            "layout_state_before_hash": before_hash,
+            "layout_state_after_hash": after_hash,
+        },
+    )
+
+
+def _runtime_layout_readback(
+    *,
+    layout_state: Any,
+    state: dict[str, object],
+    now: float,
+) -> Any:
+    from agents.studio_compositor.segment_layout_control import RuntimeLayoutReadback
+
+    layout = _active_rendered_layout(layout_state)
+    active_layout = getattr(layout, "name", None)
+    active_layout_name = active_layout if isinstance(active_layout, str) else None
+    active_wards = _active_ward_ids(layout)
+    safety_state = "consent_safe_active" if bool(state.get("consent_safe_active", False)) else None
+    return RuntimeLayoutReadback(
+        readback_ref=f"rendered-layout-state:{active_layout_name or 'none'}:{int(now)}",
+        observed_at=now,
+        active_layout=active_layout_name,
+        active_wards=active_wards,
+        ward_properties=_ward_property_readbacks(active_wards, state),
+        camera_available=_optional_bool(state.get("camera_available")),
+        safety_state=safety_state,
+        chat_available=_optional_bool(state.get("chat_available")),
+        media_available=_optional_bool(state.get("media_available")),
+        segment_playback_ref=_optional_str(state.get("segment_playback_ref")),
+        segment_action_intents_ref=_optional_str(state.get("segment_action_intents_ref")),
+    )
+
+
+def _active_rendered_layout(layout_state: Any) -> Any:
+    if hasattr(layout_state, "get_active"):
+        return layout_state.get_active()
+    if hasattr(layout_state, "get"):
+        return layout_state.get()
+    return None
+
+
+def _active_ward_ids(layout: Any) -> tuple[str, ...]:
+    if layout is None:
+        return ()
+    active_source_ids: set[str] = set()
+    assignments = getattr(layout, "assignments", ()) or ()
+    if assignments:
+        for assignment in assignments:
+            opacity = getattr(assignment, "opacity", 1.0)
+            if isinstance(opacity, int | float) and float(opacity) <= 0.0:
+                continue
+            source_id = getattr(assignment, "source", None)
+            if isinstance(source_id, str) and source_id:
+                active_source_ids.add(source_id)
+    else:
+        active_source_ids = {
+            source.id
+            for source in (getattr(layout, "sources", ()) or ())
+            if isinstance(getattr(source, "id", None), str)
+        }
+    return tuple(
+        source.id
+        for source in (getattr(layout, "sources", ()) or ())
+        if isinstance(getattr(source, "id", None), str) and source.id in active_source_ids
+    )
+
+
+def _ward_property_readbacks(
+    active_wards: tuple[str, ...],
+    state: dict[str, object],
+) -> dict[str, dict[str, object]]:
+    supplied = state.get("ward_properties")
+    if isinstance(supplied, dict):
+        return {
+            str(ward_id): dict(values)
+            for ward_id, values in supplied.items()
+            if isinstance(values, dict)
+        }
+    try:
+        from agents.studio_compositor.ward_properties import resolve_ward_properties
+    except Exception:
+        log.debug("layout-tick: ward property import failed", exc_info=True)
+        return {}
+
+    out: dict[str, dict[str, object]] = {}
+    for ward_id in active_wards:
+        try:
+            props = resolve_ward_properties(ward_id)
+        except Exception:
+            log.debug("layout-tick: ward property read failed for %s", ward_id, exc_info=True)
+            continue
+        if is_dataclass(props):
+            out[ward_id] = asdict(props)
+        elif isinstance(props, dict):
+            out[ward_id] = dict(props)
+    return out
+
+
+def _available_layout_names(loader: Any) -> tuple[str, ...]:
+    if hasattr(loader, "list_available"):
+        try:
+            return tuple(str(name) for name in loader.list_available())
+        except Exception:
+            log.debug("layout-tick: list_available failed", exc_info=True)
+    store = getattr(loader, "_store", None)
+    layouts = getattr(store, "layouts", None)
+    if isinstance(layouts, dict):
+        return tuple(str(name) for name in layouts)
+    return ()
+
+
+def _posture_for_layout(layout_name: str | None) -> Any | None:
+    if layout_name is None:
+        return None
+    from agents.studio_compositor.segment_layout_control import POSTURE_TO_LAYOUT
+
+    for posture, posture_layout in POSTURE_TO_LAYOUT.items():
+        if posture_layout == layout_name:
+            return posture
+    return None
+
+
+def _intent_priority(intents: tuple[Any, ...], need_id: str | None) -> int:
+    if need_id is None:
+        return 0
+    for intent in intents:
+        if getattr(intent, "intent_id", None) == need_id:
+            return _optional_int(getattr(intent, "priority", None)) or 0
+    return 0
+
+
+def _optional_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _write_segment_layout_receipt(receipt: Any) -> None:
+    payload = json.dumps(receipt.visible_metadata, sort_keys=True)
+    try:
+        SEGMENT_LAYOUT_RECEIPT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = SEGMENT_LAYOUT_RECEIPT_FILE.with_suffix(".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(SEGMENT_LAYOUT_RECEIPT_FILE)
+    except OSError:
+        log.debug("layout-tick: segment layout receipt write failed", exc_info=True)
+
+
+def _layout_state_hash(layout: Any) -> str | None:
+    if layout is None:
+        return None
+    if hasattr(layout, "model_dump"):
+        payload = json.dumps(layout.model_dump(mode="json"), sort_keys=True, default=str)
+    else:
+        payload = repr(layout)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def run_layout_tick_loop(
@@ -350,7 +967,13 @@ def start_layout_tick_driver(compositor: Any) -> threading.Thread | None:
 
     initial = store.active_name() or "garage-door"
     switcher = LayoutSwitcher(initial_layout=initial)
-    adapter = _LayoutStoreAdapter(store)
+    switcher._responsible_segment_state = {}  # type: ignore[attr-defined]
+    rendered_layout_state = getattr(compositor, "layout_state", None)
+    adapter = (
+        _RenderedLayoutStateAdapter(store, rendered_layout_state)
+        if rendered_layout_state is not None
+        else _LayoutStoreAdapter(store)
+    )
 
     state_provider = build_state_provider()
 
@@ -380,6 +1003,8 @@ __all__ = [
     "DIRECTOR_INTENT_JSONL",
     "DIRECTOR_INTENT_STALE_S",
     "ENV_DISABLE",
+    "SEGMENT_LAYOUT_RECEIPT_FILE",
+    "SEGMENT_STATE_FILE",
     "VINYL_CONFIDENCE_THRESHOLD",
     "VINYL_OPERATOR_OVERRIDE_FLAG",
     "VINYL_STATE_STALE_S",

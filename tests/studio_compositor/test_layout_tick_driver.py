@@ -9,6 +9,7 @@ cc-task: u6-periodic-tick-driver. Verifies that the periodic driver
 
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,13 +18,27 @@ from typing import Any
 import pytest
 
 from agents.studio_compositor import layout_tick_driver
+from agents.studio_compositor.layout_state import LayoutState
 from agents.studio_compositor.layout_switcher import LayoutSwitcher
 from agents.studio_compositor.layout_tick_driver import (
+    _driver_tick,
     _LayoutStoreAdapter,
+    _read_segment_layout_pressure,
+    _RenderedLayoutStateAdapter,
     build_state_provider,
     run_layout_tick_loop,
     start_layout_tick_driver,
 )
+from agents.studio_compositor.segment_layout_control import (
+    LayoutDecisionReason,
+    LayoutDecisionStatus,
+    LayoutNeedKind,
+    SegmentActionIntent,
+)
+from shared.compositor_model import Layout
+
+NOW = 1_000.0
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # ── env-flag gate ──────────────────────────────────────────────────
 
@@ -147,6 +162,133 @@ def test_state_provider_consent_safe_env_flag(monkeypatch: pytest.MonkeyPatch) -
     assert state["consent_safe_active"] is True
 
 
+def test_active_segment_pressure_derives_bounded_runtime_intents(tmp_path: Path) -> None:
+    state_file = tmp_path / "active-segment.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "programme_id": "programme:seg-1",
+                "current_beat_index": 4,
+                "prepared_artifact_ref": {
+                    "artifact_sha256": "sha256:abc123",
+                    "prep_session_id": "prep-1",
+                    "model_id": "command-r",
+                },
+                "host_presence": "drop-me",
+                "spoken_argument": "drop-me",
+                "current_beat_layout_intents": {
+                    "beat_index": 4,
+                    "responsibility_mode": "hapax_responsible_live",
+                    "read_mtime": NOW - 2.0,
+                    "needs": [
+                        {
+                            "kind": "chat_participation_surface",
+                            "priority": 80,
+                            "source_action_kind": "chat_poll",
+                            "evidence_ref": "beat:4:intent:chat_poll",
+                            "expected_visible_effect": "layout.surface.chat_prompt.visible",
+                            "ttl_ms": 12000,
+                            "layout_name": "garage-door",
+                            "surface_id": "unsafe-surface",
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pressure = _read_segment_layout_pressure(state_file, now=NOW)
+    intents = pressure["segment_layout_intents"]
+
+    assert isinstance(intents, tuple)
+    assert len(intents) == 1
+    intent = intents[0]
+    assert intent.intent_id == "programme:seg-1:4:layout-need-0-0"
+    assert intent.kind == LayoutNeedKind.CHAT_RESPONSE.value
+    assert intent.requested_at == NOW - 2.0
+    assert intent.ttl_s == 12.0
+    assert intent.priority == 80
+    assert intent.programme_id == "programme:seg-1"
+    assert intent.beat_index == 4
+    assert intent.target_ref == "chat_poll"
+    assert intent.authority_ref == "prepared_artifact:sha256:abc123"
+    assert intent.evidence_refs == (
+        "beat:4:intent:chat_poll",
+        "prepared_artifact:sha256:abc123",
+    )
+    assert intent.expected_effects == ("layout.surface.chat_prompt.visible",)
+    assert intent.requested_layout is None
+    assert intent.spoken_text_ref is None
+
+
+def test_active_segment_pressure_maps_tier_chat_comparison_aliases(tmp_path: Path) -> None:
+    state_file = tmp_path / "active-segment.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "programme_id": "programme:seg-1",
+                "current_beat_index": 6,
+                "prepared_artifact_ref": "sha256:abc123",
+                "current_beat_layout_intents": {
+                    "needs": [
+                        {"kind": "tier_status_surface", "evidence_ref": "prior:tier"},
+                        {"kind": "chat_participation_surface", "evidence_ref": "prior:chat"},
+                        {
+                            "kind": "source_comparison_surface",
+                            "evidence_ref": "prior:comparison",
+                        },
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pressure = _read_segment_layout_pressure(state_file, now=NOW)
+    kinds = [intent.kind for intent in pressure["segment_layout_intents"]]
+
+    assert kinds == [
+        LayoutNeedKind.TIER_STATUS.value,
+        LayoutNeedKind.CHAT_RESPONSE.value,
+        LayoutNeedKind.SOURCE_COMPARISON.value,
+    ]
+
+
+def test_active_segment_pressure_refuses_unsupported_and_forbidden_needs(tmp_path: Path) -> None:
+    state_file = tmp_path / "active-segment.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "programme_id": "programme:seg-1",
+                "current_beat_index": 5,
+                "prepared_artifact_ref": "sha256:def456",
+                "current_beat_layout_intents": [
+                    {
+                        "needs": [
+                            {"kind": "countdown", "layout_name": "segment-list"},
+                            {"kind": "camera", "coordinates": [0, 0, 100, 100]},
+                            {"kind": "mood", "cues": ["pulse"]},
+                        ]
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pressure = _read_segment_layout_pressure(state_file, now=NOW)
+
+    assert pressure["segment_layout_intents"] == ()
+    refusals = pressure["segment_layout_refusals"]
+    assert isinstance(refusals, tuple)
+    assert [item["need_kind"] for item in refusals] == ["countdown", "camera", "mood"]
+    assert all(item["reason"] == "unsupported_segment_layout_need" for item in refusals)
+    assert refusals[0]["forbidden_fields"] == ["layout_name"]
+    assert refusals[1]["forbidden_fields"] == ["coordinates"]
+    assert refusals[2]["forbidden_fields"] == ["cues"]
+
+
 # ── adapter contract ───────────────────────────────────────────────
 
 
@@ -159,7 +301,7 @@ class _FakeLayout:
 class _FakeStore:
     """Minimal LayoutStore-shape for adapter tests."""
 
-    layouts: dict[str, _FakeLayout] = field(default_factory=dict)
+    layouts: dict[str, Any] = field(default_factory=dict)
     _active: str | None = None
     set_active_calls: list[str] = field(default_factory=list)
     reload_calls: int = 0
@@ -185,6 +327,13 @@ class _FakeStore:
 
     def active_name(self) -> str | None:
         return self._active
+
+    def list_available(self) -> list[str]:
+        return sorted(self.layouts)
+
+
+def _load_layout(path: str) -> Layout:
+    return Layout.model_validate_json((REPO_ROOT / path).read_text(encoding="utf-8"))
 
 
 def test_adapter_load_returns_layout() -> None:
@@ -294,6 +443,91 @@ def test_run_layout_tick_loop_handles_missing_layout(
     assert iter_count == 2
     # Counter still emitted both times — driver alive even with no layouts loaded.
     assert len(increments) == 2
+
+
+def test_responsible_segment_tick_escapes_static_then_accepts_rendered_readback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    garage = _load_layout("config/layouts/garage-door.json")
+    segment_list = _load_layout("config/compositor-layouts/segment-list.json")
+    store = _FakeStore(
+        layouts={
+            "garage-door": garage,
+            "segment-list": segment_list,
+        },
+        _active="garage-door",
+    )
+    rendered_state = LayoutState(garage)
+    adapter = _RenderedLayoutStateAdapter(store, rendered_state)
+    switcher = LayoutSwitcher(initial_layout="garage-door")
+    switcher._responsible_segment_state = {}
+    monkeypatch.setattr(
+        layout_tick_driver,
+        "SEGMENT_LAYOUT_RECEIPT_FILE",
+        tmp_path / "segment-layout-receipt.json",
+    )
+
+    intent = SegmentActionIntent(
+        intent_id="programme:seg-1:4:layout-need-0-0",
+        kind=LayoutNeedKind.RANKED_LIST.value,
+        requested_at=NOW - 1.0,
+        priority=80,
+        ttl_s=30.0,
+        evidence_refs=("prior:ranked-list", "prepared_artifact:sha256:abc123"),
+        programme_id="programme:seg-1",
+        beat_index=4,
+        target_ref="artifact:ranked",
+        authority_ref="prepared_artifact:sha256:abc123",
+        expected_effects=("ward:ranked-list-panel",),
+    )
+    state_provider = lambda: {  # noqa: E731
+        "consent_safe_active": False,
+        "vinyl_playing": False,
+        "director_activity": None,
+        "stream_mode": None,
+        "segment_layout_intents": (intent,),
+        "segment_action_intents_ref": "active-segment:sha256:abc123",
+        "segment_playback_ref": "segment-playback:beat-4",
+        "ward_properties": {"ranked-list-panel": {"visible": True, "alpha": 1.0}},
+    }
+
+    monkeypatch.setattr(layout_tick_driver.time, "time", lambda: NOW)
+    first = _driver_tick(
+        state_provider=state_provider,
+        layout_state=adapter,
+        loader=adapter,
+        switcher=switcher,
+    )
+
+    assert first.status is LayoutDecisionStatus.HELD
+    assert first.reason is LayoutDecisionReason.DEFAULT_STATIC_LAYOUT_IN_RESPONSIBLE_HOSTING
+    assert first.selected_layout == "segment-list"
+    assert first.applied_layout_changes == ("segment-list",)
+    assert rendered_state.get().name == "segment-list"
+    assert store.active_name() == "segment-list"
+    assert first.receipt_metadata["layout_state_before_hash"]
+    assert first.receipt_metadata["layout_state_after_hash"]
+
+    monkeypatch.setattr(layout_tick_driver.time, "time", lambda: NOW + 1.0)
+    second = _driver_tick(
+        state_provider=state_provider,
+        layout_state=adapter,
+        loader=adapter,
+        switcher=switcher,
+    )
+
+    assert second.status is LayoutDecisionStatus.ACCEPTED
+    assert second.reason is LayoutDecisionReason.ACCEPTED
+    assert second.selected_layout == "segment-list"
+    assert "rendered-layout-state:segment-list" in second.readback_refs[0]
+    assert "ward:ranked-list-panel" in second.satisfied_effects
+
+    receipt_payload = json.loads(
+        (tmp_path / "segment-layout-receipt.json").read_text(encoding="utf-8")
+    )
+    assert receipt_payload["status"] == "accepted"
+    assert receipt_payload["selected_layout"] == "segment-list"
 
 
 def test_stop_event_breaks_loop() -> None:

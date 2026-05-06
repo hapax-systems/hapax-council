@@ -68,9 +68,11 @@ class LayoutDecisionReason(StrEnum):
     CONFLICTING_NEEDS = "conflicting_needs"
     HYSTERESIS_HOLD = "hysteresis_hold"
     RENDERED_READBACK_MISMATCH = "rendered_readback_mismatch"
+    RENDERED_READBACK_REQUIRED = "rendered_readback_required"
     DEFAULT_STATIC_LAYOUT_IN_RESPONSIBLE_HOSTING = "default_static_layout_in_responsible_hosting"
     EXPLICIT_FALLBACK = "explicit_fallback"
     SAFETY_FALLBACK = "safety_fallback"
+    SAFETY_FALLBACK_UNAVAILABLE = "safety_fallback_unavailable"
 
 
 NEED_TO_POSTURE: Mapping[LayoutNeedKind, LayoutPosture] = {
@@ -96,6 +98,17 @@ POSTURE_TO_LAYOUT: Mapping[LayoutPosture, str] = {
     LayoutPosture.CHAT_RESPONSE: "segment-chat",
     LayoutPosture.NON_RESPONSIBLE_FALLBACK: "default",
     LayoutPosture.SAFETY_FALLBACK: "consent-safe",
+}
+
+POSTURE_TO_REQUIRED_WARD: Mapping[LayoutPosture, str] = {
+    LayoutPosture.RANKED_LIST: "ranked-list-panel",
+    LayoutPosture.SOURCE_COMPARISON: "compare-panel",
+    LayoutPosture.ARTIFACT_DETAIL: "artifact-detail-panel",
+    LayoutPosture.AUDIENCE_POLL: "audience-poll-panel",
+    LayoutPosture.WORLD_SURFACE_RECEIPT: "world-receipt-panel",
+    LayoutPosture.PROGRAMME_CONTEXT: "programme-context",
+    LayoutPosture.TIER_STATUS: "tier-panel",
+    LayoutPosture.CHAT_RESPONSE: "chat-panel",
 }
 
 BOUNDED_LAYOUTS: frozenset[str] = frozenset(POSTURE_TO_LAYOUT.values())
@@ -289,10 +302,12 @@ def decide_layout_responsibility(
     intent_list = list(intents)
     readback_refs = _readback_refs(readback)
     input_refs = _input_refs(intent_list, readback)
+    available = frozenset(available_layouts)
 
     if _safety_active(readback):
         return _safety_fallback_receipt(
             intents=intent_list,
+            available_layouts=available,
             readback=readback,
             state=state,
             now=now,
@@ -355,35 +370,7 @@ def decide_layout_responsibility(
             },
         )
 
-    validation = _validate_intents(intent_list, now=now, available_layouts=available_layouts)
-    if (
-        readback.active_layout in DEFAULT_STATIC_LAYOUTS
-        and validation.valid
-        and validation.valid[0].posture is not LayoutPosture.NON_RESPONSIBLE_FALLBACK
-    ):
-        selected = _select_winner(validation.valid)
-        return _receipt(
-            status=LayoutDecisionStatus.REFUSED,
-            reason=LayoutDecisionReason.DEFAULT_STATIC_LAYOUT_IN_RESPONSIBLE_HOSTING,
-            selected_posture=selected.posture,
-            selected_layout=selected.layout,
-            previous_layout=readback.active_layout,
-            intent=selected.intent,
-            now=now,
-            evidence_refs=selected.intent.evidence_refs,
-            input_refs=input_refs,
-            readback_refs=readback_refs,
-            satisfied_effects=(),
-            unsatisfied_effects=tuple(
-                _expected_effects(selected.intent, selected.layout, selected.posture)
-            ),
-            denied_intents=(selected.intent.intent_id,),
-            refusal_metadata={
-                "active_layout": readback.active_layout,
-                "static_layouts": sorted(DEFAULT_STATIC_LAYOUTS),
-                "message": "static/default layout readback is not responsible-hosting success",
-            },
-        )
+    validation = _validate_intents(intent_list, now=now, available_layouts=available)
 
     if not intent_list:
         return _receipt(
@@ -496,19 +483,34 @@ def decide_layout_responsibility(
             },
         )
 
-    if readback.active_layout != selected.layout or not readback.active_wards:
+    critical_unsatisfied = _critical_unsatisfied_effects(unsatisfied_effects)
+    if (
+        readback.active_layout in DEFAULT_STATIC_LAYOUTS
+        or readback.active_layout != selected.layout
+        or not readback.active_wards
+        or critical_unsatisfied
+    ):
+        reason = (
+            LayoutDecisionReason.DEFAULT_STATIC_LAYOUT_IN_RESPONSIBLE_HOSTING
+            if readback.active_layout in DEFAULT_STATIC_LAYOUTS
+            else LayoutDecisionReason.RENDERED_READBACK_MISMATCH
+        )
         unsatisfied = tuple(
             dict.fromkeys(
                 (
                     *unsatisfied_effects,
-                    "readback:rendered_layout",
-                    "readback:active_wards",
+                    *(
+                        ()
+                        if readback.active_layout == selected.layout
+                        else ("readback:rendered_layout",)
+                    ),
+                    *(() if readback.active_wards else ("readback:active_wards",)),
                 )
             )
         )
         return _receipt(
             status=LayoutDecisionStatus.HELD,
-            reason=LayoutDecisionReason.RENDERED_READBACK_MISMATCH,
+            reason=reason,
             selected_posture=selected.posture,
             selected_layout=selected.layout,
             previous_layout=readback.active_layout or state.current_layout,
@@ -524,7 +526,12 @@ def decide_layout_responsibility(
                 "active_layout_readback": readback.active_layout,
                 "required_layout_readback": selected.layout,
                 "active_wards": list(readback.active_wards),
-                "message": "LayoutStore active layout alone is advisory; rendered readback must satisfy posture",
+                "critical_unsatisfied_effects": list(critical_unsatisfied),
+                "message": (
+                    "default/static layout is not responsible-hosting success; "
+                    "LayoutStore active layout alone is advisory and rendered readback "
+                    "must satisfy posture"
+                ),
             },
         )
 
@@ -570,7 +577,36 @@ def decide_segment_layout(
     mode: ResponsibleLayoutMode = "responsible_hosting",
     hysteresis_s: float = DEFAULT_HYSTERESIS_S,
 ) -> LayoutDecisionReceipt:
-    """Compatibility wrapper using the prior state as the runtime readback."""
+    """Compatibility wrapper for legacy callers.
+
+    In responsible-hosting mode this wrapper is refusal-only: it has no
+    rendered ``LayoutState``/ward readback and must not launder advisory
+    state into success. Legacy/non-responsible callers can still use the
+    explicit mode boundary.
+    """
+
+    if mode == "responsible_hosting":
+        need_list = list(needs)
+        return _receipt(
+            status=LayoutDecisionStatus.REFUSED,
+            reason=LayoutDecisionReason.RENDERED_READBACK_REQUIRED,
+            selected_posture=None,
+            selected_layout=None,
+            previous_layout=state.current_layout,
+            intent=need_list[0] if need_list else None,
+            now=now,
+            evidence_refs=_flatten_evidence(need_list),
+            input_refs=tuple(
+                ref for need in need_list for ref in (need.intent_id, *need.evidence_refs)
+            ),
+            readback_refs=(),
+            satisfied_effects=(),
+            unsatisfied_effects=("readback:rendered_layout_state", "readback:active_wards"),
+            denied_intents=_intent_ids(need_list),
+            refusal_metadata={
+                "message": "responsible hosting requires rendered LayoutState/ward readback",
+            },
+        )
 
     readback = RuntimeLayoutReadback(
         readback_ref="legacy-state-readback",
@@ -715,17 +751,6 @@ def _select_explicit_fallback(
     return max(candidates, key=lambda item: (_clamp_priority(item.priority), item.requested_at))
 
 
-def _select_winner(valid: Iterable[_ValidIntent]) -> _ValidIntent:
-    return max(
-        valid,
-        key=lambda item: (
-            _clamp_priority(item.intent.priority),
-            item.intent.requested_at,
-            item.intent.intent_id,
-        ),
-    )
-
-
 def _state_posture(state: SegmentLayoutState) -> LayoutPosture | None:
     if state.current_posture is None:
         return None
@@ -790,6 +815,9 @@ def _expected_effects(
     posture: LayoutPosture,
 ) -> tuple[str, ...]:
     base = [f"posture:{posture.value}", f"layout:{layout}"]
+    required_ward = POSTURE_TO_REQUIRED_WARD.get(posture)
+    if required_ward:
+        base.append(f"ward:{required_ward}")
     base.extend(intent.expected_effects)
     return tuple(dict.fromkeys(base))
 
@@ -809,16 +837,41 @@ def _split_effects(
             continue
         if effect.startswith("ward:"):
             ward_id = effect.split(":", 1)[1]
-            target = satisfied if ward_id in active_wards else unsatisfied
+            target = (
+                satisfied
+                if ward_id in active_wards and _ward_is_visible(ward_id, readback.ward_properties)
+                else unsatisfied
+            )
             target.append(effect)
             continue
         unsatisfied.append(effect)
     return tuple(satisfied), tuple(unsatisfied)
 
 
+def _critical_unsatisfied_effects(effects: Iterable[str]) -> tuple[str, ...]:
+    return tuple(
+        effect for effect in effects if effect.startswith("layout:") or effect.startswith("ward:")
+    )
+
+
+def _ward_is_visible(
+    ward_id: str,
+    ward_properties: Mapping[str, Mapping[str, object]],
+) -> bool:
+    props = ward_properties.get(ward_id)
+    if props is None:
+        return True
+    visible = props.get("visible")
+    if visible is False:
+        return False
+    alpha = props.get("alpha")
+    return not (isinstance(alpha, int | float) and float(alpha) <= 0.0)
+
+
 def _safety_fallback_receipt(
     *,
     intents: tuple[SegmentActionIntent, ...],
+    available_layouts: frozenset[str],
     readback: RuntimeLayoutReadback,
     state: SegmentLayoutState,
     now: float,
@@ -826,6 +879,29 @@ def _safety_fallback_receipt(
     readback_refs: tuple[str, ...],
 ) -> LayoutDecisionReceipt:
     selected_layout = POSTURE_TO_LAYOUT[LayoutPosture.SAFETY_FALLBACK]
+    if selected_layout not in available_layouts:
+        return _receipt(
+            status=LayoutDecisionStatus.HELD,
+            reason=LayoutDecisionReason.SAFETY_FALLBACK_UNAVAILABLE,
+            selected_posture=LayoutPosture.SAFETY_FALLBACK,
+            selected_layout=selected_layout,
+            previous_layout=state.current_layout,
+            intent=intents[0] if intents else None,
+            now=now,
+            evidence_refs=_flatten_evidence(intents),
+            input_refs=input_refs,
+            readback_refs=readback_refs,
+            satisfied_effects=(),
+            unsatisfied_effects=(f"layout:{selected_layout}", "safety:consent"),
+            denied_intents=_intent_ids(intents),
+            safety_arbitration={
+                "safety_state": readback.safety_state,
+                "bypasses_hysteresis": True,
+                "message": "safety fallback layout unavailable; fail closed instead of faking success",
+            },
+            fallback_reason="safety_unavailable",
+            refusal_metadata={"missing_layout": selected_layout},
+        )
     satisfied_effects, unsatisfied_effects = _split_effects(
         (f"layout:{selected_layout}", "safety:consent"),
         readback,
@@ -844,7 +920,6 @@ def _safety_fallback_receipt(
         satisfied_effects=satisfied_effects,
         unsatisfied_effects=unsatisfied_effects,
         denied_intents=_intent_ids(intents),
-        applied_layout_changes=(selected_layout,),
         safety_arbitration={
             "safety_state": readback.safety_state,
             "bypasses_hysteresis": True,

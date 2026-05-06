@@ -5,10 +5,13 @@ cc-task: segment-layout-control-loop-chaos-guards
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from agents.studio_compositor.segment_layout_control import (
     POSTURE_TO_LAYOUT,
+    POSTURE_TO_REQUIRED_WARD,
     LayoutDecisionReason,
     LayoutDecisionStatus,
     LayoutNeedKind,
@@ -17,9 +20,12 @@ from agents.studio_compositor.segment_layout_control import (
     SegmentActionIntent,
     SegmentLayoutState,
     decide_layout_responsibility,
+    decide_segment_layout,
 )
+from shared.compositor_model import Layout
 
 NOW = 1_000.0
+LAYOUTS_DIR = Path(__file__).resolve().parents[2] / "config" / "compositor-layouts"
 
 
 def _intent(
@@ -52,6 +58,7 @@ def _readback(
     *,
     active_layout: str = "segment-list",
     active_wards: tuple[str, ...] = ("ranked-list-panel",),
+    ward_properties: dict[str, dict[str, object]] | None = None,
     observed_at: float = NOW,
     safety_state: str | None = None,
 ) -> RuntimeLayoutReadback:
@@ -60,7 +67,7 @@ def _readback(
         observed_at=observed_at,
         active_layout=active_layout,
         active_wards=active_wards,
-        ward_properties={"ranked-list-panel": {"visible": True}},
+        ward_properties=ward_properties or {"ranked-list-panel": {"visible": True}},
         camera_available=True,
         safety_state=safety_state,
         chat_available=True,
@@ -71,18 +78,18 @@ def _readback(
 
 
 def _available() -> set[str]:
-    return {
-        "segment-list",
-        "segment-compare",
-        "segment-detail",
-        "segment-poll",
-        "segment-receipt",
-        "segment-programme-context",
-        "segment-tier",
-        "segment-chat",
-        "default",
-        "consent-safe",
-    }
+    names: set[str] = set()
+    for path in sorted(LAYOUTS_DIR.rglob("*.json")):
+        if "examples" in path.parts:
+            continue
+        try:
+            raw = path.read_text(encoding="utf-8")
+            layout = Layout.model_validate_json(raw)
+        except Exception:
+            continue
+        if layout.sources or layout.surfaces or layout.assignments:
+            names.add(layout.name)
+    return names
 
 
 def test_responsible_acceptance_requires_rendered_readback_receipt_refs() -> None:
@@ -122,14 +129,15 @@ def test_static_default_readback_fails_responsible_hosting(static_layout: str) -
         now=NOW,
     )
 
-    assert receipt.status is LayoutDecisionStatus.REFUSED
+    assert receipt.status is LayoutDecisionStatus.HELD
     assert receipt.reason is LayoutDecisionReason.DEFAULT_STATIC_LAYOUT_IN_RESPONSIBLE_HOSTING
     assert receipt.selected_layout == "segment-list"
     assert receipt.previous_layout == static_layout
     assert receipt.layout_applied is False
     assert receipt.applied_layout_changes == ()
     assert receipt.grants_playback_authority is False
-    assert "default" in receipt.refusal_metadata["message"]
+    assert "layout:segment-list" in receipt.unsatisfied_effects
+    assert "default" in receipt.receipt_metadata["message"]
 
 
 def test_programme_context_never_launders_default_as_responsible_success() -> None:
@@ -237,6 +245,48 @@ def test_rendered_readback_mismatch_holds_instead_of_claiming_success() -> None:
     assert receipt.applied_layout_changes == ()
 
 
+def test_matching_layout_without_required_ward_is_held() -> None:
+    receipt = decide_layout_responsibility(
+        [_intent()],
+        available_layouts=_available(),
+        readback=_readback(active_layout="segment-list", active_wards=()),
+        state=SegmentLayoutState(current_layout="segment-list"),
+        now=NOW,
+    )
+
+    assert receipt.status is LayoutDecisionStatus.HELD
+    assert receipt.reason is LayoutDecisionReason.RENDERED_READBACK_MISMATCH
+    assert "ward:ranked-list-panel" in receipt.unsatisfied_effects
+    assert "readback:active_wards" in receipt.unsatisfied_effects
+
+
+@pytest.mark.parametrize(
+    "ward_properties",
+    [
+        {"ranked-list-panel": {"visible": False}},
+        {"ranked-list-panel": {"visible": True, "alpha": 0.0}},
+    ],
+)
+def test_matching_layout_with_invisible_required_ward_is_held(
+    ward_properties: dict[str, dict[str, object]],
+) -> None:
+    receipt = decide_layout_responsibility(
+        [_intent()],
+        available_layouts=_available(),
+        readback=_readback(
+            active_layout="segment-list",
+            active_wards=("ranked-list-panel",),
+            ward_properties=ward_properties,
+        ),
+        state=SegmentLayoutState(current_layout="segment-list"),
+        now=NOW,
+    )
+
+    assert receipt.status is LayoutDecisionStatus.HELD
+    assert receipt.reason is LayoutDecisionReason.RENDERED_READBACK_MISMATCH
+    assert "ward:ranked-list-panel" in receipt.unsatisfied_effects
+
+
 def test_hysteresis_prevents_tier_chat_tier_thrash() -> None:
     state = SegmentLayoutState(
         current_layout="segment-tier",
@@ -300,6 +350,27 @@ def test_consent_safe_bypasses_dwell_and_records_safety_fallback() -> None:
     assert receipt.layout_applied is False
 
 
+def test_missing_consent_safe_layout_fails_closed() -> None:
+    receipt = decide_layout_responsibility(
+        [_intent(LayoutNeedKind.CHAT_RESPONSE, intent_id="intent-chat", priority=100)],
+        available_layouts=_available() - {"consent-safe"},
+        readback=_readback(
+            active_layout="segment-tier",
+            active_wards=("tier-panel",),
+            safety_state="consent_safe_active",
+        ),
+        state=SegmentLayoutState(current_layout="segment-tier"),
+        now=NOW,
+    )
+
+    assert receipt.status is LayoutDecisionStatus.HELD
+    assert receipt.reason is LayoutDecisionReason.SAFETY_FALLBACK_UNAVAILABLE
+    assert receipt.selected_layout == "consent-safe"
+    assert receipt.applied_layout_changes == ()
+    assert receipt.fallback_reason == "safety_unavailable"
+    assert receipt.refusal_metadata["missing_layout"] == "consent-safe"
+
+
 def test_missing_evidence_refuses_and_never_grants_public_authority() -> None:
     receipt = decide_layout_responsibility(
         [_intent(evidence_refs=())],
@@ -330,3 +401,30 @@ def test_stale_readback_refuses_before_layout_success() -> None:
     assert receipt.reason is LayoutDecisionReason.STALE_READBACK
     assert receipt.selected_layout is None
     assert "readback:fresh" in receipt.unsatisfied_effects
+
+
+def test_legacy_wrapper_cannot_launder_advisory_state_as_readback() -> None:
+    receipt = decide_segment_layout(
+        [_intent()],
+        available_layouts=_available(),
+        state=SegmentLayoutState(current_layout="segment-list"),
+        now=NOW,
+    )
+
+    assert receipt.status is LayoutDecisionStatus.REFUSED
+    assert receipt.reason is LayoutDecisionReason.RENDERED_READBACK_REQUIRED
+    assert "readback:rendered_layout_state" in receipt.unsatisfied_effects
+    assert receipt.readback_refs == ()
+
+
+def test_responsible_posture_layouts_exist_in_real_config_corpus() -> None:
+    available = _available()
+    for posture, layout_name in POSTURE_TO_LAYOUT.items():
+        if posture is LayoutPosture.NON_RESPONSIBLE_FALLBACK:
+            continue
+        assert layout_name in available
+        required_ward = POSTURE_TO_REQUIRED_WARD.get(posture)
+        if required_ward is not None:
+            layout_path = LAYOUTS_DIR / f"{layout_name}.json"
+            layout = Layout.model_validate_json(layout_path.read_text(encoding="utf-8"))
+            assert required_ward in {source.id for source in layout.sources}
