@@ -194,3 +194,51 @@ class TestMeasureAlignmentTax(unittest.TestCase):
                 assert snapshot.sdlc_tax_pct == 20.0
         finally:
             path.unlink()
+
+
+class TestMeasureSdlcOverheadNonDictHarden(unittest.TestCase):
+    """Defensive parsing — non-dict JSONL lines are skipped.
+
+    Same campaign as the broader `fix(X): reject non-dict root` series —
+    a stray non-dict line in `sdlc-events.jsonl` (e.g. a JSON list, null,
+    string, number, or bool) would have crashed `event.get(...)` with
+    AttributeError before this hardening, since the existing try/except
+    only caught `json.JSONDecodeError`.
+    """
+
+    def test_non_dict_lines_are_skipped(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as tmp_file:
+            now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            tmp_file.write("[1, 2, 3]\n")  # JSON list (non-dict)
+            tmp_file.write("null\n")
+            tmp_file.write('"a string"\n')
+            tmp_file.write("42\n")
+            tmp_file.write("true\n")
+            tmp_file.write(
+                json.dumps({"timestamp": now, "stage": "axiom-gate", "duration_ms": 50}) + "\n"
+            )
+            path = Path(tmp_file.name)
+
+        try:
+            with patch("agents.alignment_tax_meter.SDLC_EVENTS_PATH", path):
+                result = measure_sdlc_overhead(lookback_days=1)
+            # Non-dict lines were skipped; the one valid dict event was counted.
+            self.assertEqual(result["events_counted"], 1)
+            self.assertTrue(result["available"])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_all_non_dict_returns_unavailable(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as tmp_file:
+            tmp_file.write("[]\n")
+            tmp_file.write("null\n")
+            tmp_file.write('"string"\n')
+            path = Path(tmp_file.name)
+
+        try:
+            with patch("agents.alignment_tax_meter.SDLC_EVENTS_PATH", path):
+                result = measure_sdlc_overhead(lookback_days=1)
+            # No valid dict events → unavailable, not crashed.
+            self.assertFalse(result["available"])
+        finally:
+            path.unlink(missing_ok=True)
