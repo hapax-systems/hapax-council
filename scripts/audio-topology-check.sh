@@ -49,7 +49,6 @@ OPTIONAL_NODES=(
 
 HARDWARE_NODES=(
     "Blue_Microphones_Yeti"
-    "PreSonus_Studio_24c"
 )
 
 missing_required=()

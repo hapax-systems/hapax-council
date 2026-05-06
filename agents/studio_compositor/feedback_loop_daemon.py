@@ -66,7 +66,7 @@ The full source name carries the device serial, e.g.
 ``alsa_input.usb-ZOOM_Corporation_L-12_8253...-00.multichannel-input``.
 Matching the vendor-and-model substring is robust across device serials
 while still pinning to the L-12 (ignoring other USB audio interfaces
-such as the S-4 or Studio 24c)."""
+such as the S-4)."""
 
 # 250 ms windows × 14 channels × 4 bytes (s32) ≈ 168 kB per read at 48 kHz.
 _PAREC_FORMAT = "s32le"

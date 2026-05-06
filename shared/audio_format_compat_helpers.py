@@ -32,7 +32,7 @@ import array
 import math
 from typing import Final
 
-#: Canonical broadcast sample rate. The L-12 / Studio 24c chain runs
+#: Canonical broadcast sample rate. The L-12 chain runs
 #: at 48000 Hz; any source at 44.1k must be resampled before reaching
 #: the chain.
 DEFAULT_SAMPLE_RATE_HZ: Final[int] = 48000

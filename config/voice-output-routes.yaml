@@ -17,8 +17,7 @@ roles:
       Operator-private TTS path through the voice FX chain to the
       master loudnorm chain (`hapax-loudnorm-capture`), then onward
       to the L-12 → Evil Pet → broadcast path. The "talking to Hapax"
-      route. (Historical: prior to the 24c retirement 2026-05-03, this
-      ended at the Studio 24c analog out.)
+route.
 
   broadcast:
     sink_name: hapax-livestream

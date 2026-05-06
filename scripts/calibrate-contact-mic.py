@@ -432,7 +432,7 @@ def step_5_scratching():
             "\n  WARNING: Scratch autocorrelation is NOT clearly separated from other activities."
         )
         print("  The threshold may produce false positives. Consider:")
-        print("  - Increasing gain on Studio 24c Input 2")
+        print("  - Increasing gain on L-12 CH2")
         print("  - Checking the contact mic is firmly attached under the desk")
         print("  - The turntable may need to be closer to the mic mounting point")
 

@@ -828,7 +828,7 @@ class StudioCompositor:
         self._overlay_zone_manager = OverlayZoneManager(budget_tracker=self._budget_tracker)
         self._audio_capture = CompositorAudioCapture()
 
-        # CVS #145 — bidirectional 24c audio ducking controller. Runs on
+        # CVS #145 — bidirectional audio ducking controller. Runs on
         # its own background thread polling VAD + YT-audio state files at
         # 30 ms cadence. Feature-flag-gated at dispatch level (no
         # PipeWire changes unless ``HAPAX_AUDIO_DUCKING_ACTIVE=1``), but

@@ -17,7 +17,7 @@ operator_present:
   structural_commitments:
     - "single_user axiom (one operator; no multi-operator concurrency)"
     - "physical: presence requires body in the room"
-    - "hardware: 6-camera fleet + 5-Pi NoIR + contact mic on Studio 24c Input 2"
+    - "hardware: 6-camera fleet + 5-Pi NoIR + contact mic on L-12 (CH2)"
   reference_prior: "Beta(1,1) uniform; 0.5 starting probability"
   constraint_narrowing: "single_user reduces hypothesis space to {present, absent}; physical-presence requires at least one positive sensor"
   symmetry: "time-translation invariant during a single session window"

@@ -1,4 +1,4 @@
-"""Adapters that expose existing 24c DSP pipelines as ``AudioReactivitySource``.
+"""Adapters that expose existing broadcast-capture DSP pipelines as ``AudioReactivitySource``.
 
 Each adapter is a thin wrapper. No DSP changes — the underlying capture
 class continues to run at its configured rate; the adapter just reshapes
@@ -8,10 +8,10 @@ through the bus.
 Adapters:
 
 - ``CompositorAudioCaptureSource`` — wraps ``CompositorAudioCapture``
-  (24c FR / Input 2, ``mixer_master`` → room mic / external mixer bus).
+  (FR / mixer_master, ``mixer_master`` → room mic / external mixer bus).
   Signal name prefix: ``mixer``.
 - ``ContactMicSource`` — wraps ``ContactMicBackend`` output via its
-  ``desk_energy`` / ``desk_onset_rate`` behaviors (24c FL / Input 1).
+  ``desk_energy`` / ``desk_onset_rate`` behaviors (FL / contact_mic).
   Signal name prefix: ``desk``.
 - ``PipeWireLineInSource`` — generic adapter for Inputs 3-8 when a
   ``MelFFTReactivitySource``-style DSP becomes available. For now,
@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-# ── Mixer master (24c FR / Input 2) ─────────────────────────────────────────
+# ── Mixer master (FR / mixer_master) ─────────────────────────────────────────
 
 
 class CompositorAudioCaptureSource:
@@ -99,7 +99,7 @@ class CompositorAudioCaptureSource:
         return float(raw.get("mixer_energy", 0.0)) > ACTIVITY_FLOOR_RMS
 
 
-# ── Contact mic (24c FL / Input 1) ──────────────────────────────────────────
+# ── Contact mic (FL / contact_mic) ──────────────────────────────────────────
 
 
 class ContactMicSource:
@@ -162,11 +162,11 @@ class ContactMicSource:
         return sig.rms > ACTIVITY_FLOOR_RMS
 
 
-# ── Generic PipeWire line-in (24c Inputs 3-8) ───────────────────────────────
+# ── Generic PipeWire line-in (capture inputs 3-8) ───────────────────────────────
 
 
 class PipeWireLineInSource:
-    """Placeholder for auto-discovered 24c line inputs (3-8).
+    """Placeholder for auto-discovered capture line inputs (3-8).
 
     The full auto-discovery path lives in the #149 Phase C plan
     (``pw-dump`` enumeration + generated loopback config). Until that
@@ -216,7 +216,7 @@ def register_default_sources(
     contact_mic_reader: Any | None = None,
     bus: UnifiedReactivityBus | None = None,
 ) -> UnifiedReactivityBus:
-    """Register the 24c-default set of sources on the bus.
+    """Register the default set of sources on the bus.
 
     Called once from the compositor composition root after
     ``CompositorAudioCapture`` is constructed. Missing arguments register

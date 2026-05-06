@@ -142,14 +142,6 @@ _PROFILES: tuple[UsbDeviceProfile, ...] = (
         notes="48 kHz / 24-bit multichannel",
     ),
     UsbDeviceProfile(
-        vid="194f",
-        pid="0102",
-        name="PreSonus Studio 24c",
-        device_class="UAC2 audio (2ch I/O + headphone)",
-        bandwidth_mbps=3.0,
-        notes="48 kHz / 24-bit",
-    ),
-    UsbDeviceProfile(
         vid="16c0",
         pid="048a",
         name="Dirtywave M8",
