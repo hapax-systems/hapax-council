@@ -6,7 +6,7 @@
 
 ## Context
 
-CBIP (Chess Board Interpretive Platter, formerly "Chess Boxing Interpretive Plane" per ops vintage) physically relocated. Operator added a second onboard IR camera to the Raspberry Pi watching it. CBIP repurposed from a vinyl-cover-only interpreter to a general interpretative-platter surface where any objects can be accepted for content-programming consumption.
+CBIP (Chess Board Interpretive Platter) physically relocated. Operator added a second onboard IR camera to the Raspberry Pi watching it. CBIP is a general interpretative-platter surface where any objects can be accepted for content-programming consumption.
 
 **Current scene state (2026-05-06):** 6 lenormand cards on the chess board.
 
@@ -20,7 +20,7 @@ CBIP (Chess Board Interpretive Platter, formerly "Chess Boxing Interpretive Plan
 2. **Locked lighting.** External light is orange-yellow tone/hue, won't change (or only slightly). White balance + exposure locked, not auto.
 3. **Per-camera independence.** Both cameras configured separately — different ROI corners, different WB/exposure.
 4. **Compositing intent (2026-05-06T02:08Z clarification):** the 2 cams composite together for displacement effects (parallax / stereo disparity / dual-channel chromatic warp). NOT redundancy. Both streams must reach council separately and be near-time-synchronized.
-5. **Generalization.** Detector accepts any object on the platter (1 vinyl, 6 lenormand cards, future N objects). Stable per-position IDs (not per-content) so downstream consumers can map identity → slot.
+5. **Generalization.** Detector accepts any object on the platter (one large object, six lenormand cards, future N objects). Stable per-position IDs (not per-content) so downstream consumers can map identity → slot.
 
 ## Component graph
 
@@ -76,9 +76,20 @@ Operator confirms via direct check, then alpha picks daemon implementation path.
 - Reverie wgpu shader for displacement — could land in compositor source PR or be its own follow-up
 - Segment authorship (lenormand reading, etc.) — codex territory
 
+## v2 detector contract
+
+- Canonical Pi-edge module: `pi-edge/ir_platter.py`.
+- Canonical function: `detect_platter_objects(grey_frame) -> list[dict]`.
+- Empty platter returns `[]`; one large object and multiple smaller objects use the same list contract.
+- Each object carries `object_id`, `position_index`, `bbox`, `center`, `corners`, `rotation`, `size`, `area_pct`, `aspect_ratio`, and `extent`.
+- IDs are deterministic per visible position in the current frame (`platter-01`, `platter-02`, ...), not content identity or semantic class.
+- `extract_platter_crop(frame, detection, output_size=...)` is the canonical crop helper.
+- `/platter.json` exposes the current detected object list on the Pi frame server. `/album.jpg` and `/album.json` remain compatibility aliases for older consumers, backed by the primary detected object.
+- Detector output is contour geometry only. Content identity, card reading, music provenance, segment authorship, and broadcast claims require downstream receipts.
+
 ## References
 
 - Memory: `~/.claude/projects/-home-hapax-projects/memory/project_cbip_relocation_dual_ir_lenormand.md`
-- Existing: `pi-edge/hapax_ir_edge.py`, `pi-edge/ir_album.py`, `agents/studio_compositor/cbip/`, `agents/studio_compositor/cbip_signal_density.py`, `agents/studio_compositor/album_overlay.py`
+- Existing: `pi-edge/hapax_ir_edge.py`, `pi-edge/ir_platter.py`, `pi-edge/ir_album.py`, `agents/studio_compositor/cbip/`, `agents/studio_compositor/cbip_signal_density.py`, `agents/studio_compositor/album_overlay.py`
 - Pi fleet config: `agents/health_monitor/constants.py::PI_FLEET`
 - IR perception system memory: `project_ir_perception`

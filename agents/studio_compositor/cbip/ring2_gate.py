@@ -1,15 +1,15 @@
-"""CBIP Ring-2 pre-render gate — last check before an enhanced cover ships.
+"""CBIP Ring-2 pre-render gate — last check before enhanced platter output ships.
 
 Spec §5 of `docs/superpowers/specs/2026-04-21-cbip-phase-1-design.md`.
 
 Three independent gates, fail-CLOSED to Phase 0 (deterministic tint) on
 any failure:
 
-1. **Content-ID matchability** — the audio fingerprint of the associated
-   track must be present in a copyright-clear set. If absent, the album
-   may match a Content-ID claim and the enhanced cover should not be
+1. **Content-ID matchability** — the fingerprint of the associated
+   source asset must be present in a copyright-clear set. If absent, the
+   source may match a Content-ID claim and the enhanced output should not be
    amplified — substitute Phase 0.
-2. **Copyright freshness** — album metadata must have been re-checked
+2. **Copyright freshness** — source metadata must have been re-checked
    within the last 90 days. Stale metadata is risk; substitute Phase 0
    and re-check via the copyright-status surface.
 3. **Demonetization risk** — Ring 2 classifier on the rendered output;
@@ -23,7 +23,7 @@ exercises end-to-end.
 
 Wired between enhancement-family render and final compositor blit:
 when ``GateResult.substitute_phase_0`` is True the renderer falls back
-to ``scripts/album-identifier.py`` deterministic-tint output.
+to deterministic-tint output.
 """
 
 from __future__ import annotations
@@ -119,7 +119,7 @@ class Ring2PreRenderGate:
 
     * Content-ID lookup → copyright-clear set query
       (delta wires in Phase 1.7 follow-up)
-    * Copyright freshness clock → album metadata store mtime
+    * Copyright freshness clock → source metadata store mtime
     * Demonet risk scorer → ``shared.governance.ring2_classifier``
 
     Any callable that raises is treated as a gate failure (fail-CLOSED).

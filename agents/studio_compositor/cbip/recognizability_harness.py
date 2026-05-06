@@ -14,12 +14,12 @@ six invariants of the (original, enhanced) pair:
 * **Palette delta-E (CIELAB)** (QUALITY) — K-means K=8 dominant colors;
   pairwise CIE2000 distance, mean ≤ 40 units per matched pair.
 * **Edge IoU (Sobel σ=1)** (QUALITY) — Jaccard over thresholded Sobel edges;
-  ≥ 0.65 for geometric covers, ≥ 0.50 for abstract covers.
+  ≥ 0.65 for geometric objects, ≥ 0.50 for abstract objects.
 * **CLIP cosine** (QUALITY) — vision-language similarity between original
   and enhanced; ≥ 0.75. Optional (CLIP model load is heavy); skipped if the
   caller does not provide a CLIP scorer.
 * **Human-ID rate** (INVARIANT, operator-run) — ≥ 80 % identification across
-  20 canonical covers × 3 intensity levels. Not callable from automation;
+  a canonical object panel × 3 intensity levels. Not callable from automation;
   the harness records the value when the operator submits it.
 
 INVARIANT failures block ship; QUALITY failures warn but do not block. The
@@ -59,10 +59,13 @@ class Severity(StrEnum):
 
 
 class CoverShape(StrEnum):
-    """Recognizability bound depends on cover topology (spec §4)."""
+    """Recognizability bound depends on object topology (spec §4)."""
 
     GEOMETRIC = "geometric"  # ≥0.65 edge IoU required
     ABSTRACT = "abstract"  # ≥0.50 edge IoU required
+
+
+ObjectShape = CoverShape
 
 
 @dataclass(frozen=True)
