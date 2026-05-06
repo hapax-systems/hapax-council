@@ -470,12 +470,22 @@ DEDUP_PATH = RAG_INGEST_STATE_DIR / "processed.json"
 
 
 def _load_dedup_tracker() -> dict:
-    """Load the dedup tracker from disk."""
+    """Load the dedup tracker from disk.
+
+    Validates the JSON root is a mapping. The tracker is consumed by
+    ``_should_skip(file, tracker)`` and ``tracker[str(path)] = {...}``
+    — both crash on non-dict roots. A writer producing valid JSON
+    whose root is null, a list, a string, or a number previously
+    raised AttributeError or TypeError out of the bulk-ingest loop.
+    Same shape as the other recent SHM-read fixes.
+    """
     if DEDUP_PATH.exists():
         try:
-            return json.loads(DEDUP_PATH.read_text())
+            data = json.loads(DEDUP_PATH.read_text())
         except (json.JSONDecodeError, OSError):
             return {}
+        if isinstance(data, dict):
+            return data
     return {}
 
 
