@@ -33,27 +33,39 @@ STIMMUNG_STATE = Path("/dev/shm/hapax-stimmung/state.json")
 def _read_perception() -> dict | None:
     """Read current perception state (flow_state, activity_mode, etc.)."""
     try:
-        return json.loads(PERCEPTION_STATE.read_text())
+        data = json.loads(PERCEPTION_STATE.read_text())
     except (FileNotFoundError, json.JSONDecodeError) as e:
         log.warning("Cannot read perception state: %s", e)
         return None
+    if not isinstance(data, dict):
+        return None
+    return data
 
 
 def _read_stimmung() -> str:
     """Read current stimmung stance."""
     try:
         data = json.loads(STIMMUNG_STATE.read_text())
-        return data.get("overall_stance", "unknown")
     except (FileNotFoundError, json.JSONDecodeError):
         return "unknown"
+    if not isinstance(data, dict):
+        return "unknown"
+    return data.get("overall_stance", "unknown")
+
+
+def _default_state() -> dict:
+    return {"last_flow_state": "idle", "last_activity_mode": "unknown", "transitions": []}
 
 
 def _load_state() -> dict:
     """Load journal state (last known flow state, today's transitions)."""
     try:
-        return json.loads(STATE_FILE.read_text())
+        data = json.loads(STATE_FILE.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
-        return {"last_flow_state": "idle", "last_activity_mode": "unknown", "transitions": []}
+        return _default_state()
+    if not isinstance(data, dict):
+        return _default_state()
+    return data
 
 
 def _save_state(state: dict) -> None:
