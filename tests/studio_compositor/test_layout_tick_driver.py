@@ -319,6 +319,40 @@ def test_active_segment_pressure_maps_ranked_list_to_ranked_ward(tmp_path: Path)
     assert intents[0].expected_effects == ("ward:ranked-list-panel",)
 
 
+def test_active_segment_pressure_maps_blue_contract_needs(tmp_path: Path) -> None:
+    state_file = tmp_path / "active-segment.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "programme_id": "programme:seg-1",
+                "current_beat_index": 1,
+                "prepared_artifact_ref": "sha256:abc123",
+                "current_beat_layout_intents": [
+                    {
+                        "beat_id": "body",
+                        "needs": ["evidence_visible", "action_visible", "comparison_visible"],
+                        "evidence_refs": ["prepared_artifact:sha256:abc123", "vault:source"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pressure = _read_segment_layout_pressure(state_file, now=NOW)
+    intents = pressure["segment_layout_intents"]
+
+    assert pressure["segment_layout_refusals"] == ()
+    assert [intent.kind for intent in intents] == [
+        LayoutNeedKind.ARTIFACT_DETAIL.value,
+        LayoutNeedKind.PROGRAMME_CONTEXT.value,
+        LayoutNeedKind.SOURCE_COMPARISON.value,
+    ]
+    assert intents[0].expected_effects == ("ward:artifact-detail-panel",)
+    assert intents[1].expected_effects == ("ward:programme-context",)
+    assert intents[2].expected_effects == ("ward:compare-panel",)
+
+
 def test_active_segment_pressure_refuses_unsupported_and_forbidden_needs(tmp_path: Path) -> None:
     state_file = tmp_path / "active-segment.json"
     state_file.write_text(

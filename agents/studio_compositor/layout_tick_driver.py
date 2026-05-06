@@ -100,6 +100,12 @@ SUPPORTED_SEGMENT_LAYOUT_PRESSURE_KINDS: frozenset[str] = frozenset(
         "compare",
         "source_comparison",
         "source_comparison_surface",
+        "evidence_visible",
+        "action_visible",
+        "comparison_visible",
+        "source_visible",
+        "readability_held",
+        "referent_visible",
     }
 )
 FORBIDDEN_SEGMENT_LAYOUT_PROPOSAL_FIELDS: frozenset[str] = frozenset(
@@ -428,6 +434,12 @@ def _need_to_segment_intent_kind(need: dict[str, object]) -> str | None:
         "compare": LayoutNeedKind.SOURCE_COMPARISON,
         "source_comparison": LayoutNeedKind.SOURCE_COMPARISON,
         "source_comparison_surface": LayoutNeedKind.SOURCE_COMPARISON,
+        "evidence_visible": LayoutNeedKind.ARTIFACT_DETAIL,
+        "action_visible": LayoutNeedKind.PROGRAMME_CONTEXT,
+        "comparison_visible": LayoutNeedKind.SOURCE_COMPARISON,
+        "source_visible": LayoutNeedKind.ARTIFACT_DETAIL,
+        "readability_held": LayoutNeedKind.ARTIFACT_DETAIL,
+        "referent_visible": LayoutNeedKind.ARTIFACT_DETAIL,
     }
     mapped = mapping.get(kind)
     if mapped is not None:
@@ -452,6 +464,10 @@ def _expected_effects_for_need(need: dict[str, object]) -> tuple[str, ...]:
         return ("ward:chat-panel",)
     if "compar" in kind:
         return ("ward:compare-panel",)
+    if "action" in kind:
+        return ("ward:programme-context",)
+    if "evidence" in kind or "source" in kind or "readability" in kind or "referent" in kind:
+        return ("ward:artifact-detail-panel",)
     return ()
 
 
