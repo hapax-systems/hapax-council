@@ -10,10 +10,12 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 CODEX_CONFIG = REPO_ROOT / "config" / "codex" / "config.toml"
 CODEX_LAUNCHER = REPO_ROOT / "scripts" / "hapax-codex"
 CODEX_INSTALLER = REPO_ROOT / "scripts" / "install-codex-config.sh"
+CODEX_MCP_CONFIG_SCRUB = REPO_ROOT / "scripts" / "hapax-codex-mcp-config-scrub"
 TAVILY_WRAPPER = REPO_ROOT / "scripts" / "hapax-tavily-mcp"
 PLAYWRIGHT_WRAPPER = REPO_ROOT / "scripts" / "hapax-playwright-mcp"
 GITHUB_WRAPPER = REPO_ROOT / "scripts" / "hapax-github-mcp"
 GEMINI_WRAPPER = REPO_ROOT / "scripts" / "hapax-gemini-mcp"
+CONTEXT7_WRAPPER = REPO_ROOT / "scripts" / "hapax-context7-mcp"
 
 
 def _installed_config(tmp_path: Path) -> dict:
@@ -116,17 +118,62 @@ def test_github_mcp_uses_secret_loading_wrapper(tmp_path: Path) -> None:
     assert "--log-driver none" in wrapper
 
 
-def test_context7_mcp_uses_env_var_not_literal_bearer(tmp_path: Path) -> None:
+def test_context7_mcp_uses_secret_loading_wrapper(tmp_path: Path) -> None:
     config = _installed_config(tmp_path)
     launcher = CODEX_LAUNCHER.read_text()
+    wrapper = CONTEXT7_WRAPPER.read_text()
 
-    assert config["mcp_servers"]["context7"] == {
-        "url": "https://mcp.context7.com/mcp",
-        "bearer_token_env_var": "CONTEXT7_API_KEY",
-    }
-    assert 'mcp_servers.context7.bearer_token_env_var="CONTEXT7_API_KEY"' in launcher
-    assert "load_first_available_pass_secret CONTEXT7_API_KEY context7/api-key" in launcher
+    assert config["mcp_servers"]["context7"] == {"command": str(CONTEXT7_WRAPPER)}
+    assert 'mcp_servers.context7.command=\\"$COUNCIL_DIR/scripts/hapax-context7-mcp\\"' in launcher
+    assert "mcp_servers.context7.bearer_token_env_var" not in launcher
     assert "mcp_servers.context7.bearer_token=" not in launcher
+    assert "unset CONTEXT7_API_KEY" in launcher
+    assert "load_first_available_pass_secret CONTEXT7_API_KEY context7/api-key" in wrapper
+    assert "CONTEXT7_API_KEY" not in str(config["mcp_servers"]["context7"])
+
+
+def test_context7_scrub_removes_stale_remote_config(tmp_path: Path) -> None:
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    config_path = codex_home / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'model = "gpt-5.5"',
+                "",
+                "[mcp_servers.context7]",
+                'url = "https://mcp.context7.com/mcp"',
+                'bearer_token_env_var = "CONTEXT7_API_KEY"',
+                f'command = "{CONTEXT7_WRAPPER}"',
+                "",
+                "[mcp_servers.context7.headers]",
+                'authorization = "bearer ${CONTEXT7_API_KEY}"',
+                "",
+                "[mcp_servers.github]",
+                f'command = "{GITHUB_WRAPPER}"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(CODEX_MCP_CONFIG_SCRUB)],
+        capture_output=True,
+        text=True,
+        env={
+            "CODEX_HOME": str(codex_home),
+            "HOME": str(tmp_path),
+            "PATH": "/usr/bin:/bin",
+        },
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    scrubbed = tomllib.loads(config_path.read_text())
+    assert scrubbed["mcp_servers"]["context7"] == {"command": str(CONTEXT7_WRAPPER)}
+    assert scrubbed["mcp_servers"]["github"] == {"command": str(GITHUB_WRAPPER)}
+    assert (codex_home / "config.toml.backup-context7-scrub").exists()
 
 
 def test_codex_mcp_scripts_are_valid_bash() -> None:
@@ -135,10 +182,12 @@ def test_codex_mcp_scripts_are_valid_bash() -> None:
             "bash",
             "-n",
             str(CODEX_LAUNCHER),
+            str(CODEX_MCP_CONFIG_SCRUB),
             str(TAVILY_WRAPPER),
             str(PLAYWRIGHT_WRAPPER),
             str(GITHUB_WRAPPER),
             str(GEMINI_WRAPPER),
+            str(CONTEXT7_WRAPPER),
         ],
         capture_output=True,
         text=True,
