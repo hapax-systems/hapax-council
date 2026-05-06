@@ -33,6 +33,7 @@ ALLOW_LEGACY_ACK=0
 JSON_OUTPUT=0
 USED_TRANSPORT=""
 READ_STDIN=0
+RTE_BYPASS=0
 MESSAGE_PARTS=()
 TMP_FILES=()
 
@@ -113,6 +114,10 @@ while [ $# -gt 0 ]; do
       READ_STDIN=1
       shift
       ;;
+    --rte-bypass)
+      RTE_BYPASS=1
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -160,6 +165,26 @@ fi
 if [ -z "$MESSAGE" ]; then
   echo "hapax-codex-send: refusing to send an empty message" >&2
   exit 2
+fi
+
+# RTE authority gate (operator directive 2026-05-06): when the active RTE has
+# declared red or ops-distress in their latest tick log, refuse new dispatches.
+# Bypass with --rte-bypass for operator emergencies (logged to stderr).
+if [ "$RTE_BYPASS" -ne 1 ] && command -v hapax-rte-state >/dev/null 2>&1; then
+  rte_status="$(hapax-rte-state --status-only 2>/dev/null || echo unknown)"
+  case "$rte_status" in
+    red)
+      echo "hapax-codex-send: BLOCKED by RTE — status=red, dispatch refused. Override with --rte-bypass (operator only)." >&2
+      exit 4
+      ;;
+    ops-distress)
+      echo "hapax-codex-send: BLOCKED by RTE — status=ops-distress, dispatch refused. Override with --rte-bypass (operator emergency only)." >&2
+      exit 4
+      ;;
+  esac
+fi
+if [ "$RTE_BYPASS" -eq 1 ]; then
+  echo "hapax-codex-send: NOTE — RTE gate bypassed via --rte-bypass" >&2
 fi
 
 case "$ACK_TIMEOUT" in
