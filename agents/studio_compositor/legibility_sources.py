@@ -160,15 +160,38 @@ _UNGROUNDED_BREATH_HZ: float = 0.3
 
 
 def _read_narrative_state() -> dict:
+    """Return the narrative-state JSON as a dict, or {} on any failure.
+
+    Validates the JSON root is a mapping. A writer producing valid JSON
+    with a non-dict root (``null``, list, string, number) previously
+    propagated AttributeError out of ``ns.get("activity")`` in the
+    Cairo render callback at line 398, crashing the ActivityHeader /
+    StanceIndicator / GroundingProvenanceTicker / ChatKeywordLegend
+    sources. Mirrors the isinstance pattern already in
+    :func:`_read_rotation_mode` below.
+    """
     try:
         if _NARRATIVE_STATE.exists():
-            return json.loads(_NARRATIVE_STATE.read_text(encoding="utf-8"))
+            data = json.loads(_NARRATIVE_STATE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+            log.debug(
+                "narrative-state root is %s, expected mapping",
+                type(data).__name__,
+            )
     except Exception:
         log.debug("narrative-state read failed", exc_info=True)
     return {}
 
 
 def _read_latest_intent() -> dict:
+    """Return the most recent director-intent JSONL entry as a dict.
+
+    Same isinstance contract as :func:`_read_narrative_state` — the
+    last line of the JSONL tail is parsed and validated, with non-dict
+    values rejected so the callsite's ``intent.get(...)`` cannot raise
+    AttributeError into the Cairo render callback.
+    """
     try:
         if _DIRECTOR_INTENT_JSONL.exists():
             size = _DIRECTOR_INTENT_JSONL.stat().st_size
@@ -177,7 +200,13 @@ def _read_latest_intent() -> dict:
                 tail = fh.read().decode("utf-8", errors="ignore")
             lines = [line for line in tail.splitlines() if line.strip()]
             if lines:
-                return json.loads(lines[-1])
+                data = json.loads(lines[-1])
+                if isinstance(data, dict):
+                    return data
+                log.debug(
+                    "director-intent tail root is %s, expected mapping",
+                    type(data).__name__,
+                )
     except Exception:
         log.debug("director-intent tail failed", exc_info=True)
     return {}
