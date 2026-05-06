@@ -15,22 +15,19 @@
     },
     "sierpinski_main": {
       "type": "sierpinski_content",
-      "params": {
-        "depth": 4,
-        "rotation": 0.0
-      }
+      "params": {}
     },
     "droste_sierpinski": {
       "type": "droste",
       "params": {
-        "depth": 2,
-        "scale": 0.85
+        "branches": 2,
+        "zoom_speed": 0.85
       }
     },
     "vignette": {
       "type": "vignette",
       "params": {
-        "intensity": 0.35,
+        "strength": 0.35,
         "radius": 0.68
       }
     },

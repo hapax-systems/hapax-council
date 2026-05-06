@@ -1,0 +1,588 @@
+"""Deterministic gate for the one-segment iteration protocol.
+
+The review layer consumes manifest-accepted prepared artifacts and emits a
+receipt for the canary segment. It does not call models, generate content, or
+grant prepared artifacts any runtime layout authority.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+from shared.resident_command_r import RESIDENT_COMMAND_R_MODEL
+from shared.segment_quality_actionability import (
+    RESPONSIBLE_HOSTING_CONTEXT,
+    forbidden_layout_authority_fields,
+    score_segment_quality,
+    validate_layout_responsibility,
+    validate_segment_actionability,
+)
+
+SEGMENT_ITERATION_REVIEW_VERSION = 1
+MIN_AUTOMATED_SCRIPT_SCORE = 3.5
+IDEAL_SCRIPT_SCORE_FLOORS = {
+    "premise": 4,
+    "tension": 4,
+    "arc": 3,
+    "specificity": 5,
+    "pacing": 3,
+    "stakes": 3,
+    "callbacks": 3,
+    "audience_address": 3,
+    "source_fidelity": 3,
+    "ending": 3,
+    "actionability": 4,
+    "layout_responsibility": 4,
+}
+REQUIRED_SOURCE_HASH_KEYS = frozenset(
+    {
+        "programme_sha256",
+        "topic_sha256",
+        "segment_beats_sha256",
+        "seed_sha256",
+        "prompt_sha256",
+    }
+)
+REQUIRED_TEAM_CRITIQUE_ROLES = (
+    "script_quality",
+    "actionability_layout",
+    "layout_responsibility",
+)
+PASSING_TEAM_VERDICTS = frozenset({"approved", "pass", "passed"})
+MIN_CONCRETE_ACTION_KINDS = 2
+FORBIDDEN_LAYOUT_LAUNDERING_TERMS = frozenset(
+    {
+        "camera",
+        "camera_subject",
+        "host_camera_or_voice_presence",
+        "non_responsible_static",
+        "spoken_argument_only",
+        "spoken_only_fallback",
+        "static",
+        "default",
+        "garage-door",
+        "garage_door",
+    }
+)
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _sha256_json(payload: Any) -> str:
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return _sha256_text(text)
+
+
+def _artifact_hash(payload: Mapping[str, Any]) -> str:
+    return _sha256_json({k: v for k, v in payload.items() if k != "artifact_sha256"})
+
+
+def _criterion(
+    name: str,
+    passed: bool,
+    detail: str,
+    *,
+    observed: Any | None = None,
+) -> dict[str, Any]:
+    out: dict[str, Any] = {"name": name, "passed": bool(passed), "detail": detail}
+    if observed is not None:
+        out["observed"] = observed
+    return out
+
+
+def _is_sha256_hex(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(ch in "0123456789abcdef" for ch in value.lower())
+    )
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item.strip()]
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _score_floor_failures(scores: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    failures: dict[str, dict[str, Any]] = {}
+    for name, floor in IDEAL_SCRIPT_SCORE_FLOORS.items():
+        observed = scores.get(name)
+        if not isinstance(observed, int | float) or observed < floor:
+            failures[name] = {"observed": observed, "minimum": floor}
+    return failures
+
+
+def _source_binding_ok(
+    artifact: Mapping[str, Any],
+    source_hashes: Mapping[str, Any],
+    llm_calls: Sequence[Any],
+) -> bool:
+    if set(source_hashes) != REQUIRED_SOURCE_HASH_KEYS:
+        return False
+    if source_hashes.get("prompt_sha256") != artifact.get("prompt_sha256"):
+        return False
+    if source_hashes.get("seed_sha256") != artifact.get("seed_sha256"):
+        return False
+    return all(
+        isinstance(call, Mapping)
+        and call.get("prompt_sha256") == artifact.get("prompt_sha256")
+        and call.get("programme_id") == artifact.get("programme_id")
+        for call in llm_calls
+    )
+
+
+def _concrete_action_bindings(
+    beat_action_intents: Any,
+    beat_layout_intents: Any,
+) -> list[dict[str, Any]]:
+    if not isinstance(beat_action_intents, list) or not isinstance(beat_layout_intents, list):
+        return []
+    layout_by_index = {
+        beat.get("beat_index"): beat
+        for beat in beat_layout_intents
+        if isinstance(beat, Mapping) and isinstance(beat.get("beat_index"), int)
+    }
+    bindings: list[dict[str, Any]] = []
+    for beat in beat_action_intents:
+        if not isinstance(beat, Mapping) or not isinstance(beat.get("beat_index"), int):
+            continue
+        beat_index = beat["beat_index"]
+        layout_beat = layout_by_index.get(beat_index)
+        concrete_intents = [
+            intent
+            for intent in beat.get("intents") or []
+            if isinstance(intent, Mapping) and intent.get("kind") != "spoken_argument"
+        ]
+        if not concrete_intents:
+            continue
+        needs = layout_beat.get("needs") if isinstance(layout_beat, Mapping) else None
+        evidence_refs = (
+            layout_beat.get("evidence_refs") if isinstance(layout_beat, Mapping) else None
+        )
+        source_affordances = (
+            layout_beat.get("source_affordances") if isinstance(layout_beat, Mapping) else None
+        )
+        bindings.append(
+            {
+                "beat_index": beat_index,
+                "action_kinds": sorted({str(intent.get("kind")) for intent in concrete_intents}),
+                "has_layout_need": isinstance(needs, list)
+                and any(
+                    isinstance(need, str)
+                    and need not in {"unsupported_layout_need", "host_presence"}
+                    for need in needs
+                ),
+                "has_evidence_ref": isinstance(evidence_refs, list) and bool(evidence_refs),
+                "has_source_affordance": isinstance(source_affordances, list)
+                and bool(source_affordances),
+                "default_static_success_allowed": bool(
+                    layout_beat.get("default_static_success_allowed")
+                    if isinstance(layout_beat, Mapping)
+                    else False
+                ),
+            }
+        )
+    return bindings
+
+
+def _layout_laundering_terms(value: Any, *, path: str = "$") -> list[dict[str, str]]:
+    found: list[dict[str, str]] = []
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            child_path = f"{path}.{key}"
+            found.extend(_layout_laundering_terms(child, path=child_path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            found.extend(_layout_laundering_terms(child, path=f"{path}[{index}]"))
+    elif isinstance(value, str):
+        lowered = value.lower()
+        for term in FORBIDDEN_LAYOUT_LAUNDERING_TERMS:
+            if term in lowered:
+                found.append({"path": path, "value": value, "term": term})
+                break
+    return found
+
+
+def _team_critique_loop(
+    receipts: Sequence[Mapping[str, Any]] | None,
+) -> dict[str, Any]:
+    normalized: list[dict[str, Any]] = []
+    approved_roles: set[str] = set()
+    malformed: list[str] = []
+    blocking: list[str] = []
+
+    for index, receipt in enumerate(receipts or ()):
+        role = str(receipt.get("role") or receipt.get("gate") or "").strip()
+        verdict = str(receipt.get("verdict") or receipt.get("status") or "").strip().lower()
+        reviewer = str(receipt.get("reviewer") or "").strip()
+        checked_at = str(receipt.get("checked_at") or "").strip()
+        receipt_id = str(receipt.get("receipt_id") or receipt.get("id") or "").strip()
+        notes = str(receipt.get("notes") or "").strip()
+        entry = {
+            "role": role,
+            "verdict": verdict,
+            "reviewer": reviewer,
+            "checked_at": checked_at,
+            "receipt_id": receipt_id,
+            "notes": notes,
+        }
+        normalized.append(entry)
+
+        missing = [
+            key
+            for key, value in {
+                "role": role,
+                "verdict": verdict,
+                "reviewer": reviewer,
+                "checked_at": checked_at,
+                "receipt_id": receipt_id,
+            }.items()
+            if not value
+        ]
+        if missing:
+            malformed.append(f"receipt[{index}] missing {','.join(missing)}")
+            continue
+        if role not in REQUIRED_TEAM_CRITIQUE_ROLES:
+            malformed.append(f"receipt[{index}] has unsupported role {role!r}")
+            continue
+        if verdict in PASSING_TEAM_VERDICTS:
+            approved_roles.add(role)
+        else:
+            blocking.append(role)
+
+    pending_roles = [role for role in REQUIRED_TEAM_CRITIQUE_ROLES if role not in approved_roles]
+    return {
+        "required_roles": list(REQUIRED_TEAM_CRITIQUE_ROLES),
+        "receipts": normalized,
+        "pending_roles": pending_roles,
+        "malformed_receipts": malformed,
+        "blocking_roles": sorted(set(blocking)),
+        "passed": not pending_roles and not malformed and not blocking,
+        "instructions": [
+            "Review the single canary artifact before any next-nine generation.",
+            "Each reviewer records a receipt with role, verdict, reviewer, checked_at, receipt_id, and notes.",
+            "Approvals must cover script quality, actionability/layout fit, and layout-responsibility doctrine.",
+            "Any revise/block verdict sends the method back to one-segment iteration.",
+        ],
+    }
+
+
+def review_one_segment_iteration(
+    accepted_artifacts: Sequence[Mapping[str, Any]],
+    *,
+    team_critique_receipts: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Review the canary set and return a receipt for the next-nine gate."""
+
+    criteria = [
+        _criterion(
+            "artifact.exactly_one_manifest_accepted",
+            len(accepted_artifacts) == 1,
+            "one-segment canary must expose exactly one manifest-accepted artifact",
+            observed={"accepted_artifact_count": len(accepted_artifacts)},
+        )
+    ]
+    if len(accepted_artifacts) != 1:
+        team = _team_critique_loop(team_critique_receipts)
+        return _receipt(
+            artifact={},
+            accepted_artifact_count=len(accepted_artifacts),
+            criteria=criteria,
+            quality_report={},
+            actionability_report={},
+            layout_report={},
+            team_critique_loop=team,
+        )
+
+    artifact = dict(accepted_artifacts[0])
+    artifact_criteria, quality, actionability, layout = _review_artifact(artifact)
+    criteria.extend(artifact_criteria)
+    team = _team_critique_loop(team_critique_receipts)
+    return _receipt(
+        artifact=artifact,
+        accepted_artifact_count=1,
+        criteria=criteria,
+        quality_report=quality,
+        actionability_report=actionability,
+        layout_report=layout,
+        team_critique_loop=team,
+    )
+
+
+def _review_artifact(
+    artifact: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    script = _string_list(artifact.get("prepared_script"))
+    beats = _string_list(artifact.get("segment_beats"))
+    quality = score_segment_quality(script, beats) if script else {}
+    actionability = validate_segment_actionability(script, beats) if script else {}
+    beat_action_intents = actionability.get("beat_action_intents") if actionability else []
+    layout = (
+        validate_layout_responsibility(beat_action_intents)
+        if isinstance(beat_action_intents, list)
+        else {}
+    )
+    runtime_layout_validation = _mapping(artifact.get("runtime_layout_validation"))
+    layout_contract = _mapping(artifact.get("layout_decision_contract"))
+    actionability_alignment = _mapping(artifact.get("actionability_alignment"))
+    source_hashes = _mapping(artifact.get("source_hashes"))
+    raw_llm_calls = artifact.get("llm_calls")
+    llm_calls: list[Any] = raw_llm_calls if isinstance(raw_llm_calls, list) else []
+    forbidden_layout_fields = forbidden_layout_authority_fields(dict(artifact))
+    layout_laundering_terms = _layout_laundering_terms(
+        {
+            "beat_layout_intents": artifact.get("beat_layout_intents"),
+            "layout_decision_contract": artifact.get("layout_decision_contract"),
+            "runtime_layout_validation": artifact.get("runtime_layout_validation"),
+            "layout_decision_receipts": artifact.get("layout_decision_receipts"),
+        }
+    )
+    concrete_action_kinds = sorted(
+        {
+            str(intent.get("kind"))
+            for beat in beat_action_intents or []
+            for intent in (beat.get("intents") or [])
+            if isinstance(intent, Mapping) and intent.get("kind") != "spoken_argument"
+        }
+    )
+    expected_artifact_hash = artifact.get("artifact_sha256")
+    expected_source_hash = artifact.get("source_provenance_sha256")
+    recomputed_action_intents = actionability.get("beat_action_intents") if actionability else None
+    recomputed_layout_intents = layout.get("beat_layout_intents") if layout else None
+    concrete_action_bindings = _concrete_action_bindings(
+        recomputed_action_intents,
+        recomputed_layout_intents,
+    )
+    score_failures = _score_floor_failures(_mapping(quality.get("scores")) if quality else {})
+
+    criteria = [
+        _criterion(
+            "artifact.command_r_model",
+            artifact.get("model_id") == RESIDENT_COMMAND_R_MODEL
+            and all(
+                isinstance(call, Mapping) and call.get("model_id") == RESIDENT_COMMAND_R_MODEL
+                for call in llm_calls
+            ),
+            "prepared artifact and all LLM call receipts must use resident Command-R",
+            observed={
+                "model_id": artifact.get("model_id"),
+                "llm_call_count": len(llm_calls),
+            },
+        ),
+        _criterion(
+            "artifact.prior_only_authority",
+            artifact.get("authority") == "prior_only",
+            "prepared artifact must remain prior-only content",
+            observed=artifact.get("authority"),
+        ),
+        _criterion(
+            "artifact.hash_receipt",
+            _is_sha256_hex(expected_artifact_hash)
+            and expected_artifact_hash == _artifact_hash(artifact),
+            "artifact_sha256 must match the artifact bytes excluding artifact_sha256",
+            observed=expected_artifact_hash,
+        ),
+        _criterion(
+            "artifact.source_provenance_receipt",
+            _is_sha256_hex(expected_source_hash)
+            and bool(source_hashes)
+            and expected_source_hash == _sha256_json(source_hashes),
+            "source_provenance_sha256 must match source_hashes",
+            observed=expected_source_hash,
+        ),
+        _criterion(
+            "artifact.prior_source_binding",
+            _source_binding_ok(artifact, source_hashes, llm_calls),
+            "source hashes, prompt hash, seed hash, and LLM call receipts must bind to the same prior",
+            observed={
+                "source_hash_keys": sorted(source_hashes),
+                "prompt_sha256": artifact.get("prompt_sha256"),
+                "seed_sha256": artifact.get("seed_sha256"),
+                "llm_call_count": len(llm_calls),
+            },
+        ),
+        _criterion(
+            "script.shape",
+            bool(script) and bool(beats) and len(script) == len(beats),
+            "prepared_script must be present and align one-to-one with segment_beats",
+            observed={"script_beats": len(script), "segment_beats": len(beats)},
+        ),
+        _criterion(
+            "script.quality_floor",
+            bool(quality)
+            and float(quality.get("overall") or 0) >= MIN_AUTOMATED_SCRIPT_SCORE
+            and quality.get("label") != "generic"
+            and _mapping(quality.get("diagnostics")).get("thin_beats") == 0,
+            "script must clear the automated quality floor; team critique decides excellence",
+            observed={
+                "overall": quality.get("overall"),
+                "label": quality.get("label"),
+                "thin_beats": _mapping(quality.get("diagnostics")).get("thin_beats"),
+            },
+        ),
+        _criterion(
+            "script.ideal_livestream_bit",
+            bool(quality) and not score_failures,
+            "canary script must clear per-dimension floors for a compelling livestream bit",
+            observed={
+                "score_failures": score_failures,
+                "scores": quality.get("scores"),
+            },
+        ),
+        _criterion(
+            "script.source_fidelity",
+            bool(quality)
+            and _mapping(quality.get("scores")).get("source_fidelity", 0)
+            >= IDEAL_SCRIPT_SCORE_FLOORS["source_fidelity"],
+            "sources must appear as grounded arguments, not decorative name drops",
+            observed={
+                "source_fidelity": _mapping(quality.get("scores")).get("source_fidelity")
+                if quality
+                else None,
+                "proper_noun_count": _mapping(quality.get("diagnostics")).get("proper_noun_count")
+                if quality
+                else None,
+            },
+        ),
+        _criterion(
+            "actionability.supported",
+            actionability.get("ok") is True
+            and actionability_alignment.get("ok") is True
+            and actionability.get("removed_unsupported_action_lines") == [],
+            "script must not contain unsupported action claims",
+            observed={
+                "removed": actionability.get("removed_unsupported_action_lines"),
+                "artifact_alignment": actionability_alignment,
+            },
+        ),
+        _criterion(
+            "actionability.visible_or_doable_counterpart",
+            len(concrete_action_kinds) >= MIN_CONCRETE_ACTION_KINDS,
+            "the canary must contain multiple visible or doable supported action intents",
+            observed={"concrete_action_kinds": concrete_action_kinds},
+        ),
+        _criterion(
+            "actionability.claim_layout_binding",
+            bool(concrete_action_bindings)
+            and all(
+                binding["has_layout_need"]
+                and binding["has_evidence_ref"]
+                and binding["has_source_affordance"]
+                and not binding["default_static_success_allowed"]
+                for binding in concrete_action_bindings
+            ),
+            "every concrete spoken claim must bind to a layout need, source affordance, and evidence ref",
+            observed={"bindings": concrete_action_bindings},
+        ),
+        _criterion(
+            "actionability.receipt_freshness",
+            artifact.get("beat_action_intents") == recomputed_action_intents,
+            "stored beat_action_intents must match deterministic recomputation",
+        ),
+        _criterion(
+            "layout.responsible_proposal_only",
+            layout.get("ok") is True
+            and artifact.get("hosting_context") == RESPONSIBLE_HOSTING_CONTEXT
+            and layout_contract.get("may_command_layout") is False
+            and layout_contract.get("default_static_success_allowed") is False
+            and runtime_layout_validation.get("status") == "pending_runtime_readback"
+            and runtime_layout_validation.get("layout_success") is False
+            and artifact.get("layout_decision_receipts") == [],
+            "prepared layout metadata must stay responsible, proposal-only, and pending readback",
+            observed={
+                "hosting_context": artifact.get("hosting_context"),
+                "layout_success": runtime_layout_validation.get("layout_success"),
+                "receipt_count": len(artifact.get("layout_decision_receipts") or []),
+            },
+        ),
+        _criterion(
+            "layout.intent_receipt_freshness",
+            artifact.get("beat_layout_intents") == recomputed_layout_intents,
+            "stored beat_layout_intents must match deterministic recomputation",
+        ),
+        _criterion(
+            "layout.no_prepared_authority",
+            not forbidden_layout_fields,
+            "prepared artifact must not carry concrete layout authority, static-default success, or cues",
+            observed=forbidden_layout_fields,
+        ),
+        _criterion(
+            "layout.no_static_camera_spoken_laundering",
+            not layout_laundering_terms,
+            "prepared layout metadata must not launder static default, camera, or spoken-only fallback as responsible success",
+            observed=layout_laundering_terms,
+        ),
+    ]
+    return criteria, quality, actionability, layout
+
+
+def _receipt(
+    *,
+    artifact: Mapping[str, Any],
+    accepted_artifact_count: int,
+    criteria: list[dict[str, Any]],
+    quality_report: dict[str, Any],
+    actionability_report: dict[str, Any],
+    layout_report: dict[str, Any],
+    team_critique_loop: dict[str, Any],
+) -> dict[str, Any]:
+    automation_passed = all(item["passed"] for item in criteria)
+    team_passed = bool(team_critique_loop.get("passed"))
+    ready_for_next_nine = automation_passed and team_passed
+    decision = (
+        "ready_for_next_nine"
+        if ready_for_next_nine
+        else "team_critique_required"
+        if automation_passed
+        else "revise_canary_artifact"
+    )
+    body = {
+        "segment_iteration_review_version": SEGMENT_ITERATION_REVIEW_VERSION,
+        "programme_id": artifact.get("programme_id"),
+        "artifact_sha256": artifact.get("artifact_sha256"),
+        "artifact_path": artifact.get("artifact_path") or artifact.get("artifact_path_diagnostic"),
+        "artifact_extraction": {
+            "accepted_artifact_count": accepted_artifact_count,
+            "manifest_gate": accepted_artifact_count == 1,
+        },
+        "automated_gate": {
+            "passed": automation_passed,
+            "minimum_script_score": MIN_AUTOMATED_SCRIPT_SCORE,
+            "criteria": criteria,
+        },
+        "script_quality": quality_report,
+        "actionability": {
+            "ok": actionability_report.get("ok"),
+            "beat_action_intents": actionability_report.get("beat_action_intents"),
+            "removed_unsupported_action_lines": actionability_report.get(
+                "removed_unsupported_action_lines"
+            ),
+        },
+        "layout_responsibility": {
+            "ok": layout_report.get("ok"),
+            "hosting_context": layout_report.get("hosting_context"),
+            "beat_layout_intents": layout_report.get("beat_layout_intents"),
+            "runtime_layout_validation": layout_report.get("runtime_layout_validation"),
+            "layout_decision_contract": layout_report.get("layout_decision_contract"),
+        },
+        "team_critique_loop": team_critique_loop,
+        "ready_for_next_nine": ready_for_next_nine,
+        "decision": decision,
+        "resident_model_continuity": {
+            "expected_model": RESIDENT_COMMAND_R_MODEL,
+            "no_qwen": True,
+            "no_unload_or_swap": True,
+        },
+    }
+    body["review_receipt_sha256"] = _sha256_json(body)
+    return body

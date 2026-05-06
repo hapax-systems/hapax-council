@@ -16,8 +16,7 @@
     "edge": {
       "type": "edge_detect",
       "params": {
-        "threshold": 0.18,
-        "amount": 0.55
+        "threshold": 0.18
       }
     },
     "grain_grit": {
@@ -29,7 +28,7 @@
     "vignette": {
       "type": "vignette",
       "params": {
-        "intensity": 0.55,
+        "strength": 0.55,
         "radius": 0.6
       }
     },

@@ -16,22 +16,21 @@
     "rutt_mesh": {
       "type": "rutt_etra",
       "params": {
-        "amount": 0.5,
-        "scanlines": 240,
-        "depth": 0.35
+        "displacement": 0.5,
+        "line_density": 240
       }
     },
     "thermal_warm": {
       "type": "thermal",
       "params": {
         "intensity": 0.32,
-        "palette": "warm"
+        "palette": 2.0
       }
     },
     "vignette": {
       "type": "vignette",
       "params": {
-        "intensity": 0.48,
+        "strength": 0.48,
         "radius": 0.6
       }
     },

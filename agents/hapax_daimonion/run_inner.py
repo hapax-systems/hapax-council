@@ -501,10 +501,10 @@ async def run_inner(daemon: VoiceDaemon) -> None:
         "programme_manager_loop",
         lambda: programme_manager_loop(daemon),
     )
-    # Dedicated prepared-content playback loop — bypasses narrative_drive →
-    # affordance_pipeline → recruitment → CPAL chain entirely. Drives TTS
-    # synthesis and playback directly, block by block, with only a 1s
-    # breath between paragraphs. Eliminates all pipeline overhead.
+    # Legacy prepared-content playback loop. It direct-plays scripts only
+    # when content explicitly requests verbatim legacy mode and the runtime
+    # HAPAX_PREP_VERBATIM_LEGACY gate is enabled; live-prior prepared content
+    # continues through narrative_drive → live composition.
     from agents.hapax_daimonion.run_loops_aux import prepared_playback_loop
 
     _make_task(

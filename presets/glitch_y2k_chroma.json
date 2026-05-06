@@ -23,15 +23,14 @@
     "slitscan_strip": {
       "type": "slitscan",
       "params": {
-        "amount": 0.22,
-        "frequency": 6
+        "speed": 0.22,
+        "direction": 6
       }
     },
     "dither_y2k": {
       "type": "dither",
       "params": {
-        "amount": 0.18,
-        "palette_size": 32
+        "color_levels": 0.18
       }
     },
     "out": {

@@ -197,6 +197,28 @@ that conf wires the S-4 stereo content into the livestream tap;
 this conf exposes the underlying device's pro-audio capability so
 the router has individually-addressable destinations.
 
+## ReSpeaker XVF3800 array mic profile pin
+
+`hapax-respeaker-xvf3800-array-mic.conf` pins the optional ReSpeaker XVF3800
+USB 4-Mic Array to its multichannel/pro-audio surface and gives it the
+operator role nickname `hapax-array-mic`. It is not a default-source rule and
+does not replace the Rode/L-12 CH5 broadcast mic.
+
+Install + verify after plugging the array into the host AMD/front-case
+controller (`0000:09:00.0`):
+
+```fish
+scripts/hapax-usb-bandwidth-preflight --device 2886:001a/0000:09:00.0
+cp config/pipewire/hapax-respeaker-xvf3800-array-mic.conf ~/.config/pipewire/pipewire.conf.d/
+systemctl --user restart pipewire pipewire-pulse wireplumber
+pactl list short cards | grep -Ei 'respeaker|xvf3800|xmos'
+pactl list short sources | grep -Ei 'respeaker|xvf3800|hapax-array-mic'
+```
+
+The 2ch playback endpoint is reserved for an explicit AEC far-end reference
+loopback from `hapax-livestream-tap.monitor`. Do not set it as the default sink
+or use it as a private monitor.
+
 ## YT bed loudness normalisation (B2 / H#13)
 
 `hapax-yt-loudnorm.conf` creates a stereo `hapax-yt-loudnorm` sink that

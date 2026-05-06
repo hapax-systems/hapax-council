@@ -23,15 +23,15 @@
     "slitscan_thin": {
       "type": "slitscan",
       "params": {
-        "amount": 0.14,
-        "frequency": 24
+        "speed": 0.14,
+        "direction": 24
       }
     },
     "displacement_grain": {
       "type": "displacement_map",
       "params": {
-        "amount": 0.08,
-        "scale": 0.35
+        "strength_x": 0.08,
+        "strength_y": 0.35
       }
     },
     "out": {

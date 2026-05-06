@@ -193,7 +193,7 @@ def _default_inject(sink_name: str, samples: np.ndarray, sample_rate: int) -> No
 def _default_capture(monitor_source: str, duration_s: float, sample_rate: int) -> np.ndarray:
     """Capture int16 PCM from ``parec`` for ``duration_s`` seconds."""
     n_samples = int(round(sample_rate * duration_s))
-    nbytes = n_samples * 2  # int16 = 2 bytes/sample
+    nbytes = n_samples * 2 * 2  # int16 = 2 bytes/sample, 2 channels (stereo)
     cmd = [
         "parec",
         "--device",
@@ -201,7 +201,7 @@ def _default_capture(monitor_source: str, duration_s: float, sample_rate: int) -
         "--rate",
         str(sample_rate),
         "--channels",
-        "1",
+        "2",
         "--format",
         "s16le",
         "--raw",
@@ -220,7 +220,12 @@ def _default_capture(monitor_source: str, duration_s: float, sample_rate: int) -
             proc.kill()
     if len(buf) < nbytes:
         raise RuntimeError(f"parec short read: got {len(buf)} of {nbytes} bytes")
-    return np.frombuffer(buf, dtype=np.int16)
+    # Downmix stereo→mono in software to avoid PipeWire channelmix
+    # matrix injection that can transiently apply +6dB gain on stereo nodes.
+    stereo = np.frombuffer(buf, dtype=np.int16)
+    truncated = (stereo.size // 2) * 2
+    reshaped = stereo[:truncated].reshape(-1, 2)
+    return reshaped.astype(np.int32).mean(axis=1).astype(np.int16)
 
 
 class BroadcastAudioHealthProducer:

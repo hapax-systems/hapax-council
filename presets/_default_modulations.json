@@ -1,15 +1,7 @@
 {
+    "_directive": "2026-05-05: no brightness/intensity flashing. Audio reactivity must be spatial (warp, drift, rotation, chromatic) or tonal (hue, saturation). Brightness/opacity/strobe modulation is prohibited.",
     "default_modulations": [
-        {"_comment": "═══ COLORGRADE — broadband color reactivity ═══"},
-        {
-            "node": "colorgrade",
-            "param": "brightness",
-            "source": "music.kick_onset",
-            "scale": -0.8,
-            "offset": 0.0,
-            "attack": 0.0,
-            "decay": 0.82
-        },
+        {"_comment": "═══ COLORGRADE — tonal color reactivity only (no brightness) ═══"},
         {
             "node": "colorgrade",
             "param": "saturation",
@@ -38,45 +30,18 @@
             "decay": 0.92
         },
 
-        {"_comment": "═══ BLOOM — bass-pumped glow ═══"},
-        {
-            "node": "bloom",
-            "param": "alpha",
-            "source": "music.kick_onset",
-            "scale": 1.2,
-            "offset": 0.0,
-            "attack": 0.0,
-            "decay": 0.60
-        },
+        {"_comment": "═══ BLOOM — bass spreads radius only (no alpha/intensity flash) ═══"},
         {
             "node": "bloom",
             "param": "radius",
             "source": "music.bass",
-            "scale": 10.0,
-            "offset": 0.0,
-            "attack": 0.0,
-            "decay": 0.65
-        },
-        {
-            "node": "bloom",
-            "param": "intensity",
-            "source": "music.rms",
-            "scale": 0.8,
+            "scale": 6.0,
             "offset": 0.0,
             "attack": 0.05,
-            "decay": 0.75
-        },
-
-        {"_comment": "═══ VIGNETTE — kick pump, close-in on transient ═══"},
-        {
-            "node": "vignette",
-            "param": "strength",
-            "source": "music.kick_onset",
-            "scale": 1.8,
-            "offset": 0.0,
-            "attack": 0.0,
             "decay": 0.70
         },
+
+        {"_comment": "═══ VIGNETTE — removed: kick-pumped vignette = brightness flash ═══"},
 
         {"_comment": "═══ CHROMATIC ABERRATION — snare/hat splits ═══"},
         {
@@ -130,7 +95,7 @@
         },
         {
             "node": "trail",
-            "param": "decay",
+            "param": "fade",
             "source": "music.kick_onset",
             "scale": 0.3,
             "offset": 0.0,
@@ -219,7 +184,7 @@
         },
         {
             "node": "scanlines",
-            "param": "speed",
+            "param": "thickness",
             "source": "music.treble",
             "scale": 3.0,
             "offset": 0.0,
@@ -230,7 +195,7 @@
         {"_comment": "═══ DITHER — treble drives amount ═══"},
         {
             "node": "dither",
-            "param": "amount",
+            "param": "color_levels",
             "source": "music.treble",
             "scale": 0.5,
             "offset": 0.0,
@@ -250,9 +215,9 @@
         },
         {
             "node": "halftone",
-            "param": "angle",
+            "param": "dot_size",
             "source": "music.centroid",
-            "scale": 20.0,
+            "scale": 2.0,
             "offset": 0.0,
             "attack": 0.15,
             "decay": 0.90
@@ -272,7 +237,7 @@
         {"_comment": "═══ FISHEYE — kick distorts ═══"},
         {
             "node": "fisheye",
-            "param": "amount",
+            "param": "strength",
             "source": "music.kick_onset",
             "scale": 0.4,
             "offset": 0.0,
@@ -283,7 +248,7 @@
         {"_comment": "═══ EDGE DETECT — RMS reveals edges ═══"},
         {
             "node": "edge_detect",
-            "param": "amount",
+            "param": "threshold",
             "source": "music.rms",
             "scale": 0.5,
             "offset": 0.0,
@@ -305,7 +270,7 @@
         {"_comment": "═══ DISPLACEMENT MAP — bass warps ═══"},
         {
             "node": "displacement_map",
-            "param": "amount",
+            "param": "strength_x",
             "source": "music.bass",
             "scale": 0.6,
             "offset": 0.0,
@@ -325,7 +290,7 @@
         },
         {
             "node": "slitscan",
-            "param": "amount",
+            "param": "speed",
             "source": "music.kick_onset",
             "scale": 0.5,
             "offset": 0.0,
@@ -336,7 +301,7 @@
         {"_comment": "═══ PIXSORT — snare triggers sort ═══"},
         {
             "node": "pixsort",
-            "param": "amount",
+            "param": "sort_length",
             "source": "music.snare_onset",
             "scale": 0.6,
             "offset": 0.0,
@@ -356,7 +321,7 @@
         {"_comment": "═══ ECHO — bass drives feedback ═══"},
         {
             "node": "echo",
-            "param": "feedback",
+            "param": "decay_curve",
             "source": "music.bass",
             "scale": 0.4,
             "offset": 0.0,
@@ -365,7 +330,7 @@
         },
         {
             "node": "echo",
-            "param": "wet",
+            "param": "frame_count",
             "source": "music.rms",
             "scale": 0.5,
             "offset": 0.0,
@@ -424,27 +389,9 @@
             "decay": 0.60
         },
 
-        {"_comment": "═══ POSTPROCESS — master opacity on voice ═══"},
-        {
-            "node": "postprocess",
-            "param": "vignette_strength",
-            "source": "music.kick_onset",
-            "scale": 0.6,
-            "offset": 0.0,
-            "attack": 0.0,
-            "decay": 0.70
-        },
+        {"_comment": "═══ POSTPROCESS — removed: kick vignette = brightness flash ═══"},
 
-        {"_comment": "═══ STROBE — bass drives depth ═══"},
-        {
-            "node": "strobe",
-            "param": "depth",
-            "source": "music.kick_onset",
-            "scale": 0.5,
-            "offset": 0.0,
-            "attack": 0.0,
-            "decay": 0.55
-        },
+        {"_comment": "═══ STROBE — removed: literal strobe flash ═══"},
 
         {"_comment": "═══ CIRCULAR MASK — kick tightens ═══"},
         {
@@ -480,7 +427,7 @@
         {"_comment": "═══ SIERPINSKI — kick rotates ═══"},
         {
             "node": "sierpinski_content",
-            "param": "rotation",
+            "param": "tri_scale",
             "source": "music.bass",
             "scale": 0.5,
             "offset": 0.0,
@@ -489,7 +436,7 @@
         },
         {
             "node": "sierpinski_lines",
-            "param": "thickness",
+            "param": "line_width",
             "source": "music.kick_onset",
             "scale": 2.0,
             "offset": 0.0,
@@ -511,7 +458,7 @@
         {"_comment": "═══ ASCII — kick scales ═══"},
         {
             "node": "ascii",
-            "param": "scale",
+            "param": "cell_size",
             "source": "music.kick_onset",
             "scale": 0.5,
             "offset": 0.0,
@@ -533,7 +480,7 @@
         {"_comment": "═══ DIFF — kick drives amount ═══"},
         {
             "node": "diff",
-            "param": "amount",
+            "param": "threshold",
             "source": "music.kick_onset",
             "scale": 0.5,
             "offset": 0.0,
@@ -541,15 +488,7 @@
             "decay": 0.60
         },
 
-        {"_comment": "═══ NIGHTVISION_TINT — bass pulses brightness ═══"},
-        {
-            "node": "nightvision_tint",
-            "param": "brightness",
-            "source": "music.kick_onset",
-            "scale": 0.5,
-            "offset": 0.0,
-            "attack": 0.0,
-            "decay": 0.65
-        }
+        {"_comment": "═══ NIGHTVISION_TINT — removed: brightness flash ═══"}
+        
     ]
 }

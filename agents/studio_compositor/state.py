@@ -115,7 +115,18 @@ def apply_layout_mode(compositor: Any, mode: str) -> None:
     Runtime layout switch: no pipeline rebuild, no caps renegotiation.
     GStreamer compositor scales each camera input to fit its pad's
     width/height automatically.
+
+    When the initial layout mode is ``"packed"``, hero-override and
+    follow-mode switches are suppressed — packed mode manages camera
+    placement via the PackedCamerasCairoSource overlay, not cudacompositor
+    pad geometry.
     """
+    # Guard: packed mode is not overridable by hero switches
+    initial_mode = getattr(compositor, "_initial_layout_mode", None)
+    if initial_mode == "packed" and mode != "packed":
+        log.debug("Layout mode %s suppressed — packed mode is active", mode)
+        return
+
     cameras = list(getattr(compositor, "_camera_specs", {}).values())
     if not cameras:
         return
@@ -547,12 +558,14 @@ def state_reader_loop(compositor: Any) -> None:
                 override_source = "follow_mode"
         if override_camera_role is not None:
             try:
-                requested_mode = f"hero/{override_camera_role}"
+                requested_mode = f"packed/{override_camera_role}"
                 current_mode = getattr(compositor, "_layout_mode", "balanced")
                 last_applied = getattr(compositor, "_hero_override_last_applied_set_at", 0.0)
                 if requested_mode != current_mode and override_set_at > last_applied:
                     previous_role = ""
-                    if isinstance(current_mode, str) and current_mode.startswith("hero/"):
+                    if isinstance(current_mode, str) and (
+                        current_mode.startswith("packed/") or current_mode.startswith("hero/")
+                    ):
                         previous_role = current_mode.split("/", 1)[1]
                     compositor._hero_override_last_applied_set_at = override_set_at
                     GLib = compositor._GLib

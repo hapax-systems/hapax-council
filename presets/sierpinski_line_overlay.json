@@ -1,6 +1,6 @@
 {
   "name": "Sierpinski Line Overlay",
-  "description": "Sierpinski lineage (2/2): sierpinski_lines + edge_detect creates a wireframe-sierpinski overlay aesthetic — geometric line architecture composited on the content. Lineage: sierpinski.",
+  "description": "Sierpinski lineage (2/2): sierpinski_lines + edge_detect creates a wireframe-sierpinski overlay aesthetic \u2014 geometric line architecture composited on the content. Lineage: sierpinski.",
   "lineage": "sierpinski",
   "transition_ms": 2000,
   "nodes": {
@@ -16,15 +16,13 @@
     "sierpinski_lines_main": {
       "type": "sierpinski_lines",
       "params": {
-        "depth": 5,
-        "thickness": 1.5
+        "line_width": 1.5
       }
     },
     "edge_sierpinski": {
       "type": "edge_detect",
       "params": {
-        "threshold": 0.18,
-        "amount": 0.4
+        "threshold": 0.18
       }
     },
     "out": {
@@ -37,11 +35,26 @@
     }
   },
   "edges": [
-    ["@live", "colorgrade"],
-    ["colorgrade", "sierpinski_lines_main"],
-    ["sierpinski_lines_main", "edge_sierpinski"],
-    ["edge_sierpinski", "content_layer"],
-    ["content_layer", "out"]
+    [
+      "@live",
+      "colorgrade"
+    ],
+    [
+      "colorgrade",
+      "sierpinski_lines_main"
+    ],
+    [
+      "sierpinski_lines_main",
+      "edge_sierpinski"
+    ],
+    [
+      "edge_sierpinski",
+      "content_layer"
+    ],
+    [
+      "content_layer",
+      "out"
+    ]
   ],
   "modulations": []
 }

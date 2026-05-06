@@ -16,16 +16,14 @@
     "kuwahara_paint": {
       "type": "kuwahara",
       "params": {
-        "radius": 4,
-        "amount": 0.7
+        "radius": 4
       }
     },
     "reaction_subtle": {
       "type": "reaction_diffusion",
       "params": {
         "feed_rate": 0.038,
-        "kill_rate": 0.061,
-        "iterations": 2
+        "kill_rate": 0.061
       }
     },
     "out": {

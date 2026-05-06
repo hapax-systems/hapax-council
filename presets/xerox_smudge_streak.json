@@ -16,22 +16,22 @@
     "displacement_smudge": {
       "type": "displacement_map",
       "params": {
-        "amount": 0.18,
-        "scale": 0.5
+        "strength_x": 0.18,
+        "strength_y": 0.5
       }
     },
     "threshold_smudge": {
       "type": "threshold",
       "params": {
-        "threshold": 0.5,
-        "smoothness": 0.12
+        "level": 0.5,
+        "softness": 0.12
       }
     },
     "slitscan_streak": {
       "type": "slitscan",
       "params": {
-        "amount": 0.16,
-        "frequency": 8
+        "speed": 0.16,
+        "direction": 8
       }
     },
     "out": {

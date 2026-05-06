@@ -7,12 +7,20 @@ LRR Phase 9 content-programming loop (hook 3) and Phase 8 item 7.
 Quota policy lives in ``config/youtube-quota.yaml``. The writer is the single
 source of quota enforcement in the repo; no other code should call
 ``youtube.videos().update(snippet=...)`` directly.
+
+Private-sentinel hygiene: every text input is scanned against the
+``_PRIVATE_SENTINEL_PATTERN`` (the
+``PRIVATE_SENTINEL_DO_NOT_PUBLISH_*`` family introduced by the
+private/public cross-surface fixtures spec) and redacted before
+description assembly. The interpersonal_transparency axiom forbids
+private text from reaching the public YouTube description surface.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -23,6 +31,17 @@ log = logging.getLogger("youtube_description")
 
 CONFIG_FILE = Path(__file__).parent.parent.parent / "config" / "youtube-quota.yaml"
 QUOTA_FILE_DEFAULT = Path("/dev/shm/hapax-compositor/youtube-quota.json")
+
+# Matches the ``PRIVATE_SENTINEL_DO_NOT_PUBLISH_*`` family used by the
+# private/public cross-surface negative fixtures (see
+# ``tests/shared/test_private_public_cross_surface_negative_fixtures.py``).
+# Pattern intentionally broad: any token starting with the canonical
+# sentinel prefix is treated as private and redacted, so a future
+# rotation of the sentinel suffix does not bypass this gate.
+_PRIVATE_SENTINEL_PATTERN = re.compile(
+    r"PRIVATE_SENTINEL_DO_NOT_PUBLISH_[A-Za-z0-9_]+",
+)
+_REDACTION_PLACEHOLDER = "[REDACTED-PRIVATE]"
 
 
 class QuotaExhausted(Exception):
@@ -93,6 +112,72 @@ def check_and_debit(
     _write_quota_state(quota_file, state)
 
 
+def _redact_private_sentinels(text: str | None) -> str | None:
+    """Replace any ``PRIVATE_SENTINEL_DO_NOT_PUBLISH_*`` token with a
+    redaction placeholder.
+
+    Returns ``None`` unchanged so the caller can preserve "field absent"
+    semantics; an empty string after redaction is also returned unchanged
+    (the description assembler already gates on truthiness for optional
+    fields).
+
+    Why redact instead of refuse: the description assembler is the *gate*
+    that blocks the sentinel from reaching the public surface. Refusing
+    would silently drop the publish opportunity and break the live caller
+    (Phase 9 hook). Redaction preserves the publish path while satisfying
+    the interpersonal_transparency invariant that no raw private text
+    crosses the YouTube boundary.
+    """
+    if text is None:
+        return None
+    return _PRIVATE_SENTINEL_PATTERN.sub(_REDACTION_PLACEHOLDER, text)
+
+
+def _redact_attribution_entries(entries: list[Any] | None) -> list[Any] | None:
+    """Return a copy of ``entries`` with any sentinel-bearing ``title`` /
+    ``url`` fields replaced by the redaction placeholder.
+
+    Sentinel-bearing URLs are dropped entirely (URLs cannot be
+    meaningfully redacted in place — a redacted URL is not a URL); this
+    matches the Sources block's existing "skip empty url" policy.
+    """
+    if not entries:
+        return entries
+    out: list[Any] = []
+    for entry in entries:
+        title = getattr(entry, "title", None)
+        url = getattr(entry, "url", "")
+        title_redacted = _redact_private_sentinels(title) if title else title
+        url_has_sentinel = bool(url) and bool(_PRIVATE_SENTINEL_PATTERN.search(url))
+        if url_has_sentinel:
+            # URL-bearing sentinel cannot be safely redacted in a URL
+            # field — drop the whole entry so the rendered Sources block
+            # never references the sentinel directly or via a redirect.
+            continue
+        if title_redacted == title and not url_has_sentinel:
+            out.append(entry)
+            continue
+        out.append(_RedactedAttribution(entry=entry, title=title_redacted, url=url))
+    return out
+
+
+class _RedactedAttribution:
+    """Lightweight wrapper preserving the original entry's attributes
+    while overriding ``title`` (and any URL stripping) with redacted
+    values.
+
+    Avoids mutating the caller's entry objects — the live attribution
+    pipeline reuses these instances across emission cycles.
+    """
+
+    def __init__(self, *, entry: Any, title: str | None, url: str) -> None:
+        self._entry = entry
+        self.title = title
+        self.url = url
+        self.kind = getattr(entry, "kind", "")
+        self.emitted_at = getattr(entry, "emitted_at", 0)
+
+
 def assemble_description(
     *,
     condition_id: str,
@@ -114,7 +199,21 @@ def assemble_description(
     ``attribution_max`` entries (newest first) and a total character
     budget of ``attribution_max_chars`` for the section so a runaway
     URL flood can never blow YouTube's 5000-char description ceiling.
+
+    Private-sentinel hygiene: every text input (and attribution
+    title/url) is scrubbed for the
+    ``PRIVATE_SENTINEL_DO_NOT_PUBLISH_*`` token family before
+    composition; sentinel-bearing URLs are dropped from the Sources
+    block. This is the single gate between private metadata sources
+    and the public YouTube description.
     """
+    condition_id = _redact_private_sentinels(condition_id) or ""
+    claim_id = _redact_private_sentinels(claim_id)
+    objective_title = _redact_private_sentinels(objective_title)
+    substrate_model = _redact_private_sentinels(substrate_model) or ""
+    extra = _redact_private_sentinels(extra)
+    attributions = _redact_attribution_entries(attributions)
+
     lines = [f"Condition: {condition_id}"]
     if claim_id:
         lines.append(f"Claim: {claim_id}")

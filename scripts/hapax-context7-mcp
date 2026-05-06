@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Launch Context7 MCP with credentials resolved in the child process.
+
+set -euo pipefail
+
+pass_first_line() {
+  local name="$1"
+  command -v pass >/dev/null 2>&1 || return 1
+  pass show "$name" 2>/dev/null | sed -n '1p'
+}
+
+load_first_available_pass_secret() {
+  local env_name="$1"
+  shift
+  [ -n "${!env_name:-}" ] && return 0
+  local entry value
+  for entry in "$@"; do
+    value="$(pass_first_line "$entry" || true)"
+    if [ -n "$value" ]; then
+      export "$env_name=$value"
+      return 0
+    fi
+  done
+  return 1
+}
+
+LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/mcp-logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/context7-mcp.log"
+
+load_first_available_pass_secret CONTEXT7_API_KEY context7/api-key || {
+  echo "hapax-context7-mcp: no token found in CONTEXT7_API_KEY or pass:context7/api-key" >&2
+  exit 2
+}
+
+exec npx -y @upstash/context7-mcp@2.2.4 2>>"$LOG_FILE"
