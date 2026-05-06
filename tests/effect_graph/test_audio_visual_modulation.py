@@ -203,3 +203,165 @@ def test_forbidden_waveform_binding_neutralizes_without_claim_authority() -> Non
     assert decision.allowed is False
     assert "forbidden_visualizer_register" in decision.reason_codes
     assert decision.public_claim_policy is PublicClaimPolicy.NO_CLAIM_AUTHORITY
+
+
+# ── No global flash/dim/pulse ban (operator directive 2026-05-06) ──────────
+#
+# `~/.claude/projects/-home-hapax-projects/memory/feedback_no_global_flash_dim_pulse.md`
+#
+# Audio modulations may NOT target params that produce a global frame-luma
+# effect. ALLOW list: vibration (slice/displacement), color modulation
+# (hue/sat/chroma), cycling (posterize/dither/palette), luminescences on
+# specific geometries, warping of non-global areas, specific geometries.
+# BAN list (any audio→ binding to these on any preset is a CI-blocking error):
+
+BANNED_GLOBAL_LUMA_PARAMS: frozenset[str] = frozenset(
+    {
+        # global frame-luma multipliers
+        "brightness",
+        "intensity",
+        # global opacity / alpha
+        "opacity",
+        "alpha",
+        "master_opacity",
+        # global vignette luma multiply (radius is allowed — that's spatial)
+        "strength",
+        # generic catchalls operators have used as flash channels
+        "flash",
+        "dim",
+        "pulse",
+    }
+)
+
+# Audio-source prefixes that count as audio reactivity (not perception or
+# stimmung — those have their own governance paths).
+AUDIO_SOURCE_PREFIXES: tuple[str, ...] = (
+    "audio_",
+    "music.",
+    "audio.",
+)
+
+
+def _is_audio_source(source: str) -> bool:
+    return any(source.startswith(p) for p in AUDIO_SOURCE_PREFIXES)
+
+
+# Grandfathered violations from before the directive existed. Each entry
+# has a known retargeting path that requires shader-level work (adding
+# allow-list params to the corresponding WGSL shader). Tracked in cc-task
+# `extend-banned-luma-shaders-with-allow-list-params`. NEW violations
+# beyond this set must fail the gate.
+KNOWN_BANNED_VIOLATIONS: frozenset[tuple[str, str, str]] = frozenset(
+    {
+        # (source, node, param)
+        # ── from _default_modulations.json ──
+        ("music.hat_onset", "noise_overlay", "intensity"),
+        ("music.kick_onset", "glitch_block", "intensity"),
+        ("music.rms", "scanlines", "opacity"),
+        ("music.kick_onset", "fisheye", "strength"),
+        ("music.rms", "thermal", "intensity"),
+        ("broadcast.rms", "trail", "opacity"),
+        # ── from per-preset modulations (audio_* sources) ──
+        ("audio_energy", "noise", "intensity"),
+        ("audio_energy", "grain_grit", "intensity"),
+        ("audio_energy", "noise_static", "intensity"),
+        ("audio_beat", "emboss_brushed", "strength"),
+        ("audio_energy", "noise_dense", "intensity"),
+        ("audio_energy", "noise_drone", "intensity"),
+        ("audio_beat", "bloom", "alpha"),
+        ("audio_beat", "fisheye", "strength"),
+        ("audio_energy", "grain_print", "intensity"),
+        ("audio_energy", "grain_paper", "intensity"),
+        ("audio_energy", "grain_tape", "intensity"),
+        ("audio_rms", "trail", "opacity"),
+        ("audio_energy", "noise_dust", "intensity"),
+        ("audio_energy", "grain_xerox", "intensity"),
+    }
+)
+
+
+def test_no_preset_modulation_targets_banned_global_luma_param() -> None:
+    """Per operator directive 2026-05-06: zero global flash/dim/pulse from
+    audio reactivity. Scans every `presets/*.json` modulations array and
+    fails CI if any audio-driven binding targets a banned param outside
+    the grandfathered `KNOWN_BANNED_VIOLATIONS` set.
+
+    Build path (per never-remove): when this test fails on a NEW binding,
+    the fix is to re-target the modulation to an ALLOW-list axis
+    (vibration, color, cycling, luminescence-on-specific-geom,
+    warp-non-global). Do NOT delete — replace with a non-banned target.
+    For grandfathered violations, the retargeting path requires shader
+    extension (adding allow-list params to the corresponding WGSL).
+    """
+    presets_dir = REPO_ROOT / "presets"
+    violations: list[str] = []
+    for preset_path in sorted(presets_dir.glob("*.json")):
+        try:
+            payload = json.loads(preset_path.read_text())
+        except json.JSONDecodeError as e:
+            violations.append(f"{preset_path.name}: invalid JSON ({e})")
+            continue
+        for row in payload.get("modulations", []) or []:
+            if not isinstance(row, dict):
+                continue
+            source = row.get("source", "")
+            param = row.get("param", "")
+            node = row.get("node", "")
+            if not isinstance(source, str) or not isinstance(param, str):
+                continue
+            if not _is_audio_source(source) and not source.startswith("broadcast."):
+                continue
+            if param in BANNED_GLOBAL_LUMA_PARAMS:
+                if (source, node, param) in KNOWN_BANNED_VIOLATIONS:
+                    continue  # grandfathered — followup PR will retarget
+                violations.append(
+                    f"{preset_path.name}: {source} → {node}.{param} "
+                    f"(banned: produces global flash/dim/pulse)"
+                )
+    assert not violations, (
+        "Banned global-luma audio modulations detected. "
+        "Re-target to ALLOW-list axis (vibration/color/cycling/luminescence/warp), "
+        "do NOT delete:\n  " + "\n  ".join(violations)
+    )
+
+
+def test_default_modulations_template_obeys_global_luma_ban() -> None:
+    """The `_default_modulations.json` template carries the operator's
+    no-global-flash directive verbatim — its own bindings must obey it
+    outside the grandfathered set.
+    """
+    payload = json.loads((REPO_ROOT / "presets" / "_default_modulations.json").read_text())
+    violations: list[str] = []
+    for row in payload.get("default_modulations", []) or []:
+        if not isinstance(row, dict):
+            continue
+        source = row.get("source", "")
+        param = row.get("param", "")
+        node = row.get("node", "")
+        if not isinstance(source, str) or not isinstance(param, str):
+            continue
+        if not _is_audio_source(source) and not source.startswith("broadcast."):
+            continue
+        if param in BANNED_GLOBAL_LUMA_PARAMS:
+            if (source, node, param) in KNOWN_BANNED_VIOLATIONS:
+                continue
+            violations.append(f"{source} → {node}.{param}")
+    assert not violations, (
+        "_default_modulations.json contains banned global-luma audio bindings:\n  "
+        + "\n  ".join(violations)
+    )
+
+
+def test_known_banned_violations_set_does_not_regrow() -> None:
+    """The grandfathered violations set is a transitional exemption.
+    Adding a new entry without operator approval is a regression — every
+    new banned binding should be retargeted, not exempted. This pin
+    catches accidental growth of the set."""
+    # Caps the set size at the original count from 2026-05-06 audit. New
+    # exemptions require an explicit operator-approved cap bump.
+    assert len(KNOWN_BANNED_VIOLATIONS) <= 20, (
+        f"KNOWN_BANNED_VIOLATIONS grew to {len(KNOWN_BANNED_VIOLATIONS)} — "
+        "retarget the new violation to an ALLOW-list param instead of exempting."
+    )
+
+
