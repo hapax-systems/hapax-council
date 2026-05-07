@@ -389,22 +389,39 @@ def start_compositor(compositor: Any) -> None:
                 except Exception:
                     pass
             elif any_active and not v4l2_alive:
-                # v4l2sink stall recovery. ALWAYS ping the watchdog so systemd
-                # never kills us — a few seconds of blank video on the
-                # v4l2loopback is FAR less disruptive than OBS losing the
-                # V4L2 source entirely (operator has to re-add it manually
-                # after every compositor restart, which is unacceptable
-                # during normal SDLC cadence). The compositor stays alive
-                # in DEGRADED state and retries recovery indefinitely.
+                # v4l2sink stall recovery. Always ping the watchdog for the
+                # first _V4L2_GRAY_TOLERANCE_S seconds to give recovery a
+                # chance without restarting. If the sink remains unrecoverable
+                # past that window, exit(1) so systemd restarts us — perpetual
+                # gray is worse than a restart + OBS source re-add.
                 from .v4l2_stall_recovery import attempt_recovery
+
+                _V4L2_GRAY_TOLERANCE_S = 120.0
+                stall_start = getattr(compositor, "_v4l2_stall_start", 0.0)
+                now_mono = time.monotonic()
+                if stall_start == 0.0:
+                    compositor._v4l2_stall_start = now_mono
+                    stall_start = now_mono
 
                 recovered = attempt_recovery(compositor, compositor._v4l2_recovery_state)
                 if recovered:
                     sd_notify_status("DEGRADED — v4l2sink stalled then recovered via sink reattach")
+                    compositor._v4l2_stall_start = 0.0
+                elif (now_mono - stall_start) > _V4L2_GRAY_TOLERANCE_S:
+                    log.error(
+                        "v4l2sink stall unrecoverable for %.0fs — exiting for systemd restart",
+                        now_mono - stall_start,
+                    )
+                    sd_notify_status("FATAL — v4l2sink gray for >120s, restarting")
+                    import os
+
+                    os._exit(1)
                 else:
                     sd_notify_status("DEGRADED — v4l2sink stalled, retrying recovery")
                     log.warning(
-                        "v4l2sink stall detected — recovery in progress, keeping unit alive"
+                        "v4l2sink stall (%.0fs / %.0fs tolerance) — keeping alive",
+                        now_mono - stall_start,
+                        _V4L2_GRAY_TOLERANCE_S,
                     )
                 sd_notify_watchdog()
             elif any_active and v4l2_alive and not director_alive:
