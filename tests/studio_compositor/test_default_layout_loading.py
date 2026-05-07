@@ -33,127 +33,82 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "stream_overlay",
         "sierpinski",
         "reverie",
-        # Volitional-director epic Phase 4 legibility surfaces
-        # (PR #1017/§3.5 + follow-ups #1018).
         "activity_header",
         "stance_indicator",
-        # chat_ambient retired 2026-04-23 (PR #1239 — aspect-ratio mismatch).
         "grounding_provenance_ticker",
-        # Epic 2 Phase C (2026-04-17) — hothouse pressure surfaces.
         "impingement_cascade",
         "recruitment_candidate_panel",
         "thinking_indicator",
         "pressure_gauge",
         "activity_variety_log",
-        # Epic 2 Phase D — operator-always-here indicator.
         "whos_here",
         "durf",
         "m8-display",
-        # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
         "steamdeck-display",
-        "packed_cameras",
         "egress_footer",
-        # HOMAGE follow-on #191 (2026-04-21) — GEM (Graffiti Emphasis
-        # Mural) is the 15th HOMAGE ward; lower-band geometry, retires
-        # captions in same surface area. See
-        # docs/superpowers/plans/2026-04-21-gem-ward-activation-plan.md.
         "gem",
-        # cc-task ``programme-banner-ward`` (PR #2366, 2026-05-03).
         "programme_banner",
-        # ytb-LORE-EXT family (2026-05-04, ward-family-compositor-layout-
-        # integration cc-task) — three lore-surface wards composing the
-        # mid-band lore strip. Each is feature-flagged OFF by default.
-        # The fourth family member (interactive_lore_query, #2484) is
-        # not wired here: its constructor requires a non-default
-        # ``allowlist`` kwarg incompatible with the compositor's
-        # no-arg auto-construction path; wiring it needs a follow-up.
         "precedent_ticker",
         "programme_history",
         "research_instrument_dashboard",
     }
 
-    # LRR Phase 2 item 10: video_out surfaces declared for OutputRouter.from_layout()
-    # enumeration. The 4 pip-* quadrants are the input surfaces; the 3 video_out_*
-    # surfaces are the output sinks (v4l2 loopback, RTMP, HLS).
-    # Volitional-director Phase 4 adds 4 legibility surfaces.
+    # Garage-door layout surfaces: right-column lore strip replaces
+    # constellation pip-* quadrants. 3 video_out sinks remain.
     surface_ids = {s.id for s in layout.surfaces}
     assert surface_ids == {
-        "pip-ul",
-        "pip-ur",
-        "pip-ll",
-        "pip-lr",
         "video_out_v4l2_loopback",
         "video_out_rtmp_mediamtx",
         "video_out_hls_playlist",
-        "activity-header-top",
-        "stance-indicator-tr",
-        "grounding-ticker-bl",
-        # Epic 2 Phase C hothouse surfaces.
-        "impingement-cascade-midright",
+        "activity-header-top-mid",
+        "stance-indicator-right-column",
+        "grounding-ticker-right-column",
+        "impingement-cascade-midleft",
         "recruitment-candidate-top",
         "thinking-indicator-tr",
         "pressure-gauge-ul",
-        "activity-variety-log-mid",
-        # Epic 2 Phase D — operator-always-here indicator.
-        "whos-here-tr",
+        "activity-variety-log-midbottom",
+        "whos-here-tc",
         "durf-fullframe",
-        "m8-display-surface",
-        "m8-display-tiny-surface",
-        # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
-        "steamdeck-display-pip",
-        "steamdeck-display-fullscreen",
-        "packed-cameras-fullframe",
+        "m8-oscilloscope-rightcol",
         "egress-footer-bottom",
-        # HOMAGE follow-on #191 — GEM mural surface (lower-band).
         "gem-mural-bottom",
-        # cc-task ``programme-banner-ward`` (PR #2366, 2026-05-03).
-        "programme-banner-top",
-        # ytb-LORE-EXT mid-band lore strip (2026-05-04). Three slots
-        # span the mid-band x=20 → x=1520 at y=380, the family's
-        # "side-by-side" rendering.
-        "lore-precedent-ticker",
-        "lore-programme-history",
-        "lore-research-instrument-dashboard",
-        "sierpinski-center",
+        "programme-banner-bottom",
+        "precedent-ticker-right-column",
+        "chronicle-ticker-right-column",
+        "research-dashboard-right",
+        "sierpinski-overlay",
+        "lower-left-album",
+        "upper-left-vitruvian",
+        "obsidian-overlay-region",
+        "lyrics-region",
+        "reverie-upper-right",
     }
 
     assignment_pairs = {(a.source, a.surface) for a in layout.assignments}
     assert assignment_pairs == {
-        ("token_pole", "pip-ul"),
-        ("reverie", "pip-ur"),
-        ("album", "pip-ll"),
-        ("stream_overlay", "pip-lr"),
-        # captions retired at GEM cutover (2026-04-21); GEM ward (#191)
-        # takes the lower-band geometry.
-        # Volitional-director Phase 4 legibility assignments.
-        ("activity_header", "activity-header-top"),
-        ("stance_indicator", "stance-indicator-tr"),
-        ("grounding_provenance_ticker", "grounding-ticker-bl"),
-        # Epic 2 Phase C hothouse assignments.
-        ("impingement_cascade", "impingement-cascade-midright"),
+        ("token_pole", "upper-left-vitruvian"),
+        ("reverie", "reverie-upper-right"),
+        ("album", "lower-left-album"),
+        ("stream_overlay", "obsidian-overlay-region"),
+        ("activity_header", "activity-header-top-mid"),
+        ("stance_indicator", "stance-indicator-right-column"),
+        ("grounding_provenance_ticker", "grounding-ticker-right-column"),
+        ("impingement_cascade", "impingement-cascade-midleft"),
         ("recruitment_candidate_panel", "recruitment-candidate-top"),
         ("thinking_indicator", "thinking-indicator-tr"),
         ("pressure_gauge", "pressure-gauge-ul"),
-        ("activity_variety_log", "activity-variety-log-mid"),
-        # Epic 2 Phase D.
-        ("whos_here", "whos-here-tr"),
+        ("activity_variety_log", "activity-variety-log-midbottom"),
+        ("whos_here", "whos-here-tc"),
         ("durf", "durf-fullframe"),
-        ("m8-display", "m8-display-surface"),
-        ("m8-display", "m8-display-tiny-surface"),
-        # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
-        ("steamdeck-display", "steamdeck-display-pip"),
-        ("steamdeck-display", "steamdeck-display-fullscreen"),
-        ("packed_cameras", "packed-cameras-fullframe"),
+        ("m8-display", "m8-oscilloscope-rightcol"),
         ("egress_footer", "egress-footer-bottom"),
-        # HOMAGE follow-on #191 — GEM mural assignment.
         ("gem", "gem-mural-bottom"),
-        # cc-task ``programme-banner-ward`` (PR #2366, 2026-05-03).
-        ("programme_banner", "programme-banner-top"),
-        # ytb-LORE-EXT family (2026-05-04).
-        ("precedent_ticker", "lore-precedent-ticker"),
-        ("programme_history", "lore-programme-history"),
-        ("research_instrument_dashboard", "lore-research-instrument-dashboard"),
-        ("sierpinski", "sierpinski-center"),
+        ("programme_banner", "programme-banner-bottom"),
+        ("precedent_ticker", "precedent-ticker-right-column"),
+        ("programme_history", "chronicle-ticker-right-column"),
+        ("research_instrument_dashboard", "research-dashboard-right"),
+        ("sierpinski", "sierpinski-overlay"),
     }
 
 
@@ -170,26 +125,19 @@ def test_default_json_source_backends_match_registry_dispatch() -> None:
         "stream_overlay": "cairo",
         "sierpinski": "cairo",
         "reverie": "shm_rgba",
-        # Volitional-director Phase 4 legibility sources.
         "activity_header": "cairo",
         "stance_indicator": "cairo",
         "grounding_provenance_ticker": "cairo",
-        # Epic 2 Phase C hothouse sources.
         "impingement_cascade": "cairo",
         "recruitment_candidate_panel": "cairo",
         "thinking_indicator": "cairo",
         "pressure_gauge": "cairo",
         "activity_variety_log": "cairo",
-        # Epic 2 Phase D.
         "whos_here": "cairo",
         "durf": "cairo",
         "m8-display": "shm_rgba",
-        # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
         "steamdeck-display": "shm_rgba",
-        "packed_cameras": "cairo",
         "egress_footer": "cairo",
-        # cc-task ``programme-banner-ward`` (PR #2366, 2026-05-03) +
-        # ytb-LORE-EXT family (2026-05-04).
         "programme_banner": "cairo",
         "precedent_ticker": "cairo",
         "programme_history": "cairo",
@@ -228,9 +176,11 @@ def test_default_json_reverie_points_at_producer_shm_path() -> None:
 
 
 def test_default_json_operator_quadrant_defaults() -> None:
-    """Four-quadrant operator default: reverie UR, token_pole UL, album LL, stream_overlay LR.
+    """Garage-door layout default assignments: token_pole to upper-left-vitruvian,
+    reverie to reverie-upper-right, album to lower-left-album,
+    stream_overlay to obsidian-overlay-region.
 
-    Post-epic operator spec: every quadrant has a default source so the
+    Post-epic operator spec: every slot has a default source so the
     stream output is legible the moment the compositor boots. These
     assignments are a starting point — Hapax content programming drives
     runtime re-assignment via the affordance pipeline + command registry.
@@ -239,10 +189,10 @@ def test_default_json_operator_quadrant_defaults() -> None:
     layout = Layout.model_validate(raw)
 
     assignments_by_surface = {a.surface: a.source for a in layout.assignments}
-    assert assignments_by_surface["pip-ul"] == "token_pole"
-    assert assignments_by_surface["pip-ur"] == "reverie"
-    assert assignments_by_surface["pip-ll"] == "album"
-    assert assignments_by_surface["pip-lr"] == "stream_overlay"
+    assert assignments_by_surface["upper-left-vitruvian"] == "token_pole"
+    assert assignments_by_surface["reverie-upper-right"] == "reverie"
+    assert assignments_by_surface["lower-left-album"] == "album"
+    assert assignments_by_surface["obsidian-overlay-region"] == "stream_overlay"
 
 
 def test_default_json_stream_overlay_source_is_registered() -> None:
@@ -294,32 +244,21 @@ def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
         "stream_overlay",
         "sierpinski",
         "reverie",
-        # Volitional-director Phase 4 legibility additions.
         "activity_header",
         "stance_indicator",
-        # chat_ambient retired 2026-04-23 (PR #1239 — aspect-ratio mismatch).
         "grounding_provenance_ticker",
-        # Epic 2 Phase C hothouse additions.
         "impingement_cascade",
         "recruitment_candidate_panel",
         "thinking_indicator",
         "pressure_gauge",
         "activity_variety_log",
-        # Epic 2 Phase D.
         "whos_here",
         "durf",
         "m8-display",
-        # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
         "steamdeck-display",
-        "packed_cameras",
         "egress_footer",
-        # HOMAGE follow-on #191 — GEM mural ward (15th HOMAGE).
         "gem",
-        # cc-task ``programme-banner-ward`` (PR #2366, 2026-05-03).
         "programme_banner",
-        # ytb-LORE-EXT family (2026-05-04, ward-family-compositor-layout-
-        # integration cc-task) — three lore-surface wards on the
-        # default layout's mid-band lore strip.
         "precedent_ticker",
         "programme_history",
         "research_instrument_dashboard",
@@ -441,19 +380,18 @@ def test_load_layout_or_fallback_rescales_to_canvas_size() -> None:
     from agents.studio_compositor.config import LAYOUT_COORD_SCALE
 
     layout = load_layout_or_fallback(DEFAULT_JSON)
-    activity_header = next(s for s in layout.surfaces if s.id == "activity-header-top")
-    expected_x = int(round(560 * LAYOUT_COORD_SCALE))
+    activity_header = next(s for s in layout.surfaces if s.id == "activity-header-top-mid")
+    expected_x = int(round(400 * LAYOUT_COORD_SCALE))
     expected_w = int(round(800 * LAYOUT_COORD_SCALE))
     assert activity_header.geometry.x == expected_x, (
-        f"activity-header-top x should be {expected_x} (560 × {LAYOUT_COORD_SCALE}), "
+        f"activity-header-top-mid x should be {expected_x} (400 × {LAYOUT_COORD_SCALE}), "
         f"got {activity_header.geometry.x}"
     )
     assert activity_header.geometry.w == expected_w
-    # chat-legend-right retired 2026-04-23 (PR #1239). Stance indicator is
-    # the closest-analogue right-edge ward; pin its rescale to cover the
-    # same "right-edge wards off-canvas" regression space.
-    stance_ind = next(s for s in layout.surfaces if s.id == "stance-indicator-tr")
-    # stance-indicator-tr x=1800 in 1920-coord space.
+    # Stance indicator is the closest-analogue right-edge ward; pin its
+    # rescale to cover the "right-edge wards off-canvas" regression space.
+    stance_ind = next(s for s in layout.surfaces if s.id == "stance-indicator-right-column")
+    # stance-indicator-right-column x=1800 in 1920-coord space.
     expected_stance_x = int(round(1800 * LAYOUT_COORD_SCALE))
     assert stance_ind.geometry.x == expected_stance_x
 

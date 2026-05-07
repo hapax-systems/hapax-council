@@ -73,10 +73,10 @@ class TestCaptionsRetiredFromDefaultLayout:
         cr = cairo.Context(canvas)
         pip_draw_from_layout(cr, LayoutState(parsed), registry, stage="pre_fx")
 
-    def test_other_core_pips_untouched(self, layout):
-        """Regression pin: CL §3.4 must not reposition pre-existing PiPs."""
+    def test_other_core_surfaces_untouched(self, layout):
+        """Regression pin: garage-door core surfaces must be present."""
         surface_ids = {s["id"] for s in layout["surfaces"]}
-        for required in ("pip-ul", "pip-ur", "pip-ll", "pip-lr"):
+        for required in ("upper-left-vitruvian", "lower-left-album", "sierpinski-overlay"):
             assert required in surface_ids
 
 

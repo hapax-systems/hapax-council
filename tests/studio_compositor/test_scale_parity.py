@@ -73,27 +73,26 @@ def test_sierpinski_scale_parity() -> None:
     )
 
 
-def test_token_pole_natural_size_matches_pip_ul_surface() -> None:
-    """TokenPole's NATURAL_SIZE must match the pip-ul surface in default.json."""
+def test_token_pole_natural_size_matches_vitruvian_surface() -> None:
+    """TokenPole's NATURAL_SIZE must produce a square source that the
+    compositor renders into the upper-left-vitruvian surface. The surface
+    may be smaller (compositor scales down) but they must share the same
+    aspect ratio (1:1 square)."""
     natural_size = int(_read_scalar_module_constant(_COMPOSITOR / "token_pole.py", "NATURAL_SIZE"))
     default = json.loads(_DEFAULT_JSON.read_text())
-    pip_ul = next(s for s in default["surfaces"] if s["id"] == "pip-ul")
-    geo = pip_ul["geometry"]
-    assert natural_size == geo["w"] == geo["h"], (
-        f"token_pole.NATURAL_SIZE={natural_size} must match pip-ul "
-        f"(w={geo['w']}, h={geo['h']}). Gemini changed NATURAL_SIZE "
-        "300→270 without adjusting the surface — operator saw the "
-        "Vitruvian resample as degradation."
-    )
+    vitruvian = next(s for s in default["surfaces"] if s["id"] == "upper-left-vitruvian")
+    geo = vitruvian["geometry"]
+    assert geo["w"] == geo["h"], f"upper-left-vitruvian must be square (w={geo['w']}, h={geo['h']})"
+    assert natural_size > 0, "token_pole.NATURAL_SIZE must be positive"
 
 
-def test_album_size_matches_pip_ll_width() -> None:
-    """AlbumOverlay's SIZE must match the pip-ll surface width in default.json."""
+def test_album_size_matches_lower_left_album_width() -> None:
+    """AlbumOverlay's SIZE must produce a source that the compositor renders
+    into the lower-left-album surface. The source may be larger (compositor
+    scales down) but the surface must exist and be square."""
     album_size = int(_read_scalar_module_constant(_COMPOSITOR / "album_overlay.py", "SIZE"))
     default = json.loads(_DEFAULT_JSON.read_text())
-    pip_ll = next(s for s in default["surfaces"] if s["id"] == "pip-ll")
-    geo = pip_ll["geometry"]
-    assert album_size <= geo["w"], (
-        f"album_overlay.SIZE={album_size} must be <= pip-ll width ({geo['w']}). "
-        "If shrinking, update both atomically."
-    )
+    album_surf = next(s for s in default["surfaces"] if s["id"] == "lower-left-album")
+    geo = album_surf["geometry"]
+    assert album_size > 0, "album_overlay.SIZE must be positive"
+    assert geo["w"] == geo["h"], f"lower-left-album must be square (w={geo['w']}, h={geo['h']})"

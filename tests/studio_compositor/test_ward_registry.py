@@ -40,13 +40,15 @@ def _layout_with_one_source_one_surface() -> Layout:
             ),
         ],
         surfaces=[
-            SurfaceSchema(id="pip-ll", geometry=SurfaceGeometry(kind="rect", x=0, y=0, w=10, h=10)),
+            SurfaceSchema(
+                id="lower-left-album", geometry=SurfaceGeometry(kind="rect", x=0, y=0, w=10, h=10)
+            ),
             SurfaceSchema(
                 id="video_out_v4l2_loopback",
                 geometry=SurfaceGeometry(kind="video_out", target="/dev/video42"),
             ),
         ],
-        assignments=[Assignment(source="album", surface="pip-ll")],
+        assignments=[Assignment(source="album", surface="lower-left-album")],
     )
 
 

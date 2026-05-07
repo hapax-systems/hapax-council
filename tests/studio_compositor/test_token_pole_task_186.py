@@ -30,9 +30,9 @@ from agents.studio_compositor.token_pole import (
 )
 
 
-def test_default_path_mode_is_navel_to_cranium() -> None:
-    """Operator directive 2026-04-19: default path is NAVEL_TO_CRANIUM."""
-    assert _resolve_path_mode() is PathMode.NAVEL_TO_CRANIUM
+def test_default_path_mode_is_spiral() -> None:
+    """Post garage-door merge: default path is SPIRAL."""
+    assert _resolve_path_mode() is PathMode.SPIRAL
 
 
 def test_navel_cranium_path_spans_anchors() -> None:

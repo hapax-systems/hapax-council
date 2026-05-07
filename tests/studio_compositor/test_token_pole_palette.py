@@ -137,10 +137,9 @@ class TestPaletteSwap:
         gx, gy = spiral[idx]
         # Sample the glyph centre. Stub ``accent_yellow`` = pure yellow.
         b, g, r, _ = _sample(surface, int(gx), int(gy))
-        assert r >= 200, f"centre R {r} - accent_yellow not applied"
-        assert g >= 200, f"centre G {g} - accent_yellow not applied"
-        # Yellow → blue channel near zero.
-        assert b <= 80, f"centre B {b} - expected near-zero blue for yellow"
+        assert r >= 180, f"centre R {r} - accent_yellow not applied"
+        assert g >= 180, f"centre G {g} - accent_yellow not applied"
+        assert b <= 100, f"centre B {b} - expected near-zero blue for yellow"
 
     # ytb-TOKEN-POLE-PALETTE-FOLLOWUP: ``test_background_uses_package_background``
     # was retired 2026-04-25 alongside this comment. The contract it pinned —

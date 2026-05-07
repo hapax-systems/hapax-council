@@ -89,14 +89,20 @@ class PathMode(enum.Enum):
 def _resolve_path_mode() -> PathMode:
     """Read ``HAPAX_TOKEN_POLE_PATH`` from env with safe fallback.
 
-    Default is NAVEL_TO_CRANIUM per operator directive 2026-04-19.
-    Set ``HAPAX_TOKEN_POLE_PATH=spiral`` to force the legacy spiral
-    path (regression comparison / back-compat).
+    Default is SPIRAL per operator directive 2026-05-07 (golden spiral
+    with z-layer depth, path-ahead/path-traveled visual distinction).
+    Set ``HAPAX_TOKEN_POLE_PATH=navel_to_cranium`` for the linear path.
     """
     raw = (os.environ.get("HAPAX_TOKEN_POLE_PATH") or "").strip().lower()
-    if raw == "spiral":
-        return PathMode.SPIRAL
-    return PathMode.NAVEL_TO_CRANIUM
+    if raw == "navel_to_cranium":
+        return PathMode.NAVEL_TO_CRANIUM
+    return PathMode.SPIRAL
+
+
+_Z_LAYERS = 3
+_Z_SCALE_STEP = 0.018
+_Z_ALPHA_DECAY = 0.45
+_Z_COLOR_SHIFT = 0.08
 
 
 # --- Palette role names (HOMAGE spec §4.4) ---------------------------------
@@ -541,65 +547,113 @@ class TokenPoleCairoSource(HomageTransitionalSource):
             cr.fill()
             cr.restore()
 
-        # --- Path backbone — continuous muted line across the full path ---
-        # #186 (operator 2026-04-19): full route visible always. Replaces
-        # the prior 32-point dotted skeleton, which read as gappy and
-        # ambiguous about which way the road went. The continuous stroke
-        # is a flat cairo line at the muted role's emissive ground
-        # (no per-segment shimmer — the bright trail overlay below carries
-        # all the breathing). Kept under the trail so the traveled portion
-        # of the path still reads bright; the untraveled portion shows as
-        # a clean grey road from token glyph to terminal anchor.
-        muted_rgba = pkg.resolve_colour("muted")
-        m_r, m_g, m_b, m_a = muted_rgba
-        cr.save()
-        cr.set_source_rgba(m_r, m_g, m_b, m_a * 0.55)
-        cr.set_line_width(1.4)
-        cr.set_line_cap(__import__("cairo").LINE_CAP_ROUND)
-        cr.set_line_join(__import__("cairo").LINE_JOIN_ROUND)
-        first_x, first_y = self._path[0]
-        cr.move_to(first_x, first_y)
-        for px, py in self._path[1:]:
-            cr.line_to(px, py)
-        cr.stroke()
-        cr.restore()
+        # --- Z-layered golden spiral path with traveled/ahead distinction ---
+        # Operator directive 2026-05-07: golden spiral with multiple z-layer
+        # representation (like Sierpinski), path ahead vs path traveled
+        # visually distinct (like map pathing progress).
+        import cairo as _cairo
 
-        # --- Trail — muted→bright gradient via accent emissive strokes ----
         idx = int(self._position * (NUM_POINTS - 1))
-        if idx > 1:
-            trail_rgba = tuple(pkg.resolve_colour(role) for role in _TRAIL_ROLES)  # type: ignore[arg-type]
-            num_c = len(trail_rgba)
-            for i in range(1, idx):
-                progress = i / idx
-                ci = progress * (num_c - 1)
-                c0 = trail_rgba[int(ci) % num_c]
-                c1 = trail_rgba[(int(ci) + 1) % num_c]
-                f = ci - int(ci)
-                r = c0[0] + (c1[0] - c0[0]) * f
-                g = c0[1] + (c1[1] - c0[1]) * f
-                b = c0[2] + (c1[2] - c0[2]) * f
-                a = c0[3] + (c1[3] - c0[3]) * f
-                baseline = 0.15 + 0.65 * (progress**1.5)
-                x0, y0 = self._path[i - 1]
-                x1, y1 = self._path[i]
-                paint_emissive_stroke(
-                    cr,
-                    x0,
-                    y0,
-                    x1,
-                    y1,
-                    (r, g, b, a),
-                    t=t_now,
-                    phase=i * 0.13,
-                    baseline_alpha=baseline,
-                    width_px=2.0,
-                    shimmer_hz=pulse_hz,
-                )
+        muted_rgba = pkg.resolve_colour("muted")
+        accent_cyan = pkg.resolve_colour("accent_cyan")
+        accent_green = pkg.resolve_colour("accent_green")
+        cx = NATURAL_SIZE * 0.5
+        cy = NATURAL_SIZE * 0.5
 
-        # --- Token glyph — centre dot + halo + outer bloom ----------------
-        # Success-def §1.2: centre dot (accent_yellow), halo (accent_magenta
-        # α=0.45), outer bloom (accent_yellow α=0.12). No cheeks. No eyes.
-        # No smile. Reads as a point of light at the navel.
+        trail_rgba = tuple(pkg.resolve_colour(role) for role in _TRAIL_ROLES)
+        num_c = len(trail_rgba)
+
+        for z in range(_Z_LAYERS):
+            scale_offset = 1.0 + z * _Z_SCALE_STEP
+            alpha_mult = _Z_ALPHA_DECAY**z
+            color_shift = z * _Z_COLOR_SHIFT
+
+            cr.save()
+            cr.translate(cx, cy)
+            cr.scale(scale_offset, scale_offset)
+            cr.translate(-cx, -cy)
+
+            # PATH AHEAD (untraveled) — dashed, muted, with subtle hue cycling
+            if idx < NUM_POINTS - 1:
+                m_r, m_g, m_b, m_a = muted_rgba
+                ac_r, ac_g, ac_b, ac_a = accent_cyan
+                cr.save()
+                dash_phase = (t_now * 12.0 + z * 8.0) % 20.0
+                cr.set_dash([6.0, 4.0], dash_phase)
+                cr.set_line_width(1.2 + z * 0.3)
+                cr.set_line_cap(_cairo.LINE_CAP_ROUND)
+                cr.set_line_join(_cairo.LINE_JOIN_ROUND)
+                start = max(idx, 1)
+                sx, sy = self._path[start]
+                cr.move_to(sx, sy)
+                for i in range(start + 1, NUM_POINTS):
+                    px, py = self._path[i]
+                    ahead_progress = (i - idx) / max(1, NUM_POINTS - idx)
+                    fade = 0.25 + 0.15 * math.sin(ahead_progress * math.pi * 4 + t_now * 1.5 + z)
+                    r = m_r + (ac_r - m_r) * (
+                        color_shift + 0.1 * math.sin(ahead_progress * math.tau)
+                    )
+                    g = m_g + (ac_g - m_g) * (
+                        color_shift + 0.1 * math.sin(ahead_progress * math.tau)
+                    )
+                    b = m_b + (ac_b - m_b) * (
+                        color_shift + 0.1 * math.sin(ahead_progress * math.tau)
+                    )
+                    cr.set_source_rgba(r, g, b, fade * alpha_mult)
+                    cr.line_to(px, py)
+                cr.stroke()
+                cr.restore()
+
+            # PATH TRAVELED — solid, bright gradient, wider, with glow
+            if idx > 1:
+                for i in range(1, idx):
+                    progress = i / idx
+                    ci = progress * (num_c - 1)
+                    c0 = trail_rgba[int(ci) % num_c]
+                    c1 = trail_rgba[(int(ci) + 1) % num_c]
+                    f = ci - int(ci)
+                    r = c0[0] + (c1[0] - c0[0]) * f + color_shift * 0.3
+                    g = c0[1] + (c1[1] - c0[1]) * f
+                    b = c0[2] + (c1[2] - c0[2]) * f
+                    a = c0[3] + (c1[3] - c0[3]) * f
+                    baseline = (0.25 + 0.65 * (progress**1.3)) * alpha_mult
+                    width = 2.4 + 1.2 * progress - z * 0.4
+                    x0, y0 = self._path[i - 1]
+                    x1, y1 = self._path[i]
+                    paint_emissive_stroke(
+                        cr,
+                        x0,
+                        y0,
+                        x1,
+                        y1,
+                        (min(1.0, r), min(1.0, g), min(1.0, b), a),
+                        t=t_now,
+                        phase=i * 0.13 + z * 0.5,
+                        baseline_alpha=baseline,
+                        width_px=max(0.8, width),
+                        shimmer_hz=pulse_hz,
+                    )
+
+                # Glow pass on the traveled path (z=0 only for perf)
+                if z == 0 and idx > 10:
+                    cr.save()
+                    cr.set_line_width(6.0)
+                    cr.set_line_cap(_cairo.LINE_CAP_ROUND)
+                    cr.set_line_join(_cairo.LINE_JOIN_ROUND)
+                    ag_r, ag_g, ag_b, _ = accent_green
+                    glow_start = max(0, idx - 30)
+                    sx, sy = self._path[glow_start]
+                    cr.move_to(sx, sy)
+                    for i in range(glow_start + 1, idx):
+                        px, py = self._path[i]
+                        cr.line_to(px, py)
+                    cr.set_source_rgba(ag_r, ag_g, ag_b, 0.06)
+                    cr.stroke()
+                    cr.restore()
+
+            cr.restore()
+
+        # --- Token glyph with z-layer depth ---------------------------------
         if idx < len(self._path):
             gx, gy = self._path[idx]
         else:
@@ -614,51 +668,61 @@ class TokenPoleCairoSource(HomageTransitionalSource):
         accent_yellow = pkg.resolve_colour("accent_yellow")
         accent_magenta = pkg.resolve_colour("accent_magenta")
         bright_rgba = pkg.resolve_colour("bright")
-        # Outer bloom — accent_yellow at low alpha.
         ay_r, ay_g, ay_b, ay_a = accent_yellow
-        paint_emissive_point(
-            cr,
-            glyph_cx,
-            glyph_cy,
-            (ay_r, ay_g, ay_b, ay_a * 0.12),
-            t=t_now,
-            phase=0.0,
-            baseline_alpha=1.0,
-            centre_radius_px=0.0,
-            halo_radius_px=0.0,
-            outer_glow_radius_px=22.0 + pulse_r,
-            shimmer_hz=pulse_hz,
-        )
-        # Halo — accent_magenta α=0.45.
         am_r, am_g, am_b, am_a = accent_magenta
-        paint_emissive_point(
-            cr,
-            glyph_cx,
-            glyph_cy,
-            (am_r, am_g, am_b, am_a * 0.45),
-            t=t_now,
-            phase=math.pi / 3.0,
-            baseline_alpha=1.0,
-            centre_radius_px=0.0,
-            halo_radius_px=14.0 + pulse_r,
-            outer_glow_radius_px=0.0,
-            shimmer_hz=pulse_hz,
-        )
-        # Centre dot — accent_yellow at full alpha. Slim sparkle trail
-        # in bright, emissive.
-        paint_emissive_point(
-            cr,
-            glyph_cx,
-            glyph_cy,
-            accent_yellow,
-            t=t_now,
-            phase=0.0,
-            baseline_alpha=1.0,
-            centre_radius_px=4.0 + pulse_r * 0.5,
-            halo_radius_px=8.0,
-            outer_glow_radius_px=0.0,
-            shimmer_hz=pulse_hz,
-        )
+
+        for z in range(_Z_LAYERS):
+            z_scale = 1.0 + z * _Z_SCALE_STEP
+            z_alpha = _Z_ALPHA_DECAY**z
+            z_offset = z * 1.5
+            zcx = glyph_cx + z_offset
+            zcy = glyph_cy - z_offset
+
+            cr.save()
+            cr.translate(cx, cy)
+            cr.scale(z_scale, z_scale)
+            cr.translate(-cx, -cy)
+
+            paint_emissive_point(
+                cr,
+                zcx,
+                zcy,
+                (ay_r, ay_g, ay_b, ay_a * 0.12 * z_alpha),
+                t=t_now,
+                phase=z * 0.4,
+                baseline_alpha=1.0,
+                centre_radius_px=0.0,
+                halo_radius_px=0.0,
+                outer_glow_radius_px=22.0 + pulse_r,
+                shimmer_hz=pulse_hz,
+            )
+            paint_emissive_point(
+                cr,
+                zcx,
+                zcy,
+                (am_r, am_g, am_b, am_a * 0.45 * z_alpha),
+                t=t_now,
+                phase=math.pi / 3.0 + z * 0.3,
+                baseline_alpha=1.0,
+                centre_radius_px=0.0,
+                halo_radius_px=14.0 + pulse_r,
+                outer_glow_radius_px=0.0,
+                shimmer_hz=pulse_hz,
+            )
+            paint_emissive_point(
+                cr,
+                zcx,
+                zcy,
+                (ay_r, ay_g, ay_b, ay_a * z_alpha),
+                t=t_now,
+                phase=z * 0.2,
+                baseline_alpha=1.0,
+                centre_radius_px=4.0 + pulse_r * 0.5,
+                halo_radius_px=8.0,
+                outer_glow_radius_px=0.0,
+                shimmer_hz=pulse_hz,
+            )
+            cr.restore()
 
         # Sparkle trail — bright, thinning, emissive.
         for i in range(1, 4):

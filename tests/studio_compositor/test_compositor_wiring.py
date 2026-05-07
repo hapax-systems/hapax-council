@@ -88,7 +88,6 @@ class TestStartLayoutOnly:
             "durf",
             "m8-display",
             "steamdeck-display",
-            "packed_cameras",
             "egress_footer",
             "gem",
             "programme_banner",
@@ -133,7 +132,6 @@ class TestStartLayoutOnly:
             "durf",
             "m8-display",
             "steamdeck-display",
-            "packed_cameras",
             "egress_footer",
             "gem",
             # Programme banner ward (PR #2366).

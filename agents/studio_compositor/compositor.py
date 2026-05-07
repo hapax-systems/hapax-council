@@ -92,7 +92,7 @@ _FALLBACK_LAYOUT = Layout(
     description=(
         "Hardcoded fallback layout — rescue path when default.json is missing "
         "or cannot be parsed. Structurally identical to "
-        "config/compositor-layouts/default.json (Phase D task 12)."
+        "config/compositor-layouts/default.json (garage-door merge)."
     ),
     sources=[
         SourceSchema(
@@ -124,6 +124,8 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_w": 400,
                 "natural_h": 200,
             },
+            update_cadence="rate",
+            rate_hz=2.0,
         ),
         SourceSchema(
             id="sierpinski",
@@ -131,8 +133,8 @@ _FALLBACK_LAYOUT = Layout(
             backend="cairo",
             params={
                 "class_name": "SierpinskiCairoSource",
-                "natural_w": 640,
-                "natural_h": 640,
+                "natural_w": 840,
+                "natural_h": 840,
             },
         ),
         SourceSchema(
@@ -145,16 +147,18 @@ _FALLBACK_LAYOUT = Layout(
                 "shm_path": "/dev/shm/hapax-sources/reverie.rgba",
             },
         ),
-        # Volitional-director epic Phase 4 legibility sources (PR #1017/§3.5).
         SourceSchema(
             id="activity_header",
             kind="cairo",
             backend="cairo",
             params={
                 "class_name": "ActivityHeaderCairoSource",
-                "natural_w": 800,
-                "natural_h": 56,
+                "natural_w": 540,
+                "natural_h": 200,
             },
+            update_cadence="rate",
+            rate_hz=2.0,
+            tags=["legibility", "authorship"],
         ),
         SourceSchema(
             id="stance_indicator",
@@ -165,6 +169,22 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_w": 100,
                 "natural_h": 40,
             },
+            update_cadence="rate",
+            rate_hz=2.0,
+            tags=["legibility", "authorship"],
+        ),
+        SourceSchema(
+            id="gem",
+            kind="cairo",
+            backend="cairo",
+            params={
+                "class_name": "GemCairoSource",
+                "natural_w": 1840,
+                "natural_h": 240,
+            },
+            update_cadence="rate",
+            rate_hz=24.0,
+            tags=["homage", "expression", "graffiti-emphasis-mural"],
         ),
         SourceSchema(
             id="grounding_provenance_ticker",
@@ -175,8 +195,10 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_w": 480,
                 "natural_h": 40,
             },
+            update_cadence="rate",
+            rate_hz=2.0,
+            tags=["legibility", "grounding"],
         ),
-        # Epic 2 Phase C (2026-04-17) — hothouse pressure surfaces.
         SourceSchema(
             id="impingement_cascade",
             kind="cairo",
@@ -186,6 +208,9 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_w": 480,
                 "natural_h": 360,
             },
+            update_cadence="rate",
+            rate_hz=2.0,
+            tags=["hothouse", "pressure"],
         ),
         SourceSchema(
             id="recruitment_candidate_panel",
@@ -196,6 +221,9 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_w": 800,
                 "natural_h": 60,
             },
+            update_cadence="rate",
+            rate_hz=2.0,
+            tags=["hothouse", "authorship"],
         ),
         SourceSchema(
             id="thinking_indicator",
@@ -206,6 +234,9 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_w": 170,
                 "natural_h": 44,
             },
+            update_cadence="rate",
+            rate_hz=6.0,
+            tags=["hothouse", "authorship"],
         ),
         SourceSchema(
             id="pressure_gauge",
@@ -216,6 +247,9 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_w": 300,
                 "natural_h": 52,
             },
+            update_cadence="rate",
+            rate_hz=2.0,
+            tags=["hothouse", "pressure"],
         ),
         SourceSchema(
             id="activity_variety_log",
@@ -226,8 +260,10 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_w": 400,
                 "natural_h": 140,
             },
+            update_cadence="rate",
+            rate_hz=2.0,
+            tags=["hothouse", "authorship"],
         ),
-        # Epic 2 Phase D (2026-04-17) — operator-always-here indicator.
         SourceSchema(
             id="whos_here",
             kind="cairo",
@@ -237,6 +273,9 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_w": 230,
                 "natural_h": 46,
             },
+            update_cadence="rate",
+            rate_hz=2.0,
+            tags=["hothouse", "audience"],
         ),
         SourceSchema(
             id="durf",
@@ -244,9 +283,13 @@ _FALLBACK_LAYOUT = Layout(
             backend="cairo",
             params={
                 "class_name": "DURFCairoSource",
-                "natural_w": 1920,
-                "natural_h": 1080,
+                "natural_w": 530,
+                "natural_h": 180,
             },
+            update_cadence="rate",
+            rate_hz=6.0,
+            tags=["homage", "durf", "full-frame"],
+            ward_id="durf",
         ),
         SourceSchema(
             id="m8-display",
@@ -257,22 +300,9 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_h": 240,
                 "shm_path": "/dev/shm/hapax-sources/m8-display.rgba",
             },
-            # Cc-task ``activity-reveal-ward-p2-m8-migration``: pair the
-            # external_rgba M8 source with its ActivityRevealMixin
-            # lifecycle owner via ``ward_id``. Mirrors the
-            # ``"ward_id": "m8-display"`` entry on the default.json
-            # source so the in-memory fallback layout matches the
-            # canonical JSON byte-for-byte where it counts.
+            tags=["instrument", "m8"],
             ward_id="m8-display",
         ),
-        # Re-Splay Homage Ward — Steam Deck. Mirrors the M8 source
-        # contract (external_rgba + shm_rgba); sourced from
-        # ``agents/hapax_steamdeck_bridge/`` capture daemon. Activated
-        # only when the Magewell USB Capture HDMI Plus is plugged in
-        # AND the Steam Deck is driving HDMI into it (two-stage
-        # monitor). Default opacity 0 in assignments so the surface
-        # only becomes visible when the affordance pipeline recruits
-        # ``ward.reveal.steamdeck-display``.
         SourceSchema(
             id="steamdeck-display",
             kind="external_rgba",
@@ -282,19 +312,7 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_h": 1080,
                 "shm_path": "/dev/shm/hapax-sources/steamdeck-display.rgba",
             },
-        ),
-        SourceSchema(
-            id="packed_cameras",
-            kind="cairo",
-            backend="cairo",
-            params={
-                "class_name": "PackedCamerasCairoSource",
-                "natural_w": 1920,
-                "natural_h": 1080,
-            },
-            update_cadence="rate",
-            rate_hz=15.0,
-            tags=["camera", "packing"],
+            tags=["homage", "re-splay", "steamdeck"],
         ),
         SourceSchema(
             id="egress_footer",
@@ -309,51 +327,20 @@ _FALLBACK_LAYOUT = Layout(
             rate_hz=1.0,
             tags=["governance", "anti-personification", "egress"],
         ),
-        # HARDM dot-matrix source retired 2026-04-23 (GEAL Phase 0).
-        # Replaced by the Sierpinski-native expression layer defined in
-        # ``docs/superpowers/specs/2026-04-23-geal-spec.md``.
-        # HOMAGE follow-on #191 (2026-04-21) — GEM (Graffiti Emphasis
-        # Mural) is the 15th HOMAGE ward. Lower-band geometry; replaces
-        # captions in same surface area. See
-        # docs/superpowers/plans/2026-04-21-gem-ward-activation-plan.md.
-        SourceSchema(
-            id="gem",
-            kind="cairo",
-            backend="cairo",
-            params={
-                "class_name": "GemCairoSource",
-                "natural_w": 1840,
-                "natural_h": 240,
-                # Candidate C Phase 1 (operator decision 2026-04-22):
-                # bump to 24 Hz so the Gray-Scott substrate animation
-                # reads as smooth motion. The substrate ticks once per
-                # render, so cadence directly governs evolution speed.
-                # Substrate CPU cost ~0.5 ms/tick (numpy 230x30 grid at
-                # 4 GS steps/tick), well under the per-tick budget.
-                "fps": 24,
-            },
-        ),
-        # Programme banner ward (PR #2366) — lower-third surfacing
-        # the active programme's role + narrative_beat.
         SourceSchema(
             id="programme_banner",
             kind="cairo",
             backend="cairo",
             params={
                 "class_name": "ProgrammeBannerWard",
-                "natural_w": 900,
-                "natural_h": 120,
+                "natural_w": 540,
+                "natural_h": 280,
             },
             update_cadence="rate",
             rate_hz=1.0,
             tags=["programme", "ward", "lower-third"],
             ward_id="programme-banner",
         ),
-        # ytb-LORE-EXT family (2026-05-04, ward-family-compositor-layout-
-        # integration cc-task) — three lore-surface wards composing the
-        # mid-band lore strip. Each is feature-flagged OFF by default
-        # via its module-level ``HAPAX_LORE_*_ENABLED`` env, so adding
-        # them to the fallback layout is safe at boot.
         SourceSchema(
             id="precedent_ticker",
             kind="cairo",
@@ -396,40 +383,98 @@ _FALLBACK_LAYOUT = Layout(
             tags=["homage", "ward", "lore-ext", "hybrid", "keystone"],
             ward_id="research-instrument-dashboard",
         ),
-        # Fourth ytb-LORE-EXT ward (interactive_lore_query / #2484) is
-        # NOT wired here yet: its constructor requires a non-default
-        # ``allowlist`` kwarg, which the compositor's
-        # ``source_registry.construct_backend`` no-arg path can't
-        # supply. Wiring it needs either (a) a layout-side factory
-        # shim or (b) a default-allowlist auto-construction path on
-        # the ward itself. Tracked as the follow-up for this cc-task.
     ],
     surfaces=[
         SurfaceSchema(
-            id="pip-ul",
-            geometry=SurfaceGeometry(kind="rect", x=20, y=20, w=300, h=300),
-            z_order=10,
+            id="sierpinski-overlay",
+            geometry=SurfaceGeometry(kind="rect", x=0, y=0, w=1920, h=1080),
+            z_order=2,
         ),
         SurfaceSchema(
-            id="pip-ur",
-            geometry=SurfaceGeometry(kind="rect", x=1260, y=20, w=640, h=360),
-            z_order=10,
+            id="lower-left-album",
+            geometry=SurfaceGeometry(kind="rect", x=10, y=554, w=200, h=200),
+            z_order=3,
         ),
         SurfaceSchema(
-            id="pip-ll",
-            geometry=SurfaceGeometry(kind="rect", x=20, y=540, w=400, h=520),
-            z_order=10,
+            id="upper-left-vitruvian",
+            geometry=SurfaceGeometry(kind="rect", x=10, y=344, w=200, h=200),
+            z_order=3,
         ),
         SurfaceSchema(
-            id="pip-lr",
-            geometry=SurfaceGeometry(kind="rect", x=1500, y=860, w=400, h=200),
-            z_order=10,
+            id="obsidian-overlay-region",
+            geometry=SurfaceGeometry(kind="rect", x=300, y=840, w=900, h=80),
+            z_order=2,
         ),
-        # LRR Phase 2 item 10 — video_out surfaces enumerated by
-        # OutputRouter.from_layout() for the three current sinks.
-        # Legacy hardcoded paths remain authoritative for sink
-        # construction; full migration to router-driven sinks is a
-        # Phase 10 polish item.
+        SurfaceSchema(
+            id="lyrics-region",
+            geometry=SurfaceGeometry(kind="rect", x=1350, y=0, w=500, h=1080),
+            z_order=2,
+        ),
+        SurfaceSchema(
+            id="impingement-cascade-midleft",
+            geometry=SurfaceGeometry(kind="rect", x=1550, y=200, w=340, h=250),
+            z_order=50,
+        ),
+        SurfaceSchema(
+            id="recruitment-candidate-top",
+            geometry=SurfaceGeometry(kind="rect", x=340, y=16, w=660, h=60),
+            z_order=52,
+        ),
+        SurfaceSchema(
+            id="thinking-indicator-tr",
+            geometry=SurfaceGeometry(kind="rect", x=1200, y=16, w=150, h=44),
+            z_order=54,
+        ),
+        SurfaceSchema(
+            id="pressure-gauge-ul",
+            geometry=SurfaceGeometry(kind="rect", x=10, y=764, w=300, h=52),
+            z_order=50,
+        ),
+        SurfaceSchema(
+            id="activity-variety-log-midbottom",
+            geometry=SurfaceGeometry(kind="rect", x=1550, y=460, w=340, h=150),
+            z_order=50,
+        ),
+        SurfaceSchema(
+            id="whos-here-tc",
+            geometry=SurfaceGeometry(kind="rect", x=1050, y=16, w=140, h=44),
+            z_order=54,
+        ),
+        SurfaceSchema(
+            id="reverie-upper-right",
+            geometry=SurfaceGeometry(kind="rect", x=1400, y=20, w=480, h=170),
+            z_order=15,
+        ),
+        SurfaceSchema(
+            id="stance-indicator-right-column",
+            geometry=SurfaceGeometry(kind="rect", x=1800, y=420, w=100, h=40),
+            z_order=54,
+        ),
+        SurfaceSchema(
+            id="grounding-ticker-right-column",
+            geometry=SurfaceGeometry(kind="rect", x=1370, y=480, w=480, h=40),
+            z_order=52,
+        ),
+        SurfaceSchema(
+            id="activity-header-top-mid",
+            geometry=SurfaceGeometry(kind="rect", x=400, y=86, w=800, h=56),
+            z_order=52,
+        ),
+        SurfaceSchema(
+            id="m8-oscilloscope-rightcol",
+            geometry=SurfaceGeometry(kind="rect", x=1350, y=396, w=500, h=128),
+            z_order=3,
+        ),
+        SurfaceSchema(
+            id="chronicle-ticker-right-column",
+            geometry=SurfaceGeometry(kind="rect", x=1380, y=560, w=420, h=140),
+            z_order=52,
+        ),
+        SurfaceSchema(
+            id="precedent-ticker-right-column",
+            geometry=SurfaceGeometry(kind="rect", x=1380, y=720, w=460, h=140),
+            z_order=52,
+        ),
         SurfaceSchema(
             id="video_out_v4l2_loopback",
             geometry=SurfaceGeometry(kind="video_out", target="/dev/video42", render_target="main"),
@@ -449,225 +494,67 @@ _FALLBACK_LAYOUT = Layout(
             geometry=SurfaceGeometry(kind="video_out", target="hls://local", render_target="main"),
             z_order=102,
         ),
-        # Volitional-director Phase 4 legibility surfaces.
-        SurfaceSchema(
-            id="activity-header-top",
-            geometry=SurfaceGeometry(kind="rect", x=560, y=16, w=800, h=56),
-            z_order=30,
-        ),
-        # stance-indicator geometry retained at y=290 post-HARDM retirement
-        # (2026-04-23). The upper-right 1600-1856 / 20-276 block is now free;
-        # future surfaces may relocate stance-indicator upward if warranted.
-        SurfaceSchema(
-            id="stance-indicator-tr",
-            geometry=SurfaceGeometry(kind="rect", x=1800, y=290, w=100, h=40),
-            z_order=35,
-        ),
-        # 2026-04-23 Gemini-reapproach Plan B Phase B1 — move grounding-ticker
-        # ABOVE gem-mural-bottom (now y=810..1050) and to the RIGHT of pip-ll
-        # (x=20..420, the album quadrant). New (440, 770, 480, 40) sits in
-        # the dead strip between pip-lr/activity-variety-log-mid and GEM.
-        SurfaceSchema(
-            id="grounding-ticker-bl",
-            geometry=SurfaceGeometry(kind="rect", x=440, y=770, w=480, h=40),
-            z_order=22,
-        ),
-        # Epic 2 Phase C (2026-04-17) — hothouse pressure surfaces.
-        SurfaceSchema(
-            id="impingement-cascade-midright",
-            geometry=SurfaceGeometry(kind="rect", x=1260, y=400, w=480, h=360),
-            z_order=24,
-        ),
-        SurfaceSchema(
-            id="recruitment-candidate-top",
-            geometry=SurfaceGeometry(kind="rect", x=560, y=80, w=800, h=60),
-            z_order=24,
-        ),
-        # thinking-indicator at x=1380 — geometry retained post-HARDM
-        # retirement (2026-04-23); the 1600..1856 x-range is now free.
-        SurfaceSchema(
-            id="thinking-indicator-tr",
-            geometry=SurfaceGeometry(kind="rect", x=1380, y=20, w=170, h=44),
-            z_order=26,
-        ),
-        SurfaceSchema(
-            id="pressure-gauge-ul",
-            geometry=SurfaceGeometry(kind="rect", x=20, y=336, w=300, h=52),
-            z_order=24,
-        ),
-        SurfaceSchema(
-            id="activity-variety-log-mid",
-            geometry=SurfaceGeometry(kind="rect", x=440, y=540, w=400, h=140),
-            z_order=24,
-        ),
-        # Epic 2 Phase D — operator-always-here. whos-here stacked under
-        # thinking-indicator at x=1380 column; y=80 clears
-        # activity-header-top (y=16..72) and recruitment-candidate-top
-        # (x=560..1360, so no x-overlap).
-        SurfaceSchema(
-            id="whos-here-tr",
-            geometry=SurfaceGeometry(kind="rect", x=1380, y=80, w=150, h=46),
-            z_order=26,
-        ),
-        # HARDM surface retired 2026-04-23 (GEAL Phase 0). The
-        # upper-right 1600..1856 / 20..276 block is now reserved; GEAL
-        # lives inside the existing Sierpinski ward geometry, not in a
-        # separate surface. See docs/superpowers/specs/2026-04-23-geal-spec.md.
-        # HOMAGE #191 GEM mural — lower-band, replaces captions geometry.
         SurfaceSchema(
             id="gem-mural-bottom",
-            geometry=SurfaceGeometry(kind="rect", x=40, y=810, w=1840, h=240),
-            z_order=30,
-        ),
-        SurfaceSchema(
-            id="durf-fullframe",
-            geometry=SurfaceGeometry(kind="rect", x=0, y=0, w=1920, h=1080),
-            z_order=50,
-            update_cadence="rate",
-        ),
-        SurfaceSchema(
-            id="m8-display-surface",
-            geometry=SurfaceGeometry(kind="rect", x=480, y=80, w=960, h=720),
-            z_order=25,
-        ),
-        SurfaceSchema(
-            id="m8-display-tiny-surface",
-            geometry=SurfaceGeometry(kind="rect", x=440, y=336, w=320, h=240),
-            z_order=25,
-        ),
-        # Re-Splay Homage Ward — Steam Deck PiP (upper-right large
-        # quadrant per cc-task spec; ~920×580 surface at z=22 to sit
-        # under the operator-canonical wards but above ambient
-        # surfaces). HAPAX_STEAMDECK_FULLSCREEN=1 swaps to the
-        # fullscreen surface below.
-        SurfaceSchema(
-            id="steamdeck-display-pip",
-            geometry=SurfaceGeometry(kind="rect", x=960, y=60, w=920, h=580),
-            z_order=22,
-        ),
-        SurfaceSchema(
-            id="steamdeck-display-fullscreen",
-            geometry=SurfaceGeometry(kind="rect", x=0, y=0, w=1920, h=1080),
-            z_order=22,
+            geometry=SurfaceGeometry(kind="rect", x=0, y=920, w=1920, h=160),
+            z_order=5,
         ),
         SurfaceSchema(
             id="egress-footer-bottom",
             geometry=SurfaceGeometry(kind="rect", x=0, y=1050, w=1920, h=30),
             z_order=60,
-            update_cadence="rate",
         ),
-        # Programme banner ward (PR #2366).
         SurfaceSchema(
-            id="programme-banner-top",
-            geometry=SurfaceGeometry(kind="rect", x=510, y=84, w=900, h=120),
+            id="programme-banner-bottom",
+            geometry=SurfaceGeometry(kind="rect", x=300, y=780, w=500, h=50),
             z_order=28,
-            update_cadence="rate",
-        ),
-        # ytb-LORE-EXT mid-band lore strip (2026-05-04). Three slots
-        # at y=380 spanning x=20 → x=1520, the "side-by-side"
-        # rendering surface for the lore-extension ward family.
-        SurfaceSchema(
-            id="lore-precedent-ticker",
-            geometry=SurfaceGeometry(kind="rect", x=20, y=380, w=460, h=140),
-            z_order=22,
-            update_cadence="rate",
         ),
         SurfaceSchema(
-            id="lore-programme-history",
-            geometry=SurfaceGeometry(kind="rect", x=500, y=380, w=460, h=110),
-            z_order=22,
-            update_cadence="rate",
-        ),
-        SurfaceSchema(
-            id="lore-research-instrument-dashboard",
-            geometry=SurfaceGeometry(kind="rect", x=980, y=380, w=540, h=220),
-            z_order=22,
-            update_cadence="rate",
-        ),
-        SurfaceSchema(
-            id="sierpinski-center",
-            geometry=SurfaceGeometry(kind="rect", x=640, y=220, w=640, h=640),
-            z_order=15,
-        ),
-        SurfaceSchema(
-            id="packed-cameras-fullframe",
+            id="durf-fullframe",
             geometry=SurfaceGeometry(kind="rect", x=0, y=0, w=1920, h=1080),
-            z_order=8,
-            update_cadence="rate",
+            z_order=1,
+        ),
+        SurfaceSchema(
+            id="research-dashboard-right",
+            geometry=SurfaceGeometry(kind="rect", x=1380, y=860, w=500, h=180),
+            z_order=22,
+        ),
+        SurfaceSchema(
+            id="steamdeck-display-pip",
+            geometry=SurfaceGeometry(kind="rect", x=960, y=60, w=920, h=580),
+            z_order=42,
+        ),
+        SurfaceSchema(
+            id="steamdeck-display-fullscreen",
+            geometry=SurfaceGeometry(kind="rect", x=0, y=0, w=1920, h=1080),
+            z_order=42,
         ),
     ],
     assignments=[
-        Assignment(source="token_pole", surface="pip-ul"),
-        Assignment(source="reverie", surface="pip-ur"),
-        Assignment(source="album", surface="pip-ll"),
-        Assignment(source="stream_overlay", surface="pip-lr"),
-        # captions assignment removed at GEM cutover (2026-04-21);
-        # GEM ward (#191) takes the lower-band geometry.
-        # Volitional-director Phase 4 assignments.
-        Assignment(source="activity_header", surface="activity-header-top"),
-        Assignment(source="stance_indicator", surface="stance-indicator-tr"),
-        Assignment(source="grounding_provenance_ticker", surface="grounding-ticker-bl"),
-        # Epic 2 Phase C hothouse assignments.
-        Assignment(
-            source="impingement_cascade",
-            surface="impingement-cascade-midright",
-            opacity=0.92,
-        ),
-        Assignment(
-            source="recruitment_candidate_panel",
-            surface="recruitment-candidate-top",
-            opacity=0.92,
-        ),
-        Assignment(source="thinking_indicator", surface="thinking-indicator-tr", opacity=0.92),
-        Assignment(source="pressure_gauge", surface="pressure-gauge-ul", opacity=0.92),
-        Assignment(
-            source="activity_variety_log",
-            surface="activity-variety-log-mid",
-            opacity=0.90,
-        ),
-        # Epic 2 Phase D assignment.
-        Assignment(source="whos_here", surface="whos-here-tr", opacity=0.92),
-        # HARDM assignment retired 2026-04-23 (GEAL Phase 0).
-        # HOMAGE #191 GEM mural assignment.
-        Assignment(source="gem", surface="gem-mural-bottom", opacity=0.95),
-        Assignment(source="durf", surface="durf-fullframe", opacity=0.96),
-        Assignment(source="m8-display", surface="m8-display-surface", opacity=0.0),
-        Assignment(source="m8-display", surface="m8-display-tiny-surface", opacity=0.0),
-        # Steam Deck — start at opacity=0; the affordance pipeline
-        # recruits ``ward.reveal.steamdeck-display`` to fade the PiP in.
-        Assignment(source="steamdeck-display", surface="steamdeck-display-pip", opacity=0.0),
-        Assignment(
-            source="steamdeck-display",
-            surface="steamdeck-display-fullscreen",
-            opacity=0.0,
-        ),
+        Assignment(source="stream_overlay", surface="obsidian-overlay-region"),
+        Assignment(source="album", surface="lower-left-album"),
+        Assignment(source="token_pole", surface="upper-left-vitruvian"),
+        Assignment(source="impingement_cascade", surface="impingement-cascade-midleft"),
+        Assignment(source="recruitment_candidate_panel", surface="recruitment-candidate-top"),
+        Assignment(source="thinking_indicator", surface="thinking-indicator-tr"),
+        Assignment(source="pressure_gauge", surface="pressure-gauge-ul"),
+        Assignment(source="activity_variety_log", surface="activity-variety-log-midbottom"),
+        Assignment(source="whos_here", surface="whos-here-tc"),
+        Assignment(source="reverie", surface="reverie-upper-right"),
+        Assignment(source="stance_indicator", surface="stance-indicator-right-column"),
+        Assignment(source="grounding_provenance_ticker", surface="grounding-ticker-right-column"),
+        Assignment(source="activity_header", surface="activity-header-top-mid"),
+        Assignment(source="m8-display", surface="m8-oscilloscope-rightcol"),
+        Assignment(source="programme_history", surface="chronicle-ticker-right-column"),
+        Assignment(source="precedent_ticker", surface="precedent-ticker-right-column"),
+        Assignment(source="sierpinski", surface="sierpinski-overlay", render_stage="pre_fx"),
+        Assignment(source="gem", surface="gem-mural-bottom"),
         Assignment(source="egress_footer", surface="egress-footer-bottom"),
-        # Programme banner ward (PR #2366).
-        Assignment(source="programme_banner", surface="programme-banner-top"),
-        # ytb-LORE-EXT family (2026-05-04).
-        Assignment(
-            source="precedent_ticker",
-            surface="lore-precedent-ticker",
-            opacity=0.92,
-        ),
-        Assignment(
-            source="programme_history",
-            surface="lore-programme-history",
-            opacity=0.92,
-        ),
-        Assignment(
-            source="research_instrument_dashboard",
-            surface="lore-research-instrument-dashboard",
-            opacity=0.92,
-        ),
-        Assignment(source="sierpinski", surface="sierpinski-center"),
-        Assignment(
-            source="packed_cameras",
-            surface="packed-cameras-fullframe",
-            opacity=0.0,
-            non_destructive=False,
-            render_stage="pre_fx",
-        ),
+        Assignment(source="programme_banner", surface="programme-banner-bottom"),
+        Assignment(source="durf", surface="durf-fullframe", render_stage="pre_fx"),
+        Assignment(source="research_instrument_dashboard", surface="research-dashboard-right"),
+        Assignment(source="steamdeck-display", surface="steamdeck-display-pip", opacity=0.0),
+        Assignment(source="steamdeck-display", surface="steamdeck-display-fullscreen", opacity=0.0),
     ],
 )
 
@@ -880,8 +767,8 @@ class StudioCompositor:
         # Currently advisory only — no rendering code consumes this yet.
         # Phase 3 will wire the active Layout into the executor.
         self._layout_store = LayoutStore()
-        if "garage-door" in self._layout_store.list_available():
-            self._layout_store.set_active("garage-door")
+        if "default" in self._layout_store.list_available():
+            self._layout_store.set_active("default")
 
         from agents.effect_graph.visual_governance import AtmosphericSelector
 
