@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from shared.segment_candidate_selection import (
+    review_segment_candidate_set,
     selected_release_manifest,
     write_selected_release_manifest,
 )
@@ -134,12 +135,79 @@ def test_selected_release_manifest_allows_interview_with_public_release_receipts
         "answer_authority_receipt": "receipt:answer-authority",
         "release_scope_receipt": "receipt:release-scope",
         "layout_readback_receipt": "receipt:layout-readback",
+        "question_ladder": [
+            {
+                "question_id": "q-1",
+                "question": "What claim can be answered on record?",
+            }
+        ],
+        "turn_receipts": [
+            {
+                "question_id": "q-1",
+                "answer_receipt_id": "receipt:answer-q-1",
+                "release_decision_id": "receipt:release-q-1",
+                "layout_readback_receipt": "receipt:layout-q-1",
+            }
+        ],
     }
 
     manifest = selected_release_manifest([artifact], [_receipt(artifact)])
 
     assert manifest["ok"] is True
     assert manifest["programmes"] == ["interview-a.json"]
+
+
+def test_selected_release_manifest_blocks_interview_with_missing_turn_receipt() -> None:
+    artifact = _artifact("interview-a")
+    artifact["role"] = "interview"
+    artifact["selected_release_interview_report"] = {
+        "ok": True,
+        "mode": "public_release",
+        "topic_consent_receipt": "receipt:topic-consent",
+        "answer_authority_receipt": "receipt:answer-authority",
+        "release_scope_receipt": "receipt:release-scope",
+        "layout_readback_receipt": "receipt:layout-readback",
+        "question_ladder": [
+            {"question_id": "q-1", "question": "First?"},
+            {"question_id": "q-2", "question": "Second?"},
+        ],
+        "turn_receipts": [
+            {
+                "question_id": "q-1",
+                "answer_receipt_id": "receipt:answer-q-1",
+                "release_decision_id": "receipt:release-q-1",
+                "layout_readback_receipt": "receipt:layout-q-1",
+            }
+        ],
+    }
+
+    manifest = selected_release_manifest([artifact], [_receipt(artifact)])
+
+    assert manifest["ok"] is False
+    assert manifest["programmes"] == []
+    assert manifest["review_gaps"][0]["reason"] == (
+        "interview_artifact_missing_selected_release_receipts"
+    )
+    assert "turn_receipts:missing_question_ids" in manifest["review_gaps"][0]["missing"]
+
+
+def test_review_segment_candidate_set_rejects_one_field_ledger_rows() -> None:
+    artifact = _artifact("prog-a", score=96)
+    receipt = _receipt(artifact)
+
+    review = review_segment_candidate_set(
+        [artifact],
+        [{"artifact_sha256": artifact["artifact_sha256"]}],
+        [receipt],
+        selected_count=1,
+    )
+
+    assert review["ok"] is False
+    failed = {item["name"] for item in review["criteria"] if item["passed"] is False}
+    assert {
+        "candidate_set.has_ledger",
+        "candidate_set.selected_artifacts_have_ledger_rows",
+    }.issubset(failed)
 
 
 def test_write_selected_release_manifest_refuses_failed_manifest(tmp_path: Path) -> None:

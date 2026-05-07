@@ -191,8 +191,19 @@ def load_pause_state(
     if not isinstance(payload, dict):
         raise SegmentPrepPauseError(f"segment-prep pause state {resolved} must be a JSON object")
 
+    mode = payload.get("mode")
+    if not isinstance(mode, str) or not mode.strip():
+        return _state_from_mode(
+            "research_only",
+            reason=str(payload.get("reason", "authority file missing mode")),
+            updated_at=str(payload.get("updated_at", "")),
+            updated_by=str(payload.get("updated_by", "")),
+            source=f"file_missing_mode:{resolved}",
+            path=resolved,
+        )
+
     return _state_from_mode(
-        str(payload.get("mode", "open")),
+        mode,
         reason=str(payload.get("reason", "")),
         updated_at=str(payload.get("updated_at", "")),
         updated_by=str(payload.get("updated_by", "")),

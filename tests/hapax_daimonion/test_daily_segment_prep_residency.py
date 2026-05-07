@@ -9,6 +9,8 @@ import pytest
 
 from agents.hapax_daimonion import daily_segment_prep as prep
 
+SOURCE_REF = "vault:test-segment-source"
+
 
 class _FakeResponse:
     def __init__(self, payload: dict[str, Any]) -> None:
@@ -22,6 +24,41 @@ class _FakeResponse:
 
     def read(self) -> bytes:
         return self._payload
+
+
+def _ready_content(
+    *,
+    narrative_beat: str,
+    segment_beats: list[str],
+    role: str = "rant",
+) -> SimpleNamespace:
+    role_contract: dict[str, Any] = {
+        "source_packet_refs": [SOURCE_REF],
+        "role_live_bit_mechanic": "source evidence changes a visible segment object",
+        "event_object": "source-backed public comparison object",
+        "audience_job": "inspect the source-backed consequence",
+        "payoff": "the final beat resolves the source consequence",
+        "temporality_band": "evergreen",
+    }
+    if role in {"tier_list", "top_10"}:
+        role_contract["tier_criteria"] = "source-backed criterion for each placement"
+    if role == "rant":
+        role_contract["bounded_claim"] = "source evidence constrains the claim"
+        role_contract["receipt_flip"] = "receipt changes confidence or scope"
+    return SimpleNamespace(
+        narrative_beat=narrative_beat,
+        segment_beats=segment_beats,
+        role_contract=role_contract,
+        beat_layout_intents=[
+            {
+                "beat_id": f"beat-{index + 1}",
+                "evidence_refs": [SOURCE_REF],
+                "needs": ["source_visible"],
+                "default_static_success_allowed": False,
+            }
+            for index, _beat in enumerate(segment_beats)
+        ],
+    )
 
 
 def test_prep_model_is_command_r_only(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -51,6 +88,33 @@ def test_parse_script_extracts_spoken_text_from_object_array() -> None:
         "Second spoken beat.",
         "Third spoken beat.",
     ]
+
+
+def test_refine_script_returns_final_model_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    refined = ["Place the final claim in A-tier because the cited source changes the consequence."]
+    contract = {"claim_map": [{"claim_id": "claim:final", "claim_text": refined[0]}]}
+    monkeypatch.setattr(
+        prep,
+        "_call_llm",
+        lambda *_args, **_kwargs: json.dumps(
+            {"prepared_script": refined, "segment_prep_contract": contract}
+        ),
+    )
+
+    script, model_contract, changed = prep._refine_script(
+        ["Draft claim."],
+        SimpleNamespace(
+            role=SimpleNamespace(value="tier_list"),
+            content=SimpleNamespace(
+                narrative_beat="Contract refresh",
+                segment_beats=["rank final claim"],
+            ),
+        ),
+    )
+
+    assert script == refined
+    assert model_contract == contract
+    assert changed is True
 
 
 def test_daily_prep_source_has_no_model_swap_or_fallback_paths() -> None:
@@ -128,6 +192,11 @@ def test_call_llm_refuses_wrong_resident_model(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.delenv("HAPAX_SEGMENT_PREP_MODEL", raising=False)
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        prep,
+        "assert_segment_prep_allowed",
+        lambda _activity: SimpleNamespace(mode="open", reason="test", source="test"),
+    )
 
     with pytest.raises(RuntimeError, match="resident Command-R required"):
         prep._call_llm("hello")
@@ -150,6 +219,11 @@ def test_call_llm_uses_resident_command_r_body_and_records_call(
 
     monkeypatch.delenv("HAPAX_SEGMENT_PREP_MODEL", raising=False)
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        prep,
+        "assert_segment_prep_allowed",
+        lambda _activity: SimpleNamespace(mode="open", reason="test", source="test"),
+    )
 
     status_path = tmp_path / "prep-status.json"
     session = prep._new_prep_session()
@@ -190,6 +264,31 @@ def test_call_llm_uses_resident_command_r_body_and_records_call(
     assert status["current_llm_call"]["status"] == "returned"
     assert status["current_llm_call"]["max_tokens"] == 77
     assert status["current_llm_call"]["timeout_s"] == prep._PREP_LLM_TIMEOUT_S
+
+
+def test_call_llm_checks_live_authority_on_every_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_urlopen(req: Any, timeout: float) -> _FakeResponse:  # noqa: ARG001
+        url = getattr(req, "full_url", str(req))
+        if url.endswith("/v1/model"):
+            return _FakeResponse({"id": prep.RESIDENT_PREP_MODEL})
+        return _FakeResponse({"choices": [{"message": {"content": "ok"}}]})
+
+    checked: list[str] = []
+
+    def fake_authority(activity: str) -> SimpleNamespace:
+        checked.append(activity)
+        return SimpleNamespace(mode="open", reason="test", source="test")
+
+    monkeypatch.delenv("HAPAX_SEGMENT_PREP_MODEL", raising=False)
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(prep, "assert_segment_prep_allowed", fake_authority)
+
+    session = prep._new_prep_session()
+    session["authority_gate_passed"] = True
+
+    assert prep._call_llm("one", prep_session=session) == "ok"
+    assert prep._call_llm("two", prep_session=session) == "ok"
+    assert checked == ["pool_generation", "pool_generation"]
 
 
 def _valid_artifact(**overrides: Any) -> dict[str, Any]:
@@ -574,8 +673,6 @@ def test_run_prep_appends_manifest_without_readmitting_invalid_or_unlisted_artif
     )
     monkeypatch.setattr(planner_module, "ProgrammePlanner", FakePlanner)
     monkeypatch.setattr(prep, "prep_segment", fake_prep_segment)
-    monkeypatch.setattr(prep, "_upsert_programmes_to_qdrant", lambda *_args, **_kwargs: None)
-
     saved = prep.run_prep(tmp_path)
 
     assert [path.name for path in saved] == ["prog-2.json", "prog-3.json"]
@@ -630,8 +727,6 @@ def test_run_prep_one_segment_writes_status_and_exact_planner_target(
         lambda _activity: SimpleNamespace(mode="open", reason="test", source="test"),
     )
     monkeypatch.setattr(planner_module, "ProgrammePlanner", FakePlanner)
-    monkeypatch.setattr(prep, "_upsert_programmes_to_qdrant", lambda *_args, **_kwargs: None)
-
     saved = prep.run_prep(tmp_path)
 
     today = prep._today_dir(tmp_path)
@@ -706,9 +801,10 @@ def test_prep_segment_quarantines_actionability_invalid_script(
     programme = SimpleNamespace(
         programme_id="prog-invalid-action",
         role=SimpleNamespace(value="tier_list"),
-        content=SimpleNamespace(
+        content=_ready_content(
             narrative_beat="Unsupported clip claim",
             segment_beats=["Make the claim without unsupported visuals"],
+            role="tier_list",
         ),
     )
     session = {
@@ -769,9 +865,10 @@ def test_prep_segment_quarantines_responsible_spoken_only_script(
     programme = SimpleNamespace(
         programme_id="prog-spoken-only",
         role=SimpleNamespace(value="rant"),
-        content=SimpleNamespace(
+        content=_ready_content(
             narrative_beat="Spoken only argument",
             segment_beats=["argue the point without visible evidence"],
+            role="rant",
         ),
     )
     session = {
@@ -827,20 +924,21 @@ def test_prep_segment_quarantines_responsible_spoken_only_script(
     assert dossier["refusal_metadata"]["violation_count"] >= 1
 
 
-def test_prep_segment_repairs_spoken_only_tier_list_into_visible_placements(
+def test_prep_segment_quarantines_spoken_only_tier_list_without_validator_repair(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     programme = SimpleNamespace(
         programme_id="prog-tier-repair",
         role=SimpleNamespace(value="tier_list"),
-        content=SimpleNamespace(
+        content=_ready_content(
             narrative_beat="Tier list on programming languages",
             segment_beats=[
                 "hook with a tier rubric",
                 "rank the early language",
                 "rank the modern language",
             ],
+            role="tier_list",
         ),
     )
     session = {
@@ -852,14 +950,6 @@ def test_prep_segment_repairs_spoken_only_tier_list_into_visible_placements(
         "This beat compares language eras and explains the stakes of abstraction.",
         "FORTRAN and COBOL matter because they changed business computing.",
         "Java matters because object-oriented design reshaped enterprise software.",
-    ]
-    repaired = [
-        "Place the abstraction rubric in S-tier because the archive shows leverage, "
-        "not nostalgia, changes the chart and the result is visible criteria.",
-        "Place FORTRAN in A-tier because the archive shows scientific computing made "
-        "high level programming visible, which means the ranking needs context.",
-        "Place Java in B-tier because the source documents enterprise reach, but the "
-        "tradeoff changes the result toward a heavier object model chat can dispute.",
     ]
     prompts: list[str] = []
     phases: list[str] = []
@@ -890,8 +980,6 @@ def test_prep_segment_repairs_spoken_only_tier_list_into_visible_placements(
             )
         if phase == "compose":
             return json.dumps(draft)
-        if phase == "layout_repair":
-            return json.dumps(repaired)
         raise AssertionError(f"unexpected phase {phase!r}")
 
     monkeypatch.setattr(prep, "_call_llm", fake_call)
@@ -900,54 +988,34 @@ def test_prep_segment_repairs_spoken_only_tier_list_into_visible_placements(
 
     saved = prep.prep_segment(programme, tmp_path, prep_session=session)
 
-    assert saved == tmp_path / "prog-tier-repair.json"
-    payload = json.loads(saved.read_text(encoding="utf-8"))
-    assert payload["prepared_script"] == repaired
-    assert payload["runtime_layout_validation"]["status"] == "pending_runtime_readback"
-    assert payload["runtime_layout_validation"]["layout_success"] is False
-    assert payload["beat_layout_intents"]
-    assert not payload["layout_decision_receipts"]
-    action_kinds = {
-        intent["kind"] for beat in payload["beat_action_intents"] for intent in beat["intents"]
+    assert saved is None
+    assert not (tmp_path / "prog-tier-repair.json").exists()
+    diagnostic_path = tmp_path / "prog-tier-repair.layout-invalid.json"
+    diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+    assert diagnostic["not_loadable_reason"] == "layout responsibility failed"
+    assert "missing_tier_placement_phrase" in {
+        item["reason"] for item in diagnostic["layout_responsibility"]["violations"]
     }
-    layout_needs = {need for beat in payload["beat_layout_intents"] for need in beat["needs"]}
-    assert "tier_chart" in action_kinds
-    assert "spoken_argument" not in action_kinds
-    assert "tier_visual" in layout_needs
-    assert "unsupported_layout_need" not in layout_needs
-    assert any("spoken-only beats do not satisfy" in prompt for prompt in prompts)
-    assert any("INVALID: 'Let's kick things off by placing" in prompt for prompt in prompts)
-    assert any("MANDATORY FAILED-BEAT REPAIRS" in prompt for prompt in prompts)
-    assert phases == ["compose", "layout_repair"]
-    assert [call["phase"] for call in payload["llm_calls"]] == ["compose", "layout_repair"]
-    load_root = tmp_path / "load"
-    today = prep._today_dir(load_root)
-    load_path = today / "prog-tier-repair.json"
-    load_path.write_text(json.dumps(payload), encoding="utf-8")
-    (today / "manifest.json").write_text(
-        json.dumps({"programmes": [load_path.name]}),
-        encoding="utf-8",
-    )
-    assert [
-        item["programme_id"]
-        for item in prep.load_prepped_programmes(load_root, require_selected=False)
-    ] == ["prog-tier-repair"]
+    assert prompts == ["prompt"]
+    assert phases == ["compose"]
+    assert session["llm_calls"][0]["phase"] == "compose"
 
 
-def test_prep_segment_rejects_tier_list_repair_without_exact_placements(
+def test_prep_segment_rejects_tier_list_without_exact_placements(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     programme = SimpleNamespace(
         programme_id="prog-tier-generic-repair",
         role=SimpleNamespace(value="tier_list"),
-        content=SimpleNamespace(
+        content=_ready_content(
             narrative_beat="Tier list on programming languages",
             segment_beats=[
                 "hook with a tier rubric",
                 "item_1: rank the early language",
                 "item_2: rank the modern language",
             ],
+            role="tier_list",
         ),
     )
     session = {
@@ -960,14 +1028,6 @@ def test_prep_segment_rejects_tier_list_repair_without_exact_placements(
         "FORTRAN and COBOL matter because they changed business computing.",
         "Java matters because object-oriented design reshaped enterprise software.",
     ]
-    repaired = [
-        "This tier list ranks language eras by leverage, not nostalgia.",
-        "FORTRAN belongs in A-tier because its scientific-computing legacy made "
-        "high level programming visible as a practical working method.",
-        "Java belongs in B-tier because its enterprise reach is enormous, but the "
-        "tradeoff is a heavier object model that chat can dispute.",
-    ]
-
     monkeypatch.setattr(prep, "_build_seed", lambda _programme: "seed")
     monkeypatch.setattr(
         prep,
@@ -979,8 +1039,6 @@ def test_prep_segment_rejects_tier_list_repair_without_exact_placements(
         phase = kwargs.get("phase")
         if phase == "compose":
             return json.dumps(draft)
-        if phase == "layout_repair":
-            return json.dumps(repaired)
         raise AssertionError(f"unexpected phase {phase!r}")
 
     monkeypatch.setattr(prep, "_call_llm", fake_call)
@@ -1120,63 +1178,5 @@ def test_load_prepped_programmes_rejects_programme_id_filename_mismatch(
     assert prep.load_prepped_programmes(tmp_path, require_selected=False) == []
 
 
-def test_qdrant_upsert_indexes_only_valid_saved_artifacts(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    import shared.affordance_pipeline as affordance_pipeline
-    import shared.config as shared_config
-
-    today = prep._today_dir(tmp_path)
-    valid_path = today / "prog-1.json"
-    invalid_path = today / "prog-2.json"
-    valid_path.write_text(json.dumps(_valid_artifact(programme_id="prog-1")), encoding="utf-8")
-    invalid_path.write_text(
-        json.dumps(_valid_artifact(programme_id="prog-2", model_id="wrong-model")),
-        encoding="utf-8",
-    )
-    (today / "manifest.json").write_text(
-        json.dumps({"programmes": [valid_path.name, invalid_path.name]}),
-        encoding="utf-8",
-    )
-
-    captured: dict[str, Any] = {}
-
-    def fake_embed_batch(texts: list[str], *, prefix: str) -> list[list[float]]:
-        captured["texts"] = texts
-        captured["prefix"] = prefix
-        return [[0.1, 0.2] for _ in texts]
-
-    class FakeQdrant:
-        def upsert(self, *, collection_name: str, points: list[Any]) -> None:
-            captured["collection_name"] = collection_name
-            captured["points"] = points
-
-    monkeypatch.setattr(affordance_pipeline, "embed_batch_safe", fake_embed_batch)
-    monkeypatch.setattr(shared_config, "get_qdrant", lambda: FakeQdrant())
-
-    programmes = [
-        SimpleNamespace(
-            programme_id="prog-1",
-            role=SimpleNamespace(value="rant"),
-            content=SimpleNamespace(narrative_beat="Test topic", segment_beats=["Beat one"]),
-        ),
-        SimpleNamespace(
-            programme_id="prog-2",
-            role=SimpleNamespace(value="rant"),
-            content=SimpleNamespace(narrative_beat="Bad topic", segment_beats=["Beat two"]),
-        ),
-    ]
-
-    prep._upsert_programmes_to_qdrant(programmes, [valid_path, invalid_path])
-
-    points = captured["points"]
-    assert len(points) == 1
-    payload = points[0].payload
-    assert payload["programme_id"] == "prog-1"
-    assert payload["accepted"] is True
-    assert payload["authority"] == prep.PREP_ARTIFACT_AUTHORITY
-    assert payload["artifact_path"] == str(valid_path)
-    assert payload["source_provenance_sha256"]
-    assert payload["hosting_context"] == prep.RESPONSIBLE_HOSTING_CONTEXT
-    assert payload["beat_layout_intents"]
+def test_raw_manifest_candidates_are_not_published_to_qdrant() -> None:
+    assert not hasattr(prep, "_upsert_programmes_to_qdrant")

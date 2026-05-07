@@ -38,7 +38,7 @@ EXCELLENT_SCRIPT = [
     (
         "So the ending is not nostalgia, it is a production rule. If Hapax says a chart "
         "changed, the chart has to change; if Hapax asks chat to judge the ranking, chat "
-        "has to be the surface. What do you think? Drop it in chat, because the next "
+        "has to be the surface. Chat can challenge the ranking because the next "
         "move is deciding which claims deserve a visible instrument and which should "
         "remain spoken argument."
     ),
@@ -304,7 +304,7 @@ def test_actionability_allows_neutral_camera_descriptions_without_commands() -> 
         "The overhead camera feed has a color cast; that is source context, not "
         "a director instruction. Place FORTRAN in A-tier because the ranking is legible.",
         "A director view of the argument is not the same thing as directing the "
-        "runtime layout. What do you think? Drop it in chat.",
+        "runtime layout. Chat can mark whether that distinction is clear.",
         "Take the long view on this tradeoff before the ranking. "
         "Move the argument into view, then push the comparison angle harder.",
     ]

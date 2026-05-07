@@ -46,13 +46,14 @@ EXCELLENT_SCRIPT = [
     (
         "So the actionability test is simple and uncomfortable: what the script says should have "
         "a visible or doable counterpart, and what cannot be witnessed should be spoken as argument "
-        "rather than advertised as a screen event. What do you think? Drop it in chat if the ranking "
-        "gate is stricter than the content needs, because that response is itself a supported surface "
+        "rather than advertised as a screen event. Chat can challenge the live question: "
+        "is the ranking gate stricter than the content needs? That response is itself a supported surface "
         "instead of an imaginary clip. The callback is Zuboff again: systems become trustworthy only "
         "when their operations can be inspected. The next move is not the next nine segments; it is "
         "one canary receipt that proves the script, action intents, and layout posture all agree."
     ),
 ]
+SOURCE_REF = "vault:test-segment-source"
 
 
 GENERIC_SCRIPT = [
@@ -125,30 +126,100 @@ WEAK_SOURCE_SCRIPT = [
 ]
 
 
-def _artifact(script: list[str]) -> dict[str, Any]:
-    beats = ["manifest gate", "layout responsibility", "actionability close"]
-    prompt_sha256 = prep._sha256_text("prompt")
-    seed_sha256 = prep._sha256_text("seed")
+def _contract_for(
+    *,
+    programme_id: str,
+    role: str,
+    topic: str,
+    beats: list[str],
+    script: list[str],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     actionability = validate_segment_actionability(script, beats)
     layout = validate_layout_responsibility(actionability["beat_action_intents"])
+    seed_contract = prep.build_segment_prep_contract(
+        programme_id=programme_id,
+        role=role,
+        topic=topic,
+        segment_beats=beats,
+        script=script,
+        actionability=actionability,
+        layout_responsibility=layout,
+        source_refs=[SOURCE_REF],
+    )
+    actionability = validate_segment_actionability(script, beats, prep_contract=seed_contract)
+    layout = validate_layout_responsibility(actionability["beat_action_intents"])
+    model_contract = prep.build_segment_prep_contract(
+        programme_id=programme_id,
+        role=role,
+        topic=topic,
+        segment_beats=beats,
+        script=script,
+        actionability=actionability,
+        layout_responsibility=layout,
+        source_refs=[SOURCE_REF],
+    )
+    model_contract.pop("contract_generation", None)
+    contract = prep.build_segment_prep_contract(
+        programme_id=programme_id,
+        role=role,
+        topic=topic,
+        segment_beats=beats,
+        script=script,
+        actionability=actionability,
+        layout_responsibility=layout,
+        source_refs=[SOURCE_REF],
+        model_contract=model_contract,
+    )
+    return contract, actionability, layout
+
+
+def _artifact(script: list[str]) -> dict[str, Any]:
+    beats = ["manifest gate", "layout responsibility", "actionability close"]
+    programme_id = "prog-canary"
+    role = "tier_list"
+    topic = "One segment iteration review"
+    prompt_sha256 = prep._sha256_text("prompt")
+    seed_sha256 = prep._sha256_text("seed")
+    contract, actionability, layout = _contract_for(
+        programme_id=programme_id,
+        role=role,
+        topic=topic,
+        beats=beats,
+        script=script,
+    )
     source_consequence_map = build_source_consequence_map(
         script,
         actionability["beat_action_intents"],
     )
     source_hashes = prep._source_hashes_from_fields(
-        programme_id="prog-canary",
-        role="tier_list",
-        topic="One segment iteration review",
+        programme_id=programme_id,
+        role=role,
+        topic=topic,
         segment_beats=beats,
         seed_sha256=seed_sha256,
         prompt_sha256=prompt_sha256,
     )
+    contract_report = prep.validate_segment_prep_contract(
+        contract,
+        prepared_script=script,
+        segment_beats=beats,
+    )
+    contract_sha256 = prep._contract_hash(contract)
+    source_hashes["segment_prep_contract_sha256"] = contract_sha256
+    live_event_report = prep.evaluate_segment_live_event_quality(
+        script,
+        beats,
+        actionability["beat_action_intents"],
+        layout["beat_layout_intents"],
+        role=role,
+        segment_prep_contract=contract,
+    )
     payload: dict[str, Any] = {
         "schema_version": prep.PREP_ARTIFACT_SCHEMA_VERSION,
         "authority": prep.PREP_ARTIFACT_AUTHORITY,
-        "programme_id": "prog-canary",
-        "role": "tier_list",
-        "topic": "One segment iteration review",
+        "programme_id": programme_id,
+        "role": role,
+        "topic": topic,
         "segment_beats": beats,
         "prepared_script": script,
         "segment_quality_rubric_version": QUALITY_RUBRIC_VERSION,
@@ -162,9 +233,17 @@ def _artifact(script: list[str]) -> dict[str, Any]:
             script,
             actionability=actionability,
             layout=layout,
-            role="tier_list",
+            role=role,
         ),
         "readback_obligations": build_readback_obligations(layout["beat_layout_intents"]),
+        "segment_prep_contract_version": prep.SEGMENT_PREP_CONTRACT_VERSION,
+        "segment_prep_contract": contract,
+        "segment_prep_contract_report": contract_report,
+        "segment_prep_contract_sha256": contract_sha256,
+        "segment_live_event_rubric_version": prep.LIVE_EVENT_RUBRIC_VERSION,
+        "segment_live_event_plan": live_event_report["plan"],
+        "segment_live_event_report": live_event_report,
+        "segment_live_event_report_sha256": prep._live_event_report_hash(live_event_report),
         "beat_action_intents": actionability["beat_action_intents"],
         "actionability_alignment": {
             "ok": actionability["ok"],
@@ -344,15 +423,6 @@ def test_one_segment_review_accepts_multi_phase_resident_call_provenance() -> No
                 "prompt_chars": 1220,
                 "called_at": "2026-05-06T04:01:00+00:00",
             },
-            {
-                "call_index": 3,
-                "phase": "layout_repair",
-                "programme_id": artifact["programme_id"],
-                "model_id": prep.RESIDENT_PREP_MODEL,
-                "prompt_sha256": prep._sha256_text("layout repair prompt"),
-                "prompt_chars": 1330,
-                "called_at": "2026-05-06T04:02:00+00:00",
-            },
         ]
     )
     _rehash_artifact(artifact)
@@ -364,6 +434,31 @@ def test_one_segment_review_accepts_multi_phase_resident_call_provenance() -> No
 
     assert receipt["ready_for_next_nine"] is True
     assert "artifact.prior_source_binding" not in _failed_criteria(receipt)
+    assert "artifact.no_validator_rewrite_phase" not in _failed_criteria(receipt)
+
+
+def test_one_segment_review_rejects_validator_rewrite_phase() -> None:
+    artifact = _artifact(EXCELLENT_SCRIPT)
+    artifact["llm_calls"].append(
+        {
+            "call_index": 2,
+            "phase": "layout_repair",
+            "programme_id": artifact["programme_id"],
+            "model_id": prep.RESIDENT_PREP_MODEL,
+            "prompt_sha256": prep._sha256_text("layout repair prompt"),
+            "prompt_chars": 1330,
+            "called_at": "2026-05-06T04:02:00+00:00",
+        }
+    )
+    _rehash_artifact(artifact)
+
+    receipt = review_one_segment_iteration(
+        [artifact],
+        team_critique_receipts=_team_receipts_for(artifact),
+    )
+
+    assert receipt["ready_for_next_nine"] is False
+    assert "artifact.no_validator_rewrite_phase" in _failed_criteria(receipt)
 
 
 def test_one_segment_review_accepts_real_loader_objects_without_enriched_hash_mismatch(

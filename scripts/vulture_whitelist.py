@@ -2668,3 +2668,11 @@ from agents.studio_compositor.hero_effect_rotator import HeroEffectRotator as _H
 _HeroEffectRotator.current_effect_name
 _HeroEffectRotator.effect_count
 _HeroEffectRotator.set_slot
+
+# PR #2811 segment-prep contract hardening (2026-05-07).
+# _parse_script is retained as a narrow compatibility/test helper around
+# the newer script+contract parser; production compose/refine paths now call
+# _parse_segment_generation so the contract cannot be silently discarded.
+from agents.hapax_daimonion import daily_segment_prep as _SegmentPrepModule
+
+_SegmentPrepModule._parse_script

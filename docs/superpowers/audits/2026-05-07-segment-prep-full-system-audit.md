@@ -28,7 +28,7 @@ Completed enough to preserve:
   restart paths.
 - Live authority state is set to `research_only`.
 - No-candidate prep runs write diagnostic-only outcome dossiers and
-  candidate-ledger rows.
+  `prep-diagnostic-outcomes.jsonl` rows.
 - Deterministic canary generation is explicit only and uses the `canary`
   authority activity.
 - Eligible-candidate Qdrant publication is retired; selected-release feedback is
@@ -80,7 +80,8 @@ Correctness risks fixed in this pass:
 
 - Planner failure no longer auto-manufactures a canned canary.
 - `canary_allowed` is now operationally meaningful for explicit canary mode.
-- `_upsert_programmes_to_qdrant()` no longer bypasses selected release.
+- the raw-manifest Qdrant publication path is removed; selected-release
+  feedback is the only prep-to-Qdrant publication path.
 - Manifest mismatch between review receipt and disk selected-release manifest
   blocks selected-release feedback.
 - Thin release receipts no longer satisfy selected-release review.
@@ -162,11 +163,11 @@ Highest-leverage missed opportunities:
 
 ## Verification
 
-- `uv run pytest tests/shared/test_segment_prep_pause.py tests/shared/test_segment_prep_contract_outcomes.py tests/scripts/test_segment_prep_pause_runtime_surfaces.py tests/systemd/test_content_prep_residency_units.py tests/systemd/test_content_prep_residency_guards.py tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_paused_writes_status_and_skips_model_check tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_one_segment_writes_status_and_exact_planner_target tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_load_prepped_programmes_blocks_runtime_load_below_authority_gate tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_load_prepped_programmes_accepts_valid_provenance tests/hapax_daimonion/test_daily_segment_prep_layout_contract.py tests/hapax_daimonion/test_segment_quality_actionability.py::test_loader_rejects_artifact_requiring_unsupported_runtime_action_rewrite tests/shared/test_segment_iteration_review.py::test_one_segment_review_accepts_real_loader_objects_without_enriched_hash_mismatch tests/hapax_daimonion/test_segment_release_publication.py -q`
+- `uv run pytest tests/shared/test_segment_prep_pause.py tests/shared/test_segment_prep_contract_outcomes.py tests/scripts/test_segment_prep_pause_runtime_surfaces.py tests/systemd/test_content_prep_residency_units.py tests/systemd/test_content_prep_residency_guards.py tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_paused_writes_status_and_skips_model_check tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_one_segment_writes_status_and_exact_planner_target tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_load_prepped_programmes_accepts_valid_provenance tests/hapax_daimonion/test_daily_segment_prep_layout_contract.py tests/hapax_daimonion/test_segment_quality_actionability.py::test_loader_rejects_artifact_requiring_unsupported_runtime_action_rewrite tests/shared/test_segment_iteration_review.py::test_one_segment_review_accepts_real_loader_objects_without_enriched_hash_mismatch tests/hapax_daimonion/test_segment_release_publication.py -q`
   passed: 38 tests.
-- `uv run pytest tests/shared/test_segment_candidate_selection.py tests/shared/test_segment_iteration_review.py::test_one_segment_review_accepts_real_loader_objects_without_enriched_hash_mismatch tests/shared/test_segment_review_gate_sections.py tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_one_segment_writes_status_and_exact_planner_target tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_canary_seed_switch_bypasses_heavy_planner tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_legacy_qdrant_upsert_path_is_retired tests/hapax_daimonion/test_segment_release_publication.py tests/hapax_daimonion/test_daily_segment_prep_layout_contract.py::test_load_prepped_programmes_accepts_prior_only_responsible_artifact -q`
+- `uv run pytest tests/shared/test_segment_candidate_selection.py tests/shared/test_segment_iteration_review.py::test_one_segment_review_accepts_real_loader_objects_without_enriched_hash_mismatch tests/shared/test_segment_review_gate_sections.py tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_one_segment_writes_status_and_exact_planner_target tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_raw_manifest_candidates_are_not_published_to_qdrant tests/hapax_daimonion/test_segment_release_publication.py tests/hapax_daimonion/test_daily_segment_prep_layout_contract.py::test_load_prepped_programmes_accepts_prior_only_responsible_artifact -q`
   passed: 20 tests.
-- `uv run pytest tests/hapax_daimonion/test_segment_quality_actionability.py::test_actionability_quarantines_unsupported_visual_claims_without_prepared_script tests/hapax_daimonion/test_segment_quality_actionability.py::test_actionability_rejects_camera_director_command_prose tests/scripts/test_lint_personification.py tests/shared/test_segment_candidate_selection.py tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_one_segment_writes_status_and_exact_planner_target tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_canary_seed_switch_bypasses_heavy_planner tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_legacy_qdrant_upsert_path_is_retired tests/hapax_daimonion/test_segment_release_publication.py -q`
+- `uv run pytest tests/hapax_daimonion/test_segment_quality_actionability.py::test_actionability_quarantines_unsupported_visual_claims_without_prepared_script tests/hapax_daimonion/test_segment_quality_actionability.py::test_actionability_rejects_camera_director_command_prose tests/scripts/test_lint_personification.py tests/shared/test_segment_candidate_selection.py tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_one_segment_writes_status_and_exact_planner_target tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_raw_manifest_candidates_are_not_published_to_qdrant tests/hapax_daimonion/test_segment_release_publication.py -q`
   passed: 19 tests.
 - `uv run python scripts/lint_personification.py --json` returned zero findings.
 - `uv run python -m py_compile shared/segment_prep_pause.py shared/segment_prep_contract.py shared/segment_candidate_selection.py shared/segment_iteration_review.py agents/hapax_daimonion/daily_segment_prep.py scripts/review_segment_candidate_set.py`
@@ -174,3 +175,10 @@ Highest-leverage missed opportunities:
 
 All pytest runs had the existing environment warning for unset
 `LITELLM_API_KEY`.
+
+Current branch verification after the contract/authority hardening pass:
+
+- `uv run pytest tests/shared/test_segment_prep_pause.py tests/scripts/test_segment_prep_pause_runtime_surfaces.py tests/shared/test_segment_prep_contract_outcomes.py tests/shared/test_segment_live_event_quality.py tests/hapax_daimonion/test_segment_quality_actionability.py tests/shared/test_segment_iteration_review.py tests/shared/test_segment_candidate_selection.py tests/scripts/test_review_segment_candidate_set.py tests/hapax_daimonion/test_daily_segment_prep_residency.py tests/hapax_daimonion/test_segment_release_publication.py -q`
+  passed: 123 tests, 1 environment warning for unset `LITELLM_API_KEY`.
+- `uv run ruff check agents/hapax_daimonion/daily_segment_prep.py shared/segment_prep_pause.py shared/segment_prep_contract.py shared/segment_quality_actionability.py shared/segment_live_event_quality.py shared/segment_candidate_selection.py shared/segment_iteration_review.py shared/segment_review_gate_sections.py scripts/review_one_segment_iteration.py tests/hapax_daimonion/test_daily_segment_prep_residency.py tests/hapax_daimonion/test_segment_quality_actionability.py tests/shared/test_segment_candidate_selection.py tests/shared/test_segment_iteration_review.py`
+  passed.

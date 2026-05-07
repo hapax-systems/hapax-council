@@ -602,9 +602,11 @@ def _ttl_to_seconds(value: Any) -> float | None:
     if not match:
         return None
     amount = float(match.group(1))
+    if amount <= 0:
+        return None
     unit = match.group(2) or "s"
     if unit == "ms":
-        return max(0.001, amount / 1000.0)
+        return amount / 1000.0
     return amount
 
 
@@ -707,6 +709,13 @@ def build_segment_prep_contract(
         )
 
     model_contract_provided = isinstance(model_contract, Mapping) and bool(model_contract)
+    if model_contract_provided:
+        generation = model_contract.get("contract_generation")
+        if isinstance(generation, Mapping) and (
+            generation.get("model_emitted") is False
+            or _string_list(generation.get("deterministic_backfilled_fields"))
+        ):
+            model_contract_provided = False
     model_contract = model_contract or {}
     deterministic_backfilled_fields: list[str] = []
     source_packets = list(_mapping_list(model_contract.get("source_packet_refs")))
@@ -992,17 +1001,33 @@ def validate_segment_prep_contract(
     )
     if not source_packets or not any(is_content_evidence_ref(ref) for ref in source_refs):
         violations.append({"reason": "missing_source_packet_refs"})
+    source_ref_set = set(source_refs)
+    for index, packet in enumerate(source_packets):
+        packet_refs = _string_list(packet.get("evidence_refs") or packet.get("source_ref"))
+        if not any(is_source_evidence_ref(ref) for ref in packet_refs):
+            violations.append(
+                {"reason": "source_packet_missing_source_evidence_ref", "index": index}
+            )
 
     claim_map = _mapping_list(contract.get("claim_map"))
     if not claim_map:
         violations.append({"reason": "missing_claim_map"})
+    claim_ids: set[str] = set()
     for index, claim in enumerate(claim_map):
-        if not str(claim.get("claim_id") or "").strip():
+        claim_id = str(claim.get("claim_id") or "").strip()
+        if not claim_id:
             violations.append({"reason": "claim_missing_id", "index": index})
+        else:
+            claim_ids.add(claim_id)
         if not str(claim.get("claim_text") or "").strip():
             violations.append({"reason": "claim_missing_text", "index": index})
-        if not _string_list(claim.get("grounds")):
+        grounds = _string_list(claim.get("grounds"))
+        if not grounds:
             violations.append({"reason": "claim_missing_grounds", "index": index})
+        elif not all(is_source_evidence_ref(ref) for ref in grounds):
+            violations.append({"reason": "claim_ground_not_source_evidence_ref", "index": index})
+        elif not any(ref in source_ref_set for ref in grounds):
+            violations.append({"reason": "claim_ground_not_in_source_packets", "index": index})
         if not str(claim.get("source_consequence") or "").strip():
             violations.append({"reason": "claim_missing_source_consequence", "index": index})
 
@@ -1010,8 +1035,18 @@ def validate_segment_prep_contract(
     if not source_consequences:
         violations.append({"reason": "missing_source_consequence_map"})
     for index, consequence in enumerate(source_consequences):
-        if not _string_list(consequence.get("claim_ids")):
+        consequence_claim_ids = _string_list(consequence.get("claim_ids"))
+        if not consequence_claim_ids:
             violations.append({"reason": "source_consequence_missing_claim_ids", "index": index})
+        elif not set(consequence_claim_ids).issubset(claim_ids):
+            violations.append({"reason": "source_consequence_unknown_claim_id", "index": index})
+        consequence_ref = str(consequence.get("source_ref") or "").strip()
+        if not consequence_ref or not is_source_evidence_ref(consequence_ref):
+            violations.append({"reason": "source_consequence_missing_source_ref", "index": index})
+        elif source_ref_set and consequence_ref not in source_ref_set:
+            violations.append(
+                {"reason": "source_consequence_source_ref_not_in_packets", "index": index}
+            )
         if not str(consequence.get("changed_field") or "").strip():
             violations.append(
                 {"reason": "source_consequence_missing_changed_field", "index": index}
@@ -1022,6 +1057,7 @@ def validate_segment_prep_contract(
     actions = _mapping_list(contract.get("actionability_map"))
     if not actions:
         violations.append({"reason": "missing_actionability_map"})
+    action_ids: set[str] = set()
     for index, action in enumerate(actions):
         for field in (
             "action_id",
@@ -1034,19 +1070,37 @@ def validate_segment_prep_contract(
         ):
             if not str(action.get(field) or "").strip():
                 violations.append({"reason": f"action_missing_{field}", "index": index})
-        if not _string_list(action.get("claim_ids")):
+        action_id = str(action.get("action_id") or "").strip()
+        if action_id:
+            action_ids.add(action_id)
+        action_claim_ids = _string_list(action.get("claim_ids"))
+        if not action_claim_ids:
             violations.append({"reason": "action_missing_claim_ids", "index": index})
+        elif not set(action_claim_ids).issubset(claim_ids):
+            violations.append({"reason": "action_unknown_claim_id", "index": index})
 
     layout_needs = _mapping_list(contract.get("layout_need_map"))
     if not layout_needs:
         violations.append({"reason": "missing_layout_need_map"})
+    layout_need_ids: set[str] = set()
     for index, need in enumerate(layout_needs):
         refs = _string_list(need.get("source_packet_refs") or need.get("evidence_refs"))
         if not any(is_content_evidence_ref(ref) for ref in refs):
             violations.append({"reason": "layout_need_missing_content_evidence", "index": index})
+        elif not any(is_source_evidence_ref(ref) for ref in refs):
+            violations.append({"reason": "layout_need_missing_source_evidence", "index": index})
         for field in ("layout_need_id", "beat_id", "need_kind", "why_visible"):
             if not str(need.get(field) or "").strip():
                 violations.append({"reason": f"layout_need_missing_{field}", "index": index})
+        layout_need_id = str(need.get("layout_need_id") or "").strip()
+        if layout_need_id:
+            layout_need_ids.add(layout_need_id)
+        need_claim_ids = _string_list(need.get("claim_ids"))
+        if need_claim_ids and not set(need_claim_ids).issubset(claim_ids):
+            violations.append({"reason": "layout_need_unknown_claim_id", "index": index})
+        need_action_ids = _string_list(need.get("action_ids"))
+        if need_action_ids and not set(need_action_ids).issubset(action_ids):
+            violations.append({"reason": "layout_need_unknown_action_id", "index": index})
 
     readbacks = _mapping_list(contract.get("readback_obligations"))
     if not readbacks:
@@ -1062,6 +1116,12 @@ def validate_segment_prep_contract(
         ):
             if not str(readback.get(field) or "").strip():
                 violations.append({"reason": f"readback_missing_{field}", "index": index})
+        layout_need_id = str(readback.get("layout_need_id") or "").strip()
+        if layout_need_id and layout_need_id not in layout_need_ids:
+            violations.append({"reason": "readback_unknown_layout_need_id", "index": index})
+        ttl = _ttl_to_seconds(readback.get("timeout_or_ttl") or readback.get("ttl_s"))
+        if ttl is None or ttl <= 0:
+            violations.append({"reason": "readback_missing_positive_ttl", "index": index})
 
     loop_report = validate_loop_cards(contract.get("loop_cards"))
     if loop_report["ok"] is not True:

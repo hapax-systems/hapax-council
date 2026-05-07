@@ -39,9 +39,11 @@ CRITERION_SECTION: dict[str, GateSection] = {
     "artifact.prepared_script_contract_binding": HARD_AUTHORITY_GATE,
     "live_event.report_freshness": HARD_AUTHORITY_GATE,
     "layout.hard_contract_replay": HARD_AUTHORITY_GATE,
-    "script.no_framework_vocabulary_leakage": HARD_AUTHORITY_GATE,
-    "script.source_consequence_bound": HARD_AUTHORITY_GATE,
+    "script.non_anthropomorphic_force": HARD_AUTHORITY_GATE,
+    "script.framework_vocabulary_not_prompt_facing": HARD_AUTHORITY_GATE,
     "actionability.supported": HARD_AUTHORITY_GATE,
+    "actionability.personage_honesty": HARD_AUTHORITY_GATE,
+    "actionability.no_detector_trigger_theater": HARD_AUTHORITY_GATE,
     "actionability.claim_layout_binding": HARD_AUTHORITY_GATE,
     "actionability.receipt_freshness": HARD_AUTHORITY_GATE,
     "layout.responsible_proposal_only": HARD_AUTHORITY_GATE,
@@ -55,6 +57,10 @@ CRITERION_SECTION: dict[str, GateSection] = {
     "script.quality_floor": ADVISORY_EXCELLENCE_REPORT,
     "script.ideal_livestream_bit": ADVISORY_EXCELLENCE_REPORT,
     "script.source_fidelity": ADVISORY_EXCELLENCE_REPORT,
+    "consultation.role_standards_exemplars_counterexamples": ADVISORY_EXCELLENCE_REPORT,
+    "consultation.source_consequence_map": ADVISORY_EXCELLENCE_REPORT,
+    "consultation.live_event_viability": ADVISORY_EXCELLENCE_REPORT,
+    "consultation.readback_obligations": ADVISORY_EXCELLENCE_REPORT,
 }
 
 KNOWN_CURRENT_REVIEW_CRITERIA: tuple[str, ...] = tuple(CRITERION_SECTION)
