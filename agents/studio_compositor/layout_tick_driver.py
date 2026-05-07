@@ -1475,7 +1475,7 @@ def start_layout_tick_driver(compositor: Any) -> threading.Thread | None:
 
     from agents.studio_compositor.layout_switcher import LayoutSwitcher
 
-    initial = store.active_name() or "garage-door"
+    initial = store.active_name() or "default"
     switcher = LayoutSwitcher(initial_layout=initial)
     switcher._responsible_segment_state = {}  # type: ignore[attr-defined]
     rendered_layout_state = getattr(compositor, "layout_state", None)

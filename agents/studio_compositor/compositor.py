@@ -880,8 +880,8 @@ class StudioCompositor:
         # Currently advisory only — no rendering code consumes this yet.
         # Phase 3 will wire the active Layout into the executor.
         self._layout_store = LayoutStore()
-        if "garage-door" in self._layout_store.list_available():
-            self._layout_store.set_active("garage-door")
+        if "default" in self._layout_store.list_available():
+            self._layout_store.set_active("default")
 
         from agents.effect_graph.visual_governance import AtmosphericSelector
 
