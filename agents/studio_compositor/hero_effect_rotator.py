@@ -13,11 +13,12 @@ from __future__ import annotations
 import logging
 import random
 import time
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from .config import OUTPUT_HEIGHT, OUTPUT_WIDTH
-from .models import TileRect
+from .models import CameraSpec, TileRect
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +37,32 @@ varying vec2 v_texcoord;
 uniform sampler2D tex;
 void main() { gl_FragColor = texture2D(tex, v_texcoord); }
 """
+
+
+def hero_tile_from_layout(
+    layout: Mapping[str, TileRect],
+    cameras: Sequence[CameraSpec],
+    *,
+    mode: str = "balanced",
+) -> TileRect | None:
+    """Return the currently responsible hero tile for masked hero effects."""
+    requested_role: str | None = None
+    if mode.startswith("packed/"):
+        requested_role = mode[len("packed/") :]
+    elif mode.startswith("hero/"):
+        requested_role = mode[len("hero/") :]
+
+    if requested_role:
+        return layout.get(requested_role)
+
+    for cam in cameras:
+        if cam.hero and cam.role in layout:
+            return layout[cam.role]
+
+    if mode == "packed" and cameras:
+        return layout.get(cameras[0].role)
+
+    return None
 
 
 class HeroEffectRotator:

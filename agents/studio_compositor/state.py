@@ -150,8 +150,26 @@ def apply_layout_mode(compositor: Any, mode: str) -> None:
         except Exception:
             log.debug("Failed to update pad for camera %s", role, exc_info=True)
 
+    compositor._tile_layout = new_layout
+    _update_hero_effect_tile(compositor, new_layout, mode)
     compositor._layout_mode = mode
     log.info("Layout mode: %s (applied to %d cameras)", mode, applied)
+
+
+def _update_hero_effect_tile(compositor: Any, layout: dict[str, Any], mode: str) -> None:
+    """Refresh the hero-effect mask when runtime layout authority changes."""
+    rotator = getattr(compositor, "_hero_effect_rotator", None)
+    if rotator is None:
+        return
+    try:
+        from .hero_effect_rotator import hero_tile_from_layout
+
+        cameras = list(getattr(compositor, "_camera_specs", {}).values())
+        tile = hero_tile_from_layout(layout, cameras, mode=mode)
+        if tile is not None:
+            rotator.update_hero_tile(tile)
+    except Exception:
+        log.debug("Failed to refresh hero effect mask for layout %s", mode, exc_info=True)
 
 
 def try_reconnect_camera(compositor: Any, role: str) -> bool:

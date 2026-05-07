@@ -569,7 +569,9 @@ def build_inline_fx_chain(
         log.debug("glvideomixer: latency property not supported", exc_info=True)
 
     # --- Post-mixer: shader chain → output ---
-    from agents.effect_graph.pipeline import SlotPipeline
+    from agents.effect_graph.pipeline import PASSTHROUGH_SHADER, SlotPipeline
+
+    from .hero_effect_rotator import HeroEffectRotator, hero_tile_from_layout
 
     registry = compositor._graph_runtime._registry if compositor._graph_runtime else None
     # A+ Stage 0 (2026-04-17): 24 → 12 glfeedback slots. Audit of all
@@ -585,6 +587,17 @@ def build_inline_fx_chain(
     gldownload = Gst.ElementFactory.make("gldownload", "fx-gldownload")
     fx_convert = Gst.ElementFactory.make("videoconvert", "fx-out-convert")
     fx_convert.set_property("dither", 0)  # none — Bayer default creates sawtooth columns
+    hero_effect_slot = Gst.ElementFactory.make("glfeedback", "hero-effect-slot")
+    if hero_effect_slot is not None:
+        try:
+            hero_effect_slot.set_property("fragment", PASSTHROUGH_SHADER)
+        except Exception:
+            log.warning(
+                "hero-effect-slot did not accept passthrough shader; disabled", exc_info=True
+            )
+            hero_effect_slot = None
+    else:
+        log.info("glfeedback unavailable — hero effect rotator disabled")
 
     all_elements = [
         input_sel,
@@ -602,6 +615,8 @@ def build_inline_fx_chain(
         gldownload,
         fx_convert,
     ]
+    if hero_effect_slot is not None:
+        all_elements.append(hero_effect_slot)
     for el in all_elements:
         if el is None:
             log.error("Failed to create FX element — effects disabled")
@@ -637,7 +652,24 @@ def build_inline_fx_chain(
     compositor._fx_glmixer = glmixer
 
     # --- Shader chain after mixer ---
-    compositor._slot_pipeline.build_chain(pipeline, Gst, glmixer, glcolorconvert_out)
+    if hero_effect_slot is not None:
+        compositor._slot_pipeline.build_chain(pipeline, Gst, glmixer, hero_effect_slot)
+        if not hero_effect_slot.link(glcolorconvert_out):
+            log.error("Failed to link hero-effect-slot into FX chain — effects disabled")
+            return False
+        compositor._hero_effect_slot = hero_effect_slot
+        compositor._hero_effect_rotator = HeroEffectRotator(hero_effect_slot)
+        hero_tile = hero_tile_from_layout(
+            getattr(compositor, "_tile_layout", {}),
+            compositor.config.cameras,
+            mode=getattr(compositor, "_layout_mode", "balanced"),
+        )
+        if hero_tile is not None:
+            compositor._hero_effect_rotator.update_hero_tile(hero_tile)
+    else:
+        compositor._slot_pipeline.build_chain(pipeline, Gst, glmixer, glcolorconvert_out)
+        compositor._hero_effect_slot = None
+        compositor._hero_effect_rotator = None
 
     glcolorconvert_out.link(gldownload)
     gldownload.link(fx_convert)
@@ -954,6 +986,12 @@ def fx_tick_callback(compositor: Any) -> bool:
     if modulator is not None:
         modulator.maybe_tick()
     tick_slot_pipeline(compositor, t)
+    hero_rotator = getattr(compositor, "_hero_effect_rotator", None)
+    if hero_rotator is not None:
+        try:
+            hero_rotator.tick()
+        except Exception:
+            log.debug("hero effect rotator tick failed", exc_info=True)
 
     # Flash scheduler: animate glvideomixer flash pad alpha
     scheduler = getattr(compositor, "_fx_flash_scheduler", None)

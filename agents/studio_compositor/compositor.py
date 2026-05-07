@@ -822,6 +822,8 @@ class StudioCompositor:
         self._overlay_state = OverlayState()
         self._overlay_canvas_size: tuple[int, int] = (config.output_width, config.output_height)
         self._tile_layout: dict[str, TileRect] = {}
+        self._hero_effect_slot: Any | None = None
+        self._hero_effect_rotator: Any | None = None
         self._state_reader_thread: threading.Thread | None = None
         # Task #150 Phase 1 — scene classifier background thread. Created
         # lazily in ``start_layout_only`` when the feature flag is on.
