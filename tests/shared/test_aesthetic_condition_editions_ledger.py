@@ -81,7 +81,9 @@ def test_all_seven_edition_kinds_constructible():
 
 def test_required_field_set_matches_acceptance():
     m = _metadata()
-    fields = set(m.model_fields.keys())
+    # Pydantic v2.11 deprecated instance access of ``model_fields``; use the
+    # class attribute so V3 doesn't break the assertion.
+    fields = set(type(m).model_fields.keys())
     expected = {
         "edition_id",
         "kind",
