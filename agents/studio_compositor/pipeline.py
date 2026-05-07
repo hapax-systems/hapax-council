@@ -163,116 +163,36 @@ def build_pipeline(compositor: Any) -> Any:
         queue_sink = bypass_queue.get_static_pad("sink")
         tee_pad.link(queue_sink)
 
-    # v4l2sink branch — with caps dedup probe to prevent renegotiation on source switch
-    queue_v4l2 = Gst.ElementFactory.make("queue", "queue-v4l2")
-    queue_v4l2.set_property("leaky", 2)
-    # Delta 2026-04-14-camera-pipeline-systematic-walk finding F9: bump
-    # the v4l2sink branch's buffer cushion from 1 to 5 frames. A 1-buffer
-    # queue drops the frame on any 33 ms hiccup — a tight window for OBS
-    # reads that can stall briefly under GPU contention. 5 frames at
-    # 30fps is ~167 ms of cushion, still well within the 2-second
-    # watchdog timeout, and v4l2loopback's kernel-side max_buffers=2
-    # (operator-gated modprobe reload per drop follow-ups) remains the
-    # hard ceiling upstream of this queue. ``leaky=downstream`` is
-    # preserved so back-pressure still results in frame drops at the
-    # queue rather than upstream.
-    queue_v4l2.set_property("max-size-buffers", 5)
-    convert_out = Gst.ElementFactory.make("videoconvert", "convert-out")
-    convert_out.set_property("dither", 0)  # none — Bayer default creates sawtooth columns
-    sink_caps = Gst.ElementFactory.make("capsfilter", "sink-caps")
-    # F6 (drop #32 B7): format is NV12, not YUY2. NV12 is cheaper to convert
-    # from the upstream BGRA source (compositor mix → BGRA → NV12 costs ~30-40%
-    # less CPU on the videoconvert step than BGRA → YUY2), matches the
-    # livestream standard for v4l2loopback + OBS consumption, and is supported
-    # by v4l2loopback 0.15.3 on exclusive_caps=1 devices (verified via isolated
-    # gst-launch test on /dev/video10 2026-04-15). Operator-confirmed; applies
-    # on next compositor restart.
-    sink_caps.set_property(
-        "caps",
-        Gst.Caps.from_string(
-            f"video/x-raw,format=NV12,width={compositor.config.output_width},"
-            f"height={compositor.config.output_height},framerate={fps}/1"
-        ),
-    )
-    # identity drop-allocation=true: standard v4l2loopback workaround for
-    # allocation query renegotiation (defense-in-depth alongside caps probe)
-    identity = Gst.ElementFactory.make("identity", "v4l2-identity")
-    identity.set_property("drop-allocation", True)
-    sink = Gst.ElementFactory.make("v4l2sink", "output")
-    sink.set_property("device", compositor.config.output_device)
-    sink.set_property("sync", False)
-    # Drop #50 OBS-N1: disable last-sample caching. v4l2sink's default
-    # `enable-last-sample=true` holds a ref to the most recently pushed
-    # buffer so `get-last-sample` queries can read it back. The compositor
-    # never calls `get-last-sample` on the output sink, so the cache is
-    # just dead pinning ~4 MB of BGRA memory per frame indefinitely.
-    try:
-        sink.set_property("enable-last-sample", False)
-    except Exception:
-        log.debug("v4l2sink: enable-last-sample property not supported", exc_info=True)
-    # Drop #50 OBS-N3: disable QoS back-pressure. v4l2loopback's kernel
-    # buffering is small (max_buffers=2 default) and with an absent or
-    # slow consumer the sink emits QoS events upstream, which propagate
-    # through the fx chain and can back-pressure cudacompositor. The
-    # compositor should be OBS-agnostic: frames are produced at the
-    # pipeline's natural rate and drop at the v4l2sink boundary if OBS
-    # can't keep up, rather than stalling the whole upstream chain.
-    try:
-        sink.set_property("qos", False)
-    except Exception:
-        log.debug("v4l2sink: qos property not supported", exc_info=True)
+    # v4l2 output — isolated via interpipesink. The consumer side
+    # (interpipesrc → queue → videoconvert → v4l2sink) runs in a
+    # separate Gst.Pipeline (V4l2OutputPipeline) so state-cycling the
+    # v4l2sink does not require flushing the upstream GL chain. This
+    # eliminates the 15-30s ASYNC timeout that caused persistent v4l2
+    # stalls and OBS source loss. Recovery transitions now complete
+    # in <1s because the output pipeline has no GL elements.
+    from .v4l2_output_pipeline import INTERPIPE_CHANNEL, V4l2OutputPipeline
 
-    # v4l2sink frame-push heartbeat probe (Phase 1 stall detection).
-    # Increments compositor._v4l2_frame_count and updates
-    # _v4l2_last_frame_monotonic on every buffer that crosses the sink
-    # pad. The watchdog tick conjoins v4l2_frame_seen_within(20.0) with
-    # the existing camera-active gate, so the systemd WatchdogSec=60s
-    # fires when the v4l2sink branch stalls — even if cameras are still
-    # live. Closes the same coverage gap that allowed the 2026-04-14
-    # 78-min silent stall + the 2026-04-20 stall. Ref:
-    # docs/research/2026-04-20-v4l2sink-stall-prevention.md §7-§8.
-    def _v4l2_buffer_probe(pad: Any, info: Any) -> Any:
-        compositor._on_v4l2_frame_pushed()
-        return Gst.PadProbeReturn.OK
-
-    sink.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, _v4l2_buffer_probe)
-
-    for el in [queue_v4l2, convert_out, sink_caps, identity, sink]:
-        pipeline.add(el)
-
-    queue_v4l2.link(convert_out)
-    convert_out.link(sink_caps)
-    sink_caps.link(identity)
-    identity.link(sink)
-
-    # Caps dedup probe: drop CAPS events with identical content to prevent
-    # v4l2sink renegotiation when input-selector switches between sources.
-    # GStreamer uses pointer comparison for event identity — even identical
-    # caps from a different pad trigger full renegotiation without this.
-    _last_caps: list[Any] = [None]
-
-    def _caps_dedup_probe(pad: Any, info: Any) -> Any:
-        event = info.get_event()
-        if event is None or event.type != Gst.EventType.CAPS:
-            return Gst.PadProbeReturn.OK
-        try:
-            result = event.parse_caps()
-            # GStreamer Python binding returns (bool, Caps) or just Caps depending on version
-            caps = result[1] if isinstance(result, tuple) else result
-        except Exception:
-            return Gst.PadProbeReturn.OK
-        if _last_caps[0] is not None and _last_caps[0].is_equal(caps):
-            return Gst.PadProbeReturn.DROP
-        _last_caps[0] = caps
-        return Gst.PadProbeReturn.OK
-
-    queue_v4l2.get_static_pad("sink").add_probe(
-        Gst.PadProbeType.EVENT_DOWNSTREAM, _caps_dedup_probe
-    )
+    v4l2_interpipe = Gst.ElementFactory.make("interpipesink", INTERPIPE_CHANNEL)
+    if v4l2_interpipe is None:
+        raise RuntimeError("interpipesink factory failed — gst-plugin-interpipe not installed")
+    v4l2_interpipe.set_property("sync", False)
+    v4l2_interpipe.set_property("async", False)
+    v4l2_interpipe.set_property("forward-events", False)
+    v4l2_interpipe.set_property("forward-eos", False)
+    pipeline.add(v4l2_interpipe)
 
     tee_pad = output_tee.request_pad(output_tee.get_pad_template("src_%u"), None, None)
-    queue_sink_pad = queue_v4l2.get_static_pad("sink")
-    tee_pad.link(queue_sink_pad)
+    tee_pad.link(v4l2_interpipe.get_static_pad("sink"))
+
+    compositor._v4l2_output_pipeline = V4l2OutputPipeline(
+        gst=Gst,
+        device=compositor.config.output_device,
+        width=compositor.config.output_width,
+        height=compositor.config.output_height,
+        fps=fps,
+        on_frame=compositor._on_v4l2_frame_pushed,
+    )
+    compositor._v4l2_output_pipeline.build()
 
     if compositor.config.hls.enabled:
         add_hls_branch(compositor, pipeline, output_tee, fps)

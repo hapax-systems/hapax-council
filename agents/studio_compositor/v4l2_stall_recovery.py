@@ -280,19 +280,37 @@ def attempt_recovery(
     )
     _emit_metric("V4L2SINK_STALL_TOTAL", "detected")
 
-    sink = _resolve_v4l2sink(compositor)
-    if sink is None:
-        with state.lock:
-            state.consecutive_failures += 1
-        _emit_metric("V4L2SINK_RECOVERY_TOTAL", "failed_no_sink")
-        return False
+    # Prefer interpipeline isolation path (V4l2OutputPipeline) if
+    # available. Cycling the isolated output pipeline completes in <1s
+    # because it has no GL elements upstream. Falls back to the legacy
+    # sink-only cycle for backward compat.
+    output_pipeline = getattr(compositor, "_v4l2_output_pipeline", None)
+    if output_pipeline is not None:
+        try:
+            output_pipeline.stop()
+            ok = output_pipeline.start()
+        except Exception:
+            log.warning("v4l2 stall recovery: output pipeline cycle raised", exc_info=True)
+            ok = False
+        if not ok:
+            with state.lock:
+                state.consecutive_failures += 1
+            _emit_metric("V4L2SINK_RECOVERY_TOTAL", "failed_interpipe_cycle")
+            return False
+    else:
+        sink = _resolve_v4l2sink(compositor)
+        if sink is None:
+            with state.lock:
+                state.consecutive_failures += 1
+            _emit_metric("V4L2SINK_RECOVERY_TOTAL", "failed_no_sink")
+            return False
 
-    cycled = _cycle_sink_state(sink)
-    if not cycled:
-        with state.lock:
-            state.consecutive_failures += 1
-        _emit_metric("V4L2SINK_RECOVERY_TOTAL", "failed_state_change")
-        return False
+        cycled = _cycle_sink_state(sink)
+        if not cycled:
+            with state.lock:
+                state.consecutive_failures += 1
+            _emit_metric("V4L2SINK_RECOVERY_TOTAL", "failed_state_change")
+            return False
 
     if not _wait_for_frame(compositor):
         with state.lock:
