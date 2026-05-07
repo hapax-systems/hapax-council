@@ -5,9 +5,9 @@
   "hero_cam": {
     "source": "compositor_main",
     "source_crop": {
-      "x": 420,
+      "x": 656,
       "y": 0,
-      "width": 1080,
+      "width": 608,
       "height": 1080
     },
     "dest": {
