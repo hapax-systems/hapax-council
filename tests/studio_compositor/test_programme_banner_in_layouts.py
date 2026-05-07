@@ -6,8 +6,8 @@ placing it in any layout).
 
 Per ``feedback_show_dont_tell_director``: the banner must SHOW programme
 state, which requires it to actually render. These tests pin the banner
-into all 4 LayoutSwitcher KNOWN_LAYOUTS at the top-strip placement
-chosen for u6-periodic-tick-driver visibility.
+into every still-live LayoutSwitcher KNOWN_LAYOUTS entry at the
+top-strip placement chosen for u6-periodic-tick-driver visibility.
 """
 
 from __future__ import annotations
@@ -20,14 +20,17 @@ from shared.compositor_model import Layout
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# All 4 layouts the LayoutSwitcher (u6) cycles through must carry the
-# banner so it renders regardless of the active layout. Distinct from
-# garage-door which is the boot/fallback.
+# LayoutSwitcher (u6) layouts that must carry the banner so it renders
+# regardless of the active layout. Distinct from garage-door which is
+# the boot/fallback.
+#
+# ``default-legacy.json`` and ``examples/vinyl-focus.json`` were purged
+# in the layout cleanup (PR #2770); their entries are dropped here to
+# keep the pin honest. If either layout is reintroduced, re-add it to
+# the parametrize set so the banner pin re-extends.
 KNOWN_LAYOUT_PATHS = (
     REPO_ROOT / "config/compositor-layouts/default.json",
-    REPO_ROOT / "config/compositor-layouts/default-legacy.json",
     REPO_ROOT / "config/compositor-layouts/consent-safe.json",
-    REPO_ROOT / "config/compositor-layouts/examples/vinyl-focus.json",
 )
 
 
