@@ -46,6 +46,7 @@ separate.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -327,7 +328,7 @@ def run_layout_switch_loop(
 
     Cc-task: ``u6-periodic-tick-driver``.
     """
-    if interval_s < MIN_DRIVER_INTERVAL_S:
+    if not math.isfinite(interval_s) or interval_s < MIN_DRIVER_INTERVAL_S:
         interval_s = MIN_DRIVER_INTERVAL_S
     switches = 0
     iter_count = 0
@@ -341,10 +342,19 @@ def run_layout_switch_loop(
         if iterations is not None and iter_count >= iterations:
             break
         try:
-            state = state_provider() or {}
+            state_payload = state_provider() or {}
         except Exception:
             log.warning("layout_switch state_provider failed; skipping tick", exc_info=True)
             state = {}
+        else:
+            if isinstance(state_payload, dict):
+                state = state_payload
+            else:
+                log.warning(
+                    "layout_switch state_provider returned non-dict payload; skipping tick",
+                    extra={"payload_type": type(state_payload).__name__},
+                )
+                state = {}
         try:
             applied = apply_layout_switch(
                 layout_state,
