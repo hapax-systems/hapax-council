@@ -4,7 +4,7 @@ date: 2026-05-03
 author: alpha (architectural design, operator-commissioned)
 audience: operator + alpha + beta + delta + cx-* + epsilon
 register: scientific, engineering-normative
-status: design spec — implementation deferred to phased plan; NO PipeWire / config changes in this PR
+status: phased implementation in progress; Phase 3 lock/CLI dispatched; NO PipeWire / config changes in this PR
 operator-directive-load-bearing: |
   "We have complicated use cases, but the fundamental constraints are well known
    and well understood. There is SOMETHING REALLY FUCKING WRONG with our
@@ -890,18 +890,29 @@ running graph.
 
 ## Phase 3 — Lock + transaction layer
 
+> **2026-05-07 P3 dispatch note.** The shipped P3 slice is the edit-lock
+> and CLI coordination surface only. It intentionally does not apply live
+> graph mutations, write PipeWire/WirePlumber confs, invoke `pactl
+> load-module`, or restart services. Active apply and snapshot/rollback
+> remain Phase 4 surfaces.
+
 **What ships:**
 
-1. The applier lock (`~/.cache/hapax/pipewire-graph/applier.lock`) is created at daemon start.
+1. The session-scoped applier lease
+   (`~/.cache/hapax/pipewire-graph/applier.lock`) is created/refreshed by
+   `scripts/hapax-pipewire-graph lock`. The lease is JSON so hooks can
+   read owner, expiry, and mutation mode directly; lock writes are
+   serialized with `flock(2)`.
 2. PreToolUse hook `hooks/scripts/pipewire-graph-edit-gate.sh` blocks Edit/Write tool calls
    targeting `~/.config/pipewire/pipewire.conf.d/*.conf` or
    `~/.config/wireplumber/wireplumber.conf.d/*.conf` UNLESS the calling session holds the applier lock
-   (the hook reads `flock --test` against the lock file). The hook prints an actionable error:
-   "graph editing is now daemon-mediated; use `hapax-pipewire-graph apply <descriptor>` or
+   (the hook reads the JSON lease and rejects missing, expired, malformed, or wrong-owner locks). The
+   hook prints an actionable error:
+   "graph editing is now daemon-mediated; use `hapax-pipewire-graph apply <descriptor> --dry-run` or
    `hapax-pipewire-graph lock --owner $CLAUDE_ROLE` to hold the lock for a session-scoped edit."
-3. `scripts/hapax-pipewire-graph` CLI — wraps the daemon's API. `lock --owner alpha` writes the lock,
-   `apply <yaml>` invokes the daemon, `current` prints the applied descriptor, `verify` invokes
-   `verify_live()`.
+3. `scripts/hapax-pipewire-graph` CLI — wraps the safe P3 surfaces. `validate` runs compiler/invariants
+   read-only, `lock`/`unlock` manage the lease, `lock-status` prints the lease, `apply <yaml> --dry-run`
+   writes only the P2 shadow report, and active `apply <yaml>` is refused until Phase 4.
 
 **Observable that proves it works:** a deliberate concurrent-edit test from two terminals shows one wins,
 one fails with an actionable error. No edit to a manifested file proceeds without the lock.

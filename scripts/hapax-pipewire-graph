@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""hapax-pipewire-graph — P3 coordination CLI for the audio graph SSOT.
+
+This CLI is deliberately conservative in Phase 3:
+
+- ``validate`` runs the P1 compiler/validator and prints a JSON report.
+- ``lock`` / ``unlock`` manage the short-lived edit lease consumed by the
+  PreToolUse gate.
+- ``apply --dry-run`` writes the existing P2 shadow report under
+  ``~/hapax-state/pipewire-graph``.
+
+It does not write PipeWire/WirePlumber configs, invoke ``pactl load-module``,
+or restart services. Active apply remains a P4 surface.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+from agents.pipewire_graph.daemon import apply_dry_run
+from agents.pipewire_graph.lock import (
+    DEFAULT_LOCK_TTL_S,
+    acquire_session_lock,
+    owner_from_env,
+    read_lock_status,
+    release_session_lock,
+)
+from shared.audio_graph import AudioGraph, AudioGraphValidator, check_all_invariants
+from shared.audio_graph.compiler import compile_descriptor
+from shared.audio_graph.invariants import InvariantSeverity
+
+
+def _write_json(payload: dict[str, Any], *, pretty: bool) -> None:
+    indent = 2 if pretty else None
+    sys.stdout.write(json.dumps(payload, indent=indent, sort_keys=True) + "\n")
+
+
+def _violation_to_dict(violation: Any) -> dict[str, Any]:
+    return {
+        "kind": getattr(getattr(violation, "kind", None), "value", str(violation.kind)),
+        "severity": getattr(getattr(violation, "severity", None), "value", str(violation.severity)),
+        "node_id": getattr(violation, "node_id", None),
+        "edge_idx": getattr(violation, "edge_idx", None),
+        "message": getattr(violation, "message", ""),
+    }
+
+
+def _graph_from_args(args: argparse.Namespace) -> tuple[AudioGraph, dict[str, Any]]:
+    if args.descriptor is not None:
+        graph = AudioGraph.from_yaml(args.descriptor)
+        return graph, {"source": "descriptor", "descriptor": str(args.descriptor)}
+
+    validator = AudioGraphValidator(
+        pipewire_conf_dir=args.pipewire_conf_dir,
+        wireplumber_conf_dir=args.wireplumber_conf_dir,
+    )
+    pw_confs = validator.list_active_pipewire_confs()
+    wp_confs = validator.list_active_wireplumber_confs()
+    result = validator.decompose_confs()
+    failures = [c.name for c in pw_confs + wp_confs if not validator.conf_decomposed_cleanly(c)]
+    metadata = {
+        "source": "decompose",
+        "pipewire_conf_dir": str(args.pipewire_conf_dir),
+        "wireplumber_conf_dir": str(args.wireplumber_conf_dir),
+        "active_pipewire_confs": len(pw_confs),
+        "active_wireplumber_confs": len(wp_confs),
+        "decompose_failures": failures,
+        "gaps": {
+            "untyped_confs": result.gaps.untyped_confs,
+            "parse_warnings": result.gaps.parse_warnings,
+            "inferred_models": result.gaps.inferred_models,
+        },
+    }
+    return result.graph, metadata
+
+
+def _graph_stats(graph: AudioGraph) -> dict[str, int]:
+    return {
+        "nodes": len(graph.nodes),
+        "links": len(graph.links),
+        "loopbacks": len(graph.loopbacks),
+        "channel_downmixes": len(graph.channel_downmixes),
+        "fanouts": len(graph.fanouts),
+        "gain_stages": len(graph.gain_stages),
+        "tunables": len(graph.tunables),
+        "alsa_profile_pins": len(graph.alsa_profile_pins),
+        "alsa_rules": len(graph.alsa_rules),
+        "bluez_rules": len(graph.bluez_rules),
+        "stream_restore_rules": len(graph.stream_restore_rules),
+        "stream_pins": len(graph.stream_pins),
+        "media_role_sinks": len(graph.media_role_sinks),
+        "untyped_wireplumber_rules": len(graph.untyped_wireplumber_rules),
+    }
+
+
+def _compile_stats(graph: AudioGraph) -> dict[str, Any]:
+    compiled = compile_descriptor(graph)
+    violations = check_all_invariants(graph)
+    blocking = [v for v in violations if v.severity == InvariantSeverity.BLOCKING]
+    return {
+        "pipewire_conf_count": len(compiled.pipewire_confs),
+        "wireplumber_conf_count": len(compiled.wireplumber_confs),
+        "pactl_load_count": len(compiled.pactl_loads),
+        "post_apply_probe_count": len(compiled.post_apply_probes),
+        "violation_count": len(violations),
+        "blocking_violation_count": len(blocking),
+        "violations": [_violation_to_dict(v) for v in violations],
+    }
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    graph, metadata = _graph_from_args(args)
+    compile_stats = _compile_stats(graph)
+    output = {
+        "schema_version": 1,
+        "command": "validate",
+        "mode": "read_only",
+        "live_pipewire_mutation": False,
+        "pactl_load_module": False,
+        "service_restart": False,
+        "input": metadata,
+        "graph_stats": _graph_stats(graph),
+        "compile": compile_stats,
+        "applier_lock": read_lock_status().to_dict(),
+    }
+    _write_json(output, pretty=args.pretty)
+    if compile_stats["blocking_violation_count"] and args.fail_on_blocking:
+        return 2
+    if metadata.get("decompose_failures"):
+        return 1
+    return 0
+
+
+def cmd_lock(args: argparse.Namespace) -> int:
+    owner = args.owner or owner_from_env()
+    status = acquire_session_lock(
+        owner=owner,
+        ttl_s=args.ttl_s,
+        lock_root=args.lock_root,
+        force=args.force,
+    )
+    _write_json({"command": "lock", "status": status.to_dict()}, pretty=args.pretty)
+    return 0
+
+
+def cmd_unlock(args: argparse.Namespace) -> int:
+    owner = args.owner or owner_from_env()
+    status = release_session_lock(owner=owner, lock_root=args.lock_root, force=args.force)
+    _write_json({"command": "unlock", "status": status.to_dict()}, pretty=args.pretty)
+    return 0
+
+
+def cmd_lock_status(args: argparse.Namespace) -> int:
+    _write_json(
+        {"command": "lock-status", "status": read_lock_status(lock_root=args.lock_root).to_dict()},
+        pretty=args.pretty,
+    )
+    return 0
+
+
+def cmd_apply(args: argparse.Namespace) -> int:
+    if not args.dry_run:
+        _write_json(
+            {
+                "command": "apply",
+                "result": "refused",
+                "reason": "active apply is deferred to P4; use --dry-run in P3",
+                "live_pipewire_mutation": False,
+                "pactl_load_module": False,
+                "service_restart": False,
+            },
+            pretty=args.pretty,
+        )
+        return 3
+    graph = AudioGraph.from_yaml(args.descriptor)
+    report = apply_dry_run(
+        graph,
+        state_root=args.state_root,
+        pipewire_conf_dir=args.pipewire_conf_dir,
+        wireplumber_conf_dir=args.wireplumber_conf_dir,
+    )
+    _write_json({"command": "apply", "dry_run": True, "report": report}, pretty=args.pretty)
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
+    parser.add_argument("--pretty", action="store_true", help="indent JSON output")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    def add_graph_dirs(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "--pipewire-conf-dir",
+            type=Path,
+            default=Path("~/.config/pipewire/pipewire.conf.d").expanduser(),
+        )
+        p.add_argument(
+            "--wireplumber-conf-dir",
+            type=Path,
+            default=Path("~/.config/wireplumber/wireplumber.conf.d").expanduser(),
+        )
+
+    validate = sub.add_parser("validate", help="run compiler/validator read-only")
+    add_graph_dirs(validate)
+    validate.add_argument("--descriptor", type=Path, help="validate an AudioGraph YAML file")
+    validate.add_argument(
+        "--fail-on-blocking",
+        action="store_true",
+        help="exit 2 when BLOCKING invariant violations are present",
+    )
+    validate.set_defaults(func=cmd_validate)
+
+    lock = sub.add_parser("lock", help="acquire or refresh the P3 edit lease")
+    lock.add_argument("--owner", default="", help="session owner; defaults to agent env")
+    lock.add_argument("--ttl-s", type=int, default=DEFAULT_LOCK_TTL_S)
+    lock.add_argument("--lock-root", type=Path, default=None)
+    lock.add_argument("--force", action="store_true", help="replace another active owner")
+    lock.set_defaults(func=cmd_lock)
+
+    unlock = sub.add_parser("unlock", help="release the P3 edit lease")
+    unlock.add_argument("--owner", default="", help="session owner; defaults to agent env")
+    unlock.add_argument("--lock-root", type=Path, default=None)
+    unlock.add_argument("--force", action="store_true")
+    unlock.set_defaults(func=cmd_unlock)
+
+    status = sub.add_parser("lock-status", help="print the current P3 edit lease")
+    status.add_argument("--lock-root", type=Path, default=None)
+    status.set_defaults(func=cmd_lock_status)
+
+    apply = sub.add_parser("apply", help="P3 apply dispatcher; active apply is refused")
+    apply.add_argument("descriptor", type=Path)
+    apply.add_argument("--dry-run", action="store_true", help="write a P2 shadow report only")
+    apply.add_argument(
+        "--state-root",
+        type=Path,
+        default=Path("~/hapax-state/pipewire-graph").expanduser(),
+    )
+    add_graph_dirs(apply)
+    apply.set_defaults(func=cmd_apply)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    return int(args.func(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
