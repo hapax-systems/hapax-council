@@ -656,12 +656,9 @@ Still open after the follow-up fixes:
   tier-list trigger language still impose form authority;
 - source recruitment/free inquiry is not wired into planning with resolved
   source packets, hashes, freshness, and source-consequence transforms;
-- final script/contract alignment after refinement still needs a final-script
-  contract hash or post-refinement contract refresh;
 - review `no_release` is now first-class enough to prevent selected-release
   publication; refusal-brief/no-release dossiers still need richer source-gap,
   source-follow-up, and return-to-prep fields;
-- runtime readback identity remains incomplete for layout/action claims;
 - interview prep needs consent, answer-authority, turn-taking, and release-scope
   receipts before it can be treated as ordinary segment prep.
 
@@ -675,8 +672,10 @@ Additional read-only audit returns found more actionable issues:
   surfaces even though tests expected those paths;
 - `_build_seed()` constructed `NarrativeContext` without required fields,
   causing source/live-prior context to fall back to topic-only seed text;
-- runtime layout readback remains object-weak: ward visibility can be true
-  without proving the specific cited source/item/action is visible;
+- script refinement now fails closed unless a refreshed final contract binds the
+  final text;
+- runtime layout readback now refuses acceptance when the expected
+  source/item/action object refs are missing from rendered readback;
 - tier-list actionability crosses contracts through lossy mapping rather than a
   first-class tier visual/action contract;
 - explicit static fallback semantics still need separation between fallback
@@ -716,7 +715,6 @@ The remaining blockers are now clearer and larger than a bug patch:
 
 - generated form-contract architecture;
 - resolved source-packet inquiry before planning;
-- object-bound layout/action readback;
+- richer payload-bound action readback beyond object refs;
 - first-class tier/interview action contracts;
-- post-refinement final-script contract binding;
 - richer refusal/no-release dossiers and return-to-prep routing.

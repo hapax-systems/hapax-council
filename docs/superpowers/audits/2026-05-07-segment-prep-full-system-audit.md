@@ -44,7 +44,8 @@ Completed enough to preserve:
 - One-segment review receipts now include hard/structural/advisory section
   projection.
 - Prepared artifacts now bind the selected script path to contract/provenance
-  surfaces; the next requirement is post-refinement final-script hash binding.
+  surfaces; post-refinement rewrites must refresh the model contract or
+  invalidate it before save/release.
 - Invalid actionability validation no longer exposes `prepared_script`; it emits
   `diagnostic_sanitized_script` only.
 - Anti-personification lint coverage now includes autonomous segment prompts and
@@ -63,11 +64,12 @@ Remaining inconsistencies:
   consequence.
 - Source-recruitment failures are witnessed, but not yet routed into autonomous
   source-following blackboard objects with expected-value bids.
-- Model-emitted prep contracts can become stale after script refinement.
+- Model-emitted prep contracts are now invalidated when script refinement
+  changes material text without a refreshed final contract.
 - Review gate section projection is visible, but the current blocking gate still
   treats structural/craft criteria as release authority.
-- Runtime layout readback is not yet object-bound enough: ward visibility can be
-  true without proving the exact cited source/item/action is visible.
+- Runtime layout readback now requires object refs for cited source/item/action
+  targets in addition to layout and ward visibility.
 - Tier-list actionability still maps through lossy trigger/need conversion
   rather than a first-class tier action contract.
 - Interview prep has source/consent concepts, but lacks action/readback kinds
@@ -124,24 +126,15 @@ Highest-leverage missed opportunities:
    `ProgrammePlanner` should receive resolved source packets through
    `content_state`/`vault_state`, not naked topic strings.
 
-4. Final-script contract binding.
-   Refinement must either rewrite the contract with the script or invalidate the
-   previous contract and require final script, source, and contract hashes in
-   the accepted contract.
-
-5. Object-bound runtime readback.
-   Layout/action success needs proof that the expected source/action/object is
-   visible or done, not just that a generic ward is rendered.
-
-6. First-class action contracts.
+4. First-class action contracts.
    Add canonical tier and interview action kinds instead of relying on regex
    phrases and generic layout needs.
 
-7. Refusal/no-release terminal outcomes.
+5. Refusal/no-release terminal outcomes.
    Candidate-set review with no acceptable selection should produce a valid
    diagnostic terminal outcome, not just `ok=false`.
 
-8. Return-to-prep gate.
+6. Return-to-prep gate.
    Failed selection, `no_release`, runtime fallback, or readback mismatch should
    return to prep only when a bounded dossier names the gap, budget, expected
    observable, and falsification criterion. Otherwise it should remain a
@@ -153,12 +146,10 @@ Highest-leverage missed opportunities:
    examples.
 2. Add source-packet inquiry objects and require resolved packets before
    planning.
-3. Bind final script to final contract after refinement.
-4. Add object-bound readback contracts for layout/action claims.
-5. Add tier-list and interview action-contract schemas.
-6. Enrich refusal/no-release dossiers and candidate-set outcome summaries.
-7. Add return-to-prep gating from diagnostic outcomes.
-8. Revisit hard/structural/advisory gate release policy after the above gives
+3. Add tier-list and interview action-contract schemas.
+4. Enrich refusal/no-release dossiers and candidate-set outcome summaries.
+5. Add return-to-prep gating from diagnostic outcomes.
+6. Revisit hard/structural/advisory gate release policy after the above gives
    enough evidence to avoid weakening real authority gates.
 
 ## Verification

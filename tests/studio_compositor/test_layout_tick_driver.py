@@ -836,6 +836,7 @@ def test_responsible_segment_tick_escapes_static_then_accepts_rendered_readback(
         "segment_layout_intents": (intent,),
         "segment_action_intents_ref": "active-segment:sha256:abc123",
         "segment_playback_ref": "segment-playback:beat-4",
+        "rendered_object_refs": ("artifact:ranked",),
         "ward_properties": {"ranked-list-panel": {"visible": True, "alpha": 1.0}},
     }
     monkeypatch.setattr(

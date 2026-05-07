@@ -157,19 +157,19 @@
       "attack": 0.18,
       "decay": 0.88
     },
-    {
-      "source": "audio_energy",
-      "param": "displacement",
-      "scale": 0.35,
-      "offset": 0.0,
+  {
+    "source": "music.energy",
+    "param": "displacement",
+    "scale": 0.35,
+    "offset": 0.0,
       "attack": 0.1,
       "decay": 0.7,
       "node": "colorgrade_transport"
-    },
-    {
-      "source": "audio_beat",
-      "param": "chromatic_aberration",
-      "scale": 0.5,
+  },
+  {
+    "source": "music.centroid",
+    "param": "chromatic_aberration",
+    "scale": 0.5,
       "offset": 0.0,
       "attack": 0.05,
       "decay": 0.6,
