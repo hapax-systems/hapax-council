@@ -42,9 +42,23 @@ NODE_DIR = REPO_ROOT / "agents" / "shaders" / "nodes"
 # node spec files; the bump is the contract that the new specs are real.
 MIN_NODE_SPECS = 62
 
+# Some specs are intentionally not 1:1 WGSL shader nodes:
+# - palette/output are graph-level pseudo nodes.
+# - nightvision_tint currently references a fragment-stage shader that is
+#   not present in the live WGSL node directory.
+# - grain_bump.wgsl exists as a live WGSL node but does not yet have a JSON
+#   param spec. Keep these exceptions explicit so future drift cannot hide
+#   inside the raw count floor.
+JSON_SPECS_WITHOUT_WGSL = frozenset({"nightvision_tint", "output", "palette"})
+WGSL_NODES_WITHOUT_JSON_SPEC = frozenset({"grain_bump"})
+
 
 def _spec_files() -> list[Path]:
     return sorted(NODE_DIR.glob("*.json"))
+
+
+def _wgsl_files() -> list[Path]:
+    return sorted(NODE_DIR.glob("*.wgsl"))
 
 
 def _audit_one(spec: dict, source: str) -> Iterator[str]:
@@ -102,7 +116,34 @@ def test_minimum_spec_count() -> None:
     )
 
 
+def test_wgsl_spec_inventory_matches_allowlisted_asymmetry() -> None:
+    """Every live WGSL node should have a JSON spec unless explicitly
+    allowlisted, and every JSON spec should point at a WGSL node unless it
+    is an explicit graph-level or legacy exception."""
+    json_stems = {path.stem for path in _spec_files()}
+    wgsl_stems = {path.stem for path in _wgsl_files()}
+
+    json_without_wgsl = json_stems - wgsl_stems
+    wgsl_without_json = wgsl_stems - json_stems
+
+    assert json_without_wgsl == JSON_SPECS_WITHOUT_WGSL
+    assert wgsl_without_json == WGSL_NODES_WITHOUT_JSON_SPEC
+
+
 # ── Per-spec audit ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "spec_path",
+    _spec_files(),
+    ids=lambda p: p.stem,
+)
+def test_spec_node_type_matches_filename(spec_path: Path) -> None:
+    """The spec filename is the runtime node identifier. Keep
+    ``node_type`` aligned so registry lookups and telemetry labels do not
+    silently diverge."""
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    assert spec.get("node_type") == spec_path.stem
 
 
 @pytest.mark.parametrize(
