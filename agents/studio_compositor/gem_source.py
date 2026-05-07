@@ -63,6 +63,8 @@ DEFAULT_FONT_DESCRIPTION = "Px437 IBM VGA 8x16 32"
 FALLBACK_FRAME_TEXT = "» hapax «"
 MIN_FRAME_HOLD_MS = 400
 MAX_LAYER_OFFSET_PX = 128
+# The room layer remains disabled until the artifact-leak path is reworked.
+ROOM_LAYER_RENDER_ENABLED = False
 
 # Codepoint range Unicode emoji blocks fall into. Conservative — covers
 # Misc Symbols & Pictographs, Emoticons, Transport, Supplemental Symbols,
@@ -395,61 +397,9 @@ class GemCairoSource(HomageTransitionalSource):
             return None
 
     def _render_rooms(self, cr, canvas_w: int, canvas_h: int, t: float) -> None:
-        try:
-            tree = self._ensure_room_tree(canvas_w, canvas_h)
-            if not tree:
-                return
-            from .gem_rooms import room_brightness
-
-            try:
-                from .homage.rendering import active_package
-
-                package = active_package()
-                r, g, b, _ = package.resolve_colour(package.grammar.content_colour_role)
-            except Exception:
-                r, g, b = 0.95, 0.92, 0.78
-
-            cr.save()
-            cr.select_font_face("Px437 IBM VGA 8x16 24")
-            cr.set_font_size(16)
-
-            for room in tree:
-                bright = room_brightness(room, t)
-                cr.set_source_rgba(r, g, b, bright * 0.6)
-                g_set = room.glyphs
-                cell_w = 8
-                cell_h = 16
-
-                cr.save()
-                cr.rectangle(room.x, room.y, room.w, room.h)
-                cr.clip()
-
-                cr.move_to(room.x, room.y + cell_h)
-                cr.show_text(g_set["tl"])
-                cr.move_to(room.x + room.w - cell_w, room.y + cell_h)
-                cr.show_text(g_set["tr"])
-                cr.move_to(room.x, room.y + room.h)
-                cr.show_text(g_set["bl"])
-                cr.move_to(room.x + room.w - cell_w, room.y + room.h)
-                cr.show_text(g_set["br"])
-
-                for cx in range(room.x + cell_w, room.x + room.w - cell_w, cell_w):
-                    cr.move_to(cx, room.y + cell_h)
-                    cr.show_text(g_set["h"])
-                    cr.move_to(cx, room.y + room.h)
-                    cr.show_text(g_set["h"])
-
-                for cy in range(room.y + cell_h + cell_h, room.y + room.h - cell_h, cell_h):
-                    cr.move_to(room.x, cy + cell_h)
-                    cr.show_text(g_set["v"])
-                    cr.move_to(room.x + room.w - cell_w, cy + cell_h)
-                    cr.show_text(g_set["v"])
-
-                cr.restore()
-
-            cr.restore()
-        except Exception:
-            pass
+        if not ROOM_LAYER_RENDER_ENABLED:
+            return
+        return
 
     def _render_substrate(
         self,
