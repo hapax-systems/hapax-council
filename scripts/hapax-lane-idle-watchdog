@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# hapax-lane-idle-watchdog — mechanistic idle-lane detection.
+#
+# Discovers active lanes from relay yaml files (the coordination SSOT).
+# Any file in ~/.cache/hapax/relay/ matching {name}.yaml with a
+# "session:" field is a lane. Excludes the RTE lane, alpha (integrator),
+# and non-lane files (rte-tick-*, inflections, onboarding, context).
+#
+# For each discovered lane: checks tmux liveness + relay freshness.
+# If alive + stale >30min → cues the RTE to handle it.
+set -euo pipefail
+
+STALE_THRESHOLD_S=1800  # 30 min
+RELAY_DIR="${HOME}/.cache/hapax/relay"
+SEND="${HOME}/.local/bin/hapax-claude-send"
+
+# Find the current RTE so we skip it
+RTE_LANE=""
+if [ -f "${RELAY_DIR}/rte-assignment.yaml" ]; then
+    RTE_LANE=$(grep "^rte:" "${RELAY_DIR}/rte-assignment.yaml" 2>/dev/null | awk '{print $2}')
+fi
+
+now=$(date +%s)
+stale_lanes=()
+full_lanes=()
+
+# Discover lanes from relay yaml files
+for yaml in "${RELAY_DIR}"/*.yaml; do
+    [ -f "$yaml" ] || continue
+    bn=$(basename "$yaml" .yaml)
+
+    # Skip non-lane files
+    case "$bn" in
+        rte-*|alpha-*|audit-*|context*|onboarding-*|inflection*) continue ;;
+        alpha) continue ;;  # integrator, not a dispatch target
+    esac
+
+    # Must have a "session:" field to be a lane
+    grep -q "^session:" "$yaml" 2>/dev/null || continue
+
+    lane="$bn"
+
+    # Skip the RTE itself
+    [ "$lane" = "$RTE_LANE" ] && continue
+
+    # Determine tmux session name by convention
+    tmux_name=""
+    case "$lane" in
+        cx-*)     tmux_name="hapax-codex-${lane}" ;;
+        vbe-*)    tmux_name="hapax-vibe-${lane}" ;;
+        iota|kappa|lambda|mu) tmux_name="hapax-gemini-${lane}" ;;
+        antigrav*) tmux_name="hapax-antigrav" ;;
+        *)        tmux_name="hapax-claude-${lane}" ;;
+    esac
+
+    # Skip if tmux not alive
+    tmux has-session -t "${tmux_name}" 2>/dev/null || continue
+
+    # Check freshness
+    mtime=$(stat -c '%Y' "$yaml" 2>/dev/null || echo 0)
+    age=$((now - mtime))
+    [ "$age" -le "$STALE_THRESHOLD_S" ] && continue
+
+    # Check context full
+    pane_text=$(tmux capture-pane -t "${tmux_name}" -p 2>/dev/null | tail -5)
+    if echo "$pane_text" | grep -q "/clear to save"; then
+        full_lanes+=("${lane}(context-full,$((age/60))m)")
+    else
+        stale_lanes+=("${lane}(idle,$((age/60))m)")
+    fi
+done
+
+if [ ${#stale_lanes[@]} -eq 0 ] && [ ${#full_lanes[@]} -eq 0 ]; then
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) lane-idle-watchdog: all lanes fresh"
+    exit 0
+fi
+
+msg="LANE IDLE WATCHDOG: "
+[ ${#stale_lanes[@]} -gt 0 ] && msg+="STALE: ${stale_lanes[*]}. "
+[ ${#full_lanes[@]} -gt 0 ] && msg+="CONTEXT-FULL: ${full_lanes[*]}. "
+msg+="Dispatch or recycle. Idle lanes = RTE emergency."
+
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) lane-idle-watchdog: cueing ${RTE_LANE:-beta} — ${stale_lanes[*]} ${full_lanes[*]}"
+"$SEND" --session "${RTE_LANE:-beta}" "$msg" 2>/dev/null || echo "WARN: failed to send to RTE"

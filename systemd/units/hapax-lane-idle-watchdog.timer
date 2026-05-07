@@ -1,0 +1,10 @@
+[Unit]
+Description=Hapax Lane Idle Watchdog Timer (every 10 min)
+
+[Timer]
+OnBootSec=300
+OnUnitActiveSec=600
+AccuracySec=30
+
+[Install]
+WantedBy=timers.target
