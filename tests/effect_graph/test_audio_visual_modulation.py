@@ -251,33 +251,10 @@ def _is_audio_source(source: str) -> bool:
 # allow-list params to the corresponding WGSL shader). Tracked in cc-task
 # `extend-banned-luma-shaders-with-allow-list-params`. NEW violations
 # beyond this set must fail the gate.
-KNOWN_BANNED_VIOLATIONS: frozenset[tuple[str, str, str]] = frozenset(
-    {
-        # (source, node, param)
-        # ── from _default_modulations.json ──
-        ("music.hat_onset", "noise_overlay", "intensity"),
-        ("music.kick_onset", "glitch_block", "intensity"),
-        ("music.rms", "scanlines", "opacity"),
-        ("music.kick_onset", "fisheye", "strength"),
-        ("music.rms", "thermal", "intensity"),
-        ("broadcast.rms", "trail", "opacity"),
-        # ── from per-preset modulations (audio_* sources) ──
-        ("audio_energy", "noise", "intensity"),
-        ("audio_energy", "grain_grit", "intensity"),
-        ("audio_energy", "noise_static", "intensity"),
-        ("audio_beat", "emboss_brushed", "strength"),
-        ("audio_energy", "noise_dense", "intensity"),
-        ("audio_energy", "noise_drone", "intensity"),
-        ("audio_beat", "bloom", "alpha"),
-        ("audio_beat", "fisheye", "strength"),
-        ("audio_energy", "grain_print", "intensity"),
-        ("audio_energy", "grain_paper", "intensity"),
-        ("audio_energy", "grain_tape", "intensity"),
-        ("audio_rms", "trail", "opacity"),
-        ("audio_energy", "noise_dust", "intensity"),
-        ("audio_energy", "grain_xerox", "intensity"),
-    }
-)
+# All 20 historical violations retargeted to allow-list params
+# (2026-05-07): intensity→hue_rotate, opacity→chromatic_aberration,
+# strength→displacement, alpha→saturation. Zero grandfather entries.
+KNOWN_BANNED_VIOLATIONS: frozenset[tuple[str, str, str]] = frozenset()
 
 
 def test_no_preset_modulation_targets_banned_global_luma_param() -> None:

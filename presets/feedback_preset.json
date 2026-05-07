@@ -84,9 +84,9 @@
   "modulations": [
     {
       "node": "bloom",
-      "param": "alpha",
+      "param": "saturation",
       "source": "audio_beat",
-      "scale": 0.3,
+      "scale": 0.5,
       "offset": 0.0,
       "smoothing": 0.5
     }

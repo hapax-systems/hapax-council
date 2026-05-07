@@ -124,9 +124,9 @@
     },
     {
       "node": "noise",
-      "param": "intensity",
+      "param": "hue_rotate",
       "source": "audio_energy",
-      "scale": 0.08,
+      "scale": 30.0,
       "offset": 0.0,
       "smoothing": 0.5
     }

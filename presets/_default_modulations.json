@@ -1,7 +1,9 @@
 {
     "_directive": "2026-05-05: no brightness/intensity flashing. Audio reactivity must be spatial (warp, drift, rotation, chromatic) or tonal (hue, saturation). Brightness/opacity/strobe modulation is prohibited.",
     "default_modulations": [
-        {"_comment": "═══ COLORGRADE — tonal color reactivity only (no brightness) ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 COLORGRADE \u2014 tonal color reactivity only (no brightness) \u2550\u2550\u2550"
+        },
         {
             "node": "colorgrade",
             "param": "saturation",
@@ -18,7 +20,7 @@
             "scale": 0.5,
             "offset": 0.0,
             "attack": 0.05,
-            "decay": 0.80
+            "decay": 0.8
         },
         {
             "node": "colorgrade",
@@ -29,8 +31,9 @@
             "attack": 0.15,
             "decay": 0.92
         },
-
-        {"_comment": "═══ BLOOM — bass spreads radius only (no alpha/intensity flash) ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 BLOOM \u2014 bass spreads radius only (no alpha/intensity flash) \u2550\u2550\u2550"
+        },
         {
             "node": "bloom",
             "param": "radius",
@@ -38,12 +41,14 @@
             "scale": 6.0,
             "offset": 0.0,
             "attack": 0.05,
-            "decay": 0.70
+            "decay": 0.7
         },
-
-        {"_comment": "═══ VIGNETTE — removed: kick-pumped vignette = brightness flash ═══"},
-
-        {"_comment": "═══ CHROMATIC ABERRATION — snare/hat splits ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 VIGNETTE \u2014 removed: kick-pumped vignette = brightness flash \u2550\u2550\u2550"
+        },
+        {
+            "_comment": "\u2550\u2550\u2550 CHROMATIC ABERRATION \u2014 snare/hat splits \u2550\u2550\u2550"
+        },
         {
             "node": "chromatic_aberration",
             "param": "offset_x",
@@ -60,26 +65,28 @@
             "scale": 6.0,
             "offset": 0.0,
             "attack": 0.0,
-            "decay": 0.40
+            "decay": 0.4
         },
-
-        {"_comment": "═══ NOISE OVERLAY — hat/treble drives grain ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 NOISE OVERLAY \u2014 hat/treble drives grain \u2550\u2550\u2550"
+        },
         {
             "node": "noise_overlay",
-            "param": "intensity",
+            "param": "hue_rotate",
             "source": "music.hat_onset",
-            "scale": 0.4,
+            "scale": 30.0,
             "offset": 0.0,
             "attack": 0.0,
-            "decay": 0.40
+            "decay": 0.4
         },
-
-        {"_comment": "═══ TRAIL — bass drift + RMS opacity ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 TRAIL \u2014 bass drift + RMS opacity \u2550\u2550\u2550"
+        },
         {
             "node": "trail",
-            "param": "opacity",
+            "param": "chromatic_aberration",
             "source": "broadcast.rms",
-            "scale": 0.5,
+            "scale": 0.4,
             "offset": 0.0,
             "attack": 0.05,
             "decay": 0.75
@@ -100,10 +107,11 @@
             "scale": 0.3,
             "offset": 0.0,
             "attack": 0.0,
-            "decay": 0.80
+            "decay": 0.8
         },
-
-        {"_comment": "═══ DRIFT — bass drives spatial warping ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 DRIFT \u2014 bass drives spatial warping \u2550\u2550\u2550"
+        },
         {
             "node": "drift",
             "param": "speed",
@@ -111,7 +119,7 @@
             "scale": 3.0,
             "offset": 0.0,
             "attack": 0.05,
-            "decay": 0.80
+            "decay": 0.8
         },
         {
             "node": "drift",
@@ -122,13 +130,14 @@
             "attack": 0.0,
             "decay": 0.65
         },
-
-        {"_comment": "═══ GLITCH BLOCK — kick drives intensity ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 GLITCH BLOCK \u2014 kick drives intensity \u2550\u2550\u2550"
+        },
         {
             "node": "glitch_block",
-            "param": "intensity",
+            "param": "hue_rotate",
             "source": "music.kick_onset",
-            "scale": 0.8,
+            "scale": 30.0,
             "offset": 0.0,
             "attack": 0.0,
             "decay": 0.55
@@ -140,10 +149,11 @@
             "scale": 0.6,
             "offset": 0.0,
             "attack": 0.0,
-            "decay": 0.50
+            "decay": 0.5
         },
-
-        {"_comment": "═══ FEEDBACK — kick pumps zoom, treble shifts hue ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 FEEDBACK \u2014 kick pumps zoom, treble shifts hue \u2550\u2550\u2550"
+        },
         {
             "node": "feedback",
             "param": "zoom",
@@ -169,15 +179,16 @@
             "scale": 0.15,
             "offset": 0.0,
             "attack": 0.05,
-            "decay": 0.80
+            "decay": 0.8
         },
-
-        {"_comment": "═══ SCANLINES — treble/voice drives frequency ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 SCANLINES \u2014 treble/voice drives frequency \u2550\u2550\u2550"
+        },
         {
             "node": "scanlines",
-            "param": "opacity",
+            "param": "chromatic_aberration",
             "source": "music.rms",
-            "scale": 0.5,
+            "scale": 0.4,
             "offset": 0.0,
             "attack": 0.05,
             "decay": 0.75
@@ -189,10 +200,11 @@
             "scale": 3.0,
             "offset": 0.0,
             "attack": 0.1,
-            "decay": 0.80
+            "decay": 0.8
         },
-
-        {"_comment": "═══ DITHER — treble drives amount ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 DITHER \u2014 treble drives amount \u2550\u2550\u2550"
+        },
         {
             "node": "dither",
             "param": "color_levels",
@@ -200,10 +212,11 @@
             "scale": 0.5,
             "offset": 0.0,
             "attack": 0.1,
-            "decay": 0.80
+            "decay": 0.8
         },
-
-        {"_comment": "═══ HALFTONE — kick scales dots ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 HALFTONE \u2014 kick scales dots \u2550\u2550\u2550"
+        },
         {
             "node": "halftone",
             "param": "dot_size",
@@ -220,10 +233,11 @@
             "scale": 2.0,
             "offset": 0.0,
             "attack": 0.15,
-            "decay": 0.90
+            "decay": 0.9
         },
-
-        {"_comment": "═══ KALEIDOSCOPE — bass rotates ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 KALEIDOSCOPE \u2014 bass rotates \u2550\u2550\u2550"
+        },
         {
             "node": "kaleidoscope",
             "param": "rotation",
@@ -231,21 +245,23 @@
             "scale": 0.8,
             "offset": 0.0,
             "attack": 0.05,
-            "decay": 0.80
+            "decay": 0.8
         },
-
-        {"_comment": "═══ FISHEYE — kick distorts ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 FISHEYE \u2014 kick distorts \u2550\u2550\u2550"
+        },
         {
             "node": "fisheye",
-            "param": "strength",
+            "param": "displacement",
             "source": "music.kick_onset",
-            "scale": 0.4,
+            "scale": 0.3,
             "offset": 0.0,
             "attack": 0.0,
-            "decay": 0.60
+            "decay": 0.6
         },
-
-        {"_comment": "═══ EDGE DETECT — RMS reveals edges ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 EDGE DETECT \u2014 RMS reveals edges \u2550\u2550\u2550"
+        },
         {
             "node": "edge_detect",
             "param": "threshold",
@@ -255,8 +271,9 @@
             "attack": 0.05,
             "decay": 0.75
         },
-
-        {"_comment": "═══ STUTTER — kick freezes frame ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 STUTTER \u2014 kick freezes frame \u2550\u2550\u2550"
+        },
         {
             "node": "stutter",
             "param": "freeze_chance",
@@ -264,10 +281,11 @@
             "scale": 0.3,
             "offset": 0.0,
             "attack": 0.0,
-            "decay": 0.50
+            "decay": 0.5
         },
-
-        {"_comment": "═══ DISPLACEMENT MAP — bass warps ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 DISPLACEMENT MAP \u2014 bass warps \u2550\u2550\u2550"
+        },
         {
             "node": "displacement_map",
             "param": "strength_x",
@@ -277,8 +295,9 @@
             "attack": 0.0,
             "decay": 0.65
         },
-
-        {"_comment": "═══ SLITSCAN — bass drives speed ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 SLITSCAN \u2014 bass drives speed \u2550\u2550\u2550"
+        },
         {
             "node": "slitscan",
             "param": "speed",
@@ -286,7 +305,7 @@
             "scale": 3.0,
             "offset": 0.0,
             "attack": 0.0,
-            "decay": 0.70
+            "decay": 0.7
         },
         {
             "node": "slitscan",
@@ -295,10 +314,11 @@
             "scale": 0.5,
             "offset": 0.0,
             "attack": 0.0,
-            "decay": 0.60
+            "decay": 0.6
         },
-
-        {"_comment": "═══ PIXSORT — snare triggers sort ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 PIXSORT \u2014 snare triggers sort \u2550\u2550\u2550"
+        },
         {
             "node": "pixsort",
             "param": "sort_length",
@@ -306,7 +326,7 @@
             "scale": 0.6,
             "offset": 0.0,
             "attack": 0.0,
-            "decay": 0.50
+            "decay": 0.5
         },
         {
             "node": "pixsort",
@@ -315,10 +335,11 @@
             "scale": 0.4,
             "offset": 0.0,
             "attack": 0.05,
-            "decay": 0.70
+            "decay": 0.7
         },
-
-        {"_comment": "═══ ECHO — bass drives feedback ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 ECHO \u2014 bass drives feedback \u2550\u2550\u2550"
+        },
         {
             "node": "echo",
             "param": "decay_curve",
@@ -326,7 +347,7 @@
             "scale": 0.4,
             "offset": 0.0,
             "attack": 0.05,
-            "decay": 0.80
+            "decay": 0.8
         },
         {
             "node": "echo",
@@ -337,8 +358,9 @@
             "attack": 0.05,
             "decay": 0.75
         },
-
-        {"_comment": "═══ TUNNEL — kick pulses depth ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 TUNNEL \u2014 kick pulses depth \u2550\u2550\u2550"
+        },
         {
             "node": "tunnel",
             "param": "speed",
@@ -355,10 +377,11 @@
             "scale": 1.5,
             "offset": 0.0,
             "attack": 0.1,
-            "decay": 0.80
+            "decay": 0.8
         },
-
-        {"_comment": "═══ REACTION DIFFUSION — treble drives feed rate ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 REACTION DIFFUSION \u2014 treble drives feed rate \u2550\u2550\u2550"
+        },
         {
             "node": "reaction_diffusion",
             "param": "feed_rate",
@@ -366,7 +389,7 @@
             "scale": 0.03,
             "offset": 0.0,
             "attack": 0.1,
-            "decay": 0.90
+            "decay": 0.9
         },
         {
             "node": "reaction_diffusion",
@@ -377,8 +400,9 @@
             "attack": 0.05,
             "decay": 0.75
         },
-
-        {"_comment": "═══ POSTERIZE — kick snaps levels ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 POSTERIZE \u2014 kick snaps levels \u2550\u2550\u2550"
+        },
         {
             "node": "posterize",
             "param": "levels",
@@ -386,14 +410,17 @@
             "scale": -6.0,
             "offset": 0.0,
             "attack": 0.0,
-            "decay": 0.60
+            "decay": 0.6
         },
-
-        {"_comment": "═══ POSTPROCESS — removed: kick vignette = brightness flash ═══"},
-
-        {"_comment": "═══ STROBE — removed: literal strobe flash ═══"},
-
-        {"_comment": "═══ CIRCULAR MASK — kick tightens ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 POSTPROCESS \u2014 removed: kick vignette = brightness flash \u2550\u2550\u2550"
+        },
+        {
+            "_comment": "\u2550\u2550\u2550 STROBE \u2014 removed: literal strobe flash \u2550\u2550\u2550"
+        },
+        {
+            "_comment": "\u2550\u2550\u2550 CIRCULAR MASK \u2014 kick tightens \u2550\u2550\u2550"
+        },
         {
             "node": "circular_mask",
             "param": "radius",
@@ -403,13 +430,14 @@
             "attack": 0.0,
             "decay": 0.65
         },
-
-        {"_comment": "═══ THERMAL — RMS drives intensity ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 THERMAL \u2014 RMS drives intensity \u2550\u2550\u2550"
+        },
         {
             "node": "thermal",
-            "param": "intensity",
+            "param": "hue_rotate",
             "source": "music.rms",
-            "scale": 0.6,
+            "scale": 30.0,
             "offset": 0.0,
             "attack": 0.05,
             "decay": 0.75
@@ -421,10 +449,11 @@
             "scale": 0.5,
             "offset": 0.0,
             "attack": 0.1,
-            "decay": 0.80
+            "decay": 0.8
         },
-
-        {"_comment": "═══ SIERPINSKI — kick rotates ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 SIERPINSKI \u2014 kick rotates \u2550\u2550\u2550"
+        },
         {
             "node": "sierpinski_content",
             "param": "tri_scale",
@@ -432,7 +461,7 @@
             "scale": 0.5,
             "offset": 0.0,
             "attack": 0.05,
-            "decay": 0.80
+            "decay": 0.8
         },
         {
             "node": "sierpinski_lines",
@@ -441,10 +470,11 @@
             "scale": 2.0,
             "offset": 0.0,
             "attack": 0.0,
-            "decay": 0.60
+            "decay": 0.6
         },
-
-        {"_comment": "═══ KUWAHARA — bass smooths ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 KUWAHARA \u2014 bass smooths \u2550\u2550\u2550"
+        },
         {
             "node": "kuwahara",
             "param": "radius",
@@ -452,10 +482,11 @@
             "scale": 4.0,
             "offset": 0.0,
             "attack": 0.05,
-            "decay": 0.70
+            "decay": 0.7
         },
-
-        {"_comment": "═══ ASCII — kick scales ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 ASCII \u2014 kick scales \u2550\u2550\u2550"
+        },
         {
             "node": "ascii",
             "param": "cell_size",
@@ -465,8 +496,9 @@
             "attack": 0.0,
             "decay": 0.55
         },
-
-        {"_comment": "═══ MIRROR — treble drives position ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 MIRROR \u2014 treble drives position \u2550\u2550\u2550"
+        },
         {
             "node": "mirror",
             "param": "position",
@@ -474,10 +506,11 @@
             "scale": 0.3,
             "offset": 0.0,
             "attack": 0.1,
-            "decay": 0.80
+            "decay": 0.8
         },
-
-        {"_comment": "═══ DIFF — kick drives amount ═══"},
+        {
+            "_comment": "\u2550\u2550\u2550 DIFF \u2014 kick drives amount \u2550\u2550\u2550"
+        },
         {
             "node": "diff",
             "param": "threshold",
@@ -485,10 +518,10 @@
             "scale": 0.5,
             "offset": 0.0,
             "attack": 0.0,
-            "decay": 0.60
+            "decay": 0.6
         },
-
-        {"_comment": "═══ NIGHTVISION_TINT — removed: brightness flash ═══"}
-        
+        {
+            "_comment": "\u2550\u2550\u2550 NIGHTVISION_TINT \u2014 removed: brightness flash \u2550\u2550\u2550"
+        }
     ]
 }
