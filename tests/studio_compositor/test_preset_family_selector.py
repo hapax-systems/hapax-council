@@ -163,6 +163,71 @@ class TestAudioReactiveExtendedRegistration:
         )
 
 
+class TestEveryFamilyHasCapability:
+    """Generalization of the 2026-05-07 fix: every entry in
+    ``FAMILY_PRESETS`` MUST have a matching ``fx.family.<name>``
+    capability registered in ``shared/compositional_affordances.py``.
+
+    Without this regression guard, a future PR can re-introduce the
+    audio-reactive-extended-style gap (preset family registered for
+    dispatch but not retrievable from the affordance pipeline). The
+    audit-preset-affordances.py script catches this offline but only
+    runs on demand; this test pins the invariant in CI.
+    """
+
+    def test_every_canonical_family_has_capability(self):
+        from shared.compositional_affordances import _PRESET_FAMILY
+
+        registered = {
+            rec.name.removeprefix("fx.family.")
+            for rec in _PRESET_FAMILY
+            if rec.name.startswith("fx.family.")
+        }
+        for family in pfs.family_names():
+            assert family in registered, (
+                f"family {family!r} is in FAMILY_PRESETS but no "
+                f"fx.family.{family} capability is registered in "
+                "shared/compositional_affordances.py — its presets are "
+                "unreachable from the affordance pipeline. Add a "
+                "_record('fx.family.<name>', '<gibson-verb description>') "
+                "entry to _PRESET_FAMILY."
+            )
+
+    def test_every_family_alias_resolves(self):
+        """Family aliases (FAMILY_ALIASES) must resolve to canonical
+        families that exist. Catches alias-vs-canonical drift like the
+        original audio-abstract → neutral-ambient gap (task #166).
+        """
+        for alias, canonical in pfs.FAMILY_ALIASES.items():
+            assert canonical in pfs.FAMILY_PRESETS, (
+                f"alias {alias!r} resolves to {canonical!r} which is "
+                "not a canonical family — alias would return empty "
+                "preset pool"
+            )
+
+    def test_no_orphan_capability(self):
+        """Every ``fx.family.*`` capability MUST have a matching entry
+        in FAMILY_PRESETS. An orphan capability (recruitable but with
+        no preset list) is a silent monoculture amplifier — recruitment
+        succeeds, the dispatcher's ``pick_from_family`` returns ``None``
+        (warning only), and downstream falls back to ``neutral-ambient``.
+        """
+        from shared.compositional_affordances import _PRESET_FAMILY
+
+        for rec in _PRESET_FAMILY:
+            if not rec.name.startswith("fx.family."):
+                continue
+            family = rec.name.removeprefix("fx.family.")
+            assert family in pfs.FAMILY_PRESETS, (
+                f"capability {rec.name!r} has no entry in FAMILY_PRESETS — "
+                "recruitment will succeed but the dispatcher cannot pick "
+                "any preset, silently falling through to neutral-ambient. "
+                "Either add a preset list under the family key in "
+                "preset_family_selector.FAMILY_PRESETS or remove the "
+                "orphan capability."
+            )
+
+
 # ── preset-variety Phase 2 — director-prompt ↔ catalog parity ─────────
 
 
