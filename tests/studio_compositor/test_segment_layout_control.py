@@ -59,6 +59,7 @@ def _readback(
     active_layout: str = "segment-list",
     active_wards: tuple[str, ...] = ("ranked-list-panel",),
     ward_properties: dict[str, dict[str, object]] | None = None,
+    rendered_object_refs: tuple[str, ...] = ("artifact:segment-card",),
     observed_at: float = NOW,
     safety_state: str | None = None,
 ) -> RuntimeLayoutReadback:
@@ -69,6 +70,7 @@ def _readback(
         active_wards=active_wards,
         ward_properties=ward_properties
         or {"ranked-list-panel": {"visible": True, "rendered_blit": True}},
+        rendered_object_refs=rendered_object_refs,
         camera_available=True,
         safety_state=safety_state,
         chat_available=True,
@@ -117,6 +119,22 @@ def test_responsible_acceptance_requires_rendered_readback_receipt_refs() -> Non
     assert receipt.grants_playback_authority is False
     assert receipt.grants_audio_authority is False
     assert receipt.spoken_text_altered is False
+    assert receipt.receipt_metadata["rendered_object_refs"] == ["artifact:segment-card"]
+
+
+def test_matching_layout_and_ward_without_object_readback_is_held() -> None:
+    receipt = decide_layout_responsibility(
+        [_intent()],
+        available_layouts=_available(),
+        readback=_readback(rendered_object_refs=()),
+        state=SegmentLayoutState(current_layout="segment-list"),
+        now=NOW,
+    )
+
+    assert receipt.status is LayoutDecisionStatus.HELD
+    assert receipt.reason is LayoutDecisionReason.RENDERED_READBACK_MISMATCH
+    assert "object_ref:artifact:segment-card" in receipt.unsatisfied_effects
+    assert receipt.receipt_metadata["missing_object_refs"] == ["artifact:segment-card"]
 
 
 def test_unsatisfied_non_ward_visible_effect_blocks_acceptance() -> None:

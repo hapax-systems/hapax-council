@@ -6,6 +6,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from shared.anti_personification_linter import lint_text
 from shared.segment_prep_consultation import (
     build_source_consequence_map,
     nonsterile_force_ok,
@@ -107,7 +108,7 @@ ACTIONABILITY_RUBRIC: tuple[dict[str, str], ...] = (
     },
     {
         "kind": "chat_poll",
-        "trigger": "Where does chat land, drop it in chat, what would you change",
+        "trigger": "Where does chat land, chat can challenge, chat can mark, drop it in chat",
         "expected_effect": "The audience prompt should be treated as a chat-poll moment.",
     },
     {
@@ -300,7 +301,8 @@ _TIER_RE = re.compile(
 _COUNTDOWN_RE = re.compile(r"\b(?:#|number\s+)(?P<number>\d{1,2})\s*(?:is|:)", re.IGNORECASE)
 _CHAT_RE = re.compile(
     r"\b(?:what do\s+you\s+think|drop it in (?:the )?chat|let me know in (?:the )?chat|"
-    r"what would you change|what's your pick|what is your pick)\b",
+    r"what would you change|what's your pick|what is your pick|"
+    r"chat can (?:challenge|mark|judge|vote|decide|pick))\b",
     re.IGNORECASE,
 )
 _COMPARISON_RE = re.compile(
@@ -705,8 +707,23 @@ def segment_personage_violations(script: Sequence[str]) -> list[dict[str, Any]]:
 
     violations: list[dict[str, Any]] = []
     for beat_index, text in enumerate(script):
-        for line in _personage_violation_lines(str(text)):
-            violations.append({"beat_index": beat_index, "line": line})
+        text_value = str(text)
+        seen_lines: set[str] = set()
+        for line in _personage_violation_lines(text_value):
+            seen_lines.add(line)
+            violations.append({"beat_index": beat_index, "line": line, "source": "segment_regex"})
+        for finding in lint_text(text_value, path=f"segment-prep-beat-{beat_index}.txt"):
+            line = finding.matched_text
+            if line in seen_lines:
+                continue
+            violations.append(
+                {
+                    "beat_index": beat_index,
+                    "line": line,
+                    "source": "anti_personification_linter",
+                    "rule_id": finding.rule_id,
+                }
+            )
     return violations
 
 
@@ -763,8 +780,9 @@ def validate_segment_actionability(
         sanitized.append(clean)
         for line in removed_lines:
             removed.append({"beat_index": index, "line": line})
-        for line in _personage_violation_lines(text):
-            personage_violations.append({"beat_index": index, "line": line})
+        for item in segment_personage_violations([text]):
+            item["beat_index"] = index
+            personage_violations.append(item)
         for line in _detector_theater_lines(text):
             detector_theater_lines.append({"beat_index": index, "line": line})
     ok = not removed and not personage_violations and not detector_theater_lines
@@ -1049,6 +1067,23 @@ def _observed_layout_object_refs(observed_layout_state: Mapping[str, Any]) -> li
     return _dedupe(refs)
 
 
+def _positive_ttl_seconds(value: Any) -> float | None:
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return float(value) if value > 0 else None
+    if not isinstance(value, str):
+        return None
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(ms|s|sec|secs|second|seconds)?", value.lower())
+    if not match:
+        return None
+    amount = float(match.group(1))
+    if amount <= 0:
+        return None
+    unit = match.group(2) or "s"
+    if unit == "ms":
+        return amount / 1000.0
+    return amount
+
+
 def validate_layout_responsibility(
     beat_action_intents: list[dict[str, Any]],
     *,
@@ -1174,12 +1209,20 @@ def validate_layout_responsibility(
             or responsibility_mode == EXPLICIT_LAYOUT_FALLBACK_CONTEXT
         ):
             has_fallback_receipt = bool(
-                observed_layout_state.get("decision_id")
-                or observed_layout_state.get("receipt_id")
-                or observed_layout_state.get("readback")
+                str(observed_layout_state.get("decision_id") or "").strip()
+                or str(observed_layout_state.get("receipt_id") or "").strip()
+                or (
+                    isinstance(observed_layout_state.get("readback"), Mapping)
+                    and (
+                        str(observed_layout_state["readback"].get("decision_id") or "").strip()
+                        or str(observed_layout_state["readback"].get("receipt_id") or "").strip()
+                        or str(observed_layout_state["readback"].get("readback_id") or "").strip()
+                    )
+                )
             )
-            has_fallback_ttl = bool(
-                observed_layout_state.get("ttl_ms") or observed_layout_state.get("ttl_s")
+            has_fallback_ttl = (
+                _positive_ttl_seconds(observed_layout_state.get("ttl_s")) is not None
+                or _positive_ttl_seconds(observed_layout_state.get("ttl_ms")) is not None
             )
             if not (has_fallback_receipt and has_fallback_ttl):
                 violations.append(
@@ -1230,9 +1273,13 @@ def validate_layout_responsibility(
                 or responsibility_mode == EXPLICIT_LAYOUT_FALLBACK_CONTEXT
             )
             and (
-                observed_layout_state.get("receipt_id") or observed_layout_state.get("decision_id")
+                str(observed_layout_state.get("receipt_id") or "").strip()
+                or str(observed_layout_state.get("decision_id") or "").strip()
             )
-            and (observed_layout_state.get("ttl_ms") or observed_layout_state.get("ttl_s"))
+            and (
+                _positive_ttl_seconds(observed_layout_state.get("ttl_ms")) is not None
+                or _positive_ttl_seconds(observed_layout_state.get("ttl_s")) is not None
+            )
         )
         if (
             responsibility_mode == RESPONSIBLE_HOSTING_CONTEXT
@@ -1252,8 +1299,14 @@ def validate_layout_responsibility(
         observed_layout_state
         and observed_layout_state.get("fallback_explicit")
         and _observed_static_default_layout(observed_layout_state)
-        and (observed_layout_state.get("receipt_id") or observed_layout_state.get("decision_id"))
-        and (observed_layout_state.get("ttl_ms") or observed_layout_state.get("ttl_s"))
+        and (
+            str(observed_layout_state.get("receipt_id") or "").strip()
+            or str(observed_layout_state.get("decision_id") or "").strip()
+        )
+        and (
+            _positive_ttl_seconds(observed_layout_state.get("ttl_ms")) is not None
+            or _positive_ttl_seconds(observed_layout_state.get("ttl_s")) is not None
+        )
     )
     fallback_active = bool(explicit_static_fallback_receipt and not violations)
     layout_success = bool(

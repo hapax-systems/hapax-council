@@ -570,9 +570,11 @@ Implemented in the first ancillary slice:
 - `scripts/hapax-rte-remediate` skips `hapax-segment-prep.service` and
   `hapax-segment-prep.timer` restarts while the authority gate blocks
   generation, reporting the skip as `skipped_pause_gate`.
-- `load_prepped_programmes(require_selected=True)` now returns an empty runtime
-  pool below `runtime_pool_load_allowed`, even if a selected manifest exists.
-  Review/research callers may still use `require_selected=False`.
+- `load_prepped_programmes(require_selected=True)` now checks
+  `runtime_pool_load_allowed` before reading the selected manifest. A blocked
+  runtime load raises the authority pause instead of silently treating
+  selected-release artifacts as available. Review/research callers may still
+  use `require_selected=False`.
 - `scripts/review_segment_candidate_set.py --write-manifest` now checks
   `runtime_pool_load_allowed` before writing `selected-release-manifest.json`.
 - `shared.segment_prep_contract.validate_segment_prep_outcome()` and
@@ -587,7 +589,7 @@ full prep-system audit remains pending.
 
 Verification:
 
-- `uv run pytest tests/shared/test_segment_prep_pause.py tests/shared/test_segment_prep_contract_outcomes.py tests/scripts/test_segment_prep_pause_runtime_surfaces.py tests/systemd/test_content_prep_residency_units.py tests/systemd/test_content_prep_residency_guards.py tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_paused_writes_status_and_skips_model_check tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_one_segment_writes_status_and_exact_planner_target tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_load_prepped_programmes_blocks_runtime_load_below_authority_gate tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_load_prepped_programmes_accepts_valid_provenance -q`
+- `uv run pytest tests/shared/test_segment_prep_pause.py tests/shared/test_segment_prep_contract_outcomes.py tests/scripts/test_segment_prep_pause_runtime_surfaces.py tests/systemd/test_content_prep_residency_units.py tests/systemd/test_content_prep_residency_guards.py tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_paused_writes_status_and_skips_model_check tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_one_segment_writes_status_and_exact_planner_target tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_load_prepped_programmes_accepts_valid_provenance -q`
   passed: 25 tests, 1 environment warning for unset `LITELLM_API_KEY`.
 - `uv run pytest tests/hapax_daimonion/test_daily_segment_prep_layout_contract.py tests/hapax_daimonion/test_segment_quality_actionability.py::test_loader_rejects_artifact_requiring_unsupported_runtime_action_rewrite tests/shared/test_segment_iteration_review.py::test_one_segment_review_accepts_real_loader_objects_without_enriched_hash_mismatch tests/hapax_daimonion/test_segment_release_publication.py -q`
   passed: 13 tests, 1 environment warning for unset `LITELLM_API_KEY`.
@@ -606,7 +608,7 @@ audit is considered complete:
   deterministic canary instead of producing a witnessed no-candidate outcome;
 - `canary_allowed` existed as an authority mode but no generation path used the
   `canary` activity;
-- a retired `_upsert_programmes_to_qdrant()` helper still encoded the old
+- a raw-manifest Qdrant helper still encoded the old
   eligible-candidate-to-Qdrant path;
 - selected-release publication could validate an in-memory review manifest while
   runtime loading read a different disk manifest;
@@ -626,9 +628,8 @@ Fixes applied:
 - source-readiness failure writes a diagnostic-only outcome under `outcomes/`
   and the ledger row records diagnostic authority and closed release/runtime
   boundaries.
-- `_upsert_programmes_to_qdrant()` is now a retired no-op with a warning; the
-  only Qdrant/RAG path is selected-release feedback through runtime loader
-  gates.
+- the raw-manifest Qdrant helper is removed. The only Qdrant/RAG path is
+  selected-release feedback through runtime loader gates.
 - selected-release feedback now requires the disk
   `selected-release-manifest.json` hash to match the review receipt manifest
   hash when a receipt manifest is supplied.
@@ -642,9 +643,9 @@ Fixes applied:
 
 Additional verification:
 
-- `uv run pytest tests/shared/test_segment_candidate_selection.py tests/shared/test_segment_iteration_review.py::test_one_segment_review_accepts_real_loader_objects_without_enriched_hash_mismatch tests/shared/test_segment_review_gate_sections.py tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_one_segment_writes_status_and_exact_planner_target tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_canary_seed_switch_bypasses_heavy_planner tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_legacy_qdrant_upsert_path_is_retired tests/hapax_daimonion/test_segment_release_publication.py tests/hapax_daimonion/test_daily_segment_prep_layout_contract.py::test_load_prepped_programmes_accepts_prior_only_responsible_artifact -q`
+- `uv run pytest tests/shared/test_segment_candidate_selection.py tests/shared/test_segment_iteration_review.py::test_one_segment_review_accepts_real_loader_objects_without_enriched_hash_mismatch tests/shared/test_segment_review_gate_sections.py tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_one_segment_writes_status_and_exact_planner_target tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_raw_manifest_candidates_are_not_published_to_qdrant tests/hapax_daimonion/test_segment_release_publication.py tests/hapax_daimonion/test_daily_segment_prep_layout_contract.py::test_load_prepped_programmes_accepts_prior_only_responsible_artifact -q`
   passed: 20 tests, 1 environment warning for unset `LITELLM_API_KEY`.
-- `uv run pytest tests/shared/test_segment_prep_pause.py tests/shared/test_segment_prep_contract_outcomes.py tests/scripts/test_segment_prep_pause_runtime_surfaces.py tests/systemd/test_content_prep_residency_units.py tests/systemd/test_content_prep_residency_guards.py tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_paused_writes_status_and_skips_model_check tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_one_segment_writes_status_and_exact_planner_target tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_load_prepped_programmes_blocks_runtime_load_below_authority_gate tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_load_prepped_programmes_accepts_valid_provenance tests/hapax_daimonion/test_daily_segment_prep_layout_contract.py tests/hapax_daimonion/test_segment_quality_actionability.py::test_loader_rejects_artifact_requiring_unsupported_runtime_action_rewrite tests/shared/test_segment_iteration_review.py::test_one_segment_review_accepts_real_loader_objects_without_enriched_hash_mismatch tests/hapax_daimonion/test_segment_release_publication.py -q`
+- `uv run pytest tests/shared/test_segment_prep_pause.py tests/shared/test_segment_prep_contract_outcomes.py tests/scripts/test_segment_prep_pause_runtime_surfaces.py tests/systemd/test_content_prep_residency_units.py tests/systemd/test_content_prep_residency_guards.py tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_paused_writes_status_and_skips_model_check tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_one_segment_writes_status_and_exact_planner_target tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_load_prepped_programmes_accepts_valid_provenance tests/hapax_daimonion/test_daily_segment_prep_layout_contract.py tests/hapax_daimonion/test_segment_quality_actionability.py::test_loader_rejects_artifact_requiring_unsupported_runtime_action_rewrite tests/shared/test_segment_iteration_review.py::test_one_segment_review_accepts_real_loader_objects_without_enriched_hash_mismatch tests/hapax_daimonion/test_segment_release_publication.py -q`
   passed: 38 tests, 1 environment warning for unset `LITELLM_API_KEY`.
 - `uv run python -m py_compile shared/segment_prep_pause.py shared/segment_prep_contract.py shared/segment_candidate_selection.py shared/segment_iteration_review.py agents/hapax_daimonion/daily_segment_prep.py scripts/review_segment_candidate_set.py`
   passed.
@@ -655,12 +656,9 @@ Still open after the follow-up fixes:
   tier-list trigger language still impose form authority;
 - source recruitment/free inquiry is not wired into planning with resolved
   source packets, hashes, freshness, and source-consequence transforms;
-- final script/contract alignment after refinement still needs a final-script
-  contract hash or post-refinement contract refresh;
 - review `no_release` is now first-class enough to prevent selected-release
   publication; refusal-brief/no-release dossiers still need richer source-gap,
   source-follow-up, and return-to-prep fields;
-- runtime readback identity remains incomplete for layout/action claims;
 - interview prep needs consent, answer-authority, turn-taking, and release-scope
   receipts before it can be treated as ordinary segment prep.
 
@@ -674,8 +672,10 @@ Additional read-only audit returns found more actionable issues:
   surfaces even though tests expected those paths;
 - `_build_seed()` constructed `NarrativeContext` without required fields,
   causing source/live-prior context to fall back to topic-only seed text;
-- runtime layout readback remains object-weak: ward visibility can be true
-  without proving the specific cited source/item/action is visible;
+- script refinement now fails closed unless a refreshed final contract binds the
+  final text;
+- runtime layout readback now refuses acceptance when the expected
+  source/item/action object refs are missing from rendered readback;
 - tier-list actionability crosses contracts through lossy mapping rather than a
   first-class tier visual/action contract;
 - explicit static fallback semantics still need separation between fallback
@@ -693,23 +693,28 @@ Fixes applied:
   `agents/hapax_daimonion/autonomous_narrative/segment_prompts.py` and
   `shared/segment_iteration_review.py`; the current sweep returns zero findings.
 - `_build_seed()` now builds `NarrativeContext` with explicit
-  `stimmung_tone="segment_prep_source_bound"` and
-  `director_activity="offline_segment_preparation"` so the autonomous narrative
-  seed path can include live priors/assets instead of falling through to topic
-  text.
+  `stimmung_tone="segment_prep"` and `director_activity="segment_prep"` so the
+  autonomous narrative seed path can include live priors/assets instead of
+  falling through to topic text.
 
 Additional verification:
 
-- `uv run pytest tests/hapax_daimonion/test_segment_quality_actionability.py::test_actionability_quarantines_unsupported_visual_claims_without_prepared_script tests/hapax_daimonion/test_segment_quality_actionability.py::test_actionability_rejects_camera_director_command_prose tests/scripts/test_lint_personification.py tests/shared/test_segment_candidate_selection.py tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_one_segment_writes_status_and_exact_planner_target tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_canary_seed_switch_bypasses_heavy_planner tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_legacy_qdrant_upsert_path_is_retired tests/hapax_daimonion/test_segment_release_publication.py -q`
+- `uv run pytest tests/hapax_daimonion/test_segment_quality_actionability.py::test_actionability_quarantines_unsupported_visual_claims_without_prepared_script tests/hapax_daimonion/test_segment_quality_actionability.py::test_actionability_rejects_camera_director_command_prose tests/scripts/test_lint_personification.py tests/shared/test_segment_candidate_selection.py tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_run_prep_one_segment_writes_status_and_exact_planner_target tests/hapax_daimonion/test_daily_segment_prep_residency.py::test_raw_manifest_candidates_are_not_published_to_qdrant tests/hapax_daimonion/test_segment_release_publication.py -q`
   passed: 19 tests, 1 environment warning for unset `LITELLM_API_KEY`.
 - `uv run python scripts/lint_personification.py --json` returned
   `{"count": 0, "findings": []}`.
+
+Current branch verification after the contract/authority hardening pass:
+
+- `uv run pytest tests/shared/test_segment_prep_pause.py tests/scripts/test_segment_prep_pause_runtime_surfaces.py tests/shared/test_segment_prep_contract_outcomes.py tests/shared/test_segment_live_event_quality.py tests/hapax_daimonion/test_segment_quality_actionability.py tests/shared/test_segment_iteration_review.py tests/shared/test_segment_candidate_selection.py tests/scripts/test_review_segment_candidate_set.py tests/hapax_daimonion/test_daily_segment_prep_residency.py tests/hapax_daimonion/test_segment_release_publication.py -q`
+  passed: 123 tests, 1 environment warning for unset `LITELLM_API_KEY`.
+- `uv run ruff check agents/hapax_daimonion/daily_segment_prep.py shared/segment_prep_pause.py shared/segment_prep_contract.py shared/segment_quality_actionability.py shared/segment_live_event_quality.py shared/segment_candidate_selection.py shared/segment_iteration_review.py shared/segment_review_gate_sections.py scripts/review_one_segment_iteration.py tests/hapax_daimonion/test_daily_segment_prep_residency.py tests/hapax_daimonion/test_segment_quality_actionability.py tests/shared/test_segment_candidate_selection.py tests/shared/test_segment_iteration_review.py`
+  passed.
 
 The remaining blockers are now clearer and larger than a bug patch:
 
 - generated form-contract architecture;
 - resolved source-packet inquiry before planning;
-- object-bound layout/action readback;
+- richer payload-bound action readback beyond object refs;
 - first-class tier/interview action contracts;
-- post-refinement final-script contract binding;
 - richer refusal/no-release dossiers and return-to-prep routing.

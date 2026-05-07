@@ -212,9 +212,8 @@ def evaluate_segment_live_event_quality(
     visible_transformation = bool(transforming_action_kinds) and bool(layout_needs)
     audience_job = "chat_poll" in action_kinds or bool(_AUDIENCE_JOB_RE.search(text))
     payoff = bool(script_list and _PAYOFF_RE.search(script_list[-1]))
-    source_as_mechanic = bool(source_refs) and (
-        bool(_SOURCE_MECHANIC_RE.search(text)) or bool(contract_report.get("ok"))
-    )
+    spoken_source_mechanic = bool(_SOURCE_MECHANIC_RE.search(text))
+    source_as_mechanic = bool(source_refs) and spoken_source_mechanic
     role_standard_fit = not role_required or bool(role_required.intersection(action_kinds))
     repair_readback_legibility = bool(layout_needs) and any(
         "readback" in str(need).lower() or _string_list(need.get("source_packet_refs"))
@@ -267,6 +266,7 @@ def evaluate_segment_live_event_quality(
             "sources change scope, rank, confidence, contrast, or visible action",
             source_ref_count=len(source_refs),
             contract_ok=contract_report.get("ok"),
+            spoken_source_mechanic=spoken_source_mechanic,
         ),
         _dimension(
             "role_standard_fit",

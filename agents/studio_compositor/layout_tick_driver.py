@@ -650,8 +650,13 @@ def _evidence_refs(value: dict[str, object]) -> tuple[str, ...]:
 
 def _target_ref_for_need(need: dict[str, object]) -> str | None:
     return (
-        _optional_str(need.get("target_ref"))
+        _optional_str(need.get("object_ref"))
+        or _optional_str(need.get("target_ref"))
         or _optional_str(need.get("target"))
+        or _optional_str(need.get("item_ref"))
+        or _optional_str(need.get("source_ref"))
+        or _optional_str(need.get("action_ref"))
+        or _optional_str(need.get("readback_ref"))
         or _optional_str(need.get("source_action_kind"))
         or _optional_str(need.get("source_affordance"))
     )
@@ -1121,16 +1126,23 @@ def _runtime_layout_readback(
     active_wards = _active_ward_ids(layout)
     safety_state = "consent_safe_active" if bool(state.get("consent_safe_active", False)) else None
     ward_properties = _ward_property_readbacks(active_wards, state, now=now)
+    rendered_object_refs = _rendered_object_refs(
+        active_wards=active_wards,
+        state=state,
+        ward_properties=ward_properties,
+    )
     return RuntimeLayoutReadback(
         readback_ref=_runtime_readback_ref(
             active_layout_name=active_layout_name,
             ward_properties=ward_properties,
+            rendered_object_refs=rendered_object_refs,
             now=now,
         ),
         observed_at=now,
         active_layout=active_layout_name,
         active_wards=active_wards,
         ward_properties=ward_properties,
+        rendered_object_refs=rendered_object_refs,
         camera_available=_optional_bool(state.get("camera_available")),
         safety_state=safety_state,
         chat_available=_optional_bool(state.get("chat_available")),
@@ -1227,6 +1239,87 @@ def _ward_property_readbacks(
     return out
 
 
+def _object_ref_token(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    ref = value.strip()
+    if not ref:
+        return None
+    if ref.lower().startswith(
+        (
+            "object:",
+            "artifact:",
+            "source:",
+            "packet:",
+            "content:",
+            "item:",
+            "action:",
+            "claim:",
+            "receipt:",
+        )
+    ):
+        return ref
+    return None
+
+
+def _object_ref_tokens(value: object) -> tuple[str, ...]:
+    refs: list[str] = []
+    if isinstance(value, str):
+        token = _object_ref_token(value)
+        if token:
+            refs.append(token)
+    elif isinstance(value, dict):
+        for key in (
+            "object_ref",
+            "target_ref",
+            "item_ref",
+            "source_ref",
+            "content_ref",
+            "action_ref",
+            "claim_ref",
+            "receipt_ref",
+        ):
+            token = _object_ref_token(value.get(key))
+            if token:
+                refs.append(token)
+        for key in (
+            "object_refs",
+            "target_refs",
+            "item_refs",
+            "source_refs",
+            "content_refs",
+            "action_refs",
+            "claim_refs",
+            "receipt_refs",
+            "rendered_object_refs",
+            "readback_object_refs",
+        ):
+            refs.extend(_object_ref_tokens(value.get(key)))
+    elif isinstance(value, list | tuple | set):
+        for item in value:
+            refs.extend(_object_ref_tokens(item))
+    return tuple(dict.fromkeys(refs))
+
+
+def _rendered_object_refs(
+    *,
+    active_wards: tuple[str, ...],
+    state: dict[str, object],
+    ward_properties: dict[str, dict[str, object]],
+) -> tuple[str, ...]:
+    refs: list[str] = []
+    for key in (
+        "rendered_object_refs",
+        "readback_object_refs",
+        "object_refs",
+        "segment_object_refs",
+    ):
+        refs.extend(_object_ref_tokens(state.get(key)))
+    for ward_id in active_wards:
+        refs.extend(_object_ref_tokens(ward_properties.get(ward_id)))
+    return tuple(dict.fromkeys(refs))
+
+
 def _recent_blit_readbacks(
     active_wards: tuple[str, ...],
     *,
@@ -1248,13 +1341,15 @@ def _runtime_readback_ref(
     *,
     active_layout_name: str | None,
     ward_properties: dict[str, dict[str, object]],
+    rendered_object_refs: tuple[str, ...],
     now: float,
 ) -> str:
     rendered_wards = sorted(
         ward_id for ward_id, props in ward_properties.items() if props.get("rendered_blit") is True
     )
-    if rendered_wards:
-        rendered_hash = hashlib.sha256(",".join(rendered_wards).encode("utf-8")).hexdigest()[:12]
+    rendered_parts = [*rendered_wards, *sorted(rendered_object_refs)]
+    if rendered_parts:
+        rendered_hash = hashlib.sha256(",".join(rendered_parts).encode("utf-8")).hexdigest()[:12]
         return f"rendered-blit-readback:{active_layout_name or 'none'}:{rendered_hash}:{int(now)}"
     return f"rendered-layout-state:{active_layout_name or 'none'}:no-fresh-blit:{int(now)}"
 

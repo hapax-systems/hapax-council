@@ -27,6 +27,21 @@ INTERVIEW_RELEASE_RECEIPT_FIELDS = (
     "release_scope_receipt",
     "layout_readback_receipt",
 )
+REQUIRED_CANDIDATE_LEDGER_FIELDS = frozenset(
+    {
+        "candidate_ledger_version",
+        "programme_id",
+        "artifact_name",
+        "artifact_path",
+        "artifact_sha256",
+        "segment_quality_overall",
+        "segment_live_event_score",
+        "manifest_eligible",
+        "prep_contract_ok",
+        "runtime_pool_eligible",
+        "selected_release_required",
+    }
+)
 
 
 def _sha256_text(text: str) -> str:
@@ -80,6 +95,45 @@ def _interview_release_missing_fields(artifact: Mapping[str, Any]) -> list[str]:
     mode = str(report.get("mode") or "").strip()
     if mode != "public_release":
         missing.append("mode=public_release")
+    question_ladder = report.get("question_ladder")
+    if not isinstance(question_ladder, Sequence) or isinstance(question_ladder, (str, bytes)):
+        question_ladder = []
+    expected_question_ids = {
+        str(question.get("question_id") or question.get("id") or "").strip()
+        for question in question_ladder
+        if isinstance(question, Mapping)
+    }
+    expected_question_ids.discard("")
+    if not expected_question_ids:
+        missing.append("question_ladder")
+    raw_turn_receipts = report.get("turn_receipts")
+    turn_receipts = (
+        raw_turn_receipts
+        if isinstance(raw_turn_receipts, Sequence)
+        and not isinstance(raw_turn_receipts, (str, bytes))
+        else []
+    )
+    valid_turn_receipts = [
+        item
+        for item in turn_receipts
+        if isinstance(item, Mapping)
+        and str(item.get("question_id") or "").strip()
+        and str(item.get("answer_receipt_id") or "").strip()
+        and str(item.get("release_decision_id") or "").strip()
+        and str(item.get("layout_readback_receipt") or "").strip()
+    ]
+    if (
+        not isinstance(raw_turn_receipts, Sequence)
+        or isinstance(raw_turn_receipts, (str, bytes))
+        or len(valid_turn_receipts) != len(turn_receipts)
+    ):
+        missing.append("turn_receipts")
+    receipt_question_ids = {
+        str(item.get("question_id") or "").strip() for item in valid_turn_receipts
+    }
+    missing_question_receipts = sorted(expected_question_ids - receipt_question_ids)
+    if missing_question_receipts:
+        missing.append("turn_receipts:missing_question_ids")
     return missing
 
 
@@ -142,7 +196,28 @@ def read_candidate_ledger(today: Path) -> list[dict[str, Any]]:
 
 
 def _valid_candidate_ledger_rows(rows: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-    return [row for row in rows if "invalid_jsonl_line" not in row]
+    valid: list[Mapping[str, Any]] = []
+    for row in rows:
+        if "invalid_jsonl_line" in row:
+            continue
+        if set(REQUIRED_CANDIDATE_LEDGER_FIELDS) - set(row):
+            continue
+        if row.get("candidate_ledger_version") != SEGMENT_CANDIDATE_SELECTION_VERSION:
+            continue
+        for key in ("programme_id", "artifact_name", "artifact_path", "artifact_sha256"):
+            if not isinstance(row.get(key), str) or not str(row.get(key)).strip():
+                break
+        else:
+            if (
+                row.get("manifest_eligible") is True
+                and row.get("prep_contract_ok") is True
+                and row.get("runtime_pool_eligible") is False
+                and row.get("selected_release_required") is True
+                and isinstance(row.get("segment_quality_overall"), int | float)
+                and isinstance(row.get("segment_live_event_score"), int | float)
+            ):
+                valid.append(row)
+    return valid
 
 
 def _ledger_artifact_hashes(rows: Sequence[Mapping[str, Any]]) -> set[str]:

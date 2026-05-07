@@ -155,6 +155,7 @@ class RuntimeLayoutReadback:
     active_layout: str | None
     active_wards: tuple[str, ...] = ()
     ward_properties: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    rendered_object_refs: tuple[str, ...] = ()
     camera_available: bool | None = None
     safety_state: str | None = None
     chat_available: bool | None = None
@@ -302,6 +303,7 @@ def decide_layout_responsibility(
     intent_list = list(intents)
     readback_refs = _readback_refs(readback)
     input_refs = _input_refs(intent_list, readback)
+    observed_object_refs = _observed_object_refs(readback)
     available = frozenset(available_layouts)
 
     if _safety_active(readback):
@@ -451,6 +453,16 @@ def decide_layout_responsibility(
     selected = max(winners, key=lambda item: (item.intent.requested_at, item.intent.intent_id))
     expected_effects = tuple(_expected_effects(selected.intent, selected.layout, selected.posture))
     satisfied_effects, unsatisfied_effects = _split_effects(expected_effects, readback)
+    required_object_refs = _required_object_refs(selected.intent)
+    missing_object_refs = tuple(
+        ref for ref in required_object_refs if ref not in observed_object_refs
+    )
+    if missing_object_refs:
+        unsatisfied_effects = tuple(
+            dict.fromkeys(
+                (*unsatisfied_effects, *(f"object_ref:{ref}" for ref in missing_object_refs))
+            )
+        )
 
     if _should_hold_for_hysteresis(
         state=state,
@@ -527,10 +539,13 @@ def decide_layout_responsibility(
                 "required_layout_readback": selected.layout,
                 "active_wards": list(readback.active_wards),
                 "critical_unsatisfied_effects": list(critical_unsatisfied),
+                "required_object_refs": list(required_object_refs),
+                "observed_object_refs": list(observed_object_refs),
+                "missing_object_refs": list(missing_object_refs),
                 "message": (
                     "default/static layout is not responsible-hosting success; "
                     "LayoutStore active layout alone is advisory and rendered readback "
-                    "must satisfy posture"
+                    "must satisfy posture and object-bound evidence"
                 ),
             },
         )
@@ -558,6 +573,7 @@ def decide_layout_responsibility(
             "authority_ref": selected.intent.authority_ref,
             "active_layout_readback": readback.active_layout,
             "active_wards": list(readback.active_wards),
+            "rendered_object_refs": list(observed_object_refs),
             "ward_properties": {
                 ward_id: dict(values) for ward_id, values in readback.ward_properties.items()
             },
@@ -846,6 +862,85 @@ def _split_effects(
             continue
         unsatisfied.append(effect)
     return tuple(satisfied), tuple(unsatisfied)
+
+
+def _object_ref_token(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    ref = value.strip()
+    if not ref:
+        return None
+    lowered = ref.lower()
+    if lowered.startswith(
+        (
+            "object:",
+            "artifact:",
+            "source:",
+            "packet:",
+            "content:",
+            "item:",
+            "action:",
+            "claim:",
+            "receipt:",
+        )
+    ):
+        return ref
+    return None
+
+
+def _object_ref_tokens(value: object) -> tuple[str, ...]:
+    refs: list[str] = []
+    if isinstance(value, str):
+        token = _object_ref_token(value)
+        if token:
+            refs.append(token)
+    elif isinstance(value, Mapping):
+        for key in (
+            "object_ref",
+            "target_ref",
+            "item_ref",
+            "source_ref",
+            "content_ref",
+            "action_ref",
+            "claim_ref",
+            "receipt_ref",
+        ):
+            token = _object_ref_token(value.get(key))
+            if token:
+                refs.append(token)
+        for key in (
+            "object_refs",
+            "target_refs",
+            "item_refs",
+            "source_refs",
+            "content_refs",
+            "action_refs",
+            "claim_refs",
+            "receipt_refs",
+            "rendered_object_refs",
+            "readback_object_refs",
+        ):
+            refs.extend(_object_ref_tokens(value.get(key)))
+    elif isinstance(value, Iterable):
+        for item in value:
+            refs.extend(_object_ref_tokens(item))
+    return tuple(dict.fromkeys(refs))
+
+
+def _required_object_refs(intent: SegmentActionIntent) -> tuple[str, ...]:
+    refs: list[str] = []
+    refs.extend(_object_ref_tokens(intent.target_ref))
+    for effect in intent.expected_effects:
+        refs.extend(_object_ref_tokens(effect))
+    return tuple(dict.fromkeys(refs))
+
+
+def _observed_object_refs(readback: RuntimeLayoutReadback) -> tuple[str, ...]:
+    refs: list[str] = []
+    refs.extend(_object_ref_tokens(readback.rendered_object_refs))
+    for props in readback.ward_properties.values():
+        refs.extend(_object_ref_tokens(props))
+    return tuple(dict.fromkeys(refs))
 
 
 def _critical_unsatisfied_effects(effects: Iterable[str]) -> tuple[str, ...]:

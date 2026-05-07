@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from shared.resident_command_r import RESIDENT_COMMAND_R_MODEL
+from shared.segment_live_event_quality import validate_live_event_report_matches_artifact
 from shared.segment_prep_consultation import (
     framework_vocabulary_hits,
     nonsterile_force_ok,
@@ -21,6 +22,11 @@ from shared.segment_prep_consultation import (
     validate_live_event_viability,
     validate_readback_obligations,
     validate_source_consequence_map,
+)
+from shared.segment_prep_contract import (
+    SEGMENT_PREP_CONTRACT_VERSION,
+    prepared_script_sha256,
+    validate_segment_prep_contract,
 )
 from shared.segment_quality_actionability import (
     RESPONSIBLE_HOSTING_CONTEXT,
@@ -53,6 +59,7 @@ REQUIRED_SOURCE_HASH_KEYS = frozenset(
         "segment_beats_sha256",
         "seed_sha256",
         "prompt_sha256",
+        "segment_prep_contract_sha256",
     }
 )
 REQUIRED_TEAM_CRITIQUE_ROLES = (
@@ -69,6 +76,9 @@ REQUIRED_POSITIVE_EXCELLENCE_EVIDENCE = (
     "framework_vocabulary_leakage",
 )
 PASSING_TEAM_VERDICTS = frozenset({"approved", "pass", "passed"})
+FORBIDDEN_VALIDATOR_REWRITE_PHASES = frozenset(
+    {"layout_repair", "validator_rewrite", "actionability_repair"}
+)
 MIN_CONCRETE_ACTION_KINDS = 2
 ACTIONABILITY_DIVERSITY_EXCLUDED_KINDS = frozenset({"source_citation", "spoken_argument"})
 MIN_TEAM_CRITIQUE_NOTE_WORDS = 6
@@ -582,8 +592,13 @@ def _review_artifact(
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], dict[str, Any]]:
     script = _string_list(artifact.get("prepared_script"))
     beats = _string_list(artifact.get("segment_beats"))
+    segment_prep_contract = _mapping(artifact.get("segment_prep_contract"))
     quality = score_segment_quality(script, beats) if script else {}
-    actionability = validate_segment_actionability(script, beats) if script else {}
+    actionability = (
+        validate_segment_actionability(script, beats, prep_contract=segment_prep_contract)
+        if script
+        else {}
+    )
     beat_action_intents = actionability.get("beat_action_intents") if actionability else []
     layout = (
         validate_layout_responsibility(beat_action_intents)
@@ -594,9 +609,23 @@ def _review_artifact(
     layout_contract = _mapping(artifact.get("layout_decision_contract"))
     actionability_alignment = _mapping(artifact.get("actionability_alignment"))
     source_hashes = _mapping(artifact.get("source_hashes"))
+    segment_prep_contract_report = validate_segment_prep_contract(
+        segment_prep_contract,
+        prepared_script=script,
+        segment_beats=beats,
+    )
+    stored_segment_prep_contract_report = artifact.get("segment_prep_contract_report")
+    segment_prep_contract_binding = _mapping(segment_prep_contract.get("prepared_script_binding"))
+    live_event_report_freshness = validate_live_event_report_matches_artifact(artifact)
     hard_contract_replay = _prepared_layout_contract_replay(artifact, loader_metadata)
     raw_llm_calls = artifact.get("llm_calls")
     llm_calls: list[Any] = raw_llm_calls if isinstance(raw_llm_calls, list) else []
+    forbidden_rewrite_phases = [
+        str(call.get("phase") or "")
+        for call in llm_calls
+        if isinstance(call, Mapping)
+        and str(call.get("phase") or "") in FORBIDDEN_VALIDATOR_REWRITE_PHASES
+    ]
     forbidden_layout_fields = forbidden_layout_authority_fields(dict(artifact))
     layout_laundering_terms = _layout_laundering_terms(
         {
@@ -652,6 +681,12 @@ def _review_artifact(
             },
         ),
         _criterion(
+            "artifact.no_validator_rewrite_phase",
+            not forbidden_rewrite_phases,
+            "LLM provenance must not include validator-authored rewrite or repair phases",
+            observed={"forbidden_phases": forbidden_rewrite_phases},
+        ),
+        _criterion(
             "artifact.prior_only_authority",
             artifact.get("authority") == "prior_only",
             "prepared artifact must remain prior-only content",
@@ -671,6 +706,37 @@ def _review_artifact(
             and expected_source_hash == _sha256_json(source_hashes),
             "source_provenance_sha256 must match source_hashes",
             observed=expected_source_hash,
+        ),
+        _criterion(
+            "artifact.segment_prep_contract",
+            artifact.get("segment_prep_contract_version") == SEGMENT_PREP_CONTRACT_VERSION
+            and segment_prep_contract_report.get("ok") is True
+            and stored_segment_prep_contract_report == segment_prep_contract_report
+            and artifact.get("segment_prep_contract_sha256") == _sha256_json(segment_prep_contract)
+            and source_hashes.get("segment_prep_contract_sha256")
+            == artifact.get("segment_prep_contract_sha256"),
+            "model-emitted segment prep contract must validate, hash, and bind into source provenance",
+            observed={
+                "stored_report": stored_segment_prep_contract_report,
+                "expected_report": segment_prep_contract_report,
+                "contract_sha256": artifact.get("segment_prep_contract_sha256"),
+                "source_contract_sha256": source_hashes.get("segment_prep_contract_sha256"),
+            },
+        ),
+        _criterion(
+            "artifact.prepared_script_contract_binding",
+            segment_prep_contract_binding.get("prepared_script_sha256")
+            == prepared_script_sha256(script)
+            and segment_prep_contract_binding.get("script_beat_count") == len(script)
+            and segment_prep_contract_binding.get("segment_beat_count") == len(beats),
+            "prep contract must bind to the final prepared script and segment beat counts",
+            observed=segment_prep_contract_binding,
+        ),
+        _criterion(
+            "live_event.report_freshness",
+            live_event_report_freshness.get("ok") is True,
+            "stored live-event report and hash must match deterministic replay",
+            observed=live_event_report_freshness,
         ),
         _criterion(
             "artifact.prior_source_binding",

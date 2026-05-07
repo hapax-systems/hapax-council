@@ -58,6 +58,7 @@ from shared.segment_prep_contract import (
     SELECTED_RELEASE_MANIFEST,
     framework_vocabulary_leaks,
     prepared_script_sha256,
+    programme_source_readiness,
     validate_segment_prep_contract,
 )
 from shared.segment_prep_contract import (
@@ -397,7 +398,7 @@ def _build_full_segment_prompt(
         "- Every claim gets its FULL ARGUMENT, not just an assertion\n"
         "- Sources get CONTEXT: 'Zuboff argues X because Y, which matters because Z'\n"
         "- Transitions between beats should feel like a DJ crossfade, not a chapter break\n"
-        "- Use precise questions, callbacks to earlier beats, direct address to chat\n"
+        "- Use precise questions, callbacks to earlier beats, and bounded audience prompts\n"
         "- Let ideas BREATHE — develop a point, sit with it, then pivot\n"
         "- A beat that can be summarized in one sentence is a beat that wasn't written yet\n\n"
         f"{render_quality_prompt_block()}"
@@ -405,7 +406,7 @@ def _build_full_segment_prompt(
         "Narration proposes stream-visible obligations. Specific text patterns create "
         "typed needs that runtime readback must satisfy before they count:\n\n"
         "CHAT TRIGGERS — these phrases poll chat immediately:\n"
-        "  'Where does chat land?', 'Drop it in the chat', 'Let me know in the chat',\n"
+        "  'Where does chat land?', 'Drop it in the chat',\n"
         "  'What would you change?', 'What's your pick?'\n"
         "  Use at beat endings where audience engagement adds value. Never as filler.\n\n"
         f"{visual_hooks}"
@@ -414,8 +415,8 @@ def _build_full_segment_prompt(
         "NEVER include stage directions, beat labels, action cues, or meta-instructions.\n"
         "WRONG: 'We pivot. Challenge the S-tier placement. Discuss the complexity.'\n"
         "WRONG: 'We close. Recap the final tier chart. Invite chat to disagree.'\n"
-        "RIGHT: 'But here is where the chart gets uncomfortable. Because Sutton — '\n"
-        "RIGHT: 'So let me pull this back together. The final chart tells a story...'\n"
+        "RIGHT: 'The chart gets uncomfortable here because the cited source changes the ranking.'\n"
+        "RIGHT: 'The final chart now has to carry the consequence of that source.'\n"
         "If a sentence reads like a screenplay direction, DELETE IT and write dialogue.\n\n"
         "== CRITICAL: NO REPETITION ==\n"
         "NEVER repeat the same phrase, sentence, or paragraph across beats.\n"
@@ -424,14 +425,29 @@ def _build_full_segment_prompt(
         "Repetition is the single worst failure mode. Every beat must advance.\n\n"
         "== YOUR TASK ==\n"
         "Compose the COMPLETE narration for this segment — one SUBSTANTIAL block of "
-        "broadcast-ready prose per beat. Return a JSON array where each element is "
-        "the spoken text for that beat (800-2000 characters each, 8-20 sentences).\n\n"
+        "broadcast-ready prose per beat. Also emit a model-authored "
+        "segment_prep_contract object for the final script with source_packet_refs, "
+        "claim_map, source_consequence_map, actionability_map, layout_need_map, "
+        "readback_obligations, loop_cards, and role_excellence_plan. The contract "
+        "must name the exact source refs and visible/doable objects the script uses; "
+        "validators may replay it but may not author it for you.\n\n"
         "Example format:\n"
-        '[\n  "Opening beat — a full paragraph that hooks, contextualizes, and builds '
-        'anticipation. Multiple sentences developing the frame...",\n'
-        '  "Second beat — continues with depth. Names sources with context. Develops '
-        'the argument across many sentences...",\n'
-        "  ...\n]\n\n"
+        "{\n"
+        '  "prepared_script": [\n'
+        '    "Opening beat — a full paragraph that hooks, contextualizes, and builds anticipation...",\n'
+        '    "Second beat — continues with depth and names sources with context..."\n'
+        "  ],\n"
+        '  "segment_prep_contract": {\n'
+        '    "source_packet_refs": [{"id": "packet:...", "source_ref": "vault:...", "evidence_refs": ["vault:..."]}],\n'
+        '    "claim_map": [],\n'
+        '    "source_consequence_map": [],\n'
+        '    "actionability_map": [],\n'
+        '    "layout_need_map": [],\n'
+        '    "readback_obligations": [],\n'
+        '    "loop_cards": [],\n'
+        '    "role_excellence_plan": {"live_event_plan": {"bit_engine": "...", "audience_job": "...", "payoff": "..."}}\n'
+        "  }\n"
+        "}\n\n"
         "REGISTER: nonhuman system voice for a live production: source-bound, direct, "
         "forceful, and intelligible to humans. Use marked analogies when useful. Do "
         "not claim human feeling, empathy, taste, intuition, memory, concern, or a "
@@ -499,6 +515,21 @@ def _new_prep_session() -> dict[str, Any]:
     }
 
 
+def _prep_activity() -> str:
+    return (
+        "canary" if os.environ.get("HAPAX_SEGMENT_PREP_CANARY_SEED") == "1" else "pool_generation"
+    )
+
+
+def _assert_prep_model_call_authority(prep_session: dict[str, Any] | None) -> None:
+    """Check live prep authority before every resident model call."""
+    authority_state = assert_segment_prep_allowed(_prep_activity())
+    if isinstance(prep_session, dict):
+        prep_session["authority_gate_passed"] = True
+        prep_session["authority_mode"] = authority_state.mode
+        prep_session["authority_reason"] = authority_state.reason
+
+
 def _record_llm_call(
     prep_session: dict[str, Any] | None,
     *,
@@ -536,6 +567,7 @@ def _call_llm(
     A residency mismatch is a hard failure because a wrong-model prep artifact
     is worse than no prep artifact.
     """
+    _assert_prep_model_call_authority(prep_session)
     model = _prep_model()
     record = _record_llm_call(
         prep_session,
@@ -591,6 +623,12 @@ def _clean_llm_text(text: str) -> str:
 
 def _parse_script(raw: str) -> list[str]:
     """Parse the LLM response into a list of beat narration blocks."""
+    script, _contract = _parse_segment_generation(raw)
+    return script
+
+
+def _parse_segment_generation(raw: str) -> tuple[list[str], dict[str, Any] | None]:
+    """Parse segment generation into spoken beats plus a model-emitted contract."""
     text = _clean_llm_text(raw.strip())
     # Strip markdown fences
     if text.startswith("```"):
@@ -604,11 +642,35 @@ def _parse_script(raw: str) -> list[str]:
         parsed = json.loads(text)
     except json.JSONDecodeError:
         log.warning("segment prep: LLM response is not valid JSON")
-        return []
+        return [], None
+
+    model_contract: dict[str, Any] | None = None
+    if isinstance(parsed, dict):
+        raw_contract = (
+            parsed.get("segment_prep_contract")
+            or parsed.get("prep_contract")
+            or parsed.get("contract")
+        )
+        if isinstance(raw_contract, dict) and raw_contract:
+            model_contract = raw_contract
+        for key in (
+            "prepared_script",
+            "script",
+            "beats",
+            "narration",
+            "segments",
+        ):
+            value = parsed.get(key)
+            if isinstance(value, list):
+                parsed = value
+                break
+        else:
+            log.warning("segment prep: LLM response object has no prepared script list")
+            return [], model_contract
 
     if not isinstance(parsed, list):
-        log.warning("segment prep: LLM response is not a JSON array")
-        return []
+        log.warning("segment prep: LLM response is not a JSON array or script object")
+        return [], model_contract
 
     beats: list[str] = []
     for item in parsed:
@@ -625,7 +687,7 @@ def _parse_script(raw: str) -> list[str]:
             text = str(item).strip()
         if text:
             beats.append(text)
-    return beats
+    return beats, model_contract
 
 
 def _build_seed(programme: Any) -> str:
@@ -639,7 +701,11 @@ def _build_seed(programme: Any) -> str:
             NarrativeContext,
         )
 
-        ctx = NarrativeContext(programme=programme)
+        ctx = NarrativeContext(
+            programme=programme,
+            stimmung_tone="segment_prep",
+            director_activity="segment_prep",
+        )
         return _build_seed(ctx)
     except Exception:
         # Fallback: use narrative_beat as seed
@@ -680,7 +746,7 @@ def _build_refinement_prompt(script: list[str], programme: Any) -> str:
         "6. DEPTH: Could a Wikipedia article make this same point? If yes, it's too shallow.\n"
         "7. STAGE DIRECTIONS: Does the beat contain meta-instructions like 'We pivot',\n"
         "   'We close', 'Recap the chart', 'Invite chat'? These are FATAL — rewrite as\n"
-        "   actual spoken prose that a host would say out loud.\n"
+        "   actual spoken prose for the segment.\n"
         "8. REPETITION: Is the same phrase or paragraph copy-pasted across beats?\n"
         "   Any repeated text block is a FATAL error — each beat must be unique.\n\n"
         "== THE DRAFT ==\n"
@@ -690,24 +756,11 @@ def _build_refinement_prompt(script: list[str], programme: Any) -> str:
         "intact but polish transitions. For beats that are thin, rushed, or shallow, "
         "SUBSTANTIALLY expand them — add argument, add evidence, add rhetorical "
         "texture. Every beat in the output MUST be at least 800 characters.\n\n"
-        "Return a JSON array of the rewritten beats (same count as the input). "
-        "Output ONLY the JSON array. No preamble, no markdown fences. "
-        "Start with [ and end with ]."
-    )
-
-
-def _layout_repair_required(layout_responsibility: dict[str, Any]) -> bool:
-    """Return True when the draft failed only by leaving repairable layout gaps."""
-    violations = layout_responsibility.get("violations")
-    if not isinstance(violations, list) or not violations:
-        return False
-    repairable_reasons = {
-        "unsupported_layout_need",
-        "missing_layout_evidence_refs",
-        "missing_tier_placement_phrase",
-    }
-    return all(
-        isinstance(item, dict) and item.get("reason") in repairable_reasons for item in violations
+        "Return a JSON object with `prepared_script` and `segment_prep_contract`. "
+        "The contract must be newly authored for the rewritten final script; do "
+        "not reuse a draft contract if any claim, action, layout need, or source "
+        "consequence changed. Output ONLY the JSON object. No preamble, no "
+        "markdown fences."
     )
 
 
@@ -783,128 +836,19 @@ def _with_tier_list_placement_gate(
     return gated
 
 
-def _build_layout_repair_prompt(
-    script: list[str],
-    programme: Any,
-    layout_responsibility: dict[str, Any],
-) -> str:
-    role = getattr(getattr(programme, "role", None), "value", "rant")
-    content = getattr(programme, "content", None)
-    narrative_beat = getattr(content, "narrative_beat", "") or "" if content else ""
-    beats = getattr(content, "segment_beats", []) or [] if content else []
-    visual_hooks = _ROLE_VISUAL_HOOKS.get(role, "")
-    failed = {
-        int(item["beat_index"])
-        for item in layout_responsibility.get("violations", [])
-        if isinstance(item, dict)
-        and isinstance(item.get("beat_index"), int)
-        and item.get("reason") in {"unsupported_layout_need", "missing_tier_placement_phrase"}
-    }
-
-    mandatory_lines: list[str] = []
-    beat_review = ""
-    for i, (direction, text) in enumerate(zip(beats, script, strict=False)):
-        status = "FAILED: missing supported visible/doable placement" if i in failed else "ok"
-        beat_review += f"\n--- Beat {i + 1} ({status}) ---\n"
-        beat_review += f"Direction: {direction}\n"
-        if role == "tier_list" and i in failed:
-            mandatory_lines.append(
-                f"- Beat {i + 1}: include a literal sentence that starts with "
-                "'Place ' and matches `Place [item] in [S/A/B/C/D]-tier`."
-            )
-            beat_review += (
-                "Mandatory visible trigger: write an exact placement sentence like "
-                "'Place Sutton's moonshine craft in S-tier.'\n"
-            )
-        beat_review += f"Draft: {text}\n"
-
-    mandatory_block = ""
-    if mandatory_lines:
-        mandatory_block = (
-            "== MANDATORY FAILED-BEAT REPAIRS ==\n" + "\n".join(mandatory_lines) + "\n\n"
-        )
-
-    return (
-        f"You are repairing a {role.upper().replace('_', ' ')} segment for Hapax's "
-        "responsible livestream layout contract.\n\n"
-        f"Topic: {narrative_beat}\n\n"
-        "The previous draft failed because some beats only made spoken arguments. "
-        "For Hapax-hosted responsible segments, spoken-only beats do not satisfy "
-        "layout responsibility. Rewrite the full script with the same beat count "
-        "so every failed beat includes a supported visible/doable trigger in the "
-        "spoken words.\n\n"
-        f"{render_quality_prompt_block()}"
-        "== ROLE-SPECIFIC VISIBLE ACTIONS ==\n"
-        f"{visual_hooks}"
-        f"{mandatory_block}"
-        "If this is a tier-list segment, every failed item/ranking/body beat must "
-        "say an exact placement phrase that matches the runtime trigger regex:\n"
-        "  Place [item] in [S/A/B/C/D]-tier\n"
-        "The sentence must begin with the word 'Place', include the word 'in' "
-        "before the tier, and use S-tier, A-tier, B-tier, C-tier, or D-tier. "
-        "VALID: 'Place Popcorn Sutton's moonshine craft in S-tier.' "
-        "INVALID: 'Let's kick things off by placing Popcorn Sutton in S-tier.' "
-        "INVALID: 'Sutton belongs in A-tier.' "
-        "Do not merely discuss history; make a ranking the audience can see.\n\n"
-        "Do not invent camera shots, screenshots, clips, direct layout commands, "
-        "coordinates, cue strings, or stage directions. Keep the prose live-host "
-        "spoken text only.\n\n"
-        "== DRAFT TO REPAIR ==\n"
-        f"{beat_review}\n\n"
-        "Return ONLY a JSON array of rewritten spoken beats, same count as the "
-        "input. No preamble, no markdown fences. Start with [ and end with ]."
-    )
-
-
-def _repair_layout_actionability(
-    script: list[str],
-    programme: Any,
-    layout_responsibility: dict[str, Any],
-    *,
-    prep_session: dict[str, Any] | None = None,
-    programme_id: str = "",
-) -> list[str]:
-    """Give resident Command-R one chance to turn spoken-only beats into visible actions."""
-    if not _layout_repair_required(layout_responsibility):
-        return script
-    prompt = _build_layout_repair_prompt(script, programme, layout_responsibility)
-    try:
-        raw = _call_llm(
-            prompt,
-            prep_session=prep_session,
-            phase="layout_repair",
-            programme_id=programme_id,
-        )
-        repaired = _parse_script(raw)
-        if repaired and len(repaired) >= len(script):
-            log.info(
-                "layout repair: rewrote %d beats for %s after spoken-only layout failure",
-                len(script),
-                programme_id or "unknown",
-            )
-            return repaired[: len(script)]
-        log.warning(
-            "layout repair: got %d beats (expected %d), keeping refined draft",
-            len(repaired) if repaired else 0,
-            len(script),
-        )
-    except Exception:
-        log.warning("layout repair: LLM call failed, keeping refined draft", exc_info=True)
-    return script
-
-
 def _refine_script(
     script: list[str],
     programme: Any,
     *,
     prep_session: dict[str, Any] | None = None,
     programme_id: str = "",
-) -> list[str]:
+) -> tuple[list[str], dict[str, Any] | None, bool]:
     """Iterative refinement pass — critic + rewrite.
 
     Sends the initial draft to the LLM with a broadcast-editor persona
     that evaluates each beat on specificity, arc, length, and rhetoric,
-    then rewrites weak beats.  Returns the improved script.
+    then rewrites weak beats. Returns the improved script, the model-emitted
+    contract for that script, and whether refinement changed the script.
     """
     prompt = _build_refinement_prompt(script, programme)
     try:
@@ -914,8 +858,9 @@ def _refine_script(
             phase="refine",
             programme_id=programme_id,
         )
-        refined = _parse_script(raw)
+        refined, refined_contract = _parse_segment_generation(raw)
         if refined and len(refined) >= len(script):
+            refined = refined[: len(script)]
             # Log improvement stats
             old_avg = sum(len(b) for b in script) / max(len(script), 1)
             new_avg = sum(len(b) for b in refined) / max(len(refined), 1)
@@ -925,7 +870,7 @@ def _refine_script(
                 new_avg,
                 ((new_avg - old_avg) / max(old_avg, 1)) * 100,
             )
-            return refined[: len(script)]  # Trim to original beat count
+            return refined, refined_contract, refined != script
         log.warning(
             "refinement: got %d beats (expected %d), keeping original",
             len(refined) if refined else 0,
@@ -933,7 +878,7 @@ def _refine_script(
         )
     except Exception:
         log.warning("refinement: LLM call failed, keeping original", exc_info=True)
-    return script
+    return script, None, False
 
 
 def _source_hashes_from_fields(
@@ -1012,8 +957,7 @@ def _source_refs_from_programme(
             seen.add(ref)
     if cleaned:
         return cleaned
-    programme_id = str(getattr(programme, "programme_id", "unknown") or "unknown")
-    return [f"source:prep-seed:{_diagnostic_slug(programme_id)}"]
+    return []
 
 
 def _contract_hash(payload: dict[str, Any]) -> str:
@@ -1036,7 +980,9 @@ def _append_candidate_ledger(prep_dir: Path, payload: dict[str, Any], artifact_p
         "segment_quality_label": (payload.get("segment_quality_report") or {}).get("label"),
         "segment_live_event_score": (payload.get("segment_live_event_report") or {}).get("score"),
         "segment_live_event_band": (payload.get("segment_live_event_report") or {}).get("band"),
+        "manifest_eligible": True,
         "authority": payload.get("authority"),
+        "prep_contract_ok": (payload.get("segment_prep_contract_report") or {}).get("ok"),
         "runtime_pool_eligible": False,
         "selected_release_required": True,
     }
@@ -1117,6 +1063,60 @@ def prep_segment(
         )
         return None
 
+    source_readiness = programme_source_readiness(programme)
+    if source_readiness.get("ok") is not True:
+        log.warning(
+            "prep_segment: source readiness blocked %s before composition: %s",
+            prog_id,
+            [item.get("reason") for item in source_readiness.get("violations", [])],
+        )
+        diagnostic_path = prep_dir / _programme_artifact_name(
+            prog_id,
+            suffix=".source-readiness-required.json",
+        )
+        boundary = _diagnostic_boundary_contract()
+        diagnostic = {
+            "schema_version": PREP_ARTIFACT_SCHEMA_VERSION,
+            "record_type": "prep_failure_diagnostic",
+            "authority": PREP_DIAGNOSTIC_AUTHORITY,
+            **boundary,
+            "terminal": True,
+            "terminal_status": "no_candidate",
+            "terminal_reason": "source_readiness_failed",
+            "programme_id": prog_id,
+            "role": role,
+            "topic": topic,
+            "segment_beats": list(beats),
+            "source_readiness": source_readiness,
+            "prepped_at": datetime.now(tz=UTC).isoformat(),
+            "prep_session_id": prep_session["prep_session_id"],
+            "model_id": prep_session["model_id"],
+            "not_loadable_reason": "source readiness failed before composition",
+            "boundary_contract": boundary,
+        }
+        diagnostic["artifact_sha256"] = _artifact_hash(diagnostic)
+        tmp = diagnostic_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(diagnostic, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(diagnostic_path)
+        _write_prep_diagnostic_outcome(
+            prep_dir,
+            prep_session=prep_session,
+            programme_id=prog_id,
+            role=role,
+            topic=topic,
+            segment_beats=list(beats),
+            terminal_status="no_candidate",
+            terminal_reason="source_readiness_failed",
+            not_loadable_reason="source readiness failed before composition",
+            diagnostic_refs=[str(diagnostic_path)],
+            no_candidate_metadata={
+                "candidate_source": "programme_source_readiness",
+                "candidate_count": 0,
+                "source_readiness": source_readiness,
+            },
+        )
+        return None
+
     log.info("prep_segment: composing %s (%s, %d beats)", prog_id, role, len(beats))
 
     # Pass 1: Initial composition
@@ -1129,7 +1129,7 @@ def prep_segment(
         phase="compose",
         programme_id=prog_id,
     )
-    script = _parse_script(raw)
+    script, model_contract = _parse_segment_generation(raw)
 
     if not script:
         log.warning("prep_segment: empty script for %s", prog_id)
@@ -1172,12 +1172,29 @@ def prep_segment(
     )
 
     # Pass 2: Iterative refinement
-    script = _refine_script(
+    refine_result = _refine_script(
         script,
         programme,
         prep_session=prep_session,
         programme_id=prog_id,
     )
+    refinement_contract: dict[str, Any] | None = None
+    refinement_changed = False
+    if isinstance(refine_result, tuple):
+        script, refinement_contract, refinement_changed = refine_result
+    else:
+        # Compatibility for tests or external monkeypatches that still return a script only.
+        refined_script = [str(item) for item in refine_result]
+        refinement_changed = refined_script != script
+        script = refined_script
+    if refinement_contract and (refinement_changed or model_contract is None):
+        model_contract = refinement_contract
+    elif refinement_changed:
+        log.warning(
+            "prep_segment: refinement changed %s without a model-emitted final contract",
+            prog_id,
+        )
+        model_contract = None
     actionability = validate_segment_actionability(
         script,
         [str(item) for item in beats],
@@ -1254,50 +1271,6 @@ def prep_segment(
         segment_beats=segment_beat_strings,
         beat_action_intents=actionability["beat_action_intents"],
     )
-    if layout_responsibility["ok"] is not True and _layout_repair_required(layout_responsibility):
-        repaired_script = _repair_layout_actionability(
-            script,
-            programme,
-            layout_responsibility,
-            prep_session=prep_session,
-            programme_id=prog_id,
-        )
-        if repaired_script != script:
-            repaired_actionability = validate_segment_actionability(
-                repaired_script,
-                [str(item) for item in beats],
-            )
-            if repaired_actionability["ok"] is True:
-                repaired_layout = validate_layout_responsibility(
-                    repaired_actionability["beat_action_intents"],
-                )
-                repaired_layout = _with_tier_list_placement_gate(
-                    repaired_layout,
-                    role=role,
-                    segment_beats=segment_beat_strings,
-                    beat_action_intents=repaired_actionability["beat_action_intents"],
-                )
-                if repaired_layout["ok"] is True:
-                    log.info(
-                        "prep_segment: layout repair made %s responsible-layout loadable",
-                        prog_id,
-                    )
-                    script = list(repaired_actionability["prepared_script"])
-                    actionability = repaired_actionability
-                    layout_responsibility = repaired_layout
-                else:
-                    log.warning(
-                        "prep_segment: layout repair for %s still violates layout "
-                        "responsibility: %s",
-                        prog_id,
-                        [item.get("reason") for item in repaired_layout["violations"]],
-                    )
-            else:
-                log.warning(
-                    "prep_segment: layout repair for %s introduced unsupported action "
-                    "claims; keeping refined draft",
-                    prog_id,
-                )
     quality_report = score_segment_quality(script, [str(item) for item in beats])
     consultation_manifest = build_consultation_manifest(role)
     source_consequence_map = build_source_consequence_map(
@@ -1423,7 +1396,7 @@ def prep_segment(
         actionability=actionability,
         layout_responsibility=layout_responsibility,
         source_refs=source_refs,
-        model_contract=contract_seed,
+        model_contract=model_contract,
     )
     segment_prep_contract_report = validate_segment_prep_contract(
         segment_prep_contract,
@@ -1441,6 +1414,69 @@ def prep_segment(
         segment_prep_contract=segment_prep_contract,
     )
     segment_live_event_report_sha256 = _live_event_report_hash(segment_live_event_report)
+    if (
+        segment_prep_contract_report.get("ok") is not True
+        or segment_live_event_report.get("ok") is not True
+    ):
+        log.warning(
+            "prep_segment: quarantining %s with contract/live-event failures: contract=%s live_event=%s",
+            prog_id,
+            segment_prep_contract_report.get("violations"),
+            segment_live_event_report.get("violations"),
+        )
+        diagnostic_path = prep_dir / _programme_artifact_name(
+            prog_id,
+            suffix=".contract-invalid.json",
+        )
+        boundary = _diagnostic_boundary_contract()
+        diagnostic = {
+            "schema_version": PREP_ARTIFACT_SCHEMA_VERSION,
+            "record_type": "prep_failure_diagnostic",
+            "authority": PREP_DIAGNOSTIC_AUTHORITY,
+            **boundary,
+            "terminal": True,
+            "terminal_status": "refused_no_release",
+            "terminal_reason": "segment_prep_contract_or_live_event_failed",
+            "programme_id": prog_id,
+            "role": role,
+            "topic": topic,
+            "segment_beats": list(beats),
+            "prepared_script_candidate": script,
+            "segment_prep_contract_version": SEGMENT_PREP_CONTRACT_VERSION,
+            "segment_prep_contract": segment_prep_contract,
+            "segment_prep_contract_report": segment_prep_contract_report,
+            "segment_live_event_rubric_version": LIVE_EVENT_RUBRIC_VERSION,
+            "segment_live_event_report": segment_live_event_report,
+            "prepped_at": datetime.now(tz=UTC).isoformat(),
+            "prep_session_id": prep_session["prep_session_id"],
+            "model_id": prep_session["model_id"],
+            "prompt_sha256": source_hashes["prompt_sha256"],
+            "seed_sha256": source_hashes["seed_sha256"],
+            "not_loadable_reason": "segment prep contract or live-event report failed",
+            "boundary_contract": boundary,
+        }
+        diagnostic["artifact_sha256"] = _artifact_hash(diagnostic)
+        tmp = diagnostic_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(diagnostic, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(diagnostic_path)
+        _write_prep_diagnostic_outcome(
+            prep_dir,
+            prep_session=prep_session,
+            programme_id=prog_id,
+            role=role,
+            topic=topic,
+            segment_beats=list(beats),
+            terminal_status="refused_no_release",
+            terminal_reason="segment_prep_contract_or_live_event_failed",
+            not_loadable_reason="segment prep contract or live-event report failed",
+            source_hashes=source_hashes,
+            diagnostic_refs=[str(diagnostic_path)],
+            refusal_metadata={
+                "segment_prep_contract_report": segment_prep_contract_report,
+                "segment_live_event_report": segment_live_event_report,
+            },
+        )
+        return None
 
     # Save to disk
     out_path = prep_dir / artifact_name
@@ -1618,6 +1654,8 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
     started_at = datetime.now(tz=UTC).isoformat()
     prep_session["_prep_started_monotonic"] = start
     prep_session["prep_status_path"] = str(today / PREP_STATUS_FILENAME)
+    prep_activity = _prep_activity()
+    max_segments_for_run = 1 if prep_activity == "canary" else MAX_SEGMENTS
     prep_session["prep_status"] = {
         "prep_status_version": PREP_STATUS_VERSION,
         "status": "in_progress",
@@ -1627,13 +1665,10 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
         "updated_at": started_at,
         "prep_session_id": prep_session["prep_session_id"],
         "model_id": prep_session["model_id"],
-        "target_segments": MAX_SEGMENTS,
+        "target_segments": max_segments_for_run,
         "existing_manifest_programmes": existing_manifest_names,
         "llm_calls": [],
     }
-    prep_activity = (
-        "canary" if os.environ.get("HAPAX_SEGMENT_PREP_CANARY_SEED") == "1" else "pool_generation"
-    )
     _update_prep_status(
         prep_session,
         status="in_progress",
@@ -1651,6 +1686,9 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
             last_error=f"{type(exc).__name__}: {exc}",
         )
         return saved
+    prep_session["authority_gate_passed"] = True
+    prep_session["authority_mode"] = authority_state.mode
+    prep_session["authority_reason"] = authority_state.reason
     _update_prep_status(
         prep_session,
         status="in_progress",
@@ -1674,12 +1712,12 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
     # Step 1: Plan — call the planner in rounds until we have enough
     # segmented programmes. Each round yields ~3 programmes; for 10
     # segments we typically need 4 rounds.
-    log.info("daily_segment_prep: planning programmes (target=%d)...", MAX_SEGMENTS)
+    log.info("daily_segment_prep: planning programmes (target=%d)...", max_segments_for_run)
     segmented: list[Any] = []
     seen_ids: set[str] = set(existing_programme_ids)
     plan_round = 0
-    max_rounds = 1 if MAX_SEGMENTS == 1 else (MAX_SEGMENTS // 2) + 2
-    planner_target_programmes = 1 if MAX_SEGMENTS == 1 else None
+    max_rounds = 1 if max_segments_for_run == 1 else (max_segments_for_run // 2) + 2
+    planner_target_programmes = 1 if max_segments_for_run == 1 else None
     _update_prep_status(
         prep_session,
         status="in_progress",
@@ -1710,7 +1748,7 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
         log.error("daily_segment_prep: planner construction failed", exc_info=True)
         return saved
 
-    while len(segmented) < MAX_SEGMENTS and plan_round < max_rounds:
+    while len(segmented) < max_segments_for_run and plan_round < max_rounds:
         elapsed = time.monotonic() - start
         if elapsed >= PREP_BUDGET_S:
             _update_prep_status(
@@ -1800,7 +1838,7 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
     )
 
     # Step 2: Compose each segmented-content programme on the same resident model.
-    for prog in segmented[:MAX_SEGMENTS]:
+    for prog in segmented[:max_segments_for_run]:
         elapsed = time.monotonic() - start
         if elapsed >= PREP_BUDGET_S:
             _update_prep_status(
@@ -1925,160 +1963,12 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
     # Step 4: Upsert programme summaries into Qdrant so the affordance
     # pipeline can semantically match impingements against available
     # pre-composed content.
-    _upsert_programmes_to_qdrant(segmented[:MAX_SEGMENTS], saved)
-
     log.info(
         "daily_segment_prep: done. %d segments prepped in %.0fs",
         len(saved),
         time.monotonic() - start,
     )
     return saved
-
-
-def _upsert_programmes_to_qdrant(
-    programmes: list[Any],
-    saved_paths: list[Path],
-) -> None:
-    """Embed and upsert prepped programmes into Qdrant.
-
-    Each programme gets a semantic summary embedded and stored in the
-    affordances collection with a ``programme.prepped.*`` capability name.
-    This lets the affordance pipeline's cosine-similarity retrieval
-    surface relevant pre-composed programmes when impingements fire.
-
-    Best-effort: Qdrant or Ollama unavailability does NOT block the prep.
-    """
-    if not programmes or not saved_paths:
-        return
-
-    try:
-        import uuid
-
-        from shared.affordance_pipeline import (
-            COLLECTION_NAME,
-            embed_batch_safe,
-        )
-        from shared.config import get_qdrant
-
-        saved_by_id: dict[str, tuple[Path, dict[str, Any]]] = {}
-        for path in saved_paths:
-            try:
-                artifact = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                log.debug("prep qdrant: failed to read saved artifact %s", path, exc_info=True)
-                continue
-            if not isinstance(artifact, dict):
-                continue
-            reason = _artifact_rejection_reason(
-                artifact,
-                path=path,
-                manifest_programmes=_manifest_programmes(path.parent),
-            )
-            if reason:
-                log.warning("prep qdrant: refusing %s: %s", path.name, reason)
-                continue
-            pid = str(artifact.get("programme_id") or "")
-            if pid:
-                saved_by_id[pid] = (path, artifact)
-
-        # Build semantic summaries for successfully saved programmes only.
-        texts: list[str] = []
-        prog_ids: list[str] = []
-        prog_meta: list[dict] = []
-        for prog in programmes:
-            pid = getattr(prog, "programme_id", None) or ""
-            if not pid or pid not in saved_by_id:
-                continue
-            artifact_path, artifact = saved_by_id[pid]
-            content = getattr(prog, "content", None)
-            role_value = getattr(getattr(prog, "role", None), "value", "rant")
-            topic = getattr(content, "narrative_beat", "") or "" if content else ""
-            beats = getattr(content, "segment_beats", []) or [] if content else []
-
-            # Build a rich text summary for embedding
-            beat_summary = " → ".join(str(b)[:60] for b in beats[:8])
-            text = (
-                f"Programme {pid}: {role_value} segment about {topic[:200]}. "
-                f"Beats: {beat_summary}. "
-                "Review-only prepared artifact candidate available; selected release required."
-            )
-            texts.append(text)
-            prog_ids.append(pid)
-            prog_meta.append(
-                {
-                    "programme_id": pid,
-                    "role": role_value,
-                    "topic": str(topic)[:500],
-                    "beat_count": len(beats),
-                    "has_script": True,
-                    "artifact_type": "prepared_script",
-                    "accepted": True,
-                    "available": False,
-                    "review_required": True,
-                    "selected_release": False,
-                    "runtime_pool_eligible": False,
-                    "acceptance_gate": "daily_segment_prep._upsert_programmes_to_qdrant",
-                    "authority": artifact.get("authority"),
-                    "artifact_path": str(artifact_path),
-                    "artifact_sha256": artifact.get("artifact_sha256"),
-                    "model_id": artifact.get("model_id"),
-                    "prep_session_id": artifact.get("prep_session_id"),
-                    "llm_call_count": len(artifact.get("llm_calls") or []),
-                    "prompt_sha256": artifact.get("prompt_sha256"),
-                    "seed_sha256": artifact.get("seed_sha256"),
-                    "source_hashes": artifact.get("source_hashes"),
-                    "source_provenance_sha256": artifact.get("source_provenance_sha256"),
-                    "segment_quality_label": (artifact.get("segment_quality_report") or {}).get(
-                        "label"
-                    ),
-                    "actionability_ok": (artifact.get("actionability_alignment") or {}).get("ok"),
-                    "beat_action_intents": artifact.get("beat_action_intents"),
-                    "hosting_context": artifact.get("hosting_context"),
-                    "runtime_layout_validation": artifact.get("runtime_layout_validation"),
-                    "beat_layout_intents": artifact.get("beat_layout_intents"),
-                    "prepped_at": artifact.get("prepped_at"),
-                }
-            )
-
-        if not texts:
-            return
-
-        # Batch embed
-        embeddings = embed_batch_safe(texts, prefix="search_document")
-        if embeddings is None:
-            log.warning("prep qdrant: embed_batch failed, skipping Qdrant upsert")
-            return
-
-        # Build Qdrant points
-        from qdrant_client.models import PointStruct
-
-        points = []
-        for i, (pid, meta) in enumerate(zip(prog_ids, prog_meta, strict=True)):
-            if i >= len(embeddings) or embeddings[i] is None:
-                continue
-            point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"programme.prepped.{pid}"))
-            points.append(
-                PointStruct(
-                    id=point_id,
-                    vector=embeddings[i],
-                    payload={
-                        "capability_name": f"programme.prepped.{pid}",
-                        "description": texts[i],
-                        "daemon": "hapax_daimonion",
-                        **meta,
-                    },
-                )
-            )
-
-        if not points:
-            return
-
-        client = get_qdrant()
-        client.upsert(collection_name=COLLECTION_NAME, points=points)
-        log.info("prep qdrant: upserted %d programme points", len(points))
-
-    except Exception:
-        log.warning("prep qdrant: upsert failed (non-fatal)", exc_info=True)
 
 
 _PROGRAMME_ID_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")

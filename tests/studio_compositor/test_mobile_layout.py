@@ -1,26 +1,23 @@
-"""Mobile substream Cairo routing contracts.
-
-The three ``mobile.json``-bound tests
-(``test_mobile_json_matches_portrait_schema``,
-``test_select_mobile_sources_clamps_to_candidates_and_fails_closed``,
-and ``test_mobile_cairo_runner_writes_exact_rgba_size``) were removed
-when PR #2770 purged ``config/compositor-layouts/mobile.json`` ("broken
-schema" — operator directive). The runner test depended transitively
-because ``MobileCairoRunner.__init__`` calls
-``load_mobile_layout(DEFAULT_MOBILE_LAYOUT_PATH)``, which now
-``FileNotFoundError``s.
-
-The static-spec pin below remains: it exercises the
-``MOBILE_SOURCE_SPECS`` tuple and the cairo class registry, neither of
-which depends on the purged JSON. If a fresh mobile layout is
-reintroduced, restore the runner / load-layout pins alongside it.
-"""
+"""Mobile substream Cairo routing contracts."""
 
 from __future__ import annotations
 
 from agents.studio_compositor.cairo_sources import get_cairo_source_class
 from agents.studio_compositor.mobile_cairo_sources import MOBILE_SOURCE_SPECS
-from agents.studio_compositor.mobile_layout import MIN_MOBILE_FONT_SIZE_PT
+from agents.studio_compositor.mobile_layout import (
+    DEFAULT_MOBILE_LAYOUT_PATH,
+    MIN_MOBILE_FONT_SIZE_PT,
+    load_mobile_layout,
+)
+
+
+def test_mobile_json_matches_portrait_schema() -> None:
+    layout = load_mobile_layout(DEFAULT_MOBILE_LAYOUT_PATH)
+
+    assert layout.target_width == 1080
+    assert layout.target_height == 1920
+    assert layout.metadata_footer.claim_posture == "neutral_hold"
+    assert layout.ward_zone.max_wards == 3
 
 
 def test_mobile_cairo_sources_are_registered_and_readable() -> None:

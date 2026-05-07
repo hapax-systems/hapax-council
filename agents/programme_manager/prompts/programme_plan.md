@@ -74,9 +74,9 @@ The operator does NOT write the outline.
 - `top_10` — countdown segment (10 → 1) over a declared topic.
   Source candidates from operator's vault notes / RAG / scout
   decisions; narrate the climb and the reasoning.
-- `rant` — sustained operator-flavoured argument on one topic. Compose
-  the rant from operator-profile facts (positions,
-  preferences, prior corrections) and current perception — never
+- `rant` — sustained operator-profile-grounded argument on one topic. Compose
+  the rant from operator-profile facts (documented positions,
+  prior corrections, explicit constraints) and current perception — never
   inventing positions.
 - `react` — source-bound analysis of a piece of media (video, paper, audio,
   text). Source media is fetched via the content resolver; Hapax
@@ -363,8 +363,8 @@ the segment; it never becomes script authority or runtime authority.
 **The fundamental question for every segment**: WHAT CONTENT WILL
 IMPROVE GROUNDING? The answer is NOT always "talk about the system."
 Grounding means specificity, evidence, earned authority. If
-the operator's vault has deep notes on Appalachian moonshine culture,
-and you can pull 8 specific facts with sources — that is MORE
+the operator's vault has deep notes on a niche craft tradition,
+and you can pull 8 specific facts with source receipts — that is MORE
 GROUNDED than a vague summary of recent PRs.
 
 **Topic selection is a grounding calculation, not a reflex.** Before
@@ -374,12 +374,23 @@ picking a topic, ask:
    make specific claims I can back up?
 3. What hasn't been covered recently? (Novelty helps grounding.)
 
-The operator is a FULL PERSON. The vault contains research, music
+The operator context is broad. The vault contains research, music
 notes, cultural interests, philosophical positions, craft knowledge,
 reading notes, life observations. A segment on the operator's
-position on why Popcorn Sutton matters to Appalachian identity is as
+documented position about a well-sourced archival media object is as
 valid as a segment on CPAL evaluator architecture — IF the vault has
 the material to ground it.
+
+Every segmented-content programme must include a `role_contract` object
+with source authority for prep. Required fields for all roles:
+`source_packet_refs`, `role_live_bit_mechanic`, `event_object`,
+`audience_job`, `payoff`, and `temporality_band`. `tier_list` and
+`top_10` also require `tier_criteria`; `rant` also requires
+`bounded_claim` and `receipt_flip`; `interview` requires structured
+`question_ladder`, `answer_source_policy`, and, for operator interviews,
+topic-selection and agency-policy receipts. Every planned beat that
+needs layout must carry `beat_layout_intents` with source evidence refs
+and `default_static_success_allowed: false`.
 
 **Content sources for topic inspiration:**
 - Vault daily notes (`~/Documents/Personal/`) — what's the operator
@@ -490,11 +501,11 @@ point and adapt to the declared topic.
   against.
 - **Beats**: introduce the source + why this is worth reacting to
   → time-stamped first impressions → mid-piece pivot if the
-  source surprises → reflective synthesis → operator-coloured
+  source surprises → reflective synthesis → source-and-profile-grounded
   take.
 - **`narrative_beat` example**: `"react segment on '{source_uri}'.
   Resolve via content-resolver; emit time-stamped reactions;
-  synthesise with operator-coloured take"`
+  synthesise with source-and-profile-grounded take"`
 
 ### `iceberg`
 

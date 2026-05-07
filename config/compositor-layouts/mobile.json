@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "target_width": 1080,
+  "target_height": 1920,
+  "hero_cam": {
+    "source": "compositor_main",
+    "source_crop": {
+      "x": 420,
+      "y": 0,
+      "width": 1080,
+      "height": 1080
+    },
+    "dest": {
+      "x": 0,
+      "y": 0,
+      "width": 1080,
+      "height": 1080
+    }
+  },
+  "ward_zone": {
+    "y_top": 1080,
+    "y_bottom": 1776,
+    "max_wards": 3,
+    "ward_height": 192,
+    "padding_px": 24,
+    "fallback_density": "minimum_density"
+  },
+  "metadata_footer": {
+    "y_top": 1776,
+    "y_bottom": 1920,
+    "font_size_pt": 32,
+    "claim_posture": "neutral_hold"
+  },
+  "salience_sources": [
+    "/dev/shm/hapax-compositor/recent-recruitment.json",
+    "/dev/shm/hapax-daimonion/narrative-state.json",
+    "/dev/shm/hapax-youtube/viewer-count.txt"
+  ],
+  "ward_candidates": [
+    "impingement_cascade",
+    "captions",
+    "token_pole",
+    "activity_header",
+    "stance_panel"
+  ]
+}
