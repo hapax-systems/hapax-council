@@ -16,8 +16,7 @@ roles:
     description: |
       Operator-private TTS path through the voice FX chain to the
       master loudnorm chain (`hapax-loudnorm-capture`), then onward
-      to the L-12 → Evil Pet → broadcast path. The "talking to Hapax"
-route.
+      to the L-12 → Evil Pet → broadcast route.
 
   broadcast:
     sink_name: hapax-livestream

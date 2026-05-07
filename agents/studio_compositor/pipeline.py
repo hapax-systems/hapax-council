@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from .cameras import add_camera_branch
@@ -147,6 +148,16 @@ def build_pipeline(compositor: Any) -> Any:
 
     output_tee = Gst.ElementFactory.make("tee", "output-tee")
     pipeline.add(output_tee)
+
+    # GL chain output probe — direct detection of GL chain death.
+    # Fires on every frame that exits the GL chain and reaches output_tee.
+    # If this probe hasn't fired for >30s while cameras are active, the
+    # GL chain is dead and the watchdog can exit immediately.
+    def _gl_output_probe(pad: Any, info: Any) -> Any:
+        compositor._gl_last_frame_monotonic = time.monotonic()
+        return Gst.PadProbeReturn.OK
+
+    output_tee.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, _gl_output_probe)
 
     from .fx_chain import build_inline_fx_chain
 
