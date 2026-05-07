@@ -226,6 +226,32 @@ def test_audio_node_fail_closed_typed() -> None:
     assert n.private_monitor_endpoint is True
 
 
+def test_audio_node_industrial_name_validates() -> None:
+    n = AudioNode(
+        id="music-duck",
+        kind=NodeKind.FILTER_CHAIN,
+        pipewire_name="hapax-music-duck",
+        industrial_name="chain.music.ducker",
+    )
+    assert n.industrial_name == "chain.music.ducker"
+
+    with pytest.raises(ValidationError):
+        AudioNode(
+            id="bad-industrial",
+            kind=NodeKind.TAP,
+            pipewire_name="hapax-bad-industrial",
+            industrial_name="hapax-music-duck",
+        )
+
+    with pytest.raises(ValidationError):
+        AudioNode(
+            id="not-hierarchical",
+            kind=NodeKind.TAP,
+            pipewire_name="hapax-not-hierarchical",
+            industrial_name="music-duck",
+        )
+
+
 def test_audio_link_gain_range_enforced() -> None:
     with pytest.raises(ValidationError):
         AudioLink(source="a", target="b", makeup_gain_db=999.0)
@@ -241,6 +267,23 @@ def test_audio_graph_node_id_unique() -> None:
 def test_audio_graph_pipewire_name_unique() -> None:
     n1 = AudioNode(id="a", kind=NodeKind.TAP, pipewire_name="dup")
     n2 = AudioNode(id="b", kind=NodeKind.TAP, pipewire_name="dup")
+    with pytest.raises(ValidationError):
+        AudioGraph(nodes=[n1, n2])
+
+
+def test_audio_graph_industrial_name_unique() -> None:
+    n1 = AudioNode(
+        id="a",
+        kind=NodeKind.TAP,
+        pipewire_name="pw1",
+        industrial_name="chain.valid.duplicate",
+    )
+    n2 = AudioNode(
+        id="b",
+        kind=NodeKind.TAP,
+        pipewire_name="pw2",
+        industrial_name="chain.valid.duplicate",
+    )
     with pytest.raises(ValidationError):
         AudioGraph(nodes=[n1, n2])
 

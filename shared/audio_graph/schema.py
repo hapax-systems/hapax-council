@@ -75,6 +75,8 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from shared.audio_industrial_naming import validate_industrial_audio_name
+
 # ---------------------------------------------------------------------------
 # Vocabulary enums
 # ---------------------------------------------------------------------------
@@ -427,6 +429,9 @@ class AudioNode(BaseModel):
       nodes that perform a channel-count change.
     - :attr:`private_monitor_endpoint` — typed boolean for the spec's
       ``params.private_monitor_endpoint`` flag.
+    - :attr:`industrial_name` — stable hierarchical graph identity for
+      operator docs and audits. Live ``pipewire_name`` remains the
+      deployment compatibility handle.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -434,6 +439,7 @@ class AudioNode(BaseModel):
     id: str
     kind: NodeKind
     pipewire_name: str
+    industrial_name: str | None = None
     description: str = ""
     target_object: str | None = None
     hw: str | None = None
@@ -464,6 +470,11 @@ class AudioNode(BaseModel):
         if not v or any(c.isspace() for c in v) or v != v.lower():
             raise ValueError(f"AudioNode.id={v!r} — must be lowercase, no whitespace (kebab-case)")
         return v
+
+    @field_validator("industrial_name")
+    @classmethod
+    def _industrial_name_is_hierarchical(cls, v: str | None) -> str | None:
+        return validate_industrial_audio_name(v)
 
     @model_validator(mode="after")
     def _hardware_nodes_have_hw(self) -> AudioNode:
@@ -821,6 +832,20 @@ class AudioGraph(BaseModel):
                     f"Duplicate pipewire_name: {node.pipewire_name!r} on node {node.id!r}"
                 )
             seen.add(node.pipewire_name)
+        return v
+
+    @field_validator("nodes")
+    @classmethod
+    def _industrial_names_unique(cls, v: list[AudioNode]) -> list[AudioNode]:
+        seen: set[str] = set()
+        for node in v:
+            if node.industrial_name is None:
+                continue
+            if node.industrial_name in seen:
+                raise ValueError(
+                    f"Duplicate industrial_name: {node.industrial_name!r} on node {node.id!r}"
+                )
+            seen.add(node.industrial_name)
         return v
 
     @model_validator(mode="after")
