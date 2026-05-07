@@ -35,6 +35,27 @@ EXPECTED_LINEAGE_COUNTS: dict[str, int] = {
     "broadcast-degraded": 2,
 }
 
+FIRST_TWO_POOL_PRESETS: tuple[tuple[str, str], ...] = (
+    # vinyl-tape-glitch (#2399)
+    ("vinyl_dust", "vinyl-noise"),
+    ("vinyl_pop_static", "vinyl-noise"),
+    ("tape_warmth", "tape-saturation"),
+    ("tape_wow_flutter", "tape-saturation"),
+    ("glitch_y2k_block", "glitch-y2k"),
+    ("glitch_y2k_chroma", "glitch-y2k"),
+    ("antivapor_grit", "anti-vaporwave"),
+    ("antivapor_thresh", "anti-vaporwave"),
+    # dub-granular-modulation-liquid (#2402)
+    ("dub_echo_spatial", "dub-spectral"),
+    ("dub_tunnel_chamber", "dub-spectral"),
+    ("granular_stutter", "granular-loop"),
+    ("granular_tile_grid", "granular-loop"),
+    ("modulation_pulse_strobe", "modulation-pulse"),
+    ("modulation_pulse_warp", "modulation-pulse"),
+    ("liquid_flow_fluid", "liquid-flow"),
+    ("liquid_flow_breath", "liquid-flow"),
+)
+
 PRIOR_POOLS: frozenset[str] = frozenset(
     {
         # vinyl-tape-glitch (#2399)
@@ -94,6 +115,22 @@ class TestExpectedInventory:
         new_pool = {name for name, _ in EXPECTED_PRESETS}
         overlap = PRIOR_POOLS & new_pool
         assert not overlap, f"name collision with prior pools: {overlap}"
+
+    def test_first_three_preset_pools_cover_twenty_four_unique_presets(self) -> None:
+        """PR #2406 made the aggregate promise: 24 lineage-tagged presets
+        across 12 lineages after the third pool. Pin that base even as
+        later pool PRs grow the global preset library."""
+        first_three_pool = FIRST_TWO_POOL_PRESETS + EXPECTED_PRESETS
+        names = {name for name, _ in first_three_pool}
+        lineages = {lineage for _, lineage in first_three_pool}
+
+        assert len(first_three_pool) == 24
+        assert len(names) == 24
+        assert len(lineages) == 12
+
+        for name, lineage in first_three_pool:
+            preset = _load_preset(name)
+            assert preset.get("lineage") == lineage
 
 
 class TestPresetSchema:
