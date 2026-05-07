@@ -37,6 +37,11 @@ from shared.resident_command_r import (
     loaded_tabby_model,
     tabby_chat_url,
 )
+from shared.segment_live_event_quality import (
+    LIVE_EVENT_RUBRIC_VERSION,
+    evaluate_segment_live_event_quality,
+    validate_live_event_report_matches_artifact,
+)
 from shared.segment_prep_consultation import (
     build_consultation_manifest,
     build_live_event_viability,
@@ -46,6 +51,22 @@ from shared.segment_prep_consultation import (
     validate_live_event_viability,
     validate_readback_obligations,
     validate_source_consequence_map,
+)
+from shared.segment_prep_contract import (
+    CANDIDATE_LEDGER,
+    SEGMENT_PREP_CONTRACT_VERSION,
+    SELECTED_RELEASE_MANIFEST,
+    framework_vocabulary_leaks,
+    prepared_script_sha256,
+    validate_segment_prep_contract,
+)
+from shared.segment_prep_contract import (
+    build_segment_prep_contract as _build_segment_prep_contract,
+)
+from shared.segment_prep_pause import (
+    SegmentPrepPaused,
+    SegmentPrepPauseError,
+    assert_segment_prep_allowed,
 )
 from shared.segment_quality_actionability import (
     ACTIONABILITY_RUBRIC_VERSION,
@@ -62,6 +83,11 @@ from shared.segment_quality_actionability import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def build_segment_prep_contract(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    return _build_segment_prep_contract(*args, **kwargs)
+
 
 # Where prepped segments live.  One subdirectory per date.
 DEFAULT_PREP_DIR = Path(
@@ -675,7 +701,11 @@ def _layout_repair_required(layout_responsibility: dict[str, Any]) -> bool:
     violations = layout_responsibility.get("violations")
     if not isinstance(violations, list) or not violations:
         return False
-    repairable_reasons = {"unsupported_layout_need", "missing_tier_placement_phrase"}
+    repairable_reasons = {
+        "unsupported_layout_need",
+        "missing_layout_evidence_refs",
+        "missing_tier_placement_phrase",
+    }
     return all(
         isinstance(item, dict) and item.get("reason") in repairable_reasons for item in violations
     )
@@ -943,6 +973,79 @@ def _source_hashes(programme: Any, *, seed: str, prompt: str) -> dict[str, str]:
     )
 
 
+def _source_refs_from_programme(
+    programme: Any,
+    *,
+    actionability: dict[str, Any],
+    layout_responsibility: dict[str, Any],
+) -> list[str]:
+    content = getattr(programme, "content", None)
+    refs: list[str] = []
+    for field in ("source_refs", "source_packet_refs", "evidence_refs"):
+        value = getattr(content, field, None) if content else None
+        if isinstance(value, str):
+            refs.append(value)
+        elif isinstance(value, list):
+            refs.extend(str(item) for item in value)
+    role_contract = getattr(content, "role_contract", None) if content else None
+    if isinstance(role_contract, dict):
+        for field in ("source_refs", "source_packet_refs", "evidence_refs"):
+            refs.extend(_string_list(role_contract.get(field)))
+    for beat in actionability.get("beat_action_intents", []) or []:
+        if not isinstance(beat, dict):
+            continue
+        for intent in beat.get("intents", []) or []:
+            if isinstance(intent, dict):
+                refs.extend(_string_list(intent.get("evidence_refs")))
+    for beat in layout_responsibility.get("beat_layout_intents", []) or []:
+        if isinstance(beat, dict):
+            refs.extend(_string_list(beat.get("evidence_refs")))
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for ref in refs:
+        if not ref or ref in seen:
+            continue
+        if ref.startswith(
+            ("source:", "vault:", "rag:", "packet:", "receipt:", "profile:", "media:")
+        ):
+            cleaned.append(ref)
+            seen.add(ref)
+    if cleaned:
+        return cleaned
+    programme_id = str(getattr(programme, "programme_id", "unknown") or "unknown")
+    return [f"source:prep-seed:{_diagnostic_slug(programme_id)}"]
+
+
+def _contract_hash(payload: dict[str, Any]) -> str:
+    return _sha256_json(payload)
+
+
+def _live_event_report_hash(payload: dict[str, Any]) -> str:
+    return _sha256_json(payload)
+
+
+def _append_candidate_ledger(prep_dir: Path, payload: dict[str, Any], artifact_path: Path) -> None:
+    row = {
+        "candidate_ledger_version": 1,
+        "ledgered_at": datetime.now(tz=UTC).isoformat(),
+        "programme_id": payload.get("programme_id"),
+        "artifact_name": artifact_path.name,
+        "artifact_path": str(artifact_path),
+        "artifact_sha256": payload.get("artifact_sha256"),
+        "segment_quality_overall": (payload.get("segment_quality_report") or {}).get("overall"),
+        "segment_quality_label": (payload.get("segment_quality_report") or {}).get("label"),
+        "segment_live_event_score": (payload.get("segment_live_event_report") or {}).get("score"),
+        "segment_live_event_band": (payload.get("segment_live_event_report") or {}).get("band"),
+        "authority": payload.get("authority"),
+        "runtime_pool_eligible": False,
+        "selected_release_required": True,
+    }
+    ledger_path = prep_dir / CANDIDATE_LEDGER
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    with ledger_path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row, sort_keys=True) + "\n")
+
+
 def prep_segment(
     programme: Any,
     prep_dir: Path,
@@ -1100,7 +1203,7 @@ def prep_segment(
             "topic": topic,
             "segment_beats": list(beats),
             "prepared_script_candidate": script,
-            "sanitized_script_candidate": actionability["prepared_script"],
+            "sanitized_script_candidate": actionability["diagnostic_sanitized_script"],
             "actionability_rubric_version": ACTIONABILITY_RUBRIC_VERSION,
             "actionability_alignment": {
                 "ok": False,
@@ -1273,6 +1376,72 @@ def prep_segment(
         )
         return None
 
+    source_refs = _source_refs_from_programme(
+        programme,
+        actionability=actionability,
+        layout_responsibility=layout_responsibility,
+    )
+    contract_seed = build_segment_prep_contract(
+        programme_id=prog_id,
+        role=role,
+        topic=topic,
+        segment_beats=[str(item) for item in beats],
+        script=script,
+        actionability=actionability,
+        layout_responsibility=layout_responsibility,
+        source_refs=source_refs,
+    )
+    actionability = validate_segment_actionability(
+        script,
+        [str(item) for item in beats],
+        prep_contract=contract_seed,
+    )
+    layout_responsibility = validate_layout_responsibility(
+        actionability["beat_action_intents"],
+    )
+    layout_responsibility = _with_tier_list_placement_gate(
+        layout_responsibility,
+        role=role,
+        segment_beats=segment_beat_strings,
+        beat_action_intents=actionability["beat_action_intents"],
+    )
+    live_event_viability = build_live_event_viability(
+        script,
+        actionability=actionability,
+        layout=layout_responsibility,
+        role=role,
+    )
+    readback_obligations = build_readback_obligations(
+        layout_responsibility["beat_layout_intents"],
+    )
+    segment_prep_contract = build_segment_prep_contract(
+        programme_id=prog_id,
+        role=role,
+        topic=topic,
+        segment_beats=[str(item) for item in beats],
+        script=script,
+        actionability=actionability,
+        layout_responsibility=layout_responsibility,
+        source_refs=source_refs,
+        model_contract=contract_seed,
+    )
+    segment_prep_contract_report = validate_segment_prep_contract(
+        segment_prep_contract,
+        prepared_script=script,
+        segment_beats=[str(item) for item in beats],
+    )
+    segment_prep_contract_sha256 = _contract_hash(segment_prep_contract)
+    source_hashes["segment_prep_contract_sha256"] = segment_prep_contract_sha256
+    segment_live_event_report = evaluate_segment_live_event_quality(
+        script,
+        [str(item) for item in beats],
+        actionability["beat_action_intents"],
+        layout_responsibility["beat_layout_intents"],
+        role=role,
+        segment_prep_contract=segment_prep_contract,
+    )
+    segment_live_event_report_sha256 = _live_event_report_hash(segment_live_event_report)
+
     # Save to disk
     out_path = prep_dir / artifact_name
     final_avg = sum(len(b) for b in script) / max(len(script), 1)
@@ -1293,10 +1462,20 @@ def prep_segment(
         "source_consequence_map": source_consequence_map,
         "live_event_viability": live_event_viability,
         "readback_obligations": readback_obligations,
+        "segment_prep_contract_version": SEGMENT_PREP_CONTRACT_VERSION,
+        "segment_prep_contract": segment_prep_contract,
+        "segment_prep_contract_report": segment_prep_contract_report,
+        "segment_prep_contract_sha256": segment_prep_contract_sha256,
+        "segment_live_event_rubric_version": LIVE_EVENT_RUBRIC_VERSION,
+        "segment_live_event_plan": segment_live_event_report.get("plan"),
+        "segment_live_event_report": segment_live_event_report,
+        "segment_live_event_report_sha256": segment_live_event_report_sha256,
         "beat_action_intents": actionability["beat_action_intents"],
         "actionability_alignment": {
             "ok": actionability["ok"],
             "removed_unsupported_action_lines": actionability["removed_unsupported_action_lines"],
+            "personage_violations": actionability["personage_violations"],
+            "detector_theater_lines": actionability["detector_theater_lines"],
         },
         "beat_layout_intents": layout_responsibility["beat_layout_intents"],
         "layout_decision_contract": layout_responsibility["layout_decision_contract"],
@@ -1322,6 +1501,7 @@ def prep_segment(
     tmp = out_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(out_path)
+    _append_candidate_ledger(prep_dir, payload, out_path)
     log.info(
         "prep_segment: saved %s (%d blocks, avg %.0f chars/beat)",
         out_path,
@@ -1451,6 +1631,34 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
         "existing_manifest_programmes": existing_manifest_names,
         "llm_calls": [],
     }
+    prep_activity = (
+        "canary" if os.environ.get("HAPAX_SEGMENT_PREP_CANARY_SEED") == "1" else "pool_generation"
+    )
+    _update_prep_status(
+        prep_session,
+        status="in_progress",
+        phase="authority_gate_check",
+        authority_activity=prep_activity,
+    )
+    try:
+        authority_state = assert_segment_prep_allowed(prep_activity)
+    except (SegmentPrepPaused, SegmentPrepPauseError) as exc:
+        _update_prep_status(
+            prep_session,
+            status="paused",
+            phase="segment_prep_authority_paused",
+            authority_activity=prep_activity,
+            last_error=f"{type(exc).__name__}: {exc}",
+        )
+        return saved
+    _update_prep_status(
+        prep_session,
+        status="in_progress",
+        phase="authority_gate_passed",
+        authority_activity=prep_activity,
+        authority_mode=authority_state.mode,
+        authority_reason=authority_state.reason,
+    )
     _update_prep_status(prep_session, status="in_progress", phase="resident_model_check")
     try:
         _assert_resident_prep_model(prep_session["model_id"])
@@ -1792,7 +2000,7 @@ def _upsert_programmes_to_qdrant(
             text = (
                 f"Programme {pid}: {role_value} segment about {topic[:200]}. "
                 f"Beats: {beat_summary}. "
-                "Accepted prepared artifact candidate available."
+                "Review-only prepared artifact candidate available; selected release required."
             )
             texts.append(text)
             prog_ids.append(pid)
@@ -1805,6 +2013,10 @@ def _upsert_programmes_to_qdrant(
                     "has_script": True,
                     "artifact_type": "prepared_script",
                     "accepted": True,
+                    "available": False,
+                    "review_required": True,
+                    "selected_release": False,
+                    "runtime_pool_eligible": False,
                     "acceptance_gate": "daily_segment_prep._upsert_programmes_to_qdrant",
                     "authority": artifact.get("authority"),
                     "artifact_path": str(artifact_path),
@@ -2094,6 +2306,7 @@ def _artifact_rejection_reason(
     *,
     path: Path,
     manifest_programmes: set[str] | None,
+    strict_release_contract: bool = False,
 ) -> str | None:
     if manifest_programmes is None:
         return "missing manifest"
@@ -2117,6 +2330,8 @@ def _artifact_rejection_reason(
         or not all(isinstance(item, str) for item in script)
     ):
         return "invalid prepared_script"
+    if framework_vocabulary_leaks(script):
+        return "framework vocabulary leaked into prepared script"
     beats = data.get("segment_beats")
     if not isinstance(beats, list) or not all(isinstance(item, str) for item in beats):
         return "invalid segment_beats"
@@ -2163,20 +2378,52 @@ def _artifact_rejection_reason(
         return "unsafe programme_id"
     if expected_name != path.name:
         return "programme_id filename mismatch"
-    if source_hashes != _source_hashes_from_fields(
+    expected_source_hashes = _source_hashes_from_fields(
         programme_id=programme_id,
         role=role,
         topic=topic,
         segment_beats=beats,
         seed_sha256=data["seed_sha256"],
         prompt_sha256=data["prompt_sha256"],
-    ):
+    )
+    allowed_extra_source_hashes = {"segment_prep_contract_sha256"}
+    if any(source_hashes.get(key) != value for key, value in expected_source_hashes.items()):
+        return "source hash mismatch"
+    if set(source_hashes) - set(expected_source_hashes) - allowed_extra_source_hashes:
         return "source hash mismatch"
     source_provenance_sha256 = data.get("source_provenance_sha256")
     if not _is_sha256_hex(source_provenance_sha256) or source_provenance_sha256 != _sha256_json(
         source_hashes
     ):
         return "source provenance hash mismatch"
+    if strict_release_contract:
+        if data.get("segment_prep_contract_version") != SEGMENT_PREP_CONTRACT_VERSION:
+            return "missing segment prep contract version"
+        contract = data.get("segment_prep_contract")
+        if not isinstance(contract, dict):
+            return "missing segment prep contract"
+        contract_sha = data.get("segment_prep_contract_sha256")
+        if not _is_sha256_hex(contract_sha) or contract_sha != _contract_hash(contract):
+            return "segment prep contract hash mismatch"
+        if source_hashes.get("segment_prep_contract_sha256") != contract_sha:
+            return "source hash missing segment prep contract binding"
+        expected_contract_report = validate_segment_prep_contract(
+            contract,
+            prepared_script=script,
+            segment_beats=beats,
+        )
+        if data.get("segment_prep_contract_report") != expected_contract_report:
+            return "stale segment prep contract report"
+        if expected_contract_report.get("ok") is not True:
+            return "segment prep contract failed"
+        binding = contract.get("prepared_script_binding") if isinstance(contract, dict) else {}
+        if not isinstance(binding, dict) or binding.get(
+            "prepared_script_sha256"
+        ) != prepared_script_sha256(script):
+            return "prepared script contract binding mismatch"
+        live_event_validation = validate_live_event_report_matches_artifact(data)
+        if live_event_validation.get("ok") is not True:
+            return "live event quality report failed"
     return None
 
 
@@ -2184,6 +2431,8 @@ def _accepted_artifact_or_reason(
     path: Path,
     *,
     manifest_programmes: set[str] | None,
+    strict_release_contract: bool = False,
+    selected_artifact_hashes: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -2199,13 +2448,24 @@ def _accepted_artifact_or_reason(
         data,
         path=path,
         manifest_programmes=manifest_programmes,
+        strict_release_contract=strict_release_contract,
     )
     if reason:
         return None, reason
+    if selected_artifact_hashes is not None:
+        expected_hash = selected_artifact_hashes.get(path.name)
+        if not expected_hash:
+            return None, "not selected for release"
+        if data.get("artifact_sha256") != expected_hash:
+            return None, "selected artifact hash mismatch"
 
+    contract_for_replay = None
+    if isinstance(data.get("segment_prep_contract"), dict):
+        contract_for_replay = data["segment_prep_contract"]
     runtime_actionability = validate_segment_actionability(
         list(data["prepared_script"]),
         list(data["segment_beats"]),
+        prep_contract=contract_for_replay,
     )
     if runtime_actionability["ok"] is not True:
         return None, "runtime actionability alignment failed"
@@ -2307,7 +2567,68 @@ def _accepted_manifest_programme_ids(today: Path, accepted_names: list[str]) -> 
     return programme_ids
 
 
-def load_prepped_programmes(prep_dir: Path | None = None) -> list[dict]:
+def _selected_release_manifest(today: Path) -> dict[str, Any] | None:
+    path = today / SELECTED_RELEASE_MANIFEST
+    if not path.exists():
+        return None
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        log.debug("selected_release: failed to read %s", path, exc_info=True)
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    expected_hash = manifest.get("selected_release_manifest_sha256")
+    if not _is_sha256_hex(expected_hash):
+        return None
+    body = dict(manifest)
+    body.pop("selected_release_manifest_sha256", None)
+    if expected_hash != _sha256_json(body):
+        return None
+    if manifest.get("ok") is not True:
+        return None
+    return manifest
+
+
+def _selected_release_programme_names(today: Path) -> list[str] | None:
+    manifest = _selected_release_manifest(today)
+    if manifest is None:
+        return None
+    programmes = manifest.get("programmes")
+    if not isinstance(programmes, list):
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in programmes:
+        name = _safe_manifest_name(item)
+        if name is None or name in seen:
+            continue
+        names.append(name)
+        seen.add(name)
+    return names
+
+
+def _selected_release_artifact_hashes(today: Path) -> dict[str, str] | None:
+    manifest = _selected_release_manifest(today)
+    if manifest is None:
+        return None
+    hashes: dict[str, str] = {}
+    for item in manifest.get("selected_artifacts") or []:
+        if not isinstance(item, dict):
+            continue
+        name = _safe_manifest_name(item.get("artifact_name"))
+        artifact_hash = item.get("artifact_sha256")
+        if name and _is_sha256_hex(artifact_hash):
+            hashes[name] = str(artifact_hash)
+    return hashes
+
+
+def load_prepped_programmes(
+    prep_dir: Path | None = None,
+    *,
+    require_selected: bool = True,
+    strict_release_contract: bool | None = None,
+) -> list[dict]:
     """Load today's prepped segments from disk.
 
     Returns a list of dicts, each with programme_id, prepared_script, etc.
@@ -2315,10 +2636,18 @@ def load_prepped_programmes(prep_dir: Path | None = None) -> list[dict]:
     """
     if prep_dir is None:
         prep_dir = DEFAULT_PREP_DIR
+    if strict_release_contract is None:
+        strict_release_contract = require_selected
     today = _today_path(prep_dir)
     if not today.exists():
         return []
-    manifest_names = _manifest_programme_names(today)
+    selected_hashes: dict[str, str] | None = None
+    if require_selected:
+        assert_segment_prep_allowed("runtime_pool_load")
+        manifest_names = _selected_release_programme_names(today)
+        selected_hashes = _selected_release_artifact_hashes(today) or {}
+    else:
+        manifest_names = _manifest_programme_names(today)
     manifest_programmes = set(manifest_names) if manifest_names is not None else None
 
     results = []
@@ -2329,6 +2658,8 @@ def load_prepped_programmes(prep_dir: Path | None = None) -> list[dict]:
         data, reason = _accepted_artifact_or_reason(
             f,
             manifest_programmes=manifest_programmes,
+            strict_release_contract=strict_release_contract,
+            selected_artifact_hashes=selected_hashes,
         )
         if reason:
             log.warning("load_prepped: rejecting %s: %s", f.name, reason)
@@ -2336,6 +2667,219 @@ def load_prepped_programmes(prep_dir: Path | None = None) -> list[dict]:
         if data is not None:
             results.append(data)
     return results
+
+
+def _write_selected_release_rag_digest(
+    today: Path,
+    artifacts: list[dict[str, Any]],
+    *,
+    manifest: dict[str, Any],
+    review_receipt: dict[str, Any],
+    rag_dir: Path,
+) -> Path:
+    rag_dir.mkdir(parents=True, exist_ok=True)
+    path = rag_dir / f"{today.name}-selected-segment-prep.md"
+    lines = [
+        "---",
+        "type: segment-prep-selected-release",
+        "authority: prior_only_feedback",
+        f"date: {today.name}",
+        f"selected_release_manifest_sha256: {manifest.get('selected_release_manifest_sha256', '')}",
+        f"review_receipt_sha256: {review_receipt.get('segment_candidate_selection_sha256', '')}",
+        "---",
+        "",
+        "# Selected Segment Prep Release",
+        "",
+        "This digest publishes selected prepared-script feedback for retrieval. It is not runtime layout authority.",
+        "",
+        "## Selected Artifacts",
+    ]
+    selected_by_name = {
+        str(item.get("artifact_name") or ""): item
+        for item in manifest.get("selected_artifacts") or []
+        if isinstance(item, dict)
+    }
+    for artifact in artifacts:
+        name = Path(
+            str(artifact.get("artifact_path") or artifact.get("artifact_path_diagnostic") or "")
+        ).name
+        if not name:
+            name = f"{artifact.get('programme_id', 'unknown')}.json"
+        selected = selected_by_name.get(name, {})
+        lines.extend(
+            [
+                "",
+                f"- `{name}`",
+                f"  - programme: `{artifact.get('programme_id', '')}`",
+                f"  - receipt: `{selected.get('receipt_id', '')}`",
+                f"  - live-event band: `{(artifact.get('segment_live_event_report') or {}).get('band', '')}`",
+            ]
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _upsert_artifact_dicts_to_qdrant(
+    artifacts: list[dict[str, Any]],
+    *,
+    manifest: dict[str, Any],
+    review_receipt: dict[str, Any],
+) -> int:
+    if not artifacts:
+        return 0
+    try:
+        import uuid
+
+        from qdrant_client.models import PointStruct
+
+        from shared.affordance_pipeline import COLLECTION_NAME, embed_batch_safe
+        from shared.config import get_qdrant
+
+        texts: list[str] = []
+        payloads: list[dict[str, Any]] = []
+        for artifact in artifacts:
+            programme_id = str(artifact.get("programme_id") or "")
+            topic = str(artifact.get("topic") or "")
+            script_preview = " ".join(_string_list(artifact.get("prepared_script")))[:1200]
+            texts.append(
+                f"Selected prepared livestream segment {programme_id}: {topic}. {script_preview}"
+            )
+            payloads.append(
+                {
+                    "capability_name": f"programme.prepped.selected.{programme_id}",
+                    "description": texts[-1],
+                    "daemon": "hapax_daimonion",
+                    "programme_id": programme_id,
+                    "role": artifact.get("role"),
+                    "topic": topic[:500],
+                    "artifact_type": "selected_prepared_script",
+                    "available": True,
+                    "selected_release": True,
+                    "runtime_pool_eligible": True,
+                    "authority": artifact.get("authority"),
+                    "artifact_path": artifact.get("artifact_path")
+                    or artifact.get("artifact_path_diagnostic"),
+                    "artifact_sha256": artifact.get("artifact_sha256"),
+                    "selected_release_manifest_sha256": manifest.get(
+                        "selected_release_manifest_sha256"
+                    ),
+                    "review_receipt_sha256": review_receipt.get(
+                        "segment_candidate_selection_sha256"
+                    ),
+                    "segment_quality_report": artifact.get("segment_quality_report"),
+                    "segment_live_event_report": artifact.get("segment_live_event_report"),
+                    "segment_prep_contract_report": artifact.get("segment_prep_contract_report"),
+                }
+            )
+        embeddings = embed_batch_safe(texts, prefix="search_document")
+        if embeddings is None:
+            return 0
+        points = []
+        for _text, payload, vector in zip(texts, payloads, embeddings, strict=True):
+            if vector is None:
+                continue
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, payload["capability_name"]))
+            points.append(PointStruct(id=point_id, vector=vector, payload=payload))
+        if not points:
+            return 0
+        get_qdrant().upsert(collection_name=COLLECTION_NAME, points=points)
+        return len(points)
+    except Exception:
+        log.warning("selected_release qdrant: publication failed", exc_info=True)
+        return 0
+
+
+def publish_selected_release_feedback(
+    *,
+    prep_dir: Path | None = None,
+    review_receipt: dict[str, Any],
+    rag_dir: Path | None = None,
+) -> dict[str, Any]:
+    if prep_dir is None:
+        prep_dir = DEFAULT_PREP_DIR
+    today = _today_path(prep_dir)
+    publication_errors: list[dict[str, str]] = []
+    if review_receipt.get("ok") is not True:
+        return {
+            "ok": False,
+            "publication_ok": False,
+            "publication_errors": [{"surface": "review_receipt", "error": "review_not_ok"}],
+        }
+    disk_manifest = _selected_release_manifest(today)
+    if disk_manifest is None:
+        return {
+            "ok": False,
+            "publication_ok": False,
+            "publication_errors": [
+                {
+                    "surface": "selected_release_manifest",
+                    "error": "missing_or_invalid_disk_manifest",
+                }
+            ],
+        }
+    receipt_manifest = review_receipt.get("selected_release_manifest")
+    if not isinstance(receipt_manifest, dict):
+        return {
+            "ok": False,
+            "publication_ok": False,
+            "publication_errors": [
+                {"surface": "selected_release_manifest", "error": "missing_receipt_manifest"}
+            ],
+        }
+    if receipt_manifest.get("selected_release_manifest_sha256") != disk_manifest.get(
+        "selected_release_manifest_sha256"
+    ):
+        return {
+            "ok": False,
+            "publication_ok": False,
+            "publication_errors": [
+                {"surface": "selected_release_manifest", "error": "receipt_manifest_hash_mismatch"}
+            ],
+        }
+
+    artifacts = load_prepped_programmes(prep_dir, require_selected=True)
+    if not artifacts:
+        return {
+            "ok": False,
+            "publication_ok": False,
+            "qdrant_upserted": 0,
+            "publication_errors": [
+                {"surface": "runtime_loader", "error": "selected_release_loaded_no_artifacts"}
+            ],
+        }
+    qdrant_upserted = _upsert_artifact_dicts_to_qdrant(
+        artifacts,
+        manifest=disk_manifest,
+        review_receipt=review_receipt,
+    )
+    if qdrant_upserted < len(artifacts):
+        publication_errors.append(
+            {
+                "surface": "qdrant",
+                "error": "selected_release_qdrant_publication_incomplete",
+            }
+        )
+    rag_digest_path: str | None = None
+    try:
+        digest = _write_selected_release_rag_digest(
+            today,
+            artifacts,
+            manifest=disk_manifest,
+            review_receipt=review_receipt,
+            rag_dir=rag_dir or (Path.home() / "documents" / "rag-sources" / "segment-prep"),
+        )
+        rag_digest_path = str(digest)
+    except Exception as exc:
+        publication_errors.append({"surface": "rag_digest", "error": str(exc)})
+
+    return {
+        "ok": True,
+        "publication_ok": not publication_errors,
+        "publication_errors": publication_errors,
+        "qdrant_upserted": qdrant_upserted,
+        "rag_digest_path": rag_digest_path,
+        "selected_release_manifest_sha256": disk_manifest.get("selected_release_manifest_sha256"),
+    }
 
 
 if __name__ == "__main__":

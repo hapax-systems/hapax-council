@@ -353,7 +353,7 @@ def _write_artifact(base: Path, payload: dict[str, Any], *, manifest: bool = Tru
 def test_load_prepped_programmes_accepts_valid_provenance(tmp_path: Path) -> None:
     _write_artifact(tmp_path, _valid_artifact())
 
-    loaded = prep.load_prepped_programmes(tmp_path)
+    loaded = prep.load_prepped_programmes(tmp_path, require_selected=False)
 
     assert len(loaded) == 1
     assert loaded[0]["programme_id"] == "prog-1"
@@ -429,7 +429,7 @@ def test_load_prepped_programmes_rejects_invalid_provenance(
 ) -> None:
     _write_artifact(tmp_path, payload, manifest=manifest)
 
-    assert prep.load_prepped_programmes(tmp_path) == []
+    assert prep.load_prepped_programmes(tmp_path, require_selected=False) == []
 
 
 def test_load_prepped_programmes_rejects_layout_responsibility_failure(
@@ -443,7 +443,7 @@ def test_load_prepped_programmes_rejects_layout_responsibility_failure(
     payload["artifact_sha256"] = prep._artifact_hash(payload)
     _write_artifact(tmp_path, payload)
 
-    assert prep.load_prepped_programmes(tmp_path) == []
+    assert prep.load_prepped_programmes(tmp_path, require_selected=False) == []
 
 
 def test_load_prepped_programmes_rejects_hash_mismatch(tmp_path: Path) -> None:
@@ -451,7 +451,7 @@ def test_load_prepped_programmes_rejects_hash_mismatch(tmp_path: Path) -> None:
     payload["prepared_script"] = ["Tampered."]
     _write_artifact(tmp_path, payload)
 
-    assert prep.load_prepped_programmes(tmp_path) == []
+    assert prep.load_prepped_programmes(tmp_path, require_selected=False) == []
 
 
 def test_load_prepped_programmes_rejects_stale_declared_action_intents(
@@ -469,7 +469,7 @@ def test_load_prepped_programmes_rejects_stale_declared_action_intents(
     payload["artifact_sha256"] = prep._artifact_hash(payload)
     _write_artifact(tmp_path, payload)
 
-    assert prep.load_prepped_programmes(tmp_path) == []
+    assert prep.load_prepped_programmes(tmp_path, require_selected=False) == []
 
 
 def test_run_prep_appends_manifest_without_readmitting_invalid_or_unlisted_artifacts(
@@ -567,6 +567,11 @@ def test_run_prep_appends_manifest_without_readmitting_invalid_or_unlisted_artif
         },
     )
     monkeypatch.setattr(prep, "_assert_resident_prep_model", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        prep,
+        "assert_segment_prep_allowed",
+        lambda _activity: SimpleNamespace(mode="open", reason="test", source="test"),
+    )
     monkeypatch.setattr(planner_module, "ProgrammePlanner", FakePlanner)
     monkeypatch.setattr(prep, "prep_segment", fake_prep_segment)
     monkeypatch.setattr(prep, "_upsert_programmes_to_qdrant", lambda *_args, **_kwargs: None)
@@ -577,7 +582,10 @@ def test_run_prep_appends_manifest_without_readmitting_invalid_or_unlisted_artif
     manifest = json.loads((today / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["programmes"] == ["prog-1.json", "prog-2.json", "prog-3.json"]
     assert manifest["run_saved_programmes"] == ["prog-2.json", "prog-3.json"]
-    assert [item["programme_id"] for item in prep.load_prepped_programmes(tmp_path)] == [
+    assert [
+        item["programme_id"]
+        for item in prep.load_prepped_programmes(tmp_path, require_selected=False)
+    ] == [
         "prog-1",
         "prog-2",
         "prog-3",
@@ -616,6 +624,11 @@ def test_run_prep_one_segment_writes_status_and_exact_planner_target(
         },
     )
     monkeypatch.setattr(prep, "_assert_resident_prep_model", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        prep,
+        "assert_segment_prep_allowed",
+        lambda _activity: SimpleNamespace(mode="open", reason="test", source="test"),
+    )
     monkeypatch.setattr(planner_module, "ProgrammePlanner", FakePlanner)
     monkeypatch.setattr(prep, "_upsert_programmes_to_qdrant", lambda *_args, **_kwargs: None)
 
@@ -915,9 +928,10 @@ def test_prep_segment_repairs_spoken_only_tier_list_into_visible_placements(
         json.dumps({"programmes": [load_path.name]}),
         encoding="utf-8",
     )
-    assert [item["programme_id"] for item in prep.load_prepped_programmes(load_root)] == [
-        "prog-tier-repair"
-    ]
+    assert [
+        item["programme_id"]
+        for item in prep.load_prepped_programmes(load_root, require_selected=False)
+    ] == ["prog-tier-repair"]
 
 
 def test_prep_segment_rejects_tier_list_repair_without_exact_placements(
@@ -1013,7 +1027,7 @@ def test_load_prepped_programmes_rejects_tier_list_without_exact_placements(
     payload["artifact_sha256"] = prep._artifact_hash(payload)
     _write_artifact(tmp_path, payload)
 
-    assert prep.load_prepped_programmes(tmp_path) == []
+    assert prep.load_prepped_programmes(tmp_path, require_selected=False) == []
 
 
 def test_load_prepped_programmes_rejects_final_candidate_without_exact_placement(
@@ -1052,7 +1066,7 @@ def test_load_prepped_programmes_rejects_final_candidate_without_exact_placement
         encoding="utf-8",
     )
 
-    assert prep.load_prepped_programmes(tmp_path) == []
+    assert prep.load_prepped_programmes(tmp_path, require_selected=False) == []
 
 
 def test_prep_segment_rejects_unsafe_programme_id_before_writing(
@@ -1103,7 +1117,7 @@ def test_load_prepped_programmes_rejects_programme_id_filename_mismatch(
         encoding="utf-8",
     )
 
-    assert prep.load_prepped_programmes(tmp_path) == []
+    assert prep.load_prepped_programmes(tmp_path, require_selected=False) == []
 
 
 def test_qdrant_upsert_indexes_only_valid_saved_artifacts(

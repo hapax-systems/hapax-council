@@ -371,7 +371,7 @@ def test_one_segment_review_accepts_real_loader_objects_without_enriched_hash_mi
 ) -> None:
     artifact = _artifact(EXCELLENT_SCRIPT)
     path = _write_manifest_artifact(tmp_path, artifact)
-    loaded = prep.load_prepped_programmes(tmp_path)
+    loaded = prep.load_prepped_programmes(tmp_path, require_selected=False)
 
     assert len(loaded) == 1
     assert loaded[0]["acceptance_gate"] == "daily_segment_prep.load_prepped_programmes"

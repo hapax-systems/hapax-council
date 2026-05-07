@@ -71,6 +71,13 @@ emit_progress() {
   fi
 }
 
+prep_restart_blocked_by_authority_gate() {
+  (
+    cd /home/hapax/projects/hapax-council
+    uv run python -m shared.segment_prep_pause --check --activity pool_generation
+  ) >/dev/null 2>&1
+}
+
 write_inflection() {
   local unit="$1"
   local cause="$2"
@@ -132,6 +139,12 @@ for unit in "${failed_units[@]}"; do
   fi
 
   emit_progress "  attempting: ${unit}"
+  if [[ "$unit" =~ ^(hapax-segment-prep.service|hapax-segment-prep.timer)$ ]] \
+      && ! prep_restart_blocked_by_authority_gate; then
+    emit_progress "  skipped_pause_gate: ${unit} blocked by segment-prep authority gate"
+    skipped+=("$unit")
+    continue
+  fi
   systemctl --user reset-failed "$unit" 2>/dev/null || true
 
   # Try restart with timeout

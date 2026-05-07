@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from shared.segment_prep_consultation import (
     build_source_consequence_map,
     nonsterile_force_ok,
 )
+from shared.segment_prep_contract import is_content_evidence_ref, is_internal_evidence_ref
 
 QUALITY_RUBRIC_VERSION = 2
 ACTIONABILITY_RUBRIC_VERSION = 3
@@ -336,9 +338,16 @@ _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 _PERSONAGE_RE = re.compile(
     r"\b(?:"
     r"I (?:feel|felt|believe|think|thought|wonder|wondered|hope|want|wanted|"
-    r"prefer|remember|know|trust|care|love|hate|enjoy|sense|intuit)|"
+    r"prefer|remember|know|trust|care|love|hate|enjoy|sense|intuit|am excited|"
+    r"am worried|am afraid|am moved)|"
+    r"we (?:feel|felt|believe|think|thought|wonder|wondered|hope|want|wanted|"
+    r"prefer|remember|know|trust|care|love|hate|enjoy|sense|intuit|are excited|"
+    r"are worried|are afraid|are moved)|"
+    r"let'?s (?:feel|remember|care|pretend|imagine ourselves)|"
+    r"you (?:will|can) (?:feel|notice|sense|care|remember)|"
     r"my (?:feelings?|emotions?|mood|memory|taste|intuition|experience|concern)|"
-    r"Hapax (?:feels|felt|believes|thinks|thought|wonders|hopes|wants|"
+    r"(?:Hapax|Claude|the system|the substrate) "
+    r"(?:feels|felt|believes|thinks|thought|wonders|hopes|wants|"
     r"prefers|remembers|knows|understands|trusts|finds|cares|loves|hates|"
     r"enjoys|senses|intuits|perceives)"
     r")\b",
@@ -499,6 +508,8 @@ def _intent(
     trigger: str,
     expected_effect: str,
     target: str | None = None,
+    evidence_refs: Sequence[str] | None = None,
+    object_ref: str | None = None,
 ) -> dict[str, Any]:
     out: dict[str, Any] = {
         "kind": kind,
@@ -508,23 +519,85 @@ def _intent(
     }
     if target:
         out["target"] = target.strip()
+    refs = _dedupe([ref for ref in evidence_refs or () if is_content_evidence_ref(ref)])
+    if refs:
+        out["evidence_refs"] = refs
+    if object_ref and is_content_evidence_ref(object_ref):
+        out["object_ref"] = object_ref
     return out
 
 
-def _intents_for_text(text: str) -> list[dict[str, Any]]:
+def _dedupe(values: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        clean = str(value or "").strip()
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        out.append(clean)
+    return out
+
+
+def _slug_token(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug or "object"
+
+
+def _refs_from_prep_contract(prep_contract: Mapping[str, Any] | None) -> list[str]:
+    if not isinstance(prep_contract, Mapping):
+        return []
+    refs: list[str] = []
+    for key in ("source_packet_refs", "claim_map", "actionability_map", "layout_need_map"):
+        value = prep_contract.get(key)
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            for item in value:
+                if not isinstance(item, Mapping):
+                    continue
+                for ref_key in ("source_ref", "evidence_refs", "grounds", "claim_ids"):
+                    raw = item.get(ref_key)
+                    if isinstance(raw, str):
+                        refs.append(raw)
+                    elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+                        refs.extend(str(ref) for ref in raw)
+    return _dedupe([ref for ref in refs if is_content_evidence_ref(ref)])
+
+
+def _source_ref_for_target(target: str, contract_refs: Sequence[str]) -> str:
+    target_slug = _slug_token(target)
+    lowered = target.lower()
+    for ref in contract_refs:
+        if ref.lower().endswith(f":{lowered}") or target_slug in ref.lower():
+            return ref
+    return f"source:{target_slug}"
+
+
+def _object_ref_for_target(target: str, action_kind: str) -> str:
+    return f"object:{target.strip()}"
+
+
+def _intents_for_text(
+    text: str,
+    *,
+    prep_contract: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     intents: list[dict[str, Any]] = []
     lower = text.lower()
+    contract_refs = _refs_from_prep_contract(prep_contract)
 
     for sentence in _sentences(text):
         for match in _TIER_RE.finditer(sentence):
             target = match.group("target").strip()
             tier = match.group("tier").upper()
+            action_ref = f"action:tier_chart:{_slug_token(target)}:{tier}"
             intents.append(
                 _intent(
                     kind="tier_chart",
                     trigger=match.group(0),
                     target=target,
                     expected_effect=f"tier_chart.place:{target}:{tier}",
+                    evidence_refs=[action_ref, _source_ref_for_target(target, contract_refs)],
+                    object_ref=_object_ref_for_target(target, "tier_chart"),
                 )
             )
 
@@ -536,6 +609,8 @@ def _intents_for_text(text: str) -> list[dict[str, Any]]:
                 trigger=match.group(0),
                 target=number,
                 expected_effect=f"countdown.current:{number}",
+                evidence_refs=[f"action:countdown:{number}", *contract_refs[:1]],
+                object_ref=_object_ref_for_target(number, "countdown"),
             )
         )
 
@@ -545,6 +620,8 @@ def _intents_for_text(text: str) -> list[dict[str, Any]]:
                 kind="chat_poll",
                 trigger=match.group(0),
                 expected_effect="chat.poll.requested",
+                evidence_refs=["action:chat_poll:audience-job", *contract_refs[:1]],
+                object_ref="object:chat_poll:audience-job",
             )
         )
 
@@ -556,6 +633,8 @@ def _intents_for_text(text: str) -> list[dict[str, Any]]:
                     trigger=phrase,
                     target=layer,
                     expected_effect=f"iceberg.depth:{layer}",
+                    evidence_refs=[f"action:iceberg_depth:{layer}", *contract_refs[:1]],
+                    object_ref=_object_ref_for_target(layer, "iceberg_depth"),
                 )
             )
 
@@ -567,6 +646,8 @@ def _intents_for_text(text: str) -> list[dict[str, Any]]:
                     trigger=phrase,
                     target=mood,
                     expected_effect=f"visual_mood:{mood}",
+                    evidence_refs=[f"action:mood_shift:{mood}", *contract_refs[:1]],
+                    object_ref=_object_ref_for_target(mood, "mood_shift"),
                 )
             )
 
@@ -576,6 +657,8 @@ def _intents_for_text(text: str) -> list[dict[str, Any]]:
                 kind="comparison",
                 trigger="comparison language",
                 expected_effect="spoken.comparison.explicit",
+                evidence_refs=["action:comparison:spoken", *contract_refs[:1]],
+                object_ref="object:comparison:spoken",
             )
         )
 
@@ -592,6 +675,8 @@ def _intents_for_text(text: str) -> list[dict[str, Any]]:
                 trigger=match.group(0),
                 target=target,
                 expected_effect=f"source.visible:{target}",
+                evidence_refs=[_source_ref_for_target(target, contract_refs)],
+                object_ref=_object_ref_for_target(target, "source_citation"),
             )
         )
 
@@ -601,6 +686,7 @@ def _intents_for_text(text: str) -> list[dict[str, Any]]:
                 kind="spoken_argument",
                 trigger="no external affordance claimed",
                 expected_effect="spoken.argument.only",
+                evidence_refs=contract_refs[:1],
             )
         )
     return intents
@@ -612,6 +698,16 @@ def _unsupported_action_lines(text: str) -> list[str]:
 
 def _personage_violation_lines(text: str) -> list[str]:
     return [sentence for sentence in _sentences(text) if _PERSONAGE_RE.search(sentence)]
+
+
+def segment_personage_violations(script: Sequence[str]) -> list[dict[str, Any]]:
+    """Return beat-indexed non-anthropomorphic personage violations for a script."""
+
+    violations: list[dict[str, Any]] = []
+    for beat_index, text in enumerate(script):
+        for line in _personage_violation_lines(str(text)):
+            violations.append({"beat_index": beat_index, "line": line})
+    return violations
 
 
 def _detector_theater_lines(text: str) -> list[str]:
@@ -632,6 +728,8 @@ def _remove_unsupported_action_lines(text: str) -> tuple[str, list[str]]:
 def build_beat_action_intents(
     script: list[str],
     segment_beats: list[str] | None = None,
+    *,
+    prep_contract: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Build beat-level declarations of what the spoken script should do."""
     segment_beats = segment_beats or []
@@ -642,7 +740,7 @@ def build_beat_action_intents(
             {
                 "beat_index": index,
                 "beat_direction": beat_direction,
-                "intents": _intents_for_text(text),
+                "intents": _intents_for_text(text, prep_contract=prep_contract),
                 "unsupported_action_lines": _unsupported_action_lines(text),
             }
         )
@@ -652,6 +750,8 @@ def build_beat_action_intents(
 def validate_segment_actionability(
     script: list[str],
     segment_beats: list[str] | None = None,
+    *,
+    prep_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return sanitized script plus beat action declarations."""
     sanitized: list[str] = []
@@ -667,15 +767,23 @@ def validate_segment_actionability(
             personage_violations.append({"beat_index": index, "line": line})
         for line in _detector_theater_lines(text):
             detector_theater_lines.append({"beat_index": index, "line": line})
-    return {
+    ok = not removed and not personage_violations and not detector_theater_lines
+    result: dict[str, Any] = {
         "rubric_version": ACTIONABILITY_RUBRIC_VERSION,
-        "ok": not removed and not personage_violations and not detector_theater_lines,
-        "prepared_script": sanitized,
-        "beat_action_intents": build_beat_action_intents(sanitized, segment_beats),
+        "ok": ok,
+        "diagnostic_sanitized_script": sanitized,
+        "beat_action_intents": build_beat_action_intents(
+            sanitized,
+            segment_beats,
+            prep_contract=prep_contract,
+        ),
         "removed_unsupported_action_lines": removed,
         "personage_violations": personage_violations,
         "detector_theater_lines": detector_theater_lines,
     }
+    if ok:
+        result["prepared_script"] = sanitized
+    return result
 
 
 def _layout_need_from_intent(
@@ -693,6 +801,7 @@ def _layout_need_from_intent(
             "source_affordance": "spoken_argument_only",
             "expected_visible_effect": "layout.refusal.visible",
             "evidence_ref": f"beat_action_intents[{beat_index}].intents[{intent_index}]",
+            "evidence_refs": [],
             "priority": "low",
             "ttl_ms": 8000,
             "hysteresis_key": "unsupported:spoken_argument_only",
@@ -708,6 +817,7 @@ def _layout_need_from_intent(
             "source_affordance": "unknown",
             "expected_visible_effect": "layout.refusal.visible",
             "evidence_ref": f"beat_action_intents[{beat_index}].intents[{intent_index}]",
+            "evidence_refs": [],
             "priority": "low",
             "ttl_ms": 8000,
             "hysteresis_key": f"unsupported:{action_kind}",
@@ -717,12 +827,27 @@ def _layout_need_from_intent(
         }
 
     target = intent.get("target")
+    expected_effect = str(intent.get("expected_effect") or rubric["expected_visible_effect"])
     kind = rubric["kind"]
     return {
         "kind": kind,
         "source_action_kind": action_kind,
         "source_affordance": rubric["source_affordance"],
         "expected_visible_effect": rubric["expected_visible_effect"],
+        "expected_effect": expected_effect,
+        "target_ref": str(target).strip() if target else "",
+        "evidence_refs": _dedupe(
+            [
+                f"beat_action_intents[{beat_index}].intents[{intent_index}]",
+                *[
+                    ref
+                    for ref in intent.get("evidence_refs", []) or []
+                    if is_content_evidence_ref(ref)
+                ],
+            ]
+        ),
+        "object_ref": str(intent.get("object_ref") or "").strip(),
+        "action_ref": f"action:beat-{beat_index + 1}:{intent_index}:{action_kind}",
         "evidence_ref": f"beat_action_intents[{beat_index}].intents[{intent_index}]",
         "priority": "high" if action_kind != "spoken_argument" else "low",
         "ttl_ms": 12000 if action_kind != "spoken_argument" else 8000,
@@ -731,6 +856,47 @@ def _layout_need_from_intent(
         "readback_required": responsibility_mode == RESPONSIBLE_LAYOUT_MODE,
         "status": "proposed_prior",
     }
+
+
+def _object_binding_from_need(need: dict[str, Any]) -> dict[str, Any]:
+    action_kind = str(need.get("source_action_kind") or "")
+    effect = str(need.get("expected_effect") or "").strip()
+    target = str(need.get("target_ref") or "").strip()
+    action_ref = str(need.get("action_ref") or "").strip()
+    if not effect or not action_ref:
+        return {}
+    binding: dict[str, Any] = {
+        "need_kind": str(need.get("kind") or ""),
+        "source_action_kind": action_kind,
+        "expected_effect": effect,
+        "action_ref": action_ref,
+    }
+    if target:
+        binding["object_ref"] = f"object:{target}"
+    if need.get("object_ref"):
+        binding["object_ref"] = str(need["object_ref"])
+    if action_kind == "tier_chart" and effect.startswith("tier_chart.place:"):
+        parts = [part.strip() for part in effect.split(":")[1:] if part.strip()]
+        if len(parts) >= 2:
+            item = ":".join(parts[:-1])
+            tier = parts[-1]
+            binding["item_ref"] = f"tier_item:{item}:{tier}"
+            binding["action_ref"] = f"action:tier_chart:{item}:{tier}"
+    elif action_kind == "source_citation" and target:
+        binding["source_ref"] = f"source:{target}"
+    elif action_kind == "countdown" and target:
+        binding["item_ref"] = f"item:rank:{target}"
+    return {key: value for key, value in binding.items() if str(value or "").strip()}
+
+
+def _content_refs_from_need(need: Mapping[str, Any]) -> list[str]:
+    refs: list[str] = []
+    for ref in need.get("evidence_refs", []) or []:
+        if is_content_evidence_ref(ref):
+            refs.append(str(ref).strip())
+    if need.get("object_ref") and is_content_evidence_ref(need["object_ref"]):
+        refs.append(str(need["object_ref"]).strip())
+    return _dedupe(refs)
 
 
 def build_beat_layout_intents(
@@ -745,6 +911,9 @@ def build_beat_layout_intents(
         needs: list[str] = []
         evidence_refs: list[str] = []
         source_affordances: list[str] = []
+        expected_effects: list[str] = []
+        object_bindings: list[dict[str, Any]] = []
+        need_objects: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
         for intent_index, intent in enumerate(declaration.get("intents") or []):
             if not isinstance(intent, dict):
@@ -762,10 +931,29 @@ def build_beat_layout_intents(
             need_kind = str(need["kind"])
             if need_kind not in needs:
                 needs.append(need_kind)
-            evidence_refs.append(str(need["evidence_ref"]))
+            evidence_refs.extend(_content_refs_from_need(need))
+            if not evidence_refs and not is_internal_evidence_ref(need["evidence_ref"]):
+                evidence_refs.append(str(need["evidence_ref"]))
             source_affordance = str(need["source_affordance"])
             if source_affordance not in source_affordances:
                 source_affordances.append(source_affordance)
+            if need.get("expected_effect"):
+                expected_effects.append(str(need["expected_effect"]))
+            binding = _object_binding_from_need(need)
+            if binding:
+                object_bindings.append(binding)
+                need_objects.append(
+                    {
+                        "need_kind": need["kind"],
+                        "source_action_kind": need["source_action_kind"],
+                        "expected_effect": need.get("expected_effect")
+                        or need.get("expected_visible_effect"),
+                        "source_packet_refs": _content_refs_from_need(need),
+                        "object_ref": binding.get("object_ref") or need.get("object_ref") or "",
+                        "readback_ref": binding.get("action_ref") or need.get("action_ref") or "",
+                        "readback_required": need.get("readback_required") is True,
+                    }
+                )
         if not needs:
             needs.append(
                 str(
@@ -777,7 +965,6 @@ def build_beat_layout_intents(
                     )["kind"]
                 )
             )
-            evidence_refs.append(f"beat_action_intents[{beat_index}].intents[0]")
             source_affordances.append("host_camera_or_voice_presence")
         out.append(
             {
@@ -786,8 +973,11 @@ def build_beat_layout_intents(
                 "beat_direction": declaration.get("beat_direction", ""),
                 "responsibility_mode": responsibility_mode,
                 "needs": needs,
-                "evidence_refs": evidence_refs,
+                "evidence_refs": _dedupe(evidence_refs),
                 "source_affordances": source_affordances,
+                "expected_effects": _dedupe([str(item) for item in expected_effects]),
+                "object_bindings": object_bindings,
+                "need_objects": need_objects,
                 "default_static_success_allowed": responsibility_mode
                 in {EXPLICIT_LAYOUT_FALLBACK_CONTEXT, NON_RESPONSIBLE_STATIC_CONTEXT},
             }
@@ -817,6 +1007,48 @@ def _observed_static_default_layout(observed_layout_state: dict[str, Any]) -> bo
     return False
 
 
+def _required_layout_object_refs(beat_layout_intents: Sequence[Mapping[str, Any]]) -> list[str]:
+    refs: list[str] = []
+    for beat in beat_layout_intents:
+        for binding in beat.get("object_bindings", []) or []:
+            if isinstance(binding, Mapping):
+                refs.extend(
+                    str(binding[key]).strip()
+                    for key in ("object_ref", "item_ref", "source_ref", "action_ref")
+                    if str(binding.get(key) or "").strip()
+                )
+        for need in beat.get("need_objects", []) or []:
+            if isinstance(need, Mapping):
+                refs.extend(
+                    str(need[key]).strip()
+                    for key in ("object_ref", "readback_ref")
+                    if str(need.get(key) or "").strip()
+                )
+    return _dedupe(refs)
+
+
+def _observed_layout_object_refs(observed_layout_state: Mapping[str, Any]) -> list[str]:
+    refs: list[str] = []
+    for key in (
+        "readback_object_ref",
+        "object_ref",
+        "item_ref",
+        "source_ref",
+        "action_ref",
+    ):
+        value = observed_layout_state.get(key)
+        if isinstance(value, str):
+            refs.append(value)
+    for key in ("readback_object_refs", "object_refs", "rendered_object_refs", "readback_refs"):
+        value = observed_layout_state.get(key)
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            refs.extend(str(item) for item in value)
+    readback = observed_layout_state.get("readback")
+    if isinstance(readback, Mapping):
+        refs.extend(_observed_layout_object_refs(readback))
+    return _dedupe(refs)
+
+
 def validate_layout_responsibility(
     beat_action_intents: list[dict[str, Any]],
     *,
@@ -837,6 +1069,17 @@ def validate_layout_responsibility(
         beat_action_intents,
         responsibility_mode=responsibility_mode,
     )
+    rendered_readback = bool(
+        observed_layout_state
+        and (
+            observed_layout_state.get("rendered_readback")
+            or observed_layout_state.get("layout_state_readback")
+            or (
+                observed_layout_state.get("readback")
+                and observed_layout_state.get("readback_surface") == "rendered_compositor"
+            )
+        )
+    )
     for beat in beat_layout_intents:
         if beat.get("beat_index") is None or not isinstance(beat.get("needs"), list):
             violations.append({"reason": "invalid_beat_layout_needs", "beat": beat})
@@ -850,11 +1093,20 @@ def validate_layout_responsibility(
                     "beat_index": beat["beat_index"],
                 }
             )
-        if not beat.get("evidence_refs"):
+        evidence_refs = [ref for ref in beat.get("evidence_refs", []) or [] if isinstance(ref, str)]
+        if not evidence_refs:
             violations.append(
                 {
                     "reason": "missing_layout_evidence_refs",
                     "beat_index": beat["beat_index"],
+                }
+            )
+        elif not all(is_content_evidence_ref(ref) for ref in evidence_refs):
+            violations.append(
+                {
+                    "reason": "invalid_layout_evidence_refs",
+                    "beat_index": beat["beat_index"],
+                    "evidence_refs": evidence_refs,
                 }
             )
         if not beat.get("source_affordances"):
@@ -892,7 +1144,10 @@ def validate_layout_responsibility(
                     }
                 )
 
-    if observed_layout_state and responsibility_mode == RESPONSIBLE_HOSTING_CONTEXT:
+    if observed_layout_state and responsibility_mode in {
+        RESPONSIBLE_HOSTING_CONTEXT,
+        EXPLICIT_LAYOUT_FALLBACK_CONTEXT,
+    }:
         explicit_static_allowed = bool(
             observed_layout_state.get("fallback_explicit")
             or observed_layout_state.get("non_responsible_context")
@@ -901,7 +1156,11 @@ def validate_layout_responsibility(
             or observed_layout_state.get("hosting_context")
             in {EXPLICIT_LAYOUT_FALLBACK_CONTEXT, NON_RESPONSIBLE_STATIC_CONTEXT}
         )
-        if _observed_static_default_layout(observed_layout_state) and not explicit_static_allowed:
+        if (
+            responsibility_mode == RESPONSIBLE_HOSTING_CONTEXT
+            and _observed_static_default_layout(observed_layout_state)
+            and not explicit_static_allowed
+        ):
             violations.append(
                 {
                     "reason": "static_default_layout_not_responsible_success",
@@ -910,8 +1169,9 @@ def validate_layout_responsibility(
                     or observed_layout_state.get("layout"),
                 }
             )
-        if _observed_static_default_layout(observed_layout_state) and observed_layout_state.get(
-            "fallback_explicit"
+        if _observed_static_default_layout(observed_layout_state) and (
+            observed_layout_state.get("fallback_explicit")
+            or responsibility_mode == EXPLICIT_LAYOUT_FALLBACK_CONTEXT
         ):
             has_fallback_receipt = bool(
                 observed_layout_state.get("decision_id")
@@ -928,10 +1188,14 @@ def validate_layout_responsibility(
                         "layout_id": observed_layout_state.get("layout_id"),
                     }
                 )
-        if observed_layout_state.get("claims_success") is True and not (
-            observed_layout_state.get("decision_id")
-            or observed_layout_state.get("receipt_id")
-            or observed_layout_state.get("readback")
+        if (
+            responsibility_mode == RESPONSIBLE_HOSTING_CONTEXT
+            and observed_layout_state.get("claims_success") is True
+            and not (
+                observed_layout_state.get("decision_id")
+                or observed_layout_state.get("receipt_id")
+                or observed_layout_state.get("readback")
+            )
         ):
             violations.append(
                 {
@@ -940,11 +1204,15 @@ def validate_layout_responsibility(
                 }
             )
         if (
-            observed_layout_state.get("layout_store_success")
-            or observed_layout_state.get("gauge_success")
-        ) and not (
-            observed_layout_state.get("rendered_readback")
-            or observed_layout_state.get("layout_state_readback")
+            responsibility_mode == RESPONSIBLE_HOSTING_CONTEXT
+            and (
+                observed_layout_state.get("layout_store_success")
+                or observed_layout_state.get("gauge_success")
+            )
+            and not (
+                observed_layout_state.get("rendered_readback")
+                or observed_layout_state.get("layout_state_readback")
+            )
         ):
             violations.append(
                 {
@@ -953,17 +1221,33 @@ def validate_layout_responsibility(
                 }
             )
 
-    rendered_readback = bool(
-        observed_layout_state
-        and (
-            observed_layout_state.get("rendered_readback")
-            or observed_layout_state.get("layout_state_readback")
-            or (
-                observed_layout_state.get("readback")
-                and observed_layout_state.get("readback_surface") == "rendered_compositor"
+        observed_refs = set(_observed_layout_object_refs(observed_layout_state))
+        required_refs = set(_required_layout_object_refs(beat_layout_intents))
+        static_fallback_has_receipt = bool(
+            _observed_static_default_layout(observed_layout_state)
+            and (
+                observed_layout_state.get("fallback_explicit")
+                or responsibility_mode == EXPLICIT_LAYOUT_FALLBACK_CONTEXT
             )
+            and (
+                observed_layout_state.get("receipt_id") or observed_layout_state.get("decision_id")
+            )
+            and (observed_layout_state.get("ttl_ms") or observed_layout_state.get("ttl_s"))
         )
-    )
+        if (
+            responsibility_mode == RESPONSIBLE_HOSTING_CONTEXT
+            and rendered_readback
+            and required_refs
+            and not static_fallback_has_receipt
+            and not required_refs.issubset(observed_refs)
+        ):
+            violations.append(
+                {
+                    "reason": "rendered_readback_missing_object_refs",
+                    "missing_object_refs": sorted(required_refs - observed_refs),
+                }
+            )
+
     explicit_static_fallback_receipt = bool(
         observed_layout_state
         and observed_layout_state.get("fallback_explicit")
