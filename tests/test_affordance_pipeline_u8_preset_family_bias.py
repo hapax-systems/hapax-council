@@ -29,11 +29,12 @@ mode-appropriate lean.)
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from shared.affordance import SelectionCandidate
+from shared.affordance import ActivationState, SelectionCandidate
+from shared.impingement import Impingement, ImpingementType
 from shared.visual_mode_bias import (
     PRESET_FAMILY_WEIGHTS,
     VisualModeBias,
@@ -174,34 +175,77 @@ class TestPipelineMultiplier:
 
 
 class TestPipelineLiveIntegration:
-    """Verify the production scoring loop applies the multiplier when
-    invoked. Patches `get_visual_mode_bias` at the import site in
-    `shared.affordance_pipeline` rather than its source so the test
-    can drive deterministic mode without writing to the live working-
-    mode file. The two `__getattr__` indirections (call site +
-    helper module) are the cache-invalidation seam — patching at the
-    call site exercises the same path operator-mode-flips touch."""
+    """Drive `AffordancePipeline.select()` through the production scoring loop."""
 
-    def test_select_applies_family_weight_multiplier(self) -> None:
-        """Mock `get_visual_mode_bias` at the import site to return a
-        synthetic bias and assert the candidate's `combined` score
-        carries the multiplier. We bypass full select() by invoking
-        the same multiplier logic on a simulated post-action-tendency
-        candidate snapshot — equivalent to inserting a synthetic
-        impingement after the fact."""
+    def _candidate_pair(self) -> list[SelectionCandidate]:
+        payload = {
+            "content_risk": "tier_0_owned",
+            "monetization_risk": "none",
+            "public_capable": False,
+        }
+        return [
+            SelectionCandidate(
+                capability_name="fx.family.calm-textural",
+                similarity=1.0,
+                payload=dict(payload),
+            ),
+            SelectionCandidate(
+                capability_name="fx.family.audio-reactive",
+                similarity=1.0,
+                payload=dict(payload),
+            ),
+        ]
 
-        synthetic_bias = visual_mode_bias_for("research")
-        candidate = _candidate("fx.family.calm-textural", combined=1.0)
+    def _select_with_bias(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mode: str,
+    ) -> tuple[list[SelectionCandidate], MagicMock]:
+        from shared.affordance_pipeline import AffordancePipeline
 
-        with patch(
-            "shared.affordance_pipeline.get_visual_mode_bias",
-            return_value=synthetic_bias,
-        ):
-            from shared.affordance_pipeline import get_visual_mode_bias
+        pipeline = AffordancePipeline()
+        pipeline._retrieve = MagicMock(return_value=self._candidate_pair())
+        pipeline._active_programme_cached = MagicMock(return_value=None)
+        pipeline._exploration.compute_and_publish = MagicMock(return_value=None)
+        bias = MagicMock(return_value=visual_mode_bias_for(mode))
+        monkeypatch.setattr("shared.affordance_pipeline.get_visual_mode_bias", bias)
+        monkeypatch.setattr("shared.affordance_pipeline._record_recruitment", lambda _name: None)
+        monkeypatch.setattr("shared.governance.quiet_frame_subscriber.install", lambda: None)
+        monkeypatch.setattr(ActivationState, "thompson_sample", lambda _self: 0.5)
+        monkeypatch.setenv("HAPAX_AFFORDANCE_RECENCY_WEIGHT", "0")
+        monkeypatch.setenv("HAPAX_AFFORDANCE_THOMPSON_DECAY", "1")
+        monkeypatch.setenv("HAPAX_RECRUITMENT_LOG", "0")
+        monkeypatch.setenv("HAPAX_DISPATCH_TRACE", "0")
 
-            visual_bias = get_visual_mode_bias()
-            if candidate.capability_name.startswith("fx.family."):
-                candidate.combined *= visual_bias.family_weight(candidate.capability_name)
+        winners = pipeline.select(
+            Impingement(
+                timestamp=1.0,
+                source="test.u8",
+                type=ImpingementType.ABSOLUTE_THRESHOLD,
+                strength=1.0,
+                content={"metric": "preset-family-bias"},
+                embedding=[1.0, 0.0, 0.0],
+            ),
+            top_k=2,
+        )
+        return winners, bias
 
-        # Was 1.5 pre-2026-05-03; now 1.2 after visual-monoculture rebalance.
-        assert candidate.combined == pytest.approx(1.2)
+    def test_select_applies_research_family_weight_to_winner(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        winners, bias = self._select_with_bias(monkeypatch, "research")
+
+        assert winners[0].capability_name == "fx.family.calm-textural"
+        assert winners[0].combined > winners[1].combined
+        bias.assert_called_once()
+
+    def test_select_applies_rnd_family_weight_to_winner(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        winners, bias = self._select_with_bias(monkeypatch, "rnd")
+
+        assert winners[0].capability_name == "fx.family.audio-reactive"
+        assert winners[0].combined > winners[1].combined
+        bias.assert_called_once()
