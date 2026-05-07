@@ -581,6 +581,7 @@ def build_inline_fx_chain(
     # thread dump is dominated by these passthrough shader invocations.
     compositor._slot_pipeline = SlotPipeline(registry, num_slots=12)
 
+    hero_effect_slot = _make_hero_effect_slot(Gst)
     glcolorconvert_out = Gst.ElementFactory.make("glcolorconvert", "fx-glcc-out")
     gldownload = Gst.ElementFactory.make("gldownload", "fx-gldownload")
     fx_convert = Gst.ElementFactory.make("videoconvert", "fx-out-convert")
@@ -598,10 +599,10 @@ def build_inline_fx_chain(
         glupload_flash,
         glcc_flash,
         glmixer,
-        glcolorconvert_out,
-        gldownload,
-        fx_convert,
     ]
+    if hero_effect_slot is not None:
+        all_elements.append(hero_effect_slot)
+    all_elements.extend([glcolorconvert_out, gldownload, fx_convert])
     for el in all_elements:
         if el is None:
             log.error("Failed to create FX element — effects disabled")
@@ -637,7 +638,14 @@ def build_inline_fx_chain(
     compositor._fx_glmixer = glmixer
 
     # --- Shader chain after mixer ---
-    compositor._slot_pipeline.build_chain(pipeline, Gst, glmixer, glcolorconvert_out)
+    shader_downstream = hero_effect_slot if hero_effect_slot is not None else glcolorconvert_out
+    compositor._slot_pipeline.build_chain(pipeline, Gst, glmixer, shader_downstream)
+
+    if hero_effect_slot is not None:
+        if not hero_effect_slot.link(glcolorconvert_out):
+            log.error("Failed to link hero-effect-slot -> fx-glcc-out")
+            return False
+        _install_hero_effect_rotator(compositor, hero_effect_slot)
 
     glcolorconvert_out.link(gldownload)
     gldownload.link(fx_convert)
@@ -704,6 +712,62 @@ def build_inline_fx_chain(
         compositor._slot_pipeline.num_slots,
     )
     return True
+
+
+def _make_hero_effect_slot(Gst: Any) -> Any | None:
+    """Create the optional dedicated hero-effect GL pass."""
+    if Gst.ElementFactory.find("glfeedback") is None:
+        log.info("HeroEffectRotator disabled: glfeedback factory unavailable")
+        return None
+    slot = Gst.ElementFactory.make("glfeedback", "hero-effect-slot")
+    if slot is None:
+        log.info("HeroEffectRotator disabled: hero-effect-slot creation failed")
+        return None
+    try:
+        from .hero_effect_rotator import HERO_EFFECT_PASSTHROUGH
+
+        slot.set_property("fragment", HERO_EFFECT_PASSTHROUGH)
+    except Exception:
+        log.debug("HeroEffectRotator passthrough seed failed", exc_info=True)
+    return slot
+
+
+def _hero_effect_target(compositor: Any) -> tuple[str, Any] | None:
+    """Return the configured hero camera's tile in the active tiled layout."""
+    layout = getattr(compositor, "_tile_layout", {}) or {}
+    cameras = getattr(getattr(compositor, "config", None), "cameras", ()) or ()
+    for cam in cameras:
+        role = getattr(cam, "role", "")
+        if not getattr(cam, "hero", False) or not role:
+            continue
+        tile = layout.get(role)
+        if tile is None:
+            continue
+        if getattr(tile, "w", 0) <= 0 or getattr(tile, "h", 0) <= 0:
+            continue
+        return role, tile
+    return None
+
+
+def _install_hero_effect_rotator(compositor: Any, slot: Any) -> None:
+    """Attach HeroEffectRotator to the dedicated post-FX GL pass."""
+    try:
+        from .hero_effect_rotator import HeroEffectRotator
+
+        rotator = getattr(compositor, "_hero_effect_rotator", None)
+        if not isinstance(rotator, HeroEffectRotator):
+            rotator = HeroEffectRotator()
+        rotator.set_slot(slot)
+        target = _hero_effect_target(compositor)
+        if target is not None:
+            _, tile = target
+            rotator.update_hero_tile(tile)
+            rotator.tick()
+        compositor._hero_effect_rotator = rotator
+        log.info("HeroEffectRotator slot bound: effects=%d target=%s", rotator.effect_count, target)
+    except Exception:
+        compositor._hero_effect_rotator = None
+        log.exception("HeroEffectRotator wiring failed")
 
 
 def switch_fx_source(compositor: Any, source: str) -> bool:
