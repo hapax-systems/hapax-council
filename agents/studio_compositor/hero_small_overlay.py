@@ -1,4 +1,4 @@
-"""Hero small tile overlay — renders the hero camera snapshot on the cairooverlay.
+"""Hero small tile overlay — projects the hero camera snapshot on cairooverlay.
 
 Reads the hero camera's JPEG snapshot from /dev/shm and draws it at the
 ``_hero_small`` tile position (a virtual layout rect; underscore prefix
@@ -6,9 +6,9 @@ means no GStreamer compositor pad is created for it). Source JPEG only
 changes every 5 seconds (the snapshot branch refresh rate) and we cache
 the decoded surface for 500ms — re-decoding is cheap-ish but not free.
 
-The overlay draws in the post-FX cairooverlay callback, so it lands on
-top of the shader chain — a "raw monitor" PIP showing the unprocessed
-hero feed alongside the FX'd version.
+The overlay draws in the post-FX cairooverlay callback as a constant-alpha
+projection. It is a bounded monitor aid, not layout success and not a
+replacement for capture-side face obscuring.
 """
 
 from __future__ import annotations
@@ -19,13 +19,20 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .models import TileRect
+from .projected_hero import (
+    PROJECTED_HERO_MIN_DWELL_S,
+    ProjectedHeroProfile,
+    build_projected_hero_profile,
+)
+
 if TYPE_CHECKING:
     import cairo
 
 log = logging.getLogger(__name__)
 
 _SNAPSHOT_DIR = Path("/dev/shm/hapax-compositor")
-_CACHE_TTL_S = 0.5
+_CACHE_TTL_S = PROJECTED_HERO_MIN_DWELL_S
 
 
 class HeroSmallOverlay:
@@ -37,6 +44,10 @@ class HeroSmallOverlay:
         self._tile_y = tile_y
         self._tile_w = tile_w
         self._tile_h = tile_h
+        self._projection: ProjectedHeroProfile = build_projected_hero_profile(
+            hero_role,
+            TileRect(x=tile_x, y=tile_y, w=tile_w, h=tile_h),
+        )
         self._surface: cairo.ImageSurface | None = None
         self._last_load: float = 0.0
         self._lock = threading.Lock()
@@ -100,9 +111,16 @@ class HeroSmallOverlay:
 
         try:
             cr.save()
-            cr.set_source_surface(surface, self._tile_x, self._tile_y)
+            cr.set_source_rgba(0.0, 0.0, 0.0, self._projection.backdrop_alpha)
             cr.rectangle(self._tile_x, self._tile_y, self._tile_w, self._tile_h)
             cr.fill()
+            cr.set_source_surface(surface, self._tile_x, self._tile_y)
+            cr.rectangle(self._tile_x, self._tile_y, self._tile_w, self._tile_h)
+            cr.paint_with_alpha(self._projection.alpha)
+            cr.set_source_rgba(1.0, 1.0, 1.0, self._projection.border_alpha)
+            cr.rectangle(self._tile_x + 0.5, self._tile_y + 0.5, self._tile_w - 1, self._tile_h - 1)
+            cr.set_line_width(1.0)
+            cr.stroke()
             cr.restore()
         except Exception:
             log.debug("HeroSmallOverlay: draw failed", exc_info=True)
