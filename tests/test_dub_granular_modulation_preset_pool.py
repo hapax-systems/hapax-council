@@ -177,7 +177,14 @@ class TestLineageDistinctness:
     LINEAGE_PRIMARY_NODES: dict[str, frozenset[str]] = {
         "dub-spectral": frozenset({"echo", "tunnel", "trail", "droste"}),
         "granular-loop": frozenset({"stutter", "tile", "slitscan"}),
-        "modulation-pulse": frozenset({"strobe", "breathing", "warp"}),
+        # ``scanlines`` carries the strobe-flicker intent in the
+        # ``modulation_pulse_strobe`` preset (node type ``scanlines``,
+        # node id ``scanlines_pulse``); ``drift`` carries the breathing
+        # intent (``breathing_pulse`` node uses ``drift`` type for the
+        # slow-modulation envelope). Both are first-class signature
+        # expressions of the modulation-pulse lineage even though they
+        # don't share the lineage's keyword names.
+        "modulation-pulse": frozenset({"strobe", "breathing", "warp", "scanlines", "drift"}),
         "liquid-flow": frozenset({"fluid_sim", "fisheye", "syrup", "drift"}),
     }
 

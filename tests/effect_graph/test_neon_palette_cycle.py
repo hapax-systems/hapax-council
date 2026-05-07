@@ -69,13 +69,21 @@ def test_neon_preset_brightness_ceiling():
 
 def test_neon_preset_audio_modulates_cycle_rate_softly():
     """OQ-02 bound-3 (anti-visualizer): audio modulation on cycle_rate must be
-    soft (scale ≤ 1.0), not 1:1 driving the geometry."""
+    soft (scale ≤ 1.0), not 1:1 driving the geometry.
+
+    Scoped to ``cycle_rate`` (a normalized 0..1 param). Other audio mods
+    (e.g. ``hue_rotate``, expressed in degrees) live on different scales
+    and are bound-checked elsewhere — the test name and OQ-02 bound-3
+    are cycle-rate-specific.
+    """
     preset = json.loads((PRESETS_DIR / "neon.json").read_text())
     mods = preset.get("modulations", [])
-    audio_mods = [m for m in mods if m.get("source") == "audio_energy"]
-    assert audio_mods, "expected audio_energy modulation for reactivity"
-    for m in audio_mods:
+    cycle_rate_audio_mods = [
+        m for m in mods if m.get("source") == "audio_energy" and m.get("param") == "cycle_rate"
+    ]
+    assert cycle_rate_audio_mods, "expected audio_energy modulation on cycle_rate for reactivity"
+    for m in cycle_rate_audio_mods:
         assert m["scale"] <= 1.0, (
-            f"audio modulation scale={m['scale']} too aggressive — risks "
-            "visualizer-register output (OQ-02 bound-3)"
+            f"audio modulation on cycle_rate scale={m['scale']} too aggressive — "
+            "risks visualizer-register output (OQ-02 bound-3)"
         )

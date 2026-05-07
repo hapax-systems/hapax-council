@@ -104,14 +104,25 @@ def test_prompt_contains_what_to_do_instead_block() -> None:
 
     Text updated 2026-04-22 (PR #1210) from ``host making a livestream,
     not a system announcer`` → ``ACTIVE LIVESTREAM HOST, not a dumb
-    observer or a museum docent``. Test assertions follow.
+    observer or a museum docent``. Subsequently retitled to ``ACTIVE
+    STRUCTURAL DIRECTOR ... not a dumb observer or a museum docent`` —
+    same intent (active driver, not passive narrator), reframed around
+    the director's structural role over the composition. Test
+    assertions follow current text.
     """
     director = _director()
     prompt = director._build_unified_prompt()
     assert "WHAT TO DO INSTEAD" in prompt
-    assert "ACTIVE LIVESTREAM HOST" in prompt
-    assert "Be concrete. Be crunchy. Be blunt." in prompt
-    assert "host running the show" in prompt
+    assert "ACTIVE STRUCTURAL DIRECTOR" in prompt
+    # Source text: "...DRIVE the stream. Be\n  concrete. Be crunchy. Be blunt."
+    # The newline+indent between "Be" and "concrete" means a strict
+    # "Be concrete. Be crunchy. Be blunt." substring match would be too
+    # brittle to surface-level reflowing. Match the load-bearing fragments
+    # individually so the test pins INTENT (terse, blunt directive) rather
+    # than EXACT line wrapping.
+    assert "Be crunchy. Be blunt." in prompt
+    assert "concrete." in prompt
+    assert "structural director running" in prompt
 
 
 def test_silence_hold_reactions_filtered_from_recent_reactions() -> None:
