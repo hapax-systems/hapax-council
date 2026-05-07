@@ -35,6 +35,144 @@ def test_passthrough_shader():
     assert "gl_FragColor" in PASSTHROUGH_SHADER
 
 
+# ── link_chain — per-slot leaky queue defense-in-depth ──────────────────────
+
+
+class _FakeElement:
+    """Tracking double for a Gst element used in the link_chain assertion suite."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.properties: dict[str, object] = {}
+        self.linked_to: list[_FakeElement] = []
+
+    def get_name(self) -> str:
+        return self.name
+
+    def set_property(self, key: str, value: object) -> None:
+        self.properties[key] = value
+
+    def link(self, other: "_FakeElement") -> bool:
+        self.linked_to.append(other)
+        return True
+
+
+class _FakeGst:
+    def __init__(self) -> None:
+        self.created: list[_FakeElement] = []
+
+        class _Factory:
+            @staticmethod
+            def make(kind: str, name: str) -> _FakeElement:
+                el = _FakeElement(f"{kind}:{name}")
+                outer.created.append(el)
+                return el
+
+        outer = self
+        self.ElementFactory = _Factory
+
+
+def test_link_chain_inserts_n_minus_one_leaky_queues(registry):
+    """11 leaky queues for 12 slots; configured per the task spec.
+
+    Each queue must carry leaky=2 (downstream), max-size-buffers=1, and zero
+    bytes/time so only the buffer count gates flow. ``downstream`` semantics
+    drop the oldest queued buffer when full, leaving upstream non-blocking —
+    this caps blast radius if any single glfeedback slot stalls the shared
+    GL command stream.
+    """
+    pipe = SlotPipeline(registry, num_slots=12)
+    pipe._slots = [_FakeElement(f"slot-{i}") for i in range(12)]
+    fake_gst = _FakeGst()
+    fake_pipeline = MagicMock()
+    upstream = _FakeElement("upstream")
+    downstream = _FakeElement("downstream")
+
+    pipe.link_chain(fake_pipeline, fake_gst, upstream, downstream)
+
+    queues = pipe._inter_slot_queues
+    assert len(queues) == 11, "12 slots → 11 inter-slot queues"
+
+    for i, q in enumerate(queues):
+        assert q.name == f"queue:effect-slot-queue-{i}"
+        assert q.properties["leaky"] == 2
+        assert q.properties["max-size-buffers"] == 1
+        assert q.properties["max-size-bytes"] == 0
+        assert q.properties["max-size-time"] == 0
+
+
+def test_link_chain_adds_each_queue_to_pipeline(registry):
+    """Every queue must be added to the GstPipeline before being linked.
+
+    Without ``pipeline.add(queue)`` GStreamer rejects the link_pads call;
+    the queue would be a free-floating element and the bus would emit a
+    ``not-linked`` error at PLAYING transition.
+    """
+    pipe = SlotPipeline(registry, num_slots=4)
+    pipe._slots = [_FakeElement(f"slot-{i}") for i in range(4)]
+    fake_gst = _FakeGst()
+    fake_pipeline = MagicMock()
+    upstream = _FakeElement("upstream")
+    downstream = _FakeElement("downstream")
+
+    pipe.link_chain(fake_pipeline, fake_gst, upstream, downstream)
+
+    added = [call.args[0] for call in fake_pipeline.add.call_args_list]
+    assert added == pipe._inter_slot_queues, (
+        "pipeline.add must be called once per inter-slot queue, in order"
+    )
+
+
+def test_link_chain_link_order_is_alternating(registry):
+    """The chain must read upstream → slot[0] → queue[0] → slot[1] → … → slot[N-1] → downstream.
+
+    The alternation is what enables blast-radius capping: each slot has its
+    own downstream queue so a single stuck slot can only fill a single queue
+    before being bypassed via leaky drop. Verifies the linking sequence as
+    observed via each element's ``linked_to`` list.
+    """
+    n = 5
+    pipe = SlotPipeline(registry, num_slots=n)
+    pipe._slots = [_FakeElement(f"slot-{i}") for i in range(n)]
+    fake_gst = _FakeGst()
+    fake_pipeline = MagicMock()
+    upstream = _FakeElement("upstream")
+    downstream = _FakeElement("downstream")
+
+    pipe.link_chain(fake_pipeline, fake_gst, upstream, downstream)
+
+    # upstream → slot[0]
+    assert upstream.linked_to == [pipe._slots[0]]
+    # slot[i] → queue[i] for i in 0..n-2
+    for i in range(n - 1):
+        assert pipe._slots[i].linked_to == [pipe._inter_slot_queues[i]], (
+            f"slot[{i}] must link to queue[{i}], saw {pipe._slots[i].linked_to}"
+        )
+        # queue[i] → slot[i+1]
+        assert pipe._inter_slot_queues[i].linked_to == [pipe._slots[i + 1]], (
+            f"queue[{i}] must link to slot[{i + 1}], saw {pipe._inter_slot_queues[i].linked_to}"
+        )
+    # last slot → downstream
+    assert pipe._slots[n - 1].linked_to == [downstream]
+
+
+def test_link_chain_single_slot_has_no_queues(registry):
+    """Boundary case: 1 slot → 0 queues, just upstream → slot → downstream."""
+    pipe = SlotPipeline(registry, num_slots=1)
+    pipe._slots = [_FakeElement("slot-0")]
+    fake_gst = _FakeGst()
+    fake_pipeline = MagicMock()
+    upstream = _FakeElement("upstream")
+    downstream = _FakeElement("downstream")
+
+    pipe.link_chain(fake_pipeline, fake_gst, upstream, downstream)
+
+    assert pipe._inter_slot_queues == []
+    assert upstream.linked_to == [pipe._slots[0]]
+    assert pipe._slots[0].linked_to == [downstream]
+    fake_pipeline.add.assert_not_called()
+
+
 def test_initial_state(pipeline):
     assert pipeline.num_slots == 8
     assert all(s is None for s in pipeline.slot_assignments)

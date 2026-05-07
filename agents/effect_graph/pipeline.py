@@ -116,20 +116,52 @@ class SlotPipeline:
             return None
 
     def link_chain(self, pipeline: Any, Gst: Any, upstream: Any, downstream: Any) -> None:
-        """Link slots directly between upstream and downstream.
+        """Link slots with per-slot leaky queues between them.
 
-        No inter-slot queues: all GL filter elements share a single GL context
-        (single GPU command stream), so adding queues/threads between them only
-        adds synchronization overhead without enabling actual GPU parallelism.
+        Defense-in-depth for the GL chain stall scenario: a single glfeedback
+        slot blocking the shared GL command stream could otherwise serial-block
+        the entire chain (12 serial elements, one stuck = full chain freeze).
+        Inserting ``queue(leaky=downstream, max-size-buffers=1)`` between each
+        consecutive slot pair caps blast radius — the leaky queue drops the
+        oldest queued buffer when full, so upstream slots are never blocked by
+        downstream stalls.
+
+        The 2026-04-14 GLib.idle_add fix addresses the root cause of the GL
+        chain deadlock at the preset-activation layer. This adds defense-in-
+        depth at the GStreamer linking layer: if the root cause re-emerges via
+        a different path, the inter-slot queues localise the stall to a single
+        slot rather than the entire 12-slot chain.
+
+        Latency cost: at most 1 buffer per queue. Acceptable for live-stream
+        purposes where dropping a stale frame is preferable to blocking on a
+        stuck slot. ``max-size-bytes`` and ``max-size-time`` are zeroed so
+        only the buffer count gates the queue.
         """
+        self._inter_slot_queues: list[Any] = []
         prev = upstream
-        for slot in self._slots:
+        for i, slot in enumerate(self._slots):
             if not prev.link(slot):
                 log.error("Failed to link %s → %s", prev.get_name(), slot.get_name())
             prev = slot
+            if i < len(self._slots) - 1:
+                queue = Gst.ElementFactory.make("queue", f"effect-slot-queue-{i}")
+                # leaky=downstream (2): when full, drop the oldest queued buffer.
+                queue.set_property("leaky", 2)
+                queue.set_property("max-size-buffers", 1)
+                queue.set_property("max-size-bytes", 0)
+                queue.set_property("max-size-time", 0)
+                pipeline.add(queue)
+                if not prev.link(queue):
+                    log.error("Failed to link %s → %s", prev.get_name(), queue.get_name())
+                prev = queue
+                self._inter_slot_queues.append(queue)
         if not prev.link(downstream):
             log.error("Failed to link %s → %s", prev.get_name(), downstream.get_name())
-        log.info("Built %d-slot shader pipeline", self._num_slots)
+        log.info(
+            "Built %d-slot shader pipeline with %d inter-slot leaky queues",
+            self._num_slots,
+            len(self._inter_slot_queues),
+        )
 
     def build_chain(
         self,
