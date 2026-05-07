@@ -415,8 +415,37 @@ class GemCairoSource(HomageTransitionalSource):
 
             for room in tree:
                 bright = room_brightness(room, t)
-                cr.set_source_rgba(r, g, b, bright)
-                # Rendering disabled per operator feedback (artifacts leaking through).
+                cr.set_source_rgba(r, g, b, bright * 0.6)
+                g_set = room.glyphs
+                cell_w = 8
+                cell_h = 16
+
+                cr.save()
+                cr.rectangle(room.x, room.y, room.w, room.h)
+                cr.clip()
+
+                cr.move_to(room.x, room.y + cell_h)
+                cr.show_text(g_set["tl"])
+                cr.move_to(room.x + room.w - cell_w, room.y + cell_h)
+                cr.show_text(g_set["tr"])
+                cr.move_to(room.x, room.y + room.h)
+                cr.show_text(g_set["bl"])
+                cr.move_to(room.x + room.w - cell_w, room.y + room.h)
+                cr.show_text(g_set["br"])
+
+                for cx in range(room.x + cell_w, room.x + room.w - cell_w, cell_w):
+                    cr.move_to(cx, room.y + cell_h)
+                    cr.show_text(g_set["h"])
+                    cr.move_to(cx, room.y + room.h)
+                    cr.show_text(g_set["h"])
+
+                for cy in range(room.y + cell_h + cell_h, room.y + room.h - cell_h, cell_h):
+                    cr.move_to(room.x, cy + cell_h)
+                    cr.show_text(g_set["v"])
+                    cr.move_to(room.x + room.w - cell_w, cy + cell_h)
+                    cr.show_text(g_set["v"])
+
+                cr.restore()
 
             cr.restore()
         except Exception:
