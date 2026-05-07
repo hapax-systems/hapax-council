@@ -3,6 +3,7 @@
   "editable": true,
   "graphTooltip": 0,
   "id": null,
+  "description": "Narration triad lifecycle — opened vs satisfied rate, status appends by terminal status, blocked / corrected / stale / orphan counts. Source: shared/narration_triad.py.",
   "uid": "hapax-narration-triad",
   "title": "Hapax / Narration triad — open / satisfied / blocked",
   "tags": ["hapax", "narration", "triad", "governance"],

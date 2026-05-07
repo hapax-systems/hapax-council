@@ -3,6 +3,7 @@
   "editable": true,
   "graphTooltip": 0,
   "id": null,
+  "description": "Studio compositor process & pipeline health — uptime, watchdog, cameras healthy/total, v4l2sink last-frame, pipeline-restart cadence, v4l2sink stalls/recoveries, RSS+VRAM, FD count, camera-rebuild cadence, per-source render p95, director intents + voice activity. Source: agents/studio_compositor/metrics.py. Complementary to compositor-surface-health.json (different metric scope: process/pipeline/v4l2 vs HOMAGE/face-obscure/follow-mode/ward/layout/broadcast).",
   "uid": "hapax-compositor-health",
   "title": "Hapax / Studio Compositor — process & pipeline health",
   "tags": ["hapax", "compositor", "studio", "v4l2", "process"],

@@ -3,6 +3,7 @@
   "editable": true,
   "graphTooltip": 0,
   "id": null,
+  "description": "Reverie DynamicPipeline transient texture pool — reuse ratio, active textures, bucket count, acquires-vs-allocations, named-slot count, imagination loop fragments + shader rollbacks. Source: agents/hapax_imagination + Rust pool_metrics().",
   "uid": "hapax-reverie-pool",
   "title": "Hapax / Reverie — transient texture pool",
   "tags": ["hapax", "reverie", "imagination", "wgpu", "texture-pool"],

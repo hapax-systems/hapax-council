@@ -3,6 +3,7 @@
   "editable": true,
   "graphTooltip": 0,
   "id": null,
+  "description": "CPAL cognitive tick health — tick rate, cold-start events, p50/p95/p99 wallclock duration, ticks-by-type distribution. Source: agents/hapax_daimonion/cpal/runner.py.",
   "uid": "hapax-cpal-daimonion",
   "title": "Hapax / CPAL Daimonion — cognitive tick health",
   "tags": ["hapax", "daimonion", "cpal", "cognitive-tick"],

@@ -3,6 +3,7 @@
   "editable": true,
   "graphTooltip": 0,
   "id": null,
+  "description": "Affordance pipeline observability — recruitment events per 6-domain taxonomy (perception/expression/recall/action/communication/regulation), outcome split, dispatch rate, winner-similarity p50/p95/p99, candidate-pool size, JSONL write-failure stat. Source: shared/affordance_pipeline.py + telemetry.",
   "uid": "hapax-affordance-pipeline",
   "title": "Hapax / Affordance Pipeline — recruitment & dispatch",
   "tags": ["hapax", "affordance", "recruitment", "semantic-pipeline"],
