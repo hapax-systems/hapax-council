@@ -413,17 +413,37 @@ class TestCompositorIntegration:
         assert "_v4l2_recovery_state" in source
 
     def test_lifecycle_calls_recovery_before_withholding_ping(self):
-        """Lifecycle `_watchdog_tick` calls ``attempt_recovery`` before
-        the legacy "withholding watchdog ping" log line. Static check —
-        verifies the wiring rather than a live tick."""
+        """Lifecycle ``_watchdog_tick`` calls ``attempt_recovery`` and
+        carries the escalation contract: a time-bounded recovery window
+        gated by ``_V4L2_GRAY_TOLERANCE_S``, a fatal exit when the
+        window is exceeded (so systemd restarts the unit), and a
+        keep-alive ``sd_notify_watchdog`` ping while recovery is still
+        being attempted (preserves the DO-NOT-SUPPRESS contract that
+        replaced the old ``withholding watchdog ping`` branch).
+
+        Static check — verifies the wiring rather than a live tick.
+        Names follow the current implementation; the older
+        ``should_escalate`` helper was inlined into the lifecycle file
+        as the explicit ``(now_mono - stall_start) > _V4L2_GRAY_TOLERANCE_S``
+        comparison, and the ``withholding watchdog ping`` log line was
+        replaced by the ``keeping alive`` /
+        ``unrecoverable for %.0fs — exiting for systemd restart``
+        pair.
+        """
 
         from agents.studio_compositor import lifecycle as _lc
 
         source = open(_lc.__file__, encoding="utf-8").read()
         # The recovery import + call must appear in the watchdog branch.
         assert "from .v4l2_stall_recovery import attempt_recovery" in source
-        assert "should_escalate" in source
-        # The original "withholding ping" log line is still present
-        # (preserves the DO-NOT-SUPPRESS constraint when escalation
-        # fires).
-        assert "withholding watchdog ping" in source
+        assert "attempt_recovery(compositor" in source
+        # Time-bounded escalation: the recovery window must be gated by
+        # a tolerance threshold so a permanently-gray sink eventually
+        # exits for systemd restart instead of looping forever.
+        assert "_V4L2_GRAY_TOLERANCE_S" in source
+        assert "exiting for systemd restart" in source
+        # Keep-alive ping while recovery is in progress (the
+        # DO-NOT-SUPPRESS contract that replaced the historical
+        # ``withholding watchdog ping`` branch).
+        assert "sd_notify_watchdog" in source
+        assert "keeping alive" in source

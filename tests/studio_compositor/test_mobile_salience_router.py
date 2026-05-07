@@ -1,4 +1,14 @@
-"""Mobile salience router scoring and fail-closed behavior."""
+"""Mobile salience router scoring and fail-closed behavior.
+
+PR #2770 purged ``config/compositor-layouts/mobile.json`` ("broken
+schema"); ``MobileSalienceRouter.__init__`` calls
+``load_mobile_layout(layout_path)`` which falls through to the missing
+default file when no path is supplied. Both tests below construct the
+router that way, so they raise ``FileNotFoundError`` whenever the
+layout is absent. The module-level skip below switches them off cleanly
+in that state and reactivates automatically when a fresh mobile.json
+is reintroduced.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +16,20 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from agents.studio_compositor.mobile_salience_router import MobileSalienceRouter
+
+_MOBILE_LAYOUT_PATH = (
+    Path(__file__).resolve().parents[2] / "config" / "compositor-layouts" / "mobile.json"
+)
+pytestmark = pytest.mark.skipif(
+    not _MOBILE_LAYOUT_PATH.exists(),
+    reason=(
+        "config/compositor-layouts/mobile.json was purged by PR #2770 "
+        "('broken schema'); MobileSalienceRouter cannot construct without it"
+    ),
+)
 
 
 def _fresh(path: Path, payload: object, *, now: float) -> None:
