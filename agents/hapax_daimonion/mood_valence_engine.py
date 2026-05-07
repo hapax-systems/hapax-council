@@ -89,9 +89,9 @@ class MoodValenceEngine:
     engines uniformly. State vocabulary is NEGATIVE/UNCERTAIN/POSITIVE
     rather than ASSERTED/UNCERTAIN/RETRACTED.
 
-    Phase 6b-ii.B will wire the four signal sources into this engine
-    via a perception adapter; until then the engine is constructed +
-    tested against synthetic observations only.
+    The Logos API tick loop wires the four signal sources through
+    ``mood_valence_observation``. Each tick also updates scrape-visible
+    posterior and contributed-signal metrics for Phase D observability.
     """
 
     name: str = "mood_valence_engine"
@@ -164,6 +164,12 @@ class MoodValenceEngine:
         self._engine.tick(observations)
         new_state = self.state
         new_posterior = self._engine.posterior
+        try:
+            from shared.mood_engine_metrics import record_mood_engine_tick
+
+            record_mood_engine_tick("mood_valence", new_posterior, observations)
+        except Exception:
+            log.debug("mood_valence metrics update failed", exc_info=True)
         if new_state != self._prev_state:
             try:
                 emit_state_transition_impingement(

@@ -89,9 +89,9 @@ class MoodArousalEngine:
     engines uniformly. State vocabulary is AROUSED/UNCERTAIN/CALM rather
     than ASSERTED/UNCERTAIN/RETRACTED.
 
-    Phase 6b-i.B will wire the four signal sources into this engine via
-    a perception adapter; until then the engine is constructed + tested
-    against synthetic observations only.
+    The Logos API tick loop wires the four signal sources through
+    ``mood_arousal_observation``. Each tick also updates scrape-visible
+    posterior and contributed-signal metrics for Phase D observability.
     """
 
     name: str = "mood_arousal_engine"
@@ -162,6 +162,12 @@ class MoodArousalEngine:
         self._engine.tick(observations)
         new_state = self.state
         new_posterior = self._engine.posterior
+        try:
+            from shared.mood_engine_metrics import record_mood_engine_tick
+
+            record_mood_engine_tick("mood_arousal", new_posterior, observations)
+        except Exception:
+            log.debug("mood_arousal metrics update failed", exc_info=True)
         if new_state != self._prev_state:
             try:
                 emit_state_transition_impingement(

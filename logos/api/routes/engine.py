@@ -60,9 +60,9 @@ async def mood_arousal_status(request: Request):
     Returns the Bayesian mood-arousal posterior and discrete state.
     Signal accessors on ``LogosStimmungBridge`` (ambient_audio_rms_high,
     contact_mic_onset_rate_high, midi_clock_bpm_high, hr_bpm_above_baseline)
-    return ``None`` until per-backend quantile / baseline references are
-    calibrated against production data; the engine treats ``None`` as
-    skip-this-signal so the posterior stays at its prior in that regime.
+    are live and return ``None`` only when the source is missing, stale, or
+    the rolling baseline is still warming. The engine treats ``None`` as
+    skip-this-signal.
     State is one of AROUSED / UNCERTAIN / CALM.
     """
     mae = getattr(request.app.state, "mood_arousal_engine", None)
@@ -77,10 +77,9 @@ async def mood_valence_status(request: Request):
 
     Returns the Bayesian mood-valence posterior and discrete state.
     Signal accessors on ``LogosMoodValenceBridge`` (hrv_below_baseline,
-    skin_temp_drop, sleep_debt_high, voice_pitch_elevated) return
-    ``None`` until per-backend baseline references are calibrated
-    against production data. State is one of NEGATIVE / UNCERTAIN /
-    POSITIVE.
+    skin_temp_drop, sleep_debt_high, voice_pitch_elevated) are live and
+    return ``None`` only when the source is missing, stale, or warming.
+    State is one of NEGATIVE / UNCERTAIN / POSITIVE.
     """
     mve = getattr(request.app.state, "mood_valence_engine", None)
     if mve is None:
@@ -95,9 +94,8 @@ async def mood_coherence_status(request: Request):
     Returns the Bayesian mood-coherence posterior and discrete state.
     Signal accessors on ``LogosMoodCoherenceBridge`` (hrv_variability_high,
     respiration_irregular, movement_jitter_high, skin_temp_volatility_high)
-    return ``None`` until per-backend volatility windows are calibrated
-    against production data. State is one of INCOHERENT / UNCERTAIN /
-    COHERENT.
+    are live and return ``None`` only when the source is missing, stale, or
+    warming. State is one of INCOHERENT / UNCERTAIN / COHERENT.
     """
     mce = getattr(request.app.state, "mood_coherence_engine", None)
     if mce is None:
