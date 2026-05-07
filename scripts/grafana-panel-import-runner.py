@@ -37,7 +37,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-DEFAULT_GRAFANA_URL = os.environ.get("HAPAX_GRAFANA_URL", "http://localhost:3000")
+DEFAULT_GRAFANA_URL = os.environ.get("HAPAX_GRAFANA_URL", "http://localhost:3001")
 DEFAULT_PASS_PATH = "grafana/api-key"
 
 
@@ -65,7 +65,13 @@ def _resolve_api_key(cli_key: str | None) -> str | None:
     return None
 
 
-def import_dashboard(panel_json_path: Path, *, grafana_url: str, api_key: str) -> dict[str, Any]:
+def import_dashboard(
+    panel_json_path: Path,
+    *,
+    grafana_url: str,
+    api_key: str,
+    folder_uid: str | None = None,
+) -> dict[str, Any]:
     """POST the dashboard JSON to ``/api/dashboards/db``; return parsed response."""
     payload_text = panel_json_path.read_text(encoding="utf-8")
     payload = json.loads(payload_text)
@@ -74,6 +80,8 @@ def import_dashboard(panel_json_path: Path, *, grafana_url: str, api_key: str) -
         "overwrite": True,
         "message": f"hapax import via grafana-panel-import-runner ({panel_json_path.name})",
     }
+    if folder_uid:
+        body["folderUid"] = folder_uid
     request = urllib.request.Request(
         f"{grafana_url.rstrip('/')}/api/dashboards/db",
         data=json.dumps(body).encode("utf-8"),
@@ -88,35 +96,42 @@ def import_dashboard(panel_json_path: Path, *, grafana_url: str, api_key: str) -
     return json.loads(raw)
 
 
-def capture_screenshot(dashboard_uid: str, *, grafana_url: str, output: Path) -> bool:
-    """Run a Playwright snippet to capture a dashboard screenshot.
+def capture_screenshot(
+    dashboard_uid: str,
+    *,
+    grafana_url: str,
+    output: Path,
+    api_key: str | None = None,
+) -> bool:
+    """Use Playwright to capture a dashboard screenshot.
 
     Best-effort: returns ``True`` on success, ``False`` if Playwright is
     unavailable or the snippet fails. Does not raise — screenshot capture
     is evidence-grade, not blocking.
     """
     panel_url = f"{grafana_url.rstrip('/')}/d/{dashboard_uid}?kiosk=tv"
-    snippet = (
-        f"const {{ chromium }} = require('playwright');\n"
-        f"(async () => {{\n"
-        f"  const browser = await chromium.launch();\n"
-        f"  const page = await browser.newPage();\n"
-        f"  await page.goto('{panel_url}', {{ waitUntil: 'networkidle', timeout: 15000 }});\n"
-        f"  await page.screenshot({{ path: '{output}', fullPage: true }});\n"
-        f"  await browser.close();\n"
-        f"}})().catch(e => {{ console.error(e); process.exit(1); }});\n"
-    )
     try:
-        result = subprocess.run(
-            ["node", "-e", snippet],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:
+        print(f"warning: Playwright unavailable for screenshot capture: {exc}", file=sys.stderr)
         return False
-    return result.returncode == 0 and output.exists()
+
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            try:
+                page = browser.new_page()
+                if api_key:
+                    page.set_extra_http_headers({"Authorization": f"Bearer {api_key}"})
+                page.goto(panel_url, wait_until="networkidle", timeout=15000)
+                page.screenshot(path=str(output), full_page=True)
+            finally:
+                browser.close()
+    except Exception as exc:
+        print(f"warning: Grafana screenshot capture failed: {exc}", file=sys.stderr)
+        return False
+    return output.exists()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -143,6 +158,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="capture a Playwright screenshot to this path",
     )
+    parser.add_argument(
+        "--folder-uid",
+        default=None,
+        help="optional Grafana folder UID for the imported dashboard",
+    )
     args = parser.parse_args(argv)
 
     if not args.panel_json.is_file():
@@ -159,7 +179,12 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
     try:
-        result = import_dashboard(args.panel_json, grafana_url=args.grafana_url, api_key=api_key)
+        result = import_dashboard(
+            args.panel_json,
+            grafana_url=args.grafana_url,
+            api_key=api_key,
+            folder_uid=args.folder_uid,
+        )
     except urllib.error.HTTPError as exc:
         print(f"error: Grafana API HTTP {exc.code}: {exc.reason}", file=sys.stderr)
         return 4
@@ -173,7 +198,12 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps({"status": "imported", "uid": uid, "url": result.get("url", "")}))
 
     if args.screenshot:
-        ok = capture_screenshot(uid, grafana_url=args.grafana_url, output=args.screenshot)
+        ok = capture_screenshot(
+            uid,
+            grafana_url=args.grafana_url,
+            output=args.screenshot,
+            api_key=api_key,
+        )
         print(
             json.dumps(
                 {
