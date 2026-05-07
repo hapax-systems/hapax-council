@@ -309,3 +309,13 @@ def test_render_rooms_handles_no_tree(tmp_path: Path) -> None:
         "agents.studio_compositor.gem_source.GemCairoSource._ensure_room_tree", return_value=None
     ):
         src._render_rooms(None, 1840, 240, 0.0)  # Should not crash
+
+
+def test_render_rooms_is_explicit_noop(tmp_path: Path) -> None:
+    src = GemCairoSource(frames_path=tmp_path / "x.json")
+
+    class _FailOnTouch:
+        def __getattr__(self, name: str):
+            raise AssertionError(f"room renderer touched cairo state via {name}")
+
+    src._render_rooms(_FailOnTouch(), 1840, 240, 0.0)
