@@ -3063,6 +3063,57 @@ async def test_modern_treasury_route_distinct_payment_ids_both_processed(
 
 
 @pytest.mark.asyncio
+async def test_modern_treasury_route_created_and_completed_same_payment_id_both_processed(
+    mt_output_dir: Path,
+    mt_secret_env: str,
+    mt_idempotency_isolated: Path,
+) -> None:
+    payment_id = "ipd-lifecycle-route"
+    created = _modern_treasury_payload(
+        event="incoming_payment_detail.created",
+        payment_id=payment_id,
+    )
+    completed = _modern_treasury_payload(
+        event="incoming_payment_detail.completed",
+        payment_id=payment_id,
+    )
+    raw_created = json.dumps(created).encode("utf-8")
+    raw_completed = json.dumps(completed).encode("utf-8")
+    sig_created = hmac.new(mt_secret_env.encode("utf-8"), raw_created, hashlib.sha256).hexdigest()
+    sig_completed = hmac.new(
+        mt_secret_env.encode("utf-8"), raw_completed, hashlib.sha256
+    ).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        created_response = await client.post(
+            "/api/payment-rails/modern-treasury",
+            content=raw_created,
+            headers={"X-Signature": sig_created},
+        )
+        completed_response = await client.post(
+            "/api/payment-rails/modern-treasury",
+            content=raw_completed,
+            headers={"X-Signature": sig_completed},
+        )
+        replay_completed = await client.post(
+            "/api/payment-rails/modern-treasury",
+            content=raw_completed,
+            headers={"X-Signature": sig_completed},
+        )
+
+    assert created_response.status_code == 200, created_response.text
+    assert created_response.json()["event_kind"] == "incoming_payment_detail.created"
+    assert completed_response.status_code == 200, completed_response.text
+    assert completed_response.json()["event_kind"] == "incoming_payment_detail.completed"
+    body = replay_completed.json()
+    assert replay_completed.status_code == 200, replay_completed.text
+    assert body["status"] == "duplicate"
+    assert body["payment_id"] == payment_id
+    assert len(list(mt_output_dir.glob("event-incoming_payment_detail_created-*.md"))) == 1
+    assert len(list(mt_output_dir.glob("event-incoming_payment_detail_completed-*.md"))) == 1
+
+
+@pytest.mark.asyncio
 async def test_modern_treasury_route_missing_data_id_returns_400(
     mt_output_dir: Path,
     mt_secret_env: str,

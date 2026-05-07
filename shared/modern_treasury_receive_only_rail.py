@@ -508,11 +508,12 @@ class ModernTreasuryRailReceiver:
             if not isinstance(payment_id, str) or not payment_id:
                 raise ReceiveOnlyRailError(
                     "idempotency_store provided but data.id missing — "
-                    "Modern Treasury IPD payloads carry the per-delivery "
+                    "Modern Treasury IPD payloads carry the payment "
                     "identifier in data.id"
                 )
+            idempotency_key = f"{event_kind.value}:{payment_id}"
             try:
-                if not self._idempotency_store.record_or_skip(payment_id):
+                if not self._idempotency_store.record_or_skip(idempotency_key):
                     return None
             except _SharedIdempotencyError as exc:
                 raise ReceiveOnlyRailError(str(exc)) from exc

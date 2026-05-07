@@ -613,6 +613,27 @@ def test_idempotency_store_distinct_payment_ids_both_processed(tmp_path):
     assert second is not None
 
 
+def test_idempotency_store_allows_lifecycle_events_for_same_payment_id(tmp_path):
+    from shared._rail_idempotency import IdempotencyStore
+
+    store = IdempotencyStore(db_path=tmp_path / "mt-idem.db")
+    receiver = ModernTreasuryRailReceiver(idempotency_store=store)
+    created = _ach_payload(event="incoming_payment_detail.created")
+    completed = _ach_payload(event="incoming_payment_detail.completed")
+    created["data"]["id"] = "ipd-lifecycle-001"
+    completed["data"]["id"] = "ipd-lifecycle-001"
+
+    first = receiver.ingest_webhook(created, signature=None)
+    second = receiver.ingest_webhook(completed, signature=None)
+    replay_completed = receiver.ingest_webhook(completed, signature=None)
+
+    assert first is not None
+    assert first.event_kind is IncomingPaymentEventKind.CREATED
+    assert second is not None
+    assert second.event_kind is IncomingPaymentEventKind.COMPLETED
+    assert replay_completed is None
+
+
 def test_idempotency_store_provided_but_data_id_missing_raises(tmp_path):
     from shared._rail_idempotency import IdempotencyStore
 
