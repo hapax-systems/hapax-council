@@ -4,10 +4,12 @@
   "transition_ms": 500,
   "nodes": {
     "breathing": {
-      "type": "breathing",
+      "type": "drift",
       "params": {
-        "amplitude": 0.08,
-        "rate": 1.0
+        "speed": 1.0,
+        "amplitude": 2,
+        "frequency": 0.3,
+        "coherence": 0.6
       }
     },
     "drift": {

@@ -22,10 +22,12 @@
       }
     },
     "breathing_deep": {
-      "type": "breathing",
+      "type": "drift",
       "params": {
-        "rate": 0.18,
-        "amplitude": 0.28
+        "speed": 0.18,
+        "amplitude": 8,
+        "frequency": 0.3,
+        "coherence": 0.6
       }
     },
     "drift_slow": {

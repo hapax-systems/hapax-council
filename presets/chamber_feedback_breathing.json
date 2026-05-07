@@ -20,10 +20,12 @@
       }
     },
     "breathing_chamber": {
-      "type": "breathing",
+      "type": "drift",
       "params": {
-        "rate": 0.22,
-        "amplitude": 0.32
+        "speed": 0.22,
+        "amplitude": 9,
+        "frequency": 0.3,
+        "coherence": 0.6
       }
     },
     "drift_chamber": {
