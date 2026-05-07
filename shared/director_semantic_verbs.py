@@ -8,7 +8,7 @@ consumed — the director "talks to itself."
 
 This Phase 0 ships the substrate that closes that loop:
 
-  SEMANTIC_VERBS                       — the canonical 10-verb vocabulary
+  SEMANTIC_VERBS                       — the canonical 11-verb vocabulary
   VerbAction                           — frozen dataclass per-verb action descriptor
   SEMANTIC_VERB_ACTIONS                — verb → VerbAction registry
   registered_verbs() / consumer_for()  — accessor pair for downstream actors
@@ -20,14 +20,14 @@ preset-family bias, shader uniform target, slot-rotator nudge). Phase 1
 cc-tasks wire each verb's hint into a concrete consumer + a Prometheus
 counter (``hapax_semantic_verb_consumed_total{verb=..., outcome=...}``).
 
-Vocabulary rationale (10 verbs across 5 axes):
+Vocabulary rationale (11 verbs across 5 axes):
   - **temporal**: ascend (intensify), linger (dwell), accelerate (cycle faster)
   - **spatial**: gather (focus center), disperse (peripheral spread)
   - **phenomenological**: dwell (extend duration), rupture (sudden break)
   - **chromatic**: warm (palette shift toward Gruvbox-warm), cool (toward Solarized)
   - **structural**: align (snap to grid), drift (loosen alignment)
 
-This 10-verb floor matches the cc-task acceptance criterion ("≥6 verbs
+This 11-verb floor matches the cc-task acceptance criterion ("≥6 verbs
 must have non-zero dispatch in a 10-min sample") with margin so a
 director that only fires 6 distinct verbs in a window still has
 coverage to spare.

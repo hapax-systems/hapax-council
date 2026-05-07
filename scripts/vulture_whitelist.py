@@ -2230,7 +2230,7 @@ _banner_ward_format_residual
 _banner_ward_truncate_beat
 
 # Semantic verb consumer (cc-task u5-verb-prometheus-counter-and-consumer
-# Phase 1): consumes the 10-verb vocabulary from PR #2326. Each verb
+# Phase 1): consumes the 11-verb vocabulary from PR #2326. Each verb
 # routes to envelope-nudge OR transition-bias JSONL write + Prometheus
 # counter. Phase 2: heartbeat envelope daemon + recruitment consumer
 # tail the JSONL files.
