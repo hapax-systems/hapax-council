@@ -156,6 +156,26 @@ class TestCurrentActivity:
         assert result.decision is Decision.ALLOW
         assert "coding" in result.reason
 
+    def test_private_sentinel_refuses(self) -> None:
+        result = evaluate_public_claim(
+            ClaimKind.CURRENT_ACTIVITY,
+            ClaimEvidence(
+                current_activity="side note: PRIVATE_SENTINEL_DO_NOT_PUBLISH_20260505_XSURF_9F4C2A"
+            ),
+        )
+        assert result.decision is Decision.REFUSE
+        assert "PRIVATE_SENTINEL" in result.reason
+        assert result.correction == "activity not currently witnessed"
+
+    def test_arbitrary_sentinel_suffix_refuses(self) -> None:
+        """Sentinel pattern must match any future-suffix ID, not just the
+        seed token from PR #2526."""
+        result = evaluate_public_claim(
+            ClaimKind.CURRENT_ACTIVITY,
+            ClaimEvidence(current_activity="PRIVATE_SENTINEL_DO_NOT_PUBLISH_FUTURE_DEADBEEF"),
+        )
+        assert result.decision is Decision.REFUSE
+
 
 # ── programme_role ───────────────────────────────────────────────────
 
@@ -185,6 +205,19 @@ class TestProgrammeRole:
             ),
         )
         assert result.decision is Decision.ALLOW
+
+    def test_private_sentinel_refuses(self) -> None:
+        """Programme role is the other free-text claim kind; sentinel
+        scan must REFUSE before the freshness check applies."""
+        result = evaluate_public_claim(
+            ClaimKind.PROGRAMME_ROLE,
+            ClaimEvidence(
+                programme_role="research PRIVATE_SENTINEL_DO_NOT_PUBLISH_20260505_XSURF_9F4C2A",
+                programme_role_age_s=1.0,
+            ),
+        )
+        assert result.decision is Decision.REFUSE
+        assert "PRIVATE_SENTINEL" in result.reason
 
 
 # ── archive / replay ─────────────────────────────────────────────────
