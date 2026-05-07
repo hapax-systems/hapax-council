@@ -330,13 +330,15 @@ def test_default_modulations_template_obeys_global_luma_ban() -> None:
 
 
 def test_known_banned_violations_set_does_not_regrow() -> None:
-    """The grandfathered violations set is a transitional exemption.
-    Adding a new entry without operator approval is a regression — every
-    new banned binding should be retargeted, not exempted. This pin
-    catches accidental growth of the set."""
-    # Caps the set size at the original count from 2026-05-06 audit. New
-    # exemptions require an explicit operator-approved cap bump.
-    assert len(KNOWN_BANNED_VIOLATIONS) <= 20, (
-        f"KNOWN_BANNED_VIOLATIONS grew to {len(KNOWN_BANNED_VIOLATIONS)} — "
+    """The grandfathered violations set is a transitional exemption that
+    has now been fully retired (all 20 historical violations retargeted
+    2026-05-07). Adding a new entry without operator approval is a
+    regression — every new banned binding should be retargeted, not
+    exempted. This pin catches accidental re-growth from the empty set."""
+    # All 20 historical violations were retargeted on 2026-05-07. The cap
+    # is now 0; any new exemption requires an explicit operator-approved
+    # cap bump (and a paired retargeting cc-task).
+    assert len(KNOWN_BANNED_VIOLATIONS) == 0, (
+        f"KNOWN_BANNED_VIOLATIONS regrew to {len(KNOWN_BANNED_VIOLATIONS)} — "
         "retarget the new violation to an ALLOW-list param instead of exempting."
     )
