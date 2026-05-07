@@ -155,6 +155,23 @@ _PRESET_FAMILY: list[CapabilityRecord] = [
         "fx.family.neutral-ambient",
         "neutral baseline visuals for default fallback moments without strong directional cue, coherent and unobtrusive backdrop",
     ),
+    # 2026-05-07 epsilon — gap surfaced by the director-only-cycles-7-of-86
+    # investigation: ``audio-reactive-extended`` lives in FAMILY_PRESETS
+    # (11 presets — dub_echo_spatial, dub_tunnel_chamber, granular_stutter,
+    # granular_tile_grid, liquid_flow_breath, liquid_flow_fluid,
+    # m8_music_reactive_transport, modulation_pulse_strobe,
+    # modulation_pulse_warp, glitch_y2k_block, glitch_y2k_chroma,
+    # tape_wow_flutter) but was NEVER registered as a capability. Its 11
+    # presets were structurally unreachable: the affordance pipeline could
+    # not retrieve them, the dispatcher's hard-coded fallback only knew
+    # ``neutral-ambient``, and twitch_director only emits audio-reactive.
+    # This capability description distinguishes it from plain
+    # ``audio-reactive`` by leaning into the slow / dub / granular /
+    # tape-wear register rather than the beat-pulse one.
+    _record(
+        "fx.family.audio-reactive-extended",
+        "slow audio-following visuals — dub echoes, granular stutter, liquid flow, tape wow/flutter, m8 transport — for music that breathes rather than pulses, when the moment is sound-rich but rhythmic emphasis is wrong",
+    ),
     # Phase 6 of preset-variety-plan (task #166): the recruitment target
     # for ``content.too-similar-recently`` impingements emitted by
     # ``AffordancePipeline._maybe_emit_perceptual_distance_impingement``
