@@ -351,7 +351,7 @@ def start_compositor(compositor: Any) -> None:
             # docs/research/2026-04-20-v4l2sink-stall-prevention.md §8.
             with compositor._camera_status_lock:
                 any_active = any(s == "active" for s in compositor._camera_status.values())
-            v4l2_alive = compositor.v4l2_frame_seen_within(20.0)
+            v4l2_alive = compositor.v4l2_frame_seen_within(45.0)
             # Director liveness gate (Phase 1 per
             # docs/research/2026-04-20-livestream-halt-investigation.md §6).
             # 180s = 6 PERCEPTION_INTERVAL ticks. A single-tick LLM timeout
