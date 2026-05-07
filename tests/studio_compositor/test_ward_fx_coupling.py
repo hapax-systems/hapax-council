@@ -605,6 +605,28 @@ class TestDomainPresetFamilyMapping:
             f"(would default to 'perception'): {missing}"
         )
 
+    def test_audio_reactive_set_includes_named_presence_wards(self):
+        """Operator ward audit 2026-05-07 added three presence wards
+        (``whos_here``, ``thinking_indicator``, ``stance_indicator``)
+        to ``AUDIO_REACTIVE_WARDS`` so the parametric heartbeat reaches
+        them with its baseline-floor writes (border_pulse_hz /
+        scale_bump_pct / glow_radius_px / drift_hz / drift_amplitude_px).
+        Before that change the three sat flat-zero on broadcast.
+
+        Pins explicit membership so a future revert that drops one
+        without paired operator approval fails this test rather than
+        silently regressing the wards back to static chrome. The
+        membership is a behaviour contract the operator audited; the
+        cohesion tests above only check structural invariants."""
+        from agents.studio_compositor.ward_fx_mapping import AUDIO_REACTIVE_WARDS
+
+        for ward_id in ("whos_here", "thinking_indicator", "stance_indicator"):
+            assert ward_id in AUDIO_REACTIVE_WARDS, (
+                f"presence ward {ward_id!r} dropped from AUDIO_REACTIVE_WARDS — "
+                "operator added it via 2026-05-07 ward audit; revert needs "
+                "explicit operator approval"
+            )
+
     def test_album_overlay_classified_and_audio_reactive(self):
         """The album overlay ward emits ``ward_id="album_overlay"`` from
         ``HomageAlbumOverlay`` (default in ``album_overlay.py``); the layout
