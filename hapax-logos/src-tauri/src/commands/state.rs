@@ -538,6 +538,12 @@ pub struct ReadinessSnapshot {
     #[serde(default)]
     pub interview_conducted: bool,
     #[serde(default)]
+    pub interview_fact_count: u32,
+    #[serde(default)]
+    pub priorities_known: bool,
+    #[serde(default)]
+    pub neurocognitive_mapped: bool,
+    #[serde(default)]
     pub profile_coverage_pct: f64,
     #[serde(default)]
     pub total_facts: u32,
@@ -561,6 +567,9 @@ pub fn get_readiness() -> ReadinessSnapshot {
     read_json(&path).unwrap_or(ReadinessSnapshot {
         level: "bootstrapping".into(),
         interview_conducted: false,
+        interview_fact_count: 0,
+        priorities_known: false,
+        neurocognitive_mapped: false,
         profile_coverage_pct: 0.0,
         total_facts: 0,
         populated_dimensions: 0,

@@ -99,6 +99,9 @@ export interface GoalStatus {
 export interface ReadinessSnapshot {
   level: "bootstrapping" | "developing" | "operational";
   interview_conducted: boolean;
+  interview_fact_count: number;
+  priorities_known: boolean;
+  neurocognitive_mapped: boolean;
   profile_coverage_pct: number;
   total_facts: number;
   populated_dimensions: number;

@@ -61,14 +61,21 @@ import os
 import random
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from agents.studio_compositor.atomic_io import atomic_write_json
+from agents.studio_compositor.ward_fx_mapping import AUDIO_REACTIVE_WARDS
+from agents.studio_compositor.ward_properties import (
+    WardProperties,
+    get_specific_ward_properties,
+    set_many_ward_properties,
+)
 from shared.parameter_envelopes import (
     JointConstraint,
     ParameterEnvelope,
+    envelope_by_key,
     envelopes,
     joint_constraints,
 )
@@ -218,6 +225,10 @@ HEARTBEAT_SOURCE: str = "parametric-modulation-heartbeat"
 # 30s parallels the preset-bias heartbeat's tick. The walker's smoothness
 # invariant is per-tick, so this is the time-resolution of the walk.
 DEFAULT_TICK_S: float = 30.0
+
+# Cairo ward-property cadence. The same 30s heartbeat keeps the Cairo
+# accent params alive without competing with the faster FX reactor.
+WARD_PROPERTIES_TTL_S: float = 60.0
 
 # LFO period — base wavelength for the per-parameter low-frequency
 # oscillator. 600s = 10 minutes traverses the envelope range slowly per
@@ -481,6 +492,52 @@ def write_uniform_overrides(
     atomic_write_json(merged, path)
 
 
+def _normalized_envelope_value(values: dict[str, float], key: str) -> float:
+    env = envelope_by_key(key)
+    value = values.get(key)
+    if env is None or value is None:
+        return 0.5
+    span = env.max_value - env.min_value
+    if span <= 0:
+        return 0.5
+    return max(0.0, min(1.0, (value - env.min_value) / span))
+
+
+def _write_cairo_ward_params(
+    values: dict[str, float],
+    *,
+    ttl_s: float = WARD_PROPERTIES_TTL_S,
+) -> None:
+    """Write baseline Cairo ward chrome params on the same heartbeat tick.
+
+    The Cairo wards already have a separate FX reactor for short-lived
+    spikes. This heartbeat only raises the floor: it writes a smooth
+    pulse / bump baseline for the Cairo audio-reactive wards without
+    lowering any stronger values already present in ward-properties.json.
+    """
+
+    try:
+        breath = _normalized_envelope_value(values, "breath.rate")
+        intensity = _normalized_envelope_value(values, "content.intensity")
+        noise = _normalized_envelope_value(values, "noise.amplitude")
+        sediment = _normalized_envelope_value(values, "post.sediment_strength")
+
+        pulse_hz = 4.0 * max(0.0, min(1.0, 0.55 * breath + 0.25 * noise + 0.20 * (1.0 - sediment)))
+        bump_pct = 0.08 * max(0.0, min(1.0, 0.65 * intensity + 0.35 * noise))
+
+        updates: dict[str, WardProperties] = {}
+        for ward_id in AUDIO_REACTIVE_WARDS:
+            base = get_specific_ward_properties(ward_id) or WardProperties()
+            updates[ward_id] = replace(
+                base,
+                border_pulse_hz=max(base.border_pulse_hz, pulse_hz),
+                scale_bump_pct=max(base.scale_bump_pct, bump_pct),
+            )
+        set_many_ward_properties(updates, ttl_s=ttl_s)
+    except Exception:
+        log.debug("parametric walker: cairo ward param update failed", exc_info=True)
+
+
 def emit_transition_primitive(
     transition_name: str,
     triggering_envelope_key: str,
@@ -634,6 +691,7 @@ def tick_once(
     try:
         events = walker.tick(now=now)
         write_uniform_overrides(walker.values, path=uniforms_path)
+        _write_cairo_ward_params(walker.values)
     except Exception:
         # Emit the error counter so the failure rate is observable, then
         # re-raise — ``run_forever`` already has its own try/except that
