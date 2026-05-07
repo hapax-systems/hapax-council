@@ -71,6 +71,34 @@ requires_cairo_and_gi = pytest.mark.skipif(
 )
 
 
+def _homage_goldens_marked_stale() -> bool:
+    """Opt-in CI skip when the operator knows the golden bank has drifted.
+
+    Set ``HAPAX_HOMAGE_GOLDENS_STALE=1`` to skip the entire suite while a
+    refresh is pending — useful when an upstream change (e.g. dataclass
+    default flips that propagate into ward chrome) invalidates the
+    committed PNGs but the operator hasn't yet had a chance to regenerate
+    them with ``HAPAX_UPDATE_GOLDEN=1`` and re-commit. Default: unset →
+    tests run as normal so a regression that wasn't operator-acknowledged
+    is loud.
+    """
+    return os.environ.get("HAPAX_HOMAGE_GOLDENS_STALE", "").strip() not in (
+        "",
+        "0",
+        "false",
+    )
+
+
+goldens_acknowledged_stale = pytest.mark.skipif(
+    _homage_goldens_marked_stale(),
+    reason=(
+        "operator marked the homage golden bank as stale via "
+        "HAPAX_HOMAGE_GOLDENS_STALE — refresh pending. Unset to run "
+        "the suite again."
+    ),
+)
+
+
 # ── Paths / tolerances ──────────────────────────────────────────────────
 
 _GOLDEN_DIR = Path(__file__).parent / "golden_images"
@@ -558,6 +586,7 @@ def _cases() -> list[tuple[str, bool]]:
 
 
 @requires_cairo_and_gi
+@goldens_acknowledged_stale
 @pytest.mark.parametrize("ward_id,emphasis", _cases())
 def test_homage_visual_regression(ward_id: str, emphasis: bool) -> None:
     """Render ward ``ward_id`` and compare against its golden image.
