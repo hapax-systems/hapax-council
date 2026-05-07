@@ -29,6 +29,8 @@ CLAUDE.md rotation policy: `docs/superpowers/specs/2026-04-13-claude-md-excellen
 
 `docs/logos-design-language.md` is the authority document for all visual surfaces. It governs color (§3), typography (§1.6), spatial model (§4), animation (§6), mode switching (§2), and scope (§11). All component colors must use CSS custom properties (`var(--color-*)`) or Tailwind classes — no hardcoded hex except detection overlays (§3.8). `docs/logos-ui-reference.md` governs region content (what appears at each depth). Classification inspector (`C` key) is exempt from density rules — diagnostic tool with theme-aware colors.
 
+**Visual evidence in PRs (operator directive 2026-05-07):** every PR that touches the visual surface — wards, presets, modulations, layout JSON, effect chains — MUST include before/after compositor screenshots in the PR body, captured over 5–10 s so animation / drift / ticker variation surfaces in the evidence. Use `scripts/compositor-frame-capture.sh <label> [--duration SECONDS] [--interval-ms MS] [--source PATH]` to dump labelled frames to `~/.cache/hapax/screenshots/<label>/<utc-iso>/frame-NN.jpg` plus a markdown block to stdout suitable for `gh pr create --body "$(...)"`. Sources: `/dev/shm/hapax-compositor/snapshot.jpg` (default — main compositor output), `/dev/shm/hapax-compositor/frame_for_llm.jpg` (LLM-pipeline view), or `/dev/shm/hapax-visual/frame.jpg` (Reverie wgpu surface only, no overlays). When the compositor is inactive, document that explicitly in the PR body and capture before/after at the next operator-blessed restart.
+
 ## Logos API
 
 FastAPI on `:8051`. `uv run logos-api` to start. Containers: `docker compose up -d`.
