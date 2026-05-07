@@ -519,6 +519,16 @@ _FALLBACK_LAYOUT = Layout(
             geometry=SurfaceGeometry(kind="rect", x=1380, y=860, w=500, h=180),
             z_order=22,
         ),
+        SurfaceSchema(
+            id="steamdeck-display-pip",
+            geometry=SurfaceGeometry(kind="rect", x=960, y=60, w=920, h=580),
+            z_order=42,
+        ),
+        SurfaceSchema(
+            id="steamdeck-display-fullscreen",
+            geometry=SurfaceGeometry(kind="rect", x=0, y=0, w=1920, h=1080),
+            z_order=42,
+        ),
     ],
     assignments=[
         Assignment(source="stream_overlay", surface="obsidian-overlay-region"),
@@ -543,6 +553,8 @@ _FALLBACK_LAYOUT = Layout(
         Assignment(source="programme_banner", surface="programme-banner-bottom"),
         Assignment(source="durf", surface="durf-fullframe", render_stage="pre_fx"),
         Assignment(source="research_instrument_dashboard", surface="research-dashboard-right"),
+        Assignment(source="steamdeck-display", surface="steamdeck-display-pip", opacity=0.0),
+        Assignment(source="steamdeck-display", surface="steamdeck-display-fullscreen", opacity=0.0),
     ],
 )
 
