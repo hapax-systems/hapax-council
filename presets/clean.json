@@ -52,6 +52,10 @@
     ],
     [
       "vig",
+      "posterize"
+    ],
+    [
+      "posterize",
       "content_layer"
     ],
     [
