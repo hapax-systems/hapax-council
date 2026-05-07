@@ -531,16 +531,15 @@ def _write_cairo_ward_params(
         # Caps at 4 px so this only seats a *floor* — the FX reactor's own
         # spike-grade glow remains the audible foreground.
         glow_px = 4.0 * max(0.0, min(1.0, breath_amp))
-        # Drift-floor outputs (operator directive 2026-05-07 ward audit:
-        # ``drift_hz=0, drift_amplitude_px=0 — completely static``). The
-        # heartbeat raises the FLOOR for both fields from envelope-walked
-        # values; ``drift_type`` is intentionally NOT touched here so a
-        # ward whose drift_type defaults to ``"none"`` still renders
-        # static — the floor only manifests as visible motion when an
-        # upstream caller (compositional_consumer, operator config) sets
-        # drift_type to ``"sine"`` or ``"circle"``. Keeps this PR a pure
-        # prep for activation rather than an unconditional behaviour
-        # change.
+        # Drift-floor outputs (operator directive 2026-05-07 ward audit
+        # stage A: heartbeat raises the FLOOR for both fields from
+        # envelope-walked values). Stage B (flipped the
+        # ``WardProperties.drift_type`` dataclass default from
+        # ``"none"`` → ``"sine"``) ships separately so the floors here
+        # produce visible motion by default. ``drift_type`` is still NOT
+        # touched here — upstream callers (compositional_consumer,
+        # operator config) remain authoritative for picking the drift
+        # shape.
         drift_hz_floor = 1.5 * drift_freq
         drift_px_floor = 8.0 * drift_amp
 
