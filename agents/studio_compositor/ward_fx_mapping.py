@@ -103,6 +103,7 @@ WARD_DOMAIN: dict[str, WardDomain] = {
 
 AUDIO_REACTIVE_WARDS: frozenset[str] = frozenset(
     {
+        # Music-domain wards
         "pressure_gauge",
         "token_pole",
         "activity_variety_log",
@@ -110,26 +111,43 @@ AUDIO_REACTIVE_WARDS: frozenset[str] = frozenset(
         "m8_oscilloscope",
         "m8-display",
         "album_overlay",
+        # Presence-domain wards (operator directive 2026-05-07 ward audit:
+        # these wards rendered ``drift_type=none`` / static defaults after
+        # the audio fan-out was removed in #2756; joining them here lets
+        # the parametric heartbeat raise the same baseline floor
+        # (border_pulse_hz / scale_bump_pct / glow_radius_px) that the
+        # music-domain wards already see, so presence chrome no longer
+        # sits flat-zero on broadcast).
+        "whos_here",
+        "thinking_indicator",
+        "stance_indicator",
     }
 )
-"""Wards whose render responds to FX audio signals (kick onsets,
-intensity spikes). The reactor modulates these via the ward_properties
-SHM path (``scale_bump_pct`` / ``border_pulse_hz``) so the ward renders
-the beat without hard-coding audio state in every Cairo source.
+"""Wards whose chrome accepts heartbeat-driven baseline modulation
+(``border_pulse_hz`` / ``scale_bump_pct`` / ``glow_radius_px``) plus
+the FX reactor's spike-grade overlay on top.
 
-The ``album_overlay`` ward joins ``vinyl_platter`` so the cover art
-pulses with the broadcast beat alongside the platter — both surfaces
-represent the same playing track and should breathe together.
+**Music-domain wards** (the original cohort) couple to the broadcast
+beat: ``pressure_gauge``, ``token_pole``, ``activity_variety_log``,
+``vinyl_platter``, ``m8_oscilloscope``, ``m8-display``,
+``album_overlay``. ``album_overlay`` and ``vinyl_platter`` breathe
+together because both surfaces represent the same playing track. The
+M8 surfaces (``m8_oscilloscope`` + ``m8-display``) render their own
+SLIP-packet amplitudes directly; FX-bus inclusion synchronises their
+chrome to the broader broadcast beat on top of that.
 
-The M8 oscilloscope already renders the M8 device's own SLIP-packet
-amplitudes directly — that surface IS its audio. Inclusion here adds
-bus-level FX-event coupling on top of that, so the ward gets the same
-``scale_bump`` / ``border_pulse`` on broader-mix kicks as the other
-music-domain wards (``vinyl_platter``). The two signal paths compose:
-the waveform reflects the M8 instantaneously, while the FX reactor
-synchronises the ward's chrome to the broadcast's overall beat. The
-``m8-display`` ward (sibling IR surface for the same device) joins on
-the same FX path so both M8 surfaces breathe with the broadcast beat."""
+**Presence-domain wards** joined per the 2026-05-07 ward audit:
+``whos_here``, ``thinking_indicator``, ``stance_indicator``. These
+wards rendered with static chrome (``drift_type=none``, zero glow,
+zero pulse) after the audio fan-out path was retired in #2756.
+Joining the AUDIO_REACTIVE set here only hooks them into the
+heartbeat's baseline-floor writes — it does NOT subscribe them to
+``audio_kick_onset`` events (the anti-pumping carve-out at
+``fx_chain_ward_reactor.py`` still applies, pinned by
+``test_kick_onset_does_not_fan_out_to_audio_reactive_set``). The
+behavioural change is: presence wards now get a slow continuous
+breath baseline from the parametric heartbeat instead of sitting
+flat-zero."""
 
 
 def domain_for_ward(ward_id: str) -> WardDomain:
