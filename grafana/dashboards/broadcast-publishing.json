@@ -1,0 +1,357 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 0,
+  "id": null,
+  "uid": "hapax-broadcast-publishing",
+  "title": "Hapax / Broadcast — publishing & fanout surfaces",
+  "tags": ["hapax", "broadcast", "publication-bus", "fanout", "omg-lol", "mastodon", "bluesky"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Active broadcast — elapsed",
+      "description": "Seconds since the current broadcast went live. Resets at end-of-stream.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "hapax_broadcast_active_broadcast_elapsed_s",
+          "legendFormat": "elapsed",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "text", "value": null },
+              { "color": "green", "value": 60 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Broadcast mode + orchestrator state",
+      "description": "Current broadcast mode (desktop / mobile / dual) and orchestrator state. Read together — disagreement = transition in flight.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 0 },
+      "targets": [
+        {
+          "expr": "hapax_broadcast_mode",
+          "legendFormat": "mode",
+          "refId": "A"
+        },
+        {
+          "expr": "hapax_broadcast_orchestrator_state",
+          "legendFormat": "orchestrator",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "text", "value": null }]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Master LUFS (short-term)",
+      "description": "Broadcast master integrated LUFS over the short-term window. Target -14 LUFS for streaming compliance; > -10 = aggressive, < -20 = quiet.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 0 },
+      "targets": [
+        {
+          "expr": "hapax_broadcast_master_lufs_short_term",
+          "legendFormat": "master LUFS",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null },
+              { "color": "green", "value": -16 },
+              { "color": "yellow", "value": -12 },
+              { "color": "red", "value": -8 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Cross-platform fanout — posts published (24h)",
+      "description": "Posts published per surface — Mastodon, Bluesky, Discord, omg.lol weblog. Healthy operation has steady cadence; sudden flatline = surface broken / credentials revoked.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "expr": "sum by (result) (increase(hapax_broadcast_mastodon_posts_total[24h]))",
+          "legendFormat": "mastodon:{{result}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (result) (increase(hapax_broadcast_bluesky_posts_total[24h]))",
+          "legendFormat": "bluesky:{{result}}",
+          "refId": "B"
+        },
+        {
+          "expr": "sum by (result) (increase(hapax_broadcast_discord_webhook_posts_total[24h]))",
+          "legendFormat": "discord:{{result}}",
+          "refId": "C"
+        },
+        {
+          "expr": "sum by (result) (increase(hapax_broadcast_omg_weblog_publishes_total[24h]))",
+          "legendFormat": "omg-weblog:{{result}}",
+          "refId": "D"
+        },
+        {
+          "expr": "sum by (result) (increase(hapax_broadcast_arena_posts_total[24h]))",
+          "legendFormat": "are.na:{{result}}",
+          "refId": "E"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": { "mode": "normal" }
+          }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "sum"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "omg.lol family — pastebin / now / status / purl / weblog",
+      "description": "All omg.lol surface activity (pastebin / now / status / purl / weblog). Steady cadence is healthy; unbalanced = a surface is jammed or rate-limited.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 15 },
+      "targets": [
+        {
+          "expr": "sum (rate(hapax_broadcast_omg_pastebin_publishes_total[15m]))",
+          "legendFormat": "pastebin",
+          "refId": "A"
+        },
+        {
+          "expr": "sum (rate(hapax_broadcast_omg_now_syncs_total[15m]))",
+          "legendFormat": "now",
+          "refId": "B"
+        },
+        {
+          "expr": "sum (rate(hapax_broadcast_omg_statuslog_posts_total[15m]))",
+          "legendFormat": "statuslog",
+          "refId": "C"
+        },
+        {
+          "expr": "sum (rate(hapax_broadcast_omg_purl_registrations_total[15m]))",
+          "legendFormat": "purl",
+          "refId": "D"
+        },
+        {
+          "expr": "sum (rate(hapax_broadcast_omg_api_calls_total[15m]))",
+          "legendFormat": "api calls",
+          "refId": "E"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 4,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Publication bus — works minted",
+      "description": "Publication-bus PUB-P0-B keystone superclass publishes per surface. Failure rate climbing = AllowlistGate or legal-name guard rejecting payloads.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 15 },
+      "targets": [
+        {
+          "expr": "sum by (surface, result) (rate(hapax_publication_bus_publishes_total[15m]))",
+          "legendFormat": "{{surface}}:{{result}}",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(hapax_publication_bus_datacite_mirror_works_total[15m])",
+          "legendFormat": "datacite-mirror works",
+          "refId": "B"
+        },
+        {
+          "expr": "rate(hapax_publication_bus_orcid_works_total[15m])",
+          "legendFormat": "orcid works",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 4,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Rotations & refusals",
+      "description": "Broadcast rotation cadence (cuepoint-driven section changes) + refusal-as-data appends. Rotation cadence reflects the section-aware programme; refusals climbing = governance gates firing more often.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 24 },
+      "targets": [
+        {
+          "expr": "rate(hapax_broadcast_rotations_total[15m]) * 60",
+          "legendFormat": "rotations/min",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(hapax_broadcast_cuepoints_emitted_total[15m]) * 60",
+          "legendFormat": "cuepoints/min",
+          "refId": "B"
+        },
+        {
+          "expr": "rate(hapax_broadcast_channel_trailer_rotations_total[15m]) * 60",
+          "legendFormat": "channel-trailer/min",
+          "refId": "C"
+        },
+        {
+          "expr": "rate(hapax_refusal_appends_total[15m]) * 60",
+          "legendFormat": "refusal appends/min",
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Allowlist decisions — admit vs reject",
+      "description": "Publication allowlist gate decisions per surface. Climbing reject = upstream content failing safety gate (legal name, governance veto).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 24 },
+      "targets": [
+        {
+          "expr": "sum by (decision) (rate(hapax_broadcast_publication_allowlist_decisions_total[15m]))",
+          "legendFormat": "{{decision}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 4,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": "(?i).*(reject|block|deny).*" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": "(?i).*(admit|allow|ok).*" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      }
+    }
+  ],
+  "templating": { "list": [] }
+}
