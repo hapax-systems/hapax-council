@@ -109,6 +109,24 @@ def test_default_chrome_wards_are_pre_fx(chrome_source: str) -> None:
     )
 
 
+def test_default_packed_cameras_is_pre_fx() -> None:
+    """Constellation harmonization: the camera tile joins the unified scrim.
+
+    Operator directive 2026-04-24 ("every ward → pre_fx") was applied to
+    every ward in default.json except ``packed_cameras``, which lingered
+    at ``post_fx`` until this pin landed. Face obscure runs upstream of
+    the layout layer (``agents/studio_compositor/face_obscure_integration.py``,
+    fail-CLOSED on detector failure), so pulling cameras through the FX
+    chain does not expose faces — it only decorates them with the
+    glfeedback shader trail like every other ward.
+    """
+    stages = _stage_by_source(_load("default.json"))
+    assert stages["packed_cameras"] == "pre_fx", (
+        "default.json: packed_cameras should now render pre-FX as part of "
+        "the unified nebulous scrim. Per operator directive 2026-04-24."
+    )
+
+
 def test_default_legacy_captions_is_post_fx() -> None:
     """Legacy rollback layout keeps captions at the chrome default."""
     stages = _stage_by_source(_load("default-legacy.json"))

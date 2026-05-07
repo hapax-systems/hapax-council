@@ -1213,7 +1213,7 @@
       "opacity": 0.0,
       "per_assignment_effects": [],
       "non_destructive": false,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     }
   ]
 }
