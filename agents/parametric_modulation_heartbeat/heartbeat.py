@@ -518,12 +518,17 @@ def _write_cairo_ward_params(
 
     try:
         breath = _normalized_envelope_value(values, "breath.rate")
+        breath_amp = _normalized_envelope_value(values, "breath.amplitude")
         intensity = _normalized_envelope_value(values, "content.intensity")
         noise = _normalized_envelope_value(values, "noise.amplitude")
         sediment = _normalized_envelope_value(values, "post.sediment_strength")
 
         pulse_hz = 4.0 * max(0.0, min(1.0, 0.55 * breath + 0.25 * noise + 0.20 * (1.0 - sediment)))
         bump_pct = 0.08 * max(0.0, min(1.0, 0.65 * intensity + 0.35 * noise))
+        # Subtle additive glow baseline driven by the breath-amplitude envelope.
+        # Caps at 4 px so this only seats a *floor* — the FX reactor's own
+        # spike-grade glow remains the audible foreground.
+        glow_px = 4.0 * max(0.0, min(1.0, breath_amp))
 
         updates: dict[str, WardProperties] = {}
         for ward_id in AUDIO_REACTIVE_WARDS:
@@ -532,6 +537,7 @@ def _write_cairo_ward_params(
                 base,
                 border_pulse_hz=max(base.border_pulse_hz, pulse_hz),
                 scale_bump_pct=max(base.scale_bump_pct, bump_pct),
+                glow_radius_px=max(base.glow_radius_px, glow_px),
             )
         set_many_ward_properties(updates, ttl_s=ttl_s)
     except Exception:

@@ -342,6 +342,9 @@ class TestCairoWardParams:
             assert ward_id in wards
             assert wards[ward_id]["border_pulse_hz"] > 0.0
             assert wards[ward_id]["scale_bump_pct"] > 0.0
+            # ``glow_radius_px`` floor driven by ``breath.amplitude`` envelope;
+            # walker init at envelope midpoint produces a non-zero baseline.
+            assert wards[ward_id]["glow_radius_px"] > 0.0
 
     def test_tick_preserves_stronger_existing_cairo_params(
         self, tmp_path: Path, monkeypatch
@@ -353,7 +356,7 @@ class TestCairoWardParams:
         wp.clear_ward_properties_cache()
         wp.set_ward_properties(
             "pressure_gauge",
-            wp.WardProperties(border_pulse_hz=9.0, scale_bump_pct=0.07),
+            wp.WardProperties(border_pulse_hz=9.0, scale_bump_pct=0.07, glow_radius_px=12.0),
             ttl_s=10.0,
         )
         wp.clear_ward_properties_cache()
@@ -372,6 +375,8 @@ class TestCairoWardParams:
         props = wp.resolve_ward_properties("pressure_gauge")
         assert props.border_pulse_hz >= 9.0
         assert props.scale_bump_pct >= 0.07
+        # Heartbeat caps glow at 4 px; the existing 12 px must survive.
+        assert props.glow_radius_px >= 12.0
 
 
 class TestAtomicity:
