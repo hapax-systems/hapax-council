@@ -198,9 +198,10 @@ class WardFxReactor:
         observed but DO NOT fan out to the audio-reactive ward set
         (``AUDIO_REACTIVE_WARDS``). The historical multi-ward synchronous
         border-pulse + scale-bump fan-out produced lockstep pumping
-        across 7 wards on every kick — a "global reactivity pumping"
-        shape banned by operator directive 2026-05-06 (carve-out to
-        never-remove: see ``feedback_never_remove_exception_global_pumping``).
+        across the audio-reactive cohort on every kick — a "global
+        reactivity pumping" shape banned by operator directive 2026-05-06
+        (carve-out to never-remove: see
+        ``feedback_never_remove_exception_global_pumping``).
 
         Per-ward, scoped audio reactivity remains live and mandatory:
         the M8 oscilloscope renders the M8 device's own SLIP-packet
