@@ -346,14 +346,15 @@ class TestCairoWardParams:
             # walker init at envelope midpoint produces a non-zero baseline.
             assert wards[ward_id]["glow_radius_px"] > 0.0
             # ``drift_hz`` / ``drift_amplitude_px`` floors driven by the
-            # ``drift.*`` envelopes (operator ward audit 2026-05-07).
-            # ``drift_type`` is intentionally NOT touched by the heartbeat,
-            # so these floors do not produce visible motion until something
-            # else flips drift_type from ``"none"`` to ``"sine"`` or
-            # ``"circle"``.
+            # ``drift.*`` envelopes (operator ward audit 2026-05-07 stage A).
+            # ``drift_type`` is NOT touched by the heartbeat, but the
+            # ``WardProperties`` dataclass default is now ``"sine"`` (stage B
+            # of the same ward audit), so the floors above produce visible
+            # motion by default. The heartbeat preserves any upstream-set
+            # ``drift_type`` via ``replace(base, …)`` semantics.
             assert wards[ward_id]["drift_hz"] > 0.0
             assert wards[ward_id]["drift_amplitude_px"] > 0.0
-            assert wards[ward_id]["drift_type"] == "none"
+            assert wards[ward_id]["drift_type"] == "sine"
 
     def test_tick_preserves_stronger_existing_cairo_params(
         self, tmp_path: Path, monkeypatch

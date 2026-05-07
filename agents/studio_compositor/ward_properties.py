@@ -140,9 +140,16 @@ class WardProperties:
     # Movement
     position_offset_x: float = 0.0
     position_offset_y: float = 0.0
-    drift_type: str = "none"  # "none" | "sine" | "circle"
-    drift_hz: float = 0.0
-    drift_amplitude_px: float = 0.0
+    # Drift defaults give every ward subtle spatial life by default rather
+    # than dead-static positioning. Director / recruitment / per-ward
+    # overrides remain authoritative — these are the *fallback* when nothing
+    # else has set a drift. Conservative numbers: 0.1 Hz = one full cycle
+    # per 10s (slow enough not to be distracting), 3 px amplitude = visible
+    # but small. Override per-ward via ``set_ward_properties`` to escalate
+    # (e.g. compositional_consumer's "drift-sine-1hz" preset uses 12 px).
+    drift_type: str = "sine"  # "none" | "sine" | "circle"
+    drift_hz: float = 0.1
+    drift_amplitude_px: float = 3.0
 
     # Appearance
     color_override_rgba: tuple[float, float, float, float] | None = None
