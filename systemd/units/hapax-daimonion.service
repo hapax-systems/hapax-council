@@ -1,7 +1,8 @@
 [Unit]
 Description=Hapax Daimonion — persistent voice interaction daemon
 After=pipewire.service pipewire-pulse.service hapax-secrets.service hapax-evil-pet-scene.service
-Requires=pipewire.service hapax-secrets.service
+BindsTo=pipewire.service
+Requires=hapax-secrets.service
 # hapax-evil-pet-scene writes the base-scene CC burst to the Evil Pet before
 # VocalChain/VinylChain start emitting. Wants= (not Requires=) so a missing
 # MIDI Dispatch port doesn't block voice — the chains cope with Evil Pet

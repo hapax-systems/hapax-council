@@ -2,7 +2,7 @@
 Description=Hapax broadcast master LUFS-S panic-cap (defense-in-depth)
 Documentation=file:///home/hapax/projects/hapax-council/agents/studio_compositor/lufs_panic_cap.py
 After=pipewire.service wireplumber.service hapax-secrets.service
-Requires=pipewire.service wireplumber.service
+BindsTo=pipewire.service wireplumber.service
 PartOf=studio-compositor.service
 
 [Service]

@@ -1,7 +1,7 @@
 [Unit]
 Description=Hapax OBS broadcast → iLoud Micro Monitor BT loopback
 After=pipewire.service pipewire-pulse.service
-Requires=pipewire.service
+BindsTo=pipewire.service
 
 [Service]
 Type=oneshot
