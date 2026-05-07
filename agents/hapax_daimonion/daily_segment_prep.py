@@ -70,6 +70,9 @@ PREP_BUDGET_S = float(os.environ.get("HAPAX_SEGMENT_PREP_BUDGET_S", "1800"))  # 
 MAX_SEGMENTS = int(os.environ.get("HAPAX_SEGMENT_PREP_MAX", "4"))
 PREP_ARTIFACT_SCHEMA_VERSION = 1
 PREP_ARTIFACT_AUTHORITY = "prior_only"
+PREP_DIAGNOSTIC_SCHEMA_VERSION = 1
+PREP_DIAGNOSTIC_AUTHORITY = "diagnostic_only"
+PREP_DIAGNOSTIC_LEDGER_FILENAME = "prep-diagnostic-outcomes.jsonl"
 PREP_STATUS_VERSION = 1
 PREP_STATUS_FILENAME = "prep-status.json"
 
@@ -145,6 +148,107 @@ def _update_prep_status(
         _write_json_atomic(path, payload)
     except Exception:
         log.warning("daily_segment_prep: failed to write prep status %s", path, exc_info=True)
+
+
+def _diagnostic_boundary_contract() -> dict[str, Any]:
+    return {
+        "diagnostic_only": True,
+        "release_boundary": "closed",
+        "runtime_boundary": "closed",
+        "loadable": False,
+        "manifest_eligible": False,
+        "qdrant_eligible": False,
+        "runtime_eligible": False,
+        "release_eligible": False,
+    }
+
+
+def _diagnostic_hash(payload: dict[str, Any]) -> str:
+    body = {key: value for key, value in payload.items() if key != "dossier_sha256"}
+    return _sha256_json(body)
+
+
+def _diagnostic_slug(value: Any) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "").strip()).strip(".-").lower()
+    return (slug or "unknown")[:96]
+
+
+def _write_prep_diagnostic_outcome(
+    prep_dir: Path,
+    *,
+    prep_session: dict[str, Any] | None,
+    programme_id: str | None,
+    role: str | None = None,
+    topic: str | None = None,
+    segment_beats: list[Any] | None = None,
+    terminal_status: str,
+    terminal_reason: str,
+    not_loadable_reason: str,
+    source_hashes: dict[str, str] | None = None,
+    diagnostic_refs: list[str] | None = None,
+    no_candidate_metadata: dict[str, Any] | None = None,
+    refusal_metadata: dict[str, Any] | None = None,
+) -> Path:
+    """Write a terminal diagnostic dossier and append its non-runtime ledger row."""
+
+    boundary = _diagnostic_boundary_contract()
+    session_id = str((prep_session or {}).get("prep_session_id") or "unknown-session")
+    model_id = str((prep_session or {}).get("model_id") or "unknown-model")
+    subject_slug = _diagnostic_slug(programme_id or session_id)
+    reason_slug = _diagnostic_slug(terminal_reason)
+    dossier_path = prep_dir / f"{subject_slug}.{reason_slug}.diagnostic.json"
+    relevant_llm_calls = [
+        call
+        for call in list((prep_session or {}).get("llm_calls") or [])
+        if programme_id is None or call.get("programme_id") in {programme_id, "planner"}
+    ]
+    now = datetime.now(tz=UTC).isoformat()
+    dossier: dict[str, Any] = {
+        "schema_version": PREP_DIAGNOSTIC_SCHEMA_VERSION,
+        "record_type": "prep_terminal_dossier",
+        "authority": PREP_DIAGNOSTIC_AUTHORITY,
+        **boundary,
+        "terminal": True,
+        "terminal_status": terminal_status,
+        "terminal_reason": terminal_reason,
+        "not_loadable_reason": not_loadable_reason,
+        "programme_id": programme_id,
+        "role": role,
+        "topic": topic,
+        "segment_beats": list(segment_beats or []),
+        "diagnostic_refs": list(diagnostic_refs or []),
+        "no_candidate_metadata": dict(no_candidate_metadata or {}),
+        "refusal_metadata": dict(refusal_metadata or {}),
+        "source_hashes": dict(source_hashes or {}),
+        "prepped_at": now,
+        "prep_session_id": session_id,
+        "model_id": model_id,
+        "llm_calls": relevant_llm_calls,
+        "boundary_contract": boundary,
+    }
+    dossier["dossier_sha256"] = _diagnostic_hash(dossier)
+    _write_json_atomic(dossier_path, dossier)
+
+    ledger_row = {
+        "schema_version": PREP_DIAGNOSTIC_SCHEMA_VERSION,
+        "record_type": "prep_diagnostic_outcome_ledger_entry",
+        **boundary,
+        "ledgered_at": now,
+        "dossier_ref": str(dossier_path),
+        "dossier_sha256": dossier["dossier_sha256"],
+        "prep_session_id": session_id,
+        "model_id": model_id,
+        "programme_id": programme_id,
+        "terminal": True,
+        "terminal_status": terminal_status,
+        "terminal_reason": terminal_reason,
+        "not_loadable_reason": not_loadable_reason,
+    }
+    ledger_path = prep_dir / PREP_DIAGNOSTIC_LEDGER_FILENAME
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    with ledger_path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(ledger_row, sort_keys=True) + "\n")
+    return dossier_path
 
 
 def _json_equal(left: Any, right: Any) -> bool:
@@ -843,6 +947,12 @@ def prep_segment(
     Returns the path to the saved JSON file, or None on failure.
     """
     prog_id = str(getattr(programme, "programme_id", "unknown"))
+    if prep_session is None:
+        prep_session = _new_prep_session()
+    role = getattr(getattr(programme, "role", None), "value", "unknown")
+    content = getattr(programme, "content", None)
+    beats = getattr(content, "segment_beats", []) or [] if content else []
+    topic = getattr(content, "narrative_beat", "") or "" if content else ""
     try:
         artifact_name = _programme_artifact_name(prog_id)
         diagnostic_name = _programme_artifact_name(
@@ -855,15 +965,42 @@ def prep_segment(
         )
     except ValueError as exc:
         log.warning("prep_segment: skipping unsafe programme_id %r: %s", prog_id, exc)
+        _write_prep_diagnostic_outcome(
+            prep_dir,
+            prep_session=prep_session,
+            programme_id=prog_id,
+            role=role,
+            topic=topic,
+            segment_beats=list(beats),
+            terminal_status="no_candidate",
+            terminal_reason="unsafe_programme_id",
+            not_loadable_reason=f"unsafe programme_id: {exc}",
+            no_candidate_metadata={
+                "candidate_source": "programme_id",
+                "candidate_count": 0,
+                "unsafe_programme_id": prog_id,
+            },
+        )
         return None
-    if prep_session is None:
-        prep_session = _new_prep_session()
-    role = getattr(getattr(programme, "role", None), "value", "unknown")
-    content = getattr(programme, "content", None)
-    beats = getattr(content, "segment_beats", []) or [] if content else []
 
     if not beats:
         log.info("prep_segment: %s has no beats, skipping", prog_id)
+        _write_prep_diagnostic_outcome(
+            prep_dir,
+            prep_session=prep_session,
+            programme_id=prog_id,
+            role=role,
+            topic=topic,
+            segment_beats=[],
+            terminal_status="no_candidate",
+            terminal_reason="no_segment_beats",
+            not_loadable_reason="no segment beats available for prep",
+            no_candidate_metadata={
+                "candidate_source": "programme.content.segment_beats",
+                "candidate_count": 0,
+                "role": role,
+            },
+        )
         return None
 
     log.info("prep_segment: composing %s (%s, %d beats)", prog_id, role, len(beats))
@@ -882,6 +1019,23 @@ def prep_segment(
 
     if not script:
         log.warning("prep_segment: empty script for %s", prog_id)
+        _write_prep_diagnostic_outcome(
+            prep_dir,
+            prep_session=prep_session,
+            programme_id=prog_id,
+            role=role,
+            topic=topic,
+            segment_beats=list(beats),
+            terminal_status="no_release",
+            terminal_reason="empty_script_candidate",
+            not_loadable_reason="LLM returned no parseable script blocks",
+            source_hashes=source_hashes,
+            no_candidate_metadata={
+                "candidate_source": "llm_script_parse",
+                "candidate_count": 0,
+                "expected_beat_count": len(beats),
+            },
+        )
         return None
 
     # Pad or truncate to match beat count
@@ -921,12 +1075,18 @@ def prep_segment(
             len(actionability["removed_unsupported_action_lines"]),
         )
         diagnostic_path = prep_dir / diagnostic_name
+        boundary = _diagnostic_boundary_contract()
         diagnostic = {
             "schema_version": PREP_ARTIFACT_SCHEMA_VERSION,
-            "authority": PREP_ARTIFACT_AUTHORITY,
+            "record_type": "prep_failure_diagnostic",
+            "authority": PREP_DIAGNOSTIC_AUTHORITY,
+            **boundary,
+            "terminal": True,
+            "terminal_status": "refused_no_release",
+            "terminal_reason": "actionability_alignment_failed",
             "programme_id": prog_id,
             "role": role,
-            "topic": getattr(content, "narrative_beat", "") or "",
+            "topic": topic,
             "segment_beats": list(beats),
             "prepared_script_candidate": script,
             "sanitized_script_candidate": actionability["prepared_script"],
@@ -943,11 +1103,31 @@ def prep_segment(
             "prompt_sha256": source_hashes["prompt_sha256"],
             "seed_sha256": source_hashes["seed_sha256"],
             "not_loadable_reason": "actionability alignment failed",
+            "boundary_contract": boundary,
         }
         diagnostic["artifact_sha256"] = _artifact_hash(diagnostic)
         tmp = diagnostic_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(diagnostic, indent=2, ensure_ascii=False), encoding="utf-8")
         tmp.replace(diagnostic_path)
+        _write_prep_diagnostic_outcome(
+            prep_dir,
+            prep_session=prep_session,
+            programme_id=prog_id,
+            role=role,
+            topic=topic,
+            segment_beats=list(beats),
+            terminal_status="refused_no_release",
+            terminal_reason="actionability_alignment_failed",
+            not_loadable_reason="actionability alignment failed",
+            source_hashes=source_hashes,
+            diagnostic_refs=[str(diagnostic_path)],
+            refusal_metadata={
+                "rubric_version": ACTIONABILITY_RUBRIC_VERSION,
+                "removed_unsupported_action_line_count": len(
+                    actionability["removed_unsupported_action_lines"]
+                ),
+            },
+        )
         return None
     script = list(actionability["prepared_script"])
     layout_responsibility = validate_layout_responsibility(
@@ -1012,12 +1192,18 @@ def prep_segment(
             [item.get("reason") for item in layout_responsibility["violations"]],
         )
         diagnostic_path = prep_dir / layout_diagnostic_name
+        boundary = _diagnostic_boundary_contract()
         diagnostic = {
             "schema_version": PREP_ARTIFACT_SCHEMA_VERSION,
-            "authority": PREP_ARTIFACT_AUTHORITY,
+            "record_type": "prep_failure_diagnostic",
+            "authority": PREP_DIAGNOSTIC_AUTHORITY,
+            **boundary,
+            "terminal": True,
+            "terminal_status": "refused_no_release",
+            "terminal_reason": "layout_responsibility_failed",
             "programme_id": prog_id,
             "role": role,
-            "topic": getattr(content, "narrative_beat", "") or "",
+            "topic": topic,
             "segment_beats": list(beats),
             "prepared_script_candidate": script,
             "segment_quality_rubric_version": QUALITY_RUBRIC_VERSION,
@@ -1037,11 +1223,29 @@ def prep_segment(
             "prompt_sha256": source_hashes["prompt_sha256"],
             "seed_sha256": source_hashes["seed_sha256"],
             "not_loadable_reason": "layout responsibility failed",
+            "boundary_contract": boundary,
         }
         diagnostic["artifact_sha256"] = _artifact_hash(diagnostic)
         tmp = diagnostic_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(diagnostic, indent=2, ensure_ascii=False), encoding="utf-8")
         tmp.replace(diagnostic_path)
+        _write_prep_diagnostic_outcome(
+            prep_dir,
+            prep_session=prep_session,
+            programme_id=prog_id,
+            role=role,
+            topic=topic,
+            segment_beats=list(beats),
+            terminal_status="refused_no_release",
+            terminal_reason="layout_responsibility_failed",
+            not_loadable_reason="layout responsibility failed",
+            source_hashes=source_hashes,
+            diagnostic_refs=[str(diagnostic_path)],
+            refusal_metadata={
+                "layout_responsibility_version": LAYOUT_RESPONSIBILITY_VERSION,
+                "violation_count": len(layout_responsibility["violations"]),
+            },
+        )
         return None
 
     # Save to disk
@@ -1418,6 +1622,27 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
             segmented_count=len(segmented),
         )
         raise
+
+    if not segmented:
+        _write_prep_diagnostic_outcome(
+            today,
+            prep_session=prep_session,
+            programme_id=None,
+            role=None,
+            topic=None,
+            segment_beats=[],
+            terminal_status="no_candidate",
+            terminal_reason="planner_no_segmented_programmes",
+            not_loadable_reason="planner produced no segmented-content programmes",
+            no_candidate_metadata={
+                "candidate_source": "programme_planner",
+                "candidate_count": 0,
+                "plan_rounds": plan_round,
+                "max_rounds": max_rounds,
+                "target_segments": MAX_SEGMENTS,
+                "existing_programme_count": len(existing_programme_ids),
+            },
+        )
 
     # Step 3: Write manifest.  The manifest is the loader allow-list, so
     # repeated prep runs must append newly accepted artifacts without
