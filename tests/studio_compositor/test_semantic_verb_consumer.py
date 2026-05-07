@@ -6,7 +6,7 @@ Pin:
 - Counter increments per consume() with correct verb + outcome label
 - Unknown verb → outcome=ignored, no file write
 - Write failure → outcome=ignored
-- 10 consumes cover all 10 verbs (live-verification proxy)
+- 11 consumes cover all 11 verbs (live-verification proxy)
 """
 
 from __future__ import annotations
@@ -199,9 +199,9 @@ class TestWriteFailureFallback:
         assert _counter("ascend", "dispatched") == 0
 
 
-class TestTenVerbsCoverFullVocabulary:
+class TestElevenVerbsCoverFullVocabulary:
     """Live-verification proxy: cc-task acceptance is ≥6 distinct verbs
-    in 10 min. We pin stronger here — all 10 verbs dispatch cleanly."""
+    in 10 min. We pin stronger here — all 11 verbs dispatch cleanly."""
 
     def test_consume_each_verb_once(self, tmp_path: Path) -> None:
         consumer = SemanticVerbConsumer(

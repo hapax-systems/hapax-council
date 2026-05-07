@@ -20,13 +20,13 @@ from shared.director_semantic_verbs import (
 
 
 class TestVocabularyFloor:
-    def test_at_least_ten_verbs_registered(self) -> None:
+    def test_at_least_eleven_verbs_registered(self) -> None:
         """U5 acceptance asks for ≥6 verbs dispatched in a 10-min sample.
-        Pin a 10-verb floor so the operator has margin: a director that
-        only fires 6 distinct verbs in a window still has 4 unfired
+        Pin an 11-verb floor so the operator has margin: a director that
+        only fires 6 distinct verbs in a window still has 5 unfired
         verbs in the catalog."""
-        assert len(SEMANTIC_VERBS) >= 10, (
-            f"SEMANTIC_VERBS must have ≥10 entries (got {len(SEMANTIC_VERBS)}); "
+        assert len(SEMANTIC_VERBS) >= 11, (
+            f"SEMANTIC_VERBS must have ≥11 entries (got {len(SEMANTIC_VERBS)}); "
             f"the floor matches the U5 acceptance criterion of ≥6-dispatched-in-10-min "
             f"with safety margin"
         )

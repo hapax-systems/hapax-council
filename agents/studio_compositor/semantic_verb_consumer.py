@@ -1,12 +1,12 @@
 """Semantic-verb consumer (cc-task u5-verb-prometheus-counter-and-consumer Phase 1).
 
 Per ``/tmp/wsjf-path-director-moves.md`` §4 item 3 + §3 G8: U5 substrate
-(10-verb vocabulary in ``shared/director_semantic_verbs.py``) shipped via
+(11-verb vocabulary in ``shared/director_semantic_verbs.py``) shipped via
 PR #2326 — vocabulary registered, no-orphan invariant pinned. But the
 director was talking to itself: no consumer mapped verbs into chain
 mutations.
 
-This Phase 1 consumer wires each of the 10 canonical verbs into one of
+This Phase 1 consumer wires each of the 11 canonical verbs into one of
 two dispatch paths:
 
   ENVELOPE   — write to a parametric-heartbeat envelope nudge file. The
@@ -215,7 +215,7 @@ class SemanticVerbConsumer:
 
 
 def all_verbs() -> tuple[str, ...]:
-    """Return the canonical 10-verb vocabulary (delegates to substrate)."""
+    """Return the canonical 11-verb vocabulary (delegates to substrate)."""
     return SEMANTIC_VERBS
 
 
