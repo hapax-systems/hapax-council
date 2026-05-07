@@ -770,6 +770,8 @@ class StudioCompositor:
         self._v4l2_frame_count: int = 0
         self._v4l2_last_frame_monotonic: float = 0.0
         self._v4l2_lock = threading.Lock()
+        # GL chain output probe — direct detection of GL chain death.
+        self._gl_last_frame_monotonic: float = 0.0
         # Cc-task ``compositor-v4l2sink-graph-mutation-stall`` (2026-05-04):
         # auto-recovery bookkeeping. Tracks consecutive failed sink-
         # reattach attempts so the watchdog tick can decide whether to
@@ -1030,9 +1032,25 @@ class StudioCompositor:
             self._slot_pipeline.update_node_uniforms(node_id, params)
 
     def _on_graph_plan_changed(self, old_plan: Any, new_plan: Any) -> None:
+        # MUST run on the GLib main loop — set_property("fragment") on
+        # PLAYING glfeedback elements requires the GL thread. Calling
+        # from the state-reader daemon thread deadlocks: the state-reader
+        # holds the Python GIL waiting for GL context, the GL streaming
+        # thread holds the GL context waiting for the GIL. This was the
+        # root cause of the persistent GL chain stall (2026-05-07).
         if hasattr(self, "_slot_pipeline") and self._slot_pipeline is not None:
-            self._slot_pipeline.activate_plan(new_plan)
-            log.info("Slot pipeline activated: %s", new_plan.name if new_plan else "none")
+            GLib = self._GLib
+            if GLib is not None:
+                GLib.idle_add(
+                    lambda p=new_plan: (
+                        self._slot_pipeline.activate_plan(p),
+                        log.info("Slot pipeline activated: %s", p.name if p else "none"),
+                        False,
+                    )[2]
+                )
+            else:
+                self._slot_pipeline.activate_plan(new_plan)
+                log.info("Slot pipeline activated: %s", new_plan.name if new_plan else "none")
 
     def _resolve_camera_role(self, element: Any) -> str | None:
         if element is None:

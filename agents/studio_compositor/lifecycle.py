@@ -393,6 +393,21 @@ def start_compositor(compositor: Any) -> None:
                 except Exception:
                     pass
             elif any_active and not v4l2_alive:
+                # Direct GL chain death detection — if the GL output probe
+                # hasn't fired for >30s, the GL chain is dead. Exit
+                # immediately rather than waiting for gray tolerance.
+                _GL_DEATH_THRESHOLD_S = 30.0
+                gl_ts = getattr(compositor, "_gl_last_frame_monotonic", 0.0)
+                if gl_ts > 0.0 and (time.monotonic() - gl_ts) > _GL_DEATH_THRESHOLD_S:
+                    log.error(
+                        "GL chain dead (no output for %.0fs) — exiting for restart",
+                        time.monotonic() - gl_ts,
+                    )
+                    sd_notify_status("FATAL — GL chain dead, restarting")
+                    import os
+
+                    os._exit(1)
+
                 # v4l2sink stall recovery. Always ping the watchdog for the
                 # first _V4L2_GRAY_TOLERANCE_S seconds to give recovery a
                 # chance without restarting. If the sink remains unrecoverable
@@ -400,7 +415,7 @@ def start_compositor(compositor: Any) -> None:
                 # gray is worse than a restart + OBS source re-add.
                 from .v4l2_stall_recovery import attempt_recovery
 
-                _V4L2_GRAY_TOLERANCE_S = 120.0
+                _V4L2_GRAY_TOLERANCE_S = 15.0
                 stall_start = getattr(compositor, "_v4l2_stall_start", 0.0)
                 now_mono = time.monotonic()
                 if stall_start == 0.0:
