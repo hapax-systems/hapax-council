@@ -123,6 +123,44 @@ class TestExpiry:
         # nothing written — file doesn't exist
         assert not wp.WARD_PROPERTIES_PATH.exists()
 
+    def test_expired_entries_pruned_from_disk_on_next_write(self):
+        """Stale entries drop off the on-disk file when ANY write touches
+        it, not just the entry being overwritten. Prior behaviour: a
+        ward entry past ``expires_at`` lingered on disk indefinitely
+        because the resolver only filtered at read time. Operators
+        inspecting ``ward-properties.json`` saw lies (e.g. a 37h-old
+        entry overriding what the dataclass default would actually
+        produce). Pruning at write keeps disk view in sync with runtime
+        semantics."""
+        # Write a short-TTL entry for ``album``.
+        wp.set_ward_properties("album", wp.WardProperties(alpha=0.3), ttl_s=0.1)
+        wp.clear_ward_properties_cache()
+        time.sleep(0.3)
+        # Confirm the stale ``album`` entry IS on disk (legacy state).
+        raw = json.loads(wp.WARD_PROPERTIES_PATH.read_text())
+        assert "album" in raw["wards"], "precondition: stale entry on disk before next write"
+
+        # Write a fresh entry for a DIFFERENT ward. The prune step
+        # should drop ``album`` even though we never touched it.
+        wp.set_ward_properties("token_pole", wp.WardProperties(alpha=0.5), ttl_s=10.0)
+        raw = json.loads(wp.WARD_PROPERTIES_PATH.read_text())
+        assert "album" not in raw["wards"], (
+            "stale album entry should have been pruned by token_pole write"
+        )
+        assert "token_pole" in raw["wards"], "fresh entry must persist"
+
+    def test_fresh_entries_preserved_on_other_ward_write(self):
+        """Pruning must NOT touch entries whose ``expires_at`` is still
+        in the future. Sister test to the prune case — pins the prune
+        condition so it doesn't accidentally widen to "drop everything
+        not in the current write batch"."""
+        wp.set_ward_properties("album", wp.WardProperties(alpha=0.3), ttl_s=10.0)
+        wp.set_ward_properties("token_pole", wp.WardProperties(alpha=0.5), ttl_s=10.0)
+        raw = json.loads(wp.WARD_PROPERTIES_PATH.read_text())
+        assert set(raw["wards"].keys()) == {"album", "token_pole"}, (
+            "both fresh entries must coexist on disk"
+        )
+
 
 class TestAllResolved:
     def test_returns_every_ward_with_an_entry(self):
