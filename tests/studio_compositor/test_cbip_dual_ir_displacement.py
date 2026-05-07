@@ -20,7 +20,6 @@ from agents.studio_compositor.cbip_dual_ir_displacement import (
     CBIPDualIrDisplacementCairoSource,
     compose_displacement_rgba,
 )
-from shared.compositor_model import Layout
 
 
 def _png_bytes(brightness: int, *, size: tuple[int, int] = (32, 24)) -> bytes:
@@ -210,18 +209,9 @@ class TestRegistrationAndLayout:
             is CBIPDualIrDisplacementCairoSource
         )
 
-    def test_example_layout_is_valid(self) -> None:
-        path = (
-            Path(__file__).parents[2]
-            / "config"
-            / "compositor-layouts"
-            / "examples"
-            / "cbip-dual-ir-displacement.json"
-        )
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        layout = Layout.model_validate(raw)
-
-        assert layout.sources[0].params["class_name"] == "CBIPDualIrDisplacementCairoSource"
-        assert {(a.source, a.surface) for a in layout.assignments} == {
-            ("cbip-dual-ir-displacement", "cbip-dual-ir-displacement-surface")
-        }
+    # ``test_example_layout_is_valid`` was removed when PR #2770 purged
+    # ``config/compositor-layouts/examples/cbip-dual-ir-displacement.json``
+    # along with the rest of the examples/ directory ("vinyl-focus caused
+    # production incident"). The class registration above is the
+    # remaining pin; if a fresh example layout is reintroduced, restore a
+    # parallel `test_example_layout_is_valid` that loads the new path.

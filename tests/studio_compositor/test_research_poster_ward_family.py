@@ -50,9 +50,11 @@ if TYPE_CHECKING:
 
 REPO_ROOT = Path(__file__).parents[2]
 DEFAULT_JSON = REPO_ROOT / "config" / "compositor-layouts" / "default.json"
-EXAMPLE_JSON = (
-    REPO_ROOT / "config" / "compositor-layouts" / "examples" / ("research-poster-family.json")
-)
+# ``examples/research-poster-family.json`` was purged with the rest of
+# the ``examples/`` directory by PR #2770; the layout-shape pin that
+# loaded it (``test_research_poster_example_layout_is_declarable``) was
+# removed in the same commit. If the example is reintroduced, restore
+# both this constant and the matching declarability test.
 
 FEATURE_FLAGS = (
     CONSTRUCTIVIST_FLAG_ENV,
@@ -149,52 +151,6 @@ def test_ascii_schematic_rows_are_ascii_and_fixed_width() -> None:
     assert widths == {46}
     for row in rows:
         row.encode("ascii")
-
-
-def test_research_poster_example_layout_is_declarable() -> None:
-    layout = Layout.model_validate(json.loads(EXAMPLE_JSON.read_text()))
-
-    assert layout.name == "research-poster-family"
-    assert {s.id for s in layout.sources} == set(CLASS_BY_ID)
-    assert {s.id for s in layout.surfaces} == set(SURFACE_BY_ID.values())
-
-    by_source = {source.id: source for source in layout.sources}
-    for source_id, cls in CLASS_BY_ID.items():
-        source = by_source[source_id]
-        assert source.backend == "cairo"
-        assert source.params["class_name"] == cls.__name__
-        assert source.update_cadence == "rate"
-        assert source.rate_hz == 0.5
-        assert "research-poster" in source.tags
-        assert get_cairo_source_class(source.params["class_name"]) is cls
-
-    by_surface = {surface.id: surface for surface in layout.surfaces}
-    rects = []
-    for surface_id in SURFACE_BY_ID.values():
-        surface = by_surface[surface_id]
-        geom = surface.geometry
-        assert surface.z_order == 22
-        assert geom.kind == "rect"
-        assert geom.x is not None and geom.y is not None
-        assert geom.w == 520 and geom.h == 180
-        assert geom.x >= 0 and geom.x + geom.w <= 1920
-        assert geom.y >= 0 and geom.y + geom.h <= 1080
-        rects.append((surface_id, geom.x, geom.y, geom.w, geom.h))
-
-    for i in range(len(rects)):
-        for j in range(i + 1, len(rects)):
-            id_a, ax, ay, aw, ah = rects[i]
-            id_b, bx, by, bw, bh = rects[j]
-            overlap_x = ax < bx + bw and bx < ax + aw
-            overlap_y = ay < by + bh and by < ay + ah
-            assert not (overlap_x and overlap_y), f"{id_a} overlaps {id_b}"
-
-    pairs = {(assignment.source, assignment.surface) for assignment in layout.assignments}
-    assert pairs == set(SURFACE_BY_ID.items())
-    for assignment in layout.assignments:
-        assert assignment.render_stage == "pre_fx"
-        assert assignment.non_destructive
-        assert assignment.opacity == 0.92
 
 
 def test_research_poster_sources_are_not_auto_active_in_default_layout() -> None:
