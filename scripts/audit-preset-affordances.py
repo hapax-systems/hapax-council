@@ -37,20 +37,99 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PRESETS_DIR = REPO_ROOT / "presets"
+SELECTOR_PATH = REPO_ROOT / "agents" / "studio_compositor" / "preset_family_selector.py"
 
 # Qdrant queries are best-effort — when unreachable, set D-category to
 # "skipped" and continue. The script must work in CI / dev / locked-down
 # environments without Qdrant access.
 
 
+def _string_constant(node: ast.AST) -> str | None:
+    """Return the str payload of an ast.Constant, or None."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _string_tuple(node: ast.AST) -> tuple[str, ...] | None:
+    """Return a tuple of strings extracted from an ast.Tuple/List of Constants."""
+    if not isinstance(node, ast.Tuple | ast.List):
+        return None
+    items: list[str] = []
+    for elt in node.elts:
+        s = _string_constant(elt)
+        if s is None:
+            return None
+        items.append(s)
+    return tuple(items)
+
+
+def _extract_family_presets_dict(dict_node: ast.Dict) -> dict[str, tuple[str, ...]] | None:
+    """Walk an ast.Dict whose keys are str-Constants and values are tuples-of-str.
+
+    Returns None when the literal contains anything else (ensures the
+    auditor never silently misreads non-trivial expressions).
+    """
+    out: dict[str, tuple[str, ...]] = {}
+    for key, value in zip(dict_node.keys, dict_node.values, strict=True):
+        if key is None:
+            return None
+        family = _string_constant(key)
+        presets = _string_tuple(value)
+        if family is None or presets is None:
+            return None
+        out[family] = presets
+    return out
+
+
 def load_family_presets() -> dict[str, tuple[str, ...]]:
-    """Import ``FAMILY_PRESETS`` from the dispatcher module."""
+    """Extract ``FAMILY_PRESETS`` from preset_family_selector.py via AST walk.
+
+    Cannot ``import`` the dispatcher module here because the script's
+    PEP 723 header (``dependencies = []``) deliberately runs in an
+    isolated environment without project deps, but importing
+    ``agents.studio_compositor.preset_family_selector`` transitively
+    triggers ``agents.studio_compositor.__init__`` → ``compositor.py``
+    → ``shared.compositor_model`` → ``pydantic`` (not in script env).
+
+    Walk the module-level AST instead, find the ``FAMILY_PRESETS``
+    annotated assignment, and extract its dict literal. Family names
+    are str-Constants; preset lists are tuples of str-Constants. Any
+    departure from this shape (operator-defined helpers, computed
+    keys, splat expansion) → fall back to the importing path so the
+    audit doesn't silently misread.
+    """
+    try:
+        tree = ast.parse(SELECTOR_PATH.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return _import_fallback_family_presets()
+
+    for node in tree.body:
+        if not isinstance(node, ast.AnnAssign | ast.Assign):
+            continue
+        targets = [node.target] if isinstance(node, ast.AnnAssign) else node.targets
+        for target in targets:
+            if (
+                isinstance(target, ast.Name)
+                and target.id == "FAMILY_PRESETS"
+                and isinstance(node.value, ast.Dict)
+            ):
+                extracted = _extract_family_presets_dict(node.value)
+                if extracted is not None:
+                    return extracted
+                return _import_fallback_family_presets()
+    return _import_fallback_family_presets()
+
+
+def _import_fallback_family_presets() -> dict[str, tuple[str, ...]]:
+    """Last-resort import — only works when run inside the project venv."""
     sys.path.insert(0, str(REPO_ROOT))
     try:
         from agents.studio_compositor.preset_family_selector import FAMILY_PRESETS
