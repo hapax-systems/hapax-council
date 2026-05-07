@@ -20,10 +20,9 @@ high/baseline accessors) and returns a single-tick observation dict for
 ``MoodArousalEngine.contribute()``.
 
 The adapter contract is fully wired; the live ``LogosStimmungBridge``
-returns ``None`` from every accessor until per-backend quantile /
-baseline references are calibrated against production data. Per the
-``ClaimEngine.tick`` contract, ``None`` means skip-this-signal-for-this-tick
-so the engine math runs cleanly under the deferred-calibration regime.
+returns ``bool | None`` per accessor. ``None`` means the source is
+missing, stale, or still warming a rolling baseline. Per the
+``ClaimEngine.tick`` contract, ``None`` means skip-this-signal-for-this-tick.
 
 Reference doc: ``docs/superpowers/research/2026-04-23-bayesian-claims-research.md``
 §Phase 6b + the MoodArousalEngine module docstring.

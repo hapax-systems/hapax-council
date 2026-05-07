@@ -3,7 +3,7 @@
   "editable": true,
   "graphTooltip": 0,
   "id": null,
-  "description": "Mood-engine observability for Phase D of logos-mood-bridge-calibration: posterior gauges for arousal, valence, and coherence plus contributed-signal counters per engine.",
+  "description": "Mood-engine observability for Phase D of logos-mood-bridge-calibration: posterior gauges for arousal, valence, and coherence plus observed and Bayesian-contributing signal counters per engine.",
   "uid": "hapax-mood-engines",
   "title": "Hapax / Mood Engines - posterior and signal contribution",
   "tags": ["hapax", "mood", "bayesian", "logos"],
@@ -16,7 +16,7 @@
       "id": 1,
       "type": "timeseries",
       "title": "Mood posteriors",
-      "description": "Current Bayesian posterior for the three mood engines. Flat lines at priors with zero signal contribution indicate dead or stale sources.",
+      "description": "Current Bayesian posterior for the three mood engines. Flat lines at priors with observed signals but zero contribution mean current live signals are non-evidence under the engine LR semantics.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
       "targets": [
@@ -59,15 +59,20 @@
     {
       "id": 2,
       "type": "timeseries",
-      "title": "Contributed signals per second",
-      "description": "Rate of non-None signal observations consumed by each mood engine. Sustained zero means the bridge is warming, stale, or not receiving source data.",
+      "title": "Signals per second",
+      "description": "Observed counts track non-None bridge readings. Contributed counts track readings that affect Bayesian log-odds; positive-only false observations are observed but not contributed.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
       "targets": [
         {
           "expr": "sum by (engine) (rate(mood_engine_signals_contributed_total[5m]))",
-          "legendFormat": "{{engine}}",
+          "legendFormat": "contributed {{engine}}",
           "refId": "A"
+        },
+        {
+          "expr": "sum by (engine) (rate(mood_engine_signals_observed_total[5m]))",
+          "legendFormat": "observed {{engine}}",
+          "refId": "B"
         }
       ],
       "fieldConfig": {
@@ -91,15 +96,20 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "Signals contributed in the last hour",
-      "description": "Per-engine count of non-None observations over the dashboard window. This should increase while sources are fresh.",
+      "title": "Signals observed and contributed in the last hour",
+      "description": "Per-engine count of observed non-None readings and readings that actually changed Bayesian log-odds over the dashboard window.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
       "targets": [
         {
           "expr": "sum by (engine) (increase(mood_engine_signals_contributed_total[1h]))",
-          "legendFormat": "{{engine}}",
+          "legendFormat": "contributed {{engine}}",
           "refId": "A"
+        },
+        {
+          "expr": "sum by (engine) (increase(mood_engine_signals_observed_total[1h]))",
+          "legendFormat": "observed {{engine}}",
+          "refId": "B"
         }
       ],
       "fieldConfig": {
