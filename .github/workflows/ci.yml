@@ -182,6 +182,19 @@ jobs:
         if: needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv run python scripts/check-claim-registry.py
 
+      # Preset-family affordance closure (categories A + B from
+      # scripts/audit-preset-affordances.py). Catches thin families
+      # (<3 members) and FAMILY_PRESETS entries missing on disk —
+      # both are critical regressions of the preset-variety guarantee.
+      # Qdrant drift (category D) is skipped via --no-qdrant since CI
+      # has no Qdrant access. The pytest regression guard at
+      # tests/studio_compositor/test_preset_family_selector.py
+      # (TestEveryFamilyHasCapability, PR #2832) covers the
+      # family-capability invariant from the other direction.
+      - name: Preset-family affordance closure
+        if: needs.docs_only_filter.outputs.docs_only != 'true'
+        run: uv run python scripts/audit-preset-affordances.py --no-qdrant
+
       # Operator legal-name leak guard. Per `interpersonal_transparency`
       # axiom + the 2026-04-24 operator-referent policy, the operator's
       # legal name appears only in formal-context locations
