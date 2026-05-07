@@ -92,13 +92,9 @@ NON_PRESET_FILES: frozenset[str] = frozenset(
     }
 )
 
-# Known historical violators — grandfathered until gap #27 (obscuring
-# on untouched presets) lands. New presets MUST NOT be added here.
-KNOWN_NAKED_PRESETS: frozenset[str] = frozenset(
-    {
-        "clean.json",
-    }
-)
+# Gap #27 closed: all presets now include obscuring nodes.
+# clean.json was the last holdout — posterize added 2026-05-07.
+KNOWN_NAKED_PRESETS: frozenset[str] = frozenset()
 
 
 def _list_presets() -> list[Path]:
