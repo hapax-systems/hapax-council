@@ -266,10 +266,17 @@ class TestFxEventToWardProperties:
         """Anti-pumping carve-out (operator directive 2026-05-06):
         ``audio_kick_onset`` must NOT fan out to the
         ``AUDIO_REACTIVE_WARDS`` set with synchronous border-pulse +
-        scale-bump. That structural shape — 7 wards moving in lockstep
-        on every kick — is global-reactivity pumping, banned by
+        scale-bump. That structural shape — the audio-reactive cohort
+        moving in lockstep on every kick — is global-reactivity
+        pumping, banned by
         ``feedback_never_remove_exception_global_pumping``. The event
-        remains on the bus for any per-ward, scoped consumer."""
+        remains on the bus for any per-ward, scoped consumer.
+
+        The cohort grew from 7 to 10 wards in the 2026-05-07 ward audit
+        (presence wards joined for heartbeat-baseline coverage); the
+        carve-out applies regardless of cohort size, which is why the
+        loop iterates ``AUDIO_REACTIVE_WARDS`` directly rather than
+        hard-coding the count."""
         from agents.studio_compositor import ward_properties
         from agents.studio_compositor.fx_chain_ward_reactor import WardFxReactor
         from agents.studio_compositor.ward_fx_mapping import AUDIO_REACTIVE_WARDS
