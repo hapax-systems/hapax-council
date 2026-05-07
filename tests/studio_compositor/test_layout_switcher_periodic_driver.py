@@ -20,6 +20,7 @@ Test surface:
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -147,6 +148,30 @@ class TestStopEvent:
         # depend on the cooldown clock.
         assert switches >= 0
 
+    def test_stop_event_raising_does_not_crash(self, caplog: pytest.LogCaptureFixture) -> None:
+        class _RaisingEvent:
+            def is_set(self) -> bool:
+                raise RuntimeError("synthetic stop-event failure")
+
+        sleeps: list[float] = []
+        caplog.set_level(logging.DEBUG, logger="agents.studio_compositor.layout_switcher")
+
+        switches = run_layout_switch_loop(
+            layout_state=_FakeLayoutState(),
+            loader=_FakeLoader(),
+            switcher=_switcher(),
+            state_provider=lambda: {},
+            interval_s=10.0,
+            sleep_fn=lambda s: sleeps.append(s),
+            stop_event=_RaisingEvent(),
+            now_fn=lambda: 0.0,
+            iterations=1,
+        )
+
+        assert switches >= 0
+        assert sleeps == [10.0]
+        assert "stop_event.is_set() failed; continuing loop" in caplog.text
+
 
 # ── Interval floor enforcement ──────────────────────────────────────
 
@@ -164,6 +189,19 @@ class TestIntervalFloor:
             iterations=1,
         )
         # The driver should have slept 10s (clamped), not 2s.
+        assert sleeps == [MIN_DRIVER_INTERVAL_S]
+
+    def test_nan_interval_clamped_to_floor(self) -> None:
+        sleeps: list[float] = []
+        run_layout_switch_loop(
+            layout_state=_FakeLayoutState(),
+            loader=_FakeLoader(),
+            switcher=_switcher(),
+            state_provider=lambda: {},
+            interval_s=float("nan"),
+            sleep_fn=lambda s: sleeps.append(s),
+            iterations=1,
+        )
         assert sleeps == [MIN_DRIVER_INTERVAL_S]
 
 
@@ -209,11 +247,14 @@ class TestStateDrivenTransitions:
 
 
 class TestFailureTolerance:
-    def test_state_provider_raising_skips_tick_does_not_crash(self) -> None:
+    def test_state_provider_raising_skips_tick_does_not_crash(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         layout_state = _FakeLayoutState(current=_FakeLayout("default"))
         loader = _FakeLoader()
         switcher = _switcher()
         call_count = [0]
+        sleeps: list[float] = []
 
         def state_provider() -> dict[str, object]:
             call_count[0] += 1
@@ -223,22 +264,51 @@ class TestFailureTolerance:
 
         # 3 iterations: tick 1 applies vinyl-focus, tick 2 raises (skipped,
         # state defaults to {}; cooldown anyway), tick 3 retries.
+        caplog.set_level(logging.WARNING, logger="agents.studio_compositor.layout_switcher")
         switches = run_layout_switch_loop(
             layout_state=layout_state,
             loader=loader,
             switcher=switcher,
             state_provider=state_provider,
             interval_s=10.0,
-            sleep_fn=lambda s: None,
+            sleep_fn=lambda s: sleeps.append(s),
             now_fn=lambda: 0.0,
             iterations=3,
         )
         assert call_count[0] == 3  # all 3 ticks called the provider
+        assert sleeps == [10.0, 10.0, 10.0]
+        assert "layout_switch state_provider failed; skipping tick" in caplog.text
         # Tick 1 applied (no prior); tick 2 raised → defaults; tick 3
         # cooldown-blocks. The loop did not crash — that's the contract.
         assert switches >= 0
 
-    def test_apply_layout_switch_raising_does_not_crash(self, monkeypatch) -> None:
+    def test_malformed_state_provider_payloads_fall_back_cleanly(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        payloads = iter([["not", "a", "dict"], None])
+        sleeps: list[float] = []
+        caplog.set_level(logging.WARNING, logger="agents.studio_compositor.layout_switcher")
+
+        switches = run_layout_switch_loop(
+            layout_state=_FakeLayoutState(),
+            loader=_FakeLoader(),
+            switcher=_switcher(),
+            state_provider=lambda: next(payloads),  # type: ignore[return-value]
+            interval_s=10.0,
+            sleep_fn=lambda s: sleeps.append(s),
+            now_fn=lambda: 0.0,
+            iterations=2,
+        )
+
+        assert switches >= 0
+        assert sleeps == [10.0, 10.0]
+        assert (
+            "layout_switch state_provider returned non-dict payload; skipping tick" in caplog.text
+        )
+
+    def test_apply_layout_switch_raising_does_not_crash(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """If apply_layout_switch internally raises (loader missing
         layout, validation error, etc.), the loop continues."""
         from agents.studio_compositor import layout_switcher
@@ -248,6 +318,7 @@ class TestFailureTolerance:
 
         monkeypatch.setattr(layout_switcher, "apply_layout_switch", raising_apply)
         sleeps: list[float] = []
+        caplog.set_level(logging.WARNING, logger="agents.studio_compositor.layout_switcher")
         # Should not raise — loop swallows + continues.
         run_layout_switch_loop(
             layout_state=_FakeLayoutState(),
@@ -259,6 +330,25 @@ class TestFailureTolerance:
             iterations=2,
         )
         assert len(sleeps) == 2  # both iterations completed despite raise
+        assert "apply_layout_switch tick raised; loop continues" in caplog.text
+
+    def test_now_fn_raising_does_not_crash(self, caplog: pytest.LogCaptureFixture) -> None:
+        sleeps: list[float] = []
+        caplog.set_level(logging.WARNING, logger="agents.studio_compositor.layout_switcher")
+
+        run_layout_switch_loop(
+            layout_state=_FakeLayoutState(),
+            loader=_FakeLoader(),
+            switcher=_switcher(),
+            state_provider=lambda: {"vinyl_playing": True},
+            interval_s=10.0,
+            sleep_fn=lambda s: sleeps.append(s),
+            now_fn=lambda: (_ for _ in ()).throw(RuntimeError("synthetic clock failure")),
+            iterations=1,
+        )
+
+        assert sleeps == [10.0]
+        assert "apply_layout_switch tick raised; loop continues" in caplog.text
 
 
 # ── Cooldown debounce ───────────────────────────────────────────────
