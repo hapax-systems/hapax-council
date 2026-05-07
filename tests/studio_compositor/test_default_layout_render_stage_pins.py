@@ -4,18 +4,18 @@ FINDING-W (ef7b-179) Phase 2 (2026-04-24) shipped the substrate/chrome
 ``render_stage`` distinction; the operator directive of 2026-04-24
 overrode it for ``default.json`` — every ward there now renders
 ``pre_fx`` so the glfeedback shader chain decorates the entire frame
-as a unified nebulous scrim. The legacy and consent-safe layouts
-preserve the original substrate/chrome split as a rollback path.
+as a unified nebulous scrim. The consent-safe layout preserves the
+original substrate/chrome split as the rollback path.
 
 Two orthogonal axes govern ward placement; this file pins the first:
 
 1. **render_stage** (``pre_fx`` / ``post_fx``) — what this file pins.
    Whether a ward enters the FX chain or composites on top of it.
    *default.json*: every ward is ``pre_fx`` (unified scrim, post
-   2026-04-24 directive). *default-legacy.json* + *consent-safe.json*:
-   substrate wards (token_pole, album, vinyl_platter) are ``pre_fx``;
-   chrome wards (captions, stream_overlay, ...) stay ``post_fx`` for
-   crisp legibility — the rollback path.
+   2026-04-24 directive). *consent-safe.json*: substrate wards
+   (token_pole, album) are ``pre_fx``; chrome wards (captions,
+   stream_overlay, ...) stay ``post_fx`` for crisp legibility — the
+   rollback path.
 
 2. **z_plane** (``surface-scrim`` / ``on-scrim`` / ``mid-scrim`` /
    ``beyond-scrim``) — depth attenuation taxonomy independent of
@@ -27,7 +27,12 @@ Two orthogonal axes govern ward placement; this file pins the first:
 
 Reverie is the shader output surface itself; for ``default.json`` the
 operator accepted the double-shader-pass trade-off (reverie ``pre_fx``)
-to keep the unified-scrim aesthetic. Legacy keeps reverie ``post_fx``.
+to keep the unified-scrim aesthetic. Consent-safe keeps reverie
+``post_fx``.
+
+The legacy ``default-legacy.json`` and ``examples/vinyl-focus.json``
+layouts were purged in PR #2770; their pins were removed alongside the
+files they referenced.
 """
 
 from __future__ import annotations
@@ -59,11 +64,8 @@ def _stage_by_source(layout: Layout) -> dict[str, str]:
     [
         ("default.json", "token_pole"),
         ("default.json", "album"),
-        ("default-legacy.json", "token_pole"),
-        ("default-legacy.json", "album"),
         ("consent-safe.json", "token_pole"),
         ("consent-safe.json", "album"),
-        ("examples/vinyl-focus.json", "vinyl_platter"),
     ],
 )
 def test_substrate_assignment_is_pre_fx(layout_name: str, substrate_source: str) -> None:
@@ -127,17 +129,6 @@ def test_default_packed_cameras_is_pre_fx() -> None:
     )
 
 
-def test_default_legacy_captions_is_post_fx() -> None:
-    """Legacy rollback layout keeps captions at the chrome default."""
-    stages = _stage_by_source(_load("default-legacy.json"))
-    assert stages["captions"] == "post_fx"
-
-
-def test_default_legacy_stream_overlay_is_post_fx() -> None:
-    stages = _stage_by_source(_load("default-legacy.json"))
-    assert stages["stream_overlay"] == "post_fx"
-
-
 def test_consent_safe_stream_overlay_is_post_fx() -> None:
     stages = _stage_by_source(_load("consent-safe.json"))
     assert stages["stream_overlay"] == "post_fx"
@@ -158,11 +149,10 @@ def test_reverie_in_default_is_pre_fx() -> None:
     assert stages["reverie"] == "pre_fx"
 
 
-@pytest.mark.parametrize("layout_name", ["default-legacy.json", "consent-safe.json"])
-def test_reverie_in_legacy_layouts_is_post_fx(layout_name: str) -> None:
-    """Legacy / consent-safe rollback layouts keep reverie at the
-    single-pass default to avoid the double-pass shader feedback path."""
-    stages = _stage_by_source(_load(layout_name))
+def test_reverie_in_consent_safe_is_post_fx() -> None:
+    """Consent-safe rollback layout keeps reverie at the single-pass
+    default to avoid the double-pass shader feedback path."""
+    stages = _stage_by_source(_load("consent-safe.json"))
     assert stages["reverie"] == "post_fx"
 
 
@@ -173,9 +163,7 @@ def test_reverie_in_legacy_layouts_is_post_fx(layout_name: str) -> None:
     "layout_name",
     [
         "default.json",
-        "default-legacy.json",
         "consent-safe.json",
-        "examples/vinyl-focus.json",
     ],
 )
 def test_every_assignment_has_explicit_stage(layout_name: str) -> None:
