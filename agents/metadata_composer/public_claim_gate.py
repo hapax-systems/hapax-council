@@ -49,9 +49,16 @@ same evidence fixture; only the per-claim wiring differs.
 from __future__ import annotations
 
 import enum
+import re
 from dataclasses import dataclass
 
 # ── Constants ────────────────────────────────────────────────────────
+
+#: Match the `PRIVATE_SENTINEL_DO_NOT_PUBLISH_*` token introduced in
+#: PR #2526. Any text-bearing public-claim evidence carrying this token
+#: is fail-CLOSED at the gate so cross-surface private text never lands
+#: in public metadata.
+_PRIVATE_SENTINEL_PATTERN = re.compile(r"PRIVATE_SENTINEL_DO_NOT_PUBLISH_[A-Z0-9_]+")
 
 #: Maximum age (seconds) for a broadcast id to count as "current". A
 #: broadcast id older than this is treated as a stale pointer; the
@@ -238,6 +245,13 @@ def _eval_current_activity(evidence: ClaimEvidence) -> PublicClaimGateDecision:
             reason="no current_activity in evidence",
             correction="activity not currently witnessed",
         )
+    if _PRIVATE_SENTINEL_PATTERN.search(evidence.current_activity):
+        return PublicClaimGateDecision(
+            decision=Decision.REFUSE,
+            kind=ClaimKind.CURRENT_ACTIVITY,
+            reason="current_activity carries a PRIVATE_SENTINEL_DO_NOT_PUBLISH token",
+            correction="activity not currently witnessed",
+        )
     return PublicClaimGateDecision(
         decision=Decision.ALLOW,
         kind=ClaimKind.CURRENT_ACTIVITY,
@@ -257,6 +271,13 @@ def _eval_programme_role(
             decision=Decision.REFUSE,
             kind=ClaimKind.PROGRAMME_ROLE,
             reason="no programme_role in evidence",
+            correction="programme role not currently witnessed",
+        )
+    if _PRIVATE_SENTINEL_PATTERN.search(evidence.programme_role):
+        return PublicClaimGateDecision(
+            decision=Decision.REFUSE,
+            kind=ClaimKind.PROGRAMME_ROLE,
+            reason="programme_role carries a PRIVATE_SENTINEL_DO_NOT_PUBLISH token",
             correction="programme role not currently witnessed",
         )
     if (

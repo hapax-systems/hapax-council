@@ -593,14 +593,30 @@ def test_refused_publication_surfaces_are_not_dispatchable() -> None:
     assert "alphaxiv-comments" not in dispatchable
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known gap: current_activity evidence is text-bearing and not private-sentinel scanned yet",
-)
 def test_public_claim_gate_blocks_text_bearing_private_activity_sentinel() -> None:
+    """Text-bearing public-claim evidence must REFUSE when the value
+    carries a `PRIVATE_SENTINEL_DO_NOT_PUBLISH_*` token.
+
+    Closed by ``cc-task metadata-current-activity-private-sentinel-text-hygiene``:
+    ``_eval_current_activity`` scans the evidence string for the
+    sentinel pattern and fails CLOSED before any emission.
+    """
     decision = evaluate_public_claim(
         ClaimKind.CURRENT_ACTIVITY,
         ClaimEvidence(current_activity=RAW_PRIVATE_TEXT),
+    )
+
+    assert decision.allows_emission is False
+
+
+def test_public_claim_gate_blocks_text_bearing_private_programme_role_sentinel() -> None:
+    """The other free-text claim kind, ``programme_role``, must also
+    REFUSE when carrying a ``PRIVATE_SENTINEL_DO_NOT_PUBLISH_*`` token.
+    Same fail-CLOSED posture as ``current_activity``.
+    """
+    decision = evaluate_public_claim(
+        ClaimKind.PROGRAMME_ROLE,
+        ClaimEvidence(programme_role=RAW_PRIVATE_TEXT, programme_role_age_s=1.0),
     )
 
     assert decision.allows_emission is False
