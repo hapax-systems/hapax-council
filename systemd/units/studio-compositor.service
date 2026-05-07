@@ -1,7 +1,12 @@
 [Unit]
 Description=Studio Compositor — GPU-accelerated camera tiling, recording, HLS streaming, and visual effects
-After=hapax-daimonion.service
+After=hapax-daimonion.service pipewire.service wireplumber.service
 Wants=hapax-daimonion.service
+BindsTo=pipewire.service
+# BindsTo ensures compositor stops when PipeWire stops and restarts
+# when PipeWire restarts. The compositor's pw-cat audio capture process
+# dies immediately on PipeWire restart; without BindsTo the compositor
+# enters a crash loop until manually reset-failed + start.
 # R-11 (audit 2026-04-26): drop hapax-video-cam@c920-desk.service +
 # hapax-video-cam@c920-overhead.service from Conflicts. Their env files
 # (~/.config/hapax-video/c920-desk.env, c920-overhead.env) do not exist
