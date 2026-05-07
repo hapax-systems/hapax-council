@@ -75,6 +75,24 @@
       "scale": 2,
       "offset": 0.5,
       "smoothing": 0.8
+    },
+    {
+      "source": "audio_energy",
+      "param": "displacement",
+      "scale": 0.35,
+      "offset": 0.0,
+      "attack": 0.1,
+      "decay": 0.7,
+      "node": "tunnel"
+    },
+    {
+      "source": "audio_beat",
+      "param": "chromatic_aberration",
+      "scale": 0.5,
+      "offset": 0.0,
+      "attack": 0.05,
+      "decay": 0.6,
+      "node": "tunnel"
     }
   ]
 }
