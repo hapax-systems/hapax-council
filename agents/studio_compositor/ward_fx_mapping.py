@@ -95,6 +95,7 @@ WARD_DOMAIN: dict[str, WardDomain] = {
     "grounding_provenance_ticker": "director",
     "programme-banner": "director",
     "precedent-ticker": "director",
+    "chronicle_ticker": "director",
     # Perception
     "sierpinski": "perception",
 }
