@@ -64,7 +64,7 @@ class TestSmoothModulation:
         rng = random.Random(0)
         walker = hb.ParameterWalker(rng=rng)
         prev = walker.values.copy()
-        env_by_key = {env.key: env for env in pe.envelopes()}
+        env_by_key = {env.key: env for env in (*pe.envelopes(), *pe.ward_envelopes())}
         for tick_idx in range(50):
             walker.tick(now=tick_idx * 30.0)
             curr = walker.values
@@ -85,7 +85,7 @@ class TestEnvelopeRespect:
         """Run 200 ticks; every snapshot must respect the envelope range."""
         rng = random.Random(1)
         walker = hb.ParameterWalker(rng=rng)
-        env_by_key = {env.key: env for env in pe.envelopes()}
+        env_by_key = {env.key: env for env in (*pe.envelopes(), *pe.ward_envelopes())}
         for tick_idx in range(200):
             walker.tick(now=tick_idx * 30.0)
             for key, value in walker.values.items():

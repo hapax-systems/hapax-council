@@ -2640,3 +2640,14 @@ _HeroEffectRotator.current_effect_name
 _HeroEffectRotator.effect_count
 _HeroEffectRotator.set_slot
 _HeroEffectRotator.update_hero_tile
+
+# Antigrav delta gap #26 (2026-05-07). Cairo-ward heartbeat extension.
+# ``ward_modulation_targets`` is a public introspection helper used by
+# tests + future dashboard panels that may surface the curated set,
+# but no direct production caller exists today (the heartbeat reads
+# ``ward_envelopes()`` directly via the ParameterWalker). Vulture
+# cannot see the test references; whitelist preserves the intentional
+# public API for operator-facing introspection.
+from shared.parameter_envelopes import ward_modulation_targets as _ward_modulation_targets
+
+_ward_modulation_targets

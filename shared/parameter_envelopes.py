@@ -261,6 +261,78 @@ def envelopes() -> tuple[ParameterEnvelope, ...]:
     return _ENVELOPES
 
 
+# ── Cairo ward envelopes (heartbeat extension, antigrav delta gap #26) ─────
+#
+# The parametric heartbeat originally walked WGSL shader uniforms only
+# (the Reverie pipeline at ``/dev/shm/hapax-imagination/uniforms.json``).
+# Gap #26 extends the walk to a small curated set of Cairo wards' alpha
+# values, dispatched through the ward-properties SHM path
+# (``/dev/shm/hapax-compositor/ward-properties.json``) so the operator
+# perceives gentle drift in ward visibility on top of the WGSL drift.
+#
+# Scope decisions (documented for the operator):
+#
+# 1. Only ``alpha`` is modulated. ``z_index_float`` is owned by the
+#    ward stimmung modulator (writes every ~200ms from imagination
+#    depth; see ward_properties.py:316-348). Heartbeat writes at 30s
+#    cadence would be invisible against the modulator's much faster
+#    writes, and would create jitter if the ranges overlap.
+#    ``z_order_override`` is operator-set per-ward z-order; modulating
+#    it would shuffle which wards are on top every 30s — operator-jarring.
+#
+# 2. Curated target set, NOT global ``"all"`` ward. Drift on
+#    ``"all".alpha`` would be global pumping (all wards drifting in
+#    lockstep) — anti-doctrine per ``feedback_never_remove_exception_global_pumping``.
+#    Per-ward drift on a small curated set is independent variance.
+#
+# 3. Conservative bounds: alpha drifts in [0.85, 1.0] with smoothness
+#    0.02. At 30s tick, traverses the range in ~7-8 ticks (~3-4 minutes).
+#    The drift is barely perceptible — just enough to feel "alive"
+#    without being distracting.
+#
+# 4. Targets: lore/director/cognition wards that benefit from drift
+#    but are not safety-load-bearing. ``chronicle_ticker`` (the
+#    chronicle-ward I shipped in #2625), ``programme-history``
+#    (cognition lore strip), and ``activity_variety_log`` (the
+#    cognition activity ledger). All three are non-load-bearing
+#    surfaces where subtle drift adds presence.
+_WARD_MODULATION_TARGETS: Final[tuple[str, ...]] = (
+    "chronicle_ticker",
+    "programme-history",
+    "activity_variety_log",
+)
+
+_WARD_ENVELOPES: Final[tuple[ParameterEnvelope, ...]] = tuple(
+    ParameterEnvelope(
+        node_id=f"ward.{ward_id}",
+        param_name="alpha",
+        min_value=0.85,
+        max_value=1.0,
+        smoothness=0.02,
+    )
+    for ward_id in _WARD_MODULATION_TARGETS
+)
+
+
+def ward_envelopes() -> tuple[ParameterEnvelope, ...]:
+    """Return the Cairo-ward envelope set, frozen tuple.
+
+    Parallel to :func:`envelopes` but for the ward-properties SHM
+    surface rather than the uniforms.json surface. Used by
+    :mod:`agents.parametric_modulation_heartbeat` to drive Cairo ward
+    alpha drift through ``set_many_ward_properties``. Test fixtures
+    monkeypatch this for deterministic behaviour.
+    """
+
+    return _WARD_ENVELOPES
+
+
+def ward_modulation_targets() -> tuple[str, ...]:
+    """Return the curated set of Cairo wards modulated by the heartbeat."""
+
+    return _WARD_MODULATION_TARGETS
+
+
 def envelope_by_key(key: str) -> ParameterEnvelope | None:
     """Resolve an envelope by ``{node_id}.{param_name}`` key, or None."""
 

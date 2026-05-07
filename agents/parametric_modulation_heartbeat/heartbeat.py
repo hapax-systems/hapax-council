@@ -71,6 +71,7 @@ from shared.parameter_envelopes import (
     ParameterEnvelope,
     envelopes,
     joint_constraints,
+    ward_envelopes,
 )
 
 log = logging.getLogger(__name__)
@@ -209,6 +210,20 @@ def _derive_constraint_name(constraint: JointConstraint) -> str:
 UNIFORMS_FILE: Path = Path("/dev/shm/hapax-imagination/uniforms.json")
 RECRUITMENT_FILE: Path = Path("/dev/shm/hapax-compositor/recent-recruitment.json")
 
+# Ward-property TTL — overrides written from this heartbeat expire after
+# 60s, slightly longer than the 30s tick cadence so the previous tick's
+# write is still live when the next tick runs (no flicker between ticks).
+# Per ward_properties.py expiry semantics; expired entries are discarded
+# at read time.
+WARD_PROPERTIES_TTL_S: float = 60.0
+
+# Prefix that distinguishes Cairo-ward envelope keys from WGSL-uniform
+# envelope keys. The walker holds both in one ``self._values`` dict;
+# the dispatcher in :func:`tick_once` splits by this prefix so ward
+# values land on the ward-properties SHM path and uniform values land
+# on the uniforms.json surface.
+_WARD_KEY_PREFIX: str = "ward."
+
 # Marker stamped on every entry this agent writes to recent-recruitment.json.
 # Distinguishes parametric-walk-origin transition primitives from LLM-origin
 # in observability dashboards.
@@ -309,8 +324,13 @@ class ParameterWalker:
         lfo_period_s: float = DEFAULT_LFO_PERIOD_S,
         perturbation: float = DEFAULT_PERTURBATION,
         rng: random.Random | None = None,
+        include_ward_envelopes: bool = True,
     ) -> None:
-        self._envelopes = envs if envs is not None else envelopes()
+        if envs is not None:
+            self._envelopes = envs
+        else:
+            base = envelopes()
+            self._envelopes = base + ward_envelopes() if include_ward_envelopes else base
         self._joint_constraints = constraints if constraints is not None else joint_constraints()
         self._lfo_period_s = lfo_period_s
         self._perturbation = perturbation
@@ -481,6 +501,85 @@ def write_uniform_overrides(
     atomic_write_json(merged, path)
 
 
+def write_ward_property_overrides(
+    values: dict[str, float],
+    *,
+    ttl_s: float = WARD_PROPERTIES_TTL_S,
+) -> None:
+    """Dispatch ward-keyed envelope values through the ward-properties SHM path.
+
+    Antigrav delta gap #26 — extends the heartbeat from WGSL uniforms only
+    to also cover Cairo ward properties. ``values`` carries keys of the
+    form ``ward.<ward_id>.<param_name>`` (parsed by splitting on ``.``);
+    only ``alpha`` is currently supported per scope decision in
+    ``shared/parameter_envelopes.py`` (see _WARD_ENVELOPES doc).
+
+    Each ward gets one ``WardProperties`` write with the walked alpha,
+    leaving every other field at the dataclass default. ``set_many_ward_properties``
+    preserves the modulator-owned ``z_plane`` / ``z_index_float`` fields
+    when the new entry passes defaults — see ward_properties.py:316-348.
+
+    The TTL is 60s (longer than the 30s tick) so two consecutive heartbeat
+    ticks have overlapping coverage; consumers never see a gap where the
+    walked alpha has expired but the next tick hasn't fired yet.
+
+    Lazy import of :mod:`agents.studio_compositor.ward_properties` keeps
+    this module importable in CI harnesses that don't have the full
+    studio_compositor stack on the path.
+    """
+
+    if not values:
+        return
+
+    # Group walked values by ward_id. ``ward.<ward_id>.<param_name>`` may
+    # have a hyphenated ward_id (e.g. ``programme-history``); split on
+    # the first two dots only so the ward_id stays intact.
+    by_ward: dict[str, dict[str, float]] = {}
+    for key, value in values.items():
+        if not key.startswith(_WARD_KEY_PREFIX):
+            continue
+        rest = key[len(_WARD_KEY_PREFIX) :]
+        if "." not in rest:
+            log.debug("ward override key has no param: %s", key)
+            continue
+        ward_id, param_name = rest.rsplit(".", 1)
+        by_ward.setdefault(ward_id, {})[param_name] = float(value)
+
+    if not by_ward:
+        return
+
+    try:
+        from agents.studio_compositor.ward_properties import (
+            WardProperties,
+            set_many_ward_properties,
+        )
+    except ImportError:
+        log.debug("ward_properties unavailable — heartbeat ward write is no-op", exc_info=True)
+        return
+
+    properties_by_ward: dict[str, WardProperties] = {}
+    for ward_id, params in by_ward.items():
+        # Build a default WardProperties and override only the params we
+        # walked. The merge in set_many_ward_properties preserves
+        # z_plane / z_index_float (modulator-owned) when defaults pass.
+        kwargs: dict[str, Any] = {}
+        if "alpha" in params:
+            kwargs["alpha"] = max(0.0, min(1.0, params["alpha"]))
+        if not kwargs:
+            continue
+        properties_by_ward[ward_id] = WardProperties(**kwargs)
+
+    if properties_by_ward:
+        try:
+            set_many_ward_properties(properties_by_ward, ttl_s=ttl_s)
+        except OSError as exc:
+            log.warning(
+                "parametric heartbeat: ward-property write failed for %d ward(s): %s",
+                len(properties_by_ward),
+                exc,
+            )
+
+
 def emit_transition_primitive(
     transition_name: str,
     triggering_envelope_key: str,
@@ -633,7 +732,16 @@ def tick_once(
         now = time.time()
     try:
         events = walker.tick(now=now)
-        write_uniform_overrides(walker.values, path=uniforms_path)
+        all_values = walker.values
+        # Split walked values by surface: ward.* keys go to the
+        # ward-properties SHM surface; everything else goes to uniforms.
+        # Mixing ward.* keys into uniforms.json would leak ward-id
+        # tokens into the WGSL pipeline's per-frame override read.
+        uniform_values = {k: v for k, v in all_values.items() if not k.startswith(_WARD_KEY_PREFIX)}
+        ward_values = {k: v for k, v in all_values.items() if k.startswith(_WARD_KEY_PREFIX)}
+        write_uniform_overrides(uniform_values, path=uniforms_path)
+        if ward_values:
+            write_ward_property_overrides(ward_values)
     except Exception:
         # Emit the error counter so the failure rate is observable, then
         # re-raise — ``run_forever`` already has its own try/except that
