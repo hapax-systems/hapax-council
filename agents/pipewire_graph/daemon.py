@@ -35,6 +35,7 @@ from agents.pipewire_graph.circuit_breaker import (
     ShadowAlert,
     probe_egress_health,
 )
+from agents.pipewire_graph.lock import read_lock_status
 from agents.pipewire_graph.metrics import PipewireGraphMetrics
 from agents.pipewire_graph.safe_mute import SafeMuteRail
 from shared.audio_graph import (
@@ -205,6 +206,12 @@ def _compiled_summary(compiled: CompiledArtefacts) -> dict[str, object]:
     }
 
 
+def lock_status_payload() -> dict[str, object]:
+    """Expose P3 applier-lock status without mutating the live graph."""
+
+    return read_lock_status().to_dict()
+
+
 def apply_dry_run(
     graph: AudioGraph,
     *,
@@ -267,6 +274,8 @@ def apply_dry_run(
             "live_pipewire_mutation": False,
             "pactl_load_module": False,
             "writes_outside_state_root": False,
+            "applier_lock_required_for_live_apply": True,
+            "applier_lock_status": lock_status_payload(),
         },
         "report_path": str(report_path),
     }
@@ -461,5 +470,6 @@ __all__ = [
     "ShadowDaemonConfig",
     "ShadowPipewireGraphDaemon",
     "apply_dry_run",
+    "lock_status_payload",
     "main",
 ]

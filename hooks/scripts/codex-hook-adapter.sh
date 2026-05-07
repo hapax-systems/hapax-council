@@ -178,6 +178,7 @@ run_pre_mutation_event() {
   local event_json="$1"
   local hooks=(
     axiom-scan.sh
+    pipewire-graph-edit-gate.sh
     work-resolution-gate.sh
     registry-guard.sh
     conductor-pre.sh

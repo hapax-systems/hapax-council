@@ -171,6 +171,29 @@ def test_apply_patch_is_scanned_by_axiom_guard(tmp_path: Path) -> None:
     assert "single_user" in result["reason"]
 
 
+def test_apply_patch_runs_pipewire_graph_edit_gate(tmp_path: Path) -> None:
+    patch = """*** Begin Patch
+*** Update File: config/pipewire/hapax-livestream-tap.conf
+@@
++context.modules = []
+*** End Patch
+"""
+    result = _run_adapter(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "apply_patch",
+            "tool_input": {"patch": patch},
+        },
+        home=tmp_path,
+        extra_env={"HAPAX_PIPEWIRE_GRAPH_LOCK_ROOT": str(tmp_path / "lock")},
+    )
+
+    assert result["decision"] == "block"
+    assert "pipewire-graph-edit-gate.sh" in result["reason"]
+    assert "requires applier lock" in result["reason"]
+
+
 def test_session_start_returns_codex_additional_context(tmp_path: Path) -> None:
     relay = tmp_path / ".cache" / "hapax" / "relay"
     relay.mkdir(parents=True)
