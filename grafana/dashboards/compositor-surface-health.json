@@ -1,0 +1,310 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Compositor surface health — covers the metric clusters previously absent from any dashboard: HOMAGE package state + render cadence + emphasis + signature artefacts, face-obscure pipeline, follow-mode cuts, ward modulator tick health, layout switch dispatches, broadcast/degraded mode. Source: agents/studio_compositor/metrics.py on 127.0.0.1:9482. Antigrav delta gap #23 fill — populates the operator's view of the surface integrity layer.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Active HOMAGE package (BitchX, GeoCities, OS9, etc.). Source: hapax_homage_package_active gauge — value 1.0 for the currently-active package, 0 for others. The package establishes the visual substrate (palette + typography + grammar). Sustained zero across all labels means HOMAGE rotation isn't running.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 30 },
+          "mappings": [],
+          "max": 1.1,
+          "min": 0,
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hapax_homage_package_active",
+          "legendFormat": "{{package}}",
+          "refId": "A"
+        }
+      ],
+      "title": "HOMAGE package active (per package)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "HOMAGE render cadence (Hz). Source: hapax_homage_render_cadence_hz gauge — published per-tick from the compositor render loop. Steady 30 Hz expected; sustained drops signal GL stalls or budget overruns.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "unit": "hertz"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hapax_homage_render_cadence_hz",
+          "legendFormat": "render cadence",
+          "refId": "A"
+        }
+      ],
+      "title": "HOMAGE render cadence",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "HOMAGE emphasis applied rate (5m). Source: hapax_homage_emphasis_applied_total — incremented when the cascade-delta ward_render_scope applies the emphasis envelope (glow / border-pulse / scale-bump) to a ward. Sustained zero means structural-intent emphasis writes are silently dropping at render time — the surface fault that motivated the cascade-delta wiring.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 3,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(hapax_homage_emphasis_applied_total[5m])",
+          "legendFormat": "{{ward_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "HOMAGE emphasis applied (5m rate, per ward)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "HOMAGE signature artefact emission rate (5m). Source: hapax_homage_signature_artefact_emitted_total — each authentic-asset surface (BitchX splash quote, GeoCities banner, etc.) increments on emission. Confirms the homage rotation is composing signature artefacts on the broadcast.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 4,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(hapax_homage_signature_artefact_emitted_total[5m])",
+          "legendFormat": "{{artefact_kind}}",
+          "refId": "A"
+        }
+      ],
+      "title": "HOMAGE signature artefacts (5m rate, per kind)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Face-obscure pipeline frame rate (5m). Source: hapax_face_obscure_frame_total — every camera frame that passes through the privacy-pipeline pixelator increments. Per visual-privacy invariant the rate must equal the camera frame rate; sustained zero indicates the obscure pipeline is bypassed (RTMP/HLS/V4L2 may be sourcing un-pixelated frames). Privacy-load-bearing.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "id": 5,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(hapax_face_obscure_frame_total[5m])",
+          "legendFormat": "obscure-pipeline frame rate",
+          "refId": "A"
+        }
+      ],
+      "title": "face-obscure pipeline (5m rate)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Follow-mode camera cuts rate (5m). Source: hapax_follow_mode_cuts_total — each follow-mode hero swap increments. Per cc-task follow-mode 30s debounce (PR #2754) the rate is bounded; sustained spikes signal the debounce isn't holding (V4L2 source loss risk).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "id": 6,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(hapax_follow_mode_cuts_total[5m])",
+          "legendFormat": "{{trigger}}",
+          "refId": "A"
+        }
+      ],
+      "title": "follow-mode cuts (5m rate)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Ward modulator tick rate (5m). Source: hapax_ward_modulator_tick_total. The ward stimmung modulator publishes per-ward properties at a steady cadence; rate confirms it's running. Pairs with hapax_ward_modulator_stale_total — when stale rate > 0, ward properties are not reaching the render path within freshness deadline.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "id": 7,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(hapax_ward_modulator_tick_total[5m])",
+          "legendFormat": "tick rate",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(hapax_ward_modulator_stale_total[5m])",
+          "legendFormat": "stale rate",
+          "refId": "B"
+        }
+      ],
+      "title": "ward modulator tick + stale (5m rate)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Layout switch dispatch rate (5m). Source: hapax_layout_switch_dispatched_total — increments on every legacy layout-switcher application. Pairs with hapax_compositor_layout_switch_total (per from-layout/to-layout label set). Sustained dispatched rate without compositor switch indicates KeyError-on-load (e.g. dangling layout name post-#2770).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "id": 8,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(hapax_layout_switch_dispatched_total[5m])",
+          "legendFormat": "{{trigger}}",
+          "refId": "A"
+        }
+      ],
+      "title": "layout switch dispatched (5m rate, per trigger)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Broadcast mode + degraded mode + director degraded holds. Composite: hapax_broadcast_mode (gauge — current mode tier) + hapax_degraded_mode_active (gauge 0/1) + hapax_director_degraded_holds_total rate (5m). Operator-glance for whether the broadcast surface is in nominal vs degraded posture.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "mappings": [],
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 32 },
+      "id": 9,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hapax_broadcast_mode",
+          "legendFormat": "broadcast_mode",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "hapax_degraded_mode_active",
+          "legendFormat": "degraded_mode_active",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(hapax_director_degraded_holds_total[5m])",
+          "legendFormat": "director_degraded_holds (5m rate)",
+          "refId": "C"
+        }
+      ],
+      "title": "broadcast posture (mode + degraded + director holds)",
+      "type": "timeseries"
+    }
+  ],
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["hapax", "compositor", "surface", "homage", "observability", "antigrav-delta-gap-23"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Hapax / Compositor / Surface Health",
+  "uid": "hapax-compositor-surface-health",
+  "version": 1,
+  "weekStart": ""
+}
