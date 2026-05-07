@@ -63,14 +63,15 @@ log = logging.getLogger(__name__)
 # seconds for a buffer to cross the v4l2sink. Matches the watchdog's
 # stall threshold (20 s) so a successful recovery is observably the same
 # liveness signal the watchdog already uses.
-_RECOVERY_PROBE_WINDOW_S: float = 6.0
+_RECOVERY_PROBE_WINDOW_S: float = 15.0
 
-# State-change timeout for each ``set_state`` call. Under GPU load
-# (cudacompositor + 6 cameras + glfeedback), the v4l2sink may need
-# more than 5s to complete state transitions — the upstream elements
-# hold buffers that prevent the sink from reaching NULL synchronously.
-# 10s gives enough headroom for the GPU to flush without timing out.
-_STATE_CHANGE_TIMEOUT_S: float = 10.0
+# State-change timeout for each ``set_state`` call. The v4l2sink shares
+# a pipeline with 12 serial glfeedback GL elements + glvideomixer
+# aggregator + cudacompositor. Flushing this entire upstream GL chain
+# takes 15-30s under GPU load (NVENC reinit, shader recompile, CUDA
+# compositor reconfigure). 35s gives the full flush budget headroom so
+# ASYNC transitions can complete instead of timing out.
+_STATE_CHANGE_TIMEOUT_S: float = 35.0
 
 # Consecutive failed recoveries before the recovery layer escalates and
 # stops attempting (lets the watchdog withhold ping → systemd SIGABRT).
