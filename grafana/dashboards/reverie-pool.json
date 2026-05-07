@@ -1,0 +1,245 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 0,
+  "id": null,
+  "uid": "hapax-reverie-pool",
+  "title": "Hapax / Reverie — transient texture pool",
+  "tags": ["hapax", "reverie", "imagination", "wgpu", "texture-pool"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Pool reuse ratio",
+      "description": "TransientTexturePool reuse ratio = (acquires - allocations) / acquires. >0.9 = warm pool; <0.5 = excess churn (pipeline is recreating textures every frame).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "reverie_pool_reuse_ratio",
+          "legendFormat": "reuse ratio",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.5 },
+              { "color": "green", "value": 0.85 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Active textures",
+      "description": "Total GPU textures the DynamicPipeline transient pool currently owns. Should plateau quickly after warmup; rising in steady state = pool fragmentation (different W/H/format hashes for similar passes).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 0 },
+      "targets": [
+        {
+          "expr": "reverie_pool_total_textures",
+          "legendFormat": "textures",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 30 },
+              { "color": "orange", "value": 60 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Bucket count (distinct W/H/format keys)",
+      "description": "Number of distinct (width, height, format) buckets in the pool. Grows on resolution change; should otherwise be stable. Sustained growth = leak.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 0 },
+      "targets": [
+        {
+          "expr": "reverie_pool_bucket_count",
+          "legendFormat": "buckets",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Acquires vs fresh allocations",
+      "description": "Rate of acquire_tracked() calls vs fresh-allocation calls. Diverging lines (acquires high, allocations near zero) = good reuse. Allocations rising = pool churning.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "expr": "rate(reverie_pool_total_acquires[5m])",
+          "legendFormat": "acquires/sec",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(reverie_pool_total_allocations[5m])",
+          "legendFormat": "fresh allocations/sec",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "fresh allocations/sec" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "acquires/sec" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Named slots (intermediate_slots)",
+      "description": "Distinct named slots currently mapped in DynamicPipeline.intermediate_slots. Reflects pass-graph topology — should track the active preset, not grow unbounded.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 6 },
+      "targets": [
+        {
+          "expr": "reverie_pool_slot_count",
+          "legendFormat": "named slots",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "showPoints": "never"
+          }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Imagination loop fragments + shader rollbacks",
+      "description": "Fragments emitted from the imagination loop and shader-validation rollbacks. Rollbacks > 0 in steady state = the SatelliteManager is hitting GraphValidationErrors and reloading the core vocabulary.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 15 },
+      "targets": [
+        {
+          "expr": "rate(hapax_imagination_loop_fragments[5m])",
+          "legendFormat": "loop fragments/sec",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(hapax_imagination_shader_rollback_total[5m])",
+          "legendFormat": "shader rollbacks/sec",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 3,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "shader rollbacks/sec" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      }
+    }
+  ],
+  "templating": { "list": [] }
+}

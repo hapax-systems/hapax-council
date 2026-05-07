@@ -1,0 +1,205 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 0,
+  "id": null,
+  "uid": "hapax-narration-triad",
+  "title": "Hapax / Narration triad — open / satisfied / blocked",
+  "tags": ["hapax", "narration", "triad", "governance"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Triads opened vs satisfied (rate)",
+      "description": "Rate of new narration triads opened vs semantically satisfied. Satisfied trailing opened = triads accumulating unresolved (see orphan/stale panels).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "rate(narration_triad_open_total[5m])",
+          "legendFormat": "opened/sec",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(narration_triad_satisfied_total[5m])",
+          "legendFormat": "satisfied/sec",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 4,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "opened/sec" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "satisfied/sec" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Status appends — by terminal status",
+      "description": "Narration triad ledger appends bucketed by terminal status. Healthy mix has 'satisfied' dominant; rising 'blocked' or 'orphan' = governance gate fires or triads abandoned.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(narration_triad_status_total[5m]))",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 4,
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": { "mode": "normal" }
+          }
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Blocked or no-learning (1h)",
+      "description": "Triads blocked or marked no-learning over the last hour. Sustained nonzero = governance is consistently rejecting narrations.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 9 },
+      "targets": [
+        {
+          "expr": "increase(narration_triad_blocked_total[1h])",
+          "legendFormat": "blocked (1h)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "orange", "value": 20 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Corrections (1h)",
+      "description": "Triads corrected (post-hoc adjustment). Higher rate signals upstream emission noise that the narrator is repairing downstream.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 9 },
+      "targets": [
+        {
+          "expr": "increase(narration_triad_correction_total[1h])",
+          "legendFormat": "corrections (1h)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 3 },
+              { "color": "orange", "value": 10 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Stale + orphan (1h)",
+      "description": "Triads stale (still open past TTL) or orphan (still open at summary time). Sustained nonzero = the satisfaction path isn't closing the loop.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 9 },
+      "targets": [
+        {
+          "expr": "increase(narration_triad_stale_total[1h])",
+          "legendFormat": "stale (1h)",
+          "refId": "A"
+        },
+        {
+          "expr": "increase(narration_triad_orphan_total[1h])",
+          "legendFormat": "orphan (1h)",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "orange", "value": 5 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name"
+      }
+    }
+  ],
+  "templating": { "list": [] }
+}
