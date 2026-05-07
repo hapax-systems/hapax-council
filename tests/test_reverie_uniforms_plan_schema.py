@@ -14,6 +14,9 @@ from unittest import mock
 import pytest
 
 from agents.reverie import _uniforms
+from shared import working_mode
+from shared.visual_mode_bias import PALETTE_HINT
+from shared.working_mode import WorkingMode
 
 
 @pytest.fixture(autouse=True)
@@ -676,3 +679,87 @@ def test_write_uniforms_passes_normal_values_through(tmp_path: Path):
     # imagination-tint (#2378) — the chain delta is overwritten by the
     # mode-bias derivation. Just check the key is present.
     assert "color.hue_rotate" in result
+
+
+def test_write_uniforms_mode_tint_reacts_to_working_mode_file(tmp_path: Path):
+    """U8 e2e pin: write_uniforms reads the live working-mode file each tick
+    and emits visibly distinct color.hue_rotate values."""
+    plan = {
+        "version": 2,
+        "targets": {
+            "main": {
+                "passes": [
+                    {"node_id": "color", "uniforms": {"hue_rotate": 0.0}},
+                ]
+            }
+        },
+    }
+    plan_file = _write_plan(tmp_path, plan)
+    uniforms_file = tmp_path / "uniforms.json"
+    mode_file = tmp_path / "working-mode"
+
+    def write_for(mode: WorkingMode) -> float:
+        mode_file.write_text(f"{mode.value}\n")
+        with (
+            mock.patch.object(_uniforms, "PLAN_FILE", plan_file),
+            mock.patch.object(_uniforms, "UNIFORMS_FILE", uniforms_file),
+            mock.patch.object(
+                _uniforms, "HOMAGE_SUBSTRATE_PACKAGE_FILE", tmp_path / "no-homage.json"
+            ),
+            mock.patch.object(working_mode, "WORKING_MODE_FILE", mode_file),
+        ):
+            _uniforms.write_uniforms(
+                None,
+                None,
+                _FakeVisualChain({}),
+                trace_strength=0.0,
+                trace_center=(0.5, 0.5),
+                trace_radius=0.0,
+            )
+        return json.loads(uniforms_file.read_text())["color.hue_rotate"]
+
+    research_value = write_for(WorkingMode.RESEARCH)
+    rnd_value = write_for(WorkingMode.RND)
+
+    assert research_value < 0.0
+    assert rnd_value > 0.0
+    assert abs(research_value - rnd_value) > 100.0
+
+
+def test_write_uniforms_mode_tint_overrides_extreme_hue_chain_delta(tmp_path: Path):
+    """Mode tint is authoritative over visual-chain hue_rotate deltas and
+    therefore cannot leak an out-of-schema colorgrade value."""
+    plan = {
+        "version": 2,
+        "targets": {
+            "main": {
+                "passes": [
+                    {"node_id": "color", "uniforms": {"hue_rotate": 0.0}},
+                ]
+            }
+        },
+    }
+    plan_file = _write_plan(tmp_path, plan)
+    uniforms_file = tmp_path / "uniforms.json"
+    mode_file = tmp_path / "working-mode"
+    mode_file.write_text(f"{WorkingMode.RESEARCH.value}\n")
+
+    with (
+        mock.patch.object(_uniforms, "PLAN_FILE", plan_file),
+        mock.patch.object(_uniforms, "UNIFORMS_FILE", uniforms_file),
+        mock.patch.object(_uniforms, "HOMAGE_SUBSTRATE_PACKAGE_FILE", tmp_path / "no-homage.json"),
+        mock.patch.object(working_mode, "WORKING_MODE_FILE", mode_file),
+    ):
+        _uniforms.write_uniforms(
+            None,
+            None,
+            _FakeVisualChain({"color.hue_rotate": 1000.0}),
+            trace_strength=0.0,
+            trace_center=(0.5, 0.5),
+            trace_radius=0.0,
+        )
+
+    result = json.loads(uniforms_file.read_text())
+    expected = _uniforms._palette_hint_to_hue_rotate(PALETTE_HINT[WorkingMode.RESEARCH])
+    assert result["color.hue_rotate"] == pytest.approx(expected)
+    assert -180.0 <= result["color.hue_rotate"] <= 180.0

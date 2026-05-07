@@ -17,6 +17,7 @@ Test surface:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -90,6 +91,12 @@ class TestPaletteHintToHueRotate:
             rotate = _uniforms._palette_hint_to_hue_rotate(PALETTE_HINT[mode])
             assert -180.0 <= rotate <= 180.0
 
+    def test_fortress_reuses_rnd_palette_rotate(self) -> None:
+        """FORTRESS is livestream-gated RND aesthetically, not a third tint."""
+        fortress = _uniforms._palette_hint_to_hue_rotate(PALETTE_HINT[WorkingMode.FORTRESS])
+        rnd = _uniforms._palette_hint_to_hue_rotate(PALETTE_HINT[WorkingMode.RND])
+        assert fortress == pytest.approx(rnd)
+
 
 # ── _apply_mode_palette_tint ────────────────────────────────────────
 
@@ -155,6 +162,23 @@ class TestApplyModePaletteTint:
         assert "color.hue_rotate" not in uniforms
         # Did not corrupt other keys.
         assert uniforms["existing"] == 1.0
+
+    def test_invalid_working_mode_file_falls_back_to_rnd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Invalid live mode content should route through get_working_mode's
+        RND fallback rather than skipping the tint or raising."""
+        from shared import working_mode
+
+        mode_file = tmp_path / "working-mode"
+        mode_file.write_text("not-a-mode\n")
+        monkeypatch.setattr(working_mode, "WORKING_MODE_FILE", mode_file)
+
+        uniforms: dict[str, float] = {}
+        _uniforms._apply_mode_palette_tint(uniforms)
+
+        expected = _uniforms._palette_hint_to_hue_rotate(PALETTE_HINT[WorkingMode.RND])
+        assert uniforms["color.hue_rotate"] == pytest.approx(expected)
 
     def test_homage_damping_called_after_overrides_mode_tint(self) -> None:
         """Composition pin: when mode tint runs first and homage damping
