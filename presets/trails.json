@@ -94,9 +94,9 @@
   "modulations": [
     {
       "node": "trail",
-      "param": "opacity",
+      "param": "chromatic_aberration",
       "source": "audio_rms",
-      "scale": 0.3,
+      "scale": 0.4,
       "offset": 0.0,
       "smoothing": 0.7
     }

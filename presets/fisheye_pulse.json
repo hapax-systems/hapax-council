@@ -80,9 +80,9 @@
   "modulations": [
     {
       "node": "fisheye",
-      "param": "strength",
+      "param": "displacement",
       "source": "audio_beat",
-      "scale": 0.5,
+      "scale": 0.3,
       "offset": 0.3,
       "smoothing": 0.7
     }

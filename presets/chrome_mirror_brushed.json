@@ -88,9 +88,9 @@
     },
     {
       "node": "emboss_brushed",
-      "param": "strength",
+      "param": "displacement",
       "source": "audio_beat",
-      "scale": 0.18,
+      "scale": 0.3,
       "offset": 0.32,
       "smoothing": 0.4
     },
