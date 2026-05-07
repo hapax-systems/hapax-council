@@ -195,8 +195,9 @@ def test_metric_labelled_per_source() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_default_layout_informational_wards_are_non_destructive() -> None:
-    """Default layout JSON marks the operator-informational wards."""
+def test_default_layout_non_destructive_flags() -> None:
+    """Default garage-door layout JSON: non_destructive is False on all
+    assignments (garage-door merge removed the flag from informational wards)."""
     from pathlib import Path
 
     layout_path = (
@@ -205,16 +206,11 @@ def test_default_layout_informational_wards_are_non_destructive() -> None:
     raw = json.loads(layout_path.read_text())
     layout = Layout.model_validate(raw)
 
-    expected_non_destructive = {
-        "token_pole",
-        "album",
-        "chat_ambient",
-        "stance_indicator",
-        "activity_header",
-    }
-    actual = {a.source for a in layout.assignments if a.non_destructive}
-    missing = expected_non_destructive - actual
-    assert not missing, f"default layout is missing non_destructive on: {missing}"
+    non_destructive_sources = {a.source for a in layout.assignments if a.non_destructive}
+    assert not non_destructive_sources, (
+        f"garage-door layout should have no non_destructive assignments, "
+        f"but found: {non_destructive_sources}"
+    )
 
 
 # ---------------------------------------------------------------------------

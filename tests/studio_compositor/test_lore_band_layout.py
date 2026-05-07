@@ -34,9 +34,9 @@ LORE_SOURCE_IDS = (
     "research_instrument_dashboard",
 )
 LORE_SURFACE_IDS = (
-    "lore-precedent-ticker",
-    "lore-programme-history",
-    "lore-research-instrument-dashboard",
+    "precedent-ticker-right-column",
+    "chronicle-ticker-right-column",
+    "research-dashboard-right",
 )
 
 
@@ -128,12 +128,11 @@ def test_lore_assignments_pair_source_to_surface() -> None:
         assert (sid, surf_id) in pairs, f"missing assignment: {sid} → {surf_id}"
 
 
-def test_lore_band_z_order_above_pip_quadrants() -> None:
-    """Lore band z=22 is below activity-header (30) and gem (30) —
-    correct: the lore strip is supporting context, not headline.
-    Pinned so a future revision raising z-order doesn't accidentally
-    occlude the headline wards."""
+def test_lore_band_z_order_in_right_column() -> None:
+    """Garage-door layout: lore surfaces in the right column share
+    z=52 with other right-column overlay wards. Pinned so a future
+    revision doesn't accidentally drop them below the content layer."""
     layout = _layout()
     for sid in LORE_SURFACE_IDS:
         s = next(s for s in layout.surfaces if s.id == sid)
-        assert 10 <= s.z_order <= 25, f"{sid}: z_order out of supporting band"
+        assert 20 <= s.z_order <= 55, f"{sid}: z_order out of expected range"

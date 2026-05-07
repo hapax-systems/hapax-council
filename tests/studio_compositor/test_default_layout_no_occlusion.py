@@ -27,18 +27,15 @@ _DEFAULT_JSON = Path(__file__).parents[2] / "config" / "compositor-layouts" / "d
 # Surfaces to check for overlap. Upper-band (y < 400) overlay surfaces
 # must not collide with each other; lower-band legibility + GEM must not
 # collide either.
+# In the garage-door layout, the right-column surfaces intentionally
+# overlap and rely on z-order stacking. Only check the upper-band +
+# left-column overlay surfaces that must NOT overlap.
 _OVERLAY_SURFACE_IDS = {
-    "activity-header-top",
-    "stance-indicator-tr",
-    "grounding-ticker-bl",
-    "impingement-cascade-midright",
+    "activity-header-top-mid",
     "recruitment-candidate-top",
     "thinking-indicator-tr",
     "pressure-gauge-ul",
-    "activity-variety-log-mid",
-    "whos-here-tr",
-    "gem-mural-bottom",
-    "egress-footer-bottom",
+    "whos-here-tc",
 }
 
 
@@ -75,28 +72,29 @@ def test_no_overlay_surface_overlap() -> None:
     )
 
 
-def test_upper_right_cluster_spatial_separation() -> None:
-    """Upper-right legibility cluster must stack without collisions.
+def test_upper_band_cluster_spatial_separation() -> None:
+    """Upper-band legibility cluster must not collide.
 
-    whos-here sits below thinking-indicator; both sit left of stance-indicator.
+    In the garage-door layout, whos-here-tc sits LEFT of thinking-indicator-tr
+    at the same y; stance-indicator-right-column is in the right column below.
     Pins their positions so a future refactor can't silently re-introduce
-    the overlap that prompted the original 2026-04-23 fix.
+    overlap.
     """
     raw = json.loads(_DEFAULT_JSON.read_text())
     geos = {s["id"]: s["geometry"] for s in raw["surfaces"] if s["geometry"]["kind"] == "rect"}
 
     thinking = geos["thinking-indicator-tr"]
-    stance = geos["stance-indicator-tr"]
-    whos = geos["whos-here-tr"]
+    stance = geos["stance-indicator-right-column"]
+    whos = geos["whos-here-tc"]
 
-    # whos-here is stacked BELOW thinking-indicator.
-    assert whos["y"] >= thinking["y"] + thinking["h"], (
-        f"whos-here-tr top ({whos['y']}) must be >= "
-        f"thinking-indicator-tr bottom ({thinking['y'] + thinking['h']})"
+    # whos-here-tc is to the LEFT of thinking-indicator-tr (same row, no overlap).
+    whos_rect = {"x": whos["x"], "y": whos["y"], "w": whos["w"], "h": whos["h"]}
+    thinking_rect = {"x": thinking["x"], "y": thinking["y"], "w": thinking["w"], "h": thinking["h"]}
+    assert not _rects_intersect(whos_rect, thinking_rect), (
+        "whos-here-tc and thinking-indicator-tr must not overlap"
     )
     # stance-indicator and thinking-indicator must not overlap.
-    thinking_rect = {"x": thinking["x"], "y": thinking["y"], "w": thinking["w"], "h": thinking["h"]}
     stance_rect = {"x": stance["x"], "y": stance["y"], "w": stance["w"], "h": stance["h"]}
     assert not _rects_intersect(thinking_rect, stance_rect), (
-        "thinking-indicator-tr and stance-indicator-tr must not overlap"
+        "thinking-indicator-tr and stance-indicator-right-column must not overlap"
     )
