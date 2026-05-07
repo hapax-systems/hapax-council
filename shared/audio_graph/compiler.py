@@ -117,6 +117,8 @@ def _emit_pipewire_confs(graph: AudioGraph) -> dict[str, str]:
             f"# Channel count: {node.channels.count}\n"
             f"# Channel positions: {' '.join(node.channels.positions)}\n"
         )
+        if node.industrial_name:
+            body += f"# Industrial name: {node.industrial_name}\n"
         if node.target_object:
             body += f"# target.object: {node.target_object}\n"
         if node.fail_closed:

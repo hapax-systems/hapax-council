@@ -39,6 +39,7 @@ from pathlib import Path
 
 import pytest
 
+from shared.audio_industrial_naming import industrial_audio_name_violations
 from shared.audio_topology import TopologyDescriptor
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -76,6 +77,38 @@ def test_all_hapax_authored_pw_nodes_match_prefix() -> None:
                 f"{node.id}: pipewire_name {node.pipewire_name!r} violates hapax-* convention"
             )
     assert not violations, "\n".join(violations)
+
+
+def test_canonical_topology_nodes_have_unique_industrial_names() -> None:
+    """Every canonical node has a stable, non-ad-hoc industrial graph name."""
+
+    descriptor = TopologyDescriptor.from_yaml(CANONICAL_YAML)
+    violations: list[str] = []
+    seen: dict[str, str] = {}
+    for node in descriptor.nodes:
+        name = node.industrial_name
+        reasons = industrial_audio_name_violations(name)
+        if reasons:
+            violations.append(f"{node.id}: {name or '<missing>'} ({', '.join(reasons)})")
+            continue
+        assert name is not None
+        if name in seen:
+            violations.append(f"{node.id}: {name} duplicates {seen[name]}")
+            continue
+        seen[name] = node.id
+
+    assert not violations, "\n".join(violations)
+
+
+def test_legacy_ad_hoc_pipewire_nodes_have_industrial_names() -> None:
+    """Pin ad-hoc live names to operator-readable SSOT graph names."""
+
+    descriptor = TopologyDescriptor.from_yaml(CANONICAL_YAML)
+    assert descriptor.node_by_id("music-duck").industrial_name == "chain.music.ducker"
+    assert (
+        descriptor.node_by_id("l12-evilpet-capture").industrial_name
+        == "chain.broadcast.processor-return-capture"
+    )
 
 
 def test_pc_loudnorm_uses_hapax_prefix() -> None:

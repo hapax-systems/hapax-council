@@ -32,6 +32,7 @@ nodes:
   - id: l12-capture
     kind: alsa_source
     pipewire_name: alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input
+    industrial_name: interface.l12.usb-in.multichannel
     description: ZOOM LiveTrak L-12 multichannel USB capture
     hw: hw:CARD=L12
     channels:
@@ -60,6 +61,7 @@ nodes:
   - id: l12-usb-return
     kind: alsa_sink
     pipewire_name: alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40
+    industrial_name: interface.l12.usb-out.surround40
     description: ZOOM LiveTrak L-12 USB return, FL/FR/RL/RR
     hw: surround40:CARD=L12
     channels:
@@ -71,6 +73,7 @@ nodes:
   - id: yeti-headphone-output
     kind: alsa_sink
     pipewire_name: alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo
+    industrial_name: interface.yeti.monitor-output.stereo
     description: Blue Yeti headphone monitor, off-L-12 private endpoint
     hw: front:CARD=Yeti
     channels:
@@ -90,6 +93,7 @@ nodes:
   - id: respeaker-xvf3800-array-source
     kind: alsa_source
     pipewire_name: alsa_input.usb-Seeed_Studio_ReSpeaker_XVF3800-00.multichannel-input
+    industrial_name: interface.respeaker.array-source.multichannel
     description: ReSpeaker XVF3800 4-mic far-field array, optional operator sidechat capture
     hw: hw:CARD=XVF3800
     channels:
@@ -111,6 +115,7 @@ nodes:
   - id: respeaker-xvf3800-aec-reference-output
     kind: alsa_sink
     pipewire_name: alsa_output.usb-Seeed_Studio_ReSpeaker_XVF3800-00.multichannel-output
+    industrial_name: interface.respeaker.aec-reference-output.stereo
     description: ReSpeaker XVF3800 stereo playback endpoint for optional AEC reference only
     hw: hw:CARD=XVF3800
     channels:
@@ -140,6 +145,7 @@ nodes:
   - id: s4-analog-out-1-2
     kind: tap
     pipewire_name: s4-analog-out-1-2
+    industrial_name: interface.s4.analog-out.monitor12
     description: |
       Operator-monitor analog OUT 1/2 patch from the S-4. Patched into
       a non-broadcast monitor sink per spec §5 (headphone amp /
@@ -161,6 +167,7 @@ nodes:
   - id: livestream-tap
     kind: tap
     pipewire_name: hapax-livestream-tap
+    industrial_name: bus.livestream.producer-tap
     description: Hapax livestream producer tap, upstream of broadcast master
     channels:
       count: 2
@@ -172,6 +179,7 @@ nodes:
   - id: livestream-legacy
     kind: tap
     pipewire_name: hapax-livestream
+    industrial_name: bus.livestream.legacy-sink
     description: Legacy application-facing livestream sink retained as a null sink
     channels:
       count: 2
@@ -182,6 +190,7 @@ nodes:
   - id: private-sink
     kind: tap
     pipewire_name: hapax-private
+    industrial_name: bus.private.assistant-sink
     description: Private assistant sink, fail-closed with no L-12 playback bridge
     channels:
       count: 2
@@ -193,6 +202,7 @@ nodes:
   - id: notification-private-sink
     kind: tap
     pipewire_name: hapax-notification-private
+    industrial_name: bus.private.notification-sink
     description: Private notification sink, fail-closed with no L-12 playback bridge
     channels:
       count: 2
@@ -204,6 +214,7 @@ nodes:
   - id: private-monitor-capture
     kind: filter_chain
     pipewire_name: hapax-private-monitor-capture
+    industrial_name: chain.private.monitor-capture
     description: Capture side for private assistant monitor bridge
     target_object: hapax-private
     channels:
@@ -219,6 +230,7 @@ nodes:
   - id: private-monitor-output
     kind: loopback
     pipewire_name: hapax-private-playback
+    industrial_name: chain.private.monitor-output
     description: |
       Option C private-monitor bridge to S-4 USB IN Track 1 input.
       Per spec amendment 2026-05-02, this loopback's playback target is
@@ -248,6 +260,7 @@ nodes:
   - id: notification-private-monitor-capture
     kind: filter_chain
     pipewire_name: hapax-notification-private-monitor-capture
+    industrial_name: chain.notification.monitor-capture
     description: Capture side for private notification monitor bridge
     target_object: hapax-notification-private
     channels:
@@ -263,6 +276,7 @@ nodes:
   - id: notification-private-monitor-output
     kind: loopback
     pipewire_name: hapax-notification-private-playback
+    industrial_name: chain.notification.monitor-output
     description: |
       Option C private-monitor bridge to S-4 USB IN Track 1 input.
       Per spec amendment 2026-05-02, the notification private path
@@ -292,6 +306,7 @@ nodes:
   - id: l12-evilpet-capture
     kind: filter_chain
     pipewire_name: hapax-l12-evilpet-capture
+    industrial_name: chain.broadcast.processor-return-capture
     description: L-12 narrowed capture, contact/sampler/rode/Evil Pet return to livestream tap
     target_object: alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input
     channels:
@@ -310,6 +325,7 @@ nodes:
   - id: l12-mainmix-capture
     kind: filter_chain
     pipewire_name: hapax-l12-mainmix-capture
+    industrial_name: chain.broadcast.mainmix-capture
     description: L-12 AUX10/AUX11 secondary broadcast A/B capture, monitor-only
     target_object: alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input
     channels:
@@ -334,6 +350,7 @@ nodes:
   - id: obs-broadcast-mainmix-tap
     kind: tap
     pipewire_name: hapax-obs-broadcast-mainmix-tap
+    industrial_name: bus.broadcast.mainmix-egress-tap
     description: OBS-visible L-12 mainmix A/B monitor tap, muted secondary source only
     channels:
       count: 2
@@ -351,6 +368,7 @@ nodes:
   - id: broadcast-master-capture
     kind: filter_chain
     pipewire_name: hapax-broadcast-master-capture
+    industrial_name: bus.broadcast.master-capture
     description: Livestream tap to broadcast master virtual source
     target_object: hapax-livestream-tap
     channels:
@@ -362,6 +380,7 @@ nodes:
   - id: broadcast-normalized-capture
     kind: filter_chain
     pipewire_name: hapax-broadcast-normalized-capture
+    industrial_name: bus.broadcast.normalized-capture
     description: Broadcast master safety-net limiter capture side
     target_object: hapax-broadcast-master
     channels:
@@ -375,6 +394,7 @@ nodes:
   - id: obs-broadcast-remap-capture
     kind: filter_chain
     pipewire_name: hapax-obs-broadcast-remap-capture
+    industrial_name: bus.broadcast.egress-remap-capture
     description: OBS-stable capture side for hapax-broadcast-normalized
     target_object: hapax-broadcast-normalized
     channels:
@@ -388,6 +408,7 @@ nodes:
   - id: role-multimedia
     kind: loopback
     pipewire_name: input.loopback.sink.role.multimedia
+    industrial_name: role.multimedia.loopback-sink
     description: Default multimedia role, routed through PC loudnorm
     target_object: hapax-pc-loudnorm
     channels:
@@ -397,6 +418,7 @@ nodes:
   - id: role-notification
     kind: loopback
     pipewire_name: input.loopback.sink.role.notification
+    industrial_name: role.notification.loopback-sink
     description: Notification role, routed to fail-closed private notification sink
     target_object: hapax-notification-private
     channels:
@@ -406,6 +428,7 @@ nodes:
   - id: role-assistant
     kind: loopback
     pipewire_name: input.loopback.sink.role.assistant
+    industrial_name: role.assistant.loopback-sink
     description: Assistant/private TTS role, routed to fail-closed private sink
     target_object: hapax-private
     channels:
@@ -415,6 +438,7 @@ nodes:
   - id: role-broadcast
     kind: loopback
     pipewire_name: input.loopback.sink.role.broadcast
+    industrial_name: role.broadcast.loopback-sink
     description: Broadcast TTS role, routed to voice FX chain
     target_object: hapax-voice-fx-capture
     channels:
@@ -425,6 +449,7 @@ nodes:
   - id: voice-fx
     kind: filter_chain
     pipewire_name: hapax-voice-fx-capture
+    industrial_name: chain.voice.effects-capture
     description: Hapax voice FX input, output routed to TTS loudnorm
     target_object: hapax-loudnorm-capture
     channels:
@@ -434,6 +459,7 @@ nodes:
   - id: tts-loudnorm
     kind: filter_chain
     pipewire_name: hapax-loudnorm-capture
+    industrial_name: chain.voice.loudnorm-capture
     description: TTS loudnorm capture side, output routed to TTS duck
     target_object: hapax-tts-duck
     channels:
@@ -446,6 +472,7 @@ nodes:
   - id: tts-duck
     kind: filter_chain
     pipewire_name: hapax-tts-duck
+    industrial_name: chain.voice.ducker
     description: TTS sidechain duck, parallel output to L-12 return and broadcast tap
     target_object: alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40
     channels:
@@ -460,6 +487,7 @@ nodes:
   - id: tts-broadcast-capture
     kind: filter_chain
     pipewire_name: hapax-tts-broadcast-capture
+    industrial_name: chain.voice.broadcast-capture
     description: TTS broadcast loopback capture side
     target_object: hapax-tts-duck
     channels:
@@ -469,6 +497,7 @@ nodes:
   - id: tts-broadcast-playback
     kind: loopback
     pipewire_name: hapax-tts-broadcast-playback
+    industrial_name: chain.voice.broadcast-playback
     description: TTS broadcast loopback playback side into livestream tap
     target_object: hapax-livestream-tap
     channels:
@@ -479,6 +508,7 @@ nodes:
   - id: pc-loudnorm
     kind: filter_chain
     pipewire_name: hapax-pc-loudnorm
+    industrial_name: chain.desktop.loudnorm
     description: PC-wide loudnorm sink routed to L-12 USB return
     target_object: alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40
     channels:
@@ -494,6 +524,7 @@ nodes:
   - id: pc-router
     kind: tap
     pipewire_name: hapax-pc-router
+    industrial_name: bus.desktop.router
     description: PC audio fork point — null-sink with monitor, dormant until PR B
     channels:
       count: 2
@@ -506,6 +537,7 @@ nodes:
   - id: pc-monitor
     kind: filter_chain
     pipewire_name: hapax-pc-monitor
+    industrial_name: chain.desktop.monitor
     description: Operator headphone path — limiter -1 dBTP to Yeti, private off-L-12
     target_object: hapax-pc-router
     channels:
@@ -525,6 +557,7 @@ nodes:
   - id: pc-broadcast
     kind: filter_chain
     pipewire_name: hapax-pc-broadcast
+    industrial_name: chain.desktop.broadcast
     description: L-12 broadcast path — limiter -18 dBFS to L-12 USB return RL/RR
     target_object: hapax-pc-router
     channels:
@@ -545,6 +578,7 @@ nodes:
   - id: music-loudnorm
     kind: filter_chain
     pipewire_name: hapax-music-loudnorm
+    industrial_name: chain.music.loudnorm
     description: Music loudnorm capture side routed to music duck
     target_object: hapax-music-duck
     channels:
@@ -557,6 +591,7 @@ nodes:
   - id: music-duck
     kind: filter_chain
     pipewire_name: hapax-music-duck
+    industrial_name: chain.music.ducker
     description: Music duck output routed to L-12 USB return
     target_object: alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40
     channels:
@@ -569,6 +604,7 @@ nodes:
   - id: yt-loudnorm
     kind: filter_chain
     pipewire_name: hapax-yt-loudnorm
+    industrial_name: chain.youtube.loudnorm
     description: YouTube bed loudnorm routed to YouTube ducker
     target_object: hapax-ytube-ducked
     channels:
@@ -581,6 +617,7 @@ nodes:
   - id: ytube-ducked
     kind: filter_chain
     pipewire_name: hapax-ytube-ducked
+    industrial_name: chain.youtube.ducker
     description: YouTube bed ducker sink
     channels:
       count: 2
@@ -590,6 +627,7 @@ nodes:
   - id: s4-source
     kind: alsa_source
     pipewire_name: alsa_input.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-input
+    industrial_name: interface.s4.usb-in.multichannel
     description: Torso S-4 pro-audio multichannel input
     hw: hw:CARD=S4
     channels:
@@ -601,6 +639,7 @@ nodes:
   - id: s4-output
     kind: alsa_sink
     pipewire_name: alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output
+    industrial_name: interface.s4.usb-out.multichannel
     description: |
       Torso S-4 pro-audio multichannel output.
       Option C (2026-05-02 spec amendment): the host-side write end of
@@ -630,6 +669,7 @@ nodes:
   - id: s4-loopback
     kind: loopback
     pipewire_name: hapax-s4-content
+    industrial_name: chain.s4.content-loopback
     description: S-4 USB stereo content loopback to livestream tap
     target_object: hapax-livestream-tap
     channels:
@@ -643,6 +683,7 @@ nodes:
   - id: m8-usb-source
     kind: alsa_source
     pipewire_name: alsa_input.usb-Dirtywave_M8_16558390-02.analog-stereo
+    industrial_name: interface.m8.usb-in.stereo
     description: Dirtywave M8 USB audio source, optional hardware endpoint
     hw: hw:M8,0
     channels:
@@ -654,6 +695,7 @@ nodes:
   - id: m8-instrument-capture
     kind: filter_chain
     pipewire_name: hapax-m8-instrument-capture
+    industrial_name: chain.m8.instrument-capture
     description: M8 USB source capture side routed to M8 loudnorm
     target_object: alsa_input.usb-Dirtywave_M8_16558390-02.analog-stereo
     channels:
@@ -665,6 +707,7 @@ nodes:
   - id: m8-loudnorm
     kind: filter_chain
     pipewire_name: hapax-m8-loudnorm
+    industrial_name: chain.m8.loudnorm
     description: M8 instrument loudnorm routed directly to livestream tap, bypassing L-12
     target_object: hapax-livestream-tap
     channels:
@@ -680,6 +723,7 @@ nodes:
   - id: polyend-instrument-source
     kind: alsa_source
     pipewire_name: alsa_input.usb-Polyend_Tracker_Mini-00.analog-stereo
+    industrial_name: interface.polyend.usb-in.stereo
     description: Polyend USB audio source, optional hardware endpoint
     hw: hw:Polyend,0
     channels:
@@ -691,6 +735,7 @@ nodes:
   - id: polyend-instrument-capture
     kind: filter_chain
     pipewire_name: hapax-polyend-instrument-capture
+    industrial_name: chain.polyend.instrument-capture
     description: Polyend USB source capture side routed to Polyend loudnorm
     target_object: alsa_input.usb-Polyend_Tracker_Mini-00.analog-stereo
     channels:
@@ -702,6 +747,7 @@ nodes:
   - id: polyend-loudnorm
     kind: filter_chain
     pipewire_name: hapax-polyend-loudnorm
+    industrial_name: chain.polyend.loudnorm
     description: Polyend instrument loudnorm routed directly to livestream tap
     target_object: hapax-livestream-tap
     channels:

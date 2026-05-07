@@ -2350,9 +2350,11 @@ _AG_ChannelMap._positions_match_count  # type: ignore[attr-defined]
 _AG_GainStage._gain_is_finite  # type: ignore[attr-defined]
 _AG_GainStage._overrides_in_range  # type: ignore[attr-defined]
 _AG_AudioNode._id_is_kebab  # type: ignore[attr-defined]
+_AG_AudioNode._industrial_name_is_hierarchical  # type: ignore[attr-defined]
 _AG_AudioNode._hardware_nodes_have_hw  # type: ignore[attr-defined]
 _AG_AudioLink._gain_in_range  # type: ignore[attr-defined]
 _AG_AudioGraph._node_ids_unique  # type: ignore[attr-defined]
+_AG_AudioGraph._industrial_names_unique  # type: ignore[attr-defined]
 _AG_AudioGraph._links_reference_valid_nodes  # type: ignore[attr-defined]
 _AG_AudioGraph._gain_stages_reference_valid_nodes  # type: ignore[attr-defined]
 _AG_AudioGraph._loopbacks_reference_valid_nodes  # type: ignore[attr-defined]
@@ -2397,6 +2399,15 @@ _AG_AudioGraph2._pipewire_names_unique  # type: ignore[attr-defined]
 _AG_AudioGraph2._downmixes_reference_valid_nodes  # type: ignore[attr-defined]
 _AG_AudioGraph2.node_by_pipewire_name
 _AG_AudioGraph2.to_yaml
+
+# TopologyDescriptor industrial naming validators — Pydantic reflection
+# call path is not visible to vulture, but config/audio-topology.yaml
+# parsing invokes them.
+from shared.audio_topology import Node as _TopologyNode
+from shared.audio_topology import TopologyDescriptor as _TopologyDescriptor
+
+_TopologyNode._industrial_name_is_hierarchical  # type: ignore[attr-defined]
+_TopologyDescriptor._industrial_names_unique  # type: ignore[attr-defined]
 
 # Validator gap-fold methods.
 from shared.audio_graph.validator import AudioGraphValidator as _AG_Validator2

@@ -41,6 +41,8 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from shared.audio_industrial_naming import validate_industrial_audio_name
+
 
 class NodeKind(StrEnum):
     """Types of nodes in a PipeWire audio graph.
@@ -102,6 +104,10 @@ class Node(BaseModel, frozen=True):
         pipewire_name: The ``node.name`` string the live graph uses.
             Must match exactly for ``verify`` to recognise the live
             node as this descriptor node.
+        industrial_name: Stable consultable graph name. This is the
+            responsibility-bearing name operators and generated docs
+            should use; live PipeWire names remain compatibility
+            handles until the graph daemon owns deployment.
         description: Operator-readable label surfaced in tooling (the
             CLI's ``describe`` subcommand, Grafana labels).
         target_object: For ``loopback`` and ``filter_chain`` nodes,
@@ -148,6 +154,7 @@ class Node(BaseModel, frozen=True):
     id: str
     kind: NodeKind
     pipewire_name: str
+    industrial_name: str | None = None
     description: str = ""
     target_object: str | None = None
     hw: str | None = None
@@ -171,6 +178,11 @@ class Node(BaseModel, frozen=True):
                 f"Node.id={v!r} — must be lowercase, no whitespace (kebab-case convention)"
             )
         return v
+
+    @field_validator("industrial_name")
+    @classmethod
+    def _industrial_name_is_hierarchical(cls, v: str | None) -> str | None:
+        return validate_industrial_audio_name(v)
 
     @model_validator(mode="after")
     def _hardware_nodes_have_hw(self) -> Node:
@@ -250,6 +262,20 @@ class TopologyDescriptor(BaseModel, frozen=True):
             if node.id in seen:
                 raise ValueError(f"Duplicate node id: {node.id!r}")
             seen.add(node.id)
+        return v
+
+    @field_validator("nodes")
+    @classmethod
+    def _industrial_names_unique(cls, v: list[Node]) -> list[Node]:
+        seen: set[str] = set()
+        for node in v:
+            if node.industrial_name is None:
+                continue
+            if node.industrial_name in seen:
+                raise ValueError(
+                    f"Duplicate industrial_name: {node.industrial_name!r} on node {node.id!r}"
+                )
+            seen.add(node.industrial_name)
         return v
 
     @model_validator(mode="after")
