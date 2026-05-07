@@ -166,6 +166,16 @@ def start_compositor(compositor: Any) -> None:
 
     compositor._write_status("starting")
 
+    if hasattr(compositor, "_v4l2_output_pipeline"):
+        compositor._v4l2_output_pipeline.start()
+        log.info("V4l2OutputPipeline started (interpipeline isolation active)")
+        import time as _time
+
+        for _i in range(50):
+            if compositor._v4l2_output_pipeline.is_alive(threshold_s=2.0):
+                break
+            _time.sleep(0.01)
+
     ret = compositor.pipeline.set_state(Gst.State.PLAYING)
     if ret == Gst.StateChangeReturn.FAILURE:
         log.error("Pipeline set_state(PLAYING) returned FAILURE — attempting recovery")
@@ -180,10 +190,6 @@ def start_compositor(compositor: Any) -> None:
             raise RuntimeError("Failed to start pipeline after recovery attempt")
 
     log.info("Pipeline started -- output on %s", compositor.config.output_device)
-
-    if hasattr(compositor, "_v4l2_output_pipeline"):
-        compositor._v4l2_output_pipeline.start()
-        log.info("V4l2OutputPipeline started (interpipeline isolation active)")
 
     with compositor._camera_status_lock:
         for role, status in compositor._camera_status.items():
