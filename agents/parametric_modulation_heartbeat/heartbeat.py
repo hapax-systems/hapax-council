@@ -522,6 +522,8 @@ def _write_cairo_ward_params(
         intensity = _normalized_envelope_value(values, "content.intensity")
         noise = _normalized_envelope_value(values, "noise.amplitude")
         sediment = _normalized_envelope_value(values, "post.sediment_strength")
+        drift_freq = _normalized_envelope_value(values, "drift.frequency")
+        drift_amp = _normalized_envelope_value(values, "drift.amplitude")
 
         pulse_hz = 4.0 * max(0.0, min(1.0, 0.55 * breath + 0.25 * noise + 0.20 * (1.0 - sediment)))
         bump_pct = 0.08 * max(0.0, min(1.0, 0.65 * intensity + 0.35 * noise))
@@ -529,6 +531,18 @@ def _write_cairo_ward_params(
         # Caps at 4 px so this only seats a *floor* — the FX reactor's own
         # spike-grade glow remains the audible foreground.
         glow_px = 4.0 * max(0.0, min(1.0, breath_amp))
+        # Drift-floor outputs (operator directive 2026-05-07 ward audit:
+        # ``drift_hz=0, drift_amplitude_px=0 — completely static``). The
+        # heartbeat raises the FLOOR for both fields from envelope-walked
+        # values; ``drift_type`` is intentionally NOT touched here so a
+        # ward whose drift_type defaults to ``"none"`` still renders
+        # static — the floor only manifests as visible motion when an
+        # upstream caller (compositional_consumer, operator config) sets
+        # drift_type to ``"sine"`` or ``"circle"``. Keeps this PR a pure
+        # prep for activation rather than an unconditional behaviour
+        # change.
+        drift_hz_floor = 1.5 * drift_freq
+        drift_px_floor = 8.0 * drift_amp
 
         updates: dict[str, WardProperties] = {}
         for ward_id in AUDIO_REACTIVE_WARDS:
@@ -538,6 +552,8 @@ def _write_cairo_ward_params(
                 border_pulse_hz=max(base.border_pulse_hz, pulse_hz),
                 scale_bump_pct=max(base.scale_bump_pct, bump_pct),
                 glow_radius_px=max(base.glow_radius_px, glow_px),
+                drift_hz=max(base.drift_hz, drift_hz_floor),
+                drift_amplitude_px=max(base.drift_amplitude_px, drift_px_floor),
             )
         set_many_ward_properties(updates, ttl_s=ttl_s)
     except Exception:

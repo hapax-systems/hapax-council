@@ -345,6 +345,15 @@ class TestCairoWardParams:
             # ``glow_radius_px`` floor driven by ``breath.amplitude`` envelope;
             # walker init at envelope midpoint produces a non-zero baseline.
             assert wards[ward_id]["glow_radius_px"] > 0.0
+            # ``drift_hz`` / ``drift_amplitude_px`` floors driven by the
+            # ``drift.*`` envelopes (operator ward audit 2026-05-07).
+            # ``drift_type`` is intentionally NOT touched by the heartbeat,
+            # so these floors do not produce visible motion until something
+            # else flips drift_type from ``"none"`` to ``"sine"`` or
+            # ``"circle"``.
+            assert wards[ward_id]["drift_hz"] > 0.0
+            assert wards[ward_id]["drift_amplitude_px"] > 0.0
+            assert wards[ward_id]["drift_type"] == "none"
 
     def test_tick_preserves_stronger_existing_cairo_params(
         self, tmp_path: Path, monkeypatch
@@ -356,7 +365,14 @@ class TestCairoWardParams:
         wp.clear_ward_properties_cache()
         wp.set_ward_properties(
             "pressure_gauge",
-            wp.WardProperties(border_pulse_hz=9.0, scale_bump_pct=0.07, glow_radius_px=12.0),
+            wp.WardProperties(
+                border_pulse_hz=9.0,
+                scale_bump_pct=0.07,
+                glow_radius_px=12.0,
+                drift_hz=3.0,
+                drift_amplitude_px=24.0,
+                drift_type="circle",
+            ),
             ttl_s=10.0,
         )
         wp.clear_ward_properties_cache()
@@ -377,6 +393,14 @@ class TestCairoWardParams:
         assert props.scale_bump_pct >= 0.07
         # Heartbeat caps glow at 4 px; the existing 12 px must survive.
         assert props.glow_radius_px >= 12.0
+        # Heartbeat caps drift_hz at 1.5; the existing 3.0 must survive.
+        assert props.drift_hz >= 3.0
+        # Heartbeat caps drift_amplitude_px at 8 px; the existing 24 px
+        # must survive.
+        assert props.drift_amplitude_px >= 24.0
+        # ``drift_type`` is never touched by the heartbeat, so the
+        # caller-provided ``"circle"`` must round-trip unchanged.
+        assert props.drift_type == "circle"
 
 
 class TestAtomicity:
