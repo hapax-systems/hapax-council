@@ -797,10 +797,9 @@ async def lifespan(app: FastAPI):
 
     # Phase 6b-ii MoodValenceEngine observes four health/voice valence
     # signals (HRV vs baseline, skin temp drop, sleep debt, voice pitch
-    # elevated). All four signal accessors on LogosMoodValenceBridge
-    # return ``None`` until per-backend baseline references are
-    # calibrated against production data. Posterior + state exposed at
-    # GET /api/engine/mood_valence for the DMN governor.
+    # elevated). All four signal accessors on LogosMoodValenceBridge are
+    # calibrated with stale/warm-up ``None`` semantics. Posterior + state
+    # are exposed at GET /api/engine/mood_valence for the DMN governor.
     mve = None
     try:
         from agents.hapax_daimonion.mood_valence_engine import MoodValenceEngine
@@ -813,10 +812,9 @@ async def lifespan(app: FastAPI):
     # Phase 6b-iii MoodCoherenceEngine observes four health-volatility
     # coherence signals (HRV CV, respiration variance, movement jitter,
     # skin temp volatility). All four signal accessors on
-    # LogosMoodCoherenceBridge return ``None`` until per-backend
-    # volatility windows are calibrated against production data.
-    # Posterior + state exposed at GET /api/engine/mood_coherence for
-    # the DMN governor.
+    # LogosMoodCoherenceBridge are calibrated with stale/warm-up ``None``
+    # semantics. Posterior + state are exposed at
+    # GET /api/engine/mood_coherence for the DMN governor.
     mce = None
     try:
         from agents.hapax_daimonion.mood_coherence_engine import MoodCoherenceEngine
