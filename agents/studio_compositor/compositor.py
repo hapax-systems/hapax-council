@@ -284,6 +284,19 @@ _FALLBACK_LAYOUT = Layout(
             },
         ),
         SourceSchema(
+            id="packed_cameras",
+            kind="cairo",
+            backend="cairo",
+            params={
+                "class_name": "PackedCamerasCairoSource",
+                "natural_w": 1920,
+                "natural_h": 1080,
+            },
+            update_cadence="rate",
+            rate_hz=15.0,
+            tags=["camera", "packing"],
+        ),
+        SourceSchema(
             id="egress_footer",
             kind="cairo",
             backend="cairo",
@@ -576,6 +589,12 @@ _FALLBACK_LAYOUT = Layout(
             geometry=SurfaceGeometry(kind="rect", x=640, y=220, w=640, h=640),
             z_order=15,
         ),
+        SurfaceSchema(
+            id="packed-cameras-fullframe",
+            geometry=SurfaceGeometry(kind="rect", x=0, y=0, w=1920, h=1080),
+            z_order=8,
+            update_cadence="rate",
+        ),
     ],
     assignments=[
         Assignment(source="token_pole", surface="pip-ul"),
@@ -642,6 +661,13 @@ _FALLBACK_LAYOUT = Layout(
             opacity=0.92,
         ),
         Assignment(source="sierpinski", surface="sierpinski-center"),
+        Assignment(
+            source="packed_cameras",
+            surface="packed-cameras-fullframe",
+            opacity=0.0,
+            non_destructive=False,
+            render_stage="pre_fx",
+        ),
     ],
 )
 
@@ -1321,6 +1347,49 @@ class StudioCompositor:
                 log.debug("fd count gauge update failed", exc_info=True)
         return self._running
 
+    @staticmethod
+    def _record_counter(counter_name: str, labels: dict[str, str]) -> None:
+        try:
+            from . import metrics
+
+            counter = getattr(metrics, counter_name, None)
+            if counter is not None:
+                counter.labels(**labels).inc()
+        except Exception:
+            log.debug("compositor observability counter %s failed", counter_name, exc_info=True)
+
+    @staticmethod
+    def _record_source_backend_error(phase: str, source: SourceSchema, exc: BaseException) -> None:
+        StudioCompositor._record_counter(
+            "COMP_SOURCE_BACKEND_ERRORS_TOTAL",
+            {
+                "phase": phase,
+                "source_id": source.id,
+                "backend": source.backend,
+                "exception_class": type(exc).__name__,
+            },
+        )
+
+    @staticmethod
+    def _record_stop_error(component: str, exc: BaseException) -> None:
+        StudioCompositor._record_counter(
+            "COMP_STOP_ERRORS_TOTAL",
+            {
+                "component": component,
+                "exception_class": type(exc).__name__,
+            },
+        )
+
+    @staticmethod
+    def _record_rtmp_side_effect_error(phase: str, exc: BaseException) -> None:
+        StudioCompositor._record_counter(
+            "RTMP_SIDE_EFFECT_ERRORS_TOTAL",
+            {
+                "phase": phase,
+                "exception_class": type(exc).__name__,
+            },
+        )
+
     def _resolve_broadcast_mode(self) -> str:
         mode = (os.environ.get("HAPAX_BROADCAST_MODE") or "dual").strip().lower()
         try:
@@ -1460,20 +1529,22 @@ class StudioCompositor:
         for source in layout.sources:
             try:
                 backend = registry.construct_backend(source, budget_tracker=self._budget_tracker)
-            except Exception:
+            except Exception as exc:
                 log.exception(
                     "failed to construct backend for source %s (backend=%s)",
                     source.id,
                     source.backend,
                 )
+                StudioCompositor._record_source_backend_error("construct", source, exc)
                 continue
             try:
                 registry.register(source.id, backend)
-            except ValueError:
+            except ValueError as exc:
                 log.exception(
                     "duplicate source_id %s in layout — dropping later registration",
                     source.id,
                 )
+                StudioCompositor._record_source_backend_error("register", source, exc)
         self.layout_state = state
         self.source_registry = registry
 
@@ -1647,39 +1718,45 @@ class StudioCompositor:
         if thread is not None:
             try:
                 thread.stop()
-            except Exception:
+            except Exception as exc:
                 log.exception("scene_classifier thread stop failed")
+                StudioCompositor._record_stop_error("scene_classifier_thread", exc)
             self._scene_classifier_thread = None
         publisher = getattr(self, "_camera_classifier_publisher", None)
         if publisher is not None:
             try:
                 publisher.stop()
-            except Exception:
+            except Exception as exc:
                 log.exception("camera_classifier_publisher stop failed")
+                StudioCompositor._record_stop_error("camera_classifier_publisher", exc)
             self._camera_classifier_publisher = None
         if self._command_server is not None:
             try:
                 self._command_server.stop()
-            except Exception:
+            except Exception as exc:
                 log.exception("CommandServer.stop failed")
+                StudioCompositor._record_stop_error("command_server", exc)
             self._command_server = None
         if getattr(self, "_recent_pub", None) is not None:
             try:
                 self._recent_pub.stop()
-            except Exception:
+            except Exception as exc:
                 log.exception("recent_pub.stop failed")
+                StudioCompositor._record_stop_error("recent_pub", exc)
             self._recent_pub = None
         if self._layout_file_watcher is not None:
             try:
                 self._layout_file_watcher.stop()
-            except Exception:
+            except Exception as exc:
                 log.exception("LayoutFileWatcher.stop failed")
+                StudioCompositor._record_stop_error("layout_file_watcher", exc)
             self._layout_file_watcher = None
         if self._layout_autosaver is not None:
             try:
                 self._layout_autosaver.stop()
-            except Exception:
+            except Exception as exc:
                 log.exception("LayoutAutoSaver.stop failed")
+                StudioCompositor._record_stop_error("layout_autosaver", exc)
             self._layout_autosaver = None
 
         from .lifecycle import stop_compositor
@@ -1727,8 +1804,9 @@ class StudioCompositor:
                     priority="default",
                     tags=["rocket"],
                 )
-            except Exception:
+            except Exception as exc:
                 log.exception("rtmp attach side-effects raised (non-fatal)")
+                StudioCompositor._record_rtmp_side_effect_error("attach", exc)
             return True, f"livestream egress attached ({mode})"
         else:
             if not StudioCompositor._any_livestream_attached(self):
@@ -1751,8 +1829,9 @@ class StudioCompositor:
                     priority="default",
                     tags=["stop_sign"],
                 )
-            except Exception:
+            except Exception as exc:
                 log.exception("rtmp detach side-effects raised (non-fatal)")
+                StudioCompositor._record_rtmp_side_effect_error("detach", exc)
             return ok, detail
 
     def _livestream_matches_mode(self, mode: str) -> bool:

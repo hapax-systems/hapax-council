@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest import mock
 
@@ -24,6 +25,18 @@ from tests.studio_compositor.test_default_layout_loading import DEFAULT_JSON
 
 if TYPE_CHECKING:
     import pytest
+
+
+class _FakeCounter:
+    def __init__(self) -> None:
+        self.labels_seen: list[dict[str, str]] = []
+
+    def labels(self, **labels: str) -> _FakeCounter:
+        self.labels_seen.append(labels)
+        return self
+
+    def inc(self) -> None:
+        pass
 
 
 def _make_compositor(layout_path: Path | None = None) -> StudioCompositor:
@@ -75,6 +88,7 @@ class TestStartLayoutOnly:
             "durf",
             "m8-display",
             "steamdeck-display",
+            "packed_cameras",
             "egress_footer",
             "gem",
             "programme_banner",
@@ -119,6 +133,7 @@ class TestStartLayoutOnly:
             "durf",
             "m8-display",
             "steamdeck-display",
+            "packed_cameras",
             "egress_footer",
             "gem",
             # Programme banner ward (PR #2366).
@@ -182,10 +197,15 @@ class TestStartLayoutOnly:
         )
 
     def test_continues_past_broken_source_backend(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch,
     ) -> None:
         """A source with an unknown backend must log + skip, not crash."""
         import logging
+
+        from agents.studio_compositor import metrics
 
         raw = json.loads(DEFAULT_JSON.read_text())
         raw["sources"].append(
@@ -200,6 +220,8 @@ class TestStartLayoutOnly:
         layout_file.write_text(json.dumps(raw))
 
         compositor = _make_compositor(layout_path=layout_file)
+        counter = _FakeCounter()
+        monkeypatch.setattr(metrics, "COMP_SOURCE_BACKEND_ERRORS_TOTAL", counter)
         caplog.set_level(logging.ERROR, logger="agents.studio_compositor.compositor")
         compositor.start_layout_only()
 
@@ -209,6 +231,12 @@ class TestStartLayoutOnly:
             set(compositor.source_registry.ids())
         )
         assert any("failed to construct backend" in rec.message for rec in caplog.records)
+        assert {
+            "phase": "construct",
+            "source_id": "broken",
+            "backend": "cairo",
+            "exception_class": "KeyError",
+        } in counter.labels_seen
 
     def test_start_layout_only_wires_autosaver_and_file_watcher(self, tmp_path: Path) -> None:
         """Post-epic audit finding #1 regression pin.
@@ -255,6 +283,43 @@ class TestStartLayoutOnly:
 
         assert compositor._layout_autosaver is None
         assert compositor._layout_file_watcher is None
+
+    def test_stop_exceptions_increment_teardown_counter(self, monkeypatch) -> None:
+        from agents.studio_compositor import metrics
+
+        class StopRaises:
+            def stop(self) -> None:
+                raise RuntimeError("stop failed")
+
+        fake = SimpleNamespace(
+            _scene_classifier_thread=StopRaises(),
+            _camera_classifier_publisher=None,
+            _command_server=StopRaises(),
+            _recent_pub=None,
+            _layout_file_watcher=StopRaises(),
+            _layout_autosaver=None,
+        )
+        counter = _FakeCounter()
+        monkeypatch.setattr(metrics, "COMP_STOP_ERRORS_TOTAL", counter)
+        monkeypatch.setattr(
+            "agents.studio_compositor.lifecycle.stop_compositor",
+            lambda _compositor: None,
+        )
+
+        StudioCompositor.stop(fake)  # type: ignore[arg-type]
+
+        assert {
+            "component": "scene_classifier_thread",
+            "exception_class": "RuntimeError",
+        } in counter.labels_seen
+        assert {
+            "component": "command_server",
+            "exception_class": "RuntimeError",
+        } in counter.labels_seen
+        assert {
+            "component": "layout_file_watcher",
+            "exception_class": "RuntimeError",
+        } in counter.labels_seen
 
 
 class TestStartDelegatesThroughStartLayoutOnly:

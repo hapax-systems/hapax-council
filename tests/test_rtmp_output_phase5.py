@@ -16,6 +16,18 @@ from unittest import mock
 import pytest
 
 
+class _FakeCounter:
+    def __init__(self) -> None:
+        self.labels_seen: list[dict[str, str]] = []
+
+    def labels(self, **labels: str) -> _FakeCounter:
+        self.labels_seen.append(labels)
+        return self
+
+    def inc(self) -> None:
+        pass
+
+
 @pytest.fixture(scope="module")
 def gst():
     import gi
@@ -276,6 +288,46 @@ class TestToggleLivestreamApi:
         ok, msg = StudioCompositor.toggle_livestream(fake, activate=False, reason="already off")
         assert ok is True
         assert "already off" in msg
+
+    def test_toggle_attach_side_effect_exception_increments_metric(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.studio_compositor import metrics
+        from agents.studio_compositor.compositor import StudioCompositor
+        from shared import notify
+
+        fake = mock.Mock()
+        fake._rtmp_bin = object()
+        fake._mobile_rtmp_bin = None
+        fake.pipeline = object()
+        counter = _FakeCounter()
+
+        monkeypatch.setattr(metrics, "RTMP_SIDE_EFFECT_ERRORS_TOTAL", counter)
+        monkeypatch.setattr(StudioCompositor, "_resolve_broadcast_mode", lambda _self: "desktop")
+        monkeypatch.setattr(StudioCompositor, "_set_broadcast_mode", lambda _self, _mode: None)
+        monkeypatch.setattr(StudioCompositor, "_sync_mobile_support_threads", lambda _self: None)
+        monkeypatch.setattr(
+            StudioCompositor, "_livestream_matches_mode", lambda _self, _mode: False
+        )
+        monkeypatch.setattr(
+            StudioCompositor,
+            "_apply_livestream_mode",
+            lambda _self, *, activate, mode: (True, "attached"),
+        )
+
+        def _raise_notification(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("notify down")
+
+        monkeypatch.setattr(notify, "send_notification", _raise_notification)
+
+        ok, msg = StudioCompositor.toggle_livestream(fake, activate=True, reason="test")
+
+        assert ok is True
+        assert "livestream egress attached" in msg
+        assert {
+            "phase": "attach",
+            "exception_class": "RuntimeError",
+        } in counter.labels_seen
 
 
 class TestLivestreamControlPoll:

@@ -115,6 +115,7 @@ RTMP_BYTES_TOTAL: Any = None
 RTMP_CONNECTED: Any = None
 RTMP_ENCODER_ERRORS_TOTAL: Any = None
 RTMP_BIN_REBUILDS_TOTAL: Any = None
+RTMP_SIDE_EFFECT_ERRORS_TOTAL: Any = None
 RTMP_BITRATE_BPS: Any = None
 HAPAX_MOBILE_SUBSTREAM_FRAMES_TOTAL: Any = None
 HAPAX_MOBILE_SUBSTREAM_BITRATE_KBPS: Any = None
@@ -207,6 +208,8 @@ COMP_PROCESS_FD_COUNT: Any = None
 COMP_CAMERA_REBUILD_TOTAL: Any = None
 COMP_PIPELINE_TEARDOWN_DURATION_MS: Any = None
 COMP_SOURCE_RENDER_DURATION_MS: Any = None
+COMP_SOURCE_BACKEND_ERRORS_TOTAL: Any = None
+COMP_STOP_ERRORS_TOTAL: Any = None
 COMP_FX_PASSTHROUGH_SLOTS: Any = None
 # Task #157 — per-source count of frames whose assignment alpha was
 # clamped below the requested value because ``Assignment.non_destructive``
@@ -272,6 +275,7 @@ def _init_metrics() -> None:
     global RTMP_CONNECTED
     global RTMP_ENCODER_ERRORS_TOTAL
     global RTMP_BIN_REBUILDS_TOTAL
+    global RTMP_SIDE_EFFECT_ERRORS_TOTAL
     global RTMP_BITRATE_BPS
     global HAPAX_MOBILE_SUBSTREAM_FRAMES_TOTAL
     global HAPAX_MOBILE_SUBSTREAM_BITRATE_KBPS
@@ -507,6 +511,8 @@ def _init_metrics() -> None:
     global COMP_CAMERA_REBUILD_TOTAL
     global COMP_PIPELINE_TEARDOWN_DURATION_MS
     global COMP_SOURCE_RENDER_DURATION_MS
+    global COMP_SOURCE_BACKEND_ERRORS_TOTAL
+    global COMP_STOP_ERRORS_TOTAL
     global COMP_FX_PASSTHROUGH_SLOTS
     COMP_GLFEEDBACK_RECOMPILE_TOTAL = Counter(
         "compositor_glfeedback_recompile_total",
@@ -806,6 +812,19 @@ def _init_metrics() -> None:
         buckets=(0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2000.0),
         registry=REGISTRY,
     )
+    COMP_SOURCE_BACKEND_ERRORS_TOTAL = Counter(
+        "studio_compositor_source_backend_errors_total",
+        "Layout-declared source backend construction/registration failures; "
+        "rising rate means a source can be absent from the rendered layout.",
+        ["phase", "source_id", "backend", "exception_class"],
+        registry=REGISTRY,
+    )
+    COMP_STOP_ERRORS_TOTAL = Counter(
+        "studio_compositor_stop_errors_total",
+        "Compositor teardown component stop exceptions; stop continues after incrementing.",
+        ["component", "exception_class"],
+        registry=REGISTRY,
+    )
 
     # Drop #37 FX-1: passthrough-slot count. The `SlotPipeline` builds
     # `num_slots=24` fixed GL slots and assigns actual shaders to the
@@ -861,6 +880,12 @@ def _init_metrics() -> None:
         "studio_rtmp_bin_rebuilds_total",
         "RTMP bin teardown + rebuild events",
         ["endpoint"],
+        registry=REGISTRY,
+    )
+    RTMP_SIDE_EFFECT_ERRORS_TOTAL = Counter(
+        "studio_rtmp_side_effect_errors_total",
+        "Non-fatal RTMP control side-effect failures after attach/detach decisions.",
+        ["phase", "exception_class"],
         registry=REGISTRY,
     )
     RTMP_BITRATE_BPS = Gauge(

@@ -51,6 +51,7 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "m8-display",
         # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
         "steamdeck-display",
+        "packed_cameras",
         "egress_footer",
         # HOMAGE follow-on #191 (2026-04-21) — GEM (Graffiti Emphasis
         # Mural) is the 15th HOMAGE ward; lower-band geometry, retires
@@ -101,6 +102,7 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
         "steamdeck-display-pip",
         "steamdeck-display-fullscreen",
+        "packed-cameras-fullframe",
         "egress-footer-bottom",
         # HOMAGE follow-on #191 — GEM mural surface (lower-band).
         "gem-mural-bottom",
@@ -141,6 +143,7 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
         ("steamdeck-display", "steamdeck-display-pip"),
         ("steamdeck-display", "steamdeck-display-fullscreen"),
+        ("packed_cameras", "packed-cameras-fullframe"),
         ("egress_footer", "egress-footer-bottom"),
         # HOMAGE follow-on #191 — GEM mural assignment.
         ("gem", "gem-mural-bottom"),
@@ -183,6 +186,7 @@ def test_default_json_source_backends_match_registry_dispatch() -> None:
         "m8-display": "shm_rgba",
         # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
         "steamdeck-display": "shm_rgba",
+        "packed_cameras": "cairo",
         "egress_footer": "cairo",
         # cc-task ``programme-banner-ward`` (PR #2366, 2026-05-03) +
         # ytb-LORE-EXT family (2026-05-04).
@@ -307,6 +311,7 @@ def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
         "m8-display",
         # cc-task ``re-splay-homage-ward-steam-deck`` (2026-05-04).
         "steamdeck-display",
+        "packed_cameras",
         "egress_footer",
         # HOMAGE follow-on #191 — GEM mural ward (15th HOMAGE).
         "gem",
