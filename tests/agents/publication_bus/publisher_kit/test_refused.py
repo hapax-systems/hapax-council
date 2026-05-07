@@ -62,6 +62,20 @@ class TestRegisteredRefusedClasses:
         for cls in REFUSED_PUBLISHER_CLASSES:
             assert issubclass(cls, RefusedPublisher)
 
+    def test_all_refused_classes_exported_from_publisher_kit(self) -> None:
+        """The package-level API should expose every registered refused publisher.
+
+        Review #2396's junior packet failed because the actual PR diff was
+        invisible to that lane; senior verification showed the social-media
+        refused publishers had landed in ``refused.py`` but the package-level
+        import surface had not been kept in sync.
+        """
+        import agents.publication_bus.publisher_kit as publisher_kit
+
+        for cls in REFUSED_PUBLISHER_CLASSES:
+            assert getattr(publisher_kit, cls.__name__) is cls
+            assert cls.__name__ in publisher_kit.__all__
+
     def test_all_refused_surfaces_in_registry(self) -> None:
         """Every registered RefusedPublisher's surface_name appears in
         SURFACE_REGISTRY with automation_status REFUSED."""
