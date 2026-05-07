@@ -49,8 +49,10 @@ SceneMode = Literal[
 
 PresetFamilyHint = Literal[
     "audio-reactive",
+    "audio-reactive-extended",
     "calm-textural",
     "glitch-dense",
+    "neutral-ambient",
     "warm-minimal",
 ]
 
@@ -322,7 +324,7 @@ class StructuralDirector:
         parts.append(
             "{\n"
             '  "scene_mode": "<desk-work|hardware-play|conversation|idle-ambient|mixed|research-primary>",\n'
-            '  "preset_family_hint": "<audio-reactive|calm-textural|glitch-dense|warm-minimal>",\n'
+            '  "preset_family_hint": "<audio-reactive|audio-reactive-extended|calm-textural|glitch-dense|neutral-ambient|warm-minimal>",\n'
             '  "long_horizon_direction": "<1-2 sentences>",\n'
             '  "homage_rotation_mode": "<sequential|random|weighted_by_salience|paused>"\n'
             "}"

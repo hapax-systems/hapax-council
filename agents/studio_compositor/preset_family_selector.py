@@ -324,6 +324,21 @@ def pick_family_with_role_bias(
 # given many families have only 3–6 presets).
 _LAST_PICK: dict[str, str] = {}
 
+# Module-level deeper recency memory per family. Depth-1 (just `_LAST_PICK`)
+# allows ABABAB-style flip-flopping in larger families (the post-2026-05-03
+# audit pools brought every family to 11–16 presets, so the original
+# "small family → don't over-constrain" rationale is now too tight).
+# `_RECENT_PICKS` tracks the last `_RECENT_DEPTH` picks per family and
+# `pick_from_family` prefers candidates absent from that set, falling back
+# to the depth-1 path when the deeper filter would empty the pool.
+# `reset_memory()` clears both stores so the existing
+# ``test_reset_clears_per_family_memory`` invariant (``_LAST_PICK == {}``)
+# is preserved.
+from collections import deque
+
+_RECENT_DEPTH: int = 3
+_RECENT_PICKS: dict[str, deque[str]] = {}
+
 
 def family_names() -> list[str]:
     """Return the list of registered family names."""
@@ -402,15 +417,43 @@ def pick_from_family(
         )
         return None
     last_seen = last if last is not None else _LAST_PICK.get(canonical)
+    # Depth-N filter: prefer candidates outside the recent-N window. If
+    # `last` was passed explicitly, fall back to depth-1 (callers passing
+    # `last` expect ``avoid this one preset`` semantics, not deeper memory).
+    if last is None:
+        recent = _RECENT_PICKS.get(canonical)
+        if recent:
+            recent_set = set(recent)
+            deep_pool = [p for p in candidates if p not in recent_set]
+            if deep_pool:
+                pick = random.choice(deep_pool)
+                _LAST_PICK[canonical] = pick
+                _record_recent(canonical, pick)
+                return pick
     non_repeat = [p for p in candidates if p != last_seen]
     pick = random.choice(non_repeat) if non_repeat else random.choice(candidates)
     _LAST_PICK[canonical] = pick
+    _record_recent(canonical, pick)
     return pick
 
 
+def _record_recent(family: str, pick: str) -> None:
+    """Append ``pick`` to the family's depth-N recent-picks deque."""
+    deq = _RECENT_PICKS.get(family)
+    if deq is None:
+        deq = deque(maxlen=_RECENT_DEPTH)
+        _RECENT_PICKS[family] = deq
+    deq.append(pick)
+
+
 def reset_memory() -> None:
-    """Clear the per-family last-pick memory. Tests + restart use this."""
+    """Clear per-family last-pick memory. Tests + restart use this.
+
+    Clears both the depth-1 ``_LAST_PICK`` map and the depth-N
+    ``_RECENT_PICKS`` deque map.
+    """
     _LAST_PICK.clear()
+    _RECENT_PICKS.clear()
 
 
 def _preset_tags(preset_name: str) -> tuple[str, ...]:
@@ -501,7 +544,22 @@ def pick_with_scene_bias(
         return None
 
     last_seen = last if last is not None else _LAST_PICK.get(canonical)
-    non_repeat = [p for p in candidates if p != last_seen]
+    # Depth-N filter (mirrors pick_from_family). When `last` is explicit,
+    # use depth-1 semantics so callers controlling memory get the literal
+    # avoid-this-preset behavior they expect.
+    if last is None:
+        recent = _RECENT_PICKS.get(canonical)
+        if recent:
+            recent_set = set(recent)
+            deep_pool = [p for p in candidates if p not in recent_set]
+            if deep_pool:
+                non_repeat = deep_pool
+            else:
+                non_repeat = [p for p in candidates if p != last_seen]
+        else:
+            non_repeat = [p for p in candidates if p != last_seen]
+    else:
+        non_repeat = [p for p in candidates if p != last_seen]
     pool = non_repeat if non_repeat else candidates
 
     favored_set = set(favored)
@@ -515,6 +573,7 @@ def pick_with_scene_bias(
     chooser = rng if rng is not None else random
     pick = chooser.choices(pool, weights=weights, k=1)[0]
     _LAST_PICK[canonical] = pick
+    _record_recent(canonical, pick)
     return pick
 
 

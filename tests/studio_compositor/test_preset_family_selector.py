@@ -81,9 +81,86 @@ class TestMemoryReset:
     def test_reset_clears_per_family_memory(self):
         pfs.pick_from_family("glitch-dense")
         pfs.reset_memory()
-        # After reset, the next pick has no last-pick anchor.
-        # Just verify the memory dict is empty by checking the module attr.
+        # After reset, both depth-1 and depth-N memory dicts must be empty.
         assert pfs._LAST_PICK == {}
+        assert pfs._RECENT_PICKS == {}
+
+
+class TestDeepRecentMemory:
+    """Depth-N non-repeat memory (2026-05-07). Original `_LAST_PICK` was
+    depth-1 to avoid round-robin in tiny families (3-6 presets), but the
+    post-2026-05-03 audit pools brought every family to 11-16 presets.
+    Depth-1 in a 16-member family permits ABABAB-style flip-flop. Depth-N
+    (default 3) widens the no-repeat window so consecutive picks span
+    `_RECENT_DEPTH + 1` distinct presets in a row when the pool allows.
+    """
+
+    def test_three_consecutive_picks_are_distinct_when_pool_allows(self):
+        """In a family with > _RECENT_DEPTH presets, the first
+        _RECENT_DEPTH+1 picks must all differ.
+        """
+        family = "audio-reactive"  # 16 presets, well above _RECENT_DEPTH=3
+        picks = [pfs.pick_from_family(family) for _ in range(pfs._RECENT_DEPTH + 1)]
+        assert all(p is not None for p in picks)
+        assert len(set(picks)) == pfs._RECENT_DEPTH + 1, (
+            f"depth-{pfs._RECENT_DEPTH} memory failed — picks repeated within window: {picks}"
+        )
+
+    def test_explicit_last_param_falls_back_to_depth_1(self):
+        """When the caller passes `last`, behave as depth-1 (legacy
+        contract). Callers controlling memory expect strict
+        avoid-this-one semantics, not the deeper module memory.
+        """
+        family_presets = pfs.presets_for_family("audio-reactive")
+        # Prime the depth-N memory with several picks
+        for _ in range(pfs._RECENT_DEPTH):
+            pfs.pick_from_family(family_presets[0] and "audio-reactive")
+        # Now pass explicit `last`; pick may be a recent one but not the
+        # explicit `last`.
+        pinned_last = family_presets[0]
+        pick = pfs.pick_from_family("audio-reactive", last=pinned_last)
+        assert pick != pinned_last
+
+    def test_pool_smaller_than_depth_falls_back_to_depth_1(self):
+        """If `available` filters the candidate pool below
+        `_RECENT_DEPTH + 1`, depth-N would over-constrain. The selector
+        must fall back to depth-1 in that case so picks still happen.
+        """
+        family_presets = pfs.presets_for_family("calm-textural")
+        # Allow only 2 family members — too small for depth-3 to filter
+        # without emptying the pool.
+        small_avail = list(family_presets[:2])
+        # Prime with both allowed presets
+        a = pfs.pick_from_family("calm-textural", available=small_avail)
+        b = pfs.pick_from_family("calm-textural", available=small_avail)
+        assert a in small_avail and b in small_avail
+        # Third pick: depth-N would empty the pool — must fall through
+        # to depth-1 behavior (avoid most recent only).
+        c = pfs.pick_from_family("calm-textural", available=small_avail)
+        assert c in small_avail
+
+
+class TestAudioReactiveExtendedRegistration:
+    """Regression pin for the 2026-05-07 fix: the
+    `audio-reactive-extended` family was registered in FAMILY_PRESETS
+    (11 presets) but never had an `fx.family.audio-reactive-extended`
+    capability in shared/compositional_affordances.py, so its 11
+    presets were structurally unreachable from the affordance pipeline.
+    """
+
+    def test_extended_family_has_presets(self):
+        presets = pfs.presets_for_family("audio-reactive-extended")
+        assert len(presets) >= 11, f"audio-reactive-extended pool shrunk: {presets}"
+
+    def test_extended_family_registered_as_capability(self):
+        from shared.compositional_affordances import _PRESET_FAMILY
+
+        names = {rec.name for rec in _PRESET_FAMILY}
+        assert "fx.family.audio-reactive-extended" in names, (
+            "audio-reactive-extended is in FAMILY_PRESETS but not registered "
+            "as a capability — its 11 presets are unreachable from the "
+            "affordance pipeline (regression of 2026-05-07 fix)"
+        )
 
 
 # ── preset-variety Phase 2 — director-prompt ↔ catalog parity ─────────
