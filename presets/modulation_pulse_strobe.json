@@ -14,10 +14,12 @@
       }
     },
     "breathing_pulse": {
-      "type": "breathing",
+      "type": "drift",
       "params": {
-        "rate": 0.85,
-        "amplitude": 0.32
+        "speed": 0.85,
+        "amplitude": 9,
+        "frequency": 0.3,
+        "coherence": 0.6
       }
     },
     "scanlines_pulse": {
