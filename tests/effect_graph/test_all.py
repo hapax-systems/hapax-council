@@ -481,7 +481,10 @@ def test_ghost():
 
 def test_trails():
     g = EffectGraph(**json.loads((PRESETS_DIR / "trails.json").read_text()))
-    assert g.name == "Trails" and len(g.modulations) == 1
+    # PR #2809 ("bulk-add 141 audio modulations to 77 low-variance presets")
+    # added two further audio bindings on top of the original single binding;
+    # the assertion follows the preset rather than re-pinning a stale count.
+    assert g.name == "Trails" and len(g.modulations) == 3
 
 
 def test_clean():
