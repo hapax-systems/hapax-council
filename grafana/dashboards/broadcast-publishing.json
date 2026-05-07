@@ -3,6 +3,7 @@
   "editable": true,
   "graphTooltip": 0,
   "id": null,
+  "description": "Broadcast publishing & fanout surfaces — active broadcast elapsed, broadcast mode + orchestrator state, master LUFS, cross-platform fanout (Mastodon/Bluesky/Discord/omg-weblog/Are.na), omg.lol family activity, publication-bus mints, rotation cadence + refusals, allowlist decisions. Source: agents/publication_bus/ + agents/broadcast/.",
   "uid": "hapax-broadcast-publishing",
   "title": "Hapax / Broadcast — publishing & fanout surfaces",
   "tags": ["hapax", "broadcast", "publication-bus", "fanout", "omg-lol", "mastodon", "bluesky"],

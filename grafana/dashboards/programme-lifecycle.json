@@ -3,6 +3,7 @@
   "editable": true,
   "graphTooltip": 0,
   "id": null,
+  "description": "Programme manager lifecycle — active programme, dwell overshoot ratio, starts per role+show, soft-prior overrides (INVARIANT >0/stream), planned vs actual duration. Source: shared/programme_observability.py.",
   "uid": "hapax-programme-lifecycle",
   "title": "Hapax / Programme — lifecycle & dwell",
   "tags": ["hapax", "programme", "broadcast", "dwell"],

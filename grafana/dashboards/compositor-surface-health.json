@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Compositor surface health — covers the metric clusters previously absent from any dashboard: HOMAGE package state + render cadence + emphasis + signature artefacts, face-obscure pipeline, follow-mode cuts, ward modulator tick health, layout switch dispatches, broadcast/degraded mode. Source: agents/studio_compositor/metrics.py on 127.0.0.1:9482. Antigrav delta gap #23 fill — populates the operator's view of the surface integrity layer.",
+  "description": "Compositor surface health — covers the metric clusters previously absent from any dashboard: HOMAGE package state + render cadence + emphasis + signature artefacts, face-obscure pipeline, follow-mode cuts, ward modulator tick health, layout switch dispatches, broadcast/degraded mode. Source: agents/studio_compositor/metrics.py on 127.0.0.1:9482. Antigrav delta gap #23 fill — populates the operator's view of the surface integrity layer. Complementary to compositor-health.json (different metric scope: HOMAGE/face-obscure/follow-mode/ward/layout/broadcast vs process/pipeline/v4l2 health).",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
