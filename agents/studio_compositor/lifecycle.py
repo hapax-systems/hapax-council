@@ -109,6 +109,8 @@ def start_compositor(compositor: Any) -> None:
     # snapshot, drawn on the post-FX cairooverlay. The _hero_small tile
     # rect is added by _balanced_layout when a hero camera exists.
     compositor._hero_small = None
+    compositor._hero_effect_rotator = None
+    small_rect = None
     try:
         from .hero_small_overlay import HeroSmallOverlay
         from .layout import compute_tile_layout
@@ -126,6 +128,21 @@ def start_compositor(compositor: Any) -> None:
             )
     except Exception:
         log.exception("HeroSmallOverlay init failed (non-fatal)")
+
+    # Hero effect rotator (gap #15 stage-1 wiring): cycles spatial effects on
+    # the hero camera tile. Instantiate, connect tile rect, register tick.
+    # The rotator's _slot binding to a glfeedback pipeline element is deferred
+    # — tick() is a no-op until set_slot() is called. Wiring it now means the
+    # tile rect tracks layout changes and the tick is live the moment a slot
+    # is bound, with no further lifecycle changes required.
+    try:
+        from .hero_effect_rotator import HeroEffectRotator
+
+        compositor._hero_effect_rotator = HeroEffectRotator()
+        if small_rect is not None:
+            compositor._hero_effect_rotator.update_hero_tile(small_rect)
+    except Exception:
+        log.exception("HeroEffectRotator init failed (non-fatal)")
 
     # Read initial consent state
     try:
@@ -309,6 +326,23 @@ def start_compositor(compositor: Any) -> None:
         return compositor._running
 
     GLib.timeout_add(1000, _compositor_budget_publish_tick)
+
+    # Hero effect rotator tick (gap #15 stage-1): drives the rotator's internal
+    # rotation timer. Rotation interval is 45–90s (random), so a 5s tick is
+    # plenty cheap and avoids burning the main loop on a no-op when no slot
+    # is bound. tick() returns None and early-exits when _slot is None or no
+    # effects are loaded; registering the timer now means the moment a future
+    # PR binds a glfeedback element via set_slot(), rotation is live.
+    def _hero_effect_rotator_tick() -> bool:
+        rotator = getattr(compositor, "_hero_effect_rotator", None)
+        if rotator is not None:
+            try:
+                rotator.tick()
+            except Exception:
+                log.debug("hero_effect_rotator.tick raised", exc_info=True)
+        return compositor._running
+
+    GLib.timeout_add(5000, _hero_effect_rotator_tick)
 
     # Phase 3: start the udev monitor so USB add/remove events drive the
     # per-camera state machine. Runs in-process via pyudev.glib bridged to
