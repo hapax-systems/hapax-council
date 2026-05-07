@@ -27,8 +27,8 @@ _HERO_EFFECTS_DIR = Path(__file__).resolve().parent.parent / "shaders" / "hero_e
 _ROTATE_INTERVAL_MIN = 45.0
 _ROTATE_INTERVAL_MAX = 90.0
 
-# Passthrough shader — no effect, used during transitions.
-_PASSTHROUGH = """#version 100
+# Passthrough shader — no effect, used before the first rotation.
+HERO_EFFECT_PASSTHROUGH = """#version 100
 #ifdef GL_ES
 precision mediump float;
 #endif
@@ -82,6 +82,8 @@ class HeroEffectRotator:
 
     def update_hero_tile(self, tile: TileRect) -> None:
         """Update the hero tile position (called on hero camera change)."""
+        if self._hero_tile == tile:
+            return
         self._hero_tile = tile
         if self._slot is not None:
             self._set_mask_uniforms()
@@ -158,3 +160,9 @@ class HeroEffectRotator:
     @property
     def effect_count(self) -> int:
         return len(self._effects)
+
+
+__all__ = [
+    "HERO_EFFECT_PASSTHROUGH",
+    "HeroEffectRotator",
+]
