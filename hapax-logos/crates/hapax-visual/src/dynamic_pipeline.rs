@@ -984,7 +984,22 @@ impl DynamicPipeline {
                             "degradation" => uniform_data.degradation = v,
                             "pitch_displacement" => uniform_data.pitch_displacement = v,
                             "diffusion" => uniform_data.diffusion = v,
-                            _ => {}
+                            _ => {
+                                if let Some(rest) = signal.strip_prefix("homage_custom_") {
+                                    let mut parts = rest.splitn(2, '_');
+                                    if let (Some(slot_s), Some(comp_s)) =
+                                        (parts.next(), parts.next())
+                                    {
+                                        if let (Ok(slot), Ok(comp)) =
+                                            (slot_s.parse::<usize>(), comp_s.parse::<usize>())
+                                        {
+                                            if slot < 8 && comp < 4 {
+                                                uniform_data.custom[slot][comp] = v;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     } else if let Some(content) = key.strip_prefix("content.") {
                         // F8: content_layer.wgsl has no @group(2) Params
@@ -2316,5 +2331,78 @@ fn main(@location(0) v_texcoord: vec2<f32>) -> @location(0) vec4<f32> {
         let dir = tempfile::tempdir().expect("tempdir");
         let failures = validate_plan_shaders(dir.path(), &[]);
         assert!(failures.is_empty());
+    }
+
+    #[test]
+    fn homage_custom_signal_routes_to_uniform_custom_slot() {
+        use crate::uniform_buffer::UniformData;
+        use std::collections::HashMap;
+
+        let overrides: HashMap<String, f64> = [
+            ("signal.homage_custom_4_0".into(), 1.0),
+            ("signal.homage_custom_4_1".into(), 180.0),
+            ("signal.homage_custom_4_2".into(), 0.75),
+            ("signal.homage_custom_4_3".into(), 42.5),
+        ]
+        .into_iter()
+        .collect();
+
+        let mut uniform_data = UniformData::default();
+        assert_eq!(uniform_data.custom[4], [0.0; 4]);
+
+        for (key, &val) in &overrides {
+            if let Some(signal) = key.strip_prefix("signal.") {
+                let v = val as f32;
+                if let Some(rest) = signal.strip_prefix("homage_custom_") {
+                    let mut parts = rest.splitn(2, '_');
+                    if let (Some(slot_s), Some(comp_s)) = (parts.next(), parts.next()) {
+                        if let (Ok(slot), Ok(comp)) =
+                            (slot_s.parse::<usize>(), comp_s.parse::<usize>())
+                        {
+                            if slot < 8 && comp < 4 {
+                                uniform_data.custom[slot][comp] = v;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert_eq!(uniform_data.custom[4][0], 1.0);
+        assert_eq!(uniform_data.custom[4][1], 180.0);
+        assert_eq!(uniform_data.custom[4][2], 0.75);
+        assert_eq!(uniform_data.custom[4][3], 42.5);
+        // Other slots untouched.
+        assert_eq!(uniform_data.custom[0], [0.0; 4]);
+        assert_eq!(uniform_data.custom[7], [0.0; 4]);
+    }
+
+    #[test]
+    fn homage_custom_signal_rejects_out_of_bounds() {
+        use crate::uniform_buffer::UniformData;
+
+        let mut uniform_data = UniformData::default();
+
+        for key in &["signal.homage_custom_8_0", "signal.homage_custom_4_4", "signal.homage_custom_99_0"] {
+            if let Some(signal) = key.strip_prefix("signal.") {
+                let v: f32 = 999.0;
+                if let Some(rest) = signal.strip_prefix("homage_custom_") {
+                    let mut parts = rest.splitn(2, '_');
+                    if let (Some(slot_s), Some(comp_s)) = (parts.next(), parts.next()) {
+                        if let (Ok(slot), Ok(comp)) =
+                            (slot_s.parse::<usize>(), comp_s.parse::<usize>())
+                        {
+                            if slot < 8 && comp < 4 {
+                                uniform_data.custom[slot][comp] = v;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for s in 0..8 {
+            assert_eq!(uniform_data.custom[s], [0.0; 4], "slot {s} should be untouched");
+        }
     }
 }
