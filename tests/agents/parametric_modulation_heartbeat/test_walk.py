@@ -314,6 +314,66 @@ class TestUniformOverlay:
         assert payload["color.brightness"] == 1.2
 
 
+class TestCairoWardParams:
+    """Heartbeat writes a baseline Cairo ward-properties envelope."""
+
+    def test_tick_writes_audio_reactive_ward_params(self, tmp_path: Path, monkeypatch) -> None:
+        from agents.studio_compositor import ward_properties as wp
+
+        ward_path = tmp_path / "ward-properties.json"
+        monkeypatch.setattr(wp, "WARD_PROPERTIES_PATH", ward_path)
+        wp.clear_ward_properties_cache()
+
+        walker = hb.ParameterWalker(rng=random.Random(4))
+        hb.tick_once(
+            walker,
+            uniforms_path=tmp_path / "uniforms.json",
+            recruitment_path=tmp_path / "recent-recruitment.json",
+            now=1_000.0,
+            last_emission_ts={},
+            emission_cooldown_s=60.0,
+        )
+
+        wp.clear_ward_properties_cache()
+        payload = _read_json(ward_path)
+        wards = payload["wards"]
+
+        for ward_id in ("pressure_gauge", "token_pole", "activity_variety_log"):
+            assert ward_id in wards
+            assert wards[ward_id]["border_pulse_hz"] > 0.0
+            assert wards[ward_id]["scale_bump_pct"] > 0.0
+
+    def test_tick_preserves_stronger_existing_cairo_params(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from agents.studio_compositor import ward_properties as wp
+
+        ward_path = tmp_path / "ward-properties.json"
+        monkeypatch.setattr(wp, "WARD_PROPERTIES_PATH", ward_path)
+        wp.clear_ward_properties_cache()
+        wp.set_ward_properties(
+            "pressure_gauge",
+            wp.WardProperties(border_pulse_hz=9.0, scale_bump_pct=0.07),
+            ttl_s=10.0,
+        )
+        wp.clear_ward_properties_cache()
+
+        walker = hb.ParameterWalker(rng=random.Random(5))
+        hb.tick_once(
+            walker,
+            uniforms_path=tmp_path / "uniforms.json",
+            recruitment_path=tmp_path / "recent-recruitment.json",
+            now=1_000.0,
+            last_emission_ts={},
+            emission_cooldown_s=60.0,
+        )
+
+        wp.clear_ward_properties_cache()
+        props = wp.resolve_ward_properties("pressure_gauge")
+        assert props.border_pulse_hz >= 9.0
+        assert props.scale_bump_pct >= 0.07
+
+
 class TestAtomicity:
     """Invariant 9 — no leftover .tmp siblings after a write."""
 
