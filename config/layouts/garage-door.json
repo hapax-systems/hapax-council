@@ -435,6 +435,24 @@
         "audio-reactive",
         "post-fx"
       ]
+    },
+    {
+      "id": "chronicle_ticker",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "ChronicleTickerCairoSource",
+        "natural_w": 420,
+        "natural_h": 140
+      },
+      "update_cadence": "rate",
+      "rate_hz": 1,
+      "tags": [
+        "cairo",
+        "lore",
+        "chronicle",
+        "post-fx"
+      ]
     }
   ],
   "surfaces": [
@@ -702,6 +720,17 @@
         "h": 128
       },
       "z_order": 3
+    },
+    {
+      "id": "chronicle-ticker-right-column",
+      "geometry": {
+        "kind": "rect",
+        "x": 1380,
+        "y": 560,
+        "w": 420,
+        "h": 140
+      },
+      "z_order": 52
     }
   ],
   "assignments": [
@@ -852,6 +881,13 @@
       "source": "m8_oscilloscope",
       "surface": "m8-oscilloscope-rightcol",
       "opacity": 1.0,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "chronicle_ticker",
+      "surface": "chronicle-ticker-right-column",
+      "opacity": 0.92,
+      "non_destructive": true,
       "render_stage": "post_fx"
     }
   ]
