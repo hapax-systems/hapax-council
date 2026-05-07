@@ -510,10 +510,25 @@ def _write_cairo_ward_params(
 ) -> None:
     """Write baseline Cairo ward chrome params on the same heartbeat tick.
 
-    The Cairo wards already have a separate FX reactor for short-lived
-    spikes. This heartbeat only raises the floor: it writes a smooth
-    pulse / bump baseline for the Cairo audio-reactive wards without
-    lowering any stronger values already present in ward-properties.json.
+    Five field bridges, all under a ``max(base, computed)`` floor so
+    existing stronger writers (FX reactor spikes, compositional_consumer
+    drift recipes, operator overrides) survive untouched:
+
+    - ``border_pulse_hz``     ← breath.rate / noise.amplitude / post.sediment_strength mix
+    - ``scale_bump_pct``      ← content.intensity / noise.amplitude mix
+    - ``glow_radius_px``      ← breath.amplitude envelope
+    - ``drift_hz``            ← drift.frequency envelope
+    - ``drift_amplitude_px``  ← drift.amplitude envelope
+
+    ``drift_type`` is intentionally NOT touched — a ward whose
+    drift_type defaults to ``"sine"`` (the post-#2842 default) gets
+    visible motion from the drift floors; one set to ``"none"`` stays
+    static even with non-zero hz/amplitude values. That keeps the
+    operator's per-ward drift-shape decision authoritative.
+
+    The Cairo wards also have a separate FX reactor for short-lived
+    spikes; the heartbeat only raises the *floor* without lowering any
+    stronger value already present in ward-properties.json.
     """
 
     try:
