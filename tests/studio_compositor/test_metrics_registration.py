@@ -96,6 +96,28 @@ class TestNondestructiveClampsCounter:
         assert after == before + 1.0
 
 
+class TestAntigravCleanupObservabilityCounters:
+    """M7/M9/M10 cleanup counters must be present on the compositor registry."""
+
+    def test_source_backend_errors_counter_registered(self) -> None:
+        assert metrics.COMP_SOURCE_BACKEND_ERRORS_TOTAL is not None
+        text = _registry_text()
+        assert "# HELP studio_compositor_source_backend_errors_total" in text
+        assert "# TYPE studio_compositor_source_backend_errors_total counter" in text
+
+    def test_rtmp_side_effect_errors_counter_registered(self) -> None:
+        assert metrics.RTMP_SIDE_EFFECT_ERRORS_TOTAL is not None
+        text = _registry_text()
+        assert "# HELP studio_rtmp_side_effect_errors_total" in text
+        assert "# TYPE studio_rtmp_side_effect_errors_total counter" in text
+
+    def test_stop_errors_counter_registered(self) -> None:
+        assert metrics.COMP_STOP_ERRORS_TOTAL is not None
+        text = _registry_text()
+        assert "# HELP studio_compositor_stop_errors_total" in text
+        assert "# TYPE studio_compositor_stop_errors_total counter" in text
+
+
 class TestDirectorRefusalGateCounter:
     """Phase 5 RefusalGate outcome counter must live on the :9482 registry."""
 
