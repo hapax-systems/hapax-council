@@ -4,7 +4,7 @@ HOMAGE Phase 6 Layer 5. Operator-tunable mapping from WardDomain → FX
 preset family + per-ward audio-reactive flag. Data-driven so the
 operator can tune without touching the reactor code.
 
-Two lookups live here:
+Three lookups live here:
 
 * :data:`DOMAIN_PRESET_FAMILY` — WardDomain → preset family name. Fed
   into :mod:`preset_family_selector` when a ward FSM transition event
@@ -12,10 +12,15 @@ Two lookups live here:
 * :data:`WARD_DOMAIN` — ward_id → WardDomain classification. Every
   ward known to the compositor is classified here. Unknown wards fall
   back to ``"perception"`` so callers always get a usable domain.
-* :data:`AUDIO_REACTIVE_WARDS` — wards whose rendering should respond
-  to FX ``audio_kick_onset`` / ``intensity_spike`` events with a
-  brightness/shimmer boost. Currently: ``pressure_gauge``,
-  ``token_pole``, ``activity_variety_log``.
+* :data:`AUDIO_REACTIVE_WARDS` — wards whose chrome accepts the
+  parametric heartbeat's baseline floor (``border_pulse_hz`` /
+  ``scale_bump_pct`` / ``glow_radius_px`` / ``drift_hz`` /
+  ``drift_amplitude_px``). Music-domain members couple to the
+  broadcast beat through the FX reactor on top of that floor.
+  Membership is anchored at module level — see the data definition
+  block below for the live set and per-ward rationale. The
+  ``audio_kick_onset`` fan-out path was retired in #2756 (pumping
+  carve-out); the heartbeat-floor path is the surviving channel.
 """
 
 from __future__ import annotations
@@ -115,17 +120,19 @@ AUDIO_REACTIVE_WARDS: frozenset[str] = frozenset(
         # these wards rendered ``drift_type=none`` / static defaults after
         # the audio fan-out was removed in #2756; joining them here lets
         # the parametric heartbeat raise the same baseline floor
-        # (border_pulse_hz / scale_bump_pct / glow_radius_px) that the
-        # music-domain wards already see, so presence chrome no longer
-        # sits flat-zero on broadcast).
+        # (border_pulse_hz / scale_bump_pct / glow_radius_px /
+        # drift_hz / drift_amplitude_px) that the music-domain wards
+        # already see, so presence chrome no longer sits flat-zero on
+        # broadcast).
         "whos_here",
         "thinking_indicator",
         "stance_indicator",
     }
 )
 """Wards whose chrome accepts heartbeat-driven baseline modulation
-(``border_pulse_hz`` / ``scale_bump_pct`` / ``glow_radius_px``) plus
-the FX reactor's spike-grade overlay on top.
+(``border_pulse_hz`` / ``scale_bump_pct`` / ``glow_radius_px`` /
+``drift_hz`` / ``drift_amplitude_px``) plus the FX reactor's
+spike-grade overlay on top.
 
 **Music-domain wards** (the original cohort) couple to the broadcast
 beat: ``pressure_gauge``, ``token_pole``, ``activity_variety_log``,
