@@ -891,10 +891,10 @@ running graph.
 ## Phase 3 — Lock + transaction layer
 
 > **2026-05-07 P3 dispatch note.** The shipped P3 slice is the edit-lock
-> and CLI coordination surface only. It intentionally does not apply live
-> graph mutations, write PipeWire/WirePlumber confs, invoke `pactl
-> load-module`, or restart services. Active apply and snapshot/rollback
-> remain Phase 4 surfaces.
+> and read-only CLI coordination surface only. It intentionally does not
+> apply live graph mutations, write PipeWire/WirePlumber confs, invoke
+> `pactl load-module`, or restart services. Active apply and
+> snapshot/rollback remain Phase 4 surfaces.
 
 **What ships:**
 
@@ -911,8 +911,10 @@ running graph.
    "graph editing is now daemon-mediated; use `hapax-pipewire-graph apply <descriptor> --dry-run` or
    `hapax-pipewire-graph lock --owner $CLAUDE_ROLE` to hold the lock for a session-scoped edit."
 3. `scripts/hapax-pipewire-graph` CLI — wraps the safe P3 surfaces. `validate` runs compiler/invariants
-   read-only, `lock`/`unlock` manage the lease, `lock-status` prints the lease, `apply <yaml> --dry-run`
-   writes only the P2 shadow report, and active `apply <yaml>` is refused until Phase 4.
+   read-only, `current` decomposes the currently deployed conf set read-only, `verify` checks either the
+   current graph or a supplied descriptor, `lock`/`unlock` manage the lease, `lock-status` prints the
+   lease, `apply <yaml> --dry-run` writes only the P2 shadow report, and active `apply <yaml>` is refused
+   until Phase 4.
 
 **Observable that proves it works:** a deliberate concurrent-edit test from two terminals shows one wins,
 one fails with an actionable error. No edit to a manifested file proceeds without the lock.

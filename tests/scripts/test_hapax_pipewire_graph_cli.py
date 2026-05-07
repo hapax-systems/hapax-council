@@ -62,6 +62,51 @@ def test_validate_descriptor_is_read_only_json(tmp_path: Path) -> None:
     assert payload["graph_stats"]["nodes"] == 2
 
 
+def test_current_decomposes_conf_dirs_read_only(tmp_path: Path) -> None:
+    pipewire_dir = tmp_path / "pipewire"
+    wireplumber_dir = tmp_path / "wireplumber"
+    pipewire_dir.mkdir()
+    wireplumber_dir.mkdir()
+
+    result = _run(
+        [
+            "current",
+            "--pipewire-conf-dir",
+            str(pipewire_dir),
+            "--wireplumber-conf-dir",
+            str(wireplumber_dir),
+        ],
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["command"] == "current"
+    assert payload["mode"] == "read_only"
+    assert payload["live_pipewire_mutation"] is False
+    assert payload["pactl_load_module"] is False
+    assert payload["service_restart"] is False
+    assert payload["input"]["source"] == "decompose"
+    assert payload["graph"]["schema_version"] == 4
+    assert payload["graph_stats"]["nodes"] == 0
+
+
+def test_verify_descriptor_is_read_only_and_fails_closed_on_blocking(tmp_path: Path) -> None:
+    descriptor = _graph_yaml(tmp_path)
+
+    result = _run(["verify", "--descriptor", str(descriptor)], tmp_path=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["command"] == "verify"
+    assert payload["mode"] == "read_only"
+    assert payload["result"] == "pass"
+    assert payload["live_pipewire_mutation"] is False
+    assert payload["pactl_load_module"] is False
+    assert payload["service_restart"] is False
+    assert payload["compile"]["blocking_violation_count"] == 0
+
+
 def test_active_apply_is_refused_in_p3(tmp_path: Path) -> None:
     descriptor = _graph_yaml(tmp_path)
 
