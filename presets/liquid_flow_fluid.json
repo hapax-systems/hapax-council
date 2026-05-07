@@ -83,6 +83,15 @@
       "scale": 0.1,
       "offset": 0.0,
       "smoothing": 0.4
+    },
+    {
+      "source": "audio_energy",
+      "param": "hue_rotate",
+      "scale": 25.0,
+      "offset": 0.0,
+      "attack": 0.1,
+      "decay": 0.8,
+      "node": "colorgrade"
     }
   ]
 }

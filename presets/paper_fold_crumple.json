@@ -58,6 +58,15 @@
       "scale": 30.0,
       "offset": 0.0,
       "smoothing": 0.5
+    },
+    {
+      "source": "audio_beat",
+      "param": "chromatic_aberration",
+      "scale": 0.5,
+      "offset": 0.0,
+      "attack": 0.05,
+      "decay": 0.6,
+      "node": "colorgrade"
     }
   ],
   "edges": [

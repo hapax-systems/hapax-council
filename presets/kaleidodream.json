@@ -1,7 +1,11 @@
 {
   "name": "Kaleidoscope Dream",
   "description": "Kaleidoscope dream",
-  "tags": ["rotation", "spiral", "geometric"],
+  "tags": [
+    "rotation",
+    "spiral",
+    "geometric"
+  ],
   "transition_ms": 500,
   "nodes": {
     "kaleidoscope": {
@@ -77,6 +81,24 @@
       "scale": 180,
       "offset": 0,
       "smoothing": 0.9
+    },
+    {
+      "source": "audio_rms",
+      "param": "slice_amplitude",
+      "scale": 0.4,
+      "offset": 0.0,
+      "attack": 0.08,
+      "decay": 0.65,
+      "node": "kaleidoscope"
+    },
+    {
+      "source": "audio_beat",
+      "param": "chromatic_aberration",
+      "scale": 0.5,
+      "offset": 0.0,
+      "attack": 0.05,
+      "decay": 0.6,
+      "node": "kaleidoscope"
     }
   ]
 }

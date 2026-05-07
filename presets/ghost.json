@@ -107,6 +107,15 @@
       "scale": 30.0,
       "offset": 0.0,
       "smoothing": 0.5
+    },
+    {
+      "source": "audio_energy",
+      "param": "displacement",
+      "scale": 0.35,
+      "offset": 0.0,
+      "attack": 0.1,
+      "decay": 0.7,
+      "node": "colorgrade"
     }
   ]
 }

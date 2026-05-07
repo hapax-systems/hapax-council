@@ -85,6 +85,24 @@
       "scale": 0.3,
       "offset": 0.3,
       "smoothing": 0.7
+    },
+    {
+      "source": "audio_rms",
+      "param": "slice_amplitude",
+      "scale": 0.4,
+      "offset": 0.0,
+      "attack": 0.08,
+      "decay": 0.65,
+      "node": "fisheye"
+    },
+    {
+      "source": "audio_energy",
+      "param": "saturation",
+      "scale": 0.4,
+      "offset": 0.0,
+      "attack": 0.08,
+      "decay": 0.75,
+      "node": "fisheye"
     }
   ]
 }
