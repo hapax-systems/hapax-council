@@ -18,7 +18,7 @@ Authoritative copies of Grafana dashboard JSON live in this directory. Grafana r
 | `programme-lifecycle.json` | `hapax-programme-lifecycle` | Programme manager lifecycle — active programme, dwell overshoot ratio, starts per role+show, soft-prior overrides (INVARIANT >0/stream), planned vs actual duration. Source: `shared/programme_observability.py`. |
 | `compositor-health.json` | `hapax-compositor-health` | Studio compositor process & pipeline health — uptime, watchdog, cameras healthy/total, v4l2sink last-frame, pipeline-restart cadence, v4l2sink stalls/recoveries, RSS+VRAM, FD count, camera-rebuild cadence, per-source render p95, director intents + voice activity. Source: `agents/studio_compositor/metrics.py`. Complementary to `compositor-surface-health.json` (different metric scope). |
 | `broadcast-publishing.json` | `hapax-broadcast-publishing` | Broadcast publishing & fanout surfaces — active broadcast elapsed, broadcast mode, master LUFS, cross-platform fanout (Mastodon/Bluesky/Discord/omg-weblog/Are.na), omg.lol family activity, publication-bus mints, rotation cadence + refusals, allowlist decisions. Source: `agents/publication_bus/` + `agents/broadcast/`. |
-| `mood-engines.json` | `hapax-mood-engines` | Mood-engine observability — arousal, valence, and coherence posterior gauges plus contributed-signal counters per engine. Source: `agents/hapax_daimonion/mood_*_engine.py` + `shared/mood_engine_metrics.py`. |
+| `mood-engines.json` | `hapax-mood-engines` | Mood-engine observability — arousal, valence, and coherence posterior gauges plus observed- and Bayesian-contributing-signal counters per engine. Source: `agents/hapax_daimonion/mood_*_engine.py` + `shared/mood_engine_metrics.py`. |
 
 ## Install
 

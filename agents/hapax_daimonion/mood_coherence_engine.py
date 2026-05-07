@@ -127,6 +127,7 @@ class MoodCoherenceEngine:
             "movement_jitter_high",
             "skin_temp_volatility_high",
         }
+        self._positive_only_signals = frozenset(positive_only_signals)
         lr_records: dict[str, LRDerivation] = {
             name: LRDerivation(
                 signal_name=name,
@@ -181,7 +182,12 @@ class MoodCoherenceEngine:
         try:
             from shared.mood_engine_metrics import record_mood_engine_tick
 
-            record_mood_engine_tick("mood_coherence", new_posterior, observations)
+            record_mood_engine_tick(
+                "mood_coherence",
+                new_posterior,
+                observations,
+                positive_only_signals=self._positive_only_signals,
+            )
         except Exception:
             log.debug("mood_coherence metrics update failed", exc_info=True)
         if new_state != self._prev_state:

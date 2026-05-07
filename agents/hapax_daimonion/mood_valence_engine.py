@@ -113,6 +113,7 @@ class MoodValenceEngine:
         # is bidirectional because high HRV genuinely evidences positive
         # parasympathetic state.
         positive_only_signals = {"skin_temp_drop", "sleep_debt_high", "voice_pitch_elevated"}
+        self._positive_only_signals = frozenset(positive_only_signals)
         lr_records: dict[str, LRDerivation] = {
             name: LRDerivation(
                 signal_name=name,
@@ -167,7 +168,12 @@ class MoodValenceEngine:
         try:
             from shared.mood_engine_metrics import record_mood_engine_tick
 
-            record_mood_engine_tick("mood_valence", new_posterior, observations)
+            record_mood_engine_tick(
+                "mood_valence",
+                new_posterior,
+                observations,
+                positive_only_signals=self._positive_only_signals,
+            )
         except Exception:
             log.debug("mood_valence metrics update failed", exc_info=True)
         if new_state != self._prev_state:

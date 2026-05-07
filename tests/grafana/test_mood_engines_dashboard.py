@@ -39,6 +39,7 @@ def test_dashboard_covers_phase_d_metrics() -> None:
         "mood_valence_posterior_value",
         "mood_coherence_posterior_value",
         "mood_engine_signals_contributed_total",
+        "mood_engine_signals_observed_total",
     ):
         assert metric in exprs
 
