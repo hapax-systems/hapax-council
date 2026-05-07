@@ -322,7 +322,23 @@ def set_many_ward_properties(
             WARD_PROPERTIES_PATH.parent.mkdir(parents=True, exist_ok=True)
             current = _safe_load_raw()
             wards = current.get("wards") or {}
-            expires_at = time.time() + ttl_s
+            now = time.time()
+            # Prune entries whose ``expires_at`` is in the past. The runtime
+            # resolver already discards them at read time, but the on-disk
+            # file accumulated stale entries indefinitely — operators
+            # inspecting ``ward-properties.json`` for live state saw lies
+            # (e.g. an entry from 37 hours ago overriding what the dataclass
+            # default would actually produce at the next read). Pruning at
+            # write keeps the disk view in sync with runtime semantics.
+            # The z_plane / z_index_float preservation block below still
+            # reads ``existing`` for the FRESH overlapping ward — pruning
+            # only removes entries the resolver already wouldn't honor.
+            wards = {
+                wid: e
+                for wid, e in wards.items()
+                if isinstance(e, dict) and e.get("expires_at", 0) > now
+            }
+            expires_at = now + ttl_s
             # 2026-04-23 race-safe preservation of modulator-owned fields
             # (``z_plane`` + ``z_index_float``). The ``ward_stimmung_modulator``
             # writes these every ~200 ms from imagination depth; non-modulator
@@ -355,7 +371,7 @@ def set_many_ward_properties(
                     ):
                         new_entry["z_index_float"] = existing["z_index_float"]
                 wards[ward_id] = new_entry
-            out = {"wards": wards, "updated_at": time.time()}
+            out = {"wards": wards, "updated_at": now}
             # 2026-04-23 per-writer unique tmp suffix. Single shared ``.tmp``
             # filename loses writes when two concurrent callers
             # ``replace()`` the same source — the second caller's rename
