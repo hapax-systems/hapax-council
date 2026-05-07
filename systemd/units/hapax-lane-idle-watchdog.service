@@ -1,0 +1,14 @@
+[Unit]
+Description=Hapax Lane Idle Watchdog — dispatch work to stale lanes
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/hapax-council/scripts/hapax-lane-idle-watchdog
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-lane-idle-watchdog
+TimeoutStartSec=60
+
+[Install]
+WantedBy=default.target

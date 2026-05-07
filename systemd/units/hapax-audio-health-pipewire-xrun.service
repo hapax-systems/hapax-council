@@ -1,7 +1,7 @@
 [Unit]
 Description=Hapax audio health M5 — PipeWire pw-top xrun + buffer-underrun monitor
 After=pipewire.service
-Requires=pipewire.service
+BindsTo=pipewire.service
 PartOf=hapax-audio-health.target
 
 [Service]

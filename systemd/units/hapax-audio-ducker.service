@@ -2,7 +2,7 @@
 Description=Hapax audio ducker — VAD-driven mixer-gain controller
 Documentation=file:///home/hapax/projects/hapax-council/docs/superpowers/specs/2026-04-23-livestream-audio-unified-architecture-design.md
 After=pipewire.service pipewire-pulse.service wireplumber.service hapax-secrets.service hapax-private-broadcast-leak-guard.service
-Requires=pipewire.service
+BindsTo=pipewire.service
 Wants=hapax-private-broadcast-leak-guard.service
 PartOf=pipewire.service
 
