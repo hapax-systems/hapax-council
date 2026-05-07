@@ -1,11 +1,10 @@
-"""Token-pole path geometry — operator directive 2026-04-19.
+"""Token-pole path geometry — operator directive 2026-05-07.
 
 Pins:
-  - NAVEL_TO_CRANIUM is the default path mode
-  - Linear path starts at navel anchor, ends at cranium anchor
-  - SPIRAL mode is reachable via HAPAX_TOKEN_POLE_PATH=spiral for regression
-  - Explosion fires at the path's terminal anchor (cranium in linear, centre
-    in spiral)
+  - SPIRAL is the default path mode (golden spiral with z-layers)
+  - Linear path reachable via HAPAX_TOKEN_POLE_PATH=navel_to_cranium
+  - Explosion fires at the path's terminal anchor (centre in spiral,
+    cranium in linear)
 """
 
 from __future__ import annotations
@@ -26,9 +25,9 @@ from agents.studio_compositor.token_pole import (
 
 
 class TestPathModeResolution:
-    def test_default_is_navel_to_cranium(self, monkeypatch):
+    def test_default_is_spiral(self, monkeypatch):
         monkeypatch.delenv("HAPAX_TOKEN_POLE_PATH", raising=False)
-        assert _resolve_path_mode() is PathMode.NAVEL_TO_CRANIUM
+        assert _resolve_path_mode() is PathMode.SPIRAL
 
     def test_env_spiral_forces_spiral(self, monkeypatch):
         monkeypatch.setenv("HAPAX_TOKEN_POLE_PATH", "spiral")
@@ -38,9 +37,9 @@ class TestPathModeResolution:
         monkeypatch.setenv("HAPAX_TOKEN_POLE_PATH", "SPIRAL")
         assert _resolve_path_mode() is PathMode.SPIRAL
 
-    def test_unknown_value_falls_back_to_navel_to_cranium(self, monkeypatch):
+    def test_unknown_value_falls_back_to_spiral(self, monkeypatch):
         monkeypatch.setenv("HAPAX_TOKEN_POLE_PATH", "diagonal")
-        assert _resolve_path_mode() is PathMode.NAVEL_TO_CRANIUM
+        assert _resolve_path_mode() is PathMode.SPIRAL
 
 
 class TestLinearPath:
@@ -69,48 +68,42 @@ class TestLinearPath:
 
 
 class TestConstructorHonoursMode:
-    def test_default_constructor_uses_linear_path(self, monkeypatch):
+    def test_default_constructor_uses_spiral_path(self, monkeypatch):
         monkeypatch.delenv("HAPAX_TOKEN_POLE_PATH", raising=False)
         src = token_pole.TokenPoleCairoSource()
-        assert src._path_mode is PathMode.NAVEL_TO_CRANIUM
-        # path[0] is navel, path[-1] is cranium
-        x0, y0 = src._spiral[0]
-        xn, yn = src._spiral[-1]
-        assert y0 > yn  # navel is below cranium in pixel coords
-
-    def test_env_override_selects_spiral(self, monkeypatch):
-        monkeypatch.setenv("HAPAX_TOKEN_POLE_PATH", "spiral")
-        src = token_pole.TokenPoleCairoSource()
         assert src._path_mode is PathMode.SPIRAL
-        # Spiral has many points; just confirm it's not the linear path by
-        # checking that consecutive y values do NOT monotonically decrease.
         ys = [p[1] for p in src._spiral]
         non_monotonic = any(ys[i + 1] > ys[i] for i in range(len(ys) - 1))
         assert non_monotonic, "spiral expected to wind — not monotonic in y"
 
+    def test_env_override_selects_linear(self, monkeypatch):
+        monkeypatch.setenv("HAPAX_TOKEN_POLE_PATH", "navel_to_cranium")
+        src = token_pole.TokenPoleCairoSource()
+        assert src._path_mode is PathMode.NAVEL_TO_CRANIUM
+        x0, y0 = src._spiral[0]
+        xn, yn = src._spiral[-1]
+        assert y0 > yn
+
 
 class TestExplosionLocation:
-    def test_linear_mode_explodes_at_cranium(self, monkeypatch):
+    def test_default_spiral_explodes_at_centre(self, monkeypatch):
         monkeypatch.delenv("HAPAX_TOKEN_POLE_PATH", raising=False)
-        src = token_pole.TokenPoleCairoSource()
-        src._particles.clear()
-        src._spawn_explosion()
-        # Every particle should originate near the cranium anchor.
-        cx = token_pole.NATURAL_SIZE * CRANIUM_X
-        cy = token_pole.NATURAL_SIZE * CRANIUM_Y
-        for p in src._particles:
-            # Particles start with small velocity; at spawn their x,y
-            # equal the spawn centre exactly.
-            assert p.x == pytest.approx(cx)
-            assert p.y == pytest.approx(cy)
-
-    def test_spiral_mode_explodes_at_centre(self, monkeypatch):
-        monkeypatch.setenv("HAPAX_TOKEN_POLE_PATH", "spiral")
         src = token_pole.TokenPoleCairoSource()
         src._particles.clear()
         src._spawn_explosion()
         cx = token_pole.NATURAL_SIZE * token_pole.SPIRAL_CENTER_X
         cy = token_pole.NATURAL_SIZE * token_pole.SPIRAL_CENTER_Y
+        for p in src._particles:
+            assert p.x == pytest.approx(cx)
+            assert p.y == pytest.approx(cy)
+
+    def test_linear_mode_explodes_at_cranium(self, monkeypatch):
+        monkeypatch.setenv("HAPAX_TOKEN_POLE_PATH", "navel_to_cranium")
+        src = token_pole.TokenPoleCairoSource()
+        src._particles.clear()
+        src._spawn_explosion()
+        cx = token_pole.NATURAL_SIZE * CRANIUM_X
+        cy = token_pole.NATURAL_SIZE * CRANIUM_Y
         for p in src._particles:
             assert p.x == pytest.approx(cx)
             assert p.y == pytest.approx(cy)
