@@ -66,7 +66,10 @@ from pathlib import Path
 from typing import Any
 
 from agents.studio_compositor.atomic_io import atomic_write_json
-from agents.studio_compositor.ward_fx_mapping import AUDIO_REACTIVE_WARDS
+from agents.studio_compositor.ward_fx_mapping import (
+    AUDIO_REACTIVE_WARDS,
+    DRIFT_FLOOR_WARDS,
+)
 from agents.studio_compositor.ward_properties import (
     WardProperties,
     get_specific_ward_properties,
@@ -526,9 +529,23 @@ def _write_cairo_ward_params(
     static even with non-zero hz/amplitude values. That keeps the
     operator's per-ward drift-shape decision authoritative.
 
-    The Cairo wards also have a separate FX reactor for short-lived
-    spikes; the heartbeat only raises the *floor* without lowering any
-    stronger value already present in ward-properties.json.
+    Two membership cohorts:
+
+    * ``AUDIO_REACTIVE_WARDS`` — full 5-field escalation. Music and
+      presence chrome that the operator wants synchronised with the
+      broadcast beat (pulse + bump + glow + drift floors).
+    * ``DRIFT_FLOOR_WARDS`` — drift-only escalation
+      (``drift_hz`` / ``drift_amplitude_px``). The pulse / scale-bump /
+      glow fields are passed through from the base entry untouched.
+      Used for wards where the operator has explicitly vetoed
+      pulse-style modulation as too heavy-handed (e.g. ``durf`` per
+      operator directive 2026-04-25).
+
+    The cohorts are disjoint by construction — pinned by
+    ``tests/studio_compositor/test_ward_fx_coupling.py``. The Cairo
+    wards also have a separate FX reactor for short-lived spikes; the
+    heartbeat only raises the *floor* without lowering any stronger
+    value already present in ward-properties.json.
     """
 
     try:
@@ -566,6 +583,13 @@ def _write_cairo_ward_params(
                 border_pulse_hz=max(base.border_pulse_hz, pulse_hz),
                 scale_bump_pct=max(base.scale_bump_pct, bump_pct),
                 glow_radius_px=max(base.glow_radius_px, glow_px),
+                drift_hz=max(base.drift_hz, drift_hz_floor),
+                drift_amplitude_px=max(base.drift_amplitude_px, drift_px_floor),
+            )
+        for ward_id in DRIFT_FLOOR_WARDS:
+            base = get_specific_ward_properties(ward_id) or WardProperties()
+            updates[ward_id] = replace(
+                base,
                 drift_hz=max(base.drift_hz, drift_hz_floor),
                 drift_amplitude_px=max(base.drift_amplitude_px, drift_px_floor),
             )

@@ -678,6 +678,160 @@ class TestDomainPresetFamilyMapping:
         assert is_audio_reactive("m8-display")
         assert domain_for_ward("m8-display") == "music"
 
+    def test_drift_floor_wards_disjoint_from_audio_reactive(self):
+        """``DRIFT_FLOOR_WARDS`` and ``AUDIO_REACTIVE_WARDS`` must be
+        disjoint by construction. The two sets express orthogonal write
+        cohorts in ``parametric_modulation_heartbeat._write_cairo_ward_params``:
+        full 5-field escalation for AUDIO_REACTIVE_WARDS, drift-only
+        escalation for DRIFT_FLOOR_WARDS. Membership in both would
+        double-write drift fields and confuse the cohort intent — a
+        ward that wants drift AND pulse already lives in the audio-
+        reactive set; the drift-floor set is for the operator-vetoed
+        pulse case (e.g. ``durf`` per directive 2026-04-25)."""
+        from agents.studio_compositor.ward_fx_mapping import (
+            AUDIO_REACTIVE_WARDS,
+            DRIFT_FLOOR_WARDS,
+        )
+
+        overlap = AUDIO_REACTIVE_WARDS & DRIFT_FLOOR_WARDS
+        assert not overlap, (
+            f"DRIFT_FLOOR_WARDS members also in AUDIO_REACTIVE_WARDS "
+            f"(would double-write drift fields and conflict on cohort "
+            f"intent — pulse-vetoed wards belong in DRIFT_FLOOR_WARDS "
+            f"only): {sorted(overlap)}"
+        )
+
+    def test_durf_drift_floor_membership_pinned(self):
+        """Pin DURF as a drift-floor-only ward. Operator directive
+        2026-04-25 (recorded at ``z_plane_constants.py:59-66``):
+        'It does need modulation, just not a pulse like that, it's
+        too heavy handed and distracting.' DURF must therefore:
+
+        * Be present in ``DRIFT_FLOOR_WARDS`` so the heartbeat raises
+          its drift_hz / drift_amplitude_px floors from the envelope-
+          walked values.
+        * Be absent from ``AUDIO_REACTIVE_WARDS`` so the heartbeat does
+          NOT escalate its border_pulse_hz / scale_bump_pct /
+          glow_radius_px (those would be the heavy-handed pulse the
+          operator vetoed).
+
+        A revert that swaps DURF into the audio-reactive set without
+        explicit operator approval would fail this pin."""
+        from agents.studio_compositor.ward_fx_mapping import (
+            AUDIO_REACTIVE_WARDS,
+            DRIFT_FLOOR_WARDS,
+        )
+
+        assert "durf" in DRIFT_FLOOR_WARDS, (
+            "DURF dropped from DRIFT_FLOOR_WARDS — operator added it via "
+            "directive 2026-04-25 ('it does need modulation, just not a "
+            "pulse'); revert needs explicit operator approval"
+        )
+        assert "durf" not in AUDIO_REACTIVE_WARDS, (
+            "DURF moved into AUDIO_REACTIVE_WARDS — operator vetoed pulse "
+            "modulation as 'too heavy handed and distracting'; only the "
+            "drift-floor cohort honors that veto"
+        )
+
+
+class TestHeartbeatDriftFloorCarveout:
+    """``parametric_modulation_heartbeat._write_cairo_ward_params``
+    must apply the drift-only carve-out to ``DRIFT_FLOOR_WARDS``
+    members — drift_hz / drift_amplitude_px get the envelope floor,
+    but border_pulse_hz / scale_bump_pct / glow_radius_px must NOT
+    be escalated (the operator vetoed pulse modulation for the
+    drift-floor cohort)."""
+
+    def test_drift_floor_ward_pulse_glow_bump_left_at_base(self, tmp_path):
+        """When the heartbeat fires with non-zero pulse / bump / glow
+        envelope output, a DRIFT_FLOOR_WARDS member must keep its base
+        pulse_hz / bump_pct / glow_px (zero by default) untouched —
+        only the drift fields are written. Audio-reactive wards still
+        get the full 5-field escalation (sanity-checked alongside)."""
+        from unittest.mock import patch
+
+        from agents.parametric_modulation_heartbeat.heartbeat import (
+            _write_cairo_ward_params,
+        )
+        from agents.studio_compositor.ward_fx_mapping import (
+            AUDIO_REACTIVE_WARDS,
+            DRIFT_FLOOR_WARDS,
+        )
+        from agents.studio_compositor.ward_properties import WardProperties
+
+        captured: dict[str, WardProperties] = {}
+
+        def _capture(props_by_ward, ttl_s):  # noqa: ANN001
+            captured.update(props_by_ward)
+
+        # Drive the envelopes near saturation so pulse / bump / glow
+        # outputs are clearly non-zero. The carve-out check is then:
+        # drift-floor ward pulse / bump / glow stay at base zero,
+        # while audio-reactive ward pulse / bump / glow rise above zero.
+        values = {
+            "breath.rate": 1.0,
+            "breath.amplitude": 1.0,
+            "content.intensity": 1.0,
+            "noise.amplitude": 1.0,
+            "post.sediment_strength": 0.0,
+            "drift.frequency": 1.0,
+            "drift.amplitude": 1.0,
+        }
+
+        with (
+            patch(
+                "agents.parametric_modulation_heartbeat.heartbeat.set_many_ward_properties",
+                side_effect=_capture,
+            ),
+            patch(
+                "agents.parametric_modulation_heartbeat.heartbeat.get_specific_ward_properties",
+                return_value=None,
+            ),
+            patch(
+                "agents.parametric_modulation_heartbeat.heartbeat._normalized_envelope_value",
+                side_effect=lambda v, k: v.get(k, 0.5),
+            ),
+        ):
+            _write_cairo_ward_params(values, ttl_s=10.0)
+
+        assert "durf" in DRIFT_FLOOR_WARDS  # premise of the test
+        durf = captured["durf"]
+        assert durf.border_pulse_hz == 0.0, (
+            f"DURF border_pulse_hz must stay at base zero — heartbeat "
+            f"applied pulse {durf.border_pulse_hz} which violates the "
+            f"drift-only carve-out"
+        )
+        assert durf.scale_bump_pct == 0.0, (
+            f"DURF scale_bump_pct must stay at base zero, got "
+            f"{durf.scale_bump_pct} (drift-only carve-out broken)"
+        )
+        assert durf.glow_radius_px == 0.0, (
+            f"DURF glow_radius_px must stay at base zero, got "
+            f"{durf.glow_radius_px} (drift-only carve-out broken)"
+        )
+        assert durf.drift_hz > 0.0, (
+            f"DURF drift_hz must rise above zero — heartbeat should "
+            f"escalate drift floor, got {durf.drift_hz}"
+        )
+        assert durf.drift_amplitude_px > 0.0, (
+            f"DURF drift_amplitude_px must rise above zero — heartbeat "
+            f"should escalate drift floor, got {durf.drift_amplitude_px}"
+        )
+
+        # Sanity: a member of AUDIO_REACTIVE_WARDS does get the full
+        # 5-field escalation. Pick the first member alphabetically so
+        # the test stays stable regardless of frozenset ordering.
+        ar_ward = sorted(AUDIO_REACTIVE_WARDS)[0]
+        ar = captured[ar_ward]
+        assert ar.border_pulse_hz > 0.0, (
+            f"audio-reactive ward {ar_ward!r} pulse must rise above "
+            f"zero — heartbeat escalation broken"
+        )
+        assert ar.drift_hz > 0.0, (
+            f"audio-reactive ward {ar_ward!r} drift_hz must rise above "
+            f"zero — heartbeat escalation broken"
+        )
+
 
 # ── helpers ──────────────────────────────────────────────────────────────
 

@@ -103,6 +103,13 @@ WARD_DOMAIN: dict[str, WardDomain] = {
     "chronicle_ticker": "director",
     # Perception
     "sierpinski": "perception",
+    # DURF (Display Under Reflective Frame) — coding-activity
+    # reveal surface; classified ``perception`` so its accent stays
+    # in the calm-textural family rather than competing with
+    # cognition / director hues. The ward gets drift-only modulation
+    # via ``DRIFT_FLOOR_WARDS`` (no pulse / scale-bump / glow per
+    # operator directive 2026-04-25).
+    "durf": "perception",
 }
 
 
@@ -157,6 +164,31 @@ breath baseline from the parametric heartbeat instead of sitting
 flat-zero."""
 
 
+DRIFT_FLOOR_WARDS: frozenset[str] = frozenset(
+    {
+        # DURF (Display Under Reflective Frame). Operator directive
+        # 2026-04-25 (recorded at ``z_plane_constants.py:59-66``):
+        # "It does need modulation, just not a pulse like that, it's
+        # too heavy handed and distracting." The reflective-frame
+        # text surface should breathe with the same drift envelope
+        # the rest of the chrome moves on, but pulse / scale-bump /
+        # glow are explicitly off the table — they pull legibility
+        # away from the rendered content.
+        "durf",
+    }
+)
+"""Wards that accept the heartbeat's drift-only baseline floor
+(``drift_hz`` / ``drift_amplitude_px``) but NOT the pulse / scale-bump
+/ glow trio.
+
+Disjoint from ``AUDIO_REACTIVE_WARDS`` by construction (a regression
+pin in ``tests/studio_compositor/test_ward_fx_coupling.py`` enforces
+the disjointness). The heartbeat iterates the union of both sets and
+selectively applies fields based on membership: full 5-field
+escalation for ``AUDIO_REACTIVE_WARDS``, drift-only for
+``DRIFT_FLOOR_WARDS``."""
+
+
 def domain_for_ward(ward_id: str) -> WardDomain:
     """Return the classified domain for ``ward_id``.
 
@@ -179,6 +211,7 @@ def is_audio_reactive(ward_id: str) -> bool:
 __all__ = [
     "AUDIO_REACTIVE_WARDS",
     "DOMAIN_PRESET_FAMILY",
+    "DRIFT_FLOOR_WARDS",
     "PresetFamily",
     "WARD_DOMAIN",
     "domain_for_ward",
