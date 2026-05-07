@@ -736,29 +736,56 @@ class SierpinskiCairoSource(HomageTransitionalSource):
         line_width: float,
         t: float,
     ) -> None:
-        """Draw triangle line work with synthwave colors and glow."""
-        for i, tri in enumerate(triangles):
-            # Color cycles through palette
-            color_idx = (i + int(t * 0.5)) % len(COLORS)
-            r, g, b = COLORS[color_idx]
+        """Draw triangle line work with synthwave colors, glow, and z-depth layers.
 
-            # Glow (wider, semi-transparent)
-            cr.set_line_width(line_width * 3.0)
-            cr.set_source_rgba(r, g, b, 0.15)
-            cr.move_to(*tri[0])
-            cr.line_to(*tri[1])
-            cr.line_to(*tri[2])
-            cr.close_path()
-            cr.stroke()
+        Draws 3 passes at slightly different scales to create a parallax/
+        depth effect — the Sierpinski appears to have multiple stacked
+        transparent planes. Each pass uses a different color offset and
+        decreasing alpha so the layers read as front-to-back depth.
+        This makes the z-axis interdimensionality renderer-intrinsic
+        rather than dependent on the active shader preset having a
+        feedback/trail node.
+        """
+        _Z_LAYERS = 3
+        _Z_SCALE_STEP = 0.012
+        _Z_ALPHA_DECAY = 0.5
 
-            # Core line
-            cr.set_line_width(line_width)
-            cr.set_source_rgba(r, g, b, 0.8)
-            cr.move_to(*tri[0])
-            cr.line_to(*tri[1])
-            cr.line_to(*tri[2])
-            cr.close_path()
-            cr.stroke()
+        for z in range(_Z_LAYERS):
+            scale_offset = 1.0 + z * _Z_SCALE_STEP
+            alpha_mult = _Z_ALPHA_DECAY**z
+            color_shift = z * 2
+
+            cr.save()
+            cw = cr.get_target().get_width() if hasattr(cr.get_target(), "get_width") else 1280
+            ch = cr.get_target().get_height() if hasattr(cr.get_target(), "get_height") else 720
+            cx, cy = cw * 0.5, ch * 0.5
+            cr.translate(cx, cy)
+            cr.scale(scale_offset, scale_offset)
+            cr.translate(-cx, -cy)
+
+            for i, tri in enumerate(triangles):
+                color_idx = (i + int(t * 0.5) + color_shift) % len(COLORS)
+                r, g, b = COLORS[color_idx]
+
+                # Glow (wider, semi-transparent)
+                cr.set_line_width(line_width * 3.0)
+                cr.set_source_rgba(r, g, b, 0.15 * alpha_mult)
+                cr.move_to(*tri[0])
+                cr.line_to(*tri[1])
+                cr.line_to(*tri[2])
+                cr.close_path()
+                cr.stroke()
+
+                # Core line
+                cr.set_line_width(line_width)
+                cr.set_source_rgba(r, g, b, 0.8 * alpha_mult)
+                cr.move_to(*tri[0])
+                cr.line_to(*tri[1])
+                cr.line_to(*tri[2])
+                cr.close_path()
+                cr.stroke()
+
+            cr.restore()
 
     def _audio_line_width(self) -> float:
         """Line width with bounded attack lift for percussive onsets.

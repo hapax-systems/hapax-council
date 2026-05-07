@@ -65,10 +65,12 @@ log = logging.getLogger(__name__)
 # liveness signal the watchdog already uses.
 _RECOVERY_PROBE_WINDOW_S: float = 6.0
 
-# State-change timeout for each ``set_state`` call. 5 s is enough for
-# a normal v4l2sink to release/acquire its fd; if the call times out,
-# the recovery attempt is judged failed and the counter increments.
-_STATE_CHANGE_TIMEOUT_S: float = 5.0
+# State-change timeout for each ``set_state`` call. Under GPU load
+# (cudacompositor + 6 cameras + glfeedback), the v4l2sink may need
+# more than 5s to complete state transitions — the upstream elements
+# hold buffers that prevent the sink from reaching NULL synchronously.
+# 10s gives enough headroom for the GPU to flush without timing out.
+_STATE_CHANGE_TIMEOUT_S: float = 10.0
 
 # Consecutive failed recoveries before the recovery layer escalates and
 # stops attempting (lets the watchdog withhold ping → systemd SIGABRT).
