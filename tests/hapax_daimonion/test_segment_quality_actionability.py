@@ -186,6 +186,8 @@ def test_actionability_rejects_common_layout_command_variants() -> None:
 
     assert alignment["ok"] is False
     assert [item["line"] for item in alignment["removed_unsupported_action_lines"]] == script
+    assert "prepared_script" not in alignment
+    assert alignment["diagnostic_sanitized_script"]
 
 
 def test_tier_chart_requires_sentence_initial_place_trigger() -> None:
@@ -291,9 +293,10 @@ def test_actionability_rejects_camera_director_command_prose() -> None:
         "Bring overhead up while chat votes.",
         "Take desk cam while I explain the tradeoff.",
     ]
-    assert alignment["prepared_script"][0] == (
+    assert alignment["diagnostic_sanitized_script"][0] == (
         "Place FORTRAN in A-tier because the ranking is legible."
     )
+    assert "prepared_script" not in alignment
 
 
 def test_actionability_allows_neutral_camera_descriptions_without_commands() -> None:
@@ -336,6 +339,43 @@ def test_layout_responsibility_derives_needs_from_action_intents() -> None:
         beat["evidence_refs"] and beat["source_affordances"]
         for beat in layout["beat_layout_intents"]
     )
+    tier_beat = next(
+        beat for beat in layout["beat_layout_intents"] if "tier_visual" in beat["needs"]
+    )
+    tier_binding = next(
+        binding
+        for binding in tier_beat["object_bindings"]
+        if binding["source_action_kind"] == "tier_chart"
+    )
+    assert "tier_chart.place:rendered LayoutState:S" in tier_beat["expected_effects"]
+    assert tier_binding["expected_effect"] == "tier_chart.place:rendered LayoutState:S"
+    assert tier_binding["item_ref"] == "tier_item:rendered LayoutState:S"
+    assert tier_binding["action_ref"] == "action:tier_chart:rendered LayoutState:S"
+    assert forbidden_layout_authority_fields(layout["beat_layout_intents"]) == []
+
+
+def test_tier_action_contract_is_object_bound_without_layout_authority() -> None:
+    alignment = validate_segment_actionability(
+        ["Place FORTRAN in S-tier because the ranking is legible."],
+        ["rank FORTRAN with visible tier placement"],
+    )
+
+    layout = validate_layout_responsibility(alignment["beat_action_intents"])
+    beat = layout["beat_layout_intents"][0]
+    binding = beat["object_bindings"][0]
+
+    assert "tier_visual" in beat["needs"]
+    assert "tier_chart.place:FORTRAN:S" in beat["expected_effects"]
+    assert "tier_chart" in beat["source_affordances"]
+    assert binding == {
+        "need_kind": "tier_visual",
+        "source_action_kind": "tier_chart",
+        "expected_effect": "tier_chart.place:FORTRAN:S",
+        "action_ref": "action:tier_chart:FORTRAN:S",
+        "object_ref": "object:FORTRAN",
+        "item_ref": "tier_item:FORTRAN:S",
+    }
+    assert forbidden_layout_authority_fields(layout["beat_layout_intents"]) == []
 
 
 def test_responsible_layout_rejects_spoken_only_beats() -> None:
@@ -375,6 +415,10 @@ def test_source_backed_claims_propose_visible_source_context_not_layout_authorit
 
     assert beat["needs"] == ["source_visible"]
     assert beat["source_affordances"] == ["source_context"]
+    assert "source.visible:Shoshana Zuboff" in beat["expected_effects"]
+    assert any(
+        binding.get("source_ref") == "source:Shoshana Zuboff" for binding in beat["object_bindings"]
+    )
     assert beat["default_static_success_allowed"] is False
     assert layout["layout_decision_contract"]["may_command_layout"] is False
     assert layout["runtime_layout_validation"]["status"] == "pending_runtime_readback"
@@ -403,7 +447,10 @@ def test_transition_phrases_do_not_become_source_visible_bypass() -> None:
         ["unsupported_layout_need"],
         ["unsupported_layout_need"],
     ]
-    assert {item["reason"] for item in layout["violations"]} == {"unsupported_layout_need"}
+    assert {item["reason"] for item in layout["violations"]} == {
+        "unsupported_layout_need",
+        "missing_layout_evidence_refs",
+    }
 
 
 def test_specific_source_structures_still_propose_visible_source_context() -> None:
@@ -545,7 +592,7 @@ def test_non_responsible_static_context_allows_default_layout() -> None:
 def test_explicit_fallback_context_allows_garage_door_layout() -> None:
     alignment = validate_segment_actionability(EXCELLENT_SCRIPT, ["hook", "body", "close"])
 
-    layout = validate_layout_responsibility(
+    missing_receipt = validate_layout_responsibility(
         alignment["beat_action_intents"],
         responsibility_mode=EXPLICIT_LAYOUT_FALLBACK_CONTEXT,
         observed_layout_state={
@@ -555,7 +602,23 @@ def test_explicit_fallback_context_allows_garage_door_layout() -> None:
             "fallback_explicit": True,
         },
     )
+    layout = validate_layout_responsibility(
+        alignment["beat_action_intents"],
+        responsibility_mode=EXPLICIT_LAYOUT_FALLBACK_CONTEXT,
+        observed_layout_state={
+            "layout_id": "garage-door",
+            "is_static_default": True,
+            "claims_success": True,
+            "fallback_explicit": True,
+            "receipt_id": "fallback-explicit-1",
+            "ttl_ms": 4000,
+            "rendered_readback": True,
+        },
+    )
 
+    assert "static_fallback_missing_ttl_or_receipt" in {
+        violation["reason"] for violation in missing_receipt["violations"]
+    }
     assert layout["ok"] is True
     assert layout["layout_decision_contract"]["default_static_success_allowed"] is True
 
@@ -632,8 +695,9 @@ def test_actionability_rewrites_unsupported_visual_claims() -> None:
 
     assert alignment["ok"] is False
     assert alignment["removed_unsupported_action_lines"][0]["beat_index"] == 0
-    assert "Watch the clip" not in alignment["prepared_script"][0]
-    assert "safer claim" in alignment["prepared_script"][0]
+    assert "prepared_script" not in alignment
+    assert "Watch the clip" not in alignment["diagnostic_sanitized_script"][0]
+    assert "safer claim" in alignment["diagnostic_sanitized_script"][0]
 
 
 def test_quality_rubric_requires_source_consequence_and_live_bit_range() -> None:
@@ -679,6 +743,6 @@ def test_loader_rejects_artifact_requiring_unsupported_runtime_action_rewrite(
     payload = _artifact(script, ["rank the evidence"])
     _write_artifact(tmp_path, payload)
 
-    loaded = prep.load_prepped_programmes(tmp_path)
+    loaded = prep.load_prepped_programmes(tmp_path, require_selected=False)
 
     assert loaded == []

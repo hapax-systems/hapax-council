@@ -37,12 +37,19 @@ verify_resident_model() {
     fi
 }
 
+check_prep_authority() {
+    (
+        cd "$PROJECT_DIR"
+        uv run python -m shared.segment_prep_pause --check --activity pool_generation
+    )
+}
+
 count_existing() {
     if [[ -f "$PREP_DIR/manifest.json" ]]; then
         (
             cd "$PROJECT_DIR"
             HAPAX_SEGMENT_PREP_MODEL="${RESIDENT_PREP_MODEL}" \
-            uv run python -c 'import sys; from pathlib import Path; from agents.hapax_daimonion.daily_segment_prep import load_prepped_programmes; print(len(load_prepped_programmes(Path(sys.argv[1]))))' "$PREP_BASE"
+            uv run python -c 'import sys; from pathlib import Path; from agents.hapax_daimonion.daily_segment_prep import load_prepped_programmes; print(len(load_prepped_programmes(Path(sys.argv[1]), require_selected=False)))' "$PREP_BASE"
         )
     else
         echo 0
@@ -64,6 +71,10 @@ echo "Model: ${RESIDENT_PREP_MODEL}"
 echo "Existing: $(count_existing) segments"
 echo ""
 
+if ! check_prep_authority; then
+    echo "[fatal] segment prep authority gate blocked pool_generation" >&2
+    exit 4
+fi
 verify_resident_model
 
 generated="$(count_existing)"
@@ -78,6 +89,10 @@ while [[ "$generated" -lt "$TOTAL" && "$failures" -lt "$max_failures" ]]; do
 
     echo ""
     echo "[batch ${batch}] Generating ${this_batch} more segments (have ${generated}/${TOTAL})..."
+    if ! check_prep_authority; then
+        echo "[fatal] segment prep authority gate blocked pool_generation" >&2
+        exit 4
+    fi
     verify_resident_model
 
     cd "$PROJECT_DIR"

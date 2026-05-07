@@ -198,6 +198,34 @@ from shared.segment_quality_layout_eval import (
 _evaluate_segment_quality_layout_fixture
 _build_beat_layout_needs
 
+# Segment-prep framework public helpers are invoked by review scripts, tests,
+# Pydantic validators, or future prep phases that vulture does not scan as
+# production call paths.
+from shared.loop_card import ControlLoopCard as _ControlLoopCard
+from shared.segment_live_event_quality import (
+    compare_live_event_quality as _compare_live_event_quality,
+)
+from shared.segment_prep_contract import (
+    programme_source_readiness as _programme_source_readiness,
+)
+from shared.segment_source_inquiry import (
+    build_source_packet_inquiry_blackboard as _build_source_packet_inquiry_blackboard,
+)
+from shared.segment_source_inquiry import (
+    render_source_packet_inquiry_seed as _render_source_packet_inquiry_seed,
+)
+from shared.segment_source_inquiry import (
+    source_packet_inquiry_summary as _source_packet_inquiry_summary,
+)
+
+_ControlLoopCard._tuple_items_non_empty
+_ControlLoopCard._admissibility_has_required_operational_surface
+_compare_live_event_quality
+_programme_source_readiness
+_build_source_packet_inquiry_blackboard
+_source_packet_inquiry_summary
+_render_source_packet_inquiry_seed
+
 # Pydantic v2 validators for the programme live-prior contract. They are
 # invoked by model validation, not by direct static calls.
 from shared.programme import (

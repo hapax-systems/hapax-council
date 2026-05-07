@@ -179,4 +179,5 @@ def _write_artifact(tmp_path: Path, artifact: dict, *, filename: str = "prog-1.j
     return path
 
 
-load_prepped_programmes = prep.load_prepped_programmes
+def load_prepped_programmes(path: Path) -> list[dict]:
+    return prep.load_prepped_programmes(path, require_selected=False)

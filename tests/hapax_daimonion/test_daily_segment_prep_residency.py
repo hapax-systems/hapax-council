@@ -353,7 +353,7 @@ def _write_artifact(base: Path, payload: dict[str, Any], *, manifest: bool = Tru
 def test_load_prepped_programmes_accepts_valid_provenance(tmp_path: Path) -> None:
     _write_artifact(tmp_path, _valid_artifact())
 
-    loaded = prep.load_prepped_programmes(tmp_path)
+    loaded = prep.load_prepped_programmes(tmp_path, require_selected=False)
 
     assert len(loaded) == 1
     assert loaded[0]["programme_id"] == "prog-1"
@@ -429,7 +429,7 @@ def test_load_prepped_programmes_rejects_invalid_provenance(
 ) -> None:
     _write_artifact(tmp_path, payload, manifest=manifest)
 
-    assert prep.load_prepped_programmes(tmp_path) == []
+    assert prep.load_prepped_programmes(tmp_path, require_selected=False) == []
 
 
 def test_load_prepped_programmes_rejects_layout_responsibility_failure(
@@ -443,7 +443,7 @@ def test_load_prepped_programmes_rejects_layout_responsibility_failure(
     payload["artifact_sha256"] = prep._artifact_hash(payload)
     _write_artifact(tmp_path, payload)
 
-    assert prep.load_prepped_programmes(tmp_path) == []
+    assert prep.load_prepped_programmes(tmp_path, require_selected=False) == []
 
 
 def test_load_prepped_programmes_rejects_hash_mismatch(tmp_path: Path) -> None:
@@ -451,7 +451,7 @@ def test_load_prepped_programmes_rejects_hash_mismatch(tmp_path: Path) -> None:
     payload["prepared_script"] = ["Tampered."]
     _write_artifact(tmp_path, payload)
 
-    assert prep.load_prepped_programmes(tmp_path) == []
+    assert prep.load_prepped_programmes(tmp_path, require_selected=False) == []
 
 
 def test_load_prepped_programmes_rejects_stale_declared_action_intents(
@@ -469,7 +469,7 @@ def test_load_prepped_programmes_rejects_stale_declared_action_intents(
     payload["artifact_sha256"] = prep._artifact_hash(payload)
     _write_artifact(tmp_path, payload)
 
-    assert prep.load_prepped_programmes(tmp_path) == []
+    assert prep.load_prepped_programmes(tmp_path, require_selected=False) == []
 
 
 def test_run_prep_appends_manifest_without_readmitting_invalid_or_unlisted_artifacts(
@@ -567,6 +567,11 @@ def test_run_prep_appends_manifest_without_readmitting_invalid_or_unlisted_artif
         },
     )
     monkeypatch.setattr(prep, "_assert_resident_prep_model", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        prep,
+        "assert_segment_prep_allowed",
+        lambda _activity: SimpleNamespace(mode="open", reason="test", source="test"),
+    )
     monkeypatch.setattr(planner_module, "ProgrammePlanner", FakePlanner)
     monkeypatch.setattr(prep, "prep_segment", fake_prep_segment)
     monkeypatch.setattr(prep, "_upsert_programmes_to_qdrant", lambda *_args, **_kwargs: None)
@@ -577,7 +582,10 @@ def test_run_prep_appends_manifest_without_readmitting_invalid_or_unlisted_artif
     manifest = json.loads((today / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["programmes"] == ["prog-1.json", "prog-2.json", "prog-3.json"]
     assert manifest["run_saved_programmes"] == ["prog-2.json", "prog-3.json"]
-    assert [item["programme_id"] for item in prep.load_prepped_programmes(tmp_path)] == [
+    assert [
+        item["programme_id"]
+        for item in prep.load_prepped_programmes(tmp_path, require_selected=False)
+    ] == [
         "prog-1",
         "prog-2",
         "prog-3",
@@ -616,6 +624,11 @@ def test_run_prep_one_segment_writes_status_and_exact_planner_target(
         },
     )
     monkeypatch.setattr(prep, "_assert_resident_prep_model", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        prep,
+        "assert_segment_prep_allowed",
+        lambda _activity: SimpleNamespace(mode="open", reason="test", source="test"),
+    )
     monkeypatch.setattr(planner_module, "ProgrammePlanner", FakePlanner)
     monkeypatch.setattr(prep, "_upsert_programmes_to_qdrant", lambda *_args, **_kwargs: None)
 
@@ -634,6 +647,56 @@ def test_run_prep_one_segment_writes_status_and_exact_planner_target(
     assert status["manifest_path"].endswith("manifest.json")
     assert manifest["programmes"] == []
     assert manifest["run_saved_programmes"] == []
+    ledger_path = today / prep.PREP_DIAGNOSTIC_LEDGER_FILENAME
+    ledger_row = json.loads(ledger_path.read_text(encoding="utf-8"))
+    assert ledger_row["terminal_status"] == "no_candidate"
+    assert ledger_row["terminal_reason"] == "planner_no_segmented_programmes"
+    assert ledger_row["diagnostic_only"] is True
+    assert ledger_row["release_boundary"] == "closed"
+    assert ledger_row["runtime_boundary"] == "closed"
+    assert ledger_row["loadable"] is False
+    dossier = json.loads(Path(ledger_row["dossier_ref"]).read_text(encoding="utf-8"))
+    assert dossier["no_candidate_metadata"]["target_segments"] == 1
+    assert dossier["manifest_eligible"] is False
+    assert dossier["qdrant_eligible"] is False
+
+
+def test_prep_segment_no_beats_writes_non_loadable_diagnostic_dossier(
+    tmp_path: Path,
+) -> None:
+    programme = SimpleNamespace(
+        programme_id="prog-no-beats",
+        role=SimpleNamespace(value="rant"),
+        content=SimpleNamespace(
+            narrative_beat="No beat candidate",
+            segment_beats=[],
+        ),
+    )
+    session = {
+        "prep_session_id": "segment-prep-test",
+        "model_id": prep.RESIDENT_PREP_MODEL,
+        "llm_calls": [],
+    }
+
+    saved = prep.prep_segment(programme, tmp_path, prep_session=session)
+
+    assert saved is None
+    assert not (tmp_path / "prog-no-beats.json").exists()
+    assert not (tmp_path / "manifest.json").exists()
+    ledger_row = json.loads(
+        (tmp_path / prep.PREP_DIAGNOSTIC_LEDGER_FILENAME).read_text(encoding="utf-8")
+    )
+    assert ledger_row["terminal_status"] == "no_candidate"
+    assert ledger_row["terminal_reason"] == "no_segment_beats"
+    assert ledger_row["diagnostic_only"] is True
+    assert ledger_row["release_boundary"] == "closed"
+    assert ledger_row["runtime_boundary"] == "closed"
+    assert ledger_row["loadable"] is False
+    dossier = json.loads(Path(ledger_row["dossier_ref"]).read_text(encoding="utf-8"))
+    assert dossier["record_type"] == "prep_terminal_dossier"
+    assert dossier["no_candidate_metadata"]["candidate_count"] == 0
+    assert dossier["manifest_eligible"] is False
+    assert dossier["qdrant_eligible"] is False
 
 
 def test_prep_segment_quarantines_actionability_invalid_script(
@@ -681,8 +744,22 @@ def test_prep_segment_quarantines_actionability_invalid_script(
     assert diagnostic_path.exists()
     diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
     assert diagnostic["not_loadable_reason"] == "actionability alignment failed"
+    assert diagnostic["authority"] == prep.PREP_DIAGNOSTIC_AUTHORITY
+    assert diagnostic["diagnostic_only"] is True
+    assert diagnostic["release_boundary"] == "closed"
+    assert diagnostic["runtime_boundary"] == "closed"
+    assert diagnostic["loadable"] is False
     assert diagnostic["actionability_alignment"]["ok"] is False
     assert diagnostic["actionability_alignment"]["removed_unsupported_action_lines"]
+    ledger_row = json.loads(
+        (tmp_path / prep.PREP_DIAGNOSTIC_LEDGER_FILENAME).read_text(encoding="utf-8")
+    )
+    assert ledger_row["terminal_status"] == "refused_no_release"
+    assert ledger_row["terminal_reason"] == "actionability_alignment_failed"
+    assert ledger_row["manifest_eligible"] is False
+    dossier = json.loads(Path(ledger_row["dossier_ref"]).read_text(encoding="utf-8"))
+    assert dossier["diagnostic_refs"] == [str(diagnostic_path)]
+    assert dossier["refusal_metadata"]["removed_unsupported_action_line_count"] == 1
 
 
 def test_prep_segment_quarantines_responsible_spoken_only_script(
@@ -730,10 +807,24 @@ def test_prep_segment_quarantines_responsible_spoken_only_script(
     assert diagnostic_path.exists()
     diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
     assert diagnostic["not_loadable_reason"] == "layout responsibility failed"
+    assert diagnostic["authority"] == prep.PREP_DIAGNOSTIC_AUTHORITY
+    assert diagnostic["diagnostic_only"] is True
+    assert diagnostic["release_boundary"] == "closed"
+    assert diagnostic["runtime_boundary"] == "closed"
+    assert diagnostic["loadable"] is False
     assert diagnostic["layout_responsibility"]["ok"] is False
     assert "unsupported_layout_need" in {
         item["reason"] for item in diagnostic["layout_responsibility"]["violations"]
     }
+    ledger_row = json.loads(
+        (tmp_path / prep.PREP_DIAGNOSTIC_LEDGER_FILENAME).read_text(encoding="utf-8")
+    )
+    assert ledger_row["terminal_status"] == "refused_no_release"
+    assert ledger_row["terminal_reason"] == "layout_responsibility_failed"
+    assert ledger_row["qdrant_eligible"] is False
+    dossier = json.loads(Path(ledger_row["dossier_ref"]).read_text(encoding="utf-8"))
+    assert dossier["diagnostic_refs"] == [str(diagnostic_path)]
+    assert dossier["refusal_metadata"]["violation_count"] >= 1
 
 
 def test_prep_segment_repairs_spoken_only_tier_list_into_visible_placements(
@@ -837,9 +928,10 @@ def test_prep_segment_repairs_spoken_only_tier_list_into_visible_placements(
         json.dumps({"programmes": [load_path.name]}),
         encoding="utf-8",
     )
-    assert [item["programme_id"] for item in prep.load_prepped_programmes(load_root)] == [
-        "prog-tier-repair"
-    ]
+    assert [
+        item["programme_id"]
+        for item in prep.load_prepped_programmes(load_root, require_selected=False)
+    ] == ["prog-tier-repair"]
 
 
 def test_prep_segment_rejects_tier_list_repair_without_exact_placements(
@@ -935,7 +1027,7 @@ def test_load_prepped_programmes_rejects_tier_list_without_exact_placements(
     payload["artifact_sha256"] = prep._artifact_hash(payload)
     _write_artifact(tmp_path, payload)
 
-    assert prep.load_prepped_programmes(tmp_path) == []
+    assert prep.load_prepped_programmes(tmp_path, require_selected=False) == []
 
 
 def test_load_prepped_programmes_rejects_final_candidate_without_exact_placement(
@@ -974,7 +1066,7 @@ def test_load_prepped_programmes_rejects_final_candidate_without_exact_placement
         encoding="utf-8",
     )
 
-    assert prep.load_prepped_programmes(tmp_path) == []
+    assert prep.load_prepped_programmes(tmp_path, require_selected=False) == []
 
 
 def test_prep_segment_rejects_unsafe_programme_id_before_writing(
@@ -1025,7 +1117,7 @@ def test_load_prepped_programmes_rejects_programme_id_filename_mismatch(
         encoding="utf-8",
     )
 
-    assert prep.load_prepped_programmes(tmp_path) == []
+    assert prep.load_prepped_programmes(tmp_path, require_selected=False) == []
 
 
 def test_qdrant_upsert_indexes_only_valid_saved_artifacts(

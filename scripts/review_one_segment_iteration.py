@@ -36,7 +36,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--receipt-out", type=Path, default=None)
     args = parser.parse_args(argv)
 
-    artifacts = load_prepped_programmes(args.prep_dir)
+    artifacts = load_prepped_programmes(args.prep_dir, require_selected=False)
     receipt = review_one_segment_iteration(
         artifacts,
         team_critique_receipts=_load_team_receipts(args.team_receipts),
