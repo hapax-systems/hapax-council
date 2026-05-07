@@ -14,6 +14,8 @@ def test_constructs_without_error() -> None:
     assert overlay._tile_y == 200
     assert overlay._tile_w == 320
     assert overlay._tile_h == 180
+    assert overlay._projection.grants_layout_success is False
+    assert overlay._projection.grants_face_obscuring is False
 
 
 def test_draw_no_surface_is_no_op() -> None:
@@ -57,3 +59,15 @@ def test_init_logs_position() -> None:
     mock_log.info.assert_called_once()
     call_args = mock_log.info.call_args
     assert "brio-room" in str(call_args)
+
+
+def test_draw_uses_constant_alpha_projection() -> None:
+    overlay = HeroSmallOverlay("brio-operator", 0, 0, 100, 100)
+    overlay._surface = MagicMock()
+    cr = MagicMock()
+
+    overlay.draw(cr)
+
+    cr.paint_with_alpha.assert_called_once_with(overlay._projection.alpha)
+    assert cr.set_source_rgba.call_args_list[0].args[-1] == overlay._projection.backdrop_alpha
+    assert cr.set_source_rgba.call_args_list[-1].args[-1] == overlay._projection.border_alpha
