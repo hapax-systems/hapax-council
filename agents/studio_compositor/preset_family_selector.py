@@ -163,6 +163,30 @@ FAMILY_PRESETS: dict[str, tuple[str, ...]] = {
         # Audit pools 2026-05-03
         "drone_static_drift",
         "drone_dense_static",
+        # 2026-05-07: 19 presets were missing from ALL families.
+        # Operator directive: all 87 must be available all the time.
+        # Distributed across families by aesthetic fit:
+        "antivapor_grit",
+        "antivapor_thresh",
+        "clean",
+        "tape_warmth",
+        "vinyl_dust",
+        "vinyl_pop_static",
+        "reverie_vocabulary",
+    ),
+    "audio-reactive-extended": (
+        "dub_echo_spatial",
+        "dub_tunnel_chamber",
+        "granular_stutter",
+        "granular_tile_grid",
+        "liquid_flow_breath",
+        "liquid_flow_fluid",
+        "m8_music_reactive_transport",
+        "modulation_pulse_strobe",
+        "modulation_pulse_warp",
+        "glitch_y2k_block",
+        "glitch_y2k_chroma",
+        "tape_wow_flutter",
     ),
 }
 
