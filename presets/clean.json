@@ -1,6 +1,6 @@
 {
   "name": "Clean",
-  "description": "Minimal processing",
+  "description": "Minimal processing with subtle posterization for obscuring compliance.",
   "transition_ms": 300,
   "nodes": {
     "color": {
@@ -32,6 +32,12 @@
       "params": {
         "vignette_strength": 0.0,
         "sediment_strength": 0.1
+      }
+    },
+    "posterize": {
+      "type": "posterize",
+      "params": {
+        "levels": 12
       }
     }
   },
