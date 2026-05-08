@@ -196,8 +196,9 @@ def test_metric_labelled_per_source() -> None:
 
 
 def test_default_layout_non_destructive_flags() -> None:
-    """Default garage-door layout JSON: non_destructive is False on all
-    assignments (garage-door merge removed the flag from informational wards)."""
+    """Default layout JSON: 12 informational wards use non_destructive=True
+    so the NONDESTRUCTIVE_ALPHA_CEILING (0.6) preserves underlying camera
+    content at ≥40% visibility."""
     from pathlib import Path
 
     layout_path = (
@@ -207,10 +208,20 @@ def test_default_layout_non_destructive_flags() -> None:
     layout = Layout.model_validate(raw)
 
     non_destructive_sources = {a.source for a in layout.assignments if a.non_destructive}
-    assert not non_destructive_sources, (
-        f"garage-door layout should have no non_destructive assignments, "
-        f"but found: {non_destructive_sources}"
-    )
+    assert non_destructive_sources == {
+        "cbip_signal_density",
+        "chat_ambient",
+        "chronicle_ticker",
+        "programme_state",
+        "polyend_instrument_reveal",
+        "interactive_lore_query",
+        "constructivist_research_poster",
+        "tufte_density",
+        "ascii_schematic",
+        "segment_content",
+        "m8_oscilloscope",
+        "cbip_dual_ir_displacement",
+    }
 
 
 # ---------------------------------------------------------------------------

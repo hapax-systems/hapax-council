@@ -51,13 +51,14 @@ def test_steamdeck_fullscreen_surface_present() -> None:
     assert surface.geometry.h == 1080
 
 
-def test_assignments_default_to_zero_opacity() -> None:
-    """Surfaces start hidden — the ward only appears when the
-    affordance pipeline recruits it."""
+def test_assignments_default_opacity() -> None:
+    """PiP starts visible (opacity 1.0); fullscreen stays hidden (0.0)
+    until the affordance pipeline recruits it."""
     assignments = _assignments_for_source("steamdeck-display")
     assert len(assignments) == 2
-    for a in assignments:
-        assert a.opacity == 0.0
+    by_surface = {a.surface: a for a in assignments}
+    assert by_surface["steamdeck-display-pip"].opacity == 1.0
+    assert by_surface["steamdeck-display-fullscreen"].opacity == 0.0
 
 
 def test_steamdeck_reveal_affordance_registered() -> None:
