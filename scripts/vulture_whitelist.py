@@ -2729,3 +2729,10 @@ ReleaseCandidateRecord
 run_orr_lite
 validate_rollback_plan
 check_public_currentness
+
+# Slice 7 migration/closure — CLI entrypoints in scripts/legacy-intake-converter
+from shared.case_migration import annotate_task_file, generate_stub, scan_tasks  # noqa: F401, E402
+
+generate_stub
+scan_tasks
+annotate_task_file
