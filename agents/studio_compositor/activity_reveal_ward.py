@@ -40,7 +40,10 @@ import time
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
+
+if TYPE_CHECKING:
+    from shared.homage_package import RGBA
 
 log = logging.getLogger(__name__)
 
@@ -303,6 +306,41 @@ class ActivityRevealMixin(ABC):
             return False
         consumed = self._consumed_visible_seconds(now=now)
         return consumed >= self._visibility_ceiling_s
+
+    # ── Palette helpers (HOMAGE compliance) ─────────────────────────
+
+    @staticmethod
+    def _active_package() -> Any:
+        """Return the active HomagePackage, or None.
+
+        Deferred import keeps the mixin free of hard dependencies on the
+        homage subsystem — subclasses that never render Cairo (M8, Steam
+        Deck) do not pay for the import.
+        """
+        try:
+            from agents.studio_compositor.homage import get_active_package
+
+            return get_active_package()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _resolve_palette_colour(role: str) -> RGBA | None:
+        """Resolve a palette colour role from the active HomagePackage.
+
+        Returns ``None`` when no package is active or the role is unknown.
+        Concrete subclasses use this in their render paths instead of
+        hardcoded RGBA literals.
+        """
+        try:
+            from agents.studio_compositor.homage import get_active_package
+
+            pkg = get_active_package()
+            if pkg is None:
+                return None
+            return pkg.resolve_colour(role)  # type: ignore[arg-type]
+        except Exception:
+            return None
 
     # ── Internal poll ────────────────────────────────────────────────
 
