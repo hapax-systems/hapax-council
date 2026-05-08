@@ -2711,3 +2711,15 @@ check_protected_session
 make_dispatch_id
 record_claim
 select_dispatch_priority
+
+# evidence-validator CLI and hooks consume these.
+from shared.evidence_ledger import EvidenceLedger, TraceGraph, check_tier_compliance
+
+EvidenceLedger.fresh_entries
+EvidenceLedger.stale_entries
+EvidenceLedger.append_receipt
+EvidenceLedger.receipts_for_case
+TraceGraph
+TraceGraph.add_link
+TraceGraph.unlinked_requirements
+check_tier_compliance
