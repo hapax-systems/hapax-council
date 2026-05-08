@@ -2688,3 +2688,9 @@ ActivityRevealMixin._resolve_palette_colour
 from agents.studio_compositor.face_obscure_integration import reset_pipeline_cache
 
 reset_pipeline_cache
+
+# team-metadata-probe and SessionStart dispatch consume these.
+from shared.team_registry import TeamRegistry
+
+TeamRegistry.fresh_lanes
+TeamRegistry.stale_lanes
