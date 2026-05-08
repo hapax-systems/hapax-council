@@ -1130,18 +1130,18 @@ class StudioCompositor:
         return True
 
     def _on_v4l2_frame_pushed(self) -> None:
-        """Called from the v4l2sink BUFFER probe (streaming-thread hot path).
-
-        Records the monotonic time of the most recent v4l2sink push so
-        ``v4l2_frame_seen_within`` can gate the systemd watchdog. Cheap;
-        held lock is uncontended in practice (one writer, one reader at
-        ~20s intervals). Ref: docs/research/2026-04-20-v4l2sink-stall-
-        prevention.md §7-§8.
-        """
+        """Called from the v4l2sink BUFFER probe (streaming-thread hot path)."""
         now = time.monotonic()
         with self._v4l2_lock:
             self._v4l2_frame_count += 1
             self._v4l2_last_frame_monotonic = now
+        try:
+            from . import metrics
+
+            if metrics.V4L2SINK_FRAMES_TOTAL is not None:
+                metrics.V4L2SINK_FRAMES_TOTAL.inc()
+        except Exception:
+            pass
 
     def v4l2_frame_seen_within(self, seconds: float) -> bool:
         """True iff v4l2sink pushed a frame within the last ``seconds``."""
