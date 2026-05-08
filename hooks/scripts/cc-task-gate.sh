@@ -52,6 +52,9 @@ case "$tool_name" in
     ;;
 esac
 
+# --- 2b. Extract edit path for docs-vs-source classification (section 10) ---
+edit_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.path // .tool_input.notebook_path // empty' 2>/dev/null || echo "")"
+
 # --- 3. Bypass for incident response ---
 if [[ "${HAPAX_CC_TASK_GATE_OFF:-0}" == "1" ]]; then
   exit 0
@@ -139,8 +142,10 @@ if ! command -v python3 &>/dev/null; then
   exit 0
 fi
 
-# Use a tiny inline python to extract status + assigned_to + blocked_reason.
-# Output format: "status\tassigned_to\tblocked_reason"
+# Use a tiny inline python to extract status + assigned_to + blocked_reason
+# + AuthorityCase fields (case_id, stage, implementation_authorized,
+# source_mutation_authorized, docs_mutation_authorized).
+# Output format: "status\tassigned_to\tblocked_reason\tcase_id\tstage\timpl_auth\tsrc_auth\tdocs_auth"
 parse_output="$(python3 - "$note_path" <<'PYEOF'
 import sys
 from pathlib import Path
@@ -148,31 +153,39 @@ from pathlib import Path
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
 if not text.startswith("---"):
-    print("\t\t")
+    print("\t\t\t\t\t\t\t")
     sys.exit(0)
 end = text.find("\n---", 4)
 if end < 0:
-    print("\t\t")
+    print("\t\t\t\t\t\t\t")
     sys.exit(0)
 front = text[4:end]
-status = ""
-assigned = ""
-blocked_reason = ""
+fields = {}
 for line in front.splitlines():
     line = line.strip()
-    if line.startswith("status:"):
-        status = line.split(":", 1)[1].strip()
-    elif line.startswith("assigned_to:"):
-        assigned = line.split(":", 1)[1].strip()
-    elif line.startswith("blocked_reason:"):
-        blocked_reason = line.split(":", 1)[1].strip().strip('"').strip("'")
-print(f"{status}\t{assigned}\t{blocked_reason}")
+    if ":" in line:
+        key, _, val = line.partition(":")
+        fields[key.strip()] = val.strip().strip('"').strip("'")
+status = fields.get("status", "")
+assigned = fields.get("assigned_to", "")
+blocked_reason = fields.get("blocked_reason", "")
+case_id = fields.get("case_id", "")
+stage = fields.get("stage", "")
+impl_auth = fields.get("implementation_authorized", "")
+src_auth = fields.get("source_mutation_authorized", "")
+docs_auth = fields.get("docs_mutation_authorized", "")
+print(f"{status}\t{assigned}\t{blocked_reason}\t{case_id}\t{stage}\t{impl_auth}\t{src_auth}\t{docs_auth}")
 PYEOF
 )"
 
 status="$(printf '%s' "$parse_output" | cut -f1)"
 assigned="$(printf '%s' "$parse_output" | cut -f2)"
 blocked_reason="$(printf '%s' "$parse_output" | cut -f3)"
+case_id="$(printf '%s' "$parse_output" | cut -f4)"
+case_stage="$(printf '%s' "$parse_output" | cut -f5)"
+impl_authorized="$(printf '%s' "$parse_output" | cut -f6)"
+src_authorized="$(printf '%s' "$parse_output" | cut -f7)"
+docs_authorized="$(printf '%s' "$parse_output" | cut -f8)"
 
 # --- 8. Check assigned_to ---
 if [[ "$assigned" != "$role" ]]; then
@@ -189,8 +202,7 @@ fi
 # --- 9. Check status ---
 case "$status" in
   in_progress)
-    # Allowed.
-    exit 0
+    # Status OK — fall through to AuthorityCase validation (section 10).
     ;;
   claimed)
     # Auto-transition claimed → in_progress on first mutation.
@@ -248,7 +260,7 @@ EOF
     ;;
   pr_open)
     # PR-open is fine for further edits (CI fixes, review feedback).
-    exit 0
+    # Fall through to AuthorityCase validation (section 10).
     ;;
   done|withdrawn|superseded)
     cat >&2 <<EOF
@@ -276,3 +288,81 @@ EOF
     exit 0
     ;;
 esac
+
+# --- 10. AuthorityCase validation (SDLC Reform Slice 2) ---
+# If the task has a case_id, it's under the AuthorityCase methodology.
+# Validate that the case stage and authorization fields allow mutation.
+# Tasks without case_id predate the methodology — allowed (migration compat).
+if [[ -z "$case_id" ]]; then
+  exit 0
+fi
+
+# Emergency bypass with audit logging
+if [[ "${HAPAX_METHODOLOGY_EMERGENCY:-0}" == "1" ]]; then
+  _emergency_ledger="$HOME/.cache/hapax/methodology-emergency-ledger.jsonl"
+  mkdir -p "$(dirname "$_emergency_ledger")"
+  printf '{"ts":"%s","role":"%s","task":"%s","case":"%s","tool":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$role" "$task_id" "$case_id" "$tool_name" \
+    >> "$_emergency_ledger"
+  echo "cc-task-gate: EMERGENCY BYPASS — logged to $_emergency_ledger" >&2
+  exit 0
+fi
+
+# Stage must be S6 or later for implementation
+_stage_num=""
+if [[ "$case_stage" =~ ^S([0-9]+) ]]; then
+  _stage_num="${BASH_REMATCH[1]}"
+fi
+if [[ -n "$_stage_num" && "$_stage_num" -lt 6 ]]; then
+  cat >&2 <<EOF
+cc-task-gate: BLOCKED — AuthorityCase '$case_id' is at stage '$case_stage' (< S6).
+
+  Implementation requires stage >= S6 with implementation_authorized: true.
+  Task: $note_path
+
+  To bypass for emergencies: HAPAX_METHODOLOGY_EMERGENCY=1
+EOF
+  exit 2
+fi
+
+# implementation_authorized must be true
+if [[ "$impl_authorized" != "true" ]]; then
+  cat >&2 <<EOF
+cc-task-gate: BLOCKED — AuthorityCase '$case_id' does not have implementation_authorized: true.
+
+  Current value: implementation_authorized: $impl_authorized
+  Task: $note_path
+
+  Create an Implementation Slice Authorization Packet (S5) first.
+  To bypass for emergencies: HAPAX_METHODOLOGY_EMERGENCY=1
+EOF
+  exit 2
+fi
+
+# Determine if this is a docs-only mutation
+_is_docs_edit=false
+if [[ -n "$edit_path" ]]; then
+  case "$edit_path" in
+    */docs/*|*/CLAUDE.md|*/README.md|*/.md) _is_docs_edit=true ;;
+  esac
+fi
+
+# For docs mutations, check docs_mutation_authorized
+if [[ "$_is_docs_edit" == "true" && "$docs_authorized" != "true" ]]; then
+  # Source mutation auth subsumes docs if source is authorized
+  if [[ "$src_authorized" != "true" ]]; then
+    cat >&2 <<EOF
+cc-task-gate: BLOCKED — AuthorityCase '$case_id' does not authorize docs mutation.
+
+  docs_mutation_authorized: $docs_authorized
+  source_mutation_authorized: $src_authorized
+  File: $edit_path
+  Task: $note_path
+
+  To bypass for emergencies: HAPAX_METHODOLOGY_EMERGENCY=1
+EOF
+    exit 2
+  fi
+fi
+
+exit 0
