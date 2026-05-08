@@ -1,0 +1,12 @@
+[Unit]
+Description=v4l2 heartbeat watchdog — detect and recover stalled compositor frame output
+After=studio-compositor.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-v4l2-watchdog.sh
+Environment=HOME=/home/hapax
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+SyslogIdentifier=hapax-v4l2-watchdog
+TimeoutSec=15
