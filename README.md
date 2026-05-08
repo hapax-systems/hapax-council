@@ -4,6 +4,11 @@ Single-operator runtime of the Hapax operating environment. Constituent of the H
 
 [![CI](https://github.com/ryanklee/hapax-council/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanklee/hapax-council/actions/workflows/ci.yml)
 
+> **Reviewer / AI-safety orientation:** start with
+> [`START_HERE.md`](START_HERE.md). It gives the short dossier for this
+> repository as an empirical grounding, refusal, agentic-oversight, and
+> public-egress safety artifact.
+
 ## Project spine
 
 Single-operator infrastructure, externalized executive function, semantic recruitment, conversational grounding research, the 24/7 livestream as instrument, and refusal as data are the first-screen frame for this repository.
