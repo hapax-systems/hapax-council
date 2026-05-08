@@ -84,8 +84,8 @@ COLORS = [
     (1.0, 0.4, 0.8),  # hot pink
 ]
 
-AUDIO_LINE_WIDTH_BASE_PX = 1.5
-AUDIO_LINE_WIDTH_SCALE_PX = 2.0
+AUDIO_LINE_WIDTH_BASE_PX = 2.5
+AUDIO_LINE_WIDTH_SCALE_PX = 3.0
 AUDIO_LINE_WIDTH_ATTACK_LIFT = 0.35
 AUDIO_LINE_WIDTH_MAX_PX = AUDIO_LINE_WIDTH_BASE_PX + AUDIO_LINE_WIDTH_SCALE_PX
 
@@ -767,9 +767,9 @@ class SierpinskiCairoSource(HomageTransitionalSource):
                 color_idx = (i + int(t * 0.5) + color_shift) % len(COLORS)
                 r, g, b = COLORS[color_idx]
 
-                # Glow (wider, semi-transparent)
+                # Glow (wider, semi-transparent — 0.25 base so neon reads through glfeedback)
                 cr.set_line_width(line_width * 3.0)
-                cr.set_source_rgba(r, g, b, 0.15 * alpha_mult)
+                cr.set_source_rgba(r, g, b, 0.25 * alpha_mult)
                 cr.move_to(*tri[0])
                 cr.line_to(*tri[1])
                 cr.line_to(*tri[2])

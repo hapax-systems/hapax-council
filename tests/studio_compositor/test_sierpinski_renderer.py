@@ -60,6 +60,27 @@ def test_audio_line_width_keeps_existing_max_footprint(renderer: SierpinskiCairo
     assert renderer._audio_line_width() == pytest.approx(AUDIO_LINE_WIDTH_MAX_PX)  # noqa: SLF001
 
 
+def test_audio_reactive_modulation_produces_visible_delta(renderer: SierpinskiCairoSource) -> None:
+    """At moderate audio energy the line width must be noticeably thicker than silence."""
+    renderer.set_audio_energy(0.0)
+    silence_width = renderer._audio_line_width()  # noqa: SLF001
+
+    renderer.set_audio_energy(0.5)
+    moderate_width = renderer._audio_line_width()  # noqa: SLF001
+
+    assert moderate_width > silence_width
+    assert moderate_width - silence_width >= 1.0, (
+        f"Delta {moderate_width - silence_width:.2f}px too small to be visible in broadcast"
+    )
+
+
+def test_base_line_width_visible_at_720p(renderer: SierpinskiCairoSource) -> None:
+    """Base line width must be ≥2px so Sierpinski reads through glfeedback at 720p."""
+    from agents.studio_compositor.sierpinski_renderer import AUDIO_LINE_WIDTH_BASE_PX
+
+    assert AUDIO_LINE_WIDTH_BASE_PX >= 2.0
+
+
 def test_geometry_cache_l2_default(renderer: SierpinskiCairoSource) -> None:
     geom = renderer.geometry_cache(target_depth=2, canvas_w=1280, canvas_h=720)
     # L0 + L1 corners + L2 corners = 1 + 3 + 9 = 13
