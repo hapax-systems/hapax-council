@@ -1,26 +1,29 @@
-"""Isolated v4l2sink output pipeline via interpipesrc.
+"""Isolated v4l2 output pipeline via interpipesrc + appsink + os.write.
 
-Decouples the v4l2sink from the main compositor pipeline so state
-transitions (PLAYING→NULL→PLAYING for stall recovery) complete in <1s
-instead of requiring a 15-30s flush of the upstream GL chain.
+Decouples the v4l2 output from the main compositor pipeline. Frames
+arrive through interpipesrc, reach an appsink, and are written to the
+v4l2loopback device fd with os.write(). On write failure (EAGAIN, EIO,
+ENODEV) the fd is closed and reopened — no GStreamer pipeline teardown
+required.
 
 Graph::
 
     interpipesrc(listen-to="compositor_v4l2_out")
       → queue(leaky=downstream, max-size-buffers=5)
-      → videoconvert
+      → videoconvert(dither=0)
       → capsfilter(video/x-raw,format=NV12,width×height,fps)
-      → v4l2sink(sync=False)
+      → appsink(emit-signals=True, max-buffers=2, drop=True)
 
 The main pipeline ends at an ``interpipesink`` named
 ``compositor_v4l2_out`` on ``output_tee``. This class consumes from
-that channel — same pattern as ``CameraPipeline`` but inverted
-(camera = producer → interpipesink; this = interpipesrc → consumer).
+that channel — same pattern as ``CameraPipeline`` but inverted.
 """
 
 from __future__ import annotations
 
+import errno
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -29,6 +32,9 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 INTERPIPE_CHANNEL = "compositor_v4l2_out"
+
+_RECOVERABLE_ERRNOS = frozenset({errno.EAGAIN, errno.EIO, errno.ENODEV, errno.ENXIO})
+_FD_REOPEN_DELAY_S = 0.1
 
 
 class V4l2OutputPipeline:
@@ -56,11 +62,108 @@ class V4l2OutputPipeline:
         self._started = False
         self._last_frame_monotonic: float = 0.0
 
+        self._fd: int = -1
+        self._fd_lock = threading.Lock()
+        self._fd_reopen_count: int = 0
+        self._fd_write_error_count: int = 0
+
     @property
     def last_frame_age_seconds(self) -> float:
         if self._last_frame_monotonic <= 0.0:
             return float("inf")
         return time.monotonic() - self._last_frame_monotonic
+
+    @property
+    def fd_reopen_count(self) -> int:
+        return self._fd_reopen_count
+
+    @property
+    def fd_write_error_count(self) -> int:
+        return self._fd_write_error_count
+
+    def _open_fd(self) -> bool:
+        with self._fd_lock:
+            if self._fd >= 0:
+                return True
+            try:
+                self._fd = os.open(self._device, os.O_WRONLY | os.O_NONBLOCK)
+                log.info("Opened v4l2 device fd=%d: %s", self._fd, self._device)
+                return True
+            except OSError as exc:
+                log.warning("Failed to open %s: %s", self._device, exc)
+                self._fd = -1
+                return False
+
+    def _close_fd(self) -> None:
+        with self._fd_lock:
+            if self._fd >= 0:
+                try:
+                    os.close(self._fd)
+                except OSError:
+                    pass
+                self._fd = -1
+
+    def _reopen_fd(self) -> bool:
+        self._close_fd()
+        time.sleep(_FD_REOPEN_DELAY_S)
+        opened = self._open_fd()
+        if opened:
+            self._fd_reopen_count += 1
+            try:
+                from . import metrics as _m
+
+                if _m.V4L2SINK_FD_REOPENS_TOTAL is not None:
+                    _m.V4L2SINK_FD_REOPENS_TOTAL.inc()
+            except Exception:
+                pass
+            log.info("Reopened v4l2 fd (total reopens: %d)", self._fd_reopen_count)
+        return opened
+
+    def _write_frame(self, data: bytes) -> bool:
+        with self._fd_lock:
+            if self._fd < 0:
+                return False
+            try:
+                os.write(self._fd, data)
+                return True
+            except OSError as exc:
+                self._fd_write_error_count += 1
+                if exc.errno in _RECOVERABLE_ERRNOS:
+                    log.warning("v4l2 write error (errno=%d), scheduling fd reopen", exc.errno)
+                else:
+                    log.error("v4l2 write error (unexpected errno=%d): %s", exc.errno, exc)
+                return False
+
+    def _on_new_sample(self, appsink: Any) -> Any:
+        Gst = self._Gst
+        sample = appsink.emit("pull-sample")
+        if sample is None:
+            return Gst.FlowReturn.OK
+
+        buf = sample.get_buffer()
+        if buf is None:
+            return Gst.FlowReturn.OK
+
+        ok, map_info = buf.map(Gst.MapFlags.READ)
+        if not ok:
+            return Gst.FlowReturn.OK
+
+        try:
+            written = self._write_frame(bytes(map_info.data))
+        finally:
+            buf.unmap(map_info)
+
+        if written:
+            self._last_frame_monotonic = time.monotonic()
+            if self._on_frame is not None:
+                try:
+                    self._on_frame()
+                except Exception:
+                    pass
+        else:
+            threading.Thread(target=self._reopen_fd, daemon=True).start()
+
+        return Gst.FlowReturn.OK
 
     def build(self) -> None:
         with self._state_lock:
@@ -96,32 +199,21 @@ class V4l2OutputPipeline:
                 ),
             )
 
-            sink = Gst.ElementFactory.make("v4l2sink", "output")
-            if sink is None:
-                raise RuntimeError("v4l2sink factory failed")
-            sink.set_property("device", self._device)
-            sink.set_property("sync", False)
-            sink.set_property("qos", False)
-            try:
-                sink.set_property("enable-last-sample", False)
-            except TypeError:
-                pass
+            appsink = Gst.ElementFactory.make("appsink", "output")
+            if appsink is None:
+                raise RuntimeError("appsink factory failed")
+            appsink.set_property("emit-signals", True)
+            appsink.set_property("max-buffers", 2)
+            appsink.set_property("drop", True)
+            appsink.set_property("sync", False)
+            appsink.connect("new-sample", self._on_new_sample)
 
-            for el in (src, queue, convert, caps, sink):
+            for el in (src, queue, convert, caps, appsink):
                 pipeline.add(el)
             src.link(queue)
             queue.link(convert)
             convert.link(caps)
-            caps.link(sink)
-
-            # Frame-flow probe on sink pad
-            sink_pad = sink.get_static_pad("sink")
-            if sink_pad is not None:
-                sink_pad.add_probe(
-                    Gst.PadProbeType.BUFFER,
-                    self._buffer_probe,
-                    None,
-                )
+            caps.link(appsink)
 
             bus = pipeline.get_bus()
             bus.add_signal_watch()
@@ -130,16 +222,11 @@ class V4l2OutputPipeline:
             self._pipeline = pipeline
             self._bus = bus
             self._bus_signal_id = sig_id
-            log.info("V4l2OutputPipeline built: %s → %s", INTERPIPE_CHANNEL, self._device)
-
-    def _buffer_probe(self, pad: Any, info: Any, _user_data: Any) -> Any:
-        self._last_frame_monotonic = time.monotonic()
-        if self._on_frame is not None:
-            try:
-                self._on_frame()
-            except Exception:
-                pass
-        return self._Gst.PadProbeReturn.OK
+            log.info(
+                "V4l2OutputPipeline built: %s → appsink → os.write(%s)",
+                INTERPIPE_CHANNEL,
+                self._device,
+            )
 
     def _on_bus_error(self, _bus: Any, message: Any) -> None:
         err, debug = message.parse_error()
@@ -150,10 +237,16 @@ class V4l2OutputPipeline:
             if self._pipeline is None:
                 log.error("V4l2OutputPipeline: start called without build")
                 return False
+
+            if not self._open_fd():
+                log.error("V4l2OutputPipeline: failed to open %s", self._device)
+                return False
+
             Gst = self._Gst
             ret = self._pipeline.set_state(Gst.State.PLAYING)
             if ret == Gst.StateChangeReturn.FAILURE:
                 log.error("V4l2OutputPipeline: set_state(PLAYING) FAILURE")
+                self._close_fd()
                 return False
             self._started = True
             log.info("V4l2OutputPipeline started (state change=%s)", ret.value_nick)
@@ -179,6 +272,7 @@ class V4l2OutputPipeline:
                 log.warning("V4l2OutputPipeline: NULL transition incomplete (%.0fms)", dt_ms)
             else:
                 log.info("V4l2OutputPipeline stopped (%.0fms)", dt_ms)
+            self._close_fd()
             self._started = False
 
     def teardown(self) -> None:

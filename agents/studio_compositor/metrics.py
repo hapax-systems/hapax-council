@@ -104,6 +104,8 @@ V4L2SINK_FRAMES_TOTAL: Any = None
 # Cc-task ``compositor-v4l2sink-graph-mutation-stall`` (2026-05-04).
 V4L2SINK_STALL_TOTAL: Any = None
 V4L2SINK_RECOVERY_TOTAL: Any = None
+V4L2SINK_FD_REOPENS_TOTAL: Any = None
+V4L2SINK_WRITE_ERRORS_TOTAL: Any = None
 DIRECTOR_LAST_INTENT_AGE: Any = None
 DIRECTOR_INTENT_TOTAL: Any = None
 HAPAX_REFUSAL_GATE_REROLLS: Any = None
@@ -264,6 +266,8 @@ def _init_metrics() -> None:
     global V4L2SINK_FRAMES_TOTAL
     global V4L2SINK_STALL_TOTAL
     global V4L2SINK_RECOVERY_TOTAL
+    global V4L2SINK_FD_REOPENS_TOTAL
+    global V4L2SINK_WRITE_ERRORS_TOTAL
     global DIRECTOR_LAST_INTENT_AGE
     global DIRECTOR_INTENT_TOTAL
     global HAPAX_REFUSAL_GATE_REROLLS
@@ -712,6 +716,16 @@ def _init_metrics() -> None:
             "escalated."
         ),
         ["outcome"],
+        registry=REGISTRY,
+    )
+    V4L2SINK_FD_REOPENS_TOTAL = Counter(
+        "hapax_compositor_v4l2_fd_reopens_total",
+        "Cumulative v4l2 device fd reopen events (appsink+os.write recovery).",
+        registry=REGISTRY,
+    )
+    V4L2SINK_WRITE_ERRORS_TOTAL = Counter(
+        "hapax_compositor_v4l2_write_errors_total",
+        "Cumulative os.write() failures to v4l2loopback device.",
         registry=REGISTRY,
     )
     # Phase 1 director liveness watchdog per

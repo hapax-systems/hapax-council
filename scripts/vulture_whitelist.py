@@ -2736,3 +2736,9 @@ from shared.case_migration import annotate_task_file, generate_stub, scan_tasks 
 generate_stub
 scan_tasks
 annotate_task_file
+
+# v4l2 appsink+os.write — properties consumed by watchdog/metrics
+from agents.studio_compositor.v4l2_output_pipeline import V4l2OutputPipeline  # noqa: F401, E402
+
+V4l2OutputPipeline.fd_reopen_count
+V4l2OutputPipeline.fd_write_error_count
