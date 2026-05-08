@@ -3479,6 +3479,20 @@ class DirectorLoop:
         except Exception:
             log.debug("camera salience director query failed", exc_info=True)
 
+        # ─── Layer 1b.2: Audio reactivity (ARI L1/L22) ──────────────
+        # The director reads blended audio state so it can modulate
+        # visual density and impingement choice based on what the room
+        # sounds like. L1 (force-field): dense audio → sparse visual.
+        # L22 (voice temporal linearization): voice activity creates
+        # temporal structure the director should respond to.
+        try:
+            audio_block = self._render_audio_reactivity_block()
+            if audio_block:
+                parts.append("")
+                parts.extend(audio_block)
+        except Exception:
+            log.debug("audio reactivity director block failed", exc_info=True)
+
         # ─── Layer 1c: Structural direction (Phase 5c — long-horizon
         # context from StructuralDirector). Stays in effect ~150s; reading
         # is best-effort. Missing file → narrative director decides freely.
@@ -4085,6 +4099,59 @@ class DirectorLoop:
         parts.append("</reactor_context>")
 
         return "\n".join(parts)
+
+    def _render_audio_reactivity_block(self) -> list[str] | None:
+        """Build a prompt block summarizing the current audio state.
+
+        Returns None when the bus has no fresh snapshot, so the section
+        is silently omitted and the director decides without audio context.
+        """
+        from shared.audio_reactivity import read_shm_snapshot
+
+        snapshot = read_shm_snapshot(max_age_s=5.0)
+        if snapshot is None:
+            return None
+
+        b = snapshot.blended
+        lines: list[str] = ["## Audio Reactivity"]
+
+        if b.rms < 0.02:
+            energy_label = "silent"
+        elif b.rms < 0.15:
+            energy_label = "low"
+        elif b.rms < 0.45:
+            energy_label = "moderate"
+        else:
+            energy_label = "high"
+
+        if b.bass_band > b.mid_band and b.bass_band > b.treble_band:
+            spectrum_label = "bass-heavy"
+        elif b.treble_band > b.mid_band:
+            spectrum_label = "bright"
+        else:
+            spectrum_label = "balanced"
+
+        voice_active = any(s.rms > 0.05 for s in snapshot.per_source.values())
+
+        lines.append(
+            f"Energy: {energy_label} (rms={b.rms:.3f}) · "
+            f"Spectrum: {spectrum_label} · "
+            f"Voice: {'active' if voice_active else 'inactive'} · "
+            f"Beat: {'yes' if b.onset > 0.3 else 'no'} · "
+            f"Sources: {', '.join(snapshot.active_sources) or 'none'}"
+        )
+        if b.bpm_estimate > 0:
+            lines.append(f"BPM estimate: {b.bpm_estimate:.0f}")
+
+        lines.append(
+            "Audio-visual balance: when audio is dense, prefer sparser "
+            "chrome (chrome.density=sparser) and let the sound carry. "
+            "When audio is silent, visual density compensates "
+            "(chrome.density=denser, ward emphasis). Voice activity "
+            "creates temporal structure — match pace.tempo_shift to "
+            "the speaking rhythm."
+        )
+        return lines
 
     def _gather_images(self) -> list[str]:
         """Collect image paths for the LLM call. Skips empty/missing files.
