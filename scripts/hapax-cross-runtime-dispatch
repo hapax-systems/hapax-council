@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# hapax-cross-runtime-dispatch — invoke Claude/Codex/Gemini with orchestration receipts.
+#
+# Reads team metadata registry (Slice 3A), checks freshness gates,
+# validates session protection and duplicate checks, then dispatches
+# to the target runtime with a ledger receipt.
+#
+# CASE-SDLC-REFORM-001 / SLICE-003C-CROSS-RUNTIME
+#
+# Usage:
+#   hapax-cross-runtime-dispatch --lane beta --task ari-sierpinski --platform claude
+#   hapax-cross-runtime-dispatch --lane cx-red --task some-task --platform codex
+#   hapax-cross-runtime-dispatch --lane iota --task research-task --platform gemini
+#   hapax-cross-runtime-dispatch --list-eligible          # show dispatch candidates
+#   hapax-cross-runtime-dispatch --check-lane beta        # freshness + protection check
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Defaults
+DISPATCHER="${HAPAX_AGENT_NAME:-operator}"
+REGISTRY_DIR="${HAPAX_TEAM_REGISTRY_DIR:-$HOME/.cache/hapax/team-registry}"
+LEDGER_DIR="${HAPAX_ORCHESTRATION_LEDGER_DIR:-$HOME/.cache/hapax/orchestration}"
+PROTECTION_FILE="${HAPAX_SESSION_PROTECTION:-$HOME/.cache/hapax/relay/session-protection.md}"
+
+usage() {
+    cat <<'USAGE'
+hapax-cross-runtime-dispatch — cross-runtime dispatch with orchestration receipts
+
+Options:
+  --lane LANE          Target lane (e.g., beta, cx-red, iota)
+  --platform PLATFORM  Target platform (claude, codex, gemini)
+  --task TASK_ID       cc-task to dispatch
+  --case CASE_ID       AuthorityCase reference (optional)
+  --mode MODE          Workstream mode: single_lane|shared_coordinated|parallel_separate
+  --reason REASON      Dispatch reason
+  --dry-run            Show what would be dispatched without acting
+  --list-eligible      List dispatch-eligible lanes
+  --check-lane LANE    Check lane freshness + protection status
+  -h, --help           Show this help
+USAGE
+    exit 0
+}
+
+# Parse arguments
+LANE="" PLATFORM="" TASK="" CASE_ID="" MODE="single_lane" REASON="" DRY_RUN=false
+LIST_ELIGIBLE=false CHECK_LANE=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --lane)       LANE="$2"; shift 2 ;;
+        --platform)   PLATFORM="$2"; shift 2 ;;
+        --task)       TASK="$2"; shift 2 ;;
+        --case)       CASE_ID="$2"; shift 2 ;;
+        --mode)       MODE="$2"; shift 2 ;;
+        --reason)     REASON="$2"; shift 2 ;;
+        --dry-run)    DRY_RUN=true; shift ;;
+        --list-eligible) LIST_ELIGIBLE=true; shift ;;
+        --check-lane) CHECK_LANE="$2"; shift 2 ;;
+        -h|--help)    usage ;;
+        *)            echo "error: unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+
+# --- Freshness check ---
+check_lane_freshness() {
+    local lane="$1"
+    local meta_file="$REGISTRY_DIR/${lane}.json"
+
+    if [[ ! -f "$meta_file" ]]; then
+        echo "UNKNOWN: no metadata for lane $lane"
+        return 1
+    fi
+
+    local last_probe
+    last_probe=$(python3 -c "
+import json, time
+m = json.load(open('$meta_file'))
+probe = m.get('last_probe_utc', 0)
+ttl = m.get('freshness_ttl_s', 3600)
+age = time.time() - probe
+if age > ttl:
+    print(f'STALE: {age:.0f}s old (ttl={ttl:.0f}s)')
+    exit(1)
+else:
+    print(f'FRESH: {age:.0f}s old (ttl={ttl:.0f}s)')
+" 2>&1) || true
+
+    echo "$last_probe"
+    [[ "$last_probe" == FRESH* ]]
+}
+
+# --- Protection check ---
+check_protection() {
+    local lane="$1"
+    if [[ -f "$PROTECTION_FILE" ]]; then
+        if grep -q "\`${lane}\`.*protected" "$PROTECTION_FILE" 2>/dev/null; then
+            echo "PROTECTED: lane $lane is protected"
+            return 1
+        fi
+    fi
+    echo "OK: lane $lane not protected"
+    return 0
+}
+
+# --- Duplicate check ---
+check_duplicate() {
+    local lane="$1" platform="$2"
+    local ledger="$LEDGER_DIR/dispatch-ledger.jsonl"
+    if [[ ! -f "$ledger" ]]; then
+        return 0
+    fi
+    local active
+    active=$(grep "\"target_lane\":\"${lane}\"" "$ledger" 2>/dev/null \
+        | grep "\"target_platform\":\"${platform}\"" \
+        | grep "\"outcome\":\"dispatched\"" \
+        | tail -1) || true
+    if [[ -n "$active" ]]; then
+        echo "DUPLICATE: lane $lane already has active $platform dispatch"
+        return 1
+    fi
+    return 0
+}
+
+# --- List eligible lanes ---
+if $LIST_ELIGIBLE; then
+    echo "=== Eligible dispatch lanes ==="
+    for meta_file in "$REGISTRY_DIR"/*.json; do
+        [[ -f "$meta_file" ]] || continue
+        lane=$(basename "$meta_file" .json)
+        platform=$(python3 -c "import json; print(json.load(open('$meta_file')).get('platform','?'))" 2>/dev/null)
+        freshness=$(check_lane_freshness "$lane" 2>&1) || true
+        protection=$(check_protection "$lane" 2>&1) || true
+        status="eligible"
+        [[ "$freshness" == STALE* ]] && status="stale"
+        [[ "$freshness" == UNKNOWN* ]] && status="unknown"
+        [[ "$protection" == PROTECTED* ]] && status="protected"
+        printf "  %-12s %-12s %-8s  %s\n" "$lane" "$platform" "$status" "$freshness"
+    done
+    exit 0
+fi
+
+# --- Check single lane ---
+if [[ -n "$CHECK_LANE" ]]; then
+    echo "=== Lane check: $CHECK_LANE ==="
+    check_lane_freshness "$CHECK_LANE" 2>&1 || true
+    check_protection "$CHECK_LANE" 2>&1 || true
+    exit 0
+fi
+
+# --- Dispatch ---
+if [[ -z "$LANE" || -z "$PLATFORM" ]]; then
+    echo "error: --lane and --platform required for dispatch" >&2
+    exit 2
+fi
+
+echo "--- Pre-dispatch checks for $LANE ($PLATFORM) ---"
+
+# Gate 1: freshness
+if ! check_lane_freshness "$LANE"; then
+    echo "BLOCKED: lane $LANE metadata is not fresh" >&2
+    exit 1
+fi
+
+# Gate 2: protection
+if ! check_protection "$LANE"; then
+    echo "BLOCKED: lane $LANE is protected" >&2
+    exit 1
+fi
+
+# Gate 3: duplicate
+if ! check_duplicate "$LANE" "$PLATFORM"; then
+    echo "BLOCKED: duplicate session" >&2
+    exit 1
+fi
+
+# Build dispatch ID
+DISPATCH_ID="DISPATCH-${DISPATCHER}-$(date -u +%Y%m%dT%H%M%SZ)"
+TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+echo "--- Dispatch ---"
+echo "  dispatch_id: $DISPATCH_ID"
+echo "  target:      $LANE ($PLATFORM)"
+echo "  task:        ${TASK:-<none>}"
+echo "  case:        ${CASE_ID:-<none>}"
+echo "  mode:        $MODE"
+echo "  reason:      ${REASON:-<none>}"
+
+if $DRY_RUN; then
+    echo "  [DRY RUN — no action taken]"
+    exit 0
+fi
+
+# Write dispatch receipt
+mkdir -p "$LEDGER_DIR"
+python3 -c "
+import json
+receipt = {
+    'dispatch_id': '$DISPATCH_ID',
+    'timestamp': '$TIMESTAMP',
+    'dispatcher': '$DISPATCHER',
+    'target_lane': '$LANE',
+    'target_platform': '$PLATFORM',
+    'task_id': '${TASK}' or None,
+    'authority_case_id': '${CASE_ID}' or None,
+    'workstream_mode': '$MODE',
+    'reason': '${REASON}',
+    'outcome': 'dispatched',
+}
+with open('$LEDGER_DIR/dispatch-ledger.jsonl', 'a') as f:
+    f.write(json.dumps(receipt) + '\n')
+print('  receipt written')
+"
+
+# Invoke target launcher
+case "$PLATFORM" in
+    claude)
+        LAUNCHER="$SCRIPT_DIR/hapax-claude"
+        ARGS=(--role "$LANE" --terminal tmux)
+        ;;
+    codex)
+        LAUNCHER="$SCRIPT_DIR/hapax-codex"
+        ARGS=(--session "$LANE" --terminal tmux)
+        [[ -n "$TASK" ]] && ARGS+=(--task "$TASK")
+        ;;
+    gemini)
+        LAUNCHER="$SCRIPT_DIR/hapax-gemini"
+        ARGS=(--role "$LANE" --terminal tmux)
+        ;;
+    *)
+        echo "error: unknown platform: $PLATFORM" >&2
+        exit 2
+        ;;
+esac
+
+if [[ -x "$LAUNCHER" ]]; then
+    echo "  invoking: $LAUNCHER ${ARGS[*]}"
+    exec "$LAUNCHER" "${ARGS[@]}"
+else
+    echo "  warning: launcher not found at $LAUNCHER — receipt written but not launched" >&2
+    exit 0
+fi
