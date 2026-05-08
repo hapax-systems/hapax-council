@@ -62,6 +62,7 @@ LEGACY_FRAMES_PATH = Path("/dev/shm/hapax-compositor/gem-frames.json")
 DEFAULT_FONT_DESCRIPTION = "Px437 IBM VGA 8x16 32"
 FALLBACK_FRAME_TEXT = "» hapax «"
 MIN_FRAME_HOLD_MS = 400
+GOVERNANCE_HOLD_MS = 6000
 MAX_LAYER_OFFSET_PX = 128
 # The room layer remains disabled until the artifact-leak path is reworked.
 ROOM_LAYER_RENDER_ENABLED = False
@@ -125,6 +126,46 @@ def build_graffiti_layers(text: str) -> tuple[GemLayer, ...]:
         GemLayer(text=f"» {safe} «", opacity=0.94, offset_x_px=0, offset_y_px=0),
         GemLayer(text=f"╱╲ {safe} ╲╱", opacity=0.28, offset_x_px=24, offset_y_px=18),
     )
+
+
+def _build_governance_frames() -> list[GemFrame]:
+    """Build GEM frames from live axiom registry, sorted by weight descending.
+
+    Each axiom becomes a frame with its ID and condensed text, formatted in
+    CP437 box-draw grammar. Returns empty list if axioms cannot be loaded —
+    caller falls back to the static FALLBACK_FRAME_TEXT.
+    """
+    try:
+        from shared.axiom_registry import load_axioms
+    except ImportError:
+        return []
+    try:
+        axioms = load_axioms()
+    except Exception:
+        return []
+    if not axioms:
+        return []
+    frames: list[GemFrame] = []
+    for ax in sorted(axioms, key=lambda a: a.weight, reverse=True):
+        text = ax.text.strip().replace("\n", " ")
+        while "  " in text:
+            text = text.replace("  ", " ")
+        prefix = f"║ {ax.id.upper()} [{ax.weight}] ║ "
+        budget = 80 - len(prefix)
+        dot = text.find(". ")
+        if 0 < dot <= budget:
+            text = text[: dot + 1]
+        elif len(text) > budget:
+            text = text[: budget - 3] + "..."
+        label = f"{prefix}{text}"
+        frames.append(
+            GemFrame(
+                text=label,
+                hold_ms=GOVERNANCE_HOLD_MS,
+                layers=build_graffiti_layers(label),
+            )
+        )
+    return frames
 
 
 def _layer_to_payload(layer: GemLayer) -> dict[str, object]:
@@ -256,6 +297,9 @@ class GemCairoSource(HomageTransitionalSource):
         self._enable_substrate = enable_substrate
         self._substrate: object | None = None
         self._substrate_init_attempted = False
+        self._governance_frames: list[GemFrame] | None = None
+        self._gov_frame_index: int = 0
+        self._gov_frame_started_ts: float = 0.0
 
     # ── CairoSource protocol ───────────────────────────────────────────
 
@@ -332,14 +376,35 @@ class GemCairoSource(HomageTransitionalSource):
         # useful (paint-and-hold behaviour).
         return None
 
-    def _current_frame(self) -> GemFrame:
-        """Return the frame to draw now, advancing the index if hold elapsed."""
-        if not self._frames:
+    def _ensure_governance_frames(self) -> list[GemFrame]:
+        if self._governance_frames is None:
+            self._governance_frames = _build_governance_frames()
+        return self._governance_frames
+
+    def _current_governance_frame(self) -> GemFrame:
+        """Rotate through governance axiom frames when producer is offline."""
+        gov = self._ensure_governance_frames()
+        if not gov:
             return GemFrame(
                 text=FALLBACK_FRAME_TEXT,
                 hold_ms=1500,
                 layers=build_graffiti_layers(FALLBACK_FRAME_TEXT),
             )
+        now = time.monotonic()
+        if self._gov_frame_started_ts == 0.0:
+            self._gov_frame_started_ts = now
+        current = gov[self._gov_frame_index % len(gov)]
+        elapsed_ms = (now - self._gov_frame_started_ts) * 1000.0
+        if elapsed_ms >= current.hold_ms:
+            self._gov_frame_index = (self._gov_frame_index + 1) % len(gov)
+            self._gov_frame_started_ts = now
+            current = gov[self._gov_frame_index % len(gov)]
+        return current
+
+    def _current_frame(self) -> GemFrame:
+        """Return the frame to draw now, advancing the index if hold elapsed."""
+        if not self._frames:
+            return self._current_governance_frame()
         now = time.monotonic()
         if self._frame_started_ts == 0.0:
             self._frame_started_ts = now
@@ -610,6 +675,7 @@ def _state_layers(state: dict[str, Any], fallback_text: str) -> tuple[GemLayer, 
 __all__ = [
     "FALLBACK_FRAME_TEXT",
     "DEFAULT_FRAMES_PATH",
+    "GOVERNANCE_HOLD_MS",
     "GemCairoSource",
     "GemFrame",
     "GemLayer",
