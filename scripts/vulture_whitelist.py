@@ -2694,3 +2694,20 @@ from shared.team_registry import TeamRegistry
 
 TeamRegistry.fresh_lanes
 TeamRegistry.stale_lanes
+
+# cross-runtime dispatch script + tests consume these.
+from shared.orchestration_ledger import (
+    active_claims,
+    check_duplicate_session,
+    check_protected_session,
+    make_dispatch_id,
+    record_claim,
+    select_dispatch_priority,
+)
+
+active_claims
+check_duplicate_session
+check_protected_session
+make_dispatch_id
+record_claim
+select_dispatch_priority
