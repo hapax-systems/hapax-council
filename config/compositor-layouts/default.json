@@ -1,6 +1,6 @@
 {
   "name": "default",
-  "description": "Merged layout \u2014 default sources (working cairo backends) + garage-door surface positions + post_fx ward rendering. Reference: 20260505_164317.png.",
+  "description": "Merged layout \u2014 default sources (working cairo backends) + garage-door surface positions + post_fx ward rendering. Reference: 20260505_164317.png. Left column offset 46px from edge (breathing strip); right column anchored to edge. Asymmetric weight per Berger audit Delta A.",
   "sources": [
     {
       "id": "token_pole",
@@ -704,7 +704,7 @@
       "id": "lower-left-album",
       "geometry": {
         "kind": "rect",
-        "x": 10,
+        "x": 46,
         "y": 554,
         "w": 200,
         "h": 200,
@@ -722,7 +722,7 @@
       "id": "upper-left-vitruvian",
       "geometry": {
         "kind": "rect",
-        "x": 10,
+        "x": 46,
         "y": 344,
         "w": 200,
         "h": 200,
@@ -830,7 +830,7 @@
       "id": "pressure-gauge-ul",
       "geometry": {
         "kind": "rect",
-        "x": 10,
+        "x": 46,
         "y": 764,
         "w": 300,
         "h": 52,
@@ -1176,9 +1176,9 @@
       "id": "cbip-signal-density-surface",
       "geometry": {
         "kind": "rect",
-        "x": 16,
+        "x": 46,
         "y": 200,
-        "w": 340,
+        "w": 300,
         "h": 340,
         "mask": null,
         "binding_name": null,
@@ -1320,7 +1320,7 @@
       "id": "ascii-schematic-surface",
       "geometry": {
         "kind": "rect",
-        "x": 16,
+        "x": 46,
         "y": 100,
         "w": 520,
         "h": 180,
@@ -1374,7 +1374,7 @@
       "id": "cbip-dual-ir-displacement-surface",
       "geometry": {
         "kind": "rect",
-        "x": 16,
+        "x": 46,
         "y": 440,
         "w": 320,
         "h": 240,
