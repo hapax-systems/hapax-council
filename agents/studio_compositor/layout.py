@@ -266,6 +266,73 @@ def _packed_layout(cameras: list[CameraSpec], canvas_w: int, canvas_h: int) -> d
     return layout
 
 
+_FORCEFIELD_POSITIONS: list[tuple[float, float]] = [
+    (0.047, 0.083),
+    (0.813, 0.067),
+    (0.047, 0.750),
+    (0.813, 0.792),
+    (0.344, 0.403),
+    (0.602, 0.556),
+]
+
+_SEMANTIC_PRIORITY_ORDER: list[str] = [
+    "turntables",
+    "room-wide",
+    "operator-face",
+    "operator-hands",
+    "operator-desk-topdown",
+    "outboard-gear",
+]
+
+
+def _forcefield_layout(
+    cameras: list[CameraSpec], canvas_w: int, canvas_h: int
+) -> dict[str, TileRect]:
+    """Arnheim force-field layout — cameras as distributed mass-points.
+
+    All cameras equal-sized. Placed at 6 structural tension points that
+    create cross-canvas perceptual forces (3 semantic axes: watching,
+    activity, equipment). Sierpinski center remains open. No hero.
+    """
+    layout: dict[str, TileRect] = {}
+    if not cameras:
+        return layout
+
+    n = len(cameras)
+    tile_w = max(120, int(canvas_w * 0.156))
+    tile_h = int(tile_w * 9 / 16)
+
+    by_role: dict[str, CameraSpec] = {c.semantic_role: c for c in cameras}
+    ordered: list[CameraSpec] = []
+    used: set[str] = set()
+    for sr in _SEMANTIC_PRIORITY_ORDER:
+        if sr in by_role and by_role[sr].role not in used:
+            ordered.append(by_role[sr])
+            used.add(by_role[sr].role)
+    for c in cameras:
+        if c.role not in used:
+            ordered.append(c)
+            used.add(c.role)
+
+    positions = _FORCEFIELD_POSITIONS[:n]
+    if n > len(_FORCEFIELD_POSITIONS):
+        extra = n - len(_FORCEFIELD_POSITIONS)
+        for i in range(extra):
+            t = (i + 1) / (extra + 1)
+            px = 0.15 + 0.7 * t
+            py = 0.2 + 0.15 * math.sin(t * math.pi)
+            positions.append((px, py))
+
+    for cam, (fx, fy) in zip(ordered, positions, strict=False):
+        x = int(fx * canvas_w)
+        y = int(fy * canvas_h)
+        x = max(0, min(x, canvas_w - tile_w))
+        y = max(0, min(y, canvas_h - tile_h))
+        layout[cam.role] = TileRect(x=x, y=y, w=tile_w, h=tile_h)
+
+    return layout
+
+
 def compute_tile_layout(
     cameras: list[CameraSpec],
     canvas_w: int = OUTPUT_WIDTH,
@@ -283,13 +350,14 @@ def compute_tile_layout(
             - "packed/{role}" — named camera as hero in packed constellation
             - "sierpinski" — 3 cameras in triangle corners, rest hidden
             - "packed" — hero upper-left + 2x2 grid + stacked right column
+            - "forcefield" — Arnheim force-field, cameras as mass-points
     """
+    if mode == "forcefield":
+        return _forcefield_layout(cameras, canvas_w, canvas_h)
     if mode == "packed":
         return _packed_layout(cameras, canvas_w, canvas_h)
     if mode.startswith("packed/"):
         hero_role = mode[len("packed/") :]
-        # Constellation layout with named hero — set hero flag on the
-        # requested camera so _packed_layout picks it for upper-left.
         repinned = [c.model_copy(update={"hero": (c.role == hero_role)}) for c in cameras]
         return _packed_layout(repinned, canvas_w, canvas_h)
     if mode == "sierpinski":
