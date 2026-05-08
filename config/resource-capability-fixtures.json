@@ -1,0 +1,704 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "resource-capability-fixtures-2026-05-08",
+  "schema_ref": "schemas/resource-capability.schema.json",
+  "generated_from": [
+    "relay:isap-resource-capability-schema-projection-only-20260508",
+    "research-brief:2026-05-08-resource-capability-monetary-formalization"
+  ],
+  "declared_at": "2026-05-08T20:45:00Z",
+  "producer": "cc-task:resource-capability-schema-projection-only",
+  "required_models": [
+    "ResourceOpportunity",
+    "ResourceCapability",
+    "MonetaryCapability",
+    "ResourceReceipt",
+    "ResourceExperiment",
+    "CapabilityAccount",
+    "AutonomyDebtEvent",
+    "ObserverPostureSnapshot",
+    "PredictionLedger",
+    "MeasurementActionContract",
+    "GrowthNoGoMatrix",
+    "SemanticTransactionTrace",
+    "TransactionPressureLedger",
+    "PublicResourceClaimEnvelope",
+    "AccountBoundaryRecord",
+    "AccountFederationRegistry",
+    "ExpectedCorrespondenceEnvelope",
+    "ExpectedMailCandidate",
+    "EmailAutonomyEvent",
+    "CalendarWriteEnvelope",
+    "CalendarObligation",
+    "PaymentReceiptEvent",
+    "BalanceSnapshot",
+    "PayoutReconciliationRecord",
+    "DisputeMonitorEvent",
+    "RefundDraft",
+    "TaxEvidencePacket",
+    "ProviderNoticeEvent",
+    "ResourceCreditReceipt"
+  ],
+  "forbidden_provider_write_scopes": [
+    "payment_refund",
+    "payment_payout",
+    "payment_transfer",
+    "payment_top_up",
+    "payment_debit_pull",
+    "payment_creation",
+    "bank_payment_creation",
+    "bank_direct_debit_pull",
+    "crypto_settlement",
+    "trading_or_investment",
+    "custody_or_lending",
+    "gmail_send_outside_expected_correspondence",
+    "tax_form_submission",
+    "kyc_kyb_upload",
+    "w9_w8_submission",
+    "terms_acceptance",
+    "grant_certification",
+    "legal_signature",
+    "public_endorsement_publication",
+    "sponsorship_acceptance",
+    "public_offer_publication",
+    "public_claim_upgrade_without_envelope",
+    "stale_surface_activation"
+  ],
+  "fail_closed_policy": {
+    "technical_rail_readiness_as_public_offer": false,
+    "high_value_upgrades_truth_or_claims": false,
+    "nominal_value_substitutes_cash_equivalent": false,
+    "revenue_value_substitutes_operational_capability_value": false,
+    "public_claim_without_envelope": false,
+    "stale_surface_conflict_activates_capability": false,
+    "semantic_transaction_trace_public_by_default": false,
+    "expected_mail_candidate_allows_body_or_thread": false,
+    "calendar_write_allows_attendees_or_notifications_by_default": false,
+    "provider_write_unknown_scope_allowed": false
+  },
+  "opportunities": [
+    {
+      "schema_version": 1,
+      "opportunity_id": "rc-opportunity:aws-credit-observe-only",
+      "resource_class": "credit",
+      "source_ref": "source:manual-fixture:aws-credit",
+      "valuation": {
+        "nominal_value": 5000,
+        "nominal_unit": "USD_CLOUD_CREDIT",
+        "cash_equivalent_value": 0,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 8200,
+        "revenue_value": 0,
+        "trust_cost": 0.2,
+        "conversion_confidence": 0.62,
+        "value_basis_refs": ["brief:valuation-model:resource-credit"]
+      },
+      "liquidity": "provider_restricted",
+      "restrictions": ["provider_terms_unknown", "no_cash_redemption"],
+      "expiry": "2026-12-31",
+      "transferability": "non_transferable",
+      "public_claim_ceiling": "none",
+      "authority_ceiling": "internal_only",
+      "obligations": ["terms_review_before_use"],
+      "hidden_operator_labor_risk": "moderate",
+      "privacy_ip_terms_risk": "unknown_until_terms_review",
+      "lock_in_cost": "provider_specific",
+      "capabilities_unlocked": ["compute:batch-experiments"],
+      "evidence_refs": ["evidence:fixture:aws-credit-offer"],
+      "source_freshness_ttl_s": 86400,
+      "decision_state": "observe_only",
+      "stale_conflict_refs": []
+    },
+    {
+      "schema_version": 1,
+      "opportunity_id": "rc-opportunity:stale-payment-surface",
+      "resource_class": "receivable",
+      "source_ref": "source:legacy:payment-surface-conflict",
+      "valuation": {
+        "nominal_value": 100,
+        "nominal_unit": "USD_RECEIVABLE",
+        "cash_equivalent_value": null,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 0,
+        "revenue_value": 0,
+        "trust_cost": 1,
+        "conversion_confidence": 0,
+        "value_basis_refs": ["brief:req-rc-029:stale-surface"]
+      },
+      "liquidity": "unknown",
+      "restrictions": ["contradictory_surface_state"],
+      "expiry": null,
+      "transferability": "unknown",
+      "public_claim_ceiling": "none",
+      "authority_ceiling": "no_claim",
+      "obligations": [],
+      "hidden_operator_labor_risk": "high",
+      "privacy_ip_terms_risk": "unknown",
+      "lock_in_cost": "unknown",
+      "capabilities_unlocked": [],
+      "evidence_refs": ["evidence:fixture:stripe-refusal-vs-legacy-rail"],
+      "source_freshness_ttl_s": 0,
+      "decision_state": "blocked_stale_conflict",
+      "stale_conflict_refs": [
+        "stale-conflict:stripe-refusal-wiring",
+        "stale-conflict:legacy-payment-processor"
+      ]
+    }
+  ],
+  "capabilities": [
+    {
+      "schema_version": 1,
+      "capability_id": "resource-capability:cloud-credit-batch-compute",
+      "capability_name": "Provider-restricted batch compute credit",
+      "account_id": "capability-account:resource-ledger-fixture",
+      "opportunity_id": "rc-opportunity:aws-credit-observe-only",
+      "resource_class": "credit",
+      "valuation": {
+        "nominal_value": 5000,
+        "nominal_unit": "USD_CLOUD_CREDIT",
+        "cash_equivalent_value": 0,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 8200,
+        "revenue_value": 0,
+        "trust_cost": 0.2,
+        "conversion_confidence": 0.62,
+        "value_basis_refs": ["brief:valuation-model:resource-credit"]
+      },
+      "authority_ceiling": "internal_only",
+      "public_claim_ceiling": "none",
+      "capabilities_unlocked": ["compute:batch-experiments"],
+      "evidence_refs": ["evidence:fixture:aws-credit-offer"],
+      "source_freshness_ttl_s": 86400,
+      "decision_state": "observe_only",
+      "autonomy_debt_refs": []
+    }
+  ],
+  "monetary_capabilities": [
+    {
+      "schema_version": 1,
+      "capability_id": "resource-capability:receive-only-cash-ledger",
+      "capability_name": "Receive-only cash observation ledger",
+      "account_id": "capability-account:resource-ledger-fixture",
+      "opportunity_id": null,
+      "resource_class": "cash",
+      "valuation": {
+        "nominal_value": 42,
+        "nominal_unit": "USD",
+        "cash_equivalent_value": 42,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 42,
+        "revenue_value": 42,
+        "trust_cost": 0,
+        "conversion_confidence": 1,
+        "value_basis_refs": ["evidence:fixture:payment-receipt"]
+      },
+      "authority_ceiling": "internal_only",
+      "public_claim_ceiling": "none",
+      "capabilities_unlocked": [],
+      "evidence_refs": ["evidence:fixture:payment-receipt"],
+      "source_freshness_ttl_s": 3600,
+      "decision_state": "observe_only",
+      "autonomy_debt_refs": [],
+      "monetary_capability_kind": "resource_capability_subtype"
+    }
+  ],
+  "receipts": [
+    {
+      "schema_version": 1,
+      "receipt_id": "resource-receipt:cloud-credit-fixture",
+      "received_at": "2026-05-08T20:45:00Z",
+      "resource_class": "credit",
+      "source_ref": "source:manual-fixture:aws-credit",
+      "account_id": "capability-account:resource-ledger-fixture",
+      "valuation": {
+        "nominal_value": 5000,
+        "nominal_unit": "USD_CLOUD_CREDIT",
+        "cash_equivalent_value": 0,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 8200,
+        "revenue_value": 0,
+        "trust_cost": 0.2,
+        "conversion_confidence": 0.62,
+        "value_basis_refs": ["brief:valuation-model:resource-credit"]
+      },
+      "obligations": ["terms_review_before_use"],
+      "evidence_refs": ["evidence:fixture:aws-credit-offer"],
+      "public_claim_envelope_ref": null,
+      "observe_only": true
+    }
+  ],
+  "experiments": [
+    {
+      "schema_version": 1,
+      "experiment_id": "resource-experiment:credit-to-batch-value",
+      "hypothesis": "Provider-restricted compute credit increases batch experiment throughput.",
+      "gate_prerequisites": ["terms_review", "later_read_only_backfill_isap"],
+      "success_metric": "completed_batch_experiment_count_delta",
+      "failure_metric": "operator_touch_minutes_or_terms_block",
+      "stop_condition": "terms or authority boundary blocks use",
+      "expiry": "2026-12-31",
+      "rollback": "leave projection rows only; do not activate provider workloads",
+      "no_go_conditions": ["provider_write_required", "public_claim_required"],
+      "launch_authorized": false
+    }
+  ],
+  "accounts": [
+    {
+      "schema_version": 1,
+      "account_id": "capability-account:resource-ledger-fixture",
+      "resource_classes": ["cash", "credit", "compute", "receivable"],
+      "nominal_value_total": 5042,
+      "cash_equivalent_value_total": 42,
+      "operational_capability_value_total": 8242,
+      "liquidity": "mixed",
+      "restrictions": ["credit_not_cash_redeemable"],
+      "expiry": null,
+      "conversion_confidence": 0.62,
+      "downstream_capability_unlocked": ["compute:batch-experiments"],
+      "evidence_refs": ["evidence:fixture:account-projection"]
+    }
+  ],
+  "autonomy_debt_events": [
+    {
+      "schema_version": 1,
+      "event_id": "autonomy-debt:operator-terms-review",
+      "occurred_at": "2026-05-08T20:45:00Z",
+      "triggering_opportunity_or_resource": "rc-opportunity:aws-credit-observe-only",
+      "intervention_class": "resource",
+      "hard_boundary": true,
+      "avoidability": "external-hard-boundary",
+      "operator_time_minutes": 15,
+      "blocked_duration": "until_provider_terms_reviewed",
+      "risk_if_automated": "terms acceptance or identity attestation without operator authority",
+      "why_required_now": "Provider terms and identity obligations require operator judgment.",
+      "future_reduction_strategy": "Pre-stage terms summary and explicit no-go checklist.",
+      "recurrence_key": "provider_terms_review",
+      "created_followup_task": null,
+      "evidence_refs": ["evidence:fixture:terms-boundary"]
+    }
+  ],
+  "observer_posture_snapshots": [
+    {
+      "schema_version": 1,
+      "snapshot_id": "observer-posture:fixture",
+      "observed_at": "2026-05-08T20:45:00Z",
+      "autonomous_gross_resource_change": 5042,
+      "autonomous_net_resource_change": 42,
+      "operator_touch_count": 1,
+      "unavoidable_touch_count": 1,
+      "autonomy_debt_event_refs": ["autonomy-debt:operator-terms-review"],
+      "recurrence_keys": ["provider_terms_review"],
+      "tax_evidence_completeness": "not_applicable_fixture",
+      "dispute_or_fraud_event_refs": [],
+      "stale_opportunity_refs": ["rc-opportunity:stale-payment-surface"],
+      "next_eligible_autonomous_actions": ["observe_only_projection"]
+    }
+  ],
+  "prediction_ledger": [
+    {
+      "schema_version": 1,
+      "prediction_id": "prediction:credit-throughput-delta",
+      "baseline": "zero provider-restricted batch credit",
+      "horizon": "30d_after_later_authorized_read_only_backfill",
+      "metric_definition": "batch experiment count enabled by credit projection",
+      "expected_delta": "positive if terms and later authority allow use",
+      "confidence": 0.42,
+      "evidence_refs": ["brief:prediction-ledger"],
+      "update_cadence": "weekly",
+      "falsification_or_kill_criteria": "terms block, expiry, or no workload match",
+      "claim_authority": "internal_only"
+    }
+  ],
+  "measurement_action_contracts": [
+    {
+      "schema_version": 1,
+      "metric_id": "metric:operator-touch-count",
+      "source": "resource-capability-fixtures",
+      "freshness_cadence": "per_snapshot",
+      "ttl_s": 86400,
+      "consumer": "observe-only-dashboard",
+      "action_class": "gate",
+      "stale_behavior": "blocked_stale_conflict",
+      "no_go_threshold": "operator_touch_count_increases_without_autonomy_debt_event",
+      "evidence_refs": ["brief:req-rc-013"],
+      "authoritative": true
+    }
+  ],
+  "growth_no_go_matrix": {
+    "schema_version": 1,
+    "matrix_id": "growth-no-go:resource-capability-default",
+    "forbidden_provider_write_scopes": [
+      "payment_refund",
+      "payment_payout",
+      "payment_transfer",
+      "payment_top_up",
+      "payment_debit_pull",
+      "payment_creation",
+      "bank_payment_creation",
+      "bank_direct_debit_pull",
+      "crypto_settlement",
+      "trading_or_investment",
+      "custody_or_lending",
+      "gmail_send_outside_expected_correspondence",
+      "tax_form_submission",
+      "kyc_kyb_upload",
+      "w9_w8_submission",
+      "terms_acceptance",
+      "grant_certification",
+      "legal_signature",
+      "public_endorsement_publication",
+      "sponsorship_acceptance",
+      "public_offer_publication",
+      "public_claim_upgrade_without_envelope",
+      "stale_surface_activation"
+    ],
+    "rules": [
+      {"scope": "payment_refund", "decision": "blocked", "required_later_authority": "separate_T3_AuthorityCase", "reason": "Outbound financial movement is forbidden."},
+      {"scope": "payment_payout", "decision": "blocked", "required_later_authority": "separate_T3_AuthorityCase", "reason": "Payouts move money."},
+      {"scope": "payment_transfer", "decision": "blocked", "required_later_authority": "separate_T3_AuthorityCase", "reason": "Transfers move money."},
+      {"scope": "payment_top_up", "decision": "blocked", "required_later_authority": "separate_T3_AuthorityCase", "reason": "Top-ups move money."},
+      {"scope": "payment_debit_pull", "decision": "blocked", "required_later_authority": "separate_T3_AuthorityCase", "reason": "Debit pulls move money."},
+      {"scope": "payment_creation", "decision": "blocked", "required_later_authority": "separate_T3_AuthorityCase", "reason": "Payment creation is outbound financial control."},
+      {"scope": "bank_payment_creation", "decision": "blocked", "required_later_authority": "separate_T3_AuthorityCase", "reason": "Bank payment creation is forbidden."},
+      {"scope": "bank_direct_debit_pull", "decision": "blocked", "required_later_authority": "separate_T3_AuthorityCase", "reason": "Direct debit pulls are forbidden."},
+      {"scope": "crypto_settlement", "decision": "blocked", "required_later_authority": "separate_T3_AuthorityCase", "reason": "Crypto settlement is financial control."},
+      {"scope": "trading_or_investment", "decision": "blocked", "required_later_authority": "separate_T3_AuthorityCase", "reason": "Trading and investment are forbidden."},
+      {"scope": "custody_or_lending", "decision": "blocked", "required_later_authority": "separate_T3_AuthorityCase", "reason": "Custody and lending are forbidden."},
+      {"scope": "gmail_send_outside_expected_correspondence", "decision": "blocked", "required_later_authority": "expected_correspondence_ISAP", "reason": "mail_monitor remains receive-only."},
+      {"scope": "tax_form_submission", "decision": "blocked", "required_later_authority": "separate_T3_AuthorityCase", "reason": "Tax submission requires operator/legal authority."},
+      {"scope": "kyc_kyb_upload", "decision": "blocked", "required_later_authority": "separate_T3_AuthorityCase", "reason": "KYC/KYB upload requires separate authority."},
+      {"scope": "w9_w8_submission", "decision": "blocked", "required_later_authority": "separate_T3_AuthorityCase", "reason": "Tax forms require separate authority."},
+      {"scope": "terms_acceptance", "decision": "blocked", "required_later_authority": "separate_T3_AuthorityCase", "reason": "Terms acceptance is operator authority."},
+      {"scope": "grant_certification", "decision": "blocked", "required_later_authority": "separate_T3_AuthorityCase", "reason": "Grant certification is not automated."},
+      {"scope": "legal_signature", "decision": "blocked", "required_later_authority": "separate_T3_AuthorityCase", "reason": "Legal signature is forbidden."},
+      {"scope": "public_endorsement_publication", "decision": "blocked", "required_later_authority": "public_claim_ISAP", "reason": "Endorsement needs claim envelope and authority."},
+      {"scope": "sponsorship_acceptance", "decision": "blocked", "required_later_authority": "separate_T3_AuthorityCase", "reason": "Sponsorship acceptance creates obligations."},
+      {"scope": "public_offer_publication", "decision": "blocked", "required_later_authority": "public_offer_ISAP", "reason": "Public offers are not authorized."},
+      {"scope": "public_claim_upgrade_without_envelope", "decision": "blocked", "required_later_authority": "public_claim_ISAP", "reason": "Claims need a claim envelope."},
+      {"scope": "stale_surface_activation", "decision": "blocked", "required_later_authority": "stale_surface_reconciliation_ISAP", "reason": "Stale conflicts remain blocked."}
+    ],
+    "unknown_scope_decision": "blocked",
+    "stale_surface_conflict_decision": "blocked_stale_conflict"
+  },
+  "semantic_transaction_traces": [
+    {
+      "schema_version": 1,
+      "trace_id": "semantic-trace:provider-waiting-escalation",
+      "observed_at": "2026-05-08T20:45:00Z",
+      "trace_kind": "escalation",
+      "source_ref": "provider-notice:fixture",
+      "semantic_state": "provider_terms_waiting_on_operator_review",
+      "pressure_score": 0.72,
+      "privacy_scope": "private",
+      "public_projection_allowed": false,
+      "observability_surface": "machine_operator_only",
+      "transaction_refs": ["payment-receipt:fixture"],
+      "communication_refs": ["email-autonomy:fixture-report-only"],
+      "action_refs": ["action:terms-review-needed"],
+      "waiting_state_refs": ["waiting:provider-terms-review"],
+      "event_refs": ["provider-notice:fixture"],
+      "refusal_refs": ["refusal:no-terms-acceptance"],
+      "escalation_refs": ["escalation:operator-terms-review"],
+      "provider_state_refs": ["provider-state:terms-unknown"],
+      "calendar_obligation_refs": ["calendar-obligation:fixture-credit-expiry"],
+      "autonomy_debt_event_refs": ["autonomy-debt:operator-terms-review"],
+      "evidence_refs": ["evidence:fixture:terms-boundary"],
+      "runtime_tracing_authorized": false,
+      "provider_api_execution_authorized": false
+    }
+  ],
+  "transaction_pressure_ledgers": [
+    {
+      "schema_version": 1,
+      "ledger_id": "transaction-pressure:fixture",
+      "observed_at": "2026-05-08T20:45:00Z",
+      "trace_refs": ["semantic-trace:provider-waiting-escalation"],
+      "pressure_score": 0.72,
+      "transaction_pressure_refs": ["pressure:terms-review"],
+      "transaction_refs": ["payment-receipt:fixture"],
+      "communication_refs": ["email-autonomy:fixture-report-only"],
+      "action_refs": ["action:terms-review-needed"],
+      "waiting_state_refs": ["waiting:provider-terms-review"],
+      "event_refs": ["provider-notice:fixture"],
+      "refusal_refs": ["refusal:no-terms-acceptance"],
+      "escalation_refs": ["escalation:operator-terms-review"],
+      "provider_state_refs": ["provider-state:terms-unknown"],
+      "calendar_obligation_refs": ["calendar-obligation:fixture-credit-expiry"],
+      "autonomy_debt_event_refs": ["autonomy-debt:operator-terms-review"],
+      "privacy_scope": "private",
+      "public_projection_allowed": false,
+      "observability_surface": "machine_operator_only",
+      "runtime_tracing_authorized": false,
+      "provider_poll_authorized": false,
+      "external_effect_authorized": false
+    }
+  ],
+  "resource_authority_cases": [
+    {
+      "case_id": "CASE-RESOURCE-CAPABILITY-001",
+      "authority_case_kind": "authority_case_profile",
+      "outbound_financial_control_authorized": false
+    }
+  ],
+  "public_claim_envelopes": [
+    {
+      "schema_version": 1,
+      "envelope_id": "public-resource-claim:blocked-default",
+      "claim_text": "",
+      "claim_class": "capability",
+      "max_public_verb": "none",
+      "evidence_refs": [],
+      "counterparty_terms_refs": [],
+      "provenance": "fixture_default_block",
+      "freshness_ttl_s": null,
+      "rights_state": "unknown",
+      "privacy_state": "private_only",
+      "uncertainty": "not_public_claim_ready",
+      "correction_path": "later_public_claim_isap_required",
+      "blocked_phrases": ["partnered with", "endorsed by", "approved by"],
+      "claim_allowed": false
+    }
+  ],
+  "account_boundaries": [
+    {
+      "schema_version": 1,
+      "account_id": "account:gmail-hapax-fixture",
+      "provider": "gmail",
+      "identity_class": "Hapax",
+      "allowed_purposes": ["expected_correspondence_observe_only"],
+      "allowed_read_classes": ["sanitized_label_hash_only"],
+      "allowed_send_classes": [],
+      "sender_identity_rule": "no_send_without_expected_correspondence_envelope",
+      "cross_account_reply_allowed": false,
+      "public_projection_allowed": false,
+      "encryption_degradation": "unknown",
+      "retention_policy": "hash_and_label_fixture_only",
+      "private_data_to_public_claim_policy": "blocked"
+    }
+  ],
+  "account_federation": [
+    {
+      "schema_version": 1,
+      "registry_id": "account-federation:gmail-hapax-fixture",
+      "provider": "gmail",
+      "account_id": "account:gmail-hapax-fixture",
+      "address_or_alias": "alias:hapax-public",
+      "source_of_truth": "account-boundary-record",
+      "pass_or_secret_key": "pass:placeholder/no-value",
+      "read_scopes": ["metadata_label_hash_only"],
+      "send_scopes": [],
+      "allowed_labels": ["resource-expected"],
+      "allowed_templates": [],
+      "forbidden_actions": ["send", "reply", "forward", "open_attachment"],
+      "purpose_boundary": "expected correspondence candidate projection only",
+      "no_fallback_to_default_token": true,
+      "proton_forwarding_policy": "not_configured",
+      "gmail_forwarding_policy": "no_cross_account_reply",
+      "operator_boundary": "operator_required_for_send_or_account_change"
+    }
+  ],
+  "expected_correspondence_envelopes": [
+    {
+      "schema_version": 1,
+      "envelope_id": "expected-correspondence:fixture-report-only",
+      "allowed_accounts": ["account:gmail-hapax-fixture"],
+      "allowed_aliases_or_labels": ["resource-expected"],
+      "allowed_senders_or_domains": [],
+      "expected_basis": ["case_id", "resource_flow"],
+      "message_classes": ["provider_notice"],
+      "auth_confidence_minimum": 0.9,
+      "allowed_templates": [],
+      "allowed_slots": [],
+      "forbidden_obligations": ["legal", "tax", "financial", "scheduling", "custom_work"],
+      "commercial_class": "mixed",
+      "disclosure_required": true,
+      "public_claim_ceiling": "none",
+      "rate_limit": "no_send_fixture",
+      "expiry": "2026-06-08T00:00:00Z",
+      "kill_switch": true,
+      "escalation_rules": ["security_legal_tax_dispute_report_only"],
+      "audit_requirements": ["candidate_hash_only", "no_body_quote"],
+      "reply_tier": "REPORT_ONLY"
+    }
+  ],
+  "expected_mail_candidates": [
+    {
+      "schema_version": 1,
+      "message_id_hash": "sha256:message-fixture",
+      "source_account": "account:gmail-hapax-fixture",
+      "original_recipient": "alias:hapax-public",
+      "label": "resource-expected",
+      "expected_class": "provider_notice",
+      "authentication_state": "verified",
+      "pending_action_ref": null,
+      "case_id": "CASE-RESOURCE-CAPABILITY-001",
+      "evidence_refs": ["evidence:fixture:mail-metadata-hash"],
+      "sender_identity_token": "sender-domain-hash:provider"
+    }
+  ],
+  "email_autonomy_events": [
+    {
+      "schema_version": 1,
+      "event_id": "email-autonomy:fixture-report-only",
+      "source_account": "account:gmail-hapax-fixture",
+      "message_ref": "sha256:message-fixture",
+      "thread_ref": null,
+      "received_at": "2026-05-08T20:45:00Z",
+      "expected_class_id": "provider_notice",
+      "confidence": 0.91,
+      "authentication_state": "verified",
+      "handling_decision": "no_response",
+      "template_id": null,
+      "response_sent": false,
+      "operator_written_email": false,
+      "hard_boundary": false,
+      "unnerving_language_lint_failures": [],
+      "claims_checked": true,
+      "suppression_checked": true,
+      "calendar_event_refs": [],
+      "autonomy_debt_event_ref": null,
+      "evidence_refs": ["evidence:fixture:mail-metadata-hash"]
+    }
+  ],
+  "calendar_write_envelopes": [
+    {
+      "schema_version": 1,
+      "envelope_id": "calendar-write:fixture-private-blocked-default",
+      "calendar_scope": "private_internal",
+      "attendee_policy": "blocked_none",
+      "notification_policy": "blocked_none",
+      "conference_data_policy": "blocked_none",
+      "description_policy": "private_minimal",
+      "idempotency_key": "calendar-fixture-private-blocked",
+      "source_confidence_minimum": 0.95,
+      "timezone_required": true,
+      "private_payload_policy": "no_external_payload",
+      "rollback_or_delete_policy": "delete_draft_only",
+      "availability_promise": false
+    }
+  ],
+  "calendar_obligations": [
+    {
+      "schema_version": 1,
+      "obligation_id": "calendar-obligation:fixture-credit-expiry",
+      "source_kind": "resource_expiry",
+      "source_ref": "rc-opportunity:aws-credit-observe-only",
+      "source_account_or_system": "resource-capability-fixtures",
+      "date_time": "2026-12-31T23:59:00Z",
+      "timezone": "UTC",
+      "confidence": 0.8,
+      "obligation_class": "expiry",
+      "operator_needs_to_know": true,
+      "authority_level": "draft_for_review",
+      "calendar_id": null,
+      "event_id": null,
+      "reminder_policy": "draft_only",
+      "notification_policy": "blocked_none",
+      "attendee_policy": "blocked_none",
+      "private_payload_policy": "private_minimal",
+      "created_or_updated_at": null,
+      "evidence_refs": ["evidence:fixture:aws-credit-offer"]
+    }
+  ],
+  "payment_receipt_events": [
+    {
+      "schema_version": 1,
+      "event_id": "payment-receipt:fixture",
+      "provider": "manual_fixture",
+      "received_at": "2026-05-08T20:45:00Z",
+      "amount": 42,
+      "currency": "USD",
+      "receipt_ref": "receipt:fixture",
+      "evidence_refs": ["evidence:fixture:payment-receipt"],
+      "observability_only": true,
+      "outbound_movement_authorized": false
+    }
+  ],
+  "balance_snapshots": [
+    {
+      "schema_version": 1,
+      "snapshot_id": "balance-snapshot:fixture",
+      "provider": "manual_fixture",
+      "observed_at": "2026-05-08T20:45:00Z",
+      "balance_amount": 42,
+      "currency": "USD",
+      "evidence_refs": ["evidence:fixture:balance"],
+      "observability_only": true
+    }
+  ],
+  "payout_reconciliation_records": [
+    {
+      "schema_version": 1,
+      "record_id": "payout-reconciliation:fixture",
+      "provider": "manual_fixture",
+      "payout_ref": "payout:none",
+      "observed_at": "2026-05-08T20:45:00Z",
+      "reconciliation_state": "no_payout_observe_only",
+      "evidence_refs": ["evidence:fixture:payout-none"],
+      "observability_only": true,
+      "payout_authorized": false
+    }
+  ],
+  "dispute_monitor_events": [
+    {
+      "schema_version": 1,
+      "event_id": "dispute-monitor:fixture",
+      "provider": "manual_fixture",
+      "dispute_ref": "dispute:none",
+      "observed_at": "2026-05-08T20:45:00Z",
+      "monitor_state": "none_observed",
+      "evidence_refs": ["evidence:fixture:dispute-none"],
+      "observability_only": true,
+      "dispute_submission_authorized": false
+    }
+  ],
+  "refund_drafts": [
+    {
+      "schema_version": 1,
+      "draft_id": "refund-draft:fixture",
+      "provider": "manual_fixture",
+      "payment_ref": "payment:fixture",
+      "reason": "draft schema only; refund not authorized",
+      "evidence_refs": ["evidence:fixture:payment-receipt"],
+      "draft_only": true,
+      "refund_authorized": false
+    }
+  ],
+  "tax_evidence_packets": [
+    {
+      "schema_version": 1,
+      "packet_id": "tax-evidence:fixture",
+      "provider": "manual_fixture",
+      "tax_context": "evidence packet only; no filing",
+      "evidence_refs": ["evidence:fixture:payment-receipt"],
+      "packet_only": true,
+      "filing_or_submission_authorized": false
+    }
+  ],
+  "provider_notice_events": [
+    {
+      "schema_version": 1,
+      "event_id": "provider-notice:fixture",
+      "provider": "manual_fixture",
+      "notice_class": "terms_notice",
+      "received_at": "2026-05-08T20:45:00Z",
+      "evidence_refs": ["evidence:fixture:terms-boundary"],
+      "observability_only": true,
+      "provider_action_authorized": false
+    }
+  ],
+  "resource_credit_receipts": [
+    {
+      "schema_version": 1,
+      "receipt_id": "resource-credit:fixture",
+      "provider": "manual_fixture",
+      "credit_class": "cloud_credit",
+      "activated_at": null,
+      "nominal_value": 5000,
+      "cash_equivalent_value": 0,
+      "operational_capability_value": 8200,
+      "evidence_refs": ["evidence:fixture:aws-credit-offer"],
+      "observability_only": true
+    }
+  ]
+}

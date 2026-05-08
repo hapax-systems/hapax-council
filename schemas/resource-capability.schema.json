@@ -1,0 +1,807 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/resource-capability.schema.json",
+  "title": "ResourceCapabilityFixtureSet",
+  "description": "Private schema/projection fixtures for resource capability. The contract is fail-closed: it grants no provider writes, email sends, calendar writes, payment movement, public offer authority, or public claim upgrade.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "generated_from",
+    "declared_at",
+    "producer",
+    "required_models",
+    "forbidden_provider_write_scopes",
+    "fail_closed_policy",
+    "opportunities",
+    "capabilities",
+    "monetary_capabilities",
+    "receipts",
+    "experiments",
+    "accounts",
+    "autonomy_debt_events",
+    "observer_posture_snapshots",
+    "prediction_ledger",
+    "measurement_action_contracts",
+    "growth_no_go_matrix",
+    "semantic_transaction_traces",
+    "transaction_pressure_ledgers",
+    "resource_authority_cases",
+    "public_claim_envelopes",
+    "account_boundaries",
+    "account_federation",
+    "expected_correspondence_envelopes",
+    "expected_mail_candidates",
+    "email_autonomy_events",
+    "calendar_write_envelopes",
+    "calendar_obligations",
+    "payment_receipt_events",
+    "balance_snapshots",
+    "payout_reconciliation_records",
+    "dispute_monitor_events",
+    "refund_drafts",
+    "tax_evidence_packets",
+    "provider_notice_events",
+    "resource_credit_receipts"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "fixture_set_id": {"type": "string", "minLength": 1},
+    "schema_ref": {
+      "type": "string",
+      "const": "schemas/resource-capability.schema.json"
+    },
+    "generated_from": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "not": {"pattern": "^/home/"}},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "declared_at": {"type": "string", "minLength": 1},
+    "producer": {"type": "string", "minLength": 1},
+    "required_models": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/required_model"},
+      "minItems": 29,
+      "uniqueItems": true
+    },
+    "forbidden_provider_write_scopes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/provider_write_scope"},
+      "minItems": 23,
+      "uniqueItems": true
+    },
+    "fail_closed_policy": {"$ref": "#/$defs/fail_closed_policy"},
+    "opportunities": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/resource_opportunity"},
+      "minItems": 1
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/resource_capability"},
+      "minItems": 1
+    },
+    "monetary_capabilities": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/resource_capability"},
+      "minItems": 1
+    },
+    "receipts": {"type": "array", "items": {"type": "object"}, "minItems": 1},
+    "experiments": {"type": "array", "items": {"type": "object"}, "minItems": 1},
+    "accounts": {"type": "array", "items": {"type": "object"}, "minItems": 1},
+    "autonomy_debt_events": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/autonomy_debt_event"},
+      "minItems": 1
+    },
+    "observer_posture_snapshots": {
+      "type": "array",
+      "items": {"type": "object"},
+      "minItems": 1
+    },
+    "prediction_ledger": {"type": "array", "items": {"type": "object"}, "minItems": 1},
+    "measurement_action_contracts": {
+      "type": "array",
+      "items": {"type": "object"},
+      "minItems": 1
+    },
+    "growth_no_go_matrix": {"$ref": "#/$defs/growth_no_go_matrix"},
+    "semantic_transaction_traces": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/semantic_transaction_trace"},
+      "minItems": 1
+    },
+    "transaction_pressure_ledgers": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/transaction_pressure_ledger"},
+      "minItems": 1
+    },
+    "resource_authority_cases": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/resource_authority_case"},
+      "minItems": 1
+    },
+    "public_claim_envelopes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/public_claim_envelope"},
+      "minItems": 1
+    },
+    "account_boundaries": {"type": "array", "items": {"type": "object"}, "minItems": 1},
+    "account_federation": {"type": "array", "items": {"type": "object"}, "minItems": 1},
+    "expected_correspondence_envelopes": {
+      "type": "array",
+      "items": {"type": "object"},
+      "minItems": 1
+    },
+    "expected_mail_candidates": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/expected_mail_candidate"},
+      "minItems": 1
+    },
+    "email_autonomy_events": {"type": "array", "items": {"type": "object"}, "minItems": 1},
+    "calendar_write_envelopes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/calendar_write_envelope"},
+      "minItems": 1
+    },
+    "calendar_obligations": {"type": "array", "items": {"type": "object"}, "minItems": 1},
+    "payment_receipt_events": {"type": "array", "items": {"type": "object"}, "minItems": 1},
+    "balance_snapshots": {"type": "array", "items": {"type": "object"}, "minItems": 1},
+    "payout_reconciliation_records": {
+      "type": "array",
+      "items": {"type": "object"},
+      "minItems": 1
+    },
+    "dispute_monitor_events": {"type": "array", "items": {"type": "object"}, "minItems": 1},
+    "refund_drafts": {"type": "array", "items": {"type": "object"}, "minItems": 1},
+    "tax_evidence_packets": {"type": "array", "items": {"type": "object"}, "minItems": 1},
+    "provider_notice_events": {"type": "array", "items": {"type": "object"}, "minItems": 1},
+    "resource_credit_receipts": {"type": "array", "items": {"type": "object"}, "minItems": 1}
+  },
+  "x-required_models": [
+    "AccountBoundaryRecord",
+    "AccountFederationRegistry",
+    "AutonomyDebtEvent",
+    "BalanceSnapshot",
+    "CalendarObligation",
+    "CalendarWriteEnvelope",
+    "CapabilityAccount",
+    "DisputeMonitorEvent",
+    "EmailAutonomyEvent",
+    "ExpectedCorrespondenceEnvelope",
+    "ExpectedMailCandidate",
+    "GrowthNoGoMatrix",
+    "MeasurementActionContract",
+    "MonetaryCapability",
+    "ObserverPostureSnapshot",
+    "PaymentReceiptEvent",
+    "PayoutReconciliationRecord",
+    "PredictionLedger",
+    "ProviderNoticeEvent",
+    "PublicResourceClaimEnvelope",
+    "RefundDraft",
+    "ResourceCapability",
+    "ResourceCreditReceipt",
+    "ResourceExperiment",
+    "ResourceOpportunity",
+    "ResourceReceipt",
+    "SemanticTransactionTrace",
+    "TransactionPressureLedger",
+    "TaxEvidencePacket"
+  ],
+  "x-forbidden_provider_write_scopes": [
+    "bank_direct_debit_pull",
+    "bank_payment_creation",
+    "crypto_settlement",
+    "custody_or_lending",
+    "gmail_send_outside_expected_correspondence",
+    "grant_certification",
+    "kyc_kyb_upload",
+    "legal_signature",
+    "payment_creation",
+    "payment_debit_pull",
+    "payment_payout",
+    "payment_refund",
+    "payment_top_up",
+    "payment_transfer",
+    "public_claim_upgrade_without_envelope",
+    "public_endorsement_publication",
+    "public_offer_publication",
+    "sponsorship_acceptance",
+    "stale_surface_activation",
+    "tax_form_submission",
+    "terms_acceptance",
+    "trading_or_investment",
+    "w9_w8_submission"
+  ],
+  "$defs": {
+    "required_model": {
+      "type": "string",
+      "enum": [
+        "ResourceOpportunity",
+        "ResourceCapability",
+        "MonetaryCapability",
+        "ResourceReceipt",
+        "ResourceExperiment",
+        "CapabilityAccount",
+        "AutonomyDebtEvent",
+        "ObserverPostureSnapshot",
+        "PredictionLedger",
+        "MeasurementActionContract",
+        "GrowthNoGoMatrix",
+        "SemanticTransactionTrace",
+        "TransactionPressureLedger",
+        "PublicResourceClaimEnvelope",
+        "AccountBoundaryRecord",
+        "AccountFederationRegistry",
+        "ExpectedCorrespondenceEnvelope",
+        "ExpectedMailCandidate",
+        "EmailAutonomyEvent",
+        "CalendarWriteEnvelope",
+        "CalendarObligation",
+        "PaymentReceiptEvent",
+        "BalanceSnapshot",
+        "PayoutReconciliationRecord",
+        "DisputeMonitorEvent",
+        "RefundDraft",
+        "TaxEvidencePacket",
+        "ProviderNoticeEvent",
+        "ResourceCreditReceipt"
+      ]
+    },
+    "provider_write_scope": {
+      "type": "string",
+      "enum": [
+        "payment_refund",
+        "payment_payout",
+        "payment_transfer",
+        "payment_top_up",
+        "payment_debit_pull",
+        "payment_creation",
+        "bank_payment_creation",
+        "bank_direct_debit_pull",
+        "crypto_settlement",
+        "trading_or_investment",
+        "custody_or_lending",
+        "gmail_send_outside_expected_correspondence",
+        "tax_form_submission",
+        "kyc_kyb_upload",
+        "w9_w8_submission",
+        "terms_acceptance",
+        "grant_certification",
+        "legal_signature",
+        "public_endorsement_publication",
+        "sponsorship_acceptance",
+        "public_offer_publication",
+        "public_claim_upgrade_without_envelope",
+        "stale_surface_activation"
+      ]
+    },
+    "resource_class": {
+      "type": "string",
+      "enum": [
+        "cash",
+        "receivable",
+        "credit",
+        "compute",
+        "api_quota",
+        "hardware",
+        "access",
+        "badge",
+        "institutional_support",
+        "obligation",
+        "trust_cost"
+      ]
+    },
+    "decision_state": {
+      "type": "string",
+      "enum": ["candidate", "observe_only", "draft_only", "blocked", "blocked_stale_conflict"]
+    },
+    "valuation": {
+      "type": "object",
+      "required": [
+        "nominal_value",
+        "nominal_unit",
+        "cash_equivalent_value",
+        "cash_equivalent_currency",
+        "operational_capability_value",
+        "revenue_value",
+        "trust_cost",
+        "conversion_confidence",
+        "value_basis_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "nominal_value": {"type": "number", "minimum": 0},
+        "nominal_unit": {"type": "string", "minLength": 1},
+        "cash_equivalent_value": {"type": ["number", "null"], "minimum": 0},
+        "cash_equivalent_currency": {"type": "string", "minLength": 1},
+        "operational_capability_value": {"type": "number", "minimum": 0},
+        "revenue_value": {"type": "number", "minimum": 0},
+        "trust_cost": {"type": "number", "minimum": 0},
+        "conversion_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "value_basis_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1
+        }
+      }
+    },
+    "resource_opportunity": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "opportunity_id",
+        "resource_class",
+        "source_ref",
+        "valuation",
+        "liquidity",
+        "restrictions",
+        "expiry",
+        "transferability",
+        "public_claim_ceiling",
+        "authority_ceiling",
+        "obligations",
+        "hidden_operator_labor_risk",
+        "privacy_ip_terms_risk",
+        "lock_in_cost",
+        "capabilities_unlocked",
+        "evidence_refs",
+        "source_freshness_ttl_s",
+        "decision_state",
+        "stale_conflict_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "opportunity_id": {"type": "string", "minLength": 1},
+        "resource_class": {"$ref": "#/$defs/resource_class"},
+        "source_ref": {"type": "string", "minLength": 1},
+        "valuation": {"$ref": "#/$defs/valuation"},
+        "liquidity": {"type": "string", "minLength": 1},
+        "restrictions": {"type": "array", "items": {"type": "string"}},
+        "expiry": {"type": ["string", "null"]},
+        "transferability": {"type": "string", "minLength": 1},
+        "public_claim_ceiling": {"type": "string"},
+        "authority_ceiling": {"type": "string"},
+        "obligations": {"type": "array", "items": {"type": "string"}},
+        "hidden_operator_labor_risk": {"type": "string", "minLength": 1},
+        "privacy_ip_terms_risk": {"type": "string", "minLength": 1},
+        "lock_in_cost": {"type": "string", "minLength": 1},
+        "capabilities_unlocked": {"type": "array", "items": {"type": "string"}},
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1
+        },
+        "source_freshness_ttl_s": {"type": "integer", "minimum": 0},
+        "decision_state": {"$ref": "#/$defs/decision_state"},
+        "stale_conflict_refs": {"type": "array", "items": {"type": "string"}}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"stale_conflict_refs": {"minItems": 1}}},
+          "then": {"properties": {"decision_state": {"const": "blocked_stale_conflict"}}}
+        }
+      ]
+    },
+    "resource_capability": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "capability_id",
+        "capability_name",
+        "account_id",
+        "opportunity_id",
+        "resource_class",
+        "valuation",
+        "authority_ceiling",
+        "public_claim_ceiling",
+        "capabilities_unlocked",
+        "evidence_refs",
+        "source_freshness_ttl_s",
+        "decision_state",
+        "autonomy_debt_refs"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "capability_id": {"type": "string", "minLength": 1},
+        "capability_name": {"type": "string", "minLength": 1},
+        "account_id": {"type": "string", "minLength": 1},
+        "opportunity_id": {"type": ["string", "null"]},
+        "resource_class": {"$ref": "#/$defs/resource_class"},
+        "valuation": {"$ref": "#/$defs/valuation"},
+        "authority_ceiling": {"type": "string"},
+        "public_claim_ceiling": {"type": "string"},
+        "capabilities_unlocked": {"type": "array", "items": {"type": "string"}},
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1
+        },
+        "source_freshness_ttl_s": {"type": "integer", "minimum": 0},
+        "decision_state": {"$ref": "#/$defs/decision_state"},
+        "autonomy_debt_refs": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "autonomy_debt_event": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "event_id",
+        "occurred_at",
+        "triggering_opportunity_or_resource",
+        "intervention_class",
+        "hard_boundary",
+        "avoidability",
+        "operator_time_minutes",
+        "blocked_duration",
+        "risk_if_automated",
+        "why_required_now",
+        "future_reduction_strategy",
+        "recurrence_key",
+        "created_followup_task",
+        "evidence_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "event_id": {"type": "string", "minLength": 1},
+        "occurred_at": {"type": "string", "minLength": 1},
+        "triggering_opportunity_or_resource": {"type": "string", "minLength": 1},
+        "intervention_class": {"type": "string", "minLength": 1},
+        "hard_boundary": {"type": "boolean"},
+        "avoidability": {"type": "string", "minLength": 1},
+        "operator_time_minutes": {"type": "integer", "minimum": 0},
+        "blocked_duration": {"type": "string", "minLength": 1},
+        "risk_if_automated": {"type": "string", "minLength": 1},
+        "why_required_now": {"type": "string", "minLength": 1},
+        "future_reduction_strategy": {"type": "string", "minLength": 1},
+        "recurrence_key": {"type": "string", "minLength": 1},
+        "created_followup_task": {"type": ["string", "null"]},
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"hard_boundary": {"const": true}}},
+          "then": {"properties": {"avoidability": {"const": "external-hard-boundary"}}}
+        }
+      ]
+    },
+    "growth_no_go_matrix": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "matrix_id",
+        "forbidden_provider_write_scopes",
+        "rules",
+        "unknown_scope_decision",
+        "stale_surface_conflict_decision"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "matrix_id": {"type": "string", "minLength": 1},
+        "forbidden_provider_write_scopes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/provider_write_scope"},
+          "minItems": 23,
+          "uniqueItems": true
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["scope", "decision", "required_later_authority", "reason"],
+            "additionalProperties": false,
+            "properties": {
+              "scope": {"$ref": "#/$defs/provider_write_scope"},
+              "decision": {"type": "string", "const": "blocked"},
+              "required_later_authority": {"type": "string", "minLength": 1},
+              "reason": {"type": "string", "minLength": 1}
+            }
+          },
+          "minItems": 23
+        },
+        "unknown_scope_decision": {"type": "string", "const": "blocked"},
+        "stale_surface_conflict_decision": {
+          "type": "string",
+          "const": "blocked_stale_conflict"
+        }
+      }
+    },
+    "public_claim_envelope": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "envelope_id",
+        "claim_text",
+        "claim_class",
+        "max_public_verb",
+        "evidence_refs",
+        "counterparty_terms_refs",
+        "provenance",
+        "freshness_ttl_s",
+        "rights_state",
+        "privacy_state",
+        "uncertainty",
+        "correction_path",
+        "blocked_phrases",
+        "claim_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "envelope_id": {"type": "string", "minLength": 1},
+        "claim_text": {"type": "string"},
+        "claim_class": {"type": "string", "minLength": 1},
+        "max_public_verb": {"type": "string", "minLength": 1},
+        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+        "counterparty_terms_refs": {"type": "array", "items": {"type": "string"}},
+        "provenance": {"type": "string", "minLength": 1},
+        "freshness_ttl_s": {"type": ["integer", "null"], "minimum": 0},
+        "rights_state": {"type": "string", "minLength": 1},
+        "privacy_state": {"type": "string", "minLength": 1},
+        "uncertainty": {"type": "string", "minLength": 1},
+        "correction_path": {"type": "string", "minLength": 1},
+        "blocked_phrases": {"type": "array", "items": {"type": "string"}},
+        "claim_allowed": {"type": "boolean", "const": false}
+      }
+    },
+    "semantic_transaction_trace": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "trace_id",
+        "observed_at",
+        "trace_kind",
+        "source_ref",
+        "semantic_state",
+        "pressure_score",
+        "privacy_scope",
+        "public_projection_allowed",
+        "observability_surface",
+        "transaction_refs",
+        "communication_refs",
+        "action_refs",
+        "waiting_state_refs",
+        "event_refs",
+        "refusal_refs",
+        "escalation_refs",
+        "provider_state_refs",
+        "calendar_obligation_refs",
+        "autonomy_debt_event_refs",
+        "evidence_refs",
+        "runtime_tracing_authorized",
+        "provider_api_execution_authorized"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "trace_id": {"type": "string", "minLength": 1},
+        "observed_at": {"type": "string", "minLength": 1},
+        "trace_kind": {
+          "type": "string",
+          "enum": [
+            "transaction_pressure",
+            "transaction",
+            "communication",
+            "action",
+            "waiting_state",
+            "event",
+            "refusal",
+            "escalation",
+            "provider_state",
+            "calendar_obligation"
+          ]
+        },
+        "source_ref": {"type": "string", "minLength": 1},
+        "semantic_state": {"type": "string", "minLength": 1},
+        "pressure_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "privacy_scope": {"type": "string", "const": "private"},
+        "public_projection_allowed": {"type": "boolean", "const": false},
+        "observability_surface": {"type": "string", "const": "machine_operator_only"},
+        "transaction_refs": {"type": "array", "items": {"type": "string"}},
+        "communication_refs": {"type": "array", "items": {"type": "string"}},
+        "action_refs": {"type": "array", "items": {"type": "string"}},
+        "waiting_state_refs": {"type": "array", "items": {"type": "string"}},
+        "event_refs": {"type": "array", "items": {"type": "string"}},
+        "refusal_refs": {"type": "array", "items": {"type": "string"}},
+        "escalation_refs": {"type": "array", "items": {"type": "string"}},
+        "provider_state_refs": {"type": "array", "items": {"type": "string"}},
+        "calendar_obligation_refs": {"type": "array", "items": {"type": "string"}},
+        "autonomy_debt_event_refs": {"type": "array", "items": {"type": "string"}},
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1
+        },
+        "runtime_tracing_authorized": {"type": "boolean", "const": false},
+        "provider_api_execution_authorized": {"type": "boolean", "const": false}
+      }
+    },
+    "transaction_pressure_ledger": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "ledger_id",
+        "observed_at",
+        "trace_refs",
+        "pressure_score",
+        "transaction_pressure_refs",
+        "transaction_refs",
+        "communication_refs",
+        "action_refs",
+        "waiting_state_refs",
+        "event_refs",
+        "refusal_refs",
+        "escalation_refs",
+        "provider_state_refs",
+        "calendar_obligation_refs",
+        "autonomy_debt_event_refs",
+        "privacy_scope",
+        "public_projection_allowed",
+        "observability_surface",
+        "runtime_tracing_authorized",
+        "provider_poll_authorized",
+        "external_effect_authorized"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "ledger_id": {"type": "string", "minLength": 1},
+        "observed_at": {"type": "string", "minLength": 1},
+        "trace_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1
+        },
+        "pressure_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "transaction_pressure_refs": {"type": "array", "items": {"type": "string"}},
+        "transaction_refs": {"type": "array", "items": {"type": "string"}},
+        "communication_refs": {"type": "array", "items": {"type": "string"}},
+        "action_refs": {"type": "array", "items": {"type": "string"}},
+        "waiting_state_refs": {"type": "array", "items": {"type": "string"}},
+        "event_refs": {"type": "array", "items": {"type": "string"}},
+        "refusal_refs": {"type": "array", "items": {"type": "string"}},
+        "escalation_refs": {"type": "array", "items": {"type": "string"}},
+        "provider_state_refs": {"type": "array", "items": {"type": "string"}},
+        "calendar_obligation_refs": {"type": "array", "items": {"type": "string"}},
+        "autonomy_debt_event_refs": {"type": "array", "items": {"type": "string"}},
+        "privacy_scope": {"type": "string", "const": "private"},
+        "public_projection_allowed": {"type": "boolean", "const": false},
+        "observability_surface": {"type": "string", "const": "machine_operator_only"},
+        "runtime_tracing_authorized": {"type": "boolean", "const": false},
+        "provider_poll_authorized": {"type": "boolean", "const": false},
+        "external_effect_authorized": {"type": "boolean", "const": false}
+      }
+    },
+    "resource_authority_case": {
+      "type": "object",
+      "required": [
+        "case_id",
+        "authority_case_kind",
+        "outbound_financial_control_authorized"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {"type": "string", "minLength": 1},
+        "authority_case_kind": {"type": "string", "const": "authority_case_profile"},
+        "outbound_financial_control_authorized": {"type": "boolean", "const": false}
+      }
+    },
+    "expected_mail_candidate": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "message_id_hash",
+        "source_account",
+        "original_recipient",
+        "label",
+        "expected_class",
+        "authentication_state",
+        "pending_action_ref",
+        "case_id",
+        "evidence_refs",
+        "sender_identity_token"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "message_id_hash": {"type": "string", "minLength": 1},
+        "source_account": {"type": "string", "minLength": 1},
+        "original_recipient": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "expected_class": {"type": "string", "minLength": 1},
+        "authentication_state": {"type": "string", "minLength": 1},
+        "pending_action_ref": {"type": ["string", "null"]},
+        "case_id": {"type": ["string", "null"]},
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 1
+        },
+        "sender_identity_token": {
+          "type": ["string", "null"],
+          "not": {"pattern": "@"}
+        }
+      }
+    },
+    "calendar_write_envelope": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "envelope_id",
+        "calendar_scope",
+        "attendee_policy",
+        "notification_policy",
+        "conference_data_policy",
+        "description_policy",
+        "idempotency_key",
+        "source_confidence_minimum",
+        "timezone_required",
+        "private_payload_policy",
+        "rollback_or_delete_policy",
+        "availability_promise"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "envelope_id": {"type": "string", "minLength": 1},
+        "calendar_scope": {"type": "string", "const": "private_internal"},
+        "attendee_policy": {"type": "string", "const": "blocked_none"},
+        "notification_policy": {"type": "string", "const": "blocked_none"},
+        "conference_data_policy": {"type": "string", "const": "blocked_none"},
+        "description_policy": {"type": "string", "minLength": 1},
+        "idempotency_key": {"type": "string", "minLength": 1},
+        "source_confidence_minimum": {"type": "number", "minimum": 0, "maximum": 1},
+        "timezone_required": {"type": "boolean", "const": true},
+        "private_payload_policy": {"type": "string", "minLength": 1},
+        "rollback_or_delete_policy": {"type": "string", "minLength": 1},
+        "availability_promise": {"type": "boolean", "const": false}
+      }
+    },
+    "fail_closed_policy": {
+      "type": "object",
+      "required": [
+        "technical_rail_readiness_as_public_offer",
+        "high_value_upgrades_truth_or_claims",
+        "nominal_value_substitutes_cash_equivalent",
+        "revenue_value_substitutes_operational_capability_value",
+        "public_claim_without_envelope",
+        "stale_surface_conflict_activates_capability",
+        "semantic_transaction_trace_public_by_default",
+        "expected_mail_candidate_allows_body_or_thread",
+        "calendar_write_allows_attendees_or_notifications_by_default",
+        "provider_write_unknown_scope_allowed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "technical_rail_readiness_as_public_offer": {"type": "boolean", "const": false},
+        "high_value_upgrades_truth_or_claims": {"type": "boolean", "const": false},
+        "nominal_value_substitutes_cash_equivalent": {"type": "boolean", "const": false},
+        "revenue_value_substitutes_operational_capability_value": {
+          "type": "boolean",
+          "const": false
+        },
+        "public_claim_without_envelope": {"type": "boolean", "const": false},
+        "stale_surface_conflict_activates_capability": {"type": "boolean", "const": false},
+        "semantic_transaction_trace_public_by_default": {"type": "boolean", "const": false},
+        "expected_mail_candidate_allows_body_or_thread": {"type": "boolean", "const": false},
+        "calendar_write_allows_attendees_or_notifications_by_default": {
+          "type": "boolean",
+          "const": false
+        },
+        "provider_write_unknown_scope_allowed": {"type": "boolean", "const": false}
+      }
+    }
+  }
+}
