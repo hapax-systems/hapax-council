@@ -1176,9 +1176,15 @@
       "id": "cbip-signal-density-surface",
       "geometry": {
         "kind": "rect",
+<<<<<<< HEAD
         "x": 46,
         "y": 200,
         "w": 300,
+=======
+        "x": 16,
+        "y": 200,
+        "w": 340,
+>>>>>>> d5c9e19d7 (feat(compositor-layout): add 12 missing wards + v4l2 appsink spec)
         "h": 340,
         "mask": null,
         "binding_name": null,
@@ -1320,7 +1326,11 @@
       "id": "ascii-schematic-surface",
       "geometry": {
         "kind": "rect",
+<<<<<<< HEAD
         "x": 46,
+=======
+        "x": 16,
+>>>>>>> d5c9e19d7 (feat(compositor-layout): add 12 missing wards + v4l2 appsink spec)
         "y": 100,
         "w": 520,
         "h": 180,
@@ -1374,7 +1384,11 @@
       "id": "cbip-dual-ir-displacement-surface",
       "geometry": {
         "kind": "rect",
+<<<<<<< HEAD
         "x": 46,
+=======
+        "x": 16,
+>>>>>>> d5c9e19d7 (feat(compositor-layout): add 12 missing wards + v4l2 appsink spec)
         "y": 440,
         "w": 320,
         "h": 240,
@@ -1604,7 +1618,11 @@
       "source": "cbip_signal_density",
       "surface": "cbip-signal-density-surface",
       "transform": {},
+<<<<<<< HEAD
       "opacity": 1.0,
+=======
+      "opacity": 0.0,
+>>>>>>> d5c9e19d7 (feat(compositor-layout): add 12 missing wards + v4l2 appsink spec)
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1613,7 +1631,11 @@
       "source": "chat_ambient",
       "surface": "chat-ambient-surface",
       "transform": {},
+<<<<<<< HEAD
       "opacity": 1.0,
+=======
+      "opacity": 0.0,
+>>>>>>> d5c9e19d7 (feat(compositor-layout): add 12 missing wards + v4l2 appsink spec)
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1622,7 +1644,11 @@
       "source": "chronicle_ticker",
       "surface": "chronicle-ticker-surface",
       "transform": {},
+<<<<<<< HEAD
       "opacity": 1.0,
+=======
+      "opacity": 0.0,
+>>>>>>> d5c9e19d7 (feat(compositor-layout): add 12 missing wards + v4l2 appsink spec)
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1631,7 +1657,11 @@
       "source": "programme_state",
       "surface": "programme-state-surface",
       "transform": {},
+<<<<<<< HEAD
       "opacity": 1.0,
+=======
+      "opacity": 0.0,
+>>>>>>> d5c9e19d7 (feat(compositor-layout): add 12 missing wards + v4l2 appsink spec)
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1640,7 +1670,11 @@
       "source": "polyend_instrument_reveal",
       "surface": "polyend-instrument-reveal-surface",
       "transform": {},
+<<<<<<< HEAD
       "opacity": 1.0,
+=======
+      "opacity": 0.0,
+>>>>>>> d5c9e19d7 (feat(compositor-layout): add 12 missing wards + v4l2 appsink spec)
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1649,7 +1683,11 @@
       "source": "interactive_lore_query",
       "surface": "interactive-lore-query-surface",
       "transform": {},
+<<<<<<< HEAD
       "opacity": 1.0,
+=======
+      "opacity": 0.0,
+>>>>>>> d5c9e19d7 (feat(compositor-layout): add 12 missing wards + v4l2 appsink spec)
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1658,7 +1696,11 @@
       "source": "constructivist_research_poster",
       "surface": "constructivist-research-poster-surface",
       "transform": {},
+<<<<<<< HEAD
       "opacity": 1.0,
+=======
+      "opacity": 0.0,
+>>>>>>> d5c9e19d7 (feat(compositor-layout): add 12 missing wards + v4l2 appsink spec)
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1667,7 +1709,11 @@
       "source": "tufte_density",
       "surface": "tufte-density-surface",
       "transform": {},
+<<<<<<< HEAD
       "opacity": 1.0,
+=======
+      "opacity": 0.0,
+>>>>>>> d5c9e19d7 (feat(compositor-layout): add 12 missing wards + v4l2 appsink spec)
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1676,7 +1722,11 @@
       "source": "ascii_schematic",
       "surface": "ascii-schematic-surface",
       "transform": {},
+<<<<<<< HEAD
       "opacity": 1.0,
+=======
+      "opacity": 0.0,
+>>>>>>> d5c9e19d7 (feat(compositor-layout): add 12 missing wards + v4l2 appsink spec)
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1685,7 +1735,11 @@
       "source": "segment_content",
       "surface": "segment-content-surface",
       "transform": {},
+<<<<<<< HEAD
       "opacity": 1.0,
+=======
+      "opacity": 0.0,
+>>>>>>> d5c9e19d7 (feat(compositor-layout): add 12 missing wards + v4l2 appsink spec)
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1694,7 +1748,11 @@
       "source": "m8_oscilloscope",
       "surface": "m8-oscilloscope-surface",
       "transform": {},
+<<<<<<< HEAD
       "opacity": 1.0,
+=======
+      "opacity": 0.0,
+>>>>>>> d5c9e19d7 (feat(compositor-layout): add 12 missing wards + v4l2 appsink spec)
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1703,7 +1761,11 @@
       "source": "cbip_dual_ir_displacement",
       "surface": "cbip-dual-ir-displacement-surface",
       "transform": {},
+<<<<<<< HEAD
       "opacity": 1.0,
+=======
+      "opacity": 0.0,
+>>>>>>> d5c9e19d7 (feat(compositor-layout): add 12 missing wards + v4l2 appsink spec)
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
