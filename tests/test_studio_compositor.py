@@ -164,7 +164,7 @@ class TestTileLayout:
 
     def test_single_camera_no_hero(self) -> None:
         cams = [CameraSpec(role="solo", device="/dev/video0")]
-        layout = compute_tile_layout(cams, 1920, 1080)
+        layout = compute_tile_layout(cams, 1920, 1080, mode="balanced")
         assert "solo" in layout
         tile = layout["solo"]
         assert tile.x == 0
@@ -179,7 +179,7 @@ class TestTileLayout:
             CameraSpec(role="cam2", device="/dev/video2"),
             CameraSpec(role="cam3", device="/dev/video3"),
         ]
-        layout = compute_tile_layout(cams, 1920, 1080)
+        layout = compute_tile_layout(cams, 1920, 1080, mode="balanced")
 
         # Hero: 16:9 fitted in left 2/3, centered vertically
         hero = layout["hero"]
@@ -198,7 +198,7 @@ class TestTileLayout:
 
     def test_no_hero_grid(self) -> None:
         cams = [CameraSpec(role=f"cam{i}", device=f"/dev/video{i}") for i in range(4)]
-        layout = compute_tile_layout(cams, 1920, 1080)
+        layout = compute_tile_layout(cams, 1920, 1080, mode="balanced")
         assert len(layout) == 4
         # 2x2 grid
         assert layout["cam0"].x == 0
@@ -226,7 +226,7 @@ class TestTileLayout:
         cams = [
             CameraSpec(role="hero", device="/dev/video0", hero=True),
         ] + [CameraSpec(role=f"cam{i}", device=f"/dev/video{i}") for i in range(6)]
-        layout = compute_tile_layout(cams, 1920, 1080)
+        layout = compute_tile_layout(cams, 1920, 1080, mode="balanced")
         # Count physical tiles (exclude virtual _hero_small PIP overlay).
         physical_tiles = {role: rect for role, rect in layout.items() if not role.startswith("_")}
         assert len(physical_tiles) == 7
@@ -258,11 +258,11 @@ class TestLayoutModes:
             CameraSpec(role="c920-overhead", device="/dev/video10"),
         ]
 
-    def test_balanced_mode_is_default(self) -> None:
+    def test_forcefield_mode_is_default(self) -> None:
         cams = self._six_cameras()
         default = compute_tile_layout(cams, 1920, 1080)
-        balanced = compute_tile_layout(cams, 1920, 1080, mode="balanced")
-        assert default == balanced
+        forcefield = compute_tile_layout(cams, 1920, 1080, mode="forcefield")
+        assert default == forcefield
 
     def test_hero_mode_named_camera(self) -> None:
         cams = self._six_cameras()

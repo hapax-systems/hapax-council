@@ -337,7 +337,7 @@ def compute_tile_layout(
     cameras: list[CameraSpec],
     canvas_w: int = OUTPUT_WIDTH,
     canvas_h: int = OUTPUT_HEIGHT,
-    mode: str = "balanced",
+    mode: str = "forcefield",
 ) -> dict[str, TileRect]:
     """Compute tile positions for each camera on the output canvas.
 
