@@ -1592,7 +1592,7 @@
       "source": "steamdeck-display",
       "surface": "steamdeck-display-pip",
       "render_stage": "post_fx",
-      "opacity": 0.0
+      "opacity": 1.0
     },
     {
       "source": "steamdeck-display",
@@ -1604,7 +1604,7 @@
       "source": "cbip_signal_density",
       "surface": "cbip-signal-density-surface",
       "transform": {},
-      "opacity": 0.0,
+      "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1613,7 +1613,7 @@
       "source": "chat_ambient",
       "surface": "chat-ambient-surface",
       "transform": {},
-      "opacity": 0.0,
+      "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1622,7 +1622,7 @@
       "source": "chronicle_ticker",
       "surface": "chronicle-ticker-surface",
       "transform": {},
-      "opacity": 0.0,
+      "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1631,7 +1631,7 @@
       "source": "programme_state",
       "surface": "programme-state-surface",
       "transform": {},
-      "opacity": 0.0,
+      "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1640,7 +1640,7 @@
       "source": "polyend_instrument_reveal",
       "surface": "polyend-instrument-reveal-surface",
       "transform": {},
-      "opacity": 0.0,
+      "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1649,7 +1649,7 @@
       "source": "interactive_lore_query",
       "surface": "interactive-lore-query-surface",
       "transform": {},
-      "opacity": 0.0,
+      "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1658,7 +1658,7 @@
       "source": "constructivist_research_poster",
       "surface": "constructivist-research-poster-surface",
       "transform": {},
-      "opacity": 0.0,
+      "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1667,7 +1667,7 @@
       "source": "tufte_density",
       "surface": "tufte-density-surface",
       "transform": {},
-      "opacity": 0.0,
+      "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1676,7 +1676,7 @@
       "source": "ascii_schematic",
       "surface": "ascii-schematic-surface",
       "transform": {},
-      "opacity": 0.0,
+      "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1685,7 +1685,7 @@
       "source": "segment_content",
       "surface": "segment-content-surface",
       "transform": {},
-      "opacity": 0.0,
+      "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1694,7 +1694,7 @@
       "source": "m8_oscilloscope",
       "surface": "m8-oscilloscope-surface",
       "transform": {},
-      "opacity": 0.0,
+      "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
@@ -1703,7 +1703,7 @@
       "source": "cbip_dual_ir_displacement",
       "surface": "cbip-dual-ir-displacement-surface",
       "transform": {},
-      "opacity": 0.0,
+      "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"
