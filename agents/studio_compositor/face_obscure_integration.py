@@ -78,6 +78,13 @@ _PIPELINES_LOCK = threading.Lock()
 # Single shared obscurer — it's stateless and its config is constant.
 _OBSCURER = FaceObscurer()
 
+# Live bbox cache for the cairooverlay face-obscure painting path.
+# Normalized to [0,1] so consumers only need tile dimensions to transform.
+# Updated by obscure_frame_for_camera() on the snapshot thread; read by
+# overlay.py on_draw() on the GStreamer streaming thread.
+_LIVE_NORM_BBOXES: dict[str, list[tuple[float, float, float, float]]] = {}
+_LIVE_NORM_BBOXES_LOCK = threading.Lock()
+
 
 def _build_default_source(camera_role: str) -> FaceBboxSource:
     """Construct the production SCRFD bbox source for a given camera role."""
@@ -170,6 +177,16 @@ def obscure_frame_for_camera(
     try:
         pipeline = _get_pipeline(camera_role, source_factory=source_factory)
         bboxes = pipeline.step(frame)
+        # Publish normalized bboxes for the cairooverlay face-obscure path.
+        frame_h, frame_w = frame.shape[:2]
+        if frame_w > 0 and frame_h > 0 and bboxes:
+            norm = [
+                (b.x1 / frame_w, b.y1 / frame_h, b.x2 / frame_w, b.y2 / frame_h) for b in bboxes
+            ]
+        else:
+            norm = []
+        with _LIVE_NORM_BBOXES_LOCK:
+            _LIVE_NORM_BBOXES[camera_role] = norm
     except Exception as exc:  # noqa: BLE001 — capture path must never crash
         # FAIL-CLOSED per beta audit F-AUDIT-1061-1 2026-04-19: if the pipeline
         # raises, we cannot trust that faces were masked. A privacy-critical
@@ -206,7 +223,20 @@ def obscure_frame_for_camera(
     return _OBSCURER.obscure(frame, filtered)
 
 
+def get_live_bboxes() -> dict[str, list[tuple[float, float, float, float]]]:
+    """Return normalized face bboxes per camera for live overlay painting.
+
+    Each value is a list of (nx1, ny1, nx2, ny2) tuples in [0,1] range,
+    representing face regions relative to the camera's capture frame.
+    The cairooverlay transforms these to composite tile coordinates.
+    """
+    with _LIVE_NORM_BBOXES_LOCK:
+        return dict(_LIVE_NORM_BBOXES)
+
+
 def reset_pipeline_cache() -> None:
     """Drop all per-camera pipelines (tests + service-reload boundary)."""
     with _PIPELINES_LOCK:
         _PIPELINES.clear()
+    with _LIVE_NORM_BBOXES_LOCK:
+        _LIVE_NORM_BBOXES.clear()
