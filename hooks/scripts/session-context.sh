@@ -573,6 +573,12 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
     fi
   fi
 
+  # ── Slice 3B: Request intake queue ──
+  INTAKE_CONSUMER="$HOME/projects/hapax-council/scripts/request-intake-consumer"
+  if [ -x "$INTAKE_CONSUMER" ]; then
+    "$INTAKE_CONSUMER" --session-preamble 2>/dev/null || true
+  fi
+
   # ── D-30 Phase 4: Obsidian SSOT — claimed task + top offered ──
   # Surfaces the canonical CC-task state from the operator's vault so
   # sessions onboard with their claim + the next-up queue.
@@ -629,6 +635,13 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
     echo "  Dashboard: open Obsidian → 20-projects/hapax-cc-tasks/_dashboard/cc-active"
   fi
 fi
+
+# ── Slice 3B: Raw-prose advisory gate ──
+# Warn sessions that raw operator prose is not implementation authority.
+echo ""
+echo "RAW-PROSE GATE: operator prose (chat messages, verbal requests) is intake"
+echo "material, not implementation authority. Route through request-intake before"
+echo "creating tasks or mutating source. See: scripts/request-intake-consumer"
 
 # Seed auto-memory directory if missing
 WORK_DIR="$(pwd)"

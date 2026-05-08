@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# request-intake-consumer — read Obsidian request intake queue,
+# report unread/stale requests, write read receipts.
+#
+# ISAP: SLICE-003B-REQUEST-INTAKE (CASE-SDLC-REFORM-001)
+#
+# Usage:
+#   request-intake-consumer                  # list unread/stale requests
+#   request-intake-consumer --write-receipt  # also write read receipts
+#   request-intake-consumer --session-preamble  # terse output for SessionStart
+
+set -euo pipefail
+
+REQUESTS_DIR="${HAPAX_REQUESTS_DIR:-$HOME/Documents/Personal/20-projects/hapax-requests}"
+ACTIVE_DIR="$REQUESTS_DIR/active"
+RECEIPTS_DIR="${HAPAX_REQUEST_RECEIPTS:-$HOME/.cache/hapax/request-receipts}"
+ROLE="${CLAUDE_ROLE:-${HAPAX_AGENT_NAME:-unknown}}"
+STALE_SECONDS="${HAPAX_REQUEST_STALE_SECONDS:-600}"
+
+MODE="list"
+if [[ "${1:-}" == "--write-receipt" ]]; then
+  MODE="receipt"
+elif [[ "${1:-}" == "--session-preamble" ]]; then
+  MODE="preamble"
+fi
+
+if [[ ! -d "$ACTIVE_DIR" ]]; then
+  if [[ "$MODE" == "preamble" ]]; then
+    exit 0
+  fi
+  echo "No request intake directory at $ACTIVE_DIR"
+  exit 0
+fi
+
+mkdir -p "$RECEIPTS_DIR"
+
+unread_count=0
+stale_count=0
+unread_lines=""
+
+for note in "$ACTIVE_DIR"/*.md; do
+  [[ -f "$note" ]] || continue
+
+  req_type=$(grep '^type:' "$note" 2>/dev/null | head -1 | sed 's/^type: *//' | tr -d '[:space:]')
+  [[ "$req_type" == "hapax-request" ]] || continue
+
+  req_id=$(grep '^request_id:' "$note" 2>/dev/null | head -1 | sed 's/^request_id: *//' | tr -d '[:space:]')
+  status=$(grep '^status:' "$note" 2>/dev/null | head -1 | sed 's/^status: *//' | tr -d '[:space:]')
+  title=$(grep '^title:' "$note" 2>/dev/null | head -1 | sed 's/^title: *//; s/^"//; s/"$//')
+  updated_at=$(grep '^updated_at:' "$note" 2>/dev/null | head -1 | sed 's/^updated_at: *//' | tr -d '[:space:]')
+
+  [[ -z "$req_id" ]] && continue
+
+  receipt_file="$RECEIPTS_DIR/${req_id}.yaml"
+
+  if [[ -f "$receipt_file" ]]; then
+    receipt_ts=$(grep '^checked_at:' "$receipt_file" 2>/dev/null | head -1 | sed 's/^checked_at: *//' | tr -d '[:space:]')
+    receipt_updated=$(grep '^observed_updated_at:' "$receipt_file" 2>/dev/null | head -1 | sed 's/^observed_updated_at: *//' | tr -d '[:space:]')
+
+    if [[ "$receipt_updated" == "$updated_at" ]]; then
+      receipt_epoch=$(date -d "$receipt_ts" +%s 2>/dev/null || echo 0)
+      now_epoch=$(date +%s)
+      age=$((now_epoch - receipt_epoch))
+      if [[ $age -gt $STALE_SECONDS ]]; then
+        stale_count=$((stale_count + 1))
+        unread_lines="${unread_lines}    STALE [${status}] ${req_id} — ${title} (receipt ${age}s old)\n"
+      fi
+      continue
+    fi
+  fi
+
+  unread_count=$((unread_count + 1))
+  unread_lines="${unread_lines}    UNREAD [${status}] ${req_id} — ${title}\n"
+
+  if [[ "$MODE" == "receipt" ]]; then
+    cat > "$receipt_file" <<RECEIPT
+receipt_type: request_intake_read
+request_id: ${req_id}
+reader_role: ${ROLE}
+checked_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+source_note: ${note}
+observed_status: ${status}
+observed_updated_at: ${updated_at}
+content_hash: $(md5sum "$note" 2>/dev/null | cut -d' ' -f1 || echo unknown)
+decision: pending_review
+next_owner: ${ROLE}
+next_check_deadline: $(date -u -d "+1 hour" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+RECEIPT
+  fi
+done
+
+total=$((unread_count + stale_count))
+
+if [[ "$MODE" == "preamble" ]]; then
+  if [[ $total -gt 0 ]]; then
+    echo ""
+    echo "REQUEST INTAKE (${unread_count} unread, ${stale_count} stale):"
+    printf "%b" "$unread_lines"
+    echo "  Run: scripts/request-intake-consumer --write-receipt"
+  fi
+  exit 0
+fi
+
+if [[ $total -eq 0 ]]; then
+  echo "Request intake: all requests have fresh read receipts."
+else
+  echo "Request intake: ${unread_count} unread, ${stale_count} stale"
+  printf "%b" "$unread_lines"
+fi
