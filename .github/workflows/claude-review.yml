@@ -78,7 +78,7 @@ jobs:
         if: steps.docs.outputs.docs_only == 'true'
         run: echo "Docs-only PR; review reports success without invoking Claude."
 
-      - uses: anthropics/claude-code-action@fefa07e9c665b7320f08c3b525980457f22f58aa
+      - uses: anthropics/claude-code-action@034cbdb008291e7eeeac420d315fc3b45fca3781
         if: env.CLAUDE_REVIEW_CONFIGURED == 'true' && steps.docs.outputs.docs_only != 'true'
         id: claude
         with:
