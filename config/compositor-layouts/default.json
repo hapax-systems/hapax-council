@@ -207,7 +207,7 @@
         "natural_h": 44
       },
       "update_cadence": "rate",
-      "rate_hz": 6.0,
+      "rate_hz": 2.0,
       "tags": [
         "hothouse",
         "authorship"
@@ -507,7 +507,7 @@
         "natural_h": 120
       },
       "update_cadence": "rate",
-      "rate_hz": 0.5,
+      "rate_hz": 1.0,
       "tags": [
         "homage",
         "ward",
