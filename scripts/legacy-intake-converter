@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Legacy cc-task to AuthorityCase migration converter.
+
+Scans active cc-tasks, classifies risk tier, maps to AuthorityCase
+stage, and optionally annotates task files with case_id fields.
+
+Usage:
+    scripts/legacy-intake-converter --scan
+    scripts/legacy-intake-converter --convert --dry-run
+    scripts/legacy-intake-converter --convert
+    scripts/legacy-intake-converter --report
+
+ISAP: SLICE-007-MIGRATION-CLOSURE (CASE-SDLC-REFORM-001)
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from collections import Counter
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from shared.case_migration import (
+    CcTask,
+    MigrationStub,
+    annotate_task_file,
+    generate_stub,
+    scan_tasks,
+)
+
+DEFAULT_TASK_DIR = (
+    Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+)
+LEDGER_PATH = Path.home() / ".cache" / "hapax" / "migration-ledger.jsonl"
+
+
+def cmd_scan(task_dir: Path) -> None:
+    tasks = scan_tasks(task_dir)
+    if not tasks:
+        print("No cc-tasks found.")
+        return
+
+    status_counts: Counter[str] = Counter()
+    tier_counts: Counter[str] = Counter()
+    decision_counts: Counter[str] = Counter()
+    train_counts: Counter[str] = Counter()
+
+    for t in tasks:
+        stub = generate_stub(t)
+        status_counts[t.status] += 1
+        tier_counts[stub.risk_tier] += 1
+        decision_counts[stub.migration_decision] += 1
+        train_counts[t.train or "(none)"] += 1
+
+    print(f"=== Legacy Intake Scan: {len(tasks)} cc-tasks ===\n")
+
+    print("--- By status ---")
+    for s, c in status_counts.most_common():
+        print(f"  {s:20s} {c:4d}")
+
+    print("\n--- By risk tier ---")
+    for s, c in sorted(tier_counts.items()):
+        print(f"  {s:20s} {c:4d}")
+
+    print("\n--- By migration decision ---")
+    for s, c in decision_counts.most_common():
+        print(f"  {s:20s} {c:4d}")
+
+    print(f"\n--- By train ({len(train_counts)} trains) ---")
+    for s, c in train_counts.most_common(10):
+        print(f"  {s:40s} {c:4d}")
+    remaining = len(train_counts) - 10
+    if remaining > 0:
+        print(f"  ... and {remaining} more trains")
+
+    with_branch = [t for t in tasks if t.branch]
+    print(f"\n--- Tasks with active branches: {len(with_branch)} ---")
+    for t in with_branch:
+        stub = generate_stub(t)
+        pr_str = f" PR#{t.pr}" if t.pr else ""
+        print(f"  {t.task_id:50s} {stub.authority_case_stage} {stub.risk_tier}{pr_str}")
+
+
+def cmd_convert(task_dir: Path, dry_run: bool) -> None:
+    tasks = scan_tasks(task_dir)
+    if not tasks:
+        print("No cc-tasks found.")
+        return
+
+    already = [t for t in tasks if hasattr(t, "case_id") and getattr(t, "case_id", None)]
+    pending = [t for t in tasks if not (hasattr(t, "case_id") and getattr(t, "case_id", None))]
+
+    if already:
+        print(f"Skipping {len(already)} tasks already annotated with case_id.")
+
+    print(f"{'[DRY RUN] ' if dry_run else ''}Converting {len(pending)} tasks...\n")
+
+    converted = 0
+    errors = 0
+    for t in pending:
+        stub = generate_stub(t)
+        if not t.source_path:
+            continue
+        try:
+            new_content = annotate_task_file(t.source_path, stub)
+            if dry_run:
+                print(
+                    f"  [DRY] {t.task_id:50s} -> {stub.case_id} ({stub.authority_case_stage}, {stub.risk_tier}, {stub.migration_decision})"
+                )
+            else:
+                t.source_path.write_text(new_content, encoding="utf-8")
+                print(f"  [OK]  {t.task_id:50s} -> {stub.case_id}")
+                _append_ledger(t, stub)
+            converted += 1
+        except Exception as e:
+            print(f"  [ERR] {t.task_id}: {e}", file=sys.stderr)
+            errors += 1
+
+    print(
+        f"\n{'[DRY RUN] ' if dry_run else ''}Done: {converted} converted, {errors} errors, {len(already)} skipped."
+    )
+
+
+def cmd_report(task_dir: Path) -> None:
+    tasks = scan_tasks(task_dir)
+    if not tasks:
+        print("No cc-tasks found.")
+        return
+
+    rows = []
+    for t in tasks:
+        stub = generate_stub(t)
+        rows.append(
+            {
+                "task_id": t.task_id,
+                "status": t.status,
+                "risk_tier": stub.risk_tier,
+                "stage": stub.authority_case_stage,
+                "decision": stub.migration_decision,
+                "case_id": stub.case_id,
+                "branch": t.branch or "",
+                "pr": str(t.pr) if t.pr else "",
+                "train": t.train or "",
+                "has_case_id": bool(getattr(t, "case_id", None)),
+            }
+        )
+
+    for row in rows:
+        print(json.dumps(row))
+
+    adopted = sum(1 for r in rows if r["decision"] == "adopted")
+    adopted_lim = sum(1 for r in rows if r["decision"] == "adopted_with_limits")
+    quarantined = sum(1 for r in rows if r["decision"] == "quarantined")
+    retired = sum(1 for r in rows if r["decision"] == "retired")
+    unresolved = sum(1 for r in rows if r["decision"] == "unresolved")
+    annotated = sum(1 for r in rows if r["has_case_id"])
+
+    print(f"\n# Migration ledger: {len(rows)} tasks", file=sys.stderr)
+    print(
+        f"#   adopted={adopted} adopted_with_limits={adopted_lim} quarantined={quarantined} retired={retired} unresolved={unresolved}",
+        file=sys.stderr,
+    )
+    print(f"#   annotated={annotated} pending={len(rows) - annotated}", file=sys.stderr)
+
+
+def _append_ledger(task: CcTask, stub: MigrationStub) -> None:
+    LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "task_id": task.task_id,
+        "case_id": stub.case_id,
+        "stage": stub.authority_case_stage,
+        "risk_tier": stub.risk_tier,
+        "decision": stub.migration_decision,
+        "timestamp_utc": time.time(),
+    }
+    with LEDGER_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Legacy cc-task to AuthorityCase converter")
+    parser.add_argument("--task-dir", type=Path, default=DEFAULT_TASK_DIR)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--scan", action="store_true", help="Read-only inventory report")
+    group.add_argument("--convert", action="store_true", help="Annotate tasks with case_id")
+    group.add_argument("--report", action="store_true", help="Emit migration ledger (JSONL)")
+    parser.add_argument("--dry-run", action="store_true", help="Show what --convert would do")
+    args = parser.parse_args()
+
+    if args.scan:
+        cmd_scan(args.task_dir)
+    elif args.convert:
+        cmd_convert(args.task_dir, dry_run=args.dry_run)
+    elif args.report:
+        cmd_report(args.task_dir)
+
+
+if __name__ == "__main__":
+    main()
