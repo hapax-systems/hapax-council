@@ -19,6 +19,9 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from agents.studio_compositor.homage import get_active_package
+from shared.homage_package import HomagePackage
+
 from .models import TileRect
 from .projected_hero import (
     PROJECTED_HERO_MIN_DWELL_S,
@@ -32,6 +35,14 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _SNAPSHOT_DIR = Path("/dev/shm/hapax-compositor")
+
+
+def _fallback_package() -> HomagePackage:
+    from agents.studio_compositor.homage.bitchx import BITCHX_PACKAGE
+
+    return BITCHX_PACKAGE
+
+
 _CACHE_TTL_S = PROJECTED_HERO_MIN_DWELL_S
 
 
@@ -110,14 +121,18 @@ class HeroSmallOverlay:
             return
 
         try:
+            pkg = get_active_package() or _fallback_package()
+            bg_r, bg_g, bg_b, _ = pkg.resolve_colour("background")
+            br_r, br_g, br_b, _ = pkg.resolve_colour("bright")
+
             cr.save()
-            cr.set_source_rgba(0.0, 0.0, 0.0, self._projection.backdrop_alpha)
+            cr.set_source_rgba(bg_r, bg_g, bg_b, self._projection.backdrop_alpha)
             cr.rectangle(self._tile_x, self._tile_y, self._tile_w, self._tile_h)
             cr.fill()
             cr.set_source_surface(surface, self._tile_x, self._tile_y)
             cr.rectangle(self._tile_x, self._tile_y, self._tile_w, self._tile_h)
             cr.paint_with_alpha(self._projection.alpha)
-            cr.set_source_rgba(1.0, 1.0, 1.0, self._projection.border_alpha)
+            cr.set_source_rgba(br_r, br_g, br_b, self._projection.border_alpha)
             cr.rectangle(self._tile_x + 0.5, self._tile_y + 0.5, self._tile_w - 1, self._tile_h - 1)
             cr.set_line_width(1.0)
             cr.stroke()
