@@ -456,9 +456,9 @@ def state_reader_loop(compositor: Any) -> None:
         layout_path = SNAPSHOT_DIR / "layout-mode.txt"
         if layout_path.exists():
             try:
-                requested = layout_path.read_text().strip() or "balanced"
+                requested = layout_path.read_text().strip() or "forcefield"
                 layout_path.unlink(missing_ok=True)
-                current = getattr(compositor, "_layout_mode", "balanced")
+                current = getattr(compositor, "_layout_mode", "forcefield")
                 if requested != current:
                     GLib = compositor._GLib
                     if GLib:
@@ -559,7 +559,7 @@ def state_reader_loop(compositor: Any) -> None:
         if override_camera_role is not None:
             try:
                 requested_mode = f"packed/{override_camera_role}"
-                current_mode = getattr(compositor, "_layout_mode", "balanced")
+                current_mode = getattr(compositor, "_layout_mode", "forcefield")
                 last_applied = getattr(compositor, "_hero_override_last_applied_set_at", 0.0)
                 # Min-hold debounce: only swap if (a) it's been ≥30s since the last
                 # follow_mode swap, and (b) the proposed role has been the
