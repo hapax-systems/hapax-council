@@ -103,7 +103,21 @@ _CONTRAST_FLOOR_SKIP = frozenset(
         "overlay-zones",
     }
 )
-CONTRAST_FLOOR_ALPHA = 0.35
+CONTRAST_FLOOR_ALPHA = 0.45
+_GOVERNANCE_CONTRAST_SOURCES = frozenset(
+    {
+        "egress_footer",
+        "precedent_ticker",
+        "grounding_provenance_ticker",
+        "activity_header",
+        "stance_indicator",
+        "thinking_indicator",
+        "programme_banner",
+        "programme_state",
+        "chronicle_ticker",
+    }
+)
+GOVERNANCE_CONTRAST_FLOOR_ALPHA = 0.70
 
 
 def _paint_contrast_floor(cr: cairo.Context, geom: SurfaceGeometry, alpha: float) -> None:
@@ -272,7 +286,12 @@ def pip_draw_from_layout(
         from agents.studio_compositor.ward_properties import resolve_ward_properties
 
         if stage == "post_fx" and assignment.source not in _CONTRAST_FLOOR_SKIP:
-            _paint_contrast_floor(cr, surface_schema.geometry, CONTRAST_FLOOR_ALPHA)
+            floor_alpha = (
+                GOVERNANCE_CONTRAST_FLOOR_ALPHA
+                if assignment.source in _GOVERNANCE_CONTRAST_SOURCES
+                else CONTRAST_FLOOR_ALPHA
+            )
+            _paint_contrast_floor(cr, surface_schema.geometry, floor_alpha)
 
         props = resolve_ward_properties(assignment.source)
         blit_with_depth(
