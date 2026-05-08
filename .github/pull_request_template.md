@@ -1,6 +1,15 @@
 ## Summary
 
 
+## AuthorityCase
+
+<!-- Required for all PRs under the AuthorityCase methodology.
+     Pre-methodology PRs: write "pre-methodology" below.
+     Format: CASE-ID / SLICE-ID (e.g., CASE-SDLC-REFORM-001 / SLICE-002) -->
+
+**Case:** <!-- CASE-XXX or pre-methodology -->
+**Slice:** <!-- SLICE-XXX or N/A -->
+
 ## Test plan
 
 
