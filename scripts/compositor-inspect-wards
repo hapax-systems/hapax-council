@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# compositor-inspect — capture compositor diagnostic state for before/after comparison
+#
+# Usage:
+#   scripts/compositor-inspect <label>
+#
+# Examples:
+#   scripts/compositor-inspect "before beta-shader"
+#   scripts/compositor-inspect "after beta-shader"
+#
+# Output:
+#   ~/.cache/hapax/compositor-inspect/<label>/<utc-iso>/
+#     report.txt          — human-readable diagnostic summary
+#     snapshot.jpg        — composite frame (if compositor running)
+#     cam-*.jpg           — per-camera snapshots (if available)
+#
+# The report.txt is also printed to stdout for easy inclusion in PR bodies.
+
+set -euo pipefail
+
+SHM_DIR="/dev/shm/hapax-compositor"
+OUTPUT_ROOT="${HOME}/.cache/hapax/compositor-inspect"
+
+usage() {
+    echo "usage: compositor-inspect <label>" >&2
+    echo "  e.g. scripts/compositor-inspect 'before beta-shader'" >&2
+    exit 2
+}
+
+if [[ $# -lt 1 ]]; then
+    usage
+fi
+
+label="$1"
+ts_utc="$(date -u +%Y%m%dT%H%M%SZ)"
+out_dir="${OUTPUT_ROOT}/${label}/${ts_utc}"
+mkdir -p "$out_dir"
+
+report="${out_dir}/report.txt"
+
+{
+    echo "=== compositor-inspect: ${label} ==="
+    echo "timestamp: ${ts_utc}"
+    echo ""
+
+    # 1. Service status
+    echo "--- service status ---"
+    if systemctl --user is-active hapax-studio-compositor &>/dev/null; then
+        echo "hapax-studio-compositor: active"
+        systemctl --user show hapax-studio-compositor --property=ActiveEnterTimestamp --property=MainPID 2>/dev/null || true
+    else
+        echo "hapax-studio-compositor: inactive"
+    fi
+    echo ""
+
+    # 2. Face obscure policy
+    echo "--- face obscure policy ---"
+    # Check systemd unit env for the var
+    active_val="${HAPAX_FACE_OBSCURE_ACTIVE:-<unset>}"
+    policy_val="${HAPAX_FACE_OBSCURE_POLICY:-<unset>}"
+    echo "HAPAX_FACE_OBSCURE_ACTIVE=${active_val}"
+    echo "HAPAX_FACE_OBSCURE_POLICY=${policy_val}"
+    if [[ "$active_val" == "<unset>" ]]; then
+        echo "effective: ACTIVE (unset defaults to ON per fail-safe)"
+    fi
+    if [[ "$policy_val" == "<unset>" ]]; then
+        echo "effective: ALWAYS_OBSCURE (unset defaults to fail-safe)"
+    fi
+    echo ""
+
+    # 3. Per-camera snapshots
+    echo "--- per-camera snapshots ---"
+    cam_count=0
+    if [[ -d "$SHM_DIR" ]]; then
+        for cam_jpg in "$SHM_DIR"/*.jpg; do
+            [[ -f "$cam_jpg" ]] || continue
+            basename_jpg="$(basename "$cam_jpg")"
+            # Skip non-camera files
+            case "$basename_jpg" in
+                snapshot.jpg|fx-snapshot.jpg|smooth-snapshot.jpg|frame_for_llm.jpg) continue ;;
+            esac
+            age_s=$(( $(date +%s) - $(stat -c %Y "$cam_jpg") ))
+            size_kb=$(( $(stat -c %s "$cam_jpg") / 1024 ))
+            echo "  ${basename_jpg}: ${size_kb}KB, age=${age_s}s"
+            cp -f "$cam_jpg" "${out_dir}/${basename_jpg}"
+            cam_count=$((cam_count + 1))
+        done
+    fi
+    echo "  total: ${cam_count} camera snapshot(s) captured"
+    echo ""
+
+    # 4. Composite snapshot
+    echo "--- composite snapshot ---"
+    if [[ -f "${SHM_DIR}/snapshot.jpg" ]]; then
+        age_s=$(( $(date +%s) - $(stat -c %Y "${SHM_DIR}/snapshot.jpg") ))
+        size_kb=$(( $(stat -c %s "${SHM_DIR}/snapshot.jpg") / 1024 ))
+        echo "  snapshot.jpg: ${size_kb}KB, age=${age_s}s"
+        cp -f "${SHM_DIR}/snapshot.jpg" "${out_dir}/snapshot.jpg"
+    else
+        echo "  snapshot.jpg: not found"
+    fi
+    if [[ -f "${SHM_DIR}/fx-snapshot.jpg" ]]; then
+        age_s=$(( $(date +%s) - $(stat -c %Y "${SHM_DIR}/fx-snapshot.jpg") ))
+        size_kb=$(( $(stat -c %s "${SHM_DIR}/fx-snapshot.jpg") / 1024 ))
+        echo "  fx-snapshot.jpg: ${size_kb}KB, age=${age_s}s"
+        cp -f "${SHM_DIR}/fx-snapshot.jpg" "${out_dir}/fx-snapshot.jpg"
+    fi
+    echo ""
+
+    # 5. Shader chain state
+    echo "--- shader chain state ---"
+    if [[ -f "${SHM_DIR}/fx-current.txt" ]]; then
+        echo "  fx-current.txt:"
+        sed 's/^/    /' "${SHM_DIR}/fx-current.txt"
+        cp -f "${SHM_DIR}/fx-current.txt" "${out_dir}/fx-current.txt"
+    else
+        echo "  fx-current.txt: not found"
+    fi
+    echo ""
+
+    # 6. Ward properties
+    echo "--- ward properties ---"
+    if [[ -f "${SHM_DIR}/ward-properties.json" ]]; then
+        size_kb=$(( $(stat -c %s "${SHM_DIR}/ward-properties.json") / 1024 ))
+        echo "  ward-properties.json: ${size_kb}KB"
+        cp -f "${SHM_DIR}/ward-properties.json" "${out_dir}/ward-properties.json"
+    else
+        echo "  ward-properties.json: not found"
+    fi
+    echo ""
+
+    # 7. Consent state
+    echo "--- consent state ---"
+    if [[ -f "${SHM_DIR}/consent-state.txt" ]]; then
+        echo "  $(cat "${SHM_DIR}/consent-state.txt")"
+    else
+        echo "  consent-state.txt: not found"
+    fi
+    echo ""
+
+    echo "=== output: ${out_dir} ==="
+} | tee "$report"

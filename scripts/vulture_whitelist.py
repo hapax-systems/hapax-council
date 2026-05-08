@@ -2683,3 +2683,8 @@ _SegmentPrepModule._parse_script
 from agents.studio_compositor.activity_reveal_ward import ActivityRevealMixin
 
 ActivityRevealMixin._resolve_palette_colour
+
+# Test-only API for resetting per-camera face detection pipeline state.
+from agents.studio_compositor.face_obscure_integration import reset_pipeline_cache
+
+reset_pipeline_cache

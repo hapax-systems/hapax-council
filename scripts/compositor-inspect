@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""compositor-inspect — dump compositor layout state for PR evidence.
+
+Computes camera tile positions and ward surface positions, then prints
+a structured report: per-element placement, coverage stats, quadrant
+distribution, and force-field balance metrics. Output is deterministic
+(no runtime dependency) so it can run whether or not the compositor is
+live.
+
+Usage:
+    scripts/compositor-inspect <phase> <label>
+
+    phase: "before" or "after"
+    label: session-specific tag (e.g. "zeta-layout")
+
+Output is written to:
+    ~/.cache/hapax/compositor-inspect/<label>/<phase>.txt
+and also printed to stdout.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from agents.studio_compositor.config import (
+    _DEFAULT_CAMERAS,
+    LAYOUT_COORD_SCALE,
+    OUTPUT_HEIGHT,
+    OUTPUT_WIDTH,
+)
+from agents.studio_compositor.layout import compute_tile_layout
+from agents.studio_compositor.models import CameraSpec
+
+
+def _load_default_layout_json() -> dict | None:
+    here = Path(__file__).resolve().parent.parent
+    for candidate in [
+        here / "config" / "compositor-layouts" / "default.json",
+        Path.home() / ".config" / "hapax-compositor" / "layouts" / "default.json",
+    ]:
+        if candidate.exists():
+            return json.loads(candidate.read_text())
+    return None
+
+
+def _quadrant(x: int, y: int, w: int, h: int, cw: int, ch: int) -> str:
+    cx, cy = x + w // 2, y + h // 2
+    return ("L" if cx < cw // 2 else "R") + ("T" if cy < ch // 2 else "B")
+
+
+def _centroid(tiles: list[dict]) -> tuple[float, float]:
+    if not tiles:
+        return 0.0, 0.0
+    tx = sum(t["cx"] for t in tiles) / len(tiles)
+    ty = sum(t["cy"] for t in tiles) / len(tiles)
+    return tx, ty
+
+
+def _spread_radius(tiles: list[dict], cx: float, cy: float) -> float:
+    if not tiles:
+        return 0.0
+    return math.sqrt(sum((t["cx"] - cx) ** 2 + (t["cy"] - cy) ** 2 for t in tiles) / len(tiles))
+
+
+def inspect(phase: str, label: str) -> str:
+    canvas_w, canvas_h = OUTPUT_WIDTH, OUTPUT_HEIGHT
+    lines: list[str] = []
+
+    lines.append(f"=== COMPOSITOR INSPECT: {phase} {label} ===")
+    lines.append(f"Canvas: {canvas_w}x{canvas_h} (scale={LAYOUT_COORD_SCALE:.4f})")
+    lines.append("")
+
+    # --- Camera tile layout ---
+    cameras = [CameraSpec(**c) for c in _DEFAULT_CAMERAS]
+    modes = ["packed", "balanced", "forcefield"]
+    for mode in modes:
+        try:
+            tiles = compute_tile_layout(cameras, canvas_w, canvas_h, mode=mode)
+        except Exception:
+            continue
+
+        lines.append(f"--- Camera layout: {mode} ---")
+        cam_tiles = []
+        for role, tile in sorted(tiles.items()):
+            if role.startswith("_"):
+                continue
+            area_pct = (tile.w * tile.h) / (canvas_w * canvas_h) * 100
+            q = _quadrant(tile.x, tile.y, tile.w, tile.h, canvas_w, canvas_h)
+            cam_tiles.append(
+                {
+                    "role": role,
+                    "x": tile.x,
+                    "y": tile.y,
+                    "w": tile.w,
+                    "h": tile.h,
+                    "cx": tile.x + tile.w / 2,
+                    "cy": tile.y + tile.h / 2,
+                    "area_pct": area_pct,
+                    "quad": q,
+                }
+            )
+            lines.append(
+                f"  {role:20s}: ({tile.x:4d},{tile.y:4d}) {tile.w:4d}x{tile.h:4d}"
+                f"  {area_pct:5.1f}% [{q}]"
+            )
+
+        total_pct = sum(t["area_pct"] for t in cam_tiles)
+        lines.append(f"  Coverage: {total_pct:.1f}% | Dark: {100 - total_pct:.1f}%")
+
+        if cam_tiles:
+            min_x = min(t["x"] for t in cam_tiles)
+            min_y = min(t["y"] for t in cam_tiles)
+            max_x = max(t["x"] + t["w"] for t in cam_tiles)
+            max_y = max(t["y"] + t["h"] for t in cam_tiles)
+            bb_pct = ((max_x - min_x) * (max_y - min_y)) / (canvas_w * canvas_h) * 100
+            lines.append(f"  Bounding box: ({min_x},{min_y})-({max_x},{max_y}) = {bb_pct:.1f}%")
+
+            cx, cy = _centroid(cam_tiles)
+            ideal_cx, ideal_cy = canvas_w / 2, canvas_h / 2
+            offset = math.sqrt((cx - ideal_cx) ** 2 + (cy - ideal_cy) ** 2)
+            spread = _spread_radius(cam_tiles, cx, cy)
+            max_spread = math.sqrt((canvas_w / 2) ** 2 + (canvas_h / 2) ** 2)
+            lines.append(
+                f"  Centroid: ({cx:.0f},{cy:.0f}) | "
+                f"Offset from center: {offset:.0f}px | "
+                f"Spread: {spread:.0f}/{max_spread:.0f}px ({spread / max_spread * 100:.0f}%)"
+            )
+
+            quads = {}
+            for t in cam_tiles:
+                quads[t["quad"]] = quads.get(t["quad"], 0) + 1
+            lines.append("  Quadrants: " + " ".join(f"{q}={n}" for q, n in sorted(quads.items())))
+        lines.append("")
+
+    # --- Ward layout from default.json ---
+    layout_json = _load_default_layout_json()
+    if layout_json:
+        lines.append("--- Ward surfaces (default.json, authored coords) ---")
+        ward_tiles = []
+        for s in layout_json.get("surfaces", []):
+            g = s.get("geometry", {})
+            if g.get("kind") != "rect" or g.get("x") is None:
+                continue
+            x, y, w, h = g["x"], g["y"], g["w"], g["h"]
+            if w >= 1920 and h >= 1080:
+                tag = "FULL"
+            else:
+                tag = ""
+            area_pct = (w * h) / (1920 * 1080) * 100
+            q = _quadrant(x, y, w, h, 1920, 1080)
+            z = s.get("z_order", 0)
+            ward_tiles.append(
+                {
+                    "id": s["id"],
+                    "x": x,
+                    "y": y,
+                    "w": w,
+                    "h": h,
+                    "cx": x + w / 2,
+                    "cy": y + h / 2,
+                    "area_pct": area_pct,
+                    "quad": q,
+                    "z": z,
+                    "tag": tag,
+                }
+            )
+
+        ward_tiles.sort(key=lambda t: t["z"])
+        for t in ward_tiles:
+            lines.append(
+                f"  z={t['z']:3d} {t['id']:40s} ({t['x']:4d},{t['y']:4d})"
+                f" {t['w']:4d}x{t['h']:4d} {t['area_pct']:5.1f}% [{t['quad']}]"
+                f" {t['tag']}"
+            )
+
+        non_full = [t for t in ward_tiles if not t["tag"]]
+        if non_full:
+            cx, cy = _centroid(non_full)
+            spread = _spread_radius(non_full, cx, cy)
+            lines.append(
+                f"  Ward centroid: ({cx:.0f},{cy:.0f}) | "
+                f"Spread: {spread:.0f}px | "
+                f"Count: {len(non_full)} non-fullframe"
+            )
+        lines.append("")
+
+    report = "\n".join(lines)
+    out_dir = Path.home() / ".cache" / "hapax" / "compositor-inspect" / label
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / f"{phase}.txt"
+    out_file.write_text(report)
+
+    return report
+
+
+def main() -> None:
+    if len(sys.argv) < 3:
+        print(f"Usage: {sys.argv[0]} <before|after> <label>", file=sys.stderr)
+        sys.exit(1)
+    phase = sys.argv[1]
+    label = sys.argv[2]
+    print(inspect(phase, label))
+
+
+if __name__ == "__main__":
+    main()

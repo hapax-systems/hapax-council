@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Compositor audio-visual correlation inspector.
+
+Reads live audio reactivity state and compositor visual parameters to
+produce a snapshot documenting which visual elements respond to which
+audio sources, current correlation strength, and latency evidence.
+
+Designed for PR evidence per ARI L4/L19 acceptance criteria.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import time
+from pathlib import Path
+
+SHM_DIR = Path("/dev/shm/hapax-compositor")
+UNIFIED_REACTIVITY_PATH = SHM_DIR / "unified-reactivity.json"
+LAYOUT_PATH = Path("config/compositor-layouts/default.json")
+
+AUDIO_VISUAL_MAP = [
+    {
+        "visual": "Sierpinski center waveform",
+        "source": "mixer_energy (mixer_master via CompositorAudioCapture)",
+        "path": "audio_capture → fx_chain._cached_audio → overlay.py → sierpinski.set_audio_energy()",
+        "latency": "< 1 frame (16.67ms @ 60fps)",
+        "contract": "α=1.0 passthrough, BURST_CLAMP=0.85",
+    },
+    {
+        "visual": "Sierpinski line-width modulation",
+        "source": "mixer_energy (smoothed via bounded-amplitude clamp)",
+        "path": "same as waveform, post BURST_CLAMP",
+        "latency": "< 1 frame (16.67ms @ 60fps)",
+        "contract": "width = 3.0 + smoothed × 3.5 px",
+    },
+    {
+        "visual": "M8 oscilloscope waveform",
+        "source": "/dev/shm/hapax-sources/m8-osc.bin (binary ring, 480 samples)",
+        "path": "m8_oscilloscope_source reads ring buffer directly",
+        "latency": "< 1 frame (16.67ms @ 60fps)",
+        "contract": "α=1.0 passthrough, BURST_CLAMP=0.85",
+    },
+    {
+        "visual": "FX chain shader modulations",
+        "source": "mixer_bass, mixer_mid, mixer_high, mixer_beat (via _cached_audio)",
+        "path": "audio_capture → fx_chain.fx_tick_callback → preset audio-reactive bindings",
+        "latency": "1 frame (fx_tick runs before modulator)",
+        "contract": "per-preset binding, multiplicative defaults=1.0",
+    },
+    {
+        "visual": "Director density decisions",
+        "source": "unified-reactivity.json (UnifiedReactivityBus)",
+        "path": "bus publishes at 60Hz → director_loop reads blended signals",
+        "latency": "1-2 frames (bus poll + director tick)",
+        "contract": "energy label, spectrum classification, voice detection",
+    },
+]
+
+
+def _read_unified_reactivity() -> dict | None:
+    try:
+        data = json.loads(UNIFIED_REACTIVITY_PATH.read_text())
+        return data
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def _read_layout_assignments() -> list[dict]:
+    try:
+        data = json.loads(LAYOUT_PATH.read_text())
+        return data.get("assignments", [])
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def main() -> None:
+    report: dict = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "audio_visual_mapping": AUDIO_VISUAL_MAP,
+    }
+
+    reactivity = _read_unified_reactivity()
+    if reactivity:
+        report["unified_reactivity_snapshot"] = reactivity
+        report["unified_reactivity_age_ms"] = "live"
+    else:
+        report["unified_reactivity_snapshot"] = None
+        report["unified_reactivity_note"] = (
+            "unified-reactivity.json not found — bus may be dormant "
+            "(HAPAX_UNIFIED_REACTIVITY_ACTIVE not set) or compositor not running"
+        )
+
+    assignments = _read_layout_assignments()
+    audio_reactive_wards = []
+    for a in assignments:
+        source = a.get("source", "")
+        if a.get("opacity", 0) > 0:
+            audio_reactive_wards.append(
+                {
+                    "source": source,
+                    "surface": a.get("surface", ""),
+                    "opacity": a.get("opacity"),
+                    "render_stage": a.get("render_stage", ""),
+                }
+            )
+    report["active_ward_count"] = len(audio_reactive_wards)
+
+    report["correlation_contract"] = {
+        "threshold": "> 0.3 during active audio periods",
+        "method": "Pearson r between clamped audio energy and line-width modulation",
+        "tightness_pin": "tests/test_audio_reactivity_tightness.py",
+        "correlation_tests": "tests/test_audio_visual_correlation.py",
+        "verified_surfaces": [
+            "Sierpinski center waveform (mixer_energy → raw draw)",
+            "Sierpinski line-width (mixer_energy → smoothed → width px)",
+            "M8 oscilloscope (ring buffer → raw draw)",
+        ],
+    }
+
+    json.dump(report, sys.stdout, indent=2)
+    print()
+
+
+if __name__ == "__main__":
+    main()

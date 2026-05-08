@@ -51,10 +51,20 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "precedent_ticker",
         "programme_history",
         "research_instrument_dashboard",
+        "cbip_signal_density",
+        "chat_ambient",
+        "chronicle_ticker",
+        "programme_state",
+        "polyend_instrument_reveal",
+        "interactive_lore_query",
+        "constructivist_research_poster",
+        "tufte_density",
+        "ascii_schematic",
+        "segment_content",
+        "m8_oscilloscope",
+        "cbip_dual_ir_displacement",
     }
 
-    # Garage-door layout surfaces: right-column lore strip replaces
-    # constellation pip-* quadrants. 3 video_out sinks remain.
     surface_ids = {s.id for s in layout.surfaces}
     assert surface_ids == {
         "video_out_v4l2_loopback",
@@ -83,6 +93,20 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "obsidian-overlay-region",
         "lyrics-region",
         "reverie-upper-right",
+        "steamdeck-display-pip",
+        "steamdeck-display-fullscreen",
+        "cbip-signal-density-surface",
+        "chat-ambient-surface",
+        "chronicle-ticker-surface",
+        "programme-state-surface",
+        "polyend-instrument-reveal-surface",
+        "interactive-lore-query-surface",
+        "constructivist-research-poster-surface",
+        "tufte-density-surface",
+        "ascii-schematic-surface",
+        "segment-content-surface",
+        "m8-oscilloscope-surface",
+        "cbip-dual-ir-displacement-surface",
     }
 
     assignment_pairs = {(a.source, a.surface) for a in layout.assignments}
@@ -109,6 +133,20 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         ("programme_history", "chronicle-ticker-right-column"),
         ("research_instrument_dashboard", "research-dashboard-right"),
         ("sierpinski", "sierpinski-overlay"),
+        ("steamdeck-display", "steamdeck-display-pip"),
+        ("steamdeck-display", "steamdeck-display-fullscreen"),
+        ("cbip_signal_density", "cbip-signal-density-surface"),
+        ("chat_ambient", "chat-ambient-surface"),
+        ("chronicle_ticker", "chronicle-ticker-surface"),
+        ("programme_state", "programme-state-surface"),
+        ("polyend_instrument_reveal", "polyend-instrument-reveal-surface"),
+        ("interactive_lore_query", "interactive-lore-query-surface"),
+        ("constructivist_research_poster", "constructivist-research-poster-surface"),
+        ("tufte_density", "tufte-density-surface"),
+        ("ascii_schematic", "ascii-schematic-surface"),
+        ("segment_content", "segment-content-surface"),
+        ("m8_oscilloscope", "m8-oscilloscope-surface"),
+        ("cbip_dual_ir_displacement", "cbip-dual-ir-displacement-surface"),
     }
 
 
@@ -142,6 +180,18 @@ def test_default_json_source_backends_match_registry_dispatch() -> None:
         "precedent_ticker": "cairo",
         "programme_history": "cairo",
         "research_instrument_dashboard": "cairo",
+        "cbip_signal_density": "cairo",
+        "chat_ambient": "cairo",
+        "chronicle_ticker": "cairo",
+        "programme_state": "cairo",
+        "polyend_instrument_reveal": "cairo",
+        "interactive_lore_query": "cairo",
+        "constructivist_research_poster": "cairo",
+        "tufte_density": "cairo",
+        "ascii_schematic": "cairo",
+        "segment_content": "cairo",
+        "m8_oscilloscope": "cairo",
+        "cbip_dual_ir_displacement": "cairo",
     }
 
 
@@ -262,6 +312,18 @@ def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
         "precedent_ticker",
         "programme_history",
         "research_instrument_dashboard",
+        "cbip_signal_density",
+        "chat_ambient",
+        "chronicle_ticker",
+        "programme_state",
+        "polyend_instrument_reveal",
+        "interactive_lore_query",
+        "constructivist_research_poster",
+        "tufte_density",
+        "ascii_schematic",
+        "segment_content",
+        "m8_oscilloscope",
+        "cbip_dual_ir_displacement",
     }
 
 

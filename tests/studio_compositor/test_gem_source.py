@@ -14,11 +14,13 @@ from unittest.mock import patch
 from agents.studio_compositor.gem_source import (
     DEFAULT_FRAMES_PATH,
     FALLBACK_FRAME_TEXT,
+    GOVERNANCE_HOLD_MS,
     LEGACY_FRAMES_PATH,
     MIN_FRAME_HOLD_MS,
     GemCairoSource,
     GemFrame,
     GemLayer,
+    _build_governance_frames,
     build_graffiti_layers,
     contains_emoji,
 )
@@ -61,10 +63,10 @@ def test_render_replaces_emoji_with_fallback(tmp_path: Path) -> None:
 # ── Frame loading + advancement ─────────────────────────────────────────
 
 
-def test_state_falls_back_when_no_frames_file(tmp_path: Path) -> None:
+def test_state_falls_back_to_governance_when_no_frames_file(tmp_path: Path) -> None:
     src = GemCairoSource(frames_path=tmp_path / "absent.json")
     state = src.state()
-    assert state["text"] == FALLBACK_FRAME_TEXT
+    assert "║" in state["text"]
     assert state["frame_count"] == 0
     assert len(state["layers"]) >= 2
 
@@ -170,14 +172,14 @@ def test_frame_wraps_to_zero(tmp_path: Path) -> None:
     assert state["frame_index"] == 0
 
 
-def test_malformed_json_falls_back_safely(tmp_path: Path) -> None:
+def test_malformed_json_falls_back_to_governance(tmp_path: Path) -> None:
     frames_path = tmp_path / "frames.json"
     frames_path.write_text("{ this is not valid json", encoding="utf-8")
 
     src = GemCairoSource(frames_path=frames_path)
     state = src.state()
 
-    assert state["text"] == FALLBACK_FRAME_TEXT
+    assert "║" in state["text"]
     assert state["frame_count"] == 0
 
 
@@ -195,7 +197,7 @@ def test_non_dict_frame_entries_skipped(tmp_path: Path) -> None:
     assert state["frame_count"] == 1
 
 
-def test_space_only_frame_entries_are_ignored(tmp_path: Path) -> None:
+def test_space_only_frame_entries_fall_to_governance(tmp_path: Path) -> None:
     frames_path = tmp_path / "frames.json"
     frames_path.write_text(
         json.dumps({"frames": [{"text": " ", "hold_ms": 100}]}),
@@ -205,7 +207,7 @@ def test_space_only_frame_entries_are_ignored(tmp_path: Path) -> None:
     src = GemCairoSource(frames_path=frames_path)
     state = src.state()
 
-    assert state["text"] == FALLBACK_FRAME_TEXT
+    assert "║" in state["text"]
     assert state["frame_count"] == 0
 
 
@@ -319,3 +321,53 @@ def test_render_rooms_is_explicit_noop(tmp_path: Path) -> None:
             raise AssertionError(f"room renderer touched cairo state via {name}")
 
     src._render_rooms(_FailOnTouch(), 1840, 240, 0.0)
+
+
+# ── Governance fallback frames ──────────────────────────────────────────
+
+
+def test_governance_frames_load_from_axiom_registry() -> None:
+    frames = _build_governance_frames()
+    assert len(frames) == 5
+    assert all(isinstance(f, GemFrame) for f in frames)
+    assert all(f.hold_ms == GOVERNANCE_HOLD_MS for f in frames)
+    assert "SINGLE_USER" in frames[0].text
+    assert frames[0].text.startswith("║")
+
+
+def test_governance_frames_sorted_by_weight_descending() -> None:
+    frames = _build_governance_frames()
+    weights = []
+    for f in frames:
+        bracket = f.text.split("[")[1].split("]")[0]
+        weights.append(int(bracket))
+    assert weights == sorted(weights, reverse=True)
+
+
+def test_governance_frames_have_graffiti_layers() -> None:
+    frames = _build_governance_frames()
+    for f in frames:
+        assert len(f.layers) >= 2
+
+
+def test_fallback_uses_governance_when_no_producer(tmp_path: Path) -> None:
+    src = GemCairoSource(frames_path=tmp_path / "absent.json")
+    state = src.state()
+    assert "SINGLE_USER" in state["text"] or "EXECUTIVE_FUNCTION" in state["text"]
+    assert state["frame_count"] == 0
+
+
+def test_governance_fallback_rotates_on_hold_elapsed(tmp_path: Path) -> None:
+    src = GemCairoSource(frames_path=tmp_path / "absent.json")
+    first = src._current_governance_frame()
+    src._gov_frame_started_ts = time.monotonic() - (GOVERNANCE_HOLD_MS / 1000.0 + 1)
+    second = src._current_governance_frame()
+    assert first.text != second.text
+
+
+def test_producer_frames_override_governance(tmp_path: Path) -> None:
+    frames_path = tmp_path / "frames.json"
+    _write_frames(frames_path, [{"text": "producer content", "hold_ms": 1000}])
+    src = GemCairoSource(frames_path=frames_path)
+    state = src.state()
+    assert state["text"] == "producer content"

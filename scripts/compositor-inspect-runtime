@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+LABEL="${1:-snapshot}"
+TAG="${2:-}"
+SHM="/dev/shm/hapax-compositor"
+OUT_DIR="$HOME/.cache/hapax/compositor-inspect"
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+SLUG="${LABEL}${TAG:+_${TAG}}"
+RUN_DIR="${OUT_DIR}/${SLUG}_${TS}"
+mkdir -p "$RUN_DIR"
+
+echo "=== compositor-inspect: ${SLUG} @ ${TS} ==="
+echo "Output: ${RUN_DIR}"
+
+section() { echo ""; echo "--- $1 ---"; }
+
+section "service status"
+systemctl --user status studio-compositor.service --no-pager 2>/dev/null | head -15 | tee "$RUN_DIR/service-status.txt"
+
+section "active segment"
+if [[ -f "$SHM/active-segment.json" ]]; then
+    python3 -c "import json,sys; d=json.load(open('$SHM/active-segment.json')); print(f'programme={d.get(\"programme_id\",\"?\")}, beat={d.get(\"current_beat_index\",\"?\")}, layout=default')" | tee "$RUN_DIR/active-segment.txt"
+    cp "$SHM/active-segment.json" "$RUN_DIR/"
+else
+    echo "no active-segment.json" | tee "$RUN_DIR/active-segment.txt"
+fi
+
+section "layout receipt"
+if [[ -f "$SHM/segment-layout-receipt.json" ]]; then
+    python3 -c "
+import json
+d=json.load(open('$SHM/segment-layout-receipt.json'))
+print(f'status={d.get(\"status\",\"?\")}, selected={d.get(\"selected_layout\",\"none\")}, prev={d.get(\"previous_layout\",\"?\")}, refusal={d.get(\"refusal\",{}).get(\"message\",\"none\")[:80]}')
+" | tee "$RUN_DIR/layout-receipt.txt"
+    cp "$SHM/segment-layout-receipt.json" "$RUN_DIR/"
+fi
+
+section "audio reactivity"
+if [[ -f "$SHM/unified-reactivity.json" ]]; then
+    python3 -c "
+import json,time
+d=json.load(open('$SHM/unified-reactivity.json'))
+b=d.get('blended',{})
+ts=d.get('published_at',0)
+age=time.time()-ts if ts>0 else -1
+srcs=d.get('active_sources',[])
+print(f'rms={b.get(\"rms\",0):.6f}, bass={b.get(\"bass_band\",0):.6f}, onset={b.get(\"onset\",0):.6f}')
+print(f'sources={srcs}, age={age:.1f}s')
+print(f'per_source keys: {list(d.get(\"per_source\",{}).keys())}')
+" | tee "$RUN_DIR/audio-reactivity.txt"
+    cp "$SHM/unified-reactivity.json" "$RUN_DIR/"
+else
+    echo "no unified-reactivity.json" | tee "$RUN_DIR/audio-reactivity.txt"
+fi
+
+section "video attention"
+if [[ -f "$SHM/video-attention.f32" ]]; then
+    python3 -c "import struct; d=open('$SHM/video-attention.f32','rb').read(); print(f'video_attention={struct.unpack(\"<f\",d)[0]:.10f}')" | tee "$RUN_DIR/video-attention.txt"
+else
+    echo "no video-attention.f32" | tee "$RUN_DIR/video-attention.txt"
+fi
+
+section "overlay alpha overrides"
+if [[ -f "$SHM/overlay-alpha-overrides.json" ]]; then
+    cat "$SHM/overlay-alpha-overrides.json" | tee "$RUN_DIR/overlay-alpha-overrides.json"
+else
+    echo "{}" | tee "$RUN_DIR/overlay-alpha-overrides.json"
+fi
+
+section "ward properties (sierpinski)"
+if [[ -f "$SHM/ward-properties.json" ]]; then
+    python3 -c "
+import json
+d=json.load(open('$SHM/ward-properties.json'))
+wards=d.get('wards',d)
+if isinstance(wards,dict):
+    for k,v in wards.items():
+        if 'sierp' in k.lower():
+            print(f'{k}: {json.dumps(v,indent=2)}')
+    print(f'total wards: {len(wards)}')
+else:
+    print(f'ward-properties shape: {type(wards).__name__}')
+" | tee "$RUN_DIR/ward-sierpinski.txt"
+    cp "$SHM/ward-properties.json" "$RUN_DIR/"
+fi
+
+section "degraded state"
+if [[ -f "$SHM/degraded.json" ]]; then
+    python3 -c "
+import json
+d=json.load(open('$SHM/degraded.json'))
+print(f'degraded_active={d.get(\"active\",False)}, sources_degraded={len(d.get(\"sources\",{}))}')
+for s,v in d.get('sources',{}).items():
+    if v: print(f'  {s}: degraded')
+" | tee "$RUN_DIR/degraded.txt"
+    cp "$SHM/degraded.json" "$RUN_DIR/"
+fi
+
+section "fx preset"
+if [[ -f "$SHM/fx-current.txt" ]]; then
+    echo "fx_preset=$(cat $SHM/fx-current.txt)" | tee "$RUN_DIR/fx-preset.txt"
+fi
+
+section "visual pool"
+POOL="$HOME/hapax-pool/visual"
+if [[ -d "$POOL" ]]; then
+    total=$(find "$POOL" -type f \( -name '*.jpg' -o -name '*.png' -o -name '*.jpeg' \) 2>/dev/null | wc -l)
+    echo "visual_pool_frames=${total}" | tee "$RUN_DIR/visual-pool.txt"
+    find "$POOL" -type f \( -name '*.jpg' -o -name '*.png' -o -name '*.jpeg' \) 2>/dev/null | head -5 >> "$RUN_DIR/visual-pool.txt"
+else
+    echo "visual_pool_dir_missing" | tee "$RUN_DIR/visual-pool.txt"
+fi
+
+section "screenshots"
+for f in snapshot.jpg fx-snapshot.jpg frame_for_llm.jpg smooth-snapshot.jpg; do
+    if [[ -f "$SHM/$f" ]]; then
+        cp "$SHM/$f" "$RUN_DIR/"
+        sz=$(stat -c%s "$SHM/$f" 2>/dev/null || echo 0)
+        echo "$f: ${sz} bytes"
+    fi
+done
+
+section "recent sierpinski logs (last 5min)"
+journalctl --user -u studio-compositor.service --since "5 min ago" --no-pager 2>/dev/null | grep -i 'sierp' | tail -10 | tee "$RUN_DIR/sierpinski-logs.txt"
+
+echo ""
+echo "=== compositor-inspect complete: ${RUN_DIR} ==="
