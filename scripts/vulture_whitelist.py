@@ -2867,3 +2867,12 @@ from shared.code_assertion_extractor import (  # noqa: F401, E402
 EXTRACTION_VERSION
 extract_from_directory
 extract_from_python_file
+
+# shmsink sidecar — compositor integration wires these at runtime.
+from agents.studio_compositor.shmsink_output_pipeline import (  # noqa: F401, E402
+    ShmsinkOutputPipeline,
+    is_bridge_enabled,
+)
+
+ShmsinkOutputPipeline
+is_bridge_enabled
