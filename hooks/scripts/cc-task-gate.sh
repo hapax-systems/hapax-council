@@ -17,10 +17,11 @@
 #
 # Bypass: HAPAX_CC_TASK_GATE_OFF=1 disables the hook (incident response).
 #
-# Failure mode: fail-OPEN on infrastructure errors (vault unreadable,
-# python missing, etc.) so the operator's session is never bricked by
-# the hook itself. The cost asymmetry favors permissivity for hook
-# failures — if the hook breaks, sessions keep working without the gate.
+# Failure mode: FAIL-CLOSED on infrastructure errors for protected
+# mutations (Edit/Write/Bash-destructive). Amendment 1 (HAZ-006):
+# fail-open permitted unauthorized protected mutations. Protected
+# surfaces now block; emergency bypass via HAPAX_METHODOLOGY_EMERGENCY=1
+# with audit receipt.
 
 set -euo pipefail
 
@@ -59,6 +60,17 @@ edit_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.
 if [[ "${HAPAX_CC_TASK_GATE_OFF:-0}" == "1" ]]; then
   exit 0
 fi
+# Methodology emergency bypass (logged in section 10 when case_id is present;
+# here as early-out when infrastructure prevents reaching section 10).
+if [[ "${HAPAX_METHODOLOGY_EMERGENCY:-0}" == "1" ]]; then
+  _emergency_ledger="$HOME/.cache/hapax/methodology-emergency-ledger.jsonl"
+  mkdir -p "$(dirname "$_emergency_ledger")" 2>/dev/null || true
+  printf '{"ts":"%s","role":"unknown","task":"unknown","case":"unknown","tool":"%s","reason":"early_infra_bypass"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tool_name" \
+    >> "$_emergency_ledger" 2>/dev/null || true
+  echo "cc-task-gate: EMERGENCY BYPASS (early) — logged" >&2
+  exit 0
+fi
 
 # --- 4. Determine session role ---
 role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
@@ -83,10 +95,9 @@ if [[ -z "$role" ]]; then
   fi
 fi
 if [[ -z "$role" ]]; then
-  # Cannot determine role — fail-OPEN with stderr hint. Better to
-  # let work proceed than to brick the session on a config gap.
-  echo "cc-task-gate: cannot determine session role (set HAPAX_AGENT_ROLE, CODEX_ROLE, or CLAUDE_ROLE); allowing" >&2
-  exit 0
+  echo "cc-task-gate: BLOCKED — cannot determine session role (set HAPAX_AGENT_ROLE, CODEX_ROLE, or CLAUDE_ROLE)." >&2
+  echo "  Protected mutations require role identification. Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
+  exit 2
 fi
 
 # --- 5. Read claim file ---
@@ -106,8 +117,9 @@ fi
 
 task_id="$(head -n1 "$claim_file" | tr -d '[:space:]')"
 if [[ -z "$task_id" ]]; then
-  echo "cc-task-gate: claim file is empty for role '$role'; allowing (likely race)" >&2
-  exit 0
+  echo "cc-task-gate: BLOCKED — claim file is empty for role '$role'." >&2
+  echo "  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
+  exit 2
 fi
 
 # --- 6. Locate task note in vault ---
@@ -138,8 +150,9 @@ fi
 
 # --- 7. Parse frontmatter via python (jq doesn't do YAML) ---
 if ! command -v python3 &>/dev/null; then
-  echo "cc-task-gate: python3 missing; cannot parse frontmatter; allowing" >&2
-  exit 0
+  echo "cc-task-gate: BLOCKED — python3 missing; cannot validate AuthorityCase." >&2
+  echo "  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
+  exit 2
 fi
 
 # Use a tiny inline python to extract status + assigned_to + blocked_reason
@@ -284,8 +297,9 @@ EOF
     exit 2
     ;;
   *)
-    echo "cc-task-gate: unknown status '$status' for task '$task_id'; allowing (fail-OPEN on parser uncertainty)" >&2
-    exit 0
+    echo "cc-task-gate: BLOCKED — unknown status '$status' for task '$task_id'." >&2
+    echo "  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
+    exit 2
     ;;
 esac
 

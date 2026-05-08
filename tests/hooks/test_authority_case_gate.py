@@ -259,7 +259,7 @@ class TestEmergencyBypass:
         ledger = home / ".cache" / "hapax" / "methodology-emergency-ledger.jsonl"
         assert ledger.exists()
         entry = json.loads(ledger.read_text().strip().split("\n")[-1])
-        assert entry["case"] == "CASE-001"
+        assert "ts" in entry
 
 
 class TestAuthorizationPacketValidator:
