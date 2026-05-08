@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+"""Surface addressed relay notes and write read receipts.
+
+This is an interim bridge for REQ-20260508154442. It does not replace the
+future durable communication control plane; it makes the existing relay notes
+consumable by SessionStart/tick context so operators are not the handoff path.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+ADDRESS_FIELDS = ("to", "recipient", "recipients", "target", "targets", "audience")
+BROADCAST_TARGETS = {
+    "all",
+    "any",
+    "team",
+    "teams",
+    "train",
+    "trains",
+    "coordinator",
+    "coordinators",
+    "coordination",
+    "rte",
+}
+
+
+def _parse_frontmatter(path: Path) -> tuple[dict[str, Any], str]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}, ""
+    if not text.startswith("---"):
+        return {}, text
+
+    end = text.find("\n---", 3)
+    if end == -1:
+        return {}, text
+
+    yaml_text = text[3:end].strip()
+    body = text[end + 4 :].lstrip("\n")
+    if not yaml_text:
+        return {}, body
+    try:
+        loaded = yaml.safe_load(yaml_text)
+    except yaml.YAMLError:
+        return {}, text
+    if not isinstance(loaded, dict):
+        return {}, text
+    return loaded, body
+
+
+@dataclass(frozen=True)
+class RelayMessage:
+    """A relay note addressed to a role."""
+
+    key: str
+    path: Path
+    title: str
+    sender: str
+    created_utc: str
+    modified_utc: str
+    size: int
+    mtime_ns: int
+
+
+def _utc_from_timestamp(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, UTC).replace(microsecond=0).isoformat()
+
+
+def _string_field(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.replace(microsecond=0).isoformat()
+    return str(value)
+
+
+def _normalize_token(value: str) -> str:
+    return value.strip().lower().replace("_", "-")
+
+
+def _flatten_address_values(value: Any) -> list[str]:
+    """Return normalized address tokens from YAML scalar/list/dict values."""
+
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        tokens: list[str] = []
+        for item in value:
+            tokens.extend(_flatten_address_values(item))
+        return tokens
+    if isinstance(value, dict):
+        tokens = []
+        for item in value.values():
+            tokens.extend(_flatten_address_values(item))
+        return tokens
+    if isinstance(value, str):
+        parts = re.split(r"[,;\s]+", value)
+        return [_normalize_token(part) for part in parts if part.strip()]
+    return [_normalize_token(str(value))]
+
+
+def _role_tokens(role: str) -> set[str]:
+    role_token = _normalize_token(role)
+    tokens = {role_token}
+    if role_token.startswith("cx-"):
+        tokens.add("codex")
+    if role_token in {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}:
+        tokens.add("claude")
+    return tokens
+
+
+def _frontmatter_addresses(frontmatter: dict[str, Any]) -> set[str]:
+    addresses: set[str] = set()
+    for field in ADDRESS_FIELDS:
+        addresses.update(_flatten_address_values(frontmatter.get(field)))
+    return addresses
+
+
+def _filename_addresses(path: Path) -> set[str]:
+    stem = _normalize_token(path.stem)
+    parts = [part for part in stem.split("-") if part]
+    addresses: set[str] = set()
+    for index, part in enumerate(parts[:-1]):
+        if part in {"to", "for"}:
+            addresses.add(parts[index + 1])
+    return addresses
+
+
+def _is_addressed_to_role(path: Path, frontmatter: dict[str, Any], role: str) -> bool:
+    addresses = _frontmatter_addresses(frontmatter) | _filename_addresses(path)
+    if not addresses:
+        return False
+    if addresses & BROADCAST_TARGETS:
+        return True
+    return bool(addresses & _role_tokens(role))
+
+
+def _title_for(path: Path, frontmatter: dict[str, Any], body: str) -> str:
+    frontmatter_title = frontmatter.get("title")
+    if frontmatter_title:
+        return str(frontmatter_title).strip()
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip() or path.stem
+        if stripped:
+            return stripped[:100]
+    return path.stem
+
+
+def _message_key(path: Path) -> tuple[str, int, int]:
+    stat = path.stat()
+    payload = f"{path.resolve()}\0{stat.st_mtime_ns}\0{stat.st_size}".encode()
+    return hashlib.sha256(payload).hexdigest(), stat.st_mtime_ns, stat.st_size
+
+
+def _read_seen(path: Path) -> set[str]:
+    try:
+        return {
+            line.strip().split("\t", 1)[0] for line in path.read_text().splitlines() if line.strip()
+        }
+    except OSError:
+        return set()
+
+
+def _write_seen(path: Path, keys: set[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text("".join(f"{key}\n" for key in sorted(keys)), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _load_message(path: Path, role: str) -> RelayMessage | None:
+    try:
+        frontmatter, body = _parse_frontmatter(path)
+        if not _is_addressed_to_role(path, frontmatter, role):
+            return None
+        key, mtime_ns, size = _message_key(path)
+        stat = path.stat()
+    except OSError:
+        return None
+
+    return RelayMessage(
+        key=key,
+        path=path,
+        title=_title_for(path, frontmatter, body),
+        sender=_string_field(frontmatter.get("from") or frontmatter.get("sender") or "unknown"),
+        created_utc=_string_field(frontmatter.get("created_utc") or frontmatter.get("created_at")),
+        modified_utc=_utc_from_timestamp(stat.st_mtime),
+        size=size,
+        mtime_ns=mtime_ns,
+    )
+
+
+def _scan_messages(relay_dir: Path, role: str) -> list[RelayMessage]:
+    paths = [path for path in relay_dir.glob("*.md") if path.is_file()]
+    paths.sort(key=lambda path: path.stat().st_mtime_ns if path.exists() else 0, reverse=True)
+    messages = []
+    for path in paths:
+        message = _load_message(path, role)
+        if message is not None:
+            messages.append(message)
+    return messages
+
+
+def _print_messages(role: str, messages: list[RelayMessage]) -> None:
+    if not messages:
+        return
+    print(f"ADDRESSED RELAY INBOX ({role}):")
+    for message in messages:
+        print(f"  - {message.title} ({message.path})")
+        meta_parts = [f"from: {message.sender}"]
+        if message.created_utc:
+            meta_parts.append(f"created: {message.created_utc}")
+        meta_parts.append(f"modified: {message.modified_utc}")
+        print(f"    {' | '.join(meta_parts)}")
+
+
+def _append_receipts(receipt_log: Path, role: str, messages: list[RelayMessage]) -> None:
+    receipt_log.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(UTC).replace(microsecond=0).isoformat()
+    with receipt_log.open("a", encoding="utf-8") as handle:
+        for message in messages:
+            receipt = {
+                "receipt_type": "relay_addressed_read",
+                "read_at_utc": now,
+                "recipient": role,
+                "message_key": message.key,
+                "path": str(message.path),
+                "title": message.title,
+                "sender": message.sender,
+                "mtime_ns": message.mtime_ns,
+                "size": message.size,
+            }
+            handle.write(json.dumps(receipt, sort_keys=True) + "\n")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--role", required=True, help="current coordinator role")
+    parser.add_argument(
+        "--relay-dir",
+        type=Path,
+        default=Path.home() / ".cache" / "hapax" / "relay",
+        help="relay directory to scan",
+    )
+    parser.add_argument(
+        "--seen-file",
+        type=Path,
+        default=None,
+        help="cursor file; defaults to RELAY_DIR/.seen/<role>-addressed-relay.seen",
+    )
+    parser.add_argument(
+        "--receipt-log",
+        type=Path,
+        default=None,
+        help="receipt JSONL; defaults to RELAY_DIR/receipts/addressed-relay-read.jsonl",
+    )
+    parser.add_argument("--limit", type=int, default=8, help="maximum unseen notes to print")
+    parser.add_argument("--mark-seen", action="store_true", help="record printed notes as read")
+    parser.add_argument("--include-seen", action="store_true", help="print already-seen notes too")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    role = _normalize_token(args.role)
+    relay_dir = args.relay_dir.expanduser()
+    seen_file = args.seen_file or relay_dir / ".seen" / f"{role}-addressed-relay.seen"
+    receipt_log = args.receipt_log or relay_dir / "receipts" / "addressed-relay-read.jsonl"
+
+    if not relay_dir.is_dir():
+        return 0
+
+    messages = _scan_messages(relay_dir, role)
+    seen = _read_seen(seen_file)
+    if not args.include_seen:
+        messages = [message for message in messages if message.key not in seen]
+    messages = messages[: max(args.limit, 0)]
+
+    _print_messages(role, messages)
+
+    if args.mark_seen and messages:
+        _write_seen(seen_file, seen | {message.key for message in messages})
+        _append_receipts(receipt_log, role, messages)
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

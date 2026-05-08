@@ -489,6 +489,15 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
     fi
   done
 
+  # Interim bridge for REQ-20260508154442: relay markdown notes can be
+  # addressed directly to a coordinator via frontmatter (`to: alpha`) or
+  # filename (`codex-to-alpha-...md`). Surface them on wake/tick and write a
+  # read receipt so operator copy/paste is not the coordination transport.
+  RELAY_INBOX="$SCRIPT_DIR/../../scripts/hapax-relay-inbox"
+  if [ -x "$RELAY_INBOX" ]; then
+    "$RELAY_INBOX" --role "$ROLE" --relay-dir "$RELAY_DIR" --mark-seen --limit 8 2>/dev/null || true
+  fi
+
   # Show urgent relay broadcasts delivered directly into this session's
   # relay yaml. The producer appends p0_broadcast_inbox_<timestamp>
   # entries; keep a small per-session cursor so old entries do not appear
