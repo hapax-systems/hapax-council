@@ -1,0 +1,14 @@
+[Unit]
+Description=Hapax OBS v4l2 capture source auto-reset monitor
+After=pipewire.service studio-compositor.service
+Wants=studio-compositor.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/hapax-obs-v4l2-source-reset --source-name StudioCompositor
+Restart=on-failure
+RestartSec=30
+WatchdogSec=120
+
+[Install]
+WantedBy=default.target

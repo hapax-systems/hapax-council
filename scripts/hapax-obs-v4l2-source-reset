@@ -1,0 +1,319 @@
+#!/usr/bin/env python3
+"""Monitor OBS v4l2 capture source and auto-reset on stall.
+
+Polls OBS via obs-websocket every POLL_INTERVAL seconds. Detects stalls by
+comparing tiny source screenshots (hash-based). If the source image is
+identical for STALL_THRESHOLD seconds, or the source is inactive, toggles
+visibility off→on to force OBS to reacquire /dev/video42.
+
+Writes:
+  - Prometheus textfile counter at --prom-path
+  - ntfy notification on each reset event
+  - JSON status to /dev/shm/hapax-obs-v4l2-source-reset/status.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import logging
+import logging.handlers
+import signal
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+LOG_TAG = "hapax-obs-v4l2-source-reset"
+STATUS_DIR = Path("/dev/shm/hapax-obs-v4l2-source-reset")
+STATUS_PATH = STATUS_DIR / "status.json"
+
+PROM_RESETS = "hapax_obs_v4l2_source_resets_total"
+PROM_ACTIVE = "hapax_obs_v4l2_source_reset_active"
+
+logger = logging.getLogger(LOG_TAG)
+
+_shutdown = False
+
+
+def _on_signal(signum: int, _frame: Any) -> None:
+    global _shutdown
+    _shutdown = True
+    logger.info("received signal %d, shutting down", signum)
+
+
+def _setup_logger() -> None:
+    if logger.handlers:
+        return
+    logger.setLevel(logging.INFO)
+    stderr = logging.StreamHandler(sys.stderr)
+    stderr.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    logger.addHandler(stderr)
+    try:
+        syslog = logging.handlers.SysLogHandler(address="/dev/log")
+        syslog.setFormatter(logging.Formatter(LOG_TAG + ": %(message)s"))
+        logger.addHandler(syslog)
+    except (OSError, FileNotFoundError):
+        pass
+
+
+def _connect(host: str, port: int) -> Any:
+    import obsws_python
+
+    return obsws_python.ReqClient(host=host, port=port, timeout=5)
+
+
+def _get_screenshot_hash(client: Any, source_name: str) -> str | None:
+    """Take a tiny screenshot and return its SHA-256 hex digest."""
+    try:
+        resp = client.get_source_screenshot(
+            source_name=source_name,
+            image_format="png",
+            image_width=8,
+            image_height=8,
+        )
+        return hashlib.sha256(resp.image_data.encode()).hexdigest()
+    except Exception as exc:
+        logger.debug("screenshot failed: %s", exc)
+        return None
+
+
+def _is_source_active(client: Any, source_name: str) -> bool:
+    try:
+        resp = client.get_source_active(source_name=source_name)
+        return bool(resp.video_active)
+    except Exception:
+        return False
+
+
+def _find_scene_item(client: Any, source_name: str) -> tuple[str, int] | None:
+    """Find the scene and scene_item_id for the named source."""
+    try:
+        current = client.get_current_program_scene()
+        scene_name = current.scene_name
+    except Exception:
+        return None
+
+    try:
+        items = client.get_scene_item_list(scene_name=scene_name)
+        for item in items.scene_items:
+            if item.get("sourceName") == source_name:
+                return scene_name, item["sceneItemId"]
+    except Exception:
+        pass
+    return None
+
+
+def _toggle_visibility(client: Any, scene_name: str, item_id: int) -> bool:
+    """Set visibility off, wait 1s, set on. Returns True on success."""
+    try:
+        client.set_scene_item_enabled(
+            scene_name=scene_name,
+            scene_item_id=item_id,
+            scene_item_enabled=False,
+        )
+        time.sleep(1.0)
+        client.set_scene_item_enabled(
+            scene_name=scene_name,
+            scene_item_id=item_id,
+            scene_item_enabled=True,
+        )
+        return True
+    except Exception as exc:
+        logger.warning("toggle failed: %s", exc)
+        return False
+
+
+def _send_ntfy(reason: str) -> None:
+    try:
+        from shared.notify import send
+
+        send(
+            title="OBS v4l2 source reset",
+            body=reason,
+            tags=["warning", "camera"],
+            topic="hapax-system",
+            priority=3,
+        )
+    except Exception as exc:
+        logger.debug("ntfy send failed: %s", exc)
+
+
+def _emit_prometheus(metrics_path: Path | None, reset_count: int) -> None:
+    if metrics_path is None:
+        return
+    lines = [
+        f"# HELP {PROM_RESETS} OBS v4l2 capture source visibility resets",
+        f"# TYPE {PROM_RESETS} counter",
+        f"{PROM_RESETS} {reset_count}",
+        f"# HELP {PROM_ACTIVE} 1 on every successful monitor tick",
+        f"# TYPE {PROM_ACTIVE} gauge",
+        f"{PROM_ACTIVE} 1",
+    ]
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    metrics_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_status(
+    state: str,
+    reset_count: int,
+    last_reset_at: str | None,
+    last_hash: str | None,
+    stall_seconds: float,
+) -> None:
+    STATUS_DIR.mkdir(parents=True, exist_ok=True)
+    data = {
+        "state": state,
+        "reset_count": reset_count,
+        "last_reset_at": last_reset_at,
+        "last_hash": last_hash,
+        "stall_seconds": round(stall_seconds, 1),
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    STATUS_PATH.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def monitor_loop(
+    *,
+    host: str,
+    port: int,
+    source_name: str,
+    poll_interval: float,
+    stall_threshold: float,
+    metrics_path: Path | None,
+) -> None:
+    client: Any = None
+    reset_count = 0
+    last_reset_at: str | None = None
+    prev_hash: str | None = None
+    hash_stable_since: float = 0.0
+
+    while not _shutdown:
+        # (Re)connect
+        if client is None:
+            try:
+                client = _connect(host, port)
+                logger.info("connected to OBS at %s:%d", host, port)
+            except Exception as exc:
+                logger.debug("OBS connection failed: %s", exc)
+                _write_status("disconnected", reset_count, last_reset_at, None, 0)
+                _emit_prometheus(metrics_path, reset_count)
+                time.sleep(poll_interval)
+                continue
+
+        now = time.monotonic()
+        stall_seconds = 0.0
+        state = "healthy"
+
+        # Check source active
+        active = _is_source_active(client, source_name)
+
+        if not active:
+            state = "inactive"
+            stall_seconds = 0
+        else:
+            # Screenshot-based stall detection
+            current_hash = _get_screenshot_hash(client, source_name)
+            if current_hash is None:
+                state = "screenshot_failed"
+                client = None
+            elif current_hash == prev_hash:
+                stall_seconds = now - hash_stable_since
+            else:
+                prev_hash = current_hash
+                hash_stable_since = now
+                stall_seconds = 0
+
+        needs_reset = False
+        reason = ""
+
+        if state == "inactive":
+            needs_reset = True
+            reason = f"source '{source_name}' inactive — reacquiring"
+        elif state == "healthy" and stall_seconds >= stall_threshold:
+            needs_reset = True
+            reason = f"source '{source_name}' stalled for {stall_seconds:.0f}s (hash unchanged)"
+
+        if needs_reset:
+            logger.warning("RESET: %s", reason)
+            scene_item = _find_scene_item(client, source_name)
+            if scene_item is not None:
+                scene_name, item_id = scene_item
+                success = _toggle_visibility(client, scene_name, item_id)
+                if success:
+                    reset_count += 1
+                    last_reset_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    _send_ntfy(reason)
+                    # Reset stall tracking after toggle
+                    prev_hash = None
+                    hash_stable_since = now
+                else:
+                    client = None
+            else:
+                logger.warning("source '%s' not found in current scene", source_name)
+
+        _write_status(state, reset_count, last_reset_at, prev_hash, stall_seconds)
+        _emit_prometheus(metrics_path, reset_count)
+        time.sleep(poll_interval)
+
+    # Clean shutdown
+    if client is not None:
+        try:
+            client.disconnect()
+        except Exception:
+            pass
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--source-name",
+        default="StudioCompositor",
+        help="OBS input source name for v4l2 capture (default: StudioCompositor)",
+    )
+    parser.add_argument("--host", default="localhost", help="OBS websocket host")
+    parser.add_argument("--port", type=int, default=4455, help="OBS websocket port")
+    parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=15.0,
+        help="Seconds between polls (default: 15)",
+    )
+    parser.add_argument(
+        "--stall-threshold",
+        type=float,
+        default=30.0,
+        help="Seconds of identical frames before reset (default: 30)",
+    )
+    parser.add_argument(
+        "--prom-path",
+        type=Path,
+        default=Path("/var/lib/node_exporter/textfile_collector/hapax-obs-v4l2-source-reset.prom"),
+        help="Prometheus textfile collector output path",
+    )
+    args = parser.parse_args()
+
+    _setup_logger()
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGINT, _on_signal)
+
+    logger.info(
+        "starting: source=%s poll=%.0fs stall=%.0fs",
+        args.source_name,
+        args.poll_interval,
+        args.stall_threshold,
+    )
+
+    monitor_loop(
+        host=args.host,
+        port=args.port,
+        source_name=args.source_name,
+        poll_interval=args.poll_interval,
+        stall_threshold=args.stall_threshold,
+        metrics_path=args.prom_path,
+    )
+
+
+if __name__ == "__main__":
+    main()
