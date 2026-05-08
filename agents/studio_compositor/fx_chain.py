@@ -90,6 +90,32 @@ def apply_nondestructive_clamp(
     return NONDESTRUCTIVE_ALPHA_CEILING
 
 
+_CONTRAST_FLOOR_SKIP = frozenset(
+    {
+        "gem",
+        "reverie",
+        "sierpinski",
+        "durf",
+        "album",
+        "token_pole",
+        "m8-display",
+        "steamdeck-display",
+        "overlay-zones",
+    }
+)
+CONTRAST_FLOOR_ALPHA = 0.35
+
+
+def _paint_contrast_floor(cr: cairo.Context, geom: SurfaceGeometry, alpha: float) -> None:
+    if geom.kind != "rect" or alpha <= 0.0:
+        return
+    cr.save()
+    cr.set_source_rgba(0.02, 0.02, 0.02, alpha)
+    cr.rectangle(geom.x or 0, geom.y or 0, geom.w or 0, geom.h or 0)
+    cr.fill()
+    cr.restore()
+
+
 def blit_scaled(
     cr: cairo.Context,
     src: cairo.ImageSurface,
@@ -244,6 +270,9 @@ def pip_draw_from_layout(
         # its ``cairo`` dependency for ``ward_render_scope``) before the
         # registry/layout modules have settled. Hot-path import is cached.
         from agents.studio_compositor.ward_properties import resolve_ward_properties
+
+        if stage == "post_fx" and assignment.source not in _CONTRAST_FLOOR_SKIP:
+            _paint_contrast_floor(cr, surface_schema.geometry, CONTRAST_FLOOR_ALPHA)
 
         props = resolve_ward_properties(assignment.source)
         blit_with_depth(
