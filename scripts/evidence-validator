@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Validate evidence completeness for AuthorityCases.
+
+Checks the evidence ledger for stale/missing evidence against the
+case's risk tier requirements. Exits non-zero if any case is
+non-compliant.
+
+ISAP: SLICE-005-EVIDENCE-TRACE (CASE-SDLC-REFORM-001)
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from shared.evidence_ledger import (
+    TraceGraph,
+    check_tier_compliance,
+)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Validate evidence for AuthorityCases")
+    parser.add_argument("case_id", help="AuthorityCase ID to validate")
+    parser.add_argument(
+        "--tier",
+        choices=["T0", "T1", "T2", "T3"],
+        default="T0",
+        help="Risk tier to check against (default: T0)",
+    )
+    parser.add_argument("--json", action="store_true", help="Output JSON")
+    parser.add_argument(
+        "--check-traces",
+        nargs="*",
+        metavar="REQ_ID",
+        help="Also check that these requirement IDs have trace links",
+    )
+    args = parser.parse_args()
+
+    result = check_tier_compliance(args.case_id, args.tier)
+
+    trace_gaps: list[str] = []
+    if args.check_traces:
+        graph = TraceGraph()
+        trace_gaps = graph.unlinked_requirements(args.check_traces)
+
+    if args.json:
+        output = result.model_dump(mode="json")
+        output["required_kinds"] = sorted(output["required_kinds"])
+        output["present_kinds"] = sorted(output["present_kinds"])
+        output["missing_kinds"] = sorted(output["missing_kinds"])
+        if args.check_traces:
+            output["unlinked_requirements"] = trace_gaps
+        print(json.dumps(output, indent=2))
+    else:
+        status = "COMPLIANT" if result.compliant else "NON-COMPLIANT"
+        print(f"evidence-validator: {args.case_id} [{args.tier}] — {status}")
+        if result.present_kinds:
+            print(f"  present: {', '.join(sorted(result.present_kinds))}")
+        if result.missing_kinds:
+            print(f"  missing: {', '.join(sorted(result.missing_kinds))}")
+        if result.stale_count:
+            print(f"  stale entries: {result.stale_count}")
+        if trace_gaps:
+            print(f"  unlinked requirements: {', '.join(trace_gaps)}")
+
+    if not result.compliant or trace_gaps:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
