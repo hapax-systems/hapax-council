@@ -2723,3 +2723,9 @@ TraceGraph
 TraceGraph.add_link
 TraceGraph.unlinked_requirements
 check_tier_compliance
+
+# Slice 6 release/ops gates — CLI + future hook consumers
+ReleaseCandidateRecord
+run_orr_lite
+validate_rollback_plan
+check_public_currentness
