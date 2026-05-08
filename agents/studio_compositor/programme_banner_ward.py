@@ -37,7 +37,9 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from agents.studio_compositor.cairo_source import CairoSource
+from agents.studio_compositor.homage import get_active_package
+from agents.studio_compositor.homage.transitional_source import HomageTransitionalSource
+from shared.homage_package import HomagePackage
 
 if TYPE_CHECKING:
     import cairo
@@ -106,7 +108,13 @@ def compute_residual_s(
     return planned_duration_s - elapsed
 
 
-class ProgrammeBannerWard(CairoSource):
+def _fallback_package() -> HomagePackage:
+    from agents.studio_compositor.homage.bitchx import BITCHX_PACKAGE
+
+    return BITCHX_PACKAGE
+
+
+class ProgrammeBannerWard(HomageTransitionalSource):
     """Cairo lower-third surfacing the active programme's role + beat + residual.
 
     State() snapshots the active programme via ``default_store()`` so a
@@ -116,6 +124,7 @@ class ProgrammeBannerWard(CairoSource):
     """
 
     def __init__(self, *, max_beat_chars: int = NARRATIVE_BEAT_MAX_CHARS) -> None:
+        super().__init__(source_id="programme_banner")
         if max_beat_chars <= 0:
             raise ValueError(f"max_beat_chars must be > 0, got {max_beat_chars}")
         self._max_beat_chars = max_beat_chars
@@ -154,17 +163,15 @@ class ProgrammeBannerWard(CairoSource):
             }
         }
 
-    def render(
+    def render_content(
         self,
         cr: cairo.Context,
         canvas_w: int,
         canvas_h: int,
-        t: float,  # noqa: ARG002 — CairoSource protocol
+        t: float,  # noqa: ARG002 — HomageTransitionalSource protocol
         state: dict[str, Any],
     ) -> None:
         """Draw the banner; clear transparent if no active programme."""
-        # Always start from transparent so a stale frame doesn't linger
-        # past programme end.
         import cairo
 
         cr.save()
@@ -178,8 +185,6 @@ class ProgrammeBannerWard(CairoSource):
 
         role = str(active.get("role") or "").upper()
         if not role:
-            # No role to anchor the banner — render nothing rather than
-            # show a blank box.
             return
 
         beat = truncate_beat(active.get("narrative_beat"), max_chars=self._max_beat_chars)
@@ -189,7 +194,8 @@ class ProgrammeBannerWard(CairoSource):
         )
         residual_text = f"residual: {format_residual(residual_s)}"
 
-        self._draw_banner(cr, canvas_w, canvas_h, role, beat, residual_text)
+        pkg = get_active_package() or _fallback_package()
+        self._draw_banner(cr, canvas_w, canvas_h, role, beat, residual_text, pkg)
 
     # ── Cairo rendering ─────────────────────────────────────────────
 
@@ -201,6 +207,7 @@ class ProgrammeBannerWard(CairoSource):
         role: str,
         beat: str,
         residual_text: str,
+        pkg: HomagePackage,
     ) -> None:
         """Draw a 3-line lower-third panel anchored bottom-left.
 
@@ -216,59 +223,50 @@ class ProgrammeBannerWard(CairoSource):
         line_h = max(28, canvas_h // 40)
         accent_w = max(4, canvas_w // 480)
 
-        # Anchor bottom-left so we don't fight album cover / sierpinski
-        # which already claim the upper-right zone of the broadcast.
         x = padding
         y = canvas_h - padding - (line_h * 3) - padding
 
-        # Background scrim — semi-opaque, lets the underlying scene bleed
-        # through. Width = 60% of canvas; height = 3 lines + padding.
         scrim_w = int(canvas_w * 0.6)
         scrim_h = (line_h * 3) + (padding * 2)
 
+        bg_r, bg_g, bg_b, _ = pkg.resolve_colour("background")
+        accent_r, accent_g, accent_b, accent_a = pkg.resolve_colour("accent_yellow")
+        bright = pkg.resolve_colour("bright")
+        muted = pkg.resolve_colour("muted")
+
         cr.save()
         cr.rectangle(x, y, scrim_w, scrim_h)
-        # Dark with mild transparency. Operator may switch to the
-        # consent-safe palette via WardProperties; for Phase 0 we hold
-        # to a single value the smoke test can reproduce.
-        cr.set_source_rgba(0.078, 0.078, 0.078, 0.78)
+        cr.set_source_rgba(bg_r, bg_g, bg_b, 0.78)
         cr.fill()
         cr.restore()
 
-        # Accent bar on the left edge — gives the banner a visible
-        # leading edge without competing with album-cover saturation.
         cr.save()
         cr.rectangle(x, y, accent_w, scrim_h)
-        cr.set_source_rgba(0.831, 0.706, 0.255, 0.95)  # warm gold
+        cr.set_source_rgba(accent_r, accent_g, accent_b, accent_a)
         cr.fill()
         cr.restore()
 
-        # Text rendering — no font setup beyond Cairo's default toy API.
-        # Phase 1 may swap to Px437 IBM VGA for the BitchX house grammar
-        # consistency; Phase 0 keeps the dependency surface tight.
+        font_family = pkg.typography.primary_font_family
         cr.save()
-        cr.set_source_rgba(0.95, 0.95, 0.95, 1.0)
-        cr.select_font_face("sans-serif", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+        cr.set_source_rgba(*bright)
+        cr.select_font_face(font_family, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
 
         text_x = x + accent_w + padding
         text_y = y + padding + (line_h * 0.7)
 
-        # Line 1: role (bold, accent — slightly larger).
         cr.set_font_size(line_h * 0.7)
         cr.move_to(text_x, text_y)
         cr.show_text(role)
 
-        # Line 2: narrative_beat (regular, body size).
-        cr.select_font_face("sans-serif", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+        cr.select_font_face(font_family, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
         cr.set_font_size(line_h * 0.55)
         text_y += line_h
         cr.move_to(text_x, text_y)
         cr.show_text(beat)
 
-        # Line 3: residual time (italic, muted).
-        cr.select_font_face("sans-serif", cairo.FONT_SLANT_ITALIC, cairo.FONT_WEIGHT_NORMAL)
+        cr.select_font_face(font_family, cairo.FONT_SLANT_ITALIC, cairo.FONT_WEIGHT_NORMAL)
         cr.set_font_size(line_h * 0.5)
-        cr.set_source_rgba(0.78, 0.78, 0.78, 1.0)
+        cr.set_source_rgba(*muted)
         text_y += line_h
         cr.move_to(text_x, text_y)
         cr.show_text(residual_text)

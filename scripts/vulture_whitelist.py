@@ -2676,3 +2676,10 @@ _HeroEffectRotator.set_slot
 from agents.hapax_daimonion import daily_segment_prep as _SegmentPrepModule
 
 _SegmentPrepModule._parse_script
+
+# ActivityRevealMixin palette helpers — subclass API for concrete wards
+# (CodingActivityReveal, M8InstrumentReveal, etc.) that render with
+# HOMAGE palette colours. No direct callers in the mixin itself.
+from agents.studio_compositor.activity_reveal_ward import ActivityRevealMixin
+
+ActivityRevealMixin._resolve_palette_colour
