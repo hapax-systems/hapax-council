@@ -10,7 +10,8 @@
 #   docs_mutation_authorized, release_authorized, public_current
 #
 # Bypass: HAPX_METHODOLOGY_EMERGENCY=1 (logged to emergency ledger).
-# Failure mode: fail-OPEN on infrastructure errors.
+# Failure mode: FAIL-CLOSED on infra errors for push/PR (protected mutations).
+# Amendment 1 (HAZ-006): fail-open permitted unauthorized mutations.
 #
 # SDLC Reform Slice 2 (CASE-SDLC-REFORM-001, SLICE-002-HOOKS-ENFORCEMENT)
 
@@ -35,14 +36,26 @@ echo "$CMD" | grep -qE '^\s*gh\s+pr\s+(create|merge)(\s|$)' && is_release=true
 echo "$CMD" | grep -qE '^\s*gh\s+api.*pulls.*/merge' && is_release=true
 [ "$is_release" = true ] || exit 0
 
+# Emergency bypass (early, before role resolution)
+if [[ "${HAPAX_METHODOLOGY_EMERGENCY:-0}" == "1" ]]; then
+  _ledger="$HOME/.cache/hapax/methodology-emergency-ledger.jsonl"
+  mkdir -p "$(dirname "$_ledger")" 2>/dev/null || true
+  printf '{"ts":"%s","role":"unknown","hook":"authorization-packet-validator","cmd":"%s","reason":"early_infra_bypass"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(echo "$CMD" | head -c 80)" \
+    >> "$_ledger" 2>/dev/null || true
+  echo "authorization-packet-validator: EMERGENCY BYPASS (early) — logged" >&2
+  exit 0
+fi
+
 # Determine role
 role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
 if [[ -z "$role" ]] && declare -F hapax_agent_role >/dev/null 2>&1; then
   role="$(hapax_agent_role 2>/dev/null || true)"
 fi
 if [[ -z "$role" ]]; then
-  echo "authorization-packet-validator: cannot determine role; allowing (fail-OPEN)" >&2
-  exit 0
+  echo "authorization-packet-validator: BLOCKED — cannot determine role for push/PR validation." >&2
+  echo "  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
+  exit 2
 fi
 
 # Read claim file
@@ -73,8 +86,9 @@ fi
 
 # Parse frontmatter
 if ! command -v python3 &>/dev/null; then
-  echo "authorization-packet-validator: python3 missing; allowing (fail-OPEN)" >&2
-  exit 0
+  echo "authorization-packet-validator: BLOCKED — python3 missing; cannot validate authorization packet." >&2
+  echo "  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
+  exit 2
 fi
 
 validation="$(python3 - "$note_path" <<'PYEOF'
@@ -202,7 +216,8 @@ EOF
     exit 2
     ;;
   *)
-    echo "authorization-packet-validator: unexpected validation result '$validation'; allowing (fail-OPEN)" >&2
-    exit 0
+    echo "authorization-packet-validator: BLOCKED — unexpected validation result '$validation'." >&2
+    echo "  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
+    exit 2
     ;;
 esac
