@@ -1,0 +1,759 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "resource-capability-read-only-backfill-20260508",
+  "authority_source": "isap:resource-capability-read-only-backfill-20260508",
+  "generated_from": [
+    "shared/resource_capability.py",
+    "shared/support_surface_registry.py",
+    "config/support-surface-registry.json",
+    "docs/monetization/rails-capability-matrix.md",
+    "docs/refusal-briefs/leverage-stripe-kyc.md",
+    "shared/stripe_payment_link_receive_only_rail.py",
+    "shared/omg_lol_pay_receive_only_rail.py",
+    "agents/payment_processors/__init__.py",
+    "agents/payment_processors/x402/models.py",
+    "config/x402-license-classes.yaml",
+    "docs/research/2026-04-26-x402-receive-endpoint-architecture.md"
+  ],
+  "declared_at": "2026-05-08T00:00:00Z",
+  "producer": "cx-red:SLICE-RC-002-READ-ONLY-BACKFILL",
+  "consumer_permission_after": "private_projection_tests_only",
+  "resource_class_projection_rows": [
+    {
+      "row_id": "resource-class:cash:private-baseline",
+      "source_kind": "resource_class_baseline",
+      "stable_source_id": "resource-class:cash",
+      "source_ref": "shared/resource_capability.py#ResourceClass.CASH",
+      "evidence_refs": [
+        "shared/resource_capability.py#ResourceClass",
+        "docs/monetization/rails-capability-matrix.md#active-rails"
+      ],
+      "projection_status": "projected_private",
+      "privacy_class": "private_projection",
+      "resource_class": "cash",
+      "valuation": {
+        "nominal_value": 0,
+        "nominal_unit": "USD",
+        "cash_equivalent_value": 0,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 0,
+        "revenue_value": 0,
+        "trust_cost": 0,
+        "conversion_confidence": 0,
+        "value_basis_refs": [
+          "docs/monetization/rails-capability-matrix.md#active-rails"
+        ]
+      },
+      "decision_state": "observe_only",
+      "authority_ceiling": "no_claim",
+      "public_claim_ceiling": "none",
+      "operator_visible_reason": "Cash support surfaces are projected privately with zero live amount and no authority."
+    },
+    {
+      "row_id": "resource-class:credit:private-baseline",
+      "source_kind": "resource_class_baseline",
+      "stable_source_id": "resource-class:credit",
+      "source_ref": "shared/resource_capability.py#ResourceClass.CREDIT",
+      "evidence_refs": [
+        "shared/resource_capability.py#ResourceClass",
+        "config/x402-license-classes.yaml"
+      ],
+      "projection_status": "projected_private",
+      "privacy_class": "private_projection",
+      "resource_class": "credit",
+      "valuation": {
+        "nominal_value": 0,
+        "nominal_unit": "CREDIT",
+        "cash_equivalent_value": null,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 0,
+        "revenue_value": 0,
+        "trust_cost": 0,
+        "conversion_confidence": 0,
+        "value_basis_refs": [
+          "config/x402-license-classes.yaml#classes"
+        ]
+      },
+      "decision_state": "observe_only",
+      "authority_ceiling": "no_claim",
+      "public_claim_ceiling": "none",
+      "operator_visible_reason": "Credit-like license-class values remain advisory/private and cannot substitute for cash."
+    },
+    {
+      "row_id": "resource-class:compute:private-baseline",
+      "source_kind": "resource_class_baseline",
+      "stable_source_id": "resource-class:compute",
+      "source_ref": "shared/resource_capability.py#ResourceClass.COMPUTE",
+      "evidence_refs": [
+        "shared/resource_capability.py#ResourceClass"
+      ],
+      "projection_status": "projected_private",
+      "privacy_class": "private_projection",
+      "resource_class": "compute",
+      "valuation": {
+        "nominal_value": 0,
+        "nominal_unit": "COMPUTE_UNIT",
+        "cash_equivalent_value": null,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 0,
+        "revenue_value": 0,
+        "trust_cost": 0,
+        "conversion_confidence": 0,
+        "value_basis_refs": [
+          "shared/resource_capability.py#ResourceClass.COMPUTE"
+        ]
+      },
+      "decision_state": "observe_only",
+      "authority_ceiling": "no_claim",
+      "public_claim_ceiling": "none",
+      "operator_visible_reason": "Compute is preserved as a separate resource class with no cash-equivalent fallback."
+    },
+    {
+      "row_id": "resource-class:access:private-baseline",
+      "source_kind": "resource_class_baseline",
+      "stable_source_id": "resource-class:access",
+      "source_ref": "shared/resource_capability.py#ResourceClass.ACCESS",
+      "evidence_refs": [
+        "shared/resource_capability.py#ResourceClass",
+        "config/support-surface-registry.json"
+      ],
+      "projection_status": "projected_private",
+      "privacy_class": "private_projection",
+      "resource_class": "access",
+      "valuation": {
+        "nominal_value": 0,
+        "nominal_unit": "ACCESS",
+        "cash_equivalent_value": null,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 0,
+        "revenue_value": 0,
+        "trust_cost": 0,
+        "conversion_confidence": 0,
+        "value_basis_refs": [
+          "config/support-surface-registry.json#no-perk-doctrine"
+        ]
+      },
+      "decision_state": "observe_only",
+      "authority_ceiling": "no_claim",
+      "public_claim_ceiling": "none",
+      "operator_visible_reason": "Access remains separated so no support row can become a perk or private access grant."
+    },
+    {
+      "row_id": "resource-class:institutional-support:private-baseline",
+      "source_kind": "resource_class_baseline",
+      "stable_source_id": "resource-class:institutional_support",
+      "source_ref": "shared/resource_capability.py#ResourceClass.INSTITUTIONAL_SUPPORT",
+      "evidence_refs": [
+        "shared/resource_capability.py#ResourceClass",
+        "docs/refusal-briefs/leverage-stripe-kyc.md"
+      ],
+      "projection_status": "projected_private",
+      "privacy_class": "private_projection",
+      "resource_class": "institutional_support",
+      "valuation": {
+        "nominal_value": 0,
+        "nominal_unit": "INSTITUTIONAL_SUPPORT",
+        "cash_equivalent_value": null,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 0,
+        "revenue_value": 0,
+        "trust_cost": 0,
+        "conversion_confidence": 0,
+        "value_basis_refs": [
+          "docs/refusal-briefs/leverage-stripe-kyc.md#operator-physical-kyc"
+        ]
+      },
+      "decision_state": "observe_only",
+      "authority_ceiling": "no_claim",
+      "public_claim_ceiling": "none",
+      "operator_visible_reason": "Institutional support is modeled separately from cash and cannot imply KYC or provider onboarding."
+    },
+    {
+      "row_id": "resource-class:trust-cost:private-baseline",
+      "source_kind": "resource_class_baseline",
+      "stable_source_id": "resource-class:trust_cost",
+      "source_ref": "shared/resource_capability.py#ResourceClass.TRUST_COST",
+      "evidence_refs": [
+        "shared/resource_capability.py#ResourceClass",
+        "docs/refusal-briefs/leverage-stripe-kyc.md#why-this-is-refused"
+      ],
+      "projection_status": "projected_private",
+      "privacy_class": "private_projection",
+      "resource_class": "trust_cost",
+      "valuation": {
+        "nominal_value": 0,
+        "nominal_unit": "TRUST_COST",
+        "cash_equivalent_value": null,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 0,
+        "revenue_value": 0,
+        "trust_cost": 1,
+        "conversion_confidence": 0,
+        "value_basis_refs": [
+          "docs/refusal-briefs/leverage-stripe-kyc.md#constitutional-incompatibility"
+        ]
+      },
+      "decision_state": "observe_only",
+      "authority_ceiling": "no_claim",
+      "public_claim_ceiling": "none",
+      "operator_visible_reason": "Trust cost is explicit and separate from nominal or cash-equivalent value."
+    }
+  ],
+  "support_surface_projections": [
+    {
+      "row_id": "support-surface:liberapay_recurring",
+      "source_kind": "support_surface_registry",
+      "stable_source_id": "liberapay_recurring",
+      "source_ref": "config/support-surface-registry.json#surfaces.liberapay_recurring",
+      "evidence_refs": [
+        "config/support-surface-registry.json#liberapay_recurring",
+        "shared/support_surface_registry.py#SupportSurface"
+      ],
+      "projection_status": "projected_private",
+      "privacy_class": "aggregate_only",
+      "resource_class": "cash",
+      "valuation": {
+        "nominal_value": 0,
+        "nominal_unit": "USD",
+        "cash_equivalent_value": 0,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 0,
+        "revenue_value": 0,
+        "trust_cost": 0,
+        "conversion_confidence": 0,
+        "value_basis_refs": [
+          "config/support-surface-registry.json#liberapay_recurring"
+        ]
+      },
+      "decision_state": "observe_only",
+      "authority_ceiling": "no_claim",
+      "public_claim_ceiling": "none",
+      "operator_visible_reason": "Registry row projected only as aggregate no-perk private support metadata.",
+      "surface_id": "liberapay_recurring",
+      "display_name": "Liberapay recurring",
+      "surface_family": "direct_support",
+      "money_form": "Liberapay recurring support",
+      "registry_decision": "allowed",
+      "automation_class": "AUTO",
+      "no_perk_required": true,
+      "aggregate_only_receipts": true,
+      "readiness_gates": [
+        "liberapay_credentials_bootstrapped",
+        "payment_aggregator_v2.aggregate_only_projection"
+      ],
+      "refusal_brief_refs": [],
+      "buildable_conversion": null,
+      "registry_allowed_public_copy_entry_count": 1,
+      "registry_public_copy_text_projected": false
+    },
+    {
+      "row_id": "support-surface:kofi_tips_guarded",
+      "source_kind": "support_surface_registry",
+      "stable_source_id": "kofi_tips_guarded",
+      "source_ref": "config/support-surface-registry.json#surfaces.kofi_tips_guarded",
+      "evidence_refs": [
+        "config/support-surface-registry.json#kofi_tips_guarded",
+        "shared/support_surface_registry.py#SupportSurface"
+      ],
+      "projection_status": "projected_private",
+      "privacy_class": "aggregate_only",
+      "resource_class": "cash",
+      "valuation": {
+        "nominal_value": 0,
+        "nominal_unit": "USD",
+        "cash_equivalent_value": 0,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 0,
+        "revenue_value": 0,
+        "trust_cost": 0,
+        "conversion_confidence": 0,
+        "value_basis_refs": [
+          "config/support-surface-registry.json#kofi_tips_guarded"
+        ]
+      },
+      "decision_state": "observe_only",
+      "authority_ceiling": "no_claim",
+      "public_claim_ceiling": "none",
+      "operator_visible_reason": "Guarded registry row remains private and cannot activate commissions, requests, or shop items.",
+      "surface_id": "kofi_tips_guarded",
+      "display_name": "Ko-fi tips",
+      "surface_family": "direct_support",
+      "money_form": "Ko-fi one-time tips or monthly tips",
+      "registry_decision": "guarded",
+      "automation_class": "GUARDED",
+      "no_perk_required": true,
+      "aggregate_only_receipts": true,
+      "readiness_gates": [
+        "MonetizationReadiness.safe_to_accept_payment",
+        "kofi_profile_perks_disabled",
+        "payment_aggregator_v2.aggregate_only_projection"
+      ],
+      "refusal_brief_refs": [],
+      "buildable_conversion": null,
+      "registry_allowed_public_copy_entry_count": 1,
+      "registry_public_copy_text_projected": false
+    },
+    {
+      "row_id": "support-surface:stripe_payment_links",
+      "source_kind": "support_surface_registry",
+      "stable_source_id": "stripe_payment_links",
+      "source_ref": "config/support-surface-registry.json#surfaces.stripe_payment_links",
+      "evidence_refs": [
+        "config/support-surface-registry.json#stripe_payment_links",
+        "docs/refusal-briefs/leverage-stripe-kyc.md"
+      ],
+      "projection_status": "projected_private",
+      "privacy_class": "no_public_projection",
+      "resource_class": "trust_cost",
+      "valuation": {
+        "nominal_value": 0,
+        "nominal_unit": "REFUSAL_ARTIFACT",
+        "cash_equivalent_value": null,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 0,
+        "revenue_value": 0,
+        "trust_cost": 1,
+        "conversion_confidence": 0,
+        "value_basis_refs": [
+          "docs/refusal-briefs/leverage-stripe-kyc.md#status"
+        ]
+      },
+      "decision_state": "observe_only",
+      "authority_ceiling": "no_claim",
+      "public_claim_ceiling": "none",
+      "operator_visible_reason": "Registry refusal conversion is projected as private refusal evidence only.",
+      "surface_id": "stripe_payment_links",
+      "display_name": "Stripe payment links",
+      "surface_family": "commercial",
+      "money_form": "Stripe Payment Link, Connect, or webhook flow",
+      "registry_decision": "refusal_conversion",
+      "automation_class": "REFUSAL_ARTIFACT",
+      "no_perk_required": true,
+      "aggregate_only_receipts": true,
+      "readiness_gates": [],
+      "refusal_brief_refs": [
+        "docs/refusal-briefs/leverage-stripe-kyc.md"
+      ],
+      "buildable_conversion": "Use Lightning, Liberapay, Nostr zaps, or receive-only artifact payment routes instead.",
+      "registry_allowed_public_copy_entry_count": 0,
+      "registry_public_copy_text_projected": false
+    }
+  ],
+  "receive_only_rail_projections": [
+    {
+      "row_id": "receive-only-rail:stripe_payment_link",
+      "source_kind": "receive_only_rail",
+      "stable_source_id": "stripe_payment_link",
+      "source_ref": "shared/stripe_payment_link_receive_only_rail.py",
+      "evidence_refs": [
+        "shared/stripe_payment_link_receive_only_rail.py#module-docstring",
+        "docs/monetization/rails-capability-matrix.md#active-rails"
+      ],
+      "projection_status": "read_receive_evidence",
+      "privacy_class": "redacted_evidence",
+      "resource_class": "receivable",
+      "valuation": {
+        "nominal_value": 0,
+        "nominal_unit": "PAYMENT_EVENT",
+        "cash_equivalent_value": null,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 0,
+        "revenue_value": 0,
+        "trust_cost": 1,
+        "conversion_confidence": 0,
+        "value_basis_refs": [
+          "shared/stripe_payment_link_receive_only_rail.py#PaymentEvent"
+        ]
+      },
+      "decision_state": "observe_only",
+      "authority_ceiling": "no_claim",
+      "public_claim_ceiling": "none",
+      "operator_visible_reason": "Rail code path is recorded as receive-only evidence, not as provider or public authority.",
+      "rail_id": "stripe_payment_link",
+      "module_path": "shared/stripe_payment_link_receive_only_rail.py",
+      "accepted_event_kinds": [
+        "payment_intent_succeeded",
+        "checkout_session_completed",
+        "customer_subscription_created",
+        "customer_subscription_deleted",
+        "payment_intent.succeeded",
+        "checkout.session.completed",
+        "customer.subscription.created",
+        "customer.subscription.deleted"
+      ],
+      "receive_only": true,
+      "outbound_fetch_authorized": false,
+      "raw_payload_persisted": false,
+      "pii_retained": false,
+      "public_surface_enabled": false
+    },
+    {
+      "row_id": "receive-only-rail:omg_lol_pay",
+      "source_kind": "receive_only_rail",
+      "stable_source_id": "omg_lol_pay",
+      "source_ref": "shared/omg_lol_pay_receive_only_rail.py",
+      "evidence_refs": [
+        "shared/omg_lol_pay_receive_only_rail.py#module-docstring",
+        "docs/monetization/rails-capability-matrix.md#refused-vaporware"
+      ],
+      "projection_status": "read_receive_evidence",
+      "privacy_class": "redacted_evidence",
+      "resource_class": "receivable",
+      "valuation": {
+        "nominal_value": 0,
+        "nominal_unit": "PAYMENT_EVENT",
+        "cash_equivalent_value": null,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 0,
+        "revenue_value": 0,
+        "trust_cost": 1,
+        "conversion_confidence": 0,
+        "value_basis_refs": [
+          "shared/omg_lol_pay_receive_only_rail.py#PaymentEvent"
+        ]
+      },
+      "decision_state": "observe_only",
+      "authority_ceiling": "no_claim",
+      "public_claim_ceiling": "none",
+      "operator_visible_reason": "Wired-code fact is recorded as evidence only while vaporware conflict stays blocked.",
+      "rail_id": "omg_lol_pay",
+      "module_path": "shared/omg_lol_pay_receive_only_rail.py",
+      "accepted_event_kinds": [
+        "payment_succeeded",
+        "payment_refunded",
+        "subscription_set",
+        "subscription_cancelled",
+        "payment.succeeded",
+        "payment.refunded",
+        "subscription.set",
+        "subscription.cancelled"
+      ],
+      "receive_only": true,
+      "outbound_fetch_authorized": false,
+      "raw_payload_persisted": false,
+      "pii_retained": false,
+      "public_surface_enabled": false
+    }
+  ],
+  "stale_conflict_projections": [
+    {
+      "row_id": "stale-conflict:stripe-refusal-vs-payment-link-wiring",
+      "source_kind": "stale_conflict",
+      "stable_source_id": "stale-conflict:stripe-refusal-vs-payment-link-wiring",
+      "source_ref": "docs/refusal-briefs/leverage-stripe-kyc.md",
+      "evidence_refs": [
+        "docs/refusal-briefs/leverage-stripe-kyc.md#status",
+        "shared/stripe_payment_link_receive_only_rail.py",
+        "docs/monetization/rails-capability-matrix.md#stripe-payment-link"
+      ],
+      "resource_class": "trust_cost",
+      "valuation": {
+        "nominal_value": 0,
+        "nominal_unit": "CONFLICT",
+        "cash_equivalent_value": null,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 0,
+        "revenue_value": 0,
+        "trust_cost": 1,
+        "conversion_confidence": 0,
+        "value_basis_refs": [
+          "docs/refusal-briefs/leverage-stripe-kyc.md#refused-implementation"
+        ]
+      },
+      "authority_ceiling": "no_claim",
+      "public_claim_ceiling": "none",
+      "stale_conflict_refs": [
+        "stale-conflict:stripe-refusal-vs-payment-link-wiring"
+      ],
+      "operator_visible_reason": "Permanent Stripe refusal conflicts with current receive-only Stripe Payment Link evidence and must fail closed.",
+      "conflict_id": "stale-conflict:stripe-refusal-vs-payment-link-wiring",
+      "conflict_class": "refusal_vs_wired_receive_only",
+      "contradictory_refs": [
+        "docs/refusal-briefs/leverage-stripe-kyc.md",
+        "shared/stripe_payment_link_receive_only_rail.py",
+        "docs/monetization/rails-capability-matrix.md#active-rails"
+      ],
+      "required_resolution": "Later named authority must reconcile whether receive-only Stripe facts supersede, narrow, or preserve the refusal.",
+      "normalization_allowed_without_later_isap": false,
+      "may_activate_capability": false
+    },
+    {
+      "row_id": "stale-conflict:omg-lol-pay-vaporware-vs-wired-code",
+      "source_kind": "stale_conflict",
+      "stable_source_id": "stale-conflict:omg-lol-pay-vaporware-vs-wired-code",
+      "source_ref": "docs/monetization/rails-capability-matrix.md#refused-vaporware",
+      "evidence_refs": [
+        "docs/monetization/rails-capability-matrix.md#refused-vaporware",
+        "shared/omg_lol_pay_receive_only_rail.py"
+      ],
+      "resource_class": "trust_cost",
+      "valuation": {
+        "nominal_value": 0,
+        "nominal_unit": "CONFLICT",
+        "cash_equivalent_value": null,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 0,
+        "revenue_value": 0,
+        "trust_cost": 1,
+        "conversion_confidence": 0,
+        "value_basis_refs": [
+          "docs/monetization/rails-capability-matrix.md#omg-lol-pay"
+        ]
+      },
+      "authority_ceiling": "no_claim",
+      "public_claim_ceiling": "none",
+      "stale_conflict_refs": [
+        "stale-conflict:omg-lol-pay-vaporware-vs-wired-code"
+      ],
+      "operator_visible_reason": "Matrix calls omg.lol Pay vaporware while local code describes a receive-only rail.",
+      "conflict_id": "stale-conflict:omg-lol-pay-vaporware-vs-wired-code",
+      "conflict_class": "vaporware_documentation_vs_wired_code",
+      "contradictory_refs": [
+        "docs/monetization/rails-capability-matrix.md#refused-vaporware",
+        "shared/omg_lol_pay_receive_only_rail.py#module-docstring"
+      ],
+      "required_resolution": "Later named authority must decide whether the wired-code fact is active, obsolete, or test-only before any capability activation.",
+      "normalization_allowed_without_later_isap": false,
+      "may_activate_capability": false
+    },
+    {
+      "row_id": "stale-conflict:legacy-payment-processors-vs-receive-only-doctrine",
+      "source_kind": "stale_conflict",
+      "stable_source_id": "stale-conflict:legacy-payment-processors-vs-receive-only-doctrine",
+      "source_ref": "agents/payment_processors/__init__.py",
+      "evidence_refs": [
+        "agents/payment_processors/__init__.py#constitutional-contract",
+        "tests/payment_processors/test_read_only_contract.py",
+        "shared/stripe_payment_link_receive_only_rail.py"
+      ],
+      "resource_class": "trust_cost",
+      "valuation": {
+        "nominal_value": 0,
+        "nominal_unit": "CONFLICT",
+        "cash_equivalent_value": null,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 0,
+        "revenue_value": 0,
+        "trust_cost": 1,
+        "conversion_confidence": 0,
+        "value_basis_refs": [
+          "agents/payment_processors/__init__.py#constitutional-contract"
+        ]
+      },
+      "authority_ceiling": "no_claim",
+      "public_claim_ceiling": "none",
+      "stale_conflict_refs": [
+        "stale-conflict:legacy-payment-processors-vs-receive-only-doctrine"
+      ],
+      "operator_visible_reason": "Legacy payment_processors surfaces and newer shared receive-only rails must not be merged into provider/action authority.",
+      "conflict_id": "stale-conflict:legacy-payment-processors-vs-receive-only-doctrine",
+      "conflict_class": "legacy_processor_namespace_vs_receive_only_modules",
+      "contradictory_refs": [
+        "agents/payment_processors/__init__.py",
+        "tests/payment_processors/test_read_only_contract.py",
+        "shared/*_receive_only_rail.py"
+      ],
+      "required_resolution": "Later named authority must reconcile namespace lineage before any backfilled row can be promoted beyond private evidence.",
+      "normalization_allowed_without_later_isap": false,
+      "may_activate_capability": false
+    },
+    {
+      "row_id": "stale-conflict:x402-path-a-vs-path-b-status",
+      "source_kind": "stale_conflict",
+      "stable_source_id": "stale-conflict:x402-path-a-vs-path-b-status",
+      "source_ref": "docs/research/2026-04-26-x402-receive-endpoint-architecture.md#path-a-semantics-and-reversal",
+      "evidence_refs": [
+        "docs/research/2026-04-26-x402-receive-endpoint-architecture.md#path-a-semantics-and-reversal",
+        "agents/payment_processors/x402/models.py",
+        "config/x402-license-classes.yaml"
+      ],
+      "resource_class": "credit",
+      "valuation": {
+        "nominal_value": 0,
+        "nominal_unit": "X402_ADVISORY",
+        "cash_equivalent_value": null,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 0,
+        "revenue_value": 0,
+        "trust_cost": 1,
+        "conversion_confidence": 0,
+        "value_basis_refs": [
+          "docs/research/2026-04-26-x402-receive-endpoint-architecture.md#path-a-semantics-and-reversal"
+        ]
+      },
+      "authority_ceiling": "no_claim",
+      "public_claim_ceiling": "none",
+      "stale_conflict_refs": [
+        "stale-conflict:x402-path-a-vs-path-b-status"
+      ],
+      "operator_visible_reason": "Path A refusal-as-data is shipped while Path B license-class accept metadata exists as local evidence.",
+      "conflict_id": "stale-conflict:x402-path-a-vs-path-b-status",
+      "conflict_class": "path_a_refusal_vs_path_b_accept_metadata",
+      "contradictory_refs": [
+        "docs/research/2026-04-26-x402-receive-endpoint-architecture.md#path-a-semantics-and-reversal",
+        "config/x402-license-classes.yaml",
+        "agents/payment_processors/x402/models.py#PaymentRequired.accepts"
+      ],
+      "required_resolution": "Later named authority must decide Path A/B status before any x402 value row can drive public or operational behavior.",
+      "normalization_allowed_without_later_isap": false,
+      "may_activate_capability": false
+    }
+  ],
+  "projected_resource_opportunities": [
+    {
+      "schema_version": 1,
+      "opportunity_id": "rc-backfill-opportunity:liberapay-recurring-private",
+      "resource_class": "cash",
+      "source_ref": "support-surface:liberapay_recurring",
+      "valuation": {
+        "nominal_value": 0,
+        "nominal_unit": "USD",
+        "cash_equivalent_value": 0,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 0,
+        "revenue_value": 0,
+        "trust_cost": 0,
+        "conversion_confidence": 0,
+        "value_basis_refs": [
+          "support-surface:liberapay_recurring"
+        ]
+      },
+      "liquidity": "unknown_fixture_only",
+      "restrictions": [
+        "private_projection_only",
+        "no_public_offer_authority",
+        "aggregate_only_receipts"
+      ],
+      "expiry": null,
+      "transferability": "not_transferable",
+      "public_claim_ceiling": "none",
+      "authority_ceiling": "no_claim",
+      "obligations": [
+        "no_perk_required",
+        "work_continues_regardless_of_support"
+      ],
+      "hidden_operator_labor_risk": "none_projected",
+      "privacy_ip_terms_risk": "aggregate_only_no_counterparty_identity",
+      "lock_in_cost": "unknown",
+      "capabilities_unlocked": [],
+      "evidence_refs": [
+        "config/support-surface-registry.json#liberapay_recurring"
+      ],
+      "source_freshness_ttl_s": 0,
+      "decision_state": "observe_only",
+      "stale_conflict_refs": []
+    },
+    {
+      "schema_version": 1,
+      "opportunity_id": "rc-backfill-opportunity:stripe-conflict-blocked",
+      "resource_class": "trust_cost",
+      "source_ref": "stale-conflict:stripe-refusal-vs-payment-link-wiring",
+      "valuation": {
+        "nominal_value": 0,
+        "nominal_unit": "CONFLICT",
+        "cash_equivalent_value": null,
+        "cash_equivalent_currency": "USD",
+        "operational_capability_value": 0,
+        "revenue_value": 0,
+        "trust_cost": 1,
+        "conversion_confidence": 0,
+        "value_basis_refs": [
+          "stale-conflict:stripe-refusal-vs-payment-link-wiring"
+        ]
+      },
+      "liquidity": "none_conflict_blocked",
+      "restrictions": [
+        "blocked_stale_conflict",
+        "no_provider_api_execution",
+        "no_public_offer_authority"
+      ],
+      "expiry": null,
+      "transferability": "not_transferable",
+      "public_claim_ceiling": "none",
+      "authority_ceiling": "no_claim",
+      "obligations": [
+        "requires_later_named_authority_to_reconcile"
+      ],
+      "hidden_operator_labor_risk": "kyc_and_dispute_handling_refusal_conflict",
+      "privacy_ip_terms_risk": "provider_terms_not_projected",
+      "lock_in_cost": "unmodeled_due_to_conflict",
+      "capabilities_unlocked": [],
+      "evidence_refs": [
+        "docs/refusal-briefs/leverage-stripe-kyc.md",
+        "shared/stripe_payment_link_receive_only_rail.py"
+      ],
+      "source_freshness_ttl_s": 0,
+      "decision_state": "blocked_stale_conflict",
+      "stale_conflict_refs": [
+        "stale-conflict:stripe-refusal-vs-payment-link-wiring"
+      ]
+    }
+  ],
+  "semantic_transaction_traces": [
+    {
+      "schema_version": 1,
+      "trace_id": "semantic-trace:rc-backfill:stripe-conflict",
+      "observed_at": "2026-05-08T00:00:00Z",
+      "trace_kind": "refusal",
+      "source_ref": "stale-conflict:stripe-refusal-vs-payment-link-wiring",
+      "semantic_state": "refusal_conflicts_with_receive_only_evidence_blocked",
+      "pressure_score": 0.4,
+      "privacy_scope": "private",
+      "public_projection_allowed": false,
+      "observability_surface": "machine_operator_only",
+      "transaction_refs": [],
+      "communication_refs": [],
+      "action_refs": [],
+      "waiting_state_refs": [],
+      "event_refs": [],
+      "refusal_refs": [
+        "docs/refusal-briefs/leverage-stripe-kyc.md"
+      ],
+      "escalation_refs": [],
+      "provider_state_refs": [
+        "shared/stripe_payment_link_receive_only_rail.py"
+      ],
+      "calendar_obligation_refs": [],
+      "autonomy_debt_event_refs": [],
+      "evidence_refs": [
+        "stale-conflict:stripe-refusal-vs-payment-link-wiring"
+      ],
+      "runtime_tracing_authorized": false,
+      "provider_api_execution_authorized": false
+    }
+  ],
+  "transaction_pressure_ledgers": [
+    {
+      "schema_version": 1,
+      "ledger_id": "transaction-pressure-ledger:rc-backfill",
+      "observed_at": "2026-05-08T00:00:00Z",
+      "trace_refs": [
+        "semantic-trace:rc-backfill:stripe-conflict"
+      ],
+      "pressure_score": 0.4,
+      "transaction_pressure_refs": [
+        "stale-conflict:stripe-refusal-vs-payment-link-wiring"
+      ],
+      "transaction_refs": [],
+      "communication_refs": [],
+      "action_refs": [],
+      "waiting_state_refs": [],
+      "event_refs": [],
+      "refusal_refs": [
+        "docs/refusal-briefs/leverage-stripe-kyc.md"
+      ],
+      "escalation_refs": [],
+      "provider_state_refs": [
+        "shared/stripe_payment_link_receive_only_rail.py"
+      ],
+      "calendar_obligation_refs": [],
+      "autonomy_debt_event_refs": [],
+      "privacy_scope": "private",
+      "public_projection_allowed": false,
+      "observability_surface": "machine_operator_only",
+      "runtime_tracing_authorized": false,
+      "provider_poll_authorized": false,
+      "external_effect_authorized": false
+    }
+  ]
+}
