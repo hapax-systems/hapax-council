@@ -566,8 +566,18 @@ def start_compositor(compositor: Any) -> None:
         log.info("Signal %d received, shutting down", signum)
         compositor.stop()
 
+    def _rebuild_v4l2_output(signum: int, frame: Any) -> None:
+        v4l2_pipe = getattr(compositor, "_v4l2_output_pipeline", None)
+        if v4l2_pipe is None:
+            log.warning("SIGUSR1: no V4l2OutputPipeline to rebuild")
+            return
+        log.info("SIGUSR1: rebuilding V4l2OutputPipeline (external watchdog request)")
+        GLib = compositor._GLib
+        GLib.idle_add(lambda: v4l2_pipe.rebuild() or False)
+
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGUSR1, _rebuild_v4l2_output)
 
     try:
         compositor.loop.run()
