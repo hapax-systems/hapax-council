@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""Probe active lanes and write team capability metadata.
+
+Reads relay status files, cc-active-task claims, and worktree state to
+build a current snapshot of each lane's metadata. Writes JSON files to
+~/.cache/hapax/team-registry/ for consumption by the freshness gate.
+
+ISAP: SLICE-003A-TEAM-METADATA (CASE-SDLC-REFORM-001)
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+# Avoid import failures if run outside the venv — the script works
+# standalone with just pydantic available.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from shared.team_registry import LaneMetadata, Platform, TeamRegistry
+
+RELAY_DIR = Path.home() / ".cache" / "hapax" / "relay"
+CLAIM_DIR = Path.home() / ".cache" / "hapax"
+WORKTREE_BASE = Path.home() / "projects"
+
+KNOWN_LANES: dict[str, dict] = {
+    "alpha": {"platform": "claude-code", "worktree_suffix": "hapax-council"},
+    "beta": {"platform": "claude-code", "worktree_suffix": "hapax-council--beta"},
+    "gamma": {"platform": "claude-code", "worktree_suffix": "hapax-council--gamma"},
+    "delta": {"platform": "claude-code", "worktree_suffix": "hapax-council--delta"},
+    "epsilon": {"platform": "claude-code", "worktree_suffix": "hapax-council--epsilon"},
+    "zeta": {"platform": "claude-code", "worktree_suffix": "hapax-council--zeta"},
+    "cx-red": {"platform": "codex", "worktree_suffix": "hapax-council--cx-red"},
+    "cx-amber": {"platform": "codex", "worktree_suffix": "hapax-council--cx-amber"},
+    "cx-cyan": {"platform": "codex", "worktree_suffix": "hapax-council--cx-cyan"},
+    "cx-gold": {"platform": "codex", "worktree_suffix": "hapax-council--cx-gold"},
+    "cx-green": {"platform": "codex", "worktree_suffix": "hapax-council--cx-green"},
+    "antigravity": {"platform": "antigrav", "worktree_suffix": None},
+}
+
+MODEL_DEFAULTS: dict[str, tuple[str, int]] = {
+    "claude-code": ("claude-opus-4-6", 1_000_000),
+    "codex": ("o3", 200_000),
+    "gemini-cli": ("gemini-3-pro-preview", 1_000_000),
+    "vibe": ("claude-sonnet-4-6", 200_000),
+    "antigrav": ("claude-sonnet-4-6", 200_000),
+}
+
+TOOL_DEFAULTS: dict[str, list[str]] = {
+    "claude-code": ["Edit", "Write", "Bash", "Read", "Grep", "Glob", "Agent", "MCP"],
+    "codex": ["Edit", "Write", "Bash", "Read", "Grep", "Glob"],
+    "gemini-cli": ["Edit", "Write", "Bash", "Read"],
+    "vibe": ["Edit", "Write", "Bash", "Read"],
+    "antigrav": ["Edit", "Write", "Bash", "Read"],
+}
+
+
+def _read_claim(lane_id: str) -> str | None:
+    claim_file = CLAIM_DIR / f"cc-active-task-{lane_id}"
+    if claim_file.exists():
+        text = claim_file.read_text().strip()
+        return text if text else None
+    return None
+
+
+def _read_relay_status(lane_id: str) -> dict | None:
+    for name in (f"{lane_id}-status.yaml", f"{lane_id}-status.json"):
+        path = RELAY_DIR / name
+        if path.exists():
+            try:
+                import yaml
+
+                return yaml.safe_load(path.read_text())
+            except Exception:
+                try:
+                    return json.loads(path.read_text())
+                except Exception:
+                    pass
+    return None
+
+
+def _detect_branch(worktree: Path) -> str | None:
+    if not worktree.exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(worktree), "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        branch = result.stdout.strip()
+        return branch if branch else None
+    except Exception:
+        return None
+
+
+def probe_lane(lane_id: str, info: dict) -> LaneMetadata:
+    platform: Platform = info["platform"]
+    model_id, ctx = MODEL_DEFAULTS.get(platform, ("unknown", 0))
+    tools = TOOL_DEFAULTS.get(platform, [])
+
+    wt_suffix = info.get("worktree_suffix")
+    worktree = str(WORKTREE_BASE / wt_suffix) if wt_suffix else None
+    branch = _detect_branch(Path(worktree)) if worktree else None
+    claimed = _read_claim(lane_id)
+
+    ttl = 3600.0 if platform in ("claude-code", "codex") else 14400.0
+
+    return LaneMetadata(
+        lane_id=lane_id,
+        platform=platform,
+        model_id=model_id,
+        context_window=ctx,
+        tools_available=tools,
+        worktree=worktree,
+        branch=branch,
+        claimed_task=claimed,
+        last_probe_utc=time.time(),
+        freshness_ttl_s=ttl,
+    )
+
+
+def main() -> None:
+    registry = TeamRegistry()
+    now = time.time()
+    probed = 0
+    fresh = 0
+    stale = 0
+
+    for lane_id, info in KNOWN_LANES.items():
+        meta = probe_lane(lane_id, info)
+        registry.write(meta)
+        result = meta.freshness(now)
+        probed += 1
+        if result == "fresh":
+            fresh += 1
+        else:
+            stale += 1
+
+    print(f"team-metadata-probe: {probed} lanes probed, {fresh} fresh, {stale} stale")
+
+    if "--json" in sys.argv:
+        lanes = registry.all_lanes()
+        print(json.dumps([m.model_dump() for m in lanes], indent=2))
+
+
+if __name__ == "__main__":
+    main()
