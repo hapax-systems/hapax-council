@@ -776,8 +776,8 @@
       "id": "impingement-cascade-midleft",
       "geometry": {
         "kind": "rect",
-        "x": 1550,
-        "y": 200,
+        "x": 380,
+        "y": 300,
         "w": 340,
         "h": 250,
         "mask": null,
@@ -848,8 +848,8 @@
       "id": "activity-variety-log-midbottom",
       "geometry": {
         "kind": "rect",
-        "x": 1550,
-        "y": 460,
+        "x": 790,
+        "y": 730,
         "w": 340,
         "h": 150,
         "mask": null,
@@ -884,8 +884,8 @@
       "id": "reverie-upper-right",
       "geometry": {
         "kind": "rect",
-        "x": 1400,
-        "y": 20,
+        "x": 1260,
+        "y": 165,
         "w": 480,
         "h": 170,
         "mask": null,
@@ -1284,8 +1284,8 @@
       "id": "constructivist-research-poster-surface",
       "geometry": {
         "kind": "rect",
-        "x": 700,
-        "y": 820,
+        "x": 360,
+        "y": 460,
         "w": 520,
         "h": 180,
         "mask": null,
