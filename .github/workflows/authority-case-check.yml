@@ -1,0 +1,116 @@
+name: AuthorityCase Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  authority-case-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Parse AuthorityCase reference from PR body
+        id: parse
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+
+          case_id=""
+          slice_id=""
+
+          if echo "$PR_BODY" | grep -qiE 'CASE-[A-Z0-9-]+'; then
+            case_id=$(echo "$PR_BODY" | grep -oiE 'CASE-[A-Z0-9-]+' | head -1)
+          fi
+
+          if echo "$PR_BODY" | grep -qiE 'SLICE-[A-Z0-9-]+'; then
+            slice_id=$(echo "$PR_BODY" | grep -oiE 'SLICE-[A-Z0-9-]+' | head -1)
+          fi
+
+          pre_methodology=false
+          if echo "$PR_BODY" | grep -qiE 'pre-methodology|pre_methodology'; then
+            pre_methodology=true
+          fi
+
+          cc_task=""
+          if echo "$PR_BODY" | grep -qiE 'cc-task:'; then
+            cc_task=$(echo "$PR_BODY" | grep -oiE 'cc-task:[[:space:]]*`?[a-z0-9-]+' | sed 's/cc-task:[[:space:]]*`\{0,1\}//' | head -1)
+          fi
+
+          echo "case_id=$case_id" >> "$GITHUB_OUTPUT"
+          echo "slice_id=$slice_id" >> "$GITHUB_OUTPUT"
+          echo "pre_methodology=$pre_methodology" >> "$GITHUB_OUTPUT"
+          echo "cc_task=$cc_task" >> "$GITHUB_OUTPUT"
+
+          echo "Parsed: case=$case_id slice=$slice_id pre_methodology=$pre_methodology cc_task=$cc_task"
+
+      - name: Validate case reference
+        env:
+          CASE_ID: ${{ steps.parse.outputs.case_id }}
+          SLICE_ID: ${{ steps.parse.outputs.slice_id }}
+          PRE_METHODOLOGY: ${{ steps.parse.outputs.pre_methodology }}
+          CC_TASK: ${{ steps.parse.outputs.cc_task }}
+        run: |
+          set -euo pipefail
+
+          if [ "$PRE_METHODOLOGY" = "true" ]; then
+            echo "PASS — pre-methodology PR (migration compat)."
+            exit 0
+          fi
+
+          if [ -n "$CC_TASK" ] && [ -z "$CASE_ID" ]; then
+            echo "PASS — legacy cc-task reference '$CC_TASK' (migration compat)."
+            exit 0
+          fi
+
+          if [ -z "$CASE_ID" ] && [ -z "$CC_TASK" ]; then
+            echo "::warning::No AuthorityCase or cc-task reference found in PR body. After migration, this will be required."
+            exit 0
+          fi
+
+          echo "PASS — AuthorityCase reference: $CASE_ID / $SLICE_ID"
+
+      - name: Check protected paths
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$PR_BASE_SHA" ]; then
+            echo "No base SHA — skipping path check."
+            exit 0
+          fi
+
+          git fetch --quiet origin "$PR_BASE_SHA" 2>/dev/null || true
+          changed=$(git diff --name-only "$PR_BASE_SHA"...HEAD 2>/dev/null || echo "")
+
+          if [ -z "$changed" ]; then
+            echo "No changed files detected."
+            exit 0
+          fi
+
+          protected_hit=false
+          protected_files=""
+          while IFS= read -r file; do
+            case "$file" in
+              axioms/*|shared/governance/*|CODEOWNERS|.github/CODEOWNERS)
+                protected_hit=true
+                protected_files="${protected_files}  - ${file}"$'\n'
+                ;;
+            esac
+          done <<< "$changed"
+
+          if [ "$protected_hit" = true ]; then
+            echo "::warning::Protected governance paths changed — requires T2/T3 AuthorityCase evidence:"
+            echo "$protected_files"
+          fi
+
+          echo "Changed files: $(echo "$changed" | wc -l), protected paths touched: $protected_hit"
