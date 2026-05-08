@@ -1,6 +1,6 @@
 {
   "name": "default",
-  "description": "Merged layout \u2014 default sources (working cairo backends) + garage-door surface positions + post_fx ward rendering. Reference: 20260505_164317.png.",
+  "description": "Merged layout — default sources (working cairo backends) + garage-door surface positions + post_fx ward rendering. Reference: 20260505_164317.png.",
   "sources": [
     {
       "id": "token_pole",
@@ -1223,7 +1223,7 @@
       },
       "effect_chain": [],
       "blend_mode": "over",
-      "z_order": 35,
+      "z_order": 30,
       "update_cadence": "rate"
     },
     {
@@ -1259,7 +1259,7 @@
       },
       "effect_chain": [],
       "blend_mode": "over",
-      "z_order": 35,
+      "z_order": 40,
       "update_cadence": "rate"
     },
     {
@@ -1295,7 +1295,7 @@
       },
       "effect_chain": [],
       "blend_mode": "over",
-      "z_order": 35,
+      "z_order": 30,
       "update_cadence": "rate"
     },
     {
@@ -1313,7 +1313,7 @@
       },
       "effect_chain": [],
       "blend_mode": "over",
-      "z_order": 35,
+      "z_order": 30,
       "update_cadence": "rate"
     },
     {
@@ -1331,7 +1331,7 @@
       },
       "effect_chain": [],
       "blend_mode": "over",
-      "z_order": 35,
+      "z_order": 30,
       "update_cadence": "rate"
     },
     {
@@ -1367,7 +1367,7 @@
       },
       "effect_chain": [],
       "blend_mode": "over",
-      "z_order": 35,
+      "z_order": 45,
       "update_cadence": "rate"
     },
     {
@@ -1385,7 +1385,7 @@
       },
       "effect_chain": [],
       "blend_mode": "over",
-      "z_order": 35,
+      "z_order": 40,
       "update_cadence": "rate"
     }
   ],
