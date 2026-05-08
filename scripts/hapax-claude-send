@@ -334,12 +334,48 @@ tmux_target_exists() {
   tmux has-session -t "hapax-claude-$SESSION" 2>/dev/null
 }
 
+tmux_target_command() {
+  have_cmd tmux || return 1
+  tmux display-message -p -t "hapax-claude-$SESSION" '#{pane_current_command}' 2>/dev/null
+}
+
+tmux_target_is_claude() {
+  tmux_target_exists || return 1
+  local command_name
+  command_name="$(tmux_target_command || true)"
+  case "$command_name" in
+    claude)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+tmux_target_reject_reason() {
+  local command_name
+  command_name="$(tmux_target_command || true)"
+  if [ -z "$command_name" ]; then
+    command_name="unknown"
+  fi
+  echo "hapax-claude-send: tmux session hapax-claude-$SESSION exists but pane_current_command=$command_name, not claude; refusing to paste into a non-Claude pane" >&2
+}
+
 foot_window_address() {
   have_cmd hyprctl || return 1
   have_cmd jq || return 1
   local class="hapax-claude-$SESSION"
   hyprctl clients -j 2>/dev/null \
-    | jq -r --arg class "$class" '[.[]? | select(.class == $class) | .address][0] // empty'
+    | jq -r --arg class "$class" --arg session "$SESSION" '
+        def title_match:
+          (.class == "foot")
+          and ((.title // "") as $title
+            | $title == $session
+              or $title == ("hapax-claude-" + $session)
+              or ($title | test("^[^A-Za-z0-9]*[[:space:]]*" + $session + "$")));
+        [.[]? | select(.class == $class or title_match) | .address][0] // empty
+      '
 }
 
 foot_target_exists() {
@@ -351,10 +387,18 @@ foot_window_center() {
   have_cmd jq || return 1
   local class="hapax-claude-$SESSION"
   hyprctl clients -j 2>/dev/null \
-    | jq -r --arg class "$class" '[.[]? | select(.class == $class) | [
+    | jq -r --arg class "$class" --arg session "$SESSION" '
+      def title_match:
+        (.class == "foot")
+        and ((.title // "") as $title
+          | $title == $session
+            or $title == ("hapax-claude-" + $session)
+            or ($title | test("^[^A-Za-z0-9]*[[:space:]]*" + $session + "$")));
+      [.[]? | select(.class == $class or title_match) | [
         (.at[0] + ((.size[0] / 2) | floor)),
         (.at[1] + ((.size[1] / 2) | floor))
-      ] | @tsv][0] // empty'
+      ] | @tsv][0] // empty
+      '
 }
 
 send_tmux() {
@@ -509,7 +553,7 @@ send_foot() {
   local address
   address="$(foot_window_address)"
   if [ -z "$address" ]; then
-    echo "hapax-claude-send: no visible foot window for $SESSION (class=hapax-claude-$SESSION)" >&2
+    echo "hapax-claude-send: no visible foot window for $SESSION (class=hapax-claude-$SESSION or title ending '$SESSION')" >&2
     exit 11
   fi
 
@@ -582,11 +626,15 @@ case "$TRANSPORT" in
       echo "hapax-claude-send: no tmux session hapax-claude-$SESSION" >&2
       exit 11
     }
+    tmux_target_is_claude || {
+      tmux_target_reject_reason
+      exit 12
+    }
     USED_TRANSPORT="tmux"
     send_tmux
     ;;
   auto)
-    if tmux_target_exists; then
+    if tmux_target_is_claude; then
       USED_TRANSPORT="tmux"
       send_tmux
     elif foot_target_exists; then
@@ -597,7 +645,10 @@ case "$TRANSPORT" in
       USED_TRANSPORT="foot"
       send_foot
     else
-      echo "hapax-claude-send: no live target for $SESSION (looked for tmux session 'hapax-claude-$SESSION' and foot window class 'hapax-claude-$SESSION')" >&2
+      if tmux_target_exists; then
+        tmux_target_reject_reason
+      fi
+      echo "hapax-claude-send: no live Claude target for $SESSION (looked for Claude tmux pane 'hapax-claude-$SESSION' and foot window class/title for '$SESSION')" >&2
       exit 11
     fi
     ;;

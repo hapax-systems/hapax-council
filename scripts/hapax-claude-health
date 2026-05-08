@@ -54,8 +54,18 @@ def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, capture_output=True, text=True, check=False)
 
 
-def _tmux_exists(session: str) -> bool:
-    return _run(["tmux", "has-session", "-t", f"{TMUX_PREFIX}{session}"]).returncode == 0
+def _tmux_state(session: str) -> dict[str, Any]:
+    target = f"{TMUX_PREFIX}{session}"
+    exists = _run(["tmux", "has-session", "-t", target]).returncode == 0
+    command = None
+    if exists:
+        result = _run(["tmux", "display-message", "-p", "-t", target, "#{pane_current_command}"])
+        command = result.stdout.strip() if result.returncode == 0 else None
+    return {
+        "exists": exists,
+        "command": command,
+        "valid_claude": exists and command == "claude",
+    }
 
 
 def _hypr_clients() -> list[dict[str, Any]]:
@@ -67,6 +77,18 @@ def _hypr_clients() -> list[dict[str, Any]]:
     except json.JSONDecodeError:
         return []
     return data if isinstance(data, list) else []
+
+
+def _foot_matches_session(client: dict[str, Any], session: str) -> bool:
+    window_class = str(client.get("class") or "")
+    title = str(client.get("title") or "")
+    if window_class == f"{WINDOW_CLASS_PREFIX}{session}":
+        return True
+    if window_class != "foot":
+        return False
+    if title in {session, f"{WINDOW_CLASS_PREFIX}{session}"}:
+        return True
+    return bool(re.match(rf"^[^A-Za-z0-9]*\s*{re.escape(session)}$", title))
 
 
 def _relay_summary(path: Path) -> dict[str, Any]:
@@ -177,16 +199,18 @@ def collect(sessions: list[str]) -> dict[str, Any]:
     protected = _protected_sessions(relay_dir)
     lanes: list[dict[str, Any]] = []
     for session in sessions:
-        foot_matches = [
-            item for item in clients if item.get("class") == f"{WINDOW_CLASS_PREFIX}{session}"
-        ]
-        tmux = _tmux_exists(session)
+        foot_matches = [item for item in clients if _foot_matches_session(item, session)]
+        tmux_state = _tmux_state(session)
+        tmux = bool(tmux_state["valid_claude"])
         claim_file = cache / "hapax" / f"cc-active-task-{session}"
         claim = claim_file.read_text(encoding="utf-8").strip() if claim_file.exists() else None
         relay = _relay_summary(relay_dir / f"{session}.yaml")
         task_id = claim or relay.get("current_claim") or relay.get("task_id")
         task = tasks.get(str(task_id), {}) if task_id else {}
         warnings: list[str] = []
+        if tmux_state["exists"] and not tmux_state["valid_claude"]:
+            command = tmux_state.get("command") or "unknown"
+            warnings.append(f"stale_tmux_not_claude:{command}")
         if foot_matches and not tmux:
             warnings.append("legacy_direct_foot_no_tmux_control_plane")
         if tmux and not foot_matches and session in SCREEN_REQUIRED:
@@ -205,6 +229,8 @@ def collect(sessions: list[str]) -> dict[str, Any]:
             {
                 "session": session,
                 "tmux": tmux,
+                "tmux_exists": tmux_state["exists"],
+                "tmux_command": tmux_state["command"],
                 "foot_visible": bool(foot_matches),
                 "foot_count": len(foot_matches),
                 "foot_titles": [str(item.get("title") or "") for item in foot_matches],
