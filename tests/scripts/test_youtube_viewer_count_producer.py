@@ -16,16 +16,20 @@ Verifies:
 
 from __future__ import annotations
 
+import importlib.machinery
 import importlib.util
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-# Load the script as a module (it's in scripts/ which is not on sys.path).
+# Load the extensionless script as a module.
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[2] / "scripts" / "hapax-youtube-viewer-count-producer"
 )
-spec = importlib.util.spec_from_file_location("youtube_viewer_count_producer", SCRIPT_PATH)
+loader = importlib.machinery.SourceFileLoader("youtube_viewer_count_producer", str(SCRIPT_PATH))
+spec = importlib.util.spec_from_file_location(
+    "youtube_viewer_count_producer", SCRIPT_PATH, loader=loader
+)
 producer = importlib.util.module_from_spec(spec)
 sys.modules["youtube_viewer_count_producer"] = producer
 spec.loader.exec_module(producer)
