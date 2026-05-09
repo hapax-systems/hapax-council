@@ -1,0 +1,388 @@
+#!/usr/bin/env python3
+"""Dispatch lanes only through explicit AuthorityCase/ISAP task authority."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+MUTATION_TOKENS = {
+    "build",
+    "bugfix",
+    "code",
+    "deploy",
+    "feature",
+    "fix",
+    "implementation",
+    "mutation",
+    "release",
+    "runtime",
+    "source",
+    "systemd",
+}
+NON_MUTATING_TOKENS = {
+    "audit",
+    "intake",
+    "planning",
+    "plan",
+    "read-only",
+    "readonly",
+    "research",
+    "triage",
+    "validation",
+    "validation-demo",
+}
+NULLISH = {"", "null", "none", "~", "[]"}
+
+
+@dataclass
+class TaskNote:
+    path: Path
+    fields: dict[str, str | list[str]]
+
+
+@dataclass
+class Validation:
+    ok: bool
+    reason: str
+    task: TaskNote | None = None
+    parent_spec_path: Path | None = None
+    exempt_read_only: bool = False
+
+
+def now_utc() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def strip_scalar(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def is_nullish(value: str | list[str] | None) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, list):
+        return len(value) == 0
+    return strip_scalar(value).lower() in NULLISH
+
+
+def field_tokens(value: str | list[str] | None) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, list):
+        raw = " ".join(value)
+    else:
+        raw = value
+    raw = strip_scalar(raw).lower()
+    for ch in "[],:;":
+        raw = raw.replace(ch, " ")
+    return {part.strip() for part in raw.split() if part.strip()}
+
+
+def parse_frontmatter(text: str) -> dict[str, str | list[str]]:
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}
+    fields: dict[str, str | list[str]] = {}
+    current_key: str | None = None
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if line.startswith("  - ") and current_key:
+            existing = fields.get(current_key)
+            if not isinstance(existing, list):
+                existing = []
+            existing.append(strip_scalar(line[4:].strip()))
+            fields[current_key] = existing
+            continue
+        if ":" not in line or line.startswith(" "):
+            current_key = None
+            continue
+        key, raw_value = line.split(":", 1)
+        key = key.strip()
+        value = raw_value.strip()
+        if value == "":
+            fields[key] = []
+            current_key = key
+        else:
+            fields[key] = strip_scalar(value)
+            current_key = key
+    return fields
+
+
+def read_task(task_root: Path, task_id: str) -> TaskNote | None:
+    active = task_root / "active"
+    candidates = [active / f"{task_id}.md", *sorted(active.glob(f"{task_id}-*.md"))]
+    for candidate in candidates:
+        if candidate.is_file():
+            return TaskNote(candidate, parse_frontmatter(candidate.read_text(encoding="utf-8")))
+    return None
+
+
+def is_authority_exempt(fields: dict[str, str | list[str]]) -> bool:
+    tokens: set[str] = set()
+    for key in ("kind", "task_type", "work_type", "tier", "tags"):
+        tokens.update(field_tokens(fields.get(key)))
+    if tokens & MUTATION_TOKENS:
+        return False
+    return bool(tokens & NON_MUTATING_TOKENS)
+
+
+def resolve_declared_path(raw: str | list[str] | None, *, base: Path) -> Path | None:
+    if is_nullish(raw):
+        return None
+    if isinstance(raw, list):
+        return None
+    value = strip_scalar(raw)
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    return base / path
+
+
+def lane_worktree(lane: str, platform: str) -> Path:
+    override = os.environ.get("HAPAX_DISPATCH_WORKTREE")
+    if override:
+        return Path(override).expanduser()
+    root = Path(os.environ.get("HAPAX_DISPATCH_PROJECT_ROOT", str(Path.home() / "projects")))
+    if platform == "codex":
+        if lane.startswith("cx-"):
+            return root / f"hapax-council--{lane}"
+        return root / f"hapax-council--cx-{lane}"
+    if platform == "claude":
+        return root / "hapax-council" if lane == "alpha" else root / f"hapax-council--{lane}"
+    return root / "hapax-council"
+
+
+def check_worktree_claim_guard(worktree: Path) -> tuple[bool, str]:
+    script = worktree / "scripts" / "cc-claim"
+    if not script.is_file():
+        return False, f"missing cc-claim at {script}"
+    text = script.read_text(encoding="utf-8", errors="replace")
+    required = [
+        "missing required AuthorityCase/ISAP fields",
+        "authority_case",
+        "parent_spec",
+    ]
+    missing = [needle for needle in required if needle not in text]
+    if missing:
+        return False, f"stale cc-claim in {worktree}: missing {', '.join(missing)}"
+    return True, "worktree cc-claim authority/spec guard present"
+
+
+def validate_task(
+    *,
+    task_id: str,
+    lane: str,
+    platform: str,
+    task_root: Path,
+    strict_worktree: bool,
+) -> Validation:
+    task = read_task(task_root, task_id)
+    if task is None:
+        return Validation(False, f"task not found in {task_root / 'active'}")
+
+    fields = task.fields
+    status = strip_scalar(str(fields.get("status", "")))
+    assigned_to = strip_scalar(str(fields.get("assigned_to", "")))
+    if status not in {"offered", "claimed", "in_progress"}:
+        return Validation(False, f"task status {status!r} is not dispatchable", task)
+    if status in {"claimed", "in_progress"} and assigned_to not in {lane, "unassigned", ""}:
+        return Validation(False, f"task already assigned to {assigned_to!r}", task)
+
+    exempt = is_authority_exempt(fields)
+    parent_spec_path = resolve_declared_path(
+        fields.get("parent_spec"), base=Path.home() / "Documents" / "Personal"
+    )
+    if not exempt:
+        missing = []
+        if is_nullish(fields.get("authority_case")):
+            missing.append("authority_case")
+        if parent_spec_path is None:
+            missing.append("parent_spec")
+        if missing:
+            return Validation(
+                False,
+                "missing required AuthorityCase/ISAP fields: " + ", ".join(missing),
+                task,
+                parent_spec_path,
+                exempt,
+            )
+        if not parent_spec_path.is_file():
+            return Validation(
+                False, f"parent_spec does not exist: {parent_spec_path}", task, parent_spec_path
+            )
+        spec_fields = parse_frontmatter(parent_spec_path.read_text(encoding="utf-8"))
+        spec_case = strip_scalar(str(spec_fields.get("case_id", "")))
+        task_case = strip_scalar(str(fields.get("authority_case", "")))
+        if spec_case and task_case and spec_case != task_case:
+            return Validation(
+                False,
+                f"parent_spec case_id {spec_case!r} does not match task authority_case {task_case!r}",
+                task,
+                parent_spec_path,
+                exempt,
+            )
+
+    if strict_worktree:
+        ok, reason = check_worktree_claim_guard(lane_worktree(lane, platform))
+        if not ok:
+            return Validation(False, reason, task, parent_spec_path, exempt)
+
+    return Validation(True, "eligible", task, parent_spec_path, exempt)
+
+
+def build_prompt(task_id: str, lane: str, platform: str, validation: Validation) -> str:
+    assert validation.task is not None
+    fields = validation.task.fields
+    authority_case = fields.get("authority_case")
+    parent_spec = fields.get("parent_spec")
+    title = fields.get("title")
+    return "\n".join(
+        [
+            "SDLC GOVERNED DISPATCH.",
+            f"Lane: {lane}",
+            f"Platform: {platform}",
+            f"Task: {task_id}",
+            f"Title: {strip_scalar(str(title or task_id))}",
+            f"AuthorityCase: {strip_scalar(str(authority_case or 'read-only-exempt'))}",
+            f"Parent spec: {strip_scalar(str(parent_spec or 'read-only-exempt'))}",
+            f"Task note: {validation.task.path}",
+            "",
+            "Instructions:",
+            f"1. Work only on task {task_id}.",
+            f"2. Run cc-claim {task_id} before mutation. If it rejects, stop and write a relay receipt.",
+            "3. Use only the authority and mutation scope in the parent spec.",
+            "4. Do not create or claim another task from the pool.",
+            "5. Do not select work from the pool. Do not continue after this task without a new dispatch.",
+            "6. If blocked, report the blocker and idle.",
+        ]
+    )
+
+
+def write_receipt(
+    *,
+    task_id: str,
+    lane: str,
+    platform: str,
+    validation: Validation,
+    prompt: str | None,
+    launched: bool,
+) -> Path:
+    ledger_dir = Path(
+        os.environ.get(
+            "HAPAX_ORCHESTRATION_LEDGER_DIR",
+            str(Path.home() / ".cache" / "hapax" / "orchestration"),
+        )
+    )
+    ledger_dir.mkdir(parents=True, exist_ok=True)
+    path = ledger_dir / "methodology-dispatch.jsonl"
+    record: dict[str, Any] = {
+        "schema_version": 1,
+        "event": "methodology_dispatch",
+        "timestamp": now_utc(),
+        "task_id": task_id,
+        "lane": lane,
+        "platform": platform,
+        "ok": validation.ok,
+        "reason": validation.reason,
+        "task_path": str(validation.task.path) if validation.task else None,
+        "parent_spec_path": str(validation.parent_spec_path)
+        if validation.parent_spec_path
+        else None,
+        "exempt_read_only": validation.exempt_read_only,
+        "launched": launched,
+        "prompt": prompt,
+    }
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, sort_keys=True) + "\n")
+    return path
+
+
+def launch_headless(lane: str, prompt: str) -> int:
+    launcher = Path.home() / ".local" / "bin" / "hapax-claude-headless"
+    return subprocess.call([str(launcher), lane, prompt])
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--task", required=True, help="Explicit cc-task id to dispatch")
+    parser.add_argument("--lane", required=True, help="Target lane, e.g. beta or cx-red")
+    parser.add_argument(
+        "--platform", default="claude", choices=["claude", "codex", "gemini", "vibe", "antigrav"]
+    )
+    parser.add_argument(
+        "--mode", default="headless", choices=["headless", "interactive", "receipt-only"]
+    )
+    parser.add_argument("--launch", action="store_true", help="Launch after validation")
+    parser.add_argument(
+        "--print-prompt", action="store_true", help="Print the governed launch prompt"
+    )
+    parser.add_argument(
+        "--no-receipt", action="store_true", help="Do not append dispatch ledger receipt"
+    )
+    parser.add_argument(
+        "--skip-worktree-check",
+        action="store_true",
+        help="Do not require target worktree cc-claim guard",
+    )
+    args = parser.parse_args(argv)
+
+    task_root = Path(
+        os.environ.get(
+            "HAPAX_CC_TASK_ROOT",
+            str(Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"),
+        )
+    )
+    validation = validate_task(
+        task_id=args.task,
+        lane=args.lane,
+        platform=args.platform,
+        task_root=task_root,
+        strict_worktree=not args.skip_worktree_check,
+    )
+
+    prompt = (
+        build_prompt(args.task, args.lane, args.platform, validation) if validation.ok else None
+    )
+    if not args.no_receipt:
+        write_receipt(
+            task_id=args.task,
+            lane=args.lane,
+            platform=args.platform,
+            validation=validation,
+            prompt=prompt,
+            launched=False,
+        )
+
+    if not validation.ok:
+        print(f"BLOCKED: {validation.reason}", file=sys.stderr)
+        return 10
+
+    if args.print_prompt:
+        print(prompt)
+
+    if args.launch:
+        if args.platform == "claude" and args.mode == "headless":
+            return launch_headless(args.lane, prompt or "")
+        print(
+            "launch currently supported only for --platform claude --mode headless", file=sys.stderr
+        )
+        return 2
+
+    print(f"eligible: {args.task} -> {args.platform}/{args.lane}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
