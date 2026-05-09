@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hear-stripe survival measurement (AVSDLC-002).
+"""Hear-stripe survival measurement (AVSDLC-005).
 
 Captures audio from the broadcast-normalized PipeWire bus, applies the
 OBS AAC + YouTube Opus codec chain, and compares spectral content to
@@ -157,7 +157,7 @@ def main() -> None:
         print(
             "Measurement inconclusive — broadcast chain was silent during capture.", file=sys.stderr
         )
-        results["verdict"] = "INCONCLUSIVE — signal below measurement threshold"
+        results["verdict"] = "INCONCLUSIVE"
     else:
         air_d = results["post_opus_128k"]["air_10k_16k"] - results["pre_codec"]["air_10k_16k"]
         brill_d = (

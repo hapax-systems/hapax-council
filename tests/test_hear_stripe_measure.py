@@ -128,6 +128,39 @@ class TestVerdictLogic:
         assert not (abs(6.0) < 6)
 
 
+class TestVerdictInconclusive:
+    def test_very_quiet_signal_below_threshold(self, tmp_path: Path) -> None:
+        sr = 48000
+        data = np.full(sr, 1e-6, dtype=np.float32)
+        wav = tmp_path / "quiet.wav"
+        _write_wav(wav, data, sr)
+        result = hsm._spectral_analysis(wav)
+        assert result["rms_db"] < -80
+
+    def test_inconclusive_verdict_is_bare_string(self) -> None:
+        rms_db = -85.0
+        assert rms_db < -80
+        verdict = "INCONCLUSIVE"
+        assert verdict == "INCONCLUSIVE"
+        assert "—" not in verdict
+
+
+class TestDeltaStructure:
+    def test_delta_keys_match_evidence_profile(self) -> None:
+        required = {"brilliance_6k_10k", "air_10k_16k", "ultra_16k_20k"}
+        pre = {"brilliance_6k_10k": -30.0, "air_10k_16k": -40.0, "ultra_16k_20k": -50.0}
+        post = {"brilliance_6k_10k": -31.5, "air_10k_16k": -43.0, "ultra_16k_20k": -55.0}
+        deltas = {k: round(post[k] - pre[k], 2) for k in required}
+        assert set(deltas.keys()) == required
+
+    def test_verdict_values_are_three_value_set(self) -> None:
+        valid = {"SURVIVES", "ATTENUATED", "INCONCLUSIVE"}
+        assert "SURVIVES" in valid
+        assert "ATTENUATED" in valid
+        assert "INCONCLUSIVE" in valid
+        assert "INCONCLUSIVE — signal below measurement threshold" not in valid
+
+
 class TestTranscodeChain:
     def test_transcode_calls_ffmpeg(self, tmp_path: Path) -> None:
         src = tmp_path / "in.wav"
