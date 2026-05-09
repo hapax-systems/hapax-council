@@ -2755,3 +2755,17 @@ ResourcePressure
 ResourceConstraint
 classify_state
 ContentionGroup._validate_non_empty
+
+from shared.workspace_graph import (  # noqa: F401, E402
+    _resolve_wikilink,
+    by_capability,
+    by_zone,
+    connected_to,
+    signal_chain,
+)
+
+by_capability
+by_zone
+connected_to
+signal_chain
+_resolve_wikilink
