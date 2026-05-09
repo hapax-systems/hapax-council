@@ -30,6 +30,13 @@ from shared.audio_loudness import (
 )
 from shared.audio_topology import TopologyDescriptor
 from shared.audio_working_mode_couplings import current_audio_constraints
+from shared.obs_egress_predicate import (
+    EXPECTED_OBS_SOURCE,
+    ObsEgressPredicateResult,
+    ObsEgressState,
+    classify_obs_egress,
+    parse_pw_link_output,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_STATE_PATH = Path("/dev/shm/hapax-broadcast/audio-safe-for-broadcast.json")
@@ -64,9 +71,10 @@ REQUIRED_SERVICE_UNITS = (
     "hapax-audio-ducker.service",
 )
 
-EXPECTED_EGRESS_SOURCES = (
-    "hapax-broadcast-normalized",
-    "hapax-obs-broadcast-remap",
+NON_BLOCKING_PIPEWIRE_EGRESS_STATES = (
+    ObsEgressState.OBS_BOUND_UNVERIFIED,
+    ObsEgressState.PUBLIC_EGRESS_UNKNOWN,
+    ObsEgressState.HEALTHY,
 )
 
 
@@ -303,6 +311,7 @@ def resolve_broadcast_audio_health(
         blocking=blocking,
         warnings=warnings,
     )
+    _evaluate_health_predicate_drift(evidence=evidence, blocking=blocking)
     _evaluate_voice_output_witness(
         p.voice_output_witness,
         current,
@@ -651,12 +660,29 @@ def _evaluate_egress_binding(
     thresholds: BroadcastAudioHealthThresholds,
 ) -> None:
     result = runner(EGRESS_BINDING_COMMAND, thresholds.command_timeout_s)
-    parsed = _parse_egress_binding(result.stdout)
+    if result.returncode == 0:
+        predicate = classify_obs_egress(pipewire=parse_pw_link_output(result.stdout))
+    else:
+        predicate = classify_obs_egress(
+            pipewire=parse_pw_link_output(
+                None,
+                error=_tail(result.stderr) or f"pw-link exited {result.returncode}",
+            )
+        )
+    observed_source = _observed_obs_source(predicate)
+    obs_present = _predicate_observed_bool(predicate, "obs_present")
+    bound = predicate.state in NON_BLOCKING_PIPEWIRE_EGRESS_STATES
     evidence["egress_binding"] = {
-        "expected_sources": list(EXPECTED_EGRESS_SOURCES),
-        "bound": parsed["bound"] if result.returncode == 0 else False,
-        "observed_source": parsed["observed_source"] if result.returncode == 0 else None,
-        "obs_present": parsed["obs_present"] if result.returncode == 0 else None,
+        "expected_source": EXPECTED_OBS_SOURCE,
+        "bound": bound if result.returncode == 0 else False,
+        "verified": predicate.safe,
+        "state": predicate.state.value,
+        "health_impact": predicate.health_impact.value,
+        "reason_codes": list(predicate.reason_codes),
+        "remediation_allowed": predicate.remediation_allowed,
+        "observed_source": observed_source if result.returncode == 0 else None,
+        "obs_present": obs_present if result.returncode == 0 else None,
+        "predicate_evidence": [record.model_dump(mode="json") for record in predicate.evidence],
         "command": " ".join(EGRESS_BINDING_COMMAND),
         "returncode": result.returncode,
         "stdout": _tail(result.stdout),
@@ -666,18 +692,18 @@ def _evaluate_egress_binding(
         _block(
             blocking,
             code="egress_binding_unknown",
-            owner="pw-link -l",
+            owner="shared/obs_egress_predicate.py + pw-link -l",
             message="egress audio binding could not be inspected",
             evidence_refs=["egress_binding"],
         )
-    elif not parsed["bound"]:
+    elif predicate.state not in NON_BLOCKING_PIPEWIRE_EGRESS_STATES:
         _block(
             blocking,
             code="egress_binding_missing",
-            owner="pw-link -l",
+            owner="shared/obs_egress_predicate.py + pw-link -l",
             message=(
-                "public egress is not visibly bound to hapax-broadcast-normalized "
-                "or hapax-obs-broadcast-remap"
+                "public egress state "
+                f"{predicate.state.value} is not exactly bound to {EXPECTED_OBS_SOURCE}"
             ),
             evidence_refs=["egress_binding"],
         )
@@ -746,10 +772,13 @@ def _evaluate_egress_loopback(
             "silence_ratio": witness.silence_ratio,
             "window_seconds": witness.window_seconds,
             "target_sink": witness.target_sink,
+            "checked_at": witness.checked_at,
+            "max_age_s": thresholds.loopback_max_age_s,
         }
     )
     if witness.error:
         record["producer_error"] = witness.error
+        record["obs_egress_state"] = ObsEgressState.ANALYZER_INTERNAL_FAILURE.value
     evidence["egress_loopback"] = record
 
     if witness.error:
@@ -789,6 +818,41 @@ def _evaluate_egress_loopback(
                 evidence_refs=["egress_loopback"],
             )
         )
+
+
+def _evaluate_health_predicate_drift(
+    *,
+    evidence: dict[str, Any],
+    blocking: list[AudioHealthReason],
+) -> None:
+    loudness = evidence.get("loudness")
+    loopback = evidence.get("egress_loopback")
+    if not isinstance(loudness, dict) or not isinstance(loopback, dict):
+        return
+    if loudness.get("egress_silent") is not True:
+        return
+    if loopback.get("status") != "live":
+        return
+    if loopback.get("producer_error"):
+        return
+
+    evidence["health_predicate_drift"] = {
+        "state": ObsEgressState.HEALTH_PREDICATE_DRIFT.value,
+        "loudness_stage": loudness.get("stage"),
+        "loudness_integrated_lufs_i": loudness.get("integrated_lufs_i"),
+        "loudness_measurement_age_s": loudness.get("measurement_age_s"),
+        "egress_loopback_checked_at": loopback.get("checked_at"),
+        "egress_loopback_max_age_s": loopback.get("max_age_s"),
+        "egress_loopback_rms_dbfs": loopback.get("rms_dbfs"),
+        "egress_loopback_silence_ratio": loopback.get("silence_ratio"),
+    }
+    _block(
+        blocking,
+        code="health_predicate_drift",
+        owner="shared/broadcast_audio_health.py",
+        message="loudness and egress loopback evidence disagree about public audio",
+        evidence_refs=["loudness", "egress_loopback", "health_predicate_drift"],
+    )
 
 
 def _evaluate_runtime_safety(
@@ -1175,33 +1239,6 @@ def _parse_loudness_output(text: str) -> dict[str, float | None]:
     }
 
 
-def _parse_egress_binding(text: str) -> dict[str, object]:
-    observed = None
-    obs_present = False
-    lines = text.splitlines()
-    for index, line in enumerate(lines):
-        if "OBS" not in line and "obs" not in line:
-            continue
-        obs_present = True
-        block = [line]
-        for linked in lines[index + 1 :]:
-            if linked[:1] and not linked[0].isspace():
-                break
-            block.append(linked)
-        block_text = "\n".join(block)
-        observed = next(
-            (source for source in EXPECTED_EGRESS_SOURCES if source in block_text),
-            None,
-        )
-        if observed is not None:
-            break
-    return {
-        "bound": observed is not None,
-        "observed_source": observed,
-        "obs_present": obs_present,
-    }
-
-
 def _read_json_file(path: Path, now: float) -> tuple[dict[str, Any], float | None, str | None]:
     age = _path_age_s(path, now)
     try:
@@ -1276,6 +1313,30 @@ def _block(
     )
 
 
+def _observed_obs_source(predicate: ObsEgressPredicateResult) -> str | None:
+    if predicate.state in NON_BLOCKING_PIPEWIRE_EGRESS_STATES:
+        return EXPECTED_OBS_SOURCE
+    for record in predicate.evidence:
+        wrong_sources = record.observed.get("wrong_obs_sources")
+        if isinstance(wrong_sources, list) and wrong_sources:
+            source = wrong_sources[0]
+            if isinstance(source, str):
+                return _port_node_name(source)
+    return None
+
+
+def _predicate_observed_bool(predicate: ObsEgressPredicateResult, key: str) -> bool | None:
+    for record in predicate.evidence:
+        value = record.observed.get(key)
+        if isinstance(value, bool):
+            return value
+    return None
+
+
+def _port_node_name(port: str) -> str:
+    return port.split(":", 1)[0]
+
+
 def _owners() -> dict[str, str]:
     return {
         "loudness_constants": "shared/audio_loudness.py",
@@ -1283,7 +1344,7 @@ def _owners() -> dict[str, str]:
         "topology": "config/audio-topology.yaml",
         "leak_guard": "scripts/audio-leak-guard.sh",
         "broadcast_forward": "scripts/hapax-audio-topology tts-broadcast-check",
-        "egress_binding": "pw-link -l / OBS binding to hapax-broadcast-normalized",
+        "egress_binding": "shared/obs_egress_predicate.py + pw-link -l",
         "voice_output_witness": str(DEFAULT_VOICE_OUTPUT_WITNESS),
         "runtime_safety": "hapax-audio-safety.service",
         "audio_ducker": "hapax-audio-ducker.service",

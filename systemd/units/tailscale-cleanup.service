@@ -3,7 +3,7 @@ Description=Tailscale stale device cleanup — remove devices offline >90 days
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/projects/hapax-council/scripts/tailscale-cleanup.sh 90
+ExecStart=%h/.local/bin/hapax-tailscale-cleanup 90
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=GNUPGHOME=/home/hapax/.gnupg

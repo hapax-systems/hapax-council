@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: teenage-engineering-ep-133-k-o-ii-portable-sampler-composer
+identity:
+  manufacturer: teenage engineering
+  model: teenage engineering EP-133 K.O. II Portable Sampler Composer
+  category: sampler
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-05-19'
+  purchased_price_usd: 299.0
+capabilities:
+- sample_playback
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

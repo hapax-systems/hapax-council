@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: bastl-instruments-thyme-digital-tape-machine-2013-2020-black
+identity:
+  manufacturer: BASTL
+  model: BASTL Instruments Thyme Digital Tape Machine 2013 - 2020 - Black
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-01-31'
+  purchased_price_usd: 350.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

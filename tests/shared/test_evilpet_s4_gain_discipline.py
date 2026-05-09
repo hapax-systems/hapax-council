@@ -67,6 +67,11 @@ EXPECTED_MIXER_GAINS: dict[str, set[float]] = {
     # which is the unity passthrough.
     "hapax-music-duck.conf": {1.0},
     "hapax-tts-duck.conf": {1.0},
+    # MPC-first wet return sums MPC content and Hapax voice from L-12
+    # AUX8-AUX11 into the livestream tap. Static gains stay at unity;
+    # level responsibility belongs to the MPC/L-12 hardware stages and
+    # downstream broadcast limiter.
+    "hapax-l12-usb-return-capture.conf": {1.0},
 }
 
 GAIN_RE = re.compile(r'"Gain 1"\s*=\s*([\d.]+)')

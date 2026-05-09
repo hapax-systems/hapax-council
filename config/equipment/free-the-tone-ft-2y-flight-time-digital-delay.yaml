@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: free-the-tone-ft-2y-flight-time-digital-delay
+identity:
+  manufacturer: Free The Tone
+  model: Free The Tone FT-2Y Flight Time Digital Delay
+  category: effects_pedal
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-01-15'
+  purchased_price_usd: 400.0
+capabilities:
+- effects_processing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

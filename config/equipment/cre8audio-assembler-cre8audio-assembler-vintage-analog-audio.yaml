@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: cre8audio-assembler-cre8audio-assembler-vintage-analog-audio
+identity:
+  manufacturer: Cre8audio
+  model: Cre8audio Assembler Cre8audio Assembler Vintage Analog Audio Mixer
+  category: mixer
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-01-31'
+  purchased_price_usd: 330.0
+capabilities:
+- mixing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

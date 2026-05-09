@@ -131,12 +131,18 @@ system_installs=(
     "$REPO_DIR/scripts/hapax-usb-bandwidth-preflight|$(system_path /usr/local/bin/hapax-usb-bandwidth-preflight)|0755"
     "$REPO_DIR/systemd/units/hapax-usb-bandwidth-preflight.service|$(system_path /etc/systemd/system/hapax-usb-bandwidth-preflight.service)|0644"
     "$REPO_DIR/systemd/units/hapax-usb-bandwidth-preflight.timer|$(system_path /etc/systemd/system/hapax-usb-bandwidth-preflight.timer)|0644"
+    "$REPO_DIR/scripts/hapax-l12-critical-usb-guard|$(system_path /usr/local/bin/hapax-l12-critical-usb-guard)|0755"
+    "$REPO_DIR/systemd/units/hapax-l12-critical-usb-guard.service|$(system_path /etc/systemd/system/hapax-l12-critical-usb-guard.service)|0644"
+    "$REPO_DIR/systemd/units/hapax-l12-critical-usb-guard.timer|$(system_path /etc/systemd/system/hapax-l12-critical-usb-guard.timer)|0644"
 )
 
 user_installs=(
     "$REPO_DIR/scripts/hapax-usb-topology-witness|$(user_path .local/bin/hapax-usb-topology-witness)|0755"
+    "$REPO_DIR/scripts/hapax-l12-hotplug-recover|$(user_path .local/bin/hapax-l12-hotplug-recover)|0755"
+    "$REPO_DIR/config/usb-topology-policy.json|$(user_path .config/hapax/usb-topology-policy.json)|0644"
     "$REPO_DIR/systemd/units/hapax-usb-topology-witness.service|$(user_path .config/systemd/user/hapax-usb-topology-witness.service)|0644"
     "$REPO_DIR/systemd/units/hapax-usb-topology-witness.timer|$(user_path .config/systemd/user/hapax-usb-topology-witness.timer)|0644"
+    "$REPO_DIR/systemd/units/hapax-l12-hotplug-recover.service|$(user_path .config/systemd/user/hapax-l12-hotplug-recover.service)|0644"
     "$REPO_DIR/systemd/units/hapax-usb-router.service|$(user_path .config/systemd/user/hapax-usb-router.service)|0644"
 )
 
@@ -161,6 +167,7 @@ if [[ "$MODE" == "apply" ]]; then
         run_privileged systemctl daemon-reload
         run_privileged systemctl enable --now hapax-usb-bandwidth-watchdog.service
         run_privileged systemctl enable --now hapax-xhci-death-watchdog.service
+        run_privileged systemctl enable --now hapax-l12-critical-usb-guard.timer
     fi
     systemctl --user daemon-reload
     systemctl --user enable --now hapax-usb-topology-witness.timer

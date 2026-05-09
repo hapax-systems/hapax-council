@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: strymon-iridium-2019-present-black
+identity:
+  manufacturer: Strymon
+  model: Strymon Iridium 2019 - Present - Black
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-05-16'
+  purchased_price_usd: 275.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

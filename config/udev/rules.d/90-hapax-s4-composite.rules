@@ -13,4 +13,4 @@ ACTION!="remove", SUBSYSTEM=="net", ENV{ID_BUS}=="usb", ENV{ID_VENDOR_ID}=="1d6b
 
 # L-12 add/change events are also route-repair triggers. The existing ZOOM
 # power policy lives in config/udev/rules.d/50-hapax-usb-audio-video-noautosuspend.rules.
-ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1686", ATTR{idProduct}=="03d5", ATTR{serial}=="8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF", TAG+="systemd", ENV{SYSTEMD_USER_WANTS}+="hapax-usb-topology-witness.service"
+ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1686", ATTR{idProduct}=="03d5", ATTR{serial}=="8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF", TAG+="systemd", ENV{SYSTEMD_USER_WANTS}+="hapax-usb-topology-witness.service", ENV{SYSTEMD_USER_WANTS}+="hapax-l12-hotplug-recover.service"

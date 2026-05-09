@@ -171,6 +171,24 @@ class TestFindLinkedTask:
         assert watcher.find_linked_task(42, vault_root=vault) is None
 
 
+class TestDefaultRepoRoot:
+    def test_prefers_explicit_cc_task_tool_repo_env(self, tmp_path: Path, monkeypatch: Any) -> None:
+        tool_root = tmp_path / "active-source"
+        monkeypatch.setenv("HAPAX_CC_TASK_TOOL_REPO_ROOT", str(tool_root))
+        monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(tmp_path / "other"))
+
+        assert watcher.default_repo_root() == tool_root
+
+    def test_falls_back_to_source_activation_worktree_env(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        active = tmp_path / "source-activation" / "worktree"
+        monkeypatch.delenv("HAPAX_CC_TASK_TOOL_REPO_ROOT", raising=False)
+        monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(active))
+
+        assert watcher.default_repo_root() == active
+
+
 # ---------------------------------------------------------------------------
 # fetch_merged_prs
 # ---------------------------------------------------------------------------

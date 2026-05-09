@@ -3,5 +3,5 @@ Description=Video recording retention — prune old segments
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/projects/hapax-council/scripts/video-retention.sh
+ExecStart=%h/.local/bin/hapax-video-retention
 Environment=HOME=/home/hapax

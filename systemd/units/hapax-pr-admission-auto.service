@@ -14,7 +14,7 @@ Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin
 #   - if open PR count >= 10 and mode=normal → freeze
 #   - if open PR count < 6 for 2 consecutive ticks → clear to normal
 # No-op (exit 0) for unrelated cases.
-ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-pr-admission auto
+ExecStart=%h/.local/bin/hapax-pr-admission auto
 TimeoutStartSec=30s
 # Don't restart on failure — the timer drives cadence; one missed tick is harmless.
 SuccessExitStatus=0

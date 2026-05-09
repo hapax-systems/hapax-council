@@ -95,6 +95,218 @@ if assigned_match and assigned_match.group(1) not in ("unassigned",):
     )
     sys.exit(4)
 
+def _strip_scalar(value: str) -> str:
+    return value.strip().strip('"').strip("'")
+
+
+_YAML_NULLS = frozenset({"null", "none", "~"})
+
+
+def _frontmatter_lines(note_text: str) -> list[str]:
+    if not note_text.startswith("---"):
+        return []
+    end = note_text.find("\n---", 4)
+    if end < 0:
+        return []
+    return note_text[4:end].splitlines()
+
+
+def _parse_inline_list(value: str) -> list[str]:
+    value = value.strip()
+    if value == "[]":
+        return []
+    if _strip_scalar(value).lower() in _YAML_NULLS:
+        return []
+    if not (value.startswith("[") and value.endswith("]")):
+        return [_strip_scalar(value)] if value else []
+    inner = value[1:-1].strip()
+    if not inner:
+        return []
+    return [_strip_scalar(item) for item in inner.split(",") if _strip_scalar(item)]
+
+
+def _parse_depends_on(note_text: str) -> list[str]:
+    lines = _frontmatter_lines(note_text)
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("depends_on:"):
+            continue
+        value = stripped.split(":", 1)[1].strip()
+        if value:
+            return _parse_inline_list(value)
+
+        deps: list[str] = []
+        for child in lines[idx + 1 :]:
+            child_stripped = child.strip()
+            if not child_stripped:
+                continue
+            if child_stripped.startswith("- "):
+                dep_id = _strip_scalar(child_stripped[2:])
+                if dep_id:
+                    deps.append(dep_id)
+                continue
+            break
+        return deps
+    return []
+
+
+def _parse_frontmatter(note_text: str) -> dict[str, str | list[str]]:
+    fields: dict[str, str | list[str]] = {}
+    lines = _frontmatter_lines(note_text)
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        stripped = line.strip()
+        idx += 1
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
+            continue
+        key, raw_value = stripped.split(":", 1)
+        key = key.strip()
+        value = raw_value.strip()
+        if value:
+            if value.startswith("[") and value.endswith("]"):
+                fields[key] = _parse_inline_list(value)
+            else:
+                fields[key] = _strip_scalar(value)
+            continue
+
+        items: list[str] = []
+        while idx < len(lines):
+            child = lines[idx].strip()
+            if not child:
+                idx += 1
+                continue
+            if child.startswith("- "):
+                item = _strip_scalar(child[2:])
+                if item:
+                    items.append(item)
+                idx += 1
+                continue
+            break
+        fields[key] = items
+    return fields
+
+
+def _field_tokens(value: str | list[str] | None) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, list):
+        raw_values = value
+    else:
+        raw_values = _parse_inline_list(value) if value.startswith("[") else [value]
+    tokens: set[str] = set()
+    for raw in raw_values:
+        token = _strip_scalar(str(raw)).lower().replace("_", "-")
+        if token:
+            tokens.add(token)
+    return tokens
+
+
+def _is_nullish(value: str | list[str] | None) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, list):
+        return len(value) == 0
+    return _strip_scalar(value).lower() in ("", "null", "none", "~", "[]")
+
+
+def _is_authority_exempt(fields: dict[str, str | list[str]]) -> bool:
+    tokens: set[str] = set()
+    for key in ("kind", "task_type", "work_type", "tier", "tags"):
+        tokens.update(_field_tokens(fields.get(key)))
+
+    mutation_tokens = {
+        "build",
+        "bugfix",
+        "code",
+        "deploy",
+        "feature",
+        "fix",
+        "implementation",
+        "mutation",
+        "release",
+        "runtime",
+        "source",
+        "systemd",
+    }
+    if tokens & mutation_tokens:
+        return False
+
+    non_mutating_tokens = {
+        "audit",
+        "intake",
+        "planning",
+        "plan",
+        "read-only",
+        "readonly",
+        "research",
+        "triage",
+        "validation",
+        "validation-demo",
+    }
+    return bool(tokens & non_mutating_tokens)
+
+
+fields = _parse_frontmatter(text)
+missing_authority_fields: list[str] = []
+if not _is_authority_exempt(fields):
+    if _is_nullish(fields.get("authority_case")):
+        missing_authority_fields.append("authority_case")
+    if _is_nullish(fields.get("parent_spec")):
+        missing_authority_fields.append("parent_spec")
+
+if missing_authority_fields:
+    print(
+        f"cc-claim: BLOCKED — task '{task_id}' is missing required AuthorityCase/ISAP fields: "
+        + ", ".join(missing_authority_fields),
+        file=sys.stderr,
+    )
+    print(
+        "Implementation/build/runtime tasks must have non-null authority_case and parent_spec before claim.",
+        file=sys.stderr,
+    )
+    print(
+        "Use an explicitly read-only intake/planning task for pre-authorization work.",
+        file=sys.stderr,
+    )
+    sys.exit(6)
+
+
+def _locate_task(vault_root: Path, dep_id: str) -> Path | None:
+    for subdir in ("closed", "active"):
+        root = vault_root / subdir
+        exact = root / f"{dep_id}.md"
+        if exact.is_file():
+            return exact
+        for candidate in root.glob(f"{dep_id}-*.md"):
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _frontmatter_status(note_text: str) -> str:
+    match = re.search(r"^status:\s*(\S+)$", note_text, flags=re.MULTILINE)
+    return match.group(1) if match else "unknown"
+
+
+vault_root = path.parent.parent
+unmet: list[str] = []
+for dep_id in _parse_depends_on(text):
+    dep_path = _locate_task(vault_root, dep_id)
+    if dep_path is None:
+        unmet.append(f"{dep_id} (not found in vault)")
+        continue
+    dep_status = _frontmatter_status(dep_path.read_text(encoding="utf-8"))
+    if dep_status not in ("completed", "closed", "done"):
+        unmet.append(f"{dep_id} (status: {dep_status})")
+
+if unmet:
+    print(f"cc-claim: BLOCKED — task '{task_id}' has unmet dependencies:", file=sys.stderr)
+    for item in unmet:
+        print(f"  - {item}", file=sys.stderr)
+    print("\nResolve dependencies before claiming this task.", file=sys.stderr)
+    sys.exit(5)
+
 text = re.sub(r"^status:.*$", "status: claimed", text, count=1, flags=re.MULTILINE)
 text = re.sub(
     r"^assigned_to:.*$", f"assigned_to: {role}", text, count=1, flags=re.MULTILINE

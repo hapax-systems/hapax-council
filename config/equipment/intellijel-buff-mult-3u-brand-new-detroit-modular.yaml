@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: intellijel-buff-mult-3u-brand-new-detroit-modular
+identity:
+  manufacturer: Intellijel
+  model: 'INTELLIJEL BUFF MULT 3U : BRAND NEW :  [DETROIT MODULAR]'
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-02-14'
+  purchased_price_usd: 75.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

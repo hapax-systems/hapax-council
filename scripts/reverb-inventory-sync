@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+"""Sync Reverb purchase/sale history into equipment YAML files.
+
+Reads the Reverb API key from `pass show reverb/api-key`, pulls all
+purchases and sales, and writes/updates device YAML files in
+config/equipment/ with acquisition data.
+
+Usage:
+    scripts/reverb-inventory-sync [--dry-run] [--output-dir DIR]
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import yaml
+
+try:
+    import requests
+except ImportError:
+    print("requests not installed — run: uv pip install requests", file=sys.stderr)
+    sys.exit(1)
+
+API_BASE = "https://api.reverb.com/api"
+HEADERS_BASE = {
+    "Accept": "application/hal+json",
+    "Accept-Version": "3.0",
+}
+
+
+def get_api_key() -> str:
+    result = subprocess.run(
+        ["pass", "show", "reverb/api-key"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def slugify(text: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower().strip())
+    return slug.strip("-")[:60]
+
+
+def fetch_all_orders(api_key: str, endpoint: str) -> list[dict]:
+    headers = {**HEADERS_BASE, "Authorization": f"Bearer {api_key}"}
+    orders = []
+    page = 1
+    while True:
+        resp = requests.get(
+            f"{API_BASE}{endpoint}",
+            headers=headers,
+            params={"per_page": 50, "page": page},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        batch = data.get("orders", [])
+        if not batch:
+            break
+        orders.extend(batch)
+        page += 1
+        if page > 50:
+            break
+    return orders
+
+
+def order_to_device_yaml(order: dict, is_sale: bool = False) -> dict:
+    title = order.get("title", "Unknown")
+    date = order.get("created_at", "")[:10]
+    status = order.get("status", "")
+    amount = order.get("amount_product", {})
+    price_str = amount.get("amount", "0")
+    try:
+        price = float(price_str)
+    except (ValueError, TypeError):
+        price = 0.0
+
+    device_id = slugify(title)
+
+    identity_category = "other"
+    title_lower = title.lower()
+    for keyword, cat in [
+        ("synth", "synthesizer"),
+        ("drum machine", "drum_machine"),
+        ("sampler", "sampler"),
+        ("sequencer", "sequencer"),
+        ("mixer", "mixer"),
+        ("pedal", "effects_pedal"),
+        ("reverb", "effects_pedal"),
+        ("delay", "effects_pedal"),
+        ("fuzz", "effects_pedal"),
+        ("compressor", "effects_pedal"),
+        ("overdrive", "effects_pedal"),
+        ("distortion", "effects_pedal"),
+        ("eurorack", "eurorack_module"),
+        ("module", "eurorack_module"),
+        ("controller", "midi_controller"),
+        ("keyboard", "midi_controller"),
+        ("microphone", "microphone"),
+        ("mic ", "microphone"),
+        ("camera", "camera"),
+        ("cable", "cable"),
+        ("power", "power_supply"),
+        ("case", "case"),
+        ("pod", "eurorack_case"),
+    ]:
+        if keyword in title_lower:
+            identity_category = cat
+            break
+
+    record = {
+        "schema_version": 1,
+        "device_id": device_id,
+        "identity": {
+            "manufacturer": _extract_manufacturer(title),
+            "model": title,
+            "category": identity_category,
+            "form_factor": "desktop",
+        },
+        "acquisition": {
+            "status": "sold" if is_sale else _map_status(status),
+            "purchased_from": "reverb" if not is_sale else None,
+            "sold_on": "reverb" if is_sale else None,
+        },
+        "capabilities": [_default_capability(identity_category)],
+        "freshness": {
+            "last_verified_at": None,
+            "specs_provenance": "reverb-api-sync",
+        },
+    }
+
+    if is_sale:
+        record["acquisition"]["sold_date"] = date
+        record["acquisition"]["sold_price_usd"] = price
+    else:
+        record["acquisition"]["purchased_date"] = date
+        record["acquisition"]["purchased_price_usd"] = price
+
+    return record
+
+
+def _extract_manufacturer(title: str) -> str:
+    known = [
+        "Akai",
+        "Elektron",
+        "Roland",
+        "Strymon",
+        "Chase Bliss",
+        "Walrus Audio",
+        "EarthQuaker",
+        "Hologram",
+        "Universal Audio",
+        "BASTL",
+        "Torso",
+        "Zoom",
+        "Endorphin",
+        "Arturia",
+        "Korg",
+        "Behringer",
+        "Dreadbox",
+        "Moog",
+        "Novation",
+        "Sonicware",
+        "1010 Music",
+        "Polyend",
+        "Pioneer",
+        "ALM",
+        "Doepfer",
+        "Intellijel",
+        "Red Panda",
+        "Old Blood Noise",
+        "Source Audio",
+        "JHS",
+        "Keeley",
+        "Eventide",
+        "Free The Tone",
+        "Catalinbread",
+        "Empress",
+        "Revv",
+        "Boss",
+        "Faderfox",
+        "Retrokits",
+        "Numark",
+        "Twisted Electrons",
+        "Pocket Animal",
+        "Cre8audio",
+        "Mackie",
+        "Radial",
+        "Boredbrain",
+        "Fairfield",
+        "Vongon",
+        "Caroline",
+        "Matthews",
+        "Saturnworks",
+        "OTO",
+        "Intech",
+        "Erica Synths",
+        "MyVolts",
+        "Audiothingies",
+        "IK Multimedia",
+        "Logitech",
+        "Blue Microphones",
+        "Warm Audio",
+        "Rode",
+        "Zeppelin",
+        "EV",
+        "Cloud",
+        "Dirtywave",
+        "teenage engineering",
+    ]
+    for mfg in known:
+        if mfg.lower() in title.lower():
+            return mfg
+    return title.split(" ")[0] if " " in title else "Unknown"
+
+
+def _map_status(reverb_status: str) -> str:
+    if reverb_status in ("shipped", "received"):
+        return "owned"
+    if reverb_status == "refunded":
+        return "returned"
+    if reverb_status == "cancelled":
+        return "returned"
+    return "owned"
+
+
+def _default_capability(category: str) -> str:
+    caps = {
+        "synthesizer": "subtractive_synthesis",
+        "drum_machine": "drum_synthesis",
+        "sampler": "sample_playback",
+        "sequencer": "step_sequencing",
+        "mixer": "mixing",
+        "effects_pedal": "effects_processing",
+        "eurorack_module": "cv_controllable",
+        "eurorack_case": "cv_controllable",
+        "midi_controller": "midi_keyboard",
+        "microphone": "room_audio_capture",
+        "camera": "video_capture",
+        "power_supply": "audio_routing",
+    }
+    return caps.get(category, "audio_routing")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Sync Reverb inventory")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--output-dir", default="config/equipment")
+    args = parser.parse_args()
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    api_key = get_api_key()
+    print("Fetching purchases...")
+    purchases = fetch_all_orders(api_key, "/my/orders/buying/all")
+    print(f"  {len(purchases)} purchases")
+
+    print("Fetching sales...")
+    sales = fetch_all_orders(api_key, "/my/orders/selling/all")
+    print(f"  {len(sales)} sales")
+
+    sold_titles = set()
+    for sale in sales:
+        if sale.get("status") in ("shipped",):
+            sold_titles.add(sale.get("title", "").lower().strip())
+
+    existing = {f.stem for f in output_dir.glob("*.yaml")}
+    created = 0
+    skipped = 0
+
+    for order in purchases:
+        status = order.get("status", "")
+        if status in ("refunded", "cancelled"):
+            skipped += 1
+            continue
+
+        record = order_to_device_yaml(order)
+        title_lower = order.get("title", "").lower().strip()
+        if title_lower in sold_titles:
+            record["acquisition"]["status"] = "sold"
+
+        device_id = record["device_id"]
+        if device_id in existing:
+            skipped += 1
+            continue
+
+        filepath = output_dir / f"{device_id}.yaml"
+        if args.dry_run:
+            print(f"  [dry-run] would create: {filepath.name}")
+        else:
+            filepath.write_text(
+                yaml.dump(record, default_flow_style=False, sort_keys=False),
+                encoding="utf-8",
+            )
+        created += 1
+
+    print(f"\nDone: {created} created, {skipped} skipped (existing or cancelled)")
+
+
+if __name__ == "__main__":
+    main()

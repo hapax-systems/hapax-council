@@ -22,12 +22,10 @@ def test_private_monitor_recover_units_are_install_visible() -> None:
 def test_private_monitor_recover_service_publishes_blocked_absent_as_success() -> None:
     service = SERVICE.read_text(encoding="utf-8")
 
-    assert "WorkingDirectory=/home/hapax/projects/hapax-council" in service
-    assert (
-        "ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-private-monitor-recover"
-        in service
-    )
-    assert "--repo-root /home/hapax/projects/hapax-council --install" in service
+    assert "WorkingDirectory=" in service
+    assert "hapax-private-monitor-recover" in service
+    assert "--repo-root" in service
+    assert "--install" in service
     assert "--dump-file" not in service
     assert "SuccessExitStatus=2" in service
     assert "After=pipewire.service pipewire-pulse.service wireplumber.service" in service

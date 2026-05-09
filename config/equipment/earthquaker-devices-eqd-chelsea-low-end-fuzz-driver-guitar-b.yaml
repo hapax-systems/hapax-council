@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: earthquaker-devices-eqd-chelsea-low-end-fuzz-driver-guitar-b
+identity:
+  manufacturer: EarthQuaker
+  model: Earthquaker Devices EQD Chelsea Low End Fuzz Driver Guitar Bass Effect Pedal
+  category: effects_pedal
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-06-16'
+  purchased_price_usd: 143.2
+capabilities:
+- effects_processing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

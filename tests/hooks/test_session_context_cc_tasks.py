@@ -7,6 +7,7 @@ claimed task + top-offered queue + dashboard reminder.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -168,6 +169,67 @@ class TestTopOfferedSorting:
         result = _run(home)
         # Should not see "Top offered" line if no offered tasks exist.
         assert "Top offered" not in result.stdout
+
+
+class TestPlanningFeedDispatchBlock:
+    def _write_feed(self, home: Path, *, generated_at: str = "2099-01-01T00:00:00Z") -> None:
+        feed = home / ".cache" / "hapax" / "planning-feed-state.json"
+        feed.parent.mkdir(parents=True, exist_ok=True)
+        feed.write_text(
+            json.dumps(
+                {
+                    "generated_at": generated_at,
+                    "dispatch": {
+                        "readiness": "ready",
+                        "dispatchable_count": 1,
+                        "planning_attention_count": 1,
+                        "dispatchable_tasks": [
+                            {
+                                "task_id": "eligible-001",
+                                "wsjf": 11.5,
+                                "authority_case": "CASE-TEST-001",
+                            }
+                        ],
+                        "planning_queue": [
+                            {
+                                "item_type": "request",
+                                "request_id": "REQ-NEEDS-CASE",
+                                "action_needed": "needs authority case creation",
+                                "age_hours": 4,
+                            }
+                        ],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_missing_feed_warns_manual_dispatch_only(self, home: Path) -> None:
+        result = _run(home)
+        assert "PLANNING FEED: priority feed unavailable" in result.stdout
+
+    def test_ready_feed_surfaces_dispatch_and_planning_attention(self, home: Path) -> None:
+        self._write_feed(home)
+        result = _run(home)
+        assert "ELIGIBLE WORK (1 dispatchable, ranking wsjf_v0)" in result.stdout
+        assert "eligible-001 (WSJF 11.5, CASE-TEST-001)" in result.stdout
+        assert "PLANNING ATTENTION (1 items)" in result.stdout
+        assert "REQ-NEEDS-CASE" in result.stdout
+
+    def test_claimed_session_suppresses_eligible_work_prompt(self, home: Path) -> None:
+        self._write_feed(home)
+        cache = home / ".cache" / "hapax"
+        (cache / "cc-active-task-cx-red").write_text("already-claimed\n", encoding="utf-8")
+        result = _run(home)
+        assert "ELIGIBLE WORK" not in result.stdout
+        assert "PLANNING ATTENTION (1 items)" in result.stdout
+
+    def test_stale_feed_escalates_to_unavailable(self, home: Path) -> None:
+        self._write_feed(home, generated_at="2020-01-01T00:00:00Z")
+        result = _run(home)
+        assert "PLANNING FEED: unavailable" in result.stdout
+        assert "timer investigation needed" in result.stdout
+        assert "ELIGIBLE WORK" not in result.stdout
 
 
 class TestVaultAbsent:

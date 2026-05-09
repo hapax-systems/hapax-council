@@ -1,4 +1,4 @@
-"""Tests for scripts/lrr-phase-4-integrity-check.sh.
+"""Tests for scripts/hapax-lrr-phase-4-integrity-check.
 
 Shell-script integration tests. Each test sets up a tempdir acting as
 ``HOME/hapax-state/research-registry/``, invokes the script with env
@@ -15,7 +15,9 @@ import os
 import subprocess
 from pathlib import Path
 
-SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "lrr-phase-4-integrity-check.sh"
+SCRIPT_PATH = (
+    Path(__file__).resolve().parent.parent / "scripts" / "hapax-lrr-phase-4-integrity-check"
+)
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 

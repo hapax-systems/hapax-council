@@ -118,7 +118,7 @@ def _read_stance() -> str:
 
 
 # FINDING-V Phase 6: narrowed-salience impingement feed written by
-# ``scripts/recent-impingements-producer.py``. Cascade consumer prefers
+# ``scripts/hapax-recent-impingements-producer``. Cascade consumer prefers
 # this when present, falls back to ``_active_perceptual_signals`` when
 # absent so a producer outage is zero-downtime.
 _RECENT_IMPINGEMENTS = Path("/dev/shm/hapax-compositor/recent-impingements.json")

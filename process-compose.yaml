@@ -122,7 +122,7 @@ processes:
   vram-watchdog:
     command: |
       bash -c 'while true; do
-        /home/hapax/projects/hapax-council/scripts/vram-watchdog.sh
+        /home/hapax/projects/hapax-council/scripts/hapax-vram-watchdog
         sleep 30
       done'
     working_dir: /home/hapax/projects/hapax-council

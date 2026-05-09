@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""Extract code assertions from agents/ and shared/.
+
+Run: uv run python scripts/extract-code-assertions [--json] [--summary]
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from shared.code_assertion_extractor import extract_from_directory
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Extract code assertions from Python files")
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+    parser.add_argument("--summary", action="store_true", help="Show summary counts only")
+    parser.add_argument(
+        "directories",
+        nargs="*",
+        default=["agents", "shared"],
+        help="Directories to scan (default: agents shared)",
+    )
+    args = parser.parse_args()
+
+    assertions = []
+    for dirname in args.directories:
+        dirpath = ROOT / dirname
+        if dirpath.is_dir():
+            assertions.extend(extract_from_directory(dirpath))
+
+    if args.summary:
+        by_type: dict[str, int] = {}
+        by_method: dict[str, int] = {}
+        for a in assertions:
+            by_type[a.assertion_type.value] = by_type.get(a.assertion_type.value, 0) + 1
+            method = a.provenance.extraction_method
+            by_method[method] = by_method.get(method, 0) + 1
+
+        print(f"Total assertions: {len(assertions)}")
+        print("\nBy type:")
+        for t, c in sorted(by_type.items()):
+            print(f"  {t}: {c}")
+        print("\nBy extraction method:")
+        for m, c in sorted(by_method.items()):
+            print(f"  {m}: {c}")
+        return
+
+    if args.json:
+        data = [a.model_dump(mode="json") for a in assertions]
+        json.dump(data, sys.stdout, indent=2, default=str)
+        print()
+    else:
+        for a in assertions:
+            span = f":{a.source_span[0]}-{a.source_span[1]}" if a.source_span else ""
+            print(f"[{a.assertion_type.value}] {a.source_uri}{span}")
+            print(f"  {a.text}")
+            print()
+
+
+if __name__ == "__main__":
+    main()

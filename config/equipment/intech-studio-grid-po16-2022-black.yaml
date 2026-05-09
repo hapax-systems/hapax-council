@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: intech-studio-grid-po16-2022-black
+identity:
+  manufacturer: Intech
+  model: Intech Studio Grid PO16 2022 - Black
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-07-23'
+  purchased_price_usd: 90.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

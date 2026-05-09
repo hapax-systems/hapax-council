@@ -1,0 +1,11 @@
+[Unit]
+Description=Watch Hapax request-intake notes and refresh receipts/state
+Documentation=file://%h/Documents/Personal/20-projects/hapax-requests/_dashboard/request-intake.md
+
+[Path]
+PathChanged=%h/Documents/Personal/20-projects/hapax-requests/active
+PathModified=%h/Documents/Personal/20-projects/hapax-requests/active
+Unit=hapax-request-intake-consumer.service
+
+[Install]
+WantedBy=default.target

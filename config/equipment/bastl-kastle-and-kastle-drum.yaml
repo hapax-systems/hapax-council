@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: bastl-kastle-and-kastle-drum
+identity:
+  manufacturer: BASTL
+  model: Bastl Kastle and Kastle Drum
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-01-11'
+  purchased_price_usd: 180.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync
