@@ -2742,3 +2742,16 @@ from agents.studio_compositor.v4l2_output_pipeline import V4l2OutputPipeline  # 
 
 V4l2OutputPipeline.fd_reopen_count
 V4l2OutputPipeline.fd_write_error_count
+
+# Resource topology model (ISAP-RES-01) — pure data model, consumers not yet wired
+from shared.resource_model import (  # noqa: F401, E402
+    ContentionGroup,
+    ResourceConstraint,
+    ResourcePressure,
+    classify_state,
+)
+
+ResourcePressure
+ResourceConstraint
+classify_state
+ContentionGroup._validate_non_empty
