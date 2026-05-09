@@ -1,8 +1,8 @@
 """Shared YouTube active-broadcast resolver.
 
-Used by ``scripts/youtube-video-id-publisher.py`` (publishes the id into
+Used by ``scripts/hapax-youtube-video-id-publisher`` (publishes the id into
 ``/dev/shm/hapax-compositor/youtube-video-id.txt`` so ``chat-monitor``
-unblocks) and by ``scripts/youtube-viewer-count-producer.py`` (feeds
+unblocks) and by ``scripts/hapax-youtube-viewer-count-producer`` (feeds
 ``videos.list(liveStreamingDetails)``).
 
 Selection policy (operator decision 2026-04-20, FINDING-V Q1 = option C):

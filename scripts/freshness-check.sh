@@ -12,7 +12,7 @@ WARNINGS=()
 warn() { WARNINGS+=("$1"); printf "  STALE: %s\n" "$1"; ((STALE++)); }
 ok()   { printf "  fresh: %s\n" "$1"; }
 
-REPO="$HOME/projects/hapax-council"
+REPO="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
 HEAD=$(git -C "$REPO" rev-parse --short=9 HEAD 2>/dev/null || echo "unknown")
 
 echo "=== Freshness Check (HEAD: $HEAD) ==="

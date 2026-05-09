@@ -7,7 +7,7 @@ Documentation=file:/home/hapax/projects/hapax-council/docs/superpowers/specs/202
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/projects/hapax-council/scripts/lrr-phase-4-integrity-check.sh
+ExecStart=%h/.local/bin/hapax-lrr-phase-4-integrity-check
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=QDRANT_URL=http://localhost:6333

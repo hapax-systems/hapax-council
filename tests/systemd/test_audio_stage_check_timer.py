@@ -17,7 +17,7 @@ SERVICE = UNITS_DIR / "hapax-audio-stage-check.service"
 
 
 def _read_unit(path: Path) -> configparser.ConfigParser:
-    cp = configparser.ConfigParser(strict=False)
+    cp = configparser.ConfigParser(strict=False, interpolation=None)
     # systemd allows duplicate keys (e.g., ExecStart=) but ConfigParser
     # raises by default; force strict=False handles it.
     cp.read(path)
@@ -84,14 +84,14 @@ def test_timer_install_target() -> None:
 def test_service_unchanged_pairs_with_timer() -> None:
     """Regression pin: the existing .service file (boot-time oneshot)
     is the timer's target. Verify the service still has Type=oneshot
-    and ExecStart points at the audio-stage-check.sh script."""
+    and ExecStart points at the hapax-audio-stage-check script."""
     cp = _read_unit(SERVICE)
     assert cp["Service"].get("Type") == "oneshot", (
         "Service must remain oneshot — the timer drives invocation cadence"
     )
     exec_start = cp["Service"].get("ExecStart", "")
-    assert "audio-stage-check.sh" in exec_start, (
-        f"Service ExecStart must reference audio-stage-check.sh; got {exec_start!r}"
+    assert "hapax-audio-stage-check" in exec_start, (
+        f"Service ExecStart must reference hapax-audio-stage-check; got {exec_start!r}"
     )
     assert "--execute" in exec_start, "Service ExecStart must pass --execute (vs dry-run default)"
 

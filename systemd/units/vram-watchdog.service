@@ -3,7 +3,7 @@ Description=VRAM Watchdog — prevent GPU memory exhaustion
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/projects/hapax-council/scripts/vram-watchdog.sh
+ExecStart=%h/.local/bin/hapax-vram-watchdog
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=DISPLAY=:0

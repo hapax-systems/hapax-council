@@ -6,7 +6,7 @@ Wants=hapax-private-broadcast-leak-guard.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/projects/hapax-council/scripts/audio-stage-check.sh --execute
+ExecStart=%h/.local/bin/hapax-audio-stage-check --execute
 TimeoutStartSec=30
 SuccessExitStatus=0 2
 

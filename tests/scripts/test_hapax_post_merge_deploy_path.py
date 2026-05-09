@@ -75,9 +75,8 @@ def test_service_unit_invokes_deploy_script_with_resolved_sha() -> None:
     assert parser.has_section("Service"), "[Service] section missing"
     exec_start = parser.get("Service", "ExecStart")
 
-    # Must call the deploy script under scripts/.
-    assert "scripts/hapax-post-merge-deploy" in exec_start, (
-        f"ExecStart must invoke scripts/hapax-post-merge-deploy, got: {exec_start!r}"
+    assert "hapax-post-merge-deploy" in exec_start, (
+        f"ExecStart must invoke hapax-post-merge-deploy, got: {exec_start!r}"
     )
     # Must compute the SHA at run time, not bake one in. The .path unit
     # fires AFTER refs/heads/main has advanced, so a static SHA would be

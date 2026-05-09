@@ -27,8 +27,12 @@ fi
 # Axiom status
 AXIOM_COUNT="4"
 AXIOM_NAMES="single_user, executive_function, corporate_boundary, management_governance"
-if [ -d "$HOME/projects/hapax-council" ]; then
-  RESULT="$(cd "$HOME/projects/hapax-council" && python3 -c "
+COUNCIL_SOURCE="$HOME/.cache/hapax/source-activation/worktree"
+if [ ! -d "$COUNCIL_SOURCE/.git" ]; then
+  COUNCIL_SOURCE="$HOME/projects/hapax-council"
+fi
+if [ -d "$COUNCIL_SOURCE" ]; then
+  RESULT="$(cd "$COUNCIL_SOURCE" && python3 -c "
 import sys; sys.path.insert(0, '.')
 from shared.axiom_registry import load_axioms
 axs=load_axioms()
@@ -377,8 +381,12 @@ if [ -f "$CC_HISTORY" ]; then
 fi
 
 # Next meeting from calendar
-if [ -d "$HOME/projects/hapax-council" ]; then
-  NEXT_MTG="$(cd "$HOME/projects/hapax-council" && python3 -c "
+CALENDAR_SOURCE="$HOME/.cache/hapax/source-activation/worktree"
+if [ ! -d "$CALENDAR_SOURCE/.git" ]; then
+  CALENDAR_SOURCE="$HOME/projects/hapax-council"
+fi
+if [ -d "$CALENDAR_SOURCE" ]; then
+  NEXT_MTG="$(cd "$CALENDAR_SOURCE" && python3 -c "
 import sys; sys.path.insert(0, '.')
 try:
     from shared.calendar_context import CalendarContext

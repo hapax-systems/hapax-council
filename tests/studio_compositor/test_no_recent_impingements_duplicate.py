@@ -8,7 +8,7 @@ duplicate of the dedicated systemd unit
 broadcast.
 
 The single writer for that SHM path is the systemd producer at
-``scripts/recent-impingements-producer.py``. Any reintroduction of a
+``scripts/hapax-recent-impingements-producer``. Any reintroduction of a
 compositor-embedded publisher re-introduces the race.
 """
 
@@ -25,7 +25,7 @@ def test_orphan_publisher_module_does_not_exist() -> None:
     orphan = _STUDIO_COMPOSITOR / "recent_impingements_publisher.py"
     assert not orphan.exists(), (
         f"{orphan} reappeared. This module duplicates "
-        "scripts/recent-impingements-producer.py + its systemd unit "
+        "scripts/hapax-recent-impingements-producer + its systemd unit "
         "and caused a live SHM race. If a compositor-embedded variant is "
         "truly needed, delete the systemd unit first."
     )
@@ -58,5 +58,5 @@ def test_ward_publisher_schemas_still_available_as_contract_surface() -> None:
     fields = set(RecentImpingementEntry.model_fields.keys())
     assert fields == {"path", "value", "family"}, (
         "Schema drifted from the systemd producer's on-disk keys. "
-        "Update scripts/recent-impingements-producer.py or this schema."
+        "Update scripts/hapax-recent-impingements-producer or this schema."
     )
