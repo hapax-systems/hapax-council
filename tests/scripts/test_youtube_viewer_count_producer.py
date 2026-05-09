@@ -1,4 +1,4 @@
-"""Tests for scripts/youtube-viewer-count-producer.py — Phase 4 of the
+"""Tests for scripts/hapax-youtube-viewer-count-producer — Phase 4 of the
 orphan-ward-producers plan.
 
 Verifies:
@@ -22,7 +22,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 # Load the script as a module (it's in scripts/ which is not on sys.path).
-SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "youtube-viewer-count-producer.py"
+SCRIPT_PATH = (
+    Path(__file__).resolve().parents[2] / "scripts" / "hapax-youtube-viewer-count-producer"
+)
 spec = importlib.util.spec_from_file_location("youtube_viewer_count_producer", SCRIPT_PATH)
 producer = importlib.util.module_from_spec(spec)
 sys.modules["youtube_viewer_count_producer"] = producer

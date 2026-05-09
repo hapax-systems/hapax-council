@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# audio-routing-check.sh — validate PipeWire audio routing invariants
+# hapax-audio-routing-check — validate PipeWire audio routing invariants
 #
 # Run before AND after any audio config change. Exits non-zero if any
 # invariant is violated. Designed to be called by:
 #   - git pre-commit hook (when PipeWire configs change)
 #   - systemd health timer (hapax-audio-health.timer)
 #   - any AI agent before/after touching audio
-#   - the operator manually: ./scripts/audio-routing-check.sh
+#   - the operator manually: ./scripts/hapax-audio-routing-check
 #
 # INVARIANTS (2026-05-05 golden state):
 #

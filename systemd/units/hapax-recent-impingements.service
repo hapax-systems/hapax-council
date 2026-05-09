@@ -7,7 +7,7 @@ OnFailure=notify-failure@%n.service
 [Service]
 Type=simple
 WorkingDirectory=/home/hapax/projects/hapax-council
-ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python /home/hapax/projects/hapax-council/scripts/recent-impingements-producer.py
+ExecStart=%h/.local/bin/uv run python %h/.local/bin/hapax-recent-impingements-producer
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Restart=on-failure

@@ -8,7 +8,7 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-systemd-reconcile.sh
+ExecStart=%h/.local/bin/hapax-systemd-reconcile.sh
 Nice=19
 StandardOutput=journal
 StandardError=journal

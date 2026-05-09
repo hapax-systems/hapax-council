@@ -165,6 +165,23 @@ if [[ "$SKIP_DEPLOY" == "1" ]]; then
     exit 0
 fi
 
+LOCAL_BIN="${HAPAX_SOURCE_ACTIVATE_LOCAL_BIN:-$HOME/.local/bin}"
+mkdir -p "$LOCAL_BIN"
+sweep_count=0
+for script in "$ACTIVE_WORKTREE"/scripts/hapax-*; do
+    [[ -f "$script" ]] || continue
+    [[ -x "$script" ]] || chmod +x "$script"
+    base="$(basename "$script")"
+    target="$(readlink "$LOCAL_BIN/$base" 2>/dev/null || true)"
+    if [[ "$target" != "$script" ]]; then
+        ln -sf "$script" "$LOCAL_BIN/$base"
+        sweep_count=$((sweep_count + 1))
+    fi
+done
+if [[ "$sweep_count" -gt 0 ]]; then
+    echo "hapax-source-activate: swept $sweep_count symlinks to activation worktree"
+fi
+
 DEPLOY_SCRIPT="${HAPAX_SOURCE_ACTIVATE_DEPLOY_SCRIPT:-$ACTIVE_WORKTREE/scripts/hapax-post-merge-deploy}"
 if [[ ! -x "$DEPLOY_SCRIPT" ]]; then
     write_receipt "failed" "not_started" "2" "deploy script missing or not executable"

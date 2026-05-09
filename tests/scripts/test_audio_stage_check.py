@@ -16,7 +16,7 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = REPO_ROOT / "scripts" / "audio-stage-check.sh"
+SCRIPT = REPO_ROOT / "scripts" / "hapax-audio-stage-check"
 CONFIG = REPO_ROOT / "config" / "audio-stage-expected-levels.yaml"
 SERVICE = REPO_ROOT / "systemd" / "units" / "hapax-audio-stage-check.service"
 
