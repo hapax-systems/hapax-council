@@ -40,15 +40,39 @@ def _write_task(
     task_id: str,
     status: str = "offered",
     parent_request: str = "",
+    parent_spec: str = "",
+    authority_case: str = "",
+    depends_on: list[str] | None = None,
+    priority: str = "p2",
+    wsjf: str | None = "1.0",
+    created_at: str = "2026-05-08T15:00:00Z",
     updated_at: str = "2026-05-08T15:00:00Z",
 ) -> None:
-    path.write_text(
-        f"---\ntype: cc-task\ntask_id: {task_id}\n"
-        f"status: {status}\n"
-        f"parent_request: {parent_request}\n"
-        f"updated_at: {updated_at}\n---\n",
-        encoding="utf-8",
+    frontmatter = [
+        "---",
+        "type: cc-task",
+        f"task_id: {task_id}",
+        f"title: {task_id} title",
+        f"status: {status}",
+        f"priority: {priority}",
+    ]
+    if wsjf is not None:
+        frontmatter.append(f"wsjf: {wsjf}")
+    frontmatter.append("depends_on:")
+    for dep in depends_on or []:
+        frontmatter.append(f"  - {dep}")
+    frontmatter.extend(
+        [
+            f"authority_case: {authority_case}",
+            f"parent_request: {parent_request}",
+            f"parent_spec: {parent_spec}",
+            f"created_at: {created_at}",
+            f"updated_at: {updated_at}",
+            "---",
+            "",
+        ]
     )
+    path.write_text("\n".join(frontmatter), encoding="utf-8")
 
 
 def _run(
@@ -66,6 +90,7 @@ def _run(
         "HAPAX_REQUEST_RECEIPTS": str(receipts_dir or tmp_path / "receipts"),
         "HAPAX_REQUEST_INTAKE_STATE": str(state_path or tmp_path / "request-state.json"),
         "HAPAX_CC_TASKS_DIR": str(tasks_dir or tmp_path / "tasks"),
+        "HAPAX_CC_CLAIMS_DIR": str(tmp_path / "claims"),
         "HAPAX_PLANNING_FEED_STATE": str(planning_feed_path or tmp_path / "planning-feed.json"),
         "CLAUDE_ROLE": "epsilon-test",
         "HAPAX_REQUEST_STALE_SECONDS": "1",
@@ -227,10 +252,12 @@ def test_planning_feed_produces_valid_json(tmp_path: Path) -> None:
         "stale_summary",
         "attention_required",
         "requests",
+        "dispatch",
     ):
         assert key in data, f"missing top-level field: {key}"
     assert data["total_requests"] == 1
     assert len(data["requests"]) == 1
+    assert data["dispatch"]["ranking_basis"] == "wsjf_v0"
 
 
 def test_planning_feed_task_active_coverage(tmp_path: Path) -> None:
@@ -294,6 +321,27 @@ def test_planning_feed_untracked_coverage(tmp_path: Path) -> None:
     data = json.loads(feed.read_text())
     assert data["requests"][0]["coverage"] == "untracked"
     assert data["coverage_summary"]["untracked"] == 1
+
+
+def test_planning_feed_treats_unassigned_owner_as_untracked(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+
+    _write_request(
+        active / "REQ-013B.md",
+        "REQ-013B",
+        status="captured",
+        intake_owner="unassigned",
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    assert data["requests"][0]["coverage"] == "untracked"
+    assert data["coverage_summary"]["untracked"] == 1
+    assert data["dispatch"]["planning_queue"][0]["request_id"] == "REQ-013B"
 
 
 def test_planning_feed_fulfilled_coverage(tmp_path: Path) -> None:
@@ -435,3 +483,190 @@ def test_planning_feed_shared_task_index(tmp_path: Path) -> None:
 
     assert by_id["REQ-C"]["coverage"] == "untracked"
     assert by_id["REQ-C"]["total_tasks"] == 0
+
+
+def test_dispatch_feed_includes_valid_offered_task(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    tasks_active = tmp_path / "tasks" / "active"
+    tasks_active.mkdir(parents=True)
+    spec = tmp_path / "spec.md"
+    spec.write_text("spec", encoding="utf-8")
+
+    _write_request(active / "REQ-020.md", "REQ-020", status="accepted_for_planning")
+    _write_task(
+        tasks_active / "T-020.md",
+        "T-020",
+        parent_request=str(active / "REQ-020.md"),
+        parent_spec=str(spec),
+        authority_case="CASE-TEST-001",
+        wsjf="7.5",
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    dispatchable = data["dispatch"]["dispatchable_tasks"]
+    assert data["dispatch"]["readiness"] == "ready"
+    assert data["dispatch"]["dispatchable_count"] == 1
+    assert dispatchable[0]["task_id"] == "T-020"
+    assert dispatchable[0]["authority_case"] == "CASE-TEST-001"
+    assert dispatchable[0]["wsjf"] == 7.5
+
+
+def test_dispatch_feed_excludes_task_without_authority_case(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    tasks_active = tmp_path / "tasks" / "active"
+    tasks_active.mkdir(parents=True)
+    spec = tmp_path / "spec.md"
+    spec.write_text("spec", encoding="utf-8")
+
+    _write_request(active / "REQ-021.md", "REQ-021", status="accepted_for_planning")
+    _write_task(
+        tasks_active / "T-021.md",
+        "T-021",
+        parent_request=str(active / "REQ-021.md"),
+        parent_spec=str(spec),
+        authority_case="",
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    assert data["dispatch"]["dispatchable_tasks"] == []
+    queue_items = data["dispatch"]["planning_queue"]
+    assert any(
+        item.get("task_id") == "T-021" and item["action_needed"] == "needs authority case"
+        for item in queue_items
+    )
+
+
+def test_dispatch_feed_excludes_unresolved_dependencies(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    tasks_active = tmp_path / "tasks" / "active"
+    tasks_active.mkdir(parents=True)
+    spec = tmp_path / "spec.md"
+    spec.write_text("spec", encoding="utf-8")
+
+    _write_request(active / "REQ-022.md", "REQ-022", status="accepted_for_planning")
+    _write_task(
+        tasks_active / "T-022.md",
+        "T-022",
+        parent_request=str(active / "REQ-022.md"),
+        parent_spec=str(spec),
+        authority_case="CASE-TEST-001",
+        depends_on=["missing-task"],
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    assert data["dispatch"]["dispatchable_tasks"] == []
+
+
+def test_dispatch_feed_excludes_task_with_active_claim(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    tasks_active = tmp_path / "tasks" / "active"
+    tasks_active.mkdir(parents=True)
+    claims = tmp_path / "claims"
+    claims.mkdir()
+    (claims / "cc-active-task-beta").write_text("T-CLAIMED\n", encoding="utf-8")
+    spec = tmp_path / "spec.md"
+    spec.write_text("spec", encoding="utf-8")
+
+    _write_request(active / "REQ-CLAIMED.md", "REQ-CLAIMED", status="accepted_for_planning")
+    _write_task(
+        tasks_active / "T-CLAIMED.md",
+        "T-CLAIMED",
+        parent_request=str(active / "REQ-CLAIMED.md"),
+        parent_spec=str(spec),
+        authority_case="CASE-TEST-001",
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    assert data["dispatch"]["dispatchable_tasks"] == []
+
+
+def test_dispatch_feed_missing_wsjf_defaults_to_zero(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    tasks_active = tmp_path / "tasks" / "active"
+    tasks_active.mkdir(parents=True)
+    spec = tmp_path / "spec.md"
+    spec.write_text("spec", encoding="utf-8")
+
+    _write_request(active / "REQ-023.md", "REQ-023", status="accepted_for_planning")
+    _write_task(
+        tasks_active / "T-023.md",
+        "T-023",
+        parent_request=str(active / "REQ-023.md"),
+        parent_spec=str(spec),
+        authority_case="CASE-TEST-001",
+        wsjf=None,
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    assert data["dispatch"]["dispatchable_tasks"][0]["wsjf"] == 0.0
+
+
+def test_dispatch_feed_sorts_by_wsjf_descending(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    tasks_active = tmp_path / "tasks" / "active"
+    tasks_active.mkdir(parents=True)
+    spec = tmp_path / "spec.md"
+    spec.write_text("spec", encoding="utf-8")
+
+    _write_request(active / "REQ-024.md", "REQ-024", status="accepted_for_planning")
+    for task_id, score in (("T-low", "1.0"), ("T-high", "9.0"), ("T-mid", "5.0")):
+        _write_task(
+            tasks_active / f"{task_id}.md",
+            task_id,
+            parent_request=str(active / "REQ-024.md"),
+            parent_spec=str(spec),
+            authority_case="CASE-TEST-001",
+            wsjf=score,
+        )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    assert [item["task_id"] for item in data["dispatch"]["dispatchable_tasks"]] == [
+        "T-high",
+        "T-mid",
+        "T-low",
+    ]
+
+
+def test_dispatch_feed_no_offered_tasks_is_ready_with_empty_list(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    _write_request(active / "REQ-025.md", "REQ-025", status="accepted_for_planning")
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    assert data["dispatch"]["readiness"] == "ready"
+    assert data["dispatch"]["dispatchable_count"] == 0
+    assert data["dispatch"]["dispatchable_tasks"] == []
