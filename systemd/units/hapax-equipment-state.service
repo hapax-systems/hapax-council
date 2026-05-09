@@ -1,9 +1,10 @@
 [Unit]
 Description=Hapax equipment state writer
 Documentation=config/equipment/
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/equipment-state-writer
 
 [Service]
 Type=oneshot
-ExecStart=%h/projects/hapax-council/scripts/equipment-state-writer
-Environment=PYTHONPATH=%h/projects/hapax-council
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/equipment-state-writer
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 TimeoutSec=30
