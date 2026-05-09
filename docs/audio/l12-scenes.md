@@ -6,9 +6,9 @@ The L-12 USB capture surface exposes 14 channels: strips 1–12 + MASTER L/R (13
 
 ## Scene 1 — BROADCAST (default)
 
-The everyday broadcast scene. All channels routed at unity to the broadcast capture path (USB strips 1–12).
+The everyday broadcast scene. All channels routed at unity to the broadcast capture path (USB strips 1–12). The current wet-return predicate is AUX8/9 content return plus AUX10/11 voice return; AUX5 is legacy Evil Pet evidence and is not sufficient to prove the scene healthy.
 
-| Channel | Source | AUX 1/3/4/5 (broadcast capture) | MONITOR A | MONITOR B (Evil Pet send) | Phantom |
+| Channel | Source | USB capture role | MONITOR A | MONITOR B (Evil Pet send) | Phantom |
 |---------|--------|---------------------------------|-----------|---------------------------|---------|
 | 1 (XLR) | Evil Pet return | AUX5 | 0 (anti-feedback) | 0 (anti-feedback) | OFF |
 | 2 | Cortado MKIII contact mic | AUX1 | to taste | to taste | ON (+48V) |
@@ -17,12 +17,23 @@ The everyday broadcast scene. All channels routed at unity to the broadcast capt
 | 5 (XLR) | Rode Wireless Pro RX | AUX4 | to taste | to taste | OFF |
 | 6 (XLR) | Evil Pet return | AUX5 (mirror of CH1) | — | 0 (anti-feedback) | OFF |
 | 7-8 | reserve | — | — | — | OFF |
-| 9-10 | Korg Handytraxx vinyl L/R | — (vinyl reaches broadcast via Evil Pet wet return only) | — | to taste | OFF |
-| 11-12 | PC Ryzen HDA L/R | — (PC reaches broadcast via Evil Pet wet return only) | — | to taste | OFF |
+| 9-10 | MPC content wet return L/R | AUX8/9 content return | — | to taste | OFF |
+| 11-12 | MPC Hapax voice wet return L/R | AUX10/11 voice return | — | to taste | OFF |
 
 **MASTER fader (broadcast layer):** drives room monitors; does NOT drive USB capture (capture is pre-fader/post-comp). Operator may move freely without disturbing broadcast levels.
 
-**AUX0 / AUX2 / AUX6–AUX13 / AUX12–AUX13 (MASTER L/R):** intentionally not bound by the `hapax-l12-evilpet-capture` filter chain. Narrowing prevents the digital feedback loop where workstation default sink → CH 11/12 → AUX B → Evil Pet → wet return CH 6 → broadcast → workstation. Source: researcher report a09d834c (`docs/research/2026-04-25-l12-aggregate-monitor.md`).
+**AUX0 / AUX2 / AUX6–AUX7 / AUX12–AUX13 (MASTER L/R):** intentionally not bound by the broadcast wet-return predicate. `hapax-l12-usb-return-capture` now binds AUX8/9 as the content return pair and AUX10/11 as the voice return pair. `hapax-l12-evilpet-capture` remains narrowed to AUX1/3/4/5 for legacy processor-return evidence, but AUX5 alone must not make the scene green. Source: researcher report a09d834c (`docs/research/2026-04-25-l12-aggregate-monitor.md`) plus accepted `l12-scene-wet-return-rebaseline` task.
+
+### Wet-return predicate
+
+The source-controlled scene check is intentionally stricter than the old AUX5 + AUX10/11 model:
+
+- AUX8 and AUX9 must both show content-return signal when programme audio is expected.
+- AUX10 and AUX11 must both show voice-return signal when Hapax voice return is expected.
+- AUX10/11-only evidence is stale and cannot make public egress healthy.
+- Real silence on either pair remains blocking unless a later authority explicitly marks that pair intentionally idle.
+
+If the predicate remains blocked, physically inspect the L-12 front panel before changing software: scene name should read `BROADCAST-V2`; CH9/10 and CH11/12 should be unmuted at the expected scene levels; MPC Out 1/2 should land on CH9/10; MPC Out 3/4 should land on CH11/12; USB multichannel capture should still expose 14 channels.
 
 ## Scene 8 — MONITOR-WORK
 
@@ -65,7 +76,8 @@ Operator monitor mix on **MONITOR OUT C** (PHONES C). Pure-hardware path — int
 
 ## Cross-references
 
-- `config/pipewire/hapax-l12-evilpet-capture.conf` — the broadcast capture filter chain (AUX1/3/4/5 narrowed surface)
+- `config/pipewire/hapax-l12-evilpet-capture.conf` — legacy processor-return capture filter chain (AUX1/3/4/5 narrowed surface)
+- `config/pipewire/hapax-l12-usb-return-capture.conf` — current wet-return capture filter chain (AUX8/9 content plus AUX10/11 voice)
 - `docs/research/2026-04-25-l12-aggregate-monitor.md` — research drop that validated the pure-hardware monitor mix vs the rejected software aggregate sink
 - cc-task `monitor-aggregate-l12-scene-config` — the task this doc serves
 - cc-task `feedback-prevention-evilpet-capture-narrow` — companion fix that closed the inverse direction of the L-12 invariant
