@@ -46,6 +46,8 @@ WORKDIR="$HOME/projects/hapax-council"
 [[ "$ROLE" != "alpha" ]] && WORKDIR="$HOME/projects/hapax-council--$ROLE"
 [[ -d "$WORKDIR" ]] || { echo "hapax-claude-headless: worktree not found: $WORKDIR" >&2; exit 3; }
 
+export PATH="$WORKDIR/scripts:$PATH"
+
 PIPE_DIR="/run/user/$(id -u)/hapax-claude"
 LOG_DIR="$HOME/.cache/hapax/claude-headless/$ROLE"
 mkdir -p "$PIPE_DIR" "$LOG_DIR"

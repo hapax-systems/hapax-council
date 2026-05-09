@@ -163,6 +163,54 @@ def test_blocks_stale_worktree_cc_claim_before_launch(tmp_path: Path) -> None:
     assert "stale cc-claim" in result.stderr
 
 
+def test_prompt_contains_worktree_local_cc_claim_path(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+
+    result = _run(tmp_path, "--task", "governed-build", "--lane", "beta", "--print-prompt")
+
+    assert result.returncode == 0, result.stderr
+    prompt = result.stdout
+    assert "scripts/cc-claim governed-build" in prompt
+    assert "/scripts/cc-claim governed-build" in prompt
+    lines = [l for l in prompt.splitlines() if "cc-claim" in l.lower()]
+    for line in lines:
+        assert "Run cc-claim governed-build" not in line or "/scripts/cc-claim" in line, (
+            f"bare cc-claim without absolute path found: {line!r}"
+        )
+
+
+def test_prompt_does_not_use_canonical_checkout_cc_claim(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+
+    result = _run(tmp_path, "--task", "governed-build", "--lane", "beta", "--print-prompt")
+
+    assert result.returncode == 0, result.stderr
+    prompt = result.stdout
+    assert "hapax-council/scripts/cc-claim" not in prompt or "hapax-council--beta" in prompt, (
+        "prompt must not reference the canonical checkout cc-claim for a non-alpha lane"
+    )
+
+
 def test_receipt_contains_task_and_authority(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
