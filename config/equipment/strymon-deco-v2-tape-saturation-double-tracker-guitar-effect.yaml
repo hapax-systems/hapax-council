@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: strymon-deco-v2-tape-saturation-double-tracker-guitar-effect
+identity:
+  manufacturer: Strymon
+  model: Strymon Deco V2 Tape Saturation & Double-Tracker Guitar Effects Pedal
+  category: effects_pedal
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-08-22'
+  purchased_price_usd: 360.05
+capabilities:
+- effects_processing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

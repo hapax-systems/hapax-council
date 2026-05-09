@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: erica-synths-8-output-midi-through-box
+identity:
+  manufacturer: Erica Synths
+  model: Erica Synths 8 Output MIDI Through Box
+  category: synthesizer
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-08-01'
+  purchased_price_usd: 109.65
+capabilities:
+- subtractive_synthesis
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

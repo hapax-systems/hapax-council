@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: radial-engineering-mix-blender-dual-input-guitar-mixer-with-
+identity:
+  manufacturer: Radial
+  model: Radial Engineering Mix-Blender Dual Input Guitar Mixer with Insert Loop
+  category: mixer
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-07-27'
+  purchased_price_usd: 200.2
+capabilities:
+- mixing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

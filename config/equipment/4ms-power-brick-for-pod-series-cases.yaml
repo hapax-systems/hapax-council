@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: 4ms-power-brick-for-pod-series-cases
+identity:
+  manufacturer: 4MS
+  model: 4MS Power Brick - for Pod Series Cases
+  category: power_supply
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-01-29'
+  purchased_price_usd: 19.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

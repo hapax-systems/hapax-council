@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: bastl-instruments-kastle-arp-2020s-black
+identity:
+  manufacturer: BASTL
+  model: BASTL Instruments Kastle Arp 2020s - Black
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-02-06'
+  purchased_price_usd: 90.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

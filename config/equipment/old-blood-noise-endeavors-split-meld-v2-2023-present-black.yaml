@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: old-blood-noise-endeavors-split-meld-v2-2023-present-black
+identity:
+  manufacturer: Old Blood Noise
+  model: Old Blood Noise Endeavors Split Meld V2 2023 - Present - Black
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-05-27'
+  purchased_price_usd: 16.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

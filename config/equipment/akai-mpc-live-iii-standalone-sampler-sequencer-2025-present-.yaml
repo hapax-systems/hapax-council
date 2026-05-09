@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: akai-mpc-live-iii-standalone-sampler-sequencer-2025-present-
+identity:
+  manufacturer: Akai
+  model: Akai MPC Live III Standalone Sampler / Sequencer 2025 - Present - Black
+  category: sampler
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-02-16'
+  purchased_price_usd: 1525.0
+capabilities:
+- sample_playback
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

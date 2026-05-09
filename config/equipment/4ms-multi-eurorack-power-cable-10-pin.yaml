@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: 4ms-multi-eurorack-power-cable-10-pin
+identity:
+  manufacturer: 4MS
+  model: 4MS Multi Eurorack Power Cable - 10-pin
+  category: eurorack_module
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-02-14'
+  purchased_price_usd: 6.0
+capabilities:
+- cv_controllable
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync
