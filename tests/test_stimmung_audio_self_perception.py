@@ -204,7 +204,7 @@ class TestVlaAudioSelfPerceptionReader:
         kwargs = agg._stimmung_collector.update_audio_self_perception.call_args[1]
         assert kwargs["classification"] == "NOISE"
 
-    def test_missing_files_still_calls_update(self, tmp_path: Path) -> None:
+    def test_missing_files_skips_update(self, tmp_path: Path) -> None:
         from agents.visual_layer_aggregator import stimmung_methods as sm
 
         agg = MagicMock()
@@ -216,10 +216,7 @@ class TestVlaAudioSelfPerceptionReader:
         ):
             sm._update_audio_self_perception(agg)
 
-        agg._stimmung_collector.update_audio_self_perception.assert_called_once()
-        kwargs = agg._stimmung_collector.update_audio_self_perception.call_args[1]
-        assert kwargs["witness_age_s"] >= 900
-        assert kwargs["classification"] == ""
+        agg._stimmung_collector.update_audio_self_perception.assert_not_called()
 
     def test_witness_with_error_passes_through(self, tmp_path: Path) -> None:
         witness = {

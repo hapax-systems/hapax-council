@@ -317,16 +317,22 @@ _EGRESS_MAX_AGE_S = 60.0
 
 
 def _update_audio_self_perception(agg: VisualLayerAggregator) -> None:
-    """Read broadcast audio SHM and feed into stimmung collector."""
+    """Read broadcast audio SHM and feed into stimmung collector.
+
+    Only records audio health when the egress loopback witness file exists —
+    absent SHM means no broadcast monitor is running, not that audio is broken.
+    """
+    has_loopback = False
     rms_dbfs = -60.0
     silence_ratio = 1.0
-    witness_age_s = 999.0
+    witness_age_s = 0.0
     witness_error: str | None = None
     classification = ""
 
     # Egress loopback witness
     try:
         if _EGRESS_LOOPBACK_PATH.exists():
+            has_loopback = True
             data = json.loads(_EGRESS_LOOPBACK_PATH.read_text(encoding="utf-8"))
             from datetime import UTC, datetime
 
@@ -343,6 +349,7 @@ def _update_audio_self_perception(agg: VisualLayerAggregator) -> None:
     # Signal flow classification at OBS-bound stage
     try:
         if _SIGNAL_FLOW_PATH.exists():
+            has_loopback = True
             flow = json.loads(_SIGNAL_FLOW_PATH.read_text(encoding="utf-8"))
             stages = flow.get("stages", {})
             obs_stage = stages.get("hapax-obs-broadcast-remap") or stages.get(
@@ -352,6 +359,9 @@ def _update_audio_self_perception(agg: VisualLayerAggregator) -> None:
                 classification = str(obs_stage.get("classification", ""))
     except (OSError, json.JSONDecodeError):
         log.debug("Audio self-perception: signal flow read failed", exc_info=True)
+
+    if not has_loopback:
+        return
 
     agg._stimmung_collector.update_audio_self_perception(
         rms_dbfs=rms_dbfs,

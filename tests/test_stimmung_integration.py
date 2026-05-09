@@ -101,6 +101,14 @@ class TestAggregatorStimmung:
             "agents.visual_layer_aggregator.constants.LANGFUSE_STATE_PATH",
             tmp_path / "nonexistent.json",
         )
+        monkeypatch.setattr(
+            "agents.visual_layer_aggregator.stimmung_methods._EGRESS_LOOPBACK_PATH",
+            tmp_path / "no-egress.json",
+        )
+        monkeypatch.setattr(
+            "agents.visual_layer_aggregator.stimmung_methods._SIGNAL_FLOW_PATH",
+            tmp_path / "no-signal-flow.json",
+        )
 
         agg = VisualLayerAggregator()
         agg._ts_perception = time.monotonic() - 5.0  # 5s ago
