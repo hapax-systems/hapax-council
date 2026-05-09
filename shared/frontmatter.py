@@ -9,13 +9,36 @@ for IFC enforcement at filesystem boundaries.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
 from shared.governance.consent_label import ConsentLabel
 from shared.governance.labeled import Labeled
+
+FrontmatterErrorKind = Literal[
+    "read_error",
+    "missing_frontmatter",
+    "missing_closing_marker",
+    "yaml_error",
+    "not_mapping",
+]
+
+
+@dataclass(frozen=True)
+class FrontmatterParseResult:
+    """Canonical diagnostic result for markdown YAML frontmatter parsing."""
+
+    frontmatter: dict[str, Any] | None
+    body: str
+    error_kind: FrontmatterErrorKind | None = None
+    error_message: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.error_kind is None and self.frontmatter is not None
 
 
 def parse_frontmatter(path_or_text: Path | str) -> tuple[dict, str]:
@@ -27,33 +50,68 @@ def parse_frontmatter(path_or_text: Path | str) -> tuple[dict, str]:
     Returns:
         (frontmatter_dict, body_text). Returns ({}, full_text) on any failure.
     """
+    result = parse_frontmatter_with_diagnostics(path_or_text)
+    if not result.ok:
+        if isinstance(path_or_text, Path):
+            return {}, result.body
+        return {}, path_or_text
+    return result.frontmatter or {}, result.body
+
+
+def parse_frontmatter_with_diagnostics(path_or_text: Path | str) -> FrontmatterParseResult:
+    """Extract YAML frontmatter with structured failure information."""
     if isinstance(path_or_text, Path):
         try:
             text = path_or_text.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            return {}, ""
+        except (OSError, UnicodeDecodeError) as exc:
+            return FrontmatterParseResult(
+                frontmatter=None,
+                body="",
+                error_kind="read_error",
+                error_message=str(exc),
+            )
     else:
         text = path_or_text
 
     if not text.startswith("---"):
-        return {}, text
+        return FrontmatterParseResult(
+            frontmatter=None,
+            body=text,
+            error_kind="missing_frontmatter",
+            error_message="document does not start with YAML frontmatter",
+        )
 
-    end = text.find("---", 3)
+    end = text.find("\n---", 3)
     if end == -1:
-        return {}, text
+        return FrontmatterParseResult(
+            frontmatter=None,
+            body=text,
+            error_kind="missing_closing_marker",
+            error_message="frontmatter closing marker is missing",
+        )
 
     yaml_text = text[3:end].strip()
+    body = text[end + 4 :].lstrip("\n")
     if not yaml_text:
-        return {}, text[end + 3 :].lstrip("\n")
+        return FrontmatterParseResult(frontmatter={}, body=body)
 
     try:
         data = yaml.safe_load(yaml_text)
-        if not isinstance(data, dict):
-            return {}, text
-        body = text[end + 3 :].lstrip("\n")
-        return data, body
-    except yaml.YAMLError:
-        return {}, text
+    except yaml.YAMLError as exc:
+        return FrontmatterParseResult(
+            frontmatter=None,
+            body=text,
+            error_kind="yaml_error",
+            error_message=str(exc),
+        )
+    if not isinstance(data, dict):
+        return FrontmatterParseResult(
+            frontmatter=None,
+            body=text,
+            error_kind="not_mapping",
+            error_message="frontmatter must be a YAML mapping",
+        )
+    return FrontmatterParseResult(frontmatter=data, body=body)
 
 
 def extract_consent_label(frontmatter: dict[str, Any]) -> ConsentLabel | None:
