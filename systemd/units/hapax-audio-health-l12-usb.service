@@ -2,11 +2,12 @@
 Description=Hapax audio health M11 — L-12 USB capture continuity monitor (observability only)
 After=pipewire.service
 PartOf=hapax-audio-health.target
+ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
 
 [Service]
 Type=notify
-ExecStart=%h/.local/share/hapax-council/.venv/bin/python -m agents.audio_health.m11_l12_usb_daemon
-WorkingDirectory=%h/.local/share/hapax-council
+WorkingDirectory=%h/.cache/hapax/rebuild/worktree
+ExecStart=%h/.local/bin/uv run python -m agents.audio_health.m11_l12_usb_daemon
 Restart=on-failure
 RestartSec=10
 WatchdogSec=120s
