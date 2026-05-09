@@ -86,6 +86,30 @@ ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/
 # the moment a producer ships them.
 ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-operator-awareness.service --watch "agents/operator_awareness/ agents/payment_processors/event_log.py shared/" --sha-key operator-awareness
 
+# hapax-audio-self-perception: restart if audio self-perception or shared code changed
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-self-perception.service --watch "agents/audio_self_perception/ shared/" --sha-key audio-self-perception
+
+# hapax-audio-health-channel-position: restart if audio health or shared code changed
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-health-channel-position.service --watch "agents/audio_health/ shared/" --sha-key audio-health-channel-position
+
+# hapax-audio-health-crest-flatness
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-health-crest-flatness.service --watch "agents/audio_health/ shared/" --sha-key audio-health-crest-flatness
+
+# hapax-audio-health-inter-stage-corr
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-health-inter-stage-corr.service --watch "agents/audio_health/ shared/" --sha-key audio-health-inter-stage-corr
+
+# hapax-audio-health-l12-usb
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-health-l12-usb.service --watch "agents/audio_health/ shared/" --sha-key audio-health-l12-usb
+
+# hapax-audio-health-lufs-s
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-health-lufs-s.service --watch "agents/audio_health/ shared/" --sha-key audio-health-lufs-s
+
+# hapax-audio-health-pipewire-xrun
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-health-pipewire-xrun.service --watch "agents/audio_health/ shared/" --sha-key audio-health-pipewire-xrun
+
+# hapax-audio-health-topology-drift
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-health-topology-drift.service --watch "agents/audio_health/ shared/" --sha-key audio-health-topology-drift
+
 # ── Operator-gated audio-touching services ──────────────────────────────
 # These entries are COMMENTED OUT by default. The operator must explicitly
 # uncomment them to auto-restart audio-touching services on deploy.

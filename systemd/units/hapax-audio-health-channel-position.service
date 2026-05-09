@@ -6,8 +6,9 @@ PartOf=hapax-audio-health.target
 
 [Service]
 Type=notify
-ExecStart=%h/.local/share/hapax-council/.venv/bin/python -m agents.audio_health.m8_channel_position_daemon
-WorkingDirectory=%h/.local/share/hapax-council
+ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
+WorkingDirectory=%h/.cache/hapax/rebuild/worktree
+ExecStart=%h/.local/bin/uv run python -m agents.audio_health.m8_channel_position_daemon
 Restart=on-failure
 RestartSec=10
 WatchdogSec=300s
