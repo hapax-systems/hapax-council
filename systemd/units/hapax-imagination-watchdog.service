@@ -4,7 +4,7 @@ After=hapax-imagination-loop.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-imagination-watchdog.sh
+ExecStart=%h/.local/bin/hapax-imagination-watchdog.sh
 Environment=HAPAX_IMAG_WATCHDOG_FILE=/dev/shm/hapax-imagination/current.json
 Environment=HAPAX_IMAG_WATCHDOG_STALE_S=600
 Environment=HAPAX_IMAG_WATCHDOG_UNIT=hapax-imagination-loop.service

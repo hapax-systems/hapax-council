@@ -54,10 +54,24 @@ HELP
     esac
 done
 
-# Portable repo path — the script is callable from anywhere via
-# hapax-systemd-reconcile on PATH; locate the repo relative to the
-# script itself.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Portable repo path — the script is callable from anywhere via a symlink in
+# ~/.local/bin; locate the repo relative to the real script source, not the
+# symlink invocation path.
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+REAL_SCRIPT_SOURCE="$(readlink -f "$SCRIPT_SOURCE" 2>/dev/null || true)"
+if [ -z "$REAL_SCRIPT_SOURCE" ]; then
+    REAL_SCRIPT_SOURCE="$SCRIPT_SOURCE"
+    while [ -L "$REAL_SCRIPT_SOURCE" ]; do
+        SOURCE_DIR="$(cd -P "$(dirname "$REAL_SCRIPT_SOURCE")" && pwd)"
+        REAL_SCRIPT_SOURCE="$(readlink "$REAL_SCRIPT_SOURCE")"
+        case "$REAL_SCRIPT_SOURCE" in
+            /*) ;;
+            *) REAL_SCRIPT_SOURCE="$SOURCE_DIR/$REAL_SCRIPT_SOURCE" ;;
+        esac
+    done
+fi
+
+SCRIPT_DIR="$(cd -P "$(dirname "$REAL_SCRIPT_SOURCE")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_UNITS="$REPO_ROOT/systemd/units"
 

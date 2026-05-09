@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: doepfer-a-130-2v-dual-lin-exp-vca-slim-line-vintage-edition-
+identity:
+  manufacturer: Doepfer
+  model: Doepfer A-130-2V Dual Lin/Exp VCA (Slim Line) (Vintage Edition) [USED]
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-02-07'
+  purchased_price_usd: 99.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

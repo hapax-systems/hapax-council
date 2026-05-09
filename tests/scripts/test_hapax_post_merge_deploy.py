@@ -57,6 +57,37 @@ def _repo_with_merge_commit(tmp_path: Path) -> tuple[Path, str]:
     return repo, _git(repo, "rev-parse", "HEAD")
 
 
+def _repo_with_linear_commit(tmp_path: Path, files: dict[str, str]) -> tuple[Path, str]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "trace-test@example.test")
+    _git(repo, "config", "user.name", "Trace Test")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "base")
+    for relative, body in files.items():
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "add deployable files")
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
+def _fake_systemctl(tmp_path: Path) -> tuple[Path, Path]:
+    calls = tmp_path / "systemctl-calls.txt"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "systemctl"
+    fake.write_text(
+        '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$HAPAX_SYSTEMCTL_CALLS"\nexit 0\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return bin_dir, calls
+
+
 def test_dry_run_writes_bounded_post_merge_trace(tmp_path: Path) -> None:
     repo, sha = _repo_with_merge_commit(tmp_path)
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
@@ -121,6 +152,141 @@ def test_systemd_coverage_still_flags_unknown_systemd_paths() -> None:
 
     assert result.returncode == 1
     assert "systemd/uncovered/example.conf" in result.stderr
+
+
+def test_system_scoped_units_skip_user_deploy_and_clean_stale_copy(tmp_path: Path) -> None:
+    unit_path = "systemd/units/hapax-l12-critical-usb-guard.service"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            unit_path: (
+                "[Unit]\n"
+                "# Hapax-Install-Scope: system\n"
+                "Description=System scoped guard\n"
+                "\n"
+                "[Service]\n"
+                "Type=oneshot\n"
+                "ExecStart=/usr/local/bin/hapax-l12-critical-usb-guard\n"
+            )
+        },
+    )
+    home = tmp_path / "home"
+    stale_user_unit = home / ".config" / "systemd" / "user" / "hapax-l12-critical-usb-guard.service"
+    stale_user_unit.parent.mkdir(parents=True)
+    stale_user_unit.write_text("stale\n", encoding="utf-8")
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "system-scoped systemd units changed" in result.stdout
+    assert not stale_user_unit.exists()
+    calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "--user disable --now hapax-l12-critical-usb-guard.service" in calls
+    assert "--user daemon-reload" in calls
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["deploy_groups"]["systemd_system_units"] == [unit_path]
+    assert record["deploy_groups"]["systemd_units"] == []
+
+
+def test_user_scoped_units_still_deploy_to_user_dir(tmp_path: Path) -> None:
+    unit_path = "systemd/units/hapax-user-demo.service"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            unit_path: (
+                "[Unit]\n"
+                "Description=User scoped demo\n"
+                "\n"
+                "[Service]\n"
+                "Type=oneshot\n"
+                "ExecStart=%h/.local/bin/hapax-demo\n"
+            )
+        },
+    )
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    installed = home / ".config" / "systemd" / "user" / "hapax-user-demo.service"
+    assert installed.read_text(encoding="utf-8") == (
+        "[Unit]\n"
+        "Description=User scoped demo\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStart=%h/.local/bin/hapax-demo\n"
+    )
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["deploy_groups"]["systemd_units"] == [unit_path]
+    assert record["deploy_groups"]["systemd_system_units"] == []
+
+
+def test_hapax_runtime_config_deploys_to_user_config_and_restarts_reconciler(
+    tmp_path: Path,
+) -> None:
+    config_path = "config/hapax/audio-link-map.conf"
+    body = "source:output_FL|target:input_FL\n"
+    repo, sha = _repo_with_linear_commit(tmp_path, {config_path: body})
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    installed = home / ".config" / "hapax" / "audio-link-map.conf"
+    assert installed.read_text(encoding="utf-8") == body
+    calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "--user restart hapax-audio-reconciler.service" in calls
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["deploy_groups"]["hapax_runtime_config"] == [config_path]
 
 
 def test_deploy_rejects_commit_ranges_before_touching_targets() -> None:

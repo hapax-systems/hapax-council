@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: red-panda-radius-ring-modulator-frequency-shifter-effect-ped
+identity:
+  manufacturer: Red Panda
+  model: Red Panda Radius Ring Modulator/Frequency Shifter Effect Pedal
+  category: effects_pedal
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-04-22'
+  purchased_price_usd: 349.0
+capabilities:
+- effects_processing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

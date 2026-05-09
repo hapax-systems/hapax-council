@@ -1,0 +1,19 @@
+schema_version: 1
+device_id: old-blood-noise-endeavors-expression-slider-eastside-exclusi
+identity:
+  manufacturer: Old Blood Noise
+  model: Old Blood Noise Endeavors Expression Slider - Eastside Exclusive-Eastside
+    Exclusive
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-03-31'
+  purchased_price_usd: 44.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

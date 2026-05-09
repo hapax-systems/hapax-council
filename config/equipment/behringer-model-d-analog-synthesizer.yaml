@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: behringer-model-d-analog-synthesizer
+identity:
+  manufacturer: Behringer
+  model: Behringer Model D Analog Synthesizer
+  category: synthesizer
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-10-17'
+  purchased_price_usd: 249.0
+capabilities:
+- subtractive_synthesis
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

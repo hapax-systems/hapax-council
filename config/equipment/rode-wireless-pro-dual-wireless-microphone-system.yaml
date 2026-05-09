@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: rode-wireless-pro-dual-wireless-microphone-system
+identity:
+  manufacturer: Rode
+  model: RODE Wireless Pro Dual Wireless Microphone System
+  category: microphone
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-04-08'
+  purchased_price_usd: 265.0
+capabilities:
+- room_audio_capture
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

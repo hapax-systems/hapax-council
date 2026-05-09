@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: polyend-tracker-mini-standalone-audio-workstation-bundle
+identity:
+  manufacturer: Polyend
+  model: Polyend Tracker Mini Standalone Audio Workstation Bundle
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-03-10'
+  purchased_price_usd: 499.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

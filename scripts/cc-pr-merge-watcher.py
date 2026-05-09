@@ -38,11 +38,20 @@ LOG = logging.getLogger("cc-pr-merge-watcher")
 
 DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 DEFAULT_CURSOR_PATH = Path.home() / ".cache" / "hapax" / "cc-pr-merge-watcher-cursor.txt"
-DEFAULT_REPO_ROOT = Path.home() / "projects" / "hapax-council"
 KILLSWITCH_ENV = "HAPAX_CC_HYGIENE_OFF"
 
 # RFC3339 / ISO-8601 timestamp shape gh emits on `mergedAt`.
 _ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+
+
+def default_repo_root() -> Path:
+    """Resolve cc-task tooling from activated source unless explicitly overridden."""
+    raw = (
+        os.environ.get("HAPAX_CC_TASK_TOOL_REPO_ROOT")
+        or os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE")
+        or str(Path.home() / ".cache" / "hapax" / "source-activation" / "worktree")
+    )
+    return Path(raw).expanduser()
 
 
 @dataclass
@@ -89,7 +98,7 @@ def write_cursor(cursor_path: Path, when: datetime) -> None:
 def fetch_merged_prs(
     cursor: datetime,
     *,
-    repo_root: Path = DEFAULT_REPO_ROOT,
+    repo_root: Path | None = None,
     limit: int = 50,
     runner: callable[..., subprocess.CompletedProcess] | None = None,
 ) -> list[MergedPR]:
@@ -107,6 +116,7 @@ def fetch_merged_prs(
         Injection point for tests; defaults to ``subprocess.run``.
     """
     runner = runner or subprocess.run
+    repo_root = repo_root or default_repo_root()
     cursor_str = cursor.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     cmd = [
         "gh",
@@ -186,12 +196,13 @@ def find_linked_task(pr_number: int, *, vault_root: Path = DEFAULT_VAULT_ROOT) -
 def close_linked_task(
     task: LinkedTask,
     *,
-    repo_root: Path = DEFAULT_REPO_ROOT,
+    repo_root: Path | None = None,
     runner: callable[..., subprocess.CompletedProcess] | None = None,
     role: str = "watcher",
 ) -> bool:
     """Invoke ``scripts/cc-close`` on the matched task. Returns True on success."""
     runner = runner or subprocess.run
+    repo_root = repo_root or default_repo_root()
     cc_close = repo_root / "scripts" / "cc-close"
     if not cc_close.is_file():
         LOG.error("cc-close script missing at %s", cc_close)
@@ -234,7 +245,7 @@ def run_watcher(
     *,
     cursor_path: Path = DEFAULT_CURSOR_PATH,
     vault_root: Path = DEFAULT_VAULT_ROOT,
-    repo_root: Path = DEFAULT_REPO_ROOT,
+    repo_root: Path | None = None,
     dry_run: bool = False,
     runner: callable[..., subprocess.CompletedProcess] | None = None,
 ) -> dict[str, int]:
@@ -246,6 +257,7 @@ def run_watcher(
         LOG.info("killswitch %s=1; skipping watcher cycle", KILLSWITCH_ENV)
         return {"merged": 0, "linked": 0, "closed": 0, "failed": 0, "skipped": 1}
 
+    repo_root = repo_root or default_repo_root()
     cursor = read_cursor(cursor_path)
     LOG.info("scanning merged PRs since %s", cursor.isoformat())
 
@@ -322,8 +334,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--repo-root",
         type=Path,
-        default=DEFAULT_REPO_ROOT,
-        help="hapax-council repo root (default: %(default)s).",
+        default=default_repo_root(),
+        help="hapax-council repo root for cc-close (default: activated source worktree).",
     )
     parser.add_argument("--verbose", "-v", action="count", default=0)
     args = parser.parse_args(argv)

@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Bounded user-scope recovery after the L-12 reappears."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+DEFAULT_STATE_PATH = Path("/dev/shm/hapax-audio/l12-hotplug-recover.json")
+DEFAULT_UNITS = (
+    "hapax-usb-topology-witness.service",
+    "hapax-livestream-tap-loopback.service",
+    "hapax-l12-mainmix-tap-loopback.service",
+    "hapax-audio-topology-verify.service",
+)
+FORBIDDEN_DEFAULT_UNITS = {
+    "pipewire.service",
+    "pipewire-pulse.service",
+    "wireplumber.service",
+}
+
+
+def run_unit(systemctl: str, unit: str, *, dry_run: bool) -> dict[str, Any]:
+    record: dict[str, Any] = {"unit": unit, "action": "start", "dry_run": dry_run}
+    if dry_run:
+        record["returncode"] = 0
+        return record
+    proc = subprocess.run(
+        [systemctl, "--user", "start", unit],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    record["returncode"] = proc.returncode
+    record["stdout"] = proc.stdout.strip()
+    record["stderr"] = proc.stderr.strip()
+    return record
+
+
+def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--state-path", type=Path, default=DEFAULT_STATE_PATH)
+    parser.add_argument("--systemctl", default="systemctl")
+    parser.add_argument("--unit", action="append", dest="units")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+
+    units = tuple(args.units) if args.units else DEFAULT_UNITS
+    forbidden = sorted(set(units) & FORBIDDEN_DEFAULT_UNITS)
+    if forbidden:
+        print(
+            "hapax-l12-hotplug-recover: refusing forbidden default recovery units: "
+            + ", ".join(forbidden),
+            file=sys.stderr,
+        )
+        return 2
+
+    actions = [run_unit(args.systemctl, unit, dry_run=args.dry_run) for unit in units]
+    payload = {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "units": list(units),
+        "actions": actions,
+        "ok": all(action["returncode"] == 0 for action in actions),
+    }
+    atomic_write_json(args.state_path, payload)
+
+    if payload["ok"]:
+        print(f"hapax-l12-hotplug-recover: started {len(actions)} recovery unit(s)")
+        return 0
+    print("hapax-l12-hotplug-recover: one or more recovery units failed", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

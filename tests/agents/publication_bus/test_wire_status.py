@@ -8,13 +8,17 @@ asserts each is catalogued.
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 from agents.publication_bus.surface_registry import SURFACE_REGISTRY
 from agents.publication_bus.wire_status import (
     PUBLISHER_WIRE_REGISTRY,
     WireEntry,
     cred_blocked_pass_keys,
+    credential_readiness,
+    overdue_reviews,
     status_summary,
 )
 
@@ -136,3 +140,54 @@ def test_each_cred_blocked_entry_documents_disposition():
 def test_graph_publisher_slug_matches_surface_registry():
     entry = PUBLISHER_WIRE_REGISTRY["agents.publication_bus.graph_publisher"]
     assert entry.surface_slug == "datacite-graphql-mirror"
+
+
+def test_crossref_depositor_is_cred_blocked():
+    entry = PUBLISHER_WIRE_REGISTRY["agents.attribution.crossref_depositor"]
+    assert entry.status == "CRED_BLOCKED"
+    assert entry.pass_key_required == "crossref/depositor-credentials"
+    assert "review-by 2026-08-01" in entry.rationale
+
+
+def test_crossref_depositor_pass_key_in_queue():
+    keys = cred_blocked_pass_keys()
+    assert "crossref/depositor-credentials" in keys
+
+
+def test_credential_readiness_probes_pass():
+    with patch("agents.publication_bus.wire_status.subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 1
+        result = credential_readiness()
+        assert isinstance(result, dict)
+        for key in cred_blocked_pass_keys():
+            assert key in result
+            assert result[key] is False
+        assert mock_run.call_count == len(cred_blocked_pass_keys())
+
+
+def test_credential_readiness_reports_present_creds():
+    with patch("agents.publication_bus.wire_status.subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 0
+        result = credential_readiness()
+        for key in cred_blocked_pass_keys():
+            assert result[key] is True
+
+
+def test_overdue_reviews_empty_before_deadline():
+    overdue = overdue_reviews(today=date(2026, 5, 8))
+    assert overdue == []
+
+
+def test_overdue_reviews_surfaces_past_deadline():
+    overdue = overdue_reviews(today=date(2026, 9, 1))
+    modules = [m for m, _, _ in overdue]
+    assert "agents.attribution.crossref_depositor" in modules
+
+
+def test_overdue_reviews_returns_correct_date():
+    overdue = overdue_reviews(today=date(2027, 1, 1))
+    crossref = [o for o in overdue if o[0] == "agents.attribution.crossref_depositor"]
+    assert len(crossref) == 1
+    _, pass_key, review_date = crossref[0]
+    assert pass_key == "crossref/depositor-credentials"
+    assert review_date == date(2026, 8, 1)

@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: zeppelin-design-labs-cortado-mkiii-versatile-rugged-steel-co
+identity:
+  manufacturer: Zeppelin
+  model: Zeppelin Design Labs Cortado MkIII Versatile Rugged Steel Contact Microphone
+  category: microphone
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-06-22'
+  purchased_price_usd: 143.0
+capabilities:
+- room_audio_capture
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

@@ -2,14 +2,16 @@
 
 Pure-logic module: no I/O, no threading, no network. Aggregates readings
 from existing data sources (health, GPU, Langfuse, engine, perception),
-operator biometrics (HR, HRV, EDA, sleep, activity), and cognitive state
-(grounding quality from voice sessions) into a single Stimmung snapshot
-that colors system behavior.
+operator biometrics (HR, HRV, EDA, sleep, activity), cognitive state
+(grounding quality from voice sessions), and audio self-perception
+(broadcast spectral analysis) into a single Stimmung snapshot that
+colors system behavior.
 
-10 dimensions (6 infrastructure + 1 cognitive + 3 biometric), each a
-DimensionReading with value/trend/freshness. Overall stance derived from
-worst non-stale dimension. Biometric dimensions use 0.5× weight, cognitive
-dimensions use 0.3× weight, so system stance remains infrastructure-driven.
+17 dimensions (6 infrastructure + 3 cognitive + 1 perceptual + 3 biometric
++ 4 audio), each a DimensionReading with value/trend/freshness. Overall stance
+derived from worst non-stale dimension. Biometric dimensions use 0.5× weight,
+cognitive and audio dimensions use 0.3× weight, and perceptual dimensions use
+0.2× weight, so stance remains infrastructure-driven.
 """
 
 from __future__ import annotations
@@ -87,7 +89,7 @@ class DimensionReading(BaseModel, frozen=True):
 
 
 class SystemStimmung(BaseModel):
-    """Unified self-state vector — 10 dimensions + derived stance."""
+    """Unified self-state vector — 17 dimensions + derived stance."""
 
     # Infrastructure dimensions (weight 1.0)
     health: DimensionReading = Field(default_factory=DimensionReading)
@@ -107,10 +109,20 @@ class SystemStimmung(BaseModel):
     # a direct physiological or infrastructure signal.
     audience_engagement: DimensionReading = Field(default_factory=DimensionReading)
 
+    # Perceptual dimensions (weight 0.2 — self-referential, lightest)
+    visual_self_perception: DimensionReading = Field(default_factory=DimensionReading)
+
     # Biometric dimensions (weight 0.5 — softer thresholds, operator changes slowly)
     operator_stress: DimensionReading = Field(default_factory=DimensionReading)
     operator_energy: DimensionReading = Field(default_factory=DimensionReading)
     physiological_coherence: DimensionReading = Field(default_factory=DimensionReading)
+
+    # Audio self-perception dimensions (weight 0.3 — perceptual, same as cognitive).
+    # AVSDLC-002: broadcast-audio self-perception via normalized egress tap.
+    audio_signal_presence: DimensionReading = Field(default_factory=DimensionReading)
+    audio_spectral_centroid: DimensionReading = Field(default_factory=DimensionReading)
+    audio_spectral_balance: DimensionReading = Field(default_factory=DimensionReading)
+    audio_content_mix: DimensionReading = Field(default_factory=DimensionReading)
 
     overall_stance: Stance = Stance.NOMINAL
     timestamp: float = 0.0
@@ -168,13 +180,30 @@ _COGNITIVE_DIMENSION_NAMES = [
     "audience_engagement",
 ]
 
+_PERCEPTUAL_DIMENSION_NAMES = [
+    "visual_self_perception",
+]
+
 _BIOMETRIC_DIMENSION_NAMES = [
     "operator_stress",
     "operator_energy",
     "physiological_coherence",
 ]
 
-_DIMENSION_NAMES = _INFRA_DIMENSION_NAMES + _COGNITIVE_DIMENSION_NAMES + _BIOMETRIC_DIMENSION_NAMES
+_AUDIO_DIMENSION_NAMES = [
+    "audio_signal_presence",
+    "audio_spectral_centroid",
+    "audio_spectral_balance",
+    "audio_content_mix",
+]
+
+_DIMENSION_NAMES = (
+    _INFRA_DIMENSION_NAMES
+    + _COGNITIVE_DIMENSION_NAMES
+    + _PERCEPTUAL_DIMENSION_NAMES
+    + _BIOMETRIC_DIMENSION_NAMES
+    + _AUDIO_DIMENSION_NAMES
+)
 
 # Biometric dimensions contribute at 0.5× weight to stance computation.
 # Operator physiological state changes slowly — infrastructure should dominate.
@@ -184,13 +213,26 @@ _BIOMETRIC_STANCE_WEIGHT = 0.5
 # for conversation quality but doesn't override system health.
 _COGNITIVE_STANCE_WEIGHT = 0.3
 
+# Perceptual dimensions contribute at 0.2× weight — self-referential visual
+# feedback should nudge behavior subtly, never dominate stance.
+_PERCEPTUAL_STANCE_WEIGHT = 0.2
+
+# Audio self-perception dimensions contribute at 0.3× weight — perceptual
+# state about the system's own broadcast output. Same weight as cognitive:
+# audio witness signals inform behavior but don't override infrastructure.
+_AUDIO_STANCE_WEIGHT = 0.3
+
 # Per-class stance thresholds applied to effective values (raw × weight).
 # Infrastructure: standard thresholds.
 # Biometric (0.5× weight): can reach DEGRADED at raw ≥ 0.8 (eff=0.4), never CRITICAL.
 # Cognitive (0.3× weight): can reach CAUTIOUS at raw ≥ 0.5 (eff=0.15), never DEGRADED.
+# Perceptual (0.2× weight): can reach CAUTIOUS only (eff max = 0.2).
+# Audio (0.3× weight): same ceiling as cognitive — perceptual, not infrastructure.
 _INFRA_THRESHOLDS = (0.30, 0.60, 0.85)  # (CAUTIOUS, DEGRADED, CRITICAL)
 _BIOMETRIC_THRESHOLDS = (0.15, 0.40, 1.01)  # CRITICAL unreachable (eff max = 0.5)
 _COGNITIVE_THRESHOLDS = (0.15, 1.01, 1.01)  # DEGRADED+CRITICAL unreachable (eff max = 0.3)
+_PERCEPTUAL_THRESHOLDS = (0.15, 1.01, 1.01)  # DEGRADED+CRITICAL unreachable (eff max = 0.2)
+_AUDIO_THRESHOLDS = (0.15, 1.01, 1.01)  # Same ceiling as cognitive
 
 # Stance ordering for comparison (StrEnum alphabetical order doesn't match severity).
 # Keyed by Stance members; since Stance is StrEnum, Stance.NOMINAL == "nominal".
@@ -469,6 +511,16 @@ class StimmungCollector:
         """Update exploration deficit (0.0 = engaged, 1.0 = system-wide boredom)."""
         self._record("exploration_deficit", max(0.0, min(1.0, deficit)))
 
+    def update_visual_self_perception(self, extremity: float) -> None:
+        """Update from rendered-frame formal property analysis.
+
+        Args:
+            extremity: 0.0 = balanced/harmonious render, 1.0 = extreme
+                (overdriven brightness, monotone color, harsh contrast).
+                Already follows stimmung convention (0.0 = good).
+        """
+        self._record("visual_self_perception", max(0.0, min(1.0, extremity)))
+
     def update_audience_engagement(self, engagement: float) -> None:
         """Update audience-engagement reading from the chat structural analyzer.
 
@@ -486,6 +538,78 @@ class StimmungCollector:
         """
         value = 1.0 - max(0.0, min(1.0, engagement))
         self._record("audience_engagement", value)
+
+    def update_audio_perception(
+        self,
+        *,
+        rms_dbfs: float = -120.0,
+        spectral_centroid_hz: float = 0.0,
+        low_high_ratio: float = 1.0,
+        voice_ratio: float = 0.0,
+        music_ratio: float = 0.0,
+        env_ratio: float = 0.0,
+        sample_rate: int = 48000,
+    ) -> None:
+        """Update audio self-perception dimensions from broadcast egress tap.
+
+        AVSDLC-002: broadcast-audio witness becomes bounded stimmung input.
+        Values arrive from the audio-self-perception daemon via /dev/shm.
+
+        Mapping to stimmung convention (0.0 = good, 1.0 = bad):
+        - signal_presence: silence = bad (1.0), healthy signal = good (0.0)
+        - spectral_centroid: extreme deviation from voice band = bad
+        - spectral_balance: skewed low/high ratio = bad
+        - content_mix: monotonic single-source = bad, diverse mix = good
+        """
+        # Signal presence: map RMS from dBFS to 0-1 pressure.
+        # -25 dBFS or louder = 0.0 (healthy), -55 dBFS or quieter = 1.0 (silent)
+        if rms_dbfs <= -55.0:
+            presence = 1.0
+        elif rms_dbfs >= -25.0:
+            presence = 0.0
+        else:
+            presence = (-25.0 - rms_dbfs) / 30.0
+        self._record("audio_signal_presence", presence)
+
+        # Spectral centroid: deviation from target voice band (300-3000 Hz).
+        # Centroid in that range = 0.0 (balanced). Outside = pressure rising.
+        nyquist = sample_rate / 2.0
+        if spectral_centroid_hz <= 0 or nyquist <= 0:
+            centroid_pressure = 0.5
+        else:
+            target_center = 1500.0
+            target_half_width = 1200.0
+            deviation = abs(spectral_centroid_hz - target_center)
+            centroid_pressure = min(
+                1.0, max(0.0, (deviation - target_half_width) / target_half_width)
+            )
+        self._record("audio_spectral_centroid", centroid_pressure)
+
+        # Spectral balance: low/high energy ratio. 1.0 = balanced,
+        # extreme values = skewed. Map via log-distance from 1.0.
+        if low_high_ratio <= 0:
+            balance_pressure = 1.0
+        else:
+            import math as _math
+
+            log_ratio = abs(_math.log2(max(0.01, low_high_ratio)))
+            balance_pressure = min(1.0, log_ratio / 3.0)
+        self._record("audio_spectral_balance", balance_pressure)
+
+        # Content mix: Shannon entropy of V/M/E ratios.
+        # Max entropy (equal mix) = 0.0 (good), zero entropy (single source) = 1.0.
+        import math as _math
+
+        ratios = [max(1e-10, r) for r in [voice_ratio, music_ratio, env_ratio]]
+        total = sum(ratios)
+        if total > 0:
+            probs = [r / total for r in ratios]
+            entropy = -sum(p * _math.log2(p) for p in probs if p > 0)
+            max_entropy = _math.log2(3.0)
+            mix_pressure = 1.0 - min(1.0, entropy / max_entropy)
+        else:
+            mix_pressure = 0.5
+        self._record("audio_content_mix", mix_pressure)
 
     def snapshot(self, now: float | None = None) -> SystemStimmung:
         """Produce a SystemStimmung from current readings."""
@@ -776,6 +900,12 @@ class StimmungCollector:
             elif name in _COGNITIVE_DIMENSION_NAMES:
                 effective *= _COGNITIVE_STANCE_WEIGHT
                 thresholds = _COGNITIVE_THRESHOLDS
+            elif name in _PERCEPTUAL_DIMENSION_NAMES:
+                effective *= _PERCEPTUAL_STANCE_WEIGHT
+                thresholds = _PERCEPTUAL_THRESHOLDS
+            elif name in _AUDIO_DIMENSION_NAMES:
+                effective *= _AUDIO_STANCE_WEIGHT
+                thresholds = _AUDIO_THRESHOLDS
             else:
                 thresholds = _INFRA_THRESHOLDS
 
@@ -853,6 +983,14 @@ class StimmungCollector:
                 effective_value *= _COGNITIVE_STANCE_WEIGHT
                 effective_sigma *= _COGNITIVE_STANCE_WEIGHT
                 thresholds = _COGNITIVE_THRESHOLDS
+            elif name in _PERCEPTUAL_DIMENSION_NAMES:
+                effective_value *= _PERCEPTUAL_STANCE_WEIGHT
+                effective_sigma *= _PERCEPTUAL_STANCE_WEIGHT
+                thresholds = _PERCEPTUAL_THRESHOLDS
+            elif name in _AUDIO_DIMENSION_NAMES:
+                effective_value *= _AUDIO_STANCE_WEIGHT
+                effective_sigma *= _AUDIO_STANCE_WEIGHT
+                thresholds = _AUDIO_THRESHOLDS
             else:
                 thresholds = _INFRA_THRESHOLDS
 

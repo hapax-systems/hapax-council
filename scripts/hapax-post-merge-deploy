@@ -18,9 +18,13 @@
 #
 # Manual (this script):
 #   config/pipewire/*.conf         → cp + restart pipewire stack
+#   config/hapax/*.conf            → cp + restart hapax-audio-reconciler
 #   config/wireplumber/*.conf      → cp + restart wireplumber
 #   systemd/*.service|timer|path   → cp + daemon-reload + restart
 #   systemd/units/*.service|timer|path|target → cp + daemon-reload + restart
+#       unless the unit has `# Hapax-Install-Scope: system`, in which case
+#       it is system/root-scoped and must be installed by its dedicated
+#       installer rather than copied into the user unit directory.
 #   systemd/units/*.service.d/*.conf → cp drop-in + daemon-reload + restart active unit
 #   systemd/user-preset.d/*.preset → cp user preset
 #   systemd/overrides/**           → source/rationale docs only; no direct deploy
@@ -67,6 +71,7 @@ else
 fi
 REPO="${REPO:-${GITHUB_WORKSPACE:-$HOME/projects/hapax-council}}"
 PW_CONF_DIR="$HOME/.config/pipewire/pipewire.conf.d"
+HAPAX_CONF_DIR="$HOME/.config/hapax"
 WP_CONF_DIR="$HOME/.config/wireplumber/wireplumber.conf.d"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 SYSTEMD_USER_PRESET_DIR="$HOME/.config/systemd/user-preset"
@@ -87,8 +92,10 @@ record_post_merge_trace() {
 
     HAPAX_TRACE_FILES="$FILES" \
     HAPAX_TRACE_PW="$(_trace_join "${PW[@]}")" \
+    HAPAX_TRACE_HAPAX_CONF="$(_trace_join "${HAPAX_CONF[@]}")" \
     HAPAX_TRACE_WP="$(_trace_join "${WP[@]}")" \
     HAPAX_TRACE_SYSTEMD="$(_trace_join "${SYSTEMD[@]}")" \
+    HAPAX_TRACE_SYSTEMD_SYSTEM="$(_trace_join "${SYSTEMD_SYSTEM[@]}")" \
     HAPAX_TRACE_SYSTEMD_DROPINS="$(_trace_join "${SYSTEMD_DROPINS[@]}")" \
     HAPAX_TRACE_USER_PRESETS="$(_trace_join "${USER_PRESETS[@]}")" \
     HAPAX_TRACE_WATCHDOGS="$(_trace_join "${WATCHDOGS[@]}")" \
@@ -124,8 +131,10 @@ manual_deploy_executed = sys.argv[7] == "1"
 
 deploy_groups = {
     "pipewire": lines("HAPAX_TRACE_PW"),
+    "hapax_runtime_config": lines("HAPAX_TRACE_HAPAX_CONF"),
     "wireplumber": lines("HAPAX_TRACE_WP"),
     "systemd_units": lines("HAPAX_TRACE_SYSTEMD"),
+    "systemd_system_units": lines("HAPAX_TRACE_SYSTEMD_SYSTEM"),
     "systemd_dropins": lines("HAPAX_TRACE_SYSTEMD_DROPINS"),
     "systemd_user_presets": lines("HAPAX_TRACE_USER_PRESETS"),
     "systemd_watchdogs": lines("HAPAX_TRACE_WATCHDOGS"),
@@ -199,9 +208,25 @@ else
     FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" | sort -u)"
 fi
 
-PW=(); WP=(); SYSTEMD=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); SCRIPTS=(); SCRIPT_PY=()
+PW=(); HAPAX_CONF=(); WP=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); SCRIPTS=(); SCRIPT_PY=()
 SYSTEMD_UNCLASSIFIED=()
 DID_ANYTHING=0
+
+unit_install_scope() {
+    local f="$1"
+    if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
+        printf 'user\n'
+        return 0
+    fi
+    local content
+    content="$(git show "$SHA:$f" 2>/dev/null || true)"
+    if [ -n "$content" ] \
+        && grep -Eiq '^[#;][[:space:]]*Hapax-Install-Scope:[[:space:]]*system([[:space:]]*$|[[:space:]]+)' <<< "$content"; then
+        printf 'system\n'
+    else
+        printf 'user\n'
+    fi
+}
 
 # Per-file deploy uses `git cat-file -e $SHA:$path` + `git show $SHA:$path`
 # to read commit-time content, decoupling the deploy decision from local
@@ -229,9 +254,16 @@ while IFS= read -r f; do
     [ -z "$f" ] && continue
     case "$f" in
         config/pipewire/*.conf)           PW+=("$f") ;;
+        config/hapax/*.conf)              HAPAX_CONF+=("$f") ;;
         config/wireplumber/*.conf)        WP+=("$f") ;;
+        systemd/units/*.service|systemd/units/*.timer|systemd/units/*.path|systemd/units/*.target)
+            if [ "$(unit_install_scope "$f")" = "system" ]; then
+                SYSTEMD_SYSTEM+=("$f")
+            else
+                SYSTEMD+=("$f")
+            fi
+            ;;
         systemd/*.service|systemd/*.timer|systemd/*.path) SYSTEMD+=("$f") ;;
-        systemd/units/*.service|systemd/units/*.timer|systemd/units/*.path|systemd/units/*.target) SYSTEMD+=("$f") ;;
         systemd/units/*.service.d/*.conf|systemd/units/*.timer.d/*.conf) SYSTEMD_DROPINS+=("$f") ;;
         systemd/user-preset.d/*.preset)   USER_PRESETS+=("$f") ;;
         systemd/watchdogs/*)              WATCHDOGS+=("$f") ;;
@@ -286,6 +318,25 @@ if [ "${#PW[@]}" -gt 0 ]; then
     done
     echo "restarting pipewire stack"
     systemctl --user restart pipewire pipewire-pulse wireplumber
+    DID_ANYTHING=1
+fi
+
+# --- Hapax runtime config ---
+if [ "${#HAPAX_CONF[@]}" -gt 0 ]; then
+    echo "hapax runtime config changed (${#HAPAX_CONF[@]}):"
+    mkdir -p "$HAPAX_CONF_DIR"
+    for f in "${HAPAX_CONF[@]}"; do
+        dest="$HAPAX_CONF_DIR/$(basename "$f")"
+        if git cat-file -e "$SHA:$f" 2>/dev/null; then
+            git show "$SHA:$f" > "$dest"
+            echo "  '$f' -> '$dest'"
+        else
+            echo "  (deleted: $f)"
+            rm -fv "$dest" || true
+        fi
+    done
+    echo "restarting hapax-audio-reconciler"
+    systemctl --user restart hapax-audio-reconciler.service || true
     DID_ANYTHING=1
 fi
 
@@ -370,6 +421,22 @@ if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
 fi
 
 # --- systemd units ---
+if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
+    echo "system-scoped systemd units changed (${#SYSTEMD_SYSTEM[@]}):"
+    mkdir -p "$SYSTEMD_USER_DIR"
+    for f in "${SYSTEMD_SYSTEM[@]}"; do
+        base="$(basename "$f")"
+        dest="$SYSTEMD_USER_DIR/$base"
+        echo "  '$f' marked Hapax-Install-Scope: system; skipping user deploy"
+        systemctl --user disable --now "$base" >/dev/null 2>&1 || true
+        if [ -e "$dest" ] || [ -L "$dest" ]; then
+            rm -fv "$dest" || true
+        fi
+    done
+    systemctl --user daemon-reload
+    DID_ANYTHING=1
+fi
+
 if [ "${#SYSTEMD[@]}" -gt 0 ]; then
     echo "systemd units changed (${#SYSTEMD[@]}):"
     mkdir -p "$SYSTEMD_USER_DIR"

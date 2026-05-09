@@ -47,14 +47,16 @@ def _replace_node(
 def _write_l12_scene_pcm(
     path: Path,
     *,
-    aux5_amp: int = 8000,
-    aux10_amp: int = 20000,
-    aux11_amp: int = 0,
+    content_l_amp: int = 20000,
+    content_r_amp: int = 20000,
+    voice_l_amp: int = 20000,
+    voice_r_amp: int = 20000,
 ) -> Path:
     buffer = np.zeros((4800, 14), dtype=np.int16)
-    buffer[:, 5] = aux5_amp
-    buffer[:, 10] = aux10_amp
-    buffer[:, 11] = aux11_amp
+    buffer[:, 8] = content_l_amp
+    buffer[:, 9] = content_r_amp
+    buffer[:, 10] = voice_l_amp
+    buffer[:, 11] = voice_r_amp
     path.write_bytes(buffer.tobytes())
     return path
 
@@ -656,7 +658,10 @@ class TestAudit:
 
 
 class TestTtsBroadcastCheck:
-    def test_tts_broadcast_check_ok(self, tmp_path: Path) -> None:
+    def test_tts_broadcast_check_ok_for_current_mpc_wet_return_path(
+        self,
+        tmp_path: Path,
+    ) -> None:
         import json
 
         dump = tmp_path / "dump.json"
@@ -668,9 +673,9 @@ class TestTtsBroadcastCheck:
                         "type": "PipeWire:Interface:Node",
                         "info": {
                             "props": {
-                                "node.name": "hapax-tts-duck",
+                                "node.name": "input.loopback.sink.role.broadcast",
                                 "media.class": "Audio/Sink",
-                                "factory.name": "filter-chain",
+                                "factory.name": "loopback",
                             }
                         },
                     },
@@ -679,14 +684,52 @@ class TestTtsBroadcastCheck:
                         "type": "PipeWire:Interface:Node",
                         "info": {
                             "props": {
-                                "node.name": "hapax-tts-broadcast-playback",
+                                "node.name": "hapax-voice-fx-capture",
                                 "media.class": "Audio/Sink",
-                                "factory.name": "loopback",
+                                "factory.name": "filter-chain",
                             }
                         },
                     },
                     {
                         "id": 102,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": "hapax-loudnorm-capture",
+                                "media.class": "Audio/Sink",
+                                "factory.name": "filter-chain",
+                            }
+                        },
+                    },
+                    {
+                        "id": 103,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": (
+                                    "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00"
+                                    ".multichannel-output"
+                                ),
+                                "media.class": "Audio/Sink",
+                                "factory.name": "api.alsa.pcm.sink",
+                                "api.alsa.path": "hw:7",
+                                "audio.channels": 24,
+                            }
+                        },
+                    },
+                    {
+                        "id": 104,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": "hapax-l12-usb-return-capture",
+                                "media.class": "Audio/Sink",
+                                "factory.name": "filter-chain",
+                            }
+                        },
+                    },
+                    {
+                        "id": 105,
                         "type": "PipeWire:Interface:Node",
                         "info": {
                             "props": {
@@ -697,14 +740,20 @@ class TestTtsBroadcastCheck:
                         },
                     },
                     {
-                        "id": 200,
-                        "type": "PipeWire:Interface:Link",
-                        "info": {"output-node-id": 100, "input-node-id": 101},
+                        "id": 106,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": "hapax-broadcast-master-capture",
+                                "media.class": "Audio/Sink",
+                                "factory.name": "filter-chain",
+                            }
+                        },
                     },
                     {
-                        "id": 201,
+                        "id": 200,
                         "type": "PipeWire:Interface:Link",
-                        "info": {"output-node-id": 101, "input-node-id": 102},
+                        "info": {"output-node-id": 105, "input-node-id": 106},
                     },
                 ]
             )
@@ -713,7 +762,10 @@ class TestTtsBroadcastCheck:
         assert result.returncode == 0
         assert "TTS broadcast path: OK" in result.stdout
 
-    def test_tts_broadcast_check_fails_when_bridge_missing(self, tmp_path: Path) -> None:
+    def test_tts_broadcast_check_fails_when_mpc_wet_return_missing(
+        self,
+        tmp_path: Path,
+    ) -> None:
         import json
 
         dump = tmp_path / "dump.json"
@@ -721,7 +773,7 @@ class TestTtsBroadcastCheck:
         result = _run(["tts-broadcast-check", "--dump-file", str(dump)])
         assert result.returncode == 2
         assert "TTS broadcast path: FAIL" in result.stdout
-        assert "hapax-tts-broadcast-*" in result.stdout
+        assert "hapax-l12-usb-return-capture" in result.stdout
 
 
 class TestL12ForwardCheck:
@@ -768,11 +820,15 @@ class TestL12SceneCheck:
         assert "L-12 broadcast scene: OK" in result.stdout
         assert "expected_scene: BROADCAST-V2" in result.stdout
 
-    def test_l12_scene_check_returns_2_when_aux5_is_cold(
+    def test_l12_scene_check_returns_2_when_content_return_is_cold(
         self,
         tmp_path: Path,
     ) -> None:
-        raw = _write_l12_scene_pcm(tmp_path / "l12-cold.s16le", aux5_amp=0)
+        raw = _write_l12_scene_pcm(
+            tmp_path / "l12-cold.s16le",
+            content_l_amp=0,
+            content_r_amp=0,
+        )
 
         result = _run(
             [
@@ -785,7 +841,7 @@ class TestL12SceneCheck:
 
         assert result.returncode == 2
         assert "L-12 broadcast scene: FAIL" in result.stdout
-        assert "AUX5/CH6 peak" in result.stdout
+        assert "AUX8 content return L peak" in result.stdout
 
 
 class TestWatchdog:

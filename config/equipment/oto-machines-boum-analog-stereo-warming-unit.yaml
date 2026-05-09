@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: oto-machines-boum-analog-stereo-warming-unit
+identity:
+  manufacturer: OTO
+  model: OTO Machines BOUM Analog Stereo Warming Unit
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-04-22'
+  purchased_price_usd: 689.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

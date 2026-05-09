@@ -120,7 +120,18 @@ def update_stimmung_sources(agg: VisualLayerAggregator) -> None:
     except Exception:
         log.debug("Exploration deficit read failed", exc_info=True)
 
-    # 6d. Audience engagement — chat activity + viewer count signal.
+    # 6d. Visual self-perception — rendered frame formal properties
+    try:
+        from .frame_perception import analyze_frame
+
+        props = analyze_frame()
+        if props is not None:
+            agg._stimmung_collector.update_visual_self_perception(props.composite)
+            log.debug("Frame perception: composite=%.3f", props.composite)
+    except Exception:
+        log.debug("Frame perception read failed", exc_info=True)
+
+    # 6e. Audience engagement — chat activity + viewer count signal.
     # Engagement = 0.0 (nobody) → 1.0 (active audience).
     # The StimmungCollector inverts this (0.0 = good engagement,
     # 1.0 = no engagement) to match stimmung convention.
@@ -151,6 +162,32 @@ def update_stimmung_sources(agg: VisualLayerAggregator) -> None:
         agg._stimmung_collector.update_audience_engagement(engagement)
     except Exception:
         log.debug("Audience engagement read failed", exc_info=True)
+
+    # 6e. Audio self-perception — AVSDLC-002
+    try:
+        if _c.AUDIO_SELF_PERCEPTION_FILE.exists():
+            audio_data = json.loads(_c.AUDIO_SELF_PERCEPTION_FILE.read_text(encoding="utf-8"))
+            audio_age = time.time() - audio_data.get("timestamp", 0)
+            if audio_age < 30:
+                agg._stimmung_collector.update_audio_perception(
+                    rms_dbfs=float(audio_data.get("rms_dbfs", -120.0)),
+                    spectral_centroid_hz=float(audio_data.get("spectral_centroid_hz", 0.0)),
+                    low_high_ratio=float(audio_data.get("low_high_ratio", 1.0)),
+                    voice_ratio=float(audio_data.get("voice_ratio", 0.0)),
+                    music_ratio=float(audio_data.get("music_ratio", 0.0)),
+                    env_ratio=float(audio_data.get("env_ratio", 0.0)),
+                    sample_rate=int(audio_data.get("sample_rate", 48000)),
+                )
+                log.debug(
+                    "Audio self-perception: rms=%.1f centroid=%.0f (age %.1fs)",
+                    audio_data.get("rms_dbfs", -120),
+                    audio_data.get("spectral_centroid_hz", 0),
+                    audio_age,
+                )
+            else:
+                log.debug("Audio self-perception stale (age %.1fs > 30s)", audio_age)
+    except Exception:
+        log.debug("Audio self-perception read failed", exc_info=True)
 
     # 7. Snapshot
     prev_stance = agg._stimmung.overall_stance.value if agg._stimmung else "nominal"

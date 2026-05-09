@@ -11,9 +11,11 @@ Usage:
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
+
+from shared.route_metadata_schema import AuthorityLevel, MutationSurface, QualityFloor
 
 
 class _BaseFrontmatter(BaseModel):
@@ -66,6 +68,39 @@ class BridgePromptFrontmatter(_BaseFrontmatter):
     tags: list[str]
 
 
+# ── Operator intake and cc-task document types ──────────────────────────────
+
+
+class _RouteMetadataFrontmatterFields(_BaseFrontmatter):
+    route_metadata_schema: Literal[1] | None = None
+    quality_floor: QualityFloor | None = None
+    authority_level: AuthorityLevel | None = None
+    mutation_surface: MutationSurface | None = None
+    mutation_scope_refs: list[str] | None = None
+    risk_flags: dict[str, Any] | None = None
+    context_shape: dict[str, Any] | None = None
+    verification_surface: dict[str, Any] | None = None
+    route_constraints: dict[str, Any] | None = None
+    review_requirement: dict[str, Any] | None = None
+    route_metadata: dict[str, Any] | None = None
+
+
+class CcTaskFrontmatter(_RouteMetadataFrontmatterFields):
+    type: Literal["cc-task"]
+    task_id: str
+    title: str
+    status: str
+    tags: list[str] | None = None
+
+
+class HapaxRequestFrontmatter(_RouteMetadataFrontmatterFields):
+    type: Literal["hapax-request"]
+    request_id: str
+    title: str
+    status: str
+    tags: list[str] | None = None
+
+
 # ── RAG source document types (written by sync agents) ─────────────────────
 
 
@@ -75,6 +110,19 @@ class RagSourceFrontmatter(_BaseFrontmatter):
     content_type: str
     source_service: str
     date: str | None = None
+
+
+FRONTMATTER_SCHEMA_REGISTRY: dict[str, type[_BaseFrontmatter]] = {
+    "briefing": BriefingFrontmatter,
+    "digest": DigestFrontmatter,
+    "nudges": NudgeFrontmatter,
+    "goals": GoalsFrontmatter,
+    "decision": DecisionFrontmatter,
+    "bridge-prompt": BridgePromptFrontmatter,
+    "cc-task": CcTaskFrontmatter,
+    "hapax-request": HapaxRequestFrontmatter,
+    "rag-source": RagSourceFrontmatter,
+}
 
 
 # ── Validation utility ──────────────────────────────────────────────────────

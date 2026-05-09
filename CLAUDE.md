@@ -36,7 +36,7 @@ GStreamer pipeline: cameras → cudacompositor → GL shader chain (12 glfeedbac
 
 ## Audio Routing — PROTECTED INVARIANTS
 
-**MANDATORY.** Golden chain: `TTS → voice-fx → loudnorm → MPC(AUX2/3) → L-12[analog] → L-12 USB return → livestream-tap → broadcast-master → broadcast-normalized → obs-broadcast-remap → OBS`. Run `scripts/audio-routing-check.sh` before/after ANY audio change. REVERT on failure. NEVER bypass MPC/L-12. NEVER target `hapax-livestream-tap` playback from unauthorized sources. NEVER modify `~/.config/pipewire/pipewire.conf.d/` without approval.
+**MANDATORY.** Golden chain: `TTS → voice-fx → loudnorm → MPC(AUX2/3) → L-12[analog] → L-12 USB return → livestream-tap → broadcast-master → broadcast-normalized → obs-broadcast-remap → OBS`. Run `scripts/hapax-audio-routing-check` before/after ANY audio change. REVERT on failure. NEVER bypass MPC/L-12. NEVER target `hapax-livestream-tap` playback from unauthorized sources. NEVER modify `~/.config/pipewire/pipewire.conf.d/` without approval.
 
 ## CC Task Tracking
 

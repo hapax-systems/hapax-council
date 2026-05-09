@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""document-pipeline-triage — register and disposition artifacts in the ledger.
+
+CLI for the document pipeline artifact ledger. Creates new entries or updates
+existing ones. Writes atomically via tmp+rename.
+
+Part of the document pipeline (design §14, slice 1).
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+import yaml
+
+LEDGER_PATH = Path.home() / ".cache" / "hapax" / "document-pipeline" / "artifact-ledger.yaml"
+
+VALID_CLASSES = frozenset(
+    {
+        "specification",
+        "design",
+        "research",
+        "audit",
+        "evaluation",
+        "planning",
+        "lab-journal",
+        "agent-return",
+        "relay-receipt",
+        "source-excerpt",
+        "conversation-log",
+    }
+)
+
+VALID_DISPOSITIONS = frozenset(
+    {
+        "produced",
+        "triaged",
+        "promoted",
+        "receipt_only",
+        "refused",
+        "superseded",
+        "needs_normalization",
+        "expired",
+        "debt_recorded",
+    }
+)
+
+CLASS_TO_CEILING: dict[str, str] = {
+    "specification": "gate",
+    "design": "gate",
+    "research": "gate",
+    "audit": "gate",
+    "evaluation": "advisory",
+    "planning": "advisory",
+    "lab-journal": "advisory",
+    "agent-return": "receipt",
+    "relay-receipt": "receipt",
+    "source-excerpt": "receipt",
+    "conversation-log": "receipt",
+}
+
+
+def read_ledger(ledger_path: Path) -> list[dict]:
+    if not ledger_path.is_file():
+        return []
+    try:
+        text = ledger_path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    if not text.strip():
+        return []
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def write_ledger(ledger_path: Path, ledger: list[dict]) -> None:
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ledger_path.with_suffix(".yaml.tmp")
+    tmp.write_text(yaml.dump(ledger, default_flow_style=False, sort_keys=False), encoding="utf-8")
+    tmp.replace(ledger_path)
+
+
+def triage(
+    artifact_id: str,
+    artifact_class: str,
+    disposition: str,
+    task_id: str | None = None,
+    authority_case: str | None = None,
+    producer: str | None = None,
+    canonical_location: str | None = None,
+    source_location: str | None = None,
+    ledger_path: Path = LEDGER_PATH,
+) -> None:
+    if artifact_class not in VALID_CLASSES:
+        print(
+            f"error: invalid class '{artifact_class}'. Must be one of: {', '.join(sorted(VALID_CLASSES))}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if disposition not in VALID_DISPOSITIONS:
+        print(
+            f"error: invalid disposition '{disposition}'. Must be one of: {', '.join(sorted(VALID_DISPOSITIONS))}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    ledger = read_ledger(ledger_path)
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ceiling = CLASS_TO_CEILING.get(artifact_class, "receipt")
+
+    existing = None
+    for entry in ledger:
+        if entry.get("artifact_id") == artifact_id:
+            existing = entry
+            break
+
+    if existing is not None:
+        existing["disposition"] = disposition
+        existing["disposition_at"] = now
+        # Merge new fields without overwriting existing non-None values
+        updates = {
+            "class": artifact_class,
+            "authority_ceiling": ceiling,
+        }
+        if task_id is not None:
+            updates["task_id"] = task_id
+        if authority_case is not None:
+            updates["authority_case"] = authority_case
+        if producer is not None:
+            updates["producer"] = producer
+        if canonical_location is not None:
+            updates["canonical_location"] = canonical_location
+        if source_location is not None:
+            updates["source_location"] = source_location
+        for key, val in updates.items():
+            if existing.get(key) is None:
+                existing[key] = val
+        print(f"updated '{artifact_id}' → disposition={disposition}")
+    else:
+        entry = {
+            "artifact_id": artifact_id,
+            "class": artifact_class,
+            "authority_ceiling": ceiling,
+            "disposition": disposition,
+            "disposition_at": now,
+            "producer": producer,
+            "task_id": task_id,
+            "authority_case": authority_case,
+            "canonical_location": canonical_location,
+            "debt": None,
+        }
+        if source_location is not None:
+            entry["source_location"] = source_location
+        ledger.append(entry)
+        print(f"registered '{artifact_id}' (class={artifact_class}, disposition={disposition})")
+
+    write_ledger(ledger_path, ledger)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="document-pipeline-triage",
+        description="Register or update artifact disposition in the document pipeline ledger.",
+    )
+    parser.add_argument("artifact_id", help="Unique artifact identifier")
+    parser.add_argument(
+        "--class",
+        dest="artifact_class",
+        required=True,
+        choices=sorted(VALID_CLASSES),
+        help="Artifact class",
+    )
+    parser.add_argument(
+        "--disposition",
+        required=True,
+        choices=sorted(VALID_DISPOSITIONS),
+        help="Disposition state",
+    )
+    parser.add_argument("--task-id", help="Associated cc-task ID")
+    parser.add_argument("--authority-case", help="Authority case ID")
+    parser.add_argument("--producer", help="Producing session role")
+    parser.add_argument("--canonical-location", help="Canonical storage path")
+    parser.add_argument("--source-location", help="Source location path")
+
+    args = parser.parse_args(argv)
+    triage(
+        artifact_id=args.artifact_id,
+        artifact_class=args.artifact_class,
+        disposition=args.disposition,
+        task_id=args.task_id,
+        authority_case=args.authority_case,
+        producer=args.producer,
+        canonical_location=args.canonical_location,
+        source_location=args.source_location,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

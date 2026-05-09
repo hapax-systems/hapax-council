@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: numark-scratch-2-channel-dj-mixer-with-serato-pro-and-innofa
+identity:
+  manufacturer: Numark
+  model: Numark Scratch 2-Channel DJ Mixer with Serato Pro and Innofader Crossfader
+  category: mixer
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-05-08'
+  purchased_price_usd: 499.0
+capabilities:
+- mixing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

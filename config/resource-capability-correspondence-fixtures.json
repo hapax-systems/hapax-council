@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "resource-capability-expected-correspondence-dry-run-20260509",
+  "consumer_permission_after": "private_correspondence_dry_run_tests_only",
+  "dry_run_packets": [
+    {
+      "schema_version": 1,
+      "packet_id": "correspondence-dry-run:fixture",
+      "evaluated_at": "2026-05-09T00:22:12Z",
+      "authority_source": "isap:resource-capability-expected-correspondence-dry-run-20260509",
+      "generated_from": [
+        "shared/resource_capability.py",
+        "config/resource-capability-fixtures.json"
+      ],
+      "source_fixture_refs": ["config/resource-capability-fixtures.json"],
+      "privacy_scope": "private",
+      "consumer_permission_after": "private_correspondence_dry_run_tests_only",
+      "classifications": [
+        {
+          "classification_id": "correspondence-classification:provider-notice-report-only",
+          "envelope_ref": "expected-correspondence:fixture-report-only",
+          "candidate_ref": "sha256:message-fixture",
+          "email_autonomy_event_ref": "email-autonomy:fixture-report-only",
+          "source_account": "account:gmail-hapax-fixture",
+          "original_recipient_alias": "alias:hapax-public",
+          "label": "resource-expected",
+          "expected_class": "provider_notice",
+          "authentication_state": "verified",
+          "confidence": 0.91,
+          "reply_tier": "REPORT_ONLY",
+          "handling_decision": "no_response",
+          "dry_run_decision": "report_only",
+          "commercial_class": "mixed",
+          "disclosure_required": true,
+          "suppression_checked": true,
+          "claims_checked": true,
+          "rate_limit_checked": true,
+          "mail_loop_policy_checked": true,
+          "body_quote_allowed": false,
+          "evidence_refs": [
+            "evidence:fixture:mail-metadata-hash",
+            "expected-correspondence:fixture-report-only",
+            "email-autonomy:fixture-report-only"
+          ]
+        }
+      ],
+      "response_artifacts": [
+        {
+          "artifact_id": "correspondence-artifact:provider-notice-report-only",
+          "artifact_kind": "report_only_record",
+          "from_classification_id": "correspondence-classification:provider-notice-report-only",
+          "envelope_ref": "expected-correspondence:fixture-report-only",
+          "message_ref": "sha256:message-fixture",
+          "template_id": null,
+          "response_body": null,
+          "disclosure_text": "automated Hapax operations dry-run record; no live message is created",
+          "auto_submitted_policy": "not_applicable_no_send",
+          "list_reply_policy": "no_send",
+          "body_quote_included": false,
+          "claims_checked": true,
+          "suppression_checked": true,
+          "rate_limit_checked": true,
+          "send_allowed": false,
+          "draft_create_allowed": false,
+          "operator_review_required": false,
+          "fail_closed_reason": "Envelope reply tier is REPORT_ONLY",
+          "evidence_refs": [
+            "correspondence-classification:provider-notice-report-only",
+            "expected-correspondence:fixture-report-only"
+          ]
+        }
+      ],
+      "evidence_refs": [
+        "config/resource-capability-fixtures.json",
+        "isap:resource-capability-expected-correspondence-dry-run-20260509"
+      ]
+    }
+  ]
+}

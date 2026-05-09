@@ -65,6 +65,8 @@ _HOMAGE_CONSENT_SAFE_FLAG = Path("/dev/shm/hapax-compositor/consent-safe-active.
 # operator_visible / ambient_priority). Read-only for this module.
 _CAMERA_CLASSIFICATIONS = Path("/dev/shm/hapax-compositor/camera-classifications.json")
 
+# Companion fleet — watch + phone state files on filesystem-as-bus
+_WATCH_STATE_DIR = Path(os.path.expanduser("~/hapax-state/watch"))
 
 # ── Sub-fields ────────────────────────────────────────────────────────────
 
@@ -259,6 +261,46 @@ class HomageField(BaseModel):
     consent_safe_active: bool = False
 
 
+class OperatorBiometricField(BaseModel):
+    """Biometric signals from companion devices (watch, phone health summaries)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    heart_rate_bpm: float | None = None
+    heart_rate_confidence: str | None = None
+    hrv_rmssd_ms: float | None = None
+    skin_temp_c: float | None = None
+    eda_event: bool | None = None
+    respiration_rate: float | None = None
+    spo2_mean: float | None = None
+    sleep_duration_min: int | None = None
+    resting_hr: float | None = None
+
+
+class OperatorMobilityField(BaseModel):
+    """Mobility and activity signals from companion devices (phone context, health summaries)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    activity_type: str | None = None
+    activity_confidence: float | None = None
+    steps: int | None = None
+    active_minutes: int | None = None
+
+
+class CompanionFleetField(BaseModel):
+    """Companion device connectivity status."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    watch_connected: bool = False
+    watch_last_seen_ago_s: float | None = None
+    watch_battery_pct: int | None = None
+    phone_connected: bool = False
+    phone_last_seen_ago_s: float | None = None
+    phone_battery_pct: int | None = None
+
+
 class PerceptualField(BaseModel):
     """Unified structured perceptual input for the director."""
 
@@ -283,6 +325,9 @@ class PerceptualField(BaseModel):
     # and high-ambient-priority cameras for ambient cuts. Empty dict when
     # the compositor hasn't published yet.
     camera_classifications: dict[str, dict] = Field(default_factory=dict)
+    operator_biometric: OperatorBiometricField = Field(default_factory=OperatorBiometricField)
+    operator_mobility: OperatorMobilityField = Field(default_factory=OperatorMobilityField)
+    companion_fleet: CompanionFleetField = Field(default_factory=CompanionFleetField)
 
     @property
     def vinyl_playing(self) -> bool:
@@ -431,6 +476,72 @@ def _read_homage() -> HomageField:
         active_artefact_form=form,
         voice_register=register,
         consent_safe_active=consent_safe_active,
+    )
+
+
+def _read_operator_biometric() -> OperatorBiometricField:
+    """Aggregate biometric signals from watch state files and phone health summary."""
+    hr_data = _safe_load_json(_WATCH_STATE_DIR / "heartrate.json") or {}
+    hrv_data = _safe_load_json(_WATCH_STATE_DIR / "hrv.json") or {}
+    skin_data = _safe_load_json(_WATCH_STATE_DIR / "skin_temp.json") or {}
+    eda_data = _safe_load_json(_WATCH_STATE_DIR / "eda.json") or {}
+    resp_data = _safe_load_json(_WATCH_STATE_DIR / "respiration.json") or {}
+    summary = _safe_load_json(_WATCH_STATE_DIR / "phone_health_summary.json") or {}
+
+    hr_current = hr_data.get("current") or {}
+    hrv_current = hrv_data.get("current") or {}
+    skin_current = skin_data.get("current") or {}
+    eda_current = eda_data.get("current") or {}
+    resp_current = resp_data.get("current") or {}
+
+    return OperatorBiometricField(
+        heart_rate_bpm=hr_current.get("bpm"),
+        heart_rate_confidence=hr_current.get("confidence"),
+        hrv_rmssd_ms=hrv_current.get("rmssd_ms"),
+        skin_temp_c=skin_current.get("temp_c"),
+        eda_event=eda_current.get("eda_event"),
+        respiration_rate=resp_current.get("breaths_per_min"),
+        spo2_mean=summary.get("spo2_mean"),
+        sleep_duration_min=summary.get("sleep_duration_min"),
+        resting_hr=summary.get("resting_hr"),
+    )
+
+
+def _read_operator_mobility() -> OperatorMobilityField:
+    """Aggregate mobility signals from phone context and health summary."""
+    context = _safe_load_json(_WATCH_STATE_DIR / "phone_context.json") or {}
+    summary = _safe_load_json(_WATCH_STATE_DIR / "phone_health_summary.json") or {}
+    activity = _safe_load_json(_WATCH_STATE_DIR / "activity.json") or {}
+
+    activity_type = context.get("activity_type") or activity.get("state")
+    confidence = context.get("activity_confidence")
+
+    return OperatorMobilityField(
+        activity_type=activity_type,
+        activity_confidence=confidence,
+        steps=summary.get("steps"),
+        active_minutes=summary.get("active_minutes"),
+    )
+
+
+def _read_companion_fleet() -> CompanionFleetField:
+    """Read companion device connectivity status."""
+    now = time.time()
+    watch_conn = _safe_load_json(_WATCH_STATE_DIR / "connection.json") or {}
+    phone_conn = _safe_load_json(_WATCH_STATE_DIR / "phone_connection.json") or {}
+
+    watch_epoch = watch_conn.get("last_seen_epoch", 0)
+    watch_age = now - watch_epoch if watch_epoch else None
+    phone_epoch = phone_conn.get("last_seen_epoch", 0)
+    phone_age = now - phone_epoch if phone_epoch else None
+
+    return CompanionFleetField(
+        watch_connected=watch_age is not None and watch_age < 300,
+        watch_last_seen_ago_s=watch_age,
+        watch_battery_pct=watch_conn.get("battery_pct"),
+        phone_connected=phone_age is not None and phone_age < 300,
+        phone_last_seen_ago_s=phone_age,
+        phone_battery_pct=phone_conn.get("battery_pct"),
     )
 
 
@@ -697,6 +808,11 @@ def build_perceptual_field(
     if not isinstance(camera_classifications, dict):
         camera_classifications = {}
 
+    # ── Companion fleet (biometric + mobility + connectivity) ─────────
+    operator_biometric = _read_operator_biometric()
+    operator_mobility = _read_operator_mobility()
+    companion_fleet = _read_companion_fleet()
+
     return PerceptualField(
         audio=audio,
         visual=visual,
@@ -710,6 +826,9 @@ def build_perceptual_field(
         tendency=tendency,
         homage=homage,
         camera_classifications=camera_classifications,
+        operator_biometric=operator_biometric,
+        operator_mobility=operator_mobility,
+        companion_fleet=companion_fleet,
     )
 
 

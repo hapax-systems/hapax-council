@@ -1,0 +1,73 @@
+schema_version: 1
+device_id: evil-pet
+
+identity:
+  manufacturer: Endorphin.es
+  model: Evil Pet
+  category: effects_pedal
+  subcategories: [tube_saturation, effects]
+  form_factor: desktop
+  serial_number: null
+  firmware_version: null
+  firmware_update_method: sd_card
+  firmware_linux_risk: low
+  year_released: 2025
+  discontinued: false
+
+acquisition:
+  status: owned
+  purchased_date: "2026-02-03"
+  purchased_price_usd: 859.00
+  purchased_from: reverb
+  purchased_condition: new
+  source_synced_at: "2026-05-09T12:00:00Z"
+
+specifications:
+  audio:
+    inputs:
+      - id: input-lr
+        type: stereo
+        connector: 1/4-TRS
+    outputs:
+      - id: output-lr
+        type: stereo
+        connector: 1/4-TRS
+    sample_rates: [48000]
+    bit_depth: 24
+  midi: {}
+  usb:
+    class: none
+    speed: null
+    bus_power: false
+  power:
+    source: dc_barrel
+    voltage_v: 12
+    current_ma: 1000
+    barrel_spec: 5.5x2.1mm center-positive
+
+capabilities:
+  - tube_saturation
+  - effects_processing
+  - audio_input_processing
+  - filtering
+
+placement:
+  zone: main-desk
+  surface: desk-left
+  position_m: [1.0, 0.3, 0.0]
+
+connections:
+  - target: zoom-l12
+    type: audio
+    direction: receive
+    via: aux-b-analog
+    port: evil-pet-input
+  - target: zoom-l12
+    type: audio
+    direction: send
+    via: analog-stereo-return
+    port: ch9-10
+
+freshness:
+  last_verified_at: "2026-05-09T12:00:00Z"
+  specs_provenance: manual-extraction

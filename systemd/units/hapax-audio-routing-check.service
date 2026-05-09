@@ -4,7 +4,7 @@ After=pipewire.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/projects/hapax-council/scripts/audio-routing-check.sh
+ExecStart=%h/.local/bin/hapax-audio-routing-check
 StandardOutput=journal
 StandardError=journal
 # On failure, log prominently but don't crash anything

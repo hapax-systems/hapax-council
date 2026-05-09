@@ -291,15 +291,15 @@ _HANDLERS: dict[str, object] = {
 }
 
 
-def _update_connection(payload: SensorPayload) -> None:
+def _update_connection(device_id: str, battery_pct: int | None = None) -> None:
     """Update connection file on every POST. Phone writes phone_connection.json."""
-    filename = "phone_connection.json" if payload.device_id == "pixel10" else "connection.json"
+    filename = "phone_connection.json" if device_id == "pixel10" else "connection.json"
     _atomic_write(
         _get_watch_state_dir() / filename,
         {
             "last_seen_epoch": time.time(),
-            "device_id": payload.device_id,
-            "battery_pct": payload.battery_pct,
+            "device_id": device_id,
+            "battery_pct": battery_pct,
         },
     )
 
@@ -324,7 +324,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=403, detail="Unknown device")
         now = time.time()
         source = DEVICE_NAMES.get(payload.device_id, payload.device_id)
-        _update_connection(payload)
+        _update_connection(payload.device_id, payload.battery_pct)
         for reading in payload.readings:
             handler = _HANDLERS.get(reading.type)
             if handler:
@@ -365,6 +365,7 @@ def create_app() -> FastAPI:
     async def phone_health_summary(payload: HealthSummaryPayload) -> dict[str, str]:
         if payload.device_id not in ALLOWED_DEVICE_IDS:
             raise HTTPException(status_code=403, detail="Unknown device")
+        _update_connection(payload.device_id)
         # Write phone_health_summary.json atomically
         summary_data = payload.model_dump()
         summary_data["source"] = DEVICE_NAMES.get(payload.device_id, payload.device_id)
@@ -428,6 +429,7 @@ def create_app() -> FastAPI:
         """Receive coarse context from phone (activity, screen, ringer)."""
         if payload.device_id not in ALLOWED_DEVICE_IDS:
             raise HTTPException(status_code=403, detail="Unknown device")
+        _update_connection(payload.device_id, payload.battery_pct)
         _atomic_write(
             _get_watch_state_dir() / "phone_context.json",
             {

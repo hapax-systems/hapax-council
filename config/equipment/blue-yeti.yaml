@@ -1,0 +1,59 @@
+schema_version: 1
+device_id: blue-yeti
+
+identity:
+  manufacturer: Blue Microphones
+  model: Yeti Stereo Microphone
+  category: microphone
+  subcategories: [usb_microphone, condenser]
+  form_factor: desktop_stand
+  serial_number: null
+  firmware_version: null
+  firmware_update_method: none
+  firmware_linux_risk: na
+  year_released: 2009
+  discontinued: false
+
+acquisition:
+  status: owned
+  purchased_date: null
+  purchased_price_usd: null
+  purchased_from: null
+
+specifications:
+  audio:
+    inputs:
+      - id: capsule
+        type: multi_pattern
+        connector: internal
+    outputs:
+      - id: headphone
+        type: stereo
+        connector: 3.5mm-TRS
+  usb:
+    class: audio
+    speed: full_speed
+    bus_power: true
+    vid: null
+    pid: null
+  power:
+    source: usb
+    voltage_v: 5
+
+capabilities:
+  - room_audio_capture
+  - usb_audio_interface
+
+placement:
+  zone: main-desk
+  surface: desk-right
+  position_m: [1.5, 0.8, 0.0]
+
+connections:
+  - target: pc-ryzen
+    type: usb
+    direction: send
+
+freshness:
+  last_verified_at: "2026-05-09T12:00:00Z"
+  specs_provenance: operator-knowledge

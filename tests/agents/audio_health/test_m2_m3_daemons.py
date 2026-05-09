@@ -15,12 +15,14 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
+from agents.audio_health.classifier import classify, measure_pcm
 from agents.audio_health.m1_dimensions import compute_spectral_flatness
 from agents.audio_health.m2_lufs_s_daemon import (
     LufsBand,
     M2DaemonConfig,
     StageState,
     _emit_snapshot,
+    _probe_stage,
 )
 from agents.audio_health.m3_crest_flatness_daemon import (
     M3DaemonConfig,
@@ -34,6 +36,24 @@ from agents.audio_health.m3_crest_flatness_daemon import (
 from agents.audio_health.m3_crest_flatness_daemon import (
     _emit_snapshot as m3_emit_snapshot,
 )
+from agents.audio_health.m3_crest_flatness_daemon import (
+    _probe_stage as m3_probe_stage,
+)
+from agents.audio_health.probes import ProbeResult
+
+
+def _probe_result(stage: str, samples: np.ndarray) -> ProbeResult:
+    measurement = measure_pcm(samples)
+    return ProbeResult(
+        stage=stage,
+        classification=classify(measurement),
+        measurement=measurement,
+        samples_mono=samples,
+        captured_at=1000.0,
+        duration_s=samples.size / 48000,
+        error=None,
+    )
+
 
 # ── M2 Tests ────────────────────────────────────────────────────────────
 
@@ -123,6 +143,62 @@ class TestM2Emission:
             text = "\n".join(lines)
             assert "hapax_audio_health_lufs_s_value" in text
             assert "-20.00" in text
+
+
+class TestM2RawSampleContract:
+    """M2 consumes explicit ProbeResult samples and reports analyzer failures."""
+
+    def test_silent_input_uses_result_samples_without_dynamic_measurement_attr(self) -> None:
+        state = StageState()
+        cfg = M2DaemonConfig(
+            stages=("stage-a",),
+            bands={"stage-a": LufsBand(low=-23.0, high=-16.0)},
+            enable_ntfy=False,
+        )
+        result = _probe_result("stage-a", np.zeros(48000, dtype=np.int16))
+
+        with patch("agents.audio_health.m2_lufs_s_daemon.capture_and_measure", return_value=result):
+            _probe_stage("stage-a", state, cfg, now=1000.0)
+
+        assert not hasattr(result.measurement, "samples_mono")
+        assert result.samples_mono.size == 48000
+        assert state.last_error is None
+        assert state.last_lufs == pytest.approx(-120.0)
+        assert state.in_band is False
+
+    def test_tone_input_updates_lufs_without_samples_mono_attribute_error(self) -> None:
+        t = np.linspace(0, 1, 48000, endpoint=False)
+        tone = (0.25 * np.sin(2 * np.pi * 440 * t) * 32767).astype(np.int16)
+        state = StageState()
+        cfg = M2DaemonConfig(stages=("stage-a",), enable_ntfy=False)
+        result = _probe_result("stage-a", tone)
+
+        with patch("agents.audio_health.m2_lufs_s_daemon.capture_and_measure", return_value=result):
+            _probe_stage("stage-a", state, cfg, now=1000.0)
+
+        assert state.last_error is None
+        assert state.last_lufs > -120.0
+
+    def test_analyzer_exception_is_snapshot_health_evidence(self, tmp_path: Path) -> None:
+        state = StageState()
+        cfg = M2DaemonConfig(snapshot_path=tmp_path / "lufs-s.json", enable_ntfy=False)
+        result = _probe_result("stage-a", np.zeros(48000, dtype=np.int16))
+
+        with (
+            patch("agents.audio_health.m2_lufs_s_daemon.capture_and_measure", return_value=result),
+            patch(
+                "agents.audio_health.m2_lufs_s_daemon.compute_lufs_s",
+                side_effect=RuntimeError("lufs analyzer failed"),
+            ),
+        ):
+            _probe_stage("stage-a", state, cfg, now=1000.0)
+
+        assert state.analyzer_error_count == 1
+        assert state.last_error == "RuntimeError: lufs analyzer failed"
+        _emit_snapshot({"stage-a": state}, cfg, now=1000.0)
+        payload = json.loads(cfg.snapshot_path.read_text(encoding="utf-8"))
+        assert payload["stages"]["stage-a"]["analyzer_error"] == state.last_error
+        assert payload["stages"]["stage-a"]["analyzer_error_count"] == 1
 
 
 # ── M3 Tests ────────────────────────────────────────────────────────────
@@ -275,6 +351,73 @@ class TestM3Emission:
         assert data["stages"]["hapax-broadcast-master"]["crest"] == pytest.approx(8.5)
         assert data["stages"]["hapax-broadcast-master"]["zcr"] == pytest.approx(0.05)
         assert data["stages"]["hapax-broadcast-master"]["crest_drop_count"] == 1
+
+
+class TestM3RawSampleContract:
+    """M3 consumes explicit ProbeResult samples and reports analyzer failures."""
+
+    def test_tone_input_updates_crest_zcr_flatness_without_dynamic_measurement_attr(self) -> None:
+        t = np.linspace(0, 1, 48000, endpoint=False)
+        tone = (0.4 * np.sin(2 * np.pi * 60 * t) * 32767).astype(np.int16)
+        state = M3StageState()
+        cfg = M3DaemonConfig(stages=("stage-a",), enable_ntfy=False)
+        result = _probe_result("stage-a", tone)
+
+        with patch(
+            "agents.audio_health.m3_crest_flatness_daemon.capture_and_measure",
+            return_value=result,
+        ):
+            m3_probe_stage("stage-a", state, cfg, now=1000.0)
+
+        assert not hasattr(result.measurement, "samples_mono")
+        assert state.last_error is None
+        assert state.last_measurement is not None
+        assert state.last_measurement.crest == pytest.approx(math.sqrt(2), abs=0.1)
+        assert state.last_measurement.zcr < 0.01
+        assert state.last_measurement.spectral_flatness < 0.1
+
+    def test_white_noise_input_exercises_flatness_path(self) -> None:
+        rng = np.random.default_rng(42)
+        noise = np.clip(rng.standard_normal(48000) * 5000, -32768, 32767).astype(np.int16)
+        state = M3StageState()
+        cfg = M3DaemonConfig(stages=("stage-a",), enable_ntfy=False)
+        result = _probe_result("stage-a", noise)
+
+        with patch(
+            "agents.audio_health.m3_crest_flatness_daemon.capture_and_measure",
+            return_value=result,
+        ):
+            m3_probe_stage("stage-a", state, cfg, now=1000.0)
+
+        assert state.last_error is None
+        assert state.last_measurement is not None
+        assert state.last_measurement.crest > 2.0
+        assert state.last_measurement.zcr > 0.35
+        assert state.last_measurement.spectral_flatness > 0.5
+
+    def test_analyzer_exception_is_snapshot_health_evidence(self, tmp_path: Path) -> None:
+        state = M3StageState()
+        cfg = M3DaemonConfig(snapshot_path=tmp_path / "crest-flatness.json", enable_ntfy=False)
+        result = _probe_result("stage-a", np.zeros(48000, dtype=np.int16))
+
+        with (
+            patch(
+                "agents.audio_health.m3_crest_flatness_daemon.capture_and_measure",
+                return_value=result,
+            ),
+            patch(
+                "agents.audio_health.m3_crest_flatness_daemon.compute_spectral_flatness",
+                side_effect=RuntimeError("flatness analyzer failed"),
+            ),
+        ):
+            m3_probe_stage("stage-a", state, cfg, now=1000.0)
+
+        assert state.analyzer_error_count == 1
+        assert state.last_error == "RuntimeError: flatness analyzer failed"
+        m3_emit_snapshot({"stage-a": state}, cfg, now=1000.0)
+        payload = json.loads(cfg.snapshot_path.read_text(encoding="utf-8"))
+        assert payload["stages"]["stage-a"]["analyzer_error"] == state.last_error
+        assert payload["stages"]["stage-a"]["analyzer_error_count"] == 1
 
 
 class TestM3BreachDetection:

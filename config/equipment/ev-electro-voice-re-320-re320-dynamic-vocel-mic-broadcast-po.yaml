@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: ev-electro-voice-re-320-re320-dynamic-vocel-mic-broadcast-po
+identity:
+  manufacturer: EV
+  model: EV Electro-Voice RE-320 RE320 Dynamic Vocel Mic Broadcast/Podcast Microphone
+  category: microphone
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-08-21'
+  purchased_price_usd: 229.99
+capabilities:
+- room_audio_capture
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync
