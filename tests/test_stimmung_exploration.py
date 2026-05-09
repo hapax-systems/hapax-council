@@ -17,6 +17,14 @@ class TestExplorationDeficitSeeking:
         collector.update_engine(events_processed=10, actions_executed=5, errors=0, uptime_s=60)
         collector.update_perception(freshness_s=1.0, confidence=0.9)
         collector.update_langfuse(daily_cost=0.0, error_count=0, total_traces=10)
+        collector.update_audio_perception(
+            rms_dbfs=-25.0,
+            spectral_centroid_hz=1500.0,
+            low_high_ratio=1.0,
+            voice_ratio=0.33,
+            music_ratio=0.33,
+            env_ratio=0.34,
+        )
 
     def test_high_deficit_triggers_seeking(self):
         collector = StimmungCollector()
