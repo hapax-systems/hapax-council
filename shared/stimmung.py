@@ -455,6 +455,65 @@ class StimmungCollector:
             coherence = 0.5  # unknown = neutral
         self._record("physiological_coherence", coherence)
 
+    def update_audio_self_perception(
+        self,
+        *,
+        rms_dbfs: float = -60.0,
+        silence_ratio: float = 1.0,
+        witness_age_s: float = 0.0,
+        witness_error: str | None = None,
+        classification: str = "",
+    ) -> None:
+        """Update from broadcast egress audio self-perception.
+
+        Closes the audio self-perception loop: Hapax hears its own
+        broadcast output and feeds the measurement back into stimmung.
+
+        Routes through existing dimensions:
+        - health: audio chain liveness (witness fresh + non-silent)
+        - error_rate: audio faults (clipping, noise, witness errors)
+
+        Args:
+            rms_dbfs: RMS level in dBFS from egress loopback witness.
+            silence_ratio: Fraction of samples below silence floor (0-1).
+            witness_age_s: Seconds since last egress witness write.
+            witness_error: Error string from witness producer (None = OK).
+            classification: Signal classification at OBS-bound stage
+                (MUSIC_VOICE, TONE, NOISE, SILENT, CLIPPING, or empty).
+        """
+        # Audio health: 0.0 = healthy chain, 1.0 = dead/broken.
+        # Witness staleness (> 30s = stale, > 120s = dead)
+        if witness_error:
+            audio_health = 0.8
+        elif witness_age_s > 120:
+            audio_health = 1.0
+        elif witness_age_s > 30:
+            audio_health = 0.5
+        elif silence_ratio > 0.95:
+            audio_health = 0.6
+        elif silence_ratio > 0.8:
+            audio_health = 0.3
+        else:
+            audio_health = 0.0
+
+        self._record("health", audio_health)
+
+        # Audio error contribution: clipping/noise at OBS stage is a fault.
+        classification_upper = classification.upper()
+        if classification_upper == "CLIPPING":
+            audio_error = 0.9
+        elif classification_upper == "NOISE":
+            audio_error = 0.5
+        elif classification_upper == "SILENT" and silence_ratio > 0.95:
+            audio_error = 0.4
+        elif witness_error:
+            audio_error = 0.6
+        else:
+            audio_error = 0.0
+
+        if audio_error > 0:
+            self._record("error_rate", audio_error)
+
     def update_grounding_quality(self, gqi: float) -> None:
         """Update from voice grounding ledger.
 

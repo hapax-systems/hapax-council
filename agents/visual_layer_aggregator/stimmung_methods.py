@@ -77,6 +77,9 @@ def update_stimmung_sources(agg: VisualLayerAggregator) -> None:
         freshness_s=perception_age, confidence=float(confidence)
     )
 
+    # 5b. Audio self-perception — broadcast egress loopback + signal flow
+    _update_audio_self_perception(agg)
+
     # 6. Grounding quality from voice session
     try:
         from pathlib import Path
@@ -304,3 +307,56 @@ def write_temporal_bands(agg: VisualLayerAggregator) -> None:
         tmp.rename(_c.TEMPORAL_FILE)
     except Exception:
         log.debug("Failed to write temporal bands", exc_info=True)
+
+
+# ── Audio self-perception ──────────────────────────────────────────────────
+
+_EGRESS_LOOPBACK_PATH = Path("/dev/shm/hapax-broadcast/egress-loopback.json")
+_SIGNAL_FLOW_PATH = Path("/dev/shm/hapax-audio/signal-flow.json")
+_EGRESS_MAX_AGE_S = 60.0
+
+
+def _update_audio_self_perception(agg: VisualLayerAggregator) -> None:
+    """Read broadcast audio SHM and feed into stimmung collector."""
+    rms_dbfs = -60.0
+    silence_ratio = 1.0
+    witness_age_s = 999.0
+    witness_error: str | None = None
+    classification = ""
+
+    # Egress loopback witness
+    try:
+        if _EGRESS_LOOPBACK_PATH.exists():
+            data = json.loads(_EGRESS_LOOPBACK_PATH.read_text(encoding="utf-8"))
+            from datetime import UTC, datetime
+
+            checked_str = data.get("checked_at", "")
+            if checked_str:
+                checked = datetime.fromisoformat(checked_str)
+                witness_age_s = (datetime.now(UTC) - checked.astimezone(UTC)).total_seconds()
+            rms_dbfs = float(data.get("rms_dbfs", -60.0))
+            silence_ratio = float(data.get("silence_ratio", 1.0))
+            witness_error = data.get("error")
+    except (OSError, json.JSONDecodeError, ValueError):
+        log.debug("Audio self-perception: egress loopback read failed", exc_info=True)
+
+    # Signal flow classification at OBS-bound stage
+    try:
+        if _SIGNAL_FLOW_PATH.exists():
+            flow = json.loads(_SIGNAL_FLOW_PATH.read_text(encoding="utf-8"))
+            stages = flow.get("stages", {})
+            obs_stage = stages.get("hapax-obs-broadcast-remap") or stages.get(
+                "hapax-broadcast-normalized", {}
+            )
+            if isinstance(obs_stage, dict):
+                classification = str(obs_stage.get("classification", ""))
+    except (OSError, json.JSONDecodeError):
+        log.debug("Audio self-perception: signal flow read failed", exc_info=True)
+
+    agg._stimmung_collector.update_audio_self_perception(
+        rms_dbfs=rms_dbfs,
+        silence_ratio=silence_ratio,
+        witness_age_s=witness_age_s,
+        witness_error=witness_error,
+        classification=classification,
+    )
