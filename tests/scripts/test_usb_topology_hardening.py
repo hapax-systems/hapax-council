@@ -14,6 +14,9 @@ INSTALLER = REPO_ROOT / "scripts" / "install-usb-topology-hardening.sh"
 WATCHDOG = REPO_ROOT / "scripts" / "hapax-usb-bandwidth-watchdog"
 RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "usb-s4-l12-topology-hardening.md"
 S4_UDEV = REPO_ROOT / "config" / "udev" / "rules.d" / "90-hapax-s4-composite.rules"
+USB_NOAUTOSUSPEND_UDEV = (
+    REPO_ROOT / "config" / "udev" / "rules.d" / "50-hapax-usb-audio-video-noautosuspend.rules"
+)
 MIDI_ROUTE = REPO_ROOT / "systemd" / "units" / "midi-route.service"
 USB_POLICY = REPO_ROOT / "config" / "usb-topology-policy.json"
 USB_WITNESS_SERVICE = REPO_ROOT / "systemd" / "units" / "hapax-usb-topology-witness.service"
@@ -300,6 +303,31 @@ def test_s4_udev_policy_pins_desktop_probe_suppression() -> None:
     assert 'ENV{UDISKS_IGNORE}="1"' in text
     assert 'ENV{ID_MM_DEVICE_IGNORE}="1"' in text
     assert 'ENV{NM_UNMANAGED}="1"' in text
+
+
+def test_l12_udev_policy_runs_critical_guard_and_hotplug_recovery() -> None:
+    noautosuspend = USB_NOAUTOSUSPEND_UDEV.read_text(encoding="utf-8")
+    s4_policy = S4_UDEV.read_text(encoding="utf-8")
+
+    assert 'ATTR{idVendor}=="1686"' in noautosuspend
+    assert 'ATTR{idProduct}=="03d5"' in noautosuspend
+    assert 'ATTR{power/control}="on"' in noautosuspend
+    assert 'ATTR{power/autosuspend_delay_ms}="-1"' in noautosuspend
+    assert 'RUN+="/usr/local/bin/hapax-l12-critical-usb-guard"' in noautosuspend
+
+    assert 'ENV{SYSTEMD_USER_WANTS}+="hapax-usb-topology-witness.service"' in s4_policy
+    assert 'ENV{SYSTEMD_USER_WANTS}+="hapax-l12-hotplug-recover.service"' in s4_policy
+
+
+def test_usb_topology_installer_deploys_l12_guard_and_recovery() -> None:
+    text = INSTALLER.read_text(encoding="utf-8")
+
+    assert "/usr/local/bin/hapax-l12-critical-usb-guard" in text
+    assert "/etc/systemd/system/hapax-l12-critical-usb-guard.service" in text
+    assert "/etc/systemd/system/hapax-l12-critical-usb-guard.timer" in text
+    assert ".local/bin/hapax-l12-hotplug-recover" in text
+    assert ".config/systemd/user/hapax-l12-hotplug-recover.service" in text
+    assert "systemctl enable --now hapax-l12-critical-usb-guard.timer" in text
     assert "hapax-usb-topology-witness.service" in text
 
 
