@@ -2785,3 +2785,17 @@ coverage_gaps
 devices_on_stream
 mic_sensitivity
 which_cameras_see
+
+from shared.signal_topology import (  # noqa: F401, E402
+    all_signal_paths_from,
+    live_pipewire_graph,
+    signal_neighbors,
+    trace_path,
+    wiring_discrepancies,
+)
+
+all_signal_paths_from
+live_pipewire_graph
+signal_neighbors
+trace_path
+wiring_discrepancies
