@@ -30,7 +30,7 @@ def _make_repos(tmp_path: Path) -> tuple[Path, Path, str]:
     origin = tmp_path / "origin.git"
     seed = tmp_path / "seed"
     canonical = tmp_path / "canonical"
-    _git(tmp_path, "init", "--bare", str(origin))
+    _git(tmp_path, "init", "--bare", "-b", "main", str(origin))
 
     seed.mkdir()
     _git(seed, "init", "-b", "main")
