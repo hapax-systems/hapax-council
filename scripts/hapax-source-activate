@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# hapax-source-activate — make origin/main operationally visible.
+#
+# Maintains a clean detached activation worktree that follows origin/main,
+# runs commit-addressed post-merge deployment from that clean source root,
+# and writes receipts describing whether the latest source is active. It
+# never resets or checks out the operator's canonical worktree.
+
+set -euo pipefail
+
+SKIP_DEPLOY=0
+FORCE=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --skip-deploy) SKIP_DEPLOY=1; shift ;;
+        --force) FORCE=1; shift ;;
+        *) echo "hapax-source-activate: unknown arg: $1" >&2; exit 2 ;;
+    esac
+done
+
+CANONICAL_REPO="${HAPAX_SOURCE_ACTIVATE_CANONICAL:-$HOME/projects/hapax-council}"
+ACTIVE_WORKTREE="${HAPAX_SOURCE_ACTIVATE_WORKTREE:-$HOME/.cache/hapax/source-activation/worktree}"
+STATE_DIR="${HAPAX_SOURCE_ACTIVATE_STATE_DIR:-$HOME/.cache/hapax/source-activation}"
+CURRENT_JSON="$STATE_DIR/current.json"
+HISTORY_JSONL="$STATE_DIR/source-activation.jsonl"
+LAST_SUCCESS_SHA="$STATE_DIR/last-success-sha"
+
+mkdir -p "$STATE_DIR"
+
+canonical_branch="unknown"
+canonical_head="unknown"
+canonical_main="unknown"
+canonical_dirty_count=0
+canonical_status_hash=""
+origin_sha="unknown"
+active_head="unknown"
+
+canonical_snapshot() {
+    if [[ -d "$CANONICAL_REPO/.git" || -f "$CANONICAL_REPO/.git" ]]; then
+        canonical_branch="$(git -C "$CANONICAL_REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+        canonical_head="$(git -C "$CANONICAL_REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
+        canonical_main="$(git -C "$CANONICAL_REPO" rev-parse main 2>/dev/null || echo unknown)"
+        status_text="$(git -C "$CANONICAL_REPO" status --porcelain=v1 2>/dev/null || true)"
+        if [[ -n "$status_text" ]]; then
+            canonical_dirty_count="$(printf '%s\n' "$status_text" | sed '/^$/d' | wc -l | tr -d ' ')"
+            canonical_status_hash="$(printf '%s\n' "$status_text" | sha256sum | awk '{print $1}')"
+        else
+            canonical_dirty_count=0
+            canonical_status_hash="$(printf '' | sha256sum | awk '{print $1}')"
+        fi
+    fi
+}
+
+write_receipt() {
+    local status="$1"
+    local deploy_status="$2"
+    local exit_code="$3"
+    local message="$4"
+
+    python3 - "$CURRENT_JSON" "$HISTORY_JSONL" \
+        "$status" "$deploy_status" "$exit_code" "$message" \
+        "$origin_sha" "$active_head" "$CANONICAL_REPO" "$ACTIVE_WORKTREE" \
+        "$canonical_branch" "$canonical_head" "$canonical_main" \
+        "$canonical_dirty_count" "$canonical_status_hash" <<'PY'
+from __future__ import annotations
+
+import json
+import os
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+(
+    current_path,
+    history_path,
+    status,
+    deploy_status,
+    exit_code,
+    message,
+    origin_sha,
+    active_head,
+    canonical_repo,
+    active_worktree,
+    canonical_branch,
+    canonical_head,
+    canonical_main,
+    canonical_dirty_count,
+    canonical_status_hash,
+) = sys.argv[1:]
+
+record = {
+    "schema_version": 1,
+    "event": "source_activation",
+    "timestamp": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    "status": status,
+    "deploy_status": deploy_status,
+    "exit_code": int(exit_code),
+    "message": message,
+    "origin_main_sha": origin_sha,
+    "active_source_head": active_head,
+    "canonical": {
+        "path": canonical_repo,
+        "branch": canonical_branch,
+        "head": canonical_head,
+        "main": canonical_main,
+        "dirty_count": int(canonical_dirty_count),
+        "status_hash": canonical_status_hash,
+    },
+    "active_source_path": active_worktree,
+}
+
+current = Path(current_path).expanduser()
+history = Path(history_path).expanduser()
+current.parent.mkdir(parents=True, exist_ok=True)
+tmp = current.with_name(f"{current.name}.tmp")
+tmp.write_text(json.dumps(record, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+os.replace(tmp, current)
+with history.open("a", encoding="utf-8") as fh:
+    fh.write(json.dumps(record, sort_keys=True) + "\n")
+PY
+}
+
+canonical_snapshot
+
+if [[ ! -d "$CANONICAL_REPO/.git" && ! -f "$CANONICAL_REPO/.git" ]]; then
+    write_receipt "failed" "not_started" "2" "canonical repo missing"
+    echo "hapax-source-activate: canonical repo missing at $CANONICAL_REPO" >&2
+    exit 2
+fi
+
+git -C "$CANONICAL_REPO" fetch origin main --quiet
+origin_sha="$(git -C "$CANONICAL_REPO" rev-parse origin/main)"
+
+if [[ ! -e "$ACTIVE_WORKTREE/.git" ]]; then
+    if [[ -e "$ACTIVE_WORKTREE" ]] && [[ -n "$(find "$ACTIVE_WORKTREE" -mindepth 1 -maxdepth 1 2>/dev/null | head -n 1)" ]]; then
+        write_receipt "failed" "not_started" "2" "activation path exists but is not a git worktree"
+        echo "hapax-source-activate: activation path exists but is not a git worktree: $ACTIVE_WORKTREE" >&2
+        exit 2
+    fi
+    mkdir -p "$(dirname "$ACTIVE_WORKTREE")"
+    git -C "$CANONICAL_REPO" worktree prune 2>/dev/null || true
+    git -C "$CANONICAL_REPO" worktree add --detach "$ACTIVE_WORKTREE" "$origin_sha" --quiet
+else
+    git -C "$ACTIVE_WORKTREE" fetch origin main --quiet
+    git -C "$ACTIVE_WORKTREE" reset --hard "$origin_sha" --quiet
+fi
+
+active_head="$(git -C "$ACTIVE_WORKTREE" rev-parse HEAD)"
+if [[ "$active_head" != "$origin_sha" ]]; then
+    write_receipt "failed" "not_started" "2" "active source head does not match origin/main"
+    echo "hapax-source-activate: active source $active_head != origin/main $origin_sha" >&2
+    exit 2
+fi
+
+previous_success="$(cat "$LAST_SUCCESS_SHA" 2>/dev/null || true)"
+if [[ "$FORCE" != "1" && "$SKIP_DEPLOY" != "1" && "$previous_success" == "$origin_sha" ]]; then
+    write_receipt "no_op" "skipped_already_active" "0" "origin/main already activated"
+    echo "hapax-source-activate: origin/main already activated at ${origin_sha:0:8}"
+    exit 0
+fi
+
+if [[ "$SKIP_DEPLOY" == "1" ]]; then
+    write_receipt "completed_skip_deploy" "skipped_by_flag" "0" "activation worktree refreshed; deploy skipped by flag"
+    echo "hapax-source-activate: refreshed active source at ${origin_sha:0:8}; deploy skipped"
+    exit 0
+fi
+
+DEPLOY_SCRIPT="${HAPAX_SOURCE_ACTIVATE_DEPLOY_SCRIPT:-$ACTIVE_WORKTREE/scripts/hapax-post-merge-deploy}"
+if [[ ! -x "$DEPLOY_SCRIPT" ]]; then
+    write_receipt "failed" "not_started" "2" "deploy script missing or not executable"
+    echo "hapax-source-activate: deploy script missing or not executable: $DEPLOY_SCRIPT" >&2
+    exit 2
+fi
+
+set +e
+(
+    cd "$ACTIVE_WORKTREE"
+    REPO="$ACTIVE_WORKTREE" "$DEPLOY_SCRIPT" "$origin_sha"
+)
+deploy_rc=$?
+set -e
+
+if [[ "$deploy_rc" -ne 0 ]]; then
+    write_receipt "failed" "failed" "$deploy_rc" "post-merge deploy failed"
+    echo "hapax-source-activate: post-merge deploy failed for ${origin_sha:0:8}" >&2
+    exit "$deploy_rc"
+fi
+
+printf '%s\n' "$origin_sha" > "$LAST_SUCCESS_SHA"
+write_receipt "completed" "success" "0" "origin/main activated"
+echo "hapax-source-activate: activated origin/main at ${origin_sha:0:8}"
