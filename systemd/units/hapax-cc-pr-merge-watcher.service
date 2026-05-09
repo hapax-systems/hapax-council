@@ -5,10 +5,10 @@ After=hapax-secrets.service
 
 [Service]
 Type=oneshot
-ExecStart=%h/projects/hapax-council/.venv/bin/python %h/projects/hapax-council/scripts/cc-pr-merge-watcher.py
-WorkingDirectory=%h/projects/hapax-council
+ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run python scripts/cc-pr-merge-watcher.py --repo-root %h/.cache/hapax/source-activation/worktree
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
-Environment=PYTHONPATH=%h/projects/hapax-council
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 # Killswitch: set HAPAX_CC_HYGIENE_OFF=1 in the environment to skip both
 # the H8 PostToolUse hook and this watcher.
 

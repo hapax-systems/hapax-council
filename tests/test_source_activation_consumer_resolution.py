@@ -133,3 +133,22 @@ class TestSymlinkSweepInSourceActivate:
         text = (SCRIPTS_DIR / "hapax-source-activate").read_text()
         assert "sweep_count" in text, "hapax-source-activate should have a symlink sweep step"
         assert "scripts/hapax-" in text
+
+    def test_cc_task_tools_are_allowlisted_for_activation_sweep(self) -> None:
+        text = (SCRIPTS_DIR / "hapax-source-activate").read_text()
+        assert "cc-claim" in text
+        assert "cc-close" in text
+
+
+class TestCcPrMergeWatcherSourceResolution:
+    def test_pr_merge_watcher_unit_uses_activation_worktree(self) -> None:
+        text = (UNITS_DIR / "hapax-cc-pr-merge-watcher.service").read_text()
+        execution_lines = [
+            line
+            for line in text.splitlines()
+            if line.startswith(("ExecStart=", "WorkingDirectory=", "Environment=PYTHONPATH="))
+        ]
+        assert execution_lines
+        assert all("%h/projects/hapax-council" not in line for line in execution_lines)
+        assert any("%h/.cache/hapax/source-activation/worktree" in line for line in execution_lines)
+        assert any("scripts/cc-pr-merge-watcher.py" in line for line in execution_lines)

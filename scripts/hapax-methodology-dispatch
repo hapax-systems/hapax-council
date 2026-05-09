@@ -180,6 +180,32 @@ def check_worktree_claim_guard(worktree: Path) -> tuple[bool, str]:
     return True, "worktree cc-claim authority/spec guard present"
 
 
+def check_worktree_close_guard(worktree: Path) -> tuple[bool, str]:
+    script = worktree / "scripts" / "cc-close"
+    if not script.is_file():
+        return False, f"missing cc-close at {script}"
+    text = script.read_text(encoding="utf-8", errors="replace")
+    required = [
+        "frontmatter_task_id",
+        "closed_duplicate",
+        "closed task duplicate has task_id",
+    ]
+    missing = [needle for needle in required if needle not in text]
+    if missing:
+        return False, f"stale cc-close in {worktree}: missing {', '.join(missing)}"
+    return True, "worktree cc-close exact-duplicate guard present"
+
+
+def check_worktree_cc_task_tool_guards(worktree: Path) -> tuple[bool, str]:
+    claim_ok, claim_reason = check_worktree_claim_guard(worktree)
+    if not claim_ok:
+        return False, claim_reason
+    close_ok, close_reason = check_worktree_close_guard(worktree)
+    if not close_ok:
+        return False, close_reason
+    return True, f"{claim_reason}; {close_reason}"
+
+
 def validate_task(
     *,
     task_id: str,
@@ -250,7 +276,7 @@ def validate_task(
             )
 
     if strict_worktree:
-        ok, reason = check_worktree_claim_guard(lane_worktree(lane, platform))
+        ok, reason = check_worktree_cc_task_tool_guards(lane_worktree(lane, platform))
         if not ok:
             return Validation(False, reason, task, parent_spec_path, exempt)
 
@@ -265,6 +291,7 @@ def build_prompt(task_id: str, lane: str, platform: str, validation: Validation)
     title = fields.get("title")
     worktree = lane_worktree(lane, platform)
     claim_cmd = worktree / "scripts" / "cc-claim"
+    close_cmd = worktree / "scripts" / "cc-close"
     return "\n".join(
         [
             "SDLC GOVERNED DISPATCH.",
@@ -282,7 +309,8 @@ def build_prompt(task_id: str, lane: str, platform: str, validation: Validation)
             "3. Use only the authority and mutation scope in the parent spec.",
             "4. Do not create or claim another task from the pool.",
             "5. Do not select work from the pool. Do not continue after this task without a new dispatch.",
-            "6. If blocked, report the blocker and idle.",
+            f"6. Close this task only with {close_cmd}; do not use bare cc-close or canonical cc-close.",
+            "7. If blocked, report the blocker and idle.",
         ]
     )
 

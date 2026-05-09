@@ -48,6 +48,8 @@ def _make_repos(tmp_path: Path) -> tuple[Path, Path, str]:
         ),
         executable=True,
     )
+    _write(seed / "scripts" / "cc-claim", "#!/usr/bin/env bash\nexit 0\n", executable=True)
+    _write(seed / "scripts" / "cc-close", "#!/usr/bin/env bash\nexit 0\n", executable=True)
     _git(seed, "add", ".")
     _git(seed, "commit", "-m", "base")
     _git(seed, "remote", "add", "origin", str(origin))
@@ -141,3 +143,15 @@ def test_failed_deploy_writes_failed_receipt_without_last_success(tmp_path: Path
     assert receipt["deploy_status"] == "failed"
     assert receipt["exit_code"] == 7
     assert not (tmp_path / "state" / "last-success-sha").exists()
+
+
+def test_activation_sweeps_cc_task_tools_into_local_bin(tmp_path: Path) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    result = _run_activate(tmp_path, canonical)
+
+    assert result.returncode == 0, result.stderr
+    local_bin = tmp_path / "home" / ".local" / "bin"
+    active_source = tmp_path / "active-source"
+    assert (local_bin / "cc-claim").resolve() == active_source / "scripts" / "cc-claim"
+    assert (local_bin / "cc-close").resolve() == active_source / "scripts" / "cc-close"

@@ -168,15 +168,25 @@ fi
 LOCAL_BIN="${HAPAX_SOURCE_ACTIVATE_LOCAL_BIN:-$HOME/.local/bin}"
 mkdir -p "$LOCAL_BIN"
 sweep_count=0
-for script in "$ACTIVE_WORKTREE"/scripts/hapax-*; do
-    [[ -f "$script" ]] || continue
+
+link_active_script() {
+    local script="$1"
+    [[ -f "$script" ]] || return 0
     [[ -x "$script" ]] || chmod +x "$script"
+    local base target
     base="$(basename "$script")"
     target="$(readlink "$LOCAL_BIN/$base" 2>/dev/null || true)"
     if [[ "$target" != "$script" ]]; then
         ln -sf "$script" "$LOCAL_BIN/$base"
         sweep_count=$((sweep_count + 1))
     fi
+}
+
+for script in "$ACTIVE_WORKTREE"/scripts/hapax-*; do
+    link_active_script "$script"
+done
+for script in cc-claim cc-close; do
+    link_active_script "$ACTIVE_WORKTREE/scripts/$script"
 done
 if [[ "$sweep_count" -gt 0 ]]; then
     echo "hapax-source-activate: swept $sweep_count symlinks to activation worktree"
