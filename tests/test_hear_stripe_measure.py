@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+soundfile = pytest.importorskip("soundfile")
+
 SCRIPT_PATH = Path(__file__).parent.parent / "scripts" / "hear-stripe-measure"
 
 
@@ -27,9 +29,7 @@ hsm = _load_module()
 
 
 def _write_wav(path: Path, data: np.ndarray, sr: int = 48000) -> None:
-    import soundfile as sf
-
-    sf.write(str(path), data, sr, format="WAV", subtype="FLOAT")
+    soundfile.write(str(path), data, sr, format="WAV", subtype="FLOAT")
 
 
 class TestSpectralAnalysis:
