@@ -1,0 +1,52 @@
+schema_version: 1
+device_id: brio-operator
+
+identity:
+  manufacturer: Logitech
+  model: BRIO 4K
+  category: camera
+  subcategories: [webcam, video_capture]
+  form_factor: clip_mount
+  serial_number: "9726C031"
+  firmware_version: null
+  firmware_update_method: none
+  firmware_linux_risk: na
+  year_released: 2017
+  discontinued: false
+
+acquisition:
+  status: owned
+  purchased_date: null
+  purchased_price_usd: null
+  purchased_from: null
+
+specifications:
+  audio:
+    inputs:
+      - id: built-in-mic
+        type: stereo
+        connector: usb
+  usb:
+    class: video
+    speed: high_speed
+    bus_power: true
+    vid: "0x046d"
+    pid: null
+
+capabilities:
+  - video_capture
+
+placement:
+  zone: main-desk
+  surface: monitor-top
+  position_m: [0.9, 1.0, 1.2]
+  orientation_deg: 180
+
+connections:
+  - target: pc-ryzen
+    type: usb
+    direction: send
+
+freshness:
+  last_verified_at: "2026-05-09T12:00:00Z"
+  specs_provenance: cameraspec-existing

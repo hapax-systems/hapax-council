@@ -1,0 +1,76 @@
+schema_version: 1
+device_id: m8-tracker
+
+identity:
+  manufacturer: Dirtywave
+  model: M8 Tracker Model:02
+  category: groovebox
+  subcategories: [tracker, sampler, synthesizer, sequencer]
+  form_factor: handheld
+  serial_number: "16558390"
+  firmware_version: null
+  firmware_update_method: usb_mass_storage
+  firmware_linux_risk: low
+  year_released: 2024
+  discontinued: false
+
+acquisition:
+  status: owned
+  purchased_date: "2025-06-30"
+  purchased_price_usd: 850.00
+  purchased_from: reverb
+  purchased_condition: new
+  source_synced_at: "2026-05-09T12:00:00Z"
+
+specifications:
+  audio:
+    outputs:
+      - id: headphone
+        type: stereo
+        connector: 3.5mm-TRS
+    sample_rates: [44100]
+    bit_depth: 16
+  midi:
+    transport: [usb]
+    channels_tx: [1,2,3,4,5,6,7,8]
+    channels_rx: [1,2,3,4,5,6,7,8]
+    clock_tx: true
+    clock_rx: true
+    program_change: true
+    alsa_card_name_pattern: "M8"
+  usb:
+    class: composite
+    speed: full_speed
+    bus_power: true
+    vid: "0x16c0"
+    pid: "0x048a"
+  power:
+    source: [usb, battery]
+    voltage_v: 5
+
+capabilities:
+  - sample_playback
+  - fm_synthesis
+  - wavetable_synthesis
+  - subtractive_synthesis
+  - step_sequencing
+  - midi_sequencing
+  - midi_clock_source
+  - midi_clock_sink
+  - usb_audio_interface
+  - effects_processing
+  - live_performance
+
+placement:
+  zone: main-desk
+  surface: desk-right
+  position_m: [1.4, 0.5, 0.0]
+
+connections:
+  - target: pc-ryzen
+    type: usb
+    direction: bidirectional
+
+freshness:
+  last_verified_at: "2026-05-09T12:00:00Z"
+  specs_provenance: manual-extraction
