@@ -40,6 +40,125 @@ NON_MUTATING_TOKENS = {
     "validation-demo",
 }
 NULLISH = {"", "null", "none", "~", "[]"}
+CAPACITY_INVARIANT = (
+    "Default to maximum appropriate quality-preserving utilization. No quality "
+    "degradation is permitted. Capacity may be reduced only by task-platform "
+    "fit, quota state, resource contention, or explicit operator hold."
+)
+
+
+@dataclass(frozen=True)
+class PlatformPath:
+    platform: str
+    mode: str
+    profile: str
+    launcher: str
+    summary: str
+    mutable: bool
+    notes: str
+
+
+PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
+    ("claude", "headless", "full"): PlatformPath(
+        "claude",
+        "headless",
+        "full",
+        "~/.local/bin/hapax-claude-headless <lane> <governed-prompt>",
+        "Claude Code headless stream-json lane",
+        True,
+        "Default frontier Claude path; requires governed headless enable latch and a validated task.",
+    ),
+    ("claude", "headless", "opus"): PlatformPath(
+        "claude",
+        "headless",
+        "opus",
+        "HAPAX_CLAUDE_MODEL=opus ~/.local/bin/hapax-claude-headless <lane> <governed-prompt>",
+        "Claude Opus headless stream-json lane",
+        True,
+        "Use when architecture, governance, theory, or high-ambiguity work requires the strongest Claude profile.",
+    ),
+    ("claude", "headless", "sonnet"): PlatformPath(
+        "claude",
+        "headless",
+        "sonnet",
+        "HAPAX_CLAUDE_MODEL=sonnet ~/.local/bin/hapax-claude-headless <lane> <governed-prompt>",
+        "Claude Sonnet headless stream-json lane",
+        True,
+        "Use only when Sonnet is quality-equivalent for the bounded task or Opus capacity is blocked.",
+    ),
+    ("codex", "headless", "full"): PlatformPath(
+        "codex",
+        "headless",
+        "full",
+        "scripts/hapax-codex --session <lane> --terminal tmux --task <task>",
+        "Codex full-capability tmux lane with methodology bootstrap",
+        True,
+        "Default Codex SOP: GPT-5.5 xhigh from the Codex launcher.",
+    ),
+    ("codex", "headless", "spark"): PlatformPath(
+        "codex",
+        "headless",
+        "spark",
+        'scripts/hapax-codex --session <lane> --terminal tmux --task <task> -- -c model="gpt-5.3-codex-spark"',
+        "Codex Spark quota-wall tmux lane with methodology bootstrap",
+        True,
+        "Use only when full Codex quota is blocked and Spark is quality-equivalent for the bounded task.",
+    ),
+    ("vibe", "headless", "full"): PlatformPath(
+        "vibe",
+        "headless",
+        "full",
+        "~/.local/bin/hapax-vibe --session <lane> --terminal tmux --task <task> --prompt <governed-prompt>",
+        "Mistral Vibe headless tmux one-shot lane",
+        True,
+        "JR+ bounded worker path; task fit must exclude governance-critical or off-limits work.",
+    ),
+    ("gemini", "headless", "full"): PlatformPath(
+        "gemini",
+        "headless",
+        "full",
+        "scripts/hapax-gemini --role <lane> --terminal tmux -- -p <governed-prompt>",
+        "Gemini Pro plan-mode read-only headless sidecar",
+        False,
+        "Read-only/plan-mode only; mutation tasks must route elsewhere.",
+    ),
+    ("gemini", "headless", "flash"): PlatformPath(
+        "gemini",
+        "headless",
+        "flash",
+        "scripts/hapax-gemini --role <lane> --terminal tmux -- --model gemini-3-flash-preview -p <governed-prompt>",
+        "Gemini Flash read-only quota/fallback headless sidecar",
+        False,
+        "Spark analogue for quality-equivalent read-only research/review/extraction; mutation tasks must route elsewhere.",
+    ),
+    ("gemini", "headless", "lite"): PlatformPath(
+        "gemini",
+        "headless",
+        "lite",
+        "scripts/hapax-gemini --role <lane> --terminal tmux -- --model gemini-3.1-flash-lite-preview -p <governed-prompt>",
+        "Gemini Flash-Lite read-only lowest-cost headless sidecar",
+        False,
+        "Use only for quality-equivalent low-risk extraction/currentness packets; mutation tasks must route elsewhere.",
+    ),
+    ("gemini", "interactive", "full"): PlatformPath(
+        "gemini",
+        "interactive",
+        "full",
+        "scripts/hapax-gemini --role <lane> --terminal tmux",
+        "Gemini plan-mode interactive lane",
+        False,
+        "Read-only/plan-mode only; mutation tasks must route elsewhere.",
+    ),
+    ("antigrav", "interactive", "full"): PlatformPath(
+        "antigrav",
+        "interactive",
+        "full",
+        "~/.local/bin/hapax-antigrav --session <lane> --task <task>",
+        "Anthropic Antigravity IDE lane",
+        True,
+        "IDE-bound JR+ path; no headless lane contract exists.",
+    ),
+}
 
 
 @dataclass
@@ -161,6 +280,12 @@ def lane_worktree(lane: str, platform: str) -> Path:
         return root / f"hapax-council--cx-{lane}"
     if platform == "claude":
         return root / "hapax-council" if lane == "alpha" else root / f"hapax-council--{lane}"
+    if platform == "vibe":
+        return root / f"hapax-council--{lane}"
+    if platform == "gemini":
+        return root / f"hapax-council--{lane}"
+    if platform == "antigrav":
+        return root / "hapax-council--antigrav"
     return root / "hapax-council"
 
 
@@ -283,7 +408,15 @@ def validate_task(
     return Validation(True, "eligible", task, parent_spec_path, exempt)
 
 
-def build_prompt(task_id: str, lane: str, platform: str, validation: Validation) -> str:
+def build_prompt(
+    task_id: str,
+    lane: str,
+    platform: str,
+    mode: str,
+    profile: str,
+    validation: Validation,
+    route: PlatformPath,
+) -> str:
     assert validation.task is not None
     fields = validation.task.fields
     authority_case = fields.get("authority_case")
@@ -292,11 +425,27 @@ def build_prompt(task_id: str, lane: str, platform: str, validation: Validation)
     worktree = lane_worktree(lane, platform)
     claim_cmd = worktree / "scripts" / "cc-claim"
     close_cmd = worktree / "scripts" / "cc-close"
+    claim_file = (
+        Path(os.environ.get("HAPAX_CC_CLAIMS_DIR", str(Path.home() / ".cache" / "hapax")))
+        / f"cc-active-task-{lane}"
+    )
+    claim_instruction = (
+        "2. Before mutation, verify this lane owns the task claim. "
+        f"If the task is still offered, run {claim_cmd} {task_id}. "
+        f"If the launcher already claimed it, confirm {claim_file} contains {task_id} "
+        "and the task note is assigned to this lane. "
+        "If claim ownership is absent, rejected for another reason, or assigned to another lane, "
+        "stop and write a relay receipt."
+    )
     return "\n".join(
         [
             "SDLC GOVERNED DISPATCH.",
             f"Lane: {lane}",
             f"Platform: {platform}",
+            f"Mode: {mode}",
+            f"Profile: {profile}",
+            f"Platform path: {route.summary}",
+            f"Capacity invariant: {CAPACITY_INVARIANT}",
             f"Task: {task_id}",
             f"Title: {strip_scalar(str(title or task_id))}",
             f"AuthorityCase: {strip_scalar(str(authority_case or 'read-only-exempt'))}",
@@ -305,12 +454,15 @@ def build_prompt(task_id: str, lane: str, platform: str, validation: Validation)
             "",
             "Instructions:",
             f"1. Work only on task {task_id}.",
-            f"2. Run {claim_cmd} {task_id} before mutation. If it rejects, stop and write a relay receipt.",
+            claim_instruction
+            if route.mutable
+            else "2. This route is read-only. Do not mutate files, claims, PRs, services, or runtime state.",
             "3. Use only the authority and mutation scope in the parent spec.",
             "4. Do not create or claim another task from the pool.",
             "5. Do not select work from the pool. Do not continue after this task without a new dispatch.",
             f"6. Close this task only with {close_cmd}; do not use bare cc-close or canonical cc-close.",
             "7. If blocked, report the blocker and idle.",
+            "8. Do not downgrade profile or platform unless quota, resource pressure, or explicit operator hold requires it and the resulting route remains quality-equivalent for this task.",
         ]
     )
 
@@ -320,9 +472,13 @@ def write_receipt(
     task_id: str,
     lane: str,
     platform: str,
+    mode: str,
+    profile: str,
+    route: PlatformPath | None,
     validation: Validation,
     prompt: str | None,
     launched: bool,
+    launch_returncode: int | None = None,
 ) -> Path:
     ledger_dir = Path(
         os.environ.get(
@@ -339,6 +495,11 @@ def write_receipt(
         "task_id": task_id,
         "lane": lane,
         "platform": platform,
+        "mode": mode,
+        "profile": profile,
+        "platform_path": route.launcher if route else None,
+        "platform_path_summary": route.summary if route else None,
+        "capacity_invariant": CAPACITY_INVARIANT,
         "ok": validation.ok,
         "reason": validation.reason,
         "task_path": str(validation.task.path) if validation.task else None,
@@ -347,6 +508,7 @@ def write_receipt(
         else None,
         "exempt_read_only": validation.exempt_read_only,
         "launched": launched,
+        "launch_returncode": launch_returncode,
         "prompt": prompt,
     }
     with path.open("a", encoding="utf-8") as fh:
@@ -354,22 +516,254 @@ def write_receipt(
     return path
 
 
-def launch_headless(lane: str, prompt: str) -> int:
-    launcher = Path.home() / ".local" / "bin" / "hapax-claude-headless"
-    return subprocess.call([str(launcher), lane, prompt])
+def slugify(value: str) -> str:
+    chars = [ch if ch.isalnum() or ch in {"_", ".", "-"} else "-" for ch in value]
+    slug = "".join(chars).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug or "item"
+
+
+def launch_claude_headless(lane: str, prompt: str, route: PlatformPath) -> int:
+    launcher = Path(
+        os.environ.get(
+            "HAPAX_METHODOLOGY_CLAUDE_HEADLESS",
+            str(Path.home() / ".local" / "bin" / "hapax-claude-headless"),
+        )
+    )
+    env = os.environ.copy()
+    if route.profile in {"opus", "sonnet"}:
+        env["HAPAX_CLAUDE_MODEL"] = route.profile
+    return subprocess.call([str(launcher), lane, prompt], env=env)
+
+
+def write_codex_bootstrap(task_id: str, lane: str, prompt: str) -> Path:
+    spawn_dir = Path(
+        os.environ.get(
+            "HAPAX_CODEX_SPAWN_DIR",
+            str(
+                Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+                / "hapax"
+                / "codex-spawns"
+            ),
+        )
+    )
+    spawn_dir.mkdir(parents=True, exist_ok=True)
+    path = (
+        spawn_dir
+        / f"{now_utc().replace(':', '').replace('-', '')}-{slugify(lane)}-{slugify(task_id)}-methodology.md"
+    )
+    path.write_text(
+        "\n".join(
+            [
+                "# Hapax Codex Methodology Dispatch",
+                "",
+                prompt,
+                "",
+                "Codex launch contract:",
+                "",
+                "- This bootstrap was produced by `hapax-methodology-dispatch` after task authority validation.",
+                "- Read the workspace `CLAUDE.md` and `AGENTS.md` files before source mutation.",
+                "- Treat the task note and parent spec named above as the only work authority.",
+                "- Keep relay/status surfaces current while blocked, waiting, or idle.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def normalize_profile(platform: str, profile: str) -> str:
+    profile = profile.strip().lower().replace("_", "-")
+    if profile in {"default", "max", "pro", "full-capability"}:
+        return "full"
+    if profile == "quota-fallback":
+        if platform == "claude":
+            return "sonnet"
+        if platform == "codex":
+            return "spark"
+        if platform == "gemini":
+            return "flash"
+    return profile
+
+
+def route_for(platform: str, mode: str, profile: str) -> PlatformPath | None:
+    return PLATFORM_PATHS.get((platform, mode, normalize_profile(platform, profile)))
+
+
+def supported_route_lines() -> list[str]:
+    lines = [CAPACITY_INVARIANT, ""]
+    for _, route in sorted(PLATFORM_PATHS.items()):
+        mutability = "mutable" if route.mutable else "read-only"
+        lines.append(
+            f"{route.platform}/{route.mode}/{route.profile}: {route.summary} "
+            f"({mutability}) -> {route.launcher}"
+        )
+        lines.append(f"  {route.notes}")
+    return lines
+
+
+def platform_route_validation(
+    route: PlatformPath | None, validation: Validation
+) -> tuple[bool, str]:
+    if route is None:
+        return False, "unsupported platform/mode/profile route"
+    if not route.mutable and not validation.exempt_read_only:
+        return (
+            False,
+            f"{route.platform}/{route.mode}/{route.profile} is read-only; "
+            "mutation tasks must route to a mutable platform profile",
+        )
+    return True, "eligible platform route"
+
+
+def launch_codex_headless(
+    task_id: str,
+    lane: str,
+    prompt: str,
+    validation: Validation,
+    route: PlatformPath,
+) -> int:
+    launcher = Path(
+        os.environ.get(
+            "HAPAX_METHODOLOGY_CODEX_LAUNCHER",
+            str(Path(__file__).resolve().parent / "hapax-codex"),
+        )
+    )
+    if not launcher.is_file():
+        print(f"Codex launcher not found: {launcher}", file=sys.stderr)
+        return 8
+
+    status = ""
+    if validation.task is not None:
+        status = strip_scalar(str(validation.task.fields.get("status", "")))
+    args = [
+        str(launcher),
+        "--session",
+        lane,
+        "--terminal",
+        "tmux",
+        "--task",
+        task_id,
+        "--bootstrap",
+        str(write_codex_bootstrap(task_id, lane, prompt)),
+        "--task-gate",
+        "--force",
+    ]
+    if status in {"claimed", "in_progress"}:
+        args.append("--no-claim")
+    if route.profile == "spark":
+        args.extend(
+            [
+                "--",
+                "-c",
+                'model="gpt-5.3-codex-spark"',
+                "-c",
+                'model_reasoning_effort="high"',
+            ]
+        )
+    return subprocess.call(args)
+
+
+def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Validation) -> int:
+    launcher = Path(
+        os.environ.get(
+            "HAPAX_METHODOLOGY_VIBE_LAUNCHER",
+            str(Path.home() / ".local" / "bin" / "hapax-vibe"),
+        )
+    )
+    if not launcher.is_file():
+        print(f"Vibe launcher not found: {launcher}", file=sys.stderr)
+        return 8
+
+    status = ""
+    if validation.task is not None:
+        status = strip_scalar(str(validation.task.fields.get("status", "")))
+    args = [
+        str(launcher),
+        "--session",
+        lane,
+        "--terminal",
+        "tmux",
+        "--task",
+        task_id,
+        "--prompt",
+        prompt,
+        "--output",
+        "streaming",
+        "--force",
+    ]
+    if status in {"claimed", "in_progress"}:
+        args.append("--no-claim")
+    return subprocess.call(args)
+
+
+def launch_gemini_headless(lane: str, prompt: str, route: PlatformPath) -> int:
+    launcher = Path(
+        os.environ.get(
+            "HAPAX_METHODOLOGY_GEMINI_LAUNCHER",
+            str(Path(__file__).resolve().parent / "hapax-gemini"),
+        )
+    )
+    if not launcher.is_file():
+        print(f"Gemini launcher not found: {launcher}", file=sys.stderr)
+        return 8
+
+    args = [str(launcher), "--role", lane, "--terminal", "tmux", "--force", "--"]
+    if route.profile == "flash":
+        args.extend(["--model", "gemini-3-flash-preview"])
+    elif route.profile == "lite":
+        args.extend(["--model", "gemini-3.1-flash-lite-preview"])
+    args.extend(["-p", prompt])
+    return subprocess.call(args)
+
+
+def launch_antigrav_interactive(task_id: str, lane: str, validation: Validation) -> int:
+    launcher = Path(
+        os.environ.get(
+            "HAPAX_METHODOLOGY_ANTIGRAV_LAUNCHER",
+            str(Path.home() / ".local" / "bin" / "hapax-antigrav"),
+        )
+    )
+    if not launcher.is_file():
+        print(f"Antigrav launcher not found: {launcher}", file=sys.stderr)
+        return 8
+
+    status = ""
+    if validation.task is not None:
+        status = strip_scalar(str(validation.task.fields.get("status", "")))
+    args = [str(launcher), "--session", lane, "--task", task_id]
+    if status in {"claimed", "in_progress"}:
+        args.append("--no-claim")
+    return subprocess.call(args)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--task", required=True, help="Explicit cc-task id to dispatch")
-    parser.add_argument("--lane", required=True, help="Target lane, e.g. beta or cx-red")
+    parser.add_argument("--task", help="Explicit cc-task id to dispatch")
+    parser.add_argument("--lane", help="Target lane, e.g. beta or cx-red")
     parser.add_argument(
         "--platform", default="claude", choices=["claude", "codex", "gemini", "vibe", "antigrav"]
     )
     parser.add_argument(
         "--mode", default="headless", choices=["headless", "interactive", "receipt-only"]
     )
+    parser.add_argument(
+        "--profile",
+        default="full",
+        help=(
+            "Capability profile. Use full by default; quota-fallback maps to "
+            "the platform's constrained analogue when one exists. Codex also "
+            "supports spark; Gemini supports flash/lite for read-only work."
+        ),
+    )
     parser.add_argument("--launch", action="store_true", help="Launch after validation")
+    parser.add_argument(
+        "--list-platform-paths",
+        action="store_true",
+        help="List governed platform/mode/profile launch paths and exit",
+    )
     parser.add_argument(
         "--print-prompt", action="store_true", help="Print the governed launch prompt"
     )
@@ -382,6 +776,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Do not require target worktree cc-claim guard",
     )
     args = parser.parse_args(argv)
+    args.profile = normalize_profile(args.platform, args.profile)
+
+    if args.list_platform_paths:
+        print("\n".join(supported_route_lines()))
+        return 0
+
+    if not args.task or not args.lane:
+        parser.error("--task and --lane are required unless --list-platform-paths is used")
 
     task_root = Path(
         os.environ.get(
@@ -396,36 +798,116 @@ def main(argv: list[str] | None = None) -> int:
         task_root=task_root,
         strict_worktree=not args.skip_worktree_check,
     )
-
-    prompt = (
-        build_prompt(args.task, args.lane, args.platform, validation) if validation.ok else None
-    )
-    if not args.no_receipt:
-        write_receipt(
-            task_id=args.task,
-            lane=args.lane,
-            platform=args.platform,
-            validation=validation,
-            prompt=prompt,
-            launched=False,
-        )
+    route = route_for(args.platform, args.mode, args.profile)
+    prompt: str | None = None
 
     if not validation.ok:
+        if not args.no_receipt:
+            write_receipt(
+                task_id=args.task,
+                lane=args.lane,
+                platform=args.platform,
+                mode=args.mode,
+                profile=args.profile,
+                route=route,
+                validation=validation,
+                prompt=prompt,
+                launched=False,
+            )
         print(f"BLOCKED: {validation.reason}", file=sys.stderr)
         return 10
+
+    route_ok, route_reason = platform_route_validation(route, validation)
+    if not route_ok:
+        blocked = Validation(
+            False,
+            route_reason,
+            validation.task,
+            validation.parent_spec_path,
+            validation.exempt_read_only,
+        )
+        if not args.no_receipt:
+            write_receipt(
+                task_id=args.task,
+                lane=args.lane,
+                platform=args.platform,
+                mode=args.mode,
+                profile=args.profile,
+                route=route,
+                validation=blocked,
+                prompt=None,
+                launched=False,
+            )
+        print(f"BLOCKED: {route_reason}", file=sys.stderr)
+        if route is None:
+            print("Supported governed routes:", file=sys.stderr)
+            print("\n".join(supported_route_lines()), file=sys.stderr)
+        return 10
+
+    assert route is not None
+    prompt = build_prompt(
+        args.task,
+        args.lane,
+        args.platform,
+        args.mode,
+        args.profile,
+        validation,
+        route,
+    )
 
     if args.print_prompt:
         print(prompt)
 
     if args.launch:
         if args.platform == "claude" and args.mode == "headless":
-            return launch_headless(args.lane, prompt or "")
-        print(
-            "launch currently supported only for --platform claude --mode headless", file=sys.stderr
-        )
-        return 2
+            rc = launch_claude_headless(args.lane, prompt or "", route)
+        elif args.platform == "codex" and args.mode == "headless":
+            rc = launch_codex_headless(args.task, args.lane, prompt or "", validation, route)
+        elif args.platform == "vibe" and args.mode == "headless":
+            rc = launch_vibe_headless(args.task, args.lane, prompt or "", validation)
+        elif args.platform == "gemini" and args.mode == "headless":
+            rc = launch_gemini_headless(args.lane, prompt or "", route)
+        elif args.platform == "antigrav" and args.mode == "interactive":
+            rc = launch_antigrav_interactive(args.task, args.lane, validation)
+        else:
+            print(
+                "launch currently unsupported for "
+                f"--platform {args.platform} --mode {args.mode} --profile {args.profile}",
+                file=sys.stderr,
+            )
+            print("Supported governed routes:", file=sys.stderr)
+            print("\n".join(supported_route_lines()), file=sys.stderr)
+            return 2
 
-    print(f"eligible: {args.task} -> {args.platform}/{args.lane}")
+        if not args.no_receipt:
+            write_receipt(
+                task_id=args.task,
+                lane=args.lane,
+                platform=args.platform,
+                mode=args.mode,
+                profile=args.profile,
+                route=route,
+                validation=validation,
+                prompt=prompt,
+                launched=rc == 0,
+                launch_returncode=rc,
+            )
+        return rc
+
+    if not args.no_receipt:
+        write_receipt(
+            task_id=args.task,
+            lane=args.lane,
+            platform=args.platform,
+            mode=args.mode,
+            profile=args.profile,
+            route=route,
+            validation=validation,
+            prompt=prompt,
+            launched=False,
+        )
+
+    print(f"eligible: {args.task} -> {args.platform}/{args.mode}/{args.profile}/{args.lane}")
     return 0
 
 

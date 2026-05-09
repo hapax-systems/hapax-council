@@ -68,6 +68,7 @@ CLAUDE_BIN="$(command -v claude || true)"
 [[ -n "$CLAUDE_BIN" ]] || { echo "hapax-claude-headless: claude not found" >&2; exit 4; }
 
 EFFORT="${HAPAX_CLAUDE_EFFORT:-max}"
+MODEL="${HAPAX_CLAUDE_MODEL:-}"
 CLAUDE_ARGS=(
   -p
   --input-format stream-json
@@ -76,6 +77,9 @@ CLAUDE_ARGS=(
   --dangerously-skip-permissions
   --effort "$EFFORT"
 )
+if [[ -n "$MODEL" ]]; then
+  CLAUDE_ARGS+=(--model "$MODEL")
+fi
 
 INITIAL_MSG="${1:-}"
 if [[ -z "$INITIAL_MSG" ]]; then
