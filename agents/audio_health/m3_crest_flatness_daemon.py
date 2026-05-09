@@ -106,6 +106,8 @@ class StageState:
     crest_drop_count: int = 0
     crest_rise_count: int = 0
     flatness_noise_count: int = 0
+    last_error: str | None = None
+    analyzer_error_count: int = 0
 
 
 @dataclass
@@ -192,6 +194,30 @@ def _emit_textfile(
                 f'hapax_audio_health_crest_flatness_{counter_name}{{stage="{stage}"}} {getter(state)}'
             )
 
+    lines.extend(
+        [
+            "# HELP hapax_audio_health_crest_flatness_analyzer_error 1 if the last analyzer tick failed",
+            "# TYPE hapax_audio_health_crest_flatness_analyzer_error gauge",
+        ]
+    )
+    for stage, state in stages.items():
+        lines.append(
+            f'hapax_audio_health_crest_flatness_analyzer_error{{stage="{stage}"}} '
+            f"{1.0 if state.last_error else 0.0}"
+        )
+
+    lines.extend(
+        [
+            "# HELP hapax_audio_health_crest_flatness_analyzer_error_count Total analyzer/probe failures",
+            "# TYPE hapax_audio_health_crest_flatness_analyzer_error_count counter",
+        ]
+    )
+    for stage, state in stages.items():
+        lines.append(
+            f'hapax_audio_health_crest_flatness_analyzer_error_count{{stage="{stage}"}} '
+            f"{state.analyzer_error_count}"
+        )
+
     try:
         textfile = DEFAULT_TEXTFILE_DIR / DEFAULT_TEXTFILE_BASENAME
         tmp = textfile.with_suffix(".tmp")
@@ -223,6 +249,8 @@ def _emit_snapshot(
             "crest_drop_count": state.crest_drop_count,
             "crest_rise_count": state.crest_rise_count,
             "flatness_noise_count": state.flatness_noise_count,
+            "analyzer_error": state.last_error,
+            "analyzer_error_count": state.analyzer_error_count,
         }
     try:
         config.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
@@ -258,6 +286,91 @@ def _send_ntfy(stage: str, alert_type: str, detail: str) -> None:
         log.debug("ntfy send failed", exc_info=True)
 
 
+def _format_error(exc: BaseException | str | None) -> str:
+    if exc is None:
+        return "unknown analyzer failure"
+    if isinstance(exc, BaseException):
+        return f"{type(exc).__name__}: {exc}"
+    return exc
+
+
+def _mark_error(state: StageState, exc: BaseException | str | None) -> None:
+    state.last_error = _format_error(exc)
+    state.analyzer_error_count += 1
+
+
+def _probe_stage(stage: str, state: StageState, config: M3DaemonConfig, *, now: float) -> None:
+    """Run one M3 stage probe and record failures as health evidence."""
+
+    try:
+        probe_cfg = ProbeConfig(duration_s=config.capture_duration_s)
+        result = capture_and_measure(f"{stage}.monitor", config=probe_cfg)
+        if result is None:
+            _mark_error(state, "probe returned None")
+            return
+        if not result.ok:
+            _mark_error(state, result.error)
+            return
+
+        samples = result.samples_mono_float
+        measurement = StageMeasurement(
+            crest=compute_crest_factor(samples),
+            zcr=compute_zcr(samples),
+            spectral_flatness=compute_spectral_flatness(samples),
+        )
+        state.last_error = None
+
+        # Crest drop detection (format-conversion noise entering)
+        if state.prev_crest is not None and state.prev_crest > config.crest_drop_threshold:
+            if measurement.crest < config.crest_drop_threshold:
+                if state.crest_drop_start is None:
+                    state.crest_drop_start = now
+                elif (now - state.crest_drop_start) >= config.breach_sustain_s:
+                    state.crest_drop_count += 1
+                    if config.enable_ntfy:
+                        _send_ntfy(
+                            stage,
+                            "Crest drop",
+                            f"{state.prev_crest:.1f} → {measurement.crest:.1f}",
+                        )
+                    state.crest_drop_start = now
+            else:
+                state.crest_drop_start = None
+
+        # Crest rise detection (transient / clipping)
+        if state.prev_crest is not None and state.prev_crest < 10.0:
+            if measurement.crest > config.crest_rise_threshold:
+                state.crest_rise_count += 1
+                if config.enable_ntfy:
+                    _send_ntfy(
+                        stage,
+                        "Crest spike",
+                        f"{state.prev_crest:.1f} → {measurement.crest:.1f}",
+                    )
+
+        # Spectral flatness sustained noise detection
+        if measurement.spectral_flatness >= config.flatness_noise_threshold:
+            if state.flatness_breach_start is None:
+                state.flatness_breach_start = now
+            elif (now - state.flatness_breach_start) >= config.breach_sustain_s:
+                state.flatness_noise_count += 1
+                if config.enable_ntfy:
+                    _send_ntfy(
+                        stage,
+                        "White noise dominant",
+                        f"flatness={measurement.spectral_flatness:.3f}",
+                    )
+                state.flatness_breach_start = now
+        else:
+            state.flatness_breach_start = None
+
+        state.prev_crest = measurement.crest
+        state.last_measurement = measurement
+    except Exception as exc:
+        _mark_error(state, exc)
+        log.warning("probe tick failed for %s", stage, exc_info=True)
+
+
 def run_daemon(config: M3DaemonConfig | None = None) -> None:
     """Main daemon loop."""
     cfg = config or M3DaemonConfig.from_env()
@@ -291,71 +404,7 @@ def run_daemon(config: M3DaemonConfig | None = None) -> None:
         now = time.time()
 
         for stage in cfg.stages:
-            try:
-                probe_cfg = ProbeConfig(duration_s=cfg.capture_duration_s)
-                result = capture_and_measure(f"{stage}.monitor", config=probe_cfg)
-                if result is None or result.measurement is None:
-                    log.debug("probe returned None for %s", stage)
-                    continue
-
-                samples = result.measurement.samples_mono
-                measurement = StageMeasurement(
-                    crest=compute_crest_factor(samples),
-                    zcr=compute_zcr(samples),
-                    spectral_flatness=compute_spectral_flatness(samples),
-                )
-
-                state = states[stage]
-
-                # Crest drop detection (format-conversion noise entering)
-                if state.prev_crest is not None and state.prev_crest > cfg.crest_drop_threshold:
-                    if measurement.crest < cfg.crest_drop_threshold:
-                        if state.crest_drop_start is None:
-                            state.crest_drop_start = now
-                        elif (now - state.crest_drop_start) >= cfg.breach_sustain_s:
-                            state.crest_drop_count += 1
-                            if cfg.enable_ntfy:
-                                _send_ntfy(
-                                    stage,
-                                    "Crest drop",
-                                    f"{state.prev_crest:.1f} → {measurement.crest:.1f}",
-                                )
-                            state.crest_drop_start = now
-                    else:
-                        state.crest_drop_start = None
-
-                # Crest rise detection (transient / clipping)
-                if state.prev_crest is not None and state.prev_crest < 10.0:
-                    if measurement.crest > cfg.crest_rise_threshold:
-                        state.crest_rise_count += 1
-                        if cfg.enable_ntfy:
-                            _send_ntfy(
-                                stage,
-                                "Crest spike",
-                                f"{state.prev_crest:.1f} → {measurement.crest:.1f}",
-                            )
-
-                # Spectral flatness sustained noise detection
-                if measurement.spectral_flatness >= cfg.flatness_noise_threshold:
-                    if state.flatness_breach_start is None:
-                        state.flatness_breach_start = now
-                    elif (now - state.flatness_breach_start) >= cfg.breach_sustain_s:
-                        state.flatness_noise_count += 1
-                        if cfg.enable_ntfy:
-                            _send_ntfy(
-                                stage,
-                                "White noise dominant",
-                                f"flatness={measurement.spectral_flatness:.3f}",
-                            )
-                        state.flatness_breach_start = now
-                else:
-                    state.flatness_breach_start = None
-
-                state.prev_crest = measurement.crest
-                state.last_measurement = measurement
-
-            except Exception:
-                log.warning("probe tick failed for %s", stage, exc_info=True)
+            _probe_stage(stage, states[stage], cfg, now=now)
 
         _emit_textfile(states, cfg)
         _emit_snapshot(states, cfg, now=now)
