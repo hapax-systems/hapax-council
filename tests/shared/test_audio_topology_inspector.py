@@ -151,6 +151,20 @@ def _l12_contract_fixture() -> TopologyDescriptor:
               capture_positions: AUX1 AUX3 AUX4 AUX5
               forbidden_capture_positions: AUX8 AUX9 AUX10 AUX11 AUX12 AUX13
               playback_target: hapax-livestream-tap
+          - id: l12-usb-return-capture
+            kind: filter_chain
+            pipewire_name: hapax-l12-usb-return-capture
+            target_object: alsa_input.usb-ZOOM_Corporation_L-12-00.multichannel-input
+            params:
+              capture_positions: AUX8 AUX9 AUX10 AUX11
+              playback_target: hapax-livestream-tap
+              mpc_wet_return: true
+          - id: mpc-usb-output
+            kind: alsa_sink
+            pipewire_name: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
+            hw: hw:MPCB,0
+            channels:
+              count: 24
           - id: private-sink
             kind: tap
             pipewire_name: hapax-private
@@ -222,7 +236,7 @@ def _l12_contract_fixture() -> TopologyDescriptor:
           - id: pc-loudnorm
             kind: filter_chain
             pipewire_name: hapax-pc-loudnorm
-            target_object: alsa_output.usb-ZOOM_Corporation_L-12-00.analog-surround-40
+            target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
             params:
               notification_excluded: true
           - id: voice-fx
@@ -232,28 +246,16 @@ def _l12_contract_fixture() -> TopologyDescriptor:
           - id: tts-loudnorm
             kind: filter_chain
             pipewire_name: hapax-loudnorm-capture
-            target_object: hapax-tts-duck
-          - id: tts-duck
-            kind: filter_chain
-            pipewire_name: hapax-tts-duck
-            target_object: alsa_output.usb-ZOOM_Corporation_L-12-00.analog-surround-40
+            target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
             params:
-              playback_target: l12-usb-return
-              broadcast_forward_path: hapax-tts-broadcast-capture hapax-tts-broadcast-playback hapax-livestream-tap
-          - id: tts-broadcast-capture
-            kind: filter_chain
-            pipewire_name: hapax-tts-broadcast-capture
-            target_object: hapax-tts-duck
-          - id: tts-broadcast-playback
-            kind: loopback
-            pipewire_name: hapax-tts-broadcast-playback
-            target_object: hapax-livestream-tap
+              playback_positions: AUX2 AUX3
+              broadcast_forward_path: mpc-usb-output l12-usb-return-capture hapax-livestream-tap
         edges:
           - source: l12-capture
             target: l12-evilpet-capture
-          - source: tts-duck
-            target: tts-broadcast-capture
-          - source: tts-broadcast-playback
+          - source: l12-capture
+            target: l12-usb-return-capture
+          - source: l12-usb-return-capture
             target: livestream-tap
           - source: private-sink
             target: private-monitor-capture
@@ -571,80 +573,81 @@ class TestPwDumpToDescriptor:
 
 
 class TestTtsBroadcastPathCheck:
-    def test_ok_when_tts_duck_bridges_to_livestream_tap(self) -> None:
+    def _current_mpc_dump(self, *, include_final_edge: bool = True) -> list[dict[str, Any]]:
         dump = [
             _pw_node(
                 id=100,
-                node_name="hapax-tts-duck",
-                media_class="Audio/Sink",
-                factory="filter-chain",
-            ),
-            _pw_node(
-                id=101,
-                node_name="hapax-tts-broadcast-playback",
+                node_name="input.loopback.sink.role.broadcast",
                 media_class="Audio/Sink",
                 factory="loopback",
             ),
             _pw_node(
+                id=101,
+                node_name="hapax-voice-fx-capture",
+                media_class="Audio/Sink",
+                factory="filter-chain",
+            ),
+            _pw_node(
                 id=102,
+                node_name="hapax-loudnorm-capture",
+                media_class="Audio/Sink",
+                factory="filter-chain",
+            ),
+            _pw_node(
+                id=103,
+                node_name="alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output",
+                media_class="Audio/Sink",
+                factory="api.alsa.pcm.sink",
+                hw="hw:7",
+                channels=24,
+            ),
+            _pw_node(
+                id=104,
+                node_name="hapax-l12-usb-return-capture",
+                media_class="Audio/Sink",
+                factory="filter-chain",
+            ),
+            _pw_node(
+                id=105,
                 node_name="hapax-livestream-tap",
                 media_class="Audio/Sink",
                 factory="support.null-audio-sink",
             ),
-            _pw_link(id=200, out_node=100, in_node=101),
-            _pw_link(id=201, out_node=101, in_node=102),
+            _pw_node(
+                id=106,
+                node_name="hapax-broadcast-master-capture",
+                media_class="Audio/Sink",
+                factory="filter-chain",
+            ),
         ]
-        result = check_tts_broadcast_path(pw_dump_to_descriptor(dump))
+        if include_final_edge:
+            dump.append(_pw_link(id=200, out_node=105, in_node=106))
+        return dump
+
+    def test_ok_when_current_mpc_wet_return_path_is_present(self) -> None:
+        result = check_tts_broadcast_path(pw_dump_to_descriptor(self._current_mpc_dump()))
         assert result.ok is True
         assert result.missing_nodes == ()
         assert result.missing_edges == ()
 
-    def test_reports_missing_bridge_node(self) -> None:
+    def test_reports_missing_mpc_wet_return_node(self) -> None:
         dump = [
-            _pw_node(
-                id=100,
-                node_name="hapax-tts-duck",
-                media_class="Audio/Sink",
-                factory="filter-chain",
-            ),
-            _pw_node(
-                id=102,
-                node_name="hapax-livestream-tap",
-                media_class="Audio/Sink",
-                factory="support.null-audio-sink",
-            ),
+            node
+            for node in self._current_mpc_dump()
+            if node.get("info", {}).get("props", {}).get("node.name")
+            != "hapax-l12-usb-return-capture"
         ]
         result = check_tts_broadcast_path(pw_dump_to_descriptor(dump))
         assert result.ok is False
-        assert "hapax-tts-broadcast-*" in result.missing_nodes
+        assert "hapax-l12-usb-return-capture" in result.missing_nodes
 
-    def test_reports_missing_forward_edge(self) -> None:
-        dump = [
-            _pw_node(
-                id=100,
-                node_name="hapax-tts-duck",
-                media_class="Audio/Sink",
-                factory="filter-chain",
-            ),
-            _pw_node(
-                id=101,
-                node_name="hapax-tts-broadcast-playback",
-                media_class="Audio/Sink",
-                factory="loopback",
-            ),
-            _pw_node(
-                id=102,
-                node_name="hapax-livestream-tap",
-                media_class="Audio/Sink",
-                factory="support.null-audio-sink",
-            ),
-            _pw_link(id=200, out_node=100, in_node=101),
-        ]
+    def test_reports_missing_final_tap_to_master_edge(self) -> None:
+        dump = self._current_mpc_dump(include_final_edge=False)
         result = check_tts_broadcast_path(pw_dump_to_descriptor(dump))
         assert result.ok is False
-        assert "hapax-tts-broadcast-* -> hapax-livestream-tap" in result.missing_edges
+        assert "hapax-livestream-tap -> hapax-broadcast-master-capture" in result.missing_edges
 
-    def test_accepts_live_loopback_split_capture_and_playback_nodes(self) -> None:
+    def test_retired_direct_tts_bridge_is_not_sufficient(self) -> None:
         dump = [
             _pw_node(
                 id=100,
@@ -671,10 +674,13 @@ class TestTtsBroadcastPathCheck:
                 factory="support.null-audio-sink",
             ),
             _pw_link(id=200, out_node=100, in_node=101),
-            _pw_link(id=201, out_node=102, in_node=103),
+            _pw_link(id=201, out_node=101, in_node=103),
         ]
         result = check_tts_broadcast_path(pw_dump_to_descriptor(dump))
-        assert result.ok is True
+        assert result.ok is False
+        assert "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output" in (
+            result.missing_nodes
+        )
 
 
 class TestL12BroadcastSceneAssertion:
@@ -750,12 +756,12 @@ class TestL12ForwardInvariantCheck:
         assert result.ok is True
         assert result.violations == ()
 
-    def test_fails_when_tts_l12_return_lacks_broadcast_forward_bridge(self) -> None:
+    def test_fails_when_tts_mpc_return_lacks_broadcast_forward_path(self) -> None:
         descriptor = _l12_contract_fixture()
-        tts = descriptor.node_by_id("tts-duck")
+        tts = descriptor.node_by_id("tts-loudnorm")
         descriptor = _replace_node(
             descriptor,
-            "tts-duck",
+            "tts-loudnorm",
             params={k: v for k, v in tts.params.items() if k != "broadcast_forward_path"},
         )
 
@@ -851,6 +857,7 @@ class TestL12ForwardInvariantCheck:
             update={
                 "id": "unclassified-monitor-bridge",
                 "pipewire_name": "hapax-unclassified-monitor-bridge",
+                "target_object": "alsa_output.usb-ZOOM_Corporation_L-12-00.analog-surround-40",
                 "params": {},
             }
         )
