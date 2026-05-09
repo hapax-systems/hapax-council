@@ -318,6 +318,12 @@ def _register_builtins() -> None:
     )
 
     register("CBIPDualIrDisplacementCairoSource", CBIPDualIrDisplacementCairoSource)
+    # AVSDLC-004 (2026-05-08) — content pipeline assertion receipt ward.
+    # Reads LayoutDecisionReceipt from SHM and renders a checklist-style
+    # status overlay. Declared in segment-receipt.json layout.
+    from agents.studio_compositor.assertion_receipt_ward import AssertionReceiptWard
+
+    register("AssertionReceiptWard", AssertionReceiptWard)
 
 
 _register_builtins()
