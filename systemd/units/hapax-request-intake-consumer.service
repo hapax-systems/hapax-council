@@ -7,4 +7,4 @@ Type=oneshot
 Environment=HAPAX_REQUEST_RECEIPTS=%h/.cache/hapax/request-receipts
 Environment=HAPAX_REQUEST_INTAKE_STATE=%h/.cache/hapax/request-intake-state.json
 ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/request-intake-consumer
-ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/request-intake-consumer --write-state
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/request-intake-consumer --write-state --write-planning-feed

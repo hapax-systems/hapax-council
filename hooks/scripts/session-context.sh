@@ -602,6 +602,22 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
     fi
   done
 
+  PLANNING_FEED="$HOME/.cache/hapax/planning-feed-state.json"
+  if [ -f "$PLANNING_FEED" ]; then
+    FEED_AGE=$(( $(date +%s) - $(date -d "$(jq -r .generated_at "$PLANNING_FEED")" +%s 2>/dev/null || echo 0) ))
+    if [ "$FEED_AGE" -lt 300 ]; then
+      STALE_CAPTURED=$(jq -r '.stale_summary.stale_captured // 0' "$PLANNING_FEED")
+      ATTN_COUNT=$(jq -r '.attention_required | length' "$PLANNING_FEED")
+      if [ "$ATTN_COUNT" -gt 0 ]; then
+        echo ""
+        echo "PLANNING FEED: $ATTN_COUNT requests need attention (${STALE_CAPTURED} stale captured)"
+      fi
+    else
+      echo ""
+      echo "PLANNING FEED: stale (${FEED_AGE}s old, threshold 300s)"
+    fi
+  fi
+
   # ── D-30 Phase 4: Obsidian SSOT — claimed task + top offered ──
   # Surfaces the canonical CC-task state from the operator's vault so
   # sessions onboard with their claim + the next-up queue.

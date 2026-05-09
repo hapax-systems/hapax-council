@@ -5,6 +5,7 @@ ISAP: SLICE-003B-REQUEST-INTAKE (CASE-SDLC-REFORM-001)
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -12,11 +13,40 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "request-intake-consumer"
 
 
-def _write_request(path: Path, req_id: str, status: str = "captured", title: str = "Test") -> None:
-    path.write_text(
+def _write_request(
+    path: Path,
+    req_id: str,
+    status: str = "captured",
+    title: str = "Test",
+    intake_owner: str = "",
+    planning_case: str = "",
+    updated_at: str = "2026-05-08T15:00:00Z",
+) -> None:
+    frontmatter = (
         f"---\ntype: hapax-request\nrequest_id: {req_id}\n"
         f"title: {title}\nstatus: {status}\n"
-        f"updated_at: 2026-05-08T15:00:00Z\n---\n",
+        f"updated_at: {updated_at}\n"
+    )
+    if intake_owner:
+        frontmatter += f"intake_owner: {intake_owner}\n"
+    if planning_case:
+        frontmatter += f"planning_case: {planning_case}\n"
+    frontmatter += "---\n"
+    path.write_text(frontmatter, encoding="utf-8")
+
+
+def _write_task(
+    path: Path,
+    task_id: str,
+    status: str = "offered",
+    parent_request: str = "",
+    updated_at: str = "2026-05-08T15:00:00Z",
+) -> None:
+    path.write_text(
+        f"---\ntype: cc-task\ntask_id: {task_id}\n"
+        f"status: {status}\n"
+        f"parent_request: {parent_request}\n"
+        f"updated_at: {updated_at}\n---\n",
         encoding="utf-8",
     )
 
@@ -26,14 +56,24 @@ def _run(
     *args: str,
     receipts_dir: Path | None = None,
     state_path: Path | None = None,
+    tasks_dir: Path | None = None,
+    planning_feed_path: Path | None = None,
+    stale_hours: str = "1",
 ) -> subprocess.CompletedProcess:
     env = {
         **os.environ,
         "HAPAX_REQUESTS_DIR": str(tmp_path / "requests"),
         "HAPAX_REQUEST_RECEIPTS": str(receipts_dir or tmp_path / "receipts"),
         "HAPAX_REQUEST_INTAKE_STATE": str(state_path or tmp_path / "request-state.json"),
+        "HAPAX_CC_TASKS_DIR": str(tasks_dir or tmp_path / "tasks"),
+        "HAPAX_PLANNING_FEED_STATE": str(planning_feed_path or tmp_path / "planning-feed.json"),
         "CLAUDE_ROLE": "epsilon-test",
         "HAPAX_REQUEST_STALE_SECONDS": "1",
+        "HAPAX_STALE_CAPTURED_HOURS": stale_hours,
+        "HAPAX_STALE_ASSIGNMENT_HOURS": stale_hours,
+        "HAPAX_STALE_CASE_HOURS": stale_hours,
+        "HAPAX_STALE_OFFERED_HOURS": stale_hours,
+        "HAPAX_STALE_COMPLETION_HOURS": stale_hours,
     }
     return subprocess.run(
         [str(SCRIPT), *args],
@@ -163,3 +203,176 @@ def test_write_state_records_counts_without_body_content(tmp_path: Path) -> None
     assert '"unread_count": 1' in state
     assert '"malformed_count": 1' in state
     assert "private body content" not in state
+
+
+# ── Planning-feed tests ──
+
+
+def test_planning_feed_produces_valid_json(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    _write_request(active / "REQ-010.md", "REQ-010", title="Test Request")
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+    assert feed.exists()
+
+    data = json.loads(feed.read_text())
+    for key in (
+        "generated_at",
+        "generator",
+        "total_requests",
+        "coverage_summary",
+        "stale_summary",
+        "attention_required",
+        "requests",
+    ):
+        assert key in data, f"missing top-level field: {key}"
+    assert data["total_requests"] == 1
+    assert len(data["requests"]) == 1
+
+
+def test_planning_feed_task_active_coverage(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    tasks_active = tmp_path / "tasks" / "active"
+    tasks_active.mkdir(parents=True)
+
+    _write_request(
+        active / "REQ-011.md",
+        "REQ-011",
+        status="accepted_for_planning",
+        planning_case="CASE-TEST-001",
+    )
+    _write_task(
+        tasks_active / "T-011.md",
+        "T-011",
+        status="in_progress",
+        parent_request="/path/to/REQ-011.md",
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    assert data["requests"][0]["coverage"] == "task_active"
+    assert data["coverage_summary"]["task_active"] == 1
+
+
+def test_planning_feed_case_linked_coverage(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+
+    _write_request(
+        active / "REQ-012.md",
+        "REQ-012",
+        status="accepted_for_planning",
+        planning_case="CASE-TEST-001",
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    assert data["requests"][0]["coverage"] == "case_linked"
+    assert data["coverage_summary"]["case_linked"] == 1
+
+
+def test_planning_feed_untracked_coverage(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+
+    _write_request(active / "REQ-013.md", "REQ-013", status="captured")
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    assert data["requests"][0]["coverage"] == "untracked"
+    assert data["coverage_summary"]["untracked"] == 1
+
+
+def test_planning_feed_fulfilled_coverage(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+
+    _write_request(
+        active / "REQ-014.md", "REQ-014", status="fulfilled", planning_case="CASE-TEST-001"
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    assert data["requests"][0]["coverage"] == "fulfilled"
+    assert data["coverage_summary"]["fulfilled"] == 1
+
+
+def test_planning_feed_staleness_thresholds(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+
+    _write_request(
+        active / "REQ-015.md", "REQ-015", status="captured", updated_at="2020-01-01T00:00:00Z"
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed, stale_hours="1")
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    assert data["requests"][0]["staleness"] == "stale_captured"
+    assert data["stale_summary"]["stale_captured"] == 1
+
+
+def test_planning_feed_attention_required_filters(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+
+    _write_request(
+        active / "REQ-016.md", "REQ-016", status="captured", updated_at="2020-01-01T00:00:00Z"
+    )
+    _write_request(
+        active / "REQ-017.md", "REQ-017", status="fulfilled", planning_case="CASE-TEST-001"
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed, stale_hours="1")
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    attn_ids = [a["request_id"] for a in data["attention_required"]]
+    assert "REQ-016" in attn_ids
+    assert "REQ-017" not in attn_ids
+
+
+def test_planning_feed_no_request_note_mutation(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+
+    req_path = active / "REQ-018.md"
+    _write_request(req_path, "REQ-018", title="Do Not Mutate")
+    before = req_path.read_text()
+
+    _run(tmp_path, "--write-planning-feed")
+    assert req_path.read_text() == before
+
+
+def test_planning_feed_no_task_note_mutation(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    tasks_active = tmp_path / "tasks" / "active"
+    tasks_active.mkdir(parents=True)
+
+    _write_request(active / "REQ-019.md", "REQ-019")
+    task_path = tasks_active / "T-019.md"
+    _write_task(task_path, "T-019", parent_request="/path/to/REQ-019.md")
+    before = task_path.read_text()
+
+    _run(tmp_path, "--write-planning-feed")
+    assert task_path.read_text() == before
