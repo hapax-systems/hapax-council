@@ -22,6 +22,11 @@ def _write_task(
     status: str = "offered",
     assigned_to: str = "unassigned",
     depends_on: str | None = "[]",
+    kind: str = "build",
+    task_type: str | None = None,
+    authority_case: str | None = "CASE-TEST-001",
+    parent_spec: str | None = "/tmp/isap-test.md",
+    tags: list[str] | None = None,
     body: str = "",
 ) -> Path:
     root = _task_root(home)
@@ -33,7 +38,17 @@ def _write_task(
         f'title: "{task_id}"',
         f"status: {status}",
         f"assigned_to: {assigned_to}",
+        f"kind: {kind}",
     ]
+    if task_type is not None:
+        frontmatter.append(f"task_type: {task_type}")
+    if authority_case is not None:
+        frontmatter.append(f"authority_case: {authority_case}")
+    if parent_spec is not None:
+        frontmatter.append(f"parent_spec: {parent_spec}")
+    if tags is not None:
+        frontmatter.append("tags:")
+        frontmatter.extend(f"  - {tag}" for tag in tags)
     if depends_on is not None:
         if depends_on.startswith("\n"):
             frontmatter.append(f"depends_on:{depends_on}")
@@ -158,3 +173,68 @@ def test_missing_frontmatter_dependency_blocks_claim(tmp_path: Path) -> None:
 
     assert result.returncode == 5
     assert "missing-dep (not found in vault)" in result.stderr
+
+
+def test_build_task_with_null_parent_spec_blocks_claim(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(
+        home,
+        "active",
+        "ungoverned-build",
+        parent_spec="null",
+        authority_case="CASE-TEST-001",
+    )
+
+    result = _claim(home, "ungoverned-build")
+
+    assert result.returncode == 6
+    assert "missing required AuthorityCase/ISAP fields" in result.stderr
+    assert "parent_spec" in result.stderr
+
+
+def test_build_task_missing_authority_case_blocks_claim(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(
+        home,
+        "active",
+        "missing-authority",
+        authority_case=None,
+        parent_spec="/tmp/isap-test.md",
+    )
+
+    result = _claim(home, "missing-authority")
+
+    assert result.returncode == 6
+    assert "missing required AuthorityCase/ISAP fields" in result.stderr
+    assert "authority_case" in result.stderr
+
+
+def test_explicit_read_only_intake_without_parent_spec_allows_claim(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(
+        home,
+        "active",
+        "intake-only",
+        kind="intake",
+        task_type="read-only",
+        authority_case=None,
+        parent_spec=None,
+        tags=["intake", "read-only"],
+    )
+
+    result = _claim(home, "intake-only")
+
+    assert result.returncode == 0, result.stderr
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+
+
+def test_governed_build_task_allows_claim(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "governed-build")
+
+    result = _claim(home, "governed-build")
+
+    assert result.returncode == 0, result.stderr
+    assert "status: claimed" in note.read_text(encoding="utf-8")
