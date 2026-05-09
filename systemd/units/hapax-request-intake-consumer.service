@@ -1,11 +1,11 @@
 [Unit]
 Description=Hapax request intake consumer receipt/state refresh
 Documentation=file://%h/Documents/Personal/20-projects/hapax-requests/_dashboard/request-intake.md
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/request-intake-consumer
 
 [Service]
 Type=oneshot
 Environment=HAPAX_REQUEST_RECEIPTS=%h/.cache/hapax/request-receipts
 Environment=HAPAX_REQUEST_INTAKE_STATE=%h/.cache/hapax/request-intake-state.json
 Environment=HAPAX_AGENT_NAME=request-intake-consumer
-ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/request-intake-consumer
 ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/request-intake-consumer --write-receipt --write-state --write-planning-feed
