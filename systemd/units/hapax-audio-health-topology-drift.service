@@ -3,10 +3,10 @@ Description=Hapax audio health M6 — topology drift monitor (PipeWire module si
 After=pipewire.service wireplumber.service
 Requires=pipewire-pulse.service
 PartOf=hapax-audio-health.target
+ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
 
 [Service]
 Type=notify
-ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
 WorkingDirectory=%h/.cache/hapax/rebuild/worktree
 ExecStart=%h/.local/bin/uv run python -m agents.audio_health.m6_topology_drift_daemon
 Restart=on-failure

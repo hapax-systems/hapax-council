@@ -3,10 +3,10 @@ Description=Hapax audio health M5 — PipeWire pw-top xrun + buffer-underrun mon
 After=pipewire.service
 BindsTo=pipewire.service
 PartOf=hapax-audio-health.target
+ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
 
 [Service]
 Type=notify
-ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
 WorkingDirectory=%h/.cache/hapax/rebuild/worktree
 ExecStart=%h/.local/bin/uv run python -m agents.audio_health.m5_pipewire_xrun_daemon
 Restart=on-failure

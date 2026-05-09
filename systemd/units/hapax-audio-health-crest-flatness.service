@@ -3,10 +3,10 @@ Description=Hapax audio health M3 — crest factor / ZCR / spectral flatness mon
 After=pipewire.service pipewire-pulse.service
 Requires=pipewire-pulse.service
 PartOf=hapax-audio-health.target
+ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
 
 [Service]
 Type=notify
-ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
 WorkingDirectory=%h/.cache/hapax/rebuild/worktree
 ExecStart=%h/.local/bin/uv run python -m agents.audio_health.m3_crest_flatness_daemon
 Restart=on-failure
