@@ -1,15 +1,16 @@
-"""L-12 BROADCAST-V2 scene unloaded detector (audit A#6, Layer D).
+"""L-12 BROADCAST-V2 wet-return detector (audit A#6, Layer D).
 
 The Zoom L-12's "BROADCAST-V2" scene is operator-side state — selecting it
-on the device's hardware buttons routes the live mix into AUX5 (CH6
-return = Evil Pet wet) so the broadcast carries the curated submix.
+on the device's hardware buttons routes the live wet-return model into
+USB capture: AUX8/9 carry MPC content return and AUX10/11 carry Hapax
+voice return.
 If the operator forgets to load BROADCAST-V2 and instead has the L-12 in
-RECORDING/MONITOR/REHEARSAL scene, AUX5 falls silent regardless of
+RECORDING/MONITOR/REHEARSAL scene, the current return pairs fall silent regardless of
 what the music sink is doing — broadcast egress goes dead while the
 software stack still reports SAFE.
 
 This probe samples ``alsa_input.usb-ZOOM_Corporation_L-12_*.multichannel-input``
-channel 5 (AUX5 = Evil Pet return on CH6) RMS over a 5-second window
+channels AUX8/9 (content return) RMS over a 5-second window
 during music playback. If RMS stays below ``silence_threshold_dbfs``
 (default -60 dBFS) for ``min_silence_s`` (default 5 minutes) while the
 music sink is RUNNING, the probe:
@@ -56,7 +57,8 @@ log = logging.getLogger("broadcast_audio_health.l12_scene_probe")
 DEFAULT_L12_TARGET: Final[str] = (
     "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"
 )
-DEFAULT_AUX5_CHANNEL_INDEX: Final[int] = 4  # 0-based: AUX5 maps to channel 5 / index 4
+DEFAULT_CONTENT_RETURN_L_CHANNEL_INDEX: Final[int] = 8
+DEFAULT_CONTENT_RETURN_R_CHANNEL_INDEX: Final[int] = 9
 DEFAULT_CHANNELS: Final[int] = 14
 DEFAULT_RATE: Final[int] = 48000
 DEFAULT_SAMPLE_WINDOW_S: Final[float] = 5.0
@@ -126,7 +128,8 @@ class L12SceneProbeConfig:
     sample_window_s: float = DEFAULT_SAMPLE_WINDOW_S
     silence_threshold_dbfs: float = DEFAULT_SILENCE_THRESHOLD_DBFS
     min_silence_s: float = DEFAULT_MIN_SILENCE_S
-    aux5_channel_index: int = DEFAULT_AUX5_CHANNEL_INDEX
+    content_return_l_channel_index: int = DEFAULT_CONTENT_RETURN_L_CHANNEL_INDEX
+    content_return_r_channel_index: int = DEFAULT_CONTENT_RETURN_R_CHANNEL_INDEX
     state_path: Path = field(default_factory=lambda: DEFAULT_STATE_PATH)
     impingements_file: Path = field(default_factory=lambda: DEFAULT_IMPINGEMENTS_FILE)
     music_sink_name: str = DEFAULT_MUSIC_SINK_NAME
@@ -146,8 +149,17 @@ class L12SceneProbeConfig:
             min_silence_s=float(
                 os.environ.get("HAPAX_L12_SCENE_MIN_SILENCE_S", DEFAULT_MIN_SILENCE_S)
             ),
-            aux5_channel_index=int(
-                os.environ.get("HAPAX_L12_SCENE_AUX5_INDEX", DEFAULT_AUX5_CHANNEL_INDEX)
+            content_return_l_channel_index=int(
+                os.environ.get(
+                    "HAPAX_L12_SCENE_CONTENT_L_INDEX",
+                    DEFAULT_CONTENT_RETURN_L_CHANNEL_INDEX,
+                )
+            ),
+            content_return_r_channel_index=int(
+                os.environ.get(
+                    "HAPAX_L12_SCENE_CONTENT_R_INDEX",
+                    DEFAULT_CONTENT_RETURN_R_CHANNEL_INDEX,
+                )
             ),
             state_path=Path(os.environ.get("HAPAX_L12_SCENE_STATE_PATH", str(DEFAULT_STATE_PATH))),
             impingements_file=Path(
@@ -163,7 +175,7 @@ class L12SceneProbeState:
 
     silent_since: float | None = None
     last_alert_at: float | None = None
-    last_aux5_dbfs: float | None = None
+    last_content_return_dbfs: float | None = None
     last_music_running: bool | None = None
     last_checked_at: float | None = None
     alert_active: bool = False
@@ -175,7 +187,10 @@ class L12SceneProbeState:
         return cls(
             silent_since=raw.get("silent_since"),
             last_alert_at=raw.get("last_alert_at"),
-            last_aux5_dbfs=raw.get("last_aux5_dbfs"),
+            last_content_return_dbfs=raw.get(
+                "last_content_return_dbfs",
+                raw.get("last_aux5_dbfs"),
+            ),
             last_music_running=raw.get("last_music_running"),
             last_checked_at=raw.get("last_checked_at"),
             alert_active=bool(raw.get("alert_active", False)),
@@ -185,7 +200,7 @@ class L12SceneProbeState:
         return {
             "silent_since": self.silent_since,
             "last_alert_at": self.last_alert_at,
-            "last_aux5_dbfs": self.last_aux5_dbfs,
+            "last_content_return_dbfs": self.last_content_return_dbfs,
             "last_music_running": self.last_music_running,
             "last_checked_at": self.last_checked_at,
             "alert_active": bool(self.alert_active),
@@ -196,11 +211,16 @@ class L12SceneProbeState:
 class ProbeOutcome:
     """One probe tick's decision."""
 
-    aux5_dbfs: float
+    content_return_dbfs: float
     music_running: bool
     silent_for_s: float
     fired: bool
     state_changed: bool
+
+    @property
+    def aux5_dbfs(self) -> float:
+        """Backward-compatible alias for old callers; now returns content return."""
+        return self.content_return_dbfs
 
 
 @dataclass
@@ -246,7 +266,8 @@ class L12SceneCheckRotationOutcome:
 
 def evaluate_tick(
     *,
-    aux5_dbfs: float,
+    content_return_dbfs: float | None = None,
+    aux5_dbfs: float | None = None,
     music_running: bool,
     now: float,
     state: L12SceneProbeState,
@@ -257,18 +278,21 @@ def evaluate_tick(
     - When music is NOT running, the silence-window state is reset; the
       probe only counts silence-during-music as evidence of an unloaded
       BROADCAST scene.
-    - When music IS running and AUX5 is below threshold, accumulate
+    - When music IS running and the content return pair is below threshold, accumulate
       silence: stamp ``silent_since`` on the first symptomatic tick,
       compute elapsed silence on subsequent ticks.
     - Fire the alert exactly once when silence exceeds ``min_silence_s``;
-      stays in alert state until AUX5 returns above threshold (operator
+      stays in alert state until content return returns above threshold (operator
       loaded BROADCAST). Re-arms the next time the sequence repeats.
     """
-    is_silent = aux5_dbfs < config.silence_threshold_dbfs
+    measured_dbfs = content_return_dbfs if content_return_dbfs is not None else aux5_dbfs
+    if measured_dbfs is None:
+        raise ValueError("content_return_dbfs is required")
+    is_silent = measured_dbfs < config.silence_threshold_dbfs
     state_changed = False
 
     if not music_running:
-        # No music = no signal expected on AUX5. Don't accumulate.
+        # No music = no content-return signal expected. Don't accumulate.
         if state.silent_since is not None or state.alert_active:
             state_changed = True
         state.silent_since = None
@@ -300,12 +324,12 @@ def evaluate_tick(
         state.last_alert_at = now
         state_changed = True
 
-    state.last_aux5_dbfs = aux5_dbfs
+    state.last_content_return_dbfs = measured_dbfs
     state.last_music_running = music_running
     state.last_checked_at = now
 
     return ProbeOutcome(
-        aux5_dbfs=aux5_dbfs,
+        content_return_dbfs=measured_dbfs,
         music_running=music_running,
         silent_for_s=elapsed,
         fired=fired,
@@ -369,11 +393,15 @@ def save_scene_check_rotation_state(
 def write_impingement(
     path: Path,
     *,
-    aux5_dbfs: float,
+    content_return_dbfs: float | None = None,
+    aux5_dbfs: float | None = None,
     silent_for_s: float,
     config: L12SceneProbeConfig,
 ) -> None:
     """Best-effort impingement append. Never raises."""
+    measured_dbfs = content_return_dbfs if content_return_dbfs is not None else aux5_dbfs
+    if measured_dbfs is None:
+        measured_dbfs = float("-inf")
     record = {
         "timestamp": time.time(),
         "source": "broadcast_audio_health.l12_scene_probe",
@@ -381,7 +409,7 @@ def write_impingement(
         "strength": 1.0,
         "content": {
             "alert": EVENT_NAME,
-            "aux5_dbfs": round(aux5_dbfs, 2),
+            "content_return_dbfs": round(measured_dbfs, 2),
             "silent_for_s": round(silent_for_s, 1),
             "silence_threshold_dbfs": config.silence_threshold_dbfs,
             "min_silence_s": config.min_silence_s,
@@ -400,12 +428,16 @@ def write_impingement(
 
 def fire_ntfy_alert(
     *,
-    aux5_dbfs: float,
+    content_return_dbfs: float | None = None,
+    aux5_dbfs: float | None = None,
     silent_for_s: float,
     config: L12SceneProbeConfig,
     notifier=None,
 ) -> None:
     """Best-effort ntfy notification. Falls back to logging only if missing."""
+    measured_dbfs = content_return_dbfs if content_return_dbfs is not None else aux5_dbfs
+    if measured_dbfs is None:
+        measured_dbfs = float("-inf")
     if notifier is None:
         try:
             from agents._notify import send_notification
@@ -414,9 +446,10 @@ def fire_ntfy_alert(
         except ImportError:
             log.warning("ntfy unavailable; alert not delivered")
             return
-    title = "Broadcast: L-12 BROADCAST scene unloaded (expected BROADCAST-V2)"
+    title = "Broadcast: L-12 BROADCAST scene wet return silent (expected BROADCAST-V2)"
     message = (
-        f"AUX5 silent ({aux5_dbfs:.1f} dBFS) for {silent_for_s / 60.0:.1f} min "
+        f"AUX8/9 content return silent ({measured_dbfs:.1f} dBFS) "
+        f"for {silent_for_s / 60.0:.1f} min "
         f"while music sink RUNNING. Load BROADCAST-V2 on the L-12 — broadcast "
         f"egress is dead until the scene is loaded (operator-only fix).\n"
         f"Runbook: {RUNBOOK_ANCHOR}"
@@ -458,18 +491,18 @@ def fire_l12_scene_check_ntfy_alert(
 # ── Live probe orchestration (uses pw-cat + pactl) ───────────────────────────
 
 
-def sample_aux5_rms_dbfs(
+def sample_content_return_rms_dbfs(
     config: L12SceneProbeConfig,
     *,
     pw_cat_runner=None,
 ) -> float:
-    """Capture ``sample_window_s`` of audio and return AUX5 RMS in dBFS.
+    """Capture audio and return the louder AUX8/9 content-return RMS in dBFS.
 
     ``pw_cat_runner`` is an injection point for tests; default invokes
     pw-cat as a subprocess. Returns ``-inf`` if the capture fails or
     the source is absent (no signal is treated as silent for the
     accumulation logic — that's the correct behaviour: an absent
-    L-12 source is operationally identical to AUX5 cold).
+    L-12 source is operationally identical to content return being cold).
     """
     if pw_cat_runner is None:
         pw_cat_runner = _default_pw_cat_runner
@@ -478,11 +511,26 @@ def sample_aux5_rms_dbfs(
     except Exception:  # noqa: BLE001 — best-effort, treat failures as silent
         log.warning("pw-cat capture failed", exc_info=True)
         return float("-inf")
-    return channel_rms_dbfs(
+    left_dbfs = channel_rms_dbfs(
         pcm,
         channels=config.channels,
-        channel_index=config.aux5_channel_index,
+        channel_index=config.content_return_l_channel_index,
     )
+    right_dbfs = channel_rms_dbfs(
+        pcm,
+        channels=config.channels,
+        channel_index=config.content_return_r_channel_index,
+    )
+    return max(left_dbfs, right_dbfs)
+
+
+def sample_aux5_rms_dbfs(
+    config: L12SceneProbeConfig,
+    *,
+    pw_cat_runner=None,
+) -> float:
+    """Backward-compatible alias; the probe now samples AUX8/9 content return."""
+    return sample_content_return_rms_dbfs(config, pw_cat_runner=pw_cat_runner)
 
 
 def _default_pw_cat_runner(config: L12SceneProbeConfig) -> bytes:
@@ -667,11 +715,11 @@ def probe_l12_broadcast_scene(
     current = now if now is not None else time.time()
     state = load_state(cfg.state_path)
 
-    aux5_dbfs = sample_aux5_rms_dbfs(cfg, pw_cat_runner=pw_cat_runner)
+    content_return_dbfs = sample_content_return_rms_dbfs(cfg, pw_cat_runner=pw_cat_runner)
     music_running = is_music_sink_running(cfg.music_sink_name, pactl_runner=pactl_runner)
 
     outcome = evaluate_tick(
-        aux5_dbfs=aux5_dbfs,
+        content_return_dbfs=content_return_dbfs,
         music_running=music_running,
         now=current,
         state=state,
@@ -683,12 +731,12 @@ def probe_l12_broadcast_scene(
     if outcome.fired:
         write_impingement(
             cfg.impingements_file,
-            aux5_dbfs=outcome.aux5_dbfs,
+            content_return_dbfs=outcome.content_return_dbfs,
             silent_for_s=outcome.silent_for_s,
             config=cfg,
         )
         fire_ntfy_alert(
-            aux5_dbfs=outcome.aux5_dbfs,
+            content_return_dbfs=outcome.content_return_dbfs,
             silent_for_s=outcome.silent_for_s,
             config=cfg,
             notifier=notifier,
@@ -698,7 +746,8 @@ def probe_l12_broadcast_scene(
 
 
 __all__ = [
-    "DEFAULT_AUX5_CHANNEL_INDEX",
+    "DEFAULT_CONTENT_RETURN_L_CHANNEL_INDEX",
+    "DEFAULT_CONTENT_RETURN_R_CHANNEL_INDEX",
     "DEFAULT_L12_SCENE_CHECK_STATE_PATH",
     "DEFAULT_L12_TARGET",
     "DEFAULT_MIN_SILENCE_S",
@@ -720,6 +769,7 @@ __all__ = [
     "load_state",
     "probe_l12_broadcast_scene",
     "run_l12_scene_check_rotation",
+    "sample_content_return_rms_dbfs",
     "sample_aux5_rms_dbfs",
     "save_scene_check_rotation_state",
     "save_state",

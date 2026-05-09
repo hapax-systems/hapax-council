@@ -198,6 +198,10 @@ journalctl --user -u hapax-music-loudnorm.service --since '15 min ago' \
 - Broadcast surface goes silent (no music, no Hapax voice).
 - Zoom LiveTrak L-12 mixer's **BROADCAST-V2** scene is no longer the
   active scene (front-panel OLED shows a different scene name).
+- Health logs show content-return or voice-return silence:
+  `AUX8/9` is the content wet return and `AUX10/11` is the Hapax voice
+  wet return. `AUX10/11` alone is stale evidence and must not make this
+  scene green.
 - Often triggered by a power cycle or USB re-enumeration.
 
 ### Detection
@@ -207,6 +211,10 @@ journalctl --user -u hapax-music-loudnorm.service --since '15 min ago' \
 uv run scripts/hapax-audio-topology l12-scene-check config/audio-topology.yaml
 ```
 
+The check is expected to fail closed when either pair is actually silent.
+If only one pair is intentionally idle, leave the health blocked unless a
+separate authority explicitly authorizes an idle-mode exception.
+
 ### 1-command recovery
 
 Operator action — load BROADCAST-V2 scene from the L-12 front panel:
@@ -215,6 +223,11 @@ Operator action — load BROADCAST-V2 scene from the L-12 front panel:
 2. Select `BROADCAST-V2`.
 3. Press `SELECT` / `LOAD`.
 4. Verify the OLED shows `BROADCAST-V2`.
+5. Physically inspect the wet-return cabling/levels:
+   - MPC Out 1/2 -> L-12 CH9/10 -> USB AUX8/9 content return.
+   - MPC Out 3/4 -> L-12 CH11/12 -> USB AUX10/11 voice return.
+   - CH9/10 and CH11/12 are unmuted and at the stored scene levels.
+   - The L-12 USB capture still exposes 14 channels.
 
 (Software cannot remote-control L-12 scene loads; this is a
 hardware-only step. Cross-reference cc-task
