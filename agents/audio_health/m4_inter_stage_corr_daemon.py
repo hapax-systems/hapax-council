@@ -55,6 +55,8 @@ class PairState:
     breach_start: float | None = None
     breach_count: int = 0
     both_silent: bool = False
+    last_error: str | None = None
+    analyzer_error_count: int = 0
 
 
 @dataclass
@@ -130,6 +132,30 @@ def _emit_textfile(pairs: dict[str, PairState]) -> None:
             f"{1.0 if state.both_silent else 0.0}"
         )
 
+    lines.extend(
+        [
+            "# HELP hapax_audio_health_inter_stage_corr_analyzer_error 1 if the last analyzer tick failed",
+            "# TYPE hapax_audio_health_inter_stage_corr_analyzer_error gauge",
+        ]
+    )
+    for pair_name, state in pairs.items():
+        lines.append(
+            f'hapax_audio_health_inter_stage_corr_analyzer_error{{pair="{pair_name}"}} '
+            f"{1.0 if state.last_error else 0.0}"
+        )
+
+    lines.extend(
+        [
+            "# HELP hapax_audio_health_inter_stage_corr_analyzer_error_count Total analyzer/probe failures",
+            "# TYPE hapax_audio_health_inter_stage_corr_analyzer_error_count counter",
+        ]
+    )
+    for pair_name, state in pairs.items():
+        lines.append(
+            f'hapax_audio_health_inter_stage_corr_analyzer_error_count{{pair="{pair_name}"}} '
+            f"{state.analyzer_error_count}"
+        )
+
     try:
         textfile = DEFAULT_TEXTFILE_DIR / DEFAULT_TEXTFILE_BASENAME
         tmp = textfile.with_suffix(".tmp")
@@ -150,6 +176,8 @@ def _emit_snapshot(pairs: dict[str, PairState], *, now: float, path: Path) -> No
                 "correlation": s.last_correlation,
                 "breach_count": s.breach_count,
                 "both_silent": s.both_silent,
+                "analyzer_error": s.last_error,
+                "analyzer_error_count": s.analyzer_error_count,
             }
             for name, s in pairs.items()
         },
@@ -187,10 +215,84 @@ def _send_ntfy(pair: str, correlation: float) -> None:
         log.debug("ntfy send failed", exc_info=True)
 
 
-def run_daemon(config: M4DaemonConfig | None = None) -> None:
-    """Main daemon loop."""
+def _format_error(exc: BaseException | str | None) -> str:
+    if exc is None:
+        return "unknown analyzer failure"
+    if isinstance(exc, BaseException):
+        return f"{type(exc).__name__}: {exc}"
+    return exc
+
+
+def _mark_error(state: PairState, exc: BaseException | str | None) -> None:
+    state.last_error = _format_error(exc)
+    state.analyzer_error_count += 1
+
+
+def _probe_pair(
+    stage_a: str,
+    stage_b: str,
+    state: PairState,
+    config: M4DaemonConfig,
+    *,
+    now: float,
+) -> None:
+    """Run one M4 pair probe and record failures as health evidence."""
+
     import numpy as np
 
+    key = _pair_key(stage_a, stage_b)
+
+    try:
+        probe_cfg = ProbeConfig(duration_s=config.capture_duration_s)
+        result_a = capture_and_measure(f"{stage_a}.monitor", config=probe_cfg)
+        result_b = capture_and_measure(f"{stage_b}.monitor", config=probe_cfg)
+
+        if result_a is None or result_b is None:
+            _mark_error(state, "probe returned None")
+            return
+        if not result_a.ok:
+            _mark_error(state, f"{stage_a}: {result_a.error}")
+            return
+        if not result_b.ok:
+            _mark_error(state, f"{stage_b}: {result_b.error}")
+            return
+
+        samples_a = result_a.samples_mono_float
+        samples_b = result_b.samples_mono_float
+
+        rms_a = float(np.sqrt(np.mean(np.square(samples_a.astype(np.float64)))))
+        rms_b = float(np.sqrt(np.mean(np.square(samples_b.astype(np.float64)))))
+
+        if rms_a < config.silence_floor_rms and rms_b < config.silence_floor_rms:
+            state.last_error = None
+            state.both_silent = True
+            state.last_correlation = None
+            state.breach_start = None
+            return
+
+        state.last_error = None
+        state.both_silent = False
+        corr = compute_envelope_correlation(samples_a, samples_b)
+        state.last_correlation = corr
+
+        if corr < config.correlation_min:
+            if state.breach_start is None:
+                state.breach_start = now
+            elif (now - state.breach_start) >= config.breach_sustain_s:
+                state.breach_count += 1
+                log.warning("Signal lost between %s: corr=%.3f", key, corr)
+                if config.enable_ntfy:
+                    _send_ntfy(key, corr)
+                state.breach_start = now
+        else:
+            state.breach_start = None
+    except Exception as exc:
+        _mark_error(state, exc)
+        log.warning("probe tick failed for %s", key, exc_info=True)
+
+
+def run_daemon(config: M4DaemonConfig | None = None) -> None:
+    """Main daemon loop."""
     cfg = config or M4DaemonConfig.from_env()
 
     try:
@@ -223,52 +325,7 @@ def run_daemon(config: M4DaemonConfig | None = None) -> None:
         for stage_a, stage_b in cfg.stage_pairs:
             key = _pair_key(stage_a, stage_b)
             state = pair_states[key]
-
-            try:
-                probe_cfg = ProbeConfig(duration_s=cfg.capture_duration_s)
-                result_a = capture_and_measure(f"{stage_a}.monitor", config=probe_cfg)
-                result_b = capture_and_measure(f"{stage_b}.monitor", config=probe_cfg)
-
-                if (
-                    result_a is None
-                    or result_a.measurement is None
-                    or result_b is None
-                    or result_b.measurement is None
-                ):
-                    log.debug("probe returned None for %s or %s", stage_a, stage_b)
-                    continue
-
-                samples_a = result_a.measurement.samples_mono
-                samples_b = result_b.measurement.samples_mono
-
-                # Check silence floor
-                rms_a = float(np.sqrt(np.mean(np.square(samples_a.astype(np.float64)))))
-                rms_b = float(np.sqrt(np.mean(np.square(samples_b.astype(np.float64)))))
-
-                if rms_a < cfg.silence_floor_rms and rms_b < cfg.silence_floor_rms:
-                    state.both_silent = True
-                    state.last_correlation = None
-                    state.breach_start = None
-                    continue
-
-                state.both_silent = False
-                corr = compute_envelope_correlation(samples_a, samples_b)
-                state.last_correlation = corr
-
-                if corr < cfg.correlation_min:
-                    if state.breach_start is None:
-                        state.breach_start = now
-                    elif (now - state.breach_start) >= cfg.breach_sustain_s:
-                        state.breach_count += 1
-                        log.warning("Signal lost between %s: corr=%.3f", key, corr)
-                        if cfg.enable_ntfy:
-                            _send_ntfy(key, corr)
-                        state.breach_start = now
-                else:
-                    state.breach_start = None
-
-            except Exception:
-                log.warning("probe tick failed for %s", key, exc_info=True)
+            _probe_pair(stage_a, stage_b, state, cfg, now=now)
 
         _emit_textfile(pair_states)
         _emit_snapshot(pair_states, now=now, path=cfg.snapshot_path)

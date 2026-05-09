@@ -25,7 +25,7 @@ import shutil
 import subprocess
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final
 
 import numpy as np
@@ -82,6 +82,11 @@ class ProbeConfig:
 class ProbeResult:
     """One probe's findings: stage + raw measurement + classification.
 
+    ``samples_mono`` is the deliberately exposed decoded mono sample
+    buffer for analyzers that need waveform access. Derived
+    measurement fields stay on :class:`ProbeMeasurement`; callers must
+    not attach raw samples to the measurement object dynamically.
+
     ``error`` is set (with measurement zeroed) when capture fails — the
     daemon treats failures as "unknown" rather than "bad" so a transient
     parecord glitch doesn't ntfy the operator. Persistent failures show
@@ -96,10 +101,35 @@ class ProbeResult:
     captured_at: float
     duration_s: float
     error: str | None = None
+    samples_mono: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int16))
+
+    def __post_init__(self) -> None:
+        """Preserve legacy fixture construction that omitted raw samples."""
+
+        if self.samples_mono.size == 0 and self.measurement.sample_count > 0:
+            object.__setattr__(
+                self,
+                "samples_mono",
+                np.zeros(self.measurement.sample_count, dtype=np.int16),
+            )
 
     @property
     def ok(self) -> bool:
         return self.error is None
+
+    @property
+    def samples_mono_float(self) -> np.ndarray:
+        """Return mono samples as unit-normalized ``float64``.
+
+        ``parecord`` capture decodes to raw int16 mono samples. M2/M3/M4
+        analyzers operate on normalized floats, so this property is the
+        explicit conversion point instead of hidden dynamic attributes
+        on :class:`ProbeMeasurement`.
+        """
+
+        if np.issubdtype(self.samples_mono.dtype, np.integer):
+            return self.samples_mono.astype(np.float64) / 32768.0
+        return self.samples_mono.astype(np.float64, copy=False)
 
 
 def discover_broadcast_stages(
@@ -318,6 +348,7 @@ def capture_and_measure(
             stage=stage,
             classification=Classification.MUSIC_VOICE,
             measurement=empty,
+            samples_mono=np.zeros(0, dtype=np.int16),
             captured_at=started,
             duration_s=0.0,
             error=str(exc),
@@ -331,6 +362,7 @@ def capture_and_measure(
         stage=stage,
         classification=label,
         measurement=measurement,
+        samples_mono=samples,
         captured_at=started,
         duration_s=float(duration),
         error=None,
