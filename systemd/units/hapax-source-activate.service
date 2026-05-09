@@ -1,0 +1,17 @@
+[Unit]
+Description=Hapax source activation receipt/deploy refresh
+Documentation=file://%h/Documents/Personal/20-projects/hapax-requests/active/REQ-20260509013221-post-merge-source-activation-guarantee.md
+After=network-online.target
+Wants=network-online.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env bash -lc 'exec "$HOME/.local/bin/hapax-source-activate"'
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-source-activate
+MemoryMax=512M
+TimeoutStartSec=300
