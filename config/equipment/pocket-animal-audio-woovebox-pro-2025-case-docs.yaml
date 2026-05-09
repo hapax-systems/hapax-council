@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: pocket-animal-audio-woovebox-pro-2025-case-docs
+identity:
+  manufacturer: Pocket Animal
+  model: Pocket Animal Audio Woovebox Pro 2025, Case, Docs
+  category: case
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-02-21'
+  purchased_price_usd: 290.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

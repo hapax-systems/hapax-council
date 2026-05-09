@@ -1,0 +1,19 @@
+schema_version: 1
+device_id: olegtron-4060mk2-dreadbox-darkness-eqd-dba-time-shadows-2-mi
+identity:
+  manufacturer: Dreadbox
+  model: Olegtron 4060mk2 + dreadbox darkness + eqd/DBA time shadows 2 + midi adapter
+    2000
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-05-27'
+  purchased_price_usd: 490.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

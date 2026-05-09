@@ -19,6 +19,24 @@
         "receipt"
       ],
       "ward_id": "world-receipt-panel"
+    },
+    {
+      "id": "assertion-receipt-panel",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "AssertionReceiptWard",
+        "natural_w": 440,
+        "natural_h": 260
+      },
+      "update_cadence": "rate",
+      "rate_hz": 1.0,
+      "tags": [
+        "assertion",
+        "receipt",
+        "governance"
+      ],
+      "ward_id": "assertion-receipt"
     }
   ],
   "surfaces": [
@@ -34,6 +52,20 @@
       "effect_chain": [],
       "blend_mode": "over",
       "z_order": 900,
+      "update_cadence": "always"
+    },
+    {
+      "id": "assertion-receipt-surface",
+      "geometry": {
+        "kind": "rect",
+        "x": 1460,
+        "y": 16,
+        "w": 440,
+        "h": 260
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 950,
       "update_cadence": "always"
     },
     {
@@ -53,6 +85,13 @@
     {
       "source": "world-receipt-panel",
       "surface": "world-receipt-panel-surface",
+      "opacity": 1.0,
+      "non_destructive": true,
+      "render_stage": "post_fx"
+    },
+    {
+      "source": "assertion-receipt-panel",
+      "surface": "assertion-receipt-surface",
       "opacity": 1.0,
       "non_destructive": true,
       "render_stage": "post_fx"

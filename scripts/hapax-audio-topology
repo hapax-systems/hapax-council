@@ -488,6 +488,12 @@ def _classify_declared_missing_edge(
         classification = _classify_declared_missing_node(node)
         if classification:
             return f"depends-on-{classification}"
+    if target is not None and target.target_object == source_name:
+        return "filter-chain-target-object-port-shape"
+    if source is not None:
+        playback_target = source.params.get("playback_target")
+        if playback_target == target_name:
+            return "reconciler-port-level-link"
     return None
 
 
@@ -756,7 +762,7 @@ def _write_topology_prom(path: Path, payload: dict) -> None:
     lines.extend(
         [
             "# HELP hapax_audio_topology_tts_broadcast_path_ok "
-            "1 when hapax-tts-duck → hapax-tts-broadcast-* → livestream tap path is intact",
+            "1 when the MPC-first TTS wet-return path to livestream tap is intact",
             "# TYPE hapax_audio_topology_tts_broadcast_path_ok gauge",
             f"hapax_audio_topology_tts_broadcast_path_ok {tts_ok}",
         ]
@@ -1128,7 +1134,7 @@ def main() -> int:
 
     p_tts_broadcast = sub.add_parser(
         "tts-broadcast-check",
-        help="Verify hapax-tts-duck forwards through hapax-tts-broadcast-* to livestream tap.",
+        help="Verify TTS reaches livestream tap through the MPC-first L-12 wet-return path.",
     )
     p_tts_broadcast.add_argument(
         "--dump-file",

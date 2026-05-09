@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""Read-only quota/spend ledger validator."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+from typing import Any
+
+from pydantic import ValidationError
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.quota_spend_ledger import (
+    CapacityPool,
+    PaidRouteRequest,
+    QuotaSpendLedgerError,
+    build_dashboard,
+    evaluate_paid_route_eligibility,
+    load_quota_spend_ledger,
+)
+
+
+def _parse_now(raw: str | None) -> datetime | None:
+    if raw is None:
+        return None
+    value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("--now must be timezone-aware")
+    return value.astimezone(UTC)
+
+
+def _decimal(raw: str) -> Decimal:
+    try:
+        return Decimal(raw)
+    except InvalidOperation as exc:
+        raise argparse.ArgumentTypeError(f"invalid decimal: {raw}") from exc
+
+
+def _json_dump(value: Any) -> str:
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    return json.dumps(value, indent=2, sort_keys=True)
+
+
+def _markdown_dashboard(value: Any) -> str:
+    dashboard = value.model_dump(mode="json")
+    lines = ["# Quota/Spend Ledger Dashboard", ""]
+    for key in (
+        "quality_preserving_routes_available",
+        "subscription_quota_state",
+        "paid_api_budget_state",
+        "bootstrap_dependency_state",
+        "local_resource_state",
+        "provider_dependency_count",
+        "support_artifacts_waiting_for_review",
+        "budget_ledger_stale",
+        "paid_api_route_eligible",
+    ):
+        lines.append(f"- `{key}`: `{dashboard[key]}`")
+    if dashboard["non_green_states"]:
+        lines.append("- `non_green_states`: " + ", ".join(dashboard["non_green_states"]))
+    return "\n".join(lines) + "\n"
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--fixture",
+        type=Path,
+        required=True,
+        help="Path to the local quota/spend ledger JSON fixture.",
+    )
+    parser.add_argument("--now", default=None, help="ISO timestamp for deterministic checks.")
+    parser.add_argument("--dashboard-json", action="store_true", help="Print dashboard JSON.")
+    parser.add_argument(
+        "--dashboard-markdown",
+        action="store_true",
+        help="Print a compact markdown dashboard.",
+    )
+    parser.add_argument(
+        "--check-paid-route",
+        action="store_true",
+        help="Evaluate paid/API route eligibility and fail closed on refusal.",
+    )
+    parser.add_argument("--route-id", default=None)
+    parser.add_argument("--provider", default=None)
+    parser.add_argument("--profile", default=None)
+    parser.add_argument("--task-class", default=None)
+    parser.add_argument("--quality-floor", default=None)
+    parser.add_argument("--estimated-cost-usd", type=_decimal, default=None)
+    parser.add_argument("--capacity-pool", default=CapacityPool.API_PAID_SPEND.value)
+    return parser
+
+
+def _request_from_args(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> PaidRouteRequest:
+    missing = [
+        flag
+        for flag, value in {
+            "--route-id": args.route_id,
+            "--provider": args.provider,
+            "--profile": args.profile,
+            "--task-class": args.task_class,
+            "--quality-floor": args.quality_floor,
+            "--estimated-cost-usd": args.estimated_cost_usd,
+        }.items()
+        if value is None
+    ]
+    if missing:
+        parser.error("--check-paid-route requires " + ", ".join(missing))
+    return PaidRouteRequest(
+        route_id=args.route_id,
+        provider=args.provider,
+        profile=args.profile,
+        task_class=args.task_class,
+        quality_floor=args.quality_floor,
+        estimated_cost_usd=args.estimated_cost_usd,
+        capacity_pool=CapacityPool(args.capacity_pool),
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    try:
+        now = _parse_now(args.now)
+        ledger = load_quota_spend_ledger(args.fixture)
+        dashboard = build_dashboard(ledger, now=now)
+        eligibility = None
+        if args.check_paid_route:
+            request = _request_from_args(args, parser)
+            eligibility = evaluate_paid_route_eligibility(ledger, request, now=now)
+
+        if args.dashboard_json and eligibility is not None:
+            print(
+                _json_dump(
+                    {
+                        "dashboard": dashboard.model_dump(mode="json"),
+                        "eligibility": eligibility.model_dump(mode="json"),
+                    }
+                )
+            )
+        elif args.dashboard_json:
+            print(_json_dump(dashboard))
+        elif args.dashboard_markdown:
+            print(_markdown_dashboard(dashboard), end="")
+            if eligibility is not None:
+                print(f"\n`paid_route_eligible`: `{eligibility.eligible}`")
+        elif eligibility is not None:
+            print(_json_dump(eligibility))
+        else:
+            print("ok quota_spend_ledger_valid")
+
+        if eligibility is not None and not eligibility.eligible:
+            return 1
+        return 0
+    except (OSError, ValueError, ValidationError, QuotaSpendLedgerError) as exc:
+        print(f"invalid quota/spend ledger: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

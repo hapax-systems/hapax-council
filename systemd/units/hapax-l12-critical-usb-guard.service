@@ -1,0 +1,18 @@
+[Unit]
+# Hapax-Install-Scope: system
+Description=Hapax L-12 critical USB anti-suspend guard
+Documentation=file:///usr/local/bin/hapax-l12-critical-usb-guard
+Documentation=file:///home/hapax/projects/hapax-council/docs/runbooks/usb-s4-l12-topology-hardening.md
+After=systemd-udevd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/hapax-l12-critical-usb-guard
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/sys /dev/shm/hapax-usb
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target

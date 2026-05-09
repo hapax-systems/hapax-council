@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: dreadbox-typhon-analog-synthesizer-w-decksaver
+identity:
+  manufacturer: Dreadbox
+  model: Dreadbox Typhon Analog Synthesizer w/Decksaver
+  category: synthesizer
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-03-21'
+  purchased_price_usd: 350.0
+capabilities:
+- subtractive_synthesis
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

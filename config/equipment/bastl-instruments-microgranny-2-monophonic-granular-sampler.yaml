@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: bastl-instruments-microgranny-2-monophonic-granular-sampler
+identity:
+  manufacturer: BASTL
+  model: BASTL Instruments MicroGranny 2 Monophonic Granular Sampler
+  category: sampler
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-01-11'
+  purchased_price_usd: 180.0
+capabilities:
+- sample_playback
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

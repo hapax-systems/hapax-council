@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: fairfield-circuitry-pb-j-compact-patchbay-free-shipping-in-t
+identity:
+  manufacturer: Fairfield
+  model: Fairfield Circuitry PB&J  Compact Patchbay *Free Shipping in the USA*
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-06-12'
+  purchased_price_usd: 110.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

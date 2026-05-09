@@ -1,0 +1,95 @@
+schema_version: 1
+device_id: mpc-live-iii
+
+identity:
+  manufacturer: Akai Professional
+  model: MPC Live III
+  category: sampler
+  subcategories: [groovebox, sequencer, sampler, audio_interface]
+  form_factor: desktop
+  serial_number: null
+  firmware_version: null
+  firmware_update_method: usb_mass_storage
+  firmware_linux_risk: low
+  year_released: 2025
+  discontinued: false
+
+acquisition:
+  status: owned
+  purchased_date: "2026-02-16"
+  purchased_price_usd: 1525.00
+  purchased_from: reverb
+  purchased_condition: new
+  source_synced_at: "2026-05-09T12:00:00Z"
+
+specifications:
+  audio:
+    inputs:
+      - id: input-lr
+        type: stereo
+        connector: 1/4-TRS
+    outputs:
+      - id: main-out
+        type: stereo
+        connector: 1/4-TRS
+      - id: aux-out-1-2
+        type: stereo
+        connector: 1/4-TRS
+      - id: aux-out-3-4
+        type: stereo
+        connector: 1/4-TRS
+    sample_rates: [44100, 48000, 96000]
+    bit_depth: 24
+  midi:
+    transport: [usb, din5, trs_type_a]
+    channels_tx: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]
+    channels_rx: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]
+    clock_tx: true
+    clock_rx: true
+    program_change: true
+    alsa_card_name_pattern: "MPC_LIVE_III"
+  usb:
+    class: composite
+    speed: high_speed
+    bus_power: false
+    vid: null
+    pid: null
+  power:
+    source: dc_barrel
+    voltage_v: 19
+    current_ma: 3000
+
+capabilities:
+  - sample_playback
+  - sample_recording
+  - drum_pads
+  - step_sequencing
+  - midi_sequencing
+  - midi_clock_source
+  - midi_clock_sink
+  - usb_audio_interface
+  - audio_recording
+  - live_performance
+  - preset_recall
+  - effects_processing
+
+placement:
+  zone: main-desk
+  surface: desk-center
+  position_m: [0.6, 0.4, 0.0]
+
+connections:
+  - target: zoom-l12
+    type: audio
+    direction: send
+    port: ch5-6
+  - target: pc-ryzen
+    type: usb
+    direction: bidirectional
+  - target: midi-dispatch
+    type: midi
+    direction: bidirectional
+
+freshness:
+  last_verified_at: "2026-05-09T12:00:00Z"
+  specs_provenance: manual-extraction

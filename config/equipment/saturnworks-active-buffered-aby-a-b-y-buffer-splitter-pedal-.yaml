@@ -1,0 +1,19 @@
+schema_version: 1
+device_id: saturnworks-active-buffered-aby-a-b-y-buffer-splitter-pedal-
+identity:
+  manufacturer: Saturnworks
+  model: Saturnworks Active Buffered ABY A/B/Y Buffer Splitter Pedal with Phase Inversion
+    + Volume Controls - Handcrafted in California
+  category: effects_pedal
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-05-25'
+  purchased_price_usd: 118.15
+capabilities:
+- effects_processing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

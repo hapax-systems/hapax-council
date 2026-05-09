@@ -1,0 +1,106 @@
+schema_version: 1
+device_id: torso-s4
+
+identity:
+  manufacturer: Torso Electronics
+  model: S-4
+  category: synthesizer
+  subcategories: [granular, sampler, effects, sequencer]
+  form_factor: desktop
+  serial_number: "16558390"
+  firmware_version: null
+  firmware_update_method: usb_mass_storage
+  firmware_linux_risk: low
+  manual_url: null
+  year_released: 2023
+  discontinued: false
+
+acquisition:
+  status: owned
+  purchased_date: "2026-02-25"
+  purchased_price_usd: 900.00
+  purchased_from: reverb
+  purchased_condition: excellent
+  source_synced_at: "2026-05-09T12:00:00Z"
+
+specifications:
+  audio:
+    inputs:
+      - id: audio-in
+        type: stereo
+        connector: 3.5mm-TRS
+    outputs:
+      - id: main-out
+        type: stereo
+        connector: 3.5mm-TRS
+    sample_rates: [44100, 48000]
+    bit_depth: 24
+  midi:
+    transport: [usb, trs_type_a]
+    channels_tx: [1, 2, 3, 4]
+    channels_rx: [1, 2, 3, 4, 15, 16]
+    clock_tx: true
+    clock_rx: true
+    program_change: false
+    cc_map:
+      "46": speed
+      "47": tempo
+      "48": start_rotate
+      "49": length
+      "62": mosaic_pitch
+      "63": mosaic_rate
+      "64": mosaic_size
+      "78": ring_cutoff
+      "79": ring_resonance
+      "94": deform_drive
+      "110": vast_delay
+      "112": vast_reverb
+    alsa_card_name_pattern: "S-4"
+  usb:
+    class: composite
+    speed: full_speed
+    bus_power: true
+    vid: "0x16c0"
+    pid: "0x048a"
+  power:
+    source: usb
+    voltage_v: 5
+    current_ma: 500
+
+capabilities:
+  - granular_synthesis
+  - sample_playback
+  - effects_processing
+  - midi_clock_source
+  - midi_clock_sink
+  - usb_audio_interface
+  - audio_input_processing
+  - sequencing
+  - filtering
+  - reverb
+  - delay
+  - distortion
+  - midi_controllable
+
+placement:
+  zone: main-desk
+  surface: desk-left
+  position_m: [0.4, 0.5, 0.0]
+
+connections:
+  - target: midi-dispatch
+    type: midi
+    direction: receive
+    via: erica-synths-midi-dispatch
+  - target: zoom-l12
+    type: audio
+    direction: send
+    via: 3.5mm-to-dual-trs
+    port: ch7-8
+  - target: pc-ryzen
+    type: usb
+    direction: bidirectional
+
+freshness:
+  last_verified_at: "2026-05-09T12:00:00Z"
+  specs_provenance: manual-extraction-and-web-research

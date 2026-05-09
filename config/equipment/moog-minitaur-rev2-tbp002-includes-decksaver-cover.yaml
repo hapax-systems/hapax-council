@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: moog-minitaur-rev2-tbp002-includes-decksaver-cover
+identity:
+  manufacturer: Moog
+  model: Moog Minitaur Rev2 TBP002 - includes Decksaver Cover
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-03-14'
+  purchased_price_usd: 390.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

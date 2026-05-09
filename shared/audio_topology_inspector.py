@@ -150,7 +150,7 @@ class L12ForwardInvariantCheck:
 
 @dataclass(frozen=True)
 class SceneAssertion:
-    """Result of the live L-12 BROADCAST-V2 scene assertion."""
+    """Result of the live L-12 wet-return scene assertion."""
 
     ok: bool
     evidence: dict[str, Any]
@@ -163,10 +163,14 @@ class SceneAssertion:
         if scene:
             lines.append(f"expected_scene: {scene}")
         for key in (
-            "aux5_peak_dbfs",
+            "aux8_peak_dbfs",
+            "aux9_peak_dbfs",
+            "content_return_peak_dbfs",
             "aux10_peak_dbfs",
             "aux11_peak_dbfs",
-            "aux10_11_peak_dbfs",
+            "voice_return_peak_dbfs",
+            "content_return_state",
+            "voice_return_state",
             "duration_s",
             "target",
         ):
@@ -182,6 +186,8 @@ _REQUIRED_L12_DIRECTIONALITY_NODES = {
     "l12-usb-return",
     "livestream-tap",
     "l12-evilpet-capture",
+    "l12-usb-return-capture",
+    "mpc-usb-output",
     "private-sink",
     "private-monitor-capture",
     "private-monitor-output",
@@ -196,11 +202,8 @@ _REQUIRED_L12_DIRECTIONALITY_NODES = {
     "pc-loudnorm",
     "voice-fx",
     "tts-loudnorm",
-    "tts-duck",
-    "tts-broadcast-capture",
-    "tts-broadcast-playback",
 }
-_ALLOWED_L12_RETURN_PRODUCERS = {"tts-duck", "pc-loudnorm", "music-duck"}
+_ALLOWED_L12_RETURN_PRODUCERS: set[str] = set()
 _ALLOWED_L12_RETURN_DIRECTIONS = {"broadcast"}
 _PRIVATE_ONLY_ROOTS = {
     "role-assistant",
@@ -225,9 +228,6 @@ _PRIVATE_FORBIDDEN_REACHABILITY = {
     "pc-loudnorm",
     "voice-fx",
     "tts-loudnorm",
-    "tts-duck",
-    "tts-broadcast-capture",
-    "tts-broadcast-playback",
 }
 _PRIVATE_MONITOR_BRIDGES = {
     # Option C (2026-05-02 spec amendment): private-monitor bridges target
@@ -271,13 +271,13 @@ DEFAULT_L12_CAPTURE_TARGET = (
 DEFAULT_L12_SCENE_DURATION_S = 30.0
 DEFAULT_L12_SCENE_RATE = 48000
 DEFAULT_L12_SCENE_CHANNELS = 14
-L12_AUX5_PEAK_THRESHOLD_DBFS = -20.0
-L12_USB_RETURN_PEAK_THRESHOLD_DBFS = -10.0
+L12_CONTENT_RETURN_PEAK_THRESHOLD_DBFS = -10.0
+L12_VOICE_RETURN_PEAK_THRESHOLD_DBFS = -10.0
 _REQUIRED_L12_BROADCAST_ASSIGNMENTS = {
-    "CH1": "evil-pet-in-from-monitor-a",
-    "CH6": "evil-pet-return-aux5",
-    "CH11": "pc-l-out",
-    "CH12": "pc-r-out",
+    "CH9": "mpc-content-return-l",
+    "CH10": "mpc-content-return-r",
+    "CH11": "mpc-voice-return-l",
+    "CH12": "mpc-voice-return-r",
 }
 ParecRunner = Callable[[str, int, int, float], bytes]
 
@@ -527,39 +527,47 @@ def descriptor_from_dump_file(path: str | Path) -> TopologyDescriptor:
 def check_tts_broadcast_path(
     descriptor: TopologyDescriptor,
     *,
-    source_name: str = "hapax-tts-duck",
-    bridge_prefix: str = "hapax-tts-broadcast-",
+    source_name: str = "input.loopback.sink.role.broadcast",
+    voice_fx_name: str = "hapax-voice-fx-capture",
+    loudnorm_name: str = "hapax-loudnorm-capture",
+    mpc_output_name: str = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output",
+    wet_return_name: str = "hapax-l12-usb-return-capture",
     target_name: str = "hapax-livestream-tap",
+    master_name: str = "hapax-broadcast-master-capture",
 ) -> TtsBroadcastPathCheck:
-    """Verify TTS reaches the livestream tap in a parsed PipeWire graph.
+    """Verify broadcast TTS has the current MPC-first path to livestream.
 
-    The static config can declare the loopback while the live graph is still
-    missing one side after deployment/restart. This checks the live shape:
+    The retired software bridge was:
     ``hapax-tts-duck -> hapax-tts-broadcast-* -> hapax-livestream-tap``.
+    The current baseline is hardware-first:
+    ``role.broadcast -> voice-fx -> loudnorm -> MPC USB AUX2/3 -> MPC TRS
+    out 3/4 -> L-12 CH11/12 -> l12-usb-return-capture -> livestream-tap``.
+
+    ``pw-dump`` does not expose every port-level link in that chain as
+    descriptor edges, so this check treats the current path as healthy when
+    the required live nodes are present and the final tap-to-master edge is
+    visible. Exact port-level link enforcement remains the responsibility of
+    ``scripts/hapax-audio-routing-check`` and the reconciler link map.
     """
     by_name = {node.pipewire_name: node for node in descriptor.nodes}
-    bridge_nodes = [
-        node for node in descriptor.nodes if node.pipewire_name.startswith(bridge_prefix)
+    required_names = [
+        source_name,
+        voice_fx_name,
+        loudnorm_name,
+        mpc_output_name,
+        wet_return_name,
+        target_name,
+        master_name,
     ]
 
-    missing_nodes: list[str] = []
-    source = by_name.get(source_name)
-    if source is None:
-        missing_nodes.append(source_name)
-    target = by_name.get(target_name)
-    if target is None:
-        missing_nodes.append(target_name)
-    if not bridge_nodes:
-        missing_nodes.append(f"{bridge_prefix}*")
+    missing_nodes = [name for name in required_names if name not in by_name]
 
     edge_pairs = {(edge.source, edge.target) for edge in descriptor.edges}
     missing_edges: list[str] = []
-    if source is not None and bridge_nodes:
-        if not any((source.id, bridge.id) in edge_pairs for bridge in bridge_nodes):
-            missing_edges.append(f"{source_name} -> {bridge_prefix}*")
-    if target is not None and bridge_nodes:
-        if not any((bridge.id, target.id) in edge_pairs for bridge in bridge_nodes):
-            missing_edges.append(f"{bridge_prefix}* -> {target_name}")
+    target = by_name.get(target_name)
+    master = by_name.get(master_name)
+    if target is not None and master is not None and (target.id, master.id) not in edge_pairs:
+        missing_edges.append(f"{target_name} -> {master_name}")
 
     return TtsBroadcastPathCheck(
         ok=not missing_nodes and not missing_edges,
@@ -578,18 +586,19 @@ def check_l12_broadcast_scene_active(
     pcm_int16: bytes | np.ndarray | None = None,
     parec_runner: ParecRunner | None = None,
     expected_scene: str = DEFAULT_L12_SCENE_NAME,
-    aux5_threshold_dbfs: float = L12_AUX5_PEAK_THRESHOLD_DBFS,
-    usb_return_threshold_dbfs: float = L12_USB_RETURN_PEAK_THRESHOLD_DBFS,
+    content_return_threshold_dbfs: float = L12_CONTENT_RETURN_PEAK_THRESHOLD_DBFS,
+    voice_return_threshold_dbfs: float = L12_VOICE_RETURN_PEAK_THRESHOLD_DBFS,
 ) -> SceneAssertion:
-    """Verify the software-observable L-12 BROADCAST-V2 scene contract.
+    """Verify the software-observable L-12 wet-return scene contract.
 
     The L-12 does not expose its active scene name over USB. The best
     software-side assertion is therefore two-part:
 
     - the topology descriptor declares the expected hardware scene and
       load-bearing channel assignments; and
-    - a live multichannel capture during music playback shows the Evil Pet
-      return (AUX5 / CH6) and PC USB-return pair (AUX10/11 / CH11/12) hot.
+    - a live multichannel capture during programme playback shows both
+      current wet-return pairs hot: AUX8/9 content return from MPC Out 1/2
+      and AUX10/11 voice return from MPC Out 3/4.
 
     The default live probe uses ``parec`` against the L-12 multichannel
     source for 30 seconds. Tests pass ``pcm_int16`` or ``parec_runner`` to
@@ -643,13 +652,19 @@ def check_l12_broadcast_scene_active(
             pcm_int16 = b""
             violations.append(f"parec capture failed: {capture_error}")
 
-    aux5_index = _channel_index(positions, "AUX5", fallback=5)
+    aux8_index = _channel_index(positions, "AUX8", fallback=8)
+    aux9_index = _channel_index(positions, "AUX9", fallback=9)
     aux10_index = _channel_index(positions, "AUX10", fallback=10)
     aux11_index = _channel_index(positions, "AUX11", fallback=11)
-    aux5_peak = channel_peak_dbfs(
+    aux8_peak = channel_peak_dbfs(
         pcm_int16,
         channels=capture_channels,
-        channel_index=aux5_index,
+        channel_index=aux8_index,
+    )
+    aux9_peak = channel_peak_dbfs(
+        pcm_int16,
+        channels=capture_channels,
+        channel_index=aux9_index,
     )
     aux10_peak = channel_peak_dbfs(
         pcm_int16,
@@ -661,16 +676,35 @@ def check_l12_broadcast_scene_active(
         channels=capture_channels,
         channel_index=aux11_index,
     )
-    usb_return_peak = max(aux10_peak, aux11_peak)
+    content_return_peak = max(aux8_peak, aux9_peak)
+    voice_return_peak = max(aux10_peak, aux11_peak)
 
-    if aux5_peak < aux5_threshold_dbfs:
+    content_return_silent = (
+        aux8_peak < content_return_threshold_dbfs or aux9_peak < content_return_threshold_dbfs
+    )
+    voice_return_silent = (
+        aux10_peak < voice_return_threshold_dbfs or aux11_peak < voice_return_threshold_dbfs
+    )
+
+    if aux8_peak < content_return_threshold_dbfs:
         violations.append(
-            f"AUX5/CH6 peak {aux5_peak:.1f} dBFS below {aux5_threshold_dbfs:.1f} dBFS threshold"
+            f"AUX8 content return L peak {aux8_peak:.1f} dBFS below "
+            f"{content_return_threshold_dbfs:.1f} dBFS threshold"
         )
-    if usb_return_peak < usb_return_threshold_dbfs:
+    if aux9_peak < content_return_threshold_dbfs:
         violations.append(
-            f"AUX10/11 PC return peak {usb_return_peak:.1f} dBFS below "
-            f"{usb_return_threshold_dbfs:.1f} dBFS threshold"
+            f"AUX9 content return R peak {aux9_peak:.1f} dBFS below "
+            f"{content_return_threshold_dbfs:.1f} dBFS threshold"
+        )
+    if aux10_peak < voice_return_threshold_dbfs:
+        violations.append(
+            f"AUX10 voice return L peak {aux10_peak:.1f} dBFS below "
+            f"{voice_return_threshold_dbfs:.1f} dBFS threshold"
+        )
+    if aux11_peak < voice_return_threshold_dbfs:
+        violations.append(
+            f"AUX11 voice return R peak {aux11_peak:.1f} dBFS below "
+            f"{voice_return_threshold_dbfs:.1f} dBFS threshold"
         )
 
     evidence: dict[str, Any] = {
@@ -681,15 +715,20 @@ def check_l12_broadcast_scene_active(
         "expected_scene": expected_scene,
         "descriptor_expected_scene": descriptor_scene,
         "required_assignments": dict(_REQUIRED_L12_BROADCAST_ASSIGNMENTS),
-        "aux5_index": aux5_index,
+        "aux8_index": aux8_index,
+        "aux9_index": aux9_index,
         "aux10_index": aux10_index,
         "aux11_index": aux11_index,
-        "aux5_peak_dbfs": _finite_or_label(aux5_peak),
+        "aux8_peak_dbfs": _finite_or_label(aux8_peak),
+        "aux9_peak_dbfs": _finite_or_label(aux9_peak),
         "aux10_peak_dbfs": _finite_or_label(aux10_peak),
         "aux11_peak_dbfs": _finite_or_label(aux11_peak),
-        "aux10_11_peak_dbfs": _finite_or_label(usb_return_peak),
-        "aux5_threshold_dbfs": aux5_threshold_dbfs,
-        "usb_return_threshold_dbfs": usb_return_threshold_dbfs,
+        "content_return_peak_dbfs": _finite_or_label(content_return_peak),
+        "voice_return_peak_dbfs": _finite_or_label(voice_return_peak),
+        "content_return_state": "silent" if content_return_silent else "active",
+        "voice_return_state": "silent" if voice_return_silent else "active",
+        "content_return_threshold_dbfs": content_return_threshold_dbfs,
+        "voice_return_threshold_dbfs": voice_return_threshold_dbfs,
     }
     if capture_error:
         evidence["capture_error"] = capture_error
@@ -963,16 +1002,37 @@ def check_l12_forward_invariant(descriptor: TopologyDescriptor) -> L12ForwardInv
         violations.append(
             L12ForwardInvariantViolation(
                 code="broadcast_role_missing_livestream_forward_path",
-                message="role-broadcast must reach voice-fx, TTS loudnorm/duck, and livestream-tap",
+                message=(
+                    "role-broadcast must reach voice-fx, TTS loudnorm, "
+                    "MPC/L-12 wet return, and livestream-tap"
+                ),
             )
         )
 
-    tts_duck = node("tts-duck")
-    if tts_duck is not None:
-        forward_path = _param_words(tts_duck.params.get("broadcast_forward_path"))
+    tts_loudnorm = node("tts-loudnorm")
+    if tts_loudnorm is not None:
+        resolved_target_id = ref_to_id.get(tts_loudnorm.target_object or "")
+        if resolved_target_id != "mpc-usb-output":
+            violations.append(
+                L12ForwardInvariantViolation(
+                    code="tts_loudnorm_target_not_mpc_output",
+                    message=(
+                        "tts-loudnorm must target the MPC USB output under "
+                        "the hardware-first broadcast baseline"
+                    ),
+                )
+            )
+        if tts_loudnorm.params.get("playback_positions") != "AUX2 AUX3":
+            violations.append(
+                L12ForwardInvariantViolation(
+                    code="tts_loudnorm_mpc_pair_not_declared",
+                    message="tts-loudnorm must declare playback_positions=AUX2 AUX3",
+                )
+            )
+        forward_path = _param_words(tts_loudnorm.params.get("broadcast_forward_path"))
         expected_forward_path = [
-            "hapax-tts-broadcast-capture",
-            "hapax-tts-broadcast-playback",
+            "mpc-usb-output",
+            "l12-usb-return-capture",
             "hapax-livestream-tap",
         ]
         if forward_path != expected_forward_path:
@@ -980,16 +1040,19 @@ def check_l12_forward_invariant(descriptor: TopologyDescriptor) -> L12ForwardInv
                 L12ForwardInvariantViolation(
                     code="tts_broadcast_forward_path_not_declared",
                     message=(
-                        "tts-duck must declare broadcast_forward_path="
+                        "tts-loudnorm must declare broadcast_forward_path="
                         + " ".join(expected_forward_path)
                     ),
                 )
             )
-        if not _can_reach(graph, "tts-duck", "livestream-tap"):
+        if not _can_reach(graph, "tts-loudnorm", "livestream-tap"):
             violations.append(
                 L12ForwardInvariantViolation(
                     code="tts_l12_missing_livestream_forward_path",
-                    message=("tts-duck targets L-12 return but does not also reach livestream-tap"),
+                    message=(
+                        "tts-loudnorm targets the MPC/L-12 wet return path "
+                        "but does not also reach livestream-tap"
+                    ),
                 )
             )
 

@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""Keep the ZOOM LiveTrak L-12 critical USB path awake.
+
+The leaf L-12 USB device can already have ``power/control=on`` while its
+parent xHCI/root path remains runtime-suspendable. This guard discovers the
+L-12 by USB identity and pins each writable power node in its ancestry to
+``on`` with autosuspend disabled where the kernel exposes that knob.
+
+It is remediation, not health assertion: L-12 absence is still owned by the
+USB witness and audio topology assertion surfaces.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+L12_VENDOR = "1686"
+L12_PRODUCT = "03d5"
+L12_SERIAL = "8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF"
+DEFAULT_SYSFS_ROOT = Path("/sys")
+DEFAULT_STATE_PATH = Path("/dev/shm/hapax-usb/l12-critical-guard.json")
+PCI_DOMAIN_RE = re.compile(r"^pci[0-9a-fA-F]{4}:[0-9a-fA-F]{2}$")
+
+
+def read_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def write_text(path: Path, value: str, *, dry_run: bool, required: bool) -> dict[str, Any]:
+    before = read_text(path)
+    record: dict[str, Any] = {
+        "path": str(path),
+        "before": before,
+        "desired": value,
+        "required": required,
+        "wrote": False,
+        "error": None,
+    }
+    if dry_run:
+        record["wrote"] = path.exists()
+        return record
+    try:
+        path.write_text(f"{value}\n", encoding="utf-8")
+        record["after"] = read_text(path)
+        record["wrote"] = True
+    except OSError as exc:
+        record["error"] = str(exc)
+    return record
+
+
+def find_l12_devices(sysfs_root: Path) -> list[Path]:
+    devices_root = sysfs_root / "bus" / "usb" / "devices"
+    if not devices_root.exists():
+        return []
+    matches: list[Path] = []
+    for candidate in sorted(devices_root.iterdir()):
+        if not candidate.is_dir():
+            continue
+        vendor = read_text(candidate / "idVendor")
+        product = read_text(candidate / "idProduct")
+        serial = read_text(candidate / "serial")
+        if vendor == L12_VENDOR and product == L12_PRODUCT and serial == L12_SERIAL:
+            matches.append(candidate.resolve(strict=False))
+    return matches
+
+
+def power_ancestors(device: Path, sysfs_root: Path) -> list[Path]:
+    """Return device + parents with a power directory, stopping at sysfs root."""
+
+    root = (sysfs_root / "devices").resolve(strict=False)
+    current = device.resolve(strict=False)
+    out: list[Path] = []
+    seen: set[Path] = set()
+    while True:
+        if current in seen:
+            break
+        seen.add(current)
+        if current == root or PCI_DOMAIN_RE.match(current.name):
+            break
+        if (current / "power").is_dir():
+            out.append(current)
+        if current == current.parent:
+            break
+        try:
+            current.relative_to(root)
+        except ValueError:
+            break
+        current = current.parent
+    return out
+
+
+def guard_device(device: Path, sysfs_root: Path, *, dry_run: bool) -> dict[str, Any]:
+    actions: list[dict[str, Any]] = []
+    for node in power_ancestors(device, sysfs_root):
+        power = node / "power"
+        node_record: dict[str, Any] = {"node": str(node), "writes": []}
+        control = power / "control"
+        if control.exists():
+            node_record["writes"].append(write_text(control, "on", dry_run=dry_run, required=True))
+        delay = power / "autosuspend_delay_ms"
+        if delay.exists():
+            # Some PCI parent nodes expose this file but reject writes. That is
+            # useful evidence, not a service failure, as long as power/control
+            # is pinned to "on".
+            node_record["writes"].append(write_text(delay, "-1", dry_run=dry_run, required=False))
+        actions.append(node_record)
+    return {"device": str(device), "actions": actions}
+
+
+def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def maybe_reexec_with_sudo(sysfs_root: Path) -> None:
+    if os.geteuid() == 0:
+        return
+    if sysfs_root.resolve(strict=False) != DEFAULT_SYSFS_ROOT:
+        return
+    if os.environ.get("HAPAX_L12_GUARD_NO_SUDO") == "1":
+        return
+    os.execvp("sudo", ["sudo", "-n", sys.executable, *sys.argv])
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--sysfs-root", type=Path, default=DEFAULT_SYSFS_ROOT)
+    parser.add_argument("--state-path", type=Path, default=DEFAULT_STATE_PATH)
+    parser.add_argument("--require-present", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+
+    maybe_reexec_with_sudo(args.sysfs_root)
+
+    devices = find_l12_devices(args.sysfs_root)
+    payload: dict[str, Any] = {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "device_found": bool(devices),
+        "device_count": len(devices),
+        "vendor": L12_VENDOR,
+        "product": L12_PRODUCT,
+        "serial": L12_SERIAL,
+        "dry_run": args.dry_run,
+        "results": [],
+    }
+
+    for device in devices:
+        payload["results"].append(guard_device(device, args.sysfs_root, dry_run=args.dry_run))
+
+    atomic_write_json(args.state_path, payload)
+
+    if not devices and args.require_present:
+        print("hapax-l12-critical-usb-guard: L-12 not present", file=sys.stderr)
+        return 2
+    if not devices:
+        print("hapax-l12-critical-usb-guard: L-12 absent; status recorded")
+        return 0
+
+    errors = [
+        write["error"]
+        for result in payload["results"]
+        for action in result["actions"]
+        for write in action["writes"]
+        if write.get("error") and write.get("required")
+    ]
+    if errors:
+        print(f"hapax-l12-critical-usb-guard: completed with {len(errors)} write errors")
+        return 1
+
+    print(f"hapax-l12-critical-usb-guard: guarded {len(devices)} L-12 device(s)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: jhs-pedals-little-black-buffer-guitar-pedal
+identity:
+  manufacturer: JHS
+  model: JHS Pedals Little Black Buffer Guitar Pedal
+  category: effects_pedal
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-04-26'
+  purchased_price_usd: 74.8
+capabilities:
+- effects_processing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

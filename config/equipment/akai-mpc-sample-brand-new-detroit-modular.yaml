@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: akai-mpc-sample-brand-new-detroit-modular
+identity:
+  manufacturer: Akai
+  model: 'AKAI MPC SAMPLE : BRAND NEW :  [DETROIT MODULAR]'
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-03-26'
+  purchased_price_usd: 399.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync
