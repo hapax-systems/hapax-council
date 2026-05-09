@@ -3,4 +3,4 @@ Description=Disk space monitor — alert at 85%% and 95%%
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/projects/hapax-council/scripts/disk-space-check.sh
+ExecStart=%h/.local/bin/hapax-disk-space-check

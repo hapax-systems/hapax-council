@@ -6,7 +6,7 @@ After=network.target
 [Service]
 Type=oneshot
 WorkingDirectory=/home/hapax/projects/hapax-council
-ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-stream-auto-private
+ExecStart=%h/.local/bin/hapax-stream-auto-private
 Restart=no
 
 # The executive_function axiom compensation mechanism. See spec §5.

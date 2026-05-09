@@ -1,0 +1,230 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "resource-capability-calendar-dry-run-20260509",
+  "consumer_permission_after": "private_calendar_dry_run_tests_only",
+  "dry_run_packets": [
+    {
+      "schema_version": 1,
+      "packet_id": "calendar-dry-run:fixture",
+      "evaluated_at": "2026-05-09T08:00:00Z",
+      "authority_source": "isap:resource-capability-calendar-obligation-dry-run-20260509",
+      "generated_from": [
+        "shared/resource_capability.py",
+        "shared/resource_capability_correspondence.py",
+        "config/resource-capability-fixtures.json",
+        "config/resource-capability-correspondence-fixtures.json"
+      ],
+      "source_fixture_refs": [
+        "config/resource-capability-fixtures.json",
+        "config/resource-capability-correspondence-fixtures.json"
+      ],
+      "privacy_scope": "private",
+      "consumer_permission_after": "private_calendar_dry_run_tests_only",
+      "extractions": [
+        {
+          "extraction_id": "calendar-extraction:resource-expiry-credit",
+          "obligation_ref": "calendar-obligation:fixture-credit-expiry",
+          "envelope_ref": "calendar-write:fixture-private-blocked-default",
+          "source_signal_refs": ["rc-opportunity:aws-credit-observe-only"],
+          "source_kind": "resource_expiry",
+          "source_account": "resource-capability-fixtures",
+          "obligation_class": "expiry",
+          "date_time": "2026-12-31T23:59:00Z",
+          "timezone": "UTC",
+          "confidence": 0.95,
+          "authority_level": "draft_for_review",
+          "calendar_scope": "private_internal",
+          "attendee_policy": "blocked_none",
+          "notification_policy": "blocked_none",
+          "conference_data_policy": "blocked_none",
+          "availability_promise": false,
+          "idempotency_key": "calendar-obligation:fixture-credit-expiry::resource-expiry",
+          "evidence_refs": [
+            "evidence:fixture:aws-credit-offer",
+            "calendar-obligation:fixture-credit-expiry"
+          ]
+        },
+        {
+          "extraction_id": "calendar-extraction:correspondence-followup",
+          "obligation_ref": "calendar-obligation:fixture-credit-expiry",
+          "envelope_ref": "calendar-write:fixture-private-blocked-default",
+          "source_signal_refs": ["correspondence-classification:provider-notice-report-only"],
+          "source_kind": "correspondence_followup",
+          "source_account": "resource-capability-fixtures",
+          "obligation_class": "followup",
+          "date_time": "2026-06-08T00:00:00Z",
+          "timezone": "UTC",
+          "confidence": 0.95,
+          "authority_level": "escalate",
+          "calendar_scope": "private_internal",
+          "attendee_policy": "blocked_none",
+          "notification_policy": "blocked_none",
+          "conference_data_policy": "blocked_none",
+          "availability_promise": false,
+          "idempotency_key": "calendar-obligation:fixture-credit-expiry::correspondence-followup",
+          "evidence_refs": [
+            "correspondence-classification:provider-notice-report-only",
+            "calendar-obligation:fixture-credit-expiry"
+          ]
+        },
+        {
+          "extraction_id": "calendar-extraction:autonomy-debt-recurrence",
+          "obligation_ref": "calendar-obligation:fixture-credit-expiry",
+          "envelope_ref": "calendar-write:fixture-private-blocked-default",
+          "source_signal_refs": ["autonomy-debt:operator-terms-review"],
+          "source_kind": "autonomy_debt_recurrence",
+          "source_account": "resource-capability-fixtures",
+          "obligation_class": "recurrence",
+          "date_time": "2026-05-23T20:45:00Z",
+          "timezone": "UTC",
+          "confidence": 0.95,
+          "authority_level": "draft_for_review",
+          "calendar_scope": "private_internal",
+          "attendee_policy": "blocked_none",
+          "notification_policy": "blocked_none",
+          "conference_data_policy": "blocked_none",
+          "availability_promise": false,
+          "idempotency_key": "calendar-obligation:fixture-credit-expiry::autonomy-debt-recurrence",
+          "evidence_refs": [
+            "autonomy-debt:operator-terms-review",
+            "calendar-obligation:fixture-credit-expiry"
+          ]
+        },
+        {
+          "extraction_id": "calendar-extraction:semantic-trace-waiting",
+          "obligation_ref": "calendar-obligation:fixture-credit-expiry",
+          "envelope_ref": "calendar-write:fixture-private-blocked-default",
+          "source_signal_refs": ["semantic-trace:provider-waiting-escalation"],
+          "source_kind": "semantic_transaction_waiting_state",
+          "source_account": "resource-capability-fixtures",
+          "obligation_class": "waiting_state",
+          "date_time": "2026-05-15T00:00:00Z",
+          "timezone": "UTC",
+          "confidence": 0.95,
+          "authority_level": "escalate",
+          "calendar_scope": "private_internal",
+          "attendee_policy": "blocked_none",
+          "notification_policy": "blocked_none",
+          "conference_data_policy": "blocked_none",
+          "availability_promise": false,
+          "idempotency_key": "calendar-obligation:fixture-credit-expiry::semantic-trace-waiting",
+          "evidence_refs": [
+            "semantic-trace:provider-waiting-escalation",
+            "calendar-obligation:fixture-credit-expiry"
+          ]
+        }
+      ],
+      "proposed_events": [
+        {
+          "artifact_id": "calendar-event:resource-expiry-draft",
+          "from_extraction_id": "calendar-extraction:resource-expiry-credit",
+          "obligation_ref": "calendar-obligation:fixture-credit-expiry",
+          "envelope_ref": "calendar-write:fixture-private-blocked-default",
+          "proposed_summary": "Resource expiry: cloud credit observation window closes",
+          "proposed_start": "2026-12-31T23:59:00Z",
+          "proposed_end": null,
+          "timezone": "UTC",
+          "calendar_scope": "private_internal",
+          "attendee_policy": "blocked_none",
+          "notification_policy": "blocked_none",
+          "conference_data_policy": "blocked_none",
+          "availability_promise": false,
+          "authority_level": "draft_for_review",
+          "idempotency_key": "calendar-obligation:fixture-credit-expiry::resource-expiry",
+          "calendar_id": null,
+          "event_id": null,
+          "send_updates": "none",
+          "operator_review_required": true,
+          "fail_closed_reason": null,
+          "evidence_refs": [
+            "calendar-extraction:resource-expiry-credit",
+            "calendar-obligation:fixture-credit-expiry"
+          ]
+        },
+        {
+          "artifact_id": "calendar-event:correspondence-followup-escalation",
+          "from_extraction_id": "calendar-extraction:correspondence-followup",
+          "obligation_ref": "calendar-obligation:fixture-credit-expiry",
+          "envelope_ref": "calendar-write:fixture-private-blocked-default",
+          "proposed_summary": "Correspondence followup: expected correspondence envelope expires",
+          "proposed_start": "2026-06-08T00:00:00Z",
+          "proposed_end": null,
+          "timezone": "UTC",
+          "calendar_scope": "private_internal",
+          "attendee_policy": "blocked_none",
+          "notification_policy": "blocked_none",
+          "conference_data_policy": "blocked_none",
+          "availability_promise": false,
+          "authority_level": "escalate",
+          "idempotency_key": "calendar-obligation:fixture-credit-expiry::correspondence-followup",
+          "calendar_id": null,
+          "event_id": null,
+          "send_updates": "none",
+          "operator_review_required": true,
+          "fail_closed_reason": null,
+          "evidence_refs": [
+            "calendar-extraction:correspondence-followup",
+            "calendar-obligation:fixture-credit-expiry"
+          ]
+        },
+        {
+          "artifact_id": "calendar-event:autonomy-debt-recurrence-draft",
+          "from_extraction_id": "calendar-extraction:autonomy-debt-recurrence",
+          "obligation_ref": "calendar-obligation:fixture-credit-expiry",
+          "envelope_ref": "calendar-write:fixture-private-blocked-default",
+          "proposed_summary": "Autonomy debt recurrence: provider terms review next touch",
+          "proposed_start": "2026-05-23T20:45:00Z",
+          "proposed_end": null,
+          "timezone": "UTC",
+          "calendar_scope": "private_internal",
+          "attendee_policy": "blocked_none",
+          "notification_policy": "blocked_none",
+          "conference_data_policy": "blocked_none",
+          "availability_promise": false,
+          "authority_level": "draft_for_review",
+          "idempotency_key": "calendar-obligation:fixture-credit-expiry::autonomy-debt-recurrence",
+          "calendar_id": null,
+          "event_id": null,
+          "send_updates": "none",
+          "operator_review_required": true,
+          "fail_closed_reason": null,
+          "evidence_refs": [
+            "calendar-extraction:autonomy-debt-recurrence",
+            "calendar-obligation:fixture-credit-expiry"
+          ]
+        },
+        {
+          "artifact_id": "calendar-event:semantic-trace-waiting-escalation",
+          "from_extraction_id": "calendar-extraction:semantic-trace-waiting",
+          "obligation_ref": "calendar-obligation:fixture-credit-expiry",
+          "envelope_ref": "calendar-write:fixture-private-blocked-default",
+          "proposed_summary": "Waiting state: provider terms review pending operator action",
+          "proposed_start": "2026-05-15T00:00:00Z",
+          "proposed_end": null,
+          "timezone": "UTC",
+          "calendar_scope": "private_internal",
+          "attendee_policy": "blocked_none",
+          "notification_policy": "blocked_none",
+          "conference_data_policy": "blocked_none",
+          "availability_promise": false,
+          "authority_level": "escalate",
+          "idempotency_key": "calendar-obligation:fixture-credit-expiry::semantic-trace-waiting",
+          "calendar_id": null,
+          "event_id": null,
+          "send_updates": "none",
+          "operator_review_required": true,
+          "fail_closed_reason": null,
+          "evidence_refs": [
+            "calendar-extraction:semantic-trace-waiting",
+            "calendar-obligation:fixture-credit-expiry"
+          ]
+        }
+      ],
+      "evidence_refs": [
+        "config/resource-capability-fixtures.json",
+        "config/resource-capability-correspondence-fixtures.json",
+        "isap:resource-capability-calendar-obligation-dry-run-20260509"
+      ]
+    }
+  ]
+}

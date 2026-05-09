@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: analogman-bi-comprossor-hammered-metal-antique-silver-free-s
+identity:
+  manufacturer: Analogman
+  model: Analogman Bi-Comprossor Hammered Metal Antique Silver + Free Shipping
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-05-11'
+  purchased_price_usd: 450.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

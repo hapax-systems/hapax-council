@@ -12,7 +12,10 @@ INPUT="$(cat)"
 SESSION_ID="$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)"
 [ -z "$SESSION_ID" ] && exit 0
 
-COUNCIL_DIR="$HOME/projects/hapax-council"
+COUNCIL_DIR="$HOME/.cache/hapax/source-activation/worktree"
+if [ ! -d "$COUNCIL_DIR/.git" ]; then
+    COUNCIL_DIR="$HOME/projects/hapax-council"
+fi
 PID_DIR="$HOME/.cache/hapax/conductor"
 
 ROLE="$(hapax_agent_role_or_default alpha)"

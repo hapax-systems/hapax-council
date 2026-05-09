@@ -1,0 +1,616 @@
+{
+  "registry_schema": 1,
+  "registry_id": "hapax-platform-capability-registry",
+  "schema_ref": "schemas/platform-capability-registry.schema.json",
+  "declared_at": "2026-05-09T20:50:00Z",
+  "capacity_invariant": "Default to maximum appropriate quality-preserving utilization. No quality degradation is permitted. Capacity may be reduced only by task-platform fit, quota state, resource contention, or explicit operator hold.",
+  "generated_from": [
+    "scripts/hapax-methodology-dispatch --list-platform-paths",
+    "quality-preserving-capacity-routing-authority-case-draft-2026-05-09#R2"
+  ],
+  "required_route_ids": [
+    "antigrav.interactive.full",
+    "claude.headless.full",
+    "claude.headless.opus",
+    "claude.headless.sonnet",
+    "codex.headless.full",
+    "codex.headless.spark",
+    "gemini.headless.flash",
+    "gemini.headless.full",
+    "gemini.headless.lite",
+    "gemini.interactive.full",
+    "vibe.headless.full"
+  ],
+  "routes": [
+    {
+      "registry_schema": 1,
+      "route_id": "antigrav.interactive.full",
+      "platform": "antigrav",
+      "mode": "interactive",
+      "profile": "full",
+      "launcher": "~/.local/bin/hapax-antigrav --session <lane> --task <task>",
+      "summary": "Anthropic Antigravity IDE lane",
+      "notes": "IDE-bound JR+ path; no headless lane contract exists.",
+      "route_state": "blocked",
+      "blocked_reasons": ["fresh_capability_evidence_absent"],
+      "model_or_engine": "anthropic-antigravity-ide",
+      "auth_surface": "operator_session",
+      "capacity_pool": "subscription_quota",
+      "mutability": {
+        "vault_docs": true,
+        "source": true,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "frontier_review_required",
+      "tool_access": {
+        "filesystem": "read_write",
+        "shell": "full",
+        "browser": true,
+        "mcp": []
+      },
+      "privacy_posture": "unknown",
+      "quality_envelope": {
+        "eligible_quality_floors": ["frontier_review_required", "deterministic_ok"],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "governance_authority_case",
+          "privacy_secret_sensitive",
+          "runtime_mutation",
+          "provider_spend"
+        ]
+      },
+      "context_limits": {"max_context_class": "large"},
+      "telemetry": {"quota_source": "unknown", "cost_source": "none", "resource_source": "unknown"},
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": null,
+        "resource_stale_after": "5m",
+        "provider_docs_checked_at": null,
+        "provider_docs_stale_after": "30d"
+      },
+      "known_unknowns": ["Antigrav limits and telemetry are unknown."]
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "claude.headless.full",
+      "platform": "claude",
+      "mode": "headless",
+      "profile": "full",
+      "launcher": "~/.local/bin/hapax-claude-headless <lane> <governed-prompt>",
+      "summary": "Claude Code headless stream-json lane",
+      "notes": "Default frontier Claude path; requires governed headless enable latch and a validated task.",
+      "route_state": "blocked",
+      "blocked_reasons": ["fresh_capability_evidence_absent"],
+      "model_or_engine": "claude-code-default",
+      "auth_surface": "subscription",
+      "capacity_pool": "subscription_quota",
+      "mutability": {
+        "vault_docs": true,
+        "source": true,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "authoritative",
+      "tool_access": {
+        "filesystem": "read_write",
+        "shell": "full",
+        "browser": true,
+        "mcp": ["context7", "github", "hapax-mcp", "playwright"]
+      },
+      "privacy_posture": "provider_private",
+      "quality_envelope": {
+        "eligible_quality_floors": ["frontier_required", "frontier_review_required", "deterministic_ok"],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "runtime_mutation_without_isap",
+          "provider_spend",
+          "public_release_without_gate"
+        ]
+      },
+      "context_limits": {"max_context_class": "very_large"},
+      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": null,
+        "resource_stale_after": "5m",
+        "provider_docs_checked_at": null,
+        "provider_docs_stale_after": "30d"
+      },
+      "known_unknowns": ["Account-live subscription quota remains manually refreshed until telemetry adapter exists."]
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "claude.headless.opus",
+      "platform": "claude",
+      "mode": "headless",
+      "profile": "opus",
+      "launcher": "HAPAX_CLAUDE_MODEL=opus ~/.local/bin/hapax-claude-headless <lane> <governed-prompt>",
+      "summary": "Claude Opus headless stream-json lane",
+      "notes": "Use when architecture, governance, theory, or high-ambiguity work requires the strongest Claude profile.",
+      "route_state": "blocked",
+      "blocked_reasons": ["fresh_capability_evidence_absent"],
+      "model_or_engine": "claude-opus",
+      "auth_surface": "subscription",
+      "capacity_pool": "subscription_quota",
+      "mutability": {
+        "vault_docs": true,
+        "source": true,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "authoritative",
+      "tool_access": {
+        "filesystem": "read_write",
+        "shell": "full",
+        "browser": true,
+        "mcp": ["context7", "github", "hapax-mcp", "playwright"]
+      },
+      "privacy_posture": "provider_private",
+      "quality_envelope": {
+        "eligible_quality_floors": ["frontier_required", "frontier_review_required", "deterministic_ok"],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "runtime_mutation_without_isap",
+          "provider_spend",
+          "public_release_without_gate"
+        ]
+      },
+      "context_limits": {"max_context_class": "very_large"},
+      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": null,
+        "resource_stale_after": "5m",
+        "provider_docs_checked_at": null,
+        "provider_docs_stale_after": "30d"
+      },
+      "known_unknowns": ["Account-live subscription quota remains manually refreshed until telemetry adapter exists."]
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "claude.headless.sonnet",
+      "platform": "claude",
+      "mode": "headless",
+      "profile": "sonnet",
+      "launcher": "HAPAX_CLAUDE_MODEL=sonnet ~/.local/bin/hapax-claude-headless <lane> <governed-prompt>",
+      "summary": "Claude Sonnet headless stream-json lane",
+      "notes": "Use only when Sonnet is quality-equivalent for the bounded task or Opus capacity is blocked.",
+      "route_state": "blocked",
+      "blocked_reasons": ["fresh_capability_evidence_absent", "quality_equivalence_record_absent"],
+      "model_or_engine": "claude-sonnet",
+      "auth_surface": "subscription",
+      "capacity_pool": "subscription_quota",
+      "mutability": {
+        "vault_docs": true,
+        "source": true,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "frontier_review_required",
+      "tool_access": {
+        "filesystem": "read_write",
+        "shell": "full",
+        "browser": true,
+        "mcp": ["context7", "github", "hapax-mcp", "playwright"]
+      },
+      "privacy_posture": "provider_private",
+      "quality_envelope": {
+        "eligible_quality_floors": ["frontier_review_required", "deterministic_ok"],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "frontier_required_without_equivalence_record",
+          "governance_authority_case",
+          "privacy_secret_sensitive",
+          "runtime_mutation",
+          "provider_spend"
+        ]
+      },
+      "context_limits": {"max_context_class": "large"},
+      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": null,
+        "resource_stale_after": "5m",
+        "provider_docs_checked_at": null,
+        "provider_docs_stale_after": "30d"
+      },
+      "known_unknowns": ["Quality-equivalence records are task-class-specific and absent from this seed row."]
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "codex.headless.full",
+      "platform": "codex",
+      "mode": "headless",
+      "profile": "full",
+      "launcher": "scripts/hapax-codex --session <lane> --terminal tmux --task <task>",
+      "summary": "Codex full-capability tmux lane with methodology bootstrap",
+      "notes": "Default Codex SOP: GPT-5.5 xhigh from the Codex launcher.",
+      "route_state": "blocked",
+      "blocked_reasons": ["fresh_capability_evidence_absent"],
+      "model_or_engine": "gpt-5.5-xhigh",
+      "auth_surface": "subscription",
+      "capacity_pool": "subscription_quota",
+      "mutability": {
+        "vault_docs": true,
+        "source": true,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "authoritative",
+      "tool_access": {
+        "filesystem": "read_write",
+        "shell": "full",
+        "browser": true,
+        "mcp": ["context7", "github", "playwright", "tavily"]
+      },
+      "privacy_posture": "provider_private",
+      "quality_envelope": {
+        "eligible_quality_floors": ["frontier_required", "frontier_review_required", "deterministic_ok"],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "runtime_mutation_without_isap",
+          "provider_spend",
+          "public_release_without_gate"
+        ]
+      },
+      "context_limits": {"max_context_class": "very_large"},
+      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": null,
+        "resource_stale_after": "5m",
+        "provider_docs_checked_at": null,
+        "provider_docs_stale_after": "30d"
+      },
+      "known_unknowns": ["OpenAI/Codex subscription quota is partly opaque; fallback selection needs a separate quota receipt."]
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "codex.headless.spark",
+      "platform": "codex",
+      "mode": "headless",
+      "profile": "spark",
+      "launcher": "scripts/hapax-codex --session <lane> --terminal tmux --task <task> -- -c model=\"gpt-5.3-codex-spark\"",
+      "summary": "Codex Spark quota-wall tmux lane with methodology bootstrap",
+      "notes": "Use only when full Codex quota is blocked and Spark is quality-equivalent for the bounded task.",
+      "route_state": "blocked",
+      "blocked_reasons": ["fresh_capability_evidence_absent", "quality_equivalence_record_absent"],
+      "model_or_engine": "gpt-5.3-codex-spark",
+      "auth_surface": "subscription",
+      "capacity_pool": "subscription_quota",
+      "mutability": {
+        "vault_docs": true,
+        "source": true,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "frontier_review_required",
+      "tool_access": {
+        "filesystem": "read_write",
+        "shell": "full",
+        "browser": true,
+        "mcp": ["context7", "github", "playwright", "tavily"]
+      },
+      "privacy_posture": "provider_private",
+      "quality_envelope": {
+        "eligible_quality_floors": ["frontier_review_required", "deterministic_ok"],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "frontier_required_without_equivalence_record",
+          "governance_authority_case",
+          "privacy_secret_sensitive",
+          "runtime_mutation",
+          "provider_spend"
+        ]
+      },
+      "context_limits": {"max_context_class": "medium"},
+      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": null,
+        "resource_stale_after": "5m",
+        "provider_docs_checked_at": null,
+        "provider_docs_stale_after": "30d"
+      },
+      "known_unknowns": [
+        "Quality-equivalence records are task-class-specific and absent from this seed row.",
+        "Fallback use cannot be justified by unknown quota state."
+      ]
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "gemini.headless.flash",
+      "platform": "gemini",
+      "mode": "headless",
+      "profile": "flash",
+      "launcher": "scripts/hapax-gemini --role <lane> --terminal tmux -- --model gemini-3-flash-preview -p <governed-prompt>",
+      "summary": "Gemini Flash read-only quota/fallback headless sidecar",
+      "notes": "Spark analogue for quality-equivalent read-only research/review/extraction; mutation tasks must route elsewhere.",
+      "route_state": "blocked",
+      "blocked_reasons": ["fresh_capability_evidence_absent", "read_only_support_route"],
+      "model_or_engine": "gemini-3-flash-preview",
+      "auth_surface": "subscription",
+      "capacity_pool": "subscription_quota",
+      "mutability": {
+        "vault_docs": false,
+        "source": false,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "read_only",
+      "tool_access": {
+        "filesystem": "read_only",
+        "shell": "read_only",
+        "browser": true,
+        "mcp": []
+      },
+      "privacy_posture": "provider_private",
+      "quality_envelope": {
+        "eligible_quality_floors": ["deterministic_ok"],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "mutation_task",
+          "source_authority",
+          "runtime_mutation",
+          "public_release",
+          "provider_spend"
+        ]
+      },
+      "context_limits": {"max_context_class": "medium"},
+      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": null,
+        "resource_stale_after": "5m",
+        "provider_docs_checked_at": null,
+        "provider_docs_stale_after": "30d"
+      },
+      "known_unknowns": ["Gemini CLI subscription ceilings are labels only, not account-live telemetry."]
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "gemini.headless.full",
+      "platform": "gemini",
+      "mode": "headless",
+      "profile": "full",
+      "launcher": "scripts/hapax-gemini --role <lane> --terminal tmux -- -p <governed-prompt>",
+      "summary": "Gemini Pro plan-mode read-only headless sidecar",
+      "notes": "Read-only/plan-mode only; mutation tasks must route elsewhere.",
+      "route_state": "blocked",
+      "blocked_reasons": ["fresh_capability_evidence_absent", "read_only_support_route"],
+      "model_or_engine": "gemini-pro-cli-default",
+      "auth_surface": "subscription",
+      "capacity_pool": "subscription_quota",
+      "mutability": {
+        "vault_docs": false,
+        "source": false,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "read_only",
+      "tool_access": {
+        "filesystem": "read_only",
+        "shell": "read_only",
+        "browser": true,
+        "mcp": []
+      },
+      "privacy_posture": "provider_private",
+      "quality_envelope": {
+        "eligible_quality_floors": ["deterministic_ok"],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "mutation_task",
+          "source_authority",
+          "runtime_mutation",
+          "public_release",
+          "provider_spend"
+        ]
+      },
+      "context_limits": {"max_context_class": "large"},
+      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": null,
+        "resource_stale_after": "5m",
+        "provider_docs_checked_at": null,
+        "provider_docs_stale_after": "30d"
+      },
+      "known_unknowns": ["Gemini CLI subscription ceilings are labels only, not account-live telemetry."]
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "gemini.headless.lite",
+      "platform": "gemini",
+      "mode": "headless",
+      "profile": "lite",
+      "launcher": "scripts/hapax-gemini --role <lane> --terminal tmux -- --model gemini-3.1-flash-lite-preview -p <governed-prompt>",
+      "summary": "Gemini Flash-Lite read-only lowest-cost headless sidecar",
+      "notes": "Use only for quality-equivalent low-risk extraction/currentness packets; mutation tasks must route elsewhere.",
+      "route_state": "blocked",
+      "blocked_reasons": ["fresh_capability_evidence_absent", "read_only_support_route"],
+      "model_or_engine": "gemini-3.1-flash-lite-preview",
+      "auth_surface": "subscription",
+      "capacity_pool": "subscription_quota",
+      "mutability": {
+        "vault_docs": false,
+        "source": false,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "read_only",
+      "tool_access": {
+        "filesystem": "read_only",
+        "shell": "read_only",
+        "browser": true,
+        "mcp": []
+      },
+      "privacy_posture": "provider_private",
+      "quality_envelope": {
+        "eligible_quality_floors": ["deterministic_ok"],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "mutation_task",
+          "source_authority",
+          "runtime_mutation",
+          "public_release",
+          "provider_spend"
+        ]
+      },
+      "context_limits": {"max_context_class": "small"},
+      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": null,
+        "resource_stale_after": "5m",
+        "provider_docs_checked_at": null,
+        "provider_docs_stale_after": "30d"
+      },
+      "known_unknowns": ["Gemini CLI subscription ceilings are labels only, not account-live telemetry."]
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "gemini.interactive.full",
+      "platform": "gemini",
+      "mode": "interactive",
+      "profile": "full",
+      "launcher": "scripts/hapax-gemini --role <lane> --terminal tmux",
+      "summary": "Gemini plan-mode interactive lane",
+      "notes": "Read-only/plan-mode only; mutation tasks must route elsewhere.",
+      "route_state": "blocked",
+      "blocked_reasons": ["fresh_capability_evidence_absent", "read_only_support_route"],
+      "model_or_engine": "gemini-cli-default",
+      "auth_surface": "subscription",
+      "capacity_pool": "subscription_quota",
+      "mutability": {
+        "vault_docs": false,
+        "source": false,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "read_only",
+      "tool_access": {
+        "filesystem": "read_only",
+        "shell": "read_only",
+        "browser": true,
+        "mcp": []
+      },
+      "privacy_posture": "provider_private",
+      "quality_envelope": {
+        "eligible_quality_floors": ["deterministic_ok"],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "mutation_task",
+          "source_authority",
+          "runtime_mutation",
+          "public_release",
+          "provider_spend"
+        ]
+      },
+      "context_limits": {"max_context_class": "large"},
+      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": null,
+        "resource_stale_after": "5m",
+        "provider_docs_checked_at": null,
+        "provider_docs_stale_after": "30d"
+      },
+      "known_unknowns": ["Gemini CLI subscription ceilings are labels only, not account-live telemetry."]
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "vibe.headless.full",
+      "platform": "vibe",
+      "mode": "headless",
+      "profile": "full",
+      "launcher": "~/.local/bin/hapax-vibe --session <lane> --terminal tmux --task <task> --prompt <governed-prompt>",
+      "summary": "Mistral Vibe headless tmux one-shot lane",
+      "notes": "JR+ bounded worker path; task fit must exclude governance-critical or off-limits work.",
+      "route_state": "blocked",
+      "blocked_reasons": ["fresh_capability_evidence_absent", "quality_equivalence_record_absent"],
+      "model_or_engine": "mistral-vibe",
+      "auth_surface": "subscription",
+      "capacity_pool": "subscription_quota",
+      "mutability": {
+        "vault_docs": true,
+        "source": true,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "frontier_review_required",
+      "tool_access": {
+        "filesystem": "read_write",
+        "shell": "full",
+        "browser": true,
+        "mcp": []
+      },
+      "privacy_posture": "provider_private",
+      "quality_envelope": {
+        "eligible_quality_floors": ["frontier_review_required", "deterministic_ok"],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "frontier_required_without_equivalence_record",
+          "governance_authority_case",
+          "privacy_secret_sensitive",
+          "runtime_mutation",
+          "provider_spend"
+        ]
+      },
+      "context_limits": {"max_context_class": "medium"},
+      "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": null,
+        "resource_stale_after": "5m",
+        "provider_docs_checked_at": null,
+        "provider_docs_stale_after": "30d"
+      },
+      "known_unknowns": ["JR+ bounded worker path; governance-critical task fit must be excluded by policy layer."]
+    }
+  ]
+}

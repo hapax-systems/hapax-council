@@ -1,0 +1,19 @@
+schema_version: 1
+device_id: bastl-instruments-timber-black-panel-eurorack-wavefolder-and
+identity:
+  manufacturer: BASTL
+  model: Bastl Instruments TIMBER (Black Panel) Eurorack Wavefolder and Distortion
+    Module
+  category: effects_pedal
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-02-23'
+  purchased_price_usd: 205.0
+capabilities:
+- effects_processing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

@@ -60,7 +60,8 @@ def harness(tmp_path: Path) -> dict[str, Path]:
                                             the script must create it)
           state/                          -- script state dir
           shimbin/
-            systemctl, curl, logger       -- PATH-shadowing fakes that record
+            systemctl, curl, logger,
+            timeout                       -- PATH-shadowing fakes that record
                                             their calls into log.txt
           log.txt
     """
@@ -128,6 +129,22 @@ exit 0
 """
         )
         shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    timeout_shim = shimbin / "timeout"
+    timeout_shim.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s' "timeout" >> {log_file}
+for a in "$@"; do printf ' %s' "$a" >> {log_file}; done
+printf '\\n' >> {log_file}
+if [ -n "${{HAPAX_TEST_TIMEOUT_RC:-}}" ]; then
+  exit "$HAPAX_TEST_TIMEOUT_RC"
+fi
+while [ "$#" -gt 0 ] && [ "${{1#--}}" != "$1" ]; do shift; done
+if [ "$#" -gt 0 ]; then shift; fi
+exec "$@"
+"""
+    )
+    timeout_shim.chmod(timeout_shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
     return {
         "tmp_path": tmp_path,
@@ -204,6 +221,7 @@ def _run(
     service: str | None = None,
     pull_only: bool = False,
     repo_override: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     cmd = [
         "bash",
@@ -235,6 +253,8 @@ def _run(
             "NTFY_BASE_URL": "http://127.0.0.1:0",
         }
     )
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
 
 
@@ -362,6 +382,65 @@ def test_canonical_on_feature_branch_does_not_block_deploy(
     assert sha_file.exists(), "SHA_FILE must be written after a successful deploy"
     assert sha_file.read_text().strip() == new_sha, (
         f"SHA_FILE should be {new_sha}; got {sha_file.read_text().strip()}"
+    )
+
+
+def test_service_restart_is_wrapped_with_timeout(harness: dict[str, Path]) -> None:
+    """A single service restart must not be able to hang the whole chain."""
+    _add_remote_commit(harness, "agents/voice/voice.py", "# restart-timeout\n", "restart timeout")
+
+    result = _run(harness, service="hapax-daimonion.service")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    log = harness["log_file"].read_text() if harness["log_file"].exists() else ""
+    assert "timeout --kill-after=10s 60s systemctl --user restart hapax-daimonion.service" in log, (
+        f"restart must be wrapped by the timeout guard; log:\n{log}"
+    )
+
+
+def test_timed_out_restart_writes_sha_and_exits_nonzero(harness: dict[str, Path]) -> None:
+    """Timeout failures preserve failed-restart behavior and advance SHA state."""
+    new_sha = _add_remote_commit(
+        harness,
+        "agents/voice/voice.py",
+        "# restart-timeout-failure\n",
+        "restart timeout failure",
+    )
+
+    result = _run(
+        harness,
+        service="hapax-daimonion.service",
+        extra_env={"HAPAX_TEST_TIMEOUT_RC": "124"},
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+
+    log = harness["log_file"].read_text() if harness["log_file"].exists() else ""
+    assert "timeout --kill-after=10s 60s systemctl --user restart hapax-daimonion.service" in log, (
+        f"timeout wrapper should have been invoked; log:\n{log}"
+    )
+    assert "logger -t hapax-rebuild-voice hapax-daimonion.service restart failed" in log
+
+    sha_file = harness["state_dir"] / "last-voice-sha"
+    assert sha_file.exists(), "failed restart path should still record the attempted SHA"
+    assert sha_file.read_text().strip() == new_sha
+
+
+def test_restart_timeout_accepts_coreutils_duration_override(harness: dict[str, Path]) -> None:
+    """The env override accepts an explicit duration, not only bare seconds."""
+    _add_remote_commit(
+        harness, "agents/voice/voice.py", "# restart-timeout-override\n", "timeout override"
+    )
+
+    result = _run(
+        harness,
+        service="hapax-daimonion.service",
+        extra_env={"HAPAX_REBUILD_RESTART_TIMEOUT_SEC": "2m"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    log = harness["log_file"].read_text() if harness["log_file"].exists() else ""
+    assert "timeout --kill-after=10s 2m systemctl --user restart hapax-daimonion.service" in log, (
+        f"duration override should be passed through without appending seconds; log:\n{log}"
     )
 
 

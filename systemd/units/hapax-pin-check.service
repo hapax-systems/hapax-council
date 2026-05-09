@@ -16,7 +16,7 @@ WorkingDirectory=%h/projects/hapax-council
 # `hapax-audio-topology pin-check` with persisted state. Exit code 0
 # = healthy or recovery succeeded; exit 1 = PIN_GLITCH detected and
 # auto-fix declined or failed.
-ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-pin-check-probe.sh
+ExecStart=%h/.local/bin/hapax-pin-check-probe.sh
 # Allow the auto-fix path to invoke pactl set-card-profile twice (off
 # then on); brief but non-trivial.
 TimeoutStartSec=15s

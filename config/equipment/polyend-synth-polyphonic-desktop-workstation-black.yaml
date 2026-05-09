@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: polyend-synth-polyphonic-desktop-workstation-black
+identity:
+  manufacturer: Polyend
+  model: Polyend Synth Polyphonic Desktop Workstation - Black
+  category: synthesizer
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-05-05'
+  purchased_price_usd: 549.0
+capabilities:
+- subtractive_synthesis
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

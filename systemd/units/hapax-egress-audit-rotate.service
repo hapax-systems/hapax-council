@@ -2,7 +2,7 @@
 Description=hapax — daily rotate + prune of demonet egress audit JSONL
 Documentation=file:///home/hapax/projects/hapax-council/docs/superpowers/plans/2026-04-20-demonetization-safety-plan.md
 OnFailure=notify-failure@%n.service
-ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-egress-audit-rotate.sh
+ExecStart=%h/.local/bin/hapax-egress-audit-rotate.sh
 
 [Service]
 Type=oneshot

@@ -1,0 +1,14 @@
+[Unit]
+Description=Hapax Claude headless lane %i (methodology-dispatched)
+Documentation=file:///home/hapax/projects/hapax-council/scripts/hapax-methodology-dispatch
+ConditionPathExists=%h/.cache/hapax/enable-claude-headless
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-%h/.cache/hapax/claude-headless/%i.env
+ExecStart=/usr/bin/env bash -lc 'exec "$HOME/.local/bin/hapax-methodology-dispatch" --lane "%i" --platform claude --mode headless --task "${HAPAX_DISPATCH_TASK:?HAPAX_DISPATCH_TASK required in per-lane env}" --launch'
+Restart=no
+
+[Install]
+WantedBy=default.target

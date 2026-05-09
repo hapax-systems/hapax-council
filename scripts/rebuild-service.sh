@@ -202,6 +202,7 @@ fi
 : "${HAPAX_REBUILD_LOAD_MAX:=3.0}"      # load-avg per CPU core
 : "${HAPAX_REBUILD_SWAP_PCT_MAX:=50}"   # swap used as % of total
 : "${HAPAX_REBUILD_SKIP_GUARD:=0}"      # 1 to bypass the guard entirely
+: "${HAPAX_REBUILD_RESTART_TIMEOUT_SEC:=60}"  # bound any single systemd restart
 
 PRESSURE_REASON=""
 if [ "$HAPAX_REBUILD_SKIP_GUARD" != "1" ]; then
@@ -242,7 +243,13 @@ fi
 
 ntfy "$SERVICE restarting" "${LAST_SHA:0:8} → ${CURRENT_SHA:0:8}" "low" "hammer_and_wrench"
 
-systemctl --user restart "$SERVICE" 2>/dev/null || {
+RESTART_TIMEOUT_DURATION="$HAPAX_REBUILD_RESTART_TIMEOUT_SEC"
+if [[ "$RESTART_TIMEOUT_DURATION" =~ ^[0-9]+$ ]]; then
+    RESTART_TIMEOUT_DURATION="${RESTART_TIMEOUT_DURATION}s"
+fi
+
+timeout --kill-after=10s "$RESTART_TIMEOUT_DURATION" \
+    systemctl --user restart "$SERVICE" 2>/dev/null || {
     logger -t "$LOG_TAG" "$SERVICE restart failed"
     ntfy "$SERVICE restart FAILED" "${CURRENT_SHA:0:8}" "high" "x"
     echo "$CURRENT_SHA" > "$SHA_FILE"

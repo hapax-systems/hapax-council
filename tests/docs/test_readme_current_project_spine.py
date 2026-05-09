@@ -206,15 +206,10 @@ class TestLicenseReconciliationStatusDoc:
         for surface in ("LICENSE", "NOTICE.md", "CITATION.cff", "codemeta.json"):
             assert surface in body
 
-    def test_doc_marks_operator_action_required(self) -> None:
+    def test_doc_marks_resolved(self) -> None:
         body = self.DOC.read_text(encoding="utf-8")
-        # The status doc explicitly defers the license decision to
-        # operator action; pin that framing.
-        assert "OPERATOR-ACTION REQUIRED" in body
+        assert "RESOLVED" in body
 
-    def test_doc_documents_both_paths(self) -> None:
+    def test_doc_declares_polyform_strict(self) -> None:
         body = self.DOC.read_text(encoding="utf-8")
-        # Path 1 (PolyForm Strict) and Path 2 (Apache 2.0) both
-        # documented so the operator's decision is informed.
         assert "PolyForm Strict 1.0.0" in body
-        assert "Apache 2.0" in body

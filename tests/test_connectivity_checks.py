@@ -25,7 +25,7 @@ from agents.health_monitor import (
 
 def test_connectivity_group_registered():
     assert "connectivity" in CHECK_REGISTRY
-    assert len(CHECK_REGISTRY["connectivity"]) == 8  # +1 for check_pi_fleet
+    assert len(CHECK_REGISTRY["connectivity"]) == 10  # +pi_fleet, +kdeconnect, +companion_fleet
 
 
 # ── check_tailscale ──────────────────────────────────────────────────────────

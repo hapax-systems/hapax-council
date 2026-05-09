@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: bastl-instruments-klik-audio-clock-sync-module
+identity:
+  manufacturer: BASTL
+  model: BASTL Instruments KLIK Audio Clock Sync Module
+  category: eurorack_module
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-01-11'
+  purchased_price_usd: 55.0
+capabilities:
+- cv_controllable
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

@@ -1,0 +1,17 @@
+[Unit]
+Description=Hapax audio self-perception loop — AVSDLC-002 normalized egress spectral tap
+After=pipewire.service pipewire-pulse.service
+Requires=pipewire-pulse.service
+ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
+
+[Service]
+Type=simple
+Environment=HAPAX_AUDIO_SELF_PERCEPTION_STAGE=hapax-broadcast-normalized
+WorkingDirectory=%h/.cache/hapax/rebuild/worktree
+ExecStart=%h/.local/bin/uv run python -m agents.audio_self_perception
+Restart=on-failure
+RestartSec=10
+MemoryMax=256M
+
+[Install]
+WantedBy=default.target

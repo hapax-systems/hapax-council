@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: ik-multimedia-iloud-micro-monitors-open-box
+identity:
+  manufacturer: IK Multimedia
+  model: IK Multimedia iLoud Micro Monitors - Open Box
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-12-28'
+  purchased_price_usd: 208.99
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

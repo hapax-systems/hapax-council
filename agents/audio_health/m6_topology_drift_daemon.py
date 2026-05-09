@@ -28,6 +28,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agents.audio_health.service_loop import interruptible_sleep
+
 log = logging.getLogger(__name__)
 
 # Topology-affecting module kinds to track
@@ -342,7 +344,7 @@ def run_daemon(config: M6DaemonConfig | None = None) -> None:
 
         elapsed = time.time() - now
         sleep_time = max(1.0, cfg.probe_interval_s - elapsed)
-        time.sleep(sleep_time)
+        interruptible_sleep(sleep_time, lambda: shutdown)
 
     log.info("M6 topology drift daemon shutting down")
 

@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "fixture_set_id": "resource-capability-dispatch-active-metrics-20260509",
+  "consumer_permission_after": "private_internal_recommendation_tests_only",
+  "dispatch_packets": [
+    {
+      "schema_version": 1,
+      "packet_id": "resource-dispatch:metrics:fixture",
+      "evaluated_at": "2026-05-09T00:00:14Z",
+      "authority_source": "isap:resource-capability-dispatch-active-metrics-20260509",
+      "generated_from": [
+        "shared/resource_capability.py",
+        "shared/resource_capability_dashboard.py",
+        "config/resource-capability-fixtures.json",
+        "config/resource-capability-dashboard-fixtures.json"
+      ],
+      "source_fixture_refs": [
+        "config/resource-capability-fixtures.json",
+        "config/resource-capability-backfill-fixtures.json",
+        "config/resource-capability-dashboard-fixtures.json"
+      ],
+      "privacy_scope": "private",
+      "consumer_permission_after": "private_internal_recommendation_tests_only",
+      "metric_evaluations": [
+        {
+          "evaluation_id": "metric-eval:operator-touch-gate-pass",
+          "measurement_contract_ref": "metric:operator-touch-count",
+          "dashboard_row_ref": "dashboard-row:autonomy-debt-operator-touch",
+          "source_snapshot_ref": "resource-dashboard:observe-only:fixture",
+          "action_class": "gate",
+          "evidence_refs": [
+            "brief:req-rc-013",
+            "autonomy-debt:operator-terms-review",
+            "dashboard-row:autonomy-debt-operator-touch"
+          ],
+          "threshold_basis": "operator_touch_count is represented by an autonomy debt event and can draft internal reduction work",
+          "state": "passed",
+          "eligible_for_internal_followup": true,
+          "hold_or_block_required": false,
+          "fail_closed_reason": null
+        },
+        {
+          "evaluation_id": "metric-eval:blocked-stale-conflicts",
+          "measurement_contract_ref": "metric:operator-touch-count",
+          "dashboard_row_ref": "dashboard-row:blocked-stale-conflicts",
+          "source_snapshot_ref": "resource-dashboard:observe-only:fixture",
+          "action_class": "gate",
+          "evidence_refs": [
+            "brief:req-rc-013",
+            "dashboard-row:blocked-stale-conflicts",
+            "stale-conflict:stripe-refusal-vs-payment-link-wiring"
+          ],
+          "threshold_basis": "stale conflict rows remain blocked until a later reconciliation authority packet exists",
+          "state": "blocked_stale_conflict",
+          "eligible_for_internal_followup": false,
+          "hold_or_block_required": true,
+          "fail_closed_reason": "dashboard row carries stale conflict refs"
+        },
+        {
+          "evaluation_id": "metric-eval:unbacked-growth-metric",
+          "measurement_contract_ref": "metric:unbacked-growth-claim",
+          "dashboard_row_ref": "dashboard-row:account-resource-growth",
+          "source_snapshot_ref": "resource-dashboard:observe-only:fixture",
+          "action_class": "observe",
+          "evidence_refs": [
+            "dashboard-row:account-resource-growth",
+            "config/resource-capability-dashboard-fixtures.json"
+          ],
+          "threshold_basis": "resource growth cannot draft work without an explicit measurement contract",
+          "state": "missing_contract",
+          "eligible_for_internal_followup": false,
+          "hold_or_block_required": true,
+          "fail_closed_reason": "no MeasurementActionContract exists for this metric"
+        }
+      ],
+      "internal_followup_task_drafts": [
+        {
+          "draft_id": "task-draft:reduce-operator-terms-touch",
+          "recommendation_kind": "internal_followup_task_draft",
+          "from_evaluation_id": "metric-eval:operator-touch-gate-pass",
+          "measurement_contract_ref": "metric:operator-touch-count",
+          "dashboard_row_ref": "dashboard-row:autonomy-debt-operator-touch",
+          "title": "Reduce operator terms-review autonomy debt",
+          "objective": "Specify a later authority-safe path for reducing repeated manual terms-review touches.",
+          "rationale": "The measurement contract is authoritative and action-bearing, but this slice can only draft private internal work.",
+          "proposed_task_kind": "internal_followup_only",
+          "source_refs": [
+            "metric-eval:operator-touch-gate-pass",
+            "metric:operator-touch-count",
+            "autonomy-debt:operator-terms-review"
+          ],
+          "acceptance_criteria": [
+            "No provider terms are accepted automatically",
+            "No account, calendar, email, payment, or external action is authorized",
+            "Later authority packet names any source-of-truth mutation explicitly"
+          ],
+          "consumer_permission_after": "private_internal_recommendation_tests_only",
+          "internal_followup_task_draft_authorized": true,
+          "creates_vault_task": false,
+          "sends_to_coordinator": false
+        }
+      ],
+      "hold_block_recommendations": [
+        {
+          "recommendation_id": "hold:block-stale-payment-conflicts",
+          "recommendation_kind": "block_recommendation",
+          "from_evaluation_id": "metric-eval:blocked-stale-conflicts",
+          "measurement_contract_ref": "metric:operator-touch-count",
+          "dashboard_row_ref": "dashboard-row:blocked-stale-conflicts",
+          "decision_state": "blocked_stale_conflict",
+          "stale_conflict_refs": [
+            "stale-conflict:stripe-refusal-vs-payment-link-wiring",
+            "stale-conflict:omg-lol-pay-vaporware-vs-wired-code",
+            "stale-conflict:legacy-payment-processors-vs-receive-only-doctrine",
+            "stale-conflict:x402-path-a-vs-path-b-status"
+          ],
+          "reason": "Payment/support contradictions cannot be normalized into active resource capability without reconciliation.",
+          "required_later_authority": "stale-surface-reconciliation-isap",
+          "hold_block_recommendation_authorized": true,
+          "creates_vault_task": false,
+          "sends_to_coordinator": false
+        },
+        {
+          "recommendation_id": "hold:unbacked-growth-metric",
+          "recommendation_kind": "hold_recommendation",
+          "from_evaluation_id": "metric-eval:unbacked-growth-metric",
+          "measurement_contract_ref": "metric:unbacked-growth-claim",
+          "dashboard_row_ref": "dashboard-row:account-resource-growth",
+          "decision_state": "blocked",
+          "stale_conflict_refs": [],
+          "reason": "Growth evidence is visible, but no measurement contract authorizes action semantics.",
+          "required_later_authority": "measurement-contract-definition-isap",
+          "hold_block_recommendation_authorized": true,
+          "creates_vault_task": false,
+          "sends_to_coordinator": false
+        }
+      ],
+      "evidence_refs": [
+        "config/resource-capability-fixtures.json",
+        "config/resource-capability-dashboard-fixtures.json",
+        "isap:resource-capability-dispatch-active-metrics-20260509"
+      ]
+    }
+  ]
+}

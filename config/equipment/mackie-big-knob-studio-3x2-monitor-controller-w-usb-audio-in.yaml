@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: mackie-big-knob-studio-3x2-monitor-controller-w-usb-audio-in
+identity:
+  manufacturer: Mackie
+  model: Mackie Big Knob Studio 3x2 Monitor Controller w/ USB Audio Interface w/ WARRANTY
+  category: midi_controller
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-12-29'
+  purchased_price_usd: 151.99
+capabilities:
+- midi_keyboard
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

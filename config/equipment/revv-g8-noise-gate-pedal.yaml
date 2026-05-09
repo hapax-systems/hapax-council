@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: revv-g8-noise-gate-pedal
+identity:
+  manufacturer: Revv
+  model: Revv G8 Noise Gate Pedal
+  category: effects_pedal
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-06-01'
+  purchased_price_usd: 199.0
+capabilities:
+- effects_processing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

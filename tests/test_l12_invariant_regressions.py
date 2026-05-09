@@ -20,10 +20,10 @@ silence incidents**, so the same incidents cannot recur silently:
 
   - v1 (orphan voice_state probe): pinned via the COMPONENT_OWNERS
     test in tests/test_health_monitor_exploration.py (existing).
-  - v3 (TTS chain → L-12 only): pinned here — hapax-tts-duck.conf MUST
-    have BOTH the L-12 USB analog-surround write AND a sibling
-    libpipewire-module-loopback bridging hapax-tts-duck →
-    hapax-livestream-tap.
+  - v3 (TTS chain not reaching broadcast): pinned here against the
+    current MPC-first baseline — TTS loudnorm MUST route to MPC USB
+    AUX2/AUX3, the L-12 wet return MUST capture AUX8-AUX11, and the
+    retired software direct-to-tap bridge MUST remain forbidden.
   - v4 (broadcast TTS via separate Broadcast media-role): pinned here —
     50-hapax-voice-duck.conf MUST register loopback.sink.role.broadcast
     in the requires list.
@@ -41,12 +41,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from shared.audio_topology import TopologyDescriptor
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PIPEWIRE_DIR = REPO_ROOT / "config" / "pipewire"
 WIREPLUMBER_DIR = REPO_ROOT / "config" / "wireplumber"
+CANONICAL_TOPOLOGY = REPO_ROOT / "config" / "audio-topology.yaml"
+HAPAX_LINK_MAP = REPO_ROOT / "config" / "hapax" / "audio-link-map.conf"
+HAPAX_FORBIDDEN_LINKS = REPO_ROOT / "config" / "hapax" / "audio-forbidden-links.conf"
 
 L12_OUTPUT_NODE = (
     "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"
+)
+MPC_OUTPUT_NODE = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"
+L12_CAPTURE_NODE = (
+    "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"
 )
 
 
@@ -61,19 +70,32 @@ def _strip_comments(text: str) -> str:
     )
 
 
-def test_v3_tts_chain_has_both_l12_and_livestream_tap_paths() -> None:
-    """v3: hapax-tts-duck.conf must write to BOTH the L-12 USB output AND
-    hapax-livestream-tap. The 2026-04-26 silence incident happened because
-    the conf only had the L-12 path."""
-    conf = _read_conf(PIPEWIRE_DIR / "hapax-tts-duck.conf")
-    code = _strip_comments(conf)
-    assert L12_OUTPUT_NODE in code, (
-        "hapax-tts-duck.conf must keep the L-12 USB write path (operator monitoring on RL/RR)"
+def test_v3_tts_chain_routes_through_mpc_l12_wet_return() -> None:
+    """v3: TTS must reach broadcast through the current MPC/L-12 wet
+    return, not through the retired software direct-to-tap bridge."""
+    descriptor = TopologyDescriptor.from_yaml(CANONICAL_TOPOLOGY)
+    tts_loudnorm = descriptor.node_by_id("tts-loudnorm")
+    wet_return = descriptor.node_by_id("l12-usb-return-capture")
+    assert tts_loudnorm.target_object == MPC_OUTPUT_NODE
+    assert tts_loudnorm.params["playback_positions"] == "AUX2 AUX3"
+    assert (
+        tts_loudnorm.params["broadcast_forward_path"]
+        == "mpc-usb-output l12-usb-return-capture hapax-livestream-tap"
     )
-    assert 'target.object = "hapax-livestream-tap"' in code, (
-        "hapax-tts-duck.conf must keep the broadcast forward path; "
-        "removing it caused 2026-04-26 voice-silence incident v3"
-    )
+    assert wet_return.target_object == L12_CAPTURE_NODE
+    assert wet_return.params["capture_positions"] == "AUX8 AUX9 AUX10 AUX11"
+
+    link_map = _strip_comments(_read_conf(HAPAX_LINK_MAP))
+    for aux in ("AUX8", "AUX9", "AUX10", "AUX11"):
+        assert (
+            f"{L12_CAPTURE_NODE}:capture_{aux}|hapax-l12-usb-return-capture:input_{aux}" in link_map
+        )
+    assert "hapax-l12-usb-return-playback:output_FL|hapax-livestream-tap:playback_FL" in link_map
+    assert "hapax-l12-usb-return-playback:output_FR|hapax-livestream-tap:playback_FR" in link_map
+
+    forbidden = _strip_comments(_read_conf(HAPAX_FORBIDDEN_LINKS))
+    assert "hapax-tts-broadcast-playback:output_FL|hapax-livestream-tap:playback_FL" in forbidden
+    assert "hapax-tts-broadcast-playback:output_FR|hapax-livestream-tap:playback_FR" in forbidden
 
 
 def test_v4_broadcast_role_loopback_required_in_voice_duck() -> None:

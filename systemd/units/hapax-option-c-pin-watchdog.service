@@ -5,7 +5,7 @@ After=pipewire.service wireplumber.service pipewire-pulse.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/projects/hapax-council/scripts/option-c-repin.sh
+ExecStart=%h/.local/bin/hapax-option-c-repin
 TimeoutStartSec=10
 SuccessExitStatus=0
 

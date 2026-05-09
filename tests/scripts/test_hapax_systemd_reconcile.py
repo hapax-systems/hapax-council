@@ -60,6 +60,19 @@ class TestDryRun:
             # Drift detected — output must name at least one unit.
             assert "drift" in r.stdout.lower() or "Detected" in r.stdout
 
+    def test_dry_run_through_symlink_resolves_repo_root(self, tmp_path: Path) -> None:
+        """Regression: deployed invocation comes through ~/.local/bin symlink."""
+        linked_script = tmp_path / "hapax-systemd-reconcile.sh"
+        linked_script.symlink_to(SCRIPT)
+
+        r = subprocess.run([str(linked_script)], capture_output=True, text=True, timeout=30)
+
+        assert r.returncode in (0, 1), (
+            f"unexpected exit {r.returncode}; stdout={r.stdout!r} stderr={r.stderr!r}"
+        )
+        assert "not found" not in r.stderr
+        assert ".local/systemd/units" not in r.stderr
+
 
 class TestScriptNotes:
     def test_script_mentions_apply_vs_dry_run_semantics(self) -> None:

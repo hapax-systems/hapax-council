@@ -12,7 +12,7 @@ Pin the script's contract via mocked pactl output:
   L7: missing card exits 2
 
 The mocked-pactl approach: drop a stub `pactl` script into a tmp dir,
-prepend to PATH, run option-c-repin.sh against synthetic state.
+prepend to PATH, run hapax-option-c-repin against synthetic state.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = REPO_ROOT / "scripts" / "option-c-repin.sh"
+SCRIPT = REPO_ROOT / "scripts" / "hapax-option-c-repin"
 
 
 def _make_pactl_stub(
@@ -36,7 +36,7 @@ def _make_pactl_stub(
     set_profile_exit: int = 0,
 ) -> Path:
     """Write a stub `pactl` to tmp_path/bin/ that mimics the subset
-    option-c-repin.sh queries. Returns the bin dir to prepend to PATH."""
+    hapax-option-c-repin queries. Returns the bin dir to prepend to PATH."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     stub = bin_dir / "pactl"
@@ -120,7 +120,7 @@ class TestScriptShape:
     def test_script_exists_and_executable(self) -> None:
         assert SCRIPT.is_file()
         mode = SCRIPT.stat().st_mode
-        assert mode & stat.S_IXUSR, "option-c-repin.sh not executable"
+        assert mode & stat.S_IXUSR, "hapax-option-c-repin not executable"
 
     def test_bash_syntax_clean(self) -> None:
         result = subprocess.run(["bash", "-n", str(SCRIPT)], capture_output=True, text=True)
