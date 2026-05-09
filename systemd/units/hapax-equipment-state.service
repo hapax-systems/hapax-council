@@ -1,0 +1,9 @@
+[Unit]
+Description=Hapax equipment state writer
+Documentation=config/equipment/
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/hapax-council/scripts/equipment-state-writer
+Environment=PYTHONPATH=%h/projects/hapax-council
+TimeoutSec=30
