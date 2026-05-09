@@ -29,6 +29,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from shared.hermeneutic_spiral import (
+    compute_hermeneutic_delta,
+    persist_source_consequences,
+    retrieve_fore_understanding,
+)
 from shared.resident_command_r import (
     RESIDENT_COMMAND_R_MODEL,
     call_resident_command_r,
@@ -1277,6 +1282,21 @@ def prep_segment(
         script,
         actionability["beat_action_intents"],
     )
+    fore_understanding = retrieve_fore_understanding(topic=topic, role=role)
+    hermeneutic_deltas = compute_hermeneutic_delta(
+        source_consequence_map,
+        fore_understanding,
+        programme_id=prog_id,
+        role=role,
+        topic=topic,
+    )
+    persist_source_consequences(
+        source_consequence_map,
+        programme_id=prog_id,
+        role=role,
+        topic=topic,
+        prep_session_id=prep_session["prep_session_id"],
+    )
     live_event_viability = build_live_event_viability(
         script,
         actionability=actionability,
@@ -1496,6 +1516,10 @@ def prep_segment(
         "segment_quality_report": quality_report,
         "consultation_manifest": consultation_manifest,
         "source_consequence_map": source_consequence_map,
+        "fore_understanding": [
+            {k: v for k, v in p.items() if not k.startswith("_")} for p in fore_understanding
+        ],
+        "hermeneutic_deltas": [d.model_dump() for d in hermeneutic_deltas],
         "live_event_viability": live_event_viability,
         "readback_obligations": readback_obligations,
         "segment_prep_contract_version": SEGMENT_PREP_CONTRACT_VERSION,
