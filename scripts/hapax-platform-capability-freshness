@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Freshness-check the Hapax platform capability registry."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.platform_capability_registry import (  # noqa: E402
+    PLATFORM_CAPABILITY_REGISTRY,
+    PlatformCapabilityRegistryError,
+    check_registry_freshness,
+    load_platform_capability_registry,
+    normalize_route_id,
+)
+
+
+def parse_utc(value: str) -> datetime:
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(raw)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def print_json(payload: dict[str, Any]) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--registry",
+        type=Path,
+        default=PLATFORM_CAPABILITY_REGISTRY,
+        help="Registry JSON path",
+    )
+    parser.add_argument(
+        "--route",
+        action="append",
+        default=[],
+        help="Route id to check, e.g. codex.headless.full or codex/headless/full",
+    )
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    parser.add_argument("--now", help="Override check time as an ISO-8601 UTC timestamp")
+    args = parser.parse_args(argv)
+
+    try:
+        registry = load_platform_capability_registry(args.registry)
+    except PlatformCapabilityRegistryError as exc:
+        if args.json:
+            print_json({"ok": False, "error": str(exc)})
+        else:
+            print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+    route_ids = [normalize_route_id(route_id) for route_id in args.route]
+    now = parse_utc(args.now) if args.now else None
+    result = check_registry_freshness(registry, route_ids=route_ids or None, now=now)
+
+    if args.json:
+        print_json(result.to_dict())
+    else:
+        status = "OK" if result.ok else "BLOCKED"
+        print(f"{status}: checked {len(result.routes)} route(s)")
+        for route in result.routes:
+            route_status = "ok" if route.ok else "blocked"
+            print(f"{route.route_id}: {route_status}")
+            for error in route.errors:
+                print(f"  - {error}")
+
+    return 0 if result.ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
