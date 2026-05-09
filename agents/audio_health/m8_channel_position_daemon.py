@@ -29,6 +29,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agents.audio_health.service_loop import interruptible_sleep
+
 log = logging.getLogger(__name__)
 
 DEFAULT_PROBE_INTERVAL_S: float = 60.0  # 1 minute
@@ -299,7 +301,7 @@ def run_daemon(config: M8DaemonConfig | None = None) -> None:
 
         elapsed = time.time() - now
         sleep_time = max(1.0, cfg.probe_interval_s - elapsed)
-        time.sleep(sleep_time)
+        interruptible_sleep(sleep_time, lambda: shutdown)
 
     log.info("M8 channel-position daemon shutting down")
 

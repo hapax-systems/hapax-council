@@ -6,16 +6,17 @@ Documentation=file:///home/hapax/projects/hapax-council/docs/runbooks/audio-pipe
 # Ntfys on monitor-down transition. READ-ONLY: no service restarts.
 After=hapax-audio-signal-assertion.service
 Wants=hapax-audio-signal-assertion.service
+ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
 
 [Service]
-Type=notify
-NotifyAccess=main
-WorkingDirectory=%h/projects/hapax-council
+Type=simple
+NotifyAccess=all
+WorkingDirectory=%h/.cache/hapax/rebuild/worktree
 EnvironmentFile=-%h/.config/hapax/audio-health-meta.env
 ExecStart=%h/.local/bin/uv run python -m agents.audio_health_meta
 Restart=always
 RestartSec=15s
-WatchdogSec=300s
+WatchdogSec=0
 TimeoutStartSec=30s
 TimeoutStopSec=10s
 Nice=15

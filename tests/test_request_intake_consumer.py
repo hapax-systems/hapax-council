@@ -51,6 +51,7 @@ def _write_task(
     depends_on: list[str] | None = None,
     priority: str = "p2",
     wsjf: str | None = "1.0",
+    route_metadata: bool | dict[str, object] = True,
     created_at: str = "2026-05-08T15:00:00Z",
     updated_at: str = "2026-05-08T15:00:00Z",
 ) -> None:
@@ -67,6 +68,23 @@ def _write_task(
     frontmatter.append("depends_on:")
     for dep in depends_on or []:
         frontmatter.append(f"  - {dep}")
+    if route_metadata:
+        metadata = {
+            "route_metadata_schema": 1,
+            "quality_floor": "deterministic_ok",
+            "authority_level": "authoritative",
+            "mutation_surface": "source",
+            "mutation_scope_refs": ["test:isap"],
+        }
+        if isinstance(route_metadata, dict):
+            metadata.update(route_metadata)
+        for key, value in metadata.items():
+            if isinstance(value, list):
+                frontmatter.append(f"{key}:")
+                for item in value:
+                    frontmatter.append(f"  - {item}")
+            else:
+                frontmatter.append(f"{key}: {value}")
     frontmatter.extend(
         [
             f"authority_case: {authority_case}",
@@ -588,6 +606,67 @@ def test_dispatch_feed_includes_valid_offered_task(tmp_path: Path) -> None:
     assert dispatchable[0]["task_id"] == "T-020"
     assert dispatchable[0]["authority_case"] == "CASE-TEST-001"
     assert dispatchable[0]["wsjf"] == 7.5
+    assert dispatchable[0]["route_metadata"]["status"] == "explicit"
+    assert dispatchable[0]["route_metadata"]["quality_floor"] == "deterministic_ok"
+
+
+def test_dispatch_feed_holds_missing_quality_floor(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    tasks_active = tmp_path / "tasks" / "active"
+    tasks_active.mkdir(parents=True)
+    spec = tmp_path / "spec.md"
+    spec.write_text("spec", encoding="utf-8")
+
+    _write_request(active / "REQ-020B.md", "REQ-020B", status="accepted_for_planning")
+    _write_task(
+        tasks_active / "T-020B.md",
+        "T-020B",
+        parent_request=str(active / "REQ-020B.md"),
+        parent_spec=str(spec),
+        authority_case="CASE-TEST-001",
+        route_metadata=False,
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    assert data["dispatch"]["dispatchable_tasks"] == []
+    assert data["dispatch"]["route_metadata_summary"]["hold"] == 1
+    queue_item = data["dispatch"]["planning_queue"][0]
+    assert queue_item["task_id"] == "T-020B"
+    assert "missing_quality_floor" in queue_item["action_needed"]
+    assert queue_item["route_metadata"]["status"] == "hold"
+
+
+def test_dispatch_feed_holds_malformed_route_metadata(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    tasks_active = tmp_path / "tasks" / "active"
+    tasks_active.mkdir(parents=True)
+    spec = tmp_path / "spec.md"
+    spec.write_text("spec", encoding="utf-8")
+
+    _write_request(active / "REQ-020C.md", "REQ-020C", status="accepted_for_planning")
+    _write_task(
+        tasks_active / "T-020C.md",
+        "T-020C",
+        parent_request=str(active / "REQ-020C.md"),
+        parent_spec=str(spec),
+        authority_case="CASE-TEST-001",
+        route_metadata={"quality_floor": "not_a_floor"},
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    assert data["dispatch"]["dispatchable_tasks"] == []
+    assert data["dispatch"]["route_metadata_summary"]["malformed"] == 1
+    assert data["dispatch"]["planning_queue"][0]["route_metadata"]["status"] == "malformed"
 
 
 def test_dispatch_feed_excludes_task_without_authority_case(tmp_path: Path) -> None:

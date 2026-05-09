@@ -21,6 +21,8 @@ STALE_SECONDS="${HAPAX_REQUEST_STALE_SECONDS:-600}"
 TASKS_DIR="${HAPAX_CC_TASKS_DIR:-$HOME/Documents/Personal/20-projects/hapax-cc-tasks}"
 PLANNING_FEED_PATH="${HAPAX_PLANNING_FEED_STATE:-$HOME/.cache/hapax/planning-feed-state.json}"
 ACTIVE_CLAIMS_DIR="${HAPAX_CC_CLAIMS_DIR:-$HOME/.cache/hapax}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 STALE_CAPTURED_HOURS="${HAPAX_STALE_CAPTURED_HOURS:-24}"
 STALE_ASSIGNMENT_HOURS="${HAPAX_STALE_ASSIGNMENT_HOURS:-72}"
 STALE_CASE_HOURS="${HAPAX_STALE_CASE_HOURS:-168}"
@@ -131,6 +133,8 @@ build_dispatch_json() {
   ACTIVE_DIR="$ACTIVE_DIR" \
   TASKS_DIR="$TASKS_DIR" \
   ACTIVE_CLAIMS_DIR="$ACTIVE_CLAIMS_DIR" \
+  REPO_ROOT="$REPO_ROOT" \
+  PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}" \
   STALE_CAPTURED_HOURS="$STALE_CAPTURED_HOURS" \
   STALE_ASSIGNMENT_HOURS="$STALE_ASSIGNMENT_HOURS" \
   STALE_CASE_HOURS="$STALE_CASE_HOURS" \
@@ -144,6 +148,9 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+
+from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
+from shared.route_metadata_schema import assess_route_metadata
 
 requests_dir = Path(os.environ["ACTIVE_DIR"])
 tasks_dir = Path(os.environ["TASKS_DIR"])
@@ -160,41 +167,7 @@ thresholds = {
 
 
 def parse_frontmatter(path: Path) -> dict[str, object]:
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return {}
-    if not lines or lines[0].strip() != "---":
-        return {}
-    data: dict[str, object] = {}
-    current_key: str | None = None
-    for line in lines[1:]:
-        stripped = line.strip()
-        if stripped == "---":
-            break
-        if not stripped or stripped.startswith("#"):
-            continue
-        if current_key and re.match(r"^\s*-\s+", line):
-            value = re.sub(r"^\s*-\s+", "", line).strip().strip('"')
-            data.setdefault(current_key, [])
-            if isinstance(data[current_key], list):
-                data[current_key].append(value)
-            continue
-        current_key = None
-        match = re.match(r"^([A-Za-z0-9_-]+):\s*(.*)$", line)
-        if not match:
-            continue
-        key, raw = match.group(1), match.group(2).strip()
-        if raw == "":
-            data[key] = []
-            current_key = key
-        elif raw == "[]":
-            data[key] = []
-        elif raw.startswith("[") and raw.endswith("]"):
-            inner = raw[1:-1].strip()
-            data[key] = [] if not inner else [part.strip().strip('"') for part in inner.split(",")]
-        else:
-            data[key] = raw.strip('"')
+    data, _body = parse_document_frontmatter(path)
     return data
 
 
@@ -287,6 +260,7 @@ for task_dir in (tasks_dir / "active", tasks_dir / "closed"):
 
 dispatchable: list[dict[str, object]] = []
 planning_queue: list[dict[str, object]] = []
+route_metadata_summary = {"explicit": 0, "derived": 0, "hold": 0, "malformed": 0}
 
 for request_path in sorted(requests_dir.glob("*.md")):
     data = parse_frontmatter(request_path)
@@ -366,7 +340,9 @@ for task_path in sorted((tasks_dir / "active").glob("*.md")):
     parent_request = scalar(data, "parent_request")
     depends_on = list_value(data, "depends_on")
 
-    def queue_task(action: str, rank: int = 2) -> None:
+    def queue_task(
+        action: str, rank: int = 2, route_metadata: dict[str, object] | None = None
+    ) -> None:
         planning_queue.append(
             {
                 "item_type": "task",
@@ -377,6 +353,7 @@ for task_path in sorted((tasks_dir / "active").glob("*.md")):
                 "urgency_rank": rank,
                 "age_hours": age_hours(scalar(data, "created_at")),
                 "staleness": None,
+                "route_metadata": route_metadata,
             }
         )
 
@@ -392,6 +369,18 @@ for task_path in sorted((tasks_dir / "active").glob("*.md")):
     if any(dep not in closed_ids for dep in depends_on):
         continue
     if task_id in active_claims:
+        continue
+
+    route_assessment = assess_route_metadata(data)
+    route_metadata_summary[route_assessment.status.value] += 1
+    route_metadata_status = route_assessment.planning_status()
+    if not route_assessment.dispatchable:
+        reasons = (
+            route_assessment.hold_reasons
+            or route_assessment.validation_errors
+            or ["invalid_route_metadata"]
+        )
+        queue_task(f"route metadata hold: {', '.join(reasons)}", 2, route_metadata_status)
         continue
 
     try:
@@ -413,6 +402,7 @@ for task_path in sorted((tasks_dir / "active").glob("*.md")):
             "kind": scalar(data, "kind") or scalar(data, "task_type"),
             "risk_tier": scalar(data, "risk_tier") or scalar(data, "tier"),
             "tags": list_value(data, "tags"),
+            "route_metadata": route_metadata_status,
         }
     )
 
@@ -425,6 +415,7 @@ print(
             "readiness": "ready",
             "readiness_reason": None,
             "ranking_basis": "wsjf_v0",
+            "route_metadata_summary": route_metadata_summary,
             "dispatchable_count": len(dispatchable),
             "planning_attention_count": len(planning_queue),
             "dispatchable_tasks": dispatchable,

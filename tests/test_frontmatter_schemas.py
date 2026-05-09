@@ -9,9 +9,11 @@ from hypothesis import strategies as st
 from shared.frontmatter_schemas import (
     BridgePromptFrontmatter,
     BriefingFrontmatter,
+    CcTaskFrontmatter,
     DecisionFrontmatter,
     DigestFrontmatter,
     GoalsFrontmatter,
+    HapaxRequestFrontmatter,
     NudgeFrontmatter,
     RagSourceFrontmatter,
     validate_frontmatter,
@@ -106,6 +108,49 @@ class TestBridgePromptFrontmatter:
         fm = {"type": "bridge-prompt", "source": "system", "tags": ["bridge"]}
         result = validate_frontmatter(fm, BridgePromptFrontmatter)
         assert result.type == "bridge-prompt"
+
+
+class TestCcTaskFrontmatter:
+    def test_valid_with_optional_route_metadata(self):
+        fm = {
+            "type": "cc-task",
+            "task_id": "route-metadata-task",
+            "title": "Route Metadata Task",
+            "status": "offered",
+            "quality_floor": "deterministic_ok",
+            "authority_level": "authoritative",
+            "mutation_surface": "source",
+            "tags": ["cc-task"],
+        }
+        result = validate_frontmatter(fm, CcTaskFrontmatter)
+
+        assert result.type == "cc-task"
+        assert result.quality_floor == "deterministic_ok"
+
+    def test_missing_task_id_raises(self):
+        fm = {"type": "cc-task", "title": "Missing Task Id", "status": "offered"}
+        with pytest.raises(ValueError, match="CcTaskFrontmatter"):
+            validate_frontmatter(fm, CcTaskFrontmatter)
+
+
+class TestHapaxRequestFrontmatter:
+    def test_valid_with_optional_nested_route_metadata(self):
+        fm = {
+            "type": "hapax-request",
+            "request_id": "REQ-001",
+            "title": "Request",
+            "status": "captured",
+            "route_metadata": {"quality_floor": "frontier_required"},
+        }
+        result = validate_frontmatter(fm, HapaxRequestFrontmatter)
+
+        assert result.type == "hapax-request"
+        assert result.route_metadata == {"quality_floor": "frontier_required"}
+
+    def test_missing_request_id_raises(self):
+        fm = {"type": "hapax-request", "title": "Missing Request Id", "status": "captured"}
+        with pytest.raises(ValueError, match="HapaxRequestFrontmatter"):
+            validate_frontmatter(fm, HapaxRequestFrontmatter)
 
 
 class TestRagSourceFrontmatter:
