@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""Hear-stripe survival measurement (AVSDLC-002).
+
+Captures audio from the broadcast-normalized PipeWire bus, applies the
+OBS AAC + YouTube Opus codec chain, and compares spectral content to
+determine if the Evil Pet S-4 analog character survives compression.
+
+Requires active audio content (TTS speaking or music playing) during
+the capture window. Run during a live broadcast segment.
+
+Usage:
+    scripts/hear-stripe-measure [--duration 30] [--output-dir /tmp/hear-stripe]
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import numpy as np
+
+
+def _check_tools() -> bool:
+    for tool in ("pw-record", "ffmpeg"):
+        if not shutil.which(tool):
+            print(f"ERROR: {tool} not found", file=sys.stderr)
+            return False
+    return True
+
+
+def _capture(target: str, duration: int, output: Path, rate: int = 48000) -> bool:
+    """Capture audio from a PipeWire source via pw-record."""
+    try:
+        subprocess.run(
+            [
+                "pw-record",
+                f"--target={target}",
+                "--channels=2",
+                f"--rate={rate}",
+                str(output),
+            ],
+            timeout=duration + 5,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pass
+    return output.exists() and output.stat().st_size > 1000
+
+
+def _transcode(input_path: Path, output_path: Path, codec_args: list[str]) -> bool:
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-i", str(input_path), *codec_args, str(output_path)],
+        capture_output=True,
+        timeout=30,
+    )
+    return result.returncode == 0
+
+
+def _to_wav(input_path: Path, output_path: Path) -> bool:
+    return _transcode(input_path, output_path, ["-acodec", "pcm_f32le"])
+
+
+def _spectral_analysis(wav_path: Path) -> dict:
+    import soundfile as sf
+
+    data, sr = sf.read(str(wav_path))
+    if data.ndim == 2:
+        data = data.mean(axis=1)
+
+    n = len(data)
+    if n == 0:
+        return {"error": "empty signal"}
+
+    fft = np.fft.rfft(data)
+    mag = np.abs(fft) / n
+    freqs = np.fft.rfftfreq(n, 1.0 / sr)
+
+    def band_energy(lo: float, hi: float) -> float:
+        mask = (freqs >= lo) & (freqs < hi)
+        e = float(np.sum(mag[mask] ** 2))
+        return 10 * np.log10(e + 1e-20)
+
+    bands = {
+        "sub_bass_20_60": band_energy(20, 60),
+        "bass_60_250": band_energy(60, 250),
+        "low_mid_250_500": band_energy(250, 500),
+        "mid_500_2k": band_energy(500, 2000),
+        "upper_mid_2k_4k": band_energy(2000, 4000),
+        "presence_4k_6k": band_energy(4000, 6000),
+        "brilliance_6k_10k": band_energy(6000, 10000),
+        "air_10k_16k": band_energy(10000, 16000),
+        "ultra_16k_20k": band_energy(16000, 20000),
+    }
+
+    total_e = float(np.sum(mag**2))
+    hf_e = float(np.sum(mag[freqs >= 10000] ** 2))
+    bands["hf_ratio_pct"] = round(100 * hf_e / (total_e + 1e-20), 4)
+    bands["rms_db"] = round(10 * np.log10(float(np.mean(data**2)) + 1e-20), 2)
+    bands["duration_s"] = round(n / sr, 2)
+    bands["sample_rate"] = sr
+
+    return {k: round(float(v), 2) if isinstance(v, float) else v for k, v in bands.items()}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--duration", type=int, default=30)
+    parser.add_argument("--output-dir", type=Path, default=Path("/tmp/hear-stripe"))
+    parser.add_argument("--source", default="hapax-broadcast-normalized")
+    args = parser.parse_args()
+
+    if not _check_tools():
+        sys.exit(1)
+
+    out = args.output_dir
+    out.mkdir(parents=True, exist_ok=True)
+
+    print(f"Capturing {args.duration}s from {args.source}...")
+    raw = out / "pre-codec-raw.wav"
+    if not _capture(args.source, args.duration, raw):
+        print("ERROR: capture failed or empty", file=sys.stderr)
+        sys.exit(1)
+
+    pre = out / "pre-codec.wav"
+    _to_wav(raw, pre)
+
+    print("Applying AAC 160k encoding...")
+    aac = out / "aac-stage.m4a"
+    _transcode(pre, aac, ["-acodec", "aac", "-b:a", "160k"])
+    post_aac = out / "post-aac.wav"
+    _to_wav(aac, post_aac)
+
+    print("Applying Opus 128k encoding (YouTube transcode sim)...")
+    opus = out / "opus-stage.ogg"
+    _transcode(aac, opus, ["-acodec", "libopus", "-b:a", "128k"])
+    post_opus = out / "post-opus.wav"
+    _to_wav(opus, post_opus)
+
+    print("\nAnalyzing spectra...")
+    results = {}
+    for name, path in [
+        ("pre_codec", pre),
+        ("post_aac_160k", post_aac),
+        ("post_opus_128k", post_opus),
+    ]:
+        results[name] = _spectral_analysis(path)
+
+    if results["pre_codec"].get("rms_db", -200) < -80:
+        print(
+            "\nWARNING: Signal too quiet (RMS < -80 dB). Run during active TTS/music.",
+            file=sys.stderr,
+        )
+        print(
+            "Measurement inconclusive — broadcast chain was silent during capture.", file=sys.stderr
+        )
+        results["verdict"] = "INCONCLUSIVE — signal below measurement threshold"
+    else:
+        air_d = results["post_opus_128k"]["air_10k_16k"] - results["pre_codec"]["air_10k_16k"]
+        brill_d = (
+            results["post_opus_128k"]["brilliance_6k_10k"]
+            - results["pre_codec"]["brilliance_6k_10k"]
+        )
+        ultra_d = results["post_opus_128k"]["ultra_16k_20k"] - results["pre_codec"]["ultra_16k_20k"]
+
+        survive = abs(air_d) < 6 and abs(brill_d) < 3
+        results["verdict"] = "SURVIVES" if survive else "ATTENUATED"
+        results["deltas"] = {
+            "brilliance_6k_10k": round(brill_d, 2),
+            "air_10k_16k": round(air_d, 2),
+            "ultra_16k_20k": round(ultra_d, 2),
+        }
+
+    report_path = out / "hear-stripe-report.json"
+    report_path.write_text(json.dumps(results, indent=2) + "\n")
+    print(f"\nReport: {report_path}")
+    print(f"Verdict: {results['verdict']}")
+
+    print(f"\n{'Band':<25} {'Pre-codec':>10} {'Post-AAC':>10} {'Post-Opus':>10} {'Δ Opus':>10}")
+    print("-" * 65)
+    for band in [
+        "sub_bass_20_60",
+        "bass_60_250",
+        "low_mid_250_500",
+        "mid_500_2k",
+        "upper_mid_2k_4k",
+        "presence_4k_6k",
+        "brilliance_6k_10k",
+        "air_10k_16k",
+        "ultra_16k_20k",
+        "hf_ratio_pct",
+        "rms_db",
+    ]:
+        pre_v = results["pre_codec"].get(band, 0)
+        aac_v = results["post_aac_160k"].get(band, 0)
+        opus_v = results["post_opus_128k"].get(band, 0)
+        d = round(opus_v - pre_v, 2)
+        print(f"{band:<25} {pre_v:>10.2f} {aac_v:>10.2f} {opus_v:>10.2f} {d:>+10.2f}")
+
+
+if __name__ == "__main__":
+    main()
