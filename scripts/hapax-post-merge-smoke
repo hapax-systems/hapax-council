@@ -77,12 +77,26 @@ trap emit_failure_notice EXIT
 # enable/start PR; the deploy script copies them and daemon-reloads without
 # starting them.
 
+unit_install_scope() {
+    local f="$1"
+    local content
+    content="$(git show "${SHA}:$f" 2>/dev/null || true)"
+    if [ -n "$content" ] \
+        && grep -Eiq '^[#;][[:space:]]*Hapax-Install-Scope:[[:space:]]*system([[:space:]]*$|[[:space:]]+)' <<< "$content"; then
+        printf 'system\n'
+    else
+        printf 'user\n'
+    fi
+}
+
 gate_services_restarted() {
     local changed_units=()
     while IFS= read -r f; do
         case "$f" in
             systemd/units/*.service)
-                changed_units+=("$(basename "$f")")
+                if [ "$(unit_install_scope "$f")" != "system" ]; then
+                    changed_units+=("$(basename "$f")")
+                fi
                 ;;
         esac
     done <<< "$CHANGED_FILES"

@@ -21,6 +21,9 @@
 #   config/wireplumber/*.conf      → cp + restart wireplumber
 #   systemd/*.service|timer|path   → cp + daemon-reload + restart
 #   systemd/units/*.service|timer|path|target → cp + daemon-reload + restart
+#       unless the unit has `# Hapax-Install-Scope: system`, in which case
+#       it is system/root-scoped and must be installed by its dedicated
+#       installer rather than copied into the user unit directory.
 #   systemd/units/*.service.d/*.conf → cp drop-in + daemon-reload + restart active unit
 #   systemd/user-preset.d/*.preset → cp user preset
 #   systemd/overrides/**           → source/rationale docs only; no direct deploy
@@ -89,6 +92,7 @@ record_post_merge_trace() {
     HAPAX_TRACE_PW="$(_trace_join "${PW[@]}")" \
     HAPAX_TRACE_WP="$(_trace_join "${WP[@]}")" \
     HAPAX_TRACE_SYSTEMD="$(_trace_join "${SYSTEMD[@]}")" \
+    HAPAX_TRACE_SYSTEMD_SYSTEM="$(_trace_join "${SYSTEMD_SYSTEM[@]}")" \
     HAPAX_TRACE_SYSTEMD_DROPINS="$(_trace_join "${SYSTEMD_DROPINS[@]}")" \
     HAPAX_TRACE_USER_PRESETS="$(_trace_join "${USER_PRESETS[@]}")" \
     HAPAX_TRACE_WATCHDOGS="$(_trace_join "${WATCHDOGS[@]}")" \
@@ -126,6 +130,7 @@ deploy_groups = {
     "pipewire": lines("HAPAX_TRACE_PW"),
     "wireplumber": lines("HAPAX_TRACE_WP"),
     "systemd_units": lines("HAPAX_TRACE_SYSTEMD"),
+    "systemd_system_units": lines("HAPAX_TRACE_SYSTEMD_SYSTEM"),
     "systemd_dropins": lines("HAPAX_TRACE_SYSTEMD_DROPINS"),
     "systemd_user_presets": lines("HAPAX_TRACE_USER_PRESETS"),
     "systemd_watchdogs": lines("HAPAX_TRACE_WATCHDOGS"),
@@ -199,9 +204,25 @@ else
     FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" | sort -u)"
 fi
 
-PW=(); WP=(); SYSTEMD=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); SCRIPTS=(); SCRIPT_PY=()
+PW=(); WP=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); SCRIPTS=(); SCRIPT_PY=()
 SYSTEMD_UNCLASSIFIED=()
 DID_ANYTHING=0
+
+unit_install_scope() {
+    local f="$1"
+    if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
+        printf 'user\n'
+        return 0
+    fi
+    local content
+    content="$(git show "$SHA:$f" 2>/dev/null || true)"
+    if [ -n "$content" ] \
+        && grep -Eiq '^[#;][[:space:]]*Hapax-Install-Scope:[[:space:]]*system([[:space:]]*$|[[:space:]]+)' <<< "$content"; then
+        printf 'system\n'
+    else
+        printf 'user\n'
+    fi
+}
 
 # Per-file deploy uses `git cat-file -e $SHA:$path` + `git show $SHA:$path`
 # to read commit-time content, decoupling the deploy decision from local
@@ -230,8 +251,14 @@ while IFS= read -r f; do
     case "$f" in
         config/pipewire/*.conf)           PW+=("$f") ;;
         config/wireplumber/*.conf)        WP+=("$f") ;;
+        systemd/units/*.service|systemd/units/*.timer|systemd/units/*.path|systemd/units/*.target)
+            if [ "$(unit_install_scope "$f")" = "system" ]; then
+                SYSTEMD_SYSTEM+=("$f")
+            else
+                SYSTEMD+=("$f")
+            fi
+            ;;
         systemd/*.service|systemd/*.timer|systemd/*.path) SYSTEMD+=("$f") ;;
-        systemd/units/*.service|systemd/units/*.timer|systemd/units/*.path|systemd/units/*.target) SYSTEMD+=("$f") ;;
         systemd/units/*.service.d/*.conf|systemd/units/*.timer.d/*.conf) SYSTEMD_DROPINS+=("$f") ;;
         systemd/user-preset.d/*.preset)   USER_PRESETS+=("$f") ;;
         systemd/watchdogs/*)              WATCHDOGS+=("$f") ;;
@@ -370,6 +397,22 @@ if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
 fi
 
 # --- systemd units ---
+if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
+    echo "system-scoped systemd units changed (${#SYSTEMD_SYSTEM[@]}):"
+    mkdir -p "$SYSTEMD_USER_DIR"
+    for f in "${SYSTEMD_SYSTEM[@]}"; do
+        base="$(basename "$f")"
+        dest="$SYSTEMD_USER_DIR/$base"
+        echo "  '$f' marked Hapax-Install-Scope: system; skipping user deploy"
+        systemctl --user disable --now "$base" >/dev/null 2>&1 || true
+        if [ -e "$dest" ] || [ -L "$dest" ]; then
+            rm -fv "$dest" || true
+        fi
+    done
+    systemctl --user daemon-reload
+    DID_ANYTHING=1
+fi
+
 if [ "${#SYSTEMD[@]}" -gt 0 ]; then
     echo "systemd units changed (${#SYSTEMD[@]}):"
     mkdir -p "$SYSTEMD_USER_DIR"
