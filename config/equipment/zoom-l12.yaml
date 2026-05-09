@@ -1,0 +1,135 @@
+schema_version: 1
+device_id: zoom-l12
+
+identity:
+  manufacturer: Zoom
+  model: LiveTrak L-12
+  category: mixer
+  subcategories: [audio_interface, recorder, mixer]
+  form_factor: desktop
+  serial_number: null
+  firmware_version: null
+  firmware_update_method: sd_card
+  firmware_linux_risk: low
+  manual_url: null
+  year_released: 2018
+  discontinued: false
+  weight_g: 2900
+
+acquisition:
+  status: owned
+  purchased_date: "2025-08-18"
+  purchased_price_usd: 478.88
+  purchased_from: reverb
+  purchased_condition: excellent
+  source_synced_at: "2026-05-09T12:00:00Z"
+
+specifications:
+  audio:
+    inputs:
+      - id: ch1
+        type: mono_xlr_combo
+        connector: XLR/TRS
+        phantom_power: true
+      - id: ch2
+        type: mono_xlr_combo
+        connector: XLR/TRS
+        phantom_power: true
+      - id: ch3
+        type: mono_xlr_combo
+        connector: XLR/TRS
+        phantom_power: true
+      - id: ch4
+        type: mono_xlr_combo
+        connector: XLR/TRS
+        phantom_power: true
+      - id: ch5-6
+        type: stereo_trs
+        connector: 1/4-TRS
+      - id: ch7-8
+        type: stereo_trs
+        connector: 1/4-TRS
+      - id: ch9-10
+        type: stereo_trs
+        connector: 1/4-TRS
+      - id: ch11-12
+        type: stereo_trs
+        connector: 1/4-TRS
+    outputs:
+      - id: main-lr
+        type: stereo
+        connector: 1/4-TRS
+      - id: monitor-lr
+        type: stereo
+        connector: 1/4-TRS
+      - id: aux-a
+        type: stereo
+        connector: 1/4-TRS
+      - id: aux-b
+        type: stereo
+        connector: 1/4-TRS
+      - id: usb-return
+        type: multi_channel
+        connector: usb
+        channels: 4
+    sample_rates: [44100, 48000, 96000]
+    bit_depth: 24
+
+  midi: {}
+
+  usb:
+    class: audio
+    speed: high_speed
+    bus_power: false
+    vid: "0x1686"
+    pid: null
+    max_current_ma: null
+
+  power:
+    source: dc_barrel
+    voltage_v: 12
+    current_ma: 2000
+    barrel_spec: 5.5x2.1mm center-positive
+
+  physical:
+    width_mm: 370
+    height_mm: 62
+    depth_mm: 255
+
+capabilities:
+  - mixing
+  - audio_recording
+  - usb_audio_interface
+  - phantom_power
+  - aux_send
+  - headphone_monitoring
+  - sd_card_recording
+  - multitrack_recording
+  - eq
+
+placement:
+  zone: main-desk
+  surface: desk-left
+  position_m: [0.8, 0.6, 0.0]
+  orientation_deg: 0
+
+connections:
+  - target: pc-ryzen
+    type: usb
+    direction: bidirectional
+    port: rear-usb-pcie
+  - target: evil-pet
+    type: audio
+    direction: send
+    via: aux-b-analog
+    port: aux-b
+  - target: mpc-live-iii
+    type: audio
+    direction: receive
+    via: analog-stereo
+    port: ch5-6
+
+freshness:
+  last_verified_at: "2026-05-09T12:00:00Z"
+  specs_provenance: manual-extraction
+  specs_firmware_version: null

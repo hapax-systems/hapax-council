@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: bastl-instruments-timber-wavefolder-vca-used-detroit-modular
+identity:
+  manufacturer: BASTL
+  model: 'BASTL INSTRUMENTS TIMBER WAVEFOLDER VCA : USED : [DETROIT MODULAR]'
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-02-23'
+  purchased_price_usd: 189.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

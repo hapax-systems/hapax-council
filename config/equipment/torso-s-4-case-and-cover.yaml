@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: torso-s-4-case-and-cover
+identity:
+  manufacturer: Torso
+  model: Torso S-4 + case and cover
+  category: case
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-02-25'
+  purchased_price_usd: 900.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

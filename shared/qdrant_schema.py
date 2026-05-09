@@ -33,6 +33,7 @@ EXPECTED_COLLECTIONS: dict[str, dict[str, object]] = {
     # a separate work item in the alpha close-out handoff.
     "hapax-apperceptions": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
     "operator-patterns": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
+    "source-consequences": {"size": EXPECTED_EMBED_DIMENSIONS, "distance": "Cosine"},
 }
 
 

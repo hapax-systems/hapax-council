@@ -10,7 +10,7 @@ Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-daimonion-quarantine-watchdog --enforce --witness-path /dev/shm/hapax-daimonion/quarantine-watchdog.json
+ExecStart=%h/.local/bin/hapax-daimonion-quarantine-watchdog --enforce --witness-path /dev/shm/hapax-daimonion/quarantine-watchdog.json
 SuccessExitStatus=2
 TimeoutStartSec=60s
 MemoryMax=128M

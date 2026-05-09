@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: alm-busy-circuits-pip-slope-mk-ii-compact-envelope-function-
+identity:
+  manufacturer: ALM
+  model: ALM Busy Circuits Pip Slope Mk II Compact Envelope Function Generator
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-02-27'
+  purchased_price_usd: 100.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

@@ -1,0 +1,223 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.dev/schemas/equipment.schema.json",
+  "title": "Hapax Studio Equipment Record",
+  "type": "object",
+  "required": ["schema_version", "device_id", "identity", "acquisition", "capabilities"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "device_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+
+    "identity": {
+      "type": "object",
+      "required": ["manufacturer", "model", "category"],
+      "properties": {
+        "manufacturer": { "type": "string" },
+        "model": { "type": "string" },
+        "category": {
+          "type": "string",
+          "enum": [
+            "synthesizer", "drum_machine", "sampler", "groovebox",
+            "sequencer", "effects_pedal", "mixer", "audio_interface",
+            "midi_controller", "midi_hub", "eurorack_module", "eurorack_case",
+            "microphone", "camera", "monitor_speaker", "headphones",
+            "dj_equipment", "turntable", "power_supply", "cable",
+            "adapter", "stand", "case", "usb_hub", "computer",
+            "sbc", "network_switch", "keyboard_mouse", "desk_lamp",
+            "furniture", "other"
+          ]
+        },
+        "subcategories": { "type": "array", "items": { "type": "string" } },
+        "form_factor": { "type": "string" },
+        "serial_number": { "type": ["string", "null"] },
+        "firmware_version": { "type": ["string", "null"] },
+        "firmware_update_method": {
+          "type": "string",
+          "enum": [
+            "sd_card", "usb_mass_storage", "uf2_drag_drop", "sysex_midi",
+            "web_midi", "web_usb", "proprietary_app", "audio_file",
+            "avrdude", "dfu_util", "none", "unknown"
+          ]
+        },
+        "firmware_linux_risk": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "na"]
+        },
+        "manual_url": { "type": ["string", "null"], "format": "uri" },
+        "year_released": { "type": ["integer", "null"] },
+        "discontinued": { "type": "boolean", "default": false },
+        "weight_g": { "type": ["number", "null"] }
+      }
+    },
+
+    "acquisition": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["owned", "sold", "for_sale", "in_transit", "stored", "broken", "repair", "returned"]
+        },
+        "purchased_date": { "type": ["string", "null"], "format": "date" },
+        "purchased_price_usd": { "type": ["number", "null"] },
+        "purchased_from": { "type": ["string", "null"] },
+        "purchased_condition": { "type": ["string", "null"] },
+        "order_id": { "type": ["string", "null"] },
+        "sold_date": { "type": ["string", "null"], "format": "date" },
+        "sold_price_usd": { "type": ["number", "null"] },
+        "sold_on": { "type": ["string", "null"] },
+        "replacement_for": { "type": ["string", "null"] },
+        "replaced_by": { "type": ["string", "null"] },
+        "source_synced_at": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+
+    "specifications": {
+      "type": "object",
+      "properties": {
+        "audio": {
+          "type": "object",
+          "properties": {
+            "inputs": { "type": "array", "items": { "$ref": "#/$defs/audio_port" } },
+            "outputs": { "type": "array", "items": { "$ref": "#/$defs/audio_port" } },
+            "sample_rates": { "type": "array", "items": { "type": "integer" } },
+            "bit_depth": { "type": ["integer", "null"] }
+          }
+        },
+        "midi": {
+          "type": "object",
+          "properties": {
+            "transport": { "type": "array", "items": { "type": "string" } },
+            "channels_tx": { "type": "array", "items": { "type": "integer" } },
+            "channels_rx": { "type": "array", "items": { "type": "integer" } },
+            "clock_tx": { "type": "boolean" },
+            "clock_rx": { "type": "boolean" },
+            "program_change": { "type": "boolean" },
+            "cc_map": { "type": "object", "additionalProperties": { "type": "string" } },
+            "nrpn_map": { "type": "object" },
+            "sysex_id": { "type": ["string", "null"] },
+            "usb_class": { "type": ["string", "null"] },
+            "alsa_card_name_pattern": { "type": ["string", "null"] }
+          }
+        },
+        "usb": {
+          "type": "object",
+          "properties": {
+            "class": { "type": "string" },
+            "speed": { "type": "string" },
+            "bus_power": { "type": "boolean" },
+            "max_current_ma": { "type": ["integer", "null"] },
+            "vid": { "type": ["string", "null"] },
+            "pid": { "type": ["string", "null"] }
+          }
+        },
+        "power": {
+          "type": "object",
+          "properties": {
+            "source": { "type": ["string", "array"], "items": { "type": "string" } },
+            "voltage_v": { "type": ["number", "null"] },
+            "current_ma": { "type": ["integer", "null"] },
+            "barrel_spec": { "type": ["string", "null"] }
+          }
+        },
+        "cv_gate": {
+          "type": "object",
+          "properties": {
+            "inputs": { "type": "array", "items": { "$ref": "#/$defs/cv_port" } },
+            "outputs": { "type": "array", "items": { "$ref": "#/$defs/cv_port" } }
+          }
+        },
+        "eurorack": {
+          "type": "object",
+          "properties": {
+            "hp": { "type": "integer" },
+            "depth_mm": { "type": ["integer", "null"] },
+            "current_draw_plus12v_ma": { "type": ["integer", "null"] },
+            "current_draw_minus12v_ma": { "type": ["integer", "null"] },
+            "current_draw_plus5v_ma": { "type": ["integer", "null"] }
+          }
+        },
+        "physical": {
+          "type": "object",
+          "properties": {
+            "width_mm": { "type": ["number", "null"] },
+            "height_mm": { "type": ["number", "null"] },
+            "depth_mm": { "type": ["number", "null"] }
+          }
+        }
+      }
+    },
+
+    "capabilities": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+
+    "placement": {
+      "type": "object",
+      "properties": {
+        "zone": { "type": "string" },
+        "surface": { "type": "string" },
+        "position_m": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "orientation_deg": { "type": ["number", "null"] }
+      }
+    },
+
+    "connections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["target", "type"],
+        "properties": {
+          "target": { "type": "string" },
+          "type": {
+            "type": "string",
+            "enum": ["audio", "midi", "usb", "power", "cv", "hdmi", "network", "analog_clock"]
+          },
+          "direction": { "type": "string", "enum": ["send", "receive", "bidirectional"] },
+          "via": { "type": "string" },
+          "cable": { "type": "string" },
+          "port": { "type": "string" }
+        }
+      }
+    },
+
+    "freshness": {
+      "type": "object",
+      "properties": {
+        "last_verified_at": { "type": "string", "format": "date-time" },
+        "specs_provenance": { "type": "string" },
+        "specs_firmware_version": { "type": ["string", "null"] }
+      }
+    },
+
+    "notes": { "type": "string" }
+  },
+
+  "$defs": {
+    "audio_port": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "connector": { "type": "string" },
+        "channels": { "type": "integer" },
+        "phantom_power": { "type": "boolean" }
+      }
+    },
+    "cv_port": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string", "enum": ["cv", "cv_voct", "gate", "trigger", "clock", "audio"] },
+        "voltage_range": { "type": "string" }
+      }
+    }
+  }
+}

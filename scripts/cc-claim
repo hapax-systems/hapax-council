@@ -99,6 +99,9 @@ def _strip_scalar(value: str) -> str:
     return value.strip().strip('"').strip("'")
 
 
+_YAML_NULLS = frozenset({"null", "none", "~"})
+
+
 def _frontmatter_lines(note_text: str) -> list[str]:
     if not note_text.startswith("---"):
         return []
@@ -111,6 +114,8 @@ def _frontmatter_lines(note_text: str) -> list[str]:
 def _parse_inline_list(value: str) -> list[str]:
     value = value.strip()
     if value == "[]":
+        return []
+    if _strip_scalar(value).lower() in _YAML_NULLS:
         return []
     if not (value.startswith("[") and value.endswith("]")):
         return [_strip_scalar(value)] if value else []

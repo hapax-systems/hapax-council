@@ -310,6 +310,23 @@ class PosteriorUpdate(FeedbackLedgerModel):
     blocked_reason: str | None = None
 
 
+class HermeneuticDeltaRecord(FeedbackLedgerModel):
+    """What a prep cycle revealed about commitments or blind spots."""
+
+    delta_id: str
+    source_ref: str
+    delta_kind: Literal[
+        "new_consequence",
+        "reinforced_consequence",
+        "revised_consequence",
+        "novel_dimension",
+    ]
+    consequence_kind: str
+    changed_dimensions: tuple[str, ...] = Field(default_factory=tuple)
+    prior_encounter_count: int = Field(ge=0, default=0)
+    summary: str
+
+
 class ExplorationSignal(FeedbackLedgerModel):
     exploration_budget_ref: str
     exploration_regret: float = Field(ge=0, le=1)
@@ -363,6 +380,7 @@ class ContentProgrammeFeedbackEvent(FeedbackLedgerModel):
     )
     nested_programme_outcome_refs: tuple[str, ...] = Field(default_factory=tuple)
     posterior_updates: tuple[PosteriorUpdate, ...] = Field(default_factory=tuple)
+    hermeneutic_deltas: tuple[HermeneuticDeltaRecord, ...] = Field(default_factory=tuple)
     exploration: ExplorationSignal
     separation_policy: SeparationPolicy = Field(default_factory=SeparationPolicy)
     learning_policy: LearningPolicy = Field(default_factory=LearningPolicy)
@@ -398,6 +416,26 @@ def append_feedback_event(
     if any(existing.idempotency_key == event.idempotency_key for existing in events):
         raise ValueError(f"duplicate idempotency_key: {event.idempotency_key}")
     return (*events, event)
+
+
+def hermeneutic_delta_records_from_deltas(
+    deltas: Iterable[Any],
+) -> tuple[HermeneuticDeltaRecord, ...]:
+    """Convert hermeneutic_spiral.HermeneuticDelta objects into ledger records."""
+    records: list[HermeneuticDeltaRecord] = []
+    for delta in deltas:
+        records.append(
+            HermeneuticDeltaRecord(
+                delta_id=delta.delta_id,
+                source_ref=delta.source_ref,
+                delta_kind=delta.delta_kind,
+                consequence_kind=delta.consequence_kind,
+                changed_dimensions=delta.changed_dimensions,
+                prior_encounter_count=len(delta.prior_encounter_ids),
+                summary=delta.summary,
+            )
+        )
+    return tuple(records)
 
 
 def audience_outcome_is_aggregate_only(outcome: AudienceOutcome) -> bool:
@@ -458,6 +496,7 @@ def build_feedback_event_from_run_envelope(
     audience_outcome: AudienceOutcome | None = None,
     revenue_proxies: Sequence[RevenueProxy] = (),
     exploration: ExplorationSignal | None = None,
+    hermeneutic_deltas: Iterable[Any] = (),
 ) -> ContentProgrammeFeedbackEvent:
     """Build the append-only feedback event for an actual programme run envelope."""
 
@@ -511,6 +550,7 @@ def build_feedback_event_from_run_envelope(
             effective_revenue,
             safety_metrics,
         ),
+        hermeneutic_deltas=hermeneutic_delta_records_from_deltas(hermeneutic_deltas),
         exploration=exploration or _default_exploration_signal(run, state),
         learning_policy=LearningPolicy(public_truth_claim_allowed=public_truth_allowed),
         idempotency_key=f"{run.run_id}:{run.final_status}:{run.public_private_mode}:feedback",

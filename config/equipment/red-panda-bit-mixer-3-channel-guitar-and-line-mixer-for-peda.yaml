@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: red-panda-bit-mixer-3-channel-guitar-and-line-mixer-for-peda
+identity:
+  manufacturer: Red Panda
+  model: Red Panda Bit Mixer 3-Channel Guitar and Line Mixer for Pedalboards - RPL-105
+  category: mixer
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-06-25'
+  purchased_price_usd: 149.0
+capabilities:
+- mixing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

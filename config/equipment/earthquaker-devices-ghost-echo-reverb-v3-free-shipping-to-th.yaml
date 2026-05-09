@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: earthquaker-devices-ghost-echo-reverb-v3-free-shipping-to-th
+identity:
+  manufacturer: EarthQuaker
+  model: EarthQuaker Devices Ghost Echo Reverb V3 - Free Shipping to the USA
+  category: effects_pedal
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-06-15'
+  purchased_price_usd: 179.1
+capabilities:
+- effects_processing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

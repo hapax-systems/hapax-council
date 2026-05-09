@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: warm-audio-wa-47jr-black-transformerless-fet-condenser-micro
+identity:
+  manufacturer: Warm Audio
+  model: Warm Audio WA-47jr Black Transformerless FET Condenser Microphone Mic
+  category: microphone
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-09-22'
+  purchased_price_usd: 259.99
+capabilities:
+- room_audio_capture
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

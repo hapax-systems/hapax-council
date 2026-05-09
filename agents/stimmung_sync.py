@@ -41,6 +41,10 @@ DIMENSION_NAMES = [
     "operator_stress",
     "operator_energy",
     "physiological_coherence",
+    "audio_signal_presence",
+    "audio_spectral_centroid",
+    "audio_spectral_balance",
+    "audio_content_mix",
 ]
 
 

@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: electro-harmonix-v256-vocoder-with-reflex-tune-2009-present-
+identity:
+  manufacturer: Electro-Harmonix
+  model: Electro-Harmonix V256 Vocoder With Reflex-Tune 2009 - Present - Orange
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-03-17'
+  purchased_price_usd: 160.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

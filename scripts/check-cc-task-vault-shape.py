@@ -10,9 +10,15 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-import yaml
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.frontmatter import parse_frontmatter_with_diagnostics
+from shared.route_metadata_schema import RouteMetadataStatus, assess_route_metadata
 
 DEFAULT_VAULT_ROOT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
+DEFAULT_REQUESTS_ROOT = Path.home() / "Documents/Personal/20-projects/hapax-requests"
 
 TASK_DIRS = ("active", "closed", "refused")
 
@@ -86,10 +92,14 @@ class SmokeResult:
 
 
 def check_vault_shape(
-    vault_root: Path = DEFAULT_VAULT_ROOT, *, strict: bool = False
+    vault_root: Path = DEFAULT_VAULT_ROOT,
+    *,
+    requests_root: Path | None = None,
+    strict: bool = False,
 ) -> SmokeResult:
     """Validate task and dashboard shapes without mutating the vault."""
     root = vault_root.expanduser()
+    request_root = _resolve_requests_root(root, requests_root)
     findings: list[Finding] = []
     seen_task_ids: dict[str, Path] = {}
     checked_files = 0
@@ -125,6 +135,7 @@ def check_vault_shape(
                 continue
             _check_task_note(root, note_path, task_dir, frontmatter, findings, seen_task_ids)
 
+    checked_files += _check_active_requests(request_root, findings)
     checked_files += _check_dashboards(root, findings)
     ok = not any(
         finding.severity == "error" or (strict and finding.severity == "warning")
@@ -198,6 +209,13 @@ def _check_task_note(
 
     _check_status_path_consistency(root, note_path, task_dir, frontmatter, findings)
     _check_collection_fields(root, note_path, frontmatter, findings)
+    _check_route_metadata(
+        root,
+        note_path,
+        frontmatter,
+        findings,
+        audit_missing=task_dir == "active",
+    )
 
 
 def _check_status_path_consistency(
@@ -346,6 +364,93 @@ def _check_collection_fields(
             )
 
 
+def _check_route_metadata(
+    root: Path,
+    note_path: Path,
+    frontmatter: dict[str, Any],
+    findings: list[Finding],
+    *,
+    audit_missing: bool,
+) -> None:
+    display_path = _display_path(note_path, root)
+    assessment = assess_route_metadata(frontmatter)
+
+    if assessment.status == RouteMetadataStatus.EXPLICIT:
+        return
+
+    if assessment.status == RouteMetadataStatus.MALFORMED:
+        errors = "; ".join(assessment.validation_errors) or "invalid route metadata"
+        findings.append(
+            Finding(
+                severity="error",
+                path=display_path,
+                check="route_metadata_malformed",
+                message=errors,
+            )
+        )
+        return
+
+    if not audit_missing:
+        return
+
+    if assessment.status == RouteMetadataStatus.DERIVED:
+        metadata = assessment.metadata
+        suffix = ""
+        if metadata is not None:
+            suffix = (
+                f": quality_floor={metadata.quality_floor}, "
+                f"mutation_surface={metadata.mutation_surface}"
+            )
+        findings.append(
+            Finding(
+                severity="warning",
+                path=display_path,
+                check="route_metadata_derived",
+                message=f"route metadata was conservatively derived from existing fields{suffix}",
+            )
+        )
+        return
+
+    if assessment.status == RouteMetadataStatus.HOLD:
+        reasons = ", ".join(assessment.hold_reasons) or "missing route metadata"
+        findings.append(
+            Finding(
+                severity="warning",
+                path=display_path,
+                check="route_metadata_hold",
+                message=f"route metadata hold: {reasons}",
+            )
+        )
+        return
+
+
+def _check_active_requests(requests_root: Path | None, findings: list[Finding]) -> int:
+    if requests_root is None:
+        return 0
+    root = requests_root.expanduser()
+    active_dir = root / "active"
+    if not active_dir.is_dir():
+        return 0
+
+    checked_files = 0
+    for request_path in sorted(active_dir.glob("*.md")):
+        checked_files += 1
+        frontmatter = _read_frontmatter(request_path, root, findings, note_label="request")
+        if frontmatter is None:
+            continue
+        if frontmatter.get("type") != "hapax-request":
+            continue
+        status = _normalized_string(frontmatter.get("status"))
+        _check_route_metadata(
+            root,
+            request_path,
+            frontmatter,
+            findings,
+            audit_missing=status not in {"fulfilled", "rejected", "superseded"},
+        )
+    return checked_files
+
+
 def _check_dashboards(root: Path, findings: list[Finding]) -> int:
     dashboard_dir = root / "_dashboard"
     if not dashboard_dir.is_dir():
@@ -406,69 +511,55 @@ def _read_frontmatter(
     note_path: Path,
     root: Path,
     findings: list[Finding],
+    *,
+    note_label: str = "task",
 ) -> dict[str, Any] | None:
     display_path = _display_path(note_path, root)
-    try:
-        text = note_path.read_text(encoding="utf-8")
-    except OSError as exc:
+    result = parse_frontmatter_with_diagnostics(note_path)
+
+    if result.ok:
+        return result.frontmatter
+
+    if result.error_kind == "read_error":
         findings.append(
             Finding(
                 severity="error",
                 path=display_path,
-                check="task_read",
-                message=f"task note could not be read: {exc}",
+                check=f"{note_label}_read",
+                message=f"{note_label} note could not be read: {result.error_message}",
             )
         )
         return None
 
-    if not text.startswith("---\n"):
-        findings.append(
-            Finding(
-                severity="error",
-                path=display_path,
-                check="frontmatter",
-                message="task note must start with YAML frontmatter",
-            )
-        )
-        return None
-
-    end_marker = text.find("\n---", 4)
-    if end_marker == -1:
+    if result.error_kind in {"missing_frontmatter", "missing_closing_marker"}:
         findings.append(
             Finding(
                 severity="error",
                 path=display_path,
                 check="frontmatter",
-                message="task note frontmatter closing marker is missing",
+                message=f"{note_label} note {result.error_message}",
             )
         )
         return None
 
-    try:
-        loaded = yaml.safe_load(text[4:end_marker])
-    except yaml.YAMLError as exc:
-        findings.append(
-            Finding(
-                severity="error",
-                path=display_path,
-                check="frontmatter_yaml",
-                message=f"task frontmatter is not valid YAML: {exc}",
-            )
+    findings.append(
+        Finding(
+            severity="error",
+            path=display_path,
+            check="frontmatter_yaml",
+            message=f"{note_label} frontmatter is invalid: {result.error_message}",
         )
-        return None
+    )
+    return None
 
-    if not isinstance(loaded, dict):
-        findings.append(
-            Finding(
-                severity="error",
-                path=display_path,
-                check="frontmatter_yaml",
-                message="task frontmatter must be a YAML mapping",
-            )
-        )
-        return None
 
-    return loaded
+def _resolve_requests_root(vault_root: Path, requests_root: Path | None) -> Path | None:
+    if requests_root is not None:
+        return requests_root.expanduser()
+    if vault_root == DEFAULT_VAULT_ROOT.expanduser():
+        return DEFAULT_REQUESTS_ROOT
+    sibling = vault_root.parent / "hapax-requests"
+    return sibling if sibling.exists() else None
 
 
 def _normalized_string(value: Any) -> str:
@@ -508,6 +599,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="emit machine-readable JSON diagnostics",
     )
     parser.add_argument(
+        "--requests-root",
+        type=Path,
+        default=None,
+        help="request intake root to include in route metadata audit",
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         help="fail on warnings as well as errors",
@@ -517,7 +614,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    result = check_vault_shape(args.vault_root, strict=args.strict)
+    result = check_vault_shape(
+        args.vault_root, requests_root=args.requests_root, strict=args.strict
+    )
 
     if args.json:
         print(json.dumps(_result_to_dict(result), indent=2, sort_keys=True))

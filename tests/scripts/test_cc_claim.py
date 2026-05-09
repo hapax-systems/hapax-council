@@ -230,6 +230,105 @@ def test_explicit_read_only_intake_without_parent_spec_allows_claim(
     assert "status: claimed" in note.read_text(encoding="utf-8")
 
 
+def test_depends_on_null_scalar_means_no_dependencies(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "null-dep", depends_on="null")
+
+    result = _claim(home, "null-dep")
+
+    assert result.returncode == 0, result.stderr
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+
+
+def test_depends_on_tilde_means_no_dependencies(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "tilde-dep", depends_on="~")
+
+    result = _claim(home, "tilde-dep")
+
+    assert result.returncode == 0, result.stderr
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+
+
+def test_depends_on_none_means_no_dependencies(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "none-dep", depends_on="none")
+
+    result = _claim(home, "none-dep")
+
+    assert result.returncode == 0, result.stderr
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+
+
+def test_depends_on_quoted_null_means_no_dependencies(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "quoted-null", depends_on='"null"')
+
+    result = _claim(home, "quoted-null")
+
+    assert result.returncode == 0, result.stderr
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+
+
+def test_block_style_depends_on_does_not_bleed_into_tags(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(home, "closed", "real-dep", status="done", assigned_to="cx-peer")
+    note = _write_task(
+        home,
+        "active",
+        "bleed-test",
+        depends_on="\n  - real-dep",
+        tags=["cc-task", "sdlc", "implementation"],
+    )
+
+    result = _claim(home, "bleed-test")
+
+    assert result.returncode == 0, result.stderr
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+
+
+def test_depends_on_as_terminal_frontmatter_key(tmp_path: Path) -> None:
+    """depends_on as the last key before closing --- must not collect body items."""
+    home = tmp_path / "home"
+    _write_task(home, "closed", "term-dep", status="done", assigned_to="cx-peer")
+    root = _task_root(home)
+    path = root / "active" / "terminal-key.md"
+    path.write_text(
+        textwrap.dedent("""\
+            ---
+            type: cc-task
+            task_id: terminal-key
+            title: "terminal-key"
+            status: offered
+            assigned_to: unassigned
+            kind: build
+            authority_case: CASE-TEST-001
+            parent_spec: /tmp/isap-test.md
+            created_at: 2026-05-09T00:00:00Z
+            updated_at: 2026-05-09T00:00:00Z
+            claimed_at: null
+            depends_on:
+              - term-dep
+            ---
+
+            # terminal-key
+
+            Body bullets that must not be parsed as deps:
+
+            - fake-dep-one
+            - fake-dep-two
+
+            ## Session log
+        """),
+        encoding="utf-8",
+    )
+
+    result = _claim(home, "terminal-key")
+
+    assert result.returncode == 0, result.stderr
+    assert "status: claimed" in path.read_text(encoding="utf-8")
+
+
 def test_governed_build_task_allows_claim(tmp_path: Path) -> None:
     home = tmp_path / "home"
     note = _write_task(home, "active", "governed-build")

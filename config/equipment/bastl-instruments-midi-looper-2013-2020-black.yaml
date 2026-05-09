@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: bastl-instruments-midi-looper-2013-2020-black
+identity:
+  manufacturer: BASTL
+  model: BASTL Instruments Midi Looper 2013 - 2020 - Black
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-01-13'
+  purchased_price_usd: 190.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

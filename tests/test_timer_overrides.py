@@ -28,7 +28,7 @@ def test_all_override_files_exist():
 @pytest.mark.parametrize("timer_name", EXPECTED_TIMERS)
 def test_override_has_timer_section(timer_name):
     """Each override must have a [Timer] section with schedule directives."""
-    parser = configparser.ConfigParser(strict=False)
+    parser = configparser.ConfigParser(strict=False, interpolation=None)
     parser.read(OVERRIDES_DIR / timer_name)
     assert "Timer" in parser.sections(), f"{timer_name} missing [Timer] section"
     timer_section = dict(parser["Timer"])

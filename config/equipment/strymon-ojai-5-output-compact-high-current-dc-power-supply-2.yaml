@@ -1,0 +1,19 @@
+schema_version: 1
+device_id: strymon-ojai-5-output-compact-high-current-dc-power-supply-2
+identity:
+  manufacturer: Strymon
+  model: Strymon Ojai 5-Output Compact High Current DC Power Supply 2016 - Present
+    - Blue
+  category: power_supply
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-05-14'
+  purchased_price_usd: 100.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

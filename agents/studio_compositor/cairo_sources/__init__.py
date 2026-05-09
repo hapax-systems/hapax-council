@@ -319,5 +319,9 @@ def _register_builtins() -> None:
 
     register("CBIPDualIrDisplacementCairoSource", CBIPDualIrDisplacementCairoSource)
 
+    from agents.studio_compositor.assertion_receipt_ward import AssertionReceiptWard
+
+    register("AssertionReceiptWard", AssertionReceiptWard)
+
 
 _register_builtins()

@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: strymon-volante-magnetic-echo-machine-2019-present-green
+identity:
+  manufacturer: Strymon
+  model: Strymon Volante Magnetic Echo Machine 2019 - Present - Green
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-09-01'
+  purchased_price_usd: 299.25
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

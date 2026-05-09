@@ -1,0 +1,83 @@
+schema_version: 1
+device_id: sp404-mk2
+
+identity:
+  manufacturer: Roland
+  model: SP-404MKII
+  category: sampler
+  subcategories: [effects, live_performance]
+  form_factor: desktop
+  serial_number: null
+  firmware_version: null
+  firmware_update_method: sd_card
+  firmware_linux_risk: low
+  year_released: 2021
+  discontinued: false
+
+acquisition:
+  status: owned
+  purchased_date: "2026-01-31"
+  purchased_price_usd: 600.00
+  purchased_from: reverb
+  purchased_condition: excellent
+  source_synced_at: "2026-05-09T12:00:00Z"
+
+specifications:
+  audio:
+    inputs:
+      - id: input-lr
+        type: stereo
+        connector: 1/4-TRS
+      - id: mic
+        type: mono
+        connector: 3.5mm-TRS
+    outputs:
+      - id: main-out
+        type: stereo
+        connector: 1/4-TRS
+      - id: headphone
+        type: stereo
+        connector: 3.5mm-TRS
+    sample_rates: [44100, 48000]
+    bit_depth: 16
+  midi:
+    transport: [usb]
+    channels_tx: [1,2,3,4,5,6,7,8,9,10]
+    channels_rx: [1,2,3,4,5,6,7,8,9,10]
+    clock_tx: true
+    clock_rx: true
+    program_change: true
+    alsa_card_name_pattern: "SP-404"
+  usb:
+    class: composite
+    speed: full_speed
+    bus_power: true
+  power:
+    source: [usb, battery, dc_barrel]
+    voltage_v: 5
+
+capabilities:
+  - sample_playback
+  - sample_recording
+  - drum_pads
+  - effects_processing
+  - looping
+  - live_performance
+  - midi_clock_source
+  - midi_clock_sink
+  - usb_audio_interface
+  - sd_card_recording
+
+placement:
+  zone: main-desk
+  surface: desk-center
+  position_m: [0.8, 0.3, 0.0]
+
+connections:
+  - target: pc-ryzen
+    type: usb
+    direction: bidirectional
+
+freshness:
+  last_verified_at: "2026-05-09T12:00:00Z"
+  specs_provenance: manual-extraction

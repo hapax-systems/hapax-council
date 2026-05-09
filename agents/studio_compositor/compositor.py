@@ -1855,7 +1855,7 @@ class StudioCompositor:
         # is ``strength``, leaving empty-string ward entries on the
         # broadcast. It also raced the dedicated systemd unit
         # ``hapax-recent-impingements.service`` (active since 2026-04-20,
-        # backed by ``scripts/recent-impingements-producer.py``), which
+        # backed by ``scripts/hapax-recent-impingements-producer``), which
         # already owns this SHM path and uses the correct schema. The
         # systemd producer is the single writer for
         # ``/dev/shm/hapax-compositor/recent-impingements.json``; the

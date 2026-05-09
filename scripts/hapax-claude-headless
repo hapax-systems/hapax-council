@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# hapax-claude-headless - Launch a Claude Code lane in stream-json mode.
+#
+# This wrapper is deliberately default-deny. Headless lanes can mutate source,
+# so they must be enabled only after a methodology-aware dispatcher has selected
+# a specific governed task.
+
+set -euo pipefail
+
+DISABLE_FILE="${HAPAX_CLAUDE_HEADLESS_DISABLE_FILE:-$HOME/.cache/hapax/disable-claude-headless}"
+ENABLE_FILE="${HAPAX_CLAUDE_HEADLESS_ENABLE_FILE:-$HOME/.cache/hapax/enable-claude-headless}"
+
+headless_allowed() {
+  [[ "${HAPAX_CLAUDE_HEADLESS_ALLOW:-}" == "1" || -e "$ENABLE_FILE" ]]
+}
+
+ROLE="${1:-}"
+shift || true
+
+if [[ -z "$ROLE" ]]; then
+  echo "usage: hapax-claude-headless <role> [governed-initial-message]" >&2
+  exit 1
+fi
+
+case "$ROLE" in
+  alpha|beta|gamma|delta|epsilon|zeta|eta|theta) ;;
+  *) echo "hapax-claude-headless: invalid role '$ROLE'" >&2; exit 2 ;;
+esac
+
+if [[ -e "$DISABLE_FILE" ]]; then
+  echo "hapax-claude-headless: disabled by $DISABLE_FILE" >&2
+  exit 77
+fi
+if ! headless_allowed; then
+  echo "hapax-claude-headless: disabled until governed enable exists at $ENABLE_FILE or HAPAX_CLAUDE_HEADLESS_ALLOW=1 is set" >&2
+  exit 77
+fi
+
+export HAPAX_AGENT_INTERFACE="claude"
+export HAPAX_AGENT_NAME="$ROLE"
+export CLAUDE_ROLE="$ROLE"
+export HAPAX_AGENT_ROLE="$ROLE"
+export HAPAX_WORKTREE_ROLE="$ROLE"
+
+WORKDIR="$HOME/projects/hapax-council"
+[[ "$ROLE" != "alpha" ]] && WORKDIR="$HOME/projects/hapax-council--$ROLE"
+[[ -d "$WORKDIR" ]] || { echo "hapax-claude-headless: worktree not found: $WORKDIR" >&2; exit 3; }
+
+export PATH="$WORKDIR/scripts:$PATH"
+
+PIPE_DIR="/run/user/$(id -u)/hapax-claude"
+LOG_DIR="$HOME/.cache/hapax/claude-headless/$ROLE"
+mkdir -p "$PIPE_DIR" "$LOG_DIR"
+
+STDIN_PIPE="$PIPE_DIR/$ROLE.stdin"
+PID_FILE="$PIPE_DIR/$ROLE.pid"
+LOG_FILE="$LOG_DIR/output.jsonl"
+
+[[ -p "$STDIN_PIPE" ]] && rm -f "$STDIN_PIPE"
+mkfifo "$STDIN_PIPE"
+
+cleanup() {
+  rm -f "$STDIN_PIPE" "$PID_FILE"
+}
+trap cleanup EXIT
+
+CLAUDE_BIN="$(command -v claude || true)"
+[[ -n "$CLAUDE_BIN" ]] || { echo "hapax-claude-headless: claude not found" >&2; exit 4; }
+
+EFFORT="${HAPAX_CLAUDE_EFFORT:-max}"
+MODEL="${HAPAX_CLAUDE_MODEL:-}"
+CLAUDE_ARGS=(
+  -p
+  --input-format stream-json
+  --output-format stream-json
+  --verbose
+  --dangerously-skip-permissions
+  --effort "$EFFORT"
+)
+if [[ -n "$MODEL" ]]; then
+  CLAUDE_ARGS+=(--model "$MODEL")
+fi
+
+INITIAL_MSG="${1:-}"
+if [[ -z "$INITIAL_MSG" ]]; then
+  echo "hapax-claude-headless: governed initial message required" >&2
+  exit 5
+fi
+
+SDLC_PREAMBLE="SDLC DISCIPLINE (MANDATORY):
+1. Work only on the task named in this dispatch.
+2. Run cc-claim for that exact task before mutation.
+3. If cc-claim rejects, stop and write a relay receipt.
+4. Use only the AuthorityCase and parent spec named in this dispatch.
+5. Do not create, select, or claim other work from the task pool.
+6. When the task is complete or blocked, report status and idle.
+
+DISPATCH:
+"
+INITIAL_MSG="${SDLC_PREAMBLE}${INITIAL_MSG}"
+
+echo "hapax-claude-headless: starting $ROLE in $WORKDIR"
+echo "  stdin pipe: $STDIN_PIPE"
+echo "  log: $LOG_FILE"
+
+exec 3<>"$STDIN_PIPE"
+
+echo "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":$(printf '%s' "$INITIAL_MSG" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')}]}}" >&3
+
+cd "$WORKDIR"
+
+RESTART_COUNT=0
+MAX_RESTART_BACKOFF="${HAPAX_CLAUDE_HEADLESS_RESTART_BACKOFF_SECONDS:-30}"
+
+while true; do
+  if [[ -e "$DISABLE_FILE" ]]; then
+    echo "hapax-claude-headless: disabled by $DISABLE_FILE" >&2
+    exit 77
+  fi
+  if ! headless_allowed; then
+    echo "hapax-claude-headless: disabled until governed enable exists at $ENABLE_FILE or HAPAX_CLAUDE_HEADLESS_ALLOW=1 is set" >&2
+    exit 77
+  fi
+
+  "$CLAUDE_BIN" "${CLAUDE_ARGS[@]}" <&3 >> "$LOG_FILE" 2>&1 &
+  CLAUDE_PID=$!
+  echo "$CLAUDE_PID" > "$PID_FILE"
+  echo "hapax-claude-headless: pid=$CLAUDE_PID (restart #$RESTART_COUNT)"
+
+  if wait "$CLAUDE_PID"; then
+    EXIT_CODE=0
+  else
+    EXIT_CODE=$?
+  fi
+  RESTART_COUNT=$((RESTART_COUNT + 1))
+  echo "hapax-claude-headless: $ROLE exited (code=$EXIT_CODE), restarting in ${MAX_RESTART_BACKOFF}s..."
+
+  if [[ -e "$DISABLE_FILE" ]]; then
+    echo "hapax-claude-headless: disabled by $DISABLE_FILE" >&2
+    exit 77
+  fi
+  if ! headless_allowed; then
+    echo "hapax-claude-headless: disabled until governed enable exists at $ENABLE_FILE or HAPAX_CLAUDE_HEADLESS_ALLOW=1 is set" >&2
+    exit 77
+  fi
+
+  RESTART_MSG='{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Resume only the active task named in your claim file and prior governed dispatch. If there is no active claim, write a relay status saying idle-awaiting-dispatch. Do not claim any new task."}]}}'
+  sleep "$MAX_RESTART_BACKOFF"
+  echo "$RESTART_MSG" >&3
+done

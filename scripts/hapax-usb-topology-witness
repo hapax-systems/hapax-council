@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -50,6 +51,17 @@ L12_SOURCE = (
 
 CALDIGIT_CONTROLLER = "pci-0000:71:00.0"
 STATUS_PATH = Path("/dev/shm/hapax-usb/topology-status.json")
+SCRIPT_POLICY_PATH = Path(__file__).resolve().parents[1] / "config" / "usb-topology-policy.json"
+INSTALLED_POLICY_PATH = Path.home() / ".config" / "hapax" / "usb-topology-policy.json"
+
+
+def default_policy_path() -> Path:
+    env_path = os.environ.get("HAPAX_USB_TOPOLOGY_POLICY")
+    if env_path:
+        return Path(env_path)
+    if SCRIPT_POLICY_PATH.exists():
+        return SCRIPT_POLICY_PATH
+    return INSTALLED_POLICY_PATH
 
 
 def run(args: list[str], check: bool = False) -> subprocess.CompletedProcess[str]:
@@ -61,6 +73,50 @@ def read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+def load_policy(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError:
+        return {}
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"invalid USB topology policy JSON at {path}: {exc}") from exc
+    return data if isinstance(data, dict) else {}
+
+
+def configured_known_absence(
+    policy: dict[str, Any], device_key: str, serial: str
+) -> dict[str, Any] | None:
+    absences = policy.get("known_absences", {})
+    if not isinstance(absences, dict):
+        return None
+    entry = absences.get(device_key)
+    if not isinstance(entry, dict) or entry.get("enabled") is not True:
+        return None
+    if entry.get("serial") not in (None, "", serial):
+        return None
+    return entry
+
+
+def policy_reason(entry: dict[str, Any]) -> str:
+    reason = str(entry.get("reason") or "configured").strip()
+    return reason.replace(" ", "_")
+
+
+def accepted_caldigit_camera(policy: dict[str, Any], camera: dict[str, str]) -> bool:
+    placements = policy.get("accepted_caldigit_cameras", [])
+    if not isinstance(placements, list):
+        return False
+    for placement in placements:
+        if not isinstance(placement, dict) or placement.get("enabled") is not True:
+            continue
+        if placement.get("serial") != camera.get("serial"):
+            continue
+        if placement.get("path") not in (None, "", camera.get("path")):
+            continue
+        return True
+    return False
 
 
 def parse_int(value: object) -> int | None:
@@ -226,7 +282,10 @@ def live_snapshot() -> dict[str, Any]:
     }
 
 
-def validate(snapshot: dict[str, Any], repair: bool = False) -> dict[str, Any]:
+def validate(
+    snapshot: dict[str, Any], repair: bool = False, policy: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    policy = policy or {}
     issues: list[str] = []
     warnings: list[str] = []
     repairs = list(snapshot.get("repairs", []))
@@ -241,7 +300,13 @@ def validate(snapshot: dict[str, Any], repair: bool = False) -> dict[str, Any]:
     if parse_int(kernel.get("uvcvideo_quirks")) != 0x100:
         issues.append(f"kernel_uvcvideo_quirks_drift:{kernel.get('uvcvideo_quirks', '')}")
 
-    if not s4.get("device"):
+    s4_known_absence = (
+        configured_known_absence(policy, "s4", S4_SERIAL) if not s4.get("device") else None
+    )
+
+    if s4_known_absence:
+        warnings.append(f"s4_usb_missing_known_absence:{policy_reason(s4_known_absence)}")
+    elif not s4.get("device"):
         issues.append("s4_usb_missing")
     elif s4.get("path") not in S4_EXPECTED_PATHS:
         # Path drift is observability-only — same logic as the L-12 path
@@ -254,23 +319,24 @@ def validate(snapshot: dict[str, Any], repair: bool = False) -> dict[str, Any]:
         # `warnings` so the systemd timer doesn't restart-storm on
         # benign re-plugs (e.g. moving the S-4 between CalDigit ports).
         warnings.append(f"s4_path_drift:{s4.get('path', '')}")
-    if s4.get("power_control") != "on":
-        issues.append(f"s4_power_control_drift:{s4.get('power_control', '')}")
+    if not s4_known_absence:
+        if s4.get("power_control") != "on":
+            issues.append(f"s4_power_control_drift:{s4.get('power_control', '')}")
 
-    block = s4.get("block", {})
-    if block.get("udisks_ignore") != "1":
-        issues.append("s4_udisks_ignore_missing")
-    if block.get("modemmanager_ignore") != "1":
-        issues.append("s4_block_modemmanager_ignore_missing")
+        block = s4.get("block", {})
+        if block.get("udisks_ignore") != "1":
+            issues.append("s4_udisks_ignore_missing")
+        if block.get("modemmanager_ignore") != "1":
+            issues.append("s4_block_modemmanager_ignore_missing")
 
-    net = s4.get("net", {})
-    if net.get("nm_unmanaged") != "1":
-        issues.append("s4_networkmanager_unmanaged_missing")
-    if net.get("modemmanager_ignore") != "1":
-        issues.append("s4_net_modemmanager_ignore_missing")
-    nmcli_state_value = net.get("nmcli_state", "")
-    if nmcli_state_value and nmcli_state_value != "unmanaged":
-        issues.append(f"s4_nmcli_state_drift:{nmcli_state_value}")
+        net = s4.get("net", {})
+        if net.get("nm_unmanaged") != "1":
+            issues.append("s4_networkmanager_unmanaged_missing")
+        if net.get("modemmanager_ignore") != "1":
+            issues.append("s4_net_modemmanager_ignore_missing")
+        nmcli_state_value = net.get("nmcli_state", "")
+        if nmcli_state_value and nmcli_state_value != "unmanaged":
+            issues.append(f"s4_nmcli_state_drift:{nmcli_state_value}")
 
     if not l12.get("device"):
         issues.append("l12_usb_missing")
@@ -305,22 +371,28 @@ def validate(snapshot: dict[str, Any], repair: bool = False) -> dict[str, Any]:
         else:
             issues.append(f"l12_default_source_drift:{default_source}")
 
-    if S4_SINK not in sinks:
-        issues.append("s4_sink_missing")
-    if S4_SOURCE not in sources:
-        issues.append("s4_source_missing")
-    if "S-4" not in str(snapshot.get("alsa_playback", "")):
-        issues.append("s4_alsa_playback_missing")
-    if "S-4" not in str(snapshot.get("alsa_capture", "")):
-        issues.append("s4_alsa_capture_missing")
-    if "S-4" not in str(snapshot.get("midi_clients", "")):
-        issues.append("s4_midi_client_missing")
-    if "S-4" not in str(snapshot.get("amidi_ports", "")):
-        issues.append("s4_amidi_port_missing")
+    if not s4_known_absence:
+        if S4_SINK not in sinks:
+            issues.append("s4_sink_missing")
+        if S4_SOURCE not in sources:
+            issues.append("s4_source_missing")
+        if "S-4" not in str(snapshot.get("alsa_playback", "")):
+            issues.append("s4_alsa_playback_missing")
+        if "S-4" not in str(snapshot.get("alsa_capture", "")):
+            issues.append("s4_alsa_capture_missing")
+        if "S-4" not in str(snapshot.get("midi_clients", "")):
+            issues.append("s4_midi_client_missing")
+        if "S-4" not in str(snapshot.get("amidi_ports", "")):
+            issues.append("s4_amidi_port_missing")
 
     for camera in snapshot.get("cameras", []):
         if camera.get("on_caldigit_audio_controller") == "true":
-            issues.append(f"camera_on_caldigit:{camera.get('serial', '')}:{camera.get('path', '')}")
+            serial = camera.get("serial", "")
+            path = camera.get("path", "")
+            if accepted_caldigit_camera(policy, camera):
+                warnings.append(f"camera_on_caldigit_accepted:{serial}:{path}")
+            else:
+                issues.append(f"camera_on_caldigit:{serial}:{path}")
 
     if repair:
         if start_user_unit("hapax-audio-router.service"):
@@ -341,6 +413,7 @@ def main() -> int:
     parser.add_argument("--repair", action="store_true")
     parser.add_argument("--fixture", type=Path)
     parser.add_argument("--status-path", type=Path, default=STATUS_PATH)
+    parser.add_argument("--policy-path", type=Path, default=default_policy_path())
     args = parser.parse_args()
 
     if args.fixture:
@@ -350,7 +423,8 @@ def main() -> int:
         snapshot = live_snapshot()
         repair = args.repair
 
-    status = validate(snapshot, repair=repair)
+    policy = load_policy(args.policy_path)
+    status = validate(snapshot, repair=repair, policy=policy)
     args.status_path.parent.mkdir(parents=True, exist_ok=True)
     args.status_path.write_text(
         json.dumps(status, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -358,11 +432,16 @@ def main() -> int:
 
     if status["ok"]:
         warnings = status.get("warnings", [])
+        cameras_off_caldigit = sum(
+            1
+            for camera in status.get("cameras", [])
+            if camera.get("on_caldigit_audio_controller") != "true"
+        )
         print(
             "ok "
             f"s4={status['s4'].get('device', '')} "
             f"l12={status['l12'].get('device', '')} "
-            f"cameras_off_caldigit={len(status.get('cameras', []))} "
+            f"cameras_off_caldigit={cameras_off_caldigit} "
             f"repairs={','.join(status.get('repairs', [])) or 'none'} "
             f"warnings={','.join(warnings) or 'none'}"
         )

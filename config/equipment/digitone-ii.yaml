@@ -1,0 +1,85 @@
+schema_version: 1
+device_id: digitone-ii
+
+identity:
+  manufacturer: Elektron
+  model: Digitone II
+  category: synthesizer
+  subcategories: [fm_synthesis, sequencer]
+  form_factor: desktop
+  serial_number: null
+  firmware_version: null
+  firmware_update_method: sysex_midi
+  firmware_linux_risk: low
+  year_released: 2024
+  discontinued: false
+
+acquisition:
+  status: owned
+  purchased_date: "2026-01-31"
+  purchased_price_usd: 939.00
+  purchased_from: reverb
+  purchased_condition: b_stock
+  source_synced_at: "2026-05-09T12:00:00Z"
+
+specifications:
+  audio:
+    inputs:
+      - id: input-lr
+        type: stereo
+        connector: 1/4-TRS
+    outputs:
+      - id: main-out
+        type: stereo
+        connector: 1/4-TRS
+      - id: headphone
+        type: stereo
+        connector: 1/4-TRS
+    sample_rates: [48000]
+    bit_depth: 24
+  midi:
+    transport: [usb, din5]
+    channels_tx: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]
+    channels_rx: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]
+    clock_tx: true
+    clock_rx: true
+    program_change: true
+    alsa_card_name_pattern: "Digitone"
+  usb:
+    class: composite
+    speed: high_speed
+    bus_power: false
+  power:
+    source: dc_barrel
+    voltage_v: 12
+    current_ma: 2000
+
+capabilities:
+  - fm_synthesis
+  - subtractive_synthesis
+  - step_sequencing
+  - probability_sequencing
+  - midi_sequencing
+  - midi_clock_source
+  - midi_clock_sink
+  - arpeggiator
+  - usb_audio_interface
+  - effects_processing
+  - live_performance
+  - midi_controllable
+  - preset_recall
+  - midi_keyboard
+
+placement:
+  zone: main-desk
+  surface: desk-right
+  position_m: [1.2, 0.6, 0.0]
+
+connections:
+  - target: pc-ryzen
+    type: usb
+    direction: bidirectional
+
+freshness:
+  last_verified_at: "2026-05-09T12:00:00Z"
+  specs_provenance: manual-extraction

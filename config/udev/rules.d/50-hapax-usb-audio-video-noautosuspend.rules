@@ -15,6 +15,11 @@ ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="19
 ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="381a", ATTR{power/control}="on"
 ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1fc9", ATTR{power/control}="on"
 
+# ZOOM LiveTrak L-12 is a critical broadcast-audio device. Pin the leaf device
+# harder than the generic vendor rule, and let the L-12 guard handle parent
+# USB/xHCI power nodes that udev attribute assignment cannot reach reliably.
+ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1686", ATTR{idProduct}=="03d5", ATTR{serial}=="8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF", ATTR{power/control}="on", ATTR{power/autosuspend_delay_ms}="-1", RUN+="/usr/local/bin/hapax-l12-critical-usb-guard"
+
 # Catch-all for any USB interface that declares Audio or Video class
 # (fallback if vendor match misses something new).
 # Uses RUN to write into the parent device's power/control node.

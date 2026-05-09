@@ -1,9 +1,10 @@
-# Hapax user timer preset.
+# Hapax user unit preset.
 #
-# This file documents which repo-owned user timers should be enabled by
-# default when systemd preset tooling is used. The canonical install path is
-# still systemd/units/ via systemd/scripts/install-units.sh; this preset pins
-# audit-discovered V5 timers so they cannot sit outside deployment visibility.
+# This file documents which repo-owned user timers and path-triggered units
+# should be enabled by default when systemd preset tooling is used. The
+# canonical install path is still systemd/units/ via
+# systemd/scripts/install-units.sh; this preset pins audit-discovered V5 timers
+# and governed intake triggers so they cannot sit outside deployment visibility.
 
 enable hapax-orcid-verifier.timer
 enable hapax-self-federate-rss.timer
@@ -12,6 +13,7 @@ enable hapax-datacite-mirror.timer
 enable hapax-cc-hygiene.timer
 enable hapax-cc-pr-merge-watcher.timer
 enable hapax-request-intake-consumer.timer
+enable hapax-request-intake-consumer.path
 enable hapax-source-activate.timer
 enable hapax-content-candidate-discovery.timer
 enable hapax-private-monitor-recover.timer

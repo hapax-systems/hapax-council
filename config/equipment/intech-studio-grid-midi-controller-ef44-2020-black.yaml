@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: intech-studio-grid-midi-controller-ef44-2020-black
+identity:
+  manufacturer: Intech
+  model: Intech Studio Grid MIDI Controller EF44 2020 - Black
+  category: midi_controller
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-07-23'
+  purchased_price_usd: 95.0
+capabilities:
+- midi_keyboard
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

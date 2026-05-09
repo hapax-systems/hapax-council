@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: faderfox-ec4
+identity:
+  manufacturer: Faderfox
+  model: Faderfox EC4
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-10-06'
+  purchased_price_usd: 340.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

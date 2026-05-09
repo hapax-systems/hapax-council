@@ -56,6 +56,29 @@ def test_measure_pcm_via_new_package():
     assert label == Classification.SILENT
 
 
+def test_probe_result_legacy_fixture_constructor_backfills_samples():
+    """Existing named ProbeResult fixtures may omit raw samples."""
+    from agents.audio_health import Classification, ProbeMeasurement, ProbeResult
+
+    result = ProbeResult(
+        stage="test-stage",
+        classification=Classification.MUSIC_VOICE,
+        measurement=ProbeMeasurement(
+            rms_dbfs=-18.0,
+            peak_dbfs=-3.0,
+            crest_factor=8.0,
+            zero_crossing_rate=0.08,
+            sample_count=128,
+        ),
+        captured_at=1000.0,
+        duration_s=2.0,
+        error=None,
+    )
+
+    assert result.samples_mono.shape == (128,)
+    assert result.samples_mono_float.shape == (128,)
+
+
 def test_classifier_config_from_env():
     """ClassifierConfig.from_env() works via new package."""
     from agents.audio_health import ClassifierConfig

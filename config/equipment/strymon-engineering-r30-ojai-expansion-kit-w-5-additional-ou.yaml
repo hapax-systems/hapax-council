@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: strymon-engineering-r30-ojai-expansion-kit-w-5-additional-ou
+identity:
+  manufacturer: Strymon
+  model: Strymon Engineering R30 Ojai Expansion Kit w/ 5 Additional Outputs
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-05-18'
+  purchased_price_usd: 169.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync
