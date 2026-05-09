@@ -21,7 +21,10 @@ R-5 source: ``~/.cache/hapax/relay/research/2026-04-26-absence-bugs-synthesis-fo
 
 from __future__ import annotations
 
+import re
+import subprocess
 from dataclasses import dataclass
+from datetime import date
 from typing import Literal
 
 WireStatus = Literal["WIRED", "CRED_BLOCKED", "DELETE"]
@@ -391,10 +394,54 @@ def cred_blocked_pass_keys() -> list[str]:
     return sorted(set(keys))
 
 
+def credential_readiness() -> dict[str, bool]:
+    """Probe ``pass`` for each CRED_BLOCKED entry's key without reading values.
+
+    Returns a dict of ``{pass_key: exists}`` where ``exists`` is True when
+    ``pass show <key>`` exits 0 (credential is present in the store).
+    """
+    result: dict[str, bool] = {}
+    for key in cred_blocked_pass_keys():
+        try:
+            proc = subprocess.run(
+                ["pass", "show", key],
+                capture_output=True,
+                timeout=5,
+            )
+            result[key] = proc.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            result[key] = False
+    return result
+
+
+_ISO_DATE_RE = re.compile(r"\breview-by\s+(\d{4}-\d{2}-\d{2})\b")
+
+
+def overdue_reviews(*, today: date | None = None) -> list[tuple[str, str, date]]:
+    """Return CRED_BLOCKED entries whose review-by date has passed.
+
+    Each tuple is ``(module, pass_key, review_date)``.
+    """
+    today = today or date.today()
+    overdue: list[tuple[str, str, date]] = []
+    for module, entry in PUBLISHER_WIRE_REGISTRY.items():
+        if entry.status != "CRED_BLOCKED":
+            continue
+        m = _ISO_DATE_RE.search(entry.rationale)
+        if not m:
+            continue
+        review_date = date.fromisoformat(m.group(1))
+        if review_date < today:
+            overdue.append((module, entry.pass_key_required or "", review_date))
+    return overdue
+
+
 __all__ = [
     "PUBLISHER_WIRE_REGISTRY",
     "WireEntry",
     "WireStatus",
     "cred_blocked_pass_keys",
+    "credential_readiness",
+    "overdue_reviews",
     "status_summary",
 ]
