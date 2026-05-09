@@ -87,6 +87,45 @@ compact_value() {
   tr -d '[:space:]'
 }
 
+build_task_index() {
+  declare -gA _ti_offered _ti_claimed _ti_done _ti_last_activity
+  for td in "$TASKS_DIR/active" "$TASKS_DIR/closed"; do
+    [[ -d "$td" ]] || continue
+    local is_closed=0
+    [[ "$td" == *"/closed" ]] && is_closed=1
+    for tn in "$td"/*.md; do
+      [[ -f "$tn" ]] || continue
+      local tp
+      tp="$(frontmatter_value parent_request "$tn")"
+      [[ -z "$tp" ]] && continue
+      local req_key ts tu
+      req_key="${tp##*/}"
+      ts="$(frontmatter_value status "$tn" | compact_value)"
+      tu="$(frontmatter_value updated_at "$tn" | compact_value)"
+      case "$ts" in
+        claimed|in_progress)
+          _ti_claimed["$req_key"]=$(( ${_ti_claimed["$req_key"]:-0} + 1 )) ;;
+        offered)
+          _ti_offered["$req_key"]=$(( ${_ti_offered["$req_key"]:-0} + 1 )) ;;
+        done|closed|complete)
+          _ti_done["$req_key"]=$(( ${_ti_done["$req_key"]:-0} + 1 )) ;;
+        *)
+          if [[ $is_closed -eq 1 ]]; then
+            _ti_done["$req_key"]=$(( ${_ti_done["$req_key"]:-0} + 1 ))
+          else
+            _ti_offered["$req_key"]=$(( ${_ti_offered["$req_key"]:-0} + 1 ))
+          fi ;;
+      esac
+      if [[ -n "$tu" ]]; then
+        local prev="${_ti_last_activity["$req_key"]:-}"
+        if [[ -z "$prev" || "$tu" > "$prev" ]]; then
+          _ti_last_activity["$req_key"]="$tu"
+        fi
+      fi
+    done
+  done
+}
+
 write_state() {
   local generated_at
   generated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -118,6 +157,8 @@ write_planning_feed() {
   local requests_json="" attention_json=""
   local first_req=1 first_attn=1
 
+  build_task_index
+
   for note in "$ACTIVE_DIR"/*.md; do
     [[ -f "$note" ]] || continue
     [[ "$(frontmatter_value type "$note" | compact_value)" == "hapax-request" ]] || continue
@@ -134,29 +175,12 @@ write_planning_feed() {
     pf_updated_at="$(frontmatter_value updated_at "$note" | compact_value)"
     [[ "$planning_case" == "null" ]] && planning_case=""
 
-    local req_basename offered=0 claimed=0 done_count=0 last_activity=""
+    local req_basename
     req_basename="$(basename "$note")"
-    for td in "$TASKS_DIR/active" "$TASKS_DIR/closed"; do
-      [[ -d "$td" ]] || continue
-      for tn in "$td"/*.md; do
-        [[ -f "$tn" ]] || continue
-        local tp
-        tp="$(frontmatter_value parent_request "$tn")"
-        [[ "$tp" == *"$req_basename"* ]] || continue
-        local ts tu
-        ts="$(frontmatter_value status "$tn" | compact_value)"
-        tu="$(frontmatter_value updated_at "$tn" | compact_value)"
-        case "$ts" in
-          claimed|in_progress) claimed=$((claimed + 1)) ;;
-          offered) offered=$((offered + 1)) ;;
-          done|closed|complete) done_count=$((done_count + 1)) ;;
-          *) if [[ "$td" == *"/closed" ]]; then done_count=$((done_count + 1)); else offered=$((offered + 1)); fi ;;
-        esac
-        if [[ -n "$tu" ]] && [[ -z "$last_activity" || "$tu" > "$last_activity" ]]; then
-          last_activity="$tu"
-        fi
-      done
-    done
+    local offered=${_ti_offered["$req_basename"]:-0}
+    local claimed=${_ti_claimed["$req_basename"]:-0}
+    local done_count=${_ti_done["$req_basename"]:-0}
+    local last_activity="${_ti_last_activity["$req_basename"]:-}"
 
     local active_tasks=$((offered + claimed))
     local total_tasks=$((active_tasks + done_count))
