@@ -303,6 +303,45 @@ class TestHealthSummary:
         assert data["resting_hr"] == 64
 
 
+class TestPhoneConnectionTracking:
+    """Phone endpoints update phone_connection.json for health monitor."""
+
+    def test_phone_context_writes_connection(self, client, state_dir):
+        """POST /phone/context updates phone_connection.json."""
+        resp = client.post(
+            "/phone/context",
+            json={
+                "device_id": "pixel10",
+                "ts": int(time.time() * 1000),
+                "activity_type": "still",
+                "battery_pct": 85,
+            },
+        )
+        assert resp.status_code == 200
+        conn = state_dir / "phone_connection.json"
+        assert conn.exists()
+        data = json.loads(conn.read_text())
+        assert data["device_id"] == "pixel10"
+        assert data["battery_pct"] == 85
+        assert "last_seen_epoch" in data
+
+    def test_phone_health_summary_writes_connection(self, client, state_dir):
+        """POST /phone/health-summary updates phone_connection.json."""
+        resp = client.post(
+            "/phone/health-summary",
+            json={
+                "device_id": "pixel10",
+                "date": "2026-05-09",
+                "steps": 5000,
+            },
+        )
+        assert resp.status_code == 200
+        conn = state_dir / "phone_connection.json"
+        assert conn.exists()
+        data = json.loads(conn.read_text())
+        assert data["device_id"] == "pixel10"
+
+
 class TestRollingWindow:
     """Heart rate and HRV maintain 1-hour rolling windows."""
 
