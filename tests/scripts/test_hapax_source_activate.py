@@ -118,11 +118,16 @@ def test_same_sha_rerun_writes_no_op_and_does_not_redeploy(tmp_path: Path) -> No
     canonical, _origin, new_sha = _make_repos(tmp_path)
 
     first = _run_activate(tmp_path, canonical)
+    local_bin = tmp_path / "home" / ".local" / "bin"
+    (local_bin / "cc-claim").unlink()
+    (local_bin / "cc-close").unlink()
     second = _run_activate(tmp_path, canonical)
 
     assert first.returncode == 0, first.stderr
     assert second.returncode == 0, second.stderr
     assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [new_sha]
+    assert (local_bin / "cc-claim").resolve() == tmp_path / "active-source" / "scripts" / "cc-claim"
+    assert (local_bin / "cc-close").resolve() == tmp_path / "active-source" / "scripts" / "cc-close"
     receipt = _current_receipt(tmp_path)
     assert receipt["status"] == "no_op"
     assert receipt["deploy_status"] == "skipped_already_active"
