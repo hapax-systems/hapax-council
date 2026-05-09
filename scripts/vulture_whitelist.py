@@ -2769,3 +2769,19 @@ by_zone
 connected_to
 signal_chain
 _resolve_wikilink
+
+from shared.perceptual_coverage import (  # noqa: F401, E402
+    best_mic_for,
+    build_frustum,
+    coverage_gaps,
+    devices_on_stream,
+    mic_sensitivity,
+    which_cameras_see,
+)
+
+best_mic_for
+build_frustum
+coverage_gaps
+devices_on_stream
+mic_sensitivity
+which_cameras_see

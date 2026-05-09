@@ -1,0 +1,11 @@
+[Unit]
+Description=Hapax equipment state writer (30s poll)
+Documentation=config/equipment/
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
