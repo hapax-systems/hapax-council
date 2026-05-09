@@ -1146,6 +1146,12 @@ from agents.health_monitor.checks.audio import check_audio_ducker_liveness
 
 check_audio_ducker_liveness
 
+# Companion fleet health checks — registered via @check_group("connectivity").
+from agents.health_monitor.checks.connectivity import check_companion_fleet, check_kdeconnect_bridge
+
+check_kdeconnect_bridge
+check_companion_fleet
+
 # M8Sequencer — director → M8 MIDI dispatch (cc-task:
 # m8-dmn-mute-solo-transport). Currently invoked only via test fixtures;
 # the director-side recruitment wiring (impingement_consumer dispatch
