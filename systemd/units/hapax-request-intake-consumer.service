@@ -6,4 +6,5 @@ Documentation=file://%h/Documents/Personal/20-projects/hapax-requests/_dashboard
 Type=oneshot
 Environment=HAPAX_REQUEST_RECEIPTS=%h/.cache/hapax/request-receipts
 Environment=HAPAX_REQUEST_INTAKE_STATE=%h/.cache/hapax/request-intake-state.json
-ExecStart=/usr/bin/env bash -lc 'exec "$HOME/projects/hapax-council/scripts/request-intake-consumer" --write-receipt --write-state'
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/request-intake-consumer
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/request-intake-consumer --write-state
