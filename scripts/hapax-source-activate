@@ -152,19 +152,6 @@ if [[ "$active_head" != "$origin_sha" ]]; then
     exit 2
 fi
 
-previous_success="$(cat "$LAST_SUCCESS_SHA" 2>/dev/null || true)"
-if [[ "$FORCE" != "1" && "$SKIP_DEPLOY" != "1" && "$previous_success" == "$origin_sha" ]]; then
-    write_receipt "no_op" "skipped_already_active" "0" "origin/main already activated"
-    echo "hapax-source-activate: origin/main already activated at ${origin_sha:0:8}"
-    exit 0
-fi
-
-if [[ "$SKIP_DEPLOY" == "1" ]]; then
-    write_receipt "completed_skip_deploy" "skipped_by_flag" "0" "activation worktree refreshed; deploy skipped by flag"
-    echo "hapax-source-activate: refreshed active source at ${origin_sha:0:8}; deploy skipped"
-    exit 0
-fi
-
 LOCAL_BIN="${HAPAX_SOURCE_ACTIVATE_LOCAL_BIN:-$HOME/.local/bin}"
 mkdir -p "$LOCAL_BIN"
 sweep_count=0
@@ -190,6 +177,19 @@ for script in cc-claim cc-close; do
 done
 if [[ "$sweep_count" -gt 0 ]]; then
     echo "hapax-source-activate: swept $sweep_count symlinks to activation worktree"
+fi
+
+previous_success="$(cat "$LAST_SUCCESS_SHA" 2>/dev/null || true)"
+if [[ "$FORCE" != "1" && "$SKIP_DEPLOY" != "1" && "$previous_success" == "$origin_sha" ]]; then
+    write_receipt "no_op" "skipped_already_active" "0" "origin/main already activated"
+    echo "hapax-source-activate: origin/main already activated at ${origin_sha:0:8}"
+    exit 0
+fi
+
+if [[ "$SKIP_DEPLOY" == "1" ]]; then
+    write_receipt "completed_skip_deploy" "skipped_by_flag" "0" "activation worktree refreshed; deploy skipped by flag"
+    echo "hapax-source-activate: refreshed active source at ${origin_sha:0:8}; deploy skipped"
+    exit 0
 fi
 
 DEPLOY_SCRIPT="${HAPAX_SOURCE_ACTIVATE_DEPLOY_SCRIPT:-$ACTIVE_WORKTREE/scripts/hapax-post-merge-deploy}"
