@@ -96,8 +96,10 @@ def test_l12_hardware_nodes_pin_live_names() -> None:
     assert len(l12_capture.expected_channel_assignments) == 14
     assert l12_capture.expected_channel_assignments["CH1"] == "evil-pet-in-from-monitor-a"
     assert l12_capture.expected_channel_assignments["CH6"] == "evil-pet-return-aux5"
-    assert l12_capture.expected_channel_assignments["CH11"] == "pc-l-out"
-    assert l12_capture.expected_channel_assignments["CH12"] == "pc-r-out"
+    assert l12_capture.expected_channel_assignments["CH9"] == "mpc-content-return-l"
+    assert l12_capture.expected_channel_assignments["CH10"] == "mpc-content-return-r"
+    assert l12_capture.expected_channel_assignments["CH11"] == "mpc-voice-return-l"
+    assert l12_capture.expected_channel_assignments["CH12"] == "mpc-voice-return-r"
 
     assert l12_return.kind == "alsa_sink"
     assert l12_return.pipewire_name == L12_RETURN_NAME
@@ -108,8 +110,8 @@ def test_l12_hardware_nodes_pin_live_names() -> None:
 def test_l12_evilpet_capture_preserves_inverse_safety_invariant() -> None:
     """Descriptor pins the narrowed L-12 capture binding.
 
-    AUX8/9 (vinyl), AUX10/11 (PC return), and AUX12/13 (master bus) must
-    stay outside the broadcast capture node.
+    AUX8/9 (content return), AUX10/11 (voice return), and AUX12/13
+    (master bus) must stay outside the broadcast capture node.
     """
     d = _descriptor()
     l12_capture = d.node_by_id("l12-capture")

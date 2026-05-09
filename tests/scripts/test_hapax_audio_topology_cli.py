@@ -47,14 +47,16 @@ def _replace_node(
 def _write_l12_scene_pcm(
     path: Path,
     *,
-    aux5_amp: int = 8000,
-    aux10_amp: int = 20000,
-    aux11_amp: int = 0,
+    content_l_amp: int = 20000,
+    content_r_amp: int = 20000,
+    voice_l_amp: int = 20000,
+    voice_r_amp: int = 20000,
 ) -> Path:
     buffer = np.zeros((4800, 14), dtype=np.int16)
-    buffer[:, 5] = aux5_amp
-    buffer[:, 10] = aux10_amp
-    buffer[:, 11] = aux11_amp
+    buffer[:, 8] = content_l_amp
+    buffer[:, 9] = content_r_amp
+    buffer[:, 10] = voice_l_amp
+    buffer[:, 11] = voice_r_amp
     path.write_bytes(buffer.tobytes())
     return path
 
@@ -818,11 +820,15 @@ class TestL12SceneCheck:
         assert "L-12 broadcast scene: OK" in result.stdout
         assert "expected_scene: BROADCAST-V2" in result.stdout
 
-    def test_l12_scene_check_returns_2_when_aux5_is_cold(
+    def test_l12_scene_check_returns_2_when_content_return_is_cold(
         self,
         tmp_path: Path,
     ) -> None:
-        raw = _write_l12_scene_pcm(tmp_path / "l12-cold.s16le", aux5_amp=0)
+        raw = _write_l12_scene_pcm(
+            tmp_path / "l12-cold.s16le",
+            content_l_amp=0,
+            content_r_amp=0,
+        )
 
         result = _run(
             [
@@ -835,7 +841,7 @@ class TestL12SceneCheck:
 
         assert result.returncode == 2
         assert "L-12 broadcast scene: FAIL" in result.stdout
-        assert "AUX5/CH6 peak" in result.stdout
+        assert "AUX8 content return L peak" in result.stdout
 
 
 class TestWatchdog:
