@@ -2857,3 +2857,13 @@ Assertion.tags
 Assertion.supersedes
 Assertion.superseded_by
 Assertion.model_post_init
+
+from shared.code_assertion_extractor import (  # noqa: F401, E402
+    EXTRACTION_VERSION,
+    extract_from_directory,
+    extract_from_python_file,
+)
+
+EXTRACTION_VERSION
+extract_from_directory
+extract_from_python_file
