@@ -51,10 +51,10 @@ nodes:
       CH6: evil-pet-return-aux5
       CH7: reserve
       CH8: reserve
-      CH9: vinyl-l
-      CH10: vinyl-r
-      CH11: pc-l-out
-      CH12: pc-r-out
+      CH9: mpc-content-return-l
+      CH10: mpc-content-return-r
+      CH11: mpc-voice-return-l
+      CH12: mpc-voice-return-r
       CH13: master-l-dropped-from-broadcast
       CH14: master-r-dropped-from-broadcast
 

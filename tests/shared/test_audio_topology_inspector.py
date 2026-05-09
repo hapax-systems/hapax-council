@@ -80,18 +80,17 @@ def _replace_node(
 
 def _l12_scene_assignments() -> dict[str, str]:
     return {
-        "CH1": "evil-pet-in-from-monitor-a",
         "CH2": "cortado-contact-mic",
         "CH3": "reserve",
         "CH4": "sampler-chain",
         "CH5": "rode-wireless-pro-rx",
-        "CH6": "evil-pet-return-aux5",
+        "CH6": "legacy-evil-pet-return-aux5",
         "CH7": "reserve",
         "CH8": "reserve",
-        "CH9": "vinyl-l",
-        "CH10": "vinyl-r",
-        "CH11": "pc-l-out",
-        "CH12": "pc-r-out",
+        "CH9": "mpc-content-return-l",
+        "CH10": "mpc-content-return-r",
+        "CH11": "mpc-voice-return-l",
+        "CH12": "mpc-voice-return-r",
         "CH13": "master-l-dropped-from-broadcast",
         "CH14": "master-r-dropped-from-broadcast",
     }
@@ -108,15 +107,19 @@ def _l12_scene_fixture() -> TopologyDescriptor:
 
 def _scene_pcm(
     *,
-    aux5_amp: int = 8000,
-    aux10_amp: int = 20000,
-    aux11_amp: int = 0,
+    content_l_amp: int = 20000,
+    content_r_amp: int = 20000,
+    voice_l_amp: int = 20000,
+    voice_r_amp: int = 20000,
+    legacy_aux5_amp: int = 0,
     samples: int = 4800,
 ) -> bytes:
     buffer = np.zeros((samples, 14), dtype=np.int16)
-    buffer[:, 5] = aux5_amp
-    buffer[:, 10] = aux10_amp
-    buffer[:, 11] = aux11_amp
+    buffer[:, 5] = legacy_aux5_amp
+    buffer[:, 8] = content_l_amp
+    buffer[:, 9] = content_r_amp
+    buffer[:, 10] = voice_l_amp
+    buffer[:, 11] = voice_r_amp
     return buffer.tobytes()
 
 
@@ -685,9 +688,9 @@ class TestTtsBroadcastPathCheck:
 
 class TestL12BroadcastSceneAssertion:
     def test_channel_peak_dbfs_isolated_to_selected_channel(self) -> None:
-        pcm = _scene_pcm(aux5_amp=8000, aux10_amp=0)
+        pcm = _scene_pcm(content_l_amp=8000, voice_l_amp=0, voice_r_amp=0)
 
-        assert channel_peak_dbfs(pcm, channels=14, channel_index=5) > -20.0
+        assert channel_peak_dbfs(pcm, channels=14, channel_index=8) > -20.0
         assert channel_peak_dbfs(pcm, channels=14, channel_index=10) == float("-inf")
 
     def test_passes_when_scene_metadata_and_levels_match(self) -> None:
@@ -699,28 +702,61 @@ class TestL12BroadcastSceneAssertion:
 
         assert result.ok is True
         assert result.evidence["descriptor_expected_scene"] == "BROADCAST-V2"
-        assert result.evidence["aux5_peak_dbfs"] > -20.0
-        assert result.evidence["aux10_11_peak_dbfs"] > -10.0
+        assert result.evidence["content_return_state"] == "active"
+        assert result.evidence["voice_return_state"] == "active"
+        assert result.evidence["content_return_peak_dbfs"] > -10.0
+        assert result.evidence["voice_return_peak_dbfs"] > -10.0
 
-    def test_fails_when_aux5_is_cold(self) -> None:
+    def test_fails_when_content_return_pair_is_cold(self) -> None:
         result = check_l12_broadcast_scene_active(
             _l12_scene_fixture(),
-            pcm_int16=_scene_pcm(aux5_amp=0),
+            pcm_int16=_scene_pcm(content_l_amp=0, content_r_amp=0),
             duration_s=30.0,
         )
 
         assert result.ok is False
-        assert any("AUX5/CH6 peak" in violation for violation in result.violations)
+        assert result.evidence["content_return_state"] == "silent"
+        assert any("AUX8 content return L peak" in violation for violation in result.violations)
+        assert any("AUX9 content return R peak" in violation for violation in result.violations)
 
-    def test_fails_when_usb_return_pair_is_cold(self) -> None:
+    def test_fails_when_voice_return_pair_is_cold(self) -> None:
         result = check_l12_broadcast_scene_active(
             _l12_scene_fixture(),
-            pcm_int16=_scene_pcm(aux10_amp=0, aux11_amp=0),
+            pcm_int16=_scene_pcm(voice_l_amp=0, voice_r_amp=0),
             duration_s=30.0,
         )
 
         assert result.ok is False
-        assert any("AUX10/11 PC return peak" in violation for violation in result.violations)
+        assert result.evidence["voice_return_state"] == "silent"
+        assert any("AUX10 voice return L peak" in violation for violation in result.violations)
+        assert any("AUX11 voice return R peak" in violation for violation in result.violations)
+
+    def test_fails_legacy_aux10_11_only_false_green(self) -> None:
+        result = check_l12_broadcast_scene_active(
+            _l12_scene_fixture(),
+            pcm_int16=_scene_pcm(content_l_amp=0, content_r_amp=0),
+            duration_s=30.0,
+        )
+
+        assert result.ok is False
+        assert result.evidence["voice_return_state"] == "active"
+        assert result.evidence["content_return_state"] == "silent"
+
+    def test_fails_real_silence(self) -> None:
+        result = check_l12_broadcast_scene_active(
+            _l12_scene_fixture(),
+            pcm_int16=_scene_pcm(
+                content_l_amp=0,
+                content_r_amp=0,
+                voice_l_amp=0,
+                voice_r_amp=0,
+            ),
+            duration_s=30.0,
+        )
+
+        assert result.ok is False
+        assert result.evidence["content_return_state"] == "silent"
+        assert result.evidence["voice_return_state"] == "silent"
 
     def test_fails_when_expected_scene_metadata_does_not_match(self) -> None:
         descriptor = _replace_node(
