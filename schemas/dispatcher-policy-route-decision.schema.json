@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.local/schemas/dispatcher-policy-route-decision.schema.json",
+  "title": "DispatcherPolicyRouteDecision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "decision_schema",
+    "decision_id",
+    "created_at",
+    "task_id",
+    "lane",
+    "route_id",
+    "platform",
+    "mode",
+    "profile",
+    "action",
+    "policy_outcome",
+    "launch_allowed",
+    "prompt_allowed",
+    "quality_floor_satisfied",
+    "authority_allowed",
+    "reason_codes",
+    "message",
+    "resource_state_refs"
+  ],
+  "properties": {
+    "decision_schema": {"const": 1},
+    "decision_id": {
+      "type": "string",
+      "pattern": "^rd-[0-9TZ]+-[A-Za-z0-9_.-]+-[a-f0-9]{12}$"
+    },
+    "created_at": {"type": "string", "format": "date-time"},
+    "task_id": {"type": "string", "minLength": 1},
+    "lane": {"type": "string", "minLength": 1},
+    "route_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+\\.[a-z0-9_]+$"
+    },
+    "platform": {"type": "string", "minLength": 1},
+    "mode": {"type": "string", "minLength": 1},
+    "profile": {"type": "string", "minLength": 1},
+    "action": {"enum": ["launch", "hold", "support_only", "refuse"]},
+    "policy_outcome": {"enum": ["launch", "hold", "support_only", "refuse"]},
+    "launch_allowed": {"type": "boolean"},
+    "prompt_allowed": {"type": "boolean"},
+    "quality_floor_satisfied": {"type": "boolean"},
+    "authority_allowed": {"type": "boolean"},
+    "reason_codes": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "message": {"type": "string", "minLength": 1},
+    "resource_state_refs": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}
