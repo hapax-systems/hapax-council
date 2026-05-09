@@ -18,10 +18,18 @@ RECEIPTS_DIR="${HAPAX_REQUEST_RECEIPTS:-$HOME/.cache/hapax/request-receipts}"
 STATE_PATH="${HAPAX_REQUEST_INTAKE_STATE:-$HOME/.cache/hapax/request-intake-state.json}"
 ROLE="${CLAUDE_ROLE:-${HAPAX_AGENT_NAME:-unknown}}"
 STALE_SECONDS="${HAPAX_REQUEST_STALE_SECONDS:-600}"
+TASKS_DIR="${HAPAX_CC_TASKS_DIR:-$HOME/Documents/Personal/20-projects/hapax-cc-tasks}"
+PLANNING_FEED_PATH="${HAPAX_PLANNING_FEED_STATE:-$HOME/.cache/hapax/planning-feed-state.json}"
+STALE_CAPTURED_HOURS="${HAPAX_STALE_CAPTURED_HOURS:-24}"
+STALE_ASSIGNMENT_HOURS="${HAPAX_STALE_ASSIGNMENT_HOURS:-72}"
+STALE_CASE_HOURS="${HAPAX_STALE_CASE_HOURS:-168}"
+STALE_OFFERED_HOURS="${HAPAX_STALE_OFFERED_HOURS:-48}"
+STALE_COMPLETION_HOURS="${HAPAX_STALE_COMPLETION_HOURS:-168}"
 
 MODE="list"
 WRITE_RECEIPT=0
 WRITE_STATE=0
+WRITE_PLANNING_FEED=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -36,6 +44,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --state-path)
       STATE_PATH="${2:?--state-path requires a path}"
+      shift 2
+      ;;
+    --write-planning-feed)
+      WRITE_PLANNING_FEED=1
+      shift
+      ;;
+    --planning-feed-path)
+      PLANNING_FEED_PATH="${2:?--planning-feed-path requires a path}"
       shift 2
       ;;
     --session-preamble)
@@ -86,6 +102,169 @@ write_state() {
   "total_attention_count": $total
 }
 STATE
+}
+
+write_planning_feed() {
+  local generated_at now_epoch
+  generated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  now_epoch=$(date +%s)
+  mkdir -p "$(dirname "$PLANNING_FEED_PATH")"
+
+  local total_requests=0
+  local c_untracked=0 c_assigned_only=0 c_case_linked=0
+  local c_task_offered=0 c_task_active=0 c_task_complete_only=0 c_fulfilled=0
+  local s_stale_captured=0 s_stale_assignment=0 s_stale_case=0
+  local s_stale_offered=0 s_stale_completion=0
+  local requests_json="" attention_json=""
+  local first_req=1 first_attn=1
+
+  for note in "$ACTIVE_DIR"/*.md; do
+    [[ -f "$note" ]] || continue
+    [[ "$(frontmatter_value type "$note" | compact_value)" == "hapax-request" ]] || continue
+    local req_id
+    req_id="$(frontmatter_value request_id "$note" | compact_value)"
+    [[ -z "$req_id" ]] && continue
+
+    total_requests=$((total_requests + 1))
+    local pf_status pf_title intake_owner planning_case pf_updated_at
+    pf_status="$(frontmatter_value status "$note" | compact_value)"
+    pf_title="$(frontmatter_value title "$note")"
+    intake_owner="$(frontmatter_value intake_owner "$note" | compact_value)"
+    planning_case="$(frontmatter_value planning_case "$note" | compact_value)"
+    pf_updated_at="$(frontmatter_value updated_at "$note" | compact_value)"
+    [[ "$planning_case" == "null" ]] && planning_case=""
+
+    local req_basename offered=0 claimed=0 done_count=0 last_activity=""
+    req_basename="$(basename "$note")"
+    for td in "$TASKS_DIR/active" "$TASKS_DIR/closed"; do
+      [[ -d "$td" ]] || continue
+      for tn in "$td"/*.md; do
+        [[ -f "$tn" ]] || continue
+        local tp
+        tp="$(frontmatter_value parent_request "$tn")"
+        [[ "$tp" == *"$req_basename"* ]] || continue
+        local ts tu
+        ts="$(frontmatter_value status "$tn" | compact_value)"
+        tu="$(frontmatter_value updated_at "$tn" | compact_value)"
+        case "$ts" in
+          claimed|in_progress) claimed=$((claimed + 1)) ;;
+          offered) offered=$((offered + 1)) ;;
+          done|closed|complete) done_count=$((done_count + 1)) ;;
+          *) if [[ "$td" == *"/closed" ]]; then done_count=$((done_count + 1)); else offered=$((offered + 1)); fi ;;
+        esac
+        if [[ -n "$tu" ]] && [[ -z "$last_activity" || "$tu" > "$last_activity" ]]; then
+          last_activity="$tu"
+        fi
+      done
+    done
+
+    local active_tasks=$((offered + claimed))
+    local total_tasks=$((active_tasks + done_count))
+
+    local coverage
+    if [[ "$pf_status" == "fulfilled" ]]; then
+      coverage="fulfilled"; c_fulfilled=$((c_fulfilled + 1))
+    elif [[ $claimed -gt 0 ]]; then
+      coverage="task_active"; c_task_active=$((c_task_active + 1))
+    elif [[ $offered -gt 0 ]]; then
+      coverage="task_offered"; c_task_offered=$((c_task_offered + 1))
+    elif [[ $done_count -gt 0 ]]; then
+      coverage="task_complete_only"; c_task_complete_only=$((c_task_complete_only + 1))
+    elif [[ -n "$planning_case" ]]; then
+      coverage="case_linked"; c_case_linked=$((c_case_linked + 1))
+    elif [[ -n "$intake_owner" ]]; then
+      coverage="assigned_only"; c_assigned_only=$((c_assigned_only + 1))
+    else
+      coverage="untracked"; c_untracked=$((c_untracked + 1))
+    fi
+
+    local staleness_flag="" age_hours=0
+    if [[ -n "$pf_updated_at" ]]; then
+      local ue
+      ue=$(date -d "$pf_updated_at" +%s 2>/dev/null || echo 0)
+      [[ $ue -gt 0 ]] && age_hours=$(( (now_epoch - ue) / 3600 ))
+    fi
+    case "$coverage" in
+      untracked)
+        [[ "$pf_status" == "captured" && $age_hours -ge $STALE_CAPTURED_HOURS ]] && {
+          staleness_flag="stale_captured"; s_stale_captured=$((s_stale_captured + 1))
+        } ;;
+      assigned_only)
+        [[ $age_hours -ge $STALE_ASSIGNMENT_HOURS ]] && {
+          staleness_flag="stale_assignment"; s_stale_assignment=$((s_stale_assignment + 1))
+        } ;;
+      case_linked)
+        [[ $age_hours -ge $STALE_CASE_HOURS ]] && {
+          staleness_flag="stale_case"; s_stale_case=$((s_stale_case + 1))
+        } ;;
+      task_offered)
+        [[ $age_hours -ge $STALE_OFFERED_HOURS ]] && {
+          staleness_flag="stale_offered"; s_stale_offered=$((s_stale_offered + 1))
+        } ;;
+      task_complete_only)
+        [[ $age_hours -ge $STALE_COMPLETION_HOURS ]] && {
+          staleness_flag="stale_completion"; s_stale_completion=$((s_stale_completion + 1))
+        } ;;
+    esac
+
+    local staleness_json="null"
+    [[ -n "$staleness_flag" ]] && staleness_json="\"$staleness_flag\""
+    local last_json="null"
+    [[ -n "$last_activity" ]] && last_json="\"$last_activity\""
+    local jtitle
+    jtitle=$(printf '%s' "$pf_title" | sed 's/\\/\\\\/g; s/"/\\"/g')
+
+    local comma=""
+    [[ $first_req -eq 0 ]] && comma=","
+    first_req=0
+    requests_json="${requests_json}${comma}
+    {\"request_id\":\"${req_id}\",\"title\":\"${jtitle}\",\"status\":\"${pf_status}\",\"coverage\":\"${coverage}\",\"planning_case\":\"${planning_case}\",\"active_tasks\":${active_tasks},\"closed_tasks\":${done_count},\"total_tasks\":${total_tasks},\"last_task_activity\":${last_json},\"staleness\":${staleness_json}}"
+
+    if [[ -n "$staleness_flag" || "$coverage" == "untracked" ]]; then
+      local action=""
+      case "$coverage" in
+        untracked) action="needs triage and intake assignment" ;;
+        assigned_only) action="needs authority case creation" ;;
+        case_linked) action="needs task creation under case" ;;
+        task_offered) action="has offered tasks awaiting claim" ;;
+        task_complete_only) action="all tasks complete, request not yet fulfilled" ;;
+        *) action="needs review" ;;
+      esac
+      comma=""
+      [[ $first_attn -eq 0 ]] && comma=","
+      first_attn=0
+      attention_json="${attention_json}${comma}
+    {\"request_id\":\"${req_id}\",\"coverage\":\"${coverage}\",\"staleness\":${staleness_json},\"age_hours\":${age_hours},\"action\":\"${action}\"}"
+    fi
+  done
+
+  cat > "$PLANNING_FEED_PATH" <<FEED
+{
+  "generated_at": "${generated_at}",
+  "generator": "request-intake-consumer --write-planning-feed",
+  "total_requests": ${total_requests},
+  "coverage_summary": {
+    "untracked": ${c_untracked},
+    "assigned_only": ${c_assigned_only},
+    "case_linked": ${c_case_linked},
+    "task_offered": ${c_task_offered},
+    "task_active": ${c_task_active},
+    "task_complete_only": ${c_task_complete_only},
+    "fulfilled": ${c_fulfilled}
+  },
+  "stale_summary": {
+    "stale_captured": ${s_stale_captured},
+    "stale_assignment": ${s_stale_assignment},
+    "stale_case": ${s_stale_case},
+    "stale_offered": ${s_stale_offered},
+    "stale_completion": ${s_stale_completion}
+  },
+  "attention_required": [${attention_json}
+  ],
+  "requests": [${requests_json}
+  ]
+}
+FEED
 }
 
 unread_count=0
@@ -160,6 +339,10 @@ total=$((unread_count + stale_count))
 
 if [[ "$WRITE_STATE" -eq 1 ]]; then
   write_state
+fi
+
+if [[ "$WRITE_PLANNING_FEED" -eq 1 ]]; then
+  write_planning_feed
 fi
 
 if [[ "$MODE" == "preamble" ]]; then
