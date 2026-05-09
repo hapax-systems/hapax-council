@@ -155,6 +155,7 @@ fi
 LOCAL_BIN="${HAPAX_SOURCE_ACTIVATE_LOCAL_BIN:-$HOME/.local/bin}"
 mkdir -p "$LOCAL_BIN"
 sweep_count=0
+config_sync_count=0
 
 link_active_script() {
     local script="$1"
@@ -175,8 +176,27 @@ done
 for script in cc-claim cc-close; do
     link_active_script "$ACTIVE_WORKTREE/scripts/$script"
 done
+
+sync_active_config() {
+    local src="$1"
+    local dst="$2"
+    [[ -f "$src" ]] || return 0
+    if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then
+        return 0
+    fi
+    install -Dm 0644 "$src" "$dst"
+    config_sync_count=$((config_sync_count + 1))
+}
+
+sync_active_config \
+    "$ACTIVE_WORKTREE/config/usb-topology-policy.json" \
+    "$HOME/.config/hapax/usb-topology-policy.json"
+
 if [[ "$sweep_count" -gt 0 ]]; then
     echo "hapax-source-activate: swept $sweep_count symlinks to activation worktree"
+fi
+if [[ "$config_sync_count" -gt 0 ]]; then
+    echo "hapax-source-activate: synced $config_sync_count config files from activation worktree"
 fi
 
 previous_success="$(cat "$LAST_SUCCESS_SHA" 2>/dev/null || true)"

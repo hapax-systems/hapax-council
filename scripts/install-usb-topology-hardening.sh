@@ -135,6 +135,7 @@ system_installs=(
 
 user_installs=(
     "$REPO_DIR/scripts/hapax-usb-topology-witness|$(user_path .local/bin/hapax-usb-topology-witness)|0755"
+    "$REPO_DIR/config/usb-topology-policy.json|$(user_path .config/hapax/usb-topology-policy.json)|0644"
     "$REPO_DIR/systemd/units/hapax-usb-topology-witness.service|$(user_path .config/systemd/user/hapax-usb-topology-witness.service)|0644"
     "$REPO_DIR/systemd/units/hapax-usb-topology-witness.timer|$(user_path .config/systemd/user/hapax-usb-topology-witness.timer)|0644"
     "$REPO_DIR/systemd/units/hapax-usb-router.service|$(user_path .config/systemd/user/hapax-usb-router.service)|0644"

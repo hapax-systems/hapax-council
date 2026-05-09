@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -13,6 +15,8 @@ WATCHDOG = REPO_ROOT / "scripts" / "hapax-usb-bandwidth-watchdog"
 RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "usb-s4-l12-topology-hardening.md"
 S4_UDEV = REPO_ROOT / "config" / "udev" / "rules.d" / "90-hapax-s4-composite.rules"
 MIDI_ROUTE = REPO_ROOT / "systemd" / "units" / "midi-route.service"
+USB_POLICY = REPO_ROOT / "config" / "usb-topology-policy.json"
+USB_WITNESS_SERVICE = REPO_ROOT / "systemd" / "units" / "hapax-usb-topology-witness.service"
 
 S4_SINK = "alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output"
 S4_SOURCE = "alsa_input.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-input"
@@ -144,6 +148,118 @@ def test_witness_reports_kernel_policy_and_camera_drift(tmp_path: Path) -> None:
     assert any(issue.startswith("camera_on_caldigit:9726C031") for issue in status["issues"])
 
 
+def test_witness_demotes_configured_s4_absence_and_c920_placement(tmp_path: Path) -> None:
+    snapshot = known_good_snapshot()
+    snapshot["s4"] = {
+        "device": "",
+        "path": "",
+        "power_control": "",
+        "block": {
+            "node": "",
+            "udisks_ignore": "",
+            "modemmanager_ignore": "",
+        },
+        "net": {
+            "interface": "",
+            "nm_unmanaged": "",
+            "modemmanager_ignore": "",
+            "nmcli_state": "",
+        },
+    }
+    snapshot["sinks"] = [L12_SINK]
+    snapshot["sources"] = [L12_SOURCE]
+    snapshot["alsa_playback"] = ""
+    snapshot["alsa_capture"] = ""
+    snapshot["midi_clients"] = ""
+    snapshot["amidi_ports"] = ""
+    snapshot["cameras"] = [
+        {
+            "serial": "86B6B75F",
+            "path": "pci-0000:71:00.0-usb-0:1.1.2.2:1.0",
+            "on_caldigit_audio_controller": "true",
+        }
+    ]
+
+    result = run_witness(tmp_path, snapshot)
+
+    assert result.returncode == 0, result.stdout
+    status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert status["ok"] is True
+    assert status["issues"] == []
+    assert "s4_usb_missing_known_absence:hardware_fault_diagnosed_2026-05-08" in status["warnings"]
+    assert any(
+        warning.startswith("camera_on_caldigit_accepted:86B6B75F") for warning in status["warnings"]
+    )
+    assert "cameras_off_caldigit=0" in result.stdout
+
+
+def test_witness_keeps_l12_absence_hard_even_with_policy(tmp_path: Path) -> None:
+    snapshot = known_good_snapshot()
+    snapshot["l12"] = {
+        "device": "",
+        "path": "",
+        "power_control": "",
+        "default_sink": "",
+        "default_source": "",
+    }
+    snapshot["sinks"] = [S4_SINK]
+    snapshot["sources"] = [S4_SOURCE]
+
+    result = run_witness(tmp_path, snapshot)
+
+    assert result.returncode == 2
+    status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert "l12_usb_missing" in status["issues"]
+    assert "l12_sink_missing" in status["issues"]
+    assert "l12_source_missing" in status["issues"]
+
+
+def test_copied_witness_uses_installed_policy_env_path(tmp_path: Path) -> None:
+    copied = tmp_path / "home" / ".local" / "bin" / "hapax-usb-topology-witness"
+    policy = tmp_path / "home" / ".config" / "hapax" / "usb-topology-policy.json"
+    copied.parent.mkdir(parents=True)
+    policy.parent.mkdir(parents=True)
+    shutil.copy2(WITNESS, copied)
+    shutil.copy2(USB_POLICY, policy)
+
+    snapshot = known_good_snapshot()
+    snapshot["s4"] = {
+        "device": "",
+        "path": "",
+        "power_control": "",
+        "block": {"node": "", "udisks_ignore": "", "modemmanager_ignore": ""},
+        "net": {
+            "interface": "",
+            "nm_unmanaged": "",
+            "modemmanager_ignore": "",
+            "nmcli_state": "",
+        },
+    }
+    snapshot["sinks"] = [L12_SINK]
+    snapshot["sources"] = [L12_SOURCE]
+    snapshot["alsa_playback"] = ""
+    snapshot["alsa_capture"] = ""
+    snapshot["midi_clients"] = ""
+    snapshot["amidi_ports"] = ""
+    fixture = tmp_path / "snapshot.json"
+    status = tmp_path / "status.json"
+    fixture.write_text(json.dumps(snapshot), encoding="utf-8")
+
+    env = {**os.environ, "HAPAX_USB_TOPOLOGY_POLICY": str(policy)}
+    result = subprocess.run(
+        [str(copied), "--fixture", str(fixture), "--status-path", str(status)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stdout
+    output = json.loads(status.read_text(encoding="utf-8"))
+    assert output["issues"] == []
+    assert "s4_usb_missing_known_absence:hardware_fault_diagnosed_2026-05-08" in output["warnings"]
+
+
 def test_installer_dry_run_lists_durable_policy_files(tmp_path: Path) -> None:
     result = subprocess.run(
         [
@@ -163,6 +279,7 @@ def test_installer_dry_run_lists_durable_policy_files(tmp_path: Path) -> None:
     assert "/etc/udev/rules.d/90-hapax-s4-composite.rules" in result.stdout
     assert "/etc/NetworkManager/conf.d/90-hapax-s4-unmanaged.conf" in result.stdout
     assert "/etc/modprobe.d/99-hapax-usb-reliability-override.conf" in result.stdout
+    assert ".config/hapax/usb-topology-policy.json" in result.stdout
     assert "hapax-usb-topology-witness.timer" in result.stdout
     assert "hapax-usb-reliability.params" in result.stdout
     assert not (tmp_path / "root").exists()
@@ -184,6 +301,12 @@ def test_s4_udev_policy_pins_desktop_probe_suppression() -> None:
     assert 'ENV{ID_MM_DEVICE_IGNORE}="1"' in text
     assert 'ENV{NM_UNMANAGED}="1"' in text
     assert "hapax-usb-topology-witness.service" in text
+
+
+def test_usb_topology_witness_service_sets_policy_path() -> None:
+    text = USB_WITNESS_SERVICE.read_text(encoding="utf-8")
+
+    assert "Environment=HAPAX_USB_TOPOLOGY_POLICY=%h/.config/hapax/usb-topology-policy.json" in text
 
 
 def test_midi_route_skips_cleanly_when_legacy_binary_absent() -> None:

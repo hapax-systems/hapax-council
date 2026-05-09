@@ -37,6 +37,7 @@ def _make_repos(tmp_path: Path) -> tuple[Path, Path, str]:
     _git(seed, "config", "user.email", "source-activate@example.test")
     _git(seed, "config", "user.name", "Source Activate")
     _write(seed / "README.md", "base\n")
+    _write(seed / "config" / "usb-topology-policy.json", '{"known_absences": {}}\n')
     _write(
         seed / "scripts" / "hapax-post-merge-deploy",
         textwrap.dedent(
@@ -119,8 +120,10 @@ def test_same_sha_rerun_writes_no_op_and_does_not_redeploy(tmp_path: Path) -> No
 
     first = _run_activate(tmp_path, canonical)
     local_bin = tmp_path / "home" / ".local" / "bin"
+    installed_policy = tmp_path / "home" / ".config" / "hapax" / "usb-topology-policy.json"
     (local_bin / "cc-claim").unlink()
     (local_bin / "cc-close").unlink()
+    installed_policy.unlink()
     second = _run_activate(tmp_path, canonical)
 
     assert first.returncode == 0, first.stderr
@@ -128,6 +131,7 @@ def test_same_sha_rerun_writes_no_op_and_does_not_redeploy(tmp_path: Path) -> No
     assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [new_sha]
     assert (local_bin / "cc-claim").resolve() == tmp_path / "active-source" / "scripts" / "cc-claim"
     assert (local_bin / "cc-close").resolve() == tmp_path / "active-source" / "scripts" / "cc-close"
+    assert installed_policy.exists()
     receipt = _current_receipt(tmp_path)
     assert receipt["status"] == "no_op"
     assert receipt["deploy_status"] == "skipped_already_active"
@@ -160,3 +164,14 @@ def test_activation_sweeps_cc_task_tools_into_local_bin(tmp_path: Path) -> None:
     active_source = tmp_path / "active-source"
     assert (local_bin / "cc-claim").resolve() == active_source / "scripts" / "cc-claim"
     assert (local_bin / "cc-close").resolve() == active_source / "scripts" / "cc-close"
+
+
+def test_activation_syncs_usb_topology_policy_config(tmp_path: Path) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    result = _run_activate(tmp_path, canonical)
+
+    assert result.returncode == 0, result.stderr
+    installed_policy = tmp_path / "home" / ".config" / "hapax" / "usb-topology-policy.json"
+    active_policy = tmp_path / "active-source" / "config" / "usb-topology-policy.json"
+    assert installed_policy.read_text(encoding="utf-8") == active_policy.read_text(encoding="utf-8")
