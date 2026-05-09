@@ -28,6 +28,7 @@ from pathlib import Path
 
 from agents.audio_health.m1_dimensions import compute_envelope_correlation
 from agents.audio_health.probes import ProbeConfig, capture_and_measure
+from agents.audio_health.service_loop import interruptible_sleep
 
 log = logging.getLogger(__name__)
 
@@ -339,7 +340,7 @@ def run_daemon(config: M4DaemonConfig | None = None) -> None:
 
         elapsed = time.time() - now
         sleep_time = max(0.1, cfg.probe_interval_s - elapsed)
-        time.sleep(sleep_time)
+        interruptible_sleep(sleep_time, lambda: shutdown)
 
     log.info("M4 inter-stage correlation daemon shutting down")
 
