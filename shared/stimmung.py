@@ -6,10 +6,10 @@ operator biometrics (HR, HRV, EDA, sleep, activity), and cognitive state
 (grounding quality from voice sessions) into a single Stimmung snapshot
 that colors system behavior.
 
-10 dimensions (6 infrastructure + 1 cognitive + 3 biometric), each a
-DimensionReading with value/trend/freshness. Overall stance derived from
-worst non-stale dimension. Biometric dimensions use 0.5× weight, cognitive
-dimensions use 0.3× weight, so system stance remains infrastructure-driven.
+13 dimensions (6 infrastructure + 3 cognitive + 1 perceptual + 3 biometric),
+each a DimensionReading with value/trend/freshness. Overall stance derived
+from worst non-stale dimension. Biometric dimensions use 0.5× weight,
+cognitive 0.3×, perceptual 0.2×, so stance remains infrastructure-driven.
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ class DimensionReading(BaseModel, frozen=True):
 
 
 class SystemStimmung(BaseModel):
-    """Unified self-state vector — 10 dimensions + derived stance."""
+    """Unified self-state vector — 13 dimensions + derived stance."""
 
     # Infrastructure dimensions (weight 1.0)
     health: DimensionReading = Field(default_factory=DimensionReading)
@@ -106,6 +106,9 @@ class SystemStimmung(BaseModel):
     # Weight: cognitive (0.3×) — epistemic state about the audience, not
     # a direct physiological or infrastructure signal.
     audience_engagement: DimensionReading = Field(default_factory=DimensionReading)
+
+    # Perceptual dimensions (weight 0.2 — self-referential, lightest)
+    visual_self_perception: DimensionReading = Field(default_factory=DimensionReading)
 
     # Biometric dimensions (weight 0.5 — softer thresholds, operator changes slowly)
     operator_stress: DimensionReading = Field(default_factory=DimensionReading)
@@ -168,13 +171,22 @@ _COGNITIVE_DIMENSION_NAMES = [
     "audience_engagement",
 ]
 
+_PERCEPTUAL_DIMENSION_NAMES = [
+    "visual_self_perception",
+]
+
 _BIOMETRIC_DIMENSION_NAMES = [
     "operator_stress",
     "operator_energy",
     "physiological_coherence",
 ]
 
-_DIMENSION_NAMES = _INFRA_DIMENSION_NAMES + _COGNITIVE_DIMENSION_NAMES + _BIOMETRIC_DIMENSION_NAMES
+_DIMENSION_NAMES = (
+    _INFRA_DIMENSION_NAMES
+    + _COGNITIVE_DIMENSION_NAMES
+    + _PERCEPTUAL_DIMENSION_NAMES
+    + _BIOMETRIC_DIMENSION_NAMES
+)
 
 # Biometric dimensions contribute at 0.5× weight to stance computation.
 # Operator physiological state changes slowly — infrastructure should dominate.
@@ -184,13 +196,19 @@ _BIOMETRIC_STANCE_WEIGHT = 0.5
 # for conversation quality but doesn't override system health.
 _COGNITIVE_STANCE_WEIGHT = 0.3
 
+# Perceptual dimensions contribute at 0.2× weight — self-referential visual
+# feedback should nudge behavior subtly, never dominate stance.
+_PERCEPTUAL_STANCE_WEIGHT = 0.2
+
 # Per-class stance thresholds applied to effective values (raw × weight).
 # Infrastructure: standard thresholds.
 # Biometric (0.5× weight): can reach DEGRADED at raw ≥ 0.8 (eff=0.4), never CRITICAL.
 # Cognitive (0.3× weight): can reach CAUTIOUS at raw ≥ 0.5 (eff=0.15), never DEGRADED.
+# Perceptual (0.2× weight): can reach CAUTIOUS only (eff max = 0.2).
 _INFRA_THRESHOLDS = (0.30, 0.60, 0.85)  # (CAUTIOUS, DEGRADED, CRITICAL)
 _BIOMETRIC_THRESHOLDS = (0.15, 0.40, 1.01)  # CRITICAL unreachable (eff max = 0.5)
 _COGNITIVE_THRESHOLDS = (0.15, 1.01, 1.01)  # DEGRADED+CRITICAL unreachable (eff max = 0.3)
+_PERCEPTUAL_THRESHOLDS = (0.15, 1.01, 1.01)  # DEGRADED+CRITICAL unreachable (eff max = 0.2)
 
 # Stance ordering for comparison (StrEnum alphabetical order doesn't match severity).
 # Keyed by Stance members; since Stance is StrEnum, Stance.NOMINAL == "nominal".
@@ -468,6 +486,16 @@ class StimmungCollector:
     def update_exploration(self, deficit: float) -> None:
         """Update exploration deficit (0.0 = engaged, 1.0 = system-wide boredom)."""
         self._record("exploration_deficit", max(0.0, min(1.0, deficit)))
+
+    def update_visual_self_perception(self, extremity: float) -> None:
+        """Update from rendered-frame formal property analysis.
+
+        Args:
+            extremity: 0.0 = balanced/harmonious render, 1.0 = extreme
+                (overdriven brightness, monotone color, harsh contrast).
+                Already follows stimmung convention (0.0 = good).
+        """
+        self._record("visual_self_perception", max(0.0, min(1.0, extremity)))
 
     def update_audience_engagement(self, engagement: float) -> None:
         """Update audience-engagement reading from the chat structural analyzer.
@@ -776,6 +804,9 @@ class StimmungCollector:
             elif name in _COGNITIVE_DIMENSION_NAMES:
                 effective *= _COGNITIVE_STANCE_WEIGHT
                 thresholds = _COGNITIVE_THRESHOLDS
+            elif name in _PERCEPTUAL_DIMENSION_NAMES:
+                effective *= _PERCEPTUAL_STANCE_WEIGHT
+                thresholds = _PERCEPTUAL_THRESHOLDS
             else:
                 thresholds = _INFRA_THRESHOLDS
 
@@ -853,6 +884,10 @@ class StimmungCollector:
                 effective_value *= _COGNITIVE_STANCE_WEIGHT
                 effective_sigma *= _COGNITIVE_STANCE_WEIGHT
                 thresholds = _COGNITIVE_THRESHOLDS
+            elif name in _PERCEPTUAL_DIMENSION_NAMES:
+                effective_value *= _PERCEPTUAL_STANCE_WEIGHT
+                effective_sigma *= _PERCEPTUAL_STANCE_WEIGHT
+                thresholds = _PERCEPTUAL_THRESHOLDS
             else:
                 thresholds = _INFRA_THRESHOLDS
 

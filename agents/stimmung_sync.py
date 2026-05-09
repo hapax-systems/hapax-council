@@ -37,6 +37,7 @@ DIMENSION_NAMES = [
     "grounding_quality",
     "exploration_deficit",
     "audience_engagement",
+    "visual_self_perception",
     "operator_stress",
     "operator_energy",
     "physiological_coherence",

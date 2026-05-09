@@ -120,7 +120,18 @@ def update_stimmung_sources(agg: VisualLayerAggregator) -> None:
     except Exception:
         log.debug("Exploration deficit read failed", exc_info=True)
 
-    # 6d. Audience engagement — chat activity + viewer count signal.
+    # 6d. Visual self-perception — rendered frame formal properties
+    try:
+        from .frame_perception import analyze_frame
+
+        props = analyze_frame()
+        if props is not None:
+            agg._stimmung_collector.update_visual_self_perception(props.composite)
+            log.debug("Frame perception: composite=%.3f", props.composite)
+    except Exception:
+        log.debug("Frame perception read failed", exc_info=True)
+
+    # 6e. Audience engagement — chat activity + viewer count signal.
     # Engagement = 0.0 (nobody) → 1.0 (active audience).
     # The StimmungCollector inverts this (0.0 = good engagement,
     # 1.0 = no engagement) to match stimmung convention.
