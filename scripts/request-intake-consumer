@@ -639,6 +639,7 @@ for note in "$ACTIVE_DIR"/*.md; do
 
   receipt_file="$RECEIPTS_DIR/${req_id}.yaml"
 
+  receipt_stale=0
   if [[ -f "$receipt_file" ]]; then
     receipt_ts="$(frontmatter_value checked_at "$receipt_file" | compact_value)"
     receipt_updated="$(frontmatter_value observed_updated_at "$receipt_file" | compact_value)"
@@ -650,13 +651,17 @@ for note in "$ACTIVE_DIR"/*.md; do
       if [[ $age -gt $STALE_SECONDS ]]; then
         stale_count=$((stale_count + 1))
         unread_lines="${unread_lines}    STALE [${status}] ${req_id} — ${title} (receipt ${age}s old)\n"
+        receipt_stale=1
+      else
+        continue
       fi
-      continue
     fi
   fi
 
-  unread_count=$((unread_count + 1))
-  unread_lines="${unread_lines}    UNREAD [${status}] ${req_id} — ${title}\n"
+  if [[ "$receipt_stale" -eq 0 ]]; then
+    unread_count=$((unread_count + 1))
+    unread_lines="${unread_lines}    UNREAD [${status}] ${req_id} — ${title}\n"
+  fi
 
   if [[ "$WRITE_RECEIPT" -eq 1 ]]; then
     cat > "$receipt_file" <<RECEIPT
@@ -672,6 +677,11 @@ decision: pending_review
 next_owner: ${ROLE}
 next_check_deadline: $(date -u -d "+1 hour" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
 RECEIPT
+    if [[ "$receipt_stale" -eq 1 ]]; then
+      stale_count=$((stale_count - 1))
+    else
+      unread_count=$((unread_count - 1))
+    fi
   fi
 done
 

@@ -11,6 +11,12 @@ import subprocess
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "request-intake-consumer"
+SERVICE = (
+    Path(__file__).resolve().parents[1]
+    / "systemd"
+    / "units"
+    / "hapax-request-intake-consumer.service"
+)
 
 
 def _write_request(
@@ -158,6 +164,74 @@ def test_receipt_makes_request_read(tmp_path: Path) -> None:
     _run(tmp_path, "--write-receipt", receipts_dir=receipts)
     result = _run(tmp_path, receipts_dir=receipts)
     assert "all requests have fresh read receipts" in result.stdout or "0 unread" in result.stdout
+
+
+def test_write_receipt_refreshes_stale_receipt(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    _write_request(active / "REQ-003B.md", "REQ-003B")
+    receipt = receipts / "REQ-003B.yaml"
+    receipt.write_text(
+        "\n".join(
+            [
+                "receipt_type: request_intake_read",
+                "request_id: REQ-003B",
+                "reader_role: old-reader",
+                "checked_at: 2020-01-01T00:00:00Z",
+                f"source_note: {active / 'REQ-003B.md'}",
+                "observed_status: captured",
+                "observed_updated_at: 2026-05-08T15:00:00Z",
+                "content_hash: old",
+                "decision: pending_review",
+                "next_owner: old-reader",
+                "next_check_deadline: 2020-01-01T01:00:00Z",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--write-receipt", receipts_dir=receipts)
+    assert result.returncode == 0
+
+    refreshed = receipt.read_text(encoding="utf-8")
+    assert "reader_role: epsilon-test" in refreshed
+    assert "checked_at: 2020-01-01T00:00:00Z" not in refreshed
+
+    second = _run(tmp_path, receipts_dir=receipts)
+    assert "all requests have fresh read receipts" in second.stdout
+
+
+def test_write_receipt_and_state_reports_post_consumption_state(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    state_path = tmp_path / "state" / "request-intake-state.json"
+    receipts = tmp_path / "receipts"
+    _write_request(active / "REQ-003C.md", "REQ-003C")
+
+    result = _run(
+        tmp_path,
+        "--write-receipt",
+        "--write-state",
+        receipts_dir=receipts,
+        state_path=state_path,
+    )
+    assert result.returncode == 0
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["unread_count"] == 0
+    assert state["stale_count"] == 0
+    assert state["reader_role"] == "epsilon-test"
+
+
+def test_request_intake_systemd_unit_writes_receipts_state_and_planning_feed() -> None:
+    text = SERVICE.read_text(encoding="utf-8")
+    assert "Environment=HAPAX_AGENT_NAME=request-intake-consumer" in text
+    assert "ExecStart=" in text
+    assert "--write-receipt" in text
+    assert "--write-state" in text
+    assert "--write-planning-feed" in text
 
 
 def test_preamble_mode_silent_when_empty(tmp_path: Path) -> None:
