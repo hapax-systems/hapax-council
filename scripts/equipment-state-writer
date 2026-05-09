@@ -1,0 +1,352 @@
+#!/usr/bin/env python3
+"""Equipment state writer — introspects live system state for registered devices.
+
+Reads device definitions from config/equipment/*.yaml, probes USB sysfs, ALSA,
+PipeWire, and MIDI subsystems, then writes a per-device state snapshot to
+/dev/shm/hapax-equipment/state.json.
+
+Designed to run on a 30-second timer via hapax-equipment-state.timer.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config" / "equipment"
+_OUTPUT_DIR = Path("/dev/shm/hapax-equipment")
+_OUTPUT_FILE = _OUTPUT_DIR / "state.json"
+
+
+# ---------------------------------------------------------------------------
+# Device loader
+# ---------------------------------------------------------------------------
+
+
+def load_devices() -> list[dict[str, Any]]:
+    """Load all device YAML files and return their parsed contents."""
+    devices = []
+    for yf in sorted(_CONFIG_DIR.glob("*.yaml")):
+        data = yaml.safe_load(yf.read_text(encoding="utf-8"))
+        if data and "device_id" in data:
+            devices.append(data)
+    return devices
+
+
+# ---------------------------------------------------------------------------
+# Subsystem probes
+# ---------------------------------------------------------------------------
+
+
+def _run(cmd: list[str]) -> str:
+    """Run a command, return stdout.  Silently return '' on failure."""
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        return r.stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
+
+
+def probe_usb() -> list[dict[str, str]]:
+    """Parse lsusb output into list of {vid, pid, description}."""
+    entries = []
+    for line in _run(["lsusb"]).splitlines():
+        m = re.match(r"Bus \d+ Device \d+: ID ([0-9a-fA-F]{4}):([0-9a-fA-F]{4})\s+(.*)", line)
+        if m:
+            entries.append(
+                {"vid": m.group(1).lower(), "pid": m.group(2).lower(), "desc": m.group(3)}
+            )
+    return entries
+
+
+def probe_alsa() -> list[dict[str, str]]:
+    """Parse arecord -l and aplay -l into list of {card_num, card_name, card_long}."""
+    cards: dict[str, dict[str, str]] = {}
+    for cmd in [["arecord", "-l"], ["aplay", "-l"]]:
+        for line in _run(cmd).splitlines():
+            m = re.match(r"card (\d+): (\S+) \[(.+?)\]", line)
+            if m:
+                key = m.group(1)
+                if key not in cards:
+                    cards[key] = {
+                        "card_num": m.group(1),
+                        "card_name": m.group(2),
+                        "card_long": m.group(3),
+                    }
+    return list(cards.values())
+
+
+def probe_pipewire() -> list[dict[str, str]]:
+    """Parse pw-cli ls Node output into list of {node_name, media_class}."""
+    nodes = []
+    current: dict[str, str] = {}
+    for line in _run(["pw-cli", "ls", "Node"]).splitlines():
+        id_match = re.match(r"\tid (\d+), type", line)
+        if id_match:
+            if current.get("node_name"):
+                nodes.append(current)
+            current = {}
+            continue
+        name_match = re.search(r'node\.name = "(.+?)"', line)
+        if name_match:
+            current["node_name"] = name_match.group(1)
+        cls_match = re.search(r'media\.class = "(.+?)"', line)
+        if cls_match:
+            current["media_class"] = cls_match.group(1)
+        desc_match = re.search(r'node\.description = "(.+?)"', line)
+        if desc_match:
+            current["node_description"] = desc_match.group(1)
+    if current.get("node_name"):
+        nodes.append(current)
+    return nodes
+
+
+def probe_midi() -> list[dict[str, str]]:
+    """Parse amidi -l output into list of {hw_id, name}."""
+    ports = []
+    for line in _run(["amidi", "-l"]).splitlines():
+        m = re.match(r"(IO|I |O )\s+(hw:\S+)\s+(.+)", line)
+        if m:
+            ports.append({"hw_id": m.group(2).strip(), "name": m.group(3).strip()})
+    return ports
+
+
+# ---------------------------------------------------------------------------
+# Matching logic
+# ---------------------------------------------------------------------------
+
+
+def _vid_pid(device: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Extract normalised VID/PID from device spec."""
+    usb = device.get("specifications", {}).get("usb", {})
+    vid = usb.get("vid")
+    pid = usb.get("pid")
+    if vid:
+        vid = vid.lower().replace("0x", "")
+    if pid:
+        pid = pid.lower().replace("0x", "")
+    return vid, pid
+
+
+def _alsa_pattern(device: dict[str, Any]) -> str | None:
+    """Extract ALSA card name pattern from device spec."""
+    midi = device.get("specifications", {}).get("midi", {})
+    return midi.get("alsa_card_name_pattern")
+
+
+def _identity_pattern(device: dict[str, Any]) -> str:
+    """Fallback match pattern from identity model name."""
+    return device.get("identity", {}).get("model", "")
+
+
+def match_usb(device: dict[str, Any], usb_entries: list[dict[str, str]]) -> bool:
+    """Check if device is detected via USB."""
+    vid, pid = _vid_pid(device)
+    if vid:
+        for entry in usb_entries:
+            if entry["vid"] == vid:
+                if pid is None or entry["pid"] == pid:
+                    return True
+
+    # Fallback: match by manufacturer + model substring in lsusb description
+    manufacturer = device.get("identity", {}).get("manufacturer", "").lower()
+    model = device.get("identity", {}).get("model", "").lower()
+    if manufacturer or model:
+        for entry in usb_entries:
+            desc_lower = entry["desc"].lower()
+            if manufacturer and manufacturer.split()[0] in desc_lower:
+                return True
+            if model and model.split()[0] in desc_lower:
+                return True
+    return False
+
+
+def match_alsa(device: dict[str, Any], alsa_cards: list[dict[str, str]]) -> str | None:
+    """Return ALSA card name if device is detected, else None."""
+    pattern = _alsa_pattern(device)
+    model = _identity_pattern(device)
+
+    for card in alsa_cards:
+        card_name = card["card_name"]
+        card_long = card["card_long"]
+        # Exact pattern match from YAML
+        if pattern and (pattern in card_name or pattern in card_long):
+            return f"card {card['card_num']}: {card_name} [{card_long}]"
+        # Fallback: bidirectional substring match on model vs card name
+        if model:
+            model_lower = model.lower()
+            cn_lower = card_name.lower()
+            cl_lower = card_long.lower()
+            if (
+                model_lower in cl_lower
+                or model_lower in cn_lower
+                or cl_lower in model_lower
+                or cn_lower in model_lower
+            ):
+                return f"card {card['card_num']}: {card_name} [{card_long}]"
+    return None
+
+
+_PW_STOP = {
+    "pro",
+    "stereo",
+    "analog",
+    "digital",
+    "live",
+    "model",
+    "usb",
+    "audio",
+    "midi",
+    "microphone",
+    "the",
+    "and",
+    "professional",
+    "corporation",
+    "electronics",
+    "instruments",
+    "blue",  # collides with bluez (bluetooth) PipeWire nodes
+    "mk2",
+    "mkii",
+}
+
+
+def _pw_search_terms(device: dict[str, Any]) -> list[str]:
+    """Build search terms for PipeWire/MIDI matching, filtering stopwords."""
+    device_id = device["device_id"]
+    pattern = _alsa_pattern(device)
+    model = _identity_pattern(device)
+
+    terms: list[str] = []
+
+    # Full slug without hyphens (e.g. "zooml12", "m8tracker")
+    terms.append(device_id.replace("-", ""))
+
+    # Individual slug segments >= 2 chars (e.g. "l12", "zoom", "m8")
+    # But skip roman numerals (ii, iii, iv) and pure stopwords
+    for seg in device_id.split("-"):
+        low = seg.lower()
+        if len(low) >= 2 and low not in _PW_STOP and not re.fullmatch(r"i{2,4}|iv|vi?", low):
+            terms.append(low)
+
+    # ALSA card name pattern (most specific)
+    if pattern:
+        terms.append(pattern.lower())
+
+    # Model name fragments -- only distinctive ones (>= 3 chars, not stopwords/roman)
+    if model:
+        for part in model.split():
+            cleaned = re.sub(r"[^a-zA-Z0-9]", "", part).lower()
+            if (
+                len(cleaned) >= 3
+                and cleaned not in _PW_STOP
+                and not re.fullmatch(r"i{2,4}|iv|vi?", cleaned)
+            ):
+                terms.append(cleaned)
+
+    # Manufacturer omitted intentionally -- too ambiguous when multiple devices
+    # share a manufacturer (e.g. "Elektron" matches both Digitakt and Torso S-4
+    # PipeWire descriptions).  Device-id slug + ALSA pattern + model fragments
+    # are sufficient.
+
+    return terms
+
+
+def match_pipewire(device: dict[str, Any], pw_nodes: list[dict[str, str]]) -> list[str]:
+    """Return list of PipeWire node names related to this device."""
+    terms = _pw_search_terms(device)
+
+    matches = []
+    # Compile word-boundary patterns for each term
+    patterns = [re.compile(re.escape(t), re.IGNORECASE) for t in terms]
+
+    for node in pw_nodes:
+        node_name = node.get("node_name", "")
+        node_desc = node.get("node_description", "")
+        combined = f"{node_name} {node_desc}"
+        for pat in patterns:
+            if pat.search(combined):
+                if node_name not in matches:
+                    matches.append(node_name)
+                break
+    return matches
+
+
+def match_midi(device: dict[str, Any], midi_ports: list[dict[str, str]]) -> list[str]:
+    """Return list of MIDI port names related to this device."""
+    terms = _pw_search_terms(device)
+
+    matches = []
+
+    for port in midi_ports:
+        port_name = port["name"].lower()
+        for term in terms:
+            if term in port_name:
+                if port["name"] not in matches:
+                    matches.append(port["name"])
+                break
+    return matches
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def build_state() -> dict[str, Any]:
+    """Build the full state snapshot."""
+    devices = load_devices()
+    usb_entries = probe_usb()
+    alsa_cards = probe_alsa()
+    pw_nodes = probe_pipewire()
+    midi_ports = probe_midi()
+
+    now = datetime.now(UTC).isoformat()
+
+    device_states: dict[str, Any] = {}
+    for device in devices:
+        did = device["device_id"]
+        usb_connected = match_usb(device, usb_entries)
+        alsa_card = match_alsa(device, alsa_cards)
+        pw_matches = match_pipewire(device, pw_nodes)
+        midi_matches = match_midi(device, midi_ports)
+
+        device_states[did] = {
+            "usb_connected": usb_connected,
+            "alsa_card": alsa_card,
+            "pipewire_nodes": pw_matches,
+            "midi_ports": midi_matches,
+            "last_seen_at": now if (usb_connected or alsa_card) else None,
+        }
+
+    return {
+        "generated_at": now,
+        "devices": device_states,
+    }
+
+
+def write_state() -> Path:
+    """Build state and write to /dev/shm."""
+    _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    state = build_state()
+
+    tmp = _OUTPUT_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    tmp.rename(_OUTPUT_FILE)
+    return _OUTPUT_FILE
+
+
+def main() -> None:
+    out = write_state()
+    print(f"Wrote {out}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

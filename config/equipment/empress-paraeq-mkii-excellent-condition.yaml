@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: empress-paraeq-mkii-excellent-condition
+identity:
+  manufacturer: Empress
+  model: Empress ParaEQ MKII - Excellent condition
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-04-27'
+  purchased_price_usd: 224.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

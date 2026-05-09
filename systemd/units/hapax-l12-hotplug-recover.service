@@ -1,0 +1,11 @@
+[Unit]
+Description=Hapax L-12 bounded audio hotplug recovery
+Documentation=file:///home/hapax/projects/hapax-council/docs/runbooks/usb-s4-l12-topology-hardening.md
+After=pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire.service pipewire-pulse.service wireplumber.service
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/hapax-l12-hotplug-recover
+TimeoutStartSec=75s

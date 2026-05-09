@@ -1,8 +1,15 @@
 [Unit]
 Description=LLM cost anomaly alerter
-After=network-online.target
+Wants=hapax-secrets.service
+After=network-online.target hapax-secrets.service
 
 [Service]
 Type=oneshot
-ExecStart=%h/projects/distro-work/scripts/llm-cost-alert.sh
 Environment=PATH=/usr/bin:/usr/local/bin
+Environment=HOME=%h
+Environment=GNUPGHOME=%h/.gnupg
+Environment=PASSWORD_STORE_DIR=%h/.password-store
+EnvironmentFile=-%t/hapax-secrets.env
+ExecCondition=/usr/bin/env bash -lc 'pass show langfuse/public-key >/dev/null && pass show langfuse/secret-key >/dev/null || { echo "llm-cost-alert: degraded readiness: Langfuse credentials unavailable"; exit 1; }'
+ExecCondition=/usr/bin/env bash -lc 'for _ in $(seq 1 30); do curl -sf http://127.0.0.1:3000/api/public/health >/dev/null && exit 0; sleep 2; done; echo "llm-cost-alert: degraded readiness: Langfuse health endpoint unavailable"; exit 1'
+ExecStart=%h/projects/distro-work/scripts/llm-cost-alert.sh

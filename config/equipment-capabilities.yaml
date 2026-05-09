@@ -1,0 +1,102 @@
+schema_version: 1
+
+synthesis:
+  - subtractive_synthesis
+  - fm_synthesis
+  - granular_synthesis
+  - additive_synthesis
+  - wavetable_synthesis
+  - physical_modeling
+  - sample_playback
+  - drum_synthesis
+  - vocoding
+
+sequencing:
+  - step_sequencing
+  - midi_sequencing
+  - cv_sequencing
+  - arpeggiator
+  - pattern_sequencing
+  - song_mode
+  - probability_sequencing
+  - polymetric_sequencing
+
+effects:
+  - reverb
+  - delay
+  - distortion
+  - modulation
+  - filtering
+  - compression
+  - pitch_shifting
+  - looping
+  - freeze
+  - spectral_processing
+  - tape_saturation
+  - tube_saturation
+  - bit_crushing
+  - waveshaping
+  - granular_processing
+
+mixing:
+  - mixing
+  - eq
+  - aux_send
+  - headphone_monitoring
+  - bus_routing
+  - panning
+
+recording:
+  - audio_recording
+  - sample_recording
+  - multitrack_recording
+  - sd_card_recording
+
+io:
+  - usb_audio_interface
+  - usb_midi_interface
+  - phantom_power
+  - cv_controllable
+  - cv_gate_output
+  - midi_controllable
+  - expression_controllable
+  - audio_input_processing
+
+clock:
+  - midi_clock_source
+  - midi_clock_sink
+  - analog_clock_source
+  - analog_clock_sink
+  - din_sync
+
+routing:
+  - midi_routing
+  - midi_thru
+  - audio_routing
+  - patchbay
+  - signal_splitting
+  - signal_summing
+
+performance:
+  - midi_keyboard
+  - drum_pads
+  - faders
+  - knobs
+  - preset_recall
+  - live_performance
+  - dj_mixing
+  - scratching
+
+perception:
+  - video_capture
+  - ir_sensing
+  - contact_sensing
+  - room_audio_capture
+  - proximity_detection
+  - motion_detection
+
+broadcast:
+  - stream_mixing
+  - video_compositing
+  - hls_output
+  - v4l2_output

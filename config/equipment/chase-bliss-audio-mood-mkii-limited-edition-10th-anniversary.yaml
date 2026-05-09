@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: chase-bliss-audio-mood-mkii-limited-edition-10th-anniversary
+identity:
+  manufacturer: Chase Bliss
+  model: Chase Bliss Audio MOOD MKII Limited Edition - 10th Anniversary 2023 - Cream
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-03-24'
+  purchased_price_usd: 515.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

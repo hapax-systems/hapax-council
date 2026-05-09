@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: twisted-electrons-deton8-lo-fi-drum-machine-used
+identity:
+  manufacturer: Twisted Electrons
+  model: Twisted Electrons Deton8 Lo-Fi Drum Machine [USED]
+  category: drum_machine
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-02-21'
+  purchased_price_usd: 279.0
+capabilities:
+- drum_synthesis
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

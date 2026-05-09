@@ -17,6 +17,7 @@ L12_SOURCE_NAME = (
 L12_RETURN_NAME = (
     "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40"
 )
+MPC_OUTPUT_NAME = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"
 
 
 def _descriptor() -> TopologyDescriptor:
@@ -42,7 +43,9 @@ def test_canonical_has_current_livestream_node_ids() -> None:
         "yeti-headphone-output",
         "livestream-tap",
         "l12-evilpet-capture",
+        "l12-usb-return-capture",
         "l12-mainmix-capture",
+        "mpc-usb-output",
         "obs-broadcast-mainmix-tap",
         "broadcast-master-capture",
         "broadcast-normalized-capture",
@@ -57,9 +60,6 @@ def test_canonical_has_current_livestream_node_ids() -> None:
         "notification-private-monitor-output",
         "voice-fx",
         "tts-loudnorm",
-        "tts-duck",
-        "tts-broadcast-capture",
-        "tts-broadcast-playback",
         "pc-loudnorm",
         "s4-loopback",
         "m8-instrument-capture",
@@ -96,8 +96,10 @@ def test_l12_hardware_nodes_pin_live_names() -> None:
     assert len(l12_capture.expected_channel_assignments) == 14
     assert l12_capture.expected_channel_assignments["CH1"] == "evil-pet-in-from-monitor-a"
     assert l12_capture.expected_channel_assignments["CH6"] == "evil-pet-return-aux5"
-    assert l12_capture.expected_channel_assignments["CH11"] == "pc-l-out"
-    assert l12_capture.expected_channel_assignments["CH12"] == "pc-r-out"
+    assert l12_capture.expected_channel_assignments["CH9"] == "mpc-content-return-l"
+    assert l12_capture.expected_channel_assignments["CH10"] == "mpc-content-return-r"
+    assert l12_capture.expected_channel_assignments["CH11"] == "mpc-voice-return-l"
+    assert l12_capture.expected_channel_assignments["CH12"] == "mpc-voice-return-r"
 
     assert l12_return.kind == "alsa_sink"
     assert l12_return.pipewire_name == L12_RETURN_NAME
@@ -108,8 +110,8 @@ def test_l12_hardware_nodes_pin_live_names() -> None:
 def test_l12_evilpet_capture_preserves_inverse_safety_invariant() -> None:
     """Descriptor pins the narrowed L-12 capture binding.
 
-    AUX8/9 (vinyl), AUX10/11 (PC return), and AUX12/13 (master bus) must
-    stay outside the broadcast capture node.
+    AUX8/9 (content return), AUX10/11 (voice return), and AUX12/13
+    (master bus) must stay outside the broadcast capture node.
     """
     d = _descriptor()
     l12_capture = d.node_by_id("l12-capture")
@@ -239,37 +241,40 @@ def test_private_and_notification_sinks_are_fail_closed() -> None:
     ) in edge_pairs
 
 
-def test_tts_broadcast_path_has_l12_return_and_livestream_forward_path() -> None:
+def test_tts_broadcast_path_has_mpc_wet_return_and_livestream_forward_path() -> None:
     d = _descriptor()
     role_broadcast = d.node_by_id("role-broadcast")
     voice_fx = d.node_by_id("voice-fx")
     loudnorm = d.node_by_id("tts-loudnorm")
-    duck = d.node_by_id("tts-duck")
-    broadcast_capture = d.node_by_id("tts-broadcast-capture")
-    broadcast_playback = d.node_by_id("tts-broadcast-playback")
+    mpc = d.node_by_id("mpc-usb-output")
+    wet_return = d.node_by_id("l12-usb-return-capture")
 
     assert role_broadcast.target_object == "hapax-voice-fx-capture"
     assert voice_fx.target_object == "hapax-loudnorm-capture"
-    assert loudnorm.target_object == "hapax-tts-duck"
-    assert duck.target_object == L12_RETURN_NAME
-    assert duck.params["playback_positions"] == "RL RR"
-    assert broadcast_capture.target_object == "hapax-tts-duck"
-    assert broadcast_playback.target_object == "hapax-livestream-tap"
+    assert loudnorm.target_object == MPC_OUTPUT_NAME
+    assert loudnorm.params["playback_positions"] == "AUX2 AUX3"
+    assert loudnorm.params["broadcast_forward_path"] == (
+        "mpc-usb-output l12-usb-return-capture hapax-livestream-tap"
+    )
+    assert mpc.params["hardware_forward_path"]
+    assert wet_return.target_object == L12_SOURCE_NAME
+    assert wet_return.params["capture_positions"] == "AUX8 AUX9 AUX10 AUX11"
+    assert wet_return.params["playback_target"] == "hapax-livestream-tap"
 
     edge_pairs = {(edge.source, edge.target) for edge in d.edges}
-    assert ("tts-duck", "tts-broadcast-capture") in edge_pairs
-    assert ("tts-broadcast-playback", "livestream-tap") in edge_pairs
+    assert ("l12-capture", "l12-usb-return-capture") in edge_pairs
+    assert ("l12-usb-return-capture", "livestream-tap") in edge_pairs
 
 
-def test_pc_loudnorm_lands_on_l12_return_but_notifications_do_not() -> None:
+def test_pc_loudnorm_lands_on_mpc_but_notifications_do_not() -> None:
     d = _descriptor()
     pc = d.node_by_id("pc-loudnorm")
     role_multimedia = d.node_by_id("role-multimedia")
     role_notification = d.node_by_id("role-notification")
 
     assert role_multimedia.target_object == "hapax-pc-loudnorm"
-    assert pc.target_object == L12_RETURN_NAME
-    assert pc.params["playback_positions"] == "RL RR"
+    assert pc.target_object == MPC_OUTPUT_NAME
+    assert pc.params["playback_positions"] == "AUX4 AUX5"
     assert pc.params["notification_excluded"] is True
     assert role_notification.target_object == "hapax-notification-private"
 

@@ -22,7 +22,7 @@ RemainAfterExit=yes
 WorkingDirectory=/home/hapax/projects/hapax-council
 # Use uv run here — the script imports only mido; no lightning/NeMo
 # version trap from daimonion's main venv is in play.
-ExecStart=/usr/bin/uv run python /home/hapax/projects/hapax-council/scripts/evil-pet-configure-base.py
+ExecStart=%h/.local/bin/uv run python %h/.local/bin/hapax-evil-pet-configure-base
 # Script exits 1 if MIDI Dispatch port is not found; don't restart in a
 # tight loop — this is expected when the USB device is unplugged. The
 # operator can start the unit manually once the device is back.

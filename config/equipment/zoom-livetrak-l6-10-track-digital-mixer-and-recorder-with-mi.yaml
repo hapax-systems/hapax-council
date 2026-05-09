@@ -1,0 +1,19 @@
+schema_version: 1
+device_id: zoom-livetrak-l6-10-track-digital-mixer-and-recorder-with-mi
+identity:
+  manufacturer: Zoom
+  model: Zoom LiveTrak L6 10-Track Digital Mixer and Recorder with MIDI Connectivity,
+    LED Control Knobs, USB Audio Interface for Bands, Synth Players, and Live Streaming
+  category: synthesizer
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-07-11'
+  purchased_price_usd: 280.49
+capabilities:
+- subtractive_synthesis
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

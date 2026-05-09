@@ -1,0 +1,19 @@
+schema_version: 1
+device_id: walrus-audio-deep-six-compressor-v3-limited-edition-guitar-c
+identity:
+  manufacturer: Walrus Audio
+  model: "Walrus Audio Deep Six Compressor V3 Limited Edition Guitar Center Black\
+    \ / Blue Octopus \u2022 15% SALE for LIMITED TIME!!"
+  category: effects_pedal
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-04-16'
+  purchased_price_usd: 108.8
+capabilities:
+- effects_processing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

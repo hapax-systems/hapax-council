@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: novation-launchpad-pro-mk3-refurbished
+identity:
+  manufacturer: Novation
+  model: Novation Launchpad Pro [MK3] - Refurbished
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-07-13'
+  purchased_price_usd: 299.99
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

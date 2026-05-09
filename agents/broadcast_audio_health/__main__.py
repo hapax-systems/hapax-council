@@ -105,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.skip_l12_scene_probe:
         # Audit A#6 / H5 P1: the existing 30s health timer drives
-        # the lightweight AUX5 detector every tick, and the full
+        # the lightweight AUX8/9 content-return detector every tick, and the full
         # BROADCAST-V2 scene assertion on a 5-minute rotation.
         try:
             from agents.broadcast_audio_health.l12_broadcast_scene_probe import (
@@ -127,11 +127,12 @@ def main(argv: list[str] | None = None) -> int:
             if rotation.ran:
                 assertion = rotation.assertion
                 log.info(
-                    "l12-scene=%s rotation=full alerted=%s aux5_peak=%s aux10_11_peak=%s",
+                    "l12-scene=%s rotation=full alerted=%s "
+                    "content_return_peak=%s voice_return_peak=%s",
                     "ok" if rotation.scene_ok else "not-ok",
                     rotation.alerted,
-                    assertion.evidence.get("aux5_peak_dbfs") if assertion else None,
-                    assertion.evidence.get("aux10_11_peak_dbfs") if assertion else None,
+                    assertion.evidence.get("content_return_peak_dbfs") if assertion else None,
+                    assertion.evidence.get("voice_return_peak_dbfs") if assertion else None,
                 )
                 return 1 if args.fail_on_unsafe and not health.safe else 0
 
@@ -142,11 +143,11 @@ def main(argv: list[str] | None = None) -> int:
             elif outcome.fired:
                 scene_status = "not-ok"
             log.info(
-                "l12-scene=%s rotation=%s aux5_dbfs=%.2f "
+                "l12-scene=%s rotation=%s content_return_dbfs=%.2f "
                 "music_running=%s silent_for_s=%.1f fired=%s",
                 scene_status,
                 rotation.status,
-                outcome.aux5_dbfs,
+                outcome.content_return_dbfs,
                 outcome.music_running,
                 outcome.silent_for_s,
                 outcome.fired,

@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: 1010-music-blackbox-desktop-compact-sampling-studio-2016-pre
+identity:
+  manufacturer: 1010 Music
+  model: 1010 Music Blackbox Desktop Compact Sampling Studio 2016 - Present - Black
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-04-01'
+  purchased_price_usd: 425.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

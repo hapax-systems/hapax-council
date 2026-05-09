@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: bastl-bestie-mixer-brand-new-detroit-modular
+identity:
+  manufacturer: BASTL
+  model: 'BASTL BESTIE MIXER : BRAND NEW :  [DETROIT MODULAR]'
+  category: mixer
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-08-03'
+  purchased_price_usd: 250.0
+capabilities:
+- mixing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

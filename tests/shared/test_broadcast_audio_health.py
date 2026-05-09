@@ -86,6 +86,34 @@ def _write_clear_runtime_states(paths: BroadcastAudioHealthPaths) -> None:
     _write_json(paths.egress_loopback_witness, _live_loopback_witness())
 
 
+def _healthy_obs_egress_links() -> str:
+    return textwrap.dedent(
+        """
+        hapax-broadcast-normalized:capture_FL
+          |-> hapax-obs-broadcast-remap-capture:input_FL
+        hapax-broadcast-normalized:capture_FR
+          |-> hapax-obs-broadcast-remap-capture:input_FR
+        hapax-obs-broadcast-remap:capture_FL
+          |-> OBS:input_FL
+        hapax-obs-broadcast-remap:capture_FR
+          |-> OBS:input_FR
+        """
+    )
+
+
+def _remap_without_obs_links() -> str:
+    return textwrap.dedent(
+        """
+        hapax-broadcast-normalized:capture_FL
+          |-> hapax-obs-broadcast-remap-capture:input_FL
+        hapax-broadcast-normalized:capture_FR
+          |-> hapax-obs-broadcast-remap-capture:input_FR
+        hapax-obs-broadcast-remap:capture_FL
+        hapax-obs-broadcast-remap:capture_FR
+        """
+    )
+
+
 def _runner(
     overrides: dict[str, CommandResult] | None = None,
 ):
@@ -108,13 +136,7 @@ def _runner(
               Peak:       -1.0 dBFS
             """,
         ),
-        "pw-link -l": CommandResult(
-            0,
-            """
-            OBS Studio:input_FL
-              |<- hapax-broadcast-normalized:monitor_FL
-            """,
-        ),
+        "pw-link -l": CommandResult(0, _healthy_obs_egress_links()),
     }
     by_prefix.update(overrides or {})
 
@@ -168,9 +190,12 @@ def test_safe_state_contains_contract_shape(tmp_path: Path) -> None:
     assert health.evidence["loudness"]["target_lufs_i"] == -14.0
     assert health.evidence["loudness"]["target_true_peak_dbtp"] == -1.0
     assert health.evidence["egress_binding"]["bound"] is True
+    assert health.evidence["egress_binding"]["expected_source"] == "hapax-obs-broadcast-remap"
+    assert health.evidence["egress_binding"]["state"] == "obs_bound_unverified"
     assert health.evidence["audio_ducker"]["actual_music_duck_gain"] == 1.0
     assert "hapax-audio-ducker.service" in health.evidence["service_freshness"]["required_units"]
     assert health.owners["loudness_constants"] == "shared/audio_loudness.py"
+    assert health.owners["egress_binding"] == "shared/obs_egress_predicate.py + pw-link -l"
 
 
 def test_state_file_round_trips_named_envelope(tmp_path: Path) -> None:
@@ -455,9 +480,10 @@ def test_missing_egress_binding_blocks(tmp_path: Path) -> None:
 
     assert health.safe is False
     assert "egress_binding_missing" in _codes(health)
+    assert health.evidence["egress_binding"]["state"] == "remap_missing"
 
 
-def test_obs_bound_to_pre_normalized_master_still_blocks(tmp_path: Path) -> None:
+def test_normalized_source_attached_directly_to_obs_still_blocks(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     _write_clear_runtime_states(paths)
 
@@ -470,11 +496,15 @@ def test_obs_bound_to_pre_normalized_master_still_blocks(tmp_path: Path) -> None
                     0,
                     textwrap.dedent(
                         """
-                    OBS:input_FL
-                      |<- hapax-broadcast-master:capture_FL
-                    hapax-broadcast-normalized:monitor_FL
-                      |-> pw-cat:input_FL
-                    """
+                        hapax-broadcast-normalized:capture_FL
+                          |-> hapax-obs-broadcast-remap-capture:input_FL
+                          |-> OBS:input_FL
+                        hapax-broadcast-normalized:capture_FR
+                          |-> hapax-obs-broadcast-remap-capture:input_FR
+                          |-> OBS:input_FR
+                        hapax-obs-broadcast-remap:capture_FL
+                        hapax-obs-broadcast-remap:capture_FR
+                        """
                     ),
                 )
             }
@@ -484,7 +514,71 @@ def test_obs_bound_to_pre_normalized_master_still_blocks(tmp_path: Path) -> None
 
     assert health.safe is False
     assert "egress_binding_missing" in _codes(health)
-    assert health.evidence["egress_binding"]["observed_source"] is None
+    assert health.evidence["egress_binding"]["state"] == "obs_wrong_source"
+    assert health.evidence["egress_binding"]["observed_source"] == "hapax-broadcast-normalized"
+
+
+def test_obs_absent_is_distinguished_from_detached_binding(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner({"pw-link -l": CommandResult(0, _remap_without_obs_links())}),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "egress_binding_missing" in _codes(health)
+    assert health.evidence["egress_binding"]["state"] == "obs_absent"
+    assert health.evidence["egress_binding"]["obs_present"] is False
+
+
+def test_obs_detached_is_distinguished_when_obs_ports_exist(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(
+            {
+                "pw-link -l": CommandResult(
+                    0,
+                    _remap_without_obs_links()
+                    + textwrap.dedent(
+                        """
+                        OBS:input_FL
+                        OBS:input_FR
+                        """
+                    ),
+                )
+            }
+        ),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "egress_binding_missing" in _codes(health)
+    assert health.evidence["egress_binding"]["state"] == "obs_detached"
+    assert health.evidence["egress_binding"]["obs_present"] is True
+
+
+def test_egress_binding_unknown_distinguishes_inspection_failure(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner({"pw-link -l": CommandResult(2, stderr="pw-link failed")}),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "egress_binding_unknown" in _codes(health)
+    assert health.evidence["egress_binding"]["state"] == "unknown"
 
 
 def test_runtime_safety_state_stale_blocks(tmp_path: Path) -> None:
@@ -752,6 +846,37 @@ def test_egress_loopback_witness_producer_error_blocks(tmp_path: Path) -> None:
 
     assert health.safe is False
     assert "egress_loopback_producer_failed" in _codes(health)
+    assert health.evidence["egress_loopback"]["obs_egress_state"] == "analyzer_internal_failure"
+
+
+def test_contradictory_loudness_and_loopback_evidence_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(
+            {
+                "scripts/audio-measure.sh": CommandResult(
+                    0,
+                    """
+                    Hapax broadcast loudness measurement
+                      I:         -60.0 LUFS
+                      Peak:       -6.0 dBFS
+                    """,
+                )
+            }
+        ),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "health_predicate_drift" in _codes(health)
+    drift = health.evidence["health_predicate_drift"]
+    assert drift["state"] == "health_predicate_drift"
+    assert drift["loudness_integrated_lufs_i"] == -60.0
+    assert drift["egress_loopback_checked_at"] == "2026-05-02T14:00:00Z"
 
 
 def test_egress_loopback_witness_low_signal_warns_not_blocks(tmp_path: Path) -> None:

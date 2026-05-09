@@ -1,0 +1,19 @@
+schema_version: 1
+device_id: alm-busy-circuits-alm017-pamela-s-new-workout-master-clock-m
+identity:
+  manufacturer: ALM
+  model: ALM/Busy Circuits ALM017 Pamela's NEW Workout Master Clock & Modulator Eurorack
+    Synth Module 2017 - Present - Silver
+  category: synthesizer
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-02-06'
+  purchased_price_usd: 205.0
+capabilities:
+- subtractive_synthesis
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

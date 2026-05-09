@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: roland-sp-404mkii-sampler-and-effector-great-shape-with-many
+identity:
+  manufacturer: Roland
+  model: Roland SP-404MkII Sampler and Effector Great Shape with MANY extras
+  category: sampler
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-01-31'
+  purchased_price_usd: 600.0
+capabilities:
+- sample_playback
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

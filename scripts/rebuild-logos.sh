@@ -18,7 +18,7 @@
 # `git restore` silently reverted a symlinked systemd unit file mid-session.
 set -euo pipefail
 
-REPO="$HOME/projects/hapax-council"
+REPO="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
 STATE_DIR="$HOME/.cache/hapax/rebuild"
 BUILD_WORKTREE="$STATE_DIR/worktree"
 SHA_FILE="$STATE_DIR/last-build-sha"

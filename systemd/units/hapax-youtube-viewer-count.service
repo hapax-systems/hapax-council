@@ -13,7 +13,7 @@ EnvironmentFile=-/run/user/1000/hapax-secrets.env
 Environment=HOME=%h
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
-ExecStart=/home/hapax/projects/hapax-council/.venv/bin/python /home/hapax/projects/hapax-council/scripts/youtube-viewer-count-producer.py
+ExecStart=%h/.local/bin/uv run python %h/.local/bin/hapax-youtube-viewer-count-producer
 
 [Install]
 WantedBy=default.target

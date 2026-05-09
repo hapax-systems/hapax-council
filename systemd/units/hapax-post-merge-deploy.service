@@ -32,7 +32,7 @@ Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # watched, so origin/main has either already been merged into local main
 # (rebuild-service.sh ff-merge path) or local main was advanced directly.
 # Either way, `git -C $REPO rev-parse main` is the right answer.
-ExecStart=/bin/bash -c 'sha=$(git -C /home/hapax/projects/hapax-council rev-parse main 2>/dev/null) && [ -n "$sha" ] && exec /home/hapax/projects/hapax-council/scripts/hapax-post-merge-deploy "$sha"'
+ExecStart=/bin/bash -c 'sha=$(git -C %h/projects/hapax-council rev-parse main 2>/dev/null) && [ -n "$sha" ] && exec %h/.local/bin/hapax-post-merge-deploy "$sha"'
 
 StandardOutput=journal
 StandardError=journal

@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: 4ms-pod40x-powered-brand-new-detroit-modular
+identity:
+  manufacturer: 4MS
+  model: '4MS POD40X POWERED : BRAND NEW :  [DETROIT MODULAR]'
+  category: power_supply
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-02-25'
+  purchased_price_usd: 145.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

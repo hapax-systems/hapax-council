@@ -1,0 +1,18 @@
+{
+  "known_absences": {
+    "s4": {
+      "enabled": true,
+      "serial": "fedcba9876543220",
+      "reason": "hardware_fault_diagnosed_2026-05-08",
+      "operator_note": "S-4 USB hardware fault is known; absence is a warning until hardware is repaired or replaced."
+    }
+  },
+  "accepted_caldigit_cameras": [
+    {
+      "enabled": true,
+      "serial": "86B6B75F",
+      "path": "pci-0000:71:00.0-usb-0:1.1.2.2:1.0",
+      "reason": "post_128gb_install_accepted_room_c920_placement"
+    }
+  ]
+}
