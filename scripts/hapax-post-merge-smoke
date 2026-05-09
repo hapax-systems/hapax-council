@@ -91,6 +91,13 @@ gate_services_restarted() {
     [ "$DRYRUN" = "1" ] && { echo "[dry-run] services-restarted: ${changed_units[*]}"; return; }
 
     for unit in "${changed_units[@]}"; do
+        # Template unit files (foo@.service) are install-only at smoke time.
+        # A template is never active by itself; only concrete instances such as
+        # foo@bar.service can be active. Treating the template as a runnable unit
+        # creates a false failure after source activation installs the file.
+        if [[ "$unit" == *@.service ]]; then
+            continue
+        fi
         # Skip decommissioned-list units; they should NOT be active.
         if grep -qF "$unit" "$REPO_ROOT/systemd/scripts/install-units.sh" 2>/dev/null \
             && grep -qE "DECOMMISSIONED_UNITS=\(" "$REPO_ROOT/systemd/scripts/install-units.sh"; then
