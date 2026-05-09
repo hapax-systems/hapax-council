@@ -17,7 +17,7 @@ SERVICE = UNITS_DIR / "hapax-audio-stage-check.service"
 
 
 def _read_unit(path: Path) -> configparser.ConfigParser:
-    cp = configparser.ConfigParser(strict=False)
+    cp = configparser.ConfigParser(strict=False, interpolation=None)
     # systemd allows duplicate keys (e.g., ExecStart=) but ConfigParser
     # raises by default; force strict=False handles it.
     cp.read(path)
