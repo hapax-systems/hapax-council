@@ -625,9 +625,9 @@ export COCKPIT_BASE_URL="${COCKPIT_BASE_URL:-$LOGOS_BASE_URL}"
 export HAPAX_CC_TASK_GATE="$TASK_GATE"
 
 if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
-  CLAIM_SCRIPT="$COUNCIL_DIR/scripts/cc-claim"
+  CLAIM_SCRIPT="$WORKDIR/scripts/cc-claim"
   if [ ! -x "$CLAIM_SCRIPT" ]; then
-    echo "hapax-codex: cannot claim task; missing executable $CLAIM_SCRIPT" >&2
+    echo "hapax-codex: cannot claim task from selected worktree; missing executable $CLAIM_SCRIPT" >&2
     exit 8
   fi
   if [ "$TERMINAL" = "none" ]; then

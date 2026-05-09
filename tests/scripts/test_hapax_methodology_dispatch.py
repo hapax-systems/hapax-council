@@ -59,13 +59,19 @@ def _spec(path: Path, case_id: str = "CASE-TEST-001") -> Path:
     )
 
 
-def _worktree(path: Path, *, guarded: bool = True) -> Path:
+def _worktree(path: Path, *, guarded: bool = True, close_guarded: bool = True) -> Path:
     guard = (
         "missing required AuthorityCase/ISAP fields authority_case parent_spec"
         if guarded
         else "legacy cc-claim"
     )
+    close_guard = (
+        "frontmatter_task_id closed_duplicate closed task duplicate has task_id"
+        if close_guarded
+        else "legacy cc-close"
+    )
     _write(path / "scripts" / "cc-claim", f"#!/usr/bin/env bash\n# {guard}\n")
+    _write(path / "scripts" / "cc-close", f"#!/usr/bin/env bash\n# {close_guard}\n")
     return path
 
 
@@ -234,6 +240,25 @@ def test_blocks_stale_worktree_cc_claim_before_launch(tmp_path: Path) -> None:
     assert "stale cc-claim" in result.stderr
 
 
+def test_blocks_stale_worktree_cc_close_before_launch(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree", guarded=True, close_guarded=False)
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+
+    result = _run(tmp_path, "--task", "governed-build", "--lane", "beta")
+
+    assert result.returncode == 10
+    assert "stale cc-close" in result.stderr
+
+
 def test_prompt_contains_worktree_local_cc_claim_path(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
@@ -253,10 +278,17 @@ def test_prompt_contains_worktree_local_cc_claim_path(tmp_path: Path) -> None:
     prompt = result.stdout
     assert "scripts/cc-claim governed-build" in prompt
     assert "/scripts/cc-claim governed-build" in prompt
+    assert "scripts/cc-close" in prompt
+    assert "/scripts/cc-close" in prompt
     lines = [l for l in prompt.splitlines() if "cc-claim" in l.lower()]
     for line in lines:
         assert "Run cc-claim governed-build" not in line or "/scripts/cc-claim" in line, (
             f"bare cc-claim without absolute path found: {line!r}"
+        )
+    close_lines = [l for l in prompt.splitlines() if "cc-close" in l.lower()]
+    for line in close_lines:
+        assert "bare cc-close" in line or "/scripts/cc-close" in line, (
+            f"bare cc-close without absolute path found: {line!r}"
         )
 
 
