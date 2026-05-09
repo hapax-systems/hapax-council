@@ -583,10 +583,16 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
   fi
 
   # ── Slice 3B: Request intake queue ──
-  INTAKE_CONSUMER="$HOME/projects/hapax-council/scripts/request-intake-consumer"
-  if [ -x "$INTAKE_CONSUMER" ]; then
-    "$INTAKE_CONSUMER" --session-preamble 2>/dev/null || true
-  fi
+  HOOK_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  HOOK_REPO_ROOT="$(cd "$HOOK_SCRIPT_DIR/../.." && pwd)"
+  for INTAKE_CONSUMER in \
+    "$HOOK_REPO_ROOT/scripts/request-intake-consumer" \
+    "$HOME/projects/hapax-council/scripts/request-intake-consumer"; do
+    if [ -x "$INTAKE_CONSUMER" ]; then
+      "$INTAKE_CONSUMER" --session-preamble 2>/dev/null || true
+      break
+    fi
+  done
 
   # ── D-30 Phase 4: Obsidian SSOT — claimed task + top offered ──
   # Surfaces the canonical CC-task state from the operator's vault so

@@ -22,12 +22,16 @@ def _write_request(path: Path, req_id: str, status: str = "captured", title: str
 
 
 def _run(
-    tmp_path: Path, *args: str, receipts_dir: Path | None = None
+    tmp_path: Path,
+    *args: str,
+    receipts_dir: Path | None = None,
+    state_path: Path | None = None,
 ) -> subprocess.CompletedProcess:
     env = {
         **os.environ,
         "HAPAX_REQUESTS_DIR": str(tmp_path / "requests"),
         "HAPAX_REQUEST_RECEIPTS": str(receipts_dir or tmp_path / "receipts"),
+        "HAPAX_REQUEST_INTAKE_STATE": str(state_path or tmp_path / "request-state.json"),
         "CLAUDE_ROLE": "epsilon-test",
         "HAPAX_REQUEST_STALE_SECONDS": "1",
     }
@@ -116,3 +120,46 @@ def test_non_request_files_ignored(tmp_path: Path) -> None:
 
     result = _run(tmp_path)
     assert "all requests have fresh read receipts" in result.stdout
+
+
+def test_missing_type_note_does_not_hide_valid_request(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    (active / "Untitled.md").write_text("# not a valid request yet\n", encoding="utf-8")
+    _write_request(active / "REQ-005.md", "REQ-005", title="Still visible")
+
+    result = _run(tmp_path)
+    assert result.returncode == 0
+    assert "1 unread" in result.stdout
+    assert "REQ-005" in result.stdout
+    assert "1 malformed active note" in result.stdout
+
+
+def test_missing_request_id_is_malformed_not_fatal(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    (active / "bad.md").write_text(
+        "---\ntype: hapax-request\nstatus: captured\ntitle: Bad\n---\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path)
+    assert result.returncode == 0
+    assert "all requests have fresh read receipts" in result.stdout
+    assert "1 malformed active note" in result.stdout
+
+
+def test_write_state_records_counts_without_body_content(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    state_path = tmp_path / "state" / "request-intake-state.json"
+    (active / "Untitled.md").write_text("private body content should not leak\n", encoding="utf-8")
+    _write_request(active / "REQ-006.md", "REQ-006", title="Visible")
+
+    result = _run(tmp_path, "--write-state", state_path=state_path)
+    assert result.returncode == 0
+
+    state = state_path.read_text(encoding="utf-8")
+    assert '"unread_count": 1' in state
+    assert '"malformed_count": 1' in state
+    assert "private body content" not in state

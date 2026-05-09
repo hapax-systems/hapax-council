@@ -7,6 +7,7 @@
 # Usage:
 #   request-intake-consumer                  # list unread/stale requests
 #   request-intake-consumer --write-receipt  # also write read receipts
+#   request-intake-consumer --write-state    # write machine-readable state
 #   request-intake-consumer --session-preamble  # terse output for SessionStart
 
 set -euo pipefail
@@ -14,15 +15,39 @@ set -euo pipefail
 REQUESTS_DIR="${HAPAX_REQUESTS_DIR:-$HOME/Documents/Personal/20-projects/hapax-requests}"
 ACTIVE_DIR="$REQUESTS_DIR/active"
 RECEIPTS_DIR="${HAPAX_REQUEST_RECEIPTS:-$HOME/.cache/hapax/request-receipts}"
+STATE_PATH="${HAPAX_REQUEST_INTAKE_STATE:-$HOME/.cache/hapax/request-intake-state.json}"
 ROLE="${CLAUDE_ROLE:-${HAPAX_AGENT_NAME:-unknown}}"
 STALE_SECONDS="${HAPAX_REQUEST_STALE_SECONDS:-600}"
 
 MODE="list"
-if [[ "${1:-}" == "--write-receipt" ]]; then
-  MODE="receipt"
-elif [[ "${1:-}" == "--session-preamble" ]]; then
-  MODE="preamble"
-fi
+WRITE_RECEIPT=0
+WRITE_STATE=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --write-receipt)
+      MODE="receipt"
+      WRITE_RECEIPT=1
+      shift
+      ;;
+    --write-state)
+      WRITE_STATE=1
+      shift
+      ;;
+    --state-path)
+      STATE_PATH="${2:?--state-path requires a path}"
+      shift 2
+      ;;
+    --session-preamble)
+      MODE="preamble"
+      shift
+      ;;
+    *)
+      echo "request-intake-consumer: unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
 
 if [[ ! -d "$ACTIVE_DIR" ]]; then
   if [[ "$MODE" == "preamble" ]]; then
@@ -34,30 +59,72 @@ fi
 
 mkdir -p "$RECEIPTS_DIR"
 
+frontmatter_value() {
+  local key="$1"
+  local file="$2"
+  grep -m1 "^${key}:" "$file" 2>/dev/null \
+    | sed "s/^${key}: *//; s/^\"//; s/\"$//" \
+    || true
+}
+
+compact_value() {
+  tr -d '[:space:]'
+}
+
+write_state() {
+  local generated_at
+  generated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "$(dirname "$STATE_PATH")"
+  cat > "$STATE_PATH" <<STATE
+{
+  "generated_at": "$generated_at",
+  "reader_role": "$ROLE",
+  "requests_dir": "$ACTIVE_DIR",
+  "unread_count": $unread_count,
+  "stale_count": $stale_count,
+  "malformed_count": $malformed_count,
+  "total_attention_count": $total
+}
+STATE
+}
+
 unread_count=0
 stale_count=0
+malformed_count=0
 unread_lines=""
+malformed_lines=""
 
 for note in "$ACTIVE_DIR"/*.md; do
   [[ -f "$note" ]] || continue
 
-  req_type=$(grep '^type:' "$note" 2>/dev/null | head -1 | sed 's/^type: *//' | tr -d '[:space:]')
+  req_type="$(frontmatter_value type "$note" | compact_value)"
+  if [[ -z "$req_type" ]]; then
+    malformed_count=$((malformed_count + 1))
+    malformed_lines="${malformed_lines}    MALFORMED $(basename "$note") — missing type\n"
+    continue
+  fi
   [[ "$req_type" == "hapax-request" ]] || continue
 
-  req_id=$(grep '^request_id:' "$note" 2>/dev/null | head -1 | sed 's/^request_id: *//' | tr -d '[:space:]')
-  status=$(grep '^status:' "$note" 2>/dev/null | head -1 | sed 's/^status: *//' | tr -d '[:space:]')
-  title=$(grep '^title:' "$note" 2>/dev/null | head -1 | sed 's/^title: *//; s/^"//; s/"$//')
-  updated_at=$(grep '^updated_at:' "$note" 2>/dev/null | head -1 | sed 's/^updated_at: *//' | tr -d '[:space:]')
+  req_id="$(frontmatter_value request_id "$note" | compact_value)"
+  status="$(frontmatter_value status "$note" | compact_value)"
+  title="$(frontmatter_value title "$note")"
+  updated_at="$(frontmatter_value updated_at "$note" | compact_value)"
 
-  [[ -z "$req_id" ]] && continue
+  if [[ -z "$req_id" ]]; then
+    malformed_count=$((malformed_count + 1))
+    malformed_lines="${malformed_lines}    MALFORMED $(basename "$note") — missing request_id\n"
+    continue
+  fi
+  [[ -z "$status" ]] && status="unknown"
+  [[ -z "$title" ]] && title="(untitled request)"
 
   receipt_file="$RECEIPTS_DIR/${req_id}.yaml"
 
   if [[ -f "$receipt_file" ]]; then
-    receipt_ts=$(grep '^checked_at:' "$receipt_file" 2>/dev/null | head -1 | sed 's/^checked_at: *//' | tr -d '[:space:]')
-    receipt_updated=$(grep '^observed_updated_at:' "$receipt_file" 2>/dev/null | head -1 | sed 's/^observed_updated_at: *//' | tr -d '[:space:]')
+    receipt_ts="$(frontmatter_value checked_at "$receipt_file" | compact_value)"
+    receipt_updated="$(frontmatter_value observed_updated_at "$receipt_file" | compact_value)"
 
-    if [[ "$receipt_updated" == "$updated_at" ]]; then
+    if [[ -n "$updated_at" && "$receipt_updated" == "$updated_at" ]]; then
       receipt_epoch=$(date -d "$receipt_ts" +%s 2>/dev/null || echo 0)
       now_epoch=$(date +%s)
       age=$((now_epoch - receipt_epoch))
@@ -72,7 +139,7 @@ for note in "$ACTIVE_DIR"/*.md; do
   unread_count=$((unread_count + 1))
   unread_lines="${unread_lines}    UNREAD [${status}] ${req_id} — ${title}\n"
 
-  if [[ "$MODE" == "receipt" ]]; then
+  if [[ "$WRITE_RECEIPT" -eq 1 ]]; then
     cat > "$receipt_file" <<RECEIPT
 receipt_type: request_intake_read
 request_id: ${req_id}
@@ -91,6 +158,10 @@ done
 
 total=$((unread_count + stale_count))
 
+if [[ "$WRITE_STATE" -eq 1 ]]; then
+  write_state
+fi
+
 if [[ "$MODE" == "preamble" ]]; then
   if [[ $total -gt 0 ]]; then
     echo ""
@@ -106,4 +177,9 @@ if [[ $total -eq 0 ]]; then
 else
   echo "Request intake: ${unread_count} unread, ${stale_count} stale"
   printf "%b" "$unread_lines"
+fi
+
+if [[ $malformed_count -gt 0 && "$MODE" != "preamble" ]]; then
+  echo "Request intake: ${malformed_count} malformed active note(s)"
+  printf "%b" "$malformed_lines"
 fi
