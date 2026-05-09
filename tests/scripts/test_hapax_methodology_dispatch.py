@@ -75,12 +75,16 @@ def _worktree(path: Path, *, guarded: bool = True, close_guarded: bool = True) -
     return path
 
 
-def _run(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    tmp_path: Path, *args: str, extra_env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(tmp_path / "home")
     env["HAPAX_CC_TASK_ROOT"] = str(tmp_path / "tasks")
     env["HAPAX_DISPATCH_WORKTREE"] = str(tmp_path / "worktree")
     env["HAPAX_ORCHESTRATION_LEDGER_DIR"] = str(tmp_path / "ledger")
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         [str(SCRIPT), *args],
         env=env,
@@ -129,7 +133,7 @@ def test_allows_explicit_read_only_intake_without_authority(tmp_path: Path) -> N
     result = _run(tmp_path, "--task", "intake-only", "--lane", "beta", "--print-prompt")
 
     assert result.returncode == 0, result.stderr
-    assert "eligible: intake-only -> claude/beta" in result.stdout
+    assert "eligible: intake-only -> claude/headless/full/beta" in result.stdout
     assert "AuthorityCase: read-only-exempt" in result.stdout
 
 
@@ -197,7 +201,7 @@ def test_allows_claimed_task_assigned_to_target_lane(tmp_path: Path) -> None:
     result = _run(tmp_path, "--task", "claimed-build", "--lane", "beta")
 
     assert result.returncode == 0, result.stderr
-    assert "eligible: claimed-build -> claude/beta" in result.stdout
+    assert "eligible: claimed-build -> claude/headless/full/beta" in result.stdout
 
 
 def test_blocks_claimed_task_assigned_to_unassigned(tmp_path: Path) -> None:
@@ -278,6 +282,8 @@ def test_prompt_contains_worktree_local_cc_claim_path(tmp_path: Path) -> None:
     prompt = result.stdout
     assert "scripts/cc-claim governed-build" in prompt
     assert "/scripts/cc-claim governed-build" in prompt
+    assert "If the launcher already claimed it" in prompt
+    assert "cc-active-task-beta" in prompt
     assert "scripts/cc-close" in prompt
     assert "/scripts/cc-close" in prompt
     lines = [l for l in prompt.splitlines() if "cc-claim" in l.lower()]
@@ -339,3 +345,371 @@ def test_receipt_contains_task_and_authority(tmp_path: Path) -> None:
     assert receipt["ok"] is True
     assert receipt["task_id"] == "governed-build"
     assert receipt["parent_spec_path"] == str(spec)
+
+
+def test_launches_codex_headless_through_codex_launcher(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    args = launcher_args.read_text(encoding="utf-8").splitlines()
+    assert args[:10] == [
+        "--session",
+        "cx-green",
+        "--terminal",
+        "tmux",
+        "--task",
+        "governed-build",
+        "--bootstrap",
+        args[7],
+        "--task-gate",
+        "--force",
+    ]
+    bootstrap = Path(args[7]).read_text(encoding="utf-8")
+    assert "SDLC GOVERNED DISPATCH." in bootstrap
+    assert "Task: governed-build" in bootstrap
+    assert "AuthorityCase: CASE-TEST-001" in bootstrap
+    assert "If the launcher already claimed it" in bootstrap
+    assert "claim the next" not in bootstrap
+    assert "highest-WSJF" not in bootstrap
+
+    line = (
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    receipt = json.loads(line)
+    assert receipt["platform"] == "codex"
+    assert receipt["lane"] == "cx-green"
+    assert receipt["launched"] is True
+    assert receipt["launch_returncode"] == 0
+
+
+def test_codex_spark_profile_passes_model_override(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--profile",
+        "spark",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    args = launcher_args.read_text(encoding="utf-8").splitlines()
+    assert 'model="gpt-5.3-codex-spark"' in args
+    assert 'model_reasoning_effort="high"' in args
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["platform"] == "codex"
+    assert receipt["profile"] == "spark"
+    assert "Codex Spark" in receipt["platform_path_summary"]
+
+
+def test_claude_sonnet_profile_sets_model_env(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_env = tmp_path / "claude-env.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-claude-headless"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$HAPAX_CLAUDE_MODEL" "$@" > {launcher_env}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "beta",
+        "--platform",
+        "claude",
+        "--mode",
+        "headless",
+        "--profile",
+        "quota-fallback",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_CLAUDE_HEADLESS": str(fake_launcher)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    lines = launcher_env.read_text(encoding="utf-8").splitlines()
+    assert lines[:2] == ["sonnet", "beta"]
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["platform"] == "claude"
+    assert receipt["profile"] == "sonnet"
+    assert "Claude Sonnet" in receipt["platform_path_summary"]
+
+
+def test_vibe_headless_uses_governed_launcher_path(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "bounded-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "vibe-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-vibe"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "bounded-build",
+        "--lane",
+        "vbe-1",
+        "--platform",
+        "vibe",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_VIBE_LAUNCHER": str(fake_launcher)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    args = launcher_args.read_text(encoding="utf-8").splitlines()
+    assert args[:8] == [
+        "--session",
+        "vbe-1",
+        "--terminal",
+        "tmux",
+        "--task",
+        "bounded-build",
+        "--prompt",
+        args[7],
+    ]
+    assert "SDLC GOVERNED DISPATCH." in args[7]
+
+
+def test_gemini_read_only_quota_fallback_maps_to_flash(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    _task(
+        tmp_path / "tasks",
+        "research-only",
+        """
+        kind: research
+        task_type: read-only
+        parent_spec: null
+        tags:
+          - research
+          - read-only
+        """,
+    )
+    launcher_args = tmp_path / "gemini-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-gemini"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "research-only",
+        "--lane",
+        "iota",
+        "--platform",
+        "gemini",
+        "--mode",
+        "headless",
+        "--profile",
+        "quota-fallback",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_GEMINI_LAUNCHER": str(fake_launcher)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    args = launcher_args.read_text(encoding="utf-8").splitlines()
+    assert "--model" in args
+    assert "gemini-3-flash-preview" in args
+    assert "-p" in args
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["platform"] == "gemini"
+    assert receipt["profile"] == "flash"
+    assert receipt["launched"] is True
+
+
+def test_gemini_mutation_task_fails_platform_fit(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "iota",
+        "--platform",
+        "gemini",
+        "--mode",
+        "headless",
+        "--launch",
+    )
+
+    assert result.returncode == 10
+    assert "is read-only" in result.stderr
+    assert "mutation tasks must route to a mutable platform profile" in result.stderr
+
+
+def test_lists_platform_profile_paths(tmp_path: Path) -> None:
+    result = _run(tmp_path, "--list-platform-paths")
+
+    assert result.returncode == 0, result.stderr
+    assert "Default to maximum appropriate quality-preserving utilization" in result.stdout
+    assert "codex/headless/full" in result.stdout
+    assert "codex/headless/spark" in result.stdout
+    assert "claude/headless/sonnet" in result.stdout
+    assert "gemini/headless/flash" in result.stdout
+    assert "antigrav/interactive/full" in result.stdout
+
+
+def test_codex_launch_unsupported_mode_fails_closed(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text("#!/usr/bin/env bash\nexit 99\n", encoding="utf-8")
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "interactive",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_CODEX_LAUNCHER": str(fake_launcher)},
+    )
+
+    assert result.returncode == 10
+    assert "unsupported platform/mode/profile route" in result.stderr
