@@ -95,6 +95,91 @@ if assigned_match and assigned_match.group(1) not in ("unassigned",):
     )
     sys.exit(4)
 
+def _strip_scalar(value: str) -> str:
+    return value.strip().strip('"').strip("'")
+
+
+def _frontmatter_lines(note_text: str) -> list[str]:
+    if not note_text.startswith("---"):
+        return []
+    end = note_text.find("\n---", 4)
+    if end < 0:
+        return []
+    return note_text[4:end].splitlines()
+
+
+def _parse_inline_list(value: str) -> list[str]:
+    value = value.strip()
+    if value == "[]":
+        return []
+    if not (value.startswith("[") and value.endswith("]")):
+        return [_strip_scalar(value)] if value else []
+    inner = value[1:-1].strip()
+    if not inner:
+        return []
+    return [_strip_scalar(item) for item in inner.split(",") if _strip_scalar(item)]
+
+
+def _parse_depends_on(note_text: str) -> list[str]:
+    lines = _frontmatter_lines(note_text)
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("depends_on:"):
+            continue
+        value = stripped.split(":", 1)[1].strip()
+        if value:
+            return _parse_inline_list(value)
+
+        deps: list[str] = []
+        for child in lines[idx + 1 :]:
+            child_stripped = child.strip()
+            if not child_stripped:
+                continue
+            if child_stripped.startswith("- "):
+                dep_id = _strip_scalar(child_stripped[2:])
+                if dep_id:
+                    deps.append(dep_id)
+                continue
+            break
+        return deps
+    return []
+
+
+def _locate_task(vault_root: Path, dep_id: str) -> Path | None:
+    for subdir in ("closed", "active"):
+        root = vault_root / subdir
+        exact = root / f"{dep_id}.md"
+        if exact.is_file():
+            return exact
+        for candidate in root.glob(f"{dep_id}-*.md"):
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _frontmatter_status(note_text: str) -> str:
+    match = re.search(r"^status:\s*(\S+)$", note_text, flags=re.MULTILINE)
+    return match.group(1) if match else "unknown"
+
+
+vault_root = path.parent.parent
+unmet: list[str] = []
+for dep_id in _parse_depends_on(text):
+    dep_path = _locate_task(vault_root, dep_id)
+    if dep_path is None:
+        unmet.append(f"{dep_id} (not found in vault)")
+        continue
+    dep_status = _frontmatter_status(dep_path.read_text(encoding="utf-8"))
+    if dep_status not in ("completed", "closed", "done"):
+        unmet.append(f"{dep_id} (status: {dep_status})")
+
+if unmet:
+    print(f"cc-claim: BLOCKED — task '{task_id}' has unmet dependencies:", file=sys.stderr)
+    for item in unmet:
+        print(f"  - {item}", file=sys.stderr)
+    print("\nResolve dependencies before claiming this task.", file=sys.stderr)
+    sys.exit(5)
+
 text = re.sub(r"^status:.*$", "status: claimed", text, count=1, flags=re.MULTILINE)
 text = re.sub(
     r"^assigned_to:.*$", f"assigned_to: {role}", text, count=1, flags=re.MULTILINE
