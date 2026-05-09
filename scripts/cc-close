@@ -69,6 +69,42 @@ if ! command -v python3 &>/dev/null; then
   exit 3
 fi
 
+frontmatter_task_id() {
+  local file="$1"
+  python3 - "$file" <<'PYEOF'
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+frontmatter = ""
+if text.startswith("---"):
+    end = text.find("\n---", 3)
+    if end != -1:
+        frontmatter = text[3:end]
+
+for line in frontmatter.splitlines():
+    match = re.match(r"\s*task_id\s*:\s*['\"]?([^'\"#\s]+)", line)
+    if match:
+        print(match.group(1).strip())
+        break
+PYEOF
+}
+
+closed_duplicate=""
+for candidate in "$vault_root/closed/$task_id-"*.md "$vault_root/closed/$task_id.md"; do
+  [[ -f "$candidate" ]] || continue
+  candidate_task_id="$(frontmatter_task_id "$candidate" || true)"
+  if [[ "$candidate_task_id" == "$task_id" ]]; then
+    closed_duplicate="$candidate"
+    break
+  fi
+done
+if [[ -n "$closed_duplicate" ]]; then
+  echo "cc-close: BLOCKED - closed task duplicate has task_id '$task_id': $closed_duplicate" >&2
+  exit 8
+fi
+
 # Closure-discipline gate (cc-task cc-task-closure-hook-acceptance-criteria-gate):
 # refuse the move when any `## Acceptance criteria` checkbox is unchecked.
 # The Bash PreToolUse hook catches manual mv / git mv; this call catches
