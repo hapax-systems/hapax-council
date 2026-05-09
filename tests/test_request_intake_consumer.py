@@ -376,3 +376,62 @@ def test_planning_feed_no_task_note_mutation(tmp_path: Path) -> None:
 
     _run(tmp_path, "--write-planning-feed")
     assert task_path.read_text() == before
+
+
+def test_planning_feed_shared_task_index(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    tasks_active = tmp_path / "tasks" / "active"
+    tasks_active.mkdir(parents=True)
+    tasks_closed = tmp_path / "tasks" / "closed"
+    tasks_closed.mkdir(parents=True)
+
+    _write_request(
+        active / "REQ-A.md",
+        "REQ-A",
+        status="accepted_for_planning",
+        planning_case="CASE-001",
+    )
+    _write_request(
+        active / "REQ-B.md",
+        "REQ-B",
+        status="accepted_for_planning",
+        planning_case="CASE-002",
+    )
+    _write_request(active / "REQ-C.md", "REQ-C", status="captured")
+
+    _write_task(
+        tasks_active / "T-A1.md",
+        "T-A1",
+        status="in_progress",
+        parent_request="/path/to/REQ-A.md",
+    )
+    _write_task(
+        tasks_active / "T-A2.md",
+        "T-A2",
+        status="offered",
+        parent_request="/path/to/REQ-A.md",
+    )
+    _write_task(
+        tasks_closed / "T-B1.md",
+        "T-B1",
+        status="done",
+        parent_request="/path/to/REQ-B.md",
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    by_id = {r["request_id"]: r for r in data["requests"]}
+
+    assert by_id["REQ-A"]["coverage"] == "task_active"
+    assert by_id["REQ-A"]["active_tasks"] == 2
+    assert by_id["REQ-A"]["closed_tasks"] == 0
+
+    assert by_id["REQ-B"]["coverage"] == "task_complete_only"
+    assert by_id["REQ-B"]["closed_tasks"] == 1
+
+    assert by_id["REQ-C"]["coverage"] == "untracked"
+    assert by_id["REQ-C"]["total_tasks"] == 0
