@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: universal-audio-max-uafx-max-preamp-dual-compressor-pedal
+identity:
+  manufacturer: Universal Audio
+  model: Universal Audio MAX UAFX MAX Preamp & Dual Compressor Pedal
+  category: effects_pedal
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-04-27'
+  purchased_price_usd: 275.71
+capabilities:
+- effects_processing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

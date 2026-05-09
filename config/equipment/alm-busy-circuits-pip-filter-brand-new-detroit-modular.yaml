@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: alm-busy-circuits-pip-filter-brand-new-detroit-modular
+identity:
+  manufacturer: ALM
+  model: 'ALM BUSY CIRCUITS PIP FILTER : BRAND NEW :  [DETROIT MODULAR]'
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-02-27'
+  purchased_price_usd: 149.99
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

@@ -1,0 +1,19 @@
+schema_version: 1
+device_id: earthquaker-devices-the-depths-v2-analog-optical-vibe-machin
+identity:
+  manufacturer: EarthQuaker
+  model: EarthQuaker Devices The Depths V2 Analog Optical Vibe Machine, Purple Sparkle
+    (Gear Hero Exclusive)
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-05-27'
+  purchased_price_usd: 199.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

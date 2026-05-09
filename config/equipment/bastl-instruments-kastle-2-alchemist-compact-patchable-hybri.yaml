@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: bastl-instruments-kastle-2-alchemist-compact-patchable-hybri
+identity:
+  manufacturer: BASTL
+  model: BASTL Instruments Kastle 2 Alchemist Compact Patchable Hybrid-Synthesis Instrument
+  category: synthesizer
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-01-11'
+  purchased_price_usd: 194.0
+capabilities:
+- subtractive_synthesis
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

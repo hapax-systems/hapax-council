@@ -1,0 +1,19 @@
+schema_version: 1
+device_id: 1010-music-bluebox-compact-12-channel-digital-mixer-recorder
+identity:
+  manufacturer: 1010 Music
+  model: 1010 Music Bluebox Compact 12-Channel Digital Mixer / Recorder 2020 - Present
+    - Blue
+  category: mixer
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-02-07'
+  purchased_price_usd: 430.0
+capabilities:
+- mixing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

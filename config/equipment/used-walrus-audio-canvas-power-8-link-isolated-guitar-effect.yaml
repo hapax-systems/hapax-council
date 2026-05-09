@@ -1,0 +1,19 @@
+schema_version: 1
+device_id: used-walrus-audio-canvas-power-8-link-isolated-guitar-effect
+identity:
+  manufacturer: Walrus Audio
+  model: "Used Walrus Audio Canvas Power 8 LINK Isolated Guitar Effects Pedal Power\
+    \ Supply \u266B"
+  category: effects_pedal
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-06-28'
+  purchased_price_usd: 188.0
+capabilities:
+- effects_processing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: akai-professional-mpk-mini-play-mk3-keyboard-with-built-in-s
+identity:
+  manufacturer: Akai
+  model: Akai Professional MPK Mini Play Mk3 Keyboard with Built-In Speaker
+  category: midi_controller
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-02-24'
+  purchased_price_usd: 129.0
+capabilities:
+- midi_keyboard
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

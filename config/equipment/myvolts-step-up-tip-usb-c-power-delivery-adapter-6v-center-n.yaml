@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: myvolts-step-up-tip-usb-c-power-delivery-adapter-6v-center-n
+identity:
+  manufacturer: MyVolts
+  model: myVolts Step Up Tip USB-C Power Delivery Adapter - 6V Center Negative 2.1mm
+  category: power_supply
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-02-14'
+  purchased_price_usd: 19.99
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

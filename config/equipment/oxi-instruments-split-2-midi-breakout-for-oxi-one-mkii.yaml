@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: oxi-instruments-split-2-midi-breakout-for-oxi-one-mkii
+identity:
+  manufacturer: OXI
+  model: OXI Instruments Split 2 MIDI Breakout for OXI One MKII
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-10-06'
+  purchased_price_usd: 68.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync
