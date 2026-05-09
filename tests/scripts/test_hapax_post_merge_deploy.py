@@ -254,6 +254,41 @@ def test_user_scoped_units_still_deploy_to_user_dir(tmp_path: Path) -> None:
     assert record["deploy_groups"]["systemd_system_units"] == []
 
 
+def test_hapax_runtime_config_deploys_to_user_config_and_restarts_reconciler(
+    tmp_path: Path,
+) -> None:
+    config_path = "config/hapax/audio-link-map.conf"
+    body = "source:output_FL|target:input_FL\n"
+    repo, sha = _repo_with_linear_commit(tmp_path, {config_path: body})
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    installed = home / ".config" / "hapax" / "audio-link-map.conf"
+    assert installed.read_text(encoding="utf-8") == body
+    calls = systemctl_calls.read_text(encoding="utf-8")
+    assert "--user restart hapax-audio-reconciler.service" in calls
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["deploy_groups"]["hapax_runtime_config"] == [config_path]
+
+
 def test_deploy_rejects_commit_ranges_before_touching_targets() -> None:
     result = subprocess.run(
         [str(SCRIPT), "HEAD..HEAD"],

@@ -125,7 +125,8 @@ routes:
     target_chain:
       - hapax-voice-fx-capture
       - hapax-loudnorm-capture
-      - hapax-tts-duck
+      - mpc-usb-output
+      - l12-usb-return-capture
       - hapax-livestream-tap
     route_class: broadcast_voice
     broadcast_eligible: true
@@ -151,7 +152,7 @@ routes:
       - config/wireplumber/50-hapax-voice-duck.conf
       - config/pipewire/hapax-voice-fx-chain.conf
       - config/pipewire/hapax-voice-fx-loudnorm.conf
-      - config/pipewire/hapax-tts-duck.conf
+      - config/pipewire/hapax-l12-usb-return-capture.conf
 
   - source_id: multimedia-default
     producer: desktop-session
@@ -159,7 +160,9 @@ routes:
     pipewire_node: input.loopback.sink.role.multimedia
     target_chain:
       - hapax-pc-loudnorm
-      - l12-usb-return
+      - mpc-usb-output
+      - l12-usb-return-capture
+      - hapax-livestream-tap
     route_class: default_multimedia
     broadcast_eligible: false
     public_claim_allowed: false
@@ -189,8 +192,9 @@ routes:
     pipewire_node: hapax-music-loudnorm
     target_chain:
       - hapax-music-loudnorm
-      - hapax-music-duck
-      - l12-usb-return
+      - mpc-usb-output
+      - l12-usb-return-capture
+      - hapax-livestream-tap
     route_class: broadcast_content
     broadcast_eligible: true
     public_claim_allowed: false
@@ -214,7 +218,7 @@ routes:
     generated_artifact_owner: hand_mirrored
     artifact_refs:
       - config/pipewire/hapax-music-loudnorm.conf
-      - config/pipewire/hapax-music-duck.conf
+      - config/pipewire/hapax-l12-usb-return-capture.conf
 
   - source_id: youtube-bed
     producer: youtube-player
@@ -222,7 +226,9 @@ routes:
     pipewire_node: hapax-yt-loudnorm
     target_chain:
       - hapax-yt-loudnorm
-      - hapax-ytube-ducked
+      - mpc-usb-output
+      - l12-usb-return-capture
+      - hapax-livestream-tap
     route_class: broadcast_content
     broadcast_eligible: false
     public_claim_allowed: false
@@ -378,22 +384,18 @@ artifacts:
     status: hand_mirrored
     owner: config/audio-routing.yaml#broadcast-tts
     reason: TTS loudnorm constants must cite shared/audio_loudness.py.
-  - path: config/pipewire/hapax-tts-duck.conf
+  - path: config/pipewire/hapax-l12-usb-return-capture.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#broadcast-tts
-    reason: TTS duck chain mirrors explicit broadcast voice route.
+    reason: MPC-first wet return captures L-12 CH 9-12 and is shared by broadcast voice/content routes.
   - path: config/pipewire/hapax-pc-loudnorm.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#multimedia-default
-    reason: Multimedia default remains non-broadcast-eligible by policy even though topology reaches the L-12 return.
+    reason: Multimedia default remains non-broadcast-eligible by policy even though topology reaches the MPC wet return.
   - path: config/pipewire/hapax-music-loudnorm.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#music-bed
     reason: Music pre-normalization mirrors policy and loudness constants.
-  - path: config/pipewire/hapax-music-duck.conf
-    status: hand_mirrored
-    owner: config/audio-routing.yaml#music-bed
-    reason: Music ducking mirrors shared ducking constants.
   - path: config/pipewire/hapax-yt-loudnorm.conf
     status: hand_mirrored
     owner: config/audio-routing.yaml#youtube-bed

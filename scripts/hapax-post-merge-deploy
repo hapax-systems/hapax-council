@@ -18,6 +18,7 @@
 #
 # Manual (this script):
 #   config/pipewire/*.conf         → cp + restart pipewire stack
+#   config/hapax/*.conf            → cp + restart hapax-audio-reconciler
 #   config/wireplumber/*.conf      → cp + restart wireplumber
 #   systemd/*.service|timer|path   → cp + daemon-reload + restart
 #   systemd/units/*.service|timer|path|target → cp + daemon-reload + restart
@@ -70,6 +71,7 @@ else
 fi
 REPO="${REPO:-${GITHUB_WORKSPACE:-$HOME/projects/hapax-council}}"
 PW_CONF_DIR="$HOME/.config/pipewire/pipewire.conf.d"
+HAPAX_CONF_DIR="$HOME/.config/hapax"
 WP_CONF_DIR="$HOME/.config/wireplumber/wireplumber.conf.d"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 SYSTEMD_USER_PRESET_DIR="$HOME/.config/systemd/user-preset"
@@ -90,6 +92,7 @@ record_post_merge_trace() {
 
     HAPAX_TRACE_FILES="$FILES" \
     HAPAX_TRACE_PW="$(_trace_join "${PW[@]}")" \
+    HAPAX_TRACE_HAPAX_CONF="$(_trace_join "${HAPAX_CONF[@]}")" \
     HAPAX_TRACE_WP="$(_trace_join "${WP[@]}")" \
     HAPAX_TRACE_SYSTEMD="$(_trace_join "${SYSTEMD[@]}")" \
     HAPAX_TRACE_SYSTEMD_SYSTEM="$(_trace_join "${SYSTEMD_SYSTEM[@]}")" \
@@ -128,6 +131,7 @@ manual_deploy_executed = sys.argv[7] == "1"
 
 deploy_groups = {
     "pipewire": lines("HAPAX_TRACE_PW"),
+    "hapax_runtime_config": lines("HAPAX_TRACE_HAPAX_CONF"),
     "wireplumber": lines("HAPAX_TRACE_WP"),
     "systemd_units": lines("HAPAX_TRACE_SYSTEMD"),
     "systemd_system_units": lines("HAPAX_TRACE_SYSTEMD_SYSTEM"),
@@ -204,7 +208,7 @@ else
     FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" | sort -u)"
 fi
 
-PW=(); WP=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); SCRIPTS=(); SCRIPT_PY=()
+PW=(); HAPAX_CONF=(); WP=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); SCRIPTS=(); SCRIPT_PY=()
 SYSTEMD_UNCLASSIFIED=()
 DID_ANYTHING=0
 
@@ -250,6 +254,7 @@ while IFS= read -r f; do
     [ -z "$f" ] && continue
     case "$f" in
         config/pipewire/*.conf)           PW+=("$f") ;;
+        config/hapax/*.conf)              HAPAX_CONF+=("$f") ;;
         config/wireplumber/*.conf)        WP+=("$f") ;;
         systemd/units/*.service|systemd/units/*.timer|systemd/units/*.path|systemd/units/*.target)
             if [ "$(unit_install_scope "$f")" = "system" ]; then
@@ -313,6 +318,25 @@ if [ "${#PW[@]}" -gt 0 ]; then
     done
     echo "restarting pipewire stack"
     systemctl --user restart pipewire pipewire-pulse wireplumber
+    DID_ANYTHING=1
+fi
+
+# --- Hapax runtime config ---
+if [ "${#HAPAX_CONF[@]}" -gt 0 ]; then
+    echo "hapax runtime config changed (${#HAPAX_CONF[@]}):"
+    mkdir -p "$HAPAX_CONF_DIR"
+    for f in "${HAPAX_CONF[@]}"; do
+        dest="$HAPAX_CONF_DIR/$(basename "$f")"
+        if git cat-file -e "$SHA:$f" 2>/dev/null; then
+            git show "$SHA:$f" > "$dest"
+            echo "  '$f' -> '$dest'"
+        else
+            echo "  (deleted: $f)"
+            rm -fv "$dest" || true
+        fi
+    done
+    echo "restarting hapax-audio-reconciler"
+    systemctl --user restart hapax-audio-reconciler.service || true
     DID_ANYTHING=1
 fi
 

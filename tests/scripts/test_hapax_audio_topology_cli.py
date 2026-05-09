@@ -656,7 +656,10 @@ class TestAudit:
 
 
 class TestTtsBroadcastCheck:
-    def test_tts_broadcast_check_ok(self, tmp_path: Path) -> None:
+    def test_tts_broadcast_check_ok_for_current_mpc_wet_return_path(
+        self,
+        tmp_path: Path,
+    ) -> None:
         import json
 
         dump = tmp_path / "dump.json"
@@ -668,9 +671,9 @@ class TestTtsBroadcastCheck:
                         "type": "PipeWire:Interface:Node",
                         "info": {
                             "props": {
-                                "node.name": "hapax-tts-duck",
+                                "node.name": "input.loopback.sink.role.broadcast",
                                 "media.class": "Audio/Sink",
-                                "factory.name": "filter-chain",
+                                "factory.name": "loopback",
                             }
                         },
                     },
@@ -679,14 +682,52 @@ class TestTtsBroadcastCheck:
                         "type": "PipeWire:Interface:Node",
                         "info": {
                             "props": {
-                                "node.name": "hapax-tts-broadcast-playback",
+                                "node.name": "hapax-voice-fx-capture",
                                 "media.class": "Audio/Sink",
-                                "factory.name": "loopback",
+                                "factory.name": "filter-chain",
                             }
                         },
                     },
                     {
                         "id": 102,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": "hapax-loudnorm-capture",
+                                "media.class": "Audio/Sink",
+                                "factory.name": "filter-chain",
+                            }
+                        },
+                    },
+                    {
+                        "id": 103,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": (
+                                    "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00"
+                                    ".multichannel-output"
+                                ),
+                                "media.class": "Audio/Sink",
+                                "factory.name": "api.alsa.pcm.sink",
+                                "api.alsa.path": "hw:7",
+                                "audio.channels": 24,
+                            }
+                        },
+                    },
+                    {
+                        "id": 104,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": "hapax-l12-usb-return-capture",
+                                "media.class": "Audio/Sink",
+                                "factory.name": "filter-chain",
+                            }
+                        },
+                    },
+                    {
+                        "id": 105,
                         "type": "PipeWire:Interface:Node",
                         "info": {
                             "props": {
@@ -697,14 +738,20 @@ class TestTtsBroadcastCheck:
                         },
                     },
                     {
-                        "id": 200,
-                        "type": "PipeWire:Interface:Link",
-                        "info": {"output-node-id": 100, "input-node-id": 101},
+                        "id": 106,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "node.name": "hapax-broadcast-master-capture",
+                                "media.class": "Audio/Sink",
+                                "factory.name": "filter-chain",
+                            }
+                        },
                     },
                     {
-                        "id": 201,
+                        "id": 200,
                         "type": "PipeWire:Interface:Link",
-                        "info": {"output-node-id": 101, "input-node-id": 102},
+                        "info": {"output-node-id": 105, "input-node-id": 106},
                     },
                 ]
             )
@@ -713,7 +760,10 @@ class TestTtsBroadcastCheck:
         assert result.returncode == 0
         assert "TTS broadcast path: OK" in result.stdout
 
-    def test_tts_broadcast_check_fails_when_bridge_missing(self, tmp_path: Path) -> None:
+    def test_tts_broadcast_check_fails_when_mpc_wet_return_missing(
+        self,
+        tmp_path: Path,
+    ) -> None:
         import json
 
         dump = tmp_path / "dump.json"
@@ -721,7 +771,7 @@ class TestTtsBroadcastCheck:
         result = _run(["tts-broadcast-check", "--dump-file", str(dump)])
         assert result.returncode == 2
         assert "TTS broadcast path: FAIL" in result.stdout
-        assert "hapax-tts-broadcast-*" in result.stdout
+        assert "hapax-l12-usb-return-capture" in result.stdout
 
 
 class TestL12ForwardCheck:
