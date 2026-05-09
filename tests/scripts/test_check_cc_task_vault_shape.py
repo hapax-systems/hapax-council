@@ -116,6 +116,77 @@ def test_check_is_read_only(tmp_path: Path, vault_shape_module: ModuleType) -> N
     assert _snapshot(root) == before
 
 
+def test_route_metadata_missing_quality_floor_warns_without_writing(
+    tmp_path: Path, vault_shape_module: ModuleType
+) -> None:
+    root = _write_valid_vault(tmp_path)
+    _write_task(
+        root,
+        "active",
+        "missing-route-metadata",
+        status="offered",
+        assigned_to="unassigned",
+        claimed_at=None,
+        route_metadata=False,
+    )
+    before = _snapshot(root)
+
+    result = vault_shape_module.check_vault_shape(root)
+
+    assert result.ok is True
+    assert "route_metadata_hold" in _checks(result, severity="warning")
+    assert _snapshot(root) == before
+
+
+def test_malformed_route_metadata_fails(tmp_path: Path, vault_shape_module: ModuleType) -> None:
+    root = _write_valid_vault(tmp_path)
+    _write_task(
+        root,
+        "active",
+        "bad-route-metadata",
+        route_metadata={
+            "quality_floor": "frontier_review_required",
+            "authority_level": "authoritative",
+            "mutation_surface": "vault_docs",
+        },
+    )
+
+    result = vault_shape_module.check_vault_shape(root)
+
+    assert result.ok is False
+    assert "route_metadata_malformed" in _checks(result)
+
+
+def test_request_route_metadata_audit_is_read_only(
+    tmp_path: Path, vault_shape_module: ModuleType
+) -> None:
+    root = _write_valid_vault(tmp_path / "hapax-cc-tasks")
+    requests_root = tmp_path / "hapax-requests"
+    (requests_root / "active").mkdir(parents=True)
+    request_path = requests_root / "active" / "REQ-001.md"
+    request_path.write_text(
+        "\n".join(
+            [
+                "---",
+                "type: hapax-request",
+                "request_id: REQ-001",
+                "title: Needs route metadata",
+                "status: captured",
+                "---",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    before = _snapshot(requests_root)
+
+    result = vault_shape_module.check_vault_shape(root, requests_root=requests_root)
+
+    assert result.ok is True
+    assert "route_metadata_hold" in _checks(result, severity="warning")
+    assert _snapshot(requests_root) == before
+
+
 def test_cli_json_reports_failures(
     tmp_path: Path, vault_shape_module: ModuleType, capsys: Any
 ) -> None:
@@ -157,6 +228,7 @@ def _write_valid_vault(root: Path) -> Path:
 
 def _write_task(root: Path, directory: str, task_id: str, **overrides: Any) -> None:
     omit_fields = set(overrides.pop("omit_fields", ()))
+    route_metadata = overrides.pop("route_metadata", True)
     frontmatter = {
         "type": "cc-task",
         "task_id": task_id,
@@ -176,6 +248,17 @@ def _write_task(root: Path, directory: str, task_id: str, **overrides: Any) -> N
         "tags": overrides.pop("tags", ["coordination"]),
         **overrides,
     }
+    if route_metadata:
+        metadata = {
+            "route_metadata_schema": 1,
+            "quality_floor": "deterministic_ok",
+            "authority_level": "authoritative",
+            "mutation_surface": "source",
+            "mutation_scope_refs": ["test:isap"],
+        }
+        if isinstance(route_metadata, dict):
+            metadata.update(route_metadata)
+        frontmatter.update(metadata)
     for field in omit_fields:
         frontmatter.pop(field, None)
     body = yaml.safe_dump(frontmatter, sort_keys=False)
