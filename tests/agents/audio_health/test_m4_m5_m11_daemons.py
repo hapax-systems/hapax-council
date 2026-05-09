@@ -9,11 +9,13 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
+from agents.audio_health.classifier import classify, measure_pcm
 from agents.audio_health.m1_dimensions import compute_envelope_correlation
 from agents.audio_health.m4_inter_stage_corr_daemon import (
     M4DaemonConfig,
     PairState,
     _pair_key,
+    _probe_pair,
 )
 from agents.audio_health.m4_inter_stage_corr_daemon import (
     _emit_snapshot as m4_emit_snapshot,
@@ -35,6 +37,21 @@ from agents.audio_health.m11_l12_usb_daemon import (
 from agents.audio_health.m11_l12_usb_daemon import (
     _emit_snapshot as m11_emit_snapshot,
 )
+from agents.audio_health.probes import ProbeResult
+
+
+def _probe_result(stage: str, samples: np.ndarray) -> ProbeResult:
+    measurement = measure_pcm(samples)
+    return ProbeResult(
+        stage=stage,
+        classification=classify(measurement),
+        measurement=measurement,
+        samples_mono=samples,
+        captured_at=1000.0,
+        duration_s=samples.size / 48000,
+        error=None,
+    )
+
 
 # ── M4 Tests ────────────────────────────────────────────────────────────
 
@@ -102,6 +119,80 @@ class TestM4Emission:
         data = json.loads(path.read_text())
         assert data["monitor"] == "inter-stage-corr"
         assert data["pairs"]["a|b"]["correlation"] == pytest.approx(0.95)
+
+
+class TestM4RawSampleContract:
+    def test_pair_probe_uses_result_samples_without_dynamic_measurement_attr(self) -> None:
+        t = np.linspace(0, 1, 48000, endpoint=False)
+        samples = (0.25 * np.sin(2 * np.pi * 440 * t) * 32767).astype(np.int16)
+        result_a = _probe_result("a", samples)
+        result_b = _probe_result("b", samples.copy())
+        state = PairState()
+        cfg = M4DaemonConfig(
+            stage_pairs=[("a", "b")],
+            enable_ntfy=False,
+            silence_floor_rms=1e-6,
+        )
+
+        with patch(
+            "agents.audio_health.m4_inter_stage_corr_daemon.capture_and_measure",
+            side_effect=[result_a, result_b],
+        ):
+            _probe_pair("a", "b", state, cfg, now=1000.0)
+
+        assert not hasattr(result_a.measurement, "samples_mono")
+        assert state.last_error is None
+        assert state.both_silent is False
+        assert state.last_correlation is not None
+        assert state.last_correlation > 0.9
+
+    def test_pair_probe_records_capture_error_as_health_evidence(self, tmp_path: Path) -> None:
+        good = _probe_result("a", np.zeros(48000, dtype=np.int16))
+        bad = ProbeResult(
+            stage="b",
+            classification=good.classification,
+            measurement=good.measurement,
+            samples_mono=np.zeros(0, dtype=np.int16),
+            captured_at=1000.0,
+            duration_s=0.0,
+            error="capture failed",
+        )
+        state = PairState()
+        cfg = M4DaemonConfig(stage_pairs=[("a", "b")], snapshot_path=tmp_path / "corr.json")
+
+        with patch(
+            "agents.audio_health.m4_inter_stage_corr_daemon.capture_and_measure",
+            side_effect=[good, bad],
+        ):
+            _probe_pair("a", "b", state, cfg, now=1000.0)
+
+        assert state.analyzer_error_count == 1
+        assert state.last_error == "b: capture failed"
+        m4_emit_snapshot({"a|b": state}, now=1000.0, path=cfg.snapshot_path)
+        payload = json.loads(cfg.snapshot_path.read_text(encoding="utf-8"))
+        assert payload["pairs"]["a|b"]["analyzer_error"] == state.last_error
+        assert payload["pairs"]["a|b"]["analyzer_error_count"] == 1
+
+    def test_pair_probe_records_analyzer_exception_as_health_evidence(self) -> None:
+        t = np.linspace(0, 1, 48000, endpoint=False)
+        samples = (0.25 * np.sin(2 * np.pi * 440 * t) * 32767).astype(np.int16)
+        state = PairState()
+        cfg = M4DaemonConfig(stage_pairs=[("a", "b")])
+
+        with (
+            patch(
+                "agents.audio_health.m4_inter_stage_corr_daemon.capture_and_measure",
+                side_effect=[_probe_result("a", samples), _probe_result("b", samples)],
+            ),
+            patch(
+                "agents.audio_health.m4_inter_stage_corr_daemon.compute_envelope_correlation",
+                side_effect=RuntimeError("correlation analyzer failed"),
+            ),
+        ):
+            _probe_pair("a", "b", state, cfg, now=1000.0)
+
+        assert state.analyzer_error_count == 1
+        assert state.last_error == "RuntimeError: correlation analyzer failed"
 
 
 # ── M5 Tests ────────────────────────────────────────────────────────────
