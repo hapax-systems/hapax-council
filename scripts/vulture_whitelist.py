@@ -2799,3 +2799,55 @@ live_pipewire_graph
 signal_neighbors
 trace_path
 wiring_discrepancies
+
+from shared.assertion_model import (  # noqa: F401, E402
+    Assertion,
+    AssertionType,
+    ProvenanceRecord,
+    SourceType,
+    extract_from_axiom_registry,
+    extract_from_implications,
+)
+
+Assertion
+AssertionType
+ProvenanceRecord
+SourceType
+SourceType.CODE
+SourceType.CONFIG
+SourceType.MARKDOWN
+SourceType.COMMIT
+SourceType.PR
+SourceType.MEMORY
+SourceType.RELAY
+SourceType.TASK
+SourceType.REQUEST
+AssertionType.INVARIANT
+AssertionType.CONSTRAINT
+AssertionType.PREFERENCE
+AssertionType.GOAL
+AssertionType.DECISION
+AssertionType.CLAIM
+AssertionType.COROLLARY
+extract_from_axiom_registry
+extract_from_implications
+AssertionType.FACT
+ProvenanceRecord.source_commit
+ProvenanceRecord.extraction_method
+ProvenanceRecord.extracted_at
+ProvenanceRecord.extraction_version
+ProvenanceRecord.modification_history
+Assertion.assertion_id
+Assertion.text
+Assertion.atomic_facts
+Assertion.source_type
+Assertion.source_uri
+Assertion.source_span
+Assertion.confidence
+Assertion.domain
+Assertion.assertion_type
+Assertion.provenance
+Assertion.tags
+Assertion.supersedes
+Assertion.superseded_by
+Assertion.model_post_init
