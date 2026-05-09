@@ -33,6 +33,7 @@ orphans:
   - hapax-l12-evilpet-capture.conf
   - hapax-livestream-duck.conf
   - hapax-livestream-tap.conf
+  - hapax-l12-usb-return-capture.conf  # MPC-first wet return; topology models it, conf stays hand-mirrored until generator parity.
   - hapax-l12-mainmix-tap.conf  # H5 P2 monitor-only null-sink; topology node is kind=tap, loopback is systemd/pactl-owned.
   - hapax-notification-private.conf
   - hapax-obs-broadcast-remap.conf
@@ -73,14 +74,6 @@ orphans:
   - hapax-backing-ducked-sidechain.conf  # sidechain feed for the ducker
   - hapax-voice-over-ytube-duck.conf  # VAD-gated voice-over-YT ramp
 
-  # MPC Live III TTS broadcast tap. Software ducker retired (MPC owns
-  # ducking). hapax-loudnorm → hapax-livestream-tap loopback keeps
-  # broadcast TTS audible when the hardware MPC/L-12 return path is
-  # not represented as a simple PipeWire edge. Operator-authorized
-  # 2026-05-05 as part of antigrav 8h MPC-III topology rebaseline.
-  # Distinct from .disabled-bypass file (unchanged; MUST stay disabled).
-  - hapax-tts-broadcast-tap.conf
-
   # Pre-existing software-ducker remnants — superseded by MPC Live III
   # hardware ducking 2026-05-03. Files kept on disk for rollback only;
   # no yaml chain because they're functionally retired. Do not re-enable.
@@ -98,14 +91,7 @@ orphans:
   - hapax-m8-sample-input.conf
 
 known_missing:
-  # tts-loudnorm + ytube-ducked are declared in audio-topology.yaml
-  # with chain_kind set, but no `hapax-*.conf` exists yet. Tracked
-  # under separate audit follow-on tasks; the gate accepts them as
-  # known-missing so the gate ships clean, but the underlying audit
-  # findings remain open.
-  #
-  # 2026-05-03: hapax-yt-loudnorm.conf removed from this list by the
-  # audit-E naming slice that renamed the old unprefixed yt-loudnorm
-  # file to `config/pipewire/hapax-yt-loudnorm.conf`.
+  # tts-loudnorm is declared in audio-topology.yaml with chain_kind set,
+  # but the hand-mirrored conf is still `hapax-voice-fx-loudnorm.conf`.
+  # Tracked under generator/naming parity follow-on work.
   - hapax-tts-loudnorm.conf
-  - hapax-ytube-ducked.conf
