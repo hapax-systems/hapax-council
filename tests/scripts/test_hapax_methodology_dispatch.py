@@ -14,7 +14,14 @@ def _write(path: Path, content: str) -> Path:
     return path
 
 
-def _task(root: Path, task_id: str, frontmatter: str) -> Path:
+def _task(
+    root: Path,
+    task_id: str,
+    frontmatter: str,
+    *,
+    status: str = "offered",
+    assigned_to: str = "unassigned",
+) -> Path:
     return _write(
         root / "active" / f"{task_id}.md",
         "\n".join(
@@ -23,8 +30,8 @@ def _task(root: Path, task_id: str, frontmatter: str) -> Path:
                 "type: cc-task",
                 f"task_id: {task_id}",
                 f'title: "{task_id}"',
-                "status: offered",
-                "assigned_to: unassigned",
+                f"status: {status}",
+                f"assigned_to: {assigned_to}",
                 textwrap.dedent(frontmatter).strip(),
                 "---",
                 "",
@@ -142,6 +149,70 @@ def test_governed_prompt_is_specific_and_not_work_pool_prompt(tmp_path: Path) ->
     assert "claim the next" not in result.stdout
     assert "highest-WSJF" not in result.stdout
     assert "Never stop" not in result.stdout
+
+
+def test_blocks_offered_task_preassigned_to_target_lane(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "preassigned-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+        assigned_to="beta",
+    )
+
+    result = _run(tmp_path, "--task", "preassigned-build", "--lane", "beta")
+
+    assert result.returncode == 10
+    assert "offered task assigned_to 'beta' is not claimable" in result.stderr
+    assert "target-lane routing belongs in dispatch" in result.stderr
+    assert "must remain unassigned until cc-claim" in result.stderr
+
+
+def test_allows_claimed_task_assigned_to_target_lane(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "claimed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+        status="claimed",
+        assigned_to="beta",
+    )
+
+    result = _run(tmp_path, "--task", "claimed-build", "--lane", "beta")
+
+    assert result.returncode == 0, result.stderr
+    assert "eligible: claimed-build -> claude/beta" in result.stdout
+
+
+def test_blocks_claimed_task_assigned_to_unassigned(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "bad-claimed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+        status="claimed",
+        assigned_to="unassigned",
+    )
+
+    result = _run(tmp_path, "--task", "bad-claimed-build", "--lane", "beta")
+
+    assert result.returncode == 10
+    assert "claimed/in_progress tasks may only be dispatched" in result.stderr
 
 
 def test_blocks_stale_worktree_cc_claim_before_launch(tmp_path: Path) -> None:

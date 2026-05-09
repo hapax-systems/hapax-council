@@ -197,8 +197,23 @@ def validate_task(
     assigned_to = strip_scalar(str(fields.get("assigned_to", "")))
     if status not in {"offered", "claimed", "in_progress"}:
         return Validation(False, f"task status {status!r} is not dispatchable", task)
-    if status in {"claimed", "in_progress"} and assigned_to not in {lane, "unassigned", ""}:
-        return Validation(False, f"task already assigned to {assigned_to!r}", task)
+    if status == "offered" and not (
+        is_nullish(fields.get("assigned_to")) or assigned_to == "unassigned"
+    ):
+        return Validation(
+            False,
+            f"offered task assigned_to {assigned_to!r} is not claimable; "
+            "target-lane routing belongs in dispatch, while task ownership "
+            "must remain unassigned until cc-claim",
+            task,
+        )
+    if status in {"claimed", "in_progress"} and assigned_to != lane:
+        return Validation(
+            False,
+            f"task already assigned to {assigned_to!r}; claimed/in_progress "
+            f"tasks may only be dispatched to assigned lane {lane!r}",
+            task,
+        )
 
     exempt = is_authority_exempt(fields)
     parent_spec_path = resolve_declared_path(
