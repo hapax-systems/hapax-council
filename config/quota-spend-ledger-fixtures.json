@@ -1,0 +1,181 @@
+{
+  "schema_version": 1,
+  "ledger_id": "quota-spend-ledger-default-20260509",
+  "captured_at": "2026-05-09T20:49:00Z",
+  "authority_source": "isap:quota-spend-ledger-20260509",
+  "generated_from": [
+    "shared/quota_spend_ledger.py",
+    "config/quota-spend-ledger-fixtures.json"
+  ],
+  "privacy_scope": "private",
+  "consumer_permission_after": "private_capacity_routing_tests_only",
+  "paid_api_budget_freshness_ttl_s": 60,
+  "quality_preserving_routes_available": "unknown",
+  "blocked_quality_floor_reason": "no active budget authority in fixture",
+  "local_resource_state": "unknown",
+  "quota_snapshots": [
+    {
+      "quota_snapshot_schema": 1,
+      "snapshot_id": "quota-subscription-stale-20260509",
+      "captured_at": "2026-05-09T20:00:00Z",
+      "route_id": "opaque.route.subscription",
+      "provider": "opaque-provider-a",
+      "capacity_pool": "subscription_quota",
+      "subscription_quota_state": "stale",
+      "evidence_refs": [
+        "ledger:manual-subscription-quota-stale"
+      ],
+      "operator_visible_reason": "subscription quota is represented as stale fixture data"
+    }
+  ],
+  "transition_budgets": [
+    {
+      "budget_schema": 1,
+      "budget_id": "tb-20260509-bootstrap-expired",
+      "authority_case": "CASE-CAPACITY-ROUTING-001",
+      "approved_by": "operator",
+      "created_at": "2026-05-09T19:00:00Z",
+      "expires_at": "2026-05-09T20:00:00Z",
+      "capacity_pool": "bootstrap_budget",
+      "providers_allowed": [
+        "opaque-provider-a"
+      ],
+      "profiles_allowed": [
+        "opaque-profile-full"
+      ],
+      "task_classes_allowed": [
+        "authority-case-implementation"
+      ],
+      "quality_floors_allowed": [
+        "frontier_required"
+      ],
+      "total_cap_usd": "10.00",
+      "per_task_cap_usd": "5.00",
+      "daily_cap_usd": "5.00",
+      "auto_top_up_allowed": false,
+      "subscription_path_checked_at": "2026-05-09T19:00:00Z",
+      "reason_subscription_path_not_used": "subscription path unavailable in bootstrap fixture",
+      "steady_state_replacement": {
+        "target_route_id": "opaque.route.subscription",
+        "blocker_to_remove": "quota-observability-incomplete",
+        "exit_criterion": "subscription route can satisfy quality floor without paid/API spend"
+      },
+      "ledger_owner": "cx-indigo",
+      "dashboard_visibility": "required",
+      "lifecycle_state": "active"
+    }
+  ],
+  "spend_receipts": [
+    {
+      "spend_receipt_schema": 1,
+      "spend_id": "spend-20260509T193000Z-opaque-route",
+      "task_id": "capacity-routing-quota-spend-ledger",
+      "authority_case": "CASE-CAPACITY-ROUTING-001",
+      "route_id": "opaque.route.bootstrap",
+      "capacity_pool": "bootstrap_budget",
+      "budget_id": "tb-20260509-bootstrap-expired",
+      "provider": "opaque-provider-a",
+      "model_or_engine": "opaque-engine-a",
+      "auth_surface": "api_key",
+      "quality_floor": "frontier_required",
+      "quality_preservation_reason": "fixture records support-only bootstrap output",
+      "spend_reason": "bootstrap_equilibrium",
+      "estimated_cost_usd": "2.00",
+      "actual_cost_usd": null,
+      "cap_remaining_usd": null,
+      "created_at": "2026-05-09T19:30:00Z",
+      "reconcile_by": "2026-05-09T20:30:00Z",
+      "artifact_refs": [
+        "artifacts/support/bootstrap-draft.md"
+      ],
+      "support_artifact_authority": "support_non_authoritative"
+    }
+  ],
+  "spend_gate_decisions": [
+    {
+      "decision_schema": 1,
+      "decision_id": "sgd-20260509-expired-bootstrap-refusal",
+      "created_at": "2026-05-09T20:45:00Z",
+      "route_id": "opaque.route.bootstrap",
+      "provider": "opaque-provider-a",
+      "profile": "opaque-profile-full",
+      "task_class": "authority-case-implementation",
+      "quality_floor": "frontier_required",
+      "capacity_pool": "bootstrap_budget",
+      "requested_cost_usd": "1.00",
+      "decision_state": "refused_expired_budget",
+      "eligible": false,
+      "budget_id": "tb-20260509-bootstrap-expired",
+      "blocking_reasons": [
+        "matching TransitionBudget expired or inactive"
+      ],
+      "evidence_refs": [
+        "tb-20260509-bootstrap-expired"
+      ]
+    }
+  ],
+  "provider_dependencies": [
+    {
+      "dependency_schema": 1,
+      "dependency_id": "dep-opaque-provider-bootstrap",
+      "route_id": "opaque.route.bootstrap",
+      "provider": "opaque-provider-a",
+      "capacity_pool": "bootstrap_budget",
+      "dependency_state": "active",
+      "recurring": false,
+      "critical_path": true,
+      "transition_budget_id": "tb-20260509-bootstrap-expired",
+      "first_seen_at": "2026-05-09T19:00:00Z",
+      "review_by": "2026-05-09T20:10:00Z",
+      "replacement_route_id": null,
+      "bootstrap_dependency": true,
+      "evidence_refs": [
+        "ledger:bootstrap-dependency-fixture"
+      ],
+      "operator_visible_reason": "bootstrap dependency remains active but its budget is expired"
+    }
+  ],
+  "artifact_provenance": [
+    {
+      "provenance_schema": 1,
+      "provenance_id": "prov-bootstrap-support-draft",
+      "artifact_refs": [
+        "artifacts/support/bootstrap-draft.md"
+      ],
+      "produced_by_route_id": "opaque.route.bootstrap",
+      "produced_under_budget_id": "tb-20260509-bootstrap-expired",
+      "source_spend_receipt_ids": [
+        "spend-20260509T193000Z-opaque-route"
+      ],
+      "support_artifact_authority": "support_non_authoritative",
+      "accepted_by_route_id": null,
+      "accepted_at": null,
+      "evidence_refs": [
+        "spend-20260509T193000Z-opaque-route"
+      ],
+      "operator_visible_reason": "support artifact is not authoritative until reviewed by an eligible route"
+    }
+  ],
+  "renewal_records": [
+    {
+      "renewal_schema": 1,
+      "renewal_id": "renew-opaque-provider-bootstrap-review",
+      "provider": "opaque-provider-a",
+      "auth_surface": "api_key",
+      "capacity_pool": "bootstrap_budget",
+      "recurring_cost_usd": "0.00",
+      "subscription_renewal_at": null,
+      "top_up_enabled": false,
+      "hard_expiry_review_at": "2026-05-09T20:00:00Z",
+      "cancellation_or_exit_ref": "ledger:bootstrap-exit-required",
+      "evidence_refs": [
+        "tb-20260509-bootstrap-expired"
+      ],
+      "operator_visible_reason": "top-up remains disabled and budget review is expired"
+    }
+  ],
+  "evidence_refs": [
+    "CASE-CAPACITY-ROUTING-001",
+    "ledger:default-no-active-paid-api-budget"
+  ]
+}

@@ -26,6 +26,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from agents.audio_health.service_loop import interruptible_sleep
+
 log = logging.getLogger(__name__)
 
 DEFAULT_PROBE_INTERVAL_S: float = 10.0
@@ -274,7 +276,7 @@ def run_daemon(config: M5DaemonConfig | None = None) -> None:
 
         elapsed = time.time() - now
         sleep_time = max(0.1, cfg.probe_interval_s - elapsed)
-        time.sleep(sleep_time)
+        interruptible_sleep(sleep_time, lambda: shutdown)
 
     log.info("M5 pw-top xrun daemon shutting down")
 
