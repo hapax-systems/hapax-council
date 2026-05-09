@@ -104,7 +104,10 @@ def test_legacy_ad_hoc_pipewire_nodes_have_industrial_names() -> None:
     """Pin ad-hoc live names to operator-readable SSOT graph names."""
 
     descriptor = TopologyDescriptor.from_yaml(CANONICAL_YAML)
-    assert descriptor.node_by_id("music-duck").industrial_name == "chain.music.ducker"
+    assert (
+        descriptor.node_by_id("l12-usb-return-capture").industrial_name
+        == "chain.broadcast.mpc-wet-return-capture"
+    )
     assert (
         descriptor.node_by_id("l12-evilpet-capture").industrial_name
         == "chain.broadcast.processor-return-capture"

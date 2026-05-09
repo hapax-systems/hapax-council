@@ -182,6 +182,8 @@ _REQUIRED_L12_DIRECTIONALITY_NODES = {
     "l12-usb-return",
     "livestream-tap",
     "l12-evilpet-capture",
+    "l12-usb-return-capture",
+    "mpc-usb-output",
     "private-sink",
     "private-monitor-capture",
     "private-monitor-output",
@@ -196,11 +198,8 @@ _REQUIRED_L12_DIRECTIONALITY_NODES = {
     "pc-loudnorm",
     "voice-fx",
     "tts-loudnorm",
-    "tts-duck",
-    "tts-broadcast-capture",
-    "tts-broadcast-playback",
 }
-_ALLOWED_L12_RETURN_PRODUCERS = {"tts-duck", "pc-loudnorm", "music-duck"}
+_ALLOWED_L12_RETURN_PRODUCERS: set[str] = set()
 _ALLOWED_L12_RETURN_DIRECTIONS = {"broadcast"}
 _PRIVATE_ONLY_ROOTS = {
     "role-assistant",
@@ -225,9 +224,6 @@ _PRIVATE_FORBIDDEN_REACHABILITY = {
     "pc-loudnorm",
     "voice-fx",
     "tts-loudnorm",
-    "tts-duck",
-    "tts-broadcast-capture",
-    "tts-broadcast-playback",
 }
 _PRIVATE_MONITOR_BRIDGES = {
     # Option C (2026-05-02 spec amendment): private-monitor bridges target
@@ -527,39 +523,47 @@ def descriptor_from_dump_file(path: str | Path) -> TopologyDescriptor:
 def check_tts_broadcast_path(
     descriptor: TopologyDescriptor,
     *,
-    source_name: str = "hapax-tts-duck",
-    bridge_prefix: str = "hapax-tts-broadcast-",
+    source_name: str = "input.loopback.sink.role.broadcast",
+    voice_fx_name: str = "hapax-voice-fx-capture",
+    loudnorm_name: str = "hapax-loudnorm-capture",
+    mpc_output_name: str = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output",
+    wet_return_name: str = "hapax-l12-usb-return-capture",
     target_name: str = "hapax-livestream-tap",
+    master_name: str = "hapax-broadcast-master-capture",
 ) -> TtsBroadcastPathCheck:
-    """Verify TTS reaches the livestream tap in a parsed PipeWire graph.
+    """Verify broadcast TTS has the current MPC-first path to livestream.
 
-    The static config can declare the loopback while the live graph is still
-    missing one side after deployment/restart. This checks the live shape:
+    The retired software bridge was:
     ``hapax-tts-duck -> hapax-tts-broadcast-* -> hapax-livestream-tap``.
+    The current baseline is hardware-first:
+    ``role.broadcast -> voice-fx -> loudnorm -> MPC USB AUX2/3 -> MPC TRS
+    out 3/4 -> L-12 CH11/12 -> l12-usb-return-capture -> livestream-tap``.
+
+    ``pw-dump`` does not expose every port-level link in that chain as
+    descriptor edges, so this check treats the current path as healthy when
+    the required live nodes are present and the final tap-to-master edge is
+    visible. Exact port-level link enforcement remains the responsibility of
+    ``scripts/hapax-audio-routing-check`` and the reconciler link map.
     """
     by_name = {node.pipewire_name: node for node in descriptor.nodes}
-    bridge_nodes = [
-        node for node in descriptor.nodes if node.pipewire_name.startswith(bridge_prefix)
+    required_names = [
+        source_name,
+        voice_fx_name,
+        loudnorm_name,
+        mpc_output_name,
+        wet_return_name,
+        target_name,
+        master_name,
     ]
 
-    missing_nodes: list[str] = []
-    source = by_name.get(source_name)
-    if source is None:
-        missing_nodes.append(source_name)
-    target = by_name.get(target_name)
-    if target is None:
-        missing_nodes.append(target_name)
-    if not bridge_nodes:
-        missing_nodes.append(f"{bridge_prefix}*")
+    missing_nodes = [name for name in required_names if name not in by_name]
 
     edge_pairs = {(edge.source, edge.target) for edge in descriptor.edges}
     missing_edges: list[str] = []
-    if source is not None and bridge_nodes:
-        if not any((source.id, bridge.id) in edge_pairs for bridge in bridge_nodes):
-            missing_edges.append(f"{source_name} -> {bridge_prefix}*")
-    if target is not None and bridge_nodes:
-        if not any((bridge.id, target.id) in edge_pairs for bridge in bridge_nodes):
-            missing_edges.append(f"{bridge_prefix}* -> {target_name}")
+    target = by_name.get(target_name)
+    master = by_name.get(master_name)
+    if target is not None and master is not None and (target.id, master.id) not in edge_pairs:
+        missing_edges.append(f"{target_name} -> {master_name}")
 
     return TtsBroadcastPathCheck(
         ok=not missing_nodes and not missing_edges,
@@ -963,16 +967,37 @@ def check_l12_forward_invariant(descriptor: TopologyDescriptor) -> L12ForwardInv
         violations.append(
             L12ForwardInvariantViolation(
                 code="broadcast_role_missing_livestream_forward_path",
-                message="role-broadcast must reach voice-fx, TTS loudnorm/duck, and livestream-tap",
+                message=(
+                    "role-broadcast must reach voice-fx, TTS loudnorm, "
+                    "MPC/L-12 wet return, and livestream-tap"
+                ),
             )
         )
 
-    tts_duck = node("tts-duck")
-    if tts_duck is not None:
-        forward_path = _param_words(tts_duck.params.get("broadcast_forward_path"))
+    tts_loudnorm = node("tts-loudnorm")
+    if tts_loudnorm is not None:
+        resolved_target_id = ref_to_id.get(tts_loudnorm.target_object or "")
+        if resolved_target_id != "mpc-usb-output":
+            violations.append(
+                L12ForwardInvariantViolation(
+                    code="tts_loudnorm_target_not_mpc_output",
+                    message=(
+                        "tts-loudnorm must target the MPC USB output under "
+                        "the hardware-first broadcast baseline"
+                    ),
+                )
+            )
+        if tts_loudnorm.params.get("playback_positions") != "AUX2 AUX3":
+            violations.append(
+                L12ForwardInvariantViolation(
+                    code="tts_loudnorm_mpc_pair_not_declared",
+                    message="tts-loudnorm must declare playback_positions=AUX2 AUX3",
+                )
+            )
+        forward_path = _param_words(tts_loudnorm.params.get("broadcast_forward_path"))
         expected_forward_path = [
-            "hapax-tts-broadcast-capture",
-            "hapax-tts-broadcast-playback",
+            "mpc-usb-output",
+            "l12-usb-return-capture",
             "hapax-livestream-tap",
         ]
         if forward_path != expected_forward_path:
@@ -980,16 +1005,19 @@ def check_l12_forward_invariant(descriptor: TopologyDescriptor) -> L12ForwardInv
                 L12ForwardInvariantViolation(
                     code="tts_broadcast_forward_path_not_declared",
                     message=(
-                        "tts-duck must declare broadcast_forward_path="
+                        "tts-loudnorm must declare broadcast_forward_path="
                         + " ".join(expected_forward_path)
                     ),
                 )
             )
-        if not _can_reach(graph, "tts-duck", "livestream-tap"):
+        if not _can_reach(graph, "tts-loudnorm", "livestream-tap"):
             violations.append(
                 L12ForwardInvariantViolation(
                     code="tts_l12_missing_livestream_forward_path",
-                    message=("tts-duck targets L-12 return but does not also reach livestream-tap"),
+                    message=(
+                        "tts-loudnorm targets the MPC/L-12 wet return path "
+                        "but does not also reach livestream-tap"
+                    ),
                 )
             )
 
