@@ -12,6 +12,8 @@ def test_headless_defaults_to_disabled_without_governed_enable(tmp_path: Path) -
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["PATH"] = "/usr/bin:/bin"
+    env.pop("HAPAX_CLAUDE_HEADLESS_ALLOW", None)
+    env.pop("HAPAX_CLAUDE_HEADLESS_ENABLE_FILE", None)
 
     result = subprocess.run(
         [str(SCRIPT), "beta", "governed prompt"],
@@ -23,6 +25,14 @@ def test_headless_defaults_to_disabled_without_governed_enable(tmp_path: Path) -
 
     assert result.returncode == 77
     assert "disabled until governed enable exists" in result.stderr
+
+
+def test_headless_source_prepends_workdir_scripts_to_path() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+
+    assert 'PATH="$WORKDIR/scripts:$PATH"' in text, (
+        "headless wrapper must prepend $WORKDIR/scripts to PATH"
+    )
 
 
 def test_headless_source_contains_no_generic_work_pool_prompt() -> None:

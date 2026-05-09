@@ -248,6 +248,8 @@ def build_prompt(task_id: str, lane: str, platform: str, validation: Validation)
     authority_case = fields.get("authority_case")
     parent_spec = fields.get("parent_spec")
     title = fields.get("title")
+    worktree = lane_worktree(lane, platform)
+    claim_cmd = worktree / "scripts" / "cc-claim"
     return "\n".join(
         [
             "SDLC GOVERNED DISPATCH.",
@@ -261,7 +263,7 @@ def build_prompt(task_id: str, lane: str, platform: str, validation: Validation)
             "",
             "Instructions:",
             f"1. Work only on task {task_id}.",
-            f"2. Run cc-claim {task_id} before mutation. If it rejects, stop and write a relay receipt.",
+            f"2. Run {claim_cmd} {task_id} before mutation. If it rejects, stop and write a relay receipt.",
             "3. Use only the authority and mutation scope in the parent spec.",
             "4. Do not create or claim another task from the pool.",
             "5. Do not select work from the pool. Do not continue after this task without a new dispatch.",
