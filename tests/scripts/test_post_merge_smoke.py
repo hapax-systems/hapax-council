@@ -158,6 +158,26 @@ class TestServicesRestartedGate:
         assert "services-restarted" not in result.stderr
         assert "hapax-claude-lane@.service" not in result.stderr
 
+    def test_system_scoped_unit_file_passes_without_user_active_check(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {
+                "systemd/units/hapax-l12-critical-usb-guard.service": (
+                    "[Unit]\n# Hapax-Install-Scope: system\nDescription=System scoped guard\n"
+                )
+            },
+        )
+        result = _run(
+            sha,
+            cwd=repo,
+            stubs={"systemctl": "exit 3"},
+        )
+
+        assert result.returncode == 0
+        assert "services-restarted" not in result.stderr
+        assert "hapax-l12-critical-usb-guard.service" not in result.stderr
+
     def test_successful_oneshot_inactive_unit_passes_silently(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path)
         sha = _commit_files(
