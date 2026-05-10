@@ -26,6 +26,7 @@ import random
 import time
 from pathlib import Path
 
+from agents.studio_compositor.graph_mutation_bus import write_graph_mutation
 from agents.studio_compositor.preset_mutator import (
     DEFAULT_VARIANCE,
     mutate_preset,
@@ -95,7 +96,7 @@ def _load_cycle_graph(
 
 def _write_mutation(graph: dict) -> None:
     """Write a graph dict to the SHM mutation file (primitive callback)."""
-    MUTATION_FILE.write_text(json.dumps(graph))
+    write_graph_mutation(graph, path=MUTATION_FILE)
 
 
 def _cycle_sleep_duration(interval: float, *, rng: random.Random | None = None) -> float:
@@ -175,7 +176,7 @@ def apply_graph_with_brightness(graph: dict, brightness: float) -> None:
         if node.get("type") == "colorgrade":
             node["params"]["brightness"] = node["params"].get("brightness", 1.0) * brightness
             break
-    MUTATION_FILE.write_text(json.dumps(g))
+    write_graph_mutation(g, path=MUTATION_FILE)
 
 
 _PRESET_BIAS_COOLDOWN_S = 20.0  # if a preset-bias was recruited within this

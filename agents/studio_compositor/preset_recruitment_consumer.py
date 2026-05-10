@@ -38,6 +38,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .graph_mutation_bus import write_graph_mutation
 from .preset_family_selector import (
     pick_and_load_mutated,
     pick_family_with_role_bias,
@@ -82,6 +83,11 @@ sample. Mirrors the existing ``preset.bias`` lifetime so the director can
 nudge a transition with one impingement and have it land on the next
 chain change."""
 
+_MAX_RECRUITMENT_FUTURE_S = 2.0
+"""Small clock-skew tolerance for writer timestamps."""
+
+_SINGLE_WRITE_TRANSITIONS_ENV = "HAPAX_PRESET_RECRUITMENT_SINGLE_WRITE_TRANSITIONS"
+
 _last_activation_t: float = 0.0
 _last_family_activated: str | None = None
 _last_graph_activated: dict | None = None
@@ -104,10 +110,42 @@ def _write_mutation(graph: dict) -> None:
     manual → 600s hold (protects operator-authored intent from director
     thrash).
     """
-    MUTATION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tagged = dict(graph)
-    tagged["_source"] = "recruitment"
-    MUTATION_FILE.write_text(json.dumps(tagged))
+    write_graph_mutation(graph, path=MUTATION_FILE, source="recruitment")
+
+
+def _recruitment_is_fresh(bias: dict, now_wall: float) -> bool:
+    """Return whether the preset.bias entry is still eligible to consume."""
+    last_recruited_ts = bias.get("last_recruited_ts")
+    if not isinstance(last_recruited_ts, (int, float)):
+        return False
+
+    raw_ttl = bias.get("ttl_s", COOLDOWN_S)
+    try:
+        ttl_s = float(raw_ttl)
+    except (TypeError, ValueError):
+        ttl_s = COOLDOWN_S
+    if ttl_s <= 0:
+        return False
+
+    age_s = now_wall - float(last_recruited_ts)
+    if age_s < -_MAX_RECRUITMENT_FUTURE_S:
+        log.debug(
+            "preset recruitment ignored: timestamp %.3fs in future beyond tolerance",
+            -age_s,
+        )
+        return False
+    if age_s > ttl_s:
+        log.debug(
+            "preset recruitment ignored: stale age=%.3fs ttl=%.3fs",
+            age_s,
+            ttl_s,
+        )
+        return False
+    return True
+
+
+def _single_write_transitions_enabled() -> bool:
+    return os.environ.get(_SINGLE_WRITE_TRANSITIONS_ENV, "").lower() in {"1", "true", "yes", "on"}
 
 
 def _read_recruited_transition() -> str | None:
@@ -245,6 +283,9 @@ def process_preset_recruitment(compositor: Any | None = None) -> bool:
     now = time.monotonic()
     if (now - _last_activation_t) < COOLDOWN_S:
         return False
+    if not _recruitment_is_fresh(bias, time.time()):
+        return False
+
     seed = int(last_recruited_ts) ^ os.getpid()
 
     # Programme role bias — soft prior reweighting (audit-3-fix-4).
@@ -267,7 +308,11 @@ def process_preset_recruitment(compositor: Any | None = None) -> bool:
         log.debug("preset_family_selector returned no preset for family=%r", family)
         return False
     preset_name, graph = hit
-    transition_name, transition_fn = _select_transition()
+    if _single_write_transitions_enabled():
+        transition_name = "transition.cut.hard"
+        transition_fn = PRIMITIVES[transition_name]
+    else:
+        transition_name, transition_fn = _select_transition()
     _run_transition_async(transition_name, transition_fn, _last_graph_activated, graph)
     _last_activation_t = now
     _last_family_activated = preset_name
