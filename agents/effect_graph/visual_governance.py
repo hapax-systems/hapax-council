@@ -13,6 +13,7 @@ Perlin noise drift, idle escalation, and silence-as-decay.
 from __future__ import annotations
 
 import math
+import os
 import random
 import time
 
@@ -256,6 +257,35 @@ _GENRE_BIAS: dict[str, list[str]] = {
 }
 
 _DWELL_MIN_S = 30.0  # minimum seconds before atmospheric transition
+_DWELL_MIN_ENV = "HAPAX_ATMOSPHERIC_MIN_DWELL_S"
+_ROTATE_ON_STABLE_ENV = "HAPAX_ATMOSPHERIC_ROTATE_ON_STABLE"
+
+
+def _read_min_dwell_s() -> float:
+    """Return the atmospheric topology dwell floor.
+
+    The default preserves the variety fix that prevents preset monoculture.
+    Incident canaries may raise the value so agency stays active through
+    uniforms and wards while expensive topology swaps happen less often.
+    """
+
+    raw = os.environ.get(_DWELL_MIN_ENV)
+    if raw is None or raw.strip() == "":
+        return _DWELL_MIN_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DWELL_MIN_S
+    return max(0.0, value)
+
+
+def _read_rotate_on_stable() -> bool:
+    """Return whether a stable atmospheric context may rotate by dwell alone."""
+
+    raw = os.environ.get(_ROTATE_ON_STABLE_ENV)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def energy_level_from_activity(desk_activity: str) -> str:
@@ -270,10 +300,23 @@ def energy_level_from_activity(desk_activity: str) -> str:
 class AtmosphericSelector:
     """State machine for atmospheric preset selection."""
 
-    def __init__(self, rng: random.Random | None = None) -> None:
+    def __init__(
+        self,
+        rng: random.Random | None = None,
+        *,
+        dwell_min_s: float | None = None,
+        rotate_on_stable: bool | None = None,
+    ) -> None:
         self._current_preset: str | None = None
         self._current_stance: str = "nominal"
+        self._current_context: tuple[str, str, str] | None = None
         self._last_transition: float = 0.0
+        self._dwell_min_s = (
+            max(0.0, dwell_min_s) if dwell_min_s is not None else _read_min_dwell_s()
+        )
+        self._rotate_on_stable = (
+            rotate_on_stable if rotate_on_stable is not None else _read_rotate_on_stable()
+        )
         # Anti-recency: deterministic-but-non-trivial picker. Tests can pass
         # a seeded RNG; production constructs without args and gets a
         # process-local Random with monotonic-time seed so two co-running
@@ -320,19 +363,24 @@ class AtmosphericSelector:
         if no preset is available.
         """
         now = time.monotonic()
+        genre_lower = genre.lower().strip()
+        context = (stance, energy_level, genre_lower)
+        stable_context = context == self._current_context
 
         # Stance change bypasses dwell
         stance_changed = stance != self._current_stance
         self._current_stance = stance
 
+        if self._current_preset is not None and stable_context and not self._rotate_on_stable:
+            return self._current_preset
+
         # Check dwell time (unless stance changed)
-        if not stance_changed and (now - self._last_transition) < _DWELL_MIN_S:
+        if not stance_changed and (now - self._last_transition) < self._dwell_min_s:
             return self._current_preset
 
         family = self.select_family(stance, energy_level)
 
         # Apply genre bias: prepend genre-preferred presets to the family
-        genre_lower = genre.lower().strip()
         bias: list[str] = []
         for keyword, preferred in _GENRE_BIAS.items():
             if keyword in genre_lower:
@@ -353,6 +401,7 @@ class AtmosphericSelector:
             return self._current_preset
 
         self._current_preset = target
+        self._current_context = (stance, energy_level, genre_lower)
         self._last_transition = now
         return target
 

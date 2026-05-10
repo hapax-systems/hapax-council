@@ -57,6 +57,58 @@ class TestAtmosphericSelector:
         )
         assert second == first  # dwell prevents change
 
+    def test_configured_dwell_floor_controls_topology_rotation(self):
+        from agents.effect_graph.visual_governance import AtmosphericSelector
+
+        sel = AtmosphericSelector(dwell_min_s=120.0)
+        available = {"ghost", "ambient"}
+        first = sel.evaluate(
+            stance="nominal",
+            energy_level="low",
+            available_presets=available,
+        )
+
+        sel._last_transition -= 31.0
+        still_held = sel.evaluate(
+            stance="nominal",
+            energy_level="low",
+            available_presets=available,
+        )
+        assert still_held == first
+
+        sel._last_transition -= 121.0
+        rotated = sel.evaluate(
+            stance="nominal",
+            energy_level="low",
+            available_presets=available,
+        )
+        assert rotated != first
+
+    def test_stable_context_rotation_can_be_held_without_disabling_response(self):
+        from agents.effect_graph.visual_governance import AtmosphericSelector
+
+        sel = AtmosphericSelector(dwell_min_s=0.0, rotate_on_stable=False)
+        first = sel.evaluate(
+            stance="nominal",
+            energy_level="low",
+            available_presets={"ghost", "ambient"},
+        )
+
+        stable = sel.evaluate(
+            stance="nominal",
+            energy_level="low",
+            available_presets={"ghost", "ambient"},
+        )
+        assert stable == first
+
+        changed_context = sel.evaluate(
+            stance="nominal",
+            energy_level="medium",
+            available_presets={"kaleidodream", "nightvision"},
+        )
+        assert changed_context in {"kaleidodream", "nightvision"}
+        assert changed_context != first
+
     def test_stance_change_bypasses_dwell(self):
         from agents.effect_graph.visual_governance import AtmosphericSelector
 
