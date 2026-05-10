@@ -1,84 +1,366 @@
 #!/usr/bin/env bash
-# hapax-lane-idle-watchdog — mechanistic idle-lane detection.
+# hapax-lane-idle-watchdog — pane-content idle detection + auto-redispatch.
 #
-# Discovers active lanes from relay yaml files (the coordination SSOT).
-# Any file in ~/.cache/hapax/relay/ matching {name}.yaml with a
-# "session:" field is a lane. Excludes the RTE lane, alpha (integrator),
-# and non-lane files (rte-tick-*, inflections, onboarding, context).
+# Problem: lanes finish tasks and sit at their prompt producing nothing.
+# Existing monitoring (systemd, tmux has-session, process alive) all say
+# "fine" because the process IS running — it's just not working.
 #
-# For each discovered lane: checks tmux liveness + relay freshness.
-# If alive + stale >30min → cues the RTE to handle it.
+# Solution: capture each lane's pane, detect platform-specific idle state,
+# track how long each lane has been idle, and auto-redispatch from the
+# WSJF queue once the threshold is exceeded.
+#
+# Platforms:
+#   Claude:  idle = "❯" prompt visible + no active tool indicators
+#   Codex:   idle = "gpt-5.5" model line at bottom, NO "Working (" indicator
+#   Gemini:  idle = input box visible (▄/▀ bars) with no streaming output
+#
+# Runs as systemd oneshot (hapax-lane-idle-watchdog.timer, every 2 min).
+# Redispatches at most ONE lane per invocation to avoid thundering herd.
+# Cooldown: 120s per lane between kicks.
 set -euo pipefail
 
-STALE_THRESHOLD_S=1800  # 30 min
-RELAY_DIR="${HOME}/.cache/hapax/relay"
-SEND="${HOME}/.local/bin/hapax-claude-send"
+# ─── Configuration ───────────────────────────────────────────────────────────
+IDLE_THRESHOLD_S="${HAPAX_IDLE_THRESHOLD_S:-600}"       # 10 minutes
+COOLDOWN_S="${HAPAX_IDLE_COOLDOWN_S:-120}"              # 2 min between kicks
+STATE_DIR="${HAPAX_IDLE_STATE_DIR:-/tmp/hapax-lane-idle-state}"
+TASK_ROOT="${HOME}/Documents/Personal/20-projects/hapax-cc-tasks/active"
+REQUEST_ROOT="${HOME}/Documents/Personal/20-projects/hapax-requests/active"
+NTFY_TOPIC="${HAPAX_NTFY_TOPIC:-hapax}"
+NTFY_URL="${HAPAX_NTFY_URL:-http://localhost:8092}"
+CLAUDE_SEND="${HOME}/projects/hapax-council/scripts/hapax-claude-send"
+CODEX_SEND="${HOME}/projects/hapax-council/scripts/hapax-codex-send"
 
-# Find the current RTE so we skip it
-RTE_LANE=""
-if [ -f "${RELAY_DIR}/rte-assignment.yaml" ]; then
-    RTE_LANE=$(grep "^rte:" "${RELAY_DIR}/rte-assignment.yaml" 2>/dev/null | awk '{print $2}')
-fi
+# Skip alpha (integrator, always has operator) and RTE
+SKIP_LANES="${HAPAX_IDLE_SKIP_LANES:-alpha}"
 
+mkdir -p "$STATE_DIR"
 now=$(date +%s)
-stale_lanes=()
-full_lanes=()
 
-# Discover lanes from relay yaml files
-for yaml in "${RELAY_DIR}"/*.yaml; do
-    [ -f "$yaml" ] || continue
-    bn=$(basename "$yaml" .yaml)
+log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) lane-idle: $*"; }
 
-    # Skip non-lane files
-    case "$bn" in
-        rte-*|alpha-*|audit-*|context*|onboarding-*|inflection*) continue ;;
-        alpha) continue ;;  # integrator, not a dispatch target
-    esac
+# ─── Platform detection functions ────────────────────────────────────────────
 
-    # Must have a "session:" field to be a lane
-    grep -q "^session:" "$yaml" 2>/dev/null || continue
+# Claude: idle when "❯" prompt visible in last few lines.
+# When Claude is actively working, output streams and the prompt scrolls out.
+# When idle, ❯ sits in the last 5 lines with status bar below.
+is_claude_idle() {
+    local pane="$1"
+    local tail5
+    tail5=$(echo "$pane" | tail -5)
 
-    lane="$bn"
-
-    # Skip the RTE itself
-    [ "$lane" = "$RTE_LANE" ] && continue
-
-    # Determine tmux session name by convention
-    tmux_name=""
-    case "$lane" in
-        cx-*)     tmux_name="hapax-codex-${lane}" ;;
-        vbe-*)    tmux_name="hapax-vibe-${lane}" ;;
-        iota|kappa|lambda|mu) tmux_name="hapax-gemini-${lane}" ;;
-        antigrav*) tmux_name="hapax-antigrav" ;;
-        *)        tmux_name="hapax-claude-${lane}" ;;
-    esac
-
-    # Skip if tmux not alive
-    tmux has-session -t "${tmux_name}" 2>/dev/null || continue
-
-    # Check freshness
-    mtime=$(stat -c '%Y' "$yaml" 2>/dev/null || echo 0)
-    age=$((now - mtime))
-    [ "$age" -le "$STALE_THRESHOLD_S" ] && continue
-
-    # Check context full
-    pane_text=$(tmux capture-pane -t "${tmux_name}" -p 2>/dev/null | tail -5)
-    if echo "$pane_text" | grep -q "/clear to save"; then
-        full_lanes+=("${lane}(context-full,$((age/60))m)")
-    else
-        stale_lanes+=("${lane}(idle,$((age/60))m)")
+    # Idle: the ❯ prompt is in the last 5 lines
+    if echo "$tail5" | grep -q '❯'; then
+        # Confirm it's not a context-full state
+        if echo "$pane" | tail -10 | grep -q "/clear to save"; then
+            return 1  # context full, not "idle done"
+        fi
+        return 0  # idle at prompt
     fi
+
+    # Permission prompts in the tail — blocked, not idle-done
+    # but also not actively working
+    if echo "$tail5" | grep -qE '(Allow|Deny|bypass permissions on)'; then
+        return 1
+    fi
+
+    return 1  # prompt not visible, assume working
+}
+
+# Codex: idle when model line visible at bottom, no "Working" indicator
+is_codex_idle() {
+    local pane="$1"
+    # Active: "Working (Xm Ys" or "Working (Xs"
+    if echo "$pane" | grep -qE 'Working \([0-9]'; then
+        return 1  # actively working
+    fi
+    # Idle: shows model string at bottom (gpt-5.5/gpt-4.1/o3/etc)
+    if echo "$pane" | tail -5 | grep -qE '(gpt-[0-9]|o[0-9]|codex-).*~/projects/'; then
+        return 0  # idle at prompt
+    fi
+    # Also idle if we see the "› " prompt line without Working above it
+    if echo "$pane" | tail -10 | grep -qE '^› '; then
+        if ! echo "$pane" | grep -qE 'Working \('; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Gemini: idle when input box bars visible and no streaming
+is_gemini_idle() {
+    local pane="$1"
+    # Active: Gemini streams text without the input box delimiter
+    # The input box uses ▄ and ▀ bars as delimiters
+    # When idle, we see the model/workspace status bar at the bottom
+    if echo "$pane" | tail -5 | grep -qE '(gemini-[0-9]|workspace|/model)'; then
+        # Has the status bar visible — check not actively outputting
+        # If last line is the status bar or ▀▀ bar, it's idle
+        local last_content
+        last_content=$(echo "$pane" | tail -3 | head -1)
+        if echo "$last_content" | grep -qE '^[▀ ]+$'; then
+            return 0  # idle
+        fi
+        if echo "$last_content" | grep -qE '(workspace|/model|sandbox)'; then
+            return 0  # idle
+        fi
+    fi
+    # Gemini at the > prompt with no output flowing
+    if echo "$pane" | tail -8 | grep -qE '^ ?> $'; then
+        return 0
+    fi
+    return 1
+}
+
+# ─── Lane discovery ──────────────────────────────────────────────────────────
+
+declare -A LANES  # session_name -> platform
+
+for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | sort); do
+    case "$session" in
+        hapax-claude-*)
+            lane="${session#hapax-claude-}"
+            # Skip configured lanes
+            for skip in $SKIP_LANES; do
+                [ "$lane" = "$skip" ] && continue 2
+            done
+            LANES["$session"]="claude"
+            ;;
+        hapax-codex-*)
+            lane="${session#hapax-codex-}"
+            LANES["$session"]="codex"
+            ;;
+        hapax-gemini-*)
+            lane="${session#hapax-gemini-}"
+            LANES["$session"]="gemini"
+            ;;
+    esac
 done
 
-if [ ${#stale_lanes[@]} -eq 0 ] && [ ${#full_lanes[@]} -eq 0 ]; then
-    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) lane-idle-watchdog: all lanes fresh"
+if [ ${#LANES[@]} -eq 0 ]; then
+    log "no lanes found"
     exit 0
 fi
 
-msg="LANE IDLE WATCHDOG: "
-[ ${#stale_lanes[@]} -gt 0 ] && msg+="STALE: ${stale_lanes[*]}. "
-[ ${#full_lanes[@]} -gt 0 ] && msg+="CONTEXT-FULL: ${full_lanes[*]}. "
-msg+="Dispatch or recycle. Idle lanes = RTE emergency."
+# ─── Idle detection pass ─────────────────────────────────────────────────────
 
-echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) lane-idle-watchdog: cueing ${RTE_LANE:-beta} — ${stale_lanes[*]} ${full_lanes[*]}"
-"$SEND" --session "${RTE_LANE:-beta}" "$msg" 2>/dev/null || echo "WARN: failed to send to RTE"
+declare -A IDLE_LANES=()   # session_name -> idle_duration_s
+active_count=0
+idle_count=0
+
+for session in "${!LANES[@]}"; do
+    platform="${LANES[$session]}"
+
+    # Capture pane content
+    pane_text=$(tmux capture-pane -t "$session" -p -S -30 2>/dev/null) || continue
+
+    # Check if idle based on platform
+    is_idle=false
+    case "$platform" in
+        claude)  is_claude_idle "$pane_text" && is_idle=true ;;
+        codex)   is_codex_idle "$pane_text"  && is_idle=true ;;
+        gemini)  is_gemini_idle "$pane_text" && is_idle=true ;;
+    esac
+
+    state_file="$STATE_DIR/${session}.idle_since"
+
+    if [ "$is_idle" = true ]; then
+        # Record when we first saw this lane idle
+        if [ -f "$state_file" ]; then
+            idle_since=$(cat "$state_file")
+        else
+            echo "$now" > "$state_file"
+            idle_since=$now
+        fi
+        idle_duration=$((now - idle_since))
+        if [ "$idle_duration" -ge "$IDLE_THRESHOLD_S" ]; then
+            IDLE_LANES["$session"]=$idle_duration
+            idle_count=$((idle_count + 1))
+        fi
+    else
+        # Lane is active — clear idle tracking
+        rm -f "$state_file" 2>/dev/null
+        active_count=$((active_count + 1))
+    fi
+done
+
+log "scan: ${#LANES[@]} lanes, $active_count active, $idle_count idle past threshold"
+
+if [ ${#IDLE_LANES[@]} -eq 0 ]; then
+    exit 0
+fi
+
+# ─── Select ONE lane to redispatch (longest idle, past cooldown) ─────────────
+
+best_session=""
+best_idle=0
+
+for session in "${!IDLE_LANES[@]}"; do
+    idle_s="${IDLE_LANES[$session]}"
+
+    # Check cooldown
+    cooldown_file="$STATE_DIR/${session}.last_kick"
+    if [ -f "$cooldown_file" ]; then
+        last_kick=$(cat "$cooldown_file")
+        elapsed=$((now - last_kick))
+        if [ "$elapsed" -lt "$COOLDOWN_S" ]; then
+            continue
+        fi
+    fi
+
+    if [ "$idle_s" -gt "$best_idle" ]; then
+        best_idle=$idle_s
+        best_session=$session
+    fi
+done
+
+if [ -z "$best_session" ]; then
+    log "all idle lanes in cooldown"
+    exit 0
+fi
+
+# ─── Find next task to assign ────────────────────────────────────────────────
+
+# Determine lane name from session
+platform="${LANES[$best_session]}"
+case "$best_session" in
+    hapax-claude-*)  lane="${best_session#hapax-claude-}" ;;
+    hapax-codex-*)   lane="${best_session#hapax-codex-}" ;;
+    hapax-gemini-*)  lane="${best_session#hapax-gemini-}" ;;
+esac
+
+# Check if lane has a claimed task already
+find_claimed_task() {
+    local assignee="$1"
+    if [ -d "$TASK_ROOT" ]; then
+        local match
+        match=$(grep -rl "^assigned_to: ${assignee}$" "$TASK_ROOT/" 2>/dev/null | head -1)
+        if [ -n "$match" ]; then
+            local task_id status
+            task_id=$(basename "$match" .md)
+            status=$(grep -m1 "^status:" "$match" 2>/dev/null | awk '{print $2}')
+            if [ "$status" = "claimed" ] || [ "$status" = "in_progress" ]; then
+                echo "$task_id"
+                return 0
+            fi
+        fi
+    fi
+    return 1
+}
+
+# Find highest-WSJF unassigned + unblocked task
+find_next_wsjf_task() {
+    if [ ! -d "$TASK_ROOT" ]; then
+        return 1
+    fi
+    python3 -c "
+from pathlib import Path
+import re
+
+task_root = Path('$TASK_ROOT')
+best_id = None
+best_wsjf = -1.0
+
+for p in task_root.glob('*.md'):
+    text = p.read_text(errors='replace')
+    status_m = re.search(r'^status:\s*(\S+)', text, re.MULTILINE)
+    if not status_m:
+        continue
+    status = status_m.group(1)
+    if status not in ('offered', 'unassigned', 'ready'):
+        continue
+    assigned_m = re.search(r'^assigned_to:\s*(\S+)', text, re.MULTILINE)
+    if assigned_m and assigned_m.group(1) not in ('unassigned', 'null', 'None', ''):
+        continue
+    blocked_m = re.search(r'^blocked_reason:', text, re.MULTILINE)
+    if blocked_m:
+        continue
+    wsjf_m = re.search(r'^wsjf:\s*([0-9.]+)', text, re.MULTILINE)
+    wsjf = float(wsjf_m.group(1)) if wsjf_m else 0.0
+    if wsjf > best_wsjf:
+        best_wsjf = wsjf
+        best_id = p.stem
+
+if best_id:
+    print(best_id)
+" 2>/dev/null
+}
+
+# Build redispatch message
+dispatch_msg=""
+
+# First: check for already-claimed task
+claimed=$(find_claimed_task "$lane" 2>/dev/null || true)
+if [ -n "$claimed" ]; then
+    dispatch_msg="IDLE WATCHDOG: You have been idle for $((best_idle/60))m with an active task: $claimed. Resume work immediately. Ship a PR and cc-close --pr N after merge."
+else
+    # Find next WSJF task
+    next_task=$(find_next_wsjf_task || true)
+    if [ -n "$next_task" ]; then
+        dispatch_msg="IDLE WATCHDOG: You have been idle for $((best_idle/60))m. Claim and start: cc-claim $next_task. Do the work, ship a PR, then cc-close --pr N."
+    else
+        # No available tasks — check requests
+        if [ -d "$REQUEST_ROOT" ] && [ "$(ls "$REQUEST_ROOT"/*.md 2>/dev/null | wc -l)" -gt 0 ]; then
+            dispatch_msg="IDLE WATCHDOG: You have been idle for $((best_idle/60))m. No offered cc-tasks available. Check ~/Documents/Personal/20-projects/hapax-requests/active/ for request backlog items."
+        else
+            dispatch_msg="IDLE WATCHDOG: You have been idle for $((best_idle/60))m. No tasks available. Run: ls ~/Documents/Personal/20-projects/hapax-cc-tasks/active/ and find the highest-WSJF offered task to claim."
+        fi
+    fi
+fi
+
+# ─── Send the dispatch ───────────────────────────────────────────────────────
+
+send_success=false
+
+case "$platform" in
+    claude)
+        if [ -x "$CLAUDE_SEND" ]; then
+            "$CLAUDE_SEND" --session "$lane" -- "$dispatch_msg" 2>/dev/null && send_success=true
+        else
+            tmux send-keys -t "$best_session" "$dispatch_msg" Enter 2>/dev/null && send_success=true
+        fi
+        ;;
+    codex)
+        if [ -x "$CODEX_SEND" ]; then
+            "$CODEX_SEND" --session "$lane" -- "$dispatch_msg" 2>/dev/null && send_success=true
+        else
+            tmux send-keys -t "$best_session" "$dispatch_msg" Enter 2>/dev/null && send_success=true
+        fi
+        ;;
+    gemini)
+        # Gemini uses direct tmux send-keys
+        tmux send-keys -t "$best_session" "$dispatch_msg" Enter 2>/dev/null && send_success=true
+        ;;
+esac
+
+# Record the kick
+echo "$now" > "$STATE_DIR/${best_session}.last_kick"
+
+if [ "$send_success" = true ]; then
+    log "DISPATCHED $best_session ($platform/$lane): idle ${best_idle}s → ${claimed:-${next_task:-generic}}"
+    # Clear idle state — lane should now be working
+    rm -f "$STATE_DIR/${best_session}.idle_since" 2>/dev/null
+else
+    log "FAILED to dispatch $best_session ($platform/$lane): idle ${best_idle}s"
+    # Alert via ntfy
+    curl -sf -d "Lane idle watchdog: failed to dispatch $lane ($platform) after ${best_idle}s idle" \
+        -H "Title: Lane dispatch failure" \
+        -H "Priority: high" \
+        -H "Tags: warning" \
+        "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+fi
+
+# ─── Summary alert if many lanes idle ────────────────────────────────────────
+
+if [ ${#IDLE_LANES[@]} -ge 3 ]; then
+    idle_summary=""
+    for session in "${!IDLE_LANES[@]}"; do
+        idle_s="${IDLE_LANES[$session]}"
+        idle_summary+="$session(${idle_s}s) "
+    done
+    log "WARNING: ${#IDLE_LANES[@]} lanes idle past threshold: $idle_summary"
+    curl -sf -d "Lane idle watchdog: ${#IDLE_LANES[@]} lanes idle — $idle_summary" \
+        -H "Title: Multiple lanes idle" \
+        -H "Priority: high" \
+        -H "Tags: warning,robot" \
+        "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+fi

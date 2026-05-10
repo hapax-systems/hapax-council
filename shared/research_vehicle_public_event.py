@@ -32,6 +32,8 @@ type EventType = Literal[
     "archive.segment",
     "monetization.review",
     "fanout.decision",
+    "governance.enforcement",
+    "velocity.digest",
 ]
 
 type StateKind = Literal[
@@ -48,6 +50,7 @@ type StateKind = Literal[
     "attribution",
     "monetization_state",
     "health_state",
+    "governance_state",
 ]
 
 type RightsClass = Literal[

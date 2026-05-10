@@ -1,0 +1,10 @@
+[Unit]
+Description=Hapax daily velocity digest timer (23:00 local)
+
+[Timer]
+OnCalendar=*-*-* 23:00:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

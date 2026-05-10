@@ -1,14 +1,16 @@
 [Unit]
-Description=Hapax Lane Idle Watchdog — dispatch work to stale lanes
+Description=Hapax Lane Idle Watchdog — pane-level idle detection + auto-redispatch
 After=network.target
 
 [Service]
 Type=oneshot
 ExecStart=%h/projects/hapax-council/scripts/hapax-lane-idle-watchdog
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=hapax-lane-idle-watchdog
-TimeoutStartSec=60
+TimeoutStartSec=90
 
 [Install]
 WantedBy=default.target

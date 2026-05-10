@@ -57,7 +57,9 @@
         "publication.artifact",
         "archive.segment",
         "monetization.review",
-        "fanout.decision"
+        "fanout.decision",
+        "governance.enforcement",
+        "velocity.digest"
       ],
       "description": "Typed class consumed by public aperture adapters."
     },
@@ -116,7 +118,8 @@
         "archive_artifact",
         "attribution",
         "monetization_state",
-        "health_state"
+        "health_state",
+        "governance_state"
       ],
       "description": "Stable semantic class for rates, policies, replay, and publication contracts."
     },
