@@ -23,6 +23,7 @@ FPS="${HAPAX_V4L2_BRIDGE_FPS:-30}"
 CHECK_ONLY=false
 ALLOW_MISSING_SOCKET=false
 WAIT_SECONDS="${HAPAX_V4L2_BRIDGE_WAIT_SECONDS:-60}"
+FORMAT_GUARD="${HAPAX_V4L2_FORMAT_GUARD_SCRIPT:-$(dirname "$0")/hapax-v4l2-video42-format-guard}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -131,6 +132,18 @@ if ! socket_listening "$SOCKET"; then
 fi
 
 echo "  socket listening after ${waited}s"
+
+if [[ -x "$FORMAT_GUARD" ]]; then
+    "$FORMAT_GUARD" \
+        --device "$DEVICE" \
+        --width "$WIDTH" \
+        --height "$HEIGHT" \
+        --pixelformat NV12 \
+        --fps "$FPS"
+else
+    echo "error: v4l2 format guard missing or not executable: $FORMAT_GUARD" >&2
+    exit 1
+fi
 
 # GStreamer pipeline: shmsrc → queue → videoconvert → capsfilter → v4l2sink
 exec gst-launch-1.0 -e \

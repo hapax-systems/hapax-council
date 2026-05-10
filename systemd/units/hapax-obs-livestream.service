@@ -1,0 +1,22 @@
+[Unit]
+Description=Hapax OBS livestream consumer
+After=hapax-video42-format-guard.service studio-compositor.service
+Requires=hapax-video42-format-guard.service studio-compositor.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/hapax-live-surface-preflight
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-v4l2-video42-format-guard --verify-only
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-live-surface-preflight --require-hls
+ExecStart=/usr/bin/obs --profile LegomenaLive --collection Untitled --scene Scene --startstreaming
+Restart=on-failure
+RestartSec=5s
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+SyslogIdentifier=hapax-obs-livestream
+
+[Install]
+WantedBy=default.target

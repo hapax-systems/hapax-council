@@ -2,12 +2,17 @@
 director-intent activity (R9, 2026-05-02 effect+cam orchestration audit).
 
 Until 2026-05-02 the compositor never switched between its layout
-templates: ``default`` ran unless ``consent-safe`` tripped, and
-``vinyl-focus`` / ``default-legacy`` were reachable only via manual
-override. The audit's §5 U6 finding called this out as latent
-underutilization — every signal needed for a sensible per-tick
-selection (stream_mode transitions, director activity, vinyl-playing
-signal) was already being computed.
+templates: ``default`` ran unless ``consent-safe`` tripped. The audit's
+§5 U6 finding called this out as latent underutilization — every signal
+needed for a sensible per-tick selection (stream_mode transitions,
+director activity, vinyl-playing signal) was already being computed.
+
+The original selector used retired static layouts (``vinyl-focus`` and
+``default-legacy``). Those files were purged in PR #2770 after the
+operator rejected old layouts as static expert-system crutches. Current
+policy keeps responsibility in the active ``default`` surface unless the
+operator-safety gate requires ``consent-safe``; trigger labels still
+record vinyl/deep/react pressure for observability.
 
 This module is pure logic + a thin stateful cooldown wrapper. It
 mirrors the shape of ``objective_hero_switcher`` — callers pass
@@ -24,15 +29,14 @@ Selection policy (priority order):
    caller passes the flag, so the switcher cannot accidentally drop
    the safety layout. The cooldown does NOT apply to consent-safe
    transitions — safety beats aesthetics.
-2. ``vinyl_playing`` → ``vinyl-focus``. The §127 SPLATTRIBUTION
-   signal: when the music IS the show, the spinning platter ward is
-   the centerpiece.
-3. ``director_activity in {"vinyl", "react"}`` → ``vinyl-focus``.
-   Director activity carries a similar music-centerpiece signal even
-   when the deterministic ``vinyl_playing`` flag is False (e.g. live
-   reactive sessions where the platter signal hasn't fired yet).
-4. ``stream_mode == "deep"`` → ``default-legacy`` (less chrome,
-   research-mode focus).
+2. ``vinyl_playing`` → ``default`` with trigger ``vinyl_playing_default``.
+   The §127 SPLATTRIBUTION signal remains observable, but it no longer
+   swaps in a static retired layout.
+3. ``director_activity in {"vinyl", "react"}`` → ``default`` with a
+   director-activity trigger label for the same reason.
+4. ``stream_mode == "deep"`` → ``default`` with trigger
+   ``stream_mode_deep_default``; deep mode must be expressed through
+   current wards/effects, not through ``default-legacy``.
 5. Otherwise → ``default``.
 
 Out of scope (follow-up): wiring the switcher into the director-loop
@@ -53,11 +57,10 @@ from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
 
-# The 4 layout templates the audit referenced. ``mobile.json`` has a
-# different schema and is excluded; ``consent-safe`` is operator-only.
-KNOWN_LAYOUTS: frozenset[str] = frozenset(
-    {"default", "default-legacy", "consent-safe", "vinyl-focus"}
-)
+# The current switcher can only route to the live default surface or the
+# operator-safety layout. Segment-specific layouts are selected by
+# segment_layout_control, not this legacy signal switcher.
+KNOWN_LAYOUTS: frozenset[str] = frozenset({"default", "consent-safe"})
 
 # Audit floor: 8s. Existing cc-task aesthetic guard: 30s. Default to
 # the more conservative value so the surface does not chatter.
@@ -89,11 +92,11 @@ def select_layout(
     if consent_safe_active:
         return LayoutSelection("consent-safe", "consent_safe")
     if vinyl_playing:
-        return LayoutSelection("vinyl-focus", "vinyl_playing")
+        return LayoutSelection("default", "vinyl_playing_default")
     if director_activity in {"vinyl", "react"}:
-        return LayoutSelection("vinyl-focus", f"director_activity_{director_activity}")
+        return LayoutSelection("default", f"director_activity_{director_activity}_default")
     if stream_mode == "deep":
-        return LayoutSelection("default-legacy", "stream_mode_deep")
+        return LayoutSelection("default", "stream_mode_deep_default")
     return LayoutSelection("default", "default_fallback")
 
 

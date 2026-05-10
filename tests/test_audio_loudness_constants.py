@@ -15,8 +15,37 @@ range.
 
 from __future__ import annotations
 
-from shared.audio_loudness import MASTER_INPUT_MAKEUP_DB
+import re
+from pathlib import Path
+
+from shared.audio_loudness import (
+    EGRESS_TRUE_PEAK_DBTP,
+    MASTER_INPUT_MAKEUP_DB,
+    MASTER_LIMITER_RELEASE_MS,
+)
 
 
 def test_master_makeup_within_ladspa_range() -> None:
     assert -20 <= MASTER_INPUT_MAKEUP_DB <= 20
+
+
+def test_broadcast_master_pipewire_config_matches_loudness_constants() -> None:
+    conf = (
+        Path(__file__).resolve().parents[1] / "config" / "pipewire" / "hapax-broadcast-master.conf"
+    )
+    text = "\n".join(
+        line.split("#", 1)[0] for line in conf.read_text(encoding="utf-8").splitlines()
+    )
+
+    controls = {
+        match.group("name"): float(match.group("value"))
+        for match in re.finditer(
+            r'"(?P<name>Input gain \(dB\)|Limit \(dB\)|Release time \(s\))"'
+            r"\s*=\s*(?P<value>-?\d+(?:\.\d+)?)",
+            text,
+        )
+    }
+
+    assert controls["Input gain (dB)"] == MASTER_INPUT_MAKEUP_DB == 16.0
+    assert controls["Limit (dB)"] == EGRESS_TRUE_PEAK_DBTP
+    assert controls["Release time (s)"] == MASTER_LIMITER_RELEASE_MS / 1000.0

@@ -7,6 +7,7 @@ without requiring GStreamer or a v4l2loopback device.
 from __future__ import annotations
 
 import errno
+import os
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -55,6 +56,81 @@ class TestFdManagement:
         p = _make_pipeline(device="/dev/nonexistent_v4l2_device_xyz")
         assert not p._open_fd()
         assert p._fd == -1
+
+    def test_dev_video_open_enforces_format_before_fd_open(self) -> None:
+        p = _make_pipeline(device="/dev/video42", width=1280, height=720)
+        query_result = MagicMock(returncode=0, stdout="", stderr="")
+        completed = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch.dict(os.environ, {"HAPAX_V4L2_CTL": "v4l2-ctl-test"}):
+            with patch(
+                "agents.studio_compositor.v4l2_output_pipeline.subprocess.run",
+                side_effect=[query_result, completed, completed, completed, completed],
+            ) as run:
+                with patch("os.open", return_value=123) as open_fd:
+                    with patch("os.close"):
+                        assert p._open_fd()
+                        p._close_fd()
+
+        commands = [call.args[0] for call in run.call_args_list]
+        assert commands == [
+            (
+                "v4l2-ctl-test",
+                "-d",
+                "/dev/video42",
+                "--get-fmt-video-out",
+                "--get-fmt-video",
+                "--get-ctrl",
+                "keep_format",
+                "--get-parm",
+            ),
+            (
+                "v4l2-ctl-test",
+                "-d",
+                "/dev/video42",
+                "--set-fmt-video-out=width=1280,height=720,pixelformat=NV12",
+            ),
+            (
+                "v4l2-ctl-test",
+                "-d",
+                "/dev/video42",
+                "--set-fmt-video=width=1280,height=720,pixelformat=NV12",
+            ),
+            ("v4l2-ctl-test", "-d", "/dev/video42", "--set-parm=30"),
+            ("v4l2-ctl-test", "-d", "/dev/video42", "-c", "keep_format=1"),
+        ]
+        open_fd.assert_called_once_with("/dev/video42", os.O_WRONLY | os.O_NONBLOCK)
+
+    def test_dev_video_open_skips_set_when_format_already_pinned(self) -> None:
+        p = _make_pipeline(device="/dev/video42", width=1280, height=720)
+        query_result = MagicMock(
+            returncode=0,
+            stderr="",
+            stdout=(
+                "Format Video Capture:\n"
+                "\tWidth/Height      : 1280/720\n"
+                "\tPixel Format      : 'NV12'\n"
+                "Format Video Output:\n"
+                "\tWidth/Height      : 1280/720\n"
+                "\tPixel Format      : 'NV12'\n"
+                "Streaming Parameters Video Capture:\n"
+                "\tFrames per second: 30.000 (30/1)\n"
+                "keep_format: 1\n"
+            ),
+        )
+
+        with patch.dict(os.environ, {"HAPAX_V4L2_CTL": "v4l2-ctl-test"}):
+            with patch(
+                "agents.studio_compositor.v4l2_output_pipeline.subprocess.run",
+                return_value=query_result,
+            ) as run:
+                with patch("os.open", return_value=123) as open_fd:
+                    with patch("os.close"):
+                        assert p._open_fd()
+                        p._close_fd()
+
+        assert len(run.call_args_list) == 1
+        open_fd.assert_called_once_with("/dev/video42", os.O_WRONLY | os.O_NONBLOCK)
 
     def test_close_fd_idempotent(self) -> None:
         p = _make_pipeline()

@@ -36,6 +36,9 @@ AUDIO_CHAIN_UNITS = (
     "hapax-broadcast-audio-health.service",
     "hapax-broadcast-audio-health-producer.service",
 )
+BROADCAST_AUDIO_HEALTH_SOURCE_DROPIN = (
+    UNITS_DIR / "hapax-broadcast-audio-health.service.d" / "90-source-activation-context.conf"
+)
 
 
 def _read_unit(name: str) -> configparser.ConfigParser:
@@ -74,6 +77,19 @@ def test_leak_guard_unit_exists() -> None:
         f"audio chain orders After={LEAK_GUARD_UNIT} but the unit file "
         f"is missing from systemd/units/"
     )
+
+
+def test_broadcast_audio_health_source_dropin_uses_10s_loudness_window() -> None:
+    """Pin the live source-activation override for the health producer.
+
+    The base unit is overridden in production so the service runs from the
+    activated source tree. That override must carry the same 10 s loudness
+    window as the base unit, or live activation silently reverts to the
+    twitchy 5 s incident behavior.
+    """
+    body = BROADCAST_AUDIO_HEALTH_SOURCE_DROPIN.read_text(encoding="utf-8")
+    assert "source-activation/worktree/.venv/bin/python" in body
+    assert "--loudness-duration 10" in body
 
 
 class TestLeakGuardActiveMetric:

@@ -7,6 +7,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 UNITS_DIR = REPO_ROOT / "systemd" / "units"
 STUDIO = UNITS_DIR / "studio-compositor.service"
 BRIDGE = UNITS_DIR / "hapax-v4l2-bridge.service"
+VIDEO42_GUARD = UNITS_DIR / "hapax-video42-format-guard.service"
+OBS = UNITS_DIR / "hapax-obs-livestream.service"
 LAYOUT_MODE_DROPIN = UNITS_DIR / "studio-compositor.service.d" / "layout-mode-persist.conf"
 SOURCE_ROOT = "%h/.cache/hapax/source-activation/worktree"
 
@@ -26,6 +28,22 @@ def _active_unit_lines(path: Path) -> list[str]:
     ]
 
 
+def _raw_keys(path: Path, section: str, key: str) -> list[str]:
+    in_section = False
+    values: list[str] = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            in_section = line == f"[{section}]"
+            continue
+        if not in_section or not line or line.startswith("#") or "=" not in line:
+            continue
+        current_key, _, value = line.partition("=")
+        if current_key.strip() == key:
+            values.append(value.strip())
+    return values
+
+
 def test_studio_compositor_runs_from_activation_worktree() -> None:
     parser = _load_unit(STUDIO)
     assert parser.get("Service", "WorkingDirectory") == SOURCE_ROOT
@@ -40,6 +58,7 @@ def test_studio_compositor_runs_from_activation_worktree() -> None:
     assert execution_lines
     assert all("%h/projects/hapax-council" not in line for line in execution_lines)
     assert any("hapax-compositor-runtime-source-check" in line for line in execution_lines)
+    assert any("hapax-v4l2-video42-format-guard --verify-only" in line for line in lines)
     assert any("v4l2-bridge.sock*" in line and "-delete" in line for line in execution_lines)
     assert any("HAPAX_COMPOSITOR_LAYOUT_PATH=" in line for line in lines)
 
@@ -47,18 +66,44 @@ def test_studio_compositor_runs_from_activation_worktree() -> None:
 def test_studio_compositor_starts_bridge_sidecar() -> None:
     parser = _load_unit(STUDIO)
     wants = parser.get("Unit", "Wants")
+    requires = parser.get("Unit", "Requires")
+    after = parser.get("Unit", "After")
     assert "hapax-v4l2-bridge.service" in wants
+    assert "hapax-video42-format-guard.service" in requires
+    assert "hapax-video42-format-guard.service" in after
+
+
+def test_video42_format_guard_runs_from_activation_worktree() -> None:
+    parser = _load_unit(VIDEO42_GUARD)
+    assert parser.get("Unit", "Before") == (
+        "studio-compositor.service hapax-v4l2-bridge.service hapax-obs-livestream.service"
+    )
+    assert parser.get("Unit", "ConditionPathExists") == "/dev/video42"
+    assert parser.get("Service", "Type") == "oneshot"
+    assert parser.get("Service", "RemainAfterExit") == "yes"
+    assert parser.get("Service", "WorkingDirectory") == SOURCE_ROOT
+    assert parser.get("Service", "ExecStart") == (
+        f"{SOURCE_ROOT}/scripts/hapax-v4l2-video42-format-guard"
+    )
+    assert "hapax-compositor-runtime-source-check" in parser.get("Service", "ExecStartPre")
 
 
 def test_v4l2_bridge_runs_from_activation_worktree_and_is_supervised_by_studio() -> None:
     parser = _load_unit(BRIDGE)
-    assert parser.get("Unit", "Requires") == "studio-compositor.service"
+    assert parser.get("Unit", "Requires") == (
+        "hapax-video42-format-guard.service studio-compositor.service"
+    )
+    assert parser.get("Unit", "After") == (
+        "hapax-video42-format-guard.service studio-compositor.service"
+    )
     assert parser.get("Unit", "BindsTo") == "studio-compositor.service"
     assert parser.get("Unit", "PartOf") == "studio-compositor.service"
     assert parser.get("Unit", "ConditionPathExists") == f"{SOURCE_ROOT}/scripts/hapax-v4l2-bridge"
     assert parser.get("Service", "WorkingDirectory") == SOURCE_ROOT
     assert parser.get("Service", "ExecStart").startswith(f"{SOURCE_ROOT}/scripts/hapax-v4l2-bridge")
-    assert "hapax-compositor-runtime-source-check" in parser.get("Service", "ExecStartPre")
+    exec_start_pre = "\n".join(_raw_keys(BRIDGE, "Service", "ExecStartPre"))
+    assert "hapax-compositor-runtime-source-check" in exec_start_pre
+    assert "hapax-v4l2-video42-format-guard --verify-only" in exec_start_pre
     assert parser.get("Service", "Restart") == "on-failure"
     lines = _active_unit_lines(BRIDGE)
     assert any("HAPAX_V4L2_BRIDGE_WAIT_SECONDS=60" in line for line in lines)
@@ -75,6 +120,29 @@ def test_runtime_source_check_script_exists_and_is_executable() -> None:
     script = REPO_ROOT / "scripts" / "hapax-compositor-runtime-source-check"
     assert script.exists()
     assert script.stat().st_mode & 0o100
+
+
+def test_video42_format_guard_script_exists_and_is_executable() -> None:
+    script = REPO_ROOT / "scripts" / "hapax-v4l2-video42-format-guard"
+    assert script.exists()
+    assert script.stat().st_mode & 0o100
+
+
+def test_obs_livestream_unit_orders_after_guard_and_compositor() -> None:
+    parser = _load_unit(OBS)
+    assert parser.get("Unit", "Requires") == (
+        "hapax-video42-format-guard.service studio-compositor.service"
+    )
+    assert parser.get("Unit", "After") == (
+        "hapax-video42-format-guard.service studio-compositor.service"
+    )
+    assert parser.get("Service", "ExecStart") == (
+        "/usr/bin/obs --profile LegomenaLive --collection Untitled --scene Scene --startstreaming"
+    )
+    exec_start_pre = "\n".join(_raw_keys(OBS, "Service", "ExecStartPre"))
+    assert "hapax-compositor-runtime-source-check" in exec_start_pre
+    assert "hapax-v4l2-video42-format-guard --verify-only" in exec_start_pre
+    assert "hapax-live-surface-preflight --require-hls" in exec_start_pre
 
 
 def test_layout_mode_persistence_runs_from_activation_worktree() -> None:

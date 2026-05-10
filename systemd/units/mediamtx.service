@@ -3,7 +3,6 @@ Description=MediaMTX RTMP relay for studio livestream → YouTube
 Documentation=https://mediamtx.org/
 After=network-online.target hapax-secrets.service
 Wants=network-online.target
-PartOf=studio-compositor.service
 StartLimitBurst=10
 StartLimitIntervalSec=600
 OnFailure=notify-failure@%n.service

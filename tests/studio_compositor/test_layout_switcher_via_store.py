@@ -42,17 +42,15 @@ class _FakeLayoutStore:
 
 
 def test_apply_returns_true_and_sets_active_on_first_switch() -> None:
-    store = _FakeLayoutStore(
-        layouts={"vinyl-focus": object(), "default": object()}, active="default"
-    )
-    switcher = LayoutSwitcher(initial_layout="default")
+    store = _FakeLayoutStore(layouts={"default": object()}, active="garage-door")
+    switcher = LayoutSwitcher(initial_layout="garage-door")
 
     applied = apply_layout_switch_via_store(store, switcher, vinyl_playing=True)
 
     assert applied is True
-    assert store.active == "vinyl-focus"
-    assert store.set_active_calls == ["vinyl-focus"]
-    assert switcher.current_layout == "vinyl-focus"
+    assert store.active == "default"
+    assert store.set_active_calls == ["default"]
+    assert switcher.current_layout == "default"
 
 
 def test_apply_returns_false_when_same_layout() -> None:
@@ -68,45 +66,45 @@ def test_apply_returns_false_when_same_layout() -> None:
 def test_apply_returns_false_when_cooldown_blocks() -> None:
     clock = [1000.0]
     store = _FakeLayoutStore(
-        layouts={"default": object(), "vinyl-focus": object()}, active="default"
+        layouts={"default": object(), "consent-safe": object()}, active="default"
     )
     switcher = LayoutSwitcher(initial_layout="default", clock=lambda: clock[0])
 
-    apply_layout_switch_via_store(store, switcher, vinyl_playing=True)
-    assert switcher.current_layout == "vinyl-focus"
+    apply_layout_switch_via_store(store, switcher, consent_safe_active=True)
+    assert switcher.current_layout == "consent-safe"
 
-    applied = apply_layout_switch_via_store(store, switcher, vinyl_playing=False)
+    applied = apply_layout_switch_via_store(store, switcher)
     assert applied is False
-    assert store.set_active_calls == ["vinyl-focus"]  # still just the first
+    assert store.set_active_calls == ["consent-safe"]  # still just the first
 
 
 def test_apply_consent_safe_bypasses_cooldown() -> None:
     clock = [1000.0]
     store = _FakeLayoutStore(
-        layouts={"vinyl-focus": object(), "consent-safe": object()}, active="default"
+        layouts={"default": object(), "consent-safe": object()}, active="garage-door"
     )
-    switcher = LayoutSwitcher(initial_layout="default", clock=lambda: clock[0])
+    switcher = LayoutSwitcher(initial_layout="garage-door", clock=lambda: clock[0])
 
     apply_layout_switch_via_store(store, switcher, vinyl_playing=True)
-    assert switcher.current_layout == "vinyl-focus"
+    assert switcher.current_layout == "default"
 
     applied = apply_layout_switch_via_store(store, switcher, consent_safe_active=True)
     assert applied is True
     assert switcher.current_layout == "consent-safe"
-    assert store.set_active_calls == ["vinyl-focus", "consent-safe"]
+    assert store.set_active_calls == ["default", "consent-safe"]
 
 
 def test_apply_records_switch_via_record_switch() -> None:
     clock = [1000.0]
-    store = _FakeLayoutStore(layouts={"vinyl-focus": object()}, active="default")
-    switcher = LayoutSwitcher(initial_layout="default", clock=lambda: clock[0])
+    store = _FakeLayoutStore(layouts={"default": object()}, active="garage-door")
+    switcher = LayoutSwitcher(initial_layout="garage-door", clock=lambda: clock[0])
 
     apply_layout_switch_via_store(store, switcher, vinyl_playing=True, now=1000.0)
 
     clock[0] = 1029.0
-    assert switcher.should_switch(LayoutSelection("default", "default_fallback")) is False
+    assert switcher.should_switch(LayoutSelection("garage-door", "test_back_to_boot")) is False
     clock[0] = 1031.0
-    assert switcher.should_switch(LayoutSelection("default", "default_fallback")) is True
+    assert switcher.should_switch(LayoutSelection("garage-door", "test_back_to_boot")) is True
 
 
 # ── failure modes ───────────────────────────────────────────────────
@@ -114,28 +112,28 @@ def test_apply_records_switch_via_record_switch() -> None:
 
 def test_apply_raises_keyerror_when_layout_not_loaded() -> None:
     """KeyError propagates so the caller's failure policy stays explicit."""
-    store = _FakeLayoutStore(layouts={"default": object()}, active="default")
-    switcher = LayoutSwitcher(initial_layout="default")
+    store = _FakeLayoutStore(layouts={}, active="garage-door")
+    switcher = LayoutSwitcher(initial_layout="garage-door")
 
     try:
         apply_layout_switch_via_store(store, switcher, vinyl_playing=True)
     except KeyError as exc:
-        assert "vinyl-focus" in str(exc)
+        assert "default" in str(exc)
     else:
         raise AssertionError("expected KeyError for missing layout")
     assert store.set_active_calls == []
-    assert switcher.current_layout == "default"
+    assert switcher.current_layout == "garage-door"
 
 
 # ── stream_mode integration ─────────────────────────────────────────
 
 
-def test_apply_picks_default_legacy_for_stream_mode_deep() -> None:
-    store = _FakeLayoutStore(layouts={"default-legacy": object()}, active="default")
-    switcher = LayoutSwitcher(initial_layout="default")
+def test_apply_stream_mode_deep_returns_default_not_retired_layout() -> None:
+    store = _FakeLayoutStore(layouts={"default": object()}, active="garage-door")
+    switcher = LayoutSwitcher(initial_layout="garage-door")
 
     applied = apply_layout_switch_via_store(store, switcher, stream_mode="deep")
 
     assert applied is True
-    assert switcher.current_layout == "default-legacy"
-    assert store.active == "default-legacy"
+    assert switcher.current_layout == "default"
+    assert store.active == "default"

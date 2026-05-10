@@ -112,7 +112,7 @@ POSTURE_TO_REQUIRED_WARD: Mapping[LayoutPosture, str] = {
 }
 
 BOUNDED_LAYOUTS: frozenset[str] = frozenset(POSTURE_TO_LAYOUT.values())
-DEFAULT_STATIC_LAYOUTS: frozenset[str] = frozenset({"default", "default-legacy", "garage-door"})
+DEFAULT_STATIC_LAYOUTS: frozenset[str] = frozenset({"default", "garage-door"})
 SAFETY_STATES: frozenset[str] = frozenset(
     {"consent_safe_active", "consent-safe", "consent_safe", "safety_fallback"}
 )

@@ -187,7 +187,10 @@ def test_safe_state_contains_contract_shape(tmp_path: Path) -> None:
     assert health.evidence["private_routes"]["status"] == "pass"
     assert health.evidence["broadcast_forward"]["status"] == "pass"
     assert health.evidence["voice_output_witness"]["status"] == "missing"
+    assert health.evidence["loudness"]["stage"] == "hapax-broadcast-normalized"
     assert health.evidence["loudness"]["target_lufs_i"] == -14.0
+    assert health.evidence["loudness"]["target_min_lufs_i"] == -16.0
+    assert health.evidence["loudness"]["target_max_lufs_i"] == -12.0
     assert health.evidence["loudness"]["target_true_peak_dbtp"] == -1.0
     assert health.evidence["egress_binding"]["bound"] is True
     assert health.evidence["egress_binding"]["expected_source"] == "hapax-obs-broadcast-remap"
@@ -417,7 +420,7 @@ def test_voice_output_preserves_playback_evidence_after_drop_record(tmp_path: Pa
     assert witness["last_successful_playback"]["completed"] is True
 
 
-def test_loudness_failure_blocks(tmp_path: Path) -> None:
+def test_loudness_under_target_warns(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     _write_clear_runtime_states(paths)
 
@@ -430,6 +433,31 @@ def test_loudness_failure_blocks(tmp_path: Path) -> None:
                     0,
                     """
                       I:         -20.0 LUFS
+                      Peak:       -1.0 dBFS
+                    """,
+                )
+            }
+        ),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is True
+    assert "loudness_under_target" in {w.code for w in health.warnings}
+
+
+def test_loudness_over_target_blocks(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _write_clear_runtime_states(paths)
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(
+            {
+                "scripts/audio-measure.sh": CommandResult(
+                    0,
+                    """
+                      I:          -9.1 LUFS
                       Peak:       -1.0 dBFS
                     """,
                 )
@@ -670,6 +698,106 @@ def test_audio_ducker_fail_open_blocks(tmp_path: Path) -> None:
     assert health.safe is False
     assert "audio_ducker_fail_open" in _codes(health)
     assert health.evidence["audio_ducker"]["blockers"] == ["rode_capture_stale:820ms"]
+
+
+def test_audio_ducker_idle_retired_readback_is_non_blocking(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    readback_error = "duck_l/r Gain 1 not present in PipeWire Props"
+    _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
+    _write_json(paths.egress_loopback_witness, _live_loopback_witness())
+    _write_json(
+        paths.audio_ducker_state,
+        _audio_ducker_state(
+            fail_open=True,
+            trigger_cause="none",
+            blockers=[
+                f"music_readback_error:{readback_error}",
+                f"tts_readback_error:{readback_error}",
+            ],
+            actual_music_duck_gain=None,
+            actual_tts_duck_gain=None,
+            music_duck={
+                "commanded_gain": 1.0,
+                "actual_gain": None,
+                "last_readback_error": readback_error,
+                "last_write_error": None,
+            },
+            tts_duck={
+                "commanded_gain": 1.0,
+                "actual_gain": None,
+                "last_readback_error": readback_error,
+                "last_write_error": None,
+            },
+        ),
+    )
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is True
+    assert "audio_ducker_fail_open" not in _codes(health)
+    assert "audio_ducker_music_readback_missing" not in _codes(health)
+    assert "audio_ducker_tts_readback_missing" not in _codes(health)
+    assert health.evidence["audio_ducker"]["raw_fail_open"] is True
+    assert health.evidence["audio_ducker"]["fail_open"] is False
+    assert set(health.evidence["audio_ducker"]["readback_non_blocking"]) == {
+        "music",
+        "tts",
+    }
+
+
+def test_audio_ducker_idle_retired_readback_does_not_mask_real_blockers(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    readback_error = "duck_l/r Gain 1 not present in PipeWire Props"
+    _write_json(paths.audio_safety_state, {"status": "clear", "breach_active": False})
+    _write_json(paths.egress_loopback_witness, _live_loopback_witness())
+    _write_json(
+        paths.audio_ducker_state,
+        _audio_ducker_state(
+            fail_open=True,
+            trigger_cause="none",
+            blockers=[
+                f"music_readback_error:{readback_error}",
+                f"tts_readback_error:{readback_error}",
+                "rode_capture_stale:820ms",
+            ],
+            actual_music_duck_gain=None,
+            actual_tts_duck_gain=None,
+            music_duck={
+                "commanded_gain": 1.0,
+                "actual_gain": None,
+                "last_readback_error": readback_error,
+                "last_write_error": None,
+            },
+            tts_duck={
+                "commanded_gain": 1.0,
+                "actual_gain": None,
+                "last_readback_error": readback_error,
+                "last_write_error": None,
+            },
+        ),
+    )
+
+    health = resolve_broadcast_audio_health(
+        paths=paths,
+        now=NOW,
+        command_runner=_runner(),
+        service_status_probe=_service_probe(),
+    )
+
+    assert health.safe is False
+    assert "audio_ducker_fail_open" in _codes(health)
+    assert health.evidence["audio_ducker"]["fail_open"] is True
+    assert health.evidence["audio_ducker"]["non_blocking_readback_blockers"] == [
+        f"music_readback_error:{readback_error}",
+        f"tts_readback_error:{readback_error}",
+    ]
 
 
 def test_audio_ducker_readback_mismatch_blocks(tmp_path: Path) -> None:

@@ -24,6 +24,8 @@ from __future__ import annotations
 import errno
 import logging
 import os
+import re
+import subprocess
 import threading
 import time
 from collections.abc import Callable
@@ -39,6 +41,8 @@ INTERPIPE_CHANNEL = "compositor_v4l2_out"
 _RECOVERABLE_ERRNOS = frozenset({errno.EAGAIN, errno.EIO, errno.ENODEV, errno.ENXIO})
 _FD_REOPEN_DELAY_S = 0.1
 _DEFAULT_PROOF_SNAPSHOT_INTERVAL_S = 1.0
+_V4L2_FORMAT_GUARD_ENV = "HAPAX_V4L2_FORMAT_GUARD"
+_V4L2_CTL_ENV = "HAPAX_V4L2_CTL"
 
 
 def _set_optional_property(element: Any, name: str, value: Any) -> None:
@@ -46,6 +50,104 @@ def _set_optional_property(element: Any, name: str, value: Any) -> None:
         element.set_property(name, value)
     except Exception:
         log.debug("v4l2 interpipesrc property not supported: %s", name, exc_info=True)
+
+
+def _v4l2_output_format_already_pinned(
+    *,
+    v4l2_ctl: str,
+    device: str,
+    width: int,
+    height: int,
+    fps: int,
+    pixelformat: str,
+) -> bool:
+    try:
+        result = subprocess.run(
+            (
+                v4l2_ctl,
+                "-d",
+                device,
+                "--get-fmt-video-out",
+                "--get-fmt-video",
+                "--get-ctrl",
+                "keep_format",
+                "--get-parm",
+            ),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        log.debug("v4l2 format guard query failed for %s", device, exc_info=True)
+        return False
+    if result.returncode != 0:
+        return False
+    output = result.stdout
+    expected_size = f"Width/Height      : {width}/{height}"
+    expected_pixfmt = f"Pixel Format      : '{pixelformat}'"
+    fps_match = re.search(r"Frames per second:\s*([0-9]+(?:\.[0-9]+)?)", output)
+    fps_ok = fps_match is not None and abs(float(fps_match.group(1)) - float(fps)) < 0.01
+    return (
+        output.count(expected_size) >= 2
+        and output.count(expected_pixfmt) >= 2
+        and "keep_format: 1" in output
+        and fps_ok
+    )
+
+
+def _enforce_v4l2_output_format(
+    *,
+    device: str,
+    width: int,
+    height: int,
+    fps: int,
+    pixelformat: str = "NV12",
+) -> bool:
+    if os.environ.get(_V4L2_FORMAT_GUARD_ENV, "1") == "0":
+        return True
+    if not device.startswith("/dev/"):
+        return True
+
+    v4l2_ctl = os.environ.get(_V4L2_CTL_ENV, "v4l2-ctl")
+    if _v4l2_output_format_already_pinned(
+        v4l2_ctl=v4l2_ctl,
+        device=device,
+        width=width,
+        height=height,
+        fps=fps,
+        pixelformat=pixelformat,
+    ):
+        return True
+
+    fmt = f"width={width},height={height},pixelformat={pixelformat}"
+    commands = (
+        (v4l2_ctl, "-d", device, f"--set-fmt-video-out={fmt}"),
+        (v4l2_ctl, "-d", device, f"--set-fmt-video={fmt}"),
+        (v4l2_ctl, "-d", device, f"--set-parm={fps}"),
+        (v4l2_ctl, "-d", device, "-c", "keep_format=1"),
+    )
+    for command in commands:
+        try:
+            result = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log.error("v4l2 format guard failed before opening %s: %s", device, exc)
+            return False
+        if result.returncode != 0:
+            log.error(
+                "v4l2 format guard command failed before opening %s: %s stderr=%s",
+                device,
+                " ".join(command),
+                result.stderr.strip(),
+            )
+            return False
+    return True
 
 
 class V4l2OutputPipeline:
@@ -111,6 +213,13 @@ class V4l2OutputPipeline:
         with self._fd_lock:
             if self._fd >= 0:
                 return True
+            if not _enforce_v4l2_output_format(
+                device=self._device,
+                width=self._width,
+                height=self._height,
+                fps=self._fps,
+            ):
+                return False
             try:
                 self._fd = os.open(self._device, os.O_WRONLY | os.O_NONBLOCK)
                 log.info("Opened v4l2 device fd=%d: %s", self._fd, self._device)

@@ -27,10 +27,10 @@ falling back to ``brio-synths.jpg`` when the classification file is
 absent.
 
 Registered in ``cairo_sources/__init__.py`` under the class name
-``VinylPlatterCairoSource``. Not added to the default layout — the
-operator declares a "vinyl focus" layout (see
-``config/compositor-layouts/examples/vinyl-focus.json``) when the ward
-should appear.
+``VinylPlatterCairoSource``. The retired ``vinyl-focus`` layout was
+purged in PR #2770; future platter presentation should be owned by the
+current layout/effect responsibility system, not by reviving that static
+layout file.
 """
 
 from __future__ import annotations

@@ -129,6 +129,15 @@ with history.open("a", encoding="utf-8") as fh:
 PY
 }
 
+if [[ "${HAPAX_SOURCE_ACTIVATE_HOLD:-0}" == "1" || -f "$STATE_DIR/HOLD" ]]; then
+    if [[ -e "$ACTIVE_WORKTREE/.git" ]]; then
+        active_head="$(git -C "$ACTIVE_WORKTREE" rev-parse HEAD 2>/dev/null || echo unknown)"
+    fi
+    write_receipt "held" "skipped_hold" "0" "source activation hold active"
+    echo "hapax-source-activate: held before fetch/reset/symlink sweep/deploy" >&2
+    exit 0
+fi
+
 canonical_snapshot
 
 if [[ ! -d "$CANONICAL_REPO/.git" && ! -f "$CANONICAL_REPO/.git" ]]; then

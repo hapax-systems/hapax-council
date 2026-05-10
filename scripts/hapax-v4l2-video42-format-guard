@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# hapax-v4l2-video42-format-guard — lock /dev/video42 to compositor egress caps.
+#
+# The OBS consumer can otherwise renegotiate v4l2loopback to a smaller/default
+# format before the compositor writer opens it. The only safe order is:
+# set output/capture caps, set frame interval, enable keep_format, then verify.
+
+set -euo pipefail
+
+DEVICE="${HAPAX_V4L2_VIDEO42_DEVICE:-/dev/video42}"
+WIDTH="${HAPAX_V4L2_VIDEO42_WIDTH:-1280}"
+HEIGHT="${HAPAX_V4L2_VIDEO42_HEIGHT:-720}"
+PIXEL_FORMAT="${HAPAX_V4L2_VIDEO42_PIXEL_FORMAT:-NV12}"
+FPS="${HAPAX_V4L2_VIDEO42_FPS:-30}"
+V4L2_CTL="${HAPAX_V4L2_CTL:-v4l2-ctl}"
+VERIFY_ONLY=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --device|--width|--height|--pixelformat|--fps)
+            [[ $# -ge 2 && "${2:-}" != --* ]] || {
+                echo "hapax-v4l2-video42-format-guard: $1 requires a value" >&2
+                exit 2
+            }
+            case "$1" in
+                --device) DEVICE="$2" ;;
+                --width) WIDTH="$2" ;;
+                --height) HEIGHT="$2" ;;
+                --pixelformat) PIXEL_FORMAT="$2" ;;
+                --fps) FPS="$2" ;;
+            esac
+            shift 2
+            ;;
+        --verify-only) VERIFY_ONLY=1; shift ;;
+        *) echo "hapax-v4l2-video42-format-guard: unknown arg: $1" >&2; exit 2 ;;
+    esac
+done
+
+run_v4l2() {
+    "$V4L2_CTL" "$@"
+}
+
+fail() {
+    echo "hapax-v4l2-video42-format-guard: FAIL: $*" >&2
+    exit 1
+}
+
+[[ "$WIDTH" =~ ^[0-9]+$ ]] || fail "invalid width: $WIDTH"
+[[ "$HEIGHT" =~ ^[0-9]+$ ]] || fail "invalid height: $HEIGHT"
+[[ "$FPS" =~ ^[0-9]+$ ]] || fail "invalid fps: $FPS"
+[[ "$PIXEL_FORMAT" =~ ^[A-Z0-9_]+$ ]] || fail "invalid pixel format: $PIXEL_FORMAT"
+[[ -e "$DEVICE" ]] || fail "device $DEVICE is missing"
+
+if [[ "$VERIFY_ONLY" != "1" ]]; then
+    fmt="width=${WIDTH},height=${HEIGHT},pixelformat=${PIXEL_FORMAT}"
+    run_v4l2 -d "$DEVICE" --set-fmt-video-out="$fmt"
+    run_v4l2 -d "$DEVICE" --set-fmt-video="$fmt"
+    run_v4l2 -d "$DEVICE" --set-parm="$FPS"
+    run_v4l2 -d "$DEVICE" -c keep_format=1
+fi
+
+format_out="$(run_v4l2 -d "$DEVICE" --get-fmt-video-out 2>&1)"
+format_capture="$(run_v4l2 -d "$DEVICE" --get-fmt-video 2>&1)"
+keep_format="$(run_v4l2 -d "$DEVICE" --get-ctrl keep_format 2>&1)"
+stream_parm="$(run_v4l2 -d "$DEVICE" --get-parm 2>&1 || true)"
+
+combined_formats="${format_out}
+${format_capture}"
+
+format_count="$(
+    grep -Ec "Width/Height[[:space:]]*:[[:space:]]*${WIDTH}/${HEIGHT}" <<<"$combined_formats" || true
+)"
+pix_count="$(
+    grep -Ec "Pixel Format[[:space:]]*:[[:space:]]*'${PIXEL_FORMAT}'" <<<"$combined_formats" || true
+)"
+
+[[ "$format_count" -ge 2 ]] || fail "expected both capture/output ${WIDTH}x${HEIGHT}; got: ${combined_formats}"
+[[ "$pix_count" -ge 2 ]] || fail "expected both capture/output ${PIXEL_FORMAT}; got: ${combined_formats}"
+grep -Eq 'keep_format[[:space:]]*:[[:space:]]*1|keep_format[[:space:]]+1|value=1' <<<"$keep_format" \
+    || fail "keep_format is not 1; got: ${keep_format}"
+
+if [[ -n "$stream_parm" ]] && grep -Eq 'Frames per second|timeperframe' <<<"$stream_parm"; then
+    grep -Eq "Frames per second[[:space:]]*:[[:space:]]*${FPS}(\\.0+)?|${FPS}\\.0+ fps|timeperframe.*1/${FPS}" <<<"$stream_parm" \
+        || fail "expected ${FPS} fps; got: ${stream_parm}"
+fi
+
+echo "hapax-v4l2-video42-format-guard: OK ${DEVICE} ${WIDTH}x${HEIGHT} ${PIXEL_FORMAT} keep_format=1 fps=${FPS}"

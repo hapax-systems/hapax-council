@@ -150,9 +150,8 @@ def _register_builtins() -> None:
     # Epic 2 Phase D (2026-04-17) — operator-always-here audience framing.
     register("WhosHereCairoSource", WhosHereCairoSource)
     # HOMAGE follow-on #159 (2026-04-18) — vinyl-platter ward. Registered
-    # but NOT added to the default layout; operator declares a vinyl-focus
-    # layout (see config/compositor-layouts/examples/vinyl-focus.json)
-    # when the platter ward should appear on the stream.
+    # for current/future layouts; the retired vinyl-focus layout was
+    # purged in PR #2770 and must not be recreated as a static crutch.
     from agents.studio_compositor.vinyl_platter import VinylPlatterCairoSource
 
     register("VinylPlatterCairoSource", VinylPlatterCairoSource)

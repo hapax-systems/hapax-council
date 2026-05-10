@@ -48,7 +48,7 @@ class TestProgrammeBannerInLayout:
         names = {src.id for src in layout.sources}
         assert "programme_banner" in names, (
             f"layout {layout_path.name} missing programme_banner source; "
-            "u6-periodic-tick-driver requires the banner across ALL 4 known layouts"
+            "u6-periodic-tick-driver requires the banner across live default/safety layouts"
         )
 
     def test_has_programme_banner_surface(self, layout_path: Path) -> None:
@@ -104,5 +104,5 @@ def test_garage_door_layout_unchanged() -> None:
     names = {src.id for src in layout.sources}
     # Affirmative absence — garage-door is a different concept (full-camera
     # layout for live-stream debug); banner placement is intentionally
-    # scoped to the 4 KNOWN_LAYOUTS the switcher routes between.
+    # scoped to the live default/safety layouts the switcher routes between.
     assert "programme_banner" not in names

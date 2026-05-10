@@ -41,6 +41,17 @@ class TestLayoutStoreInit:
         store = LayoutStore(layout_dir=tmp_path)
         assert store.list_available() == ["valid"]
 
+    def test_skips_mobile_json_because_it_uses_portrait_schema(self, tmp_path, caplog):
+        _write_minimal_layout(tmp_path / "valid.json", name="valid")
+        (tmp_path / "mobile.json").write_text(
+            '{"version": 1, "target_width": 1080, "target_height": 1920}'
+        )
+        with caplog.at_level("WARNING"):
+            store = LayoutStore(layout_dir=tmp_path)
+
+        assert store.list_available() == ["valid"]
+        assert "mobile.json" not in caplog.text
+
     def test_skips_invalid_json(self, tmp_path, caplog):
         _write_minimal_layout(tmp_path / "good.json", name="good")
         (tmp_path / "broken.json").write_text("{not valid json")
