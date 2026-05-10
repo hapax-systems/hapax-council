@@ -348,6 +348,7 @@ def compute_tile_layout(
             - "balanced" — grid layout, honors CameraSpec.hero flag (default)
             - "hero/{role}" — named camera dominant, others stacked right
             - "packed/{role}" — named camera as hero in packed constellation
+            - "follow/{role}" — named camera as salience inside balanced posture
             - "sierpinski" — 3 cameras in triangle corners, rest hidden
             - "packed" — hero upper-left + 2x2 grid + stacked right column
             - "forcefield" — Arnheim force-field, cameras as mass-points
@@ -360,6 +361,10 @@ def compute_tile_layout(
         hero_role = mode[len("packed/") :]
         repinned = [c.model_copy(update={"hero": (c.role == hero_role)}) for c in cameras]
         return _packed_layout(repinned, canvas_w, canvas_h)
+    if mode.startswith("follow/"):
+        hero_role = mode[len("follow/") :]
+        repinned = [c.model_copy(update={"hero": (c.role == hero_role)}) for c in cameras]
+        return _balanced_layout(repinned, canvas_w, canvas_h)
     if mode == "sierpinski":
         return _sierpinski_layout(cameras, canvas_w, canvas_h)
     if mode.startswith("hero/"):
@@ -367,3 +372,25 @@ def compute_tile_layout(
         return _hero_layout(cameras, hero_role, canvas_w, canvas_h)
     # Default: balanced
     return _balanced_layout(cameras, canvas_w, canvas_h)
+
+
+def compute_safe_tile_layout(
+    cameras: list[CameraSpec],
+    canvas_w: int = OUTPUT_WIDTH,
+    canvas_h: int = OUTPUT_HEIGHT,
+    mode: str = "balanced",
+) -> dict[str, TileRect]:
+    """Compute a selectable tile layout and enforce the live safety contract."""
+
+    from .layout_safety import require_safe_tile_layout, validate_tile_layout
+
+    layout = compute_tile_layout(cameras, canvas_w, canvas_h, mode=mode)
+    report = validate_tile_layout(
+        cameras,
+        layout,
+        mode=mode,
+        canvas_w=canvas_w,
+        canvas_h=canvas_h,
+    )
+    require_safe_tile_layout(report)
+    return layout

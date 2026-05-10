@@ -7,6 +7,9 @@ vulture cannot see. Do not use this as a baseline for ordinary dead code.
 """
 
 from agents.payment_processors.x402.models import Accept, SettlementResponse
+from agents.studio_compositor.final_frame_classifier import (
+    classify_final_frame as _classify_final_frame,
+)
 from agents.visual_pool.repository import VisualPoolSidecar
 from logos.api.routes.studio import studio_audio_safe_for_broadcast, studio_egress_state
 from shared.aperture_registry import (
@@ -241,6 +244,7 @@ _render_source_packet_inquiry_seed
 _assess_live_surface
 _parse_prometheus_scalars
 _snapshot_from_prometheus
+_classify_final_frame
 
 # Pydantic v2 validators for the programme live-prior contract. They are
 # invoked by model validation, not by direct static calls.

@@ -70,6 +70,16 @@ class TestLayoutStoreInit:
             store = LayoutStore(layout_dir=tmp_path)
         assert store.list_available() == ["good"]
 
+    def test_skips_non_layout_json_without_warning(self, tmp_path, caplog):
+        _write_minimal_layout(tmp_path / "good.json", name="good")
+        (tmp_path / "mobile.json").write_text(
+            '{"version": 1, "target_width": 1080, "target_height": 1920}'
+        )
+        with caplog.at_level("WARNING"):
+            store = LayoutStore(layout_dir=tmp_path)
+        assert store.list_available() == ["good"]
+        assert not any("Failed to load layout" in r.message for r in caplog.records)
+
     def test_empty_directory(self, tmp_path):
         store = LayoutStore(layout_dir=tmp_path)
         assert store.list_available() == []

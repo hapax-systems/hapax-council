@@ -12,7 +12,7 @@ from . import metrics as _metrics
 from .config import PERCEPTION_STATE_PATH, SNAPSHOT_DIR
 from .effects import try_graph_preset
 from .follow_mode import FollowModeController, read_follow_mode_recommendation
-from .layout import compute_tile_layout
+from .layout import compute_safe_tile_layout
 from .models import OverlayData
 from .profiles import apply_camera_profile, evaluate_active_profile
 
@@ -133,7 +133,11 @@ def apply_layout_mode(compositor: Any, mode: str) -> None:
 
     canvas_w = compositor.config.output_width
     canvas_h = compositor.config.output_height
-    new_layout = compute_tile_layout(cameras, canvas_w, canvas_h, mode=mode)
+    try:
+        new_layout = compute_safe_tile_layout(cameras, canvas_w, canvas_h, mode=mode)
+    except Exception as exc:
+        log.warning("Layout mode %s rejected by live safety contract: %s", mode, exc)
+        return
 
     applied = 0
     for role, tile in new_layout.items():
@@ -558,7 +562,11 @@ def state_reader_loop(compositor: Any) -> None:
                 override_source = "follow_mode"
         if override_camera_role is not None:
             try:
-                requested_mode = f"packed/{override_camera_role}"
+                requested_mode = (
+                    f"packed/{override_camera_role}"
+                    if override_source == "manual"
+                    else f"follow/{override_camera_role}"
+                )
                 current_mode = getattr(compositor, "_layout_mode", "balanced")
                 last_applied = getattr(compositor, "_hero_override_last_applied_set_at", 0.0)
                 # Min-hold debounce: only swap if (a) it's been ≥30s since the last
@@ -589,7 +597,9 @@ def state_reader_loop(compositor: Any) -> None:
                 ):
                     previous_role = ""
                     if isinstance(current_mode, str) and (
-                        current_mode.startswith("packed/") or current_mode.startswith("hero/")
+                        current_mode.startswith("packed/")
+                        or current_mode.startswith("hero/")
+                        or current_mode.startswith("follow/")
                     ):
                         previous_role = current_mode.split("/", 1)[1]
                     compositor._hero_override_last_applied_set_at = override_set_at

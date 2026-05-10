@@ -9,7 +9,12 @@ from typing import Any
 
 from .cameras import add_camera_branch
 from .cuda_caps import cuda_output_caps_string
-from .layout import compute_tile_layout
+from .layout import compute_safe_tile_layout
+from .layout_safety import (
+    BASE_COMPOSITOR_BACKGROUND_PROPERTY_VALUE,
+    BASE_COMPOSITOR_MATERIAL,
+    resolve_startup_layout_mode,
+)
 from .pipeline_manager import PipelineManager
 from .recording import add_hls_branch
 from .smooth_delay import add_smooth_delay_branch
@@ -33,7 +38,8 @@ def init_gstreamer() -> tuple[Any, Any]:
 def _pin_black_background(comp_element: Any) -> None:
     """Prefer black compositor fill instead of checkerboard/transparent defaults."""
     try:
-        comp_element.set_property("background", 1)
+        comp_element.set_property("background", BASE_COMPOSITOR_BACKGROUND_PROPERTY_VALUE)
+        log.info("compositor background material pinned: %s", BASE_COMPOSITOR_MATERIAL)
     except Exception:
         log.debug("compositor background property not supported", exc_info=True)
 
@@ -147,10 +153,26 @@ def build_pipeline(compositor: Any) -> Any:
     Gst = compositor._Gst
 
     pipeline = Gst.Pipeline.new("studio-compositor")
-    layout = compute_tile_layout(
-        compositor.config.cameras, compositor.config.output_width, compositor.config.output_height
-    )
+    startup_mode = resolve_startup_layout_mode()
+    if compositor.config.cameras:
+        layout = compute_safe_tile_layout(
+            compositor.config.cameras,
+            compositor.config.output_width,
+            compositor.config.output_height,
+            mode=startup_mode.mode,
+        )
+    else:
+        layout = {}
+        log.warning("No cameras configured; startup layout safety has no visible regions to check")
     compositor._tile_layout = layout
+    compositor._initial_layout_mode = startup_mode.mode
+    compositor._layout_mode = startup_mode.mode
+    log.info(
+        "Startup layout mode: %s (source=%s%s)",
+        startup_mode.mode,
+        startup_mode.source,
+        f", path={startup_mode.path}" if startup_mode.path is not None else "",
+    )
 
     force_cpu = os.environ.get("HAPAX_COMPOSITOR_FORCE_CPU") == "1"
     # Try cudacompositor first, fall back to CPU compositor. During live

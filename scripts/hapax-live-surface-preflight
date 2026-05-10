@@ -16,6 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from agents.studio_compositor.final_frame_classifier import classify_final_frame
 from shared.live_surface_truth import (
     LiveSurfaceState,
     assess_live_surface,
@@ -157,6 +158,10 @@ def main() -> int:
     parser.add_argument("--max-obs-screenshot-age-seconds", type=float)
     parser.add_argument("--max-director-silence-seconds", type=float, default=180.0)
     parser.add_argument(
+        "--final-frame-image",
+        help="final egress proof image to classify for black/checkerboard fallthrough",
+    )
+    parser.add_argument(
         "--hls-playlist",
         default=str(Path.home() / ".cache" / "hapax-compositor" / "hls" / "stream.m3u8"),
     )
@@ -263,6 +268,23 @@ def main() -> int:
         list(assessment.reasons),
         hls_proof_reasons,
     )
+    final_frame_payload: dict[str, object] | None = None
+    if args.final_frame_image:
+        try:
+            classification = classify_final_frame(Path(args.final_frame_image))
+        except OSError as exc:
+            state, reasons = _with_extra_degraded_reasons(
+                state,
+                reasons,
+                [f"final_frame_unavailable:{type(exc).__name__}"],
+            )
+        else:
+            final_frame_payload = classification.as_dict()
+            state, reasons = _with_extra_degraded_reasons(
+                state,
+                reasons,
+                list(classification.reasons),
+            )
 
     print(
         json.dumps(
@@ -292,6 +314,7 @@ def main() -> int:
                 "public_output_live": snapshot.public_output_live,
                 "watchdog_last_fed_age_seconds": snapshot.watchdog_last_fed_age_seconds,
                 "director_last_intent_age_seconds": snapshot.director_last_intent_age_seconds,
+                "final_frame_classification": final_frame_payload,
             },
             sort_keys=True,
         )
