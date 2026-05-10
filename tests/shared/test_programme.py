@@ -10,7 +10,10 @@ from __future__ import annotations
 import pytest
 
 from shared.programme import (
+    SEGMENTED_CONTENT_FORMAT_SPECS,
+    SEGMENTED_CONTENT_ROLE_VALUES,
     Programme,
+    ProgrammeAssetAttribution,
     ProgrammeConstraintEnvelope,
     ProgrammeContent,
     ProgrammeDeliveryMode,
@@ -19,6 +22,7 @@ from shared.programme import (
     ProgrammeRole,
     ProgrammeStatus,
     ProgrammeSuccessCriteria,
+    segmented_content_format_spec,
 )
 from shared.voice_tier import _ROLE_TIER_DEFAULTS
 
@@ -94,6 +98,27 @@ class TestProgrammeRole:
             assert value in _ROLE_TIER_DEFAULTS, (
                 f"ProgrammeRole {value!r} missing from _ROLE_TIER_DEFAULTS"
             )
+
+
+class TestSegmentedContentFormatSpecs:
+    def test_specs_cover_every_segmented_role(self) -> None:
+        assert SEGMENTED_CONTENT_ROLE_VALUES == _SEGMENTED_CONTENT_ROLES
+        assert set(SEGMENTED_CONTENT_FORMAT_SPECS) == _SEGMENTED_CONTENT_ROLES
+
+    def test_each_spec_declares_template_assets_and_ward_profile(self) -> None:
+        for role in _SEGMENTED_CONTENT_ROLES:
+            spec = segmented_content_format_spec(role)
+            assert spec is not None
+            assert (
+                "{topic}" in spec.narrative_beat_template
+                or "{source_uri}" in (spec.narrative_beat_template)
+                or "{subject}" in spec.narrative_beat_template
+            )
+            assert "source_packet_refs" in spec.asset_requirements
+            assert spec.ward_profile
+            assert spec.ward_accent_role
+            assert spec.source_affordance_kinds
+            assert spec.minimum_planned_duration_s >= 300.0
 
 
 class TestProgrammeStatus:
@@ -239,6 +264,45 @@ class TestProgrammeContent:
         """500-char cap prevents scripted utterances from sneaking in."""
         with pytest.raises(ValueError, match="not a scripted utterance"):
             ProgrammeContent(narrative_beat="x" * 501)
+
+    def test_role_contract_and_asset_attribution_round_trip(self) -> None:
+        content = ProgrammeContent(
+            declared_topic="Source-backed ranking",
+            source_uri="https://example.com/source",
+            subject="Alpha subject",
+            narrative_beat="rank source-backed claims",
+            source_refs=[" vault:alpha.md ", "vault:alpha.md", "rag:hit-1"],
+            role_contract={
+                "source_packet_refs": [
+                    {
+                        "id": "packet:alpha",
+                        "source_ref": "vault:alpha.md",
+                        "evidence_refs": ["vault:alpha.md"],
+                    }
+                ],
+                "role_live_bit_mechanic": "source changes ranking",
+            },
+            asset_attributions=[
+                {
+                    "source_ref": "vault:alpha.md",
+                    "asset_kind": "vault_note",
+                    "title": "Alpha",
+                }
+            ],
+        )
+
+        assert content.source_refs == ["vault:alpha.md", "rag:hit-1"]
+        assert content.declared_topic == "Source-backed ranking"
+        assert content.source_uri == "https://example.com/source"
+        assert content.subject == "Alpha subject"
+        assert content.role_contract["source_packet_refs"][0]["source_ref"] == "vault:alpha.md"
+        assert content.asset_attributions == [
+            ProgrammeAssetAttribution(
+                source_ref="vault:alpha.md",
+                asset_kind="vault_note",
+                title="Alpha",
+            )
+        ]
 
     def test_responsible_hosting_rejects_executable_segment_cues(self) -> None:
         with pytest.raises(ValueError, match="executable segment_cues"):
@@ -488,6 +552,30 @@ class TestProgramme:
             "parent_show_id": "show-1",
         }
 
+    def _segmented_content(self) -> ProgrammeContent:
+        return ProgrammeContent(
+            declared_topic="source-backed ranking",
+            narrative_beat="tier list on source-backed ranking",
+            segment_beats=["hook: set criteria", "item: rank alpha", "close: recap"],
+            source_refs=["vault:alpha.md"],
+            role_contract={
+                "source_packet_refs": ["vault:alpha.md"],
+                "role_live_bit_mechanic": "source evidence changes a visible ranking",
+                "event_object": "tier chart",
+                "audience_job": "inspect and challenge placements",
+                "payoff": "final tier chart resolves opening pressure",
+                "temporality_band": "evergreen",
+                "tier_criteria": "source-backed placement criteria",
+            },
+            asset_attributions=[
+                ProgrammeAssetAttribution(
+                    source_ref="vault:alpha.md",
+                    asset_kind="vault_note",
+                    title="Alpha",
+                )
+            ],
+        )
+
     def test_minimal_programme_constructs(self) -> None:
         p = Programme(**self._minimal_kwargs())
         assert p.status is ProgrammeStatus.PENDING
@@ -555,3 +643,50 @@ class TestProgramme:
         env = ProgrammeConstraintEnvelope(capability_bias_negative={"cap": 0.3})
         p = Programme(**(self._minimal_kwargs() | {"constraints": env}))
         p.validate_soft_priors_only()
+
+    def test_segmented_programme_requires_five_minute_planned_duration(self) -> None:
+        with pytest.raises(ValueError, match="planned_duration_s"):
+            Programme(
+                **(
+                    self._minimal_kwargs()
+                    | {
+                        "role": ProgrammeRole.TIER_LIST,
+                        "planned_duration_s": 299.0,
+                        "content": self._segmented_content(),
+                    }
+                )
+            )
+
+    def test_segmented_programme_requires_role_contract(self) -> None:
+        content = self._segmented_content()
+        content.role_contract = {}
+        with pytest.raises(ValueError, match="role_contract"):
+            Programme(
+                **(
+                    self._minimal_kwargs()
+                    | {
+                        "role": ProgrammeRole.TIER_LIST,
+                        "planned_duration_s": 600.0,
+                        "content": content,
+                    }
+                )
+            )
+
+    def test_segmented_programme_persists_metadata(self) -> None:
+        content = self._segmented_content()
+        p = Programme(
+            **(
+                self._minimal_kwargs()
+                | {
+                    "role": ProgrammeRole.TIER_LIST,
+                    "planned_duration_s": 600.0,
+                    "content": content,
+                }
+            )
+        )
+
+        round_trip = Programme.model_validate_json(p.model_dump_json())
+        assert (
+            round_trip.content.role_contract["tier_criteria"] == "source-backed placement criteria"
+        )
+        assert round_trip.content.asset_attributions[0].source_ref == "vault:alpha.md"

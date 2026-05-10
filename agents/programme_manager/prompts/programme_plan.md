@@ -116,7 +116,34 @@ The operator does NOT write the outline.
         "structural_cadence_prior_s": 120.0
       },
       "content": {
+        "declared_topic": "<short topic label for ward/search metadata>",
+        "source_uri": "<react-source-uri when role=react; omit otherwise>",
+        "subject": "<interview subject when role=interview; omit otherwise>",
         "narrative_beat": "<1-2 sentence direction for the narrative director>",
+        "source_refs": ["vault:<specific-source-note>", "rag:<specific-hit-id>"],
+        "asset_attributions": [
+          {
+            "source_ref": "vault:<specific-source-note>",
+            "asset_kind": "vault_note",
+            "title": "<operator-readable source title>",
+            "rights_summary": "operator-vault source"
+          }
+        ],
+        "role_contract": {
+          "source_packet_refs": [
+            {
+              "id": "packet:<source-slug>",
+              "source_ref": "vault:<specific-source-note>",
+              "evidence_refs": ["vault:<specific-source-note>"],
+              "freshness_band": "current_or_timeless"
+            }
+          ],
+          "role_live_bit_mechanic": "<what live event this format creates>",
+          "event_object": "<source-backed object the audience can inspect>",
+          "audience_job": "<what the audience is asked to inspect, vote on, or challenge>",
+          "payoff": "<how the closing beat resolves the opening pressure>",
+          "temporality_band": "<evergreen|current|archival|retrospective>"
+        },
         "hosting_context": "hapax_responsible_live",
         "authority": "prior_only",
         "segment_beats": [
@@ -384,9 +411,10 @@ the material to ground it.
 Every segmented-content programme must include a `role_contract` object
 with source authority for prep. Required fields for all roles:
 `source_packet_refs`, `role_live_bit_mechanic`, `event_object`,
-`audience_job`, `payoff`, and `temporality_band`. `tier_list` and
-`top_10` also require `tier_criteria`; `rant` also requires
-`bounded_claim` and `receipt_flip`; `interview` requires structured
+`audience_job`, `payoff`, and `temporality_band`. `tier_list` also
+requires `tier_criteria`; `top_10` also requires
+`ordering_criterion`; `rant` also requires `bounded_claim` and
+`receipt_flip`; `interview` requires structured
 `question_ladder`, `answer_source_policy`, and, for operator interviews,
 topic-selection and agency-policy receipts. Every planned beat that
 needs layout must carry `beat_layout_intents` with source evidence refs

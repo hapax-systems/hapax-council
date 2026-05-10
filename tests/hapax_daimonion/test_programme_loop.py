@@ -384,11 +384,22 @@ def test_active_segment_payload_uses_plural_layout_intents_and_authority_ref() -
         topic="topic",
         content=SimpleNamespace(
             narrative_beat="topic",
+            declared_topic="declared topic",
+            source_uri="https://example.com/source",
+            subject="Source Subject",
             segment_beats=["hook: open", "body: show evidence"],
             prepared_artifact_ref=artifact_ref,
             artifact_path_diagnostic="/tmp/prog-responsible.json",
             hosting_context="hapax_responsible_live",
             authority="prior_only",
+            source_refs=["vault:source"],
+            asset_attributions=[
+                {
+                    "source_ref": "vault:source",
+                    "asset_kind": "vault_note",
+                    "title": "Source Note",
+                }
+            ],
             beat_layout_intents=[
                 {
                     "beat_id": "body",
@@ -412,6 +423,13 @@ def test_active_segment_payload_uses_plural_layout_intents_and_authority_ref() -
     assert payload["current_beat_layout_intents"][0]["needs"] == ["evidence_visible"]
     assert payload["prepared_artifact_ref"] == artifact_ref
     assert payload["artifact_path_diagnostic"] == "/tmp/prog-responsible.json"
+    assert payload["topic"] == "declared topic"
+    assert payload["source_uri"] == "https://example.com/source"
+    assert payload["subject"] == "Source Subject"
+    assert payload["source_refs"] == ["vault:source", "https://example.com/source"]
+    assert payload["asset_attributions"][0]["title"] == "Source Note"
+    assert payload["ward_profile"] == "argument_crescendo"
+    assert payload["ward_accent_role"] == "accent_red"
     assert "layout_decision_contract" not in payload
     assert "runtime_layout_validation" not in payload
     assert "fallback_active" not in payload
@@ -507,6 +525,35 @@ def test_active_segment_payload_includes_live_prior_proposals() -> None:
     assert payload["current_beat_action_intents"][0]["beat_index"] == 0
     assert payload["current_beat_cards"][0]["prior_summary"].startswith("Prepared prior")
     assert payload["current_beat_live_priors"][0]["text"] == "Prepared prior excerpt."
+
+
+def test_active_segment_payload_includes_format_metadata_for_each_segmented_role() -> None:
+    from agents.hapax_daimonion.programme_loop import _active_segment_payload
+    from shared.programme import SEGMENTED_CONTENT_FORMAT_SPECS, ProgrammeContent
+
+    for role_value, spec in SEGMENTED_CONTENT_FORMAT_SPECS.items():
+        content = ProgrammeContent(
+            narrative_beat=f"{role_value} on source",
+            segment_beats=["hook"],
+            source_refs=["vault:source"],
+            role_contract={
+                "source_packet_refs": ["vault:source"],
+                "role_live_bit_mechanic": "source evidence changes the segment object",
+            },
+        )
+        active = SimpleNamespace(
+            programme_id=f"prog-{role_value}",
+            actual_started_at=123.0,
+            planned_duration_s=600.0,
+            topic="topic",
+            content=content,
+        )
+
+        payload = _active_segment_payload(active, role_value, 0)
+
+        assert payload["ward_profile"] == spec.ward_profile
+        assert payload["ward_accent_role"] == spec.ward_accent_role
+        assert payload["asset_requirements"] == list(spec.asset_requirements)
 
 
 def test_programme_loop_checks_beat_transition_once_per_tick() -> None:

@@ -72,6 +72,10 @@ class SegmentState:
     current_beat_index: int
     started_at: float
     planned_duration_s: float
+    ward_profile: str
+    ward_accent_role: str
+    source_refs: tuple[str, ...]
+    asset_attributions: tuple[str, ...]
 
     @property
     def is_empty(self) -> bool:
@@ -87,7 +91,24 @@ _EMPTY_STATE = SegmentState(
     current_beat_index=0,
     started_at=0.0,
     planned_duration_s=0.0,
+    ward_profile="",
+    ward_accent_role="accent_cyan",
+    source_refs=(),
+    asset_attributions=(),
 )
+
+
+def _role_ward_defaults(role: str) -> tuple[str, str]:
+    """Return (ward_profile, palette_role) for a segmented-content role."""
+    try:
+        from shared.programme import segmented_content_format_spec
+
+        spec = segmented_content_format_spec(role)
+    except Exception:
+        spec = None
+    if spec is None:
+        return "", "accent_cyan"
+    return spec.ward_profile, spec.ward_accent_role
 
 
 def _read_segment_state(path: Path = SEGMENT_STATE_FILE) -> SegmentState:
@@ -98,6 +119,18 @@ def _read_segment_state(path: Path = SEGMENT_STATE_FILE) -> SegmentState:
         return _EMPTY_STATE
     if not isinstance(raw, dict) or not raw.get("programme_id"):
         return _EMPTY_STATE
+    default_profile, default_accent = _role_ward_defaults(str(raw.get("role", "")))
+    attributions: list[str] = []
+    for item in raw.get("asset_attributions") or []:
+        if isinstance(item, dict):
+            source_ref = str(item.get("source_ref") or "").strip()
+            title = str(item.get("title") or "").strip()
+            if title and source_ref:
+                attributions.append(f"{title} [{source_ref}]")
+            elif source_ref:
+                attributions.append(source_ref)
+        elif isinstance(item, str) and item.strip():
+            attributions.append(item.strip())
     return SegmentState(
         programme_id=str(raw.get("programme_id", "")),
         role=str(raw.get("role", "")),
@@ -107,6 +140,12 @@ def _read_segment_state(path: Path = SEGMENT_STATE_FILE) -> SegmentState:
         current_beat_index=int(raw.get("current_beat_index", 0)),
         started_at=float(raw.get("started_at", 0.0)),
         planned_duration_s=float(raw.get("planned_duration_s", 3600.0)),
+        ward_profile=str(raw.get("ward_profile") or default_profile),
+        ward_accent_role=str(raw.get("ward_accent_role") or default_accent),
+        source_refs=tuple(
+            str(ref).strip() for ref in (raw.get("source_refs") or []) if str(ref).strip()
+        ),
+        asset_attributions=tuple(attributions[:5]),
     )
 
 
@@ -122,6 +161,13 @@ def _role_label(role: str) -> str:
         "lecture": "LECTURE",
     }
     return labels.get(role, role.upper().replace("_", " "))
+
+
+def _palette_role(pkg: Any, role: str) -> tuple[float, float, float, float]:
+    value = getattr(pkg.palette, role, None)
+    if value is None:
+        value = pkg.palette.accent_cyan
+    return value
 
 
 class SegmentContentWard(HomageTransitionalSource):
@@ -285,7 +331,7 @@ class SegmentContentWard(HomageTransitionalSource):
 
         pkg = active_package()
         bg = pkg.palette.background
-        accent = pkg.palette.accent_cyan
+        accent = _palette_role(pkg, segment.ward_accent_role)
         bright = pkg.palette.bright
         muted = pkg.palette.muted
 
@@ -329,6 +375,28 @@ class SegmentContentWard(HomageTransitionalSource):
         )
         y_cursor += 24
 
+        profile_bits: list[str] = []
+        if segment.ward_profile:
+            profile_bits.append(segment.ward_profile.replace("_", " "))
+        source_count = len(segment.source_refs) or len(segment.asset_attributions)
+        if source_count:
+            profile_bits.append(f"{source_count} source{'s' if source_count != 1 else ''}")
+        if profile_bits:
+            render_text(
+                cr,
+                TextStyle(
+                    text=" | ".join(profile_bits),
+                    font_description="Inter 12",
+                    color_rgba=(muted[0], muted[1], muted[2], 0.75 * alpha),
+                    outline_color_rgba=(0.0, 0.0, 0.0, 0.6 * alpha),
+                    outline_offsets=OUTLINE_OFFSETS_4,
+                    max_width_px=max(1, max_text_w),
+                ),
+                inner_x,
+                y_cursor,
+            )
+            y_cursor += 20
+
         # Topic header — large, bright
         topic = segment.topic or segment.narrative_beat or "—"
         # Truncate very long topics
@@ -363,7 +431,7 @@ class SegmentContentWard(HomageTransitionalSource):
         # Beat list
         current_idx = segment.current_beat_index
         for i, beat in enumerate(segment.segment_beats):
-            if y_cursor > panel_y + panel_h - 40:
+            if y_cursor > panel_y + panel_h - 70:
                 break
 
             # Current beat — bright + arrow indicator
@@ -395,6 +463,27 @@ class SegmentContentWard(HomageTransitionalSource):
                 y_cursor,
             )
             y_cursor += 24
+
+        source_line = ""
+        if segment.asset_attributions:
+            source_line = segment.asset_attributions[0]
+        elif segment.source_refs:
+            source_line = segment.source_refs[0]
+        if source_line:
+            source_text = source_line if len(source_line) <= 72 else source_line[:69] + "..."
+            render_text(
+                cr,
+                TextStyle(
+                    text=f"source: {source_text}",
+                    font_description="Inter 11",
+                    color_rgba=(muted[0], muted[1], muted[2], 0.62 * alpha),
+                    outline_color_rgba=(0.0, 0.0, 0.0, 0.5 * alpha),
+                    outline_offsets=OUTLINE_OFFSETS_4,
+                    max_width_px=max(1, max_text_w),
+                ),
+                inner_x,
+                panel_y + panel_h - 50,
+            )
 
         # Elapsed time at bottom
         if segment.started_at > 0:
