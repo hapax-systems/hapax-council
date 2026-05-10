@@ -32,6 +32,7 @@ CONTAINMENT_ENV = (
 )
 EGRESS_ENV = ("HAPAX_V4L2_BRIDGE_ENABLED",)
 SELECTED_ENV = CONTAINMENT_ENV + EGRESS_ENV
+DEFAULT_MAX_HLS_TARGET_DURATION_SECONDS = 120.0
 
 
 def _bool_arg(value: str) -> bool:
@@ -125,6 +126,19 @@ def _default_hls_max_age_seconds(path: Path) -> float:
     return max(10.0, (target_duration * 2.0) + 2.0)
 
 
+def _with_extra_degraded_reasons(
+    state: LiveSurfaceState,
+    reasons: list[str],
+    extra_reasons: list[str],
+) -> tuple[LiveSurfaceState, list[str]]:
+    if not extra_reasons:
+        return state, reasons
+    merged = [*reasons, *extra_reasons]
+    if state is LiveSurfaceState.HEALTHY:
+        return LiveSurfaceState.DEGRADED_CONTAINMENT, merged
+    return state, merged
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--metrics-url", default="http://127.0.0.1:9482/metrics")
@@ -142,6 +156,15 @@ def main() -> int:
         default=str(Path.home() / ".cache" / "hapax-compositor" / "hls" / "stream.m3u8"),
     )
     parser.add_argument("--max-hls-age-seconds", type=float)
+    parser.add_argument(
+        "--max-hls-target-duration-seconds",
+        type=float,
+        default=DEFAULT_MAX_HLS_TARGET_DURATION_SECONDS,
+        help=(
+            "largest playlist target duration accepted as plausible live HLS proof; "
+            "larger values are treated as malformed"
+        ),
+    )
     args = parser.parse_args()
 
     service_active = (
@@ -190,11 +213,20 @@ def main() -> int:
 
     hls_playlist = Path(args.hls_playlist)
     hls_playlist_age_seconds = _file_age_seconds(hls_playlist) if args.require_hls else None
+    hls_target_duration_seconds = (
+        _hls_target_duration_seconds(hls_playlist) if args.require_hls else None
+    )
+    hls_proof_reasons: list[str] = []
+    if (
+        hls_target_duration_seconds is not None
+        and hls_target_duration_seconds > args.max_hls_target_duration_seconds
+    ):
+        hls_proof_reasons.append("hls_playlist_malformed_target_duration")
     hls_max_age_seconds = (
         (
             args.max_hls_age_seconds
             if args.max_hls_age_seconds is not None
-            else _default_hls_max_age_seconds(hls_playlist)
+            else (10.0 if hls_proof_reasons else _default_hls_max_age_seconds(hls_playlist))
         )
         if args.require_hls
         else None
@@ -216,26 +248,35 @@ def main() -> int:
         require_hls=args.require_hls,
         max_hls_age_seconds=hls_max_age_seconds,
     )
+    state, reasons = _with_extra_degraded_reasons(
+        assessment.state,
+        list(assessment.reasons),
+        hls_proof_reasons,
+    )
 
     print(
         json.dumps(
             {
-                "state": assessment.state.value,
-                "restored": assessment.restored,
-                "reasons": list(assessment.reasons),
+                "state": state.value,
+                "restored": state is LiveSurfaceState.HEALTHY,
+                "reasons": reasons,
                 "service_active": service_active,
                 "bridge_active": bridge_active,
                 "hls_playlist_age_seconds": hls_playlist_age_seconds,
                 "hls_max_age_seconds": hls_max_age_seconds,
+                "hls_target_duration_seconds": hls_target_duration_seconds,
+                "max_hls_target_duration_seconds": (
+                    args.max_hls_target_duration_seconds if args.require_hls else None
+                ),
             },
             sort_keys=True,
         )
     )
-    if assessment.state is LiveSurfaceState.HEALTHY:
+    if state is LiveSurfaceState.HEALTHY:
         return 0
-    if args.allow_containment and assessment.state is LiveSurfaceState.DEGRADED_CONTAINMENT:
+    if args.allow_containment and state is LiveSurfaceState.DEGRADED_CONTAINMENT:
         return 0
-    return 10 if assessment.state is LiveSurfaceState.DEGRADED_CONTAINMENT else 11
+    return 10 if state is LiveSurfaceState.DEGRADED_CONTAINMENT else 11
 
 
 if __name__ == "__main__":

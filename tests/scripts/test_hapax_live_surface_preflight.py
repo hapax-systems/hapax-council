@@ -258,6 +258,37 @@ studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapsh
     assert "hls_playlist_stale" not in payload["reasons"]
 
 
+def test_preflight_degrades_on_implausible_hls_target_duration(tmp_path: Path) -> None:
+    playlist = tmp_path / "stream.m3u8"
+    playlist.write_text("#EXTM3U\n#EXT-X-TARGETDURATION:3600000\n", encoding="utf-8")
+
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 140
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 11
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.4
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "false",
+        "--require-hls",
+        "--hls-playlist",
+        str(playlist),
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 10
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "degraded_containment"
+    assert payload["hls_target_duration_seconds"] == 3600000.0
+    assert payload["hls_max_age_seconds"] == 10.0
+    assert "hls_playlist_malformed_target_duration" in payload["reasons"]
+
+
 def test_preflight_degrades_when_required_hls_playlist_is_stale(tmp_path: Path) -> None:
     playlist = tmp_path / "stream.m3u8"
     playlist.write_text("#EXTM3U\n", encoding="utf-8")
