@@ -7,9 +7,12 @@ identical for STALL_THRESHOLD seconds, or the source is inactive, toggles
 visibility off→on to force OBS to reacquire /dev/video42.
 
 Writes:
-  - Prometheus textfile counter at --prom-path
+  - Prometheus textfile health/counter metrics at --prom-path
   - ntfy notification on each reset event
-  - JSON status to /dev/shm/hapax-obs-v4l2-source-reset/status.json
+  - JSON health status to /dev/shm/hapax-obs-v4l2-source-reset/status.json
+
+Reconnects are bounded by --reset-cooldown so a stuck OBS source cannot create
+an unbounded visibility-toggle loop.
 """
 
 from __future__ import annotations
@@ -19,9 +22,13 @@ import hashlib
 import json
 import logging
 import logging.handlers
+import os
 import signal
+import socket
 import sys
 import time
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +38,50 @@ STATUS_PATH = STATUS_DIR / "status.json"
 
 PROM_RESETS = "hapax_obs_v4l2_source_resets_total"
 PROM_ACTIVE = "hapax_obs_v4l2_source_reset_active"
+PROM_FAILURES = "hapax_obs_v4l2_source_reset_failures_total"
+
+
+class SourceState(StrEnum):
+    DISCONNECTED = "disconnected"
+    HEALTHY = "healthy"
+    INACTIVE = "inactive"
+    STALLED = "stalled"
+    SCREENSHOT_FAILED = "screenshot_failed"
+    SOURCE_MISSING = "source_missing"
+    RECONNECTED = "reconnected"
+    RECONNECT_COOLDOWN = "reconnect_cooldown"
+    RECONNECT_FAILED = "reconnect_failed"
+
+
+PROM_STATES = tuple(state.value for state in SourceState)
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    state: SourceState
+    source_active: bool | None
+    screenshot_hash: str | None
+    screenshot_available: bool
+    stall_seconds: float
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class MonitorStatus:
+    state: SourceState
+    connected: bool
+    source_active: bool | None
+    screenshot_available: bool
+    reset_count: int
+    reset_failures: int
+    consecutive_failures: int
+    last_reset_at: str | None
+    last_success_at: str | None
+    last_hash: str | None
+    stall_seconds: float
+    cooldown_remaining_seconds: float
+    reason: str | None = None
+
 
 logger = logging.getLogger(LOG_TAG)
 
@@ -58,6 +109,32 @@ def _setup_logger() -> None:
         pass
 
 
+def _sd_notify(message: str) -> bool:
+    notify_socket = os.environ.get("NOTIFY_SOCKET")
+    if not notify_socket:
+        return False
+    address: str | bytes
+    if notify_socket.startswith("@"):
+        address = "\0" + notify_socket[1:]
+    else:
+        address = notify_socket
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.connect(address)
+            sock.sendall(message.encode("utf-8"))
+        return True
+    except OSError:
+        logger.debug("sd_notify failed for %r", message, exc_info=True)
+        return False
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
 def _connect(host: str, port: int) -> Any:
     import obsws_python
 
@@ -79,12 +156,88 @@ def _get_screenshot_hash(client: Any, source_name: str) -> str | None:
         return None
 
 
+def _source_error_state(exc: Exception) -> SourceState:
+    message = str(exc).lower()
+    if any(token in message for token in ("not found", "does not exist", "unknown source")):
+        return SourceState.SOURCE_MISSING
+    return SourceState.SCREENSHOT_FAILED
+
+
 def _is_source_active(client: Any, source_name: str) -> bool:
     try:
         resp = client.get_source_active(source_name=source_name)
         return bool(resp.video_active)
     except Exception:
         return False
+
+
+def _probe_source(
+    client: Any,
+    source_name: str,
+    *,
+    previous_hash: str | None,
+    hash_stable_since: float,
+    now: float,
+) -> ProbeResult:
+    try:
+        resp = client.get_source_active(source_name=source_name)
+        source_active = bool(resp.video_active)
+    except Exception as exc:
+        return ProbeResult(
+            state=SourceState.SOURCE_MISSING,
+            source_active=False,
+            screenshot_hash=None,
+            screenshot_available=False,
+            stall_seconds=0.0,
+            reason=f"source_active_failed:{type(exc).__name__}",
+        )
+
+    if not source_active:
+        return ProbeResult(
+            state=SourceState.INACTIVE,
+            source_active=False,
+            screenshot_hash=previous_hash,
+            screenshot_available=False,
+            stall_seconds=0.0,
+            reason=f"source '{source_name}' inactive",
+        )
+
+    try:
+        resp = client.get_source_screenshot(
+            source_name=source_name,
+            image_format="png",
+            image_width=8,
+            image_height=8,
+        )
+        current_hash = hashlib.sha256(resp.image_data.encode()).hexdigest()
+    except Exception as exc:
+        state = _source_error_state(exc)
+        return ProbeResult(
+            state=state,
+            source_active=True,
+            screenshot_hash=previous_hash,
+            screenshot_available=False,
+            stall_seconds=0.0,
+            reason=f"screenshot_failed:{type(exc).__name__}",
+        )
+
+    if current_hash == previous_hash:
+        return ProbeResult(
+            state=SourceState.STALLED,
+            source_active=True,
+            screenshot_hash=current_hash,
+            screenshot_available=True,
+            stall_seconds=now - hash_stable_since,
+            reason="screenshot_hash_unchanged",
+        )
+
+    return ProbeResult(
+        state=SourceState.HEALTHY,
+        source_active=True,
+        screenshot_hash=current_hash,
+        screenshot_available=True,
+        stall_seconds=0.0,
+    )
 
 
 def _find_scene_item(client: Any, source_name: str) -> tuple[str, int] | None:
@@ -140,38 +293,108 @@ def _send_ntfy(reason: str) -> None:
         logger.debug("ntfy send failed: %s", exc)
 
 
-def _emit_prometheus(metrics_path: Path | None, reset_count: int) -> None:
+def _bool_sample(value: bool | None) -> str | None:
+    if value is None:
+        return None
+    return "1" if value else "0"
+
+
+def _emit_prometheus(
+    metrics_path: Path | None,
+    reset_count: int,
+    status: MonitorStatus | None = None,
+) -> None:
     if metrics_path is None:
         return
     lines = [
         f"# HELP {PROM_RESETS} OBS v4l2 capture source visibility resets",
         f"# TYPE {PROM_RESETS} counter",
         f"{PROM_RESETS} {reset_count}",
-        f"# HELP {PROM_ACTIVE} 1 on every successful monitor tick",
+        f"# HELP {PROM_FAILURES} OBS v4l2 capture source failed reconnect attempts",
+        f"# TYPE {PROM_FAILURES} counter",
+        f"{PROM_FAILURES} {status.reset_failures if status is not None else 0}",
+        f"# HELP {PROM_ACTIVE} 1 while the OBS v4l2 source monitor is running",
         f"# TYPE {PROM_ACTIVE} gauge",
         f"{PROM_ACTIVE} 1",
     ]
-    metrics_path.parent.mkdir(parents=True, exist_ok=True)
-    metrics_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if status is not None:
+        lines.extend(
+            [
+                "# HELP hapax_obs_v4l2_source_health OBS v4l2 source controller state",
+                "# TYPE hapax_obs_v4l2_source_health gauge",
+            ]
+        )
+        for state in PROM_STATES:
+            lines.append(
+                f'hapax_obs_v4l2_source_health{{state="{state}"}} '
+                f"{1 if status.state.value == state else 0}"
+            )
+        optional_samples = {
+            "hapax_obs_v4l2_source_connected": "1" if status.connected else "0",
+            "hapax_obs_v4l2_source_active": _bool_sample(status.source_active),
+            "hapax_obs_v4l2_source_screenshot_available": (
+                "1" if status.screenshot_available else "0"
+            ),
+            "hapax_obs_v4l2_source_stall_seconds": f"{status.stall_seconds:.3f}",
+            "hapax_obs_v4l2_source_reconnect_cooldown_seconds": (
+                f"{status.cooldown_remaining_seconds:.3f}"
+            ),
+            "hapax_obs_v4l2_source_consecutive_failures": str(status.consecutive_failures),
+        }
+        for name, value in optional_samples.items():
+            if value is None:
+                continue
+            lines.append(f"# TYPE {name} gauge")
+            lines.append(f"{name} {value}")
+    _atomic_write_text(metrics_path, "\n".join(lines) + "\n")
 
 
-def _write_status(
-    state: str,
-    reset_count: int,
-    last_reset_at: str | None,
-    last_hash: str | None,
-    stall_seconds: float,
-) -> None:
-    STATUS_DIR.mkdir(parents=True, exist_ok=True)
+def _write_status(status: MonitorStatus) -> None:
     data = {
-        "state": state,
-        "reset_count": reset_count,
-        "last_reset_at": last_reset_at,
-        "last_hash": last_hash,
-        "stall_seconds": round(stall_seconds, 1),
+        "state": status.state.value,
+        "connected": status.connected,
+        "source_active": status.source_active,
+        "screenshot_available": status.screenshot_available,
+        "reset_count": status.reset_count,
+        "reset_failures": status.reset_failures,
+        "consecutive_failures": status.consecutive_failures,
+        "last_reset_at": status.last_reset_at,
+        "last_success_at": status.last_success_at,
+        "last_hash": status.last_hash,
+        "stall_seconds": round(status.stall_seconds, 1),
+        "cooldown_remaining_seconds": round(status.cooldown_remaining_seconds, 1),
+        "reason": status.reason,
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    STATUS_PATH.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    _atomic_write_text(STATUS_PATH, json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+
+def _status_from_probe(
+    probe: ProbeResult,
+    *,
+    connected: bool,
+    reset_count: int,
+    reset_failures: int,
+    consecutive_failures: int,
+    last_reset_at: str | None,
+    last_success_at: str | None,
+    cooldown_remaining_seconds: float = 0.0,
+) -> MonitorStatus:
+    return MonitorStatus(
+        state=probe.state,
+        connected=connected,
+        source_active=probe.source_active,
+        screenshot_available=probe.screenshot_available,
+        reset_count=reset_count,
+        reset_failures=reset_failures,
+        consecutive_failures=consecutive_failures,
+        last_reset_at=last_reset_at,
+        last_success_at=last_success_at,
+        last_hash=probe.screenshot_hash,
+        stall_seconds=probe.stall_seconds,
+        cooldown_remaining_seconds=cooldown_remaining_seconds,
+        reason=probe.reason,
+    )
 
 
 def monitor_loop(
@@ -181,13 +404,19 @@ def monitor_loop(
     source_name: str,
     poll_interval: float,
     stall_threshold: float,
+    reset_cooldown: float,
     metrics_path: Path | None,
 ) -> None:
     client: Any = None
     reset_count = 0
+    reset_failures = 0
+    consecutive_failures = 0
     last_reset_at: str | None = None
+    last_success_at: str | None = None
     prev_hash: str | None = None
     hash_stable_since: float = 0.0
+    last_reset_monotonic: float | None = None
+    _sd_notify("READY=1")
 
     while not _shutdown:
         # (Re)connect
@@ -197,45 +426,76 @@ def monitor_loop(
                 logger.info("connected to OBS at %s:%d", host, port)
             except Exception as exc:
                 logger.debug("OBS connection failed: %s", exc)
-                _write_status("disconnected", reset_count, last_reset_at, None, 0)
-                _emit_prometheus(metrics_path, reset_count)
+                status = MonitorStatus(
+                    state=SourceState.DISCONNECTED,
+                    connected=False,
+                    source_active=None,
+                    screenshot_available=False,
+                    reset_count=reset_count,
+                    reset_failures=reset_failures,
+                    consecutive_failures=consecutive_failures,
+                    last_reset_at=last_reset_at,
+                    last_success_at=last_success_at,
+                    last_hash=None,
+                    stall_seconds=0.0,
+                    cooldown_remaining_seconds=0.0,
+                    reason=f"connect_failed:{type(exc).__name__}",
+                )
+                _write_status(status)
+                _emit_prometheus(metrics_path, reset_count, status)
+                _sd_notify("WATCHDOG=1")
                 time.sleep(poll_interval)
                 continue
 
         now = time.monotonic()
-        stall_seconds = 0.0
-        state = "healthy"
+        probe = _probe_source(
+            client,
+            source_name,
+            previous_hash=prev_hash,
+            hash_stable_since=hash_stable_since,
+            now=now,
+        )
+        if probe.state is SourceState.HEALTHY:
+            prev_hash = probe.screenshot_hash
+            hash_stable_since = now
+            consecutive_failures = 0
+            last_success_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        elif probe.state is SourceState.STALLED and probe.stall_seconds < stall_threshold:
+            probe = ProbeResult(
+                state=SourceState.HEALTHY,
+                source_active=probe.source_active,
+                screenshot_hash=probe.screenshot_hash,
+                screenshot_available=probe.screenshot_available,
+                stall_seconds=probe.stall_seconds,
+                reason=probe.reason,
+            )
 
-        # Check source active
-        active = _is_source_active(client, source_name)
+        needs_reset = probe.state in {
+            SourceState.INACTIVE,
+            SourceState.SOURCE_MISSING,
+            SourceState.STALLED,
+            SourceState.SCREENSHOT_FAILED,
+        }
 
-        if not active:
-            state = "inactive"
-            stall_seconds = 0
-        else:
-            # Screenshot-based stall detection
-            current_hash = _get_screenshot_hash(client, source_name)
-            if current_hash is None:
-                state = "screenshot_failed"
-                client = None
-            elif current_hash == prev_hash:
-                stall_seconds = now - hash_stable_since
-            else:
-                prev_hash = current_hash
-                hash_stable_since = now
-                stall_seconds = 0
-
-        needs_reset = False
-        reason = ""
-
-        if state == "inactive":
-            needs_reset = True
-            reason = f"source '{source_name}' inactive — reacquiring"
-        elif state == "healthy" and stall_seconds >= stall_threshold:
-            needs_reset = True
-            reason = f"source '{source_name}' stalled for {stall_seconds:.0f}s (hash unchanged)"
+        cooldown_remaining_seconds = 0.0
+        if (
+            needs_reset
+            and last_reset_monotonic is not None
+            and now - last_reset_monotonic < reset_cooldown
+        ):
+            cooldown_remaining_seconds = reset_cooldown - (now - last_reset_monotonic)
+            probe = ProbeResult(
+                state=SourceState.RECONNECT_COOLDOWN,
+                source_active=probe.source_active,
+                screenshot_hash=probe.screenshot_hash,
+                screenshot_available=probe.screenshot_available,
+                stall_seconds=probe.stall_seconds,
+                reason=probe.reason,
+            )
+            needs_reset = False
 
         if needs_reset:
+            reason = probe.reason or f"source '{source_name}' {probe.state.value}"
             logger.warning("RESET: %s", reason)
             scene_item = _find_scene_item(client, source_name)
             if scene_item is not None:
@@ -244,17 +504,58 @@ def monitor_loop(
                 if success:
                     reset_count += 1
                     last_reset_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    last_reset_monotonic = now
                     _send_ntfy(reason)
                     # Reset stall tracking after toggle
                     prev_hash = None
                     hash_stable_since = now
+                    consecutive_failures = 0
+                    probe = ProbeResult(
+                        state=SourceState.RECONNECTED,
+                        source_active=probe.source_active,
+                        screenshot_hash=None,
+                        screenshot_available=probe.screenshot_available,
+                        stall_seconds=0.0,
+                        reason=reason,
+                    )
                 else:
+                    reset_failures += 1
+                    consecutive_failures += 1
+                    probe = ProbeResult(
+                        state=SourceState.RECONNECT_FAILED,
+                        source_active=probe.source_active,
+                        screenshot_hash=probe.screenshot_hash,
+                        screenshot_available=probe.screenshot_available,
+                        stall_seconds=probe.stall_seconds,
+                        reason=reason,
+                    )
                     client = None
             else:
                 logger.warning("source '%s' not found in current scene", source_name)
+                reset_failures += 1
+                consecutive_failures += 1
+                probe = ProbeResult(
+                    state=SourceState.SOURCE_MISSING,
+                    source_active=probe.source_active,
+                    screenshot_hash=probe.screenshot_hash,
+                    screenshot_available=probe.screenshot_available,
+                    stall_seconds=probe.stall_seconds,
+                    reason=reason,
+                )
 
-        _write_status(state, reset_count, last_reset_at, prev_hash, stall_seconds)
-        _emit_prometheus(metrics_path, reset_count)
+        status = _status_from_probe(
+            probe,
+            connected=client is not None,
+            reset_count=reset_count,
+            reset_failures=reset_failures,
+            consecutive_failures=consecutive_failures,
+            last_reset_at=last_reset_at,
+            last_success_at=last_success_at,
+            cooldown_remaining_seconds=cooldown_remaining_seconds,
+        )
+        _write_status(status)
+        _emit_prometheus(metrics_path, reset_count, status)
+        _sd_notify("WATCHDOG=1")
         time.sleep(poll_interval)
 
     # Clean shutdown
@@ -287,6 +588,12 @@ def main() -> None:
         help="Seconds of identical frames before reset (default: 30)",
     )
     parser.add_argument(
+        "--reset-cooldown",
+        type=float,
+        default=60.0,
+        help="Minimum seconds between OBS visibility reset attempts (default: 60)",
+    )
+    parser.add_argument(
         "--prom-path",
         type=Path,
         default=Path("/var/lib/node_exporter/textfile_collector/hapax-obs-v4l2-source-reset.prom"),
@@ -311,6 +618,7 @@ def main() -> None:
         source_name=args.source_name,
         poll_interval=args.poll_interval,
         stall_threshold=args.stall_threshold,
+        reset_cooldown=args.reset_cooldown,
         metrics_path=args.prom_path,
     )
 

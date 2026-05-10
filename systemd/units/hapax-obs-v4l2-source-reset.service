@@ -1,14 +1,21 @@
 [Unit]
 Description=Hapax OBS v4l2 capture source auto-reset monitor
-After=pipewire.service studio-compositor.service
+After=pipewire.service studio-compositor.service hapax-obs-livestream.service
 Wants=studio-compositor.service
+PartOf=studio-compositor.service
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-obs-v4l2-source-reset
 
 [Service]
-Type=simple
-ExecStart=%h/.local/bin/hapax-obs-v4l2-source-reset --source-name StudioCompositor
+Type=notify
+NotifyAccess=main
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/hapax-obs-v4l2-source-reset
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-obs-v4l2-source-reset --source-name StudioCompositor --reset-cooldown 60
 Restart=on-failure
-RestartSec=30
+RestartSec=15
 WatchdogSec=120
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=HAPAX_COMPOSITOR_SOURCE_ROOT=%h/.cache/hapax/source-activation/worktree
 
 [Install]
 WantedBy=default.target
