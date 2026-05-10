@@ -602,6 +602,80 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
     fi
   done
 
+  PLANNING_FEED="$HOME/.cache/hapax/planning-feed-state.json"
+  if [ -f "$PLANNING_FEED" ]; then
+    FEED_TS="$(jq -r '.generated_at // empty' "$PLANNING_FEED" 2>/dev/null || true)"
+    FEED_EPOCH="$(date -d "$FEED_TS" +%s 2>/dev/null || echo 0)"
+    FEED_AGE=$(( $(date +%s) - FEED_EPOCH ))
+    DISPATCH_PRESENT="$(jq -r 'has("dispatch")' "$PLANNING_FEED" 2>/dev/null || echo false)"
+    if [ "$FEED_EPOCH" -eq 0 ]; then
+      echo ""
+      echo "PLANNING FEED: unreadable timestamp — manual dispatch only"
+    elif [ "$DISPATCH_PRESENT" != "true" ]; then
+      echo ""
+      echo "PLANNING FEED: priority feed unavailable — manual dispatch only"
+    elif [ "$FEED_AGE" -ge 900 ]; then
+      echo ""
+      echo "PLANNING FEED: unavailable (${FEED_AGE}s old) — timer investigation needed"
+    else
+      if [ "$FEED_AGE" -ge 300 ]; then
+        echo ""
+        echo "PLANNING FEED: degraded (${FEED_AGE}s old) — rankings may be outdated"
+      fi
+      HAS_ACTIVE_CLAIM=false
+      FEED_CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-${ROLE}"
+      if [ -s "$FEED_CLAIM_FILE" ]; then
+        HAS_ACTIVE_CLAIM=true
+      fi
+      DISPATCHABLE_COUNT="$(jq -r '.dispatch.dispatchable_count // 0' "$PLANNING_FEED" 2>/dev/null || echo 0)"
+      PLANNING_COUNT="$(jq -r '.dispatch.planning_attention_count // 0' "$PLANNING_FEED" 2>/dev/null || echo 0)"
+      if [ "$HAS_ACTIVE_CLAIM" != "true" ]; then
+        if [ "$DISPATCHABLE_COUNT" -gt 0 ]; then
+          echo ""
+          echo "ELIGIBLE WORK (${DISPATCHABLE_COUNT} dispatchable, ranking wsjf_v0):"
+          jq -r '
+            .dispatch.dispatchable_tasks[:5]
+            | to_entries[]
+            | "  \(.key + 1). \(.value.task_id) (WSJF \(.value.wsjf), \(.value.authority_case))"
+          ' "$PLANNING_FEED" 2>/dev/null || true
+        else
+          echo ""
+          echo "ELIGIBLE WORK: no dispatchable tasks — all work claimed, blocked, or awaiting authority"
+        fi
+      fi
+      if [ "$PLANNING_COUNT" -gt 0 ]; then
+        echo ""
+        echo "PLANNING ATTENTION (${PLANNING_COUNT} items):"
+        jq -r '
+          .dispatch.planning_queue[:3]
+          | to_entries[]
+          | .value as $item
+          | if $item.item_type == "task" then
+              "  \(.key + 1). \($item.task_id) — \($item.action_needed) (\($item.age_hours)h)"
+            else
+              "  \(.key + 1). \($item.request_id) — \($item.action_needed) (\($item.age_hours)h)"
+            end
+        ' "$PLANNING_FEED" 2>/dev/null || true
+      fi
+      CAPACITY_WARNING_COUNT="$(jq -r '.dispatch.capacity_routing.warning_count // 0' "$PLANNING_FEED" 2>/dev/null || echo 0)"
+      case "$CAPACITY_WARNING_COUNT" in
+        ''|*[!0-9]*) CAPACITY_WARNING_COUNT=0 ;;
+      esac
+      if [ "$CAPACITY_WARNING_COUNT" -gt 0 ]; then
+        echo ""
+        echo "CAPACITY ROUTING (${CAPACITY_WARNING_COUNT} non-green, observe-only):"
+        jq -r '
+          .dispatch.capacity_routing.non_green_states[:5]
+          | to_entries[]
+          | "  \(.key + 1). \(.value.state): \(.value.summary)"
+        ' "$PLANNING_FEED" 2>/dev/null || true
+      fi
+    fi
+  else
+    echo ""
+    echo "PLANNING FEED: priority feed unavailable — manual dispatch only"
+  fi
+
   # ── D-30 Phase 4: Obsidian SSOT — claimed task + top offered ──
   # Surfaces the canonical CC-task state from the operator's vault so
   # sessions onboard with their claim + the next-up queue.

@@ -1,0 +1,264 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.local/schemas/platform-capability-registry.schema.json",
+  "title": "PlatformCapabilityRegistry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "registry_schema",
+    "registry_id",
+    "schema_ref",
+    "declared_at",
+    "capacity_invariant",
+    "generated_from",
+    "required_route_ids",
+    "routes"
+  ],
+  "properties": {
+    "registry_schema": {"const": 1},
+    "registry_id": {"type": "string", "minLength": 1},
+    "schema_ref": {"const": "schemas/platform-capability-registry.schema.json"},
+    "declared_at": {"type": "string", "format": "date-time"},
+    "capacity_invariant": {"type": "string", "minLength": 1},
+    "generated_from": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "required_route_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+\\.[a-z0-9_]+$"}
+    },
+    "routes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/platform_capability_route"}
+    }
+  },
+  "$defs": {
+    "platform": {
+      "enum": ["antigrav", "api", "claude", "codex", "gemini", "local_tool", "vibe"]
+    },
+    "mode": {
+      "enum": ["headless", "interactive", "local", "receipt_only"]
+    },
+    "profile": {
+      "enum": [
+        "api_frontier",
+        "deterministic",
+        "flash",
+        "full",
+        "jr",
+        "lite",
+        "opus",
+        "sonnet",
+        "spark"
+      ]
+    },
+    "route_state": {
+      "enum": ["active", "blocked"]
+    },
+    "auth_surface": {
+      "enum": ["api_key", "local", "operator_session", "subscription", "unknown", "vertex"]
+    },
+    "capacity_pool": {
+      "enum": ["api_paid_spend", "bootstrap_budget", "local_compute", "subscription_quota"]
+    },
+    "authority_ceiling": {
+      "enum": ["authoritative", "frontier_review_required", "read_only", "support_only"]
+    },
+    "filesystem_access": {
+      "enum": ["none", "read_only", "read_write"]
+    },
+    "shell_access": {
+      "enum": ["none", "read_only", "full"]
+    },
+    "privacy_posture": {
+      "enum": [
+        "local_private",
+        "provider_private",
+        "provider_training_unknown",
+        "public_risk",
+        "unknown"
+      ]
+    },
+    "quality_floor": {
+      "enum": ["deterministic_ok", "frontier_required", "frontier_review_required"]
+    },
+    "context_class": {
+      "enum": ["small", "medium", "large", "very_large", "unknown"]
+    },
+    "quota_source": {
+      "enum": ["cli", "cloud_monitoring", "ledger", "manual", "none", "otel", "provider_console", "unknown"]
+    },
+    "cost_source": {
+      "enum": ["estimated", "ledger", "none", "otel", "provider_usage", "unknown"]
+    },
+    "resource_source": {
+      "enum": ["infra_observation_spine", "local_probe", "none", "unknown"]
+    },
+    "timestamp_or_null": {
+      "anyOf": [
+        {"type": "string", "format": "date-time"},
+        {"type": "null"}
+      ]
+    },
+    "duration": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*[smhd]$"
+    },
+    "mutability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["vault_docs", "source", "runtime", "public", "provider_spend"],
+      "properties": {
+        "vault_docs": {"type": "boolean"},
+        "source": {"type": "boolean"},
+        "runtime": {"type": "boolean"},
+        "public": {"type": "boolean"},
+        "provider_spend": {"type": "boolean"}
+      }
+    },
+    "tool_access": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filesystem", "shell", "browser", "mcp"],
+      "properties": {
+        "filesystem": {"$ref": "#/$defs/filesystem_access"},
+        "shell": {"$ref": "#/$defs/shell_access"},
+        "browser": {"type": "boolean"},
+        "mcp": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "quality_envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eligible_quality_floors",
+        "explicit_equivalence_records",
+        "excluded_task_classes"
+      ],
+      "properties": {
+        "eligible_quality_floors": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/quality_floor"}
+        },
+        "explicit_equivalence_records": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "excluded_task_classes": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "context_limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_context_class"],
+      "properties": {
+        "max_context_class": {"$ref": "#/$defs/context_class"}
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["quota_source", "cost_source", "resource_source"],
+      "properties": {
+        "quota_source": {"$ref": "#/$defs/quota_source"},
+        "cost_source": {"$ref": "#/$defs/cost_source"},
+        "resource_source": {"$ref": "#/$defs/resource_source"}
+      }
+    },
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capability_checked_at",
+        "capability_stale_after",
+        "quota_checked_at",
+        "quota_stale_after",
+        "resource_checked_at",
+        "resource_stale_after",
+        "provider_docs_checked_at",
+        "provider_docs_stale_after"
+      ],
+      "properties": {
+        "capability_checked_at": {"$ref": "#/$defs/timestamp_or_null"},
+        "capability_stale_after": {"$ref": "#/$defs/duration"},
+        "quota_checked_at": {"$ref": "#/$defs/timestamp_or_null"},
+        "quota_stale_after": {"$ref": "#/$defs/duration"},
+        "resource_checked_at": {"$ref": "#/$defs/timestamp_or_null"},
+        "resource_stale_after": {"$ref": "#/$defs/duration"},
+        "provider_docs_checked_at": {"$ref": "#/$defs/timestamp_or_null"},
+        "provider_docs_stale_after": {"$ref": "#/$defs/duration"}
+      }
+    },
+    "platform_capability_route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registry_schema",
+        "route_id",
+        "platform",
+        "mode",
+        "profile",
+        "launcher",
+        "summary",
+        "notes",
+        "route_state",
+        "blocked_reasons",
+        "model_or_engine",
+        "auth_surface",
+        "capacity_pool",
+        "mutability",
+        "authority_ceiling",
+        "tool_access",
+        "privacy_posture",
+        "quality_envelope",
+        "context_limits",
+        "telemetry",
+        "freshness",
+        "known_unknowns"
+      ],
+      "properties": {
+        "registry_schema": {"const": 1},
+        "route_id": {"type": "string", "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+\\.[a-z0-9_]+$"},
+        "platform": {"$ref": "#/$defs/platform"},
+        "mode": {"$ref": "#/$defs/mode"},
+        "profile": {"$ref": "#/$defs/profile"},
+        "launcher": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1},
+        "notes": {"type": "string", "minLength": 1},
+        "route_state": {"$ref": "#/$defs/route_state"},
+        "blocked_reasons": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "model_or_engine": {
+          "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+        },
+        "auth_surface": {"$ref": "#/$defs/auth_surface"},
+        "capacity_pool": {"$ref": "#/$defs/capacity_pool"},
+        "mutability": {"$ref": "#/$defs/mutability"},
+        "authority_ceiling": {"$ref": "#/$defs/authority_ceiling"},
+        "tool_access": {"$ref": "#/$defs/tool_access"},
+        "privacy_posture": {"$ref": "#/$defs/privacy_posture"},
+        "quality_envelope": {"$ref": "#/$defs/quality_envelope"},
+        "context_limits": {"$ref": "#/$defs/context_limits"},
+        "telemetry": {"$ref": "#/$defs/telemetry"},
+        "freshness": {"$ref": "#/$defs/freshness"},
+        "known_unknowns": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

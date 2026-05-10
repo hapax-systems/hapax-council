@@ -1,0 +1,19 @@
+schema_version: 1
+device_id: mackie-802vlz4-8-channel-analog-mixer-with-4x-xlr-cables-ess
+identity:
+  manufacturer: Mackie
+  model: Mackie 802VLZ4 8-Channel Analog Mixer with 4x XLR Cables & Essential Cables
+    for Connecting to Mixers
+  category: mixer
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-05-19'
+  purchased_price_usd: 189.99
+capabilities:
+- mixing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

@@ -35,6 +35,21 @@ NC='\033[0m'
 GRAPH=$(pw-link -l 2>&1) || { echo -e "${RED}FAIL: PipeWire not running${NC}"; exit 2; }
 FAILURES=0
 
+link_present() {
+    local source_port="$1"
+    local target_port="$2"
+    printf '%s\n' "$GRAPH" | awk -v src="$source_port" -v target="$target_port" '
+        {
+            line = $0
+            sub(/^[[:space:]]*/, "", line)
+        }
+        line == src { within = 1; next }
+        line !~ /^\|/ { within = 0 }
+        within && line ~ /^\|->/ && index(line, target) { found = 1 }
+        END { exit found ? 0 : 1 }
+    '
+}
+
 check() {
     local desc="$1"
     local result="$2"
@@ -93,9 +108,13 @@ echo ""
 # ── Invariant 3: Livestream tap inputs are clean ──
 echo "Chain 3: Livestream Tap Inputs"
 
-TAP_INPUTS=$(echo "$GRAPH" | grep "hapax-livestream-tap:playback" -B1 | grep "|->" | grep -v "hapax-livestream-tap" || true)
-ALLOWED_SOURCES="hapax-l12-evilpet-playback|hapax-l12-usb-return-playback|input\.loopback"
-UNEXPECTED=$(echo "$TAP_INPUTS" | grep -vE "$ALLOWED_SOURCES" | grep -v "^$" | grep -v "^--$" || true)
+TAP_INPUTS=$(printf '%s\n' "$GRAPH" | awk '
+    /^hapax-livestream-tap:playback_/ { in_tap = 1; next }
+    /^[^[:space:]|]/ { in_tap = 0 }
+    in_tap && /^[[:space:]]*\|<-/ { print }
+')
+ALLOWED_TAP_SOURCES="^[[:space:]]*\|<-[[:space:]]+(hapax-l12-evilpet-playback|hapax-l12-usb-return-playback):"
+UNEXPECTED=$(printf '%s\n' "$TAP_INPUTS" | grep -vE "$ALLOWED_TAP_SOURCES" | grep -v "^$" || true)
 
 if [ -z "$UNEXPECTED" ]; then
     check "livestream-tap has only L12 inputs" "PASS"
@@ -260,6 +279,26 @@ echo "Chain 10: L-12 Completeness (every active USB return channel reaches broad
 # broadcast — the invariant violation is a silent failure mode.
 
 L12_COMPLETENESS_OK=true
+L12_SOURCE="alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"
+
+# Check MPC wet-return capture inputs. This is the signal-bearing upstream
+# leg for the hardware-first baseline: MPC Out 1/2 and 3/4 land on L-12
+# CH 9-12, exposed by PipeWire as AUX8-AUX11, then enter the wet-return
+# filter-chain before the stereo sum reaches livestream-tap.
+for pair in \
+    "AUX8 hapax-l12-usb-return-capture:input_AUX8" \
+    "AUX9 hapax-l12-usb-return-capture:input_AUX9" \
+    "AUX10 hapax-l12-usb-return-capture:input_AUX10" \
+    "AUX11 hapax-l12-usb-return-capture:input_AUX11"; do
+    aux="${pair%% *}"
+    target="${pair#* }"
+    if link_present "$L12_SOURCE:capture_$aux" "$target"; then
+        check "L-12 $aux → l12-usb-return-capture linked" "PASS"
+    else
+        check "L-12 $aux → l12-usb-return-capture linked" "MISSING"
+        L12_COMPLETENESS_OK=false
+    fi
+done
 
 # Check l12-evilpet → livestream-tap link
 EVILPET_TO_TAP=$(pw-link -l 2>/dev/null | grep -A 5 "hapax-l12-evilpet-playback" 2>/dev/null | grep "hapax-livestream-tap" 2>/dev/null || true)

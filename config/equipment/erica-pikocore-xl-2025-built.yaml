@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: erica-pikocore-xl-2025-built
+identity:
+  manufacturer: Erica
+  model: Erica Pikocore XL 2025 (BUILT)
+  category: other
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-01-15'
+  purchased_price_usd: 250.0
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

@@ -7,7 +7,7 @@ Type=oneshot
 Environment=HOME=%h
 Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 SyslogIdentifier=hapax-rebuild-services
-TimeoutStartSec=120
+TimeoutStartSec=600
 
 # hapax-dmn: restart if DMN, imagination, or reverie code changed
 ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-dmn.service --watch "agents/dmn/ agents/imagination.py agents/imagination_resolver.py agents/imagination_context.py agents/reverie/ agents/visual_chain.py agents/effect_graph/ shared/" --sha-key dmn

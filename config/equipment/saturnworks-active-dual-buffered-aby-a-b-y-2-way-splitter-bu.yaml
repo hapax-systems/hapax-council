@@ -1,0 +1,19 @@
+schema_version: 1
+device_id: saturnworks-active-dual-buffered-aby-a-b-y-2-way-splitter-bu
+identity:
+  manufacturer: Saturnworks
+  model: Saturnworks Active Dual Buffered ABY A/B/Y 2-way Splitter Buffer Guitar or
+    Bass Pedal - Handcrafted in California
+  category: effects_pedal
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-05-25'
+  purchased_price_usd: 75.65
+capabilities:
+- effects_processing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

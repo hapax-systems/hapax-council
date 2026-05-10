@@ -258,11 +258,21 @@ class TestLayoutModes:
             CameraSpec(role="c920-overhead", device="/dev/video10"),
         ]
 
-    def test_forcefield_mode_is_default(self) -> None:
+    def test_balanced_mode_is_default(self) -> None:
+        cams = self._six_cameras()
+        default = compute_tile_layout(cams, 1920, 1080)
+        balanced = compute_tile_layout(cams, 1920, 1080, mode="balanced")
+        assert default == balanced
+
+    def test_default_layout_covers_more_canvas_than_forcefield(self) -> None:
         cams = self._six_cameras()
         default = compute_tile_layout(cams, 1920, 1080)
         forcefield = compute_tile_layout(cams, 1920, 1080, mode="forcefield")
-        assert default == forcefield
+        canvas_area = 1920 * 1080
+        default_area = sum(t.w * t.h for t in default.values())
+        forcefield_area = sum(t.w * t.h for t in forcefield.values())
+        assert default_area / canvas_area >= 0.60
+        assert forcefield_area / canvas_area < 0.20
 
     def test_hero_mode_named_camera(self) -> None:
         cams = self._six_cameras()

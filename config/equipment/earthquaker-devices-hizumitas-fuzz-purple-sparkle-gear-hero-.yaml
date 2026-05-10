@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: earthquaker-devices-hizumitas-fuzz-purple-sparkle-gear-hero-
+identity:
+  manufacturer: EarthQuaker
+  model: Earthquaker Devices Hizumitas Fuzz, Purple Sparkle (Gear Hero Exclusive)
+  category: effects_pedal
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-05-29'
+  purchased_price_usd: 150.0
+capabilities:
+- effects_processing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

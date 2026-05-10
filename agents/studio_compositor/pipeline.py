@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any
 
@@ -28,6 +29,14 @@ def init_gstreamer() -> tuple[Any, Any]:
     return _GLib, _Gst
 
 
+def _pin_black_background(comp_element: Any) -> None:
+    """Prefer black compositor fill instead of checkerboard/transparent defaults."""
+    try:
+        comp_element.set_property("background", 1)
+    except Exception:
+        log.debug("compositor background property not supported", exc_info=True)
+
+
 def build_pipeline(compositor: Any) -> Any:
     """Build the full GStreamer pipeline."""
     Gst = compositor._Gst
@@ -38,11 +47,17 @@ def build_pipeline(compositor: Any) -> Any:
     )
     compositor._tile_layout = layout
 
-    # Try cudacompositor first, fall back to CPU compositor
-    comp_element = Gst.ElementFactory.make("cudacompositor", "compositor")
+    force_cpu = os.environ.get("HAPAX_COMPOSITOR_FORCE_CPU") == "1"
+    # Try cudacompositor first, fall back to CPU compositor. During live
+    # incident containment HAPAX_COMPOSITOR_FORCE_CPU=1 is an actual
+    # construction gate, not just a preflight label.
+    comp_element = None if force_cpu else Gst.ElementFactory.make("cudacompositor", "compositor")
     compositor._use_cuda = comp_element is not None
     if comp_element is None:
-        log.warning("cudacompositor unavailable — falling back to CPU compositor")
+        if force_cpu:
+            log.warning("HAPAX_COMPOSITOR_FORCE_CPU=1 — using CPU compositor")
+        else:
+            log.warning("cudacompositor unavailable — falling back to CPU compositor")
         comp_element = Gst.ElementFactory.make("compositor", "compositor")
         if comp_element is None:
             raise RuntimeError("Neither cudacompositor nor compositor plugin available")
@@ -80,6 +95,7 @@ def build_pipeline(compositor: Any) -> Any:
             comp_element.set_property("ignore-inactive-pads", True)
         except Exception:
             log.debug("cudacompositor: ignore-inactive-pads property not supported", exc_info=True)
+    _pin_black_background(comp_element)
     pipeline.add(comp_element)
 
     fps = compositor.config.framerate
@@ -181,29 +197,53 @@ def build_pipeline(compositor: Any) -> Any:
     # eliminates the 15-30s ASYNC timeout that caused persistent v4l2
     # stalls and OBS source loss. Recovery transitions now complete
     # in <1s because the output pipeline has no GL elements.
-    from .v4l2_output_pipeline import INTERPIPE_CHANNEL, V4l2OutputPipeline
-
-    v4l2_interpipe = Gst.ElementFactory.make("interpipesink", INTERPIPE_CHANNEL)
-    if v4l2_interpipe is None:
-        raise RuntimeError("interpipesink factory failed — gst-plugin-interpipe not installed")
-    v4l2_interpipe.set_property("sync", False)
-    v4l2_interpipe.set_property("async", False)
-    v4l2_interpipe.set_property("forward-events", False)
-    v4l2_interpipe.set_property("forward-eos", False)
-    pipeline.add(v4l2_interpipe)
-
-    tee_pad = output_tee.request_pad(output_tee.get_pad_template("src_%u"), None, None)
-    tee_pad.link(v4l2_interpipe.get_static_pad("sink"))
-
-    compositor._v4l2_output_pipeline = V4l2OutputPipeline(
-        gst=Gst,
-        device=compositor.config.output_device,
-        width=compositor.config.output_width,
-        height=compositor.config.output_height,
-        fps=fps,
-        on_frame=compositor._on_v4l2_frame_pushed,
+    from .shmsink_output_pipeline import (
+        INTERPIPE_CHANNEL,
+        is_bridge_enabled,
+        is_v4l2_output_disabled,
     )
-    compositor._v4l2_output_pipeline.build()
+    from .v4l2_output_pipeline import V4l2OutputPipeline
+
+    if is_v4l2_output_disabled():
+        compositor._v4l2_output_pipeline = None
+        log.warning("HAPAX_COMPOSITOR_DISABLE_V4L2_OUTPUT=1 — skipping v4l2/shmsink output branch")
+    else:
+        v4l2_interpipe = Gst.ElementFactory.make("interpipesink", INTERPIPE_CHANNEL)
+        if v4l2_interpipe is None:
+            raise RuntimeError("interpipesink factory failed — gst-plugin-interpipe not installed")
+        v4l2_interpipe.set_property("sync", False)
+        v4l2_interpipe.set_property("async", False)
+        v4l2_interpipe.set_property("forward-events", False)
+        v4l2_interpipe.set_property("forward-eos", False)
+        pipeline.add(v4l2_interpipe)
+
+        tee_pad = output_tee.request_pad(output_tee.get_pad_template("src_%u"), None, None)
+        tee_pad.link(v4l2_interpipe.get_static_pad("sink"))
+
+        if is_bridge_enabled():
+            from .shmsink_output_pipeline import ShmsinkOutputPipeline
+
+            compositor._v4l2_output_pipeline = ShmsinkOutputPipeline(
+                gst=Gst,
+                width=compositor.config.output_width,
+                height=compositor.config.output_height,
+                fps=fps,
+                on_frame=compositor._on_shmsink_frame_pushed,
+            )
+            log.info(
+                "v4l2 output: shmsink bridge path (sidecar writes to %s)",
+                compositor.config.output_device,
+            )
+        else:
+            compositor._v4l2_output_pipeline = V4l2OutputPipeline(
+                gst=Gst,
+                device=compositor.config.output_device,
+                width=compositor.config.output_width,
+                height=compositor.config.output_height,
+                fps=fps,
+                on_frame=compositor._on_v4l2_frame_pushed,
+            )
+        compositor._v4l2_output_pipeline.build()
 
     if compositor.config.hls.enabled:
         add_hls_branch(compositor, pipeline, output_tee, fps)

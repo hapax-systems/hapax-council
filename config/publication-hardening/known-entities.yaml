@@ -1,0 +1,165 @@
+# Known-entities registry — maps products/services to their parent companies.
+#
+# The entity_checker scans text for attribution patterns like
+# "X's Y" or "Y by X" and flags mismatches against this registry.
+# Triggered by the Codex/Anthropic misattribution incident (2026-05-09).
+#
+# Adding entries: every product/service name that an LLM-authored
+# publication might mention should be listed under its parent company.
+# Aliases (case-insensitive alternates) prevent near-miss evasion.
+
+companies:
+  Anthropic:
+    products:
+      - name: Claude
+        aliases: [claude]
+      - name: Claude Code
+        aliases: [claude code, claude-code]
+      - name: Claude Opus
+        aliases: [claude opus]
+      - name: Claude Sonnet
+        aliases: [claude sonnet]
+      - name: Claude Haiku
+        aliases: [claude haiku]
+
+  OpenAI:
+    products:
+      - name: Codex
+        aliases: [codex, openai codex]
+      - name: ChatGPT
+        aliases: [chatgpt, chat gpt]
+      - name: GPT-4
+        aliases: [gpt-4, gpt4, gpt 4]
+      - name: GPT-4o
+        aliases: [gpt-4o, gpt4o]
+      - name: GPT-3.5
+        aliases: [gpt-3.5, gpt3.5]
+      - name: DALL-E
+        aliases: [dall-e, dalle, dall·e]
+      - name: Whisper
+        aliases: [openai whisper]
+      - name: Sora
+        aliases: [sora]
+      - name: o1
+        aliases: [o1-preview, o1-mini]
+      - name: o3
+        aliases: [o3, o3-mini]
+      - name: Codex CLI
+        aliases: [codex cli, codex-cli]
+
+  Google:
+    products:
+      - name: Gemini
+        aliases: [gemini, google gemini]
+      - name: Gemma
+        aliases: [gemma]
+      - name: PaLM
+        aliases: [palm, palm 2]
+      - name: Bard
+        aliases: [bard]
+      - name: Veo
+        aliases: [veo]
+      - name: Imagen
+        aliases: [imagen]
+      - name: NotebookLM
+        aliases: [notebooklm, notebook lm]
+
+  Google DeepMind:
+    products:
+      - name: AlphaFold
+        aliases: [alphafold, alpha fold]
+      - name: AlphaGo
+        aliases: [alphago]
+
+  Meta:
+    products:
+      - name: Llama
+        aliases: [llama, llama 2, llama 3, llama 4]
+      - name: Code Llama
+        aliases: [code llama, codellama]
+      - name: SAM
+        aliases: [segment anything]
+
+  Microsoft:
+    products:
+      - name: Copilot
+        aliases: [microsoft copilot, github copilot]
+      - name: Phi
+        aliases: [phi-3, phi-4, phi3, phi4]
+      - name: Bing Chat
+        aliases: [bing chat]
+
+  Stability AI:
+    products:
+      - name: Stable Diffusion
+        aliases: [stable diffusion, stablediffusion, sd]
+      - name: Stable Audio
+        aliases: [stable audio]
+      - name: Stable Video
+        aliases: [stable video]
+
+  Mistral AI:
+    products:
+      - name: Mistral
+        aliases: [mistral]
+      - name: Mixtral
+        aliases: [mixtral]
+      - name: Codestral
+        aliases: [codestral]
+      - name: Le Chat
+        aliases: [le chat]
+
+  Cohere:
+    products:
+      - name: Command R
+        aliases: [command r, command-r, command r+, command-r+, command r plus]
+      - name: Embed
+        aliases: [cohere embed]
+
+  xAI:
+    products:
+      - name: Grok
+        aliases: [grok]
+
+  Amazon:
+    products:
+      - name: Bedrock
+        aliases: [amazon bedrock, aws bedrock]
+      - name: Nova
+        aliases: [amazon nova]
+      - name: Titan
+        aliases: [amazon titan]
+
+  Hugging Face:
+    products:
+      - name: Transformers
+        aliases: [huggingface transformers]
+      - name: Inference API
+        aliases: [hugging face inference]
+
+  Perplexity:
+    products:
+      - name: Perplexity
+        aliases: [perplexity ai]
+
+  Midjourney:
+    products:
+      - name: Midjourney
+        aliases: [midjourney, mid journey]
+
+  Runway:
+    products:
+      - name: Gen-2
+        aliases: [gen-2, gen2]
+      - name: Gen-3
+        aliases: [gen-3, gen3]
+
+  ElevenLabs:
+    products:
+      - name: ElevenLabs
+        aliases: [elevenlabs, eleven labs]
+
+  Cursor:
+    products:
+      - name: Cursor
+        aliases: [cursor]

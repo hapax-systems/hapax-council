@@ -1,4 +1,4 @@
-"""Connectivity checks (Tailscale, ntfy, n8n, Obsidian, GDrive, Watch, Phone)."""
+"""Connectivity checks (Tailscale, ntfy, n8n, Obsidian, GDrive, Watch, Phone, KDE Connect)."""
 
 from __future__ import annotations
 
@@ -305,6 +305,100 @@ async def check_phone_connected() -> list[CheckResult]:
             group="connectivity",
             status=Status.HEALTHY,
             message=f"Phone connected, battery {battery}%",
+            duration_ms=_u._timed(t),
+            tier=3,
+        )
+    ]
+
+
+@check_group("connectivity")
+async def check_kdeconnect_bridge() -> list[CheckResult]:
+    """Check if KDE Connect bridge service is running (tier 3)."""
+    t = time.monotonic()
+    rc, out, _ = await _u.run_cmd(
+        ["systemctl", "--user", "is-active", "hapax-kdeconnect-bridge.service"]
+    )
+    active = (out or "").strip() == "active"
+    if active:
+        return [
+            CheckResult(
+                name="connectivity.kdeconnect_bridge",
+                group="connectivity",
+                status=Status.HEALTHY,
+                message="KDE Connect bridge running",
+                duration_ms=_u._timed(t),
+                tier=3,
+            )
+        ]
+    return [
+        CheckResult(
+            name="connectivity.kdeconnect_bridge",
+            group="connectivity",
+            status=Status.DEGRADED,
+            message="KDE Connect bridge not running",
+            duration_ms=_u._timed(t),
+            tier=3,
+        )
+    ]
+
+
+@check_group("connectivity")
+async def check_companion_fleet() -> list[CheckResult]:
+    """Aggregate companion fleet status: watch + phone + KDE Connect bridge."""
+    t = time.monotonic()
+    devices_ok = 0
+    devices_total = 3
+    details: list[str] = []
+
+    # Watch
+    conn_file = _c.WATCH_STATE_DIR / "connection.json"
+    if conn_file.exists():
+        try:
+            data = json.loads(conn_file.read_text())
+            age_h = (time.time() - data.get("last_seen_epoch", 0)) / 3600
+            if age_h < 1:
+                devices_ok += 1
+                details.append("watch:ok")
+            else:
+                details.append(f"watch:{age_h:.0f}h ago")
+        except (json.JSONDecodeError, OSError):
+            details.append("watch:unreadable")
+    else:
+        details.append("watch:unconfigured")
+
+    # Phone
+    phone_file = _c.WATCH_STATE_DIR / "phone_connection.json"
+    if phone_file.exists():
+        try:
+            data = json.loads(phone_file.read_text())
+            age_h = (time.time() - data.get("last_seen_epoch", 0)) / 3600
+            if age_h < 1:
+                devices_ok += 1
+                details.append("phone:ok")
+            else:
+                details.append(f"phone:{age_h:.0f}h ago")
+        except (json.JSONDecodeError, OSError):
+            details.append("phone:unreadable")
+    else:
+        details.append("phone:unconfigured")
+
+    # KDE Connect bridge
+    rc, out, _ = await _u.run_cmd(
+        ["systemctl", "--user", "is-active", "hapax-kdeconnect-bridge.service"]
+    )
+    if (out or "").strip() == "active":
+        devices_ok += 1
+        details.append("kdeconnect:ok")
+    else:
+        details.append("kdeconnect:down")
+
+    status = Status.HEALTHY if devices_ok == devices_total else Status.DEGRADED
+    return [
+        CheckResult(
+            name="connectivity.companion_fleet",
+            group="connectivity",
+            status=status,
+            message=f"{devices_ok}/{devices_total} online ({', '.join(details)})",
             duration_ms=_u._timed(t),
             tier=3,
         )

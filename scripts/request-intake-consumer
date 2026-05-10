@@ -18,10 +18,21 @@ RECEIPTS_DIR="${HAPAX_REQUEST_RECEIPTS:-$HOME/.cache/hapax/request-receipts}"
 STATE_PATH="${HAPAX_REQUEST_INTAKE_STATE:-$HOME/.cache/hapax/request-intake-state.json}"
 ROLE="${CLAUDE_ROLE:-${HAPAX_AGENT_NAME:-unknown}}"
 STALE_SECONDS="${HAPAX_REQUEST_STALE_SECONDS:-600}"
+TASKS_DIR="${HAPAX_CC_TASKS_DIR:-$HOME/Documents/Personal/20-projects/hapax-cc-tasks}"
+PLANNING_FEED_PATH="${HAPAX_PLANNING_FEED_STATE:-$HOME/.cache/hapax/planning-feed-state.json}"
+ACTIVE_CLAIMS_DIR="${HAPAX_CC_CLAIMS_DIR:-$HOME/.cache/hapax}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+STALE_CAPTURED_HOURS="${HAPAX_STALE_CAPTURED_HOURS:-24}"
+STALE_ASSIGNMENT_HOURS="${HAPAX_STALE_ASSIGNMENT_HOURS:-72}"
+STALE_CASE_HOURS="${HAPAX_STALE_CASE_HOURS:-168}"
+STALE_OFFERED_HOURS="${HAPAX_STALE_OFFERED_HOURS:-48}"
+STALE_COMPLETION_HOURS="${HAPAX_STALE_COMPLETION_HOURS:-168}"
 
 MODE="list"
 WRITE_RECEIPT=0
 WRITE_STATE=0
+WRITE_PLANNING_FEED=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -36,6 +47,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --state-path)
       STATE_PATH="${2:?--state-path requires a path}"
+      shift 2
+      ;;
+    --write-planning-feed)
+      WRITE_PLANNING_FEED=1
+      shift
+      ;;
+    --planning-feed-path)
+      PLANNING_FEED_PATH="${2:?--planning-feed-path requires a path}"
       shift 2
       ;;
     --session-preamble)
@@ -71,6 +90,379 @@ compact_value() {
   tr -d '[:space:]'
 }
 
+build_task_index() {
+  declare -gA _ti_offered _ti_claimed _ti_done _ti_last_activity
+  for td in "$TASKS_DIR/active" "$TASKS_DIR/closed"; do
+    [[ -d "$td" ]] || continue
+    local is_closed=0
+    [[ "$td" == *"/closed" ]] && is_closed=1
+    for tn in "$td"/*.md; do
+      [[ -f "$tn" ]] || continue
+      local tp
+      tp="$(frontmatter_value parent_request "$tn")"
+      [[ -z "$tp" ]] && continue
+      local req_key ts tu
+      req_key="${tp##*/}"
+      ts="$(frontmatter_value status "$tn" | compact_value)"
+      tu="$(frontmatter_value updated_at "$tn" | compact_value)"
+      case "$ts" in
+        claimed|in_progress)
+          _ti_claimed["$req_key"]=$(( ${_ti_claimed["$req_key"]:-0} + 1 )) ;;
+        offered)
+          _ti_offered["$req_key"]=$(( ${_ti_offered["$req_key"]:-0} + 1 )) ;;
+        done|closed|complete)
+          _ti_done["$req_key"]=$(( ${_ti_done["$req_key"]:-0} + 1 )) ;;
+        *)
+          if [[ $is_closed -eq 1 ]]; then
+            _ti_done["$req_key"]=$(( ${_ti_done["$req_key"]:-0} + 1 ))
+          else
+            _ti_offered["$req_key"]=$(( ${_ti_offered["$req_key"]:-0} + 1 ))
+          fi ;;
+      esac
+      if [[ -n "$tu" ]]; then
+        local prev="${_ti_last_activity["$req_key"]:-}"
+        if [[ -z "$prev" || "$tu" > "$prev" ]]; then
+          _ti_last_activity["$req_key"]="$tu"
+        fi
+      fi
+    done
+  done
+}
+
+build_dispatch_json() {
+  ACTIVE_DIR="$ACTIVE_DIR" \
+  TASKS_DIR="$TASKS_DIR" \
+  ACTIVE_CLAIMS_DIR="$ACTIVE_CLAIMS_DIR" \
+  REPO_ROOT="$REPO_ROOT" \
+  PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}" \
+  STALE_CAPTURED_HOURS="$STALE_CAPTURED_HOURS" \
+  STALE_ASSIGNMENT_HOURS="$STALE_ASSIGNMENT_HOURS" \
+  STALE_CASE_HOURS="$STALE_CASE_HOURS" \
+  STALE_OFFERED_HOURS="$STALE_OFFERED_HOURS" \
+  STALE_COMPLETION_HOURS="$STALE_COMPLETION_HOURS" \
+  python3 - <<'PY'
+from __future__ import annotations
+
+import json
+import os
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+
+from shared.capacity_routing_dashboard import (
+    build_capacity_routing_dashboard,
+    parse_optional_utc,
+)
+from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
+from shared.route_metadata_schema import assess_route_metadata
+
+requests_dir = Path(os.environ["ACTIVE_DIR"])
+tasks_dir = Path(os.environ["TASKS_DIR"])
+claims_dir = Path(os.environ["ACTIVE_CLAIMS_DIR"])
+now = datetime.now(timezone.utc)
+capacity_now = parse_optional_utc(os.environ.get("HAPAX_CAPACITY_ROUTING_NOW")) or now
+capacity_registry_env = os.environ.get("HAPAX_PLATFORM_CAPABILITY_REGISTRY")
+capacity_ledger_env = os.environ.get("HAPAX_QUOTA_SPEND_LEDGER")
+capacity_registry_path = (
+    Path(capacity_registry_env)
+    if capacity_registry_env
+    else Path(os.environ["REPO_ROOT"]) / "config" / "platform-capability-registry.json"
+)
+capacity_ledger_path = (
+    Path(capacity_ledger_env)
+    if capacity_ledger_env
+    else Path(os.environ["REPO_ROOT"]) / "config" / "quota-spend-ledger-fixtures.json"
+)
+
+thresholds = {
+    "stale_captured": int(os.environ["STALE_CAPTURED_HOURS"]),
+    "stale_assignment": int(os.environ["STALE_ASSIGNMENT_HOURS"]),
+    "stale_case": int(os.environ["STALE_CASE_HOURS"]),
+    "stale_offered": int(os.environ["STALE_OFFERED_HOURS"]),
+    "stale_completion": int(os.environ["STALE_COMPLETION_HOURS"]),
+}
+
+
+def parse_frontmatter(path: Path) -> dict[str, object]:
+    data, _body = parse_document_frontmatter(path)
+    return data
+
+
+def scalar(data: dict[str, object], key: str) -> str:
+    value = data.get(key, "")
+    if isinstance(value, list):
+        return ""
+    text = str(value).strip()
+    return "" if text in {"", "null", "None", "unassigned"} else text
+
+
+def list_value(data: dict[str, object], key: str) -> list[str]:
+    value = data.get(key, [])
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
+    if not text or text in {"null", "None"}:
+        return []
+    return [text]
+
+
+def parse_time(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def age_hours(value: str) -> int:
+    parsed = parse_time(value)
+    if not parsed:
+        return 0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0, int((now - parsed).total_seconds() // 3600))
+
+
+def resolve_ref_exists(value: str) -> bool:
+    if not value:
+        return False
+    expanded = os.path.expanduser(value)
+    if Path(expanded).exists():
+        return True
+    if value.startswith("REQ-"):
+        return bool(list(requests_dir.glob(f"{value}*.md")))
+    if value.endswith(".md"):
+        return Path(expanded).exists()
+    return False
+
+
+def task_id_for(path: Path, data: dict[str, object]) -> str:
+    return scalar(data, "task_id") or scalar(data, "id") or path.stem
+
+
+closed_ids: set[str] = set()
+for closed_path in sorted((tasks_dir / "closed").glob("*.md")):
+    data = parse_frontmatter(closed_path)
+    closed_ids.add(task_id_for(closed_path, data))
+    closed_ids.add(closed_path.stem)
+
+active_claims: set[str] = set()
+for claim in sorted(claims_dir.glob("cc-active-task-*")):
+    try:
+        text = claim.read_text(encoding="utf-8").strip()
+    except OSError:
+        continue
+    if text:
+        active_claims.add(text)
+
+task_index: dict[str, dict[str, int]] = {}
+for task_dir in (tasks_dir / "active", tasks_dir / "closed"):
+    for task_path in sorted(task_dir.glob("*.md")):
+        data = parse_frontmatter(task_path)
+        parent_request = scalar(data, "parent_request")
+        if not parent_request:
+            continue
+        key = Path(parent_request).name
+        value = task_index.setdefault(key, {"offered": 0, "claimed": 0, "done": 0})
+        status = scalar(data, "status")
+        if status in {"claimed", "in_progress"}:
+            value["claimed"] += 1
+        elif status == "offered":
+            value["offered"] += 1
+        elif status in {"done", "closed", "complete"} or task_dir.name == "closed":
+            value["done"] += 1
+        else:
+            value["offered"] += 1
+
+dispatchable: list[dict[str, object]] = []
+planning_queue: list[dict[str, object]] = []
+route_metadata_summary = {"explicit": 0, "derived": 0, "hold": 0, "malformed": 0}
+route_metadata_items: list[dict[str, object]] = []
+
+for request_path in sorted(requests_dir.glob("*.md")):
+    data = parse_frontmatter(request_path)
+    if scalar(data, "type") != "hapax-request":
+        continue
+    request_id = scalar(data, "request_id")
+    if not request_id:
+        continue
+    status = scalar(data, "status")
+    planning_case = scalar(data, "planning_case")
+    intake_owner = scalar(data, "intake_owner")
+    counts = task_index.get(request_path.name, {"offered": 0, "claimed": 0, "done": 0})
+    if status == "fulfilled":
+        coverage = "fulfilled"
+    elif counts["claimed"] > 0:
+        coverage = "task_active"
+    elif counts["offered"] > 0:
+        coverage = "task_offered"
+    elif counts["done"] > 0:
+        coverage = "task_complete_only"
+    elif planning_case:
+        coverage = "case_linked"
+    elif intake_owner:
+        coverage = "assigned_only"
+    else:
+        coverage = "untracked"
+
+    hours = age_hours(scalar(data, "updated_at"))
+    staleness = None
+    if coverage == "untracked" and status == "captured" and hours >= thresholds["stale_captured"]:
+        staleness = "stale_captured"
+    elif coverage == "assigned_only" and hours >= thresholds["stale_assignment"]:
+        staleness = "stale_assignment"
+    elif coverage == "case_linked" and hours >= thresholds["stale_case"]:
+        staleness = "stale_case"
+    elif coverage == "task_offered" and hours >= thresholds["stale_offered"]:
+        staleness = "stale_offered"
+    elif coverage == "task_complete_only" and hours >= thresholds["stale_completion"]:
+        staleness = "stale_completion"
+
+    if staleness or coverage == "untracked":
+        action_by_coverage = {
+            "untracked": "needs triage and intake assignment",
+            "assigned_only": "needs authority case creation",
+            "case_linked": "needs task creation under case",
+            "task_offered": "has offered tasks awaiting claim",
+            "task_complete_only": "all tasks complete, request not yet fulfilled",
+        }
+        urgency_by_coverage = {
+            "untracked": 1,
+            "assigned_only": 3,
+            "case_linked": 4,
+            "task_offered": 5,
+            "task_complete_only": 6,
+        }
+        planning_queue.append(
+            {
+                "item_type": "request",
+                "request_id": request_id,
+                "title": scalar(data, "title"),
+                "coverage": coverage,
+                "action_needed": action_by_coverage.get(coverage, "needs review"),
+                "urgency_rank": urgency_by_coverage.get(coverage, 9),
+                "age_hours": hours,
+                "staleness": staleness,
+            }
+        )
+
+for task_path in sorted((tasks_dir / "active").glob("*.md")):
+    data = parse_frontmatter(task_path)
+    if scalar(data, "status") != "offered":
+        continue
+    task_id = task_id_for(task_path, data)
+    title = scalar(data, "title")
+    authority_case = scalar(data, "authority_case")
+    parent_spec = scalar(data, "parent_spec")
+    parent_request = scalar(data, "parent_request")
+    depends_on = list_value(data, "depends_on")
+
+    def queue_task(
+        action: str, rank: int = 2, route_metadata: dict[str, object] | None = None
+    ) -> None:
+        planning_queue.append(
+            {
+                "item_type": "task",
+                "task_id": task_id,
+                "title": title,
+                "coverage": "task_offered",
+                "action_needed": action,
+                "urgency_rank": rank,
+                "age_hours": age_hours(scalar(data, "created_at")),
+                "staleness": None,
+                "route_metadata": route_metadata,
+            }
+        )
+
+    if not task_id:
+        queue_task("malformed task metadata", 2)
+        continue
+    if not re.match(r"^CASE-[A-Z0-9-]+$", authority_case):
+        queue_task("needs authority case", 2)
+        continue
+    if not (resolve_ref_exists(parent_spec) or resolve_ref_exists(parent_request)):
+        queue_task("needs parent spec or request", 2)
+        continue
+    if any(dep not in closed_ids for dep in depends_on):
+        continue
+    if task_id in active_claims:
+        continue
+
+    route_assessment = assess_route_metadata(data)
+    route_metadata_summary[route_assessment.status.value] += 1
+    route_metadata_status = route_assessment.planning_status()
+    if not route_assessment.dispatchable:
+        reasons = (
+            route_assessment.hold_reasons
+            or route_assessment.validation_errors
+            or ["invalid_route_metadata"]
+        )
+        route_metadata_items.append(
+            {
+                "task_id": task_id,
+                "status": route_assessment.status.value,
+                "evidence_refs": [f"cc-task:{task_id}:route_metadata"],
+                "reasons": list(reasons),
+            }
+        )
+        queue_task(f"route metadata hold: {', '.join(reasons)}", 2, route_metadata_status)
+        continue
+
+    try:
+        wsjf = float(scalar(data, "wsjf") or scalar(data, "wsjf_score") or "0")
+    except ValueError:
+        wsjf = 0.0
+    dispatchable.append(
+        {
+            "task_id": task_id,
+            "title": title,
+            "wsjf": wsjf,
+            "priority": scalar(data, "priority"),
+            "authority_case": authority_case,
+            "parent_request": parent_request,
+            "parent_spec": parent_spec,
+            "offered_at": scalar(data, "created_at") or scalar(data, "updated_at"),
+            "offered_hours": age_hours(scalar(data, "created_at") or scalar(data, "updated_at")),
+            "train": scalar(data, "train"),
+            "kind": scalar(data, "kind") or scalar(data, "task_type"),
+            "risk_tier": scalar(data, "risk_tier") or scalar(data, "tier"),
+            "tags": list_value(data, "tags"),
+            "route_metadata": route_metadata_status,
+        }
+    )
+
+dispatchable.sort(key=lambda item: (-float(item["wsjf"]), str(item["offered_at"])))
+planning_queue.sort(key=lambda item: (int(item["urgency_rank"]), -int(item["age_hours"])))
+capacity_routing_dashboard = build_capacity_routing_dashboard(
+    route_metadata_summary=route_metadata_summary,
+    route_metadata_items=route_metadata_items,
+    route_metadata_generated_at=capacity_now,
+    registry_path=capacity_registry_path,
+    quota_spend_ledger_path=capacity_ledger_path,
+    now=capacity_now,
+)
+
+print(
+    json.dumps(
+        {
+            "readiness": "ready",
+            "readiness_reason": None,
+            "ranking_basis": "wsjf_v0",
+            "route_metadata_summary": route_metadata_summary,
+            "dispatchable_count": len(dispatchable),
+            "planning_attention_count": len(planning_queue),
+            "dispatchable_tasks": dispatchable,
+            "planning_queue": planning_queue,
+            "capacity_routing": capacity_routing_dashboard.model_dump(mode="json"),
+        },
+        indent=2,
+        sort_keys=False,
+    )
+)
+PY
+}
+
 write_state() {
   local generated_at
   generated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -86,6 +478,159 @@ write_state() {
   "total_attention_count": $total
 }
 STATE
+}
+
+write_planning_feed() {
+  local generated_at now_epoch
+  generated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  now_epoch=$(date +%s)
+  mkdir -p "$(dirname "$PLANNING_FEED_PATH")"
+
+  local total_requests=0
+  local c_untracked=0 c_assigned_only=0 c_case_linked=0
+  local c_task_offered=0 c_task_active=0 c_task_complete_only=0 c_fulfilled=0
+  local s_stale_captured=0 s_stale_assignment=0 s_stale_case=0
+  local s_stale_offered=0 s_stale_completion=0
+  local requests_json="" attention_json=""
+  local first_req=1 first_attn=1
+
+  build_task_index
+
+  for note in "$ACTIVE_DIR"/*.md; do
+    [[ -f "$note" ]] || continue
+    [[ "$(frontmatter_value type "$note" | compact_value)" == "hapax-request" ]] || continue
+    local req_id
+    req_id="$(frontmatter_value request_id "$note" | compact_value)"
+    [[ -z "$req_id" ]] && continue
+
+    total_requests=$((total_requests + 1))
+    local pf_status pf_title intake_owner planning_case pf_updated_at
+    pf_status="$(frontmatter_value status "$note" | compact_value)"
+    pf_title="$(frontmatter_value title "$note")"
+    intake_owner="$(frontmatter_value intake_owner "$note" | compact_value)"
+    planning_case="$(frontmatter_value planning_case "$note" | compact_value)"
+    pf_updated_at="$(frontmatter_value updated_at "$note" | compact_value)"
+    [[ "$planning_case" == "null" ]] && planning_case=""
+    [[ "$intake_owner" == "null" || "$intake_owner" == "unassigned" ]] && intake_owner=""
+
+    local req_basename
+    req_basename="$(basename "$note")"
+    local offered=${_ti_offered["$req_basename"]:-0}
+    local claimed=${_ti_claimed["$req_basename"]:-0}
+    local done_count=${_ti_done["$req_basename"]:-0}
+    local last_activity="${_ti_last_activity["$req_basename"]:-}"
+
+    local active_tasks=$((offered + claimed))
+    local total_tasks=$((active_tasks + done_count))
+
+    local coverage
+    if [[ "$pf_status" == "fulfilled" ]]; then
+      coverage="fulfilled"; c_fulfilled=$((c_fulfilled + 1))
+    elif [[ $claimed -gt 0 ]]; then
+      coverage="task_active"; c_task_active=$((c_task_active + 1))
+    elif [[ $offered -gt 0 ]]; then
+      coverage="task_offered"; c_task_offered=$((c_task_offered + 1))
+    elif [[ $done_count -gt 0 ]]; then
+      coverage="task_complete_only"; c_task_complete_only=$((c_task_complete_only + 1))
+    elif [[ -n "$planning_case" ]]; then
+      coverage="case_linked"; c_case_linked=$((c_case_linked + 1))
+    elif [[ -n "$intake_owner" ]]; then
+      coverage="assigned_only"; c_assigned_only=$((c_assigned_only + 1))
+    else
+      coverage="untracked"; c_untracked=$((c_untracked + 1))
+    fi
+
+    local staleness_flag="" age_hours=0
+    if [[ -n "$pf_updated_at" ]]; then
+      local ue
+      ue=$(date -d "$pf_updated_at" +%s 2>/dev/null || echo 0)
+      [[ $ue -gt 0 ]] && age_hours=$(( (now_epoch - ue) / 3600 ))
+    fi
+    case "$coverage" in
+      untracked)
+        [[ "$pf_status" == "captured" && $age_hours -ge $STALE_CAPTURED_HOURS ]] && {
+          staleness_flag="stale_captured"; s_stale_captured=$((s_stale_captured + 1))
+        } ;;
+      assigned_only)
+        [[ $age_hours -ge $STALE_ASSIGNMENT_HOURS ]] && {
+          staleness_flag="stale_assignment"; s_stale_assignment=$((s_stale_assignment + 1))
+        } ;;
+      case_linked)
+        [[ $age_hours -ge $STALE_CASE_HOURS ]] && {
+          staleness_flag="stale_case"; s_stale_case=$((s_stale_case + 1))
+        } ;;
+      task_offered)
+        [[ $age_hours -ge $STALE_OFFERED_HOURS ]] && {
+          staleness_flag="stale_offered"; s_stale_offered=$((s_stale_offered + 1))
+        } ;;
+      task_complete_only)
+        [[ $age_hours -ge $STALE_COMPLETION_HOURS ]] && {
+          staleness_flag="stale_completion"; s_stale_completion=$((s_stale_completion + 1))
+        } ;;
+    esac
+
+    local staleness_json="null"
+    [[ -n "$staleness_flag" ]] && staleness_json="\"$staleness_flag\""
+    local last_json="null"
+    [[ -n "$last_activity" ]] && last_json="\"$last_activity\""
+    local jtitle
+    jtitle=$(printf '%s' "$pf_title" | sed 's/\\/\\\\/g; s/"/\\"/g')
+
+    local comma=""
+    [[ $first_req -eq 0 ]] && comma=","
+    first_req=0
+    requests_json="${requests_json}${comma}
+    {\"request_id\":\"${req_id}\",\"title\":\"${jtitle}\",\"status\":\"${pf_status}\",\"coverage\":\"${coverage}\",\"planning_case\":\"${planning_case}\",\"active_tasks\":${active_tasks},\"closed_tasks\":${done_count},\"total_tasks\":${total_tasks},\"last_task_activity\":${last_json},\"staleness\":${staleness_json}}"
+
+    if [[ -n "$staleness_flag" || "$coverage" == "untracked" ]]; then
+      local action=""
+      case "$coverage" in
+        untracked) action="needs triage and intake assignment" ;;
+        assigned_only) action="needs authority case creation" ;;
+        case_linked) action="needs task creation under case" ;;
+        task_offered) action="has offered tasks awaiting claim" ;;
+        task_complete_only) action="all tasks complete, request not yet fulfilled" ;;
+        *) action="needs review" ;;
+      esac
+      comma=""
+      [[ $first_attn -eq 0 ]] && comma=","
+      first_attn=0
+      attention_json="${attention_json}${comma}
+    {\"request_id\":\"${req_id}\",\"coverage\":\"${coverage}\",\"staleness\":${staleness_json},\"age_hours\":${age_hours},\"action\":\"${action}\"}"
+    fi
+  done
+
+  local dispatch_json
+  dispatch_json="$(build_dispatch_json)"
+
+  cat > "$PLANNING_FEED_PATH" <<FEED
+{
+  "generated_at": "${generated_at}",
+  "generator": "request-intake-consumer --write-planning-feed",
+  "total_requests": ${total_requests},
+  "coverage_summary": {
+    "untracked": ${c_untracked},
+    "assigned_only": ${c_assigned_only},
+    "case_linked": ${c_case_linked},
+    "task_offered": ${c_task_offered},
+    "task_active": ${c_task_active},
+    "task_complete_only": ${c_task_complete_only},
+    "fulfilled": ${c_fulfilled}
+  },
+  "stale_summary": {
+    "stale_captured": ${s_stale_captured},
+    "stale_assignment": ${s_stale_assignment},
+    "stale_case": ${s_stale_case},
+    "stale_offered": ${s_stale_offered},
+    "stale_completion": ${s_stale_completion}
+  },
+  "attention_required": [${attention_json}
+  ],
+  "requests": [${requests_json}
+  ],
+  "dispatch": ${dispatch_json}
+}
+FEED
 }
 
 unread_count=0
@@ -120,6 +665,7 @@ for note in "$ACTIVE_DIR"/*.md; do
 
   receipt_file="$RECEIPTS_DIR/${req_id}.yaml"
 
+  receipt_stale=0
   if [[ -f "$receipt_file" ]]; then
     receipt_ts="$(frontmatter_value checked_at "$receipt_file" | compact_value)"
     receipt_updated="$(frontmatter_value observed_updated_at "$receipt_file" | compact_value)"
@@ -131,13 +677,17 @@ for note in "$ACTIVE_DIR"/*.md; do
       if [[ $age -gt $STALE_SECONDS ]]; then
         stale_count=$((stale_count + 1))
         unread_lines="${unread_lines}    STALE [${status}] ${req_id} — ${title} (receipt ${age}s old)\n"
+        receipt_stale=1
+      else
+        continue
       fi
-      continue
     fi
   fi
 
-  unread_count=$((unread_count + 1))
-  unread_lines="${unread_lines}    UNREAD [${status}] ${req_id} — ${title}\n"
+  if [[ "$receipt_stale" -eq 0 ]]; then
+    unread_count=$((unread_count + 1))
+    unread_lines="${unread_lines}    UNREAD [${status}] ${req_id} — ${title}\n"
+  fi
 
   if [[ "$WRITE_RECEIPT" -eq 1 ]]; then
     cat > "$receipt_file" <<RECEIPT
@@ -153,6 +703,11 @@ decision: pending_review
 next_owner: ${ROLE}
 next_check_deadline: $(date -u -d "+1 hour" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
 RECEIPT
+    if [[ "$receipt_stale" -eq 1 ]]; then
+      stale_count=$((stale_count - 1))
+    else
+      unread_count=$((unread_count - 1))
+    fi
   fi
 done
 
@@ -160,6 +715,10 @@ total=$((unread_count + stale_count))
 
 if [[ "$WRITE_STATE" -eq 1 ]]; then
   write_state
+fi
+
+if [[ "$WRITE_PLANNING_FEED" -eq 1 ]]; then
+  write_planning_feed
 fi
 
 if [[ "$MODE" == "preamble" ]]; then

@@ -1,7 +1,7 @@
 [Unit]
 Description=Studio Compositor — GPU-accelerated camera tiling, recording, HLS streaming, and visual effects
 After=hapax-daimonion.service pipewire.service wireplumber.service
-Wants=hapax-daimonion.service
+Wants=hapax-daimonion.service hapax-v4l2-bridge.service
 BindsTo=pipewire.service
 # BindsTo ensures compositor stops when PipeWire stops and restarts
 # when PipeWire restarts. The compositor's pw-cat audio capture process
@@ -29,8 +29,10 @@ OnFailure=notify-failure@%n.service
 Type=notify
 NotifyAccess=main
 WatchdogSec=60s
-WorkingDirectory=%h/projects/hapax-council
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 ExecStartPre=/usr/bin/mkdir -p %h/video-recording %h/.cache/hapax-compositor/hls
+ExecStartPre=/usr/bin/find /dev/shm/hapax-compositor -maxdepth 1 -type s -name v4l2-bridge.sock* -delete
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file agents/studio_compositor/shmsink_output_pipeline.py --require-file scripts/hapax-v4l2-bridge
 # LRR Phase 2 spec §3.2 (item 2) REMOVED: the ExecStartPre `find ... -delete` on
 # the HLS cache dir was a debugging vestige that deleted every unrotated segment
 # on every compositor restart. Phase 2 wants segments PERSISTED to the archive,
@@ -46,8 +48,8 @@ ExecStartPre=/usr/bin/mkdir -p %h/video-recording %h/.cache/hapax-compositor/hls
 # purpose during the restart window. See
 # `docs/research/2026-04-14-lrr-phase-2-hls-archive-dormant.md` §5 "hlssink2
 # retention should be lenient" for the original analysis.
-ExecStartPre=%h/projects/hapax-council/scripts/studio-install-udev-rules.sh
-ExecStartPre=%h/projects/hapax-council/systemd/units/studio-camera-setup.sh
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/studio-install-udev-rules.sh
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/systemd/units/studio-camera-setup.sh
 # Phase 2 archive precheck — verifies hls-archive-rotate.timer is
 # enabled + active and ensures the archive destination dirs exist.
 # Non-fatal: a broken precheck WARNs to journald but never blocks
@@ -56,14 +58,14 @@ ExecStartPre=%h/projects/hapax-council/systemd/units/studio-camera-setup.sh
 # Phase 2 shipped code + unit files without install-units.sh being
 # run — every segment was being deleted at hlssink2 max_files=15 for
 # hours of runtime with zero observable signal.
-ExecStartPre=%h/projects/hapax-council/scripts/studio-compositor-archive-precheck.sh
-ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.studio_compositor
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/studio-compositor-archive-precheck.sh
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.studio_compositor
 # Livestream-performance-map Sprint 6 F7 / W1.5: postmortem capture.
 # Fires on every watchdog timeout, segfault, restart, or manual stop.
 # Saves nvidia-smi dump + journal tail + /dev/shm state + last metrics
 # scrape to ~/hapax-state/postmortem/studio-compositor/{ts}/. Never
 # exits non-zero — a broken hook must not block the shutdown cascade.
-ExecStopPost=%h/projects/hapax-council/scripts/studio-compositor-postmortem.sh
+ExecStopPost=%h/.cache/hapax/source-activation/worktree/scripts/studio-compositor-postmortem.sh
 Restart=on-failure
 RestartSec=10
 SuccessExitStatus=SIGTERM
@@ -71,6 +73,9 @@ Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=%h
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 EnvironmentFile=/run/user/1000/hapax-secrets.env
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=HAPAX_COMPOSITOR_SOURCE_ROOT=%h/.cache/hapax/source-activation/worktree
+Environment=HAPAX_COMPOSITOR_LAYOUT_PATH=%h/.config/hapax-compositor/layouts/default.json
 # Phase 10 observability polish — lock the compositor's CUDA-visible
 # device to index 0 so nvh264enc and cudacompositor can never drift to
 # a different GPU across reboots. Matches delta's sprint-5-delta-audit

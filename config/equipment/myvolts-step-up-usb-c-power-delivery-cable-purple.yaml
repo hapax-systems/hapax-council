@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: myvolts-step-up-usb-c-power-delivery-cable-purple
+identity:
+  manufacturer: MyVolts
+  model: myVolts Step Up USB-C Power Delivery Cable (Purple)
+  category: cable
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2026-01-29'
+  purchased_price_usd: 19.99
+capabilities:
+- audio_routing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

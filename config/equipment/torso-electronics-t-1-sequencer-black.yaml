@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: torso-electronics-t-1-sequencer-black
+identity:
+  manufacturer: Torso
+  model: Torso Electronics T-1 Sequencer - Black
+  category: sequencer
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-04-09'
+  purchased_price_usd: 480.0
+capabilities:
+- step_sequencing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

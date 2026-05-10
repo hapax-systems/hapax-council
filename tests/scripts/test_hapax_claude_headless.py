@@ -43,3 +43,10 @@ def test_headless_source_contains_no_generic_work_pool_prompt() -> None:
     assert "Never stop" not in text
     assert "governed initial message required" in text
     assert "Do not create, select, or claim other work from the task pool." in text
+
+
+def test_headless_source_supports_governed_model_profile_env() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+
+    assert 'MODEL="${HAPAX_CLAUDE_MODEL:-}"' in text
+    assert 'CLAUDE_ARGS+=(--model "$MODEL")' in text

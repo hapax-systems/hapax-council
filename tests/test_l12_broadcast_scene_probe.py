@@ -1,6 +1,6 @@
-"""Tests for the L-12 BROADCAST scene unloaded detector (audit A#6).
+"""Tests for the L-12 BROADCAST wet-return detector (audit A#6).
 
-Synthetic AUX5-cold-during-music input → assert event fires within
+Synthetic AUX8/9-cold-during-music input → assert event fires within
 ``min_silence_s``. Covers:
 
   * pure DSP RMS-in-dBFS calculation on interleaved int16 PCM
@@ -54,25 +54,25 @@ class TestChannelRmsDbfs:
         assert dbfs == float("-inf")
 
     def test_full_scale_sine_returns_around_minus_3_dbfs(self) -> None:
-        # Construct a 14-channel buffer where AUX5 (index 4) carries a
+        # Construct a 14-channel buffer where AUX8 carries a
         # near-full-scale 1 kHz sine; other channels are silent.
         sample_count = 4800
         t = np.arange(sample_count) / 48000.0
         sine = (np.sin(2 * np.pi * 1000.0 * t) * 30000).astype(np.int16)
         buffer = np.zeros((sample_count, 14), dtype=np.int16)
-        buffer[:, 4] = sine
+        buffer[:, 8] = sine
         pcm = buffer.tobytes()
-        dbfs = channel_rms_dbfs(pcm, channels=14, channel_index=4)
+        dbfs = channel_rms_dbfs(pcm, channels=14, channel_index=8)
         # RMS of full-scale sine ≈ 0.707 → 20*log10(0.707 * 30000/32768) ≈ -3.3 dBFS
         assert -4.0 < dbfs < -2.5
 
-    def test_aux5_index_4_isolation(self) -> None:
-        """A loud signal on channel 0 must not bleed into AUX5 reading."""
+    def test_aux8_index_isolation(self) -> None:
+        """A loud signal on channel 0 must not bleed into AUX8 reading."""
         sample_count = 4800
         buffer = np.zeros((sample_count, 14), dtype=np.int16)
         buffer[:, 0] = 30000  # loud DC on channel 0
         pcm = buffer.tobytes()
-        dbfs = channel_rms_dbfs(pcm, channels=14, channel_index=4)
+        dbfs = channel_rms_dbfs(pcm, channels=14, channel_index=8)
         assert dbfs == float("-inf")
 
     def test_short_buffer_truncates_to_whole_frames(self) -> None:
@@ -275,7 +275,7 @@ class TestStatePersistence:
             silent_since=1000.0,
             alert_active=True,
             last_alert_at=1305.0,
-            last_aux5_dbfs=-90.0,
+            last_content_return_dbfs=-90.0,
             last_music_running=True,
             last_checked_at=1310.0,
         )
@@ -300,12 +300,12 @@ class TestSideEffects:
     def test_write_impingement_appends_event_record(self, tmp_path: Path) -> None:
         path = tmp_path / "impingements.jsonl"
         cfg = L12SceneProbeConfig(impingements_file=path)
-        write_impingement(path, aux5_dbfs=-90.0, silent_for_s=305.0, config=cfg)
+        write_impingement(path, content_return_dbfs=-90.0, silent_for_s=305.0, config=cfg)
         lines = path.read_text(encoding="utf-8").strip().splitlines()
         assert len(lines) == 1
         record = json.loads(lines[0])
         assert record["content"]["alert"] == EVENT_NAME
-        assert record["content"]["aux5_dbfs"] == -90.0
+        assert record["content"]["content_return_dbfs"] == -90.0
         assert record["content"]["silent_for_s"] == 305.0
 
     def test_fire_ntfy_alert_dispatches_with_high_priority(self) -> None:
@@ -318,12 +318,12 @@ class TestSideEffects:
 
         cfg = L12SceneProbeConfig()
         fire_ntfy_alert(
-            aux5_dbfs=-90.0,
+            content_return_dbfs=-90.0,
             silent_for_s=305.0,
             config=cfg,
             notifier=fake_notifier,
         )
-        assert "L-12 BROADCAST scene unloaded" in captured["title"]
+        assert "L-12 BROADCAST scene wet return silent" in captured["title"]
         assert "operator-only fix" in captured["message"]
         assert "BROADCAST-V2" in captured["message"]
         assert RUNBOOK_ANCHOR in captured["message"]
@@ -336,7 +336,7 @@ class TestSideEffects:
         cfg = L12SceneProbeConfig()
         # Must not raise
         fire_ntfy_alert(
-            aux5_dbfs=-90.0,
+            content_return_dbfs=-90.0,
             silent_for_s=305.0,
             config=cfg,
             notifier=raising_notifier,
@@ -357,8 +357,8 @@ class TestL12SceneCheckRotation:
         ) -> SceneAssertion:
             return SceneAssertion(
                 ok=False,
-                evidence={"aux5_peak_dbfs": "-inf"},
-                violations=("AUX5/CH6 peak -inf dBFS below -20.0 dBFS threshold",),
+                evidence={"content_return_peak_dbfs": "-inf"},
+                violations=("AUX8 content return L peak -inf dBFS below -10.0 dBFS threshold",),
             )
 
         outcome1 = run_l12_scene_check_rotation(
@@ -456,16 +456,17 @@ def _make_silent_pcm(channels: int = 14, samples: int = 4800) -> bytes:
     return np.zeros(channels * samples, dtype=np.int16).tobytes()
 
 
-def _make_loud_aux5_pcm(channels: int = 14, samples: int = 4800) -> bytes:
+def _make_loud_content_return_pcm(channels: int = 14, samples: int = 4800) -> bytes:
     buffer = np.zeros((samples, channels), dtype=np.int16)
     t = np.arange(samples) / 48000.0
     sine = (np.sin(2 * np.pi * 1000.0 * t) * 25000).astype(np.int16)
-    buffer[:, 4] = sine
+    buffer[:, 8] = sine
+    buffer[:, 9] = sine
     return buffer.tobytes()
 
 
 class TestProbeL12BroadcastScene:
-    """End-to-end synthetic flow: AUX5 silent + music RUNNING → fires ≤ 5min."""
+    """End-to-end synthetic flow: content return silent + music RUNNING → fires."""
 
     def _config(self, tmp_path: Path) -> L12SceneProbeConfig:
         return L12SceneProbeConfig(
@@ -480,7 +481,7 @@ class TestProbeL12BroadcastScene:
         captured = []
 
         def runner(_cfg):
-            return _make_loud_aux5_pcm()
+            return _make_loud_content_return_pcm()
 
         outcome = probe_l12_broadcast_scene(
             config=cfg,
@@ -492,11 +493,13 @@ class TestProbeL12BroadcastScene:
             notifier=lambda *args, **kwargs: captured.append((args, kwargs)),
         )
         assert outcome.fired is False
-        assert outcome.aux5_dbfs > -10.0  # loud AUX5
+        assert outcome.content_return_dbfs > -10.0
         assert outcome.music_running is True
         assert captured == []
 
-    def test_silent_aux5_during_music_fires_within_min_silence(self, tmp_path: Path) -> None:
+    def test_silent_content_return_during_music_fires_within_min_silence(
+        self, tmp_path: Path
+    ) -> None:
         cfg = self._config(tmp_path)
         captured = []
 
@@ -542,7 +545,7 @@ class TestProbeL12BroadcastScene:
         assert outcome3.silent_for_s == pytest.approx(305.0)
         assert len(captured) == 1
         title = captured[0][0][0]
-        assert "BROADCAST scene unloaded" in title
+        assert "BROADCAST scene wet return silent" in title
 
         # Impingement was written
         impingements = (tmp_path / "impingements.jsonl").read_text(encoding="utf-8")
@@ -553,7 +556,9 @@ class TestProbeL12BroadcastScene:
         assert state_payload["alert_active"] is True
         assert state_payload["last_alert_at"] == 1305.0
 
-    def test_music_not_running_does_not_fire_even_with_silent_aux5(self, tmp_path: Path) -> None:
+    def test_music_not_running_does_not_fire_even_with_silent_content_return(
+        self, tmp_path: Path
+    ) -> None:
         cfg = self._config(tmp_path)
         captured = []
         outcome = probe_l12_broadcast_scene(
@@ -590,7 +595,7 @@ class TestProbeL12BroadcastScene:
                 "Sink #1\n        State: RUNNING\n        Name: hapax-music-loudnorm\n"
             ),
         )
-        assert outcome.aux5_dbfs == float("-inf")
+        assert outcome.content_return_dbfs == float("-inf")
         # First tick — accumulates but doesn't fire yet
         assert outcome.fired is False
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import random
 import threading
 import time
@@ -562,6 +563,10 @@ def build_inline_fx_chain(
     all shader effects.
     """
     Gst = compositor._Gst
+    if os.environ.get("HAPAX_COMPOSITOR_DISABLE_INLINE_FX") == "1":
+        compositor._slot_pipeline = None
+        log.warning("HAPAX_COMPOSITOR_DISABLE_INLINE_FX=1 — bypassing GL inline FX chain")
+        return False
 
     # --- Input selector for camera source switching ---
     input_sel = Gst.ElementFactory.make("input-selector", "fx-input-selector")
@@ -764,6 +769,9 @@ def build_inline_fx_chain(
 
 def _make_hero_effect_slot(Gst: Any) -> Any | None:
     """Create the optional dedicated hero-effect GL pass."""
+    if os.environ.get("HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT") == "1":
+        log.info("HeroEffectRotator disabled by HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT=1")
+        return None
     if Gst.ElementFactory.find("glfeedback") is None:
         log.info("HeroEffectRotator disabled: glfeedback factory unavailable")
         return None

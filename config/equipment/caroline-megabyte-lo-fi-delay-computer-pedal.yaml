@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: caroline-megabyte-lo-fi-delay-computer-pedal
+identity:
+  manufacturer: Caroline
+  model: Caroline Megabyte Lo-Fi Delay Computer Pedal
+  category: effects_pedal
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-04-22'
+  purchased_price_usd: 249.0
+capabilities:
+- effects_processing
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync

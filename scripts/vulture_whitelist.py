@@ -133,6 +133,15 @@ from shared.grounding_provider_router import (
     validate_eval_suite,
     validate_provider_registry,
 )
+from shared.live_surface_truth import (
+    assess_live_surface as _assess_live_surface,
+)
+from shared.live_surface_truth import (
+    parse_prometheus_scalars as _parse_prometheus_scalars,
+)
+from shared.live_surface_truth import (
+    snapshot_from_prometheus as _snapshot_from_prometheus,
+)
 from shared.livestream_health_group import LivestreamHealthEnvelope, LivestreamHealthGroup
 from shared.narration_triad import IntendedOutcomeItem, NarrationTriadEnvelope
 from shared.operator_quality_feedback import (
@@ -225,6 +234,13 @@ _programme_source_readiness
 _build_source_packet_inquiry_blackboard
 _source_packet_inquiry_summary
 _render_source_packet_inquiry_seed
+
+# Livestream incident preflight helpers are invoked from the executable
+# ``scripts/hapax-live-surface-preflight``. The project vulture pass scans
+# Python modules but not extensionless script entrypoints.
+_assess_live_surface
+_parse_prometheus_scalars
+_snapshot_from_prometheus
 
 # Pydantic v2 validators for the programme live-prior contract. They are
 # invoked by model validation, not by direct static calls.
@@ -1145,6 +1161,12 @@ check_m8_firmware
 from agents.health_monitor.checks.audio import check_audio_ducker_liveness
 
 check_audio_ducker_liveness
+
+# Companion fleet health checks — registered via @check_group("connectivity").
+from agents.health_monitor.checks.connectivity import check_companion_fleet, check_kdeconnect_bridge
+
+check_kdeconnect_bridge
+check_companion_fleet
 
 # M8Sequencer — director → M8 MIDI dispatch (cc-task:
 # m8-dmn-mute-solo-transport). Currently invoked only via test fixtures;
@@ -2742,3 +2764,135 @@ from agents.studio_compositor.v4l2_output_pipeline import V4l2OutputPipeline  # 
 
 V4l2OutputPipeline.fd_reopen_count
 V4l2OutputPipeline.fd_write_error_count
+
+# Resource topology model (ISAP-RES-01) — pure data model, consumers not yet wired
+from shared.resource_model import (  # noqa: F401, E402
+    ContentionGroup,
+    ResourceConstraint,
+    ResourcePressure,
+    classify_state,
+)
+
+ResourcePressure
+ResourceConstraint
+classify_state
+ContentionGroup._validate_non_empty
+
+from shared.workspace_graph import (  # noqa: F401, E402
+    _resolve_wikilink,
+    by_capability,
+    by_zone,
+    connected_to,
+    signal_chain,
+)
+
+by_capability
+by_zone
+connected_to
+signal_chain
+_resolve_wikilink
+
+from shared.perceptual_coverage import (  # noqa: F401, E402
+    best_mic_for,
+    build_frustum,
+    coverage_gaps,
+    devices_on_stream,
+    mic_sensitivity,
+    which_cameras_see,
+)
+
+best_mic_for
+build_frustum
+coverage_gaps
+devices_on_stream
+mic_sensitivity
+which_cameras_see
+
+from shared.signal_topology import (  # noqa: F401, E402
+    all_signal_paths_from,
+    live_pipewire_graph,
+    signal_neighbors,
+    trace_path,
+    wiring_discrepancies,
+)
+
+all_signal_paths_from
+live_pipewire_graph
+signal_neighbors
+trace_path
+wiring_discrepancies
+
+from shared.assertion_model import (  # noqa: F401, E402
+    Assertion,
+    AssertionType,
+    ProvenanceRecord,
+    SourceType,
+    extract_from_axiom_registry,
+    extract_from_implications,
+)
+
+Assertion
+AssertionType
+ProvenanceRecord
+SourceType
+SourceType.CODE
+SourceType.CONFIG
+SourceType.MARKDOWN
+SourceType.COMMIT
+SourceType.PR
+SourceType.MEMORY
+SourceType.RELAY
+SourceType.TASK
+SourceType.REQUEST
+AssertionType.INVARIANT
+AssertionType.CONSTRAINT
+AssertionType.PREFERENCE
+AssertionType.GOAL
+AssertionType.DECISION
+AssertionType.CLAIM
+AssertionType.COROLLARY
+extract_from_axiom_registry
+extract_from_implications
+AssertionType.FACT
+ProvenanceRecord.source_commit
+ProvenanceRecord.extraction_method
+ProvenanceRecord.extracted_at
+ProvenanceRecord.extraction_version
+ProvenanceRecord.modification_history
+Assertion.assertion_id
+Assertion.text
+Assertion.atomic_facts
+Assertion.source_type
+Assertion.source_uri
+Assertion.source_span
+Assertion.confidence
+Assertion.domain
+Assertion.assertion_type
+Assertion.provenance
+Assertion.tags
+Assertion.supersedes
+Assertion.superseded_by
+Assertion.model_post_init
+
+from shared.code_assertion_extractor import (  # noqa: F401, E402
+    EXTRACTION_VERSION,
+    extract_from_directory,
+    extract_from_python_file,
+)
+
+EXTRACTION_VERSION
+extract_from_directory
+extract_from_python_file
+
+# shmsink sidecar — compositor integration wires these at runtime.
+from agents.studio_compositor.shmsink_output_pipeline import (  # noqa: F401, E402
+    ShmsinkOutputPipeline,
+    is_bridge_enabled,
+)
+
+ShmsinkOutputPipeline
+is_bridge_enabled
+
+from shared.publication_hardening.entity_checker import EntityRegistry  # noqa: F401, E402
+
+EntityRegistry.is_company  # hook + external consumer API

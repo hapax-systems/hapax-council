@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# hapax-v4l2-bridge — shmsrc→v4l2sink sidecar process.
+#
+# Reads frames from shared memory (written by studio-compositor via shmsink)
+# and pushes them to /dev/video42 via v4l2sink. This process owns the
+# v4l2loopback fd so compositor crashes/restarts never touch the kernel
+# device state.
+#
+# Designed to run as a systemd user service (hapax-v4l2-bridge.service)
+# with Restart=on-failure, RestartSec=1s, BindsTo=studio-compositor.service.
+#
+# Usage:
+#   hapax-v4l2-bridge [--device /dev/video42] [--socket /dev/shm/hapax-compositor/v4l2-bridge.sock]
+#   hapax-v4l2-bridge --check   # verify socket exists and device is present
+
+set -euo pipefail
+
+DEVICE="${HAPAX_V4L2_BRIDGE_DEVICE:-/dev/video42}"
+SOCKET="${HAPAX_V4L2_BRIDGE_SOCKET:-/dev/shm/hapax-compositor/v4l2-bridge.sock}"
+WIDTH="${HAPAX_V4L2_BRIDGE_WIDTH:-1280}"
+HEIGHT="${HAPAX_V4L2_BRIDGE_HEIGHT:-720}"
+FPS="${HAPAX_V4L2_BRIDGE_FPS:-30}"
+CHECK_ONLY=false
+ALLOW_MISSING_SOCKET=false
+WAIT_SECONDS="${HAPAX_V4L2_BRIDGE_WAIT_SECONDS:-60}"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --device)  DEVICE="$2"; shift 2 ;;
+        --socket)  SOCKET="$2"; shift 2 ;;
+        --width)   WIDTH="$2"; shift 2 ;;
+        --height)  HEIGHT="$2"; shift 2 ;;
+        --fps)     FPS="$2"; shift 2 ;;
+        --check)   CHECK_ONLY=true; shift ;;
+        --allow-missing-socket) ALLOW_MISSING_SOCKET=true; shift ;;
+        *)         echo "error: unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+
+if [[ "${HAPAX_V4L2_BRIDGE_ENABLED:-1}" != "1" ]]; then
+    echo "hapax-v4l2-bridge: disabled by HAPAX_V4L2_BRIDGE_ENABLED=${HAPAX_V4L2_BRIDGE_ENABLED}"
+    exit 0
+fi
+
+socket_listening() {
+    local socket_path="$1"
+    command -v ss >/dev/null 2>&1 || return 1
+    ss -xlH 2>/dev/null | awk -v socket="$socket_path" '
+        $2 == "LISTEN" && $5 == socket { found = 1 }
+        END { exit(found ? 0 : 1) }
+    '
+}
+
+if $CHECK_ONLY; then
+    ok=true
+    if [[ ! -c "$DEVICE" ]]; then
+        echo "FAIL: device $DEVICE not found"
+        ok=false
+    else
+        echo "OK: device $DEVICE exists"
+    fi
+    if [[ -S "$SOCKET" ]] && socket_listening "$SOCKET"; then
+        echo "OK: socket $SOCKET exists and is listening"
+    elif [[ -S "$SOCKET" ]]; then
+        echo "FAIL: socket $SOCKET exists but is not listening; likely stale shmsink residue"
+        ok=false
+    elif $ALLOW_MISSING_SOCKET; then
+        echo "WAIT: socket $SOCKET not yet created (allowed by --allow-missing-socket)"
+    else
+        echo "FAIL: socket $SOCKET missing; bridge cannot prove compositor SHM output"
+        ok=false
+    fi
+    $ok && exit 0 || exit 1
+fi
+
+echo "hapax-v4l2-bridge: starting"
+echo "  device: $DEVICE"
+echo "  socket: $SOCKET"
+echo "  format: ${WIDTH}x${HEIGHT}@${FPS}fps NV12"
+
+# Wait for the compositor to create and listen on the exact socket. A stale
+# socket file can survive a crash; shmsink then creates .0/.1 siblings and the
+# bridge would connect to dead residue if presence alone counted as ready.
+waited=0
+while { [[ ! -S "$SOCKET" ]] || ! socket_listening "$SOCKET"; } && [[ $waited -lt "$WAIT_SECONDS" ]]; do
+    sleep 1
+    waited=$((waited + 1))
+done
+
+if [[ ! -S "$SOCKET" ]]; then
+    echo "error: socket $SOCKET not found after ${WAIT_SECONDS}s — compositor not running?" >&2
+    exit 1
+fi
+
+if ! socket_listening "$SOCKET"; then
+    echo "error: socket $SOCKET exists but is not listening after ${WAIT_SECONDS}s — stale shmsink residue or wrong socket path" >&2
+    exit 1
+fi
+
+echo "  socket listening after ${waited}s"
+
+# GStreamer pipeline: shmsrc → queue → videoconvert → capsfilter → v4l2sink
+exec gst-launch-1.0 -e \
+    shmsrc socket-path="$SOCKET" do-timestamp=true is-live=true \
+    ! queue leaky=downstream max-size-buffers=5 max-size-bytes=0 max-size-time=0 \
+    ! videoconvert dither=0 \
+    ! "video/x-raw,format=NV12,width=${WIDTH},height=${HEIGHT},framerate=${FPS}/1" \
+    ! v4l2sink device="$DEVICE" sync=false qos=false

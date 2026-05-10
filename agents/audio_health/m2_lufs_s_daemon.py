@@ -30,6 +30,7 @@ from agents.audio_health.probes import (
     ProbeConfig,
     capture_and_measure,
 )
+from agents.audio_health.service_loop import interruptible_sleep
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +73,8 @@ class StageState:
     breach_start: float | None = None
     breach_count: int = 0
     in_band: bool = True
+    last_error: str | None = None
+    analyzer_error_count: int = 0
 
 
 @dataclass
@@ -149,6 +152,30 @@ def _emit_textfile(
             f'hapax_audio_health_lufs_s_breach_count{{stage="{stage}"}} {state.breach_count}'
         )
 
+    lines.extend(
+        [
+            "# HELP hapax_audio_health_lufs_s_analyzer_error 1 if the last analyzer tick failed",
+            "# TYPE hapax_audio_health_lufs_s_analyzer_error gauge",
+        ]
+    )
+    for stage, state in stages.items():
+        lines.append(
+            f'hapax_audio_health_lufs_s_analyzer_error{{stage="{stage}"}} '
+            f"{1.0 if state.last_error else 0.0}"
+        )
+
+    lines.extend(
+        [
+            "# HELP hapax_audio_health_lufs_s_analyzer_error_count Total analyzer/probe failures",
+            "# TYPE hapax_audio_health_lufs_s_analyzer_error_count counter",
+        ]
+    )
+    for stage, state in stages.items():
+        lines.append(
+            f'hapax_audio_health_lufs_s_analyzer_error_count{{stage="{stage}"}} '
+            f"{state.analyzer_error_count}"
+        )
+
     try:
         textfile = DEFAULT_TEXTFILE_DIR / DEFAULT_TEXTFILE_BASENAME
         tmp = textfile.with_suffix(".tmp")
@@ -174,6 +201,8 @@ def _emit_snapshot(
                 "lufs_s": state.last_lufs,
                 "in_band": state.in_band,
                 "breach_count": state.breach_count,
+                "analyzer_error": state.last_error,
+                "analyzer_error_count": state.analyzer_error_count,
             }
             for stage, state in stages.items()
         },
@@ -214,6 +243,57 @@ def _send_ntfy(stage: str, lufs: float, band: LufsBand) -> None:
         log.debug("ntfy send failed", exc_info=True)
 
 
+def _format_error(exc: BaseException | str | None) -> str:
+    if exc is None:
+        return "unknown analyzer failure"
+    if isinstance(exc, BaseException):
+        return f"{type(exc).__name__}: {exc}"
+    return exc
+
+
+def _mark_error(state: StageState, exc: BaseException | str | None) -> None:
+    state.last_error = _format_error(exc)
+    state.analyzer_error_count += 1
+
+
+def _probe_stage(stage: str, state: StageState, config: M2DaemonConfig, *, now: float) -> None:
+    """Run one M2 stage probe and record failures as health evidence."""
+
+    try:
+        probe_cfg = ProbeConfig(duration_s=config.capture_duration_s)
+        result = capture_and_measure(f"{stage}.monitor", config=probe_cfg)
+        if result is None:
+            _mark_error(state, "probe returned None")
+            return
+        if not result.ok:
+            _mark_error(state, result.error)
+            return
+
+        lufs = compute_lufs_s(result.samples_mono_float, sample_rate=48000)
+        state.last_error = None
+        state.last_lufs = lufs
+
+        band = config.bands.get(stage)
+        if band is None:
+            return
+
+        state.in_band = band.low <= lufs <= band.high
+
+        if not state.in_band:
+            if state.breach_start is None:
+                state.breach_start = now
+            elif (now - state.breach_start) >= config.breach_sustain_s:
+                state.breach_count += 1
+                if config.enable_ntfy:
+                    _send_ntfy(stage, lufs, band)
+                state.breach_start = now
+        else:
+            state.breach_start = None
+    except Exception as exc:
+        _mark_error(state, exc)
+        log.warning("probe tick failed for %s", stage, exc_info=True)
+
+
 def run_daemon(config: M2DaemonConfig | None = None) -> None:
     """Main daemon loop."""
     cfg = config or M2DaemonConfig.from_env()
@@ -248,37 +328,7 @@ def run_daemon(config: M2DaemonConfig | None = None) -> None:
         now = time.time()
 
         for stage in cfg.stages:
-            try:
-                probe_cfg = ProbeConfig(duration_s=cfg.capture_duration_s)
-                result = capture_and_measure(f"{stage}.monitor", config=probe_cfg)
-                if result is None or result.measurement is None:
-                    log.debug("probe returned None for %s", stage)
-                    continue
-
-                # Get raw samples for LUFS computation
-                lufs = compute_lufs_s(result.measurement.samples_mono, sample_rate=48000)
-
-                state = states[stage]
-                state.last_lufs = lufs
-
-                # Check band
-                band = cfg.bands.get(stage)
-                if band is not None:
-                    state.in_band = band.low <= lufs <= band.high
-
-                    if not state.in_band:
-                        if state.breach_start is None:
-                            state.breach_start = now
-                        elif (now - state.breach_start) >= cfg.breach_sustain_s:
-                            state.breach_count += 1
-                            if cfg.enable_ntfy:
-                                _send_ntfy(stage, lufs, band)
-                            state.breach_start = now  # reset for next sustained breach
-                    else:
-                        state.breach_start = None
-
-            except Exception:
-                log.warning("probe tick failed for %s", stage, exc_info=True)
+            _probe_stage(stage, states[stage], cfg, now=now)
 
         _emit_textfile(states, cfg)
         _emit_snapshot(states, cfg, now=now)
@@ -294,7 +344,7 @@ def run_daemon(config: M2DaemonConfig | None = None) -> None:
         # Sleep until next probe
         elapsed = time.time() - now
         sleep_time = max(0.1, cfg.probe_interval_s - elapsed)
-        time.sleep(sleep_time)
+        interruptible_sleep(sleep_time, lambda: shutdown)
 
     log.info("M2 LUFS-S daemon shutting down")
 

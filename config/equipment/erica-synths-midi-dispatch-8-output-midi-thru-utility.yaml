@@ -1,0 +1,18 @@
+schema_version: 1
+device_id: erica-synths-midi-dispatch-8-output-midi-thru-utility
+identity:
+  manufacturer: Erica Synths
+  model: Erica Synths MIDI Dispatch 8-Output MIDI Thru Utility
+  category: synthesizer
+  form_factor: desktop
+acquisition:
+  status: owned
+  purchased_from: reverb
+  sold_on: null
+  purchased_date: '2025-10-11'
+  purchased_price_usd: 169.0
+capabilities:
+- subtractive_synthesis
+freshness:
+  last_verified_at: null
+  specs_provenance: reverb-api-sync
