@@ -13,6 +13,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT_FOR_IMPORTS = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT_FOR_IMPORTS) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT_FOR_IMPORTS))
+
+from shared.dispatcher_policy import (
+    DispatchAction,
+    RouteDecision,
+    build_dispatch_request,
+    evaluate_dispatch_policy,
+    load_dispatch_policy_sources,
+    route_decision_receipt_payload,
+    write_route_decision_receipt,
+)
+from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
+
 MUTATION_TOKENS = {
     "build",
     "bugfix",
@@ -164,7 +179,7 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
 @dataclass
 class TaskNote:
     path: Path
-    fields: dict[str, str | list[str]]
+    fields: dict[str, Any]
 
 
 @dataclass
@@ -208,35 +223,9 @@ def field_tokens(value: str | list[str] | None) -> set[str]:
     return {part.strip() for part in raw.split() if part.strip()}
 
 
-def parse_frontmatter(text: str) -> dict[str, str | list[str]]:
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return {}
-    fields: dict[str, str | list[str]] = {}
-    current_key: str | None = None
-    for line in lines[1:]:
-        if line.strip() == "---":
-            break
-        if line.startswith("  - ") and current_key:
-            existing = fields.get(current_key)
-            if not isinstance(existing, list):
-                existing = []
-            existing.append(strip_scalar(line[4:].strip()))
-            fields[current_key] = existing
-            continue
-        if ":" not in line or line.startswith(" "):
-            current_key = None
-            continue
-        key, raw_value = line.split(":", 1)
-        key = key.strip()
-        value = raw_value.strip()
-        if value == "":
-            fields[key] = []
-            current_key = key
-        else:
-            fields[key] = strip_scalar(value)
-            current_key = key
-    return fields
+def parse_frontmatter(text: str) -> dict[str, Any]:
+    fields, _body = parse_document_frontmatter(text)
+    return dict(fields)
 
 
 def read_task(task_root: Path, task_id: str) -> TaskNote | None:
@@ -248,7 +237,7 @@ def read_task(task_root: Path, task_id: str) -> TaskNote | None:
     return None
 
 
-def is_authority_exempt(fields: dict[str, str | list[str]]) -> bool:
+def is_authority_exempt(fields: dict[str, Any]) -> bool:
     tokens: set[str] = set()
     for key in ("kind", "task_type", "work_type", "tier", "tags"):
         tokens.update(field_tokens(fields.get(key)))
@@ -479,13 +468,10 @@ def write_receipt(
     prompt: str | None,
     launched: bool,
     launch_returncode: int | None = None,
+    route_decision: RouteDecision | None = None,
+    route_decision_receipt_path: Path | None = None,
 ) -> Path:
-    ledger_dir = Path(
-        os.environ.get(
-            "HAPAX_ORCHESTRATION_LEDGER_DIR",
-            str(Path.home() / ".cache" / "hapax" / "orchestration"),
-        )
-    )
+    ledger_dir = orchestration_ledger_dir()
     ledger_dir.mkdir(parents=True, exist_ok=True)
     path = ledger_dir / "methodology-dispatch.jsonl"
     record: dict[str, Any] = {
@@ -511,6 +497,11 @@ def write_receipt(
         "launch_returncode": launch_returncode,
         "prompt": prompt,
     }
+    if route_decision is not None:
+        record.update(route_decision_receipt_payload(route_decision))
+        record["route_decision_receipt_path"] = (
+            str(route_decision_receipt_path) if route_decision_receipt_path else None
+        )
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, sort_keys=True) + "\n")
     return path
@@ -616,6 +607,31 @@ def platform_route_validation(
             "mutation tasks must route to a mutable platform profile",
         )
     return True, "eligible platform route"
+
+
+def env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def optional_env_path(name: str) -> Path | None:
+    value = os.environ.get(name, "").strip()
+    return Path(value).expanduser() if value else None
+
+
+def orchestration_ledger_dir() -> Path:
+    return Path(
+        os.environ.get(
+            "HAPAX_ORCHESTRATION_LEDGER_DIR",
+            str(Path.home() / ".cache" / "hapax" / "orchestration"),
+        )
+    )
+
+
+def policy_task_fields(validation: Validation) -> dict[str, Any]:
+    if validation.task is None:
+        return {}
+    fields, _body = parse_document_frontmatter(validation.task.path)
+    return dict(fields or validation.task.fields)
 
 
 def launch_codex_headless(
@@ -775,6 +791,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Do not require target worktree cc-claim guard",
     )
+    parser.add_argument(
+        "--policy-rollback",
+        action="store_true",
+        help=(
+            "Use S5-4 rollback behavior: full-profile legacy routes may launch; "
+            "non-full routes hold."
+        ),
+    )
     args = parser.parse_args(argv)
     args.profile = normalize_profile(args.platform, args.profile)
 
@@ -817,8 +841,33 @@ def main(argv: list[str] | None = None) -> int:
         print(f"BLOCKED: {validation.reason}", file=sys.stderr)
         return 10
 
-    route_ok, route_reason = platform_route_validation(route, validation)
-    if not route_ok:
+    policy_sources = load_dispatch_policy_sources(
+        registry_path=optional_env_path("HAPAX_PLATFORM_CAPABILITY_REGISTRY"),
+        quota_ledger_path=optional_env_path("HAPAX_QUOTA_SPEND_LEDGER"),
+    )
+    policy_request = build_dispatch_request(
+        task_id=args.task,
+        lane=args.lane,
+        platform=args.platform,
+        mode=args.mode,
+        profile=args.profile,
+        task_fields=policy_task_fields(validation),
+        registry=policy_sources.registry,
+        registry_error=policy_sources.registry_error,
+        quota_ledger=policy_sources.quota_ledger,
+        quota_error=policy_sources.quota_error,
+        rollback_mode=args.policy_rollback or env_flag("HAPAX_DISPATCH_POLICY_ROLLBACK"),
+        legacy_route_supported=route is not None,
+        legacy_route_mutable=route.mutable if route else False,
+    )
+    route_decision = evaluate_dispatch_policy(policy_request)
+    route_decision_receipt_path = write_route_decision_receipt(
+        route_decision,
+        ledger_dir=orchestration_ledger_dir(),
+    )
+
+    if route_decision.action is not DispatchAction.LAUNCH:
+        route_reason = f"route policy {route_decision.action.value}: {route_decision.message}"
         blocked = Validation(
             False,
             route_reason,
@@ -837,6 +886,8 @@ def main(argv: list[str] | None = None) -> int:
                 validation=blocked,
                 prompt=None,
                 launched=False,
+                route_decision=route_decision,
+                route_decision_receipt_path=route_decision_receipt_path,
             )
         print(f"BLOCKED: {route_reason}", file=sys.stderr)
         if route is None:
@@ -891,6 +942,8 @@ def main(argv: list[str] | None = None) -> int:
                 prompt=prompt,
                 launched=rc == 0,
                 launch_returncode=rc,
+                route_decision=route_decision,
+                route_decision_receipt_path=route_decision_receipt_path,
             )
         return rc
 
@@ -905,6 +958,8 @@ def main(argv: list[str] | None = None) -> int:
             validation=validation,
             prompt=prompt,
             launched=False,
+            route_decision=route_decision,
+            route_decision_receipt_path=route_decision_receipt_path,
         )
 
     print(f"eligible: {args.task} -> {args.platform}/{args.mode}/{args.profile}/{args.lane}")
