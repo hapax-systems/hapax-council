@@ -25,7 +25,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from shared.audio_loudness import (
     EGRESS_TARGET_LUFS_I,
     EGRESS_TRUE_PEAK_DBTP,
-    LUFS_TOLERANCE_LU,
     TRUE_PEAK_TOLERANCE_DBTP,
 )
 from shared.audio_topology import TopologyDescriptor
@@ -156,10 +155,15 @@ class BroadcastAudioHealthThresholds:
     voice_output_witness_max_age_s: float = 180.0
     command_timeout_s: float = 15.0
     loudness_timeout_extra_s: float = 8.0
-    loudness_duration_s: int = 5
+    loudness_duration_s: int = 10
     loopback_max_age_s: float = 60.0
     silence_ratio_max: float = 0.85
     rms_dbfs_floor: float = -55.0
+    # The health probe samples only a short live window. Use a 10 s window
+    # and a safety band wide enough to avoid failing closed on normal
+    # programme/source variance; exact loudness quality belongs to longer-
+    # window mix scoring.
+    loudness_tolerance_lu: float = 2.0
     # Working-mode override: when fortress sets a tighter true-peak
     # ceiling we honor it directly instead of widening with the
     # nominal +TRUE_PEAK_TOLERANCE_DBTP cushion.
@@ -170,11 +174,11 @@ class BroadcastAudioHealthThresholds:
 
     @property
     def loudness_min_lufs_i(self) -> float:
-        return EGRESS_TARGET_LUFS_I - LUFS_TOLERANCE_LU
+        return EGRESS_TARGET_LUFS_I - self.loudness_tolerance_lu
 
     @property
     def loudness_max_lufs_i(self) -> float:
-        return EGRESS_TARGET_LUFS_I + LUFS_TOLERANCE_LU
+        return EGRESS_TARGET_LUFS_I + self.loudness_tolerance_lu
 
     @property
     def true_peak_max_dbtp(self) -> float:
@@ -291,7 +295,7 @@ def resolve_broadcast_audio_health(
 
     if t.skip_lufs_egress_check:
         evidence["loudness"] = {
-            "stage": "hapax-broadcast-normalized.monitor",
+            "stage": "hapax-broadcast-normalized",
             "skipped_by_working_mode": True,
             "reason": "lufs_egress_check_skipped",
         }
@@ -299,6 +303,7 @@ def resolve_broadcast_audio_health(
         _evaluate_loudness(
             evidence=evidence,
             blocking=blocking,
+            warnings=warnings,
             runner=runner,
             thresholds=t,
         )
@@ -562,6 +567,7 @@ def _evaluate_loudness(
     *,
     evidence: dict[str, Any],
     blocking: list[AudioHealthReason],
+    warnings: list[AudioHealthReason],
     runner: CommandRunner,
     thresholds: BroadcastAudioHealthThresholds,
 ) -> None:
@@ -582,7 +588,7 @@ def _evaluate_loudness(
     )
     true_peak_ok = true_peak is not None and true_peak <= thresholds.true_peak_max_dbtp
     evidence["loudness"] = {
-        "stage": "hapax-broadcast-normalized.monitor",
+        "stage": "hapax-broadcast-normalized",
         "integrated_lufs_i": integrated,
         "target_lufs_i": EGRESS_TARGET_LUFS_I,
         "target_min_lufs_i": thresholds.loudness_min_lufs_i,
@@ -622,12 +628,27 @@ def _evaluate_loudness(
         # miscalibration. Silence (-50 LUFS or below) is the normal state
         # before/between autonomous speech events; blocking on it creates
         # a circular dependency where voice can't flow because the gate
-        # requires voice to already be flowing at the right level.
-        # Genuine miscalibration (e.g. -20 LUFS or -8 LUFS) is still blocked.
+        # requires voice to already be flowing at the right level. Under-target
+        # programme loudness is a quality/degradation finding; over-target
+        # programme loudness is a safety finding because it can fatigue or
+        # clip downstream listeners.
         SILENCE_FLOOR_LUFS = -50.0
         if integrated is not None and integrated < SILENCE_FLOOR_LUFS:
             evidence["loudness"]["egress_silent"] = True
             evidence["loudness"]["silence_floor_lufs"] = SILENCE_FLOOR_LUFS
+        elif integrated < thresholds.loudness_min_lufs_i:
+            warnings.append(
+                AudioHealthReason(
+                    code="loudness_under_target",
+                    severity=ReasonSeverity.WARNING,
+                    owner="shared/audio_loudness.py",
+                    message=(
+                        f"broadcast loudness {integrated} LUFS-I is below "
+                        f"{thresholds.loudness_min_lufs_i} LUFS-I quality floor"
+                    ),
+                    evidence_refs=["loudness"],
+                )
+            )
         else:
             _block(
                 blocking,
@@ -969,13 +990,37 @@ def _evaluate_audio_ducker_state(
     actual_music = _number_or_none(data.get("actual_music_duck_gain"))
     commanded_tts = _number_or_none(data.get("commanded_tts_duck_gain"))
     actual_tts = _number_or_none(data.get("actual_tts_duck_gain"))
-    fail_open = bool(data.get("fail_open", False)) or bool(all_blockers)
+    idle_retired_readback = (
+        data.get("trigger_cause") in (None, "none")
+        and commanded_music == 1.0
+        and commanded_tts == 1.0
+    )
+    non_blocking_readback_blockers = [
+        blocker
+        for blocker in all_blockers
+        if idle_retired_readback
+        and blocker.startswith(("music_readback_error:", "tts_readback_error:"))
+        and "not present in PipeWire Props" in blocker
+    ]
+    effective_blockers = [
+        blocker for blocker in all_blockers if blocker not in non_blocking_readback_blockers
+    ]
+    raw_fail_open = bool(data.get("fail_open", False))
+    raw_fail_open_is_readback_only = (
+        raw_fail_open
+        and idle_retired_readback
+        and bool(non_blocking_readback_blockers)
+        and not effective_blockers
+    )
+    fail_open = (raw_fail_open and not raw_fail_open_is_readback_only) or bool(effective_blockers)
     record.update(
         {
             "status": "fail_open" if fail_open else "ok",
             "trigger_cause": data.get("trigger_cause"),
             "fail_open": fail_open,
+            "raw_fail_open": raw_fail_open,
             "blockers": all_blockers,
+            "non_blocking_readback_blockers": non_blocking_readback_blockers,
             "commanded_music_duck_gain": commanded_music,
             "actual_music_duck_gain": actual_music,
             "commanded_tts_duck_gain": commanded_tts,
@@ -990,15 +1035,17 @@ def _evaluate_audio_ducker_state(
     )
     evidence["audio_ducker"] = record
 
-    if all_blockers:
+    if effective_blockers:
         _block(
             blocking,
             code="audio_ducker_fail_open",
             owner=str(path),
-            message=f"audio ducker reports fail-open blockers: {', '.join(all_blockers[:3])}",
+            message=(
+                f"audio ducker reports fail-open blockers: {', '.join(effective_blockers[:3])}"
+            ),
             evidence_refs=["audio_ducker"],
         )
-    elif data.get("fail_open", False):
+    elif raw_fail_open and not raw_fail_open_is_readback_only:
         _block(
             blocking,
             code="audio_ducker_fail_open",
@@ -1011,7 +1058,23 @@ def _evaluate_audio_ducker_state(
         ("music", commanded_music, actual_music),
         ("tts", commanded_tts, actual_tts),
     ):
+        duck_state = record.get(f"{label}_duck")
+        readback_error = (
+            duck_state.get("last_readback_error") if isinstance(duck_state, dict) else None
+        )
+        idle_passthrough = (
+            not fail_open
+            and commanded == 1.0
+            and data.get("trigger_cause") in (None, "none")
+            and isinstance(readback_error, str)
+            and "not present in PipeWire Props" in readback_error
+        )
         if commanded is None or actual is None:
+            if idle_passthrough:
+                record.setdefault("readback_non_blocking", {})[label] = (
+                    "idle passthrough; retired or absent duck node has no active gain command"
+                )
+                continue
             _block(
                 blocking,
                 code=f"audio_ducker_{label}_readback_missing",

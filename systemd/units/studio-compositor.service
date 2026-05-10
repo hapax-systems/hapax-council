@@ -1,7 +1,8 @@
 [Unit]
 Description=Studio Compositor — GPU-accelerated camera tiling, recording, HLS streaming, and visual effects
-After=hapax-daimonion.service pipewire.service wireplumber.service
+After=hapax-daimonion.service pipewire.service wireplumber.service hapax-video42-format-guard.service
 Wants=hapax-daimonion.service hapax-v4l2-bridge.service
+Requires=hapax-video42-format-guard.service
 BindsTo=pipewire.service
 # BindsTo ensures compositor stops when PipeWire stops and restarts
 # when PipeWire restarts. The compositor's pw-cat audio capture process
@@ -33,6 +34,7 @@ WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 ExecStartPre=/usr/bin/mkdir -p %h/video-recording %h/.cache/hapax-compositor/hls
 ExecStartPre=/usr/bin/find /dev/shm/hapax-compositor -maxdepth 1 -type s -name v4l2-bridge.sock* -delete
 ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file agents/studio_compositor/shmsink_output_pipeline.py --require-file scripts/hapax-v4l2-bridge
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-v4l2-video42-format-guard --verify-only
 # LRR Phase 2 spec §3.2 (item 2) REMOVED: the ExecStartPre `find ... -delete` on
 # the HLS cache dir was a debugging vestige that deleted every unrotated segment
 # on every compositor restart. Phase 2 wants segments PERSISTED to the archive,

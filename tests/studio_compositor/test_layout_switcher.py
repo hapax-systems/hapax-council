@@ -27,40 +27,41 @@ def test_consent_safe_dominates_every_other_signal() -> None:
     assert selection.trigger == "consent_safe"
 
 
-def test_vinyl_playing_picks_vinyl_focus() -> None:
+def test_vinyl_playing_stays_on_default_with_observable_trigger() -> None:
     selection = select_layout(vinyl_playing=True)
-    assert selection.layout_name == "vinyl-focus"
-    assert selection.trigger == "vinyl_playing"
+    assert selection.layout_name == "default"
+    assert selection.trigger == "vinyl_playing_default"
 
 
 def test_vinyl_playing_outranks_director_activity_and_stream_mode() -> None:
     selection = select_layout(vinyl_playing=True, director_activity="study", stream_mode="deep")
-    assert selection.layout_name == "vinyl-focus"
-    assert selection.trigger == "vinyl_playing"
+    assert selection.layout_name == "default"
+    assert selection.trigger == "vinyl_playing_default"
 
 
-def test_director_activity_vinyl_picks_vinyl_focus() -> None:
+def test_director_activity_vinyl_stays_on_default_with_observable_trigger() -> None:
     selection = select_layout(director_activity="vinyl")
-    assert selection.layout_name == "vinyl-focus"
-    assert selection.trigger == "director_activity_vinyl"
+    assert selection.layout_name == "default"
+    assert selection.trigger == "director_activity_vinyl_default"
 
 
-def test_director_activity_react_picks_vinyl_focus() -> None:
+def test_director_activity_react_stays_on_default_with_observable_trigger() -> None:
     selection = select_layout(director_activity="react")
-    assert selection.layout_name == "vinyl-focus"
-    assert selection.trigger == "director_activity_react"
+    assert selection.layout_name == "default"
+    assert selection.trigger == "director_activity_react_default"
 
 
-def test_director_activity_other_does_not_pick_vinyl() -> None:
+def test_director_activity_other_does_not_change_default_trigger() -> None:
     for activity in ("study", "chat", "observe", "silence"):
         selection = select_layout(director_activity=activity)
-        assert selection.layout_name != "vinyl-focus", activity
+        assert selection.layout_name == "default", activity
+        assert selection.trigger == "default_fallback"
 
 
-def test_stream_mode_deep_picks_default_legacy() -> None:
+def test_stream_mode_deep_stays_on_default_with_observable_trigger() -> None:
     selection = select_layout(stream_mode="deep")
-    assert selection.layout_name == "default-legacy"
-    assert selection.trigger == "stream_mode_deep"
+    assert selection.layout_name == "default"
+    assert selection.trigger == "stream_mode_deep_default"
 
 
 def test_default_fallback_when_no_signals() -> None:
@@ -93,15 +94,15 @@ def test_should_switch_false_for_same_layout() -> None:
 
 
 def test_should_switch_true_when_no_prior_switch() -> None:
-    sw = LayoutSwitcher(initial_layout="default")
-    selection = LayoutSelection("vinyl-focus", "vinyl_playing")
+    sw = LayoutSwitcher(initial_layout="garage-door")
+    selection = LayoutSelection("default", "vinyl_playing_default")
     assert sw.should_switch(selection) is True
 
 
 def test_cooldown_blocks_consecutive_switches() -> None:
     clock = [1000.0]
     sw = LayoutSwitcher(initial_layout="default", clock=lambda: clock[0])
-    first = LayoutSelection("vinyl-focus", "vinyl_playing")
+    first = LayoutSelection("consent-safe", "consent_safe")
     sw.record_switch(first)
     assert sw.should_switch(LayoutSelection("default", "default_fallback")) is False
     clock[0] += DEFAULT_COOLDOWN_S - 1
@@ -114,7 +115,7 @@ def test_cooldown_does_not_block_consent_safe() -> None:
     """Safety beats aesthetics — consent-safe transitions always allowed."""
     clock = [1000.0]
     sw = LayoutSwitcher(initial_layout="default", clock=lambda: clock[0])
-    sw.record_switch(LayoutSelection("vinyl-focus", "vinyl_playing"))
+    sw.record_switch(LayoutSelection("default", "vinyl_playing_default"))
     # Cooldown not elapsed, but consent_safe must pass.
     consent = LayoutSelection("consent-safe", "consent_safe")
     assert sw.should_switch(consent) is True
@@ -123,8 +124,8 @@ def test_cooldown_does_not_block_consent_safe() -> None:
 def test_record_switch_updates_state() -> None:
     clock = [1000.0]
     sw = LayoutSwitcher(initial_layout="default", clock=lambda: clock[0])
-    sw.record_switch(LayoutSelection("vinyl-focus", "vinyl_playing"))
-    assert sw.current_layout == "vinyl-focus"
+    sw.record_switch(LayoutSelection("consent-safe", "consent_safe"))
+    assert sw.current_layout == "consent-safe"
 
 
 def test_cooldown_floor_rejected() -> None:
@@ -152,13 +153,13 @@ def test_stream_mode_transition_triggers_layout_change_within_one_tick() -> None
     assert s0.layout_name == "default"
     assert sw.should_switch(s0) is False  # already on default
 
-    # Tick 1: stream_mode flips to "deep", switcher produces default-legacy
-    # immediately (no prior switch recorded so cooldown doesn't gate).
+    # Tick 1: stream_mode flips to "deep"; selector records the pressure
+    # without resurrecting the purged default-legacy layout.
     s1 = select_layout(stream_mode="deep")
-    assert s1.layout_name == "default-legacy"
-    assert sw.should_switch(s1) is True
-    sw.record_switch(s1)
-    assert sw.current_layout == "default-legacy"
+    assert s1.layout_name == "default"
+    assert s1.trigger == "stream_mode_deep_default"
+    assert sw.should_switch(s1) is False
+    assert sw.current_layout == "default"
 
 
 # ── counter integration ─────────────────────────────────────────────
@@ -169,10 +170,10 @@ def test_record_switch_increments_prometheus_counter() -> None:
 
     if HAPAX_COMPOSITOR_LAYOUT_SWITCH_TOTAL is None:
         pytest.skip("prometheus_client unavailable")
-    label_set = {"from_layout": "default", "to_layout": "vinyl-focus", "trigger": "vinyl_playing"}
+    label_set = {"from_layout": "default", "to_layout": "consent-safe", "trigger": "consent_safe"}
     before = HAPAX_COMPOSITOR_LAYOUT_SWITCH_TOTAL.labels(**label_set)._value.get()
     sw = LayoutSwitcher(initial_layout="default")
-    sw.record_switch(LayoutSelection("vinyl-focus", "vinyl_playing"))
+    sw.record_switch(LayoutSelection("consent-safe", "consent_safe"))
     after = HAPAX_COMPOSITOR_LAYOUT_SWITCH_TOTAL.labels(**label_set)._value.get()
     assert after - before == 1.0
 

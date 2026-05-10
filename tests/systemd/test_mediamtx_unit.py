@@ -34,3 +34,10 @@ def test_restart_limit_and_failure_hook_live_in_unit_section() -> None:
     assert "StartLimitBurst=10" not in service
     assert "StartLimitIntervalSec=600" not in service
     assert "OnFailure=notify-failure@%n.service" not in service
+
+
+def test_mediamtx_is_not_lifecycle_bound_to_compositor() -> None:
+    sections = _sections()
+
+    assert "PartOf=studio-compositor.service" not in sections["Unit"]
+    assert "After=network-online.target hapax-secrets.service" in sections["Unit"]

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # audio-measure.sh — operator-runnable broadcast loudness check.
 #
-# Taps `hapax-broadcast-normalized.monitor` (the master output OBS reads)
-# for a configurable duration, runs ffmpeg ebur128, and prints integrated
-# LUFS-I, true-peak, and LRA. Used to verify Phase 1 acceptance criteria
-# and as a manual diagnostic tool until Phase 7 ships the live dashboard.
+# Taps the requested PipeWire source for a configurable duration, runs ffmpeg
+# ebur128, and prints integrated LUFS-I, true-peak, and LRA. If the requested
+# node is not itself a source, the script falls back to its `.monitor` source.
+# Used to verify Phase 1 acceptance criteria and as a manual diagnostic tool
+# until Phase 7 ships the live dashboard.
 #
 # Usage:
 #   audio-measure.sh                  # default 30 s
@@ -31,16 +32,54 @@ CHANNELS=2
 PWCAT_SAMPLE_FMT=s16
 FFMPEG_SAMPLE_FMT=s16le
 
+pipewire_source_exists() {
+    if command -v pw-cli >/dev/null 2>&1; then
+        pw-cli ls Node 2>/dev/null | awk -v want="$1" '
+            /^id / {
+                if (name == want && class == "Audio/Source") {
+                    found = 1
+                }
+                name = ""
+                class = ""
+            }
+            /node.name = / {
+                name = $0
+                sub(/.*node.name = "/, "", name)
+                sub(/".*/, "", name)
+            }
+            /media.class = / {
+                class = $0
+                sub(/.*media.class = "/, "", class)
+                sub(/".*/, "", class)
+            }
+            END {
+                if (name == want && class == "Audio/Source") {
+                    found = 1
+                }
+                exit found ? 0 : 1
+            }
+        ' && return 0
+    fi
+
+    command -v pactl >/dev/null 2>&1 || return 1
+    pactl list short sources 2>/dev/null | awk '{print $2}' | grep -Fxq "$1"
+}
+
+TARGET="$NODE"
+if [[ "$NODE" != *.monitor ]] && ! pipewire_source_exists "$NODE"; then
+    TARGET="${NODE}.monitor"
+fi
+
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
 CAPTURE="$TMPDIR/capture.raw"
 EBUR128_LOG="$TMPDIR/ebur128.log"
 
-echo "Capturing ${DURATION}s from ${NODE}..." >&2
+echo "Capturing ${DURATION}s from ${TARGET}..." >&2
 timeout "$((DURATION + 5))" pw-cat \
     --record "$CAPTURE" \
-    --target "${NODE}.monitor" \
+    --target "$TARGET" \
     --rate "$SAMPLE_RATE" \
     --format "$PWCAT_SAMPLE_FMT" \
     --channels "$CHANNELS" \
@@ -53,7 +92,7 @@ PWCAT_RC=0
 wait "$PWPID" 2>/dev/null || PWCAT_RC=$?
 
 if [ ! -s "$CAPTURE" ]; then
-    echo "ERROR: capture is empty (${NODE}.monitor not producing audio? pw-cat rc=${PWCAT_RC})" >&2
+    echo "ERROR: capture is empty (${TARGET} not producing audio? pw-cat rc=${PWCAT_RC})" >&2
     exit 1
 fi
 
@@ -79,7 +118,7 @@ fi
 echo
 echo "═══════════════════════════════════════════════════════════════"
 echo "  Hapax broadcast loudness measurement"
-echo "  Source: ${NODE}.monitor"
+echo "  Source: ${TARGET}"
 echo "  Window: ${DURATION}s"
 echo "═══════════════════════════════════════════════════════════════"
 sed -n "${SUMMARY_LINE},\$p" "$EBUR128_LOG" | grep -E '(I:|LRA:|Peak:|Threshold:)' | sed 's/^/  /'

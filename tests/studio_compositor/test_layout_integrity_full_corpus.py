@@ -9,10 +9,9 @@ EVERY layout JSON in:
 * ``config/layouts/`` — the operator-curated layouts (currently just
   ``garage-door.json``).
 * ``config/compositor-layouts/`` — the canonical default + segment-*
-  layouts + alternates (mobile, consent-safe, default-legacy).
+  layouts + alternates (mobile, consent-safe).
 * ``config/compositor-layouts/examples/`` — operator-declared
-  alternative arrangements (``vinyl-focus.json``,
-  ``research-poster-family.json``).
+  alternative arrangements, if present.
 
 A typo in any of these layouts surfaces only when the operator switches
 to that layout — possibly after a livestream-segment transition, when

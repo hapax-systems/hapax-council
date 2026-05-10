@@ -43,8 +43,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--loudness-duration",
         type=int,
-        default=5,
-        help="Seconds to sample hapax-broadcast-normalized.monitor.",
+        default=10,
+        help="Seconds to sample hapax-broadcast-normalized.",
     )
     parser.add_argument(
         "--print",

@@ -92,7 +92,7 @@ class TestBoundedIterations:
             layout_state=layout_state,
             loader=loader,
             switcher=switcher,
-            state_provider=lambda: {"stream_mode": "deep"},  # default-legacy
+            state_provider=lambda: {"stream_mode": "deep"},  # default with deep trigger
             interval_s=10.0,
             sleep_fn=lambda s: sleeps.append(s),
             iterations=3,
@@ -217,11 +217,12 @@ class TestStateDrivenTransitions:
         layout_state = _FakeLayoutState(current=_FakeLayout("default"))
         loader = _FakeLoader()
         switcher = _switcher()
-        # Three distinct states → three distinct layouts.
+        # Vinyl/deep pressure now resolves to the current default layout;
+        # consent-safe remains the only alternate static switch here.
         states = iter(
             [
-                {"vinyl_playing": True},  # → vinyl-focus
-                {"stream_mode": "deep"},  # → default-legacy
+                {"vinyl_playing": True},  # -> default
+                {"stream_mode": "deep"},  # -> default, same-layout no-op
                 {"consent_safe_active": True},  # → consent-safe
             ]
         )
@@ -238,9 +239,8 @@ class TestStateDrivenTransitions:
             now_fn=lambda: next(now_iter),
             iterations=3,
         )
-        # All three distinct inputs honored.
-        assert switches == 3
-        assert loader.loaded == ["vinyl-focus", "default-legacy", "consent-safe"]
+        assert switches == 2
+        assert loader.loaded == ["default", "consent-safe"]
 
 
 # ── Failure tolerance ───────────────────────────────────────────────
@@ -262,7 +262,7 @@ class TestFailureTolerance:
                 raise RuntimeError("synthetic failure on tick 2")
             return {"vinyl_playing": True}
 
-        # 3 iterations: tick 1 applies vinyl-focus, tick 2 raises (skipped,
+        # 3 iterations: tick 1 applies default, tick 2 raises (skipped,
         # state defaults to {}; cooldown anyway), tick 3 retries.
         caplog.set_level(logging.WARNING, logger="agents.studio_compositor.layout_switcher")
         switches = run_layout_switch_loop(
@@ -373,7 +373,7 @@ class TestCooldownDebounce:
         )
         # First tick switches (no prior); subsequent 4 are cooldown-blocked.
         assert switches == 1
-        assert loader.loaded == ["vinyl-focus"]
+        assert loader.loaded == ["default"]
 
 
 # ── pytest hook: module imports cleanly ─────────────────────────────

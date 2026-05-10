@@ -152,7 +152,7 @@ def test_unsatisfied_non_ward_visible_effect_blocks_acceptance() -> None:
     assert "action:visible-claim" in receipt.receipt_metadata["critical_unsatisfied_effects"]
 
 
-@pytest.mark.parametrize("static_layout", ["default", "default-legacy", "garage-door"])
+@pytest.mark.parametrize("static_layout", ["default", "garage-door"])
 def test_static_default_readback_fails_responsible_hosting(static_layout: str) -> None:
     receipt = decide_layout_responsibility(
         [_intent()],

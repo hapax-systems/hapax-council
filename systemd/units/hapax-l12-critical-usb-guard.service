@@ -7,7 +7,9 @@ After=systemd-udevd.service
 
 [Service]
 Type=oneshot
+ExecStartPre=/usr/bin/install -d -o root -g hapax -m 0775 /dev/shm/hapax-usb
 ExecStart=/usr/local/bin/hapax-l12-critical-usb-guard
+UMask=0002
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true

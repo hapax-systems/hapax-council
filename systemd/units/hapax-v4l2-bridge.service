@@ -1,7 +1,7 @@
 [Unit]
 Description=V4L2 Bridge — shmsrc→v4l2sink sidecar for /dev/video42
-After=studio-compositor.service
-Requires=studio-compositor.service
+After=hapax-video42-format-guard.service studio-compositor.service
+Requires=hapax-video42-format-guard.service studio-compositor.service
 BindsTo=studio-compositor.service
 PartOf=studio-compositor.service
 ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-v4l2-bridge
@@ -10,6 +10,7 @@ ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-v4l
 Type=simple
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/hapax-v4l2-bridge
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-v4l2-video42-format-guard --verify-only
 ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-v4l2-bridge
 Restart=on-failure
 RestartSec=1s

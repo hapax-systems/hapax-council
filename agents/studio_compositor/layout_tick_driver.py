@@ -66,8 +66,8 @@ ENV_DISABLE: str = "HAPAX_LAYOUT_TICK_DISABLED"
 DEFAULT_DRIVER_INTERVAL_S: float = 30.0
 
 # Director intent staleness — anything older than this is treated as
-# "no current director activity" so a long stall doesn't pin the
-# layout into vinyl-focus on a stale react-tick.
+# "no current director activity" so stale react/vinyl pressure cannot
+# keep driving default-surface dispatch labels indefinitely.
 DIRECTOR_INTENT_STALE_S: float = 180.0
 
 # Vinyl evidence staleness — album-state confidence decays after this.

@@ -118,6 +118,28 @@ def test_activation_uses_clean_worktree_without_touching_dirty_canonical(tmp_pat
     assert (tmp_path / "state" / "last-success-sha").read_text(encoding="utf-8").strip() == new_sha
 
 
+def test_activation_hold_exits_before_fetch_reset_symlink_sweep_or_deploy(
+    tmp_path: Path,
+) -> None:
+    canonical, _origin, _new_sha = _make_repos(tmp_path)
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={"HAPAX_SOURCE_ACTIVATE_HOLD": "1"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "held before fetch/reset/symlink sweep/deploy" in result.stderr
+    assert not (tmp_path / "active-source").exists()
+    assert not (tmp_path / "deploy-record.txt").exists()
+    assert not (tmp_path / "home" / ".local" / "bin" / "cc-claim").exists()
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "held"
+    assert receipt["deploy_status"] == "skipped_hold"
+    assert receipt["active_source_head"] == "unknown"
+
+
 def test_same_sha_rerun_writes_no_op_and_does_not_redeploy(tmp_path: Path) -> None:
     canonical, _origin, new_sha = _make_repos(tmp_path)
 

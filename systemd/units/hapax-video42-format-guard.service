@@ -1,0 +1,22 @@
+[Unit]
+Description=Hapax /dev/video42 compositor egress format guard
+Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-v4l2-video42-format-guard
+Before=studio-compositor.service hapax-v4l2-bridge.service hapax-obs-livestream.service
+ConditionPathExists=/dev/video42
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/hapax-v4l2-video42-format-guard
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-v4l2-video42-format-guard
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+Environment=HAPAX_V4L2_VIDEO42_DEVICE=/dev/video42
+Environment=HAPAX_V4L2_VIDEO42_WIDTH=1280
+Environment=HAPAX_V4L2_VIDEO42_HEIGHT=720
+Environment=HAPAX_V4L2_VIDEO42_PIXEL_FORMAT=NV12
+Environment=HAPAX_V4L2_VIDEO42_FPS=30
+
+[Install]
+WantedBy=default.target

@@ -601,7 +601,6 @@ def test_refused_only_segment_pressure_suppresses_legacy_default_switch() -> Non
     store = _FakeStore(
         layouts={
             "default": _FakeLayout("default"),
-            "vinyl-focus": _FakeLayout("vinyl-focus"),
         },
         _active="default",
     )
@@ -702,12 +701,11 @@ def test_adapter_mutate_drives_set_active() -> None:
     store = _FakeStore(
         layouts={
             "default": _FakeLayout("default"),
-            "vinyl-focus": _FakeLayout("vinyl-focus"),
         }
     )
     adapter = _LayoutStoreAdapter(store)
-    adapter.mutate(lambda _previous: store.layouts["vinyl-focus"])
-    assert store.set_active_calls == ["vinyl-focus"]
+    adapter.mutate(lambda _previous: store.layouts["default"])
+    assert store.set_active_calls == ["default"]
 
 
 # ── periodic loop semantics ────────────────────────────────────────
@@ -727,7 +725,6 @@ def test_run_layout_tick_loop_emits_dispatch_counter_per_iteration(
     store = _FakeStore(
         layouts={
             "default": _FakeLayout("default"),
-            "vinyl-focus": _FakeLayout("vinyl-focus"),
         }
     )
     store._active = "default"
@@ -751,9 +748,9 @@ def test_run_layout_tick_loop_emits_dispatch_counter_per_iteration(
     )
     assert iter_count == 3
     assert len(increments) == 3
-    # Each iteration recommends vinyl-focus (vinyl_playing=True).
-    assert all(name == "vinyl-focus" for name, _ in increments)
-    assert all(reason == "vinyl_playing" for _, reason in increments)
+    # Each iteration records vinyl pressure without reviving vinyl-focus.
+    assert all(name == "default" for name, _ in increments)
+    assert all(reason == "vinyl_playing_default" for _, reason in increments)
 
 
 def test_run_layout_tick_loop_handles_missing_layout(

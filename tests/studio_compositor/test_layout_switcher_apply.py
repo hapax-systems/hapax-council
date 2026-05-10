@@ -56,17 +56,17 @@ class _FakeLoader:
 
 
 def test_apply_returns_true_and_mutates_on_first_switch() -> None:
-    state = _FakeLayoutState(current=_FakeLayout("default"))
-    loader = _FakeLoader(layouts={"vinyl-focus": _FakeLayout("vinyl-focus")})
-    switcher = LayoutSwitcher(initial_layout="default")
+    state = _FakeLayoutState(current=_FakeLayout("garage-door"))
+    loader = _FakeLoader(layouts={"default": _FakeLayout("default")})
+    switcher = LayoutSwitcher(initial_layout="garage-door")
 
     applied = apply_layout_switch(state, loader, switcher, vinyl_playing=True)
 
     assert applied is True
     assert len(state.mutations) == 1
-    assert state.mutations[0].name == "vinyl-focus"
-    assert loader.load_calls == ["vinyl-focus"]
-    assert switcher.current_layout == "vinyl-focus"
+    assert state.mutations[0].name == "default"
+    assert loader.load_calls == ["default"]
+    assert switcher.current_layout == "default"
 
 
 def test_apply_returns_false_when_same_layout() -> None:
@@ -87,35 +87,35 @@ def test_apply_returns_false_when_cooldown_blocks() -> None:
     loader = _FakeLoader(
         layouts={
             "default": _FakeLayout("default"),
-            "vinyl-focus": _FakeLayout("vinyl-focus"),
+            "consent-safe": _FakeLayout("consent-safe"),
         }
     )
     switcher = LayoutSwitcher(initial_layout="default", clock=lambda: clock[0])
 
     # First switch goes through.
-    apply_layout_switch(state, loader, switcher, vinyl_playing=True)
-    assert switcher.current_layout == "vinyl-focus"
+    apply_layout_switch(state, loader, switcher, consent_safe_active=True)
+    assert switcher.current_layout == "consent-safe"
     assert len(state.mutations) == 1
 
     # Same tick: try to switch back. Cooldown blocks.
-    applied = apply_layout_switch(state, loader, switcher, vinyl_playing=False)
+    applied = apply_layout_switch(state, loader, switcher)
     assert applied is False
     assert len(state.mutations) == 1  # no new mutation
 
 
 def test_apply_consent_safe_bypasses_cooldown() -> None:
     clock = [1000.0]
-    state = _FakeLayoutState(current=_FakeLayout("default"))
+    state = _FakeLayoutState(current=_FakeLayout("garage-door"))
     loader = _FakeLoader(
         layouts={
-            "vinyl-focus": _FakeLayout("vinyl-focus"),
+            "default": _FakeLayout("default"),
             "consent-safe": _FakeLayout("consent-safe"),
         }
     )
-    switcher = LayoutSwitcher(initial_layout="default", clock=lambda: clock[0])
+    switcher = LayoutSwitcher(initial_layout="garage-door", clock=lambda: clock[0])
 
     apply_layout_switch(state, loader, switcher, vinyl_playing=True)
-    assert switcher.current_layout == "vinyl-focus"
+    assert switcher.current_layout == "default"
 
     # Cooldown not elapsed, but consent_safe bypasses.
     applied = apply_layout_switch(state, loader, switcher, consent_safe_active=True)
@@ -127,9 +127,9 @@ def test_apply_consent_safe_bypasses_cooldown() -> None:
 def test_apply_records_switch_via_record_switch() -> None:
     """After a successful switch, the cooldown clock advances."""
     clock = [1000.0]
-    state = _FakeLayoutState(current=_FakeLayout("default"))
-    loader = _FakeLoader(layouts={"vinyl-focus": _FakeLayout("vinyl-focus")})
-    switcher = LayoutSwitcher(initial_layout="default", clock=lambda: clock[0])
+    state = _FakeLayoutState(current=_FakeLayout("garage-door"))
+    loader = _FakeLoader(layouts={"default": _FakeLayout("default")})
+    switcher = LayoutSwitcher(initial_layout="garage-door", clock=lambda: clock[0])
 
     apply_layout_switch(state, loader, switcher, vinyl_playing=True, now=1000.0)
 
@@ -137,11 +137,11 @@ def test_apply_records_switch_via_record_switch() -> None:
     # active (default 30s) — the switcher should refuse a follow-up
     # switch even via direct should_switch().
     clock[0] = 1029.0
-    can_switch = switcher.should_switch(LayoutSelection("default", "default_fallback"))
+    can_switch = switcher.should_switch(LayoutSelection("garage-door", "test_back_to_boot"))
     assert can_switch is False
     # Advance past cooldown, switch is allowed again.
     clock[0] = 1031.0
-    assert switcher.should_switch(LayoutSelection("default", "default_fallback")) is True
+    assert switcher.should_switch(LayoutSelection("garage-door", "test_back_to_boot")) is True
 
 
 # ── failure modes ───────────────────────────────────────────────────
@@ -150,9 +150,9 @@ def test_apply_records_switch_via_record_switch() -> None:
 def test_apply_propagates_loader_keyerror() -> None:
     """An unknown layout in the loader propagates KeyError so the
     caller can decide between log+skip and escalate."""
-    state = _FakeLayoutState(current=_FakeLayout("default"))
+    state = _FakeLayoutState(current=_FakeLayout("garage-door"))
     loader = _FakeLoader(layouts={})  # no layouts at all
-    switcher = LayoutSwitcher(initial_layout="default")
+    switcher = LayoutSwitcher(initial_layout="garage-door")
 
     try:
         apply_layout_switch(state, loader, switcher, vinyl_playing=True)
@@ -164,19 +164,19 @@ def test_apply_propagates_loader_keyerror() -> None:
     # State unchanged; switcher state also unchanged (record_switch not
     # called when loader fails).
     assert state.mutations == []
-    assert switcher.current_layout == "default"
+    assert switcher.current_layout == "garage-door"
 
 
 # ── stream_mode integration ─────────────────────────────────────────
 
 
-def test_apply_picks_default_legacy_for_stream_mode_deep() -> None:
-    state = _FakeLayoutState(current=_FakeLayout("default"))
-    loader = _FakeLoader(layouts={"default-legacy": _FakeLayout("default-legacy")})
-    switcher = LayoutSwitcher(initial_layout="default")
+def test_apply_stream_mode_deep_returns_default_not_retired_layout() -> None:
+    state = _FakeLayoutState(current=_FakeLayout("garage-door"))
+    loader = _FakeLoader(layouts={"default": _FakeLayout("default")})
+    switcher = LayoutSwitcher(initial_layout="garage-door")
 
     applied = apply_layout_switch(state, loader, switcher, stream_mode="deep")
 
     assert applied is True
-    assert switcher.current_layout == "default-legacy"
-    assert state.mutations[0].name == "default-legacy"
+    assert switcher.current_layout == "default"
+    assert state.mutations[0].name == "default"

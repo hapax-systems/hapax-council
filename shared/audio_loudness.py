@@ -71,36 +71,33 @@ DUCK_LOOKAHEAD_MS: float = 5.0
 # the release time here for tunability. 50 ms = quick recovery on
 # transient catches without audible pumping on sustained content.
 MASTER_LIMITER_LOOKAHEAD_MS: float = 5.0
-MASTER_LIMITER_RELEASE_MS: float = 500.0
+MASTER_LIMITER_RELEASE_MS: float = 50.0
 
-# Master input makeup gain (Phase 1.5 calibration, recalibrated 2026-05-02).
+# Master input makeup gain (Phase 1.5 calibration, corrected 2026-05-10).
 #
-# Closes the egress-loudness gap: live broadcast measurement landed at
-# -27.9 LUFS-I against the -14 LUFS-I YouTube-aligned target (audit B#3).
-# +14 dB master makeup brings the master sum into the target band; the
-# fast_lookahead_limiter_1913 master safety net at -1.0 dBTP catches any
-# transient overshoots safely (live measurement showed 12.6 dB headroom
-# remaining at the time of recalibration). LADSPA fast_lookahead_limiter
-# accepts Input gain (dB) in [-20, +20] so +14 dB sits comfortably in
-# range — the prior +27 dB line-driver bias attempt was silently rejected
-# as out-of-range (audit B#4), which is why the +14 dB master path is the
-# correct architectural placement.
+# Closes the egress-loudness gap at the public broadcast source
+# (`hapax-broadcast-normalized`). The earlier 2026-05-02 audit measured
+# -27.9 LUFS-I and justified +14 dB makeup, but the installed runtime had
+# drifted back to +8 dB and the measurement script was sampling
+# `hapax-broadcast-normalized.monitor` instead of the source OBS consumes. A
+# first reboot-recovery pass tried +19 dB against a short quiet window, but a
+# follow-up hot passage measured -9.1 LUFS-I and -0.1 dBTP, proving that +19
+# made the master limiter carry programme loudness instead of acting as a
+# safety net. The operational correction to +16 dB keeps the observed hot
+# passage just inside the health band without relying on the peak limiter for
+# routine level management. Phase 3 per-source pre-normalizers should replace
+# this single master-makeup constant.
 #
-# Original calibration narrative (subjective, music-alone, 2026-04-23):
+# Prior calibration narrative (subjective, music-alone, 2026-04-23):
 # - +19 dB landed music alone at -15 LUFS-I → too hot (sums with voice/TTS
 #   would push above target)
 # - +14 dB landed music alone at -20 LUFS-I → still 5 dB too hot
 #   subjectively
 # - +9 dB lands music alone at -25 LUFS-I → operator confirmed "perfect"
 #   under the music-duck stereo-split + FL/FR→RL/RR remap topology
-# After 2026-04-23 routing changes (duck mixer + remap added ~8 dB) the
-# +1 dB value held briefly. The 2026-05-02 audit measured the resulting
-# broadcast at -27.9 LUFS-I — 13.9 dB below target. Bumping master makeup
-# to +14 dB closes that gap without touching per-source loudnorm or
-# downstream stages, and stays well within the LADSPA accepted range.
-# Phase 3 per-source pre-normalizers will replace this single constant
-# with proper per-source LUFS targeting.
-MASTER_INPUT_MAKEUP_DB: float = 8.0
+# Those music-alone notes were not a public-egress calibration. They remain
+# useful context, but broadcast safety follows the measured public source.
+MASTER_INPUT_MAKEUP_DB: float = 16.0
 
 # ── Per-source line-output ceiling for L-12 USB return (Phase 1.5) ────
 #

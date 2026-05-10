@@ -8,6 +8,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARD = REPO_ROOT / "scripts" / "hapax-l12-critical-usb-guard"
+UNIT = REPO_ROOT / "systemd" / "units" / "hapax-l12-critical-usb-guard.service"
 
 
 def _write(path: Path, value: str) -> None:
@@ -129,3 +130,11 @@ def test_guard_can_fail_when_presence_is_required(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert "L-12 not present" in result.stderr
+
+
+def test_guard_unit_prepares_shared_usb_tmpfs_for_user_witness() -> None:
+    text = UNIT.read_text(encoding="utf-8")
+
+    assert "ExecStartPre=/usr/bin/install -d -o root -g hapax -m 0775 /dev/shm/hapax-usb" in text
+    assert "UMask=0002" in text
+    assert "ReadWritePaths=/sys /dev/shm/hapax-usb" in text
