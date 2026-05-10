@@ -657,6 +657,19 @@ if [ "$RELAY_ACTIVE" = "true" ]; then
             end
         ' "$PLANNING_FEED" 2>/dev/null || true
       fi
+      CAPACITY_WARNING_COUNT="$(jq -r '.dispatch.capacity_routing.warning_count // 0' "$PLANNING_FEED" 2>/dev/null || echo 0)"
+      case "$CAPACITY_WARNING_COUNT" in
+        ''|*[!0-9]*) CAPACITY_WARNING_COUNT=0 ;;
+      esac
+      if [ "$CAPACITY_WARNING_COUNT" -gt 0 ]; then
+        echo ""
+        echo "CAPACITY ROUTING (${CAPACITY_WARNING_COUNT} non-green, observe-only):"
+        jq -r '
+          .dispatch.capacity_routing.non_green_states[:5]
+          | to_entries[]
+          | "  \(.key + 1). \(.value.state): \(.value.summary)"
+        ' "$PLANNING_FEED" 2>/dev/null || true
+      fi
     fi
   else
     echo ""
