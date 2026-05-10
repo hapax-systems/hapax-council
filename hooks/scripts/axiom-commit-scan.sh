@@ -130,6 +130,17 @@ for pattern in "${AXIOM_PATTERNS[@]}"; do
     echo "Matched: $MATCHED" >&2
     echo "$DESC" >&2
     echo "Recovery: $RECOVERY" >&2
+
+    ENFORCEMENT_DIR="/dev/shm/hapax-governance"
+    mkdir -p "$ENFORCEMENT_DIR" 2>/dev/null || true
+    TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    TOOL_CMD="git-commit"
+    echo "$COMMAND" | grep -qE '\bgit\s+push\b' && TOOL_CMD="git-push"
+    printf '{"event_type":"axiom_blocked","timestamp":"%s","hook":"axiom-commit-scan","domain":"%s","pattern":"%s","matched":"%s","file_path":"staged-diff","description":"%s","recovery":"%s","tool":"%s"}\n' \
+      "$TS" "$DOMAIN" "$(echo "$pattern" | sed 's/"/\\"/g')" "$(echo "$MATCHED" | sed 's/"/\\"/g')" \
+      "$(echo "$DESC" | sed 's/"/\\"/g')" "$(echo "$RECOVERY" | sed 's/"/\\"/g')" "$TOOL_CMD" \
+      >> "$ENFORCEMENT_DIR/enforcement.jsonl" 2>/dev/null || true
+
     exit 2
   fi
 done
