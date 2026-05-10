@@ -249,6 +249,12 @@ _classify_final_frame
 # Pydantic v2 validators for the programme live-prior contract. They are
 # invoked by model validation, not by direct static calls.
 from shared.programme import (
+    Programme as _Programme,
+)
+from shared.programme import (
+    ProgrammeAssetAttribution as _ProgrammeAssetAttribution,
+)
+from shared.programme import (
     ProgrammeBeatCard as _ProgrammeBeatCard,
 )
 from shared.programme import (
@@ -257,13 +263,23 @@ from shared.programme import (
 from shared.programme import (
     ProgrammeLivePrior as _ProgrammeLivePrior,
 )
+from shared.programme import (
+    is_segmented_content_role as _is_segmented_content_role,
+)
 
+_is_segmented_content_role
+_ProgrammeAssetAttribution._strip_required_strings
+_ProgrammeAssetAttribution._strip_optional_strings
 _ProgrammeBeatCard._proposal_only
 _ProgrammeLivePrior._proposal_only
+_ProgrammeContent._optional_metadata_string_stripped
+_ProgrammeContent._source_ref_lists_well_formed
+_ProgrammeContent._source_packet_refs_well_formed
 _ProgrammeContent._beat_action_intents_are_proposals
 _ProgrammeContent._delivery_mode_normalized
 _ProgrammeContent._beat_cards_reasonable
 _ProgrammeContent._live_priors_reasonable
+_Programme._segmented_content_contract_invariant
 
 # Test-only reset hook for the in-process rendered-blit readback cache. The
 # production read path is recent_blit_readbacks(); vulture does not scan tests.

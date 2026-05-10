@@ -635,6 +635,9 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
                                 role = ProgrammeRole.RANT
 
                             content = ProgrammeContent(
+                                declared_topic=p.get("declared_topic") or p.get("topic"),
+                                source_uri=p.get("source_uri"),
+                                subject=p.get("subject"),
                                 narrative_beat=p.get("topic", "")[:500],
                                 segment_beats=p.get("segment_beats", []),
                                 prepared_script=list(script),
@@ -643,6 +646,11 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
                                 live_priors=_prepped_live_priors(p),
                                 hosting_context=p.get("hosting_context"),
                                 authority=p.get("authority") or p.get("artifact_authority"),
+                                source_refs=p.get("source_refs", []),
+                                evidence_refs=p.get("evidence_refs", []),
+                                source_packet_refs=p.get("source_packet_refs", []),
+                                role_contract=p.get("role_contract", {}),
+                                asset_attributions=p.get("asset_attributions", []),
                                 beat_action_intents=p.get("beat_action_intents", []),
                                 beat_layout_intents=p.get("beat_layout_intents", []),
                                 layout_decision_contract=p.get("layout_decision_contract", {}),
@@ -997,16 +1005,106 @@ def _current_beat_live_priors(content: Any, beat_index: int) -> list[dict[str, A
     return out
 
 
+def _json_ready(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return {str(k): _json_ready(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_ready(v) for v in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _content_asset_attributions(content: Any) -> list[dict[str, Any]]:
+    values = getattr(content, "asset_attributions", []) or []
+    out: list[dict[str, Any]] = []
+    if not isinstance(values, list):
+        return out
+    for value in values:
+        rendered = _json_ready(value)
+        if isinstance(rendered, dict):
+            out.append(rendered)
+    return out
+
+
+def _content_source_refs(content: Any) -> list[str]:
+    source_keys = {
+        "source_ref",
+        "source_refs",
+        "source_packet_ref",
+        "source_packet_refs",
+        "evidence_ref",
+        "evidence_refs",
+        "prepared_artifact_ref",
+        "media_ref",
+        "resolver_ref",
+    }
+    refs: list[str] = []
+
+    def visit(value: Any, *, collect_strings: bool) -> None:
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                visit(nested, collect_strings=collect_strings or str(key) in source_keys)
+        elif isinstance(value, (list, tuple, set)):
+            for nested in value:
+                visit(nested, collect_strings=collect_strings)
+        elif isinstance(value, str) and collect_strings:
+            stripped = value.strip()
+            if stripped:
+                refs.append(stripped)
+
+    if content is None:
+        return []
+    for field in ("source_refs", "evidence_refs", "source_packet_refs"):
+        visit(getattr(content, field, None), collect_strings=True)
+    visit(getattr(content, "role_contract", None), collect_strings=False)
+    source_uri = getattr(content, "source_uri", None)
+    if isinstance(source_uri, str) and source_uri.strip():
+        refs.append(source_uri.strip())
+    for attribution in _content_asset_attributions(content):
+        visit(attribution, collect_strings=False)
+    out: list[str] = []
+    seen: set[str] = set()
+    for ref in refs:
+        if ref not in seen:
+            out.append(ref)
+            seen.add(ref)
+    return out
+
+
+def _segment_format_metadata(role_value: str) -> dict[str, Any]:
+    try:
+        from shared.programme import segmented_content_format_spec
+
+        spec = segmented_content_format_spec(role_value)
+    except Exception:
+        spec = None
+    if spec is None:
+        return {}
+    return {
+        "ward_profile": spec.ward_profile,
+        "ward_accent_role": spec.ward_accent_role,
+        "asset_requirements": list(spec.asset_requirements),
+        "source_affordance_kinds": list(spec.source_affordance_kinds),
+    }
+
+
 def _active_segment_payload(active: Any, role_value: str, beat_index: int) -> dict[str, Any]:
     content = getattr(active, "content", None)
     beats = getattr(content, "segment_beats", []) or [] if content else []
     narrative_beat = getattr(content, "narrative_beat", "") or "" if content else ""
-    topic = getattr(active, "topic", None) or narrative_beat
-    return {
+    topic = (
+        getattr(content, "declared_topic", None) or getattr(active, "topic", None) or narrative_beat
+    )
+    payload = {
         "programme_id": str(active.programme_id),
         "role": role_value,
         "topic": str(topic)[:200],
         "narrative_beat": str(narrative_beat)[:300],
+        "source_uri": getattr(content, "source_uri", None),
+        "subject": getattr(content, "subject", None),
         "segment_beats": [str(b)[:100] for b in beats[:12]],
         "current_beat_index": beat_index,
         "started_at": getattr(active, "actual_started_at", None) or time.time(),
@@ -1020,7 +1118,11 @@ def _active_segment_payload(active: Any, role_value: str, beat_index: int) -> di
         "current_beat_cards": _current_beat_cards(content, beat_index),
         "current_beat_live_priors": _current_beat_live_priors(content, beat_index),
         "current_beat_layout_intents": _current_beat_layout_proposals(content, beat_index),
+        "source_refs": _content_source_refs(content),
+        "asset_attributions": _content_asset_attributions(content),
     }
+    payload.update(_segment_format_metadata(role_value))
+    return payload
 
 
 def _execute_segment_cue_if_allowed(

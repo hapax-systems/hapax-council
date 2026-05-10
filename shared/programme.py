@@ -24,6 +24,7 @@ from __future__ import annotations
 import math
 import re
 import time
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -98,6 +99,147 @@ class ProgrammeRole(StrEnum):
     ICEBERG = "iceberg"
     INTERVIEW = "interview"
     LECTURE = "lecture"
+
+
+@dataclass(frozen=True)
+class ProgrammeFormatSpec:
+    """Code-level contract for a segmented-content programme format."""
+
+    role: ProgrammeRole
+    narrative_beat_template: str
+    asset_requirements: tuple[str, ...]
+    ward_profile: str
+    ward_accent_role: str
+    source_affordance_kinds: tuple[str, ...]
+    minimum_planned_duration_s: float = 300.0
+
+
+SEGMENTED_CONTENT_FORMAT_SPECS: dict[str, ProgrammeFormatSpec] = {
+    "tier_list": ProgrammeFormatSpec(
+        role=ProgrammeRole.TIER_LIST,
+        narrative_beat_template=(
+            "tier-list segment on '{topic}'. Source candidates from vault and RAG; "
+            "rank against explicit operator criteria; narrate placements; invite dissent."
+        ),
+        asset_requirements=(
+            "candidate_items",
+            "tier_criteria",
+            "source_packet_refs",
+            "placement_evidence",
+        ),
+        ward_profile="ranked_tiers",
+        ward_accent_role="accent_blue",
+        source_affordance_kinds=("ranked_list_visible", "tier_chart", "source_card"),
+    ),
+    "top_10": ProgrammeFormatSpec(
+        role=ProgrammeRole.TOP_10,
+        narrative_beat_template=(
+            "top-10 countdown on '{topic}'. Source ranked entries from vault and RAG; "
+            "reveal 10 to 1 with criteria and evidence for each placement."
+        ),
+        asset_requirements=(
+            "ranked_entries",
+            "ordering_criterion",
+            "source_packet_refs",
+            "reveal_evidence",
+        ),
+        ward_profile="countdown",
+        ward_accent_role="accent_yellow",
+        source_affordance_kinds=("countdown_visual", "ranked_list_visible", "source_card"),
+    ),
+    "rant": ProgrammeFormatSpec(
+        role=ProgrammeRole.RANT,
+        narrative_beat_template=(
+            "rant on '{topic}'. Ground claims in operator-profile facts and prior "
+            "corrections; escalate the argument; land a bounded claim."
+        ),
+        asset_requirements=(
+            "bounded_claim",
+            "operator_positions",
+            "prior_corrections",
+            "source_packet_refs",
+        ),
+        ward_profile="argument_crescendo",
+        ward_accent_role="accent_red",
+        source_affordance_kinds=("claim_card", "correction_receipt", "source_card"),
+    ),
+    "react": ProgrammeFormatSpec(
+        role=ProgrammeRole.REACT,
+        narrative_beat_template=(
+            "react segment on '{source_uri}'. Resolve source media through the "
+            "content resolver; analyze timestamped claims; synthesize with profile-grounded evidence."
+        ),
+        asset_requirements=(
+            "media_ref",
+            "timestamp_or_locator",
+            "claim_under_reaction",
+            "source_packet_refs",
+        ),
+        ward_profile="source_reaction",
+        ward_accent_role="accent_green",
+        source_affordance_kinds=("source_visible", "media_locator", "reaction_claim_card"),
+    ),
+    "iceberg": ProgrammeFormatSpec(
+        role=ProgrammeRole.ICEBERG,
+        narrative_beat_template=(
+            "iceberg segment on '{topic}'. Start with surface sources, descend through "
+            "vault layers, and close with the deepest source-backed payoff."
+        ),
+        asset_requirements=(
+            "layer_refs",
+            "depth_tiers",
+            "bottom_payoff",
+            "source_packet_refs",
+        ),
+        ward_profile="depth_layers",
+        ward_accent_role="accent_cyan",
+        source_affordance_kinds=("depth_visual", "layer_map", "source_card"),
+    ),
+    "interview": ProgrammeFormatSpec(
+        role=ProgrammeRole.INTERVIEW,
+        narrative_beat_template=(
+            "interview segment with '{subject}'. Prepare a source-backed question ladder, "
+            "answer-source policy, and warm-to-deep arc."
+        ),
+        asset_requirements=(
+            "subject_context",
+            "question_ladder",
+            "answer_source_policy",
+            "source_packet_refs",
+        ),
+        ward_profile="question_ladder",
+        ward_accent_role="accent_magenta",
+        source_affordance_kinds=("question_ladder", "source_answer_card", "chat_prompt"),
+    ),
+    "lecture": ProgrammeFormatSpec(
+        role=ProgrammeRole.LECTURE,
+        narrative_beat_template=(
+            "lecture segment on '{topic}'. Build outline from vault notes and RAG; "
+            "teach through a demonstration object and worked example."
+        ),
+        asset_requirements=(
+            "teaching_objective",
+            "demonstration_object",
+            "worked_example",
+            "source_packet_refs",
+        ),
+        ward_profile="lecture_outline",
+        ward_accent_role="bright",
+        source_affordance_kinds=("outline_card", "worked_example", "source_card"),
+    ),
+}
+
+SEGMENTED_CONTENT_ROLE_VALUES: frozenset[str] = frozenset(SEGMENTED_CONTENT_FORMAT_SPECS.keys())
+
+
+def is_segmented_content_role(role: ProgrammeRole | str) -> bool:
+    value = role.value if hasattr(role, "value") else str(role)
+    return value in SEGMENTED_CONTENT_ROLE_VALUES
+
+
+def segmented_content_format_spec(role: ProgrammeRole | str) -> ProgrammeFormatSpec | None:
+    value = role.value if hasattr(role, "value") else str(role)
+    return SEGMENTED_CONTENT_FORMAT_SPECS.get(value)
 
 
 class ProgrammeStatus(StrEnum):
@@ -285,6 +427,43 @@ class SegmentAsset(BaseModel):
     block_index: int | None = None  # which script block this belongs to
 
 
+class ProgrammeAssetAttribution(BaseModel):
+    """Source attribution for assets used by a programme segment.
+
+    These records make asset provenance part of programme metadata, not
+    an inferred side channel. They are intentionally light-weight: the
+    resolver or prep pipeline may know only a source ref plus a kind,
+    while richer paths can add title/URL/resolver ids.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_ref: str = Field(min_length=1)
+    asset_kind: str = Field(default="source", max_length=80)
+    title: str | None = Field(default=None, max_length=240)
+    url: str | None = Field(default=None, max_length=1000)
+    resolver_ref: str | None = Field(default=None, max_length=240)
+    rights_summary: str | None = Field(default=None, max_length=500)
+
+    @field_validator("source_ref", "asset_kind")
+    @classmethod
+    def _strip_required_strings(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("attribution string must be non-empty")
+        return stripped
+
+    @field_validator("title", "url", "resolver_ref", "rights_summary")
+    @classmethod
+    def _strip_optional_strings(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        stripped = v.strip()
+        if not stripped:
+            return None
+        return stripped
+
+
 class ProgrammeBeatCard(BaseModel):
     """A per-beat prior card for live composition.
 
@@ -368,7 +547,15 @@ class ProgrammeContent(BaseModel):
     music_track_ids: list[str] = Field(default_factory=list)
     operator_task_ref: str | None = None
     research_objective_ref: str | None = None
+    declared_topic: str | None = Field(default=None, max_length=240)
+    source_uri: str | None = Field(default=None, max_length=1000)
+    subject: str | None = Field(default=None, max_length=240)
     narrative_beat: str | None = None
+    source_refs: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    source_packet_refs: list[str | dict[str, Any]] = Field(default_factory=list)
+    role_contract: dict[str, Any] = Field(default_factory=dict)
+    asset_attributions: list[ProgrammeAssetAttribution] = Field(default_factory=list)
     segment_beats: list[str] = Field(default_factory=list)
     segment_cues: list[str] = Field(default_factory=list)
     hosting_context: str | dict[str, Any] | None = None
@@ -427,6 +614,43 @@ class ProgrammeContent(BaseModel):
                 "narrative_beat > 500 chars — programme direction, not a scripted utterance"
             )
         return stripped
+
+    @field_validator("declared_topic", "source_uri", "subject")
+    @classmethod
+    def _optional_metadata_string_stripped(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        stripped = v.strip()
+        return stripped or None
+
+    @field_validator("source_refs", "evidence_refs")
+    @classmethod
+    def _source_ref_lists_well_formed(cls, v: list[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in v:
+            stripped = str(item).strip()
+            if not stripped or stripped in seen:
+                continue
+            out.append(stripped)
+            seen.add(stripped)
+        return out
+
+    @field_validator("source_packet_refs")
+    @classmethod
+    def _source_packet_refs_well_formed(
+        cls, v: list[str | dict[str, Any]]
+    ) -> list[str | dict[str, Any]]:
+        out: list[str | dict[str, Any]] = []
+        for item in v:
+            if isinstance(item, str):
+                stripped = item.strip()
+                if stripped:
+                    out.append(stripped)
+                continue
+            if isinstance(item, dict) and item:
+                out.append(item)
+        return out
 
     @field_validator("segment_beats")
     @classmethod
@@ -769,6 +993,44 @@ ProgrammeAuthorship = Literal["hapax", "operator"]
 MAX_OPT_INS: int = 3
 
 
+def _source_refs_from_programme_content(content: ProgrammeContent) -> list[str]:
+    refs: list[str] = []
+    source_keys = {
+        "source_ref",
+        "source_refs",
+        "source_packet_ref",
+        "source_packet_refs",
+        "evidence_ref",
+        "evidence_refs",
+        "prepared_artifact_ref",
+        "media_ref",
+    }
+
+    def visit(value: Any, *, collect_strings: bool) -> None:
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                visit(nested, collect_strings=collect_strings or str(key) in source_keys)
+        elif isinstance(value, (list, tuple, set)):
+            for nested in value:
+                visit(nested, collect_strings=collect_strings)
+        elif isinstance(value, str) and collect_strings:
+            stripped = value.strip()
+            if stripped:
+                refs.append(stripped)
+
+    visit(content.source_refs, collect_strings=True)
+    visit(content.evidence_refs, collect_strings=True)
+    visit(content.source_packet_refs, collect_strings=True)
+    visit(content.role_contract, collect_strings=False)
+    if content.source_uri:
+        refs.append(content.source_uri)
+    for attribution in content.asset_attributions:
+        refs.append(attribution.source_ref)
+        if attribution.resolver_ref:
+            refs.append(attribution.resolver_ref)
+    return [ref for index, ref in enumerate(refs) if ref and ref not in refs[:index]]
+
+
 class Programme(BaseModel):
     programme_id: str
     role: ProgrammeRole
@@ -861,6 +1123,47 @@ class Programme(BaseModel):
                 f"Programme {self.programme_id!r}: operator-authored opt-ins "
                 f"exceed MAX_OPT_INS={MAX_OPT_INS} (got {len(opt_ins)}). "
                 "Trim the set or split into multiple programmes."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _segmented_content_contract_invariant(self) -> Programme:
+        """Segmented formats must carry enough structure to run as segments.
+
+        This is deliberately not a full craft-quality gate; deeper
+        source/readback checks live in ``shared.segment_prep_contract``.
+        The model boundary only prevents the most damaging failure mode:
+        accepting a segmented role while silently discarding the format
+        contract and asset attribution metadata that downstream prep
+        relies on.
+        """
+        spec = segmented_content_format_spec(self.role)
+        if spec is None:
+            return self
+        if self.planned_duration_s < spec.minimum_planned_duration_s:
+            raise ValueError(
+                f"Programme {self.programme_id!r}: {self.role.value} requires "
+                f"planned_duration_s >= {spec.minimum_planned_duration_s:.0f}s"
+            )
+        if not self.content.narrative_beat:
+            raise ValueError(
+                f"Programme {self.programme_id!r}: segmented role {self.role.value!r} "
+                "requires content.narrative_beat"
+            )
+        if not self.content.segment_beats:
+            raise ValueError(
+                f"Programme {self.programme_id!r}: segmented role {self.role.value!r} "
+                "requires content.segment_beats"
+            )
+        if not self.content.role_contract:
+            raise ValueError(
+                f"Programme {self.programme_id!r}: segmented role {self.role.value!r} "
+                "requires content.role_contract"
+            )
+        if not _source_refs_from_programme_content(self.content):
+            raise ValueError(
+                f"Programme {self.programme_id!r}: segmented role {self.role.value!r} "
+                "requires source refs or asset attributions"
             )
         return self
 

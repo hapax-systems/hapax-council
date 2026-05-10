@@ -666,15 +666,25 @@ def _build_seed(context: Any) -> str:
             try:
                 from agents.programme_authors.asset_resolver import resolve_assets
 
+                content = getattr(prog, "content", None)
                 topic = None
                 if isinstance(beat, str):
                     topic = beat
-                topic = topic or getattr(prog, "topic", None) or ""
+                topic = (
+                    getattr(content, "declared_topic", None)
+                    or topic
+                    or getattr(prog, "topic", None)
+                    or ""
+                )
+                source_uri = getattr(content, "source_uri", None) or getattr(
+                    prog, "source_uri", None
+                )
+                subject = getattr(content, "subject", None) or getattr(prog, "subject", None)
                 assets = resolve_assets(
                     role_value,
                     topic=str(topic),
-                    source_uri=getattr(prog, "source_uri", None),
-                    subject=getattr(prog, "subject", None),
+                    source_uri=source_uri,
+                    subject=subject,
                 )
                 assets_ctx = _render_assets_context(assets)
                 if assets_ctx:

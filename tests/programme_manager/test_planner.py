@@ -32,7 +32,7 @@ from agents.programme_manager.planner import (
     DEFAULT_MODEL,
     ProgrammePlanner,
 )
-from shared.programme import ProgrammePlan, ProgrammeRole
+from shared.programme import ProgrammePlan, ProgrammeRole, is_segmented_content_role
 
 # ── Fixtures ────────────────────────────────────────────────────────────
 
@@ -44,6 +44,75 @@ def _well_formed_plan_payload(
     role: ProgrammeRole = ProgrammeRole.LISTENING,
 ) -> dict:
     """Build a minimal valid ProgrammePlan dict the LLM should emit."""
+    content = {
+        "narrative_beat": "Sit with the music. Stay quiet.",
+    }
+    if is_segmented_content_role(role):
+        content = {
+            "declared_topic": "source-backed test topic",
+            "source_uri": "https://example.com/source",
+            "subject": "Test Subject",
+            "narrative_beat": f"{role.value} segment on source-backed test topic",
+            "source_refs": ["vault:test-source.md"],
+            "asset_attributions": [
+                {
+                    "source_ref": "vault:test-source.md",
+                    "asset_kind": "vault_note",
+                    "title": "Test Source",
+                }
+            ],
+            "role_contract": {
+                "source_packet_refs": ["vault:test-source.md"],
+                "role_live_bit_mechanic": "source evidence changes the segment object",
+                "event_object": "source-backed segment object",
+                "audience_job": "inspect the source-backed consequence",
+                "payoff": "closing beat resolves the opening pressure",
+                "temporality_band": "evergreen",
+                "tier_criteria": "source-backed ranking criterion",
+                "ordering_criterion": "source-backed ordering criterion",
+                "bounded_claim": "source evidence constrains the claim",
+                "receipt_flip": "receipt changes scope",
+                "media_ref": "media:test-source",
+                "timestamp_or_locator": "00:00",
+                "claim_under_reaction": "source claim under test",
+                "layer_refs": ["vault:test-source.md"],
+                "bottom_payoff": "deepest source-backed payoff",
+                "subject_context": "source-backed subject context",
+                "question_ladder": [
+                    {
+                        "question_id": "q1",
+                        "question_text": "What changes if the source is removed?",
+                        "answer_kind": "source_bound",
+                        "followup_policy": "ask one source-backed followup",
+                        "what_answer_changes": "segment scope",
+                        "source_refs": ["vault:test-source.md"],
+                    }
+                ],
+                "answer_source_policy": {
+                    "operator_answer_authority": "none",
+                    "transcript_ref_kind": "recorded_source",
+                    "no_answer_flag": "say no answer is available",
+                    "refusal_policy": "do not simulate private answers",
+                    "public_private_boundary": "public sources only",
+                },
+                "teaching_objective": "teach the source consequence",
+                "demonstration_object": "demonstration source object",
+                "worked_example": "worked source example",
+            },
+            "segment_beats": ["hook: open topic", "body: show source", "close: land"],
+            "beat_layout_intents": [
+                {
+                    "beat_id": "hook",
+                    "action_intent_kinds": ["show_evidence"],
+                    "needs": ["evidence_visible"],
+                    "proposed_postures": ["asset_front"],
+                    "expected_effects": ["evidence_on_screen"],
+                    "evidence_refs": ["vault:test-source.md"],
+                    "source_affordances": ["asset:source-card"],
+                    "default_static_success_allowed": False,
+                }
+            ],
+        }
     return {
         "plan_id": plan_id,
         "show_id": show_id,
@@ -61,9 +130,7 @@ def _well_formed_plan_payload(
                     "surface_threshold_prior": 0.7,
                     "reverie_saturation_target": 0.30,
                 },
-                "content": {
-                    "narrative_beat": "Sit with the music. Stay quiet.",
-                },
+                "content": content,
                 "success": {
                     "completion_predicates": [],
                     "abort_predicates": [],
