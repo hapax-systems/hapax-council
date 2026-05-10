@@ -14,6 +14,7 @@ from agents.studio_compositor.shmsink_output_pipeline import (
     ShmsinkOutputPipeline,
     is_bridge_enabled,
 )
+from agents.studio_compositor.v4l2_output_pipeline import V4l2OutputPipeline
 
 
 class TestBridgeEnabledGate:
@@ -123,3 +124,52 @@ class TestShmsinkPipelineConstruction:
         gst = self._make_gst_mock()
         pipe = ShmsinkOutputPipeline(gst=gst, width=1280, height=720, fps=30)
         assert pipe.last_frame_age_seconds == float("inf")
+
+    def test_is_alive_false_before_frames(self) -> None:
+        gst = self._make_gst_mock()
+        pipe = ShmsinkOutputPipeline(gst=gst, width=1280, height=720, fps=30)
+        assert not pipe.is_alive(threshold_s=45.0)
+
+    def test_is_alive_true_after_probe(self) -> None:
+        gst = self._make_gst_mock()
+        pipe = ShmsinkOutputPipeline(gst=gst, width=1280, height=720, fps=30)
+        pipe._buffer_probe(None, None, None)
+        assert pipe.is_alive(threshold_s=2.0)
+
+
+class TestPipelineSelection:
+    """Verifies that build_pipeline selects the correct output pipeline type."""
+
+    def _make_compositor_mock(self) -> MagicMock:
+        compositor = MagicMock()
+        compositor.config.output_device = "/dev/video42"
+        compositor.config.output_width = 1280
+        compositor.config.output_height = 720
+        compositor.config.cameras = []
+        compositor.config.hls.enabled = False
+        return compositor
+
+    @patch.dict("os.environ", {BRIDGE_ENABLED_ENV: "1"})
+    @patch("agents.studio_compositor.shmsink_output_pipeline.ShmsinkOutputPipeline.build")
+    @patch(
+        "agents.studio_compositor.shmsink_output_pipeline.is_bridge_enabled",
+        return_value=True,
+    )
+    def test_bridge_enabled_creates_shmsink(
+        self, _mock_enabled: MagicMock, _mock_build: MagicMock
+    ) -> None:
+        pipe = ShmsinkOutputPipeline(gst=MagicMock(), width=1280, height=720, fps=30)
+        assert isinstance(pipe, ShmsinkOutputPipeline)
+        assert not isinstance(pipe, V4l2OutputPipeline)
+
+    def test_bridge_disabled_creates_v4l2(self) -> None:
+        with patch.dict("os.environ", {}, clear=False):
+            assert not is_bridge_enabled()
+            pipe = V4l2OutputPipeline(
+                gst=MagicMock(),
+                device="/dev/video42",
+                width=1280,
+                height=720,
+                fps=30,
+            )
+            assert isinstance(pipe, V4l2OutputPipeline)
