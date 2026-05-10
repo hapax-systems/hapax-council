@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import signal
 import threading
 import time
@@ -188,6 +189,31 @@ def start_compositor(compositor: Any) -> None:
         if ret2 == Gst.StateChangeReturn.FAILURE:
             compositor._write_status("error")
             raise RuntimeError("Failed to start pipeline after recovery attempt")
+
+    try:
+        from .shmsink_output_pipeline import is_bridge_enabled, is_v4l2_output_disabled
+
+        if not is_v4l2_output_disabled() and hasattr(compositor, "_v4l2_output_pipeline"):
+            grace_s = float(os.environ.get("HAPAX_COMPOSITOR_STARTUP_EGRESS_GRACE_S", "6.0"))
+            deadline = time.monotonic() + max(0.5, grace_s)
+            while time.monotonic() < deadline:
+                if is_bridge_enabled():
+                    if compositor.shmsink_frame_seen_within(2.0):
+                        break
+                elif compositor.v4l2_frame_seen_within(2.0):
+                    break
+                time.sleep(0.05)
+            else:
+                compositor._write_status("error")
+                log.error(
+                    "Pipeline started but no initial compositor egress frame arrived within %.1fs",
+                    grace_s,
+                )
+                raise RuntimeError("No initial compositor egress frame after pipeline start")
+    except RuntimeError:
+        raise
+    except Exception:
+        log.exception("initial compositor egress gate failed unexpectedly")
 
     log.info("Pipeline started -- output on %s", compositor.config.output_device)
 

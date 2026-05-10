@@ -37,6 +37,13 @@ _RECOVERABLE_ERRNOS = frozenset({errno.EAGAIN, errno.EIO, errno.ENODEV, errno.EN
 _FD_REOPEN_DELAY_S = 0.1
 
 
+def _set_optional_property(element: Any, name: str, value: Any) -> None:
+    try:
+        element.set_property(name, value)
+    except Exception:
+        log.debug("v4l2 interpipesrc property not supported: %s", name, exc_info=True)
+
+
 class V4l2OutputPipeline:
     def __init__(
         self,
@@ -155,6 +162,12 @@ class V4l2OutputPipeline:
 
         if written:
             self._last_frame_monotonic = time.monotonic()
+            try:
+                from . import metrics as _m
+
+                _m.record_render_stage_frame("v4l2_appsink")
+            except Exception:
+                pass
             if self._on_frame is not None:
                 try:
                     self._on_frame()
@@ -179,6 +192,11 @@ class V4l2OutputPipeline:
             src.set_property("listen-to", INTERPIPE_CHANNEL)
             src.set_property("do-timestamp", True)
             src.set_property("allow-renegotiation", True)
+            _set_optional_property(src, "stream-sync", "restart-ts")
+            _set_optional_property(src, "is-live", True)
+            _set_optional_property(src, "format", Gst.Format.TIME)
+            _set_optional_property(src, "automatic-eos", False)
+            _set_optional_property(src, "accept-eos-event", False)
 
             queue = Gst.ElementFactory.make("queue", "v4l2_out_queue")
             queue.set_property("leaky", 2)  # downstream

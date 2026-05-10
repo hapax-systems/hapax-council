@@ -34,6 +34,8 @@ canonical_dirty_count=0
 canonical_status_hash=""
 origin_sha="unknown"
 active_head="unknown"
+dependency_sync_status="not_started"
+dependency_sync_message=""
 
 canonical_snapshot() {
     if [[ -d "$CANONICAL_REPO/.git" || -f "$CANONICAL_REPO/.git" ]]; then
@@ -61,7 +63,8 @@ write_receipt() {
         "$status" "$deploy_status" "$exit_code" "$message" \
         "$origin_sha" "$active_head" "$CANONICAL_REPO" "$ACTIVE_WORKTREE" \
         "$canonical_branch" "$canonical_head" "$canonical_main" \
-        "$canonical_dirty_count" "$canonical_status_hash" <<'PY'
+        "$canonical_dirty_count" "$canonical_status_hash" \
+        "$dependency_sync_status" "$dependency_sync_message" <<'PY'
 from __future__ import annotations
 
 import json
@@ -86,6 +89,8 @@ from pathlib import Path
     canonical_main,
     canonical_dirty_count,
     canonical_status_hash,
+    dependency_sync_status,
+    dependency_sync_message,
 ) = sys.argv[1:]
 
 record = {
@@ -107,6 +112,10 @@ record = {
         "status_hash": canonical_status_hash,
     },
     "active_source_path": active_worktree,
+    "dependency_sync": {
+        "status": dependency_sync_status,
+        "message": dependency_sync_message,
+    },
 }
 
 current = Path(current_path).expanduser()
@@ -198,6 +207,43 @@ fi
 if [[ "$config_sync_count" -gt 0 ]]; then
     echo "hapax-source-activate: synced $config_sync_count config files from activation worktree"
 fi
+
+sync_dependency_environment() {
+    if [[ "${HAPAX_SOURCE_ACTIVATE_SYNC_DEPS:-1}" != "1" ]]; then
+        dependency_sync_status="skipped_by_flag"
+        dependency_sync_message="HAPAX_SOURCE_ACTIVATE_SYNC_DEPS disabled"
+        return 0
+    fi
+    if [[ ! -f "$ACTIVE_WORKTREE/pyproject.toml" ]]; then
+        dependency_sync_status="skipped_no_pyproject"
+        dependency_sync_message="active source has no pyproject.toml"
+        return 0
+    fi
+    if ! command -v uv >/dev/null 2>&1; then
+        dependency_sync_status="failed"
+        dependency_sync_message="uv executable not found"
+        write_receipt "failed" "not_started" "127" "dependency sync failed"
+        echo "hapax-source-activate: dependency sync failed — uv executable not found" >&2
+        exit 127
+    fi
+    if (
+        cd "$ACTIVE_WORKTREE"
+        uv sync --all-extras --quiet
+    ); then
+        dependency_sync_status="success"
+        dependency_sync_message="uv sync --all-extras --quiet completed"
+        echo "hapax-source-activate: dependency environment synced"
+    else
+        rc=$?
+        dependency_sync_status="failed"
+        dependency_sync_message="uv sync --all-extras --quiet failed"
+        write_receipt "failed" "not_started" "$rc" "dependency sync failed"
+        echo "hapax-source-activate: dependency sync failed for ${origin_sha:0:8}" >&2
+        exit "$rc"
+    fi
+}
+
+sync_dependency_environment
 
 previous_success="$(cat "$LAST_SUCCESS_SHA" 2>/dev/null || true)"
 if [[ "$FORCE" != "1" && "$SKIP_DEPLOY" != "1" && "$previous_success" == "$origin_sha" ]]; then

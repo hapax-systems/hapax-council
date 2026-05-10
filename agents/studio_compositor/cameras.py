@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import cv2
 
 from .config import SNAPSHOT_DIR
+from .cuda_caps import cuda_input_caps_string
 from .face_obscure_integration import obscure_frame_for_camera
 from .models import CameraSpec, TileRect
 
@@ -219,7 +220,7 @@ def add_camera_branch(
         scale_caps = Gst.ElementFactory.make("capsfilter", f"scalecaps_{role}")
         scale_caps.set_property(
             "caps",
-            Gst.Caps.from_string(f"video/x-raw(memory:CUDAMemory),width={tile.w},height={tile.h}"),
+            Gst.Caps.from_string(cuda_input_caps_string(tile.w, tile.h, fps)),
         )
         branch_elements = [queue_comp, upload, cuda_convert, scale, scale_caps]
     else:
