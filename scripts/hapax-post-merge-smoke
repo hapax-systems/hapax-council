@@ -89,6 +89,20 @@ unit_install_scope() {
     fi
 }
 
+bridge_inactive_expected_for_live_mode() {
+    local unit="$1"
+    [ "$unit" = "hapax-v4l2-bridge.service" ] || return 1
+
+    local compositor_env
+    compositor_env="$(
+        systemctl --user show studio-compositor.service -p Environment --value 2>/dev/null || true
+    )"
+    if grep -Eq '(^|[[:space:]])HAPAX_V4L2_BRIDGE_ENABLED=0([[:space:]]|$)' <<< "$compositor_env"; then
+        return 0
+    fi
+    return 1
+}
+
 gate_services_restarted() {
     local changed_units=()
     while IFS= read -r f; do
@@ -118,6 +132,9 @@ gate_services_restarted() {
             continue
         fi
         if ! systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+            if bridge_inactive_expected_for_live_mode "$unit"; then
+                continue
+            fi
             local unit_type result exec_status unit_file_state
             unit_type="$(systemctl --user show "$unit" -p Type --value 2>/dev/null || true)"
             result="$(systemctl --user show "$unit" -p Result --value 2>/dev/null || true)"
