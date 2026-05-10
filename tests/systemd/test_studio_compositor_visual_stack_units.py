@@ -9,6 +9,7 @@ STUDIO = UNITS_DIR / "studio-compositor.service"
 BRIDGE = UNITS_DIR / "hapax-v4l2-bridge.service"
 VIDEO42_GUARD = UNITS_DIR / "hapax-video42-format-guard.service"
 OBS = UNITS_DIR / "hapax-obs-livestream.service"
+OBS_SOURCE_RESET = UNITS_DIR / "hapax-obs-v4l2-source-reset.service"
 LIVE_SURFACE_GUARD = UNITS_DIR / "hapax-live-surface-guard.service"
 HLS_NO_CACHE = UNITS_DIR / "hapax-hls-no-cache.service"
 LAYOUT_MODE_DROPIN = UNITS_DIR / "studio-compositor.service.d" / "layout-mode-persist.conf"
@@ -73,6 +74,7 @@ def test_studio_compositor_starts_bridge_sidecar() -> None:
     assert "hapax-v4l2-bridge.service" in wants
     assert "hapax-live-surface-guard.service" in wants
     assert "hapax-hls-no-cache.service" in wants
+    assert "hapax-obs-v4l2-source-reset.service" in wants
     assert "hapax-video42-format-guard.service" in requires
     assert "hapax-video42-format-guard.service" in after
     assert "hapax-hls-no-cache.service" in after
@@ -119,6 +121,28 @@ def test_simple_bridge_unit_does_not_claim_systemd_watchdog_without_sd_notify() 
     parser = _load_unit(BRIDGE)
     assert parser.get("Service", "Type") == "simple"
     assert parser.get("Service", "WatchdogSec", fallback=None) is None
+
+
+def test_obs_v4l2_source_reset_runs_from_activation_worktree_with_notify_watchdog() -> None:
+    parser = _load_unit(OBS_SOURCE_RESET)
+    assert parser.get("Unit", "After") == (
+        "pipewire.service studio-compositor.service hapax-obs-livestream.service"
+    )
+    assert parser.get("Unit", "PartOf") == "studio-compositor.service"
+    assert parser.get("Unit", "ConditionPathExists") == (
+        f"{SOURCE_ROOT}/scripts/hapax-obs-v4l2-source-reset"
+    )
+    assert parser.get("Service", "Type") == "notify"
+    assert parser.get("Service", "NotifyAccess") == "main"
+    assert parser.get("Service", "WorkingDirectory") == SOURCE_ROOT
+    assert parser.get("Service", "WatchdogSec") == "120"
+    assert parser.get("Service", "ExecStart").startswith(
+        f"{SOURCE_ROOT}/scripts/hapax-obs-v4l2-source-reset"
+    )
+    assert "--reset-cooldown 60" in parser.get("Service", "ExecStart")
+    assert "hapax-compositor-runtime-source-check" in parser.get("Service", "ExecStartPre")
+    lines = _active_unit_lines(OBS_SOURCE_RESET)
+    assert all("%h/projects/hapax-council" not in line for line in lines)
 
 
 def test_live_surface_guard_runs_from_activation_worktree() -> None:
