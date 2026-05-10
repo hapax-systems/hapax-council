@@ -11,7 +11,7 @@
 #
 # Usage:
 #   hapax-v4l2-bridge [--device /dev/video42] [--socket /dev/shm/hapax-compositor/v4l2-bridge.sock]
-#   hapax-v4l2-bridge --check   # verify socket exists and device is writable
+#   hapax-v4l2-bridge --check   # verify socket exists and device is present
 
 set -euo pipefail
 
@@ -21,6 +21,7 @@ WIDTH="${HAPAX_V4L2_BRIDGE_WIDTH:-1280}"
 HEIGHT="${HAPAX_V4L2_BRIDGE_HEIGHT:-720}"
 FPS="${HAPAX_V4L2_BRIDGE_FPS:-30}"
 CHECK_ONLY=false
+ALLOW_MISSING_SOCKET=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -30,6 +31,7 @@ while [[ $# -gt 0 ]]; do
         --height)  HEIGHT="$2"; shift 2 ;;
         --fps)     FPS="$2"; shift 2 ;;
         --check)   CHECK_ONLY=true; shift ;;
+        --allow-missing-socket) ALLOW_MISSING_SOCKET=true; shift ;;
         *)         echo "error: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -44,8 +46,11 @@ if $CHECK_ONLY; then
     fi
     if [[ -S "$SOCKET" ]]; then
         echo "OK: socket $SOCKET exists"
+    elif $ALLOW_MISSING_SOCKET; then
+        echo "WAIT: socket $SOCKET not yet created (allowed by --allow-missing-socket)"
     else
-        echo "WAIT: socket $SOCKET not yet created (compositor not running?)"
+        echo "FAIL: socket $SOCKET missing; bridge cannot prove compositor SHM output"
+        ok=false
     fi
     $ok && exit 0 || exit 1
 fi

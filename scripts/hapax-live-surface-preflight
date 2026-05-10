@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Fail-closed livestream surface readiness check."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.live_surface_truth import (
+    LiveSurfaceState,
+    assess_live_surface,
+    parse_prometheus_scalars,
+    snapshot_from_prometheus,
+)
+
+CONTAINMENT_ENV = (
+    "HAPAX_COMPOSITOR_FORCE_CPU",
+    "HAPAX_COMPOSITOR_DISABLE_V4L2_OUTPUT",
+    "HAPAX_COMPOSITOR_DISABLE_INLINE_FX",
+    "HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT",
+    "HAPAX_FOLLOW_MODE_ACTIVE",
+)
+
+
+def _bool_arg(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "active"}
+
+
+def _systemd_active(unit: str) -> bool:
+    result = subprocess.run(
+        ["systemctl", "--user", "is-active", unit],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.stdout.strip() == "active"
+
+
+def _main_pid(unit: str) -> int | None:
+    result = subprocess.run(
+        ["systemctl", "--user", "show", unit, "-p", "MainPID", "--value"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    try:
+        pid = int(result.stdout.strip())
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def _selected_proc_env(pid: int | None) -> dict[str, str]:
+    if pid is None:
+        return {}
+    environ = Path(f"/proc/{pid}/environ")
+    try:
+        raw = environ.read_bytes()
+    except OSError:
+        return {}
+    selected: dict[str, str] = {}
+    for entry in raw.split(b"\0"):
+        if b"=" not in entry:
+            continue
+        key, value = entry.split(b"=", 1)
+        name = key.decode("utf-8", "ignore")
+        if name in CONTAINMENT_ENV:
+            selected[name] = value.decode("utf-8", "ignore")
+    return selected
+
+
+def _load_metrics(args: argparse.Namespace) -> str:
+    if args.metrics_file:
+        return Path(args.metrics_file).read_text(encoding="utf-8")
+    with urllib.request.urlopen(args.metrics_url, timeout=2.0) as response:
+        return response.read().decode("utf-8", "replace")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--metrics-url", default="http://127.0.0.1:9482/metrics")
+    parser.add_argument("--metrics-file")
+    parser.add_argument("--service-active", choices=("true", "false"))
+    parser.add_argument("--bridge-active", choices=("true", "false"))
+    parser.add_argument("--env", action="append", default=[], metavar="KEY=VALUE")
+    parser.add_argument("--no-systemd", action="store_true")
+    parser.add_argument("--allow-containment", action="store_true")
+    parser.add_argument("--no-require-v4l2", action="store_true")
+    parser.add_argument("--max-egress-age-seconds", type=float, default=10.0)
+    args = parser.parse_args()
+
+    service_active = (
+        _bool_arg(args.service_active)
+        if args.service_active is not None
+        else (False if args.no_systemd else _systemd_active("studio-compositor.service"))
+    )
+    bridge_active = (
+        _bool_arg(args.bridge_active)
+        if args.bridge_active is not None
+        else (False if args.no_systemd else _systemd_active("hapax-v4l2-bridge.service"))
+    )
+
+    env = _selected_proc_env(None if args.no_systemd else _main_pid("studio-compositor.service"))
+    for assignment in args.env:
+        if "=" not in assignment:
+            parser.error(f"--env expects KEY=VALUE, got {assignment!r}")
+        key, value = assignment.split("=", 1)
+        if key in CONTAINMENT_ENV:
+            env[key] = value
+
+    containment_flags = {
+        "force_cpu": env.get("HAPAX_COMPOSITOR_FORCE_CPU") == "1",
+        "disable_v4l2_output": env.get("HAPAX_COMPOSITOR_DISABLE_V4L2_OUTPUT") == "1",
+        "disable_inline_fx": env.get("HAPAX_COMPOSITOR_DISABLE_INLINE_FX") == "1",
+        "disable_hero_effect": env.get("HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT") == "1",
+        "follow_mode_disabled": env.get("HAPAX_FOLLOW_MODE_ACTIVE") == "0",
+    }
+
+    metrics = parse_prometheus_scalars(_load_metrics(args))
+    snapshot = snapshot_from_prometheus(
+        metrics,
+        service_active=service_active,
+        bridge_active=bridge_active,
+        containment_flags=containment_flags,
+    )
+    assessment = assess_live_surface(
+        snapshot,
+        max_egress_age_seconds=args.max_egress_age_seconds,
+        require_v4l2=not args.no_require_v4l2,
+    )
+
+    print(
+        json.dumps(
+            {
+                "state": assessment.state.value,
+                "restored": assessment.restored,
+                "reasons": list(assessment.reasons),
+                "service_active": service_active,
+                "bridge_active": bridge_active,
+            },
+            sort_keys=True,
+        )
+    )
+    if assessment.state is LiveSurfaceState.HEALTHY:
+        return 0
+    if args.allow_containment and assessment.state is LiveSurfaceState.DEGRADED_CONTAINMENT:
+        return 0
+    return 10 if assessment.state is LiveSurfaceState.DEGRADED_CONTAINMENT else 11
+
+
+if __name__ == "__main__":
+    sys.exit(main())

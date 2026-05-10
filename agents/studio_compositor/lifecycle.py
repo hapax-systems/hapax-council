@@ -395,7 +395,20 @@ def start_compositor(compositor: Any) -> None:
             # docs/research/2026-04-20-v4l2sink-stall-prevention.md §8.
             with compositor._camera_status_lock:
                 any_active = any(s == "active" for s in compositor._camera_status.values())
-            v4l2_alive = compositor.v4l2_frame_seen_within(45.0)
+            try:
+                from .shmsink_output_pipeline import is_bridge_enabled
+
+                bridge_enabled = is_bridge_enabled()
+            except Exception:
+                bridge_enabled = False
+            if bridge_enabled:
+                # The compositor watchdog may use render-to-SHM freshness for
+                # the shmsink bridge path, but this is not v4l2/OBS egress
+                # truth. The bridge sidecar and OBS-visible device are checked
+                # by the live-surface preflight/guard.
+                v4l2_alive = compositor.shmsink_frame_seen_within(45.0)
+            else:
+                v4l2_alive = compositor.v4l2_frame_seen_within(45.0)
             v4l2_pipe = getattr(compositor, "_v4l2_output_pipeline", None)
             if v4l2_pipe is not None and v4l2_pipe.last_frame_age_seconds >= 45.0:
                 v4l2_alive = False
@@ -426,6 +439,13 @@ def start_compositor(compositor: Any) -> None:
                             else 9999.0
                         )
                         metrics.V4L2SINK_LAST_FRAME_AGE.set(age)
+                    if metrics.SHMSINK_LAST_FRAME_AGE is not None:
+                        age = (
+                            time.monotonic() - compositor._shmsink_last_frame_monotonic
+                            if compositor._shmsink_last_frame_monotonic > 0
+                            else 9999.0
+                        )
+                        metrics.SHMSINK_LAST_FRAME_AGE.set(age)
                     if metrics.DIRECTOR_LAST_INTENT_AGE is not None:
                         try:
                             from .director_loop import director_intent_age as _dia

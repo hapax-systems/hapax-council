@@ -133,6 +133,15 @@ from shared.grounding_provider_router import (
     validate_eval_suite,
     validate_provider_registry,
 )
+from shared.live_surface_truth import (
+    assess_live_surface as _assess_live_surface,
+)
+from shared.live_surface_truth import (
+    parse_prometheus_scalars as _parse_prometheus_scalars,
+)
+from shared.live_surface_truth import (
+    snapshot_from_prometheus as _snapshot_from_prometheus,
+)
 from shared.livestream_health_group import LivestreamHealthEnvelope, LivestreamHealthGroup
 from shared.narration_triad import IntendedOutcomeItem, NarrationTriadEnvelope
 from shared.operator_quality_feedback import (
@@ -225,6 +234,13 @@ _programme_source_readiness
 _build_source_packet_inquiry_blackboard
 _source_packet_inquiry_summary
 _render_source_packet_inquiry_seed
+
+# Livestream incident preflight helpers are invoked from the executable
+# ``scripts/hapax-live-surface-preflight``. The project vulture pass scans
+# Python modules but not extensionless script entrypoints.
+_assess_live_surface
+_parse_prometheus_scalars
+_snapshot_from_prometheus
 
 # Pydantic v2 validators for the programme live-prior contract. They are
 # invoked by model validation, not by direct static calls.

@@ -1,18 +1,23 @@
 [Unit]
 Description=V4L2 Bridge — shmsrc→v4l2sink sidecar for /dev/video42
 After=studio-compositor.service
+Requires=studio-compositor.service
 BindsTo=studio-compositor.service
 PartOf=studio-compositor.service
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-v4l2-bridge
 
 [Service]
 Type=simple
-ExecStart=%h/projects/hapax-council/scripts/hapax-v4l2-bridge
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/hapax-v4l2-bridge
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-v4l2-bridge
 Restart=always
 RestartSec=1s
-WatchdogSec=30s
+TimeoutStartSec=45s
 Environment=GST_DEBUG=2
 Environment=HAPAX_V4L2_BRIDGE_DEVICE=/dev/video42
 Environment=HAPAX_V4L2_BRIDGE_SOCKET=/dev/shm/hapax-compositor/v4l2-bridge.sock
+Environment=HAPAX_COMPOSITOR_SOURCE_ROOT=%h/.cache/hapax/source-activation/worktree
 
 [Install]
 WantedBy=default.target
