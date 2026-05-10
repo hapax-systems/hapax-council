@@ -123,6 +123,7 @@ def _run(
         "HAPAX_STALE_CASE_HOURS": stale_hours,
         "HAPAX_STALE_OFFERED_HOURS": stale_hours,
         "HAPAX_STALE_COMPLETION_HOURS": stale_hours,
+        "HAPAX_CAPACITY_ROUTING_NOW": "2026-05-09T21:00:00Z",
     }
     return subprocess.run(
         [str(SCRIPT), *args],
@@ -667,6 +668,42 @@ def test_dispatch_feed_holds_malformed_route_metadata(tmp_path: Path) -> None:
     assert data["dispatch"]["dispatchable_tasks"] == []
     assert data["dispatch"]["route_metadata_summary"]["malformed"] == 1
     assert data["dispatch"]["planning_queue"][0]["route_metadata"]["status"] == "malformed"
+
+
+def test_dispatch_feed_includes_capacity_routing_dashboard(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    tasks_active = tmp_path / "tasks" / "active"
+    tasks_active.mkdir(parents=True)
+    spec = tmp_path / "spec.md"
+    spec.write_text("spec", encoding="utf-8")
+
+    _write_request(active / "REQ-020D.md", "REQ-020D", status="accepted_for_planning")
+    _write_task(
+        tasks_active / "T-020D.md",
+        "T-020D",
+        parent_request=str(active / "REQ-020D.md"),
+        parent_spec=str(spec),
+        authority_case="CASE-TEST-001",
+        route_metadata=False,
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    capacity = json.loads(feed.read_text())["dispatch"]["capacity_routing"]
+    states = {state["state"] for state in capacity["non_green_states"]}
+
+    assert capacity["observe_only"] is True
+    assert capacity["dispatch_authority"] is False
+    assert capacity["spend_authority"] is False
+    assert capacity["route_metadata_summary"]["hold"] == 1
+    assert capacity["subscription_quota_state"] == "stale"
+    assert capacity["paid_api_budget_state"] == "expired"
+    assert capacity["support_artifacts_waiting_for_review"] == 1
+    assert "route_metadata_hold" in states
+    assert "support_artifacts_waiting_for_review" in states
 
 
 def test_dispatch_feed_excludes_task_without_authority_case(tmp_path: Path) -> None:

@@ -149,6 +149,10 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+from shared.capacity_routing_dashboard import (
+    build_capacity_routing_dashboard,
+    parse_optional_utc,
+)
 from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
 from shared.route_metadata_schema import assess_route_metadata
 
@@ -156,6 +160,19 @@ requests_dir = Path(os.environ["ACTIVE_DIR"])
 tasks_dir = Path(os.environ["TASKS_DIR"])
 claims_dir = Path(os.environ["ACTIVE_CLAIMS_DIR"])
 now = datetime.now(timezone.utc)
+capacity_now = parse_optional_utc(os.environ.get("HAPAX_CAPACITY_ROUTING_NOW")) or now
+capacity_registry_env = os.environ.get("HAPAX_PLATFORM_CAPABILITY_REGISTRY")
+capacity_ledger_env = os.environ.get("HAPAX_QUOTA_SPEND_LEDGER")
+capacity_registry_path = (
+    Path(capacity_registry_env)
+    if capacity_registry_env
+    else Path(os.environ["REPO_ROOT"]) / "config" / "platform-capability-registry.json"
+)
+capacity_ledger_path = (
+    Path(capacity_ledger_env)
+    if capacity_ledger_env
+    else Path(os.environ["REPO_ROOT"]) / "config" / "quota-spend-ledger-fixtures.json"
+)
 
 thresholds = {
     "stale_captured": int(os.environ["STALE_CAPTURED_HOURS"]),
@@ -261,6 +278,7 @@ for task_dir in (tasks_dir / "active", tasks_dir / "closed"):
 dispatchable: list[dict[str, object]] = []
 planning_queue: list[dict[str, object]] = []
 route_metadata_summary = {"explicit": 0, "derived": 0, "hold": 0, "malformed": 0}
+route_metadata_items: list[dict[str, object]] = []
 
 for request_path in sorted(requests_dir.glob("*.md")):
     data = parse_frontmatter(request_path)
@@ -380,6 +398,14 @@ for task_path in sorted((tasks_dir / "active").glob("*.md")):
             or route_assessment.validation_errors
             or ["invalid_route_metadata"]
         )
+        route_metadata_items.append(
+            {
+                "task_id": task_id,
+                "status": route_assessment.status.value,
+                "evidence_refs": [f"cc-task:{task_id}:route_metadata"],
+                "reasons": list(reasons),
+            }
+        )
         queue_task(f"route metadata hold: {', '.join(reasons)}", 2, route_metadata_status)
         continue
 
@@ -408,6 +434,14 @@ for task_path in sorted((tasks_dir / "active").glob("*.md")):
 
 dispatchable.sort(key=lambda item: (-float(item["wsjf"]), str(item["offered_at"])))
 planning_queue.sort(key=lambda item: (int(item["urgency_rank"]), -int(item["age_hours"])))
+capacity_routing_dashboard = build_capacity_routing_dashboard(
+    route_metadata_summary=route_metadata_summary,
+    route_metadata_items=route_metadata_items,
+    route_metadata_generated_at=capacity_now,
+    registry_path=capacity_registry_path,
+    quota_spend_ledger_path=capacity_ledger_path,
+    now=capacity_now,
+)
 
 print(
     json.dumps(
@@ -420,6 +454,7 @@ print(
             "planning_attention_count": len(planning_queue),
             "dispatchable_tasks": dispatchable,
             "planning_queue": planning_queue,
+            "capacity_routing": capacity_routing_dashboard.model_dump(mode="json"),
         },
         indent=2,
         sort_keys=False,

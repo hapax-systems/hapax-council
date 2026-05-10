@@ -198,6 +198,15 @@ class TestPlanningFeedDispatchBlock:
                                 "age_hours": 4,
                             }
                         ],
+                        "capacity_routing": {
+                            "warning_count": 1,
+                            "non_green_states": [
+                                {
+                                    "state": "route_metadata_hold",
+                                    "summary": "1 offered task(s) have hold route metadata",
+                                }
+                            ],
+                        },
                     },
                 }
             ),
@@ -215,6 +224,12 @@ class TestPlanningFeedDispatchBlock:
         assert "eligible-001 (WSJF 11.5, CASE-TEST-001)" in result.stdout
         assert "PLANNING ATTENTION (1 items)" in result.stdout
         assert "REQ-NEEDS-CASE" in result.stdout
+
+    def test_ready_feed_surfaces_capacity_routing_warnings(self, home: Path) -> None:
+        self._write_feed(home)
+        result = _run(home)
+        assert "CAPACITY ROUTING (1 non-green, observe-only)" in result.stdout
+        assert "route_metadata_hold" in result.stdout
 
     def test_claimed_session_suppresses_eligible_work_prompt(self, home: Path) -> None:
         self._write_feed(home)

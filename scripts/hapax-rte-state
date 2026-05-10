@@ -38,10 +38,31 @@ import os
 import re
 import sys
 import time
+from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-RELAY_DIR = Path.home() / ".cache" / "hapax" / "relay"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.capacity_routing_dashboard import (  # noqa: E402
+    build_capacity_routing_dashboard,
+    parse_optional_utc,
+    route_metadata_items_from_planning_queue,
+)
+
+RELAY_DIR = (
+    Path(os.environ["HAPAX_RELAY_DIR"])
+    if os.environ.get("HAPAX_RELAY_DIR")
+    else Path.home() / ".cache" / "hapax" / "relay"
+)
+PLANNING_FEED_PATH = (
+    Path(os.environ["HAPAX_PLANNING_FEED_STATE"])
+    if os.environ.get("HAPAX_PLANNING_FEED_STATE")
+    else Path.home() / ".cache" / "hapax" / "planning-feed-state.json"
+)
 TICK_RE = re.compile(r"^rte-tick-(\d{8}T\d{6}Z)\.yaml$")
 STALE_AFTER_S = 600.0  # 10 minutes — RTE cadence is 270s, so 2 missed ticks = stale
 
@@ -141,8 +162,64 @@ def read_tick(path: Path) -> dict[str, Any]:
     return parse_yaml_minimal(text)
 
 
+def _env_path(name: str, default: Path) -> Path:
+    value = os.environ.get(name)
+    return Path(value) if value else default
+
+
+def _capacity_now() -> datetime | None:
+    return parse_optional_utc(os.environ.get("HAPAX_CAPACITY_ROUTING_NOW"))
+
+
+def _planning_feed_route_metadata() -> tuple[
+    Mapping[str, object] | None,
+    tuple[dict[str, object], ...],
+    datetime | None,
+]:
+    try:
+        payload = json.loads(PLANNING_FEED_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, (), None
+    if not isinstance(payload, Mapping):
+        return None, (), None
+    dispatch = payload.get("dispatch")
+    if not isinstance(dispatch, Mapping):
+        return None, (), parse_optional_utc(payload.get("generated_at"))
+    summary = dispatch.get("route_metadata_summary")
+    planning_queue = dispatch.get("planning_queue")
+    return (
+        summary if isinstance(summary, Mapping) else None,
+        route_metadata_items_from_planning_queue(
+            planning_queue if isinstance(planning_queue, list) else []
+        ),
+        parse_optional_utc(payload.get("generated_at")),
+    )
+
+
+def collect_capacity_routing_dashboard() -> dict[str, Any]:
+    """Build warning-only capacity routing state for RTE consumers."""
+
+    summary, items, generated_at = _planning_feed_route_metadata()
+    dashboard = build_capacity_routing_dashboard(
+        route_metadata_summary=summary,
+        route_metadata_items=items,
+        route_metadata_generated_at=generated_at,
+        registry_path=_env_path(
+            "HAPAX_PLATFORM_CAPABILITY_REGISTRY",
+            REPO_ROOT / "config" / "platform-capability-registry.json",
+        ),
+        quota_spend_ledger_path=_env_path(
+            "HAPAX_QUOTA_SPEND_LEDGER",
+            REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json",
+        ),
+        now=_capacity_now(),
+    )
+    return dashboard.model_dump(mode="json")
+
+
 def evaluate() -> dict[str, Any]:
     """Read latest tick, derive current authority state."""
+    capacity_routing = collect_capacity_routing_dashboard()
     latest = find_latest_tick()
     now = time.time()
     if latest is None:
@@ -151,6 +228,7 @@ def evaluate() -> dict[str, Any]:
             "reasons": ["no RTE tick log found in ~/.cache/hapax/relay/"],
             "tick_age_s": None,
             "tick_path": None,
+            "capacity_routing": capacity_routing,
         }
     tick_mtime = latest.stat().st_mtime
     tick_age_s = now - tick_mtime
@@ -172,10 +250,13 @@ def evaluate() -> dict[str, Any]:
     if tick_age_s > STALE_AFTER_S:
         return {
             "status": "unknown",
-            "reasons": [f"latest RTE tick is {tick_age_s:.0f}s stale (>{STALE_AFTER_S:.0f}s threshold)"],
+            "reasons": [
+                f"latest RTE tick is {tick_age_s:.0f}s stale (>{STALE_AFTER_S:.0f}s threshold)"
+            ],
             "tick_age_s": tick_age_s,
             "tick_path": str(latest),
             "tick_summary": parsed.get("summary", ""),
+            "capacity_routing": capacity_routing,
         }
 
     if not reasons:
@@ -188,6 +269,7 @@ def evaluate() -> dict[str, Any]:
         "tick_path": str(latest),
         "tick_summary": parsed.get("summary", ""),
         "rte": parsed.get("rte", "unknown"),
+        "capacity_routing": capacity_routing,
     }
 
 
@@ -202,10 +284,16 @@ def status_to_exit(status: str) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--json", action="store_true", help="machine-readable JSON")
     ap.add_argument("--status-only", action="store_true", help="print only the status keyword")
-    ap.add_argument("--gate", action="store_true", help="exit-code-only (0=green/yellow, 1=red, 2=ops-distress, 3=unknown)")
+    ap.add_argument(
+        "--gate",
+        action="store_true",
+        help="exit-code-only (0=green/yellow, 1=red, 2=ops-distress, 3=unknown)",
+    )
     args = ap.parse_args()
 
     state = evaluate()
@@ -231,10 +319,19 @@ def main() -> int:
     print(f"  summary: {state.get('tick_summary', '')}")
     for r in state["reasons"]:
         print(f"  • {r}")
+    capacity_routing = state.get("capacity_routing")
+    if isinstance(capacity_routing, dict):
+        warning_count = int(capacity_routing.get("warning_count") or 0)
+        if warning_count:
+            print(f"  capacity routing warnings: {warning_count} (observe-only)")
+            for warning in capacity_routing.get("non_green_states", [])[:5]:
+                if not isinstance(warning, dict):
+                    continue
+                print(f"    - {warning.get('state')}: {warning.get('summary')}")
     if status in ("red", "ops-distress"):
         print()
-        print(f"  RTE AUTHORITY: dispatches deferred, lanes hold pattern.")
-        print(f"  Override only with --rte-bypass on send scripts (operator emergency).")
+        print("  RTE AUTHORITY: dispatches deferred, lanes hold pattern.")
+        print("  Override only with --rte-bypass on send scripts (operator emergency).")
     return status_to_exit(status)
 
 
