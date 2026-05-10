@@ -23,9 +23,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: rhysd/actionlint@v1
+      - uses: docker://rhysd/actionlint:1.7.12
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          args: -color
 
   rust-audit:
     runs-on: ubuntu-latest
