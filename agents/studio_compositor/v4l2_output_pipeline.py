@@ -27,7 +27,10 @@ import os
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
+
+from .config import SNAPSHOT_DIR
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +38,7 @@ INTERPIPE_CHANNEL = "compositor_v4l2_out"
 
 _RECOVERABLE_ERRNOS = frozenset({errno.EAGAIN, errno.EIO, errno.ENODEV, errno.ENXIO})
 _FD_REOPEN_DELAY_S = 0.1
+_DEFAULT_PROOF_SNAPSHOT_INTERVAL_S = 1.0
 
 
 def _set_optional_property(element: Any, name: str, value: Any) -> None:
@@ -54,6 +58,8 @@ class V4l2OutputPipeline:
         height: int,
         fps: int,
         on_frame: Callable[[], None] | None = None,
+        proof_snapshot_path: str | os.PathLike[str] | None = None,
+        proof_snapshot_interval_s: float | None = None,
     ) -> None:
         self._Gst = gst
         self._device = device
@@ -73,6 +79,19 @@ class V4l2OutputPipeline:
         self._fd_lock = threading.Lock()
         self._fd_reopen_count: int = 0
         self._fd_write_error_count: int = 0
+
+        self._proof_snapshot_path = (
+            Path(proof_snapshot_path) if proof_snapshot_path else (SNAPSHOT_DIR / "fx-snapshot.jpg")
+        )
+        self._proof_snapshot_interval_s = (
+            _DEFAULT_PROOF_SNAPSHOT_INTERVAL_S
+            if proof_snapshot_interval_s is None
+            else max(0.0, float(proof_snapshot_interval_s))
+        )
+        self._proof_snapshot_last_monotonic: float = 0.0
+        self._proof_snapshot_inflight = False
+        self._proof_snapshot_lock = threading.Lock()
+        self._proof_snapshot_failure_logged = False
 
     @property
     def last_frame_age_seconds(self) -> float:
@@ -141,6 +160,79 @@ class V4l2OutputPipeline:
                     log.error("v4l2 write error (unexpected errno=%d): %s", exc.errno, exc)
                 return False
 
+    def _maybe_write_proof_snapshot(self, data: bytes) -> None:
+        if self._proof_snapshot_interval_s <= 0.0:
+            return
+        now = time.monotonic()
+        with self._proof_snapshot_lock:
+            if now - self._proof_snapshot_last_monotonic < self._proof_snapshot_interval_s:
+                return
+            if self._proof_snapshot_inflight:
+                return
+            self._proof_snapshot_last_monotonic = now
+            self._proof_snapshot_inflight = True
+
+        thread = threading.Thread(
+            target=self._write_proof_snapshot_jpeg,
+            args=(data,),
+            daemon=True,
+            name="v4l2-proof-snapshot",
+        )
+        thread.start()
+
+    def _write_proof_snapshot_jpeg(self, data: bytes) -> None:
+        """Write final-egress proof JPEG from the exact NV12 frame sent to v4l2.
+
+        The legacy ``fx-snapshot.jpg`` tee branch can go stale independently
+        of the broadcast path. This writer is intentionally downstream of
+        interpipesrc conversion, so a fresh proof image means the final frame
+        reached the same appsink that writes ``/dev/video42``.
+        """
+        try:
+            import cv2
+            import numpy as np
+
+            expected = self._width * self._height * 3 // 2
+            if len(data) < expected:
+                raise ValueError(
+                    f"NV12 frame too small for proof snapshot: got {len(data)}, expected {expected}"
+                )
+            nv12 = np.frombuffer(data[:expected], dtype=np.uint8).reshape(
+                (self._height * 3 // 2, self._width)
+            )
+            bgr = cv2.cvtColor(nv12, cv2.COLOR_YUV2BGR_NV12)
+            ok, encoded = cv2.imencode(
+                ".jpg",
+                bgr,
+                [int(cv2.IMWRITE_JPEG_QUALITY), 85],
+            )
+            if not ok:
+                raise RuntimeError("cv2.imencode returned false for proof snapshot")
+
+            self._proof_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._proof_snapshot_path.with_name(self._proof_snapshot_path.name + ".tmp")
+            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+            try:
+                os.write(fd, encoded.tobytes())
+            finally:
+                os.close(fd)
+            tmp.replace(self._proof_snapshot_path)
+            try:
+                from . import metrics as _m
+
+                _m.record_render_stage_frame("final_egress_snapshot")
+            except Exception:
+                pass
+        except Exception as exc:
+            if not self._proof_snapshot_failure_logged:
+                log.warning("final-egress proof snapshot unavailable: %s", exc)
+                self._proof_snapshot_failure_logged = True
+            else:
+                log.debug("final-egress proof snapshot failed", exc_info=True)
+        finally:
+            with self._proof_snapshot_lock:
+                self._proof_snapshot_inflight = False
+
     def _on_new_sample(self, appsink: Any) -> Any:
         Gst = self._Gst
         sample = appsink.emit("pull-sample")
@@ -156,12 +248,14 @@ class V4l2OutputPipeline:
             return Gst.FlowReturn.OK
 
         try:
-            written = self._write_frame(bytes(map_info.data))
+            data = bytes(map_info.data)
+            written = self._write_frame(data)
         finally:
             buf.unmap(map_info)
 
         if written:
             self._last_frame_monotonic = time.monotonic()
+            self._maybe_write_proof_snapshot(data)
             try:
                 from . import metrics as _m
 

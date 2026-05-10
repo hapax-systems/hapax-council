@@ -37,6 +37,8 @@ def test_containment_flags_prevent_restored_state() -> None:
         cameras_healthy=6,
         v4l2_frames_total=100,
         v4l2_last_frame_age_seconds=0.2,
+        final_egress_snapshot_frames_total=10,
+        final_egress_snapshot_last_frame_age_seconds=0.2,
         containment_flags={"force_cpu": True},
     )
 
@@ -54,6 +56,8 @@ def test_healthy_requires_active_service_cameras_bridge_and_fresh_v4l2() -> None
         cameras_healthy=6,
         v4l2_frames_total=100,
         v4l2_last_frame_age_seconds=0.2,
+        final_egress_snapshot_frames_total=10,
+        final_egress_snapshot_last_frame_age_seconds=0.2,
     )
 
     assessment = assess_live_surface(snapshot)
@@ -71,6 +75,8 @@ def test_parse_prometheus_and_build_snapshot() -> None:
         studio_compositor_cameras_healthy 5
         studio_compositor_v4l2sink_frames_total 3
         studio_compositor_v4l2sink_last_frame_seconds_ago 12
+        studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 2
+        studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 1
         studio_camera_last_frame_age_seconds{camera_role="desk"} 0.2
         """
     )
@@ -85,3 +91,5 @@ def test_parse_prometheus_and_build_snapshot() -> None:
     assert snapshot.cameras_healthy == 5
     assert snapshot.v4l2_frames_total == 3
     assert snapshot.v4l2_last_frame_age_seconds == 12
+    assert snapshot.final_egress_snapshot_frames_total == 2
+    assert snapshot.final_egress_snapshot_last_frame_age_seconds == 1

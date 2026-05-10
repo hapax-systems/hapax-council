@@ -58,6 +58,8 @@ studio_compositor_cameras_total 6
 studio_compositor_cameras_healthy 6
 studio_compositor_v4l2sink_frames_total 10
 studio_compositor_v4l2sink_last_frame_seconds_ago 0.1
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 4
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.2
 """,
         "--service-active",
         "true",
@@ -80,6 +82,8 @@ studio_compositor_cameras_total 6
 studio_compositor_cameras_healthy 6
 studio_compositor_v4l2sink_frames_total 10
 studio_compositor_v4l2sink_last_frame_seconds_ago 0.1
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 4
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.2
 """,
         "--service-active",
         "true",
@@ -101,6 +105,8 @@ studio_compositor_v4l2sink_frames_total 140
 studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
 studio_compositor_shmsink_frames_total 0
 studio_compositor_shmsink_last_frame_seconds_ago 9999
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 11
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.4
 """,
         "--service-active",
         "true",
@@ -124,6 +130,8 @@ studio_compositor_cameras_total 6
 studio_compositor_cameras_healthy 6
 studio_compositor_v4l2sink_frames_total 140
 studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 11
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.4
 """,
         "--service-active",
         "true",
@@ -138,6 +146,50 @@ studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
     payload = json.loads(result.stdout)
     assert payload["state"] == "degraded_containment"
     assert "v4l2_bridge_inactive" in payload["reasons"]
+
+
+def test_preflight_degrades_when_final_egress_snapshot_is_stale(tmp_path: Path) -> None:
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 140
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 11
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 90
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "false",
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 10
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "degraded_containment"
+    assert "final_egress_snapshot_stale" in payload["reasons"]
+
+
+def test_preflight_degrades_when_final_egress_snapshot_missing(tmp_path: Path) -> None:
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 140
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "false",
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 10
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "degraded_containment"
+    assert "final_egress_snapshot_no_frames" in payload["reasons"]
 
 
 def test_preflight_fails_closed_with_json_when_metrics_are_unavailable() -> None:

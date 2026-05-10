@@ -609,9 +609,14 @@ jobs:
           # Shallow clone vs full-history. gitleaks scans current diff;
           # 50 commits is sufficient for typical PRs.
           fetch-depth: 50
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run Gitleaks CLI
+        run: |
+          docker run --rm \
+            --entrypoint sh \
+            -v "$PWD":/repo \
+            -w /repo \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            -c 'git config --global --add safe.directory /repo && gitleaks git --redact --log-opts="--max-count=50" /repo'
 
   security:
     runs-on: ubuntu-latest
