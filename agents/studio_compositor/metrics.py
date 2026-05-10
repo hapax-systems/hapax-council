@@ -108,6 +108,9 @@ V4L2SINK_STALL_TOTAL: Any = None
 V4L2SINK_RECOVERY_TOTAL: Any = None
 V4L2SINK_FD_REOPENS_TOTAL: Any = None
 V4L2SINK_WRITE_ERRORS_TOTAL: Any = None
+COMP_RUNTIME_FEATURE_ACTIVE: Any = None
+COMP_RENDER_STAGE_FRAMES_TOTAL: Any = None
+COMP_RENDER_STAGE_LAST_FRAME_AGE: Any = None
 DIRECTOR_LAST_INTENT_AGE: Any = None
 DIRECTOR_INTENT_TOTAL: Any = None
 HAPAX_REFUSAL_GATE_REROLLS: Any = None
@@ -272,6 +275,9 @@ def _init_metrics() -> None:
     global V4L2SINK_RECOVERY_TOTAL
     global V4L2SINK_FD_REOPENS_TOTAL
     global V4L2SINK_WRITE_ERRORS_TOTAL
+    global COMP_RUNTIME_FEATURE_ACTIVE
+    global COMP_RENDER_STAGE_FRAMES_TOTAL
+    global COMP_RENDER_STAGE_LAST_FRAME_AGE
     global DIRECTOR_LAST_INTENT_AGE
     global DIRECTOR_INTENT_TOTAL
     global HAPAX_REFUSAL_GATE_REROLLS
@@ -748,6 +754,33 @@ def _init_metrics() -> None:
         "Cumulative os.write() failures to v4l2loopback device.",
         registry=REGISTRY,
     )
+    COMP_RUNTIME_FEATURE_ACTIVE = Gauge(
+        "studio_compositor_runtime_feature_active",
+        (
+            "1 when a compositor runtime feature or containment gate is active. "
+            "Feature labels include force_cpu, cuda_aggregator, inline_fx, "
+            "hero_effect, follow_mode, ward_modulator, direct_v4l2, and "
+            "shmsink_bridge."
+        ),
+        ["feature"],
+        registry=REGISTRY,
+    )
+    COMP_RENDER_STAGE_FRAMES_TOTAL = Counter(
+        "studio_compositor_render_stage_frames_total",
+        (
+            "Frames observed at named compositor render stages. Used to split "
+            "no-output failures into aggregation, CUDA download/caps, FX, "
+            "interpipe, and final v4l2 appsink layers."
+        ),
+        ["stage"],
+        registry=REGISTRY,
+    )
+    COMP_RENDER_STAGE_LAST_FRAME_AGE = Gauge(
+        "studio_compositor_render_stage_last_frame_seconds_ago",
+        "Seconds since the named compositor render stage last observed a frame.",
+        ["stage"],
+        registry=REGISTRY,
+    )
     # Phase 1 director liveness watchdog per
     # docs/research/2026-04-20-livestream-halt-investigation.md §6.
     DIRECTOR_LAST_INTENT_AGE = Gauge(
@@ -1126,6 +1159,7 @@ _cam_models: dict[str, str] = {}
 # _refresh_counts can compute studio_compositor_cameras_healthy
 # without reading back from the Prometheus registry.
 _cam_states: dict[str, str] = {}
+_render_stage_last_frame_monotonic: dict[str, float] = {}
 _last_watchdog_monotonic: float = 0.0
 _boot_monotonic: float = 0.0
 _lock = threading.Lock()
@@ -1349,6 +1383,29 @@ def on_pipeline_restart(pipeline_name: str) -> None:
     COMP_PIPELINE_RESTARTS_TOTAL.labels(pipeline=pipeline_name).inc()
 
 
+def set_runtime_feature_active(feature: str, active: bool) -> None:
+    """Publish a compositor runtime feature/containment state.
+
+    This is intentionally generic: live restoration needs one scrape-visible
+    row for each switch that can make the surface merely contained instead of
+    fully restored.
+    """
+
+    if COMP_RUNTIME_FEATURE_ACTIVE is None:
+        return
+    COMP_RUNTIME_FEATURE_ACTIVE.labels(feature=feature).set(1 if active else 0)
+
+
+def record_render_stage_frame(stage: str) -> None:
+    """Record that a frame crossed a named compositor render stage."""
+
+    with _lock:
+        _render_stage_last_frame_monotonic[stage] = time.monotonic()
+    if COMP_RENDER_STAGE_FRAMES_TOTAL is None:
+        return
+    COMP_RENDER_STAGE_FRAMES_TOTAL.labels(stage=stage).inc()
+
+
 def mark_watchdog_fed() -> None:
     global _last_watchdog_monotonic
     with _lock:
@@ -1363,6 +1420,7 @@ def shutdown() -> None:
         _last_frame_monotonic.clear()
         _cam_models.clear()
         _cam_states.clear()
+        _render_stage_last_frame_monotonic.clear()
 
 
 # --------------------------- internal helpers ---------------------------
@@ -1397,12 +1455,20 @@ def _poll_loop() -> None:
                 )
                 for role, last_mono in _last_frame_monotonic.items()
             ]
+            render_stage_ages = [
+                (stage, now - last_mono if last_mono > 0 else float("inf"))
+                for stage, last_mono in _render_stage_last_frame_monotonic.items()
+            ]
 
         if CAM_LAST_FRAME_AGE is None:
             continue
 
         for role, age, model in ages:
             CAM_LAST_FRAME_AGE.labels(role=role, model=model).set(age)
+
+        if COMP_RENDER_STAGE_LAST_FRAME_AGE is not None:
+            for stage, age in render_stage_ages:
+                COMP_RENDER_STAGE_LAST_FRAME_AGE.labels(stage=stage).set(age)
 
         if COMP_UPTIME is not None and boot > 0:
             COMP_UPTIME.set(now - boot)

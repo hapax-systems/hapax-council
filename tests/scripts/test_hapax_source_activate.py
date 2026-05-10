@@ -73,6 +73,7 @@ def _run_activate(
     canonical: Path,
     *,
     deploy_exit: int = 0,
+    env_overrides: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(tmp_path / "home")
@@ -81,6 +82,8 @@ def _run_activate(
     env["HAPAX_SOURCE_ACTIVATE_STATE_DIR"] = str(tmp_path / "state")
     env["HAPAX_FAKE_DEPLOY_RECORD"] = str(tmp_path / "deploy-record.txt")
     env["HAPAX_FAKE_DEPLOY_EXIT"] = str(deploy_exit)
+    if env_overrides:
+        env.update(env_overrides)
     return subprocess.run(
         [str(SCRIPT)],
         text=True,
@@ -175,3 +178,45 @@ def test_activation_syncs_usb_topology_policy_config(tmp_path: Path) -> None:
     installed_policy = tmp_path / "home" / ".config" / "hapax" / "usb-topology-policy.json"
     active_policy = tmp_path / "active-source" / "config" / "usb-topology-policy.json"
     assert installed_policy.read_text(encoding="utf-8") == active_policy.read_text(encoding="utf-8")
+
+
+def test_activation_syncs_active_source_dependencies_before_deploy(tmp_path: Path) -> None:
+    canonical, origin, new_sha = _make_repos(tmp_path)
+    dep_seed = tmp_path / "dep-seed"
+    _git(tmp_path, "clone", str(origin), str(dep_seed))
+    _git(dep_seed, "config", "user.email", "source-activate@example.test")
+    _git(dep_seed, "config", "user.name", "Source Activate")
+    _write(dep_seed / "pyproject.toml", '[project]\nname = "activation-fixture"\nversion = "0"\n')
+    _write(dep_seed / "uv.lock", "version = 1\n")
+    _git(dep_seed, "add", "pyproject.toml", "uv.lock")
+    _git(dep_seed, "commit", "-m", "add dependency manifest")
+    _git(dep_seed, "push", "origin", "main")
+    latest_sha = _git(dep_seed, "rev-parse", "HEAD")
+    assert latest_sha != new_sha
+
+    uv_record = tmp_path / "uv-record.txt"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_uv = fake_bin / "uv"
+    fake_uv.write_text(
+        '#!/usr/bin/env bash\nprintf \'%s\\n\' "$PWD|$*" >> "$HAPAX_FAKE_UV_RECORD"\nexit 0\n',
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        env_overrides={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_FAKE_UV_RECORD": str(uv_record),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert uv_record.read_text(encoding="utf-8").splitlines() == [
+        f"{tmp_path / 'active-source'}|sync --all-extras --quiet"
+    ]
+    assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [latest_sha]
+    receipt = _current_receipt(tmp_path)
+    assert receipt["dependency_sync"]["status"] == "success"

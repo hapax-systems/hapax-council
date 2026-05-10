@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from .cameras import add_camera_branch
+from .cuda_caps import cuda_output_caps_string
 from .layout import compute_tile_layout
 from .pipeline_manager import PipelineManager
 from .recording import add_hls_branch
@@ -37,6 +38,79 @@ def _pin_black_background(comp_element: Any) -> None:
         log.debug("compositor background property not supported", exc_info=True)
 
 
+def _make_cudacompositor(Gst: Any) -> Any | None:
+    """Construct cudacompositor with live aggregation enabled when possible."""
+
+    try:
+        if hasattr(Gst, "parse_launch"):
+            element = Gst.parse_launch("cudacompositor name=compositor force-live=true")
+            if element is not None:
+                log.info("cudacompositor constructed with force-live=true")
+                return element
+    except Exception:
+        log.debug("cudacompositor force-live construction failed", exc_info=True)
+
+    element = Gst.ElementFactory.make("cudacompositor", "compositor")
+    if element is not None:
+        try:
+            element.set_property("force-live", True)
+        except Exception:
+            log.debug(
+                "cudacompositor: force-live property not settable post-construction", exc_info=True
+            )
+    return element
+
+
+def _set_optional_property(element: Any, name: str, value: Any, *, context: str) -> None:
+    try:
+        element.set_property(name, value)
+    except Exception:
+        log.debug("%s: %s property not supported", context, name, exc_info=True)
+
+
+def _add_render_stage_probe(Gst: Any, element: Any, pad_name: str, stage: str) -> None:
+    try:
+        pad = element.get_static_pad(pad_name)
+        if pad is None:
+            log.debug("render-stage probe skipped: %s.%s missing", element.get_name(), pad_name)
+            return
+
+        def _probe(_pad: Any, _info: Any) -> Any:
+            try:
+                from . import metrics
+
+                metrics.record_render_stage_frame(stage)
+            except Exception:
+                pass
+            return Gst.PadProbeReturn.OK
+
+        pad.add_probe(Gst.PadProbeType.BUFFER, _probe)
+    except Exception:
+        log.debug("render-stage probe install failed for %s", stage, exc_info=True)
+
+
+def _publish_runtime_features(*, force_cpu: bool, use_cuda: bool) -> None:
+    try:
+        from . import metrics
+        from .shmsink_output_pipeline import is_bridge_enabled, is_v4l2_output_disabled
+
+        feature_states = {
+            "force_cpu": force_cpu,
+            "cuda_aggregator": use_cuda,
+            "inline_fx": os.environ.get("HAPAX_COMPOSITOR_DISABLE_INLINE_FX") != "1",
+            "hero_effect": os.environ.get("HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT") != "1",
+            "follow_mode": os.environ.get("HAPAX_FOLLOW_MODE_ACTIVE", "1") != "0",
+            "ward_modulator": os.environ.get("HAPAX_WARD_MODULATOR_ACTIVE", "1") != "0",
+            "direct_v4l2": not is_bridge_enabled() and not is_v4l2_output_disabled(),
+            "shmsink_bridge": is_bridge_enabled() and not is_v4l2_output_disabled(),
+            "v4l2_output": not is_v4l2_output_disabled(),
+        }
+        for feature, active in feature_states.items():
+            metrics.set_runtime_feature_active(feature, active)
+    except Exception:
+        log.debug("runtime feature metrics publish failed", exc_info=True)
+
+
 def build_pipeline(compositor: Any) -> Any:
     """Build the full GStreamer pipeline."""
     Gst = compositor._Gst
@@ -51,7 +125,7 @@ def build_pipeline(compositor: Any) -> Any:
     # Try cudacompositor first, fall back to CPU compositor. During live
     # incident containment HAPAX_COMPOSITOR_FORCE_CPU=1 is an actual
     # construction gate, not just a preflight label.
-    comp_element = None if force_cpu else Gst.ElementFactory.make("cudacompositor", "compositor")
+    comp_element = None if force_cpu else _make_cudacompositor(Gst)
     compositor._use_cuda = comp_element is not None
     if comp_element is None:
         if force_cpu:
@@ -96,7 +170,9 @@ def build_pipeline(compositor: Any) -> Any:
         except Exception:
             log.debug("cudacompositor: ignore-inactive-pads property not supported", exc_info=True)
     _pin_black_background(comp_element)
+    _publish_runtime_features(force_cpu=force_cpu, use_cuda=compositor._use_cuda)
     pipeline.add(comp_element)
+    _add_render_stage_probe(Gst, comp_element, "src", "compositor_src")
 
     fps = compositor.config.framerate
 
@@ -141,8 +217,19 @@ def build_pipeline(compositor: Any) -> Any:
 
     # cudadownload only if we're using the CUDA compositor
     if compositor._use_cuda:
+        cuda_out_caps = Gst.ElementFactory.make("capsfilter", "cuda-output-caps")
+        cuda_out_caps.set_property(
+            "caps",
+            Gst.Caps.from_string(
+                cuda_output_caps_string(
+                    compositor.config.output_width,
+                    compositor.config.output_height,
+                    fps,
+                )
+            ),
+        )
         download = Gst.ElementFactory.make("cudadownload", "download")
-        elements_pre = [download, convert_bgra, bgra_caps, pre_fx_tee]
+        elements_pre = [cuda_out_caps, download, convert_bgra, bgra_caps, pre_fx_tee]
     else:
         elements_pre = [convert_bgra, bgra_caps, pre_fx_tee]
     for el in elements_pre:
@@ -155,6 +242,9 @@ def build_pipeline(compositor: Any) -> Any:
         if not prev.link(el):
             raise RuntimeError(f"Failed to link {prev.get_name()} -> {el.get_name()}")
         prev = el
+    if compositor._use_cuda:
+        _add_render_stage_probe(Gst, download, "src", "cudadownload_src")
+    _add_render_stage_probe(Gst, pre_fx_tee, "sink", "pre_fx_tee_sink")
 
     add_snapshot_branch(compositor, pipeline, pre_fx_tee)
     # Phase 3 (AUDIT-07 layer 4): camera-only frame for LLM prompts —
@@ -171,6 +261,12 @@ def build_pipeline(compositor: Any) -> Any:
     # GL chain is dead and the watchdog can exit immediately.
     def _gl_output_probe(pad: Any, info: Any) -> Any:
         compositor._gl_last_frame_monotonic = time.monotonic()
+        try:
+            from . import metrics
+
+            metrics.record_render_stage_frame("output_tee_sink")
+        except Exception:
+            pass
         return Gst.PadProbeReturn.OK
 
     output_tee.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, _gl_output_probe)
@@ -216,6 +312,7 @@ def build_pipeline(compositor: Any) -> Any:
         v4l2_interpipe.set_property("forward-events", False)
         v4l2_interpipe.set_property("forward-eos", False)
         pipeline.add(v4l2_interpipe)
+        _add_render_stage_probe(Gst, v4l2_interpipe, "sink", "v4l2_interpipe_sink")
 
         tee_pad = output_tee.request_pad(output_tee.get_pad_template("src_%u"), None, None)
         tee_pad.link(v4l2_interpipe.get_static_pad("sink"))
