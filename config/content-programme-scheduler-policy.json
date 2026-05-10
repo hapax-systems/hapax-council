@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "policy_id": "content_programme_scheduler_policy",
+  "schema_ref": "schemas/content-programme-scheduler-policy.schema.json",
+  "default_discovery_source": "content_discovery_decision",
+  "promotion_ladder": [
+    "discovered",
+    "scored",
+    "dry_run",
+    "private_archive",
+    "public_live",
+    "clipped_replayed",
+    "monetized"
+  ],
+  "routes": [
+    "private",
+    "dry_run",
+    "public_live",
+    "public_archive",
+    "monetized",
+    "refusal",
+    "correction"
+  ],
+  "public_routes": ["public_live", "public_archive", "monetized"],
+  "hard_public_gates": [
+    "no_expert_system",
+    "rights",
+    "provenance",
+    "privacy",
+    "monetization",
+    "audio",
+    "egress",
+    "wcs_health",
+    "evidence",
+    "witness",
+    "public_event"
+  ],
+  "operator_boundary_policy": {
+    "single_operator_only": true,
+    "manual_calendar_allowed": false,
+    "operator_nominated_default_allowed": false,
+    "request_queue_allowed": false,
+    "supporter_controlled_show_allowed": false,
+    "community_moderation_allowed": false,
+    "personalized_supporter_treatment_allowed": false
+  },
+  "default_exploration_budget": {
+    "budget_window": "daily",
+    "max_exploration_fraction": 0.2,
+    "used_fraction": 0.0,
+    "remaining_fraction": 0.2,
+    "private_first": true,
+    "max_public_risk_tier": "low"
+  },
+  "cooldowns": {
+    "format_cooldown_s": 3600,
+    "source_cooldown_s": 1800,
+    "subject_cluster_cooldown_s": 7200,
+    "public_mode_cooldown_s": 3600,
+    "refusal_cooldown_s": 900
+  },
+  "audit_refs": [
+    "schemas/content-programme-scheduler-policy.schema.json",
+    "schemas/content-opportunity-model.schema.json",
+    "schemas/content-candidate-discovery-daemon.schema.json",
+    "schemas/content-programme-run-store-event-surface.schema.json",
+    "schemas/content-programme-feedback-ledger.schema.json",
+    "schemas/format-wcs-requirement-matrix.schema.json",
+    "schemas/programme-scrim-profile-policy.schema.json"
+  ]
+}
