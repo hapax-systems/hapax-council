@@ -76,6 +76,13 @@ _PUBLIC_SAFE_RIGHTS: frozenset[RightsClass] = frozenset(
     {"operator_original", "operator_controlled", "third_party_attributed", "platform_embedded"}
 )
 _PUBLIC_SAFE_PRIVACY: frozenset[PrivacyClass] = frozenset({"public_safe", "aggregate_only"})
+_NON_BROADCAST_EGRESS_BYPASS_EVENTS: frozenset[EventType] = frozenset(
+    {
+        "omg.weblog",
+        "velocity.digest",
+        "governance.enforcement",
+    }
+)
 
 
 class CrossSurfaceApertureContract(BaseModel):
@@ -138,6 +145,8 @@ _SOCIAL_EVENTS: tuple[EventType, ...] = (
     "broadcast.boundary",
     "chronicle.high_salience",
     "omg.weblog",
+    "velocity.digest",
+    "governance.enforcement",
     "shorts.upload",
     "aesthetic.frame_capture",
     "publication.artifact",
@@ -158,6 +167,8 @@ _ARCHIVE_EVENTS: tuple[EventType, ...] = (
     "arena_block.candidate",
     "omg.statuslog",
     "omg.weblog",
+    "velocity.digest",
+    "governance.enforcement",
     "publication.artifact",
     "archive.segment",
     "monetization.review",
@@ -233,8 +244,10 @@ CROSS_SURFACE_APERTURES: tuple[CrossSurfaceApertureContract, ...] = (
             "arena_block.candidate",
             "aesthetic.frame_capture",
             "chronicle.high_salience",
+            "governance.enforcement",
             "omg.weblog",
             "publication.artifact",
+            "velocity.digest",
         ),
         allowed_actions=("publish", "link", "embed", "redact", "hold", "archive"),
         current_reality="credential_blocked",
@@ -452,7 +465,8 @@ def _fanout_blockers(
         blockers.append("missing_provenance")
     if requested_action in {"publish", "link", "embed"}:
         if (
-            event.surface_policy.requires_egress_public_claim
+            event.event_type not in _NON_BROADCAST_EGRESS_BYPASS_EVENTS
+            and event.surface_policy.requires_egress_public_claim
             and not event.surface_policy.claim_live
         ):
             blockers.append("egress_blocked")
