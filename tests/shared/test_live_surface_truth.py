@@ -67,6 +67,49 @@ def test_healthy_requires_active_service_cameras_bridge_and_fresh_v4l2() -> None
     assert assessment.reasons == ()
 
 
+def test_require_hls_degrades_when_playlist_missing() -> None:
+    snapshot = LiveSurfaceSnapshot(
+        service_active=True,
+        bridge_active=True,
+        cameras_total=6,
+        cameras_healthy=6,
+        v4l2_frames_total=100,
+        v4l2_last_frame_age_seconds=0.2,
+        final_egress_snapshot_frames_total=10,
+        final_egress_snapshot_last_frame_age_seconds=0.2,
+        hls_active=False,
+    )
+
+    assessment = assess_live_surface(snapshot, require_hls=True)
+
+    assert assessment.state is LiveSurfaceState.DEGRADED_CONTAINMENT
+    assert "hls_playlist_missing" in assessment.reasons
+
+
+def test_require_hls_degrades_when_playlist_stale() -> None:
+    snapshot = LiveSurfaceSnapshot(
+        service_active=True,
+        bridge_active=True,
+        cameras_total=6,
+        cameras_healthy=6,
+        v4l2_frames_total=100,
+        v4l2_last_frame_age_seconds=0.2,
+        final_egress_snapshot_frames_total=10,
+        final_egress_snapshot_last_frame_age_seconds=0.2,
+        hls_active=True,
+        hls_playlist_age_seconds=45.0,
+    )
+
+    assessment = assess_live_surface(
+        snapshot,
+        require_hls=True,
+        max_hls_age_seconds=10.0,
+    )
+
+    assert assessment.state is LiveSurfaceState.DEGRADED_CONTAINMENT
+    assert "hls_playlist_stale" in assessment.reasons
+
+
 def test_parse_prometheus_and_build_snapshot() -> None:
     metrics = parse_prometheus_scalars(
         """
@@ -77,6 +120,8 @@ def test_parse_prometheus_and_build_snapshot() -> None:
         studio_compositor_v4l2sink_last_frame_seconds_ago 12
         studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 2
         studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 1
+        studio_compositor_hls_playlist_active 1
+        studio_compositor_hls_playlist_last_write_seconds_ago 3
         studio_camera_last_frame_age_seconds{camera_role="desk"} 0.2
         """
     )
@@ -93,3 +138,5 @@ def test_parse_prometheus_and_build_snapshot() -> None:
     assert snapshot.v4l2_last_frame_age_seconds == 12
     assert snapshot.final_egress_snapshot_frames_total == 2
     assert snapshot.final_egress_snapshot_last_frame_age_seconds == 1
+    assert snapshot.hls_active is True
+    assert snapshot.hls_playlist_age_seconds == 3
