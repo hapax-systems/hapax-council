@@ -1,0 +1,18 @@
+[Unit]
+Description=No-cache HLS HTTP service for local live-surface proof
+After=network-online.target
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/agents/live_surface_guard/hls_no_cache_server.py
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=/usr/bin/mkdir -p %h/.cache/hapax-compositor/hls
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file agents/live_surface_guard/hls_no_cache_server.py --require-file scripts/hapax-hls-no-cache-server
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.live_surface_guard.hls_no_cache_server --directory %h/.cache/hapax-compositor/hls --host 127.0.0.1 --port 8988
+Restart=on-failure
+RestartSec=5s
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=HAPAX_COMPOSITOR_SOURCE_ROOT=%h/.cache/hapax/source-activation/worktree
+
+[Install]
+WantedBy=default.target

@@ -50,7 +50,9 @@ studio_compositor_v4l2sink_last_frame_seconds_ago 9999
     assert result.returncode == 10
     payload = json.loads(result.stdout)
     assert payload["state"] == "degraded_containment"
-    assert "shmsink_without_v4l2_egress" in payload["reasons"]
+    assert payload["v4l2_egress_mode"] == "bridge_v4l2"
+    assert "bridge_v4l2_write_no_frames" in payload["reasons"]
+    assert "decoded_video42_no_frames" in payload["reasons"]
 
 
 def test_preflight_fails_closed_on_containment_flags(tmp_path: Path) -> None:
@@ -148,6 +150,65 @@ studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapsh
     payload = json.loads(result.stdout)
     assert payload["state"] == "degraded_containment"
     assert "v4l2_bridge_inactive" in payload["reasons"]
+
+
+def test_preflight_accepts_bridge_mode_with_bridge_and_decoded_proof(tmp_path: Path) -> None:
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_runtime_feature_active{feature="v4l2_output"} 1
+studio_compositor_runtime_feature_active{feature="shmsink_bridge"} 1
+studio_compositor_shmsink_frames_total 140
+studio_compositor_shmsink_last_frame_seconds_ago 0.03
+hapax_v4l2_bridge_write_frames_total 120
+hapax_v4l2_bridge_write_bytes_total 120000
+hapax_v4l2_bridge_write_errors_total 0
+hapax_v4l2_bridge_heartbeat_seconds_ago 0.5
+hapax_video42_decoded_frames_total 20
+hapax_video42_decoded_last_frame_seconds_ago 0.4
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "true",
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "healthy"
+    assert payload["v4l2_egress_mode"] == "bridge_v4l2"
+
+
+def test_preflight_requires_obs_decoder_motion_when_requested(tmp_path: Path) -> None:
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 140
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 11
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.4
+hapax_obs_decoder_source_active 1
+hapax_obs_decoder_playing 1
+hapax_obs_decoder_frame_hash_changed 0
+hapax_obs_decoder_frame_flat 1
+hapax_obs_decoder_screenshot_seconds_ago 0.5
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "false",
+        "--require-obs-decoder",
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 10
+    payload = json.loads(result.stdout)
+    assert payload["obs_playing"] is True
+    assert "obs_screenshot_flat" in payload["reasons"]
+    assert "obs_playing_without_decoder_motion" in payload["reasons"]
 
 
 def test_preflight_degrades_when_final_egress_snapshot_is_stale(tmp_path: Path) -> None:

@@ -1,7 +1,7 @@
 [Unit]
 Description=Studio Compositor — GPU-accelerated camera tiling, recording, HLS streaming, and visual effects
-After=hapax-daimonion.service pipewire.service wireplumber.service hapax-video42-format-guard.service
-Wants=hapax-daimonion.service hapax-v4l2-bridge.service
+After=hapax-daimonion.service pipewire.service wireplumber.service hapax-video42-format-guard.service hapax-hls-no-cache.service
+Wants=hapax-daimonion.service hapax-v4l2-bridge.service hapax-live-surface-guard.service hapax-hls-no-cache.service
 Requires=hapax-video42-format-guard.service
 BindsTo=pipewire.service
 # BindsTo ensures compositor stops when PipeWire stops and restarts

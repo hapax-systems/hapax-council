@@ -9,6 +9,8 @@ STUDIO = UNITS_DIR / "studio-compositor.service"
 BRIDGE = UNITS_DIR / "hapax-v4l2-bridge.service"
 VIDEO42_GUARD = UNITS_DIR / "hapax-video42-format-guard.service"
 OBS = UNITS_DIR / "hapax-obs-livestream.service"
+LIVE_SURFACE_GUARD = UNITS_DIR / "hapax-live-surface-guard.service"
+HLS_NO_CACHE = UNITS_DIR / "hapax-hls-no-cache.service"
 LAYOUT_MODE_DROPIN = UNITS_DIR / "studio-compositor.service.d" / "layout-mode-persist.conf"
 SOURCE_ROOT = "%h/.cache/hapax/source-activation/worktree"
 
@@ -69,8 +71,11 @@ def test_studio_compositor_starts_bridge_sidecar() -> None:
     requires = parser.get("Unit", "Requires")
     after = parser.get("Unit", "After")
     assert "hapax-v4l2-bridge.service" in wants
+    assert "hapax-live-surface-guard.service" in wants
+    assert "hapax-hls-no-cache.service" in wants
     assert "hapax-video42-format-guard.service" in requires
     assert "hapax-video42-format-guard.service" in after
+    assert "hapax-hls-no-cache.service" in after
 
 
 def test_video42_format_guard_runs_from_activation_worktree() -> None:
@@ -116,6 +121,30 @@ def test_simple_bridge_unit_does_not_claim_systemd_watchdog_without_sd_notify() 
     assert parser.get("Service", "WatchdogSec", fallback=None) is None
 
 
+def test_live_surface_guard_runs_from_activation_worktree() -> None:
+    parser = _load_unit(LIVE_SURFACE_GUARD)
+    assert parser.get("Service", "WorkingDirectory") == SOURCE_ROOT
+    assert parser.get("Service", "ExecStart").startswith(f"{SOURCE_ROOT}/.venv/bin/python")
+    assert "agents.live_surface_guard" in parser.get("Service", "ExecStart")
+    assert "--require-obs-decoder" in parser.get("Service", "ExecStart")
+    assert "hapax-compositor-runtime-source-check" in parser.get("Service", "ExecStartPre")
+    lines = _active_unit_lines(LIVE_SURFACE_GUARD)
+    assert all("%h/projects/hapax-council" not in line for line in lines)
+
+
+def test_hls_no_cache_service_runs_from_activation_worktree() -> None:
+    parser = _load_unit(HLS_NO_CACHE)
+    assert parser.get("Service", "WorkingDirectory") == SOURCE_ROOT
+    assert parser.get("Service", "ExecStart").startswith(f"{SOURCE_ROOT}/.venv/bin/python")
+    assert "agents.live_surface_guard.hls_no_cache_server" in parser.get(
+        "Service",
+        "ExecStart",
+    )
+    assert "--port 8988" in parser.get("Service", "ExecStart")
+    lines = _active_unit_lines(HLS_NO_CACHE)
+    assert all("%h/projects/hapax-council" not in line for line in lines)
+
+
 def test_runtime_source_check_script_exists_and_is_executable() -> None:
     script = REPO_ROOT / "scripts" / "hapax-compositor-runtime-source-check"
     assert script.exists()
@@ -124,6 +153,14 @@ def test_runtime_source_check_script_exists_and_is_executable() -> None:
 
 def test_video42_format_guard_script_exists_and_is_executable() -> None:
     script = REPO_ROOT / "scripts" / "hapax-v4l2-video42-format-guard"
+
+    assert script.exists()
+    assert script.stat().st_mode & 0o100
+
+
+def test_hls_no_cache_wrapper_exists_and_is_executable() -> None:
+    script = REPO_ROOT / "scripts" / "hapax-hls-no-cache-server"
+
     assert script.exists()
     assert script.stat().st_mode & 0o100
 
