@@ -29,6 +29,14 @@ def init_gstreamer() -> tuple[Any, Any]:
     return _GLib, _Gst
 
 
+def _pin_black_background(comp_element: Any) -> None:
+    """Prefer black compositor fill instead of checkerboard/transparent defaults."""
+    try:
+        comp_element.set_property("background", 1)
+    except Exception:
+        log.debug("compositor background property not supported", exc_info=True)
+
+
 def build_pipeline(compositor: Any) -> Any:
     """Build the full GStreamer pipeline."""
     Gst = compositor._Gst
@@ -87,6 +95,7 @@ def build_pipeline(compositor: Any) -> Any:
             comp_element.set_property("ignore-inactive-pads", True)
         except Exception:
             log.debug("cudacompositor: ignore-inactive-pads property not supported", exc_info=True)
+    _pin_black_background(comp_element)
     pipeline.add(comp_element)
 
     fps = compositor.config.framerate
