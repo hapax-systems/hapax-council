@@ -13,6 +13,7 @@ USB witness and audio topology assertion surfaces.
 from __future__ import annotations
 
 import argparse
+import grp
 import json
 import os
 import re
@@ -26,6 +27,7 @@ L12_PRODUCT = "03d5"
 L12_SERIAL = "8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF"
 DEFAULT_SYSFS_ROOT = Path("/sys")
 DEFAULT_STATE_PATH = Path("/dev/shm/hapax-usb/l12-critical-guard.json")
+SHARED_STATE_DIR = Path("/dev/shm/hapax-usb")
 PCI_DOMAIN_RE = re.compile(r"^pci[0-9a-fA-F]{4}:[0-9a-fA-F]{2}$")
 
 
@@ -118,10 +120,26 @@ def guard_device(device: Path, sysfs_root: Path, *, dry_run: bool) -> dict[str, 
 
 
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    prepare_state_parent(path)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     os.replace(tmp, path)
+
+
+def prepare_state_parent(path: Path, *, shared_state_dir: Path = SHARED_STATE_DIR) -> None:
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    if parent.resolve(strict=False) != shared_state_dir:
+        return
+
+    try:
+        hapax_gid = grp.getgrnam("hapax").gr_gid
+    except KeyError:
+        hapax_gid = -1
+
+    if os.geteuid() == 0 and hapax_gid >= 0:
+        os.chown(parent, 0, hapax_gid)
+    os.chmod(parent, 0o775)
 
 
 def maybe_reexec_with_sudo(sysfs_root: Path) -> None:

@@ -2,13 +2,25 @@
 
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
 import json
 import subprocess
 from pathlib import Path
+from types import ModuleType
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARD = REPO_ROOT / "scripts" / "hapax-l12-critical-usb-guard"
 UNIT = REPO_ROOT / "systemd" / "units" / "hapax-l12-critical-usb-guard.service"
+
+
+def _load_guard_module() -> ModuleType:
+    loader = importlib.machinery.SourceFileLoader("hapax_l12_critical_usb_guard", str(GUARD))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
 
 
 def _write(path: Path, value: str) -> None:
@@ -90,6 +102,16 @@ def test_guard_absent_records_status_without_false_failure(tmp_path: Path) -> No
     assert payload["results"] == []
 
 
+def test_guard_prepares_shared_state_directory_for_user_witness(tmp_path: Path) -> None:
+    guard = _load_guard_module()
+    shared_dir = tmp_path / "hapax-usb"
+    state_path = shared_dir / "l12-critical-guard.json"
+
+    guard.prepare_state_parent(state_path, shared_state_dir=shared_dir)
+
+    assert shared_dir.stat().st_mode & 0o777 == 0o775
+
+
 def test_guard_tolerates_unsupported_parent_delay_knob(tmp_path: Path) -> None:
     paths = _make_l12_sysfs(tmp_path)
     delay = paths["xhci"] / "power/autosuspend_delay_ms"
@@ -119,10 +141,18 @@ def test_guard_tolerates_unsupported_parent_delay_knob(tmp_path: Path) -> None:
 
 def test_guard_can_fail_when_presence_is_required(tmp_path: Path) -> None:
     sysroot = tmp_path / "sys"
+    state = tmp_path / "state.json"
     (sysroot / "bus/usb/devices").mkdir(parents=True)
 
     result = subprocess.run(
-        [str(GUARD), "--sysfs-root", str(sysroot), "--require-present"],
+        [
+            str(GUARD),
+            "--sysfs-root",
+            str(sysroot),
+            "--state-path",
+            str(state),
+            "--require-present",
+        ],
         text=True,
         capture_output=True,
         check=False,
