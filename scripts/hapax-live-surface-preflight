@@ -100,6 +100,31 @@ def _file_age_seconds(path: Path) -> float | None:
     return time.time() - stat.st_mtime
 
 
+def _hls_target_duration_seconds(path: Path) -> float | None:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("#EXT-X-TARGETDURATION:"):
+            continue
+        _, raw_value = line.split(":", 1)
+        try:
+            value = float(raw_value)
+        except ValueError:
+            return None
+        return value if value > 0 else None
+    return None
+
+
+def _default_hls_max_age_seconds(path: Path) -> float:
+    target_duration = _hls_target_duration_seconds(path)
+    if target_duration is None:
+        return 10.0
+    return max(10.0, (target_duration * 2.0) + 2.0)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--metrics-url", default="http://127.0.0.1:9482/metrics")
@@ -116,7 +141,7 @@ def main() -> int:
         "--hls-playlist",
         default=str(Path.home() / ".cache" / "hapax-compositor" / "hls" / "stream.m3u8"),
     )
-    parser.add_argument("--max-hls-age-seconds", type=float, default=10.0)
+    parser.add_argument("--max-hls-age-seconds", type=float)
     args = parser.parse_args()
 
     service_active = (
@@ -163,8 +188,16 @@ def main() -> int:
         )
         return 11
 
-    hls_playlist_age_seconds = (
-        _file_age_seconds(Path(args.hls_playlist)) if args.require_hls else None
+    hls_playlist = Path(args.hls_playlist)
+    hls_playlist_age_seconds = _file_age_seconds(hls_playlist) if args.require_hls else None
+    hls_max_age_seconds = (
+        (
+            args.max_hls_age_seconds
+            if args.max_hls_age_seconds is not None
+            else _default_hls_max_age_seconds(hls_playlist)
+        )
+        if args.require_hls
+        else None
     )
 
     snapshot = snapshot_from_prometheus(
@@ -181,7 +214,7 @@ def main() -> int:
         max_egress_age_seconds=args.max_egress_age_seconds,
         require_v4l2=not args.no_require_v4l2,
         require_hls=args.require_hls,
-        max_hls_age_seconds=args.max_hls_age_seconds,
+        max_hls_age_seconds=hls_max_age_seconds,
     )
 
     print(
@@ -193,6 +226,7 @@ def main() -> int:
                 "service_active": service_active,
                 "bridge_active": bridge_active,
                 "hls_playlist_age_seconds": hls_playlist_age_seconds,
+                "hls_max_age_seconds": hls_max_age_seconds,
             },
             sort_keys=True,
         )
