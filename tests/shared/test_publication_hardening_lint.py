@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
+
+import pytest
 
 from shared.publication_hardening.lint import (
     check_heading_hierarchy,
@@ -14,6 +17,11 @@ TESTS_DIR = Path(__file__).resolve().parent.parent
 VALE_DIR = TESTS_DIR / "vale"
 REPO_ROOT = TESTS_DIR.parent
 VALE_INI = REPO_ROOT / ".vale.ini"
+
+requires_vale = pytest.mark.skipif(
+    shutil.which("vale") is None,
+    reason="vale binary not installed",
+)
 
 
 class TestHeadingHierarchy:
@@ -62,6 +70,7 @@ class TestHeadingHierarchy:
         assert check_heading_hierarchy(doc) == []
 
 
+@requires_vale
 class TestValeIntegration:
     def test_sample_pass_clean(self) -> None:
         sample = VALE_DIR / "sample_pass.md"
@@ -94,6 +103,7 @@ class TestValeIntegration:
         assert errors == []
 
 
+@requires_vale
 class TestLintFile:
     def test_combines_vale_and_heading_checks(self, tmp_path: Path) -> None:
         doc = tmp_path / "combined.md"
