@@ -35,6 +35,7 @@ class LiveSurfaceSnapshot:
     final_egress_snapshot_last_frame_age_seconds: float | None = None
     containment_flags: Mapping[str, bool] = field(default_factory=dict)
     hls_active: bool = False
+    hls_playlist_age_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,8 @@ def assess_live_surface(
     *,
     max_egress_age_seconds: float = 10.0,
     require_v4l2: bool = True,
+    require_hls: bool = False,
+    max_hls_age_seconds: float | None = None,
 ) -> LiveSurfaceAssessment:
     """Classify a livestream surface snapshot.
 
@@ -106,6 +109,19 @@ def assess_live_surface(
 
     if shmsink_positive and not v4l2_positive:
         degraded.append("shmsink_without_v4l2_egress")
+
+    if require_hls:
+        if not snapshot.hls_active:
+            degraded.append("hls_playlist_missing")
+        elif snapshot.hls_playlist_age_seconds is None:
+            degraded.append("hls_playlist_age_unknown")
+        elif not _metric_fresh(
+            snapshot.hls_playlist_age_seconds,
+            max_age_seconds=(
+                max_hls_age_seconds if max_hls_age_seconds is not None else max_egress_age_seconds
+            ),
+        ):
+            degraded.append("hls_playlist_stale")
 
     if failures:
         return LiveSurfaceAssessment(
@@ -171,6 +187,7 @@ def snapshot_from_prometheus(
     bridge_expected: bool = False,
     containment_flags: Mapping[str, bool] | None = None,
     hls_active: bool = False,
+    hls_playlist_age_seconds: float | None = None,
 ) -> LiveSurfaceSnapshot:
     return LiveSurfaceSnapshot(
         service_active=service_active,
@@ -194,5 +211,10 @@ def snapshot_from_prometheus(
             "studio_compositor_render_stage_last_frame_seconds_ago:stage:final_egress_snapshot"
         ),
         containment_flags=containment_flags or {},
-        hls_active=hls_active,
+        hls_active=hls_active or bool(metrics.get("studio_compositor_hls_playlist_active", 0)),
+        hls_playlist_age_seconds=(
+            hls_playlist_age_seconds
+            if hls_playlist_age_seconds is not None
+            else metrics.get("studio_compositor_hls_playlist_last_write_seconds_ago")
+        ),
     )

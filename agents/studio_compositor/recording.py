@@ -12,6 +12,109 @@ from .models import CameraSpec
 log = logging.getLogger(__name__)
 
 
+def _element_name(element: Any) -> str:
+    try:
+        return str(element.get_name())
+    except Exception:
+        return repr(element)
+
+
+def _make_element(Gst: Any, factory: str, name: str, branch: str) -> Any:
+    element = Gst.ElementFactory.make(factory, name)
+    if element is None:
+        raise RuntimeError(f"{branch}: failed to create {factory} element ({name})")
+    return element
+
+
+def _link_or_raise(src: Any, dst: Any, branch: str) -> None:
+    if not src.link(dst):
+        raise RuntimeError(f"{branch}: failed to link {_element_name(src)} -> {_element_name(dst)}")
+
+
+def _pad_link_ok(Gst: Any, result: Any) -> bool:
+    ok = getattr(getattr(Gst, "PadLinkReturn", None), "OK", None)
+    if ok is not None:
+        return result == ok
+    return result == 0
+
+
+def _release_request_pad(element: Any, pad: Any) -> None:
+    try:
+        element.release_request_pad(pad)
+    except Exception:
+        log.debug("failed to release request pad after link failure", exc_info=True)
+
+
+def _link_tee_to_sink_or_raise(Gst: Any, tee: Any, sink: Any, branch: str) -> Any:
+    template = tee.get_pad_template("src_%u")
+    if template is None:
+        raise RuntimeError(f"{branch}: failed to find tee src_%u pad template")
+
+    tee_pad = tee.request_pad(template, None, None)
+    if tee_pad is None:
+        raise RuntimeError(f"{branch}: failed to request tee src pad")
+
+    queue_sink = sink.get_static_pad("sink")
+    if queue_sink is None:
+        _release_request_pad(tee, tee_pad)
+        raise RuntimeError(f"{branch}: failed to get {_element_name(sink)} sink pad")
+
+    result = tee_pad.link(queue_sink)
+    if not _pad_link_ok(Gst, result):
+        _release_request_pad(tee, tee_pad)
+        raise RuntimeError(
+            f"{branch}: failed to link tee pad to {_element_name(sink)} sink pad: {result}"
+        )
+    return tee_pad
+
+
+def _request_sink_pad_or_raise(
+    Gst: Any,
+    sink_element: Any,
+    template_name: str,
+    *,
+    branch: str,
+) -> Any:
+    template = sink_element.get_pad_template(template_name)
+    if template is None:
+        raise RuntimeError(
+            f"{branch}: failed to find {_element_name(sink_element)} {template_name} pad template"
+        )
+
+    pad = sink_element.request_pad(template, None, None)
+    if pad is None:
+        raise RuntimeError(f"{branch}: failed to request {_element_name(sink_element)} pad")
+    return pad
+
+
+def _link_src_to_request_sink_pad_or_raise(
+    Gst: Any,
+    src_element: Any,
+    sink_element: Any,
+    sink_template_name: str,
+    *,
+    branch: str,
+) -> Any:
+    src_pad = src_element.get_static_pad("src")
+    if src_pad is None:
+        raise RuntimeError(f"{branch}: failed to get {_element_name(src_element)} src pad")
+
+    sink_pad = _request_sink_pad_or_raise(
+        Gst,
+        sink_element,
+        sink_template_name,
+        branch=branch,
+    )
+    result = src_pad.link(sink_pad)
+    if not _pad_link_ok(Gst, result):
+        _release_request_pad(sink_element, sink_pad)
+        raise RuntimeError(
+            f"{branch}: failed to link {_element_name(src_element)} src pad "
+            f"to {_element_name(sink_element)} {sink_template_name} pad: {result}"
+        )
+    return sink_pad
+
+
 def add_recording_branch(
     compositor: Any, pipeline: Any, camera_tee: Any, cam: CameraSpec, fps: int
 ) -> None:
@@ -85,17 +188,31 @@ def add_recording_branch(
 
 
 def add_hls_branch(compositor: Any, pipeline: Any, tee: Any, fps: int) -> None:
-    """Add HLS output branch: tee -> queue -> valve -> nvh264enc -> h264parse -> hlssink2."""
+    """Add HLS output branch with an explicit CUDA/NV12 encoder handoff."""
     Gst = compositor._Gst
     hls_cfg = compositor.config.hls
+    branch = "HLS branch"
 
-    queue = Gst.ElementFactory.make("queue", "queue-hls")
+    queue = _make_element(Gst, "queue", "queue-hls", branch)
     queue.set_property("leaky", 2)
     queue.set_property("max-size-buffers", 20)
     queue.set_property("max-size-time", 3 * 1_000_000_000)
-    valve = Gst.ElementFactory.make("valve", "hls-valve")
+    valve = _make_element(Gst, "valve", "hls-valve", branch)
     valve.set_property("drop", not compositor._consent_recording_allowed)
-    encoder = Gst.ElementFactory.make("nvh264enc", "hls-enc")
+
+    upload = _make_element(Gst, "cudaupload", "hls-upload", branch)
+    cuda_convert = _make_element(Gst, "cudaconvert", "hls-cudaconv", branch)
+    for cuda_element, label in ((upload, "cudaupload"), (cuda_convert, "cudaconvert")):
+        try:
+            cuda_element.set_property("cuda-device-id", 0)
+        except Exception:
+            log.debug("%s (HLS): cuda-device-id not supported", label, exc_info=True)
+    nv12_caps = _make_element(Gst, "capsfilter", "hls-nv12caps", branch)
+    nv12_caps.set_property(
+        "caps", Gst.Caps.from_string("video/x-raw(memory:CUDAMemory),format=NV12")
+    )
+
+    encoder = _make_element(Gst, "nvh264enc", "hls-enc", branch)
     # Drop #47 C2: pin HLS nvh264enc to GPU 0 for the same reasons as the
     # rtmp_output and rec-enc branches — cudacompositor lives on GPU 0,
     # and forcing the encoder to the same device avoids cross-GPU texture
@@ -115,12 +232,12 @@ def add_hls_branch(compositor: Any, pipeline: Any, tee: Any, fps: int) -> None:
     encoder.set_property("rc-mode", 2)  # 2 = cbr
     encoder.set_property("bitrate", hls_cfg.bitrate)
     encoder.set_property("gop-size", fps * hls_cfg.target_duration)
-    parser = Gst.ElementFactory.make("h264parse", "hls-parse")
+    parser = _make_element(Gst, "h264parse", "hls-parse", branch)
 
     hls_dir = Path(hls_cfg.output_dir)
     hls_dir.mkdir(parents=True, exist_ok=True)
 
-    hls_sink = Gst.ElementFactory.make("hlssink2", "hls-sink")
+    hls_sink = _make_element(Gst, "hlssink2", "hls-sink", branch)
     hls_sink.set_property("target-duration", hls_cfg.target_duration)
     hls_sink.set_property("playlist-length", hls_cfg.playlist_length)
     hls_sink.set_property("max-files", hls_cfg.max_files)
@@ -128,17 +245,14 @@ def add_hls_branch(compositor: Any, pipeline: Any, tee: Any, fps: int) -> None:
     hls_sink.set_property("playlist-location", str(hls_dir / "stream.m3u8"))
     hls_sink.set_property("async-handling", True)
 
-    elements = [queue, valve, encoder, parser, hls_sink]
+    elements = [queue, valve, upload, cuda_convert, nv12_caps, encoder, parser, hls_sink]
     for el in elements:
         pipeline.add(el)
 
+    for src, dst in zip(elements[:-2], elements[1:-1], strict=False):
+        _link_or_raise(src, dst, branch)
+    _link_src_to_request_sink_pad_or_raise(Gst, parser, hls_sink, "video", branch=branch)
+
+    _link_tee_to_sink_or_raise(Gst, tee, queue, branch)
+
     compositor._hls_valve = valve
-
-    queue.link(valve)
-    valve.link(encoder)
-    encoder.link(parser)
-    parser.link(hls_sink)
-
-    tee_pad = tee.request_pad(tee.get_pad_template("src_%u"), None, None)
-    queue_sink = queue.get_static_pad("sink")
-    tee_pad.link(queue_sink)

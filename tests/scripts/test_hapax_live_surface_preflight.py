@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -190,6 +192,96 @@ studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
     payload = json.loads(result.stdout)
     assert payload["state"] == "degraded_containment"
     assert "final_egress_snapshot_no_frames" in payload["reasons"]
+
+
+def test_preflight_can_require_fresh_hls_playlist(tmp_path: Path) -> None:
+    playlist = tmp_path / "stream.m3u8"
+    playlist.write_text("#EXTM3U\n", encoding="utf-8")
+
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 140
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 11
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.4
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "false",
+        "--require-hls",
+        "--hls-playlist",
+        str(playlist),
+        "--max-hls-age-seconds",
+        "30",
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "healthy"
+    assert payload["hls_playlist_age_seconds"] is not None
+
+
+def test_preflight_degrades_when_required_hls_playlist_is_stale(tmp_path: Path) -> None:
+    playlist = tmp_path / "stream.m3u8"
+    playlist.write_text("#EXTM3U\n", encoding="utf-8")
+    old = time.time() - 120
+    os.utime(playlist, (old, old))
+
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 140
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 11
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.4
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "false",
+        "--require-hls",
+        "--hls-playlist",
+        str(playlist),
+        "--max-hls-age-seconds",
+        "10",
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 10
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "degraded_containment"
+    assert "hls_playlist_stale" in payload["reasons"]
+
+
+def test_preflight_degrades_when_required_hls_playlist_is_missing(tmp_path: Path) -> None:
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 140
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 11
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.4
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "false",
+        "--require-hls",
+        "--hls-playlist",
+        str(tmp_path / "missing.m3u8"),
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 10
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "degraded_containment"
+    assert "hls_playlist_missing" in payload["reasons"]
 
 
 def test_preflight_fails_closed_with_json_when_metrics_are_unavailable() -> None:
