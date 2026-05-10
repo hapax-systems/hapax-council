@@ -33,10 +33,19 @@ def _isolated_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     prc._reset_state_for_tests()
 
 
-def _write_recruitment(path: Path, family: str, ts: float | None = None) -> None:
+def _write_recruitment(
+    path: Path,
+    family: str,
+    ts: float | None = None,
+    *,
+    ttl_s: float | None = None,
+) -> None:
     if ts is None:
         ts = time.time()
-    payload = {"families": {"preset.bias": {"family": family, "last_recruited_ts": ts}}}
+    entry = {"family": family, "last_recruited_ts": ts}
+    if ttl_s is not None:
+        entry["ttl_s"] = ttl_s
+    payload = {"families": {"preset.bias": entry}}
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
@@ -231,6 +240,83 @@ def test_process_dispatches_transition_on_first_recruitment(
     _wait_for_thread()
     # cut.hard writes exactly once with the fake graph
     assert any(g.get("marker") == "fake-graph" for g in captured_writes)
+
+
+def test_process_rejects_expired_recruitment_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agents.studio_compositor.preset_family_selector import family_names
+
+    fam = next(iter(family_names()))
+    _write_recruitment(prc.RECRUITMENT_FILE, fam, ts=time.time() - 30.0, ttl_s=1.0)
+    monkeypatch.setattr(
+        prc,
+        "pick_and_load_mutated",
+        lambda *a, **kw: pytest.fail("stale recruitment must not pick a preset"),
+    )
+
+    assert prc.process_preset_recruitment() is False
+
+
+def test_process_accepts_fresh_recruitment_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agents.studio_compositor.preset_family_selector import family_names
+
+    fam = next(iter(family_names()))
+    _write_recruitment(prc.RECRUITMENT_FILE, fam, ts=time.time() - 1.0, ttl_s=30.0)
+    fake_graph: dict[str, Any] = {"nodes": {}, "marker": "fresh-ttl"}
+    monkeypatch.setattr(prc, "pick_and_load_mutated", lambda *a, **kw: ("p", fake_graph))
+    monkeypatch.setattr(
+        prc,
+        "_select_transition",
+        lambda: ("transition.cut.hard", PRIMITIVES["transition.cut.hard"]),
+    )
+    captured_writes: list[dict] = []
+    monkeypatch.setattr(prc, "_write_mutation", captured_writes.append)
+
+    assert prc.process_preset_recruitment() is True
+    _wait_for_thread()
+    assert any(g.get("marker") == "fresh-ttl" for g in captured_writes)
+
+
+def test_process_rejects_recruitment_timestamp_too_far_in_future(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agents.studio_compositor.preset_family_selector import family_names
+
+    fam = next(iter(family_names()))
+    _write_recruitment(
+        prc.RECRUITMENT_FILE,
+        fam,
+        ts=time.time() + prc._MAX_RECRUITMENT_FUTURE_S + 10.0,
+        ttl_s=30.0,
+    )
+    monkeypatch.setattr(
+        prc,
+        "pick_and_load_mutated",
+        lambda *a, **kw: pytest.fail("future recruitment must not pick a preset"),
+    )
+
+    assert prc.process_preset_recruitment() is False
+
+
+def test_single_write_transition_env_forces_cut_hard(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agents.studio_compositor.preset_family_selector import family_names
+
+    fam = next(iter(family_names()))
+    _write_recruitment(prc.RECRUITMENT_FILE, fam)
+    fake_graph: dict[str, Any] = {"nodes": {}, "marker": "single-write"}
+
+    monkeypatch.setenv(prc._SINGLE_WRITE_TRANSITIONS_ENV, "1")
+    monkeypatch.setattr(prc, "pick_and_load_mutated", lambda *a, **kw: ("p", fake_graph))
+    monkeypatch.setattr(
+        prc,
+        "_select_transition",
+        lambda: pytest.fail("single-write containment must bypass transition selection"),
+    )
+    captured_writes: list[dict] = []
+    monkeypatch.setattr(prc, "_write_mutation", captured_writes.append)
+
+    assert prc.process_preset_recruitment() is True
+    _wait_for_thread()
+    assert captured_writes == [fake_graph]
 
 
 def test_process_cooldown_blocks_repeat_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:

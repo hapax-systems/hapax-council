@@ -50,6 +50,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from agents.effect_graph.types import EdgeDef, EffectGraph, GraphPatch, NodeInstance
+from agents.studio_compositor.graph_mutation_bus import write_graph_mutation
 
 log = logging.getLogger(__name__)
 
@@ -119,9 +120,8 @@ def _get_current_graph() -> EffectGraph | None:
 
 def _write_mutation(graph: EffectGraph) -> None:
     """Write a patched graph to the SHM mutation file (state-reader consumes)."""
-    MUTATION_FILE.parent.mkdir(parents=True, exist_ok=True)
     payload = graph.model_dump(mode="json")
-    MUTATION_FILE.write_text(json.dumps(payload), encoding="utf-8")
+    write_graph_mutation(payload, path=MUTATION_FILE)
 
 
 def _fresh_items(payload: dict, family: str, now: float) -> tuple[list[dict], float]:

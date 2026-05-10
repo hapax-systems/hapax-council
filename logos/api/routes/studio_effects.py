@@ -14,6 +14,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from agents.studio_compositor.graph_mutation_bus import write_graph_mutation
+
 log = logging.getLogger(__name__)
 
 _BUILTIN_PRESETS = Path(__file__).parent.parent.parent.parent / "presets"
@@ -157,8 +159,7 @@ async def replace_effect_graph(request: dict[str, object]):
         raise HTTPException(400, str(e)) from e
     try:
         mutation_path = Path("/dev/shm/hapax-compositor/graph-mutation.json")
-        mutation_path.parent.mkdir(parents=True, exist_ok=True)
-        mutation_path.write_text(_json_mod.dumps(graph.model_dump()))
+        write_graph_mutation(graph.model_dump(), path=mutation_path)
         # Write source selection alongside graph mutation
         source_path = Path("/dev/shm/hapax-compositor/fx-source.txt")
         source_path.write_text(source)

@@ -22,13 +22,13 @@ builder and ``random_mode``.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .graph_mutation_bus import write_graph_mutation
 from .random_mode import (
     MUTATION_FILE,
     PRESET_DIR,
@@ -243,8 +243,7 @@ class PresetReactor:
             return None
 
         try:
-            self._mutation_file.parent.mkdir(parents=True, exist_ok=True)
-            self._mutation_file.write_text(json.dumps(graph))
+            write_graph_mutation(graph, path=self._mutation_file)
         except OSError:
             log.warning("Chat reactor: failed to write mutation for %s", preset_name)
             return None
