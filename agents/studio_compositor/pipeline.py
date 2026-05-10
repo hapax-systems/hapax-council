@@ -13,7 +13,7 @@ from .layout import compute_tile_layout
 from .pipeline_manager import PipelineManager
 from .recording import add_hls_branch
 from .smooth_delay import add_smooth_delay_branch
-from .snapshots import add_fx_snapshot_branch, add_llm_frame_snapshot_branch, add_snapshot_branch
+from .snapshots import add_llm_frame_snapshot_branch, add_snapshot_branch
 
 log = logging.getLogger(__name__)
 
@@ -356,7 +356,9 @@ def build_pipeline(compositor: Any) -> Any:
     if compositor.config.hls.enabled:
         add_hls_branch(compositor, pipeline, output_tee, fps)
 
-    add_fx_snapshot_branch(compositor, pipeline, output_tee)
+    # ``fx-snapshot.jpg`` is now the final-egress proof image emitted by
+    # V4l2OutputPipeline after a successful /dev/video42 write. Keep that
+    # artifact single-owner so a revived sibling tee branch cannot race it.
     add_smooth_delay_branch(compositor, pipeline, output_tee)
 
     # Phase 5: instantiate the RTMP output bin (detached by default).

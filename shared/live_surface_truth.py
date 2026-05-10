@@ -8,6 +8,7 @@ enough to call the livestream restored.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -30,6 +31,8 @@ class LiveSurfaceSnapshot:
     v4l2_last_frame_age_seconds: float | None = None
     shmsink_frames_total: float | None = None
     shmsink_last_frame_age_seconds: float | None = None
+    final_egress_snapshot_frames_total: float | None = None
+    final_egress_snapshot_last_frame_age_seconds: float | None = None
     containment_flags: Mapping[str, bool] = field(default_factory=dict)
     hls_active: bool = False
 
@@ -93,6 +96,13 @@ def assess_live_surface(
             degraded.append("v4l2_no_frames")
         elif not v4l2_fresh:
             degraded.append("v4l2_stale_frames")
+        elif not _metric_positive(snapshot.final_egress_snapshot_frames_total):
+            degraded.append("final_egress_snapshot_no_frames")
+        elif not _metric_fresh(
+            snapshot.final_egress_snapshot_last_frame_age_seconds,
+            max_age_seconds=max_egress_age_seconds,
+        ):
+            degraded.append("final_egress_snapshot_stale")
 
     if shmsink_positive and not v4l2_positive:
         degraded.append("shmsink_without_v4l2_egress")
@@ -117,6 +127,13 @@ def parse_prometheus_scalars(text: str) -> dict[str, float]:
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "{" in line:
+            if "{" not in line:
+                continue
+            parsed = _parse_labeled_render_stage_scalar(line)
+            if parsed is None:
+                continue
+            name, value = parsed
+            values[name] = value
             continue
         parts = line.split()
         if len(parts) != 2:
@@ -127,6 +144,23 @@ def parse_prometheus_scalars(text: str) -> dict[str, float]:
         except ValueError:
             continue
     return values
+
+
+_RENDER_STAGE_SAMPLE = re.compile(
+    r"^(?P<name>studio_compositor_render_stage_(?:frames_total|last_frame_seconds_ago))"
+    r'\{stage="(?P<stage>[^"]+)"\}\s+(?P<value>[-+0-9.eE]+)$'
+)
+
+
+def _parse_labeled_render_stage_scalar(line: str) -> tuple[str, float] | None:
+    match = _RENDER_STAGE_SAMPLE.match(line)
+    if match is None:
+        return None
+    try:
+        value = float(match.group("value"))
+    except ValueError:
+        return None
+    return f"{match.group('name')}:stage:{match.group('stage')}", value
 
 
 def snapshot_from_prometheus(
@@ -152,6 +186,12 @@ def snapshot_from_prometheus(
         shmsink_frames_total=metrics.get("studio_compositor_shmsink_frames_total"),
         shmsink_last_frame_age_seconds=metrics.get(
             "studio_compositor_shmsink_last_frame_seconds_ago"
+        ),
+        final_egress_snapshot_frames_total=metrics.get(
+            "studio_compositor_render_stage_frames_total:stage:final_egress_snapshot"
+        ),
+        final_egress_snapshot_last_frame_age_seconds=metrics.get(
+            "studio_compositor_render_stage_last_frame_seconds_ago:stage:final_egress_snapshot"
         ),
         containment_flags=containment_flags or {},
         hls_active=hls_active,
