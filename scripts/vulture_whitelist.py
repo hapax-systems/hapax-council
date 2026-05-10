@@ -2876,3 +2876,7 @@ from agents.studio_compositor.shmsink_output_pipeline import (  # noqa: F401, E4
 
 ShmsinkOutputPipeline
 is_bridge_enabled
+
+from shared.publication_hardening.entity_checker import EntityRegistry  # noqa: F401, E402
+
+EntityRegistry.is_company  # hook + external consumer API
