@@ -1,7 +1,7 @@
-"""HLS segment rotation from the compositor cache to the research archive.
+"""Copy HLS segments from the live compositor cache to the research archive.
 
 LRR Phase 2 item 2 + item 3. Walks ``~/.cache/hapax-compositor/hls/`` for
-closed segments (``*.ts``), moves them to
+closed segments (``*.ts``), copies them to
 ``~/hapax-state/stream-archive/hls/YYYY-MM-DD/`` with a per-segment
 sidecar JSON. Invoked periodically (systemd timer or operator CLI).
 
@@ -59,7 +59,7 @@ from shared.stream_archive import (
 
 log = logging.getLogger(__name__)
 
-DEFAULT_STABLE_MTIME_WINDOW_SECONDS = 10.0
+DEFAULT_STABLE_MTIME_WINDOW_SECONDS = 30.0
 """Minimum mtime-stable age before a segment is considered closed + rotatable."""
 
 DEFAULT_TARGET_DURATION_SECONDS = 2.0
@@ -102,6 +102,9 @@ class RotationResult:
     skipped_unstable: int
     skipped_already_rotated: int
     errors: list[str]
+    skipped_zero_byte: int = 0
+    skipped_playlist_current: int = 0
+    skipped_open: int = 0
 
 
 def _load_condition_id(pointer_path: Path = DEFAULT_CONDITION_POINTER) -> str | None:
@@ -183,6 +186,42 @@ def is_segment_stable(
     return (now_ts - mtime) >= window_seconds
 
 
+def _read_playlist_segment_names(source_dir: Path) -> set[str]:
+    playlist = source_dir / "stream.m3u8"
+    try:
+        lines = playlist.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return set()
+    names: set[str] = set()
+    for line in lines:
+        value = line.strip()
+        if not value or value.startswith("#"):
+            continue
+        names.add(Path(value).name)
+    return names
+
+
+def _open_hls_segment_paths() -> set[Path]:
+    proc = Path("/proc")
+    paths: set[Path] = set()
+    for pid_dir in proc.iterdir():
+        if not pid_dir.name.isdigit():
+            continue
+        fd_dir = pid_dir / "fd"
+        try:
+            fd_entries = list(fd_dir.iterdir())
+        except OSError:
+            continue
+        for fd_entry in fd_entries:
+            try:
+                target = fd_entry.resolve(strict=False)
+            except OSError:
+                continue
+            if target.suffix in HLS_MEDIA_SUFFIXES:
+                paths.add(target)
+    return paths
+
+
 def build_sidecar(
     *,
     segment_path: Path,
@@ -219,12 +258,11 @@ def rotate_segment(
     target_duration_seconds: float = DEFAULT_TARGET_DURATION_SECONDS,
     dest_filename: str | None = None,
 ) -> Path:
-    """Move a single segment to the archive + write its sidecar.
+    """Copy a single segment to the archive + write its sidecar.
 
     Returns the new segment path. Sidecar path is derived via
-    ``sidecar_path_for(new_path)``. The move is atomic enough for our
-    purposes (same filesystem) — ``shutil.move`` uses ``os.rename`` when
-    possible and falls back to copy+unlink across filesystems.
+    ``sidecar_path_for(new_path)``. The live HLS cache is owned exclusively by
+    ``hlssink2``; archive code must not move, rename, or unlink those files.
 
     Phase 1 audit H4 fix: ``hlssink2`` finalizes segments on close, so
     ``segment_path.stat().st_mtime`` is the segment's END time. The
@@ -252,16 +290,16 @@ def rotate_segment(
     try:
         mtime_utc = datetime.fromtimestamp(segment_path.stat().st_mtime, tz=UTC)
     except OSError:
-        # Best-effort fallback: stat failed (unlinked mid-rotation?),
+        # Best-effort fallback: stat failed (unlinked mid-copy?),
         # use the rotator's run time for both ends, duration-zero. The
-        # subsequent shutil.move will also fail and raise, so this path
-        # is only observable in races.
+        # subsequent copy will also fail and raise, so this path is only
+        # observable in races.
         mtime_utc = fallback_now
 
     segment_end = mtime_utc
     segment_start = mtime_utc - timedelta(seconds=target_duration_seconds)
 
-    shutil.move(str(segment_path), str(new_path))
+    shutil.copy2(str(segment_path), str(new_path))
 
     sidecar = build_sidecar(
         segment_path=new_path,
@@ -318,15 +356,33 @@ def rotate_pass(
     condition_id = _load_condition_id(effective_pointer)
     stimmung = _load_stimmung_snapshot(effective_stimmung)
     target_dir = hls_archive_dir(at=now_dt)
+    playlist_segments = _read_playlist_segment_names(effective_source)
+    open_segment_paths = _open_hls_segment_paths()
 
     scanned = 0
     rotated = 0
     skipped_unstable = 0
     skipped_already_rotated = 0
+    skipped_zero_byte = 0
+    skipped_playlist_current = 0
+    skipped_open = 0
     errors: list[str] = []
 
     for segment_path in _iter_hls_media_segments(effective_source):
         scanned += 1
+        try:
+            if segment_path.stat().st_size <= 0:
+                skipped_zero_byte += 1
+                continue
+        except OSError:
+            skipped_unstable += 1
+            continue
+        if segment_path.name in playlist_segments:
+            skipped_playlist_current += 1
+            continue
+        if segment_path.resolve(strict=False) in open_segment_paths:
+            skipped_open += 1
+            continue
         if not is_segment_stable(segment_path, now_ts=now_ts, window_seconds=window_seconds):
             skipped_unstable += 1
             continue
@@ -336,14 +392,14 @@ def rotate_pass(
         # and reuses names like `segment00000.ts`. The target_dir
         # already contains a file with that name from the previous
         # boot's output. The previous "exists → skip as already
-        # rotated" check silently dropped every live segment after
+        # archived" check silently dropped every live segment after
         # restart, stalling the whole archive indefinitely.
         #
         # Fix: compare mtime between the live source and the archived
         # destination. If within 2 s, same segment (tolerates the
         # mtime-preserving shutil.move). Otherwise collision from a
         # different boot — find next available numeric suffix and
-        # rotate the new segment into ``segment00000.ts.1`` etc.
+        # archive the new segment into ``segment00000.ts.1`` etc.
         # Chronological ordering is preserved via the sidecar
         # ``segment_end_ts`` regardless of filename.
         dest_filename: str | None = None
@@ -390,6 +446,9 @@ def rotate_pass(
         rotated=rotated,
         skipped_unstable=skipped_unstable,
         skipped_already_rotated=skipped_already_rotated,
+        skipped_zero_byte=skipped_zero_byte,
+        skipped_playlist_current=skipped_playlist_current,
+        skipped_open=skipped_open,
         errors=errors,
     )
 

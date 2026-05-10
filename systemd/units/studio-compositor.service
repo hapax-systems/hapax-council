@@ -37,10 +37,10 @@ ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor
 # the HLS cache dir was a debugging vestige that deleted every unrotated segment
 # on every compositor restart. Phase 2 wants segments PERSISTED to the archive,
 # not truncated. The `hls-archive-rotate.timer` (fires every 60s via
-# `systemd/units/hls-archive-rotate.timer`) rotates finalized segments out of
+# `systemd/units/hls-archive-rotate.timer`) copies finalized segments out of
 # ~/.cache/hapax-compositor/hls/ into ~/hapax-state/stream-archive/hls/<date>/.
-# The compositor precheck below verifies the rotator is enabled + active before
-# startup so a rotator-disabled state is loud, not silent.
+# Live HLS cache ownership stays with hlssink2; the archive path is durable
+# research evidence, not the live-serving substrate.
 #
 # Historical context: the original `find -delete` was added when the HLS cache
 # was treated as purely ephemeral. Phase 2 reframes the HLS cache as a staging
@@ -56,8 +56,10 @@ ExecStartPre=%h/.cache/hapax/source-activation/worktree/systemd/units/studio-cam
 # compositor startup (livestream uptime > archive completeness).
 # Delta 2026-04-14-lrr-phase-2-hls-archive-dormant.md identified that
 # Phase 2 shipped code + unit files without install-units.sh being
-# run — every segment was being deleted at hlssink2 max_files=15 for
-# hours of runtime with zero observable signal.
+# run — every segment was being deleted at the old hlssink2 max_files=15 for
+# hours of runtime with zero observable signal. The compositor now retains a
+# larger cache and the archive precheck is non-fatal: inactive archive means
+# stale archive, not live-egress failure.
 ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/studio-compositor-archive-precheck.sh
 ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.studio_compositor
 # Livestream-performance-map Sprint 6 F7 / W1.5: postmortem capture.

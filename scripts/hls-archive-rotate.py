@@ -66,6 +66,9 @@ def main(argv: list[str] | None = None) -> int:
                     "rotated": result.rotated,
                     "skipped_unstable": result.skipped_unstable,
                     "skipped_already_rotated": result.skipped_already_rotated,
+                    "skipped_zero_byte": result.skipped_zero_byte,
+                    "skipped_playlist_current": result.skipped_playlist_current,
+                    "skipped_open": result.skipped_open,
                     "errors": result.errors,
                 }
             )
@@ -75,6 +78,9 @@ def main(argv: list[str] | None = None) -> int:
             f"scanned={result.scanned} rotated={result.rotated} "
             f"skipped_unstable={result.skipped_unstable} "
             f"skipped_already_rotated={result.skipped_already_rotated} "
+            f"skipped_zero_byte={result.skipped_zero_byte} "
+            f"skipped_playlist_current={result.skipped_playlist_current} "
+            f"skipped_open={result.skipped_open} "
             f"errors={len(result.errors)}"
         )
         for err in result.errors:

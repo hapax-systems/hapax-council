@@ -80,7 +80,7 @@ class TestIsSegmentStable:
 
 
 class TestRotateSegment:
-    def test_move_and_sidecar(self, archive_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_copy_and_sidecar(self, archive_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         source = archive_env / "src"
         source.mkdir()
         seg = source / "segment00001.ts"
@@ -96,7 +96,8 @@ class TestRotateSegment:
 
         assert new_path == target / "segment00001.ts"
         assert new_path.exists()
-        assert not seg.exists()  # moved, not copied
+        assert seg.exists()
+        assert new_path.read_bytes() == seg.read_bytes()
         sidecar_p = sidecar_path_for(new_path)
         assert sidecar_p.exists()
 
@@ -155,10 +156,57 @@ class TestRotatePass:
         assert result.skipped_already_rotated == 0
         assert result.errors == []
 
-        # Verify files moved
-        assert not (source / "segment00001.ts").exists()
-        assert not (source / "segment00002.ts").exists()
+        # Verify files copied, not moved: live HLS cache remains hlssink2-owned.
+        assert (source / "segment00001.ts").exists()
+        assert (source / "segment00002.ts").exists()
         assert (source / "segment00003.ts").exists()
+        copied = list((archive_env / "archive" / "hls").glob("*/segment0000*.ts"))
+        assert {path.name for path in copied} == {"segment00001.ts", "segment00002.ts"}
+
+    def test_skips_zero_byte_segments(self, archive_env: Path) -> None:
+        source = archive_env / "hls"
+        source.mkdir()
+        seg = source / "segment00001.ts"
+        seg.write_bytes(b"")
+        old = time.time() - 30
+        os.utime(seg, (old, old))
+
+        result = hls_archive.rotate_pass(source_dir=source, window_seconds=10.0)
+
+        assert result.scanned == 1
+        assert result.rotated == 0
+        assert result.skipped_zero_byte == 1
+        assert seg.exists()
+
+    def test_skips_playlist_current_segments(self, archive_env: Path) -> None:
+        source = archive_env / "hls"
+        source.mkdir()
+        _touch_segment(source / "segment00001.ts", age_seconds=30.0)
+        (source / "stream.m3u8").write_text(
+            "#EXTM3U\n#EXTINF:2,\nsegment00001.ts\n",
+            encoding="utf-8",
+        )
+
+        result = hls_archive.rotate_pass(source_dir=source, window_seconds=10.0)
+
+        assert result.scanned == 1
+        assert result.rotated == 0
+        assert result.skipped_playlist_current == 1
+        assert (source / "segment00001.ts").exists()
+
+    def test_skips_open_segments(self, archive_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        source = archive_env / "hls"
+        source.mkdir()
+        seg = source / "segment00001.ts"
+        _touch_segment(seg, age_seconds=30.0)
+        monkeypatch.setattr(hls_archive, "_open_hls_segment_paths", lambda: {seg.resolve()})
+
+        result = hls_archive.rotate_pass(source_dir=source, window_seconds=10.0)
+
+        assert result.scanned == 1
+        assert result.rotated == 0
+        assert result.skipped_open == 1
+        assert seg.exists()
 
     def test_missing_source_dir_is_noop(self, archive_env: Path) -> None:
         result = hls_archive.rotate_pass(source_dir=archive_env / "nonexistent")

@@ -19,8 +19,8 @@
 # Delta 2026-04-14-lrr-phase-2-hls-archive-dormant.md identified that
 # Phase 2 shipped code + unit files but the operator hadn't run
 # install-units.sh post-merge, so every HLS segment was being deleted at
-# the hlssink2 max_files=15 boundary. This precheck makes that gap loud
-# from compositor startup instead of silent for the entire session.
+# the old hlssink2 max_files=15 boundary. This precheck now protects archive
+# completeness only; live HLS cache ownership belongs to hlssink2.
 set -euo pipefail
 
 HLS_ARCHIVE_DIR="${HAPAX_HLS_ARCHIVE_ROOT:-${HOME}/hapax-state/stream-archive/hls}"
@@ -42,7 +42,7 @@ if systemctl --user is-active hls-archive-rotate.timer >/dev/null 2>&1; then
     echo "archive-precheck: hls-archive-rotate.timer active"
 else
     echo "archive-precheck: WARNING hls-archive-rotate.timer NOT active — " \
-         "HLS segments will be deleted by hlssink2 every ~60s without rotation" >&2
+         "research archive will not receive HLS segment copies" >&2
 fi
 
 exit 0
