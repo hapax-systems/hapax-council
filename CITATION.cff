@@ -2,6 +2,7 @@ cff-version: 1.2.0
 message: If you use this software in your research, please cite it as below.
 type: software
 title: hapax-council
+doi: 10.5281/zenodo.20113515
 abstract: >-
   Constituent of the Hapax operating environment. Single-operator research
   apparatus for externalised executive function, built by a neurodivergent
@@ -26,3 +27,7 @@ keywords:
 - neurodivergent-research-instrument
 - philosophy-of-science
 - infrastructure-as-argument
+identifiers:
+- type: doi
+  value: 10.5281/zenodo.20113515
+  description: Zenodo repository snapshot DOI
