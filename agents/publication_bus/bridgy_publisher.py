@@ -62,12 +62,18 @@ several seconds per fanout target; 30s comfortable upper bound."""
 
 # Default allowlist: hapax.omg.lol weblog entries. Operator-curated;
 # additions require explicit registry update + operator review.
+BRIDGY_POSSE_TARGETS: list[str] = ["mastodon", "bluesky"]
+"""Default POSSE syndication targets. Each becomes a Bridgy Publish
+target URL: ``https://brid.gy/publish/{target}``."""
+
 DEFAULT_BRIDGY_ALLOWLIST: AllowlistGate = load_allowlist(
     "bridgy-webmention-publish",
     permitted=[
         "https://hapax.omg.lol/weblog",
         "https://hapax.omg.lol/now",
         "https://hapax.omg.lol/statuslog",
+        "https://brid.gy/publish/mastodon",
+        "https://brid.gy/publish/bluesky",
     ],
 )
 
@@ -148,6 +154,7 @@ class BridgyPublisher(Publisher):
 
 
 __all__ = [
+    "BRIDGY_POSSE_TARGETS",
     "BRIDGY_PUBLISH_ENDPOINT",
     "BRIDGY_REQUEST_TIMEOUT_S",
     "DEFAULT_BRIDGY_ALLOWLIST",
