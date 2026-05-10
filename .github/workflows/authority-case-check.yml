@@ -45,10 +45,12 @@ jobs:
             cc_task=$(echo "$PR_BODY" | grep -oiE 'cc-task:[[:space:]]*`?[a-z0-9-]+' | sed 's/cc-task:[[:space:]]*`\{0,1\}//' | head -1)
           fi
 
-          echo "case_id=$case_id" >> "$GITHUB_OUTPUT"
-          echo "slice_id=$slice_id" >> "$GITHUB_OUTPUT"
-          echo "pre_methodology=$pre_methodology" >> "$GITHUB_OUTPUT"
-          echo "cc_task=$cc_task" >> "$GITHUB_OUTPUT"
+          {
+            echo "case_id=$case_id"
+            echo "slice_id=$slice_id"
+            echo "pre_methodology=$pre_methodology"
+            echo "cc_task=$cc_task"
+          } >> "$GITHUB_OUTPUT"
 
           echo "Parsed: case=$case_id slice=$slice_id pre_methodology=$pre_methodology cc_task=$cc_task"
 

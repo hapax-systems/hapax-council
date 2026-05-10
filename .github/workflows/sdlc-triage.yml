@@ -38,9 +38,11 @@ jobs:
           COMPLEXITY=$(echo "$OUTPUT" | jq -r '.complexity')
           REJECT=$(echo "$OUTPUT" | jq -r '.reject_reason // empty')
 
-          echo "type=$TYPE" >> "$GITHUB_OUTPUT"
-          echo "complexity=$COMPLEXITY" >> "$GITHUB_OUTPUT"
-          echo "reject=$REJECT" >> "$GITHUB_OUTPUT"
+          {
+            echo "type=$TYPE"
+            echo "complexity=$COMPLEXITY"
+            echo "reject=$REJECT"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Handle rejection
         if: steps.triage.outputs.reject != '' || steps.triage.outputs.complexity == 'L'

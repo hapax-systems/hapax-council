@@ -1,0 +1,6 @@
+self-hosted-runner:
+  labels:
+    - hapax-council-ci
+    - pr-safe
+    - no-secrets
+    - ephemeral-preferred
