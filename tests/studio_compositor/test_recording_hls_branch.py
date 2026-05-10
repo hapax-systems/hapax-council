@@ -40,6 +40,7 @@ class _FakeElement:
         self._gst = gst
         self.props: dict[str, object] = {}
         self.links: list[str] = []
+        self.static_pads: dict[str, _FakePad] = {}
         self.requested_pads: list[_FakePad] = []
         self.released_pads: list[_FakePad] = []
 
@@ -54,15 +55,19 @@ class _FakeElement:
         return self.name
 
     def get_pad_template(self, name: str) -> str | None:
-        if self._gst.missing_pad_template:
+        if self._gst.missing_pad_template or (self.name, name) in self._gst.missing_pad_templates:
             return None
         return name
 
     def request_pad(self, template: str, name: str | None, caps: object) -> _FakePad | None:
         del template, name, caps
-        if self._gst.request_pad_none:
+        if self._gst.request_pad_none or self.name in self._gst.request_pad_none_for:
             return None
-        pad = _FakePad(f"{self.name}:src_0", link_return=self._gst.pad_link_return)
+        link_return = (
+            self._gst.tee_pad_link_return if self.name == "output-tee" else _FakePadLinkReturn.OK
+        )
+        pad_name = f"{self.name}:src_0" if self.name == "output-tee" else f"{self.name}:video_0"
+        pad = _FakePad(pad_name, link_return=link_return)
         self.requested_pads.append(pad)
         return pad
 
@@ -72,7 +77,14 @@ class _FakeElement:
     def get_static_pad(self, name: str) -> _FakePad | None:
         if self._gst.missing_static_pad_for == self.name:
             return None
-        return _FakePad(f"{self.name}:{name}")
+        if name not in self.static_pads:
+            link_return = (
+                self._gst.hls_pad_link_return
+                if self.name == "hls-parse" and name == "src"
+                else _FakePadLinkReturn.OK
+            )
+            self.static_pads[name] = _FakePad(f"{self.name}:{name}", link_return=link_return)
+        return self.static_pads[name]
 
 
 class _FakeFactory:
@@ -98,17 +110,23 @@ class _FakeGst:
         fail_factories: set[str] | None = None,
         fail_names: set[str] | None = None,
         fail_links: set[tuple[str, str]] | None = None,
-        pad_link_return: int = _FakePadLinkReturn.OK,
+        tee_pad_link_return: int = _FakePadLinkReturn.OK,
+        hls_pad_link_return: int = _FakePadLinkReturn.OK,
         missing_pad_template: bool = False,
+        missing_pad_templates: set[tuple[str, str]] | None = None,
         request_pad_none: bool = False,
+        request_pad_none_for: set[str] | None = None,
         missing_static_pad_for: str | None = None,
     ) -> None:
         self.fail_factories = fail_factories or set()
         self.fail_names = fail_names or set()
         self.fail_links = fail_links or set()
-        self.pad_link_return = pad_link_return
+        self.tee_pad_link_return = tee_pad_link_return
+        self.hls_pad_link_return = hls_pad_link_return
         self.missing_pad_template = missing_pad_template
+        self.missing_pad_templates = missing_pad_templates or set()
         self.request_pad_none = request_pad_none
+        self.request_pad_none_for = request_pad_none_for or set()
         self.missing_static_pad_for = missing_static_pad_for
         self.elements: dict[str, _FakeElement] = {}
         self.factories: list[str] = []
@@ -180,7 +198,9 @@ def test_add_hls_branch_uploads_converts_and_caps_nv12_before_nvenc(tmp_path: Pa
     assert by_name["hls-cudaconv"].links == ["hls-nv12caps"]
     assert by_name["hls-nv12caps"].links == ["hls-enc"]
     assert by_name["hls-enc"].links == ["hls-parse"]
-    assert by_name["hls-parse"].links == ["hls-sink"]
+    assert by_name["hls-parse"].links == []
+    assert by_name["hls-parse"].static_pads["src"].links[0].name == "hls-sink:video_0"
+    assert len(by_name["hls-sink"].requested_pads) == 1
     assert tee.requested_pads[0].links[0].name == "queue-hls:sink"
     assert compositor._hls_valve is by_name["hls-valve"]
 
@@ -214,7 +234,7 @@ def test_add_hls_branch_raises_when_linear_link_fails(tmp_path: Path) -> None:
 def test_add_hls_branch_raises_and_releases_when_tee_pad_link_fails(tmp_path: Path) -> None:
     compositor, _pipeline, tee = _build_subject(
         tmp_path,
-        _FakeGst(pad_link_return=1),
+        _FakeGst(tee_pad_link_return=1),
     )
 
     with pytest.raises(RuntimeError, match="failed to link tee pad"):
@@ -222,3 +242,33 @@ def test_add_hls_branch_raises_and_releases_when_tee_pad_link_fails(tmp_path: Pa
 
     assert compositor._hls_valve is None
     assert tee.released_pads == tee.requested_pads
+
+
+def test_add_hls_branch_requests_hlssink_video_pad(tmp_path: Path) -> None:
+    compositor, _pipeline, tee = _build_subject(
+        tmp_path,
+        _FakeGst(missing_pad_templates={("hls-sink", "video")}),
+    )
+
+    with pytest.raises(RuntimeError, match="hls-sink video pad template"):
+        add_hls_branch(compositor, _pipeline, tee, fps=30)
+
+    assert compositor._hls_valve is None
+    assert not tee.requested_pads
+
+
+def test_add_hls_branch_releases_hlssink_pad_when_video_pad_link_fails(
+    tmp_path: Path,
+) -> None:
+    compositor, pipeline, tee = _build_subject(
+        tmp_path,
+        _FakeGst(hls_pad_link_return=1),
+    )
+
+    with pytest.raises(RuntimeError, match="hls-parse src pad to hls-sink video pad"):
+        add_hls_branch(compositor, pipeline, tee, fps=30)
+
+    by_name = {element.name: element for element in pipeline.added}
+    assert compositor._hls_valve is None
+    assert by_name["hls-sink"].released_pads == by_name["hls-sink"].requested_pads
+    assert not tee.requested_pads

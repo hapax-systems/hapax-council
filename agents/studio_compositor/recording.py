@@ -68,6 +68,53 @@ def _link_tee_to_sink_or_raise(Gst: Any, tee: Any, sink: Any, branch: str) -> An
     return tee_pad
 
 
+def _request_sink_pad_or_raise(
+    Gst: Any,
+    sink_element: Any,
+    template_name: str,
+    *,
+    branch: str,
+) -> Any:
+    template = sink_element.get_pad_template(template_name)
+    if template is None:
+        raise RuntimeError(
+            f"{branch}: failed to find {_element_name(sink_element)} {template_name} pad template"
+        )
+
+    pad = sink_element.request_pad(template, None, None)
+    if pad is None:
+        raise RuntimeError(f"{branch}: failed to request {_element_name(sink_element)} pad")
+    return pad
+
+
+def _link_src_to_request_sink_pad_or_raise(
+    Gst: Any,
+    src_element: Any,
+    sink_element: Any,
+    sink_template_name: str,
+    *,
+    branch: str,
+) -> Any:
+    src_pad = src_element.get_static_pad("src")
+    if src_pad is None:
+        raise RuntimeError(f"{branch}: failed to get {_element_name(src_element)} src pad")
+
+    sink_pad = _request_sink_pad_or_raise(
+        Gst,
+        sink_element,
+        sink_template_name,
+        branch=branch,
+    )
+    result = src_pad.link(sink_pad)
+    if not _pad_link_ok(Gst, result):
+        _release_request_pad(sink_element, sink_pad)
+        raise RuntimeError(
+            f"{branch}: failed to link {_element_name(src_element)} src pad "
+            f"to {_element_name(sink_element)} {sink_template_name} pad: {result}"
+        )
+    return sink_pad
+
+
 def add_recording_branch(
     compositor: Any, pipeline: Any, camera_tee: Any, cam: CameraSpec, fps: int
 ) -> None:
@@ -202,8 +249,9 @@ def add_hls_branch(compositor: Any, pipeline: Any, tee: Any, fps: int) -> None:
     for el in elements:
         pipeline.add(el)
 
-    for src, dst in zip(elements, elements[1:], strict=False):
+    for src, dst in zip(elements[:-2], elements[1:-1], strict=False):
         _link_or_raise(src, dst, branch)
+    _link_src_to_request_sink_pad_or_raise(Gst, parser, hls_sink, "video", branch=branch)
 
     _link_tee_to_sink_or_raise(Gst, tee, queue, branch)
 
