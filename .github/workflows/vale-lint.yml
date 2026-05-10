@@ -1,0 +1,61 @@
+name: Vale Style Check
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "lab-journal/posts/**/*.md"
+      - ".vale/**"
+      - ".vale.ini"
+
+permissions:
+  contents: read
+
+jobs:
+  vale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Vale
+        run: |
+          wget -qO- https://github.com/errata-ai/vale/releases/download/v3.14.1/vale_3.14.1_Linux_64-bit.tar.gz | tar xz -C /usr/local/bin vale
+
+      - name: Detect changed markdown
+        id: detect
+        run: |
+          changed="$(git diff --name-only --diff-filter=ACMR origin/main...HEAD -- 'lab-journal/posts/' | grep '\.md$' || true)"
+          if [ -z "$changed" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            printf '%s\n' "$changed" > /tmp/changed-md.txt
+          fi
+
+      - name: Run Vale
+        if: steps.detect.outputs.skip != 'true'
+        run: xargs vale --config=.vale.ini < /tmp/changed-md.txt
+
+      - name: Check heading hierarchy
+        if: steps.detect.outputs.skip != 'true'
+        run: |
+          python3 -c "
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, '.')
+          from shared.publication_hardening.lint import check_heading_hierarchy
+
+          files = Path('/tmp/changed-md.txt').read_text().strip().splitlines()
+          errors = []
+          for f in files:
+              p = Path(f)
+              if p.exists():
+                  errors.extend(check_heading_hierarchy(p))
+          if errors:
+              for e in errors:
+                  print(f'::error file={e.file},line={e.line}::{e.message}')
+              sys.exit(1)
+          print('Heading hierarchy: OK')
+          "

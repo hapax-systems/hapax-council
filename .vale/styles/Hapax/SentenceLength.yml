@@ -1,0 +1,6 @@
+extends: occurrence
+message: "Sentence has %s words (aim for under 30)."
+level: warning
+scope: sentence
+max: 30
+token: '\b(\w+)\b'

@@ -1,0 +1,7 @@
+extends: readability
+message: "Flesch-Kincaid grade level is %s (aim for 14 or below — corresponds to FK reading ease ~40+)."
+level: warning
+metrics:
+  - Flesch-Kincaid
+  - Gunning Fog
+grade: 14

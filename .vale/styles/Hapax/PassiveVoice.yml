@@ -1,0 +1,17 @@
+extends: existence
+message: "Passive voice: '%s'. Prefer active construction."
+level: warning
+ignorecase: true
+tokens:
+  - was \w+ed
+  - were \w+ed
+  - is being \w+ed
+  - are being \w+ed
+  - has been \w+ed
+  - have been \w+ed
+  - had been \w+ed
+  - will be \w+ed
+  - is \w+ed by
+  - are \w+ed by
+  - was \w+ed by
+  - were \w+ed by
