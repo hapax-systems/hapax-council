@@ -8,6 +8,13 @@ import time
 from typing import Any
 
 from .config import SNAPSHOT_DIR
+from .diagnostic_branch import (
+    DiagnosticBranchLinkError,
+    add_branch_elements_or_raise,
+    attach_tee_branch_or_raise,
+    link_chain_or_raise,
+    record_diagnostic_frame,
+)
 
 log = logging.getLogger(__name__)
 
@@ -120,6 +127,7 @@ def add_smooth_delay_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
                     os.close(fd)
                 if written == len(data):
                     tmp.rename(final_)
+                    record_diagnostic_frame("smooth_delay_snapshot")
             except OSError:
                 pass
             finally:
@@ -129,48 +137,34 @@ def add_smooth_delay_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
     sink.set_property("emit-signals", True)
     sink.connect("new-sample", _on_smooth_sample)
 
-    elements = [
-        queue,
-        convert_rgba,
-        rgba_caps,
-        glupload,
-        glcc_in,
-        smooth_delay,
-        glcc_out,
-        gldownload,
-        out_convert,
-        scale,
-        scale_caps,
-        rate,
-        rate_caps,
-        jpeg,
-        sink,
-    ]
-    for el in elements:
-        if el is None:
-            log.error("Failed to create smooth delay pipeline element")
-            compositor._fx_smooth_delay = None
-            return
-        pipeline.add(el)
-
-    queue.link(convert_rgba)
-    convert_rgba.link(rgba_caps)
-    rgba_caps.link(glupload)
-    glupload.link(glcc_in)
-    glcc_in.link(smooth_delay)
-    smooth_delay.link(glcc_out)
-    glcc_out.link(gldownload)
-    gldownload.link(out_convert)
-    out_convert.link(scale)
-    scale.link(scale_caps)
-    scale_caps.link(rate)
-    rate.link(rate_caps)
-    rate_caps.link(jpeg)
-    jpeg.link(sink)
-
-    tee_pad = tee.request_pad(tee.get_pad_template("src_%u"), None, None)
-    queue_sink = queue.get_static_pad("sink")
-    tee_pad.link(queue_sink)
+    branch = "smooth delay branch"
+    try:
+        elements = add_branch_elements_or_raise(
+            pipeline,
+            [
+                ("queue-smooth", queue),
+                ("smooth-convert-rgba", convert_rgba),
+                ("smooth-rgba-caps", rgba_caps),
+                ("smooth-glupload", glupload),
+                ("smooth-glcc-in", glcc_in),
+                ("smooth-delay", smooth_delay),
+                ("smooth-glcc-out", glcc_out),
+                ("smooth-gldownload", gldownload),
+                ("smooth-out-convert", out_convert),
+                ("smooth-scale", scale),
+                ("smooth-scale-caps", scale_caps),
+                ("smooth-rate", rate),
+                ("smooth-rate-caps", rate_caps),
+                ("smooth-jpeg", jpeg),
+                ("smooth-snapshot-sink", sink),
+            ],
+            branch=branch,
+        )
+        link_chain_or_raise(elements, branch=branch)
+        attach_tee_branch_or_raise(Gst, tee, queue, branch=branch)
+    except DiagnosticBranchLinkError:
+        compositor._fx_smooth_delay = None
+        raise
 
     compositor._fx_smooth_delay = smooth_delay
     log.info("Smooth delay branch: 5.0s delay -> smooth-snapshot.jpg")

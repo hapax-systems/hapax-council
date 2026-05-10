@@ -7,6 +7,12 @@ import os
 from typing import Any
 
 from .config import SNAPSHOT_DIR
+from .diagnostic_branch import (
+    add_branch_elements_or_raise,
+    attach_tee_branch_or_raise,
+    link_chain_or_raise,
+    record_diagnostic_frame,
+)
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +60,7 @@ def add_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
                     os.close(fd)
                 if written == len(data):
                     tmp.rename(final)
+                    record_diagnostic_frame("pre_fx_snapshot")
             finally:
                 buf.unmap(mapinfo)
         return 0
@@ -61,21 +68,23 @@ def add_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
     appsink.set_property("emit-signals", True)
     appsink.connect("new-sample", _on_new_sample)
 
-    elements = [queue, convert, scale, scale_caps, rate, rate_caps, encoder, appsink]
-    for el in elements:
-        pipeline.add(el)
-
-    queue.link(convert)
-    convert.link(scale)
-    scale.link(scale_caps)
-    scale_caps.link(rate)
-    rate.link(rate_caps)
-    rate_caps.link(encoder)
-    encoder.link(appsink)
-
-    tee_pad = tee.request_pad(tee.get_pad_template("src_%u"), None, None)
-    queue_sink = queue.get_static_pad("sink")
-    tee_pad.link(queue_sink)
+    branch = "pre-FX snapshot branch"
+    elements = add_branch_elements_or_raise(
+        pipeline,
+        [
+            ("queue-snapshot", queue),
+            ("snapshot-convert", convert),
+            ("snapshot-scale", scale),
+            ("snapshot-scale-caps", scale_caps),
+            ("snapshot-rate", rate),
+            ("snapshot-rate-caps", rate_caps),
+            ("snapshot-jpeg", encoder),
+            ("snapshot-sink", appsink),
+        ],
+        branch=branch,
+    )
+    link_chain_or_raise(elements, branch=branch)
+    attach_tee_branch_or_raise(Gst, tee, queue, branch=branch)
 
 
 def add_llm_frame_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
@@ -143,6 +152,7 @@ def add_llm_frame_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> N
                     os.close(fd)
                 if written == len(data):
                     tmp.rename(final)
+                    record_diagnostic_frame("llm_frame_snapshot")
             finally:
                 buf.unmap(mapinfo)
         return 0
@@ -150,21 +160,23 @@ def add_llm_frame_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> N
     appsink.set_property("emit-signals", True)
     appsink.connect("new-sample", _on_new_sample)
 
-    elements = [queue, convert, scale, scale_caps, rate, rate_caps, encoder, appsink]
-    for el in elements:
-        pipeline.add(el)
-
-    queue.link(convert)
-    convert.link(scale)
-    scale.link(scale_caps)
-    scale_caps.link(rate)
-    rate.link(rate_caps)
-    rate_caps.link(encoder)
-    encoder.link(appsink)
-
-    tee_pad = tee.request_pad(tee.get_pad_template("src_%u"), None, None)
-    queue_sink = queue.get_static_pad("sink")
-    tee_pad.link(queue_sink)
+    branch = "LLM frame snapshot branch"
+    elements = add_branch_elements_or_raise(
+        pipeline,
+        [
+            ("queue-llm-frame", queue),
+            ("llm-frame-convert", convert),
+            ("llm-frame-scale", scale),
+            ("llm-frame-scale-caps", scale_caps),
+            ("llm-frame-rate", rate),
+            ("llm-frame-rate-caps", rate_caps),
+            ("llm-frame-jpeg", encoder),
+            ("llm-frame-sink", appsink),
+        ],
+        branch=branch,
+    )
+    link_chain_or_raise(elements, branch=branch)
+    attach_tee_branch_or_raise(Gst, tee, queue, branch=branch)
     log.info("LLM-bound frame snapshot branch: pre_fx_tee → frame_for_llm.jpg @ 3fps")
 
 
@@ -237,11 +249,11 @@ def add_fx_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
                 finally:
                     os.close(fd)
                 tmp.rename(final)
+                record_diagnostic_frame("legacy_fx_snapshot")
             except OSError:
                 pass
 
     sender_thread = threading.Thread(target=_sender_loop, daemon=True, name="fx-frame-sender")
-    sender_thread.start()
 
     def _on_fx_sample(sink: Any) -> int:
         _fx_frame_count[0] += 1
@@ -264,23 +276,21 @@ def add_fx_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
     appsink.set_property("emit-signals", True)
     appsink.connect("new-sample", _on_fx_sample)
 
-    elements = [queue, convert, scale, scale_caps, rate, rate_caps, jpeg, appsink]
-
-    for el in elements:
-        if el is None:
-            log.error("Failed to create FX snapshot element")
-            return
-        pipeline.add(el)
-
-    # Link chain sequentially
-    for i in range(len(elements) - 1):
-        if not elements[i].link(elements[i + 1]):
-            log.error(
-                "FX snapshot: failed to link %s → %s",
-                elements[i].get_name(),
-                elements[i + 1].get_name(),
-            )
-
-    tee_pad = tee.request_pad(tee.get_pad_template("src_%u"), None, None)
-    queue_sink = queue.get_static_pad("sink")
-    tee_pad.link(queue_sink)
+    branch = "legacy FX snapshot branch"
+    elements = add_branch_elements_or_raise(
+        pipeline,
+        [
+            ("queue-fx-snap", queue),
+            ("fx-snap-convert", convert),
+            ("fx-snap-scale", scale),
+            ("fx-snap-scale-caps", scale_caps),
+            ("fx-snap-rate", rate),
+            ("fx-snap-rate-caps", rate_caps),
+            ("fx-snap-jpeg", jpeg),
+            ("fx-snapshot-sink", appsink),
+        ],
+        branch=branch,
+    )
+    link_chain_or_raise(elements, branch=branch)
+    attach_tee_branch_or_raise(Gst, tee, queue, branch=branch)
+    sender_thread.start()
