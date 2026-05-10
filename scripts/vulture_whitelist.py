@@ -19,6 +19,11 @@ from shared.aperture_registry import (
     aperture_registry,
     load_aperture_registry,
 )
+from shared.archive_replay_sidecar_index import (
+    ArchiveReplaySidecarIndex,
+    ArchiveReplaySidecarIndexEntry,
+    ArchiveReplaySidecarIndexMetrics,
+)
 from shared.audio_topology_inspector import check_l12_forward_invariant
 from shared.audio_world_surface_fixtures import AudioSurfaceFixture, AudioWorldSurfaceFixtureSet
 from shared.bayesian_camera_salience_world_surface import (
@@ -776,6 +781,17 @@ ClaimBearingMediaOutput._validate_output_claim_shape
 SpanClaimGateDecision._validate_fail_closed_decision
 TemporalSpanRegistryFixtureSet._validate_registry_fixture_contract
 TemporalSpanRegistryFixtureSet.sidecars_by_kind
+
+# Archive replay sidecar index validators are invoked dynamically by Pydantic
+# while validating the durable replay/artifact index fixture packet. The index
+# itself is the public contract for downstream conversion, dataset, grant, demo,
+# and artifact surfaces.
+ArchiveReplaySidecarIndexEntry._validate_fail_closed_public_claim
+ArchiveReplaySidecarIndex._validate_index_contract
+ArchiveReplaySidecarIndex.require_entry
+ArchiveReplaySidecarIndex.entries_for_run
+ArchiveReplaySidecarIndex.public_safe_entries
+ArchiveReplaySidecarIndexMetrics.record_index
 
 # Application obligation refusal helpers are the public contract for downstream
 # grant/fellowship scout, attestation, and operating-system tasks. This slice
