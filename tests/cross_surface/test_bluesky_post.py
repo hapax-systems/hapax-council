@@ -195,8 +195,10 @@ class TestEventFiltering:
         assert {
             "broadcast.boundary",
             "chronicle.high_salience",
+            "governance.enforcement",
             "omg.weblog",
             "shorts.upload",
+            "velocity.digest",
         } == ALLOWED_PUBLIC_EVENT_TYPES
 
     def test_skips_unsupported_public_event_type(self, tmp_path):
@@ -342,6 +344,44 @@ class TestEventFiltering:
 
         assert poster.run_once() == 1
         client.send_post.assert_called_once()
+
+    def test_non_broadcast_events_post_without_live_egress_claim(self, tmp_path):
+        for event_type, state_kind in (
+            ("velocity.digest", "research_observation"),
+            ("governance.enforcement", "governance_state"),
+        ):
+            bus = tmp_path / f"{event_type.replace('.', '_')}.jsonl"
+            _write_events(
+                bus,
+                [
+                    _public_event(
+                        event_id=f"rvpe:{event_type.replace('.', '_')}:bsky",
+                        event_type=event_type,
+                        state_kind=state_kind,
+                        broadcast_id=None,
+                        public_url=None,
+                        chapter_ref=None,
+                        surface_policy=_surface_policy(
+                            claim_live=False,
+                            claim_archive=True,
+                            requires_egress_public_claim=True,
+                            requires_audio_safe=True,
+                            rate_limit_key=f"{event_type}:{state_kind}",
+                        ),
+                    )
+                ],
+            )
+            client = mock.Mock()
+            client.send_post.return_value = mock.Mock(uri="at://post/1")
+            factory = mock.Mock(return_value=client)
+            poster, _ = _make_poster(
+                event_path=bus,
+                cursor_path=tmp_path / f"{event_type.replace('.', '_')}.cursor",
+                client_factory=factory,
+            )
+
+            assert poster.run_once() == 1
+            client.send_post.assert_called_once()
 
 
 # ── Dry-run ──────────────────────────────────────────────────────────

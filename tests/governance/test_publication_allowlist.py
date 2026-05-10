@@ -111,8 +111,10 @@ def test_empty_state_kinds_denies(tmp_path: Path) -> None:
 
 def test_state_kind_claim_policy_classifies_claim_and_non_claim_states() -> None:
     assert state_kind_claim_policy("chronicle.high_salience") == "claim_bearing"
+    assert state_kind_claim_policy("governance.enforcement") == "claim_bearing"
     assert state_kind_claim_policy("weblog.entry") == "claim_bearing"
     assert state_kind_claim_policy("publication.artifact") == "claim_bearing"
+    assert state_kind_claim_policy("velocity.digest") == "claim_bearing"
     assert state_kind_claim_policy("broadcast.boundary") == "non_claim_bearing"
     assert state_kind_claim_policy("broadcast.current_live_url") == "non_claim_bearing"
 
@@ -238,12 +240,18 @@ def test_publication_surfaces_compose_with_claim_bearing_grounding(tmp_path: Pat
         ("omg-lol-weblog", "weblog.entry"),
         ("omg-lol-pastebin", "chronicle.weekly_digest"),
         ("bluesky-post", "chronicle.high_salience"),
+        ("bluesky-post", "governance.enforcement"),
         ("bluesky-post", "omg.weblog"),
+        ("bluesky-post", "velocity.digest"),
         ("mastodon-post", "chronicle.high_salience"),
+        ("mastodon-post", "governance.enforcement"),
         ("mastodon-post", "omg.weblog"),
+        ("mastodon-post", "velocity.digest"),
         ("discord-webhook", "chronicle.high_salience"),
         ("arena-post", "chronicle.high_salience"),
+        ("arena-post", "governance.enforcement"),
         ("arena-post", "omg.weblog"),
+        ("arena-post", "velocity.digest"),
     )
     for surface, state_kind in surface_state_pairs:
         _write_contract(tmp_path, surface, state_kinds=[state_kind])
@@ -257,6 +265,24 @@ def test_publication_surfaces_compose_with_claim_bearing_grounding(tmp_path: Pat
             contracts_dir=tmp_path,
         )
         assert allowed.decision == "allow", (surface, state_kind)
+
+
+def test_real_social_allowlists_include_non_broadcast_syndication_events() -> None:
+    surface_state_pairs = (
+        ("mastodon-post", "governance.enforcement"),
+        ("mastodon-post", "velocity.digest"),
+        ("bluesky-post", "governance.enforcement"),
+        ("bluesky-post", "velocity.digest"),
+        ("arena-post", "governance.enforcement"),
+        ("arena-post", "velocity.digest"),
+    )
+    for surface, state_kind in surface_state_pairs:
+        result = check(
+            surface,
+            state_kind,
+            {"summary": surface, "grounding_gate_result": _grounding_gate()},
+        )
+        assert result.decision == "allow", (surface, state_kind, result.reason)
 
 
 def test_channel_metadata_remains_non_claim_bearing(tmp_path: Path) -> None:

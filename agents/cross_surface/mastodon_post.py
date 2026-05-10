@@ -96,8 +96,10 @@ ALLOWED_PUBLIC_EVENT_TYPES = frozenset(
     {
         "broadcast.boundary",
         "chronicle.high_salience",
+        "governance.enforcement",
         "omg.weblog",
         "shorts.upload",
+        "velocity.digest",
     }
 )
 
@@ -440,6 +442,10 @@ def _event_intent(event: ResearchVehiclePublicEvent) -> str:
         if event.chapter_ref is not None and event.chapter_ref.label:
             return f"weblog: {event.chapter_ref.label}"
         return "weblog post"
+    if event.event_type == "velocity.digest":
+        return "daily velocity digest"
+    if event.event_type == "governance.enforcement":
+        return "governance enforcement"
     if event.event_type == "shorts.upload":
         return "shorts upload"
     return event.event_type
@@ -448,12 +454,20 @@ def _event_intent(event: ResearchVehiclePublicEvent) -> str:
 def _fallback_public_event_text(event: ResearchVehiclePublicEvent) -> str:
     if event.event_type == "omg.weblog" and event.public_url:
         return f"Hapax weblog: {_event_intent(event)}. {event.public_url}"
+    if event.event_type in {"governance.enforcement", "velocity.digest"}:
+        return f"Hapax {_event_intent(event)}."
     return f"Hapax livestream: {_event_intent(event)}."
 
 
 def _allowlist_payload(event: ResearchVehiclePublicEvent) -> dict[str, Any]:
     payload: dict[str, Any] = {"event": event.model_dump(mode="json")}
-    if event.event_type in {"chronicle.high_salience", "omg.weblog", "shorts.upload"}:
+    if event.event_type in {
+        "chronicle.high_salience",
+        "governance.enforcement",
+        "omg.weblog",
+        "shorts.upload",
+        "velocity.digest",
+    }:
         payload["grounding_gate_result"] = _grounding_gate_from_public_event(event)
     return payload
 

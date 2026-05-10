@@ -50,6 +50,7 @@ CLAIM_BEARING_STATE_KIND_PATTERNS: Final[tuple[str, ...]] = (
     "director.activity_change",
     "director.activity_transition",
     "director.youtube_direction",
+    "governance.enforcement",
     "omg.weblog",
     "programme.boundary",
     "programme.completed_plan",
@@ -59,6 +60,7 @@ CLAIM_BEARING_STATE_KIND_PATTERNS: Final[tuple[str, ...]] = (
     "research.corpus_excerpt",
     "research_instrument.*",
     "shorts.upload",
+    "velocity.digest",
     "weblog.entry",
 )
 NON_CLAIM_BEARING_STATE_KIND_PATTERNS: Final[tuple[str, ...]] = (
