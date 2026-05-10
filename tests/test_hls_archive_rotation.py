@@ -208,6 +208,42 @@ class TestRotatePass:
         assert result.skipped_open == 1
         assert seg.exists()
 
+    def test_collision_suffix_is_not_rearchived_every_pass(
+        self, archive_env: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = archive_env / "hls"
+        source.mkdir()
+        seg = source / "segment00000.ts"
+        monkeypatch.setattr(
+            hls_archive,
+            "DEFAULT_CONDITION_POINTER",
+            archive_env / "nonexistent-condition.txt",
+        )
+        monkeypatch.setattr(
+            hls_archive,
+            "DEFAULT_STIMMUNG_PATH",
+            archive_env / "nonexistent-stimmung.json",
+        )
+
+        seg.write_bytes(b"boot-one")
+        os.utime(seg, (1_000.0, 1_000.0))
+        first = hls_archive.rotate_pass(source_dir=source, now_ts=1_040.0, window_seconds=10.0)
+        assert first.rotated == 1
+
+        # hlssink2 restarts its counter and reuses the same live filename.
+        seg.write_bytes(b"boot-two")
+        os.utime(seg, (1_100.0, 1_100.0))
+        second = hls_archive.rotate_pass(source_dir=source, now_ts=1_140.0, window_seconds=10.0)
+        assert second.rotated == 1
+        assert second.skipped_already_rotated == 0
+
+        third = hls_archive.rotate_pass(source_dir=source, now_ts=1_145.0, window_seconds=10.0)
+        assert third.rotated == 0
+        assert third.skipped_already_rotated == 1
+
+        archived = sorted((archive_env / "archive" / "hls").glob("*/segment00000*.ts"))
+        assert [path.name for path in archived] == ["segment00000.1.ts", "segment00000.ts"]
+
     def test_missing_source_dir_is_noop(self, archive_env: Path) -> None:
         result = hls_archive.rotate_pass(source_dir=archive_env / "nonexistent")
         assert result.scanned == 0

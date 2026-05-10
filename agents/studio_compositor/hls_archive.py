@@ -222,6 +222,35 @@ def _open_hls_segment_paths() -> set[Path]:
     return paths
 
 
+def _archive_candidates_for_segment(segment_path: Path, target_dir: Path) -> list[Path]:
+    """Return archive filenames that may already contain ``segment_path``.
+
+    Restart collision handling writes reused live names such as
+    ``segment00000.ts`` to ``segment00000.1.ts``. A later timer pass must check
+    those suffixed copies before allocating ``.2``, ``.3``, and so on.
+    """
+
+    base = target_dir / segment_path.name
+    candidates: list[Path] = [base]
+    suffixed = sorted(target_dir.glob(f"{segment_path.stem}.*{segment_path.suffix}"))
+    for candidate in suffixed:
+        if candidate != base:
+            candidates.append(candidate)
+    return candidates
+
+
+def _same_archived_segment(segment_path: Path, archived_path: Path) -> bool:
+    try:
+        src_stat = segment_path.stat()
+        archived_stat = archived_path.stat()
+    except OSError:
+        return False
+    return (
+        src_stat.st_size == archived_stat.st_size
+        and abs(src_stat.st_mtime - archived_stat.st_mtime) < 2.0
+    )
+
+
 def build_sidecar(
     *,
     segment_path: Path,
@@ -395,25 +424,22 @@ def rotate_pass(
         # archived" check silently dropped every live segment after
         # restart, stalling the whole archive indefinitely.
         #
-        # Fix: compare mtime between the live source and the archived
-        # destination. If within 2 s, same segment (tolerates the
-        # mtime-preserving shutil.move). Otherwise collision from a
-        # different boot — find next available numeric suffix and
-        # archive the new segment into ``segment00000.ts.1`` etc.
+        # Fix: compare mtime + size between the live source and all archive
+        # candidates for that segment name. If a prior base or suffixed copy
+        # matches, it is the same segment and must be skipped. Otherwise this is
+        # a collision from a different boot — find the next available numeric
+        # suffix and archive the new segment into ``segment00000.1.ts`` etc.
         # Chronological ordering is preserved via the sidecar
         # ``segment_end_ts`` regardless of filename.
         dest_filename: str | None = None
         live_dest = target_dir / segment_path.name
+        if any(
+            candidate.exists() and _same_archived_segment(segment_path, candidate)
+            for candidate in _archive_candidates_for_segment(segment_path, target_dir)
+        ):
+            skipped_already_rotated += 1
+            continue
         if live_dest.exists():
-            try:
-                src_mtime = segment_path.stat().st_mtime
-                dest_mtime = live_dest.stat().st_mtime
-            except OSError:
-                skipped_already_rotated += 1
-                continue
-            if abs(src_mtime - dest_mtime) < 2.0:
-                skipped_already_rotated += 1
-                continue
             stem = segment_path.stem
             suffix = segment_path.suffix
             for n in range(1, 10000):
