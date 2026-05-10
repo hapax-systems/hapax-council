@@ -1,0 +1,74 @@
+extends: existence
+message: "Avoid '%s' — use plain language instead."
+level: error
+ignorecase: true
+tokens:
+  - paradigm
+  - leverage
+  - leverages
+  - leveraging
+  - leveraged
+  - synergy
+  - synergies
+  - synergistic
+  - utilize
+  - utilizes
+  - utilizing
+  - utilization
+  - facilitate
+  - facilitates
+  - facilitating
+  - facilitation
+  - operationalize
+  - operationalizes
+  - operationalizing
+  - incentivize
+  - incentivizes
+  - incentivizing
+  - holistic
+  - holistically
+  - scalable
+  - best-in-class
+  - best in class
+  - cutting-edge
+  - cutting edge
+  - game-changer
+  - game changer
+  - move the needle
+  - low-hanging fruit
+  - deep dive
+  - circle back
+  - touch base
+  - at the end of the day
+  - going forward
+  - stakeholder alignment
+  - value proposition
+  - thought leader
+  - thought leadership
+  - disruptive
+  - innovative solution
+  - paradigm shift
+  - ecosystem
+  - empower
+  - empowers
+  - empowering
+  - democratize
+  - democratizes
+  - democratizing
+  - robust
+  - seamless
+  - seamlessly
+  - next-generation
+  - next generation
+  - world-class
+  - world class
+  - bleeding-edge
+  - bleeding edge
+  - best practice
+  - best practices
+  - mission-critical
+  - mission critical
+  - end-to-end
+  - turnkey
+  - actionable insights
+  - data-driven
