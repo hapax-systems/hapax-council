@@ -1,0 +1,350 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LivestreamRenderArchitectureShadowPlan",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "task_id",
+    "authority_case",
+    "decision",
+    "alternatives",
+    "local_seams",
+    "clock_contract",
+    "frame_source_abi",
+    "source_failure_policies",
+    "egress_adapters",
+    "shadow_mode",
+    "migration",
+    "av_sdlc_inspection"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "task_id": {
+      "const": "livestream-compositor-render-architecture-shadow-plan"
+    },
+    "authority_case": {
+      "const": "CASE-LIVESTREAM-COMPOSITOR-INCIDENT-20260509"
+    },
+    "decision": {
+      "type": "object",
+      "required": [
+        "selected_architecture",
+        "status",
+        "current_system_unchanged",
+        "current_containment_not_restored",
+        "rejects_monolithic_gstreamer_composition_as_global_maximum",
+        "render_clock_owner",
+        "gstreamer_roles",
+        "rationale"
+      ],
+      "properties": {
+        "selected_architecture": {
+          "const": "clock_owned_render_core_with_gstreamer_ingest_egress"
+        },
+        "status": {
+          "const": "shadow_plan"
+        },
+        "current_system_unchanged": {
+          "const": true
+        },
+        "current_containment_not_restored": {
+          "const": true
+        },
+        "rejects_monolithic_gstreamer_composition_as_global_maximum": {
+          "const": true
+        },
+        "render_clock_owner": {
+          "const": "render_core"
+        },
+        "gstreamer_roles": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "camera_ingest",
+              "decode",
+              "caps_negotiation",
+              "egress_encoding",
+              "transport_adapter"
+            ]
+          },
+          "minItems": 3,
+          "uniqueItems": true
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 20
+        }
+      },
+      "additionalProperties": false
+    },
+    "alternatives": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "verdict", "local_optimum", "retain_for", "reject_because"],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "verdict": {
+            "type": "string"
+          },
+          "local_optimum": {
+            "type": "boolean"
+          },
+          "retain_for": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reject_because": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "minItems": 5
+    },
+    "local_seams": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "path", "symbol", "role"],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "symbol": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "minItems": 4
+    },
+    "clock_contract": {
+      "type": "object",
+      "required": [
+        "owner",
+        "target_fps",
+        "frame_deadline_ms",
+        "hard_rule",
+        "prohibited_waits",
+        "source_sampling",
+        "missing_source_degrades_within_ms",
+        "egress_policy"
+      ],
+      "properties": {
+        "owner": {
+          "const": "render_core"
+        },
+        "target_fps": {
+          "const": 30
+        },
+        "frame_deadline_ms": {
+          "type": "number",
+          "maximum": 34
+        },
+        "hard_rule": {
+          "type": "string"
+        },
+        "prohibited_waits": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 6,
+          "uniqueItems": true
+        },
+        "source_sampling": {
+          "const": "nonblocking_latest_value"
+        },
+        "missing_source_degrades_within_ms": {
+          "type": "integer",
+          "maximum": 2000
+        },
+        "egress_policy": {
+          "const": "adapters_receive_latest_complete_frame_only"
+        }
+      },
+      "additionalProperties": false
+    },
+    "frame_source_abi": {
+      "type": "object",
+      "required": ["version", "metadata_fields", "transport"],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "metadata_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "transport": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "source_failure_policies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source_class", "fallback", "max_degrade_ms"],
+        "properties": {
+          "source_class": {
+            "type": "string"
+          },
+          "fallback": {
+            "enum": ["last_good_then_offline_slate", "hold_last_good_then_suppress"]
+          },
+          "max_degrade_ms": {
+            "type": "integer",
+            "maximum": 2000
+          }
+        },
+        "additionalProperties": false
+      },
+      "minItems": 4
+    },
+    "egress_adapters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "blocking_allowed", "queue", "failure_effect"],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "blocking_allowed": {
+            "const": false
+          },
+          "queue": {
+            "enum": ["single_latest", "leaky_downstream", "bounded_drop_oldest"]
+          },
+          "failure_effect": {
+            "const": "adapter_degraded_only"
+          }
+        },
+        "additionalProperties": false
+      },
+      "minItems": 4
+    },
+    "shadow_mode": {
+      "type": "object",
+      "required": [
+        "enabled_by_default",
+        "private_output_only",
+        "subset",
+        "success_criteria",
+        "chaos_tests",
+        "soak_tests",
+        "rollback"
+      ],
+      "properties": {
+        "enabled_by_default": {
+          "const": false
+        },
+        "private_output_only": {
+          "const": true
+        },
+        "subset": {
+          "type": "object"
+        },
+        "success_criteria": {
+          "type": "array",
+          "minItems": 4
+        },
+        "chaos_tests": {
+          "type": "array",
+          "minItems": 6
+        },
+        "soak_tests": {
+          "type": "array",
+          "minItems": 1
+        },
+        "rollback": {
+          "type": "object",
+          "required": ["disable_flag", "steps"],
+          "properties": {
+            "disable_flag": {
+              "type": "string"
+            },
+            "steps": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 2
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "migration": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["stage", "public_cutover_allowed", "exit_gate"],
+        "properties": {
+          "stage": {
+            "type": "string"
+          },
+          "public_cutover_allowed": {
+            "type": "boolean"
+          },
+          "exit_gate": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "minItems": 5
+    },
+    "av_sdlc_inspection": {
+      "type": "object",
+      "required": ["required_checkpoints", "evidence_commands"],
+      "properties": {
+        "required_checkpoints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 4,
+          "uniqueItems": true
+        },
+        "evidence_commands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

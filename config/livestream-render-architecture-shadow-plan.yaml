@@ -1,0 +1,292 @@
+schema_version: 1
+task_id: livestream-compositor-render-architecture-shadow-plan
+authority_case: CASE-LIVESTREAM-COMPOSITOR-INCIDENT-20260509
+
+decision:
+  selected_architecture: clock_owned_render_core_with_gstreamer_ingest_egress
+  status: shadow_plan
+  current_system_unchanged: true
+  current_containment_not_restored: true
+  rejects_monolithic_gstreamer_composition_as_global_maximum: true
+  render_clock_owner: render_core
+  gstreamer_roles:
+    - camera_ingest
+    - decode
+    - caps_negotiation
+    - egress_encoding
+    - transport_adapter
+  rationale: >
+    The long-term maximum is a render clock that samples sources without
+    waiting, produces explicit frame truth, and hands completed frames to
+    isolated adapters. GStreamer remains strong for media I/O, negotiation,
+    branch isolation, and encoding, but the May 2026 incident showed that a
+    monolithic live graph can make process liveness, camera freshness, and
+    viewer truth share failure fate.
+
+alternatives:
+  - id: monolithic_gstreamer_compositor
+    verdict: rejected_as_global_maximum
+    local_optimum: true
+    retain_for:
+      - current live containment while shadow mode is private
+      - camera ingest and egress elements that already work
+    reject_because:
+      - A blocked camera, GL/CUDA element, tee branch, v4l2 loopback, or HLS/OBS consumer can still be mistaken for render truth unless every branch is externally proven.
+      - Dynamic wards, shader state, layout truth, and degradation metadata are application semantics rather than native GStreamer graph semantics.
+      - The incident already showed healthy service/camera predicates while OBS-consumable output was stale or absent.
+  - id: gstreamer_multi_pipeline_bridge
+    verdict: keep_as_transition_and_adapter_pattern
+    local_optimum: true
+    retain_for:
+      - shmsink bridge to isolate v4l2loopback
+      - per-egress pipelines with queue and restart boundaries
+      - ingest sidecars where device negotiation belongs in GStreamer
+    reject_because:
+      - It improves branch isolation but still does not define one authoritative frame ABI, render clock, or layout/degradation manifest.
+      - It can become a pile of locally healthy pipelines without one final program-frame truth predicate.
+  - id: rust_wgpu_renderd
+    verdict: selected_as_shadow_target_after_abi_proof
+    local_optimum: false
+    retain_for:
+      - authoritative render clock
+      - GPU composition and target output views
+      - private shadow output
+    reject_because:
+      - It is not allowed to cut over immediately; camera ABI, ward ABI, egress isolation, and inspection gates must pass first.
+      - A rewrite that bypasses existing live-surface gates would repeat the incident class with different technology.
+  - id: pipewire_graph_compositor
+    verdict: reject_as_render_truth_owner_keep_as_transport_candidate
+    local_optimum: true
+    retain_for:
+      - low-latency graph transport
+      - audio/video node routing experiments
+      - private preview transport after frame ABI exists
+    reject_because:
+      - PipeWire nodes, ports, and links are transport graph primitives, not the Hapax layout, ward, fallback, and public-claim truth model.
+      - Moving composition into PipeWire would still require an application-owned clock and metadata contract.
+  - id: obs_scene_or_plugin_owner
+    verdict: reject_as_truth_owner_keep_as_consumer
+    local_optimum: true
+    retain_for:
+      - operator preview
+      - read-only consumer proof via OBS WebSocket
+      - emergency manual scene fallback
+    reject_because:
+      - OBS is downstream of the compositor; it can cache stale decoded frames and cannot be the canonical source of render truth.
+      - Scene/plugin logic would couple public preview, operator UI, and program-frame validity.
+  - id: ffmpeg_libavfilter_compositor
+    verdict: reject_as_dynamic_compositor_keep_for_egress_filters
+    local_optimum: true
+    retain_for:
+      - encoding and muxing experiments
+      - deterministic filter/overlay probes
+      - archive or private egress adapters
+    reject_because:
+      - Filtergraphs are good at static media transforms and multiple outputs, but Hapax needs live source health, ward lifecycle, shader input, fallback metadata, and frame manifests.
+      - A filtergraph owner would move the same hidden shared-fate problem to a less inspectable control surface.
+
+local_seams:
+  - id: ingest_only_mode
+    path: agents/studio_compositor/ingest_mode.py
+    symbol: IngestMode.INGEST_ONLY
+    role: Existing switch that lets GStreamer collapse to ingest while another renderer owns final composition.
+  - id: output_router
+    path: agents/studio_compositor/output_router.py
+    symbol: OutputRouter
+    role: Existing mapping from render targets to v4l2, HLS, RTMP, window, NDI, and SHM sinks.
+  - id: wgpu_target_output_view
+    path: hapax-logos/crates/hapax-visual/src/dynamic_pipeline.rs
+    symbol: get_target_output_view
+    role: Existing target texture view seam for routing completed wgpu targets to host sinks.
+  - id: shmsink_sidecar
+    path: agents/studio_compositor/shmsink_output_pipeline.py
+    symbol: ShmsinkOutputPipeline
+    role: Existing nonblocking SHM bridge pattern for isolating v4l2 from the compositor process.
+  - id: live_surface_truth
+    path: shared/live_surface_truth.py
+    symbol: assess_live_surface
+    role: Existing restored/degraded/failed predicate shape for viewer-facing truth.
+
+clock_contract:
+  owner: render_core
+  target_fps: 30
+  frame_deadline_ms: 33.333
+  hard_rule: Render frame sequencing never waits on an external producer, ward, shader, egress adapter, OBS, or public-output consumer.
+  prohibited_waits:
+    - camera
+    - ward
+    - shader
+    - hls
+    - v4l2
+    - obs
+    - public_output_consumer
+  source_sampling: nonblocking_latest_value
+  missing_source_degrades_within_ms: 2000
+  egress_policy: adapters_receive_latest_complete_frame_only
+
+frame_source_abi:
+  version: 1
+  transport:
+    - shared_memory_frame_ring
+    - metadata_sidecar_json
+    - prometheus_stage_metrics
+  metadata_fields:
+    - timestamp_ns
+    - sequence
+    - width
+    - height
+    - colorspace
+    - source_class
+    - health
+    - fallback_policy
+    - render_cost_us
+
+source_failure_policies:
+  - source_class: camera_rgb
+    fallback: last_good_then_offline_slate
+    max_degrade_ms: 2000
+  - source_class: camera_ir
+    fallback: last_good_then_offline_slate
+    max_degrade_ms: 2000
+  - source_class: cairo_ward
+    fallback: hold_last_good_then_suppress
+    max_degrade_ms: 2000
+  - source_class: reverie_shader
+    fallback: last_good_then_offline_slate
+    max_degrade_ms: 2000
+  - source_class: shm_rgba_sidecar
+    fallback: last_good_then_offline_slate
+    max_degrade_ms: 2000
+
+egress_adapters:
+  - id: private_shadow_shm
+    blocking_allowed: false
+    queue: single_latest
+    failure_effect: adapter_degraded_only
+  - id: v4l2_loopback
+    blocking_allowed: false
+    queue: leaky_downstream
+    failure_effect: adapter_degraded_only
+  - id: hls_playlist
+    blocking_allowed: false
+    queue: bounded_drop_oldest
+    failure_effect: adapter_degraded_only
+  - id: rtmp_mediamtx
+    blocking_allowed: false
+    queue: bounded_drop_oldest
+    failure_effect: adapter_degraded_only
+  - id: obs_preview
+    blocking_allowed: false
+    queue: single_latest
+    failure_effect: adapter_degraded_only
+  - id: llm_snapshot
+    blocking_allowed: false
+    queue: single_latest
+    failure_effect: adapter_degraded_only
+
+shadow_mode:
+  enabled_by_default: false
+  private_output_only: true
+  subset:
+    cameras:
+      - brio-operator
+      - c920-desk
+      - c920-overhead
+    optional_after_output_stable:
+      - camera_ir
+      - c920-room
+    wards:
+      - egress_footer
+      - programme_banner
+      - grounding_provenance_ticker
+    shader_inputs:
+      - reverie
+    private_output: /dev/shm/hapax-compositor/render-shadow/frame.rgba
+  success_criteria:
+    - id: clock_independence
+      metric: render_core_frames_total advances at 30 fps plus or minus 10 percent during injected source and egress faults
+      pass: No fault blocks frame sequence for more than one frame deadline.
+      fail: Any camera, ward, shader, HLS, v4l2, OBS, or public consumer stall pauses the render clock.
+    - id: source_degradation
+      metric: source health manifest records degraded/offline state within 2 seconds
+      pass: Each failed source moves to last-good or offline slate within the max_degrade_ms contract.
+      fail: Missing, stale, green, black, or replayed source is presented as healthy.
+    - id: egress_isolation
+      metric: adapter degradation does not change render_core_frames_total slope
+      pass: Killing v4l2, HLS, RTMP, OBS preview, or private SHM consumers marks only that adapter degraded.
+      fail: Adapter failure backpressures source sampling or render sequencing.
+    - id: visual_truth
+      metric: compositor-inspect plus final frame proof show nonblank layout and advancing frame sequence
+      pass: Layout evidence is fresh, nonblank, and tied to final program-frame metadata.
+      fail: Service liveness, source freshness, or playlist movement is accepted without final-frame proof.
+  chaos_tests:
+    - id: camera_freeze
+      fault: Stop one RGB camera producer or replay its last frame.
+      expected: Source degrades within 2 seconds and render clock continues.
+    - id: ward_timeout
+      fault: Make a Cairo ward update block or exceed its budget.
+      expected: Ward is suppressed or last-good without delaying render.
+    - id: shader_hang
+      fault: Withhold Reverie/shader frame updates.
+      expected: Shader source degrades and render target continues.
+    - id: hls_writer_stall
+      fault: Block or kill HLS writer.
+      expected: HLS adapter degraded only; private render frames continue.
+    - id: v4l2_writer_stall
+      fault: Block or kill /dev/video42 writer or bridge.
+      expected: V4L2 adapter degraded only; render clock and private output continue.
+    - id: obs_cached_frame
+      fault: Force OBS to hold an old decoded frame.
+      expected: Consumer truth fails without changing render truth.
+    - id: public_output_slow_consumer
+      fault: Simulate a slow or absent public output consumer.
+      expected: Public adapter drops or degrades without blocking render.
+  soak_tests:
+    - id: private_two_hour_shadow
+      duration: PT2H
+      success: No render-clock stalls, no unbounded queue growth, no false restored claim, and all injected faults appear in manifests.
+      failure: Any clock stall, hidden containment state, stale final proof, or public-output mutation.
+  rollback:
+    disable_flag: HAPAX_RENDER_CORE_SHADOW=0
+    steps:
+      - Stop the private render-shadow service or remove the opt-in drop-in that sets HAPAX_RENDER_CORE_SHADOW=1.
+      - Leave studio-compositor.service on the current GStreamer containment path; do not switch OBS/public egress during rollback.
+      - Preserve the last render-shadow manifest and frame proof under the incident evidence directory.
+
+migration:
+  - stage: contract_and_schema
+    public_cutover_allowed: false
+    exit_gate: This contract and tests merge without runtime mutation.
+  - stage: renderd_private_no_sources
+    public_cutover_allowed: false
+    exit_gate: Private render clock emits black/offline frames plus metadata at 30 fps for 10 minutes.
+  - stage: ingest_subset_cameras
+    public_cutover_allowed: false
+    exit_gate: Three RGB cameras satisfy ABI freshness and forced-failure degradation tests.
+  - stage: wards_and_reverie_shadow
+    public_cutover_allowed: false
+    exit_gate: Selected wards and Reverie source render or degrade without blocking camera frames.
+  - stage: isolated_egress_adapters
+    public_cutover_allowed: false
+    exit_gate: Private SHM, HLS, v4l2, and OBS-preview adapters can be killed independently without changing render clock slope.
+  - stage: s5_cutover_packet
+    public_cutover_allowed: false
+    exit_gate: AuthorityCase S5 packet records chaos, soak, rollback, source truth, render truth, egress truth, consumer truth, and layout evidence.
+  - stage: public_cutover_candidate
+    public_cutover_allowed: true
+    exit_gate: Operator accepts the S5 packet and the current stream remains live on the old path until the candidate proves healthier.
+
+av_sdlc_inspection:
+  required_checkpoints:
+    - CP-SOURCE-TRUTH
+    - CP-RENDER-TRUTH
+    - CP-EGRESS-TRUTH
+    - CP-CONSUMER-PUBLIC-TRUTH
+    - CP-LAYOUT-VALIDITY
+    - CP-INSPECTION-EVIDENCE
+    - CP-REGRESSION-GATES
+    - CP-INCIDENT-EXIT-HOLD
+  evidence_commands:
+    - scripts/compositor-inspect before incident-render-architecture
+    - scripts/compositor-inspect after incident-render-architecture-shadow
+    - scripts/hapax-live-surface-preflight --json
