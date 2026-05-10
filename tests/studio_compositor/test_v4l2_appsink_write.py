@@ -93,6 +93,13 @@ class TestWriteFrame:
             assert not p._write_frame(b"\x00" * 100)
         assert p.fd_write_error_count == 1
 
+    def test_partial_write_fails_and_increments_counter(self) -> None:
+        p = _make_pipeline()
+        p._fd = 999
+        with patch("os.write", return_value=99):
+            assert not p._write_frame(b"\x00" * 100)
+        assert p.fd_write_error_count == 1
+
     def test_recoverable_errno_set(self) -> None:
         assert errno.EAGAIN in _RECOVERABLE_ERRNOS
         assert errno.EIO in _RECOVERABLE_ERRNOS
@@ -177,6 +184,26 @@ class TestFinalEgressProofSnapshot:
         mock_buf.map.return_value = (True, mock_map_info)
 
         with patch.object(p, "_write_frame", return_value=False):
+            with patch.object(p, "_maybe_write_proof_snapshot") as proof:
+                p._on_new_sample(mock_appsink)
+
+        proof.assert_not_called()
+
+    def test_partial_v4l2_write_does_not_publish_proof_snapshot(self) -> None:
+        p = _make_pipeline(proof_snapshot_interval_s=1.0)
+        p._fd = 999
+
+        mock_appsink = MagicMock()
+        mock_sample = MagicMock()
+        mock_buf = MagicMock()
+        mock_map_info = MagicMock()
+        mock_map_info.data = b"\x00" * 100
+
+        mock_appsink.emit.return_value = mock_sample
+        mock_sample.get_buffer.return_value = mock_buf
+        mock_buf.map.return_value = (True, mock_map_info)
+
+        with patch("os.write", return_value=99):
             with patch.object(p, "_maybe_write_proof_snapshot") as proof:
                 p._on_new_sample(mock_appsink)
 

@@ -150,7 +150,15 @@ class V4l2OutputPipeline:
             if self._fd < 0:
                 return False
             try:
-                os.write(self._fd, data)
+                written = os.write(self._fd, data)
+                if written != len(data):
+                    self._fd_write_error_count += 1
+                    log.warning(
+                        "v4l2 partial write, scheduling fd reopen: wrote %d of %d bytes",
+                        written,
+                        len(data),
+                    )
+                    return False
                 return True
             except OSError as exc:
                 self._fd_write_error_count += 1
