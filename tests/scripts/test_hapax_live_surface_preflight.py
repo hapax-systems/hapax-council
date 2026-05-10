@@ -88,3 +88,29 @@ studio_compositor_v4l2sink_last_frame_seconds_ago 0.1
 
     assert result.returncode == 0
     assert json.loads(result.stdout)["state"] == "healthy"
+
+
+def test_preflight_fails_closed_with_json_when_metrics_are_unavailable() -> None:
+    result = subprocess.run(
+        [
+            str(SCRIPT),
+            "--no-systemd",
+            "--metrics-file",
+            "/path/that/does/not/exist.prom",
+            "--service-active",
+            "false",
+            "--bridge-active",
+            "false",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        cwd=REPO_ROOT,
+    )
+
+    assert result.returncode == 11
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "failed"
+    assert payload["restored"] is False
+    assert payload["reasons"] == ["metrics_unavailable:FileNotFoundError"]
+    assert result.stderr == ""

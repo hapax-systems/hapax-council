@@ -17,6 +17,7 @@ TimeoutStartSec=45s
 Environment=GST_DEBUG=2
 Environment=HAPAX_V4L2_BRIDGE_DEVICE=/dev/video42
 Environment=HAPAX_V4L2_BRIDGE_SOCKET=/dev/shm/hapax-compositor/v4l2-bridge.sock
+Environment=HAPAX_V4L2_BRIDGE_WAIT_SECONDS=60
 Environment=HAPAX_COMPOSITOR_SOURCE_ROOT=%h/.cache/hapax/source-activation/worktree
 
 [Install]

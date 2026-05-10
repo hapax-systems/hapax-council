@@ -31,6 +31,7 @@ NotifyAccess=main
 WatchdogSec=60s
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 ExecStartPre=/usr/bin/mkdir -p %h/video-recording %h/.cache/hapax-compositor/hls
+ExecStartPre=/usr/bin/find /dev/shm/hapax-compositor -maxdepth 1 -type s -name v4l2-bridge.sock* -delete
 ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file agents/studio_compositor/shmsink_output_pipeline.py --require-file scripts/hapax-v4l2-bridge
 # LRR Phase 2 spec §3.2 (item 2) REMOVED: the ExecStartPre `find ... -delete` on
 # the HLS cache dir was a debugging vestige that deleted every unrotated segment
