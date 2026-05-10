@@ -111,6 +111,15 @@ def _publish_runtime_features(*, force_cpu: bool, use_cuda: bool) -> None:
         log.debug("runtime feature metrics publish failed", exc_info=True)
 
 
+def _publish_runtime_feature(feature: str, active: bool) -> None:
+    try:
+        from . import metrics
+
+        metrics.set_runtime_feature_active(feature, active)
+    except Exception:
+        log.debug("runtime feature metric publish failed for %s", feature, exc_info=True)
+
+
 def build_pipeline(compositor: Any) -> Any:
     """Build the full GStreamer pipeline."""
     Gst = compositor._Gst
@@ -274,6 +283,8 @@ def build_pipeline(compositor: Any) -> Any:
     from .fx_chain import build_inline_fx_chain
 
     fx_ok = build_inline_fx_chain(compositor, pipeline, pre_fx_tee, output_tee, fps)
+    _publish_runtime_feature("inline_fx_built", fx_ok)
+    _publish_runtime_feature("fx_bypass", not fx_ok)
 
     if not fx_ok:
         log.warning("FX chain failed to initialize — bypassing effects")
