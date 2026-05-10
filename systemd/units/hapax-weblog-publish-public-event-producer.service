@@ -1,0 +1,25 @@
+[Unit]
+Description=Hapax weblog publish public-event producer
+Documentation=https://github.com/ryanklee/council/blob/main/agents/weblog_publish_public_event_producer.py
+After=network-online.target hapax-secrets.service
+Wants=network-online.target
+PartOf=hapax.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hapax-council
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
+Environment=PATH=%h/projects/hapax-council/.venv/bin:/usr/bin
+Environment=HAPAX_WEBLOG_PUBLISH_RSS_URL=https://hapax.weblog.lol/rss.xml
+Environment=HAPAX_WEBLOG_PUBLISH_EVENT_TICK_S=60
+Environment=HAPAX_RESEARCH_VEHICLE_PUBLIC_EVENT_PATH=/dev/shm/hapax-public-events/events.jsonl
+Environment=HAPAX_LOG_LEVEL=INFO
+# First successful run seeds the current RSS items without fanout. Set
+# --emit-existing manually for intentional backfill.
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.weblog_publish_public_event_producer
+Restart=on-failure
+RestartSec=15
+MemoryMax=128M
+
+[Install]
+WantedBy=default.target

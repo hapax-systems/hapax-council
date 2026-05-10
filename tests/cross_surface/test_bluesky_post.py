@@ -195,6 +195,7 @@ class TestEventFiltering:
         assert {
             "broadcast.boundary",
             "chronicle.high_salience",
+            "omg.weblog",
             "shorts.upload",
         } == ALLOWED_PUBLIC_EVENT_TYPES
 
@@ -288,6 +289,44 @@ class TestEventFiltering:
                     chapter_ref=None,
                     surface_policy=_surface_policy(
                         rate_limit_key="shorts.upload:short_form",
+                    ),
+                )
+            ],
+        )
+        client = mock.Mock()
+        client.send_post.return_value = mock.Mock(uri="at://post/1")
+        factory = mock.Mock(return_value=client)
+        poster, _ = _make_poster(
+            event_path=bus,
+            cursor_path=tmp_path / "cursor.txt",
+            client_factory=factory,
+        )
+
+        assert poster.run_once() == 1
+        client.send_post.assert_called_once()
+
+    def test_weblog_event_projects_grounding_for_allowlist(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        _write_events(
+            bus,
+            [
+                _public_event(
+                    event_id="rvpe:omg_weblog:bsky",
+                    event_type="omg.weblog",
+                    state_kind="public_post",
+                    public_url="https://hapax.weblog.lol/visibility-engine",
+                    chapter_ref=PublicEventChapterRef(
+                        kind="chapter",
+                        label="Visibility Engine Online",
+                        timecode="00:00",
+                        source_event_id="rvpe:omg_weblog:bsky",
+                    ),
+                    surface_policy=_surface_policy(
+                        claim_live=False,
+                        claim_archive=True,
+                        requires_egress_public_claim=False,
+                        requires_audio_safe=False,
+                        rate_limit_key="omg.weblog:public_post",
                     ),
                 )
             ],
