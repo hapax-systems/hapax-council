@@ -181,7 +181,8 @@ def build_pipeline(compositor: Any) -> Any:
     # eliminates the 15-30s ASYNC timeout that caused persistent v4l2
     # stalls and OBS source loss. Recovery transitions now complete
     # in <1s because the output pipeline has no GL elements.
-    from .v4l2_output_pipeline import INTERPIPE_CHANNEL, V4l2OutputPipeline
+    from .shmsink_output_pipeline import INTERPIPE_CHANNEL, is_bridge_enabled
+    from .v4l2_output_pipeline import V4l2OutputPipeline
 
     v4l2_interpipe = Gst.ElementFactory.make("interpipesink", INTERPIPE_CHANNEL)
     if v4l2_interpipe is None:
@@ -195,14 +196,29 @@ def build_pipeline(compositor: Any) -> Any:
     tee_pad = output_tee.request_pad(output_tee.get_pad_template("src_%u"), None, None)
     tee_pad.link(v4l2_interpipe.get_static_pad("sink"))
 
-    compositor._v4l2_output_pipeline = V4l2OutputPipeline(
-        gst=Gst,
-        device=compositor.config.output_device,
-        width=compositor.config.output_width,
-        height=compositor.config.output_height,
-        fps=fps,
-        on_frame=compositor._on_v4l2_frame_pushed,
-    )
+    if is_bridge_enabled():
+        from .shmsink_output_pipeline import ShmsinkOutputPipeline
+
+        compositor._v4l2_output_pipeline = ShmsinkOutputPipeline(
+            gst=Gst,
+            width=compositor.config.output_width,
+            height=compositor.config.output_height,
+            fps=fps,
+            on_frame=compositor._on_v4l2_frame_pushed,
+        )
+        log.info(
+            "v4l2 output: shmsink bridge path (sidecar writes to %s)",
+            compositor.config.output_device,
+        )
+    else:
+        compositor._v4l2_output_pipeline = V4l2OutputPipeline(
+            gst=Gst,
+            device=compositor.config.output_device,
+            width=compositor.config.output_width,
+            height=compositor.config.output_height,
+            fps=fps,
+            on_frame=compositor._on_v4l2_frame_pushed,
+        )
     compositor._v4l2_output_pipeline.build()
 
     if compositor.config.hls.enabled:

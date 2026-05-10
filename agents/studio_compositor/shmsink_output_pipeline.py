@@ -181,6 +181,28 @@ class ShmsinkOutputPipeline:
             self._started = False
             log.info("ShmsinkOutputPipeline stopped")
 
+    def teardown(self) -> None:
+        with self._state_lock:
+            if self._pipeline is None:
+                return
+            self.stop()
+            if self._bus is not None and self._bus_signal_id:
+                try:
+                    self._bus.disconnect(self._bus_signal_id)
+                except (TypeError, ValueError):
+                    pass
+                self._bus_signal_id = 0
+            self._pipeline = None
+            self._bus = None
+
+    def rebuild(self) -> bool:
+        self.teardown()
+        self.build()
+        return self.start()
+
+    def is_alive(self, threshold_s: float = 45.0) -> bool:
+        return self.last_frame_age_seconds < threshold_s
+
     def cycle(self) -> bool:
         self.stop()
         time.sleep(0.2)
