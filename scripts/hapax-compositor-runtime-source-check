@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# hapax-compositor-runtime-source-check — fail closed when a live compositor
+# service would import from a stale or incomplete source root.
+
+set -euo pipefail
+
+SOURCE_ROOT="${HAPAX_COMPOSITOR_SOURCE_ROOT:-$HOME/.cache/hapax/source-activation/worktree}"
+REQUIRE_FILES=()
+CHECK_CWD=1
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --source-root)
+            SOURCE_ROOT="$2"; shift 2 ;;
+        --require-file)
+            REQUIRE_FILES+=("$2"); shift 2 ;;
+        --no-cwd-check)
+            CHECK_CWD=0; shift ;;
+        *)
+            echo "hapax-compositor-runtime-source-check: unknown argument: $1" >&2
+            exit 2 ;;
+    esac
+done
+
+SOURCE_ROOT="$(realpath -m "$SOURCE_ROOT")"
+
+if [[ ! -e "$SOURCE_ROOT/.git" ]]; then
+    echo "FAIL: source root is not a git worktree: $SOURCE_ROOT" >&2
+    exit 1
+fi
+
+if [[ "$CHECK_CWD" == "1" ]]; then
+    cwd="$(pwd -P)"
+    if [[ "$cwd" != "$SOURCE_ROOT" ]]; then
+        echo "FAIL: service working directory is $cwd, expected $SOURCE_ROOT" >&2
+        exit 1
+    fi
+fi
+
+head_sha="$(git -C "$SOURCE_ROOT" rev-parse HEAD 2>/dev/null || true)"
+if [[ -z "$head_sha" ]]; then
+    echo "FAIL: cannot resolve source root HEAD: $SOURCE_ROOT" >&2
+    exit 1
+fi
+
+receipt="${HAPAX_SOURCE_ACTIVATION_RECEIPT:-$HOME/.cache/hapax/source-activation/current.json}"
+if [[ -f "$receipt" ]]; then
+    receipt_head="$(python3 - "$receipt" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+try:
+    data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    print("")
+else:
+    print(data.get("active_source_head") or "")
+PY
+)"
+    if [[ -n "$receipt_head" && "$receipt_head" != "$head_sha" ]]; then
+        echo "FAIL: source root HEAD $head_sha != activation receipt $receipt_head" >&2
+        exit 1
+    fi
+fi
+
+for rel in "${REQUIRE_FILES[@]}"; do
+    if [[ ! -e "$SOURCE_ROOT/$rel" ]]; then
+        echo "FAIL: required runtime source file missing: $SOURCE_ROOT/$rel" >&2
+        exit 1
+    fi
+done
+
+echo "OK: compositor runtime source root $SOURCE_ROOT at ${head_sha:0:12}"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,15 @@ def main() -> None:
     parser.add_argument("--record-dir", type=str, help="Override recording output directory")
     parser.add_argument("--no-record", action="store_true", help="Disable per-camera recording")
     parser.add_argument("--no-hls", action="store_true", help="Disable HLS output")
+    parser.add_argument(
+        "--layout",
+        type=Path,
+        default=None,
+        help=(
+            "Override compositor layout JSON. Defaults to "
+            "HAPAX_COMPOSITOR_LAYOUT_PATH, then the repo baseline."
+        ),
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -100,7 +110,11 @@ def main() -> None:
         cfg.hls.enabled,
     )
 
-    compositor = StudioCompositor(cfg)
+    layout_path = args.layout
+    if layout_path is None and os.environ.get("HAPAX_COMPOSITOR_LAYOUT_PATH"):
+        layout_path = Path(os.environ["HAPAX_COMPOSITOR_LAYOUT_PATH"])
+
+    compositor = StudioCompositor(cfg, layout_path=layout_path)
     compositor.start()
 
 

@@ -983,6 +983,9 @@ class StudioCompositor:
         self._v4l2_frame_count: int = 0
         self._v4l2_last_frame_monotonic: float = 0.0
         self._v4l2_lock = threading.Lock()
+        self._shmsink_frame_count: int = 0
+        self._shmsink_last_frame_monotonic: float = 0.0
+        self._shmsink_lock = threading.Lock()
         # GL chain output probe — direct detection of GL chain death.
         self._gl_last_frame_monotonic: float = 0.0
         # Cc-task ``compositor-v4l2sink-graph-mutation-stall`` (2026-05-04):
@@ -1443,12 +1446,38 @@ class StudioCompositor:
         except Exception:
             pass
 
+    def _on_shmsink_frame_pushed(self) -> None:
+        """Called from the compositor-side shmsink BUFFER probe.
+
+        This proves only that the compositor wrote a frame to the SHM bridge
+        socket. It deliberately does not update v4l2 counters: the bridge
+        sidecar and OBS-visible device need their own truth predicates.
+        """
+        now = time.monotonic()
+        with self._shmsink_lock:
+            self._shmsink_frame_count += 1
+            self._shmsink_last_frame_monotonic = now
+        try:
+            from . import metrics
+
+            if metrics.SHMSINK_FRAMES_TOTAL is not None:
+                metrics.SHMSINK_FRAMES_TOTAL.inc()
+        except Exception:
+            pass
+
     def v4l2_frame_seen_within(self, seconds: float) -> bool:
         """True iff v4l2sink pushed a frame within the last ``seconds``."""
         with self._v4l2_lock:
             if self._v4l2_last_frame_monotonic == 0.0:
                 return False
             return (time.monotonic() - self._v4l2_last_frame_monotonic) < seconds
+
+    def shmsink_frame_seen_within(self, seconds: float) -> bool:
+        """True iff compositor-side shmsink pushed a frame recently."""
+        with self._shmsink_lock:
+            if self._shmsink_last_frame_monotonic == 0.0:
+                return False
+            return (time.monotonic() - self._shmsink_last_frame_monotonic) < seconds
 
     def _write_status(self, state: str) -> None:
         if not self._status_dir_exists:

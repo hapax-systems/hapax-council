@@ -101,6 +101,8 @@ COMP_UPTIME: Any = None
 COMP_WATCHDOG_LAST_FED: Any = None
 V4L2SINK_LAST_FRAME_AGE: Any = None
 V4L2SINK_FRAMES_TOTAL: Any = None
+SHMSINK_LAST_FRAME_AGE: Any = None
+SHMSINK_FRAMES_TOTAL: Any = None
 # Cc-task ``compositor-v4l2sink-graph-mutation-stall`` (2026-05-04).
 V4L2SINK_STALL_TOTAL: Any = None
 V4L2SINK_RECOVERY_TOTAL: Any = None
@@ -264,6 +266,8 @@ def _init_metrics() -> None:
     global COMP_WATCHDOG_LAST_FED
     global V4L2SINK_LAST_FRAME_AGE
     global V4L2SINK_FRAMES_TOTAL
+    global SHMSINK_LAST_FRAME_AGE
+    global SHMSINK_FRAMES_TOTAL
     global V4L2SINK_STALL_TOTAL
     global V4L2SINK_RECOVERY_TOTAL
     global V4L2SINK_FD_REOPENS_TOTAL
@@ -696,6 +700,22 @@ def _init_metrics() -> None:
     V4L2SINK_FRAMES_TOTAL = Counter(
         "studio_compositor_v4l2sink_frames_total",
         "Cumulative buffers crossing the v4l2sink sink pad",
+        registry=REGISTRY,
+    )
+    SHMSINK_LAST_FRAME_AGE = Gauge(
+        "studio_compositor_shmsink_last_frame_seconds_ago",
+        (
+            "Seconds since the compositor-side shmsink BUFFER probe last fired. "
+            "This is render-to-SHM evidence only, not v4l2/OBS egress truth."
+        ),
+        registry=REGISTRY,
+    )
+    SHMSINK_FRAMES_TOTAL = Counter(
+        "studio_compositor_shmsink_frames_total",
+        (
+            "Cumulative buffers crossing the compositor-side shmsink sink pad. "
+            "This must not be used as proof that /dev/video42 or OBS received frames."
+        ),
         registry=REGISTRY,
     )
     # Cc-task ``compositor-v4l2sink-graph-mutation-stall`` (2026-05-04).

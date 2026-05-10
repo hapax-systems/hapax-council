@@ -204,7 +204,7 @@ def build_pipeline(compositor: Any) -> Any:
             width=compositor.config.output_width,
             height=compositor.config.output_height,
             fps=fps,
-            on_frame=compositor._on_v4l2_frame_pushed,
+            on_frame=compositor._on_shmsink_frame_pushed,
         )
         log.info(
             "v4l2 output: shmsink bridge path (sidecar writes to %s)",
