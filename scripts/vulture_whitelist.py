@@ -78,6 +78,10 @@ from shared.content_programme_run_store import (
     public_conversion_is_allowed,
     witnessed_outcome_allows_posterior_update,
 )
+from shared.content_programme_scheduler_policy import (
+    ContentProgrammeSchedulerPolicy,
+    ExplorationBudgetState,
+)
 from shared.conversion_target_readiness import (
     ConversionTargetReadinessMatrix,
     ConversionTargetThreshold,
@@ -803,6 +807,12 @@ load_format_wcs_requirement_matrix
 decide_format_wcs_readiness
 director_projection
 opportunity_gate_projection
+
+# Content programme scheduler policy validators are invoked dynamically by
+# Pydantic while loading the policy packet and runtime budget state. The module
+# is a first scheduler slice; direct runtime consumers land downstream.
+ExplorationBudgetState._validate_budget_accounting
+ContentProgrammeSchedulerPolicy._validate_policy_contract
 
 # Self-presence ontology validators are invoked dynamically by Pydantic while
 # validating the unified self-grounding fixture envelope contract. The loader
