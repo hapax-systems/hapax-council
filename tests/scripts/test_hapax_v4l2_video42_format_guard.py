@@ -36,7 +36,7 @@ def _format_stub(record: Path) -> str:
     """
 
 
-def test_video42_format_guard_sets_format_before_keep_format_and_verifies(
+def test_video42_format_guard_noops_when_already_pinned_in_apply_mode(
     tmp_path: Path,
 ) -> None:
     device = tmp_path / "video42"
@@ -58,15 +58,92 @@ def test_video42_format_guard_sets_format_before_keep_format_and_verifies(
 
     assert result.returncode == 0, result.stderr
     calls = record.read_text(encoding="utf-8").splitlines()
-    assert calls[:4] == [
+    assert not any("--set-fmt" in call for call in calls)
+    assert not any("--set-parm" in call for call in calls)
+    assert not any(" -p " in f" {call} " for call in calls)
+    assert not any("-c keep_format=1" in call for call in calls)
+    assert any("--get-fmt-video-out" in call for call in calls)
+    assert any("--get-fmt-video" in call for call in calls)
+    assert any("--get-ctrl keep_format" in call for call in calls)
+    assert any("--get-parm" in call for call in calls)
+
+
+def test_video42_format_guard_sets_format_before_keep_format_and_verifies(
+    tmp_path: Path,
+) -> None:
+    device = tmp_path / "video42"
+    device.write_bytes(b"")
+    record = tmp_path / "v4l2-calls.txt"
+    state = tmp_path / "state-pinned"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stub(
+        bin_dir / "v4l2-ctl",
+        f"""
+        printf '%s\\n' "$*" >> {record}
+        case "$*" in
+          *--set-fmt-video-out*|*--set-fmt-video=*|*--set-parm*|*"-c keep_format=1"*)
+            touch {state}
+            exit 0
+            ;;
+          *--get-fmt-video-out*|*--get-fmt-video*)
+            if [[ -f {state} ]]; then
+              cat <<'EOF'
+        Format Video Capture:
+                Width/Height      : 1280/720
+                Pixel Format      : 'NV12'
+        EOF
+            else
+              cat <<'EOF'
+        Format Video Capture:
+                Width/Height      : 640/480
+                Pixel Format      : 'NV12'
+        EOF
+            fi
+            ;;
+          *--get-ctrl\\ keep_format*)
+            if [[ -f {state} ]]; then
+              printf 'keep_format: 1\\n'
+            else
+              printf 'keep_format: 0\\n'
+            fi
+            ;;
+          *--get-parm*)
+            if [[ -f {state} ]]; then
+              printf 'Frames per second: 30.000 (30/1)\\n'
+            else
+              printf 'Frames per second: 15.000 (15/1)\\n'
+            fi
+            ;;
+        esac
+        exit 0
+        """,
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    result = subprocess.run(
+        [str(SCRIPT), "--device", str(device)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = record.read_text(encoding="utf-8").splitlines()
+    assert calls[4:8] == [
         f"-d {device} --set-fmt-video-out=width=1280,height=720,pixelformat=NV12",
         f"-d {device} --set-fmt-video=width=1280,height=720,pixelformat=NV12",
         f"-d {device} --set-parm=30",
         f"-d {device} -c keep_format=1",
     ]
-    assert any("--get-fmt-video-out" in call for call in calls)
-    assert any("--get-fmt-video" in call for call in calls)
-    assert any("--get-ctrl keep_format" in call for call in calls)
+    assert calls[-4:] == [
+        f"-d {device} --get-fmt-video-out",
+        f"-d {device} --get-fmt-video",
+        f"-d {device} --get-ctrl keep_format",
+        f"-d {device} --get-parm",
+    ]
 
 
 def test_video42_format_guard_verify_only_does_not_mutate_device(tmp_path: Path) -> None:
