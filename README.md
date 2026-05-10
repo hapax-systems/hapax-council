@@ -3,6 +3,7 @@
 Single-operator runtime of the Hapax operating environment. Constituent of the Hapax operating environment. Not a product, not a service, not seeking contributors.
 
 [![CI](https://github.com/ryanklee/hapax-council/actions/workflows/ci.yml/badge.svg)](https://github.com/ryanklee/hapax-council/actions/workflows/ci.yml)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20113515.svg)](https://doi.org/10.5281/zenodo.20113515)
 
 > **Reviewer / AI-safety orientation:** start with
 > [`START_HERE.md`](START_HERE.md). It gives the short dossier for this
