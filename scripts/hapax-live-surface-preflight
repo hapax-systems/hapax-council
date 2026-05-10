@@ -151,6 +151,11 @@ def main() -> int:
     parser.add_argument("--no-require-v4l2", action="store_true")
     parser.add_argument("--max-egress-age-seconds", type=float, default=10.0)
     parser.add_argument("--require-hls", action="store_true")
+    parser.add_argument("--require-rtmp", action="store_true")
+    parser.add_argument("--require-obs-decoder", action="store_true")
+    parser.add_argument("--require-public-output", action="store_true")
+    parser.add_argument("--max-obs-screenshot-age-seconds", type=float)
+    parser.add_argument("--max-director-silence-seconds", type=float, default=180.0)
     parser.add_argument(
         "--hls-playlist",
         default=str(Path.home() / ".cache" / "hapax-compositor" / "hls" / "stream.m3u8"),
@@ -246,7 +251,12 @@ def main() -> int:
         max_egress_age_seconds=args.max_egress_age_seconds,
         require_v4l2=not args.no_require_v4l2,
         require_hls=args.require_hls,
+        require_rtmp=args.require_rtmp,
+        require_obs_decoder=args.require_obs_decoder,
+        require_public_output=args.require_public_output,
         max_hls_age_seconds=hls_max_age_seconds,
+        max_obs_screenshot_age_seconds=args.max_obs_screenshot_age_seconds,
+        max_director_silence_seconds=args.max_director_silence_seconds,
     )
     state, reasons = _with_extra_degraded_reasons(
         assessment.state,
@@ -262,12 +272,26 @@ def main() -> int:
                 "reasons": reasons,
                 "service_active": service_active,
                 "bridge_active": bridge_active,
+                "camera_last_frame_age_seconds": dict(snapshot.camera_last_frame_age_seconds),
+                "containment_flags": dict(snapshot.containment_flags),
+                "v4l2_egress_mode": snapshot.v4l2_egress_mode.value,
                 "hls_playlist_age_seconds": hls_playlist_age_seconds,
                 "hls_max_age_seconds": hls_max_age_seconds,
                 "hls_target_duration_seconds": hls_target_duration_seconds,
                 "max_hls_target_duration_seconds": (
                     args.max_hls_target_duration_seconds if args.require_hls else None
                 ),
+                "rtmp_connected": snapshot.rtmp_connected,
+                "rtmp_bytes_total": snapshot.rtmp_bytes_total,
+                "rtmp_bitrate_bps": snapshot.rtmp_bitrate_bps,
+                "obs_source_active": snapshot.obs_source_active,
+                "obs_playing": snapshot.obs_playing,
+                "obs_screenshot_changed": snapshot.obs_screenshot_changed,
+                "obs_screenshot_flat": snapshot.obs_screenshot_flat,
+                "obs_screenshot_age_seconds": snapshot.obs_screenshot_age_seconds,
+                "public_output_live": snapshot.public_output_live,
+                "watchdog_last_fed_age_seconds": snapshot.watchdog_last_fed_age_seconds,
+                "director_last_intent_age_seconds": snapshot.director_last_intent_age_seconds,
             },
             sort_keys=True,
         )

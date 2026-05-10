@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Serve local HLS files with no-cache headers."""
+
+from agents.live_surface_guard.hls_no_cache_server import main
+
+raise SystemExit(main())

@@ -68,6 +68,38 @@ def _log_feature_probes(compositor: Any) -> None:
         log.info("feature-probe: %s=%s", name, str(value).lower())
 
 
+def _record_watchdog_ping_metrics(compositor: Any) -> None:
+    """Mirror every systemd WATCHDOG=1 ping into Prometheus gauges."""
+
+    try:
+        from . import metrics
+
+        metrics.mark_watchdog_fed()
+        if metrics.V4L2SINK_LAST_FRAME_AGE is not None:
+            age = (
+                time.monotonic() - compositor._v4l2_last_frame_monotonic
+                if compositor._v4l2_last_frame_monotonic > 0
+                else 9999.0
+            )
+            metrics.V4L2SINK_LAST_FRAME_AGE.set(age)
+        if metrics.SHMSINK_LAST_FRAME_AGE is not None:
+            age = (
+                time.monotonic() - compositor._shmsink_last_frame_monotonic
+                if compositor._shmsink_last_frame_monotonic > 0
+                else 9999.0
+            )
+            metrics.SHMSINK_LAST_FRAME_AGE.set(age)
+        if metrics.DIRECTOR_LAST_INTENT_AGE is not None:
+            try:
+                from .director_loop import director_intent_age
+
+                metrics.DIRECTOR_LAST_INTENT_AGE.set(min(director_intent_age(), 9999.0))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def start_compositor(compositor: Any) -> None:
     """Build and start the pipeline."""
     from .fx_chain import fx_tick_callback
@@ -465,33 +497,7 @@ def start_compositor(compositor: Any) -> None:
                 director_alive = True  # fail-open if module not yet imported
             if any_active and v4l2_alive and director_alive and compositor._running:
                 sd_notify_watchdog()
-                try:
-                    from . import metrics
-
-                    metrics.mark_watchdog_fed()
-                    if metrics.V4L2SINK_LAST_FRAME_AGE is not None:
-                        age = (
-                            time.monotonic() - compositor._v4l2_last_frame_monotonic
-                            if compositor._v4l2_last_frame_monotonic > 0
-                            else 9999.0
-                        )
-                        metrics.V4L2SINK_LAST_FRAME_AGE.set(age)
-                    if metrics.SHMSINK_LAST_FRAME_AGE is not None:
-                        age = (
-                            time.monotonic() - compositor._shmsink_last_frame_monotonic
-                            if compositor._shmsink_last_frame_monotonic > 0
-                            else 9999.0
-                        )
-                        metrics.SHMSINK_LAST_FRAME_AGE.set(age)
-                    if metrics.DIRECTOR_LAST_INTENT_AGE is not None:
-                        try:
-                            from .director_loop import director_intent_age as _dia
-
-                            metrics.DIRECTOR_LAST_INTENT_AGE.set(min(_dia(), 9999.0))
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+                _record_watchdog_ping_metrics(compositor)
             elif any_active and not v4l2_alive:
                 # Direct GL chain death detection — if the GL output probe
                 # hasn't fired for >30s, the GL chain is dead. Exit
@@ -539,9 +545,11 @@ def start_compositor(compositor: Any) -> None:
                         now_mono - stall_start,
                     )
                 sd_notify_watchdog()
+                _record_watchdog_ping_metrics(compositor)
             elif any_active and v4l2_alive and not director_alive:
                 sd_notify_status("DEGRADED — director silent for >180s")
                 sd_notify_watchdog()
+                _record_watchdog_ping_metrics(compositor)
             return compositor._running  # keep firing while compositor is alive
 
         # 20s interval keeps us well under the 60s WatchdogSec.
