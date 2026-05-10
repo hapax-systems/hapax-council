@@ -105,6 +105,17 @@ for pattern in "${AXIOM_PATTERNS[@]}"; do
     echo "$DESC" >&2
     echo "Relevant T0 implications: $IMPLS" >&2
     echo "Recovery: $RECOVERY" >&2
+
+    ENFORCEMENT_DIR="/dev/shm/hapax-governance"
+    mkdir -p "$ENFORCEMENT_DIR" 2>/dev/null || true
+    TOOL_NAME="$(echo "$INPUT" | jq -r '.tool_name // "unknown"' 2>/dev/null || echo unknown)"
+    TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '{"event_type":"axiom_blocked","timestamp":"%s","hook":"axiom-scan","domain":"%s","pattern":"%s","matched":"%s","file_path":"%s","description":"%s","recovery":"%s","tool":"%s"}\n' \
+      "$TS" "$DOMAIN" "$(echo "$pattern" | sed 's/"/\\"/g')" "$(echo "$MATCHED" | sed 's/"/\\"/g')" \
+      "$(echo "$FILE_PATH" | sed 's/"/\\"/g')" "$(echo "$DESC" | sed 's/"/\\"/g')" \
+      "$(echo "$RECOVERY" | sed 's/"/\\"/g')" "$TOOL_NAME" \
+      >> "$ENFORCEMENT_DIR/enforcement.jsonl" 2>/dev/null || true
+
     exit 2
   fi
 done
