@@ -5,6 +5,9 @@ Phase 2 had shipped ``systemd/units/hls-archive-rotate.{service,timer}``
 into the repo but the operator had never run ``install-units.sh`` on
 the live system — so every HLS segment was deleted at the hlssink2
 ``max_files=15`` boundary (~60 seconds) with zero observable signal.
+The current live-cache boundary is intentionally larger
+(``max_files=120``), but archive rotation still runs every 60 seconds so
+archival lag stays visible before the live cache needs to evict files.
 
 These pins make three guarantees:
 
@@ -47,8 +50,8 @@ class TestPhase2ArchiveUnitFilesExist:
     def test_timer_runs_on_unit_active_sec_interval(self) -> None:
         body = HLS_TIMER.read_text(encoding="utf-8")
         assert "OnUnitActiveSec=60s" in body, (
-            "timer cadence must be 60s so segments rotate before the 60-s "
-            "hlssink2 max_files=15 deletion boundary"
+            "timer cadence must be 60s so segments rotate well before the "
+            "current hlssink2 max_files=120 live-cache boundary"
         )
 
 
