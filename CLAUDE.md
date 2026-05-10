@@ -76,6 +76,7 @@ Non-formal referents: "The Operator"/"Oudepode"/"OTO" (sticky per utterance via 
 | no-stale-branches | Branch creation with unmerged branches; max 20 worktrees |
 | push-gate | Push without tests |
 | pii-guard | PII patterns |
+| attribution-entity-check | Product-company misattributions in publication-adjacent files (registry: `config/publication-hardening/known-entities.yaml`) |
 
 ## Voice & Research
 
