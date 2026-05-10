@@ -25,6 +25,7 @@ class LiveSurfaceSnapshot:
     bridge_active: bool
     cameras_total: int
     cameras_healthy: int
+    bridge_expected: bool = False
     v4l2_frames_total: float | None = None
     v4l2_last_frame_age_seconds: float | None = None
     shmsink_frames_total: float | None = None
@@ -86,7 +87,7 @@ def assess_live_surface(
     )
 
     if require_v4l2:
-        if not snapshot.bridge_active:
+        if snapshot.bridge_expected and not snapshot.bridge_active:
             degraded.append("v4l2_bridge_inactive")
         if not v4l2_positive:
             degraded.append("v4l2_no_frames")
@@ -133,6 +134,7 @@ def snapshot_from_prometheus(
     *,
     service_active: bool,
     bridge_active: bool,
+    bridge_expected: bool = False,
     containment_flags: Mapping[str, bool] | None = None,
     hls_active: bool = False,
 ) -> LiveSurfaceSnapshot:
@@ -141,6 +143,8 @@ def snapshot_from_prometheus(
         bridge_active=bridge_active,
         cameras_total=int(metrics.get("studio_compositor_cameras_total", 0)),
         cameras_healthy=int(metrics.get("studio_compositor_cameras_healthy", 0)),
+        bridge_expected=bridge_expected
+        or bool(metrics.get("studio_compositor_v4l2_bridge_expected", 0)),
         v4l2_frames_total=metrics.get("studio_compositor_v4l2sink_frames_total"),
         v4l2_last_frame_age_seconds=metrics.get(
             "studio_compositor_v4l2sink_last_frame_seconds_ago"

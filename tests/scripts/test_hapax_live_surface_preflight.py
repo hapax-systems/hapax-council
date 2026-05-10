@@ -40,6 +40,8 @@ studio_compositor_v4l2sink_last_frame_seconds_ago 9999
         "true",
         "--bridge-active",
         "true",
+        "--env",
+        "HAPAX_V4L2_BRIDGE_ENABLED=1",
         tmp_path=tmp_path,
     )
 
@@ -88,6 +90,54 @@ studio_compositor_v4l2sink_last_frame_seconds_ago 0.1
 
     assert result.returncode == 0
     assert json.loads(result.stdout)["state"] == "healthy"
+
+
+def test_preflight_accepts_fresh_direct_v4l2_when_bridge_not_expected(tmp_path: Path) -> None:
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 140
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
+studio_compositor_shmsink_frames_total 0
+studio_compositor_shmsink_last_frame_seconds_ago 9999
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "false",
+        "--env",
+        "HAPAX_V4L2_BRIDGE_ENABLED=0",
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "healthy"
+    assert "v4l2_bridge_inactive" not in payload["reasons"]
+
+
+def test_preflight_requires_bridge_when_bridge_mode_expected(tmp_path: Path) -> None:
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 140
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "false",
+        "--env",
+        "HAPAX_V4L2_BRIDGE_ENABLED=1",
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 10
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "degraded_containment"
+    assert "v4l2_bridge_inactive" in payload["reasons"]
 
 
 def test_preflight_fails_closed_with_json_when_metrics_are_unavailable() -> None:

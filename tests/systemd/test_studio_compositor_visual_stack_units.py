@@ -58,8 +58,10 @@ def test_v4l2_bridge_runs_from_activation_worktree_and_is_supervised_by_studio()
     assert parser.get("Service", "WorkingDirectory") == SOURCE_ROOT
     assert parser.get("Service", "ExecStart").startswith(f"{SOURCE_ROOT}/scripts/hapax-v4l2-bridge")
     assert "hapax-compositor-runtime-source-check" in parser.get("Service", "ExecStartPre")
+    assert parser.get("Service", "Restart") == "on-failure"
     lines = _active_unit_lines(BRIDGE)
     assert any("HAPAX_V4L2_BRIDGE_WAIT_SECONDS=60" in line for line in lines)
+    assert any("HAPAX_V4L2_BRIDGE_ENABLED=1" in line for line in lines)
 
 
 def test_simple_bridge_unit_does_not_claim_systemd_watchdog_without_sd_notify() -> None:
