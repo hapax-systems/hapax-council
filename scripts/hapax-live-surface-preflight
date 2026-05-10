@@ -29,6 +29,8 @@ CONTAINMENT_ENV = (
     "HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT",
     "HAPAX_FOLLOW_MODE_ACTIVE",
 )
+EGRESS_ENV = ("HAPAX_V4L2_BRIDGE_ENABLED",)
+SELECTED_ENV = CONTAINMENT_ENV + EGRESS_ENV
 
 
 def _bool_arg(value: str) -> bool:
@@ -75,7 +77,7 @@ def _selected_proc_env(pid: int | None) -> dict[str, str]:
             continue
         key, value = entry.split(b"=", 1)
         name = key.decode("utf-8", "ignore")
-        if name in CONTAINMENT_ENV:
+        if name in SELECTED_ENV:
             selected[name] = value.decode("utf-8", "ignore")
     return selected
 
@@ -116,7 +118,7 @@ def main() -> int:
         if "=" not in assignment:
             parser.error(f"--env expects KEY=VALUE, got {assignment!r}")
         key, value = assignment.split("=", 1)
-        if key in CONTAINMENT_ENV:
+        if key in SELECTED_ENV:
             env[key] = value
 
     containment_flags = {
@@ -148,6 +150,7 @@ def main() -> int:
         metrics,
         service_active=service_active,
         bridge_active=bridge_active,
+        bridge_expected=env.get("HAPAX_V4L2_BRIDGE_ENABLED") == "1",
         containment_flags=containment_flags,
     )
     assessment = assess_live_surface(

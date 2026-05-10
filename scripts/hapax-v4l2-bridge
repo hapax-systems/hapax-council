@@ -7,7 +7,7 @@
 # device state.
 #
 # Designed to run as a systemd user service (hapax-v4l2-bridge.service)
-# with Restart=always, RestartSec=1s, BindsTo=studio-compositor.service.
+# with Restart=on-failure, RestartSec=1s, BindsTo=studio-compositor.service.
 #
 # Usage:
 #   hapax-v4l2-bridge [--device /dev/video42] [--socket /dev/shm/hapax-compositor/v4l2-bridge.sock]
@@ -36,6 +36,11 @@ while [[ $# -gt 0 ]]; do
         *)         echo "error: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+
+if [[ "${HAPAX_V4L2_BRIDGE_ENABLED:-1}" != "1" ]]; then
+    echo "hapax-v4l2-bridge: disabled by HAPAX_V4L2_BRIDGE_ENABLED=${HAPAX_V4L2_BRIDGE_ENABLED}"
+    exit 0
+fi
 
 socket_listening() {
     local socket_path="$1"

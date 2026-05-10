@@ -9,6 +9,28 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-v4l2-bridge"
 
 
+def test_bridge_exits_cleanly_when_disabled(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    env["HAPAX_V4L2_BRIDGE_ENABLED"] = "0"
+
+    result = subprocess.run(
+        [
+            str(SCRIPT),
+            "--device",
+            str(tmp_path / "missing-device"),
+            "--socket",
+            str(tmp_path / "missing.sock"),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert "disabled by HAPAX_V4L2_BRIDGE_ENABLED=0" in result.stdout
+
+
 def test_check_requires_socket_by_default(tmp_path: Path) -> None:
     device = tmp_path / "not-a-real-device"
     env = os.environ.copy()
