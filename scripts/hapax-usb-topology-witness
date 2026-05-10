@@ -31,13 +31,15 @@ L12_SERIAL = "8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF"
 # Multiple known-good L12 PCI bus paths. PR #2222 (persistent ALSA card-id
 # rules) made the L-12 reachable via stable symbolic id (`hw:CARD=L12`) +
 # serial-keyed PipeWire node names — bus-path drift no longer breaks
-# routing. Listed paths are the historical canonical (CalDigit hub) plus
-# the front-PC-case enumeration observed 2026-05-03 after a re-plug.
+# routing. Listed paths are the historical canonical (CalDigit hub), the
+# front-PC-case enumeration observed 2026-05-03 after a re-plug, and the
+# post-128GB RAM install root-port enumeration observed 2026-05-10.
 # Drift OUT of this set still triggers a non-fatal `l12_path_drift_warning`
 # in the witness output (see validate()), but does not flip ok=False.
 L12_EXPECTED_PATHS = {
     "pci-0000:71:00.0-usb-0:1.1.2.2",
     "pci-0000:71:00.0-usb-0:2.1.2.1",
+    "pci-0000:74:00.0-usb-0:1",
 }
 # Backwards-compat alias for the legacy attribute name (referenced by tests
 # and any external scripts that import this constant).

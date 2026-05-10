@@ -131,6 +131,19 @@ def test_witness_warns_on_unapproved_s4_path(tmp_path: Path) -> None:
     assert not any(issue.startswith("s4_path_drift") for issue in status["issues"])
 
 
+def test_witness_accepts_post_128gb_l12_path(tmp_path: Path) -> None:
+    snapshot = known_good_snapshot()
+    snapshot["l12"]["device"] = "9-1"
+    snapshot["l12"]["path"] = "pci-0000:74:00.0-usb-0:1"
+
+    result = run_witness(tmp_path, snapshot)
+
+    assert result.returncode == 0, result.stdout
+    status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert status["ok"] is True
+    assert not any(warning.startswith("l12_path_drift") for warning in status["warnings"])
+
+
 def test_witness_reports_kernel_policy_and_camera_drift(tmp_path: Path) -> None:
     snapshot = known_good_snapshot()
     snapshot["kernel"] = {"usbfs_memory_mb": "16", "uvcvideo_quirks": "0"}
