@@ -2,8 +2,10 @@
 # hapax-v4l2-video42-format-guard — lock /dev/video42 to compositor egress caps.
 #
 # The OBS consumer can otherwise renegotiate v4l2loopback to a smaller/default
-# format before the compositor writer opens it. The only safe order is:
-# set output/capture caps, set frame interval, enable keep_format, then verify.
+# format before the compositor writer opens it. The safe order is query first,
+# no-op when already pinned, otherwise set output/capture caps, set frame
+# interval, enable keep_format, then verify. Query-first keeps live restarts from
+# trying VIDIOC_S_FMT while OBS already has a correctly pinned device open.
 
 set -euo pipefail
 
@@ -51,37 +53,67 @@ fail() {
 [[ "$PIXEL_FORMAT" =~ ^[A-Z0-9_]+$ ]] || fail "invalid pixel format: $PIXEL_FORMAT"
 [[ -e "$DEVICE" ]] || fail "device $DEVICE is missing"
 
-if [[ "$VERIFY_ONLY" != "1" ]]; then
+read_state() {
+    format_out="$(run_v4l2 -d "$DEVICE" --get-fmt-video-out 2>&1)"
+    format_capture="$(run_v4l2 -d "$DEVICE" --get-fmt-video 2>&1)"
+    keep_format="$(run_v4l2 -d "$DEVICE" --get-ctrl keep_format 2>&1)"
+    stream_parm="$(run_v4l2 -d "$DEVICE" --get-parm 2>&1 || true)"
+}
+
+state_matches() {
+    combined_formats="${format_out}
+${format_capture}"
+
+    format_count="$(
+        grep -Ec "Width/Height[[:space:]]*:[[:space:]]*${WIDTH}/${HEIGHT}" <<<"$combined_formats" || true
+    )"
+    pix_count="$(
+        grep -Ec "Pixel Format[[:space:]]*:[[:space:]]*'${PIXEL_FORMAT}'" <<<"$combined_formats" || true
+    )"
+
+    [[ "$format_count" -ge 2 ]] || return 1
+    [[ "$pix_count" -ge 2 ]] || return 1
+    grep -Eq 'keep_format[[:space:]]*:[[:space:]]*1|keep_format[[:space:]]+1|value=1' <<<"$keep_format" \
+        || return 1
+
+    if [[ -n "$stream_parm" ]] && grep -Eq 'Frames per second|timeperframe' <<<"$stream_parm"; then
+        grep -Eq "Frames per second[[:space:]]*:[[:space:]]*${FPS}(\\.0+)?|${FPS}\\.0+ fps|timeperframe.*1/${FPS}" <<<"$stream_parm" \
+            || return 1
+    fi
+}
+
+verify_state() {
+    read_state
+
+    combined_formats="${format_out}
+${format_capture}"
+
+    format_count="$(
+        grep -Ec "Width/Height[[:space:]]*:[[:space:]]*${WIDTH}/${HEIGHT}" <<<"$combined_formats" || true
+    )"
+    pix_count="$(
+        grep -Ec "Pixel Format[[:space:]]*:[[:space:]]*'${PIXEL_FORMAT}'" <<<"$combined_formats" || true
+    )"
+
+    [[ "$format_count" -ge 2 ]] || fail "expected both capture/output ${WIDTH}x${HEIGHT}; got: ${combined_formats}"
+    [[ "$pix_count" -ge 2 ]] || fail "expected both capture/output ${PIXEL_FORMAT}; got: ${combined_formats}"
+    grep -Eq 'keep_format[[:space:]]*:[[:space:]]*1|keep_format[[:space:]]+1|value=1' <<<"$keep_format" \
+        || fail "keep_format is not 1; got: ${keep_format}"
+
+    if [[ -n "$stream_parm" ]] && grep -Eq 'Frames per second|timeperframe' <<<"$stream_parm"; then
+        grep -Eq "Frames per second[[:space:]]*:[[:space:]]*${FPS}(\\.0+)?|${FPS}\\.0+ fps|timeperframe.*1/${FPS}" <<<"$stream_parm" \
+            || fail "expected ${FPS} fps; got: ${stream_parm}"
+    fi
+}
+
+read_state
+if [[ "$VERIFY_ONLY" != "1" ]] && ! state_matches; then
     fmt="width=${WIDTH},height=${HEIGHT},pixelformat=${PIXEL_FORMAT}"
     run_v4l2 -d "$DEVICE" --set-fmt-video-out="$fmt"
     run_v4l2 -d "$DEVICE" --set-fmt-video="$fmt"
     run_v4l2 -d "$DEVICE" --set-parm="$FPS"
     run_v4l2 -d "$DEVICE" -c keep_format=1
 fi
-
-format_out="$(run_v4l2 -d "$DEVICE" --get-fmt-video-out 2>&1)"
-format_capture="$(run_v4l2 -d "$DEVICE" --get-fmt-video 2>&1)"
-keep_format="$(run_v4l2 -d "$DEVICE" --get-ctrl keep_format 2>&1)"
-stream_parm="$(run_v4l2 -d "$DEVICE" --get-parm 2>&1 || true)"
-
-combined_formats="${format_out}
-${format_capture}"
-
-format_count="$(
-    grep -Ec "Width/Height[[:space:]]*:[[:space:]]*${WIDTH}/${HEIGHT}" <<<"$combined_formats" || true
-)"
-pix_count="$(
-    grep -Ec "Pixel Format[[:space:]]*:[[:space:]]*'${PIXEL_FORMAT}'" <<<"$combined_formats" || true
-)"
-
-[[ "$format_count" -ge 2 ]] || fail "expected both capture/output ${WIDTH}x${HEIGHT}; got: ${combined_formats}"
-[[ "$pix_count" -ge 2 ]] || fail "expected both capture/output ${PIXEL_FORMAT}; got: ${combined_formats}"
-grep -Eq 'keep_format[[:space:]]*:[[:space:]]*1|keep_format[[:space:]]+1|value=1' <<<"$keep_format" \
-    || fail "keep_format is not 1; got: ${keep_format}"
-
-if [[ -n "$stream_parm" ]] && grep -Eq 'Frames per second|timeperframe' <<<"$stream_parm"; then
-    grep -Eq "Frames per second[[:space:]]*:[[:space:]]*${FPS}(\\.0+)?|${FPS}\\.0+ fps|timeperframe.*1/${FPS}" <<<"$stream_parm" \
-        || fail "expected ${FPS} fps; got: ${stream_parm}"
-fi
+verify_state
 
 echo "hapax-v4l2-video42-format-guard: OK ${DEVICE} ${WIDTH}x${HEIGHT} ${PIXEL_FORMAT} keep_format=1 fps=${FPS}"
