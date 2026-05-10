@@ -31,6 +31,29 @@ def _link_or_raise(src: Any, dst: Any, branch: str) -> None:
         raise RuntimeError(f"{branch}: failed to link {_element_name(src)} -> {_element_name(dst)}")
 
 
+def _add_render_stage_probe(Gst: Any, element: Any, pad_name: str, stage: str) -> None:
+    try:
+        pad = element.get_static_pad(pad_name)
+        if pad is None:
+            log.debug(
+                "HLS render-stage probe skipped: %s.%s missing", _element_name(element), pad_name
+            )
+            return
+
+        def _probe(_pad: Any, _info: Any) -> Any:
+            try:
+                from . import metrics
+
+                metrics.record_render_stage_frame(stage)
+            except Exception:
+                pass
+            return Gst.PadProbeReturn.OK
+
+        pad.add_probe(Gst.PadProbeType.BUFFER, _probe)
+    except Exception:
+        log.debug("HLS render-stage probe install failed for %s", stage, exc_info=True)
+
+
 def _pad_link_ok(Gst: Any, result: Any) -> bool:
     ok = getattr(getattr(Gst, "PadLinkReturn", None), "OK", None)
     if ok is not None:
@@ -252,6 +275,11 @@ def add_hls_branch(compositor: Any, pipeline: Any, tee: Any, fps: int) -> None:
     for src, dst in zip(elements[:-2], elements[1:-1], strict=False):
         _link_or_raise(src, dst, branch)
     _link_src_to_request_sink_pad_or_raise(Gst, parser, hls_sink, "video", branch=branch)
+
+    _add_render_stage_probe(Gst, queue, "sink", "hls_queue_sink")
+    _add_render_stage_probe(Gst, valve, "src", "hls_valve_src")
+    _add_render_stage_probe(Gst, encoder, "sink", "hls_encoder_sink")
+    _add_render_stage_probe(Gst, parser, "src", "hls_parser_src")
 
     _link_tee_to_sink_or_raise(Gst, tee, queue, branch)
 

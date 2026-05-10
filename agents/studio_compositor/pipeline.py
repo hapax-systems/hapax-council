@@ -89,6 +89,28 @@ def _add_render_stage_probe(Gst: Any, element: Any, pad_name: str, stage: str) -
         log.debug("render-stage probe install failed for %s", stage, exc_info=True)
 
 
+def _pad_link_ok(Gst: Any, result: Any) -> bool:
+    ok = getattr(getattr(Gst, "PadLinkReturn", None), "OK", None)
+    if ok is not None:
+        return result == ok
+    return result == 0
+
+
+def _link_tee_to_queue_or_raise(Gst: Any, tee: Any, queue: Any, *, branch: str) -> None:
+    template = tee.get_pad_template("src_%u")
+    if template is None:
+        raise RuntimeError(f"{branch}: output tee src_%u pad template missing")
+    tee_pad = tee.request_pad(template, None, None)
+    if tee_pad is None:
+        raise RuntimeError(f"{branch}: failed to request output tee src pad")
+    queue_sink = queue.get_static_pad("sink")
+    if queue_sink is None:
+        raise RuntimeError(f"{branch}: queue sink pad missing")
+    result = tee_pad.link(queue_sink)
+    if not _pad_link_ok(Gst, result):
+        raise RuntimeError(f"{branch}: failed to link output tee to queue: {result}")
+
+
 def _publish_runtime_features(*, force_cpu: bool, use_cuda: bool) -> None:
     try:
         from . import metrics
@@ -315,6 +337,12 @@ def build_pipeline(compositor: Any) -> Any:
         compositor._v4l2_output_pipeline = None
         log.warning("HAPAX_COMPOSITOR_DISABLE_V4L2_OUTPUT=1 — skipping v4l2/shmsink output branch")
     else:
+        v4l2_queue = Gst.ElementFactory.make("queue", "queue-v4l2-egress")
+        if v4l2_queue is None:
+            raise RuntimeError("queue-v4l2-egress factory failed")
+        v4l2_queue.set_property("leaky", 2)
+        v4l2_queue.set_property("max-size-buffers", 4)
+        v4l2_queue.set_property("max-size-time", 500 * 1_000_000)
         v4l2_interpipe = Gst.ElementFactory.make("interpipesink", INTERPIPE_CHANNEL)
         if v4l2_interpipe is None:
             raise RuntimeError("interpipesink factory failed — gst-plugin-interpipe not installed")
@@ -322,11 +350,14 @@ def build_pipeline(compositor: Any) -> Any:
         v4l2_interpipe.set_property("async", False)
         v4l2_interpipe.set_property("forward-events", False)
         v4l2_interpipe.set_property("forward-eos", False)
+        pipeline.add(v4l2_queue)
         pipeline.add(v4l2_interpipe)
+        _add_render_stage_probe(Gst, v4l2_queue, "sink", "v4l2_output_queue_sink")
         _add_render_stage_probe(Gst, v4l2_interpipe, "sink", "v4l2_interpipe_sink")
 
-        tee_pad = output_tee.request_pad(output_tee.get_pad_template("src_%u"), None, None)
-        tee_pad.link(v4l2_interpipe.get_static_pad("sink"))
+        _link_tee_to_queue_or_raise(Gst, output_tee, v4l2_queue, branch="V4L2 output branch")
+        if not v4l2_queue.link(v4l2_interpipe):
+            raise RuntimeError("V4L2 output branch: failed to link queue-v4l2-egress -> interpipe")
 
         if is_bridge_enabled():
             from .shmsink_output_pipeline import ShmsinkOutputPipeline

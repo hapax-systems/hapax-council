@@ -143,6 +143,9 @@ class _OutputBin:
     def __init__(self, **kwargs: object) -> None:
         self.kwargs = kwargs
 
+    def build(self) -> None:
+        pass
+
 
 def _reset_fake_gst() -> None:
     _FakeGst.launched = None
@@ -313,3 +316,24 @@ def test_build_pipeline_force_cpu_skips_cuda_canary_path(monkeypatch: object) ->
     assert _FakeGst.launched is None
     assert "cuda-output-caps" not in names
     assert "download" not in names
+
+
+def test_build_pipeline_isolates_v4l2_output_tee_branch_with_queue(
+    monkeypatch: object,
+) -> None:
+    _reset_fake_gst()
+    _patch_build_pipeline_edges(monkeypatch)
+    monkeypatch.setenv("HAPAX_COMPOSITOR_DISABLE_V4L2_OUTPUT", "0")
+    monkeypatch.setenv("HAPAX_V4L2_BRIDGE_ENABLED", "0")
+    monkeypatch.setenv("HAPAX_COMPOSITOR_FORCE_CPU", "1")
+
+    built = pipeline_module.build_pipeline(_fake_compositor())
+
+    output_tee = _element_named(built.elements, "output-tee")
+    v4l2_queue = _element_named(built.elements, "queue-v4l2-egress")
+    v4l2_interpipe = _element_named(built.elements, "compositor_v4l2_out")
+    assert v4l2_queue.props["leaky"] == 2
+    assert v4l2_queue.links == ["compositor_v4l2_out"]
+    assert output_tee.requested_pads[0].linked_to is v4l2_queue.static_pads["sink"]
+    assert v4l2_queue.static_pads["sink"].probes
+    assert v4l2_interpipe.static_pads["sink"].probes

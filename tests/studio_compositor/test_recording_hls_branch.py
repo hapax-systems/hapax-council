@@ -24,6 +24,7 @@ class _FakePad:
         self.name = name
         self.link_return = link_return
         self.links: list[_FakePad] = []
+        self.probes: list[tuple[object, object]] = []
 
     def link(self, other: _FakePad) -> int:
         self.links.append(other)
@@ -31,6 +32,9 @@ class _FakePad:
 
     def get_name(self) -> str:
         return self.name
+
+    def add_probe(self, probe_type: object, callback: object) -> None:
+        self.probes.append((probe_type, callback))
 
 
 class _FakeElement:
@@ -103,6 +107,8 @@ class _FakeFactory:
 class _FakeGst:
     Caps = _FakeCaps
     PadLinkReturn = _FakePadLinkReturn
+    PadProbeReturn = type("_FakePadProbeReturn", (), {"OK": "ok"})
+    PadProbeType = type("_FakePadProbeType", (), {"BUFFER": "buffer"})
 
     def __init__(
         self,
@@ -201,6 +207,10 @@ def test_add_hls_branch_uploads_converts_and_caps_nv12_before_nvenc(tmp_path: Pa
     assert by_name["hls-parse"].links == []
     assert by_name["hls-parse"].static_pads["src"].links[0].name == "hls-sink:video_0"
     assert len(by_name["hls-sink"].requested_pads) == 1
+    assert by_name["queue-hls"].static_pads["sink"].probes
+    assert by_name["hls-valve"].static_pads["src"].probes
+    assert by_name["hls-enc"].static_pads["sink"].probes
+    assert by_name["hls-parse"].static_pads["src"].probes
     assert tee.requested_pads[0].links[0].name == "queue-hls:sink"
     assert compositor._hls_valve is by_name["hls-valve"]
 
