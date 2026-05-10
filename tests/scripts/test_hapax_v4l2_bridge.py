@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 from pathlib import Path
 
@@ -48,3 +49,27 @@ def test_check_can_allow_missing_socket_for_precreation_waits(tmp_path: Path) ->
 
     assert result.returncode == 1
     assert "allowed by --allow-missing-socket" in result.stdout
+
+
+def test_check_rejects_stale_socket_file_that_is_not_listening(tmp_path: Path) -> None:
+    socket_path = tmp_path / "stale.sock"
+    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale.bind(str(socket_path))
+    stale.close()
+
+    result = subprocess.run(
+        [
+            str(SCRIPT),
+            "--check",
+            "--device",
+            str(tmp_path / "not-a-real-device"),
+            "--socket",
+            str(socket_path),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "not listening" in result.stdout

@@ -22,6 +22,7 @@ HEIGHT="${HAPAX_V4L2_BRIDGE_HEIGHT:-720}"
 FPS="${HAPAX_V4L2_BRIDGE_FPS:-30}"
 CHECK_ONLY=false
 ALLOW_MISSING_SOCKET=false
+WAIT_SECONDS="${HAPAX_V4L2_BRIDGE_WAIT_SECONDS:-60}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -36,6 +37,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+socket_listening() {
+    local socket_path="$1"
+    command -v ss >/dev/null 2>&1 || return 1
+    ss -xlH 2>/dev/null | awk -v socket="$socket_path" '
+        $2 == "LISTEN" && $5 == socket { found = 1 }
+        END { exit(found ? 0 : 1) }
+    '
+}
+
 if $CHECK_ONLY; then
     ok=true
     if [[ ! -c "$DEVICE" ]]; then
@@ -44,8 +54,11 @@ if $CHECK_ONLY; then
     else
         echo "OK: device $DEVICE exists"
     fi
-    if [[ -S "$SOCKET" ]]; then
-        echo "OK: socket $SOCKET exists"
+    if [[ -S "$SOCKET" ]] && socket_listening "$SOCKET"; then
+        echo "OK: socket $SOCKET exists and is listening"
+    elif [[ -S "$SOCKET" ]]; then
+        echo "FAIL: socket $SOCKET exists but is not listening; likely stale shmsink residue"
+        ok=false
     elif $ALLOW_MISSING_SOCKET; then
         echo "WAIT: socket $SOCKET not yet created (allowed by --allow-missing-socket)"
     else
@@ -60,19 +73,26 @@ echo "  device: $DEVICE"
 echo "  socket: $SOCKET"
 echo "  format: ${WIDTH}x${HEIGHT}@${FPS}fps NV12"
 
-# Wait for the compositor to create the socket (up to 30s)
+# Wait for the compositor to create and listen on the exact socket. A stale
+# socket file can survive a crash; shmsink then creates .0/.1 siblings and the
+# bridge would connect to dead residue if presence alone counted as ready.
 waited=0
-while [[ ! -S "$SOCKET" ]] && [[ $waited -lt 30 ]]; do
+while { [[ ! -S "$SOCKET" ]] || ! socket_listening "$SOCKET"; } && [[ $waited -lt "$WAIT_SECONDS" ]]; do
     sleep 1
     waited=$((waited + 1))
 done
 
 if [[ ! -S "$SOCKET" ]]; then
-    echo "error: socket $SOCKET not found after 30s — compositor not running?" >&2
+    echo "error: socket $SOCKET not found after ${WAIT_SECONDS}s — compositor not running?" >&2
     exit 1
 fi
 
-echo "  socket ready after ${waited}s"
+if ! socket_listening "$SOCKET"; then
+    echo "error: socket $SOCKET exists but is not listening after ${WAIT_SECONDS}s — stale shmsink residue or wrong socket path" >&2
+    exit 1
+fi
+
+echo "  socket listening after ${waited}s"
 
 # GStreamer pipeline: shmsrc → queue → videoconvert → capsfilter → v4l2sink
 exec gst-launch-1.0 -e \

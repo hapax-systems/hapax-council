@@ -396,12 +396,19 @@ def start_compositor(compositor: Any) -> None:
             with compositor._camera_status_lock:
                 any_active = any(s == "active" for s in compositor._camera_status.values())
             try:
-                from .shmsink_output_pipeline import is_bridge_enabled
+                from .shmsink_output_pipeline import is_bridge_enabled, is_v4l2_output_disabled
 
                 bridge_enabled = is_bridge_enabled()
+                v4l2_output_disabled = is_v4l2_output_disabled()
             except Exception:
                 bridge_enabled = False
-            if bridge_enabled:
+                v4l2_output_disabled = False
+            if v4l2_output_disabled:
+                # Explicit incident containment: absence of OBS/v4l2 egress is
+                # known and must not make the compositor self-kill. The
+                # live-surface preflight still refuses to call this restored.
+                v4l2_alive = True
+            elif bridge_enabled:
                 # The compositor watchdog may use render-to-SHM freshness for
                 # the shmsink bridge path, but this is not v4l2/OBS egress
                 # truth. The bridge sidecar and OBS-visible device are checked
@@ -410,7 +417,11 @@ def start_compositor(compositor: Any) -> None:
             else:
                 v4l2_alive = compositor.v4l2_frame_seen_within(45.0)
             v4l2_pipe = getattr(compositor, "_v4l2_output_pipeline", None)
-            if v4l2_pipe is not None and v4l2_pipe.last_frame_age_seconds >= 45.0:
+            if (
+                not v4l2_output_disabled
+                and v4l2_pipe is not None
+                and v4l2_pipe.last_frame_age_seconds >= 45.0
+            ):
                 v4l2_alive = False
             # Director liveness gate (Phase 1 per
             # docs/research/2026-04-20-livestream-halt-investigation.md §6).

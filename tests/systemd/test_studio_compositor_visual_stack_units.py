@@ -39,6 +39,7 @@ def test_studio_compositor_runs_from_activation_worktree() -> None:
     assert execution_lines
     assert all("%h/projects/hapax-council" not in line for line in execution_lines)
     assert any("hapax-compositor-runtime-source-check" in line for line in execution_lines)
+    assert any("v4l2-bridge.sock*" in line and "-delete" in line for line in execution_lines)
     assert any("HAPAX_COMPOSITOR_LAYOUT_PATH=" in line for line in lines)
 
 
@@ -57,6 +58,8 @@ def test_v4l2_bridge_runs_from_activation_worktree_and_is_supervised_by_studio()
     assert parser.get("Service", "WorkingDirectory") == SOURCE_ROOT
     assert parser.get("Service", "ExecStart").startswith(f"{SOURCE_ROOT}/scripts/hapax-v4l2-bridge")
     assert "hapax-compositor-runtime-source-check" in parser.get("Service", "ExecStartPre")
+    lines = _active_unit_lines(BRIDGE)
+    assert any("HAPAX_V4L2_BRIDGE_WAIT_SECONDS=60" in line for line in lines)
 
 
 def test_simple_bridge_unit_does_not_claim_systemd_watchdog_without_sd_notify() -> None:

@@ -7,6 +7,7 @@ import argparse
 import json
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -126,7 +127,23 @@ def main() -> int:
         "follow_mode_disabled": env.get("HAPAX_FOLLOW_MODE_ACTIVE") == "0",
     }
 
-    metrics = parse_prometheus_scalars(_load_metrics(args))
+    try:
+        metrics = parse_prometheus_scalars(_load_metrics(args))
+    except (OSError, urllib.error.URLError, ValueError) as exc:
+        print(
+            json.dumps(
+                {
+                    "state": LiveSurfaceState.FAILED.value,
+                    "restored": False,
+                    "reasons": [f"metrics_unavailable:{type(exc).__name__}"],
+                    "service_active": service_active,
+                    "bridge_active": bridge_active,
+                },
+                sort_keys=True,
+            )
+        )
+        return 11
+
     snapshot = snapshot_from_prometheus(
         metrics,
         service_active=service_active,

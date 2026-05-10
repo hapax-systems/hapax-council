@@ -9,7 +9,9 @@ state. The sidecar can crash, restart, or be upgraded without touching
 the compositor pipeline.
 
 Controlled by HAPAX_V4L2_BRIDGE_ENABLED=1. When disabled, the legacy
-V4l2OutputPipeline path is used.
+V4l2OutputPipeline path is used. HAPAX_COMPOSITOR_DISABLE_V4L2_OUTPUT=1
+is a stronger incident-containment gate: no v4l2/shm output branch should
+be constructed at all.
 
 Graph::
 
@@ -33,10 +35,15 @@ log = logging.getLogger(__name__)
 INTERPIPE_CHANNEL = "compositor_v4l2_out"
 DEFAULT_SOCKET = "/dev/shm/hapax-compositor/v4l2-bridge.sock"
 BRIDGE_ENABLED_ENV = "HAPAX_V4L2_BRIDGE_ENABLED"
+V4L2_OUTPUT_DISABLED_ENV = "HAPAX_COMPOSITOR_DISABLE_V4L2_OUTPUT"
 
 
 def is_bridge_enabled() -> bool:
     return os.environ.get(BRIDGE_ENABLED_ENV, "") == "1"
+
+
+def is_v4l2_output_disabled() -> bool:
+    return os.environ.get(V4L2_OUTPUT_DISABLED_ENV, "") == "1"
 
 
 class ShmsinkOutputPipeline:

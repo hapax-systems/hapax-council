@@ -11,8 +11,10 @@ from unittest.mock import MagicMock, patch
 from agents.studio_compositor.shmsink_output_pipeline import (
     BRIDGE_ENABLED_ENV,
     DEFAULT_SOCKET,
+    V4L2_OUTPUT_DISABLED_ENV,
     ShmsinkOutputPipeline,
     is_bridge_enabled,
+    is_v4l2_output_disabled,
 )
 from agents.studio_compositor.v4l2_output_pipeline import V4l2OutputPipeline
 
@@ -33,6 +35,18 @@ class TestBridgeEnabledGate:
     def test_disabled_when_zero(self) -> None:
         with patch.dict("os.environ", {BRIDGE_ENABLED_ENV: "0"}):
             assert not is_bridge_enabled()
+
+    def test_v4l2_output_disable_gate_is_independent_and_stronger(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                BRIDGE_ENABLED_ENV: "1",
+                V4L2_OUTPUT_DISABLED_ENV: "1",
+            },
+            clear=True,
+        ):
+            assert is_bridge_enabled()
+            assert is_v4l2_output_disabled()
 
 
 class TestShmsinkPipelineConstruction:
