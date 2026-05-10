@@ -47,6 +47,16 @@ class TestPhase2ArchiveUnitFilesExist:
             "Phase 2 rotation pipeline regression"
         )
 
+    def test_hls_rotate_service_uses_activated_source_not_canonical_worktree(self) -> None:
+        body = HLS_SERVICE.read_text(encoding="utf-8")
+        assert "WorkingDirectory=%h/.cache/hapax/source-activation/worktree" in body
+        assert (
+            "ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python "
+            "%h/.cache/hapax/source-activation/worktree/scripts/hls-archive-rotate.py --json"
+            in body
+        )
+        assert "ExecStart=%h/projects/hapax-council/.venv/bin/python" not in body
+
     def test_timer_runs_on_unit_active_sec_interval(self) -> None:
         body = HLS_TIMER.read_text(encoding="utf-8")
         assert "OnUnitActiveSec=60s" in body, (

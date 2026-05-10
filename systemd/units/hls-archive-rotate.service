@@ -5,8 +5,8 @@ Wants=studio-compositor.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/projects/hapax-council
-ExecStart=%h/projects/hapax-council/.venv/bin/python %h/projects/hapax-council/scripts/hls-archive-rotate.py --json
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/hls-archive-rotate.py --json
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=6
