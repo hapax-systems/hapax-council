@@ -36,6 +36,7 @@ orphans:
   - hapax-l12-usb-return-capture.conf  # MPC-first wet return; topology models it, conf stays hand-mirrored until generator parity.
   - hapax-l12-mainmix-tap.conf  # H5 P2 monitor-only null-sink; topology node is kind=tap, loopback is systemd/pactl-owned.
   - hapax-notification-private.conf
+  - hapax-l12-usb-return-capture.conf  # L-12 USB return capture, standalone conf
   - hapax-obs-broadcast-remap.conf
   - hapax-private-monitor-bridge.conf
   - hapax-stream-split.conf
