@@ -2,18 +2,27 @@ cff-version: 1.2.0
 message: If you use this software in your research, please cite it as below.
 type: software
 title: hapax-council
-abstract: Constituent of the Hapax operating environment. Single-operator research
-  apparatus for externalised executive function. Not a product, not seeking contributors.
+abstract: >-
+  Constituent of the Hapax operating environment. Single-operator research
+  apparatus for externalised executive function, built by a neurodivergent
+  solo operator. Stigmergic cognitive mesh with formal constitutional
+  governance, 200+ agents, voice daemon, GPU visual expression, and 24/7
+  livestream as research instrument. Not a product, not seeking contributors.
   Research infrastructure published as artifact.
 authors:
 - given-names: Ryan
   family-names: Kleeberger
+  orcid: https://orcid.org/0009-0001-5146-4548
 repository-code: https://github.com/ryanklee/hapax-council
 url: https://github.com/ryanklee/hapax-council
 license: PolyForm-Strict-1.0.0
 keywords:
 - research-software
 - single-operator
+- stigmergic-cognitive-mesh
+- constitutional-governance
+- human-ai-collaboration
+- externalized-executive-function
+- neurodivergent-research-instrument
 - philosophy-of-science
-- governance
 - infrastructure-as-argument
