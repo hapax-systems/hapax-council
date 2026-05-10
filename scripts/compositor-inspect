@@ -34,6 +34,13 @@ from agents.studio_compositor.config import (
     OUTPUT_WIDTH,
 )
 from agents.studio_compositor.layout import compute_tile_layout
+from agents.studio_compositor.layout_safety import (
+    BASE_COMPOSITOR_MATERIAL,
+    LAYER_BUDGETS,
+    WARM_LIGHT_CALIBRATION_TARGET,
+    resolve_startup_layout_mode,
+    validate_tile_layout,
+)
 from agents.studio_compositor.models import CameraSpec
 
 
@@ -73,16 +80,38 @@ def inspect(phase: str, label: str) -> str:
 
     lines.append(f"=== COMPOSITOR INSPECT: {phase} {label} ===")
     lines.append(f"Canvas: {canvas_w}x{canvas_h} (scale={LAYOUT_COORD_SCALE:.4f})")
+    try:
+        startup = resolve_startup_layout_mode()
+        startup_line = (
+            f"{startup.mode} (source={startup.source}"
+            f"{', path=' + str(startup.path) if startup.path is not None else ''})"
+        )
+    except Exception as exc:
+        startup_line = f"INVALID ({type(exc).__name__}: {exc})"
+    lines.append(f"Startup layout mode: {startup_line}")
+    lines.append(f"Base material: {BASE_COMPOSITOR_MATERIAL}")
+    lines.append(f"Warm-light calibration: {WARM_LIGHT_CALIBRATION_TARGET}")
+    lines.append(
+        "Layer budgets: "
+        + "; ".join(f"{budget.layer}<={budget.max_active}" for budget in LAYER_BUDGETS)
+    )
     lines.append("")
 
     # --- Camera tile layout ---
     cameras = [CameraSpec(**c) for c in _DEFAULT_CAMERAS]
-    modes = ["packed", "balanced", "forcefield"]
+    modes = ["packed", "balanced", "forcefield", "sierpinski"]
     for mode in modes:
         try:
             tiles = compute_tile_layout(cameras, canvas_w, canvas_h, mode=mode)
         except Exception:
             continue
+        safety = validate_tile_layout(
+            cameras,
+            tiles,
+            mode=mode,
+            canvas_w=canvas_w,
+            canvas_h=canvas_h,
+        )
 
         lines.append(f"--- Camera layout: {mode} ---")
         cam_tiles = []
@@ -111,6 +140,34 @@ def inspect(phase: str, label: str) -> str:
 
         total_pct = sum(t["area_pct"] for t in cam_tiles)
         lines.append(f"  Coverage: {total_pct:.1f}% | Dark: {100 - total_pct:.1f}%")
+        lines.append(
+            "  Safety: "
+            f"{'PASS' if safety.ok else 'FAIL'} | "
+            f"content={safety.content_area_fraction:.1%} "
+            f"dark={safety.dark_area_fraction:.1%} "
+            f"regions={safety.content_regions} "
+            f"dark_space={safety.dark_space_interpretation}"
+        )
+        if safety.negative_space is not None:
+            ns = safety.negative_space
+            lines.append(
+                "  Negative space: "
+                f"intent={ns.intent}; region={ns.region}; "
+                f"material={ns.material}; signature={ns.expected_visual_signature}"
+            )
+        if safety.violations:
+            lines.append("  Violations: " + ", ".join(safety.violations))
+        if safety.warnings:
+            lines.append("  Warnings: " + ", ".join(safety.warnings))
+        lines.append(
+            "  Visible roles: "
+            f"RGB={len(safety.visible_rgb_roles)} IR={len(safety.visible_ir_roles)} "
+            f"hidden={len(safety.hidden_roles)}"
+        )
+        lines.append(
+            "  Quadrant weights: "
+            + " ".join(f"{q}={w:.2f}" for q, w in sorted(safety.quadrant_weights.items()))
+        )
 
         if cam_tiles:
             min_x = min(t["x"] for t in cam_tiles)

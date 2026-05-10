@@ -6,6 +6,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from PIL import Image
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-live-surface-preflight"
 
@@ -253,6 +255,35 @@ studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
     payload = json.loads(result.stdout)
     assert payload["state"] == "degraded_containment"
     assert "final_egress_snapshot_no_frames" in payload["reasons"]
+
+
+def test_preflight_degrades_on_black_final_frame_image(tmp_path: Path) -> None:
+    image_path = tmp_path / "black.jpg"
+    Image.new("RGB", (64, 36), (0, 0, 0)).save(image_path)
+
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 140
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 11
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.4
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "false",
+        "--final-frame-image",
+        str(image_path),
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 10
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "degraded_containment"
+    assert "unclassified_black_exceeds_threshold" in payload["reasons"]
+    assert payload["final_frame_classification"]["black_fraction"] == 1.0
 
 
 def test_preflight_can_require_fresh_hls_playlist(tmp_path: Path) -> None:

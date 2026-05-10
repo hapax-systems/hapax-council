@@ -17,6 +17,7 @@ See docs/superpowers/specs/2026-04-12-phase-2-data-model-design.md
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -29,6 +30,25 @@ from shared.compositor_model import Layout
 log = logging.getLogger(__name__)
 
 IGNORED_LAYOUT_FILES: frozenset[str] = frozenset({"mobile.json"})
+
+
+def _looks_like_layout_document(raw: str) -> bool:
+    """Return True for JSON documents shaped like ``shared.compositor_model.Layout``.
+
+    ``config/compositor-layouts/mobile.json`` is a vertical-mobile renderer
+    contract, not a Layout model.  It lives beside production layouts for
+    deployment convenience, so the LayoutStore must skip it instead of
+    warning once per file edit.
+    """
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return True
+    if not isinstance(payload, dict):
+        return True
+    required = {"name", "sources", "surfaces", "assignments"}
+    return required.issubset(payload)
 
 
 def _rescale_layout(layout: Layout) -> Layout:
@@ -277,7 +297,12 @@ class LayoutStore:
                 if self._mtimes.get(name) == mtime:
                     continue
                 try:
-                    layout = Layout.model_validate_json(path.read_text())
+                    raw_layout = path.read_text()
+                    if not _looks_like_layout_document(raw_layout):
+                        log.debug("Skipping non-Layout JSON in layout scan: %s", path)
+                        self._mtimes[name] = mtime
+                        continue
+                    layout = Layout.model_validate_json(raw_layout)
                 except (ValidationError, OSError, ValueError) as exc:
                     log.warning("Failed to load layout %s: %s", path, exc)
                     # Cache the mtime even on validation failure so we don't
