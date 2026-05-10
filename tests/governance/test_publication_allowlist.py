@@ -238,9 +238,12 @@ def test_publication_surfaces_compose_with_claim_bearing_grounding(tmp_path: Pat
         ("omg-lol-weblog", "weblog.entry"),
         ("omg-lol-pastebin", "chronicle.weekly_digest"),
         ("bluesky-post", "chronicle.high_salience"),
+        ("bluesky-post", "omg.weblog"),
         ("mastodon-post", "chronicle.high_salience"),
+        ("mastodon-post", "omg.weblog"),
         ("discord-webhook", "chronicle.high_salience"),
         ("arena-post", "chronicle.high_salience"),
+        ("arena-post", "omg.weblog"),
     )
     for surface, state_kind in surface_state_pairs:
         _write_contract(tmp_path, surface, state_kinds=[state_kind])

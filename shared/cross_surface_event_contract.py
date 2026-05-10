@@ -137,6 +137,7 @@ _YOUTUBE_EVENTS: tuple[EventType, ...] = (
 _SOCIAL_EVENTS: tuple[EventType, ...] = (
     "broadcast.boundary",
     "chronicle.high_salience",
+    "omg.weblog",
     "shorts.upload",
     "aesthetic.frame_capture",
     "publication.artifact",
@@ -232,6 +233,7 @@ CROSS_SURFACE_APERTURES: tuple[CrossSurfaceApertureContract, ...] = (
             "arena_block.candidate",
             "aesthetic.frame_capture",
             "chronicle.high_salience",
+            "omg.weblog",
             "publication.artifact",
         ),
         allowed_actions=("publish", "link", "embed", "redact", "hold", "archive"),

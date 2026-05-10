@@ -134,6 +134,7 @@ ALLOWED_PUBLIC_EVENT_TYPES = frozenset(
         "arena_block.candidate",
         "aesthetic.frame_capture",
         "chronicle.high_salience",
+        "omg.weblog",
         "publication.artifact",
     }
 )
@@ -486,6 +487,8 @@ def _event_intent(event: ResearchVehiclePublicEvent) -> str:
         return "aesthetic frame"
     if event.event_type == "chronicle.high_salience":
         return "high-salience observation"
+    if event.event_type == "omg.weblog":
+        return "weblog post"
     if event.event_type == "arena_block.candidate":
         return "arena block candidate"
     if event.event_type == "publication.artifact":
@@ -520,6 +523,7 @@ def _allowlist_payload(event: ResearchVehiclePublicEvent) -> dict[str, Any]:
     if event.event_type in {
         "chronicle.high_salience",
         "aesthetic.frame_capture",
+        "omg.weblog",
         "publication.artifact",
     }:
         payload["grounding_gate_result"] = _grounding_gate_from_public_event(event)

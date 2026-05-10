@@ -2,6 +2,7 @@ surface: bluesky-post
 state_kinds:
   - broadcast.boundary
   - chronicle.high_salience
+  - omg.weblog
   - shorts.upload
 redactions:
   - operator_profile.*

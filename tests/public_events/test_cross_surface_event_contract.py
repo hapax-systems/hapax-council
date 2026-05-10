@@ -181,6 +181,35 @@ def test_operator_review_surface_holds_autonomous_publish() -> None:
     assert decision.reasons == ["human_review_required"]
 
 
+def test_weblog_event_allows_social_and_arena_fanout() -> None:
+    event = _event(
+        event_id="rvpe:omg_weblog:visibility_engine",
+        event_type="omg.weblog",
+        state_kind="public_post",
+        public_url="https://hapax.weblog.lol/visibility-engine",
+        surface_policy=PublicEventSurfacePolicy(
+            allowed_surfaces=["mastodon", "bluesky", "arena", "archive"],
+            denied_surfaces=[],
+            claim_live=False,
+            claim_archive=True,
+            claim_monetizable=False,
+            requires_egress_public_claim=False,
+            requires_audio_safe=False,
+            requires_provenance=True,
+            requires_human_review=False,
+            rate_limit_key="omg.weblog:public_post",
+            redaction_policy="none",
+            fallback_action="hold",
+            dry_run_reason=None,
+        ),
+    )
+
+    for aperture in ("mastodon", "bluesky", "arena"):
+        decision = decide_cross_surface_fanout(event, aperture, "publish")
+        assert decision.decision == "allow", (aperture, decision.reasons)
+        assert decision.target_surfaces == [aperture]
+
+
 def test_archive_and_replay_actions_use_archive_claim_and_refs() -> None:
     event = _event()
 
