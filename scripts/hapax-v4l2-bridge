@@ -37,11 +37,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "${HAPAX_V4L2_BRIDGE_ENABLED:-1}" != "1" ]]; then
-    echo "hapax-v4l2-bridge: disabled by HAPAX_V4L2_BRIDGE_ENABLED=${HAPAX_V4L2_BRIDGE_ENABLED}"
-    exit 0
-fi
-
 socket_listening() {
     local socket_path="$1"
     command -v ss >/dev/null 2>&1 || return 1
@@ -49,6 +44,39 @@ socket_listening() {
         $2 == "LISTEN" && $5 == socket { found = 1 }
         END { exit(found ? 0 : 1) }
     '
+}
+
+studio_compositor_bridge_enabled() {
+    command -v systemctl >/dev/null 2>&1 || return 1
+    local compositor_env
+    compositor_env="$(
+        systemctl --user show studio-compositor.service -p Environment --value 2>/dev/null || true
+    )"
+    if grep -Eq '(^|[[:space:]])HAPAX_V4L2_BRIDGE_ENABLED=0([[:space:]]|$)' <<< "$compositor_env"; then
+        printf '0\n'
+        return 0
+    fi
+    if grep -Eq '(^|[[:space:]])HAPAX_V4L2_BRIDGE_ENABLED=1([[:space:]]|$)' <<< "$compositor_env"; then
+        printf '1\n'
+        return 0
+    fi
+    return 1
+}
+
+bridge_disabled_reason() {
+    if [[ "${HAPAX_V4L2_BRIDGE_ENABLED:-1}" != "1" ]]; then
+        printf 'HAPAX_V4L2_BRIDGE_ENABLED=%s\n' "${HAPAX_V4L2_BRIDGE_ENABLED}"
+        return 0
+    fi
+
+    local compositor_enabled
+    if compositor_enabled="$(studio_compositor_bridge_enabled)"; then
+        if [[ "$compositor_enabled" != "1" ]]; then
+            printf 'studio-compositor HAPAX_V4L2_BRIDGE_ENABLED=%s\n' "$compositor_enabled"
+            return 0
+        fi
+    fi
+    return 1
 }
 
 if $CHECK_ONLY; then
@@ -71,6 +99,11 @@ if $CHECK_ONLY; then
         ok=false
     fi
     $ok && exit 0 || exit 1
+fi
+
+if reason="$(bridge_disabled_reason)"; then
+    echo "hapax-v4l2-bridge: disabled by ${reason}"
+    exit 0
 fi
 
 echo "hapax-v4l2-bridge: starting"

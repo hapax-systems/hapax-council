@@ -31,6 +31,41 @@ def test_bridge_exits_cleanly_when_disabled(tmp_path: Path) -> None:
     assert "disabled by HAPAX_V4L2_BRIDGE_ENABLED=0" in result.stdout
 
 
+def test_bridge_exits_cleanly_when_compositor_selects_direct_egress(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    systemctl = bin_dir / "systemctl"
+    systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$2" = "show" ] && [ "$3" = "studio-compositor.service" ]; then\n'
+        "  echo 'HAPAX_V4L2_BRIDGE_ENABLED=0 HAPAX_COMPOSITOR_DISABLE_V4L2_OUTPUT=0'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 1\n"
+    )
+    systemctl.chmod(0o755)
+    env = os.environ.copy()
+    env["HAPAX_V4L2_BRIDGE_ENABLED"] = "1"
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+    result = subprocess.run(
+        [
+            str(SCRIPT),
+            "--device",
+            str(tmp_path / "missing-device"),
+            "--socket",
+            str(tmp_path / "missing.sock"),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert "disabled by studio-compositor HAPAX_V4L2_BRIDGE_ENABLED=0" in result.stdout
+
+
 def test_check_requires_socket_by_default(tmp_path: Path) -> None:
     device = tmp_path / "not-a-real-device"
     env = os.environ.copy()
