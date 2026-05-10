@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.council/schemas/archive-replay-sidecar-index.schema.json",
+  "title": "Archive Replay Sidecar Index",
+  "description": "Durable index of archive/replay sidecar objects for conversion, dataset, grant, demo, and artifact consumers.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "index_id",
+    "schema_ref",
+    "generated_from",
+    "declared_at",
+    "producer",
+    "fail_closed_policy",
+    "entries"
+  ],
+  "additionalProperties": false,
+  "x-required_artifact_kinds": [
+    "public_safe_run",
+    "refusal_artifact",
+    "correction_artifact",
+    "rights_blocked_run"
+  ],
+  "x-required_index_states": ["blocked", "private", "dry-run", "public"],
+  "x-required_metric_states": ["available", "blocked", "stale", "public_safe"],
+  "x-fail_closed_policy": {
+    "missing_archive_refs_allow_public_replay": false,
+    "stale_archive_refs_allow_public_replay": false,
+    "private_archive_refs_allow_public_replay": false,
+    "rights_held_archive_refs_allow_public_replay": false,
+    "unverified_archive_refs_allow_public_replay": false,
+    "non_public_index_state_allows_public_replay": false
+  },
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "index_id": {"type": "string", "minLength": 1},
+    "schema_ref": {
+      "type": "string",
+      "const": "schemas/archive-replay-sidecar-index.schema.json"
+    },
+    "generated_from": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "declared_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "fail_closed_policy": {"$ref": "#/$defs/fail_closed_policy"},
+    "entries": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/index_entry"},
+      "minItems": 1
+    }
+  },
+  "$defs": {
+    "string_refs": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "fail_closed_policy": {
+      "type": "object",
+      "required": [
+        "missing_archive_refs_allow_public_replay",
+        "stale_archive_refs_allow_public_replay",
+        "private_archive_refs_allow_public_replay",
+        "rights_held_archive_refs_allow_public_replay",
+        "unverified_archive_refs_allow_public_replay",
+        "non_public_index_state_allows_public_replay"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "missing_archive_refs_allow_public_replay": {"type": "boolean", "const": false},
+        "stale_archive_refs_allow_public_replay": {"type": "boolean", "const": false},
+        "private_archive_refs_allow_public_replay": {"type": "boolean", "const": false},
+        "rights_held_archive_refs_allow_public_replay": {"type": "boolean", "const": false},
+        "unverified_archive_refs_allow_public_replay": {"type": "boolean", "const": false},
+        "non_public_index_state_allows_public_replay": {"type": "boolean", "const": false}
+      }
+    },
+    "index_entry": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "index_ref",
+        "artifact_kind",
+        "state",
+        "run_refs",
+        "public_event_refs",
+        "archive_refs",
+        "sidecar_refs",
+        "frame_refs",
+        "chapter_refs",
+        "caption_refs",
+        "temporal_span_refs",
+        "source_decision_refs",
+        "rights_class",
+        "privacy_class",
+        "provenance",
+        "archive_ref_state",
+        "archive_verified",
+        "public_url",
+        "public_safe_replay_claim_allowed",
+        "blocker_reasons"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "index_ref": {
+          "type": "string",
+          "pattern": "^archive-replay-index:[a-z0-9_.:-]+$"
+        },
+        "artifact_kind": {
+          "type": "string",
+          "enum": [
+            "public_safe_run",
+            "refusal_artifact",
+            "correction_artifact",
+            "rights_blocked_run"
+          ]
+        },
+        "state": {"type": "string", "enum": ["blocked", "private", "dry-run", "public"]},
+        "run_refs": {
+          "allOf": [{"$ref": "#/$defs/string_refs"}],
+          "minItems": 1
+        },
+        "public_event_refs": {"$ref": "#/$defs/string_refs"},
+        "archive_refs": {"$ref": "#/$defs/string_refs"},
+        "sidecar_refs": {"$ref": "#/$defs/string_refs"},
+        "frame_refs": {"$ref": "#/$defs/string_refs"},
+        "chapter_refs": {"$ref": "#/$defs/string_refs"},
+        "caption_refs": {"$ref": "#/$defs/string_refs"},
+        "temporal_span_refs": {"$ref": "#/$defs/string_refs"},
+        "source_decision_refs": {"$ref": "#/$defs/string_refs"},
+        "rights_class": {
+          "type": "string",
+          "enum": [
+            "operator_original",
+            "operator_controlled",
+            "third_party_attributed",
+            "third_party_uncleared",
+            "platform_embedded",
+            "unknown"
+          ]
+        },
+        "privacy_class": {
+          "type": "string",
+          "enum": [
+            "operator_private",
+            "consent_required",
+            "aggregate_only",
+            "public_safe",
+            "unknown"
+          ]
+        },
+        "provenance": {"$ref": "#/$defs/provenance"},
+        "archive_ref_state": {
+          "type": "string",
+          "enum": ["available", "missing", "stale", "private", "rights_held", "unverified"]
+        },
+        "archive_verified": {"type": "boolean"},
+        "public_url": {"type": ["string", "null"], "format": "uri"},
+        "public_safe_replay_claim_allowed": {"type": "boolean"},
+        "blocker_reasons": {"$ref": "#/$defs/string_refs"}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "token",
+        "generated_at",
+        "producer",
+        "evidence_refs",
+        "rights_basis",
+        "citation_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "token": {"type": ["string", "null"]},
+        "generated_at": {"type": "string", "format": "date-time"},
+        "producer": {"type": "string", "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/string_refs"},
+        "rights_basis": {"type": "string", "minLength": 1},
+        "citation_refs": {"$ref": "#/$defs/string_refs"}
+      }
+    }
+  }
+}

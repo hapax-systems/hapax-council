@@ -1,0 +1,188 @@
+{
+  "schema_version": 1,
+  "index_id": "archive-replay-sidecar-index-fixture-20260510",
+  "schema_ref": "schemas/archive-replay-sidecar-index.schema.json",
+  "generated_from": [
+    "task:archive-replay-sidecar-index",
+    "task:archive-replay-public-event-link-adapter",
+    "schema:archive-replay-public-event",
+    "schema:temporal-span-registry",
+    "schema:conversion-broker"
+  ],
+  "declared_at": "2026-05-10T12:00:00Z",
+  "producer": "shared.archive_replay_sidecar_index",
+  "fail_closed_policy": {
+    "missing_archive_refs_allow_public_replay": false,
+    "stale_archive_refs_allow_public_replay": false,
+    "private_archive_refs_allow_public_replay": false,
+    "rights_held_archive_refs_allow_public_replay": false,
+    "unverified_archive_refs_allow_public_replay": false,
+    "non_public_index_state_allows_public_replay": false
+  },
+  "entries": [
+    {
+      "schema_version": 1,
+      "index_ref": "archive-replay-index:public-safe-run:segment00042",
+      "artifact_kind": "public_safe_run",
+      "state": "public",
+      "run_refs": [
+        "ContentProgrammeRunEnvelope:run-public-safe-0042",
+        "programme:temporal-grounding"
+      ],
+      "public_event_refs": ["rvpe:archive_replay:segment00042:public-safe"],
+      "archive_refs": [
+        "/archive/hls/2026-04-30/segment00042.ts",
+        "sidecar:hls:segment00042"
+      ],
+      "sidecar_refs": ["sidecar:hls:segment00042"],
+      "frame_refs": ["frame:https://example.invalid/frames/segment00042.jpg"],
+      "chapter_refs": ["chapter:00:00:Temporal grounding fixture"],
+      "caption_refs": ["caption:vtt:segment00042"],
+      "temporal_span_refs": [
+        "span:archive.hls.segment00042",
+        "span:audio.broadcast.window.0042",
+        "span:replay.chapter.opening.0042"
+      ],
+      "source_decision_refs": [
+        "archive_replay_decision:rvpe:archive_replay:segment00042:public-safe"
+      ],
+      "rights_class": "operator_original",
+      "privacy_class": "public_safe",
+      "provenance": {
+        "token": "archive-replay-token:segment00042",
+        "generated_at": "2026-05-10T12:00:00Z",
+        "producer": "shared.archive_replay_sidecar_index",
+        "evidence_refs": [
+          "provenance:archive-replay:segment00042",
+          "egress:public-claim:fixture-pass",
+          "public-event-gate:archive-replay:pass"
+        ],
+        "rights_basis": "operator-original archive segment with public-safe replay evidence",
+        "citation_refs": ["rights:operator-original"]
+      },
+      "archive_ref_state": "available",
+      "archive_verified": true,
+      "public_url": "https://example.invalid/replay/segment00042",
+      "public_safe_replay_claim_allowed": true,
+      "blocker_reasons": []
+    },
+    {
+      "schema_version": 1,
+      "index_ref": "archive-replay-index:refusal-artifact:segment00043",
+      "artifact_kind": "refusal_artifact",
+      "state": "dry-run",
+      "run_refs": [
+        "ContentProgrammeRunEnvelope:run-refusal-0043",
+        "programme:refusal-artifact-fixture"
+      ],
+      "public_event_refs": [],
+      "archive_refs": [
+        "/archive/hls/2026-04-30/segment00043.ts",
+        "sidecar:hls:segment00043"
+      ],
+      "sidecar_refs": ["sidecar:hls:segment00043"],
+      "frame_refs": [],
+      "chapter_refs": ["chapter:00:00:Unsupported claim refusal"],
+      "caption_refs": ["caption:vtt:segment00043"],
+      "temporal_span_refs": ["span:archive.hls.segment00042"],
+      "source_decision_refs": [
+        "archive_replay_decision:rvpe:archive_replay:segment00043:dry-run"
+      ],
+      "rights_class": "operator_original",
+      "privacy_class": "public_safe",
+      "provenance": {
+        "token": "archive-replay-token:segment00043",
+        "generated_at": "2026-05-10T12:00:00Z",
+        "producer": "shared.archive_replay_sidecar_index",
+        "evidence_refs": ["provenance:archive-replay:segment00043"],
+        "rights_basis": "operator-authored refusal appendix, replay held for stale archive evidence",
+        "citation_refs": ["refusal:unsupported-claim"]
+      },
+      "archive_ref_state": "stale",
+      "archive_verified": true,
+      "public_url": null,
+      "public_safe_replay_claim_allowed": false,
+      "blocker_reasons": ["dry_run_only", "archive_refs_stale"]
+    },
+    {
+      "schema_version": 1,
+      "index_ref": "archive-replay-index:correction-artifact:segment00044",
+      "artifact_kind": "correction_artifact",
+      "state": "private",
+      "run_refs": [
+        "ContentProgrammeRunEnvelope:run-correction-0044",
+        "programme:correction-artifact-fixture"
+      ],
+      "public_event_refs": [],
+      "archive_refs": [
+        "/archive/hls/2026-04-30/segment00044.ts",
+        "sidecar:hls:segment00044"
+      ],
+      "sidecar_refs": ["sidecar:hls:segment00044"],
+      "frame_refs": ["frame:private://archive/segment00044.jpg"],
+      "chapter_refs": ["chapter:00:00:Correction before public release"],
+      "caption_refs": [],
+      "temporal_span_refs": ["span:archive.hls.segment00042"],
+      "source_decision_refs": [
+        "archive_replay_decision:rvpe:archive_replay:segment00044:private"
+      ],
+      "rights_class": "operator_controlled",
+      "privacy_class": "operator_private",
+      "provenance": {
+        "token": "archive-replay-token:segment00044",
+        "generated_at": "2026-05-10T12:00:00Z",
+        "producer": "shared.archive_replay_sidecar_index",
+        "evidence_refs": ["provenance:archive-replay:segment00044"],
+        "rights_basis": "operator-controlled correction artifact retained privately",
+        "citation_refs": ["correction:pre-publication"]
+      },
+      "archive_ref_state": "private",
+      "archive_verified": true,
+      "public_url": null,
+      "public_safe_replay_claim_allowed": false,
+      "blocker_reasons": ["private_state", "archive_refs_private", "privacy_blocked"]
+    },
+    {
+      "schema_version": 1,
+      "index_ref": "archive-replay-index:rights-blocked-run:segment00045",
+      "artifact_kind": "rights_blocked_run",
+      "state": "blocked",
+      "run_refs": [
+        "ContentProgrammeRunEnvelope:run-rights-blocked-0045",
+        "programme:rights-blocked-fixture"
+      ],
+      "public_event_refs": [],
+      "archive_refs": [
+        "/archive/hls/2026-04-30/segment00045.ts",
+        "sidecar:hls:segment00045"
+      ],
+      "sidecar_refs": ["sidecar:hls:segment00045"],
+      "frame_refs": [],
+      "chapter_refs": ["chapter:00:00:Rights hold"],
+      "caption_refs": [],
+      "temporal_span_refs": ["span:archive.hls.segment00042"],
+      "source_decision_refs": [
+        "archive_replay_decision:rvpe:archive_replay:segment00045:rights-blocked"
+      ],
+      "rights_class": "third_party_uncleared",
+      "privacy_class": "public_safe",
+      "provenance": {
+        "token": "archive-replay-token:segment00045",
+        "generated_at": "2026-05-10T12:00:00Z",
+        "producer": "shared.archive_replay_sidecar_index",
+        "evidence_refs": ["provenance:archive-replay:segment00045"],
+        "rights_basis": "third-party material is not cleared for replay artifact use",
+        "citation_refs": ["rights:third-party-uncleared"]
+      },
+      "archive_ref_state": "rights_held",
+      "archive_verified": true,
+      "public_url": null,
+      "public_safe_replay_claim_allowed": false,
+      "blocker_reasons": [
+        "blocked_state",
+        "archive_refs_rights_held",
+        "rights_blocked"
+      ]
+    }
+  ]
+}
