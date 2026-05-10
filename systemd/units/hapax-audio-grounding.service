@@ -1,0 +1,18 @@
+[Unit]
+Description=Hapax CLAP audio scene grounding daemon — continuous zero-shot classification
+After=pipewire.service pipewire-pulse.service
+Requires=pipewire-pulse.service
+ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
+
+[Service]
+Type=simple
+Environment=CUDA_VISIBLE_DEVICES=
+Environment=HAPAX_AUDIO_GROUNDING_SOURCE=hapax-broadcast-normalized
+WorkingDirectory=%h/.cache/hapax/rebuild/worktree
+ExecStart=%h/.local/bin/uv run python -m agents.audio_grounding
+Restart=on-failure
+RestartSec=10
+MemoryMax=2G
+
+[Install]
+WantedBy=default.target
