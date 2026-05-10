@@ -223,6 +223,39 @@ studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapsh
     payload = json.loads(result.stdout)
     assert payload["state"] == "healthy"
     assert payload["hls_playlist_age_seconds"] is not None
+    assert payload["hls_max_age_seconds"] == 30.0
+
+
+def test_preflight_derives_hls_freshness_from_target_duration(tmp_path: Path) -> None:
+    playlist = tmp_path / "stream.m3u8"
+    playlist.write_text("#EXTM3U\n#EXT-X-TARGETDURATION:10\n", encoding="utf-8")
+    old = time.time() - 11
+    os.utime(playlist, (old, old))
+
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 140
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 11
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.4
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "false",
+        "--require-hls",
+        "--hls-playlist",
+        str(playlist),
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "healthy"
+    assert payload["hls_max_age_seconds"] == 22.0
+    assert "hls_playlist_stale" not in payload["reasons"]
 
 
 def test_preflight_degrades_when_required_hls_playlist_is_stale(tmp_path: Path) -> None:

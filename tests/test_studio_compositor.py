@@ -66,7 +66,7 @@ class TestHlsConfig:
         assert cfg.enabled is True
         assert cfg.target_duration == 2
         assert cfg.playlist_length == 10
-        assert cfg.max_files == 15
+        assert cfg.max_files == 120
         assert cfg.bitrate == 4000
         assert "hls" in str(cfg.output_dir)
 

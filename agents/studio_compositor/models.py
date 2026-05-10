@@ -78,7 +78,7 @@ class HlsConfig(BaseModel):
     enabled: bool = True
     target_duration: int = 2
     playlist_length: int = 10
-    max_files: int = 15
+    max_files: int = 120
     output_dir: str = str(Path.home() / ".cache" / "hapax-compositor" / "hls")
     bitrate: int = 4000
 
