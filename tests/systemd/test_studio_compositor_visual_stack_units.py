@@ -7,6 +7,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 UNITS_DIR = REPO_ROOT / "systemd" / "units"
 STUDIO = UNITS_DIR / "studio-compositor.service"
 BRIDGE = UNITS_DIR / "hapax-v4l2-bridge.service"
+LAYOUT_MODE_DROPIN = UNITS_DIR / "studio-compositor.service.d" / "layout-mode-persist.conf"
 SOURCE_ROOT = "%h/.cache/hapax/source-activation/worktree"
 
 
@@ -74,3 +75,22 @@ def test_runtime_source_check_script_exists_and_is_executable() -> None:
     script = REPO_ROOT / "scripts" / "hapax-compositor-runtime-source-check"
     assert script.exists()
     assert script.stat().st_mode & 0o100
+
+
+def test_layout_mode_persistence_runs_from_activation_worktree() -> None:
+    parser = _load_unit(LAYOUT_MODE_DROPIN)
+    assert parser.get("Service", "ExecStartPost") == (
+        f"{SOURCE_ROOT}/scripts/studio-compositor-post-start.sh"
+    )
+    assert parser.get("Service", "ExecStop") == (
+        f"{SOURCE_ROOT}/scripts/studio-compositor-persist-mode.sh"
+    )
+    lines = _active_unit_lines(LAYOUT_MODE_DROPIN)
+    assert all("%h/projects/hapax-council" not in line for line in lines)
+
+
+def test_layout_mode_persistence_scripts_exist_and_are_executable() -> None:
+    for name in ("studio-compositor-post-start.sh", "studio-compositor-persist-mode.sh"):
+        script = REPO_ROOT / "scripts" / name
+        assert script.exists()
+        assert script.stat().st_mode & 0o100
