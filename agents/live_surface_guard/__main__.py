@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -128,6 +129,7 @@ def _sample_obs_websocket(args: argparse.Namespace, runtime_state: RuntimeState)
         client = obsws_python.ReqClient(
             host=args.obs_host,
             port=args.obs_port,
+            password=args.obs_password,
             timeout=2,
         )
         evidence = sample_obs_decoder(
@@ -232,6 +234,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--obs-source-name", default="StudioCompositor")
     parser.add_argument("--obs-host", default="localhost")
     parser.add_argument("--obs-port", type=int, default=4455)
+    parser.add_argument(
+        "--obs-password",
+        default=os.environ.get("HAPAX_OBS_WEBSOCKET_PASSWORD")
+        or os.environ.get("OBS_WEBSOCKET_PASSWORD")
+        or "",
+    )
     parser.add_argument("--disable-obs-websocket-sampling", action="store_true")
     parser.add_argument("--bridge-inactive", action="store_true")
     parser.add_argument("--require-hls", action="store_true")
@@ -255,7 +263,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--textfile-path",
         type=Path,
-        default=Path("/var/lib/node_exporter/textfile_collector/hapax-live-surface-guard.prom"),
+        default=Path.home()
+        / ".local"
+        / "share"
+        / "node_exporter"
+        / "textfile_collector"
+        / "hapax-live-surface-guard.prom",
     )
     parser.add_argument(
         "--ledger-path",

@@ -56,6 +56,8 @@ AUTO_ENABLE_SERVICES=(
     hapax-private-broadcast-leak-guard.service       # PR #2221 (also has .timer; kicking the oneshot once at install fires the first protection cycle immediately)
     hapax-broadcast-egress-loopback-producer.service # PR #2235
     hapax-parametric-modulation-heartbeat.service    # PR #2252 (supersedes hapax-preset-bias-heartbeat above)
+    hapax-hls-no-cache.service                       # live-surface proof egress; must not stay repo-only
+    hapax-live-surface-guard.service                 # live-surface observability/remediation daemon
 )
 # Privacy / safety-critical timers that MUST be enabled. The script's
 # sweep loop also enables every linked-but-not-enabled timer, so this
