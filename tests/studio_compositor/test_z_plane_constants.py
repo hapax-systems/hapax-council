@@ -91,3 +91,24 @@ def test_durf_is_surface_scrim_per_operator_directive():
     legible through the FX chain.
     """
     assert WARD_Z_PLANE_DEFAULTS.get("durf") == "surface-scrim"
+
+
+def test_lore_ext_wards_are_surface_scrim_per_umbrella_task():
+    """ytb-LORE-EXT: future wards render at surface scrim depth.
+
+    These four wards already run through Cairo/layout registration; the
+    umbrella task also requires explicit surface-depth placement so the
+    lore typography is readable while still receiving the ward FX path.
+    """
+
+    lore_ward_ids = (
+        "precedent_ticker",
+        "programme_history",
+        "research_instrument_dashboard",
+        "interactive_lore_query",
+    )
+    for ward_id in lore_ward_ids:
+        assert WARD_Z_PLANE_DEFAULTS.get(ward_id) == "surface-scrim", (
+            f"ward {ward_id!r} expected at 'surface-scrim' for ytb-LORE-EXT, "
+            f"found {WARD_Z_PLANE_DEFAULTS.get(ward_id)!r}"
+        )
