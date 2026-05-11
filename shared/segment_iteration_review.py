@@ -36,6 +36,7 @@ from shared.segment_quality_actionability import (
     validate_layout_responsibility,
     validate_segment_actionability,
 )
+from shared.segment_review_gate_sections import project_review_gate_sections
 
 SEGMENT_ITERATION_REVIEW_VERSION = 1
 CANARY_REVIEW_RECEIPT_ENV = "HAPAX_SEGMENT_PREP_CANARY_REVIEW_RECEIPT"
@@ -1195,5 +1196,6 @@ def _receipt(
             "no_unload_or_swap": True,
         },
     }
+    body["review_gate_sections"] = project_review_gate_sections(body)
     body["review_receipt_sha256"] = _sha256_json(body)
     return body

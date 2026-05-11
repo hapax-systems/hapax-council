@@ -33,6 +33,7 @@ from agents.programme_manager.planner import (
     ProgrammePlanner,
 )
 from shared.programme import ProgrammePlan, ProgrammeRole, is_segmented_content_role
+from shared.segment_prep_contract import programme_source_readiness
 
 # ── Fixtures ────────────────────────────────────────────────────────────
 
@@ -328,6 +329,107 @@ class TestRetryPath:
         assert "Validation error on previous attempt" in captured_prompts[1]
         assert "capability_bias_negative" in captured_prompts[1]
 
+    def test_segment_source_readiness_failure_triggers_retry(self) -> None:
+        bad = _well_formed_plan_payload(role=ProgrammeRole.TIER_LIST)
+        bad["programmes"][0]["content"]["role_contract"].pop("tier_criteria")
+        bad["programmes"][0]["content"]["narrative_beat"] = (
+            "tier-list segment on anime. Source candidates from vault + RAG; "
+            "rank against operator positions; narrate placements; invite chat reactions."
+        )
+        bad["programmes"][0]["content"]["segment_beats"] = [
+            "hook: Introduce the topic and why it matters.",
+            "item_1: Present the first S-tier item.",
+            "close: Recap the tier list and invite chat.",
+        ]
+        good = _well_formed_plan_payload(role=ProgrammeRole.TIER_LIST)
+        captured_prompts: list[str] = []
+
+        def capture_llm(prompt: str) -> str:
+            captured_prompts.append(prompt)
+            if len(captured_prompts) == 1:
+                return json.dumps(bad)
+            return json.dumps(good)
+
+        planner = ProgrammePlanner(llm_fn=capture_llm)
+        plan = planner.plan(show_id="show-test-001", target_programmes=1)
+
+        assert plan is not None
+        assert len(captured_prompts) == 2
+        assert "segment source readiness failed" in captured_prompts[1]
+        assert "missing_role_contract_fields" in captured_prompts[1]
+        assert "programme_narrative_beat_template_leak" in captured_prompts[1]
+        assert "tier_criteria" in captured_prompts[1]
+
+    def test_segment_source_readiness_failure_returns_none_without_retry(self) -> None:
+        bad = _well_formed_plan_payload(role=ProgrammeRole.TIER_LIST)
+        bad["programmes"][0]["content"]["role_contract"].pop("tier_criteria")
+        bad["programmes"][0]["content"]["narrative_beat"] = (
+            "tier-list segment on anime. Source candidates from vault + RAG; "
+            "rank against operator positions; narrate placements; invite chat reactions."
+        )
+        bad["programmes"][0]["content"]["segment_beats"] = [
+            "hook: Introduce the topic and why it matters.",
+            "item_1: Present the first S-tier item.",
+            "close: Recap the tier list and invite chat.",
+        ]
+
+        planner = ProgrammePlanner(llm_fn=_stub_llm(bad), max_retries=0)
+        plan = planner.plan(show_id="show-test-001")
+
+        assert plan is None
+
+    def test_segment_source_readiness_accepts_structured_tier_criteria_field(self) -> None:
+        payload = _well_formed_plan_payload(role=ProgrammeRole.TIER_LIST)
+        payload["programmes"][0]["content"]["role_contract"]["tier_criteria"] = (
+            "source impact, durability, and consequence under visible placement"
+        )
+        plan = ProgrammePlan.model_validate(payload)
+
+        readiness = programme_source_readiness(plan.programmes[0])
+
+        assert readiness["ok"] is True
+        assert "tier_list_requires_ordering_criteria" not in {
+            item["reason"] for item in readiness["violations"]
+        }
+
+    @pytest.mark.parametrize(
+        ("role", "field_updates", "forbidden_reason"),
+        [
+            (
+                ProgrammeRole.LECTURE,
+                {
+                    "teaching_objective": "explain the causal chain from the packet",
+                    "demonstration_object": "packet alpha",
+                    "worked_example": "packet alpha against packet beta",
+                },
+                "lecture_requires_demonstration_object",
+            ),
+            (
+                ProgrammeRole.REACT,
+                {
+                    "media_ref": "asset alpha",
+                    "timestamp_or_locator": "00:00",
+                    "claim_under_reaction": "the packet changes claim scope",
+                },
+                "react_requires_media_locator",
+            ),
+        ],
+    )
+    def test_segment_source_readiness_accepts_structured_role_specific_fields(
+        self,
+        role: ProgrammeRole,
+        field_updates: dict[str, str],
+        forbidden_reason: str,
+    ) -> None:
+        payload = _well_formed_plan_payload(role=role)
+        payload["programmes"][0]["content"]["role_contract"].update(field_updates)
+        plan = ProgrammePlan.model_validate(payload)
+
+        readiness = programme_source_readiness(plan.programmes[0])
+
+        assert readiness["ok"] is True
+        assert forbidden_reason not in {item["reason"] for item in readiness["violations"]}
+
     def test_max_retries_zero_no_retry(self) -> None:
         bad = json.dumps({"plan_id": "x", "show_id": "show-test-001"})
         calls: list[int] = []
@@ -527,6 +629,38 @@ class TestContextRendering:
 
         assert "camera_subject" not in prompt
         assert "camera:" not in prompt
+
+    def test_default_prompt_skeleton_names_segment_role_contract_fields(self) -> None:
+        captured: list[str] = []
+
+        def capture(prompt: str) -> str:
+            captured.append(prompt)
+            return json.dumps(_well_formed_plan_payload(role=ProgrammeRole.TIER_LIST))
+
+        planner = ProgrammePlanner(llm_fn=capture)
+        planner.plan(show_id="show-test-001", target_programmes=1)
+        prompt = captured[0]
+
+        for key in (
+            '"tier_criteria"',
+            '"ordering_criterion"',
+            '"bounded_claim"',
+            '"receipt_flip"',
+            '"media_ref"',
+            '"timestamp_or_locator"',
+            '"claim_under_reaction"',
+            '"layer_refs"',
+            '"bottom_payoff"',
+            '"subject_context"',
+            '"question_ladder"',
+            '"answer_source_policy"',
+            '"topic_selection"',
+            '"operator_agency_policy"',
+            '"teaching_objective"',
+            '"demonstration_object"',
+            '"worked_example"',
+        ):
+            assert key in prompt
 
 
 # ── Soft-prior architectural pin ──────────────────────────────────────

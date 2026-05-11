@@ -413,6 +413,18 @@ def test_one_segment_review_accepts_after_automation_and_team_receipts() -> None
         "no_qwen": True,
         "no_unload_or_swap": True,
     }
+    assert receipt["review_gate_sections"]["migration_guard"] == {
+        "projection_only": True,
+        "current_release_gate_unchanged": True,
+        "unknown_criteria_default_to_hard_authority": True,
+        "current_automated_gate_passed": True,
+        "current_failed_criteria": [],
+        "advisory_or_structural_failures_still_block_current_release": [],
+        "unknown_criteria": [],
+    }
+    assert receipt["review_gate_sections"]["hard_authority_gate"]["passed"] is True
+    assert receipt["review_gate_sections"]["structural_readout"]["passed"] is True
+    assert receipt["review_gate_sections"]["advisory_excellence_report"]["passed"] is True
 
 
 def test_next_nine_canary_gate_accepts_passing_review_receipt(tmp_path: Path) -> None:

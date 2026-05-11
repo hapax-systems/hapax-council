@@ -41,13 +41,14 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from shared.programme import ProgrammePlan
+from shared.programme import ProgrammePlan, is_segmented_content_role
 from shared.resident_command_r import (
     RESIDENT_COMMAND_R_MODEL,
     call_resident_command_r,
     configured_resident_model,
     tabby_chat_url,
 )
+from shared.segment_prep_contract import programme_source_readiness
 
 log = logging.getLogger(__name__)
 
@@ -236,7 +237,13 @@ class ProgrammePlanner:
             "- `plan_author` must be the literal string "
             '"hapax-director-planner".\n'
             "- 1-5 programmes per plan; each must have `authorship: "
-            '"hapax"`.'
+            '"hapax"`.\n'
+            "- Segmented-content programmes must satisfy source readiness before "
+            "composition: include required `role_contract` fields such as "
+            "`tier_criteria`/`ordering_criterion`, use real source evidence refs, "
+            "write concrete segment beats rather than template/example language, "
+            "and bind layout intents to content evidence with "
+            "`default_static_success_allowed: false`."
         )
 
     def _read_prompt_template(self) -> str:
@@ -338,9 +345,35 @@ class ProgrammePlanner:
                 "All programmes must use the supplied show_id."
             )
         try:
-            return ProgrammePlan.model_validate(obj)
+            plan = ProgrammePlan.model_validate(obj)
         except ValidationError as e:
             return str(e)
+        source_readiness_error = _segment_source_readiness_error(plan)
+        if source_readiness_error:
+            return source_readiness_error
+        return plan
+
+
+def _segment_source_readiness_error(plan: ProgrammePlan) -> str | None:
+    """Return a retry-ready error if any segmented programme cannot enter prep."""
+
+    failures: list[dict[str, object]] = []
+    for programme in plan.programmes:
+        if not is_segmented_content_role(programme.role):
+            continue
+        readiness = programme_source_readiness(programme)
+        if readiness.get("ok") is True:
+            continue
+        failures.append(
+            {
+                "programme_id": programme.programme_id,
+                "role": getattr(programme.role, "value", str(programme.role)),
+                "violations": readiness.get("violations", []),
+            }
+        )
+    if not failures:
+        return None
+    return "segment source readiness failed: " + json.dumps(failures, sort_keys=True)
 
 
 # --- default LLM call ------------------------------------------------

@@ -419,6 +419,18 @@ def _build_full_segment_prompt(
         "  'What would you change?', 'What's your pick?'\n"
         "  Use at beat endings where audience engagement adds value. Never as filler.\n\n"
         f"{visual_hooks}"
+        "== RESPONSIBLE ACTIONABILITY ==\n"
+        "This is Hapax-hosted responsible live prep: no beat may be spoken-only.\n"
+        "Every beat, including hook, criteria, recap, breathe, and close beats, "
+        "must contain at least one validator-recognized visible/doable trigger:\n"
+        "- a role visual hook such as 'Place [item] in [S/A/B/C/D]-tier';\n"
+        "- a source citation such as 'According to [source]...' or "
+        "'[Source] argues/shows/documents...';\n"
+        "- a chat trigger such as 'Where does chat land?' when audience response "
+        "is the responsible visible surface.\n"
+        "Do not issue camera, layout, surface, panel, clip, or cue commands. "
+        "The script proposes needs through spoken source/action/chat patterns; "
+        "runtime owns layout decisions and readback.\n\n"
         "== CRITICAL: SPOKEN PROSE ONLY ==\n"
         "Write ONLY words you would SAY OUT LOUD on a live broadcast.\n"
         "NEVER include stage directions, beat labels, action cues, or meta-instructions.\n"
@@ -756,7 +768,10 @@ def _build_refinement_prompt(script: list[str], programme: Any) -> str:
         "7. STAGE DIRECTIONS: Does the beat contain meta-instructions like 'We pivot',\n"
         "   'We close', 'Recap the chart', 'Invite chat'? These are FATAL — rewrite as\n"
         "   actual spoken prose for the segment.\n"
-        "8. REPETITION: Is the same phrase or paragraph copy-pasted across beats?\n"
+        "8. RESPONSIBLE ACTIONABILITY: Does every beat contain a validator-recognized\n"
+        "   visible/doable trigger: source citation, role visual hook, or chat trigger?\n"
+        "   Spoken-only hook, criteria, recap, breathe, or close beats are FATAL.\n"
+        "9. REPETITION: Is the same phrase or paragraph copy-pasted across beats?\n"
         "   Any repeated text block is a FATAL error — each beat must be unique.\n\n"
         "== THE DRAFT ==\n"
         f"{beat_review}\n\n"
@@ -773,12 +788,12 @@ def _build_refinement_prompt(script: list[str], programme: Any) -> str:
     )
 
 
-_TIER_BODY_DIRECTION_RE = re.compile(
-    r"\b(?:body|item[_ -]?\d+|entry[_ -]?\d+|rank|ranking|place|placing|tier placement)\b",
-    re.IGNORECASE,
-)
 _TIER_SKIP_DIRECTION_RE = re.compile(
     r"\b(?:hook|intro|open|opener|criteria|rubric|close|closing|recap|wrap|chat)\b",
+    re.IGNORECASE,
+)
+_TIER_PLACEMENT_ACTION_DIRECTION_RE = re.compile(
+    r"\b(?:place|placing|assign|slot|promote|demote)\b",
     re.IGNORECASE,
 )
 
@@ -801,9 +816,9 @@ def _tier_list_placement_violations(
             if index < len(segment_beats)
             else str(declaration.get("beat_direction") or "")
         )
-        body_or_rank_direction = bool(_TIER_BODY_DIRECTION_RE.search(direction))
         skip_direction = bool(_TIER_SKIP_DIRECTION_RE.search(direction))
-        if not body_or_rank_direction and skip_direction:
+        placement_action_direction = bool(_TIER_PLACEMENT_ACTION_DIRECTION_RE.search(direction))
+        if skip_direction and not placement_action_direction:
             continue
         intents = declaration.get("intents") or []
         has_placement = any(
