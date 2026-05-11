@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""Detect quota wall from a lane's output.jsonl and write relay receipt.
+
+Exit codes:
+  0  — no quota wall detected (lane exited for other reasons)
+  75 — quota wall detected, receipt written
+
+Called by hapax-claude-headless after Claude exits to determine
+whether to use extended backoff.
+
+Usage:
+    detect-quota-wall <role>
+    detect-quota-wall beta
+    detect-quota-wall gamma --output /path/to/output.jsonl
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from pathlib import Path
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("role", help="Lane role (beta, gamma, etc.)")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Path to output.jsonl (default: ~/.cache/hapax/claude-headless/<role>/output.jsonl)",
+    )
+    parser.add_argument("--verbose", action="store_true")
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(levelname)-7s %(message)s",
+    )
+
+    output_path = args.output or (
+        Path.home() / ".cache/hapax/claude-headless" / args.role / "output.jsonl"
+    )
+
+    from shared.quota_wall import handle_quota_wall
+
+    return handle_quota_wall(args.role, output_path)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
