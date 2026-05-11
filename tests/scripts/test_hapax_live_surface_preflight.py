@@ -232,6 +232,119 @@ hapax_ward_modulator_tick_total 5
     assert payload["full_surface_performance"]["stage_fps"]["v4l2_appsink"] == 30.0
 
 
+def test_preflight_full_surface_accepts_one_hz_final_egress_proof(
+    tmp_path: Path,
+) -> None:
+    before = """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 10
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.1
+studio_compositor_render_stage_frames_total{stage="compositor_src"} 100
+studio_compositor_render_stage_frames_total{stage="output_tee_sink"} 100
+studio_compositor_render_stage_frames_total{stage="v4l2_appsink"} 100
+studio_compositor_render_stage_frames_total{stage="hls_parser_src"} 100
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 10
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.2
+studio_compositor_runtime_feature_active{feature="shader_fx"} 1
+studio_compositor_runtime_feature_active{feature="inline_fx"} 1
+studio_compositor_runtime_feature_active{feature="hero_effect"} 1
+studio_compositor_runtime_feature_active{feature="follow_mode"} 1
+studio_compositor_runtime_feature_active{feature="ward_modulator"} 1
+studio_compositor_runtime_feature_active{feature="flash_overlay"} 0
+studio_compositor_ward_blit_total{ward="programme-context"} 10
+studio_compositor_ward_blit_total{ward="tier-panel"} 10
+studio_compositor_ward_blit_total{ward="artifact-detail-panel"} 10
+hapax_compositor_layout_active{layout="segment-programme-context"} 1
+hapax_ward_modulator_tick_total 5
+"""
+    after = before.replace(
+        'studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 10',
+        'studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 11',
+    )
+    for stage in ("compositor_src", "output_tee_sink", "v4l2_appsink", "hls_parser_src"):
+        after = after.replace(
+            f'studio_compositor_render_stage_frames_total{{stage="{stage}"}} 100',
+            f'studio_compositor_render_stage_frames_total{{stage="{stage}"}} 130',
+        )
+
+    result = _run(
+        before,
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "true",
+        "--require-full-surface",
+        "--full-surface-sample-seconds",
+        "1",
+        "--env",
+        "HAPAX_COMPOSITOR_FX_SLOTS=8",
+        tmp_path=tmp_path,
+        after_metrics=after,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "healthy"
+    assert payload["full_surface_performance"]["stage_fps"]["final_egress_snapshot"] == 1.0
+
+
+def test_preflight_full_surface_blocks_missing_final_egress_proof_progress(
+    tmp_path: Path,
+) -> None:
+    before = """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 10
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.1
+studio_compositor_render_stage_frames_total{stage="compositor_src"} 100
+studio_compositor_render_stage_frames_total{stage="output_tee_sink"} 100
+studio_compositor_render_stage_frames_total{stage="v4l2_appsink"} 100
+studio_compositor_render_stage_frames_total{stage="hls_parser_src"} 100
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 10
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.2
+studio_compositor_runtime_feature_active{feature="shader_fx"} 1
+studio_compositor_runtime_feature_active{feature="inline_fx"} 1
+studio_compositor_runtime_feature_active{feature="hero_effect"} 1
+studio_compositor_runtime_feature_active{feature="follow_mode"} 1
+studio_compositor_runtime_feature_active{feature="ward_modulator"} 1
+studio_compositor_runtime_feature_active{feature="flash_overlay"} 0
+studio_compositor_ward_blit_total{ward="programme-context"} 10
+studio_compositor_ward_blit_total{ward="tier-panel"} 10
+studio_compositor_ward_blit_total{ward="artifact-detail-panel"} 10
+hapax_compositor_layout_active{layout="segment-programme-context"} 1
+hapax_ward_modulator_tick_total 5
+"""
+    after = before
+    for stage in ("compositor_src", "output_tee_sink", "v4l2_appsink", "hls_parser_src"):
+        after = after.replace(
+            f'studio_compositor_render_stage_frames_total{{stage="{stage}"}} 100',
+            f'studio_compositor_render_stage_frames_total{{stage="{stage}"}} 130',
+        )
+
+    result = _run(
+        before,
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "true",
+        "--require-full-surface",
+        "--full-surface-sample-seconds",
+        "1",
+        "--env",
+        "HAPAX_COMPOSITOR_FX_SLOTS=8",
+        tmp_path=tmp_path,
+        after_metrics=after,
+    )
+
+    assert result.returncode == 10
+    payload = json.loads(result.stdout)
+    assert (
+        "full_surface:LSC-VIEWER-001:stage_fps_below_floor:final_egress_snapshot:0.00<0.80"
+        in payload["reasons"]
+    )
+
+
 def test_preflight_full_surface_performance_sample_blocks_slow_hls(tmp_path: Path) -> None:
     before = """
 studio_compositor_cameras_total 6
