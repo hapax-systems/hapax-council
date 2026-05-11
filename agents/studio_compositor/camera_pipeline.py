@@ -87,6 +87,16 @@ class CameraPipeline:
             return float("inf")
         return time.monotonic() - self._last_frame_monotonic
 
+    def clear_frame_observation(self) -> None:
+        """Forget prior pad-probe evidence before a fresh start/rebuild.
+
+        Reaching PLAYING is not proof that a newly rebuilt source has produced
+        a post-rebuild frame. Clearing the timestamp prevents the recovery FSM
+        from treating a pre-fault frame as proof that the repaired pipeline is
+        live.
+        """
+        self._last_frame_monotonic = 0.0
+
     def build(self) -> None:
         """Construct the GstPipeline graph. Idempotent (no-op if already built)."""
         with self._state_lock:
@@ -262,6 +272,7 @@ class CameraPipeline:
                 return False
 
             Gst = self._Gst
+            self.clear_frame_observation()
             ret = self._pipeline.set_state(Gst.State.PLAYING)
             if ret == Gst.StateChangeReturn.FAILURE:
                 log.error("camera_pipeline %s: set_state(PLAYING) FAILURE", self._spec.role)
@@ -321,6 +332,33 @@ class CameraPipeline:
         device = str(getattr(self._spec, "device", "") or "")
         return getattr(self._spec, "input_format", "") == "http_jpeg" or device.startswith(
             ("http://", "https://")
+        )
+
+    def _is_v4l2loopback_source(self) -> bool:
+        device = str(getattr(self._spec, "device", "") or "")
+        if not device.startswith("/dev/video"):
+            return False
+        name_path = Path("/sys/class/video4linux") / Path(device).name / "name"
+        try:
+            name = name_path.read_text(encoding="utf-8").strip().lower()
+        except OSError:
+            return False
+        return "v4l2loopback" in name or name.startswith(
+            ("hapax-rtsp-", "studiocompositor", "youtube")
+        )
+
+    def _buffer_allocation_error_context(self) -> str:
+        if self._is_v4l2loopback_source():
+            return (
+                "v4l2 loopback producer stopped, starved, or changed format mid-read "
+                "(kernel -ENODEV; GStreamer surfaced this as 'Failed to allocate a buffer' "
+                "— not an OOM). Check the upstream RTSP/loopback producer for this role; "
+                "reconnect supervisor will retry."
+            )
+        return (
+            "v4l2 device vanished mid-read (kernel -ENODEV; GStreamer surfaced this as "
+            "'Failed to allocate a buffer' — not an OOM). USB bus-kick or cable disconnect "
+            "— reconnect supervisor will retry."
         )
 
     def _effective_http_fps(self) -> float:
@@ -678,12 +716,7 @@ class CameraPipeline:
             # message is preserved in the debug field for forensics.
             message_text = err.message
             if "Failed to allocate a buffer" in message_text:
-                message_text = (
-                    "v4l2 device vanished mid-read (kernel -ENODEV; "
-                    "GStreamer surfaced this as 'Failed to allocate a buffer' — "
-                    "not an OOM). USB bus-kick or cable disconnect — reconnect "
-                    "supervisor will retry."
-                )
+                message_text = self._buffer_allocation_error_context()
             log.error(
                 "camera_pipeline %s error (element=%s): %s (debug=%s)",
                 self._spec.role,

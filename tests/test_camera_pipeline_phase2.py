@@ -97,6 +97,40 @@ class TestCameraPipelineConstruction:
         cam = CameraPipeline(_make_spec(), gst=Gst, fps=30)
         assert cam.last_frame_age_seconds == float("inf")
 
+    def test_clear_frame_observation_resets_prior_frame_proof(self, gst):
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        Gst, _ = gst
+        cam = CameraPipeline(_make_spec(), gst=Gst, fps=30)
+        cam._last_frame_monotonic = time.monotonic()  # type: ignore[attr-defined]
+        assert cam.last_frame_age_seconds < 1.0
+        cam.clear_frame_observation()
+        assert cam.last_frame_age_seconds == float("inf")
+
+    def test_buffer_allocation_context_names_loopback_producer(
+        self, gst, monkeypatch: pytest.MonkeyPatch
+    ):
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        Gst, _ = gst
+        cam = CameraPipeline(_make_spec(), gst=Gst, fps=30)
+        monkeypatch.setattr(cam, "_is_v4l2loopback_source", lambda: True)
+        context = cam._buffer_allocation_error_context()
+        assert "loopback producer" in context
+        assert "USB bus-kick" not in context
+
+    def test_buffer_allocation_context_names_physical_device(
+        self, gst, monkeypatch: pytest.MonkeyPatch
+    ):
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        Gst, _ = gst
+        cam = CameraPipeline(_make_spec(), gst=Gst, fps=30)
+        monkeypatch.setattr(cam, "_is_v4l2loopback_source", lambda: False)
+        context = cam._buffer_allocation_error_context()
+        assert "USB bus-kick" in context
+        assert "loopback producer" not in context
+
     def test_stop_without_build_is_idempotent(self, gst):
         from agents.studio_compositor.camera_pipeline import CameraPipeline
 
