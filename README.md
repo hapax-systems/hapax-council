@@ -103,6 +103,7 @@ Enforcement at 4 tiers: T0 (block at commit), T1 (review), T2 (warn), T3 (lint).
 | Governance | 5 constitutional axioms enforced via [hapax-constitution](https://github.com/ryanklee/hapax-constitution) and [`axioms/`](axioms/). |
 | License | PolyForm Strict 1.0.0. See [`NOTICE.md`](NOTICE.md), [`CITATION.cff`](CITATION.cff), and [`license-reconciliation-status`](docs/governance/license-reconciliation-status.md). |
 | Authorship | Indeterminate by design: co-produced by Hapax (the system), Claude Code, and the operator. See [Hapax Manifesto v0](https://hapax.weblog.lol/hapax-manifesto-v0). |
+| Support / sponsorship | Public support page: [hapax.omg.lol/support](https://hapax.omg.lol/support). GitHub Sponsors approval is pending; no monetization-ready claim is made until publication-bus evidence clears. |
 
 ## Ecosystem
 
