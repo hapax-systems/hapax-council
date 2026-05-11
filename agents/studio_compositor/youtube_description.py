@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -38,10 +39,65 @@ QUOTA_FILE_DEFAULT = Path("/dev/shm/hapax-compositor/youtube-quota.json")
 # Pattern intentionally broad: any token starting with the canonical
 # sentinel prefix is treated as private and redacted, so a future
 # rotation of the sentinel suffix does not bypass this gate.
-_PRIVATE_SENTINEL_PATTERN = re.compile(
-    r"PRIVATE_SENTINEL_DO_NOT_PUBLISH_[A-Za-z0-9_]+",
+_PRIVATE_SENTINEL_PATTERN = re.compile(r"PRIVATE_SENTINEL_DO_NOT_PUBLISH_[A-Za-z0-9_]+")
+_PRIVATE_NONBROADCAST_MARKER_PATTERN = re.compile(
+    r"("
+    r"\bPRIVATE_(?:MEDIA_ROLE|SINK|SOURCE|AUDIO|ONLY)\b|"
+    r"\bPUBLIC_FORBIDDEN\b|"
+    r"\bOPERATOR_PRIVATE\b|"
+    r"\bPRIVATE_ONLY\b|"
+    r"private://|"
+    r"\bhapax-(?:notification-)?private\b|"
+    r"\boperator[-_ ]private\b|"
+    r"\bprivacy[-_ ]blocked\b|"
+    r"\bprivate[-_ ](?:audio|mode|only|state)\b|"
+    r"\bprivate[-_ ]monitor\b|"
+    r"\b(?:non|not|no)[-_ ]broadcast\b|"
+    r"\bbus\.private\b|"
+    r"\bchain\.private\b|"
+    r"\brole\.private\b|"
+    r"\baudio\.private[_\w.-]*\b"
+    r")",
+    re.IGNORECASE,
 )
-_REDACTION_PLACEHOLDER = "[REDACTED-PRIVATE]"
+_UPPERCASE_PRIVATE_TOKEN_PATTERN = re.compile(r"\bPRIVATE\b")
+_REDACTION_PLACEHOLDER = "[redacted]"
+_PRIVATE_POSTURE_FIELDS = {
+    "archive_ref_state",
+    "broadcast_posture",
+    "privacy_class",
+    "privacy_label",
+    "privacy_mode",
+    "privacy_scope",
+    "privacy_state",
+    "public_private_mode",
+    "public_private_posture",
+    "redaction_privacy_posture",
+}
+_PRIVATE_POSTURE_VALUES = {
+    "blocked",
+    "operator_private",
+    "private",
+    "private_only",
+    "public_forbidden",
+    "redaction_required",
+    "unknown_private",
+}
+_FALSE_PUBLIC_FLAGS = {
+    "broadcast_safe",
+    "public_broadcast",
+    "public_broadcast_safe",
+    "public_safe",
+    "youtube_description_safe",
+}
+_TRUE_PRIVATE_FLAGS = {
+    "no_broadcast",
+    "non_broadcast",
+    "not_broadcast",
+    "private",
+    "private_audio",
+    "private_only",
+}
 
 
 class QuotaExhausted(Exception):
@@ -118,25 +174,65 @@ def check_and_debit(
     _write_quota_state(quota_file, state)
 
 
-def _redact_private_sentinels(text: str | None) -> str | None:
-    """Replace any ``PRIVATE_SENTINEL_DO_NOT_PUBLISH_*`` token with a
-    redaction placeholder.
+def description_text_has_private_marker(text: str | None) -> bool:
+    """Return True when text carries private or non-broadcast marker tokens."""
+
+    if not text:
+        return False
+    return bool(
+        _PRIVATE_SENTINEL_PATTERN.search(text)
+        or _PRIVATE_NONBROADCAST_MARKER_PATTERN.search(text)
+        or _UPPERCASE_PRIVATE_TOKEN_PATTERN.search(text)
+    )
+
+
+def sanitize_description_text(text: str | None) -> str | None:
+    """Return public-safe description text or ``None`` when it must be omitted.
 
     Returns ``None`` unchanged so the caller can preserve "field absent"
-    semantics; an empty string after redaction is also returned unchanged
-    (the description assembler already gates on truthiness for optional
-    fields).
-
-    Why redact instead of refuse: the description assembler is the *gate*
-    that blocks the sentinel from reaching the public surface. Refusing
-    would silently drop the publish opportunity and break the live caller
-    (Phase 9 hook). Redaction preserves the publish path while satisfying
-    the interpersonal_transparency invariant that no raw private text
-    crosses the YouTube boundary.
+    semantics. Sentinel tokens are replaced with a neutral placeholder;
+    explicit private/non-broadcast route markers cause the field to be
+    omitted because those markers identify content that has no public
+    description authority.
     """
     if text is None:
         return None
-    return _PRIVATE_SENTINEL_PATTERN.sub(_REDACTION_PLACEHOLDER, text)
+    redacted = _PRIVATE_SENTINEL_PATTERN.sub(_REDACTION_PLACEHOLDER, str(text))
+    if _PRIVATE_NONBROADCAST_MARKER_PATTERN.search(
+        redacted
+    ) or _UPPERCASE_PRIVATE_TOKEN_PATTERN.search(redacted):
+        return None
+    redacted = re.sub(r"[ \t]+", " ", redacted).strip()
+    return redacted or None
+
+
+def _description_url_is_public_safe(url: Any) -> bool:
+    if url is None:
+        return False
+    text = str(url).strip()
+    return bool(text) and not description_text_has_private_marker(text)
+
+
+def _metadata_blocks_public_description(value: Any, *, key: str | None = None) -> bool:
+    key_l = key.lower() if isinstance(key, str) else None
+    if key_l in _FALSE_PUBLIC_FLAGS and value is False:
+        return True
+    if key_l in _TRUE_PRIVATE_FLAGS and value is True:
+        return True
+    if key_l in _PRIVATE_POSTURE_FIELDS and isinstance(value, str):
+        normalized = value.strip().lower().replace("-", "_")
+        if normalized in _PRIVATE_POSTURE_VALUES:
+            return True
+    if isinstance(value, str):
+        return description_text_has_private_marker(value)
+    if isinstance(value, Mapping):
+        return any(
+            _metadata_blocks_public_description(item_value, key=str(item_key))
+            for item_key, item_value in value.items()
+        )
+    if isinstance(value, list | tuple | set):
+        return any(_metadata_blocks_public_description(item) for item in value)
+    return False
 
 
 def _redact_attribution_entries(entries: list[Any] | None) -> list[Any] | None:
@@ -151,20 +247,33 @@ def _redact_attribution_entries(entries: list[Any] | None) -> list[Any] | None:
         return entries
     out: list[Any] = []
     for entry in entries:
+        if _attribution_entry_blocks_public_description(entry):
+            continue
         title = getattr(entry, "title", None)
         url = getattr(entry, "url", "")
-        title_redacted = _redact_private_sentinels(title) if title else title
-        url_has_sentinel = bool(url) and bool(_PRIVATE_SENTINEL_PATTERN.search(url))
-        if url_has_sentinel:
+        title_redacted = sanitize_description_text(title) if title else title
+        url_safe = _description_url_is_public_safe(url)
+        if not url_safe:
             # URL-bearing sentinel cannot be safely redacted in a URL
-            # field — drop the whole entry so the rendered Sources block
-            # never references the sentinel directly or via a redirect.
+            # field. Likewise, private/non-broadcast source markers in a
+            # URL mean the entire entry lacks public-description authority.
             continue
-        if title_redacted == title and not url_has_sentinel:
+        if title_redacted == title:
             out.append(entry)
             continue
         out.append(_RedactedAttribution(entry=entry, title=title_redacted, url=url))
     return out
+
+
+def _attribution_entry_blocks_public_description(entry: Any) -> bool:
+    metadata = getattr(entry, "metadata", None)
+    source = getattr(entry, "source", None)
+    kind = getattr(entry, "kind", None)
+    return (
+        _metadata_blocks_public_description(metadata)
+        or description_text_has_private_marker(source)
+        or description_text_has_private_marker(kind)
+    )
 
 
 class _RedactedAttribution:
@@ -213,11 +322,11 @@ def assemble_description(
     block. This is the single gate between private metadata sources
     and the public YouTube description.
     """
-    condition_id = _redact_private_sentinels(condition_id) or ""
-    claim_id = _redact_private_sentinels(claim_id)
-    objective_title = _redact_private_sentinels(objective_title)
-    substrate_model = _redact_private_sentinels(substrate_model) or ""
-    extra = _redact_private_sentinels(extra)
+    condition_id = sanitize_description_text(condition_id) or "unknown"
+    claim_id = sanitize_description_text(claim_id)
+    objective_title = sanitize_description_text(objective_title)
+    substrate_model = sanitize_description_text(substrate_model) or "unknown"
+    extra = sanitize_description_text(extra)
     attributions = _redact_attribution_entries(attributions)
 
     lines = [f"Condition: {condition_id}"]
