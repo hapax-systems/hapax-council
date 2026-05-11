@@ -113,7 +113,7 @@ class TestEventCollection:
 
         events: list[CascadeEvent] = []
         if current_stance != prev_stance:
-            stances = ["nominal", "cautious", "degraded", "critical"]
+            stances = ["nominal", "seeking", "cautious", "degraded", "critical"]
             improving = stances.index(current_stance) < stances.index(prev_stance)
             events.append(
                 CascadeEvent(

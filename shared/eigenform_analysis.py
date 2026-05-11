@@ -26,7 +26,7 @@ NUMERIC_FIELDS = [
     "restriction_residual_rms",
 ]
 
-STANCE_MAP = {"nominal": 0.0, "cautious": 0.25, "degraded": 0.5, "critical": 1.0}
+STANCE_MAP = {"nominal": 0.0, "seeking": 0.1, "cautious": 0.25, "degraded": 0.5, "critical": 1.0}
 
 
 def _vectorize(entry: dict) -> list[float]:
