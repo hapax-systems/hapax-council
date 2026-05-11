@@ -11,7 +11,8 @@
     "docs/refusal-briefs/leverage-consulting-methodology-as-service.md",
     "docs/refusal-briefs/leverage-discord-community.md",
     "closed-task:leverage-money-lightning-nostr-zaps",
-    "closed-task:leverage-money-liberapay-recurring"
+    "closed-task:leverage-money-liberapay-recurring",
+    "cc-task:research-github-sponsors"
   ],
   "no_perk_support_doctrine": {
     "doctrine_id": "no_perk_instrument_support",
@@ -262,18 +263,23 @@
       "surface_id": "github_sponsors",
       "display_name": "GitHub Sponsors",
       "surface_family": "patronage",
-      "money_form": "GitHub Sponsors funding file or repo sponsor button",
-      "decision": "refusal_conversion",
-      "automation_class": "REFUSAL_ARTIFACT",
+      "money_form": "GitHub Sponsors org profile and repo sponsor button",
+      "decision": "guarded",
+      "automation_class": "GUARDED",
       "no_perk_required": true,
       "aggregate_only_receipts": true,
-      "readiness_gates": [],
-      "allowed_public_copy": [],
-      "refusal_brief_refs": [
-        "docs/refusal-briefs/sponsorships-multi-user-pattern.md"
+      "readiness_gates": [
+        "support_surface_registry.no_perk_copy_valid",
+        "github_sponsors_profile_public",
+        "github_sponsors_tiers_no_perk",
+        "payment_aggregator_v2.aggregate_only_projection"
       ],
-      "buildable_conversion": "Keep has_sponsorships=false and no FUNDING.yml; route to no-perk support page and license-request intake.",
-      "notes": "Refused as a multi-user-shape affordance on pushable repos."
+      "allowed_public_copy": [
+        "GitHub Sponsors support keeps compute, archive storage, rights-safe production, and publication plumbing running. It buys no access, requests, priority, deliverables, or control."
+      ],
+      "refusal_brief_refs": [],
+      "buildable_conversion": null,
+      "notes": "Reopened only as a receive-only org rail with no perks and aggregate-only receipts; older sponsorware and multi-user affordance copy remains refused."
     },
     {
       "surface_id": "patreon",

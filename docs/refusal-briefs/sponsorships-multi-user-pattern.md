@@ -3,16 +3,21 @@
 **Slug:** `repo-pres-funding-yml-disable`
 **Axiom tag:** `single_user` + `corporate_boundary`
 **Refusal classification:** Multi-user-shape affordance
-**Status:** REFUSED — operator's pushable repos keep `has_sponsorships=false`.
+**Status:** SUPERSEDED for `hapax-systems/hapax-council` receive-only org support; still refused for sponsorware, perks, private access, repo-setting automation, and generic multi-user monetization shapes.
 **Date:** 2026-04-26
 **Source research:** drop 3 §3, drop 4 §10
 
 ## What is refused
 
-GitHub Sponsorships UI on the operator's pushable repos:
-- The "Sponsor this project" button on repo headers
-- The `.github/FUNDING.yml` file (no funding-link declaration)
-- The repo Settings → Sponsorships → "Enable sponsorships" toggle
+GitHub Sponsorships UI that sells or implies a multi-party service relationship:
+- Sponsor tiers with access, requests, private advice, priority, shoutouts,
+  guarantees, client service, deliverables, or control
+- Sponsorware, early-access, exclusive-content, role-gate, or request-queue copy
+- Agent/script automation that toggles repo Settings with `has_sponsorships=true`
+
+The `research-github-sponsors` task reopens one narrow receive-only surface:
+`hapax-systems` org Sponsors metadata, `.github/FUNDING.yml`, and no-perk
+donation tiers whose public receipts remain aggregate-only.
 
 ## Why this is refused
 
@@ -30,23 +35,29 @@ Sponsorships is a marketing affordance: it optimises for visibility + monetisati
 
 ## Daemon-tractable boundary
 
-`scripts/disable-sponsorships.sh` issues `gh api PATCH` for each of the 7 pushable repos to set `has_sponsorships=false`. Idempotent — re-running after first success is a no-op. Operator runs once; CI drift check (monthly) re-asserts the flag.
+`scripts/disable-sponsorships.sh` remains the rollback path for repositories
+that should not expose Sponsorships. It is not the activation path for
+`hapax-systems/hapax-council`; activation uses GitHub Sponsors profile/tier
+GraphQL/dashboard setup plus `.github/FUNDING.yml`.
 
 ## Refused implementation
 
-- NO `.github/FUNDING.yml` in any pushable repo
-- NO `has_sponsorships=true` in any pushable repo's Settings
-- NO recommendation that the operator enable Sponsorships
-- NO sponsor-tier rendering on any operator-facing surface
+- NO perk-bearing GitHub Sponsors tiers
+- NO sponsorware, early access, private channels, request queues, role gates,
+  priority response, name acknowledgments, leaderboards, client service, or
+  ad-read deliverables
+- NO agent/script mutation that sets `has_sponsorships=true`
+- NO sponsor identity or comment projection in public receipt state
 
 ## Lift conditions
 
-This refusal cannot lift while:
+The original broad refusal cannot lift while:
 
 - The `single_user` axiom is in effect (constitutional, weight 100)
 - The corporate-boundary axiom is in effect (constitutional, weight 90)
 
-Lift would require constitutional amendment on either axis.
+The receive-only org support exception is valid only while it preserves the
+no-perk doctrine and aggregate-only receipt policy.
 
 ## Cross-references
 
