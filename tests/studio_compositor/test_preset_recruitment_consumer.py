@@ -242,6 +242,25 @@ def test_process_dispatches_transition_on_first_recruitment(
     assert any(g.get("marker") == "fake-graph" for g in captured_writes)
 
 
+def test_process_honors_fx_autonomous_mutation_disable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agents.studio_compositor.preset_family_selector import family_names
+
+    fam = next(iter(family_names()))
+    ts = time.time()
+    _write_recruitment(prc.RECRUITMENT_FILE, fam, ts=ts)
+    monkeypatch.setenv("HAPAX_FX_AUTONOMOUS_MUTATIONS", "0")
+    monkeypatch.setattr(
+        prc,
+        "pick_and_load_mutated",
+        lambda *a, **kw: pytest.fail("disabled recruitment must not pick a preset"),
+    )
+
+    assert prc.process_preset_recruitment() is False
+    assert prc._last_recruitment_ts_seen == ts
+
+
 def test_process_rejects_expired_recruitment_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
     from agents.studio_compositor.preset_family_selector import family_names
 

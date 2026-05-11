@@ -337,3 +337,19 @@ def test_build_pipeline_isolates_v4l2_output_tee_branch_with_queue(
     assert output_tee.requested_pads[0].linked_to is v4l2_queue.static_pads["sink"]
     assert v4l2_queue.static_pads["sink"].probes
     assert v4l2_interpipe.static_pads["sink"].probes
+
+
+def test_build_pipeline_honors_smooth_delay_disable_env(monkeypatch: object) -> None:
+    _reset_fake_gst()
+    _patch_build_pipeline_edges(monkeypatch)
+    calls: list[object] = []
+    monkeypatch.setattr(
+        pipeline_module, "add_smooth_delay_branch", lambda *args: calls.append(args)
+    )
+    monkeypatch.setenv("HAPAX_COMPOSITOR_DISABLE_SMOOTH_DELAY", "1")
+
+    compositor = _fake_compositor()
+    pipeline_module.build_pipeline(compositor)
+
+    assert calls == []
+    assert compositor._fx_smooth_delay is None
