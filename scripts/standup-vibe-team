@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# One-shot operator entry point to provision the Vibe relay team.
+
+set -euo pipefail
+
+WORKTREE_ROOT="${HAPAX_VIBE_WORKTREE_ROOT:-$HOME/projects}"
+COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$WORKTREE_ROOT/hapax-council}"
+RELAY_DIR="${HAPAX_VIBE_RELAY_DIR:-$HOME/.cache/hapax/relay}"
+LANES=(${HAPAX_VIBE_LANES:-vbe-1 vbe-2})
+LAUNCHER="${HAPAX_VIBE_LAUNCHER:-$COUNCIL_DIR/scripts/hapax-vibe}"
+
+ts_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+say() { printf '[standup-vibe] %s\n' "$*" >&2; }
+warn() { printf '[standup-vibe WARN] %s\n' "$*" >&2; }
+fail() { printf '[standup-vibe FAIL] %s\n' "$*" >&2; exit 1; }
+
+VIBE_BIN="$(command -v vibe || true)"
+[ -n "$VIBE_BIN" ] || fail "vibe binary not on PATH (install: uv tool install mistral-vibe)"
+say "vibe binary: $VIBE_BIN ($("$VIBE_BIN" --version 2>/dev/null | head -1 || echo unknown))"
+
+if [ -z "${MISTRAL_API_KEY:-}" ] && [ -r "$HOME/.vibe/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$HOME/.vibe/.env"
+  set +a
+fi
+[ -n "${MISTRAL_API_KEY:-}" ] || fail "MISTRAL_API_KEY not set"
+
+[ -x "$LAUNCHER" ] || warn "hapax-vibe launcher missing or not executable at $LAUNCHER"
+mkdir -p "$RELAY_DIR"
+
+ensure_lane() {
+  local lane="$1"
+  local workdir="$WORKTREE_ROOT/hapax-council--$lane"
+  local branch="vibe/$lane/scratch"
+
+  if [ ! -d "$workdir" ]; then
+    if [ "${HAPAX_VIBE_CREATE_WORKTREE:-1}" = "0" ]; then
+      mkdir -p "$workdir"
+    elif git -C "$COUNCIL_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      local base="origin/main"
+      git -C "$COUNCIL_DIR" rev-parse --verify --quiet "$base" >/dev/null 2>&1 || base="HEAD"
+      if git -C "$COUNCIL_DIR" show-ref --verify --quiet "refs/heads/$branch"; then
+        git -C "$COUNCIL_DIR" worktree add "$workdir" "$branch" >/dev/null
+      else
+        git -C "$COUNCIL_DIR" worktree add -b "$branch" "$workdir" "$base" >/dev/null
+      fi
+    else
+      mkdir -p "$workdir"
+    fi
+  fi
+
+  local agents_path="$workdir/AGENTS.md"
+  if [ ! -f "$agents_path" ] || head -1 "$agents_path" 2>/dev/null | grep -qF '<!-- HAPAX-VIBE-MANAGED'; then
+    cat > "$agents_path" <<EOF_AGENTS
+<!-- HAPAX-VIBE-MANAGED: regenerated on every hapax-vibe launch. Do not hand-edit. -->
+
+# Hapax Vibe Lane - $lane
+
+Read ~/.cache/hapax/relay/onboarding-vbe.md first, then invoke the
+relay-protocol skill. Worktree: $workdir.
+EOF_AGENTS
+  fi
+
+  local status_file="$RELAY_DIR/$lane.yaml"
+  if [ ! -f "$status_file" ] || [ "${HAPAX_STANDUP_FORCE_STATUS:-0}" = "1" ]; then
+    cat > "$status_file" <<EOF_STATUS
+session: $lane
+updated: '$(ts_utc)'
+role: vbe-* JR+ lane - Mistral Medium 3.5
+session_status: |
+  STANDBY - lane is provisioned but no task claimed. Dispatch via:
+    hapax-vibe --session $lane --task <cc-task-id>
+worktree: $workdir
+worktree_branch: $branch
+model: mistral-medium-3.5
+interface: vibe
+tier: jr-plus
+last_standup: '$(ts_utc)'
+EOF_STATUS
+    say "$lane: wrote status file $status_file"
+  else
+    say "$lane: status file exists - preserving"
+  fi
+}
+
+for lane in "${LANES[@]}"; do
+  ensure_lane "$lane"
+done
+
+cat >&2 <<EOF_SUMMARY
+
+Vibe relay team is up.
+
+Launch a lane:
+  hapax-vibe --session vbe-1 --task <cc-task-id>
+
+Health check:
+  hapax-vibe-health
+EOF_SUMMARY
