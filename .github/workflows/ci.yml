@@ -610,13 +610,22 @@ jobs:
           # 50 commits is sufficient for typical PRs.
           fetch-depth: 50
       - name: Run Gitleaks CLI
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: |
+          log_opts="--max-count=50"
+          if [ "$GITHUB_EVENT_NAME" = "merge_group" ]; then
+            # Merge queue uses a synthetic squash commit; scanning 50 linear
+            # ancestors there walks unrelated parent history.
+            log_opts="--max-count=1"
+          fi
           docker run --rm \
             --entrypoint sh \
+            -e GITLEAKS_LOG_OPTS="$log_opts" \
             -v "$PWD":/repo \
             -w /repo \
             ghcr.io/gitleaks/gitleaks:v8.30.1 \
-            -c 'git config --global --add safe.directory /repo && gitleaks git --redact --log-opts="--max-count=50" /repo'
+            -c 'git config --global --add safe.directory /repo && gitleaks git --redact --log-opts="$GITLEAKS_LOG_OPTS" /repo'
 
   security:
     runs-on: ubuntu-latest
