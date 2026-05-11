@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import re as _re
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -473,6 +474,18 @@ def _build_full_segment_prompt(
         "forceful, and intelligible to humans. Use marked analogies when useful. Do "
         "not claim human feeling, empathy, taste, intuition, memory, concern, or a "
         "human host identity.\n\n"
+        "== CRITICAL: HAPAX VOICE — NOT A PODCAST HOST ==\n"
+        "Hapax is a nonhuman cognitive substrate, NOT a human presenter.\n"
+        "BANNED phrases (these FAIL validation):\n"
+        "- Collective we/our/let's: 'We'll', 'Our first', 'Let's dive', 'we have'\n"
+        "- Stock host greetings: 'welcome to', 'hello everyone', 'thanks for joining'\n"
+        "- Stock transitions: 'Moving on', 'without further ado', 'before we go'\n"
+        "- Audience pandering: 'feel free', 'share your thoughts', 'drop it in the chat'\n"
+        "INSTEAD use Hapax voice:\n"
+        "- 'The evidence shifts here' not 'Let's move on'\n"
+        "- 'This source changes the ranking' not 'We'll see why this matters'\n"
+        "- 'The chart requires a response from chat' not 'Feel free to share your thoughts'\n"
+        "- Third person or bare assertions: 'The data shows', 'This collapses', 'Notice the gap'\n\n"
         "RHETORIC — every beat must satisfy ALL of these:\n"
         "1. CLAIM → EVIDENCE → SO-WHAT → IMPLICATION chain per beat.\n"
         "2. Every sentence has at least one TECHNICAL NOUN or PROPER NAME.\n"
@@ -572,6 +585,31 @@ def _record_llm_call(
     }
     calls.append(record)
     return record
+
+
+_HOST_COLLECTIVE_RE = _re.compile(
+    r"(?i)\b(?:we'(?:ll|re|ve)|we (?:are|have|can|will|need|should|want|must))\b"
+)
+_HOST_STOCK_RE = _re.compile(
+    r"(?i)(?:"
+    r"[Ww]elcome to|[Tt]hanks for (?:joining|tuning|watching|listening)|"
+    r"[Hh]ello everyone|[Mm]oving on|[Ww]ithout further ado|"
+    r"[Ff]eel free to|[Ss]hare your thoughts|[Ss]tay tuned|"
+    r"[Aa]s (?:always|we mentioned))"
+)
+
+
+def _scrub_host_posture(script: list[str]) -> list[str]:
+    """Best-effort rewrite of common host-posture violations."""
+    out: list[str] = []
+    for beat in script:
+        cleaned = _HOST_STOCK_RE.sub("", beat)
+        cleaned = _HOST_COLLECTIVE_RE.sub("The analysis", cleaned)
+        cleaned = _re.sub(r"\b[Oo]ur (first|second|third|next|final)", r"The \1", cleaned)
+        cleaned = _re.sub(r"\b[Ll]et'?s (\w+)", r"The argument \1s", cleaned)
+        cleaned = _re.sub(r"  +", " ", cleaned).strip()
+        out.append(cleaned)
+    return out
 
 
 def _call_llm(
@@ -1219,6 +1257,8 @@ def prep_segment(
             prog_id,
         )
         model_contract = None
+    script = _scrub_host_posture(script)
+
     actionability = validate_segment_actionability(
         script,
         [str(item) for item in beats],
