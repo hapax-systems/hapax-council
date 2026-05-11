@@ -186,6 +186,7 @@ from shared.programme_revenue_braid_adapters import (
     ProgrammeFeedbackBraidProjection,
     load_programme_revenue_braid_adapter_fixtures,
 )
+from shared.publication_hardening.review import ReviewClaim, ReviewReport
 from shared.scrim_health_fixtures import (
     ScrimHealthExpectedOutcome,
     ScrimHealthFixture,
@@ -935,6 +936,12 @@ _RuntimeReadbackRef._digest_is_sha256
 # The evaluator is the sole public path from private to public.
 BridgeResult._no_public_without_authorization
 evaluate_bridge
+
+# Publication-hardening review reports use Pydantic field validators for
+# model-loaded LLM JSON. Pydantic invokes them dynamically.
+ReviewClaim._coerce_issues
+ReviewReport._coerce_claims
+ReviewReport._coerce_flagged_issues
 
 # Awareness-digest watcher loop is the public entrypoint wired into
 # `run_loops_aux` by the daemon's voice path in a follow-up; per the

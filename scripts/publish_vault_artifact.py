@@ -21,6 +21,7 @@ Optional:
   surfaces_targeted: list[str]  # else default to [zenodo-doi, omg-weblog]
   attribution_block: str        # else inferred from operator + co-authors
   abstract:          str        # else first ~500 chars of body
+  author_model:      str        # reviewer author-model hint
   doi:               str        # for cross-citation
 
 ## Approval semantics
@@ -134,12 +135,18 @@ def _build_artifact(
     frontmatter: dict,
     surfaces: list[str],
     approver: str,
+    source_path: Path | None = None,
 ) -> PreprintArtifact:
     title = frontmatter.get("title") or _extract_first_heading(body_md) or "Untitled"
     slug = frontmatter.get("slug") or _slugify(title)
     abstract = frontmatter.get("abstract") or _summarize(body_md, max_chars=500)
     attribution = frontmatter.get("attribution_block") or ""
     doi = frontmatter.get("doi") or None
+    author_model = _optional_string(
+        frontmatter.get("author_model")
+        or frontmatter.get("draft_author_model")
+        or frontmatter.get("llm_model")
+    )
 
     co_authors = _resolve_co_authors(frontmatter)
     kwargs: dict = {
@@ -153,6 +160,10 @@ def _build_artifact(
     }
     if co_authors:
         kwargs["co_authors"] = co_authors
+    if source_path is not None:
+        kwargs["source_path"] = str(source_path)
+    if author_model:
+        kwargs["author_model"] = author_model
 
     artifact = PreprintArtifact(**kwargs)
     artifact.mark_approved(by_referent=approver)
@@ -194,6 +205,13 @@ def _parse_surfaces(raw: str | None) -> list[str]:
     if not raw:
         return DEFAULT_SURFACES
     return [s.strip() for s in raw.split(",") if s.strip()]
+
+
+def _optional_string(value: object) -> str | None:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -245,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
         frontmatter=frontmatter,
         surfaces=surfaces,
         approver=args.approver,
+        source_path=args.path.expanduser().resolve(),
     )
 
     payload = artifact.model_dump_json(indent=2)

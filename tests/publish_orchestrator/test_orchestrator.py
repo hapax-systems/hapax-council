@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from unittest import mock
 
@@ -10,6 +11,7 @@ from prometheus_client import CollectorRegistry
 
 from agents.publish_orchestrator.orchestrator import Orchestrator
 from shared.preprint_artifact import PreprintArtifact
+from shared.publication_hardening.review import ReviewReport
 
 
 def _drop_artifact(
@@ -18,6 +20,8 @@ def _drop_artifact(
     slug: str,
     surfaces: list[str],
     body_md: str = "Body.",
+    source_path: Path | None = None,
+    author_model: str | None = None,
 ) -> Path:
     """Write an approved PreprintArtifact JSON to inbox/."""
     artifact = PreprintArtifact(
@@ -26,6 +30,8 @@ def _drop_artifact(
         abstract="Brief.",
         body_md=body_md,
         surfaces_targeted=surfaces,
+        source_path=str(source_path) if source_path is not None else None,
+        author_model=author_model,
     )
     artifact.mark_approved(by_referent="Oudepode")
     inbox_path = artifact.inbox_path(state_root=state_root)
@@ -34,11 +40,47 @@ def _drop_artifact(
     return inbox_path
 
 
+class _ApprovingReviewPass:
+    def review_text(
+        self,
+        text: str,
+        *,
+        author_model: str | None = None,
+        lint_report: str | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> ReviewReport:
+        del text, lint_report, metadata
+        return ReviewReport(
+            reviewer_model="test-reviewer",
+            author_model=author_model,
+            overall_confidence=0.99,
+        )
+
+
+class _HoldingReviewPass:
+    def review_text(
+        self,
+        text: str,
+        *,
+        author_model: str | None = None,
+        lint_report: str | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> ReviewReport:
+        del text, lint_report, metadata
+        return ReviewReport(
+            reviewer_model="test-reviewer",
+            author_model=author_model,
+            overall_confidence=0.2,
+            flagged_issues=("tone too promotional",),
+        )
+
+
 def _make_orchestrator(state_root: Path, *, surface_registry: dict[str, str]) -> Orchestrator:
     return Orchestrator(
         state_root=state_root,
         surface_registry=surface_registry,
         public_event_path=state_root / "public-events.jsonl",
+        review_pass=_ApprovingReviewPass(),
         registry=CollectorRegistry(),
     )
 
@@ -106,6 +148,50 @@ class TestSingleSurface:
         surface_event = next(event for event in events if event["event_id"].endswith(":fake:ok"))
         assert surface_event["surface_policy"]["dry_run_reason"] == ("surface_policy_denied:fake")
         assert "Body." not in json.dumps(surface_event)
+
+    def test_cross_provider_review_hold_suppresses_surface_dispatch(self, tmp_path, monkeypatch):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        source = tmp_path / "draft.md"
+        source.write_text("---\ntitle: Held\n---\n\nBody\n", encoding="utf-8")
+        _drop_artifact(
+            tmp_path,
+            slug="held-for-review",
+            surfaces=["fake"],
+            source_path=source,
+            author_model="codex",
+        )
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=_HoldingReviewPass(),
+            registry=CollectorRegistry(),
+        )
+
+        assert orch.run_once() == 1
+        fake_module.publish_artifact.assert_not_called()
+
+        assert not (tmp_path / "publish/inbox/held-for-review.json").exists()
+        assert not (tmp_path / "publish/published/held-for-review.json").exists()
+        assert not (tmp_path / "publish/failed/held-for-review.json").exists()
+
+        draft = json.loads((tmp_path / "publish/draft/held-for-review.json").read_text())
+        assert draft["approval"] == "withheld"
+        assert draft["publication_review"]["overall_confidence"] == 0.2
+        assert draft["publication_review"]["author_model"] == "codex"
+
+        frontmatter = source.read_text(encoding="utf-8").split("---", 2)[1]
+        assert "publication_review:" in frontmatter
+        assert "overall_confidence: 0.2" in frontmatter
+
+        review_log = json.loads(
+            (tmp_path / "publish/log/held-for-review.cross-provider-review.json").read_text()
+        )
+        assert review_log["result"] == "operator_hold"
+        assert review_log["flagged_issues"] == ["tone too promotional"]
 
     def test_publisher_raises_logs_error(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()

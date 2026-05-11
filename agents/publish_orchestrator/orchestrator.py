@@ -61,11 +61,17 @@ from prometheus_client import REGISTRY, CollectorRegistry, Counter
 from agents.publication_bus.surface_registry import dispatch_registry
 from shared.preprint_artifact import (
     INBOX_DIR_NAME,
+    ApprovalState,
     PreprintArtifact,
 )
 from shared.publication_artifact_public_event import (
     PublicationArtifactEventStage,
     build_publication_artifact_public_event,
+)
+from shared.publication_hardening.review import (
+    ReviewPass,
+    ReviewReport,
+    attach_review_report_to_frontmatter,
 )
 from shared.research_vehicle_public_event import ResearchVehiclePublicEvent
 
@@ -201,6 +207,7 @@ class Orchestrator:
         state_root: Path | None = None,
         surface_registry: dict[str, str] | None = None,
         public_event_path: Path | None = PUBLIC_EVENT_PATH,
+        review_pass: ReviewPass | None = None,
         registry: CollectorRegistry = REGISTRY,
         tick_s: float = DEFAULT_TICK_S,
         max_workers: int = 8,
@@ -210,6 +217,7 @@ class Orchestrator:
             surface_registry if surface_registry is not None else SURFACE_REGISTRY
         )
         self._public_event_path = public_event_path
+        self._review_pass = review_pass if review_pass is not None else ReviewPass()
         self._tick_s = max(1.0, tick_s)
         self._max_workers = max(1, max_workers)
         self._stop_evt = threading.Event()
@@ -272,6 +280,14 @@ class Orchestrator:
         if not artifact.surfaces_targeted:
             log.warning("artifact %s has no surfaces_targeted; skipping", artifact.slug)
             return
+
+        review = self._review_artifact(artifact)
+        artifact.publication_review = review.to_frontmatter()
+        self._attach_review_frontmatter(artifact, review)
+        if not review.passes():
+            self._withhold_for_review(artifact, review)
+            return
+
         artifact_fingerprint = _artifact_fingerprint(artifact)
         self._record_public_event(
             artifact,
@@ -367,6 +383,73 @@ class Orchestrator:
         except Exception:  # noqa: BLE001
             log.exception("publisher %s raised for artifact %s", surface, artifact.slug)
             return "error"
+
+    def _review_artifact(self, artifact: PreprintArtifact) -> ReviewReport:
+        text = _artifact_review_text(artifact)
+        return self._review_pass.review_text(
+            text,
+            author_model=_artifact_author_model(artifact),
+            metadata={
+                "slug": artifact.slug,
+                "title": artifact.title,
+                "source_path": artifact.source_path,
+                "surfaces_targeted": artifact.surfaces_targeted,
+            },
+        )
+
+    def _withhold_for_review(self, artifact: PreprintArtifact, review: ReviewReport) -> None:
+        artifact.approval = ApprovalState.WITHHELD
+        artifact.publication_review = review.to_frontmatter()
+        draft = artifact.draft_path(state_root=self._state_root)
+        inbox = artifact.inbox_path(state_root=self._state_root)
+        draft.parent.mkdir(parents=True, exist_ok=True)
+        draft.write_text(artifact.model_dump_json(indent=2))
+        try:
+            inbox.unlink()
+        except FileNotFoundError:
+            pass
+        review_log = (
+            self._state_root / "publish" / "log" / f"{artifact.slug}.cross-provider-review.json"
+        )
+        review_log.parent.mkdir(parents=True, exist_ok=True)
+        review_log.write_text(
+            json.dumps(
+                {
+                    "slug": artifact.slug,
+                    "surface": "cross-provider-review",
+                    "result": "operator_hold",
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "overall_confidence": review.overall_confidence,
+                    "flagged_issues": list(review.flagged_issues),
+                },
+                sort_keys=True,
+            )
+        )
+        self.dispatches_total.labels(surface="cross-provider-review", result="operator_hold").inc()
+        log.warning(
+            "publication review held %s at %.2f: %s",
+            artifact.slug,
+            review.overall_confidence,
+            "; ".join(review.flagged_issues),
+        )
+
+    def _attach_review_frontmatter(self, artifact: PreprintArtifact, review: ReviewReport) -> None:
+        if not artifact.source_path:
+            return
+        source_path = Path(artifact.source_path).expanduser()
+        if source_path.suffix.lower() not in {".md", ".markdown"}:
+            return
+        try:
+            attached = attach_review_report_to_frontmatter(source_path, review)
+        except Exception:  # noqa: BLE001 - frontmatter writeback must not block dispatch
+            log.warning(
+                "publication review frontmatter write failed for %s",
+                source_path,
+                exc_info=True,
+            )
+            return
+        if not attached:
+            log.warning("publication review frontmatter missing or malformed for %s", source_path)
 
     def _resolve_entry_point(self, surface: str) -> Callable[[PreprintArtifact], str] | None:
         """Cache imports per surface."""
@@ -568,6 +651,30 @@ def _artifact_fingerprint(artifact: PreprintArtifact) -> str:
     return sha256(encoded).hexdigest()
 
 
+def _artifact_review_text(artifact: PreprintArtifact) -> str:
+    return "\n\n".join(
+        part
+        for part in (
+            f"# {artifact.title}",
+            artifact.abstract,
+            artifact.attribution_block,
+            artifact.body_md,
+            artifact.body_html,
+        )
+        if part
+    )
+
+
+def _artifact_author_model(artifact: PreprintArtifact) -> str | None:
+    if artifact.author_model:
+        return artifact.author_model
+    names = {author.name.lower() for author in artifact.co_authors}
+    aliases = {author.alias.lower() for author in artifact.co_authors if author.alias}
+    if "claude code" in names or "claude-code" in aliases:
+        return "claude-code"
+    return None
+
+
 def _load_public_event_ids(path: Path) -> set[str]:
     ids: set[str] = set()
     try:
@@ -596,4 +703,5 @@ __all__ = [
     "SURFACE_REGISTRY",
     "SurfaceResult",
     "_artifact_fingerprint",
+    "_artifact_review_text",
 ]
