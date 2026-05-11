@@ -916,3 +916,90 @@ class TestHostPostureScrub:
 
         result = _scrub_host_posture(["Let's dive into the evidence."])
         assert "let's" not in result[0].lower()
+
+
+class TestTemplateLeak:
+    def test_detects_placeholder_syntax(self) -> None:
+        from shared.segment_quality_actionability import detect_template_leaks
+
+        script = [
+            "This is about {topic} and the {subject} we are discussing.",
+            "Place {item_1} in S-tier because it is the best.",
+        ]
+        leaks = detect_template_leaks(script)
+        assert len(leaks) >= 2
+        assert leaks[0]["failure"] == "narrative_beat_template_leak"
+        assert leaks[0]["beat_index"] == 0
+
+    def test_no_false_positive_on_clean_text(self) -> None:
+        from shared.segment_quality_actionability import detect_template_leaks
+
+        script = [
+            "The source argues that governance is architecture, not policy.",
+            "Place Python in S-tier because it dominates ML frameworks.",
+        ]
+        leaks = detect_template_leaks(script)
+        assert leaks == []
+
+    def test_actionability_rejects_template_leaks(self) -> None:
+        from shared.segment_quality_actionability import validate_segment_actionability
+
+        script = ["This beat is about {topic} which is very interesting."]
+        result = validate_segment_actionability(script)
+        assert result["ok"] is False
+        assert len(result["template_leaks"]) > 0
+
+
+class TestRoleContractValidation:
+    def test_tier_list_requires_ordering_criteria(self) -> None:
+        from shared.segment_quality_actionability import validate_role_contract_fields
+
+        script = [
+            "Here is item one. It is good.",
+            "Here is item two. It is also good.",
+        ]
+        failures = validate_role_contract_fields("tier_list", script)
+        assert any(f["failure"] == "tier_list_requires_ordering_criteria" for f in failures)
+
+    def test_tier_list_passes_with_criteria(self) -> None:
+        from shared.segment_quality_actionability import validate_role_contract_fields
+
+        script = [
+            "We are ranking these languages based on community support.",
+            "Evaluated using three criteria: performance, ecosystem, and ergonomics.",
+        ]
+        failures = validate_role_contract_fields("tier_list", script)
+        ordering_failures = [
+            f for f in failures if f["failure"] == "tier_list_requires_ordering_criteria"
+        ]
+        assert ordering_failures == []
+
+    def test_non_tier_role_skips_ordering_check(self) -> None:
+        from shared.segment_quality_actionability import validate_role_contract_fields
+
+        script = ["A regular rant about technology."]
+        failures = validate_role_contract_fields("rant", script)
+        ordering_failures = [
+            f for f in failures if f["failure"] == "tier_list_requires_ordering_criteria"
+        ]
+        assert ordering_failures == []
+
+    def test_missing_contract_fields(self) -> None:
+        from shared.segment_quality_actionability import validate_role_contract_fields
+
+        script = ["Some content."]
+        failures = validate_role_contract_fields(
+            "tier_list", script, prep_contract={"source_packet_refs": [], "claim_map": []}
+        )
+        contract_failures = [f for f in failures if f["failure"] == "missing_role_contract_fields"]
+        assert any("actionability_map" in str(f.get("missing_keys", [])) for f in contract_failures)
+
+    def test_actionability_wired_with_role(self) -> None:
+        from shared.segment_quality_actionability import validate_segment_actionability
+
+        script = ["Just talking about stuff without any ordering."]
+        result = validate_segment_actionability(script, role_value="tier_list")
+        assert any(
+            f["failure"] == "tier_list_requires_ordering_criteria"
+            for f in result.get("role_contract_failures", [])
+        )
