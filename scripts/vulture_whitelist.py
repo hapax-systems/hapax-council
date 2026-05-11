@@ -6,6 +6,7 @@ framework, subprocess entrypoint, import string, or other dynamic path that
 vulture cannot see. Do not use this as a baseline for ordinary dead code.
 """
 
+from agents.content_programmer.grounding_runner import ProgrammeSequenceGroundingRunner
 from agents.payment_processors.x402.models import Accept, SettlementResponse
 from agents.studio_compositor.final_frame_classifier import (
     classify_final_frame as _classify_final_frame,
@@ -225,6 +226,10 @@ _LivestreamRoleScrimWCSClaimPostureInput._role_state_must_match_scrim_posture
 from shared.segment_observability import SegmentRecorder as _SegmentRecorder
 
 _SegmentRecorder
+
+# Content-programme sequence grounding is wired by scheduler/runner composition
+# through dependency injection; vulture cannot see those dynamic call sites.
+ProgrammeSequenceGroundingRunner.run_sequence
 
 # Deterministic fixture evaluator for segment quality/action/layout contract tests.
 # Test call sites are intentionally outside vulture's production scan.
