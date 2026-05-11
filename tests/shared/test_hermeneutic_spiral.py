@@ -265,3 +265,42 @@ def test_compute_delta_skips_entries_without_source_ref() -> None:
     )
 
     assert len(deltas) == 0
+
+
+def test_persist_call_is_after_segment_save_in_prep_segment() -> None:
+    """persist_source_consequences must run AFTER the segment file is saved."""
+    from pathlib import Path
+
+    source = (Path(__file__).parents[2] / "agents/hapax_daimonion/daily_segment_prep.py").read_text(
+        encoding="utf-8"
+    )
+    save_pos = source.find("tmp.replace(out_path)")
+    persist_pos = source.find("persist_source_consequences(", save_pos)
+    assert save_pos > 0, "segment save not found"
+    assert persist_pos > save_pos, (
+        "persist_source_consequences must appear after segment save "
+        f"(save at {save_pos}, persist at {persist_pos})"
+    )
+
+
+def test_planner_accepts_fore_understanding_kwarg() -> None:
+    """ProgrammePlanner.plan() must accept fore_understanding."""
+    import inspect
+
+    from agents.programme_manager.planner import ProgrammePlanner
+
+    sig = inspect.signature(ProgrammePlanner.plan)
+    assert "fore_understanding" in sig.parameters
+
+
+def test_run_prep_calls_retrieve_broad_fore_understanding() -> None:
+    """run_prep must call _retrieve_broad_fore_understanding before planner."""
+    from pathlib import Path
+
+    source = (Path(__file__).parents[2] / "agents/hapax_daimonion/daily_segment_prep.py").read_text(
+        encoding="utf-8"
+    )
+    assert "_retrieve_broad_fore_understanding()" in source
+    fore_pos = source.find("_retrieve_broad_fore_understanding()")
+    planner_pos = source.find("planner.plan(", fore_pos)
+    assert planner_pos > fore_pos, "fore_understanding retrieval must precede planner call"

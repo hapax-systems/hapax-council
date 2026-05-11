@@ -134,6 +134,7 @@ class ProgrammePlanner:
         profile: dict | None = None,
         condition_history: dict | None = None,
         content_state: dict | None = None,
+        fore_understanding: list[dict] | None = None,
         target_programmes: int | None = None,
     ) -> ProgrammePlan | None:
         """Compose a context block, call the LLM, validate + return.
@@ -151,6 +152,7 @@ class ProgrammePlanner:
             profile=profile,
             condition_history=condition_history,
             content_state=content_state,
+            fore_understanding=fore_understanding,
             target_programmes=target_programmes,
         )
 
@@ -196,6 +198,7 @@ class ProgrammePlanner:
         profile: dict | None,
         condition_history: dict | None,
         content_state: dict | None,
+        fore_understanding: list[dict] | None = None,
         target_programmes: int | None,
     ) -> str:
         """Render the prompt template + per-call context."""
@@ -210,6 +213,7 @@ class ProgrammePlanner:
             profile=profile,
             condition_history=condition_history,
             content_state=content_state,
+            fore_understanding=fore_understanding,
         )
         blocks = [block for block in (target_directive, template) if block]
         prompt_body = "\n\n".join(blocks)
@@ -271,6 +275,7 @@ class ProgrammePlanner:
         profile: dict | None,
         condition_history: dict | None,
         content_state: dict | None,
+        fore_understanding: list[dict] | None = None,
     ) -> str:
         """Render the per-call inputs as a Markdown context block.
 
@@ -300,6 +305,21 @@ class ProgrammePlanner:
         _section("Operator profile", profile)
         _section("Condition history", condition_history)
         _section("Content state", content_state)
+        if fore_understanding:
+            summary = [
+                {
+                    "topic": p.get("topic", ""),
+                    "source_ref": p.get("source_ref", ""),
+                    "consequence_kind": p.get("consequence_kind", ""),
+                }
+                for p in fore_understanding[:10]
+            ]
+            _section(
+                "Fore-understanding (prior source-consequences)",
+                {"encounters": summary, "count": len(fore_understanding)},
+            )
+        else:
+            _section("Fore-understanding (prior source-consequences)", None)
         return "\n".join(parts)
 
     # --- response parsing ------------------------------------------
