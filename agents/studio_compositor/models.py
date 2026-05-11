@@ -44,6 +44,9 @@ class CameraSpec(BaseModel):
     device: str
     width: int = 1280
     height: int = 720
+    # Producer-space orientation normalization before layout/compositing.
+    # Examples: identity, 90r/clockwise, 90l/counterclockwise, 180.
+    orientation: str = "identity"
     input_format: str = "mjpeg"
     pixel_format: str | None = None
     hero: bool = False

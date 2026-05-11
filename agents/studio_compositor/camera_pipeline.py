@@ -25,6 +25,38 @@ from .models import CameraSpec
 
 log = logging.getLogger(__name__)
 
+_ORIENTATION_METHODS: dict[str, int | None] = {
+    "": None,
+    "0": None,
+    "identity": None,
+    "none": None,
+    "normal": None,
+    "90": 1,
+    "90r": 1,
+    "cw": 1,
+    "clockwise": 1,
+    "right": 1,
+    "rotate-90": 1,
+    "rotate-90r": 1,
+    "180": 2,
+    "rotate-180": 2,
+    "upside-down": 2,
+    "-90": 3,
+    "90l": 3,
+    "ccw": 3,
+    "counterclockwise": 3,
+    "counter-clockwise": 3,
+    "left": 3,
+    "rotate--90": 3,
+    "rotate-90l": 3,
+    "hflip": 4,
+    "horizontal": 4,
+    "horizontal-flip": 4,
+    "vflip": 5,
+    "vertical": 5,
+    "vertical-flip": 5,
+}
+
 
 class CameraPipeline:
     """Single v4l2 camera as an isolated producer GstPipeline.
@@ -189,6 +221,15 @@ class CameraPipeline:
             convert = Gst.ElementFactory.make("videoconvert", f"vc_{self._role_safe}")
             convert.set_property("dither", 0)
 
+            flip = self._orientation_element()
+            normalize_scale: Any = None
+            if flip is not None:
+                normalize_scale = Gst.ElementFactory.make(
+                    "videoscale", f"normscale_{self._role_safe}"
+                )
+                if normalize_scale is None:
+                    raise RuntimeError(f"{self._spec.role}: videoscale factory failed")
+
             out_caps = Gst.ElementFactory.make("capsfilter", f"outcaps_{self._role_safe}")
             out_caps.set_property(
                 "caps",
@@ -214,7 +255,12 @@ class CameraPipeline:
                 elements.append(decode_queue)
             if decoder is not None:
                 elements.append(decoder)
-            elements.extend([convert, out_caps, sink])
+            elements.append(convert)
+            if flip is not None:
+                elements.append(flip)
+            if normalize_scale is not None:
+                elements.append(normalize_scale)
+            elements.extend([out_caps, sink])
 
             for el in elements:
                 pipeline.add(el)
@@ -239,13 +285,14 @@ class CameraPipeline:
             self._bus_signal_id = self._bus.connect("message", self._on_bus_message)
 
             log.info(
-                "camera_pipeline %s built (device=%s, %dx%d@%dfps, format=%s)",
+                "camera_pipeline %s built (device=%s, %dx%d@%dfps, format=%s, orientation=%s)",
                 self._spec.role,
                 self._spec.device,
                 self._spec.width,
                 self._spec.height,
                 self._fps,
                 self._spec.input_format,
+                getattr(self._spec, "orientation", "identity"),
             )
 
     def start(self) -> bool:
@@ -383,6 +430,24 @@ class CameraPipeline:
         return raw.strip().lower() in {"1", "true", "yes", "on"}
 
     @staticmethod
+    def _orientation_method(orientation: str | None) -> int | None:
+        key = str(orientation or "").strip().lower().replace("_", "-")
+        if key in _ORIENTATION_METHODS:
+            return _ORIENTATION_METHODS[key]
+        valid = ", ".join(sorted(k for k in _ORIENTATION_METHODS if k))
+        raise ValueError(f"unknown camera orientation {orientation!r}; expected one of: {valid}")
+
+    def _orientation_element(self) -> Any | None:
+        method = self._orientation_method(getattr(self._spec, "orientation", "identity"))
+        if method is None:
+            return None
+        flip = self._Gst.ElementFactory.make("videoflip", f"flip_{self._role_safe}")
+        if flip is None:
+            raise RuntimeError(f"{self._spec.role}: videoflip factory failed")
+        flip.set_property("method", method)
+        return flip
+
+    @staticmethod
     def _select_http_frame_for_push(
         fetched: bytes | None,
         last_good: bytes | None,
@@ -443,6 +508,8 @@ class CameraPipeline:
             raise RuntimeError(f"{self._spec.role}: videoconvert factory failed")
         convert.set_property("dither", 0)
 
+        flip = self._orientation_element()
+
         scale = Gst.ElementFactory.make("videoscale", f"scale_{self._role_safe}")
         if scale is None:
             raise RuntimeError(f"{self._spec.role}: videoscale factory failed")
@@ -471,7 +538,10 @@ class CameraPipeline:
         elements = [src, src_caps, watchdog, decode_queue]
         if jpegparse is not None:
             elements.append(jpegparse)
-        elements.extend([decoder, convert, scale, out_caps, sink])
+        elements.extend([decoder, convert])
+        if flip is not None:
+            elements.append(flip)
+        elements.extend([scale, out_caps, sink])
 
         for el in elements:
             pipeline.add(el)
@@ -493,12 +563,13 @@ class CameraPipeline:
         self._bus_signal_id = self._bus.connect("message", self._on_bus_message)
 
         log.info(
-            "camera_pipeline %s built (http_jpeg=%s, %dx%d@%dfps, fetch=%.1ffps)",
+            "camera_pipeline %s built (http_jpeg=%s, %dx%d@%dfps, orientation=%s, fetch=%.1ffps)",
             self._spec.role,
             self._spec.device,
             self._spec.width,
             self._spec.height,
             self._fps,
+            getattr(self._spec, "orientation", "identity"),
             self._effective_http_fps(),
         )
 
