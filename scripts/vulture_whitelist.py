@@ -318,8 +318,14 @@ _Programme._segmented_content_contract_invariant
 # Test-only reset hook for the in-process rendered-blit readback cache. The
 # production read path is recent_blit_readbacks(); vulture does not scan tests.
 from agents.studio_compositor.fx_chain import clear_blit_readbacks as _clear_blit_readbacks
+from agents.studio_compositor.fx_chain import (
+    clear_layout_composite_cache as _clear_layout_composite_cache,
+)
+from agents.studio_compositor.fx_chain import clear_scaled_blit_cache as _clear_scaled_blit_cache
 
 _clear_blit_readbacks
+_clear_scaled_blit_cache
+_clear_layout_composite_cache
 
 from shared.self_grounding_envelope import (
     SelfPresenceEnvelopeProjection,

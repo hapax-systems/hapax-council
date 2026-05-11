@@ -250,7 +250,7 @@ class InteractiveLoreQueryWard(HomageTransitionalSource):
     def __init__(
         self,
         *,
-        allowlist: ChatAuthorityAllowlist,
+        allowlist: ChatAuthorityAllowlist | None = None,
         backend: LoreBackend = _default_backend,
         chat_state_path: Path = DEFAULT_CHAT_STATE_PATH,
         ring_size: int = DEFAULT_RING_SIZE,
@@ -259,6 +259,12 @@ class InteractiveLoreQueryWard(HomageTransitionalSource):
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         super().__init__(SOURCE_ID)
+        if allowlist is None:
+            anonymizer = AuthorAnonymizer()
+            allowlist = ChatAuthorityAllowlist(
+                anonymizer=anonymizer,
+                channel_ids=load_allowlist_channel_ids(),
+            )
         self._allowlist = allowlist
         self._backend = backend
         self._chat_state_path = chat_state_path

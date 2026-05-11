@@ -12,11 +12,14 @@ paired fallback producer via a thread-safe GObject property write.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 from .models import CameraSpec
 
@@ -62,6 +65,9 @@ class CameraPipeline:
         self._last_frame_monotonic: float = 0.0
         self._rebuild_count = 0
         self._started = False
+        self._http_appsrc: Any = None
+        self._http_stop_event = threading.Event()
+        self._http_thread: threading.Thread | None = None
 
     @property
     def role(self) -> str:
@@ -85,6 +91,10 @@ class CameraPipeline:
         """Construct the GstPipeline graph. Idempotent (no-op if already built)."""
         with self._state_lock:
             if self._pipeline is not None:
+                return
+
+            if self._is_http_jpeg_source():
+                self._build_http_jpeg_pipeline()
                 return
 
             Gst = self._Gst
@@ -235,7 +245,15 @@ class CameraPipeline:
                 log.error("camera_pipeline %s: start called without build", self._spec.role)
                 return False
 
-            if not Path(self._spec.device).exists():
+            if self._is_http_jpeg_source():
+                if not self._http_source_reachable():
+                    log.warning(
+                        "camera_pipeline %s: HTTP JPEG source %s not reachable, deferring start",
+                        self._spec.role,
+                        self._spec.device,
+                    )
+                    return False
+            elif not Path(self._spec.device).exists():
                 log.warning(
                     "camera_pipeline %s: device %s not present, deferring start",
                     self._spec.role,
@@ -249,6 +267,8 @@ class CameraPipeline:
                 log.error("camera_pipeline %s: set_state(PLAYING) FAILURE", self._spec.role)
                 return False
             self._started = True
+            if self._is_http_jpeg_source():
+                self._start_http_push_thread()
             log.info(
                 "camera_pipeline %s started (state change=%s)", self._spec.role, ret.value_nick
             )
@@ -266,6 +286,7 @@ class CameraPipeline:
             if self._pipeline is None:
                 return
             Gst = self._Gst
+            self._stop_http_push_thread()
             self._pipeline.set_state(Gst.State.NULL)
             teardown_start = time.monotonic()
             ret, state, pending = self._pipeline.get_state(timeout=5 * Gst.SECOND)
@@ -295,6 +316,228 @@ class CameraPipeline:
                     pending.value_nick if pending else "?",
                 )
             self._started = False
+
+    def _is_http_jpeg_source(self) -> bool:
+        device = str(getattr(self._spec, "device", "") or "")
+        return getattr(self._spec, "input_format", "") == "http_jpeg" or device.startswith(
+            ("http://", "https://")
+        )
+
+    def _effective_http_fps(self) -> float:
+        raw = os.environ.get("HAPAX_HTTP_JPEG_CAMERA_FPS", "10")
+        try:
+            value = float(raw)
+        except ValueError:
+            log.warning("Invalid HAPAX_HTTP_JPEG_CAMERA_FPS=%r; using 10", raw)
+            value = 10.0
+        return max(1.0, min(float(self._fps), value))
+
+    def _http_timeout_s(self) -> float:
+        raw = os.environ.get("HAPAX_HTTP_JPEG_CAMERA_TIMEOUT_S", "1.0")
+        try:
+            return max(0.1, float(raw))
+        except ValueError:
+            log.warning("Invalid HAPAX_HTTP_JPEG_CAMERA_TIMEOUT_S=%r; using 1.0", raw)
+            return 1.0
+
+    def _build_http_jpeg_pipeline(self) -> None:
+        Gst = self._Gst
+        pipeline = Gst.Pipeline.new(self._pipeline_name)
+
+        src = Gst.ElementFactory.make("appsrc", f"src_{self._role_safe}")
+        if src is None:
+            raise RuntimeError(f"{self._spec.role}: appsrc factory failed")
+        src.set_property("is-live", True)
+        src.set_property("format", Gst.Format.TIME)
+        src.set_property("do-timestamp", True)
+        src.set_property("block", False)
+        # Advertise the compositor cadence even though the fetch loop may
+        # push repeated/stale frames more slowly. Some downstream elements
+        # treat the source caps as the branch contract; using the reduced
+        # HTTP fetch rate here caused IR producer negotiation churn.
+        src.set_property(
+            "caps",
+            Gst.Caps.from_string(f"image/jpeg,framerate={self._fps}/1"),
+        )
+
+        src_caps = Gst.ElementFactory.make("capsfilter", f"srccaps_{self._role_safe}")
+        if src_caps is None:
+            raise RuntimeError(f"{self._spec.role}: capsfilter factory failed")
+        src_caps.set_property("caps", Gst.Caps.from_string(f"image/jpeg,framerate={self._fps}/1"))
+
+        watchdog = Gst.ElementFactory.make("watchdog", f"watchdog_{self._role_safe}")
+        if watchdog is None:
+            raise RuntimeError(f"{self._spec.role}: watchdog element missing")
+        watchdog.set_property("timeout", 2500)
+
+        decode_queue = Gst.ElementFactory.make("queue", f"decq_{self._role_safe}")
+        if decode_queue is None:
+            raise RuntimeError(f"{self._spec.role}: queue factory failed")
+        decode_queue.set_property("max-size-buffers", 5)
+        decode_queue.set_property("max-size-bytes", 0)
+        decode_queue.set_property("max-size-time", 0)
+        decode_queue.set_property("leaky", 2)
+
+        jpegparse = Gst.ElementFactory.make("jpegparse", f"parse_{self._role_safe}")
+        decoder = Gst.ElementFactory.make("jpegdec", f"dec_{self._role_safe}")
+        if decoder is None:
+            raise RuntimeError(f"{self._spec.role}: jpegdec factory failed")
+
+        convert = Gst.ElementFactory.make("videoconvert", f"vc_{self._role_safe}")
+        if convert is None:
+            raise RuntimeError(f"{self._spec.role}: videoconvert factory failed")
+        convert.set_property("dither", 0)
+
+        scale = Gst.ElementFactory.make("videoscale", f"scale_{self._role_safe}")
+        if scale is None:
+            raise RuntimeError(f"{self._spec.role}: videoscale factory failed")
+
+        out_caps = Gst.ElementFactory.make("capsfilter", f"outcaps_{self._role_safe}")
+        if out_caps is None:
+            raise RuntimeError(f"{self._spec.role}: output capsfilter factory failed")
+        out_caps.set_property(
+            "caps",
+            Gst.Caps.from_string(
+                f"video/x-raw,format=NV12,width={self._spec.width},"
+                f"height={self._spec.height},framerate={self._fps}/1"
+            ),
+        )
+
+        sink = Gst.ElementFactory.make("interpipesink", self._sink_name)
+        if sink is None:
+            raise RuntimeError(
+                f"{self._spec.role}: interpipesink factory failed — install gst-plugin-interpipe"
+            )
+        sink.set_property("sync", False)
+        sink.set_property("async", False)
+        sink.set_property("forward-events", False)
+        sink.set_property("forward-eos", False)
+
+        elements = [src, src_caps, watchdog, decode_queue]
+        if jpegparse is not None:
+            elements.append(jpegparse)
+        elements.extend([decoder, convert, scale, out_caps, sink])
+
+        for el in elements:
+            pipeline.add(el)
+        for i in range(len(elements) - 1):
+            if not elements[i].link(elements[i + 1]):
+                raise RuntimeError(
+                    f"{self._spec.role}: failed to link "
+                    f"{elements[i].get_name()} -> {elements[i + 1].get_name()}"
+                )
+
+        sink_pad = sink.get_static_pad("sink")
+        if sink_pad is not None:
+            sink_pad.add_probe(Gst.PadProbeType.BUFFER, self._on_buffer_probe)
+
+        self._http_appsrc = src
+        self._pipeline = pipeline
+        self._bus = pipeline.get_bus()
+        self._bus.add_signal_watch()
+        self._bus_signal_id = self._bus.connect("message", self._on_bus_message)
+
+        log.info(
+            "camera_pipeline %s built (http_jpeg=%s, %dx%d@%dfps, fetch=%.1ffps)",
+            self._spec.role,
+            self._spec.device,
+            self._spec.width,
+            self._spec.height,
+            self._fps,
+            self._effective_http_fps(),
+        )
+
+    def _http_source_reachable(self) -> bool:
+        try:
+            req = urllib_request.Request(
+                str(self._spec.device),
+                headers={"User-Agent": "hapax-studio-compositor/1.0"},
+            )
+            with urllib_request.urlopen(req, timeout=self._http_timeout_s()) as response:
+                return 200 <= int(getattr(response, "status", 200)) < 400
+        except (OSError, urllib_error.URLError, TimeoutError):
+            return False
+
+    def _start_http_push_thread(self) -> None:
+        if self._http_appsrc is None:
+            return
+        if self._http_thread is not None and self._http_thread.is_alive():
+            return
+        self._http_stop_event.clear()
+        self._http_thread = threading.Thread(
+            target=self._http_push_loop,
+            name=f"http-jpeg-{self._role_safe}",
+            daemon=True,
+        )
+        self._http_thread.start()
+
+    def _stop_http_push_thread(self) -> None:
+        self._http_stop_event.set()
+        appsrc = self._http_appsrc
+        if appsrc is not None:
+            try:
+                appsrc.emit("end-of-stream")
+            except Exception:
+                log.debug("camera_pipeline %s: appsrc EOS failed", self._spec.role, exc_info=True)
+        thread = self._http_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+        self._http_thread = None
+
+    def _http_fetch_frame(self) -> bytes | None:
+        try:
+            req = urllib_request.Request(
+                str(self._spec.device),
+                headers={"User-Agent": "hapax-studio-compositor/1.0"},
+            )
+            with urllib_request.urlopen(req, timeout=self._http_timeout_s()) as response:
+                status = int(getattr(response, "status", 200))
+                if not 200 <= status < 400:
+                    return None
+                data = response.read()
+        except (OSError, urllib_error.URLError, TimeoutError):
+            return None
+        if not data:
+            return None
+        return data
+
+    def _http_push_loop(self) -> None:
+        Gst = self._Gst
+        appsrc = self._http_appsrc
+        if appsrc is None:
+            return
+        frame_index = 0
+        last_good: bytes | None = None
+        interval = 1.0 / self._effective_http_fps()
+        duration_ns = int(interval * Gst.SECOND)
+        while not self._http_stop_event.is_set():
+            loop_start = time.monotonic()
+            frame = self._http_fetch_frame()
+            if frame is not None:
+                last_good = frame
+            elif last_good is None:
+                self._http_stop_event.wait(min(interval, 0.25))
+                continue
+            else:
+                frame = last_good
+
+            buf = Gst.Buffer.new_allocate(None, len(frame), None)
+            buf.fill(0, frame)
+            buf.pts = frame_index * duration_ns
+            buf.dts = buf.pts
+            buf.duration = duration_ns
+            frame_index += 1
+            try:
+                ret = appsrc.emit("push-buffer", buf)
+            except Exception:
+                log.debug("camera_pipeline %s: appsrc push raised", self._spec.role, exc_info=True)
+                break
+            if ret != Gst.FlowReturn.OK:
+                log.debug("camera_pipeline %s: appsrc push returned %s", self._spec.role, ret)
+                break
+
+            elapsed = time.monotonic() - loop_start
+            self._http_stop_event.wait(max(0.0, interval - elapsed))
 
     def teardown(self) -> None:
         """Full teardown: NULL + bus disconnect + element release. Idempotent."""
