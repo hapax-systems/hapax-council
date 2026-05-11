@@ -87,6 +87,7 @@ _MAX_RECRUITMENT_FUTURE_S = 2.0
 """Small clock-skew tolerance for writer timestamps."""
 
 _SINGLE_WRITE_TRANSITIONS_ENV = "HAPAX_PRESET_RECRUITMENT_SINGLE_WRITE_TRANSITIONS"
+_FX_AUTONOMOUS_MUTATIONS_ENV = "HAPAX_FX_AUTONOMOUS_MUTATIONS"
 
 _last_activation_t: float = 0.0
 _last_family_activated: str | None = None
@@ -146,6 +147,13 @@ def _recruitment_is_fresh(bias: dict, now_wall: float) -> bool:
 
 def _single_write_transitions_enabled() -> bool:
     return os.environ.get(_SINGLE_WRITE_TRANSITIONS_ENV, "").lower() in {"1", "true", "yes", "on"}
+
+
+def _fx_autonomous_mutations_enabled() -> bool:
+    raw = os.environ.get(_FX_AUTONOMOUS_MUTATIONS_ENV)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in {"0", "false", "no", "off", "disabled"}
 
 
 def _read_recruited_transition() -> str | None:
@@ -268,6 +276,15 @@ def process_preset_recruitment(compositor: Any | None = None) -> bool:
     family = bias.get("family")
     last_recruited_ts = bias.get("last_recruited_ts")
     if not isinstance(family, str) or not isinstance(last_recruited_ts, (int, float)):
+        return False
+    if not _fx_autonomous_mutations_enabled():
+        _last_recruitment_ts_seen = max(_last_recruitment_ts_seen, float(last_recruited_ts))
+        log.info(
+            "preset recruitment suppressed by %s=0 (family=%r, recruitment_ts=%.3f)",
+            _FX_AUTONOMOUS_MUTATIONS_ENV,
+            family,
+            last_recruited_ts,
+        )
         return False
     if not presets_for_family(family):
         log.debug("preset recruitment family unknown: %r", family)

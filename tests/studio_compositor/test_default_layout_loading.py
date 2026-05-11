@@ -434,6 +434,39 @@ def test_load_layout_or_fallback_uses_fallback_on_schema_violation(
     assert any("fallback" in rec.message.lower() for rec in caplog.records)
 
 
+def test_load_layout_or_fallback_rejects_poisoned_default_name(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A runtime ``default.json`` must not silently contain another layout."""
+    import logging
+
+    from agents.studio_compositor.compositor import load_layout_or_fallback
+
+    poisoned = tmp_path / "default.json"
+    poisoned.write_text(
+        json.dumps(
+            {
+                "name": "segment-detail",
+                "sources": [{"id": "artifact-detail-panel", "kind": "cairo", "backend": "cairo"}],
+                "surfaces": [
+                    {"id": "panel", "geometry": {"kind": "rect", "x": 0, "y": 0, "w": 1, "h": 1}}
+                ],
+                "assignments": [{"source": "artifact-detail-panel", "surface": "panel"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    caplog.set_level(logging.WARNING, logger="agents.studio_compositor.compositor")
+
+    layout = load_layout_or_fallback(poisoned)
+
+    assert layout.name == "default"
+    assert len(layout.sources) > 1
+    assert any(
+        "internal name" in rec.message and "repo default" in rec.message for rec in caplog.records
+    )
+
+
 def test_load_layout_or_fallback_fires_ntfy_on_missing_file(tmp_path: Path, monkeypatch) -> None:
     """Post-epic audit Phase 1 finding #6 regression pin.
 

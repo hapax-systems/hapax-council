@@ -20,9 +20,9 @@ from shared.compositor_model import (
 )
 
 
-def _minimal_layout() -> Layout:
+def _minimal_layout(name: str = "default") -> Layout:
     return Layout(
-        name="t",
+        name=name,
         sources=[
             SourceSchema(
                 id="src1",
@@ -98,6 +98,19 @@ def test_autosave_writes_atomically(tmp_path: Path) -> None:
         assert residue == []
     finally:
         saver.stop()
+
+
+def test_autosave_refuses_to_poison_default_with_named_layout(tmp_path: Path, caplog) -> None:
+    layout_file = tmp_path / "default.json"
+    layout_file.write_text(json.dumps(_minimal_layout().model_dump()))
+    state = LayoutState(_minimal_layout(name="segment-detail"))
+    saver = LayoutAutoSaver(state, layout_file, debounce_s=0.05)
+    with caplog.at_level("WARNING"):
+        saver.flush_now()
+
+    on_disk = json.loads(layout_file.read_text())
+    assert on_disk["name"] == "default"
+    assert "refusing to write layout" in caplog.text
 
 
 def test_filewatcher_reloads_on_valid_edit(tmp_path: Path) -> None:

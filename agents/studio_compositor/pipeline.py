@@ -67,6 +67,10 @@ def _make_cudacompositor(Gst: Any) -> Any | None:
     return element
 
 
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _set_optional_property(element: Any, name: str, value: Any, *, context: str) -> None:
     try:
         element.set_property(name, value)
@@ -412,7 +416,11 @@ def build_pipeline(compositor: Any) -> Any:
     # ``fx-snapshot.jpg`` is now the final-egress proof image emitted by
     # V4l2OutputPipeline after a successful /dev/video42 write. Keep that
     # artifact single-owner so a revived sibling tee branch cannot race it.
-    add_smooth_delay_branch(compositor, pipeline, output_tee)
+    if _env_truthy("HAPAX_COMPOSITOR_DISABLE_SMOOTH_DELAY"):
+        compositor._fx_smooth_delay = None
+        log.warning("HAPAX_COMPOSITOR_DISABLE_SMOOTH_DELAY=1 — skipping smooth-delay branch")
+    else:
+        add_smooth_delay_branch(compositor, pipeline, output_tee)
 
     # Phase 5: instantiate the RTMP output bin (detached by default).
     # It is attached on toggle_livestream affordance activation; consent gate

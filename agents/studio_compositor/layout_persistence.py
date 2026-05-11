@@ -4,7 +4,8 @@ These two cooperating threads keep ``~/.config/hapax-compositor/layouts/default.
 and the in-memory ``LayoutState`` coherent:
 
 - :class:`LayoutAutoSaver` subscribes to ``LayoutState`` mutations and
-  writes the current layout to disk after a debounce window. Writes are
+  writes the current layout to disk after a debounce window only when
+  the layout's internal name matches the target filename stem. Writes are
   atomic (tmp + rename). Before returning it calls
   ``LayoutState.mark_self_write`` so the watcher on the other thread
   does not interpret the new mtime as an external edit.
@@ -99,6 +100,15 @@ class LayoutAutoSaver:
 
     def _write(self) -> None:
         layout = self._state.get()
+        expected_name = self._path.stem
+        if expected_name and layout.name != expected_name:
+            log.warning(
+                "LayoutAutoSaver refusing to write layout %r to %s; filename stem is %r",
+                layout.name,
+                self._path,
+                expected_name,
+            )
+            return
         dump = json.dumps(layout.model_dump(), indent=2)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp_fd, tmp_name = tempfile.mkstemp(
