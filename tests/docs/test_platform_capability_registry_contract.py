@@ -10,6 +10,7 @@ import jsonschema
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = REPO_ROOT / "schemas" / "platform-capability-registry.schema.json"
 REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
+SEEDED_ACTIVE_ROUTE_IDS = {"claude.headless.full"}
 
 
 def _json(path: Path) -> dict[str, object]:
@@ -69,13 +70,22 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
     }
 
 
-def test_seed_registry_keeps_absent_evidence_null_or_blocked() -> None:
+def test_seed_registry_keeps_absent_evidence_blocked_unless_explicitly_seeded() -> None:
     registry = _json(REGISTRY)
 
     for route in registry["routes"]:
+        freshness = route["freshness"]
+        if route["route_id"] in SEEDED_ACTIVE_ROUTE_IDS:
+            assert route["route_state"] == "active"
+            assert route["blocked_reasons"] == []
+            assert freshness["capability_checked_at"] is not None
+            assert freshness["quota_checked_at"] is not None
+            assert freshness["resource_checked_at"] is not None
+            assert freshness["provider_docs_checked_at"] is not None
+            continue
+
         assert route["route_state"] == "blocked"
         assert route["blocked_reasons"]
-        freshness = route["freshness"]
         assert freshness["capability_checked_at"] is None
         assert freshness["quota_checked_at"] is None
         assert freshness["resource_checked_at"] is None
