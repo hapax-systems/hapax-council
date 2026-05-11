@@ -432,7 +432,7 @@ class OmgLolClient:
     def delete_entry(self, address: str, entry_id: str) -> dict | None:
         return self._execute(
             "DELETE",
-            f"/address/{address}/weblog/entry/{entry_id}",
+            f"/address/{address}/weblog/delete/{entry_id}",
             endpoint="address.weblog.delete",
         )
 
