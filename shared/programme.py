@@ -898,6 +898,20 @@ _FORBIDDEN_LAYOUT_AUTHORITY_VALUE_PATTERNS = (
 )
 
 
+_LAYOUT_AUTHORITY_EXEMPT_KEYS = frozenset(
+    {
+        "beatid",
+        "beatindex",
+        "actionintentkind",
+        "actionintentkinds",
+        "kind",
+        "sourceactionkind",
+        "sourceaffordance",
+        "hysteresiskey",
+    }
+)
+
+
 def _reject_layout_authority_fields(value: Any, *, prefix: str = "") -> None:
     if isinstance(value, dict):
         for key, nested in value.items():
@@ -909,6 +923,8 @@ def _reject_layout_authority_fields(value: Any, *, prefix: str = "") -> None:
                 raise ValueError(
                     f"ProgrammeContent layout proposals cannot carry concrete layout authority: {path}"
                 )
+            if token in _LAYOUT_AUTHORITY_EXEMPT_KEYS:
+                continue
             _reject_layout_authority_fields(nested, prefix=path)
     elif isinstance(value, list):
         for index, nested in enumerate(value):
