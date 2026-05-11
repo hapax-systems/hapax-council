@@ -493,6 +493,30 @@ RESIDENT_PREP_MODEL = RESIDENT_COMMAND_R_MODEL
 _ALLOWED_PREP_MODELS = {RESIDENT_PREP_MODEL}
 
 
+def _retrieve_broad_fore_understanding() -> list[dict[str, Any]]:
+    """Retrieve recent source-consequence encounters across all topics.
+
+    Provides the planner with accumulated interpretive context so it can
+
+    select topics informed by prior cycles."""
+    try:
+        from shared.config import get_qdrant
+        from shared.hermeneutic_spiral import COLLECTION_NAME
+
+        client = get_qdrant()
+        results = client.scroll(
+            collection_name=COLLECTION_NAME,
+            limit=20,
+            with_payload=True,
+            order_by="persisted_at",
+        )
+        points, _ = results
+        return [{k: v for k, v in (dict(p.payload) if p.payload else {}).items()} for p in points]
+    except Exception:
+        log.debug("_retrieve_broad_fore_understanding: unavailable", exc_info=True)
+        return []
+
+
 def _prep_model() -> str:
     return configured_resident_model("HAPAX_SEGMENT_PREP_MODEL", purpose="segment prep")
 
@@ -1294,13 +1318,6 @@ def prep_segment(
         role=role,
         topic=topic,
     )
-    persist_source_consequences(
-        source_consequence_map,
-        programme_id=prog_id,
-        role=role,
-        topic=topic,
-        prep_session_id=prep_session["prep_session_id"],
-    )
     live_event_viability = build_live_event_viability(
         script,
         actionability=actionability,
@@ -1573,6 +1590,14 @@ def prep_segment(
         final_avg,
     )
 
+    persist_source_consequences(
+        source_consequence_map,
+        programme_id=prog_id,
+        role=role,
+        topic=topic,
+        prep_session_id=prep_session["prep_session_id"],
+    )
+
     # Pass 3: Self-evaluation → emit impingement
     # This is how taste develops. Hapax evaluates its own output and
     # the evaluation flows through the impingement bus into the
@@ -1831,9 +1856,11 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
             segmented_count=len(segmented),
         )
         try:
+            recent_fore = _retrieve_broad_fore_understanding()
             plan = planner.plan(
                 show_id=show_id,
                 target_programmes=planner_target_programmes,
+                fore_understanding=recent_fore or None,
             )
         except Exception as exc:
             _update_prep_status(

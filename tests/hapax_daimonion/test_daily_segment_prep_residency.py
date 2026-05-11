@@ -633,6 +633,7 @@ def test_run_prep_appends_manifest_without_readmitting_invalid_or_unlisted_artif
             *,
             show_id: str,  # noqa: ARG002
             target_programmes: int | None = None,  # noqa: ARG002
+            **_kw: Any,
         ) -> SimpleNamespace:
             return SimpleNamespace(programmes=planned_programmes)
 
@@ -762,6 +763,7 @@ def test_run_prep_one_segment_writes_status_and_exact_planner_target(
             *,
             show_id: str,  # noqa: ARG002
             target_programmes: int | None = None,
+            **_kw: Any,
         ) -> None:
             captured_targets.append(target_programmes)
             return None
