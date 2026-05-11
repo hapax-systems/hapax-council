@@ -28,6 +28,13 @@ from pydantic import BaseModel, Field
 from agents.metadata_composer import chapters as _chapters
 from agents.metadata_composer import framing, redaction, state_readers
 from agents.metadata_composer.chapters import ChapterMarker
+from agents.metadata_composer.public_claim_gate import (
+    ClaimEvidence,
+    ClaimKind,
+    Decision,
+    PublicClaimGateDecision,
+    evaluate_public_claim,
+)
 from shared.resident_command_r import call_resident_command_r
 
 log = logging.getLogger(__name__)
@@ -68,6 +75,17 @@ class ComposedMetadata(BaseModel):
     grounding_provenance: dict[str, Any] = Field(default_factory=dict)
 
 
+class MetadataPublicClaimGateResult(BaseModel):
+    """Scope-level gate result recorded with every metadata composition."""
+
+    gate: Literal["metadata-public-claim-gate"] = "metadata-public-claim-gate"
+    required_claims: list[str] = Field(default_factory=list)
+    allowed: bool
+    outcome: Literal["allow", "refuse", "correct"]
+    refusal_copy: str = ""
+    decisions: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
 def compose_metadata(
     scope: Scope,
     *,
@@ -75,6 +93,7 @@ def compose_metadata(
     vod_time_range: tuple[float, float] | None = None,
     triggering_event: dict | None = None,
     llm_call: Any | None = None,
+    claim_evidence: ClaimEvidence | None = None,
 ) -> ComposedMetadata:
     """Compose metadata for the given scope.
 
@@ -94,8 +113,26 @@ def compose_metadata(
     picker import is soft — if the module is not yet present (pre-PR
     #1277 merge), referent-aware prompt-clauses are simply omitted.
     """
+    if scope == "vod_boundary" and vod_time_range is None:
+        raise ValueError("vod_boundary scope requires vod_time_range=(start, end)")
+    if scope == "cross_surface" and triggering_event is None:
+        raise ValueError("cross_surface scope requires triggering_event")
+    if scope not in ("vod_boundary", "live_update", "cross_surface"):
+        raise ValueError(f"unknown scope: {scope!r}")
+
     state = state_readers.snapshot()
     referent = _pick_referent(scope, broadcast_id, triggering_event)
+    evidence = claim_evidence or state_readers.read_public_claim_evidence(
+        state=state,
+        broadcast_id=broadcast_id,
+        triggering_event=triggering_event,
+    )
+    public_claim_gate = _evaluate_metadata_public_claim_gate(
+        scope=scope,
+        state=state,
+        triggering_event=triggering_event,
+        evidence=evidence,
+    )
     grounding: dict[str, Any] = {
         "working_mode": state.working_mode,
         "programme_role": state.programme.role.value if state.programme else None,
@@ -103,22 +140,22 @@ def compose_metadata(
         "director_activity": state.director_activity,
         "scope": scope,
         "operator_referent": referent,
+        "public_claim_gate": public_claim_gate.model_dump(mode="json"),
     }
 
+    if not public_claim_gate.allowed:
+        return _compose_gate_refusal(scope, grounding, public_claim_gate)
+
     if scope == "vod_boundary":
-        if vod_time_range is None:
-            raise ValueError("vod_boundary scope requires vod_time_range=(start, end)")
         return _compose_vod_boundary(state, vod_time_range, grounding, llm_call, referent)
 
     if scope == "live_update":
         return _compose_live_update(state, grounding, llm_call, referent)
 
     if scope == "cross_surface":
-        if triggering_event is None:
-            raise ValueError("cross_surface scope requires triggering_event")
         return _compose_cross_surface(state, triggering_event, grounding, llm_call, referent)
 
-    raise ValueError(f"unknown scope: {scope!r}")
+    raise AssertionError(f"validated scope fell through: {scope!r}")
 
 
 def _pick_referent(
@@ -284,6 +321,212 @@ def _compose_cross_surface(
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
+
+
+def _evaluate_metadata_public_claim_gate(
+    *,
+    scope: Scope,
+    state: state_readers.StateSnapshot,
+    triggering_event: dict | None,
+    evidence: ClaimEvidence,
+) -> MetadataPublicClaimGateResult:
+    required = _required_claim_kinds(scope, state, triggering_event)
+    decisions = [evaluate_public_claim(kind, evidence) for kind in required]
+    failed = [decision for decision in decisions if not decision.allows_emission]
+    if not failed:
+        outcome: Literal["allow", "refuse", "correct"] = "allow"
+    elif any(decision.decision is Decision.CORRECT for decision in failed):
+        outcome = "correct"
+    else:
+        outcome = "refuse"
+
+    return MetadataPublicClaimGateResult(
+        required_claims=[kind.value for kind in required],
+        allowed=not failed,
+        outcome=outcome,
+        refusal_copy=_refusal_copy(failed),
+        decisions={
+            decision.kind.value: {
+                "decision": decision.decision.value,
+                "reason": decision.reason,
+                "correction": decision.correction,
+                "allows_emission": decision.allows_emission,
+            }
+            for decision in decisions
+        },
+    )
+
+
+def _required_claim_kinds(
+    scope: Scope,
+    state: state_readers.StateSnapshot,
+    triggering_event: dict | None,
+) -> list[ClaimKind]:
+    required: list[ClaimKind] = []
+    if scope == "live_update":
+        required.append(ClaimKind.LIVE_NOW)
+        if state.director_activity and state.director_activity != "observe":
+            required.append(ClaimKind.CURRENT_ACTIVITY)
+        if _programme_role_value(state.programme):
+            required.append(ClaimKind.PROGRAMME_ROLE)
+    elif scope == "vod_boundary":
+        required.extend((ClaimKind.ARCHIVE, ClaimKind.REPLAY))
+    elif scope == "cross_surface":
+        required.append(ClaimKind.LIVE_NOW)
+        if state.director_activity and state.director_activity != "observe":
+            required.append(ClaimKind.CURRENT_ACTIVITY)
+        if _programme_role_value(state.programme):
+            required.append(ClaimKind.PROGRAMME_ROLE)
+        required.extend(_event_requested_claims(triggering_event))
+    return _dedupe_claim_kinds(required)
+
+
+def _event_requested_claims(triggering_event: dict | None) -> list[ClaimKind]:
+    if triggering_event is None:
+        return []
+
+    payload = triggering_event.get("payload")
+    payload = payload if isinstance(payload, dict) else {}
+    requested: list[str] = []
+    for source in (triggering_event, payload):
+        for key in ("public_claims", "claim_kinds", "metadata_claims", "claims"):
+            requested.extend(_as_string_list(source.get(key)))
+
+    flag_map = {
+        ClaimKind.ARCHIVE: ("archive_url", "archive_ready", "claim_archive"),
+        ClaimKind.REPLAY: ("replay_url", "replay_ready", "claim_replay"),
+        ClaimKind.SUPPORT: ("support_url", "support_ready", "claim_support"),
+        ClaimKind.MONETIZATION: (
+            "monetization_ready",
+            "monetization_state",
+            "claim_monetization",
+            "monetization_claim",
+        ),
+        ClaimKind.LICENSE_CLASS: ("declared_license", "license_class", "claim_license"),
+        ClaimKind.PUBLICATION_STATE: (
+            "publication_state",
+            "publication_evidence_url",
+            "claim_publication_state",
+        ),
+        ClaimKind.DISABLED_ISSUES: ("issues_disabled", "claim_disabled_issues"),
+    }
+    for kind, keys in flag_map.items():
+        if any(key in payload or key in triggering_event for key in keys):
+            requested.append(kind.value)
+
+    return [
+        kind
+        for raw in requested
+        if (kind := _claim_kind_from_text(raw)) is not None
+        and kind
+        not in {
+            ClaimKind.LIVE_NOW,
+            ClaimKind.CURRENT_ACTIVITY,
+            ClaimKind.PROGRAMME_ROLE,
+        }
+    ]
+
+
+def _claim_kind_from_text(value: str) -> ClaimKind | None:
+    token = value.strip().lower().replace("-", "_")
+    aliases = {
+        "live": ClaimKind.LIVE_NOW,
+        "live_now": ClaimKind.LIVE_NOW,
+        "current": ClaimKind.CURRENT_ACTIVITY,
+        "activity": ClaimKind.CURRENT_ACTIVITY,
+        "current_activity": ClaimKind.CURRENT_ACTIVITY,
+        "programme": ClaimKind.PROGRAMME_ROLE,
+        "program": ClaimKind.PROGRAMME_ROLE,
+        "programme_role": ClaimKind.PROGRAMME_ROLE,
+        "program_role": ClaimKind.PROGRAMME_ROLE,
+        "archive": ClaimKind.ARCHIVE,
+        "replay": ClaimKind.REPLAY,
+        "support": ClaimKind.SUPPORT,
+        "monetization": ClaimKind.MONETIZATION,
+        "monetisation": ClaimKind.MONETIZATION,
+        "license": ClaimKind.LICENSE_CLASS,
+        "license_class": ClaimKind.LICENSE_CLASS,
+        "publication": ClaimKind.PUBLICATION_STATE,
+        "publication_state": ClaimKind.PUBLICATION_STATE,
+        "disabled_issues": ClaimKind.DISABLED_ISSUES,
+        "issues_disabled": ClaimKind.DISABLED_ISSUES,
+    }
+    return aliases.get(token)
+
+
+def _as_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list | tuple | set):
+        return [item for item in (str(raw) for raw in value) if item]
+    return [str(value)]
+
+
+def _dedupe_claim_kinds(kinds: list[ClaimKind]) -> list[ClaimKind]:
+    seen: set[ClaimKind] = set()
+    out: list[ClaimKind] = []
+    for kind in kinds:
+        if kind in seen:
+            continue
+        seen.add(kind)
+        out.append(kind)
+    return out
+
+
+def _programme_role_value(programme: Any) -> str:
+    if programme is None:
+        return ""
+    role = getattr(programme, "role", "")
+    value = getattr(role, "value", role)
+    return str(value) if value else ""
+
+
+def _refusal_copy(decisions: list[PublicClaimGateDecision]) -> str:
+    corrections = [decision.correction for decision in decisions if decision.correction]
+    if corrections:
+        return "; ".join(dict.fromkeys(corrections))
+    reasons = [decision.reason for decision in decisions]
+    if reasons:
+        return "; ".join(dict.fromkeys(reasons))
+    return "public claim evidence missing"
+
+
+def _compose_gate_refusal(
+    scope: Scope,
+    grounding: dict[str, Any],
+    gate_result: MetadataPublicClaimGateResult,
+) -> ComposedMetadata:
+    action = "correction" if gate_result.outcome == "correct" else "refusal"
+    title = _gate_title(scope, action)
+    body = (
+        f"Public metadata {action}: {gate_result.refusal_copy}. Gate: metadata-public-claim-gate."
+    )
+    tags = ["hapax", "metadata", "public-claim-gate", action]
+    return ComposedMetadata(
+        title=title[:TITLE_LIMIT],
+        description=body[:DESCRIPTION_LIMIT],
+        description_chapters=None,
+        tags=_truncate_tags(tags),
+        shorts_caption=f"Metadata {action}: public claim gate"[:SHORTS_CAPTION_LIMIT],
+        bluesky_post=body[:BLUESKY_LIMIT],
+        discord_embed_title=title[:DISCORD_TITLE_LIMIT],
+        discord_embed_description=body[:DISCORD_DESCRIPTION_LIMIT],
+        mastodon_post=body[:MASTODON_LIMIT],
+        pinned_comment="",
+        grounding_provenance=grounding,
+    )
+
+
+def _gate_title(scope: Scope, action: str) -> str:
+    if scope == "vod_boundary":
+        surface = "archive"
+    elif scope == "cross_surface":
+        surface = "cross-surface"
+    else:
+        surface = "live"
+    return f"Metadata {action}: {surface} evidence missing"
 
 
 def _format_description_with_chapters(body: str, chapter_list: list[ChapterMarker]) -> str:
