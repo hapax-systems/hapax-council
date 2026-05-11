@@ -310,6 +310,14 @@ _CAMERA_SAMPLE = re.compile(
     r'^(?P<name>studio_camera_last_frame_age_seconds)\{camera_role="(?P<camera_role>[^"]+)"\}'
     r"\s+(?P<value>[-+0-9.eE]+)$"
 )
+_WARD_SAMPLE = re.compile(
+    r"^(?P<name>studio_compositor_ward_(?:blit_total|source_surface_pixels))"
+    r'\{ward="(?P<ward>[^"]+)"\}\s+(?P<value>[-+0-9.eE]+)$'
+)
+_LAYOUT_ACTIVE_SAMPLE = re.compile(
+    r'^(?P<name>hapax_compositor_layout_active)\{layout="(?P<layout>[^"]+)"\}'
+    r"\s+(?P<value>[-+0-9.eE]+)$"
+)
 
 
 def _parse_labeled_scalar(line: str) -> tuple[str, float] | None:
@@ -318,6 +326,8 @@ def _parse_labeled_scalar(line: str) -> tuple[str, float] | None:
         (_FEATURE_SAMPLE, "feature"),
         (_RTMP_SAMPLE, "endpoint"),
         (_CAMERA_SAMPLE, "camera_role"),
+        (_WARD_SAMPLE, "ward"),
+        (_LAYOUT_ACTIVE_SAMPLE, "layout"),
     ):
         match = pattern.match(line)
         if match is None:
