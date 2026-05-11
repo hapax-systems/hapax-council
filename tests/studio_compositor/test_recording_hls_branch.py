@@ -84,7 +84,7 @@ class _FakeElement:
         if name not in self.static_pads:
             link_return = (
                 self._gst.hls_pad_link_return
-                if self.name == "hls-parse" and name == "src"
+                if self.name == "hls-h264-caps" and name == "src"
                 else _FakePadLinkReturn.OK
             )
             self.static_pads[name] = _FakePad(f"{self.name}:{name}", link_return=link_return)
@@ -154,7 +154,11 @@ def _build_subject(
     fake_gst = gst or _FakeGst()
     compositor = SimpleNamespace(
         _Gst=fake_gst,
-        config=SimpleNamespace(hls=HlsConfig(output_dir=str(tmp_path))),
+        config=SimpleNamespace(
+            hls=HlsConfig(output_dir=str(tmp_path)),
+            output_width=1280,
+            output_height=720,
+        ),
         _consent_recording_allowed=True,
         _hls_valve=None,
     )
@@ -171,25 +175,37 @@ def test_add_hls_branch_uploads_converts_and_caps_nv12_before_nvenc(tmp_path: Pa
     assert [element.factory for element in pipeline.added] == [
         "queue",
         "valve",
+        "videorate",
+        "capsfilter",
         "cudaupload",
         "cudaconvert",
         "capsfilter",
         "nvh264enc",
         "h264parse",
+        "capsfilter",
         "hlssink2",
     ]
     assert [element.name for element in pipeline.added] == [
         "queue-hls",
         "hls-valve",
+        "hls-videorate",
+        "hls-rate-caps",
         "hls-upload",
         "hls-cudaconv",
         "hls-nv12caps",
         "hls-enc",
         "hls-parse",
+        "hls-h264-caps",
         "hls-sink",
     ]
 
     by_name = {element.name: element for element in pipeline.added}
+    assert by_name["hls-videorate"].props["skip-to-first"] is True
+    assert by_name["hls-videorate"].props["max-closing-segment-duplication-duration"] == 0
+    assert by_name["hls-rate-caps"].props["caps"] == (
+        f"video/x-raw,format=BGRA,width={compositor.config.output_width},"
+        f"height={compositor.config.output_height},framerate=30/1"
+    )
     assert by_name["hls-upload"].props["cuda-device-id"] == 0
     assert by_name["hls-cudaconv"].props["cuda-device-id"] == 0
     assert by_name["hls-nv12caps"].props["caps"] == ("video/x-raw(memory:CUDAMemory),format=NV12")
@@ -201,17 +217,23 @@ def test_add_hls_branch_uploads_converts_and_caps_nv12_before_nvenc(tmp_path: Pa
     assert by_name["hls-enc"].props["bframes"] == 0
     assert by_name["hls-enc"].props["repeat-sequence-header"] is True
     assert by_name["hls-parse"].props["config-interval"] == -1
+    assert by_name["hls-h264-caps"].props["caps"] == (
+        "video/x-h264,stream-format=byte-stream,alignment=au"
+    )
     assert by_name["hls-sink"].props["send-keyframe-requests"] is True
     assert by_name["hls-sink"].props["playlist-location"] == str(tmp_path / "stream.m3u8")
 
     assert by_name["queue-hls"].links == ["hls-valve"]
-    assert by_name["hls-valve"].links == ["hls-upload"]
+    assert by_name["hls-valve"].links == ["hls-videorate"]
+    assert by_name["hls-videorate"].links == ["hls-rate-caps"]
+    assert by_name["hls-rate-caps"].links == ["hls-upload"]
     assert by_name["hls-upload"].links == ["hls-cudaconv"]
     assert by_name["hls-cudaconv"].links == ["hls-nv12caps"]
     assert by_name["hls-nv12caps"].links == ["hls-enc"]
     assert by_name["hls-enc"].links == ["hls-parse"]
-    assert by_name["hls-parse"].links == []
-    assert by_name["hls-parse"].static_pads["src"].links[0].name == "hls-sink:video_0"
+    assert by_name["hls-parse"].links == ["hls-h264-caps"]
+    assert by_name["hls-h264-caps"].links == []
+    assert by_name["hls-h264-caps"].static_pads["src"].links[0].name == "hls-sink:video_0"
     assert len(by_name["hls-sink"].requested_pads) == 1
     assert by_name["queue-hls"].static_pads["sink"].probes
     assert by_name["hls-valve"].static_pads["src"].probes
@@ -281,7 +303,7 @@ def test_add_hls_branch_releases_hlssink_pad_when_video_pad_link_fails(
         _FakeGst(hls_pad_link_return=1),
     )
 
-    with pytest.raises(RuntimeError, match="hls-parse src pad to hls-sink video pad"):
+    with pytest.raises(RuntimeError, match="hls-h264-caps src pad to hls-sink video pad"):
         add_hls_branch(compositor, pipeline, tee, fps=30)
 
     by_name = {element.name: element for element in pipeline.added}
