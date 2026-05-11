@@ -25,6 +25,7 @@ from shared.platform_capability_registry import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DISPATCHER = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
 FRESH_NOW = datetime(2026, 5, 9, 21, 0, tzinfo=UTC)
+CLAUDE_FULL_FRESH_NOW = datetime(2026, 5, 11, 1, 57, tzinfo=UTC)
 
 
 def _dispatcher_module() -> ModuleType:
@@ -102,6 +103,21 @@ def test_fresh_row_passes_when_evidence_is_present() -> None:
 
     assert result.ok is True
     assert result.routes[0].errors == ()
+
+
+def test_seeded_claude_headless_full_route_is_dispatch_fresh() -> None:
+    registry = load_platform_capability_registry()
+
+    result = check_registry_freshness(
+        registry,
+        route_ids=["claude.headless.full"],
+        now=CLAUDE_FULL_FRESH_NOW,
+    )
+
+    assert result.ok is True
+    route = registry.require("claude.headless.full")
+    assert route.route_state is RouteState.ACTIVE
+    assert route.blocked_reasons == []
 
 
 def test_stale_capability_quota_and_resource_state_fail_closed() -> None:

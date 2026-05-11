@@ -84,8 +84,8 @@
       "launcher": "~/.local/bin/hapax-claude-headless <lane> <governed-prompt>",
       "summary": "Claude Code headless stream-json lane",
       "notes": "Default frontier Claude path; requires governed headless enable latch and a validated task.",
-      "route_state": "blocked",
-      "blocked_reasons": ["fresh_capability_evidence_absent"],
+      "route_state": "active",
+      "blocked_reasons": [],
       "model_or_engine": "claude-code-default",
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
@@ -116,16 +116,16 @@
       "context_limits": {"max_context_class": "very_large"},
       "telemetry": {"quota_source": "manual", "cost_source": "none", "resource_source": "local_probe"},
       "freshness": {
-        "capability_checked_at": null,
+        "capability_checked_at": "2026-05-11T01:56:10Z",
         "capability_stale_after": "24h",
-        "quota_checked_at": null,
-        "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
-        "provider_docs_checked_at": null,
+        "quota_checked_at": "2026-05-11T01:56:10Z",
+        "quota_stale_after": "24h",
+        "resource_checked_at": "2026-05-11T01:56:10Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-11T01:56:10Z",
         "provider_docs_stale_after": "30d"
       },
-      "known_unknowns": ["Account-live subscription quota remains manually refreshed until telemetry adapter exists."]
+      "known_unknowns": ["Subscription quota remains manually refreshed until telemetry adapter exists."]
     },
     {
       "registry_schema": 1,
