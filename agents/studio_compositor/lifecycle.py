@@ -18,6 +18,28 @@ from .consent import log_consent_event
 log = logging.getLogger(__name__)
 
 
+def _startup_preset_name() -> str | None:
+    raw = os.environ.get("HAPAX_COMPOSITOR_STARTUP_PRESET", "sierpinski_line_overlay").strip()
+    if raw.lower() in {"", "0", "false", "no", "none", "off", "disabled"}:
+        return None
+    return raw
+
+
+def apply_startup_preset(compositor: Any) -> str | None:
+    preset_name = _startup_preset_name()
+    if preset_name is None:
+        log.info("Default startup preset disabled")
+        return None
+    from .effects import try_graph_preset
+
+    if try_graph_preset(compositor, preset_name):
+        compositor._current_preset_name = preset_name
+        log.info("Default startup preset: %s", preset_name)
+    else:
+        log.warning("Default startup preset %s could not be activated", preset_name)
+    return preset_name
+
+
 def _log_feature_probes(compositor: Any) -> None:
     """Log one INFO line per optional subsystem probe (Phase 10 D3).
 
@@ -289,15 +311,7 @@ def start_compositor(compositor: Any) -> None:
 
     compositor._write_status("running")
 
-    # Activate a default obscuring overlay on startup — never show raw feed.
-    # Sierpinski overlay matches operator's aesthetic bar (memory:
-    # feedback_gem_aesthetic_bar: "Sierpinski-caliber visual"); face privacy is
-    # independently enforced by face_obscure_integration (fail-CLOSED at egress).
-    from .effects import try_graph_preset
-
-    try_graph_preset(compositor, "sierpinski_line_overlay")
-    compositor._current_preset_name = "sierpinski_line_overlay"
-    log.info("Default startup preset: sierpinski_line_overlay")
+    apply_startup_preset(compositor)
     log_consent_event(compositor, "pipeline_start", allowed=compositor._consent_recording_allowed)
 
     with compositor._camera_status_lock:

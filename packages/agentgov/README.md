@@ -1,8 +1,11 @@
 # agentgov
 
+[![PyPI](https://img.shields.io/pypi/v/agentgov)](https://pypi.org/project/agentgov/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 Computational constitutional governance for AI agent systems.
 
-agentgov provides algebraically-verified primitives for governing multi-agent systems: consent contracts, information flow control, principal delegation, provenance tracking, and compositional policy enforcement.
+agentgov provides algebraically-verified primitives for governing multi-agent systems: consent contracts, information flow control, principal delegation, provenance tracking, and compositional policy enforcement. Zero dependencies beyond PyYAML. Extracted from [hapax-council](https://github.com/hapax-systems/hapax-council), where it governs 200+ AI agents in production.
 
 ## Install
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentgov"
-version = "0.1.0"
+version = "0.2.0"
 description = "Computational constitutional governance for AI agent systems"
 readme = "README.md"
 license = "MIT"
@@ -36,9 +36,10 @@ dependencies = ["pyyaml>=6.0"]
 dev = ["pytest>=8.0", "hypothesis>=6.0", "ruff>=0.4", "pyright>=1.1"]
 
 [project.urls]
-Homepage = "https://github.com/ryanklee/hapax-council"
-Documentation = "https://github.com/ryanklee/hapax-council/tree/main/packages/agentgov"
-Repository = "https://github.com/ryanklee/hapax-council"
+Homepage = "https://github.com/hapax-systems/agentgov"
+Documentation = "https://github.com/hapax-systems/agentgov#readme"
+Repository = "https://github.com/hapax-systems/agentgov"
+Issues = "https://github.com/hapax-systems/agentgov/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agentgov"]

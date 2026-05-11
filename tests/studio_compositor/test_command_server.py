@@ -244,6 +244,40 @@ def test_activate_layout_resolves_and_mutates_state(tmp_path: Path) -> None:
         server.stop()
 
 
+def test_director_segment_runner_cannot_activate_fragment_layout(tmp_path: Path) -> None:
+    state = LayoutState(_minimal_layout())
+    alt = _alternate_layout()
+    sock_path = tmp_path / "compositor.sock"
+    activated: list[str] = []
+    server = CommandServer(
+        state,
+        sock_path,
+        layout_resolver=lambda name: alt if name == "segment-tier" else None,
+        layout_names_provider=lambda: ["default", "segment-tier"],
+        layout_activation_callback=lambda name, _layout: activated.append(name),
+    )
+    server.start()
+    time.sleep(0.05)
+    try:
+        resp = _call(
+            sock_path,
+            {
+                "command": "compositor.layout.activate",
+                "args": {
+                    "layout_name": "segment-tier",
+                    "source": "director_segment_runner",
+                },
+            },
+        )
+        assert resp["status"] == "error"
+        assert resp["error"] == "segment_fragment_layout_not_full_surface"
+        assert resp["source_count"] == 1
+        assert state.get().name == "t"
+        assert activated == []
+    finally:
+        server.stop()
+
+
 def test_activate_layout_reports_unknown_with_hint(tmp_path: Path) -> None:
     state = LayoutState(_minimal_layout())
     sock_path = tmp_path / "compositor.sock"

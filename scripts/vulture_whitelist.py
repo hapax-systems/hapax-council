@@ -2703,19 +2703,6 @@ from agents.m8_control.sample_capture import M8SampleCapture as _M8SampleCapture
 
 _M8SampleCapture
 
-# cc-task ``publication-bus-monetization-rails-surfaces`` (2026-05-04).
-# omg.lol Pay publisher methods are dispatched via the FastAPI route
-# at ``logos.api.routes.payment_rails:receive_omg_lol_pay_webhook``
-# — vulture cannot see the FastAPI registration. _emit + _handle_is_address_only
-# are also called via Pydantic field-validator + Publisher ABC dispatch.
-from agents.publication_bus.omg_lol_pay_publisher import OmgLolPayPublisher
-from shared.omg_lol_pay_receive_only_rail import PaymentEvent
-
-OmgLolPayPublisher.requires_legal_name
-OmgLolPayPublisher._emit
-PaymentEvent.model_config
-PaymentEvent._handle_is_address_only
-
 # cc-task ``audio-graph-ssot-p2-daemon-shadow`` (2026-05-05):
 # SafeMuteRail.engage/disengage are the active-mode API promised by the
 # audio graph SSOT spec, but the P2 daemon must not call them because it
