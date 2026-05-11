@@ -1,7 +1,7 @@
 """Liberapay sponsorship receive-rail.
 
 Polls Liberapay's authenticated transactions API at
-``https://liberapay.com/{username}/wallet/payins/public.json``. Each
+``https://liberapay.com/{username}/public.json``. Each
 new completed pay-in emits one ``PaymentEvent`` into the canonical
 payment-event log.
 
@@ -127,7 +127,7 @@ class LiberapayReceiver:
             )
             return 0
         username, password = self._credentials
-        url = f"/{username}/wallet/payins/public.json"
+        url = f"/{username}/public.json"
         client = self._client()
         try:
             response = client.get(url, auth=(username, password), timeout=15.0)
