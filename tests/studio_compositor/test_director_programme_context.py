@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from unittest.mock import patch
 
 from agents.studio_compositor.director_loop import DirectorLoop
 from shared.programme import (
@@ -109,6 +110,20 @@ def test_programme_provider_failure_preserves_legacy_prompt() -> None:
 
     prompt = _director(boom)._build_unified_prompt()
     assert "## Programme context" not in prompt
+
+
+def test_segment_binding_prompt_block_is_spliced_into_director_prompt() -> None:
+    with patch(
+        "agents.studio_compositor.director_segment_runner.render_director_segment_binding_prompt",
+        return_value=[
+            "## Segment director binding",
+            "- runtime layout receipt: `held` / `default_static_layout_in_responsible_hosting` -> `segment-tier`",
+        ],
+    ):
+        prompt = _director(lambda: _programme())._build_unified_prompt()
+
+    assert "## Segment director binding" in prompt
+    assert "segment-tier" in prompt
 
 
 def test_programme_context_is_soft_prior_not_hard_gate() -> None:

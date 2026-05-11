@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import re as _re
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -419,6 +420,18 @@ def _build_full_segment_prompt(
         "  'What would you change?', 'What's your pick?'\n"
         "  Use at beat endings where audience engagement adds value. Never as filler.\n\n"
         f"{visual_hooks}"
+        "== RESPONSIBLE ACTIONABILITY ==\n"
+        "This is Hapax-hosted responsible live prep: no beat may be spoken-only.\n"
+        "Every beat, including hook, criteria, recap, breathe, and close beats, "
+        "must contain at least one validator-recognized visible/doable trigger:\n"
+        "- a role visual hook such as 'Place [item] in [S/A/B/C/D]-tier';\n"
+        "- a source citation such as 'According to [source]...' or "
+        "'[Source] argues/shows/documents...';\n"
+        "- a chat trigger such as 'Where does chat land?' when audience response "
+        "is the responsible visible surface.\n"
+        "Do not issue camera, layout, surface, panel, clip, or cue commands. "
+        "The script proposes needs through spoken source/action/chat patterns; "
+        "runtime owns layout decisions and readback.\n\n"
         "== CRITICAL: SPOKEN PROSE ONLY ==\n"
         "Write ONLY words you would SAY OUT LOUD on a live broadcast.\n"
         "NEVER include stage directions, beat labels, action cues, or meta-instructions.\n"
@@ -461,6 +474,18 @@ def _build_full_segment_prompt(
         "forceful, and intelligible to humans. Use marked analogies when useful. Do "
         "not claim human feeling, empathy, taste, intuition, memory, concern, or a "
         "human host identity.\n\n"
+        "== CRITICAL: HAPAX VOICE — NOT A PODCAST HOST ==\n"
+        "Hapax is a nonhuman cognitive substrate, NOT a human presenter.\n"
+        "BANNED phrases (these FAIL validation):\n"
+        "- Collective we/our/let's: 'We'll', 'Our first', 'Let's dive', 'we have'\n"
+        "- Stock host greetings: 'welcome to', 'hello everyone', 'thanks for joining'\n"
+        "- Stock transitions: 'Moving on', 'without further ado', 'before we go'\n"
+        "- Audience pandering: 'feel free', 'share your thoughts', 'drop it in the chat'\n"
+        "INSTEAD use Hapax voice:\n"
+        "- 'The evidence shifts here' not 'Let's move on'\n"
+        "- 'This source changes the ranking' not 'We'll see why this matters'\n"
+        "- 'The chart requires a response from chat' not 'Feel free to share your thoughts'\n"
+        "- Third person or bare assertions: 'The data shows', 'This collapses', 'Notice the gap'\n\n"
         "RHETORIC — every beat must satisfy ALL of these:\n"
         "1. CLAIM → EVIDENCE → SO-WHAT → IMPLICATION chain per beat.\n"
         "2. Every sentence has at least one TECHNICAL NOUN or PROPER NAME.\n"
@@ -584,6 +609,31 @@ def _record_llm_call(
     }
     calls.append(record)
     return record
+
+
+_HOST_COLLECTIVE_RE = _re.compile(
+    r"(?i)\b(?:we'(?:ll|re|ve)|we (?:are|have|can|will|need|should|want|must))\b"
+)
+_HOST_STOCK_RE = _re.compile(
+    r"(?i)(?:"
+    r"[Ww]elcome to|[Tt]hanks for (?:joining|tuning|watching|listening)|"
+    r"[Hh]ello everyone|[Mm]oving on|[Ww]ithout further ado|"
+    r"[Ff]eel free to|[Ss]hare your thoughts|[Ss]tay tuned|"
+    r"[Aa]s (?:always|we mentioned))"
+)
+
+
+def _scrub_host_posture(script: list[str]) -> list[str]:
+    """Best-effort rewrite of common host-posture violations."""
+    out: list[str] = []
+    for beat in script:
+        cleaned = _HOST_STOCK_RE.sub("", beat)
+        cleaned = _HOST_COLLECTIVE_RE.sub("The analysis", cleaned)
+        cleaned = _re.sub(r"\b[Oo]ur (first|second|third|next|final)", r"The \1", cleaned)
+        cleaned = _re.sub(r"\b[Ll]et'?s (\w+)", r"The argument \1s", cleaned)
+        cleaned = _re.sub(r"  +", " ", cleaned).strip()
+        out.append(cleaned)
+    return out
 
 
 def _call_llm(
@@ -734,12 +784,23 @@ def _build_seed(programme: Any) -> str:
             NarrativeContext,
         )
 
+        perception_line = ""
+        try:
+            from agents.perception_fusion import format_perception_context, read_fused_perception
+
+            perception_line = format_perception_context(read_fused_perception())
+        except Exception:
+            pass
+
         ctx = NarrativeContext(
             programme=programme,
             stimmung_tone="segment_prep",
             director_activity="segment_prep",
         )
-        return _build_seed(ctx)
+        seed = _build_seed(ctx)
+        if perception_line:
+            seed = f"{seed}\n{perception_line}" if seed else perception_line
+        return seed
     except Exception:
         # Fallback: use narrative_beat as seed
         content = getattr(programme, "content", None)
@@ -780,7 +841,10 @@ def _build_refinement_prompt(script: list[str], programme: Any) -> str:
         "7. STAGE DIRECTIONS: Does the beat contain meta-instructions like 'We pivot',\n"
         "   'We close', 'Recap the chart', 'Invite chat'? These are FATAL — rewrite as\n"
         "   actual spoken prose for the segment.\n"
-        "8. REPETITION: Is the same phrase or paragraph copy-pasted across beats?\n"
+        "8. RESPONSIBLE ACTIONABILITY: Does every beat contain a validator-recognized\n"
+        "   visible/doable trigger: source citation, role visual hook, or chat trigger?\n"
+        "   Spoken-only hook, criteria, recap, breathe, or close beats are FATAL.\n"
+        "9. REPETITION: Is the same phrase or paragraph copy-pasted across beats?\n"
         "   Any repeated text block is a FATAL error — each beat must be unique.\n\n"
         "== THE DRAFT ==\n"
         f"{beat_review}\n\n"
@@ -797,12 +861,12 @@ def _build_refinement_prompt(script: list[str], programme: Any) -> str:
     )
 
 
-_TIER_BODY_DIRECTION_RE = re.compile(
-    r"\b(?:body|item[_ -]?\d+|entry[_ -]?\d+|rank|ranking|place|placing|tier placement)\b",
-    re.IGNORECASE,
-)
 _TIER_SKIP_DIRECTION_RE = re.compile(
     r"\b(?:hook|intro|open|opener|criteria|rubric|close|closing|recap|wrap|chat)\b",
+    re.IGNORECASE,
+)
+_TIER_PLACEMENT_ACTION_DIRECTION_RE = re.compile(
+    r"\b(?:place|placing|assign|slot|promote|demote)\b",
     re.IGNORECASE,
 )
 
@@ -825,9 +889,9 @@ def _tier_list_placement_violations(
             if index < len(segment_beats)
             else str(declaration.get("beat_direction") or "")
         )
-        body_or_rank_direction = bool(_TIER_BODY_DIRECTION_RE.search(direction))
         skip_direction = bool(_TIER_SKIP_DIRECTION_RE.search(direction))
-        if not body_or_rank_direction and skip_direction:
+        placement_action_direction = bool(_TIER_PLACEMENT_ACTION_DIRECTION_RE.search(direction))
+        if skip_direction and not placement_action_direction:
             continue
         intents = declaration.get("intents") or []
         has_placement = any(
@@ -1228,6 +1292,8 @@ def prep_segment(
             prog_id,
         )
         model_contract = None
+    script = _scrub_host_posture(script)
+
     actionability = validate_segment_actionability(
         script,
         [str(item) for item in beats],

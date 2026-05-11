@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from agents.hapax_daimonion import daily_segment_prep as prep
 from shared.segment_quality_actionability import (
@@ -146,6 +147,27 @@ def test_quality_rubric_scores_exemplar_above_generic_script() -> None:
     assert generic["label"] == "generic"
 
 
+def test_full_segment_prompt_rejects_spoken_only_responsible_beats() -> None:
+    programme = SimpleNamespace(
+        role=SimpleNamespace(value="tier_list"),
+        content=SimpleNamespace(
+            narrative_beat="source-backed ranking segment",
+            segment_beats=[
+                "hook: introduce the ranking pressure",
+                "item_1: rank the first object",
+                "close: recap the final chart",
+            ],
+        ),
+    )
+
+    prompt = prep._build_full_segment_prompt(programme, "source seed")
+
+    assert "no beat may be spoken-only" in prompt
+    assert "Every beat, including hook, criteria, recap, breathe, and close beats" in prompt
+    assert "According to [source]" in prompt
+    assert "Place [item] in [S/A/B/C/D]-tier" in prompt
+
+
 def test_actionability_declares_expected_visible_or_doable_effects() -> None:
     alignment = validate_segment_actionability(EXCELLENT_SCRIPT, ["hook", "body", "close"])
 
@@ -259,6 +281,64 @@ def test_tier_list_gate_requires_final_non_skip_candidate_placement() -> None:
         for violation in gated["violations"]
         if violation["reason"] == "missing_tier_placement_phrase"
     ] == [2]
+
+
+def test_tier_list_gate_skips_numbered_criteria_and_recap_beats() -> None:
+    alignment = validate_segment_actionability(
+        [
+            "This opening names the tier-list premise and the stakes.",
+            "The criteria are impact, durability, and whether the example still teaches.",
+            "Place FORTRAN in A-tier because the legacy is visible in the ranking.",
+            "The recap ties the placements back to the audience reaction.",
+            "The scoring rubric keeps durability above novelty before the chart moves.",
+        ],
+        [
+            "hook with a tier rubric",
+            "item_1: discuss criteria for ranking",
+            "item_2: rank FORTRAN",
+            "item_7: summarize tier placements and chat reactions",
+            "criteria: score durability higher than novelty before moving to chat",
+        ],
+    )
+
+    gated = prep._with_tier_list_placement_gate(
+        {"ok": True, "violations": [], "runtime_layout_validation": {"ok": True}},
+        role="tier_list",
+        segment_beats=[
+            "hook with a tier rubric",
+            "item_1: discuss criteria for ranking",
+            "item_2: rank FORTRAN",
+            "item_7: summarize tier placements and chat reactions",
+            "criteria: score durability higher than novelty before moving to chat",
+        ],
+        beat_action_intents=alignment["beat_action_intents"],
+    )
+
+    assert gated["ok"] is True
+    assert gated["violations"] == []
+
+
+def test_tier_list_gate_still_rejects_skip_direction_with_placement_action() -> None:
+    alignment = validate_segment_actionability(
+        [
+            "This closing beat says the wildcard belongs in C-tier because the payoff is narrow.",
+        ],
+        ["closing: place the wildcard candidate"],
+    )
+
+    gated = prep._with_tier_list_placement_gate(
+        {"ok": True, "violations": [], "runtime_layout_validation": {"ok": True}},
+        role="tier_list",
+        segment_beats=["closing: place the wildcard candidate"],
+        beat_action_intents=alignment["beat_action_intents"],
+    )
+
+    assert gated["ok"] is False
+    assert [
+        violation["beat_index"]
+        for violation in gated["violations"]
+        if violation["reason"] == "missing_tier_placement_phrase"
+    ] == [0]
 
 
 def test_actionability_rejects_camera_director_command_prose() -> None:
@@ -746,3 +826,93 @@ def test_loader_rejects_artifact_requiring_unsupported_runtime_action_rewrite(
     loaded = prep.load_prepped_programmes(tmp_path, require_selected=False)
 
     assert loaded == []
+
+
+class TestHostPostureDetection:
+    """Validates detection of podcast-host language patterns."""
+
+    def test_collective_we_detected(self) -> None:
+        from shared.segment_quality_actionability import segment_personage_violations
+
+        script = ["We'll be examining the factors today."]
+        violations = segment_personage_violations(script)
+        rule_ids = {v["rule_id"] for v in violations}
+        assert "collective_human_host_posture" in rule_ids
+
+    def test_welcome_to_detected(self) -> None:
+        from shared.segment_quality_actionability import segment_personage_violations
+
+        script = ["Welcome to our segment on control loops."]
+        violations = segment_personage_violations(script)
+        rule_ids = {v["rule_id"] for v in violations}
+        assert "stock_human_host_phrase" in rule_ids
+
+    def test_moving_on_detected(self) -> None:
+        from shared.segment_quality_actionability import segment_personage_violations
+
+        script = ["Moving on to the next topic."]
+        violations = segment_personage_violations(script)
+        rule_ids = {v["rule_id"] for v in violations}
+        assert "stock_human_host_phrase" in rule_ids
+
+    def test_feel_free_detected(self) -> None:
+        from shared.segment_quality_actionability import segment_personage_violations
+
+        script = ["Feel free to share your thoughts in the chat."]
+        violations = segment_personage_violations(script)
+        rule_ids = {v["rule_id"] for v in violations}
+        assert "stock_human_host_phrase" in rule_ids
+
+    def test_hapax_voice_passes(self) -> None:
+        from shared.segment_quality_actionability import segment_personage_violations
+
+        script = [
+            "The evidence shifts here. Zuboff argues that surveillance capitalism "
+            "operates through behavioral surplus extraction. This source changes "
+            "the ranking because the citation directly challenges the S-tier placement."
+        ]
+        violations = segment_personage_violations(script)
+        host_violations = [
+            v
+            for v in violations
+            if v.get("rule_id") in ("collective_human_host_posture", "stock_human_host_phrase")
+        ]
+        assert host_violations == []
+
+    def test_canary_script_fails_validation(self) -> None:
+        from shared.segment_quality_actionability import validate_segment_actionability
+
+        canary_script = [
+            "Hello everyone, and welcome to our segment. We'll be examining factors.",
+            "Our first item is the validator rewrite prohibition.",
+            "Next, we have programme-scoped abort supervision.",
+            "Moving on to selected-release feedback. We can improve priors.",
+            "As we conclude, let's review our chart. Feel free to share your thoughts.",
+        ]
+        result = validate_segment_actionability(
+            canary_script, ["hook", "item_1", "item_2", "item_3", "close"]
+        )
+        assert result["ok"] is False
+        assert len(result["personage_violations"]) >= 5
+
+
+class TestHostPostureScrub:
+    """Validates the post-compose scrub pass."""
+
+    def test_scrub_removes_welcome(self) -> None:
+        from agents.hapax_daimonion.daily_segment_prep import _scrub_host_posture
+
+        result = _scrub_host_posture(["Welcome to our segment on control loops."])
+        assert "welcome to" not in result[0].lower()
+
+    def test_scrub_replaces_collective_we(self) -> None:
+        from agents.hapax_daimonion.daily_segment_prep import _scrub_host_posture
+
+        result = _scrub_host_posture(["We'll be examining the factors today."])
+        assert "we'll" not in result[0].lower()
+
+    def test_scrub_replaces_lets(self) -> None:
+        from agents.hapax_daimonion.daily_segment_prep import _scrub_host_posture
+
+        result = _scrub_host_posture(["Let's dive into the evidence."])
+        assert "let's" not in result[0].lower()

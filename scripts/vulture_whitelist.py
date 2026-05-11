@@ -2988,3 +2988,11 @@ is_bridge_enabled
 from shared.publication_hardening.entity_checker import EntityRegistry  # noqa: F401, E402
 
 EntityRegistry.is_company  # hook + external consumer API
+
+from agents.coordination_tui.app import CoordinationApp  # noqa: F401, E402
+
+# Textual framework lifecycle and action methods — called by convention, not direct invocation
+CoordinationApp.on_mount
+CoordinationApp.action_refresh
+CoordinationApp.action_dispatch
+CoordinationApp.action_quit
