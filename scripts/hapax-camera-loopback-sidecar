@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# hapax-camera-loopback-sidecar - feed one Chrome-facing v4l2loopback camera.
+#
+# The sidecar reads one configured UVC/v4l2 source and writes raw video to the
+# matching Hapax camera-sharing loopback. It is intentionally independent of
+# studio-compositor.service lifecycle so a Meet/Chrome consumer cannot restart
+# or backpressure the compositor.
+
+set -euo pipefail
+
+ROLE="${HAPAX_CAMERA_LOOPBACK_ROLE:-}"
+SOURCE="${HAPAX_CAMERA_LOOPBACK_SOURCE:-}"
+DEVICE="${HAPAX_CAMERA_LOOPBACK_DEVICE:-}"
+WIDTH="${HAPAX_CAMERA_LOOPBACK_WIDTH:-1280}"
+HEIGHT="${HAPAX_CAMERA_LOOPBACK_HEIGHT:-720}"
+FPS="${HAPAX_CAMERA_LOOPBACK_FPS:-30}"
+INPUT_FORMAT="${HAPAX_CAMERA_LOOPBACK_INPUT_FORMAT:-mjpeg}"
+OUTPUT_PIXEL_FORMAT="${HAPAX_CAMERA_LOOPBACK_OUTPUT_PIXEL_FORMAT:-yuyv422}"
+LOGLEVEL="${HAPAX_CAMERA_LOOPBACK_FFMPEG_LOGLEVEL:-warning}"
+THREAD_QUEUE_SIZE="${HAPAX_CAMERA_LOOPBACK_THREAD_QUEUE_SIZE:-2}"
+CHECK_ONLY=false
+PRINT_COMMAND=false
+
+usage() {
+    cat <<'USAGE'
+usage: hapax-camera-loopback-sidecar [options]
+
+Options:
+  --env-file PATH       Source a camera-loopback env file before running
+  --role ROLE          Camera role label for logs
+  --source PATH        Input v4l2 device
+  --device PATH        Output v4l2loopback device
+  --width N            Input/output width
+  --height N           Input/output height
+  --fps N              Frame rate
+  --input-format FMT   v4l2 input format, usually mjpeg
+  --pixel-format FMT   output raw pixel format, default yuyv422
+  --check              Validate commands/devices and exit
+  --print-command      Print the ffmpeg command and exit
+USAGE
+}
+
+load_env_file() {
+    local path="$1"
+    if [[ ! -f "$path" ]]; then
+        echo "error: env file not found: $path" >&2
+        exit 1
+    fi
+    set -a
+    # shellcheck disable=SC1090
+    source "$path"
+    set +a
+    ROLE="${HAPAX_CAMERA_LOOPBACK_ROLE:-$ROLE}"
+    SOURCE="${HAPAX_CAMERA_LOOPBACK_SOURCE:-$SOURCE}"
+    DEVICE="${HAPAX_CAMERA_LOOPBACK_DEVICE:-$DEVICE}"
+    WIDTH="${HAPAX_CAMERA_LOOPBACK_WIDTH:-$WIDTH}"
+    HEIGHT="${HAPAX_CAMERA_LOOPBACK_HEIGHT:-$HEIGHT}"
+    FPS="${HAPAX_CAMERA_LOOPBACK_FPS:-$FPS}"
+    INPUT_FORMAT="${HAPAX_CAMERA_LOOPBACK_INPUT_FORMAT:-$INPUT_FORMAT}"
+    OUTPUT_PIXEL_FORMAT="${HAPAX_CAMERA_LOOPBACK_OUTPUT_PIXEL_FORMAT:-$OUTPUT_PIXEL_FORMAT}"
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --env-file) load_env_file "$2"; shift 2 ;;
+        --role) ROLE="$2"; shift 2 ;;
+        --source) SOURCE="$2"; shift 2 ;;
+        --device) DEVICE="$2"; shift 2 ;;
+        --width) WIDTH="$2"; shift 2 ;;
+        --height) HEIGHT="$2"; shift 2 ;;
+        --fps) FPS="$2"; shift 2 ;;
+        --input-format) INPUT_FORMAT="$2"; shift 2 ;;
+        --pixel-format) OUTPUT_PIXEL_FORMAT="$2"; shift 2 ;;
+        --check) CHECK_ONLY=true; shift ;;
+        --print-command) PRINT_COMMAND=true; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "error: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+if [[ "${HAPAX_CAMERA_LOOPBACK_ENABLED:-1}" != "1" ]]; then
+    echo "hapax-camera-loopback-sidecar: disabled for ${ROLE:-unknown}"
+    exit 0
+fi
+
+require_value() {
+    local name="$1"
+    local value="$2"
+    if [[ -z "$value" ]]; then
+        echo "error: ${name} is required" >&2
+        exit 2
+    fi
+}
+
+require_value HAPAX_CAMERA_LOOPBACK_ROLE "$ROLE"
+require_value HAPAX_CAMERA_LOOPBACK_SOURCE "$SOURCE"
+require_value HAPAX_CAMERA_LOOPBACK_DEVICE "$DEVICE"
+
+ffmpeg_cmd=(
+    ffmpeg
+    -hide_banner
+    -loglevel "$LOGLEVEL"
+    -nostdin
+    -fflags nobuffer
+    -flags low_delay
+    -f v4l2
+    -thread_queue_size "$THREAD_QUEUE_SIZE"
+    -input_format "$INPUT_FORMAT"
+    -framerate "$FPS"
+    -video_size "${WIDTH}x${HEIGHT}"
+    -i "$SOURCE"
+    -an
+    -vcodec rawvideo
+    -pix_fmt "$OUTPUT_PIXEL_FORMAT"
+    -f v4l2
+    "$DEVICE"
+)
+
+if $PRINT_COMMAND; then
+    printf '%q' "${ffmpeg_cmd[0]}"
+    for arg in "${ffmpeg_cmd[@]:1}"; do
+        printf ' %q' "$arg"
+    done
+    printf '\n'
+    exit 0
+fi
+
+ok=true
+if ! command -v ffmpeg >/dev/null 2>&1; then
+    echo "FAIL: ffmpeg not found on PATH" >&2
+    ok=false
+fi
+if [[ ! -c "$SOURCE" ]]; then
+    echo "FAIL: source device missing for ${ROLE}: ${SOURCE}" >&2
+    ok=false
+fi
+if [[ ! -c "$DEVICE" ]]; then
+    echo "FAIL: loopback device missing for ${ROLE}: ${DEVICE}" >&2
+    ok=false
+fi
+
+if $CHECK_ONLY; then
+    $ok && echo "OK: ${ROLE} loopback sidecar inputs are present"
+    $ok && exit 0 || exit 1
+fi
+
+$ok || exit 1
+
+echo "hapax-camera-loopback-sidecar: starting role=${ROLE} source=${SOURCE} device=${DEVICE} format=${WIDTH}x${HEIGHT}@${FPS} ${INPUT_FORMAT}->${OUTPUT_PIXEL_FORMAT}"
+exec "${ffmpeg_cmd[@]}"

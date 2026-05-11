@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# hapax-camera-loopback-setup - ensure Chrome-facing camera loopback devices exist.
+#
+# Normal mode loads v4l2loopback if it is absent. If v4l2loopback is already
+# loaded without the per-camera devices, the script fails with a reload/reboot
+# instruction instead of disrupting live compositor consumers.
+
+set -euo pipefail
+
+VIDEO_NR="10,42,50,51,52,60,61,62,70,71,72,73,74,75"
+CARD_LABELS="OBS_Virtual_Camera,StudioCompositor,YouTube0,YouTube1,YouTube2,hapax-rtsp-pi4-brio,hapax-rtsp-pi5-c920,hapax-rtsp-pi1-brio-synths,Hapax BRIO Operator,Hapax C920 Desk,Hapax C920 Room,Hapax C920 Overhead,Hapax BRIO Room,Hapax BRIO Synths"
+EXCLUSIVE_CAPS="1,0,0,0,0,1,1,1,0,0,0,0,0,0"
+MAX_BUFFERS="8"
+REQUIRED_CAMERA_DEVICES="70,71,72,73,74,75"
+DEV_ROOT="${HAPAX_CAMERA_LOOPBACK_DEV_ROOT:-/dev}"
+PRINT_MODPROBE=false
+CHECK_ONLY=false
+
+usage() {
+    cat <<'USAGE'
+usage: hapax-camera-loopback-setup [--check] [--print-modprobe]
+
+Ensures the merged Hapax v4l2loopback topology includes per-camera
+Chrome/Meet devices /dev/video70 through /dev/video75.
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --check) CHECK_ONLY=true; shift ;;
+        --print-modprobe) PRINT_MODPROBE=true; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "error: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+modprobe_args=(
+    v4l2loopback
+    "devices=14"
+    "video_nr=${VIDEO_NR}"
+    "card_label=${CARD_LABELS}"
+    "exclusive_caps=${EXCLUSIVE_CAPS}"
+    "max_buffers=${MAX_BUFFERS}"
+)
+
+if $PRINT_MODPROBE; then
+    printf 'modprobe'
+    for arg in "${modprobe_args[@]}"; do
+        printf ' %q' "$arg"
+    done
+    printf '\n'
+    exit 0
+fi
+
+missing_camera_devices() {
+    local nums=()
+    local missing=()
+    IFS=',' read -r -a nums <<< "$REQUIRED_CAMERA_DEVICES"
+    for nr in "${nums[@]}"; do
+        if [[ ! -c "${DEV_ROOT}/video${nr}" ]]; then
+            missing+=("${DEV_ROOT}/video${nr}")
+        fi
+    done
+    printf '%s\n' "${missing[@]}"
+}
+
+module_loaded() {
+    grep -q '^v4l2loopback ' /proc/modules 2>/dev/null
+}
+
+if $CHECK_ONLY; then
+    mapfile -t missing < <(missing_camera_devices)
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo "FAIL: missing per-camera loopback device(s):"
+        printf '  %s\n' "${missing[@]}"
+        exit 1
+    fi
+    echo "OK: per-camera loopback devices present: ${REQUIRED_CAMERA_DEVICES}"
+    exit 0
+fi
+
+if module_loaded; then
+    mapfile -t missing < <(missing_camera_devices)
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo "error: v4l2loopback is already loaded but per-camera devices are missing:" >&2
+        printf '  %s\n' "${missing[@]}" >&2
+        echo "Install config/modprobe.d/v4l2loopback-hapax.conf, then reboot or reload v4l2loopback during a camera maintenance window." >&2
+        exit 1
+    fi
+    echo "hapax-camera-loopback-setup: per-camera loopback devices already present"
+    exit 0
+fi
+
+echo "hapax-camera-loopback-setup: loading v4l2loopback with Hapax camera sharing topology"
+if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    exec modprobe "${modprobe_args[@]}"
+fi
+exec sudo -n modprobe "${modprobe_args[@]}"
