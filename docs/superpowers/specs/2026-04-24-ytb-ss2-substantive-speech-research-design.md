@@ -80,6 +80,26 @@ or observation window. SS3 may consume only these cycle-level summaries until
 SS2 has converged; the raw QM5 JSONL remains a private research signal and must
 not become a public attribution, chat, or viewer-facing feedback surface.
 
+### §3.2. Cycle report harness
+
+`scripts/ss2-cycle-report.py` is the private cycle-packet generator for this
+protocol. Given a cycle id and an observation window, it:
+
+- reads `self_authored_narrative` / `narrative.emitted` chronicle rows;
+- samples emissions uniformly with a deterministic seed;
+- emits stable `emission_ref` handles such as `chronicle:<event_id>`;
+- joins direct QM5 ratings by `emission_ref`;
+- joins cycle-level QM5 ratings by observation window plus optional
+  `programme_id`, `condition_id`, or `run_id`;
+- computes the five-axis rubric mean and hold/iterate/revert/insufficient
+  verdict;
+- computes conservative autonomous-narrative grounding coverage over the
+  whole window, treating missing `grounding_provenance` as ungrounded.
+
+The output is private-by-default Markdown or JSON. It is an operator scoring
+packet, not a public claim, and it cannot authorize publication, monetization,
+or research-validity assertions.
+
 ## §4. Cycle 1 — first hypothesis (proposed)
 
 ### §4.1. Hypothesis
@@ -169,7 +189,7 @@ If after 5 cycles the rubric average remains < 4/5, SS2 escalates to a redesign 
 
 | Cycle | Hypothesis | PR | Window (UTC) | Score | Verdict |
 |-------|------------|----|----|-------|---------|
-|       |            |    |              |       |         |
+| 1 | Vault-context grounding | #1295 | Pending report via `scripts/ss2-cycle-report.py` | Pending operator/QM5 ratings | Pending |
 
 ## §10. Inputs from prior work
 
