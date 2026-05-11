@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Health check for the Vibe relay team.
+
+set -euo pipefail
+
+WORKTREE_ROOT="${HAPAX_VIBE_WORKTREE_ROOT:-$HOME/projects}"
+RELAY_DIR="${HAPAX_VIBE_RELAY_DIR:-$HOME/.cache/hapax/relay}"
+SPAWN_DIR="${HAPAX_VIBE_SPAWN_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/hapax/vibe-spawns}"
+LANES=("vbe-1" "vbe-2")
+TMUX_BIN="$(command -v tmux || true)"
+
+if [ "$#" -gt 0 ]; then
+  LANES=("$@")
+fi
+
+age_iso() {
+  local ts="$1"
+  local now epoch_ts diff
+  now="$(date -u +%s)"
+  epoch_ts="$(date -u -d "$ts" +%s 2>/dev/null || echo 0)"
+  [ "$epoch_ts" -gt 0 ] || { printf 'unknown'; return; }
+  diff="$((now - epoch_ts))"
+  if [ "$diff" -lt 60 ]; then printf '%ds' "$diff"
+  elif [ "$diff" -lt 3600 ]; then printf '%dm' "$((diff / 60))"
+  elif [ "$diff" -lt 86400 ]; then printf '%dh' "$((diff / 3600))"
+  else printf '%dd' "$((diff / 86400))"
+  fi
+}
+
+pane_preview() {
+  local target="$1"
+  local captured trimmed
+  [ -n "$TMUX_BIN" ] || { printf 'tmux-missing'; return; }
+  "$TMUX_BIN" has-session -t "$target" >/dev/null 2>&1 || { printf '-'; return; }
+  captured="$("$TMUX_BIN" capture-pane -t "$target" -p -S -40 2>/dev/null || true)"
+  trimmed="$(printf '%s\n' "$captured" | sed '/^[[:space:]]*$/d' | tail -1 | cut -c1-64)"
+  if [ -z "$trimmed" ]; then
+    printf 'blank'
+  else
+    printf '%s' "$trimmed"
+  fi
+}
+
+printf 'vibe binary: %s\n' "$(command -v vibe || printf 'MISSING')"
+printf 'vibe version: %s\n' "$(vibe --version 2>/dev/null | head -1 || printf 'unknown')"
+
+printf '\nPer-lane health:\n'
+printf '  %-8s %-9s %-10s %-12s %-8s %s\n' "LANE" "TMUX" "WORKTREE" "STATUS" "AGE" "PANE"
+printf '  %-8s %-9s %-10s %-12s %-8s %s\n' "----" "----" "--------" "------" "---" "----"
+
+for lane in "${LANES[@]}"; do
+  workdir="$WORKTREE_ROOT/hapax-council--$lane"
+  status_file="$RELAY_DIR/$lane.yaml"
+  tmux_name="hapax-vibe-$lane"
+
+  if [ -n "$TMUX_BIN" ] && "$TMUX_BIN" has-session -t "$tmux_name" 2>/dev/null; then
+    tmux_state="LIVE"
+  else
+    tmux_state="down"
+  fi
+
+  if [ -d "$workdir" ]; then
+    wt_state="ok"
+  else
+    wt_state="missing"
+  fi
+
+  if [ -f "$status_file" ]; then
+    state_value="$(grep -E '^session_status: \|' -A1 "$status_file" 2>/dev/null | tail -1 | tr -d '[:space:]' | head -c 12 || true)"
+    [ -n "$state_value" ] || state_value="$(grep -E '^session_status:' "$status_file" 2>/dev/null | head -1 | sed 's/.*: *//' | tr -d '"' | head -c 12 || true)"
+    [ -n "$state_value" ] || state_value="?"
+    updated="$(grep -E "^updated:" "$status_file" 2>/dev/null | head -1 | sed -E "s/.*: *['\"]?//; s/['\"]? *\$//" || true)"
+    age="$(age_iso "$updated")"
+  else
+    state_value="no-status"
+    age="-"
+  fi
+
+  printf '  %-8s %-9s %-10s %-12s %-8s %s\n' \
+    "$lane" "$tmux_state" "$wt_state" "$state_value" "$age" "$(pane_preview "$tmux_name")"
+done
+
+if [ -d "$SPAWN_DIR" ]; then
+  printf '\nRecent spawns (last 5):\n'
+  (ls -t "$SPAWN_DIR"/*.yaml 2>/dev/null || true) | head -5 | while read -r file_path; do
+    printf '  %s\n' "$(basename "$file_path")"
+  done
+fi
