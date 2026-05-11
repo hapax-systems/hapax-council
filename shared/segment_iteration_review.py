@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,7 @@ from shared.segment_quality_actionability import (
 )
 
 SEGMENT_ITERATION_REVIEW_VERSION = 1
+CANARY_REVIEW_RECEIPT_ENV = "HAPAX_SEGMENT_PREP_CANARY_REVIEW_RECEIPT"
 MIN_AUTOMATED_SCRIPT_SCORE = 3.5
 IDEAL_SCRIPT_SCORE_FLOORS = {
     "premise": 4,
@@ -133,6 +135,175 @@ def _sha256_text(text: str) -> str:
 def _sha256_json(payload: Any) -> str:
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return _sha256_text(text)
+
+
+class SegmentCanaryGateError(RuntimeError):
+    """Raised when pool generation lacks a passing one-segment review receipt."""
+
+
+def default_canary_review_receipt_path(env: Mapping[str, str] | None = None) -> Path:
+    """Return the default path for the latest passing canary review receipt."""
+
+    env_map = os.environ if env is None else env
+    state_root = Path(env_map.get("HAPAX_STATE", str(Path.home() / "hapax-state"))).expanduser()
+    return state_root / "segment-prep" / "canary-review.json"
+
+
+def canary_review_receipt_path(
+    path: Path | str | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> Path:
+    """Resolve the receipt path used to authorize next-nine pool generation."""
+
+    if path is not None:
+        return Path(path).expanduser()
+    env_map = os.environ if env is None else env
+    if explicit := env_map.get(CANARY_REVIEW_RECEIPT_ENV):
+        return Path(explicit).expanduser()
+    return default_canary_review_receipt_path(env_map)
+
+
+def validate_next_nine_canary_receipt(receipt: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Validate that a canary review receipt authorizes next-nine generation."""
+
+    violations: list[dict[str, Any]] = []
+    if not isinstance(receipt, Mapping):
+        return {
+            "ok": False,
+            "violations": [{"reason": "receipt_not_object"}],
+            "receipt": {},
+        }
+
+    if receipt.get("segment_iteration_review_version") != SEGMENT_ITERATION_REVIEW_VERSION:
+        violations.append(
+            {
+                "reason": "unsupported_review_version",
+                "observed": receipt.get("segment_iteration_review_version"),
+                "expected": SEGMENT_ITERATION_REVIEW_VERSION,
+            }
+        )
+    if receipt.get("ready_for_next_nine") is not True:
+        violations.append({"reason": "ready_for_next_nine_not_true"})
+    if receipt.get("decision") != "ready_for_next_nine":
+        violations.append(
+            {
+                "reason": "decision_not_ready_for_next_nine",
+                "observed": receipt.get("decision"),
+            }
+        )
+    if receipt.get("next_nine_gate_mode") != "blocking_review_receipt":
+        violations.append(
+            {
+                "reason": "next_nine_gate_mode_not_blocking_review_receipt",
+                "observed": receipt.get("next_nine_gate_mode"),
+            }
+        )
+
+    for key in ("programme_id", "artifact_sha256", "iteration_id", "review_receipt_sha256"):
+        if not isinstance(receipt.get(key), str) or not str(receipt.get(key)).strip():
+            violations.append({"reason": f"missing_{key}"})
+
+    for section_key in ("automated_gate", "eligibility_gate"):
+        section = receipt.get(section_key)
+        if not isinstance(section, Mapping) or section.get("passed") is not True:
+            violations.append({"reason": f"{section_key}_not_passed"})
+
+    excellence = receipt.get("excellence_selection")
+    if not isinstance(excellence, Mapping) or excellence.get("passed") is not True:
+        violations.append({"reason": "excellence_selection_not_passed"})
+    else:
+        if excellence.get("automation_passed") is not True:
+            violations.append({"reason": "excellence_automation_not_passed"})
+        if excellence.get("team_passed") is not True:
+            violations.append({"reason": "excellence_team_not_passed"})
+
+    team_loop = receipt.get("team_critique_loop")
+    if not isinstance(team_loop, Mapping) or team_loop.get("passed") is not True:
+        violations.append({"reason": "team_critique_loop_not_passed"})
+
+    resident = receipt.get("resident_model_continuity")
+    if not isinstance(resident, Mapping):
+        violations.append({"reason": "resident_model_continuity_missing"})
+    else:
+        if resident.get("expected_model") != RESIDENT_COMMAND_R_MODEL:
+            violations.append(
+                {
+                    "reason": "resident_model_mismatch",
+                    "observed": resident.get("expected_model"),
+                    "expected": RESIDENT_COMMAND_R_MODEL,
+                }
+            )
+        if resident.get("no_qwen") is not True:
+            violations.append({"reason": "resident_model_no_qwen_not_true"})
+        if resident.get("no_unload_or_swap") is not True:
+            violations.append({"reason": "resident_model_no_unload_or_swap_not_true"})
+
+    expected_hash = receipt.get("review_receipt_sha256")
+    if isinstance(expected_hash, str) and expected_hash.strip():
+        actual_hash = _sha256_json(
+            {key: value for key, value in receipt.items() if key != "review_receipt_sha256"}
+        )
+        if actual_hash != expected_hash:
+            violations.append(
+                {
+                    "reason": "review_receipt_sha256_mismatch",
+                    "observed": expected_hash,
+                    "expected": actual_hash,
+                }
+            )
+
+    return {
+        "ok": not violations,
+        "violations": violations,
+        "receipt": {
+            "programme_id": receipt.get("programme_id"),
+            "artifact_sha256": receipt.get("artifact_sha256"),
+            "iteration_id": receipt.get("iteration_id"),
+            "review_receipt_sha256": receipt.get("review_receipt_sha256"),
+            "decision": receipt.get("decision"),
+        },
+    }
+
+
+def load_next_nine_canary_receipt(
+    path: Path | str | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> tuple[dict[str, Any] | None, Path, str | None]:
+    """Load the canary review receipt used to authorize next-nine generation."""
+
+    resolved = canary_review_receipt_path(path, env=env)
+    try:
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return None, resolved, str(exc)
+    if not isinstance(payload, dict):
+        return None, resolved, "receipt JSON must be an object"
+    return payload, resolved, None
+
+
+def assert_next_nine_canary_ready(
+    path: Path | str | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Fail unless a passing canary review receipt authorizes pool generation."""
+
+    receipt, resolved, load_error = load_next_nine_canary_receipt(path, env=env)
+    if load_error is not None:
+        raise SegmentCanaryGateError(
+            f"next-nine generation requires a passing canary review receipt at {resolved}: "
+            f"{load_error}"
+        )
+    report = validate_next_nine_canary_receipt(receipt)
+    report["path"] = str(resolved)
+    if report["ok"] is not True:
+        reasons = ", ".join(str(item.get("reason")) for item in report["violations"])
+        raise SegmentCanaryGateError(
+            f"next-nine generation blocked by canary review receipt {resolved}: {reasons}"
+        )
+    return report
 
 
 def _artifact_hash(payload: Mapping[str, Any]) -> str:

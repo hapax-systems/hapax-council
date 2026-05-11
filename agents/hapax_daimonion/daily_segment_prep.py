@@ -42,6 +42,10 @@ from shared.resident_command_r import (
     loaded_tabby_model,
     tabby_chat_url,
 )
+from shared.segment_iteration_review import (
+    SegmentCanaryGateError,
+    assert_next_nine_canary_ready,
+)
 from shared.segment_live_event_quality import (
     LIVE_EVENT_RUBRIC_VERSION,
     evaluate_segment_live_event_quality,
@@ -1721,6 +1725,35 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
         authority_mode=authority_state.mode,
         authority_reason=authority_state.reason,
     )
+    if prep_activity == "pool_generation" and max_segments_for_run > 1:
+        _update_prep_status(
+            prep_session,
+            status="in_progress",
+            phase="next_nine_canary_gate_check",
+            authority_activity=prep_activity,
+        )
+        try:
+            canary_gate = assert_next_nine_canary_ready()
+        except SegmentCanaryGateError as exc:
+            _update_prep_status(
+                prep_session,
+                status="blocked",
+                phase="next_nine_canary_gate_blocked",
+                authority_activity=prep_activity,
+                last_error=f"{type(exc).__name__}: {exc}",
+            )
+            return saved
+        prep_session["next_nine_canary_gate"] = canary_gate
+        _update_prep_status(
+            prep_session,
+            status="in_progress",
+            phase="next_nine_canary_gate_passed",
+            authority_activity=prep_activity,
+            canary_review_receipt_path=canary_gate.get("path"),
+            canary_programme_id=(canary_gate.get("receipt") or {}).get("programme_id"),
+            canary_artifact_sha256=(canary_gate.get("receipt") or {}).get("artifact_sha256"),
+            canary_iteration_id=(canary_gate.get("receipt") or {}).get("iteration_id"),
+        )
     _update_prep_status(prep_session, status="in_progress", phase="resident_model_check")
     try:
         _assert_resident_prep_model(prep_session["model_id"])

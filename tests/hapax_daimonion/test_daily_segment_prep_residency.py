@@ -671,6 +671,19 @@ def test_run_prep_appends_manifest_without_readmitting_invalid_or_unlisted_artif
         "assert_segment_prep_allowed",
         lambda _activity: SimpleNamespace(mode="open", reason="test", source="test"),
     )
+    monkeypatch.setattr(
+        prep,
+        "assert_next_nine_canary_ready",
+        lambda: {
+            "ok": True,
+            "path": str(tmp_path / "canary-review.json"),
+            "receipt": {
+                "programme_id": "prog-canary",
+                "artifact_sha256": "a" * 64,
+                "iteration_id": "segment-prep-canary-test",
+            },
+        },
+    )
     monkeypatch.setattr(planner_module, "ProgrammePlanner", FakePlanner)
     monkeypatch.setattr(prep, "prep_segment", fake_prep_segment)
     saved = prep.run_prep(tmp_path)
@@ -687,6 +700,49 @@ def test_run_prep_appends_manifest_without_readmitting_invalid_or_unlisted_artif
         "prog-2",
         "prog-3",
     ]
+
+
+def test_run_prep_pool_generation_requires_passing_canary_before_model_check(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(prep, "MAX_SEGMENTS", 2)
+    monkeypatch.setattr(
+        prep,
+        "_new_prep_session",
+        lambda: {
+            "prep_session_id": "segment-prep-needs-canary",
+            "model_id": prep.RESIDENT_PREP_MODEL,
+            "llm_calls": [],
+        },
+    )
+    monkeypatch.setattr(
+        prep,
+        "assert_segment_prep_allowed",
+        lambda _activity: SimpleNamespace(mode="pool_generation_allowed", reason="test"),
+    )
+
+    def missing_canary() -> None:
+        raise prep.SegmentCanaryGateError("missing canary review receipt")
+
+    monkeypatch.setattr(prep, "assert_next_nine_canary_ready", missing_canary)
+    monkeypatch.setattr(
+        prep,
+        "_assert_resident_prep_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("model must not be probed before canary gate")
+        ),
+    )
+
+    saved = prep.run_prep(tmp_path)
+
+    status = json.loads(
+        (prep._today_dir(tmp_path) / prep.PREP_STATUS_FILENAME).read_text(encoding="utf-8")
+    )
+    assert saved == []
+    assert status["status"] == "blocked"
+    assert status["phase"] == "next_nine_canary_gate_blocked"
+    assert "missing canary review receipt" in status["last_error"]
 
 
 def test_run_prep_one_segment_writes_status_and_exact_planner_target(
