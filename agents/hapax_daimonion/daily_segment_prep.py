@@ -710,12 +710,23 @@ def _build_seed(programme: Any) -> str:
             NarrativeContext,
         )
 
+        perception_line = ""
+        try:
+            from agents.perception_fusion import format_perception_context, read_fused_perception
+
+            perception_line = format_perception_context(read_fused_perception())
+        except Exception:
+            pass
+
         ctx = NarrativeContext(
             programme=programme,
             stimmung_tone="segment_prep",
             director_activity="segment_prep",
         )
-        return _build_seed(ctx)
+        seed = _build_seed(ctx)
+        if perception_line:
+            seed = f"{seed}\n{perception_line}" if seed else perception_line
+        return seed
     except Exception:
         # Fallback: use narrative_beat as seed
         content = getattr(programme, "content", None)
