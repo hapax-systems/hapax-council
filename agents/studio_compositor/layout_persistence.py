@@ -110,11 +110,15 @@ class LayoutAutoSaver:
             )
             return
         dump = json.dumps(layout.model_dump(), indent=2)
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_fd, tmp_name = tempfile.mkstemp(
-            prefix=".default.json.tmp-",
-            dir=str(self._path.parent),
-        )
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_fd, tmp_name = tempfile.mkstemp(
+                prefix=".default.json.tmp-",
+                dir=str(self._path.parent),
+            )
+        except Exception:
+            log.exception("LayoutAutoSaver temp file allocation failed")
+            return
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
                 f.write(dump)
