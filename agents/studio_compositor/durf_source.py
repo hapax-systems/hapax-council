@@ -29,11 +29,18 @@ import subprocess
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from .durf_redaction import DURF_RAW_ENV, RISK_PATTERNS, RedactionAction
+
+if TYPE_CHECKING:
+    from agents.studio_compositor.coding_activity_reveal import (
+        CodingActivityReveal as CodingActivityReveal,
+    )
+
+    DURFCairoSource = CodingActivityReveal
 
 log = logging.getLogger(__name__)
 
@@ -98,6 +105,7 @@ _TEXT_RISK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = RISK_PATTERNS + (
         "private_or_employer_data",
         re.compile(r"\b(?:employer-confidential|work-confidential|private-third-party)\b"),
     ),
+    ("operator_ssh_path", re.compile(re.escape(_OPERATOR_HOME_PREFIX) + r"\.ssh/")),
 )
 
 
@@ -239,13 +247,17 @@ def redact_terminal_lines(lines: tuple[str, ...]) -> TextRedactionResult:
         )
     joined = "\n".join(sanitized)
     for name, pattern in _TEXT_RISK_PATTERNS:
+        if name == "operator_home_path":
+            if pattern.search(joined) and "/.ssh/" not in joined:
+                continue
         if pattern.search(joined):
             return TextRedactionResult(
                 RedactionAction.SUPPRESS,
                 matched_pattern=name,
                 detail=f"matched {name}",
             )
-    return TextRedactionResult(RedactionAction.CLEAN, lines=sanitized)
+    public_lines = tuple(line.replace(_OPERATOR_HOME_PREFIX, "~/") for line in sanitized)
+    return TextRedactionResult(RedactionAction.CLEAN, lines=public_lines)
 
 
 def capture_tmux_text(

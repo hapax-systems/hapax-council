@@ -43,6 +43,7 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "activity_variety_log",
         "whos_here",
         "durf",
+        "coding_session_reveal",
         "m8-display",
         "steamdeck-display",
         "egress_footer",
@@ -80,6 +81,8 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         "activity-variety-log-midbottom",
         "whos-here-tc",
         "durf-fullframe",
+        "coding-session-fullframe",
+        "coding-session-peek",
         "m8-oscilloscope-rightcol",
         "egress-footer-bottom",
         "gem-mural-bottom",
@@ -125,6 +128,8 @@ def test_default_json_exists_and_is_valid_layout() -> None:
         ("activity_variety_log", "activity-variety-log-midbottom"),
         ("whos_here", "whos-here-tc"),
         ("durf", "durf-fullframe"),
+        ("coding_session_reveal", "coding-session-fullframe"),
+        ("coding_session_reveal", "coding-session-peek"),
         ("m8-display", "m8-oscilloscope-rightcol"),
         ("egress_footer", "egress-footer-bottom"),
         ("gem", "gem-mural-bottom"),
@@ -173,6 +178,7 @@ def test_default_json_source_backends_match_registry_dispatch() -> None:
         "activity_variety_log": "cairo",
         "whos_here": "cairo",
         "durf": "cairo",
+        "coding_session_reveal": "cairo",
         "m8-display": "shm_rgba",
         "steamdeck-display": "shm_rgba",
         "egress_footer": "cairo",
@@ -245,6 +251,53 @@ def test_default_json_operator_quadrant_defaults() -> None:
     assert assignments_by_surface["obsidian-overlay-region"] == "stream_overlay"
 
 
+def test_default_json_coding_session_reveal_geometry_and_opacity() -> None:
+    """DURF foot-terminal reveal defaults stay scrim-edge-honoring and opt-in."""
+    raw = json.loads(DEFAULT_JSON.read_text())
+    layout = Layout.model_validate(raw)
+
+    full = next(s for s in layout.surfaces if s.id == "coding-session-fullframe")
+    peek = next(s for s in layout.surfaces if s.id == "coding-session-peek")
+    assert (full.geometry.x, full.geometry.y, full.geometry.w, full.geometry.h) == (
+        480,
+        80,
+        960,
+        720,
+    )
+    assert full.z_order == 10
+    assert (peek.geometry.x, peek.geometry.y, peek.geometry.w, peek.geometry.h) == (
+        1448,
+        280,
+        448,
+        320,
+    )
+    assert peek.z_order == 10
+
+    assignments = [a for a in layout.assignments if a.source == "coding_session_reveal"]
+    assert {(a.surface, a.opacity, a.render_stage) for a in assignments} == {
+        ("coding-session-fullframe", 0.0, "pre_fx"),
+        ("coding-session-peek", 0.0, "pre_fx"),
+    }
+
+    pip_ur = (1448, 20, 448, 252)
+    full_rect = (
+        full.geometry.x,
+        full.geometry.y,
+        full.geometry.w,
+        full.geometry.h,
+    )
+    assert not _rects_overlap(full_rect, pip_ur)
+
+
+def _rects_overlap(
+    left: tuple[int | None, int | None, int | None, int | None],
+    right: tuple[int, int, int, int],
+) -> bool:
+    lx, ly, lw, lh = (int(v) for v in left)
+    rx, ry, rw, rh = right
+    return lx < rx + rw and lx + lw > rx and ly < ry + rh and ly + lh > ry
+
+
 def test_default_json_stream_overlay_source_is_registered() -> None:
     """stream_overlay appears in the source list with a registered class_name."""
     from agents.studio_compositor.cairo_sources import get_cairo_source_class
@@ -304,6 +357,7 @@ def test_load_layout_or_fallback_reads_valid_file(tmp_path: Path) -> None:
         "activity_variety_log",
         "whos_here",
         "durf",
+        "coding_session_reveal",
         "m8-display",
         "steamdeck-display",
         "egress_footer",
