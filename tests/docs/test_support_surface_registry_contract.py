@@ -83,7 +83,6 @@ def test_required_surfaces_and_refusals_are_pinned_in_schema() -> None:
         "sponsor_support_copy",
     }
     assert set(schema["x-required_refusal_conversion_surface_ids"]) == {
-        "github_sponsors",
         "patreon",
         "substack_paid_subscription",
         "discord_community_subscriptions",
@@ -142,6 +141,7 @@ def test_registry_classifies_acceptance_criteria_surfaces() -> None:
         "lightning_invoice_receive",
         "nostr_zaps",
         "kofi_tips_guarded",
+        "github_sponsors",
         "sponsor_support_copy",
     ):
         assert surfaces[surface_id]["decision"] in {"allowed", "guarded"}
@@ -149,7 +149,6 @@ def test_registry_classifies_acceptance_criteria_surfaces() -> None:
         assert surfaces[surface_id]["aggregate_only_receipts"] is True
 
     for surface_id in (
-        "github_sponsors",
         "patreon",
         "substack_paid_subscription",
         "discord_community_subscriptions",

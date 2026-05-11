@@ -64,13 +64,22 @@ def test_example_config_loads_and_builds_plan(runner_mod: ModuleType) -> None:
     plan = runner_mod.build_plan(config)
     cassette = runner_mod.build_cassette(config)
 
-    assert plan["profile"]["account"] == "hapax-llc"
-    assert len(plan["tiers"]) >= 5
+    assert plan["profile"]["account"] == "hapax-systems"
+    assert len(plan["tiers"]) == 4
+    assert [tier["amount_usd_cents"] for tier in plan["tiers"]] == [
+        100,
+        500,
+        1000,
+        2500,
+    ]
     assert plan["safety"]["dry_run_default"] is True
     assert plan["safety"]["does_not_touch_repo_sponsorships"] is True
-    assert "github-sponsors/tiers/supporter" in {tier["pass_key"] for tier in plan["tiers"]}
+    assert "github-sponsors/tiers/five-dollar" in {tier["pass_key"] for tier in plan["tiers"]}
     assert cassette["actions"][0]["action"] == "goto"
-    assert {action["action"] for action in cassette["actions"]} >= {"fill_profile", "create_tier"}
+    assert {action["action"] for action in cassette["actions"]} >= {
+        "fill_profile",
+        "create_tier",
+    }
 
 
 def test_duplicate_tier_slugs_fail_closed(runner_mod: ModuleType, tmp_path: Path) -> None:
@@ -107,7 +116,7 @@ def test_main_dry_run_writes_plan_and_never_opens_browser(
     out_dir = Path(summary["output_dir"])
     plan = json.loads((out_dir / "bootstrap-plan.json").read_text(encoding="utf-8"))
     cassette = json.loads((out_dir / "dry-run-cassette.json").read_text(encoding="utf-8"))
-    assert plan["dashboard_url"].endswith("/sponsors/accounts/hapax-llc/dashboard/profile")
+    assert plan["dashboard_url"].endswith("/sponsors/hapax-llc/dashboard")
     assert cassette["actions"][0]["url"] == plan["dashboard_url"]
     assert summary["applied"] is False
     assert summary["profile_url"] == "https://github.com/sponsors/hapax-llc"

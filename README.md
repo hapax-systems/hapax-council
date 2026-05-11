@@ -4,6 +4,7 @@ Single-operator cognitive infrastructure: 180+ agent modules, 330+ systemd unit 
 
 [![CI](https://github.com/hapax-systems/hapax-council/actions/workflows/ci.yml/badge.svg)](https://github.com/hapax-systems/hapax-council/actions/workflows/ci.yml)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20113515.svg)](https://doi.org/10.5281/zenodo.20113515)
+[![Sponsor Hapax research](https://img.shields.io/badge/Sponsor-Hapax%20research-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/hapax-systems)
 
 > **Reviewer / AI-safety orientation:** start with
 > [`START_HERE.md`](START_HERE.md) — the short dossier for this repository
