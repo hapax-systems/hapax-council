@@ -36,6 +36,8 @@ origin_sha="unknown"
 active_head="unknown"
 dependency_sync_status="not_started"
 dependency_sync_message=""
+quarantined_untracked_count=0
+quarantined_untracked_path=""
 
 canonical_snapshot() {
     if [[ -d "$CANONICAL_REPO/.git" || -f "$CANONICAL_REPO/.git" ]]; then
@@ -64,7 +66,8 @@ write_receipt() {
         "$origin_sha" "$active_head" "$CANONICAL_REPO" "$ACTIVE_WORKTREE" \
         "$canonical_branch" "$canonical_head" "$canonical_main" \
         "$canonical_dirty_count" "$canonical_status_hash" \
-        "$dependency_sync_status" "$dependency_sync_message" <<'PY'
+        "$dependency_sync_status" "$dependency_sync_message" \
+        "$quarantined_untracked_count" "$quarantined_untracked_path" <<'PY'
 from __future__ import annotations
 
 import json
@@ -91,6 +94,8 @@ from pathlib import Path
     canonical_status_hash,
     dependency_sync_status,
     dependency_sync_message,
+    quarantined_untracked_count,
+    quarantined_untracked_path,
 ) = sys.argv[1:]
 
 record = {
@@ -115,6 +120,10 @@ record = {
     "dependency_sync": {
         "status": dependency_sync_status,
         "message": dependency_sync_message,
+    },
+    "source_hygiene": {
+        "untracked_quarantine_count": int(quarantined_untracked_count),
+        "untracked_quarantine_path": quarantined_untracked_path,
     },
 }
 
@@ -169,6 +178,31 @@ if [[ "$active_head" != "$origin_sha" ]]; then
     echo "hapax-source-activate: active source $active_head != origin/main $origin_sha" >&2
     exit 2
 fi
+
+quarantine_untracked_active_source() {
+    local rel
+    local -a untracked_paths
+    mapfile -t untracked_paths < <(git -C "$ACTIVE_WORKTREE" ls-files --others --exclude-standard)
+    if [[ "${#untracked_paths[@]}" -eq 0 ]]; then
+        return 0
+    fi
+
+    local stamp
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    quarantined_untracked_path="$STATE_DIR/untracked-quarantine/${stamp}-${origin_sha:0:8}"
+    mkdir -p "$quarantined_untracked_path"
+
+    for rel in "${untracked_paths[@]}"; do
+        [[ -z "$rel" ]] && continue
+        mkdir -p "$quarantined_untracked_path/$(dirname "$rel")"
+        mv "$ACTIVE_WORKTREE/$rel" "$quarantined_untracked_path/$rel"
+        quarantined_untracked_count=$((quarantined_untracked_count + 1))
+    done
+
+    echo "hapax-source-activate: quarantined $quarantined_untracked_count untracked activation files to $quarantined_untracked_path"
+}
+
+quarantine_untracked_active_source
 
 LOCAL_BIN="${HAPAX_SOURCE_ACTIVATE_LOCAL_BIN:-$HOME/.local/bin}"
 mkdir -p "$LOCAL_BIN"
