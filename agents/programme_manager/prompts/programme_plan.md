@@ -164,9 +164,10 @@ The operator does NOT write the outline.
         "hosting_context": "hapax_responsible_live",
         "authority": "prior_only",
         "segment_beats": [
-          "hook: <what to open with — topic frame, why it matters NOW>",
-          "item_N: <beat-by-beat directions, NOT scripted lines>",
-          "close: <how to land the segment — chat invite, tease next>"
+          "hook: Introduce the ranking topic and state the criteria used to evaluate entries",
+          "Evaluate the first entry against the declared criteria with source evidence",
+          "Evaluate the next entry — compare against previous placements",
+          "close: Recap the final ranking, invite chat reactions, tease implications"
         ],
         "beat_layout_intents": [
           {
@@ -215,12 +216,14 @@ Every segment MUST have this structure:
    these and what criteria we're using. Tease a controversial placement."`
 
 2. **Body beats** (middle beats, minimum 3): Beat-by-beat delivery of
-   the segment content. Each beat is a specific action:
-   - Tier list: `"item: Place X in A-tier — reasoning from vault notes"`
-   - Rant: `"escalation: Build the case using evidence from operator profile"`
-   - React: `"react: Pause source, react to the claim about X"`
-   - Iceberg: `"layer_3: Descend to lesser-known facts about X"`
-   - Lecture: `"point_2: Present evidence for thesis from research notes"`
+   the segment content. Each beat describes what to deliver in concrete
+   language. NEVER use template placeholders like `item_1:`, `item_N:`,
+   `{topic}`, or `{item}`. Write real content directions:
+   - Tier list: `"Evaluate Python against the declared criteria — cite framework ecosystem evidence from vault"`
+   - Rant: `"Escalate the governance argument using the Zuboff source and operator profile facts"`
+   - React: `"Pause at the 3:42 mark — react to the speaker's claim about alignment"`
+   - Iceberg: `"Descend to the third layer — the lesser-known connection between X and Y"`
+   - Lecture: `"Present the second piece of evidence for the thesis from the research notes"`
 
 3. **Closing beat** (last beat): Land the segment, invite audience
    response, tease what's next. This is the segment's EXIT.
@@ -231,6 +234,14 @@ Segments with fewer than 8 total beats are TOO SHORT. Aim for 10-20
 beats for a 30-60 minute segment. Each beat should BREATHE — never
 rush through a layer to get to the next one. A beat that can be
 summarized in one sentence wasn't developed enough.
+
+**CRITICAL: NO TEMPLATE SYNTAX IN BEATS.** Every beat must contain
+concrete content directions. The following patterns are REJECTED by
+source readiness validation and will block the segment:
+- `item_1:`, `item_2:`, `item_N:` — write the actual item name
+- `{topic}`, `{item}`, `{source}` — write the actual value
+- Generic directions like "Source candidates from vault + RAG" — name
+  the specific sources
 
 **Arc shaping**: Every segment has dramatic energy, not just
 information. Open with tension. Build through the body — each beat

@@ -68,13 +68,18 @@ _SCRIPTLIKE_BEAT_RE = re.compile(
     re.IGNORECASE,
 )
 _TEMPLATE_LEAK_RE = re.compile(
-    r"\b(?:"
-    r"source candidates from vault \+ rag|source from vault \+ rag|"
+    r"(?:"
+    r"\b(?:source candidates from vault \+ rag|source from vault \+ rag|"
     r"rank against operator positions|narrate placements|narrate the climb|"
     r"ground in operator positions from profile-facts|resolve via content-resolver|"
     r"surface from rag|descend through vault notes|outline from operator vault notes|"
-    r"warm-then-deep question arc"
-    r")\b",
+    r"warm-then-deep question arc)\b"
+    r"|"
+    r"\bitem_\d+:"
+    r"|"
+    r"\{(?:topic|item|hook|close|body|subject|source|beat|segment|title|name|"
+    r"item_\d+|beat_\d+|criteria|ranking|tier|description|argument|claim)\}"
+    r")",
     re.IGNORECASE,
 )
 _CURRENT_RANKING_RE = re.compile(
