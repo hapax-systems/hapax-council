@@ -733,6 +733,36 @@ def test_actionability_rejects_human_personage_and_detector_theater() -> None:
     assert alignment["detector_theater_lines"]
 
 
+def test_actionability_rejects_host_persona_patterns() -> None:
+    host_lines = [
+        "We'll start by looking at the governance evidence from Zuboff's 2019 study.",
+        "Welcome to the stream. Let's dive into the data on consent frameworks.",
+        "Our next topic covers the Thompson sampling surface from the affordance pipeline.",
+        "Moving on to the compositor architecture. Feel free to drop questions in chat.",
+    ]
+    for line in host_lines:
+        alignment = validate_segment_actionability(
+            [line],
+            [f"host-persona test: {line[:30]}"],
+        )
+        assert alignment["personage_violations"], f"Expected violation for: {line[:40]}"
+
+
+def test_actionability_accepts_nonhost_hapax_voice() -> None:
+    clean_lines = [
+        "The evidence for consent-gated data flow starts with Zuboff's 2019 finding.",
+        "This segment continues the governance thread from the previous cycle.",
+        "The data surface opens with three observations from the affordance pipeline.",
+        "Hapax processes the Thompson sampling surface through six recruitment domains.",
+    ]
+    for line in clean_lines:
+        alignment = validate_segment_actionability(
+            [line],
+            [f"clean voice test: {line[:30]}"],
+        )
+        assert not alignment["personage_violations"], f"Unexpected violation for: {line[:40]}"
+
+
 def test_loader_rejects_artifact_requiring_unsupported_runtime_action_rewrite(
     tmp_path: Path,
 ) -> None:

@@ -355,6 +355,17 @@ _PERSONAGE_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_HOST_PERSONA_RE = re.compile(
+    r"(?:"
+    r"\b(?:we'(?:ll|re|ve)|we (?:will|are|have|can|should|need to|want to|'re|'ll|'ve))\b|"
+    r"\b(?:our (?:first|next|final|last|show|segment|audience|topic|guest))\b|"
+    r"\blet'?s (?:start|begin|move|dive|take|look|see|get|go|turn|explore|talk|wrap|kick)\b|"
+    r"\b(?:welcome (?:to|back)|moving on|feel free|stay tuned|join (?:us|me)|"
+    r"thanks? for (?:joining|watching|tuning|listening|being)|"
+    r"good (?:morning|afternoon|evening))\b"
+    r")",
+    re.IGNORECASE,
+)
 _DETECTOR_THEATER_RE = re.compile(
     r"\b(?:detector|classifier|sensor|gauge|readback|layoutstore)\s+"
     r"(?:saw|sees|proved|proves|triggered|changed|guarantees|confirms|certifies)\b",
@@ -699,7 +710,11 @@ def _unsupported_action_lines(text: str) -> list[str]:
 
 
 def _personage_violation_lines(text: str) -> list[str]:
-    return [sentence for sentence in _sentences(text) if _PERSONAGE_RE.search(sentence)]
+    return [
+        sentence
+        for sentence in _sentences(text)
+        if _PERSONAGE_RE.search(sentence) or _HOST_PERSONA_RE.search(sentence)
+    ]
 
 
 def segment_personage_violations(script: Sequence[str]) -> list[dict[str, Any]]:
