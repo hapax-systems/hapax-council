@@ -117,6 +117,7 @@ class TestPollOnce:
         client = _make_client(_make_response(status_code=200, body=body))
         receiver = LiberapayReceiver(credentials=("u", "p"), http_client=client)
         assert receiver.poll_once() == 1
+        client.get.assert_called_with("/u/public.json", auth=("u", "p"), timeout=15.0)
         events = tail_events(log_path=log_path)
         assert len(events) == 1
         assert events[0].rail == "liberapay"
