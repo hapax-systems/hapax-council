@@ -3,8 +3,8 @@
   "@type": "SoftwareSourceCode",
   "name": "hapax-council",
   "description": "Constituent of the Hapax operating environment. Single-operator research apparatus for externalised executive function, built by a neurodivergent solo operator. Stigmergic cognitive mesh with formal constitutional governance, 200+ agents, voice daemon, GPU visual expression, and 24/7 livestream as research instrument. Not a product, not seeking contributors. Research infrastructure published as artifact.",
-  "codeRepository": "https://github.com/ryanklee/hapax-council",
-  "url": "https://github.com/ryanklee/hapax-council",
+  "codeRepository": "https://github.com/hapax-systems/hapax-council",
+  "url": "https://github.com/hapax-systems/hapax-council",
   "license": "https://polyformproject.org/licenses/strict/1.0.0/",
   "author": [
     {

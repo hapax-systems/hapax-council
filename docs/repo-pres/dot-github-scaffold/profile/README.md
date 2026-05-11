@@ -1,46 +1,44 @@
-# The Operator — Hapax
+# The Operator - Hapax
 
-Single-operator infrastructure for externalised executive function. Grounded LLM tier, refusal-as-data substrate, full-automation-or-no-engagement.
+Building Hapax: a single-operator operating environment for externalized executive function and empirical AI-safety research. It combines multimodal perception, semantic recruitment, constitutional governance, refusal-as-data, and a studio/livestream research instrument on one workstation for one person.
 
-## Stance
+This is research infrastructure, not a product or community project. It is not seeking contributors, support tickets, or public feature requests.
 
-This account ships infrastructure that argues against itself. Three constitutional commitments shape what is published and what is refused:
+## Hapax
 
-- **Single-operator.** No auth, no roles, no multi-user code. The operator is the only formal-action actor.
-- **Full automation or no engagement.** Surfaces that cannot be daemon-tractable end-to-end are refused entirely, and the refusal is published as data via the [Refusal Briefs](#refusal-briefs).
-- **Interpersonal transparency.** No persistent state about non-operator persons without an active consent contract. Non-formal contexts use one of four sanctioned referents only — _The Operator_, _Oudepode_, _Oudepode The Operator_, _OTO_.
+| Surface | Current public state |
+|---|---|
+| What | Single-operator operating environment: perception, reasoning, action, and self-governance running as one integrated system |
+| Scale | 180+ agent modules, 330+ systemd unit files, 13 Docker containers, 5 Raspberry Pis, 60 WGSL shader nodes |
+| Governance | 5 constitutional axioms with algebraic verification: consent labels, provenance semiring, deny-wins composition |
+| Coordination | Multi-lane AI work through Claude Code, Codex, and Gemini CLI using relay files, task claims, and PR gates |
+| Perception | Voice daemon, USB-camera compositor, IR fleet, wearable biometrics, phone context, visual expression engine |
+| Research | Grounding attempts, claim authority, refusal/correction behavior, privacy-preserving public egress, and agentic oversight |
 
-Governance specification: [`hapax-constitution`](https://github.com/ryanklee/hapax-constitution).
-
-## Repos
+## Public repos
 
 | Repo | Role |
 |---|---|
-| [`hapax-constitution`](https://github.com/ryanklee/hapax-constitution) | Governance spec — axioms, implications, canons. Publishes the `hapax-sdlc` package. |
-| [`hapax-council`](https://github.com/ryanklee/hapax-council) | Personal operating environment — 200+ agents, voice daemon, studio compositor, reactive engine. |
-| [`hapax-officium`](https://github.com/ryanklee/hapax-officium) | Management decision support — filesystem-as-bus data model. |
-| [`hapax-watch`](https://github.com/ryanklee/hapax-watch) | Wear OS biometric companion (heart rate, HRV, skin temperature, sleep). |
-| [`hapax-phone`](https://github.com/ryanklee/hapax-phone) | Android health-summary + phone-context companion. |
-| [`hapax-mcp`](https://github.com/ryanklee/hapax-mcp) | MCP server bridging logos APIs to Claude Code. |
-| [`hapax-assets`](https://github.com/ryanklee/hapax-assets) | SHA-pinned aesthetic library CDN (BitchX, Px437 IBM VGA). |
+| [hapax-council](https://github.com/hapax-systems/hapax-council) | Primary runtime and research artifact |
+| [agentgov](https://github.com/hapax-systems/agentgov) | Extracted governance hooks/package for AI coding agents |
+| [hapax-constitution](https://github.com/ryanklee/hapax-constitution) | Governance specification: axioms, implications, canons; publishes `hapax-sdlc` |
+| [hapax-officium](https://github.com/ryanklee/hapax-officium) | Management decision support cockpit |
+| [hapax-assets](https://github.com/ryanklee/hapax-assets) | SHA-pinned aesthetic-library CDN |
 
-## Refusal Briefs
+Not public as of 2026-05-11: `hapax-mcp`, `hapax-watch`, and `hapax-phone` are private surfaces. They are not listed here as live public repos.
 
-A growing catalogue of surfaces, mechanisms, and practices the operator has refused — with the reason recorded as data. Refusals are first-class citizens of the publication graph, deposited as Zenodo records with `IsRequiredBy` / `IsObsoletedBy` `RelatedIdentifier` edges (see [V5 publication bus](https://github.com/ryanklee/hapax-council/tree/main/agents/publication_bus)).
+## Entry points
 
-Recent examples:
-- arXiv institutional-email shortcut (closed by upstream Jan 2026 — documentary refusal)
-- Bandcamp / Discogs / RYM / Crossref Event Data — direct outreach is REFUSED per family-wide stance; refusal subclasses auto-record via `__init_subclass__`
-- omg.lol mailhook — vapor (announced ~2021, never publicly shipped)
+- [Start here](https://github.com/hapax-systems/hapax-council/blob/main/START_HERE.md): short dossier for reviewers and researchers.
+- [Primary runtime](https://github.com/hapax-systems/hapax-council): the Hapax operating environment.
+- [Governance spec](https://github.com/ryanklee/hapax-constitution): axioms, implications, canons.
+- [Refusal brief](https://hapax.weblog.lol/refusal-brief): refusal-as-data public artifact.
+- [Manifesto](https://hapax.weblog.lol/hapax-manifesto-v0): authorship and artifact posture.
 
-The full refusal corpus lives in `hapax-council/docs/refusal-briefs/` and is mirrored to Zenodo under the [Hapax Refusal Briefs](https://zenodo.org) concept-DOI.
+## Research framing
 
-## Identifiers
+Working title: **Grounding Attempts as Safety Artifacts: A Live Benchmark for Agentic Claim Confidence, Refusal, and Public Egress.**
 
-- ORCID: configured via `HAPAX_OPERATOR_ORCID`
-- Hapax Citation Graph concept-DOI: minted via `agents/publication_bus/datacite_mirror.py`
-- Software Heritage: SWHID per repo via `agents/attribution/swh_register.py`
+The system studies whether an agentic environment can know what it is entitled to claim, refuse when evidence or governance is insufficient, and keep public/private boundaries intact under operational pressure. Current evidence should be read by ceiling: implemented infrastructure, pilot SCED evidence, spec-ready contracts, dry-run publication paths, and public-archive artifacts are separate states.
 
-## Contact
-
-Direct contact channels are intentionally absent from this surface. The operator participates in the citation graph via DOI cross-references; cold-contact outreach is structurally refused (see `agents/cold_contact/candidate_registry.py` — no email/telephone fields by design). Engagement happens through the work itself.
+DOI: [10.5281/zenodo.20113515](https://doi.org/10.5281/zenodo.20113515). ORCID: [0009-0001-5146-4548](https://orcid.org/0009-0001-5146-4548).
