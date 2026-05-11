@@ -255,7 +255,21 @@ def add_hls_branch(compositor: Any, pipeline: Any, tee: Any, fps: int) -> None:
     encoder.set_property("rc-mode", 2)  # 2 = cbr
     encoder.set_property("bitrate", hls_cfg.bitrate)
     encoder.set_property("gop-size", fps * hls_cfg.target_duration)
+    encoder.set_property("zerolatency", True)
+    encoder.set_property("tune", 3)  # 3 = ultra-low-latency
+    try:
+        encoder.set_property("bframes", 0)
+    except Exception:
+        log.debug("nvh264enc (hls-enc): bframes property not supported", exc_info=True)
+    try:
+        encoder.set_property("repeat-sequence-header", True)
+    except Exception:
+        log.debug(
+            "nvh264enc (hls-enc): repeat-sequence-header property not supported",
+            exc_info=True,
+        )
     parser = _make_element(Gst, "h264parse", "hls-parse", branch)
+    parser.set_property("config-interval", -1)
 
     hls_dir = Path(hls_cfg.output_dir)
     hls_dir.mkdir(parents=True, exist_ok=True)
@@ -264,6 +278,7 @@ def add_hls_branch(compositor: Any, pipeline: Any, tee: Any, fps: int) -> None:
     hls_sink.set_property("target-duration", hls_cfg.target_duration)
     hls_sink.set_property("playlist-length", hls_cfg.playlist_length)
     hls_sink.set_property("max-files", hls_cfg.max_files)
+    hls_sink.set_property("send-keyframe-requests", True)
     hls_sink.set_property("location", str(hls_dir / "segment%05d.ts"))
     hls_sink.set_property("playlist-location", str(hls_dir / "stream.m3u8"))
     hls_sink.set_property("async-handling", True)

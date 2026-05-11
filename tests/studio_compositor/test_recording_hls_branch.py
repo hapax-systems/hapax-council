@@ -196,6 +196,12 @@ def test_add_hls_branch_uploads_converts_and_caps_nv12_before_nvenc(tmp_path: Pa
     assert by_name["hls-enc"].props["cuda-device-id"] == 0
     assert by_name["hls-enc"].props["rc-mode"] == 2
     assert by_name["hls-enc"].props["gop-size"] == 60
+    assert by_name["hls-enc"].props["zerolatency"] is True
+    assert by_name["hls-enc"].props["tune"] == 3
+    assert by_name["hls-enc"].props["bframes"] == 0
+    assert by_name["hls-enc"].props["repeat-sequence-header"] is True
+    assert by_name["hls-parse"].props["config-interval"] == -1
+    assert by_name["hls-sink"].props["send-keyframe-requests"] is True
     assert by_name["hls-sink"].props["playlist-location"] == str(tmp_path / "stream.m3u8")
 
     assert by_name["queue-hls"].links == ["hls-valve"]
