@@ -244,7 +244,7 @@ def branch_glyph(branch: str) -> str:
     cleaned = "".join(ch for ch in branch if ch.isalnum())
     if not cleaned:
         return ""
-    digest = hashlib.sha1(branch.encode("utf-8")).hexdigest()[:3].upper()
+    digest = hashlib.sha1(branch.encode("utf-8"), usedforsecurity=False).hexdigest()[:3].upper()
     return f"{cleaned[0].upper()}{digest}"[:4]
 
 
