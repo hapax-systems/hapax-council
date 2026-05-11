@@ -78,6 +78,8 @@ _DEFAULT_GLYPHS = {
     "cx-violet": "V-\\\\",
 }
 
+_YAML_MAPPING_CACHE: dict[Path, tuple[tuple[int, int], dict[str, Any]]] = {}
+
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _OPERATOR_HOME_PREFIX = "/" + "home" + "/" + "hapax" + "/"
@@ -315,13 +317,26 @@ def is_pane_stale(pane: DURFPaneState, *, now: float, stale_after_s: float) -> b
 
 def _read_yaml_mapping(path: Path) -> dict[str, Any]:
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        stat = path.stat()
     except FileNotFoundError:
+        _YAML_MAPPING_CACHE.pop(path, None)
         return {}
+    except OSError:
+        return {}
+
+    cache_key = (stat.st_mtime_ns, stat.st_size)
+    cached = _YAML_MAPPING_CACHE.get(path)
+    if cached is not None and cached[0] == cache_key:
+        return dict(cached[1])
+
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except Exception:
         log.debug("durf: failed to parse yaml %s", path, exc_info=True)
         return {}
-    return raw if isinstance(raw, dict) else {}
+    mapping = raw if isinstance(raw, dict) else {}
+    _YAML_MAPPING_CACHE[path] = (cache_key, dict(mapping))
+    return dict(mapping)
 
 
 def _read_claims(claim_dir: Path) -> dict[str, tuple[str, str]]:

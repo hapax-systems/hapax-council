@@ -54,34 +54,45 @@ class AudioPerceptionState:
 
 
 def _capture_audio(duration_s: float = CAPTURE_DURATION_S) -> np.ndarray | None:
-    n_samples = int(SAMPLE_RATE * duration_s)
-    n_bytes = n_samples * 2
+    target_bytes = int(SAMPLE_RATE * duration_s * 2)
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [
                 "parecord",
                 "--raw",
                 "--format=s16le",
-                "--rate",
-                str(SAMPLE_RATE),
+                f"--rate={SAMPLE_RATE}",
                 "--channels=1",
-                f"--process-time-msec={int(duration_s * 1000)}",
-                "-d",
-                "hapax-broadcast-normalized.monitor",
-                "/dev/stdout",
+                f"--latency-msec={int(duration_s * 1000)}",
+                "--device=hapax-broadcast-normalized",
             ],
-            capture_output=True,
-            timeout=duration_s + 5.0,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
-        raw = proc.stdout
-        if len(raw) < 64:
-            return None
-        n = min(len(raw), n_bytes)
-        n = n - (n % 2)
-        return np.frombuffer(raw[:n], dtype=np.int16)
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-        log.warning("Audio capture failed: %s", exc)
+    except (FileNotFoundError, OSError) as exc:
+        log.warning("parecord spawn failed: %s", exc)
         return None
+
+    captured = bytearray()
+    deadline = time.monotonic() + duration_s
+    try:
+        while time.monotonic() < deadline and len(captured) < target_bytes:
+            chunk = proc.stdout.read(min(4096, target_bytes - len(captured)))
+            if not chunk:
+                break
+            captured.extend(chunk)
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+    if len(captured) < 64:
+        return None
+    n = len(captured) - (len(captured) % 2)
+    return np.frombuffer(bytes(captured[:n]), dtype=np.int16)
 
 
 def _compute_features(samples: np.ndarray) -> dict:

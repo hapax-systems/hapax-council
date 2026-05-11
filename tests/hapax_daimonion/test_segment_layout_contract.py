@@ -607,6 +607,44 @@ def test_prepared_metadata_rejects_concrete_layouts_and_cue_strings(
         validate_prepared_artifact_layout_metadata(metadata)
 
 
+@pytest.mark.parametrize(
+    "beat_id",
+    ["surface", "surface-level", "deep", "default-analysis", "static-overview", "balanced-take"],
+)
+def test_prepared_metadata_allows_content_bearing_beat_ids(beat_id: str) -> None:
+    artifact = _parent_artifact(
+        beat_layout_intents=[
+            {
+                "beat_id": beat_id,
+                "beat_index": 0,
+                "needs": ["evidence_visible"],
+                "evidence_refs": ["vault:source-note"],
+                "source_affordances": ["asset:source-card"],
+            }
+        ],
+    )
+
+    parsed = validate_prepared_segment_artifact(artifact, artifact_sha256="6" * 64)
+
+    assert parsed.segment_id == "seg-1"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("topic", "A balanced overview of static default patterns"),
+        ("rationale", "Surface the default balanced approach"),
+        ("hook_text", "The static surface of a balanced system"),
+    ],
+)
+def test_prepared_artifact_allows_layout_words_in_content_fields(field: str, value: str) -> None:
+    artifact = _parent_artifact(**{field: value})
+
+    parsed = validate_prepared_segment_artifact(artifact, artifact_sha256="6" * 64)
+
+    assert parsed.segment_id == "seg-1"
+
+
 def test_prepared_segment_artifact_allows_neutral_camera_descriptions() -> None:
     artifact = _parent_artifact(
         prepared_script=[

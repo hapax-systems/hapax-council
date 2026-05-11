@@ -81,6 +81,129 @@ studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapsh
     assert "containment_flag:force_cpu" in payload["reasons"]
 
 
+def test_preflight_full_surface_blocks_active_suppressors(tmp_path: Path) -> None:
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 10
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.1
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 4
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.2
+studio_compositor_runtime_feature_active{feature="shader_fx"} 0
+studio_compositor_runtime_feature_active{feature="inline_fx"} 1
+studio_compositor_runtime_feature_active{feature="hero_effect"} 1
+studio_compositor_runtime_feature_active{feature="follow_mode"} 0
+studio_compositor_runtime_feature_active{feature="ward_modulator"} 0
+studio_compositor_runtime_feature_active{feature="flash_overlay"} 0
+studio_compositor_ward_blit_total{ward="programme-context"} 10
+hapax_compositor_layout_active{layout="default"} 1
+hapax_ward_modulator_tick_total 0
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "true",
+        "--require-full-surface",
+        "--env",
+        "HAPAX_COMPOSITOR_DISABLE_SHADER_FX=1",
+        "--env",
+        "HAPAX_FOLLOW_MODE_ACTIVE=0",
+        "--env",
+        "HAPAX_WARD_MODULATOR_ACTIVE=0",
+        "--env",
+        "HAPAX_COMPOSITOR_FX_SLOTS=2",
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 10
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "degraded_containment"
+    assert payload["restored"] is False
+    assert payload["full_surface_required"] is True
+    assert "full_surface:LSC-FX-001:shader_fx_disabled" in payload["reasons"]
+    assert "full_surface:LSC-FX-001:fx_slots_below_min:2<8" in payload["reasons"]
+    assert "full_surface:LSC-WARD-001:visible_ward_count_below_min:1<3" in payload["reasons"]
+    assert "full_surface:LSC-LAYOUT-003:legacy_static_layout_active:default" in payload["reasons"]
+
+
+def test_preflight_full_surface_can_pass_with_complete_surface_evidence(tmp_path: Path) -> None:
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 10
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.1
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 4
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.2
+studio_compositor_runtime_feature_active{feature="shader_fx"} 1
+studio_compositor_runtime_feature_active{feature="inline_fx"} 1
+studio_compositor_runtime_feature_active{feature="hero_effect"} 1
+studio_compositor_runtime_feature_active{feature="follow_mode"} 1
+studio_compositor_runtime_feature_active{feature="ward_modulator"} 1
+studio_compositor_runtime_feature_active{feature="flash_overlay"} 0
+studio_compositor_ward_blit_total{ward="programme-context"} 10
+studio_compositor_ward_blit_total{ward="tier-panel"} 10
+studio_compositor_ward_blit_total{ward="artifact-detail-panel"} 10
+hapax_compositor_layout_active{layout="segment-programme-context"} 1
+hapax_ward_modulator_tick_total 5
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "true",
+        "--require-full-surface",
+        "--env",
+        "HAPAX_COMPOSITOR_FX_SLOTS=8",
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "healthy"
+    assert payload["full_surface_required"] is True
+    assert payload["full_surface_failures"] == []
+
+
+def test_preflight_allow_containment_does_not_normalize_full_surface_failure(
+    tmp_path: Path,
+) -> None:
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 10
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.1
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 4
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.2
+studio_compositor_runtime_feature_active{feature="shader_fx"} 0
+studio_compositor_runtime_feature_active{feature="inline_fx"} 1
+studio_compositor_runtime_feature_active{feature="hero_effect"} 1
+studio_compositor_runtime_feature_active{feature="follow_mode"} 1
+studio_compositor_runtime_feature_active{feature="ward_modulator"} 1
+studio_compositor_runtime_feature_active{feature="flash_overlay"} 0
+studio_compositor_ward_blit_total{ward="programme-context"} 10
+studio_compositor_ward_blit_total{ward="tier-panel"} 10
+studio_compositor_ward_blit_total{ward="artifact-detail-panel"} 10
+hapax_compositor_layout_active{layout="segment-programme-context"} 1
+hapax_ward_modulator_tick_total 5
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "true",
+        "--require-full-surface",
+        "--allow-containment",
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "degraded_containment"
+    assert payload["restored"] is False
+    assert "full_surface:LSC-FX-001:feature_inactive:shader_fx" in payload["reasons"]
+
+
 def test_preflight_passes_when_final_v4l2_truth_is_fresh(tmp_path: Path) -> None:
     result = _run(
         """

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any
 
@@ -12,6 +13,21 @@ log = logging.getLogger(__name__)
 _OBSCURE_R = 40.0 / 255.0
 _OBSCURE_G = 40.0 / 255.0
 _OBSCURE_B = 40.0 / 255.0
+
+
+def _env_enabled(name: str, *, default: bool = True) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+
+
+def overlay_zone_manager_draw_enabled() -> bool:
+    return _env_enabled("HAPAX_OVERLAY_ZONE_MANAGER_DRAW_ENABLED", default=True)
+
+
+def pre_fx_layout_draw_enabled() -> bool:
+    return _env_enabled("HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED", default=True)
 
 
 def _paint_face_obscure_rects(compositor: Any, cr: Any) -> None:
@@ -105,7 +121,7 @@ def on_draw(compositor: Any, overlay: Any, cr: Any, timestamp: int, duration: in
         geal.render(cr, canvas_w, canvas_h, time.monotonic(), state)
 
     # Render content overlay zones (markdown/ANSI from Obsidian via Pango)
-    if hasattr(compositor, "_overlay_zone_manager"):
+    if overlay_zone_manager_draw_enabled() and hasattr(compositor, "_overlay_zone_manager"):
         compositor._overlay_zone_manager.render(cr, canvas_w, canvas_h)
 
     # FINDING-W (ef7b-179, 2026-04-24): substrate layout assignments —
@@ -114,6 +130,7 @@ def on_draw(compositor: Any, overlay: Any, cr: Any, timestamp: int, duration: in
     # decorate them. Chrome wards remain on the post-FX callback. The
     # default layout ships chrome-only so this call is a no-op until
     # a session or layout opts substrate assignments in.
-    from agents.studio_compositor.fx_chain import pre_fx_draw_from_layout
+    if pre_fx_layout_draw_enabled():
+        from agents.studio_compositor.fx_chain import pre_fx_draw_from_layout
 
-    pre_fx_draw_from_layout(compositor, cr)
+        pre_fx_draw_from_layout(compositor, cr)
