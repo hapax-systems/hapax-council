@@ -42,6 +42,11 @@ class TestSurfaceRegistry:
         assert spec.scope_note is not None
         assert "concept-DOI" in spec.scope_note
 
+    def test_omg_lol_pay_is_not_registered(self) -> None:
+        """omg.lol has no Pay product, so the publication bus must not
+        expose an omg.lol Pay surface or publisher activation path."""
+        assert "omg-lol-pay-receiver" not in SURFACE_REGISTRY
+
 
 class TestAutomationStatusEnum:
     def test_three_tiers(self) -> None:
