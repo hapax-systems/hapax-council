@@ -6,6 +6,7 @@ Wants=pipewire.service wireplumber.service pipewire-pulse.service
 [Service]
 Type=oneshot
 Environment=HAPAX_USB_TOPOLOGY_POLICY=%h/.config/hapax/usb-topology-policy.json
+ExecStartPre=/usr/bin/udevadm settle --timeout=30
 ExecStart=%h/.local/bin/hapax-usb-topology-witness --repair
 
 [Install]
