@@ -22,6 +22,15 @@ from agentgov.governor import (
     consent_input_policy,
     consent_output_policy,
 )
+from agentgov.hooks import (
+    HookResult,
+    scan_attribution_entities,
+    scan_management_boundary,
+    scan_pii,
+    scan_provenance_references,
+    scan_single_user_violations,
+    validate_all,
+)
 from agentgov.labeled import Labeled
 from agentgov.primitives import (
     Candidate,
@@ -84,4 +93,12 @@ __all__ = [
     "VetoResult",
     # Says monad
     "Says",
+    # Governance hooks
+    "HookResult",
+    "scan_pii",
+    "scan_single_user_violations",
+    "scan_attribution_entities",
+    "scan_provenance_references",
+    "scan_management_boundary",
+    "validate_all",
 ]
