@@ -62,6 +62,24 @@ wheels = [
 ]
 
 [[package]]
+name = "agentgov"
+version = "0.1.0"
+source = { editable = "packages/agentgov" }
+dependencies = [
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "aiofile"
 version = "3.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2050,6 +2068,7 @@ name = "hapax-council"
 version = "0.3.7"
 source = { editable = "." }
 dependencies = [
+    { name = "agentgov" },
     { name = "atproto" },
     { name = "chat-downloader" },
     { name = "evdev" },
@@ -2214,6 +2233,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agentgov", editable = "packages/agentgov" },
     { name = "atproto", specifier = ">=0.0.65" },
     { name = "chat-downloader", specifier = ">=0.2.8" },
     { name = "evdev", specifier = ">=1.9.3" },

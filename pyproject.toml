@@ -54,6 +54,7 @@ dependencies = [
     "atproto>=0.0.65",
     "mastodon-py>=2.2.1",
     "mcp>=1.26",
+    "agentgov",
 ]
 
 [project.optional-dependencies]
@@ -185,3 +186,6 @@ markers = [
     "e2e: end-to-end tests requiring live services + browser (run with '-m e2e')",
     "revocation_drill: DESTRUCTIVE — actually revokes the operator's mail-monitor OAuth token. Run with '-m revocation_drill' only on explicit operator intent; manual re-bootstrap is required after. Default-deselected.",
 ]
+
+[tool.uv.sources]
+agentgov = { path = "packages/agentgov", editable = true }
