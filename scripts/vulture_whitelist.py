@@ -155,6 +155,12 @@ from shared.live_surface_truth import (
     snapshot_from_prometheus as _snapshot_from_prometheus,
 )
 from shared.livestream_health_group import LivestreamHealthEnvelope, LivestreamHealthGroup
+from shared.multimodal_environmental_evidence_envelope import (
+    MultimodalClaimSupportDecision,
+    MultimodalEnvironmentalEvidenceEnvelope,
+    MultimodalEnvironmentalEvidenceFixtureSet,
+    load_multimodal_environmental_evidence_fixtures,
+)
 from shared.narration_triad import IntendedOutcomeItem, NarrationTriadEnvelope
 from shared.operator_quality_feedback import (
     OperatorQualityRatingEvent,
@@ -765,6 +771,15 @@ adapt_vision_backend_observation
 adapt_cross_camera_tracklet
 adapt_ir_presence_observation
 load_camera_salience_fixtures
+
+# Multimodal environmental evidence validators are invoked dynamically by
+# Pydantic while validating the schema/fixture contract. The loader is the
+# public contract for downstream self-grounding, camera/IR, archive, and
+# public-reembed consumers.
+MultimodalEnvironmentalEvidenceEnvelope._validate_envelope_contract
+MultimodalClaimSupportDecision._validate_decision_shape
+MultimodalEnvironmentalEvidenceFixtureSet._validate_fixture_set
+load_multimodal_environmental_evidence_fixtures
 
 # Narration triad validators are invoked dynamically by Pydantic while the
 # autonomous narration ledger validates open/closed semantic-outcome policy.
