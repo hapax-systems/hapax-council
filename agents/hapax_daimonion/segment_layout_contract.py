@@ -1314,27 +1314,55 @@ def _layout_intent_to_dict(intent: Any) -> dict[str, Any] | None:
     return None
 
 
-def _reject_prepared_layout_commands(value: Any, *, path: str = "$") -> None:
+_CONTENT_BEARING_KEYS = frozenset(
+    {
+        "beatid",
+        "beat",
+        "beatlabel",
+        "beattext",
+        "hooktext",
+        "hook",
+        "label",
+        "narrativetext",
+        "rationale",
+        "role",
+        "spokentext",
+        "suggestedtitle",
+        "text",
+        "title",
+        "topic",
+    }
+)
+
+
+def _reject_prepared_layout_commands(
+    value: Any, *, path: str = "$", _in_content_key: bool = False
+) -> None:
     if isinstance(value, Mapping):
         for key, nested in value.items():
             key_text = str(key)
             if _key_token(key_text) in _FORBIDDEN_PREPARED_LAYOUT_KEY_TOKENS:
                 raise ValueError(f"prepared artifact layout metadata cannot set {path}.{key_text}")
-            _reject_prepared_layout_commands(nested, path=f"{path}.{key_text}")
+            child_is_content = _key_token(key_text) in _CONTENT_BEARING_KEYS
+            _reject_prepared_layout_commands(
+                nested, path=f"{path}.{key_text}", _in_content_key=child_is_content
+            )
         return
     if isinstance(value, str):
         if _contains_forbidden_command_text(value):
             raise ValueError(
                 f"prepared artifact layout metadata cannot carry executable cue {value!r}"
             )
-        if _is_forbidden_prepared_layout_value(value):
+        if not _in_content_key and _is_forbidden_prepared_layout_value(value):
             raise ValueError(
                 f"prepared artifact layout metadata cannot name concrete layout {value!r}"
             )
         return
     if isinstance(value, list | tuple):
         for index, nested in enumerate(value):
-            _reject_prepared_layout_commands(nested, path=f"{path}[{index}]")
+            _reject_prepared_layout_commands(
+                nested, path=f"{path}[{index}]", _in_content_key=_in_content_key
+            )
 
 
 def _layout_token(value: str) -> str:
