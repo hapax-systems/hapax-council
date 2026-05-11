@@ -133,6 +133,8 @@ class PreprintArtifact(BaseModel):
     publication_review: dict[str, object] | None = None
     """Latest cross-provider publication review report attached before fan-out."""
 
+    grounding_gate_result: dict[str, object] | None = None
+
     # ── Inbox helpers ──────────────────────────────────────────────
 
     def inbox_path(self, *, state_root: Path) -> Path:
