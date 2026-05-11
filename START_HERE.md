@@ -138,7 +138,7 @@ failures and corrections can be observed.
 
 ## Public Anchors
 
-- Repository: <https://github.com/ryanklee/hapax-council>
+- Repository: <https://github.com/hapax-systems/hapax-council>
 - Governance specification: <https://github.com/ryanklee/hapax-constitution>
 - Public weblog: <https://hapax.weblog.lol/>
 - Hapax Manifesto v0: <https://hapax.weblog.lol/hapax-manifesto-v0>

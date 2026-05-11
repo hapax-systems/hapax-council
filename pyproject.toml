@@ -11,7 +11,7 @@ packages = ["agents", "logos", "shared"]
 [project]
 name = "hapax-council"
 version = "0.3.7"
-description = "Personal agent infrastructure for a single-user LLM-first computing environment"
+description = "Single-operator Hapax operating-environment runtime and research infrastructure"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

@@ -14,8 +14,8 @@ authors:
 - given-names: Ryan
   family-names: Kleeberger
   orcid: https://orcid.org/0009-0001-5146-4548
-repository-code: https://github.com/ryanklee/hapax-council
-url: https://github.com/ryanklee/hapax-council
+repository-code: https://github.com/hapax-systems/hapax-council
+url: https://github.com/hapax-systems/hapax-council
 license: PolyForm-Strict-1.0.0
 keywords:
 - research-software
