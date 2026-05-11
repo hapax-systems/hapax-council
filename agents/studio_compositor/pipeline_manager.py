@@ -49,6 +49,10 @@ _FRAME_FLOW_TICK_S = 1.0
 # first buffer typically arrives within a frame or two but a tight
 # threshold creates a false-fire window. Five seconds is generous.
 _FRAME_FLOW_GRACE_S = 5.0
+# Minimum time after a successful rebuild before a fresh pad-probe frame can
+# promote RECOVERING back to HEALTHY. One frame alone can be a stale edge; a
+# one-second proof window shows the rebuilt source is actually flowing.
+_RECOVERY_FRAME_PROOF_S = 1.0
 
 
 class PipelineManager:
@@ -504,12 +508,44 @@ class PipelineManager:
 
         for role in roles:
             sm = self._state_machines.get(role)
-            if sm is None or sm.state != CameraState.HEALTHY:
+            if sm is None or sm.state not in (CameraState.HEALTHY, CameraState.RECOVERING):
                 continue
             recovered_at = recovery_snapshot.get(role)
+            age = self.get_last_frame_age(role)
+            if sm.state == CameraState.RECOVERING:
+                if (
+                    recovered_at is not None
+                    and (now - recovered_at) >= _RECOVERY_FRAME_PROOF_S
+                    and age <= STALENESS_THRESHOLD_S
+                ):
+                    sm.dispatch(
+                        Event(
+                            EventKind.FRAME_FLOW_OBSERVED,
+                            reason=f"post-rebuild pad-probe age {age:.2f}s",
+                            source="watchdog",
+                        )
+                    )
+                    continue
+                if recovered_at is not None and (now - recovered_at) < _FRAME_FLOW_GRACE_S:
+                    continue
+                log.warning(
+                    "frame-flow watchdog: role=%s recovery produced no fresh frames "
+                    "(last_frame_age=%.2fs) after %.2fs grace — dispatching FRAME_FLOW_STALE",
+                    role,
+                    age,
+                    _FRAME_FLOW_GRACE_S,
+                )
+                metrics.on_frame_flow_stale(role)
+                sm.dispatch(
+                    Event(
+                        EventKind.FRAME_FLOW_STALE,
+                        reason=f"post-rebuild pad-probe age {age:.2f}s",
+                        source="watchdog",
+                    )
+                )
+                continue
             if recovered_at is not None and (now - recovered_at) < _FRAME_FLOW_GRACE_S:
                 continue
-            age = self.get_last_frame_age(role)
             if age <= STALENESS_THRESHOLD_S:
                 # Sustained-success signal: post grace window, frames
                 # flowing at the pad probe. Dispatch resets the state
@@ -560,20 +596,31 @@ class PipelineManager:
         metrics.on_reconnect_result(role, ok)
         metrics.on_pipeline_restart(f"cam_{role}")
         if sm is not None:
-            sm.dispatch(
-                Event(
-                    EventKind.RECOVERY_SUCCEEDED if ok else EventKind.RECOVERY_FAILED,
-                    reason="rebuild ok" if ok else "rebuild failed",
-                    source="supervisor",
-                )
-            )
-            metrics.on_consecutive_failures_changed(role, sm.consecutive_failures)
             if ok:
-                # W5 NEW: timestamp the recovery so the frame-flow
-                # watchdog gives the rebuilt pipeline a grace window
-                # before checking pad-probe staleness.
+                log.info(
+                    "supervisor: rebuild accepted for role=%s; awaiting post-rebuild frame flow",
+                    role,
+                )
+                # Timestamp before dispatching RECOVERY_SUCCEEDED so a concurrent
+                # watchdog tick never sees RECOVERING without a recovery epoch.
                 with self._lock:
                     self._last_recovery_at[role] = time.monotonic()
+                sm.dispatch(
+                    Event(
+                        EventKind.RECOVERY_SUCCEEDED,
+                        reason="rebuild accepted; awaiting frame flow",
+                        source="supervisor",
+                    )
+                )
+            else:
+                sm.dispatch(
+                    Event(
+                        EventKind.RECOVERY_FAILED,
+                        reason="rebuild failed",
+                        source="supervisor",
+                    )
+                )
+            metrics.on_consecutive_failures_changed(role, sm.consecutive_failures)
             # The state machine schedules its own next retry via its
             # on_schedule_reconnect callback on failure; no need to
             # schedule again here.

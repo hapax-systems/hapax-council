@@ -32,14 +32,127 @@ log = logging.getLogger(__name__)
 # operator-facing video remains ≥0.4 visible under any informational ward.
 NONDESTRUCTIVE_ALPHA_CEILING: float = 0.6
 DEFAULT_BLIT_READBACK_TTL_S: float = 2.0
+DEFAULT_FX_SLOT_COUNT: int = 12
+MAX_FX_SLOT_COUNT: int = 24
 _BLIT_READBACK_LOCK = threading.Lock()
 _BLIT_READBACKS: dict[str, dict[str, object]] = {}
+_SCALE_CACHE_LOCK = threading.Lock()
+_SCALE_CACHE: dict[tuple[object, ...], cairo.ImageSurface] = {}
+_LAYOUT_COMPOSITE_CACHE_LOCK = threading.Lock()
+_LAYOUT_COMPOSITE_CACHE: dict[str, dict[str, object]] = {}
 
 
 def clear_blit_readbacks() -> None:
     """Clear in-process ward blit readbacks. Used by focused tests."""
     with _BLIT_READBACK_LOCK:
         _BLIT_READBACKS.clear()
+
+
+def clear_scaled_blit_cache() -> None:
+    """Clear scaled ward surface cache. Used by tests and incident rollback."""
+    with _SCALE_CACHE_LOCK:
+        _SCALE_CACHE.clear()
+
+
+def clear_layout_composite_cache() -> None:
+    """Clear full-canvas layout composite cache. Used by tests and incident rollback."""
+    with _LAYOUT_COMPOSITE_CACHE_LOCK:
+        _LAYOUT_COMPOSITE_CACHE.clear()
+
+
+def _env_enabled(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+
+
+def _fx_slot_count_from_env() -> int:
+    raw = os.environ.get("HAPAX_COMPOSITOR_FX_SLOTS")
+    if raw is None:
+        return DEFAULT_FX_SLOT_COUNT
+    try:
+        requested = int(raw)
+    except ValueError:
+        log.warning("Invalid HAPAX_COMPOSITOR_FX_SLOTS=%r; using %d", raw, DEFAULT_FX_SLOT_COUNT)
+        return DEFAULT_FX_SLOT_COUNT
+    clamped = max(1, min(MAX_FX_SLOT_COUNT, requested))
+    if clamped != requested:
+        log.warning(
+            "Clamped HAPAX_COMPOSITOR_FX_SLOTS=%d to supported range 1..%d",
+            requested,
+            MAX_FX_SLOT_COUNT,
+        )
+    return clamped
+
+
+def _shader_fx_disabled() -> bool:
+    return _env_enabled("HAPAX_COMPOSITOR_DISABLE_SHADER_FX", default=False)
+
+
+def _overlay_only_output_convert_enabled() -> bool:
+    return _env_enabled("HAPAX_OVERLAY_ONLY_OUTPUT_CONVERT", default=False)
+
+
+def _post_fx_overlay_disabled() -> bool:
+    return _env_enabled("HAPAX_COMPOSITOR_DISABLE_POST_FX_OVERLAY", default=False)
+
+
+def _hero_small_overlay_enabled() -> bool:
+    return _env_enabled("HAPAX_HERO_SMALL_OVERLAY_ENABLED", default=True)
+
+
+def _hero_small_overlay_stage() -> Literal["pre_fx", "post_fx"]:
+    raw = os.environ.get("HAPAX_HERO_SMALL_RENDER_STAGE", "post_fx").strip().lower()
+    return "pre_fx" if raw == "pre_fx" else "post_fx"
+
+
+def _visual_pumping_enabled() -> bool:
+    return _env_enabled("HAPAX_VISUAL_PUMPING_ENABLED", default=True)
+
+
+def _pre_fx_background_composite_enabled() -> bool:
+    return _env_enabled("HAPAX_PRE_FX_LAYOUT_BACKGROUND_COMPOSITE_ENABLED", default=True)
+
+
+def _post_fx_background_composite_enabled() -> bool:
+    return _env_enabled("HAPAX_POST_FX_LAYOUT_BACKGROUND_COMPOSITE_ENABLED", default=True)
+
+
+def _layout_composite_cache_enabled(stage: Literal["pre_fx", "post_fx"] | None) -> bool:
+    if stage == "pre_fx":
+        return _env_enabled("HAPAX_PRE_FX_LAYOUT_COMPOSITE_CACHE_ENABLED", default=True)
+    if stage == "post_fx":
+        return _env_enabled("HAPAX_POST_FX_LAYOUT_COMPOSITE_CACHE_ENABLED", default=True)
+    return False
+
+
+def _layout_composite_interval_s(stage: Literal["pre_fx", "post_fx"] | None) -> float:
+    env_name = (
+        "HAPAX_PRE_FX_LAYOUT_COMPOSITE_HZ"
+        if stage == "pre_fx"
+        else "HAPAX_POST_FX_LAYOUT_COMPOSITE_HZ"
+    )
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return 0.0
+    try:
+        hz = float(raw)
+    except ValueError:
+        log.warning("Invalid %s=%r; disabling interval throttle", env_name, raw)
+        return 0.0
+    if hz <= 0.0:
+        return 0.0
+    return 1.0 / hz
+
+
+def _publish_fx_runtime_feature(feature: str, active: bool) -> None:
+    try:
+        from . import metrics
+
+        metrics.set_runtime_feature_active(feature, active)
+    except Exception:
+        log.debug("runtime feature metric publish failed for %s", feature, exc_info=True)
 
 
 def recent_blit_readbacks(
@@ -137,6 +250,9 @@ def blit_scaled(
     geom: SurfaceGeometry,
     opacity: float,
     blend_mode: str,
+    *,
+    cache_key: object | None = None,
+    content_token: object | None = None,
 ) -> None:
     """Place a natural-size source surface at ``geom``'s rect with scaling.
 
@@ -156,8 +272,19 @@ def blit_scaled(
     src_h = max(src.get_height(), 1)
     sx = (geom.w or src_w) / src_w
     sy = (geom.h or src_h) / src_h
+    draw_src = src
+    if cache_key is not None and (abs(sx - 1.0) >= 1e-6 or abs(sy - 1.0) >= 1e-6):
+        draw_src = _scaled_surface_for_blit(
+            src,
+            int(geom.w or src_w),
+            int(geom.h or src_h),
+            cache_key=cache_key,
+            content_token=content_token,
+        )
+        sx = 1.0
+        sy = 1.0
     cr.scale(sx, sy)
-    cr.set_source_surface(src, 0, 0)
+    cr.set_source_surface(draw_src, 0, 0)
     pattern = cr.get_source()
     # Crispness pass (2026-04-21, Tier A of the livestream-crispness
     # research): pick the sharpest filter appropriate for the scale.
@@ -183,6 +310,52 @@ def blit_scaled(
     cr.restore()
 
 
+def _scaled_surface_for_blit(
+    src: cairo.ImageSurface,
+    width: int,
+    height: int,
+    *,
+    cache_key: object,
+    content_token: object | None,
+) -> cairo.ImageSurface:
+    src_w = max(src.get_width(), 1)
+    src_h = max(src.get_height(), 1)
+    width = max(1, width)
+    height = max(1, height)
+    key = (
+        cache_key,
+        content_token if content_token is not None else id(src),
+        src_w,
+        src_h,
+        width,
+        height,
+    )
+    with _SCALE_CACHE_LOCK:
+        cached = _SCALE_CACHE.get(key)
+        if cached is not None:
+            return cached
+
+    scaled = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+    s_cr = cairo.Context(scaled)
+    s_cr.scale(width / src_w, height / src_h)
+    s_cr.set_source_surface(src, 0, 0)
+    pattern = s_cr.get_source()
+    try:
+        pattern.set_filter(cairo.FILTER_BEST)
+    except Exception:
+        try:
+            pattern.set_filter(cairo.FILTER_BILINEAR)
+        except Exception:
+            log.debug("scaled blit cache filter selection failed", exc_info=True)
+    s_cr.paint()
+    scaled.flush()
+    with _SCALE_CACHE_LOCK:
+        if len(_SCALE_CACHE) > 256:
+            _SCALE_CACHE.clear()
+        _SCALE_CACHE[key] = scaled
+    return scaled
+
+
 def blit_with_depth(
     cr: cairo.Context,
     src: cairo.ImageSurface,
@@ -191,6 +364,8 @@ def blit_with_depth(
     blend_mode: str,
     z_plane: str = DEFAULT_Z_PLANE,
     z_index_float: float = DEFAULT_Z_INDEX_FLOAT,
+    cache_key: object | None = None,
+    content_token: object | None = None,
 ) -> None:
     """``blit_scaled`` with z-plane depth attenuation applied to opacity.
 
@@ -207,7 +382,15 @@ def blit_with_depth(
     z_base = _Z_INDEX_BASE.get(z_plane, _Z_INDEX_BASE[DEFAULT_Z_PLANE])
     effective_z = max(0.0, min(1.0, z_base + (z_index_float - 0.5) * 0.2))
     depth_opacity = 0.6 + 0.4 * effective_z
-    blit_scaled(cr, src, geom, opacity * depth_opacity, blend_mode)
+    blit_scaled(
+        cr,
+        src,
+        geom,
+        opacity * depth_opacity,
+        blend_mode,
+        cache_key=cache_key,
+        content_token=content_token,
+    )
 
 
 def pip_draw_from_layout(
@@ -216,6 +399,7 @@ def pip_draw_from_layout(
     source_registry: SourceRegistry,
     *,
     stage: Literal["pre_fx", "post_fx"] | None = None,
+    use_composite_cache: bool = True,
 ) -> None:
     """Walk the current layout's assignments by z_order and blit each one.
 
@@ -247,7 +431,7 @@ def pip_draw_from_layout(
     top of shaders and substrate gets decorated by them.
     """
     layout = layout_state.get()
-    pairs: list[tuple[Any, Any]] = []
+    pairs: list[tuple[Any, Any, cairo.ImageSurface, object]] = []
     for assignment in layout.assignments:
         if stage is not None and getattr(assignment, "render_stage", "post_fx") != stage:
             continue
@@ -258,10 +442,6 @@ def pip_draw_from_layout(
         if surface_schema.geometry.kind != "rect":
             # appsrc/wgpu/video_out paths — not a blit candidate.
             continue
-        pairs.append((assignment, surface_schema))
-    pairs.sort(key=lambda p: p[1].z_order)
-
-    for assignment, surface_schema in pairs:
         try:
             src = source_registry.get_current_surface(assignment.source)
         except KeyError:
@@ -270,6 +450,44 @@ def pip_draw_from_layout(
         if src is None:
             _emit_blit_skip(assignment.source, "source_surface_none")
             continue
+        pairs.append((assignment, surface_schema, src, id(src)))
+    pairs.sort(key=lambda p: p[1].z_order)
+
+    target_size = _target_size_from_context(cr)
+    if (
+        use_composite_cache
+        and stage is not None
+        and target_size is not None
+        and _layout_composite_cache_enabled(stage)
+    ):
+        signature = _layout_composite_signature(pairs)
+        if _paint_cached_layout_composite(
+            cr,
+            stage=stage,
+            signature=signature,
+            min_interval_s=_layout_composite_interval_s(stage),
+        ):
+            return
+
+        composite = cairo.ImageSurface(cairo.FORMAT_ARGB32, target_size[0], target_size[1])
+        composite_cr = cairo.Context(composite)
+        _draw_layout_pairs(composite_cr, pairs, stage=stage)
+        composite.flush()
+        _store_layout_composite(stage, signature, composite)
+        cr.set_source_surface(composite, 0, 0)
+        cr.paint()
+        return
+
+    _draw_layout_pairs(cr, pairs, stage=stage)
+
+
+def _draw_layout_pairs(
+    cr: cairo.Context,
+    pairs: list[tuple[Any, Any, cairo.ImageSurface, object]],
+    *,
+    stage: Literal["pre_fx", "post_fx"] | None,
+) -> None:
+    for assignment, surface_schema, src, content_token in pairs:
         # Task #157: clamp alpha to the non-destructive ceiling when the
         # assignment opts in, so informational wards cannot visually
         # destroy the camera content underneath them.
@@ -303,6 +521,13 @@ def pip_draw_from_layout(
             blend_mode=surface_schema.blend_mode,
             z_plane=props.z_plane,
             z_index_float=props.z_index_float,
+            cache_key=(
+                assignment.source,
+                assignment.surface,
+                surface_schema.geometry.w,
+                surface_schema.geometry.h,
+            ),
+            content_token=content_token,
         )
         _emit_blit_success(assignment.source)
         _record_blit_observability(
@@ -311,6 +536,84 @@ def pip_draw_from_layout(
             surface_schema.geometry,
             effective_alpha,
         )
+
+
+def _target_size_from_context(cr: cairo.Context) -> tuple[int, int] | None:
+    try:
+        target = cr.get_target()
+        width = int(target.get_width())
+        height = int(target.get_height())
+    except Exception:
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
+def _layout_composite_signature(
+    pairs: list[tuple[Any, Any, cairo.ImageSurface, object]],
+) -> tuple[object, ...]:
+    signature: list[object] = []
+    for assignment, surface_schema, src, content_token in pairs:
+        geom = surface_schema.geometry
+        signature.append(
+            (
+                assignment.source,
+                assignment.surface,
+                getattr(assignment, "render_stage", "post_fx"),
+                round(float(assignment.opacity), 4),
+                bool(getattr(assignment, "non_destructive", False)),
+                surface_schema.blend_mode,
+                surface_schema.z_order,
+                geom.kind,
+                geom.x,
+                geom.y,
+                geom.w,
+                geom.h,
+                src.get_width(),
+                src.get_height(),
+                content_token,
+            )
+        )
+    return tuple(signature)
+
+
+def _paint_cached_layout_composite(
+    cr: cairo.Context,
+    *,
+    stage: Literal["pre_fx", "post_fx"],
+    signature: tuple[object, ...],
+    min_interval_s: float,
+) -> bool:
+    now = time.monotonic()
+    with _LAYOUT_COMPOSITE_CACHE_LOCK:
+        entry = _LAYOUT_COMPOSITE_CACHE.get(stage)
+    if entry is None:
+        return False
+    if entry.get("signature") != signature:
+        return False
+    rendered_at = float(entry.get("rendered_at", 0.0))
+    if min_interval_s > 0.0 and now - rendered_at >= min_interval_s:
+        return False
+    surface = entry.get("surface")
+    if not isinstance(surface, cairo.ImageSurface):
+        return False
+    cr.set_source_surface(surface, 0, 0)
+    cr.paint()
+    return True
+
+
+def _store_layout_composite(
+    stage: Literal["pre_fx", "post_fx"],
+    signature: tuple[object, ...],
+    surface: cairo.ImageSurface,
+) -> None:
+    with _LAYOUT_COMPOSITE_CACHE_LOCK:
+        _LAYOUT_COMPOSITE_CACHE[stage] = {
+            "signature": signature,
+            "surface": surface,
+            "rendered_at": time.monotonic(),
+        }
 
 
 def _emit_blit_skip(ward_id: str, reason: str) -> None:
@@ -441,14 +744,92 @@ def _pip_draw(compositor: Any, cr: Any) -> None:
     layout_state = getattr(compositor, "layout_state", None)
     source_registry = getattr(compositor, "source_registry", None)
     if layout_state is not None and source_registry is not None:
-        pip_draw_from_layout(cr, layout_state, source_registry, stage="post_fx")
+        target_size = _target_size_from_context(cr)
+        if target_size is not None:
+            draw_post_fx_layout_from_composite(compositor, cr, target_size[0], target_size[1])
+        else:
+            pip_draw_from_layout(cr, layout_state, source_registry, stage="post_fx")
 
+    draw_hero_small_overlay(compositor, cr, stage="post_fx")
+
+
+def draw_hero_small_overlay(
+    compositor: Any,
+    cr: Any,
+    *,
+    stage: Literal["pre_fx", "post_fx"],
+) -> None:
+    if not _hero_small_overlay_enabled() or _hero_small_overlay_stage() != stage:
+        return
     hero_small = getattr(compositor, "_hero_small", None)
-    if hero_small is not None:
-        try:
-            hero_small.draw(cr)
-        except Exception:
-            log.debug("hero_small.draw raised", exc_info=True)
+    if hero_small is None:
+        return
+    try:
+        hero_small.draw(cr)
+    except Exception:
+        log.debug("hero_small.draw raised", exc_info=True)
+
+
+def _has_post_fx_layout_assignments(compositor: Any) -> bool:
+    layout_state = getattr(compositor, "layout_state", None)
+    if layout_state is None:
+        return False
+    try:
+        layout = layout_state.get()
+    except Exception:
+        log.debug("post-FX overlay requirement check failed", exc_info=True)
+        return True
+    for assignment in getattr(layout, "assignments", ()):
+        if getattr(assignment, "render_stage", "post_fx") == "post_fx":
+            return True
+    return False
+
+
+def _post_fx_overlay_required(compositor: Any) -> bool:
+    if _post_fx_overlay_disabled():
+        return False
+    if _hero_small_overlay_enabled() and _hero_small_overlay_stage() == "post_fx":
+        return True
+    return _has_post_fx_layout_assignments(compositor)
+
+
+def draw_pre_fx_layout_from_composite(
+    compositor: Any,
+    cr: cairo.Context,
+    canvas_w: int,
+    canvas_h: int,
+) -> None:
+    layout_state = getattr(compositor, "layout_state", None)
+    source_registry = getattr(compositor, "source_registry", None)
+    if layout_state is None or source_registry is None:
+        return
+    pip_draw_from_layout(
+        cr,
+        layout_state,
+        source_registry,
+        stage="pre_fx",
+        use_composite_cache=_pre_fx_background_composite_enabled(),
+    )
+    draw_hero_small_overlay(compositor, cr, stage="pre_fx")
+
+
+def draw_post_fx_layout_from_composite(
+    compositor: Any,
+    cr: cairo.Context,
+    canvas_w: int,
+    canvas_h: int,
+) -> None:
+    layout_state = getattr(compositor, "layout_state", None)
+    source_registry = getattr(compositor, "source_registry", None)
+    if layout_state is None or source_registry is None:
+        return
+    pip_draw_from_layout(
+        cr,
+        layout_state,
+        source_registry,
+        stage="post_fx",
+        use_composite_cache=_post_fx_background_composite_enabled(),
+    )
 
 
 def pre_fx_draw_from_layout(compositor: Any, cr: Any) -> None:
@@ -468,7 +849,12 @@ def pre_fx_draw_from_layout(compositor: Any, cr: Any) -> None:
     layout_state = getattr(compositor, "layout_state", None)
     source_registry = getattr(compositor, "source_registry", None)
     if layout_state is not None and source_registry is not None:
-        pip_draw_from_layout(cr, layout_state, source_registry, stage="pre_fx")
+        target_size = _target_size_from_context(cr)
+        if target_size is not None:
+            draw_pre_fx_layout_from_composite(compositor, cr, target_size[0], target_size[1])
+        else:
+            pip_draw_from_layout(cr, layout_state, source_registry, stage="pre_fx")
+            draw_hero_small_overlay(compositor, cr, stage="pre_fx")
 
 
 class FlashScheduler:
@@ -544,6 +930,101 @@ class FlashScheduler:
         return None
 
 
+def _ensure_base_cairo_sources(compositor: Any) -> None:
+    """Create renderer state expected by the base cairooverlay draw path."""
+    if getattr(compositor, "_sierpinski_loader", None) is None:
+        from .sierpinski_loader import SierpinskiLoader
+
+        compositor._sierpinski_loader = SierpinskiLoader()
+        compositor._sierpinski_loader.start()
+    if getattr(compositor, "_sierpinski_renderer", None) is None:
+        from .sierpinski_renderer import SierpinskiRenderer
+
+        compositor._sierpinski_renderer = SierpinskiRenderer(
+            budget_tracker=getattr(compositor, "_budget_tracker", None)
+        )
+        compositor._sierpinski_renderer.start()
+    if getattr(compositor, "_geal_source", None) is None:
+        from .geal_source import GealCairoSource
+
+        compositor._geal_source = GealCairoSource(
+            _sierpinski_geom_provider=compositor._sierpinski_renderer._source,
+        )
+
+
+def _build_overlay_only_chain(
+    compositor: Any, pipeline: Any, pre_fx_tee: Any, output_tee: Any
+) -> bool:
+    Gst = compositor._Gst
+    from .overlay import on_draw, on_overlay_caps_changed
+
+    queue_base = Gst.ElementFactory.make("queue", "queue-fx-base")
+    if queue_base is None:
+        log.error("FX overlay-only chain: queue-fx-base factory failed")
+        return False
+    queue_base.set_property("leaky", 2)
+    queue_base.set_property("max-size-buffers", 2)
+
+    overlay = Gst.ElementFactory.make("cairooverlay", "overlay")
+    if overlay is None:
+        log.error("FX overlay-only chain: cairooverlay factory failed")
+        return False
+
+    fold_post_fx_into_base = _post_fx_overlay_required(compositor)
+
+    def _draw_base(overlay_obj: Any, cr: Any, ts: int, dur: int) -> None:
+        on_draw(compositor, overlay_obj, cr, ts, dur)
+        if fold_post_fx_into_base:
+            _pip_draw(compositor, cr)
+
+    overlay.connect("draw", _draw_base)
+    overlay.connect("caps-changed", lambda o, caps: on_overlay_caps_changed(compositor, o, caps))
+
+    elements = [queue_base, overlay]
+    if _overlay_only_output_convert_enabled():
+        convert = Gst.ElementFactory.make("videoconvert", "fx-overlay-only-convert")
+        if convert is None:
+            log.error("FX overlay-only chain: videoconvert factory failed")
+            return False
+        convert.set_property("dither", 0)
+        elements.append(convert)
+
+    for el in elements:
+        pipeline.add(el)
+
+    tee_pad_live = pre_fx_tee.request_pad(pre_fx_tee.get_pad_template("src_%u"), None, None)
+    if tee_pad_live is None:
+        log.error("FX overlay-only chain: failed to request pre-fx tee pad")
+        return False
+    queue_sink = queue_base.get_static_pad("sink")
+    if queue_sink is None or tee_pad_live.link(queue_sink) != Gst.PadLinkReturn.OK:
+        log.error("FX overlay-only chain: failed to link pre-fx tee to base queue")
+        return False
+
+    for i in range(len(elements) - 1):
+        if not elements[i].link(elements[i + 1]):
+            log.error(
+                "FX overlay-only chain: failed to link %s -> %s",
+                elements[i].get_name(),
+                elements[i + 1].get_name(),
+            )
+            return False
+    if not elements[-1].link(output_tee):
+        log.error("FX overlay-only chain: failed to link final element to output tee")
+        return False
+
+    compositor._slot_pipeline = None
+    compositor._fx_flash_scheduler = None
+    compositor._fx_flash_pad = None
+    _ensure_base_cairo_sources(compositor)
+    _publish_fx_runtime_feature("shader_fx", False)
+    _publish_fx_runtime_feature("post_fx_overlay", False)
+    _publish_fx_runtime_feature("post_fx_folded_base", fold_post_fx_into_base)
+    _publish_fx_runtime_feature("flash_overlay", False)
+    log.info("FX chain: overlay-only base path (post_fx_folded=%s)", fold_post_fx_into_base)
+    return True
+
+
 def build_inline_fx_chain(
     compositor: Any, pipeline: Any, pre_fx_tee: Any, output_tee: Any, fps: int
 ) -> bool:
@@ -567,6 +1048,9 @@ def build_inline_fx_chain(
         compositor._slot_pipeline = None
         log.warning("HAPAX_COMPOSITOR_DISABLE_INLINE_FX=1 — bypassing GL inline FX chain")
         return False
+    if _shader_fx_disabled():
+        log.warning("HAPAX_COMPOSITOR_DISABLE_SHADER_FX=1 — using overlay-only FX chain")
+        return _build_overlay_only_chain(compositor, pipeline, pre_fx_tee, output_tee)
 
     # --- Input selector for camera source switching ---
     input_sel = Gst.ElementFactory.make("input-selector", "fx-input-selector")
@@ -632,7 +1116,7 @@ def build_inline_fx_chain(
     # largest preset while halving the per-frame full-screen quad work
     # for passthrough slots — the fx-glmi+ thread at 54% CPU in the
     # thread dump is dominated by these passthrough shader invocations.
-    compositor._slot_pipeline = SlotPipeline(registry, num_slots=12)
+    compositor._slot_pipeline = SlotPipeline(registry, num_slots=_fx_slot_count_from_env())
 
     hero_effect_slot = _make_hero_effect_slot(Gst)
     glcolorconvert_out = Gst.ElementFactory.make("glcolorconvert", "fx-glcc-out")
@@ -703,14 +1187,21 @@ def build_inline_fx_chain(
     glcolorconvert_out.link(gldownload)
     gldownload.link(fx_convert)
 
-    # --- Post-FX cairooverlay: composites YouTube PiP AFTER shader chain ---
-    # Uses CPU compositing (640x360 PiP on 1920x1080 output = trivial).
-    # Avoids glvideomixer deadlock from dynamic pad addition.
-    pip_overlay = Gst.ElementFactory.make("cairooverlay", "pip-overlay")
-    pip_overlay.connect("draw", lambda o, cr, ts, dur: _pip_draw(compositor, cr))
-    pipeline.add(pip_overlay)
-    fx_convert.link(pip_overlay)
-    pip_overlay.link(output_tee)
+    # --- Post-FX cairooverlay: composites chrome wards AFTER shader chain ---
+    # Avoid creating this extra streaming-thread cairooverlay when there is
+    # nothing to draw or when an incident canary has explicitly disabled it.
+    if _post_fx_overlay_required(compositor):
+        pip_overlay = Gst.ElementFactory.make("cairooverlay", "pip-overlay")
+        pip_overlay.connect("draw", lambda o, cr, ts, dur: _pip_draw(compositor, cr))
+        pipeline.add(pip_overlay)
+        fx_convert.link(pip_overlay)
+        pip_overlay.link(output_tee)
+        _publish_fx_runtime_feature("post_fx_overlay", True)
+        _publish_fx_runtime_feature("post_fx_folded_base", False)
+    else:
+        fx_convert.link(output_tee)
+        _publish_fx_runtime_feature("post_fx_overlay", False)
+        _publish_fx_runtime_feature("post_fx_folded_base", False)
 
     # --- Input-selector: default to live (tiled composite) ---
     live_pad = input_sel.request_pad(input_sel.get_pad_template("sink_%u"), None, None)
@@ -736,29 +1227,11 @@ def build_inline_fx_chain(
     # with the renderer holding set_active_slot / set_audio_energy state.
     # Migrating Sierpinski to the source registry's fx_chain_input surface
     # is a separate refactor tracked as a follow-up ticket.
-    from .sierpinski_loader import SierpinskiLoader
-    from .sierpinski_renderer import SierpinskiRenderer
-
-    compositor._sierpinski_loader = SierpinskiLoader()
-    compositor._sierpinski_loader.start()
-    compositor._sierpinski_renderer = SierpinskiRenderer(
-        budget_tracker=getattr(compositor, "_budget_tracker", None)
-    )
-    compositor._sierpinski_renderer.start()
+    _ensure_base_cairo_sources(compositor)
     log.info("SierpinskiLoader + SierpinskiRenderer created (render thread at 10fps)")
-
-    # GEAL Phase 1 MVP — ward-gated behind HAPAX_GEAL_ENABLED=1. The
-    # GealCairoSource is instantiated unconditionally so tests and
-    # runtime-configuration toggles can engage it without a reload,
-    # but its render() is a no-op when the env var is unset. Shares
-    # the Sierpinski source's geometry cache to avoid recomputing
-    # recursion geometry on the render tick.
-    from .geal_source import GealCairoSource
-
-    compositor._geal_source = GealCairoSource(
-        _sierpinski_geom_provider=compositor._sierpinski_renderer._source,
-    )
     log.info("GealCairoSource constructed (gated behind HAPAX_GEAL_ENABLED=1)")
+    _publish_fx_runtime_feature("shader_fx", True)
+    _publish_fx_runtime_feature("flash_overlay", _visual_pumping_enabled())
 
     log.info(
         "FX chain: %d shader slots, glvideomixer (camera base + live flash 60%%)",
@@ -1078,7 +1551,7 @@ def fx_tick_callback(compositor: Any) -> bool:
     # Flash scheduler: animate glvideomixer flash pad alpha
     scheduler = getattr(compositor, "_fx_flash_scheduler", None)
     flash_pad = getattr(compositor, "_fx_flash_pad", None)
-    if scheduler and flash_pad:
+    if _visual_pumping_enabled() and scheduler and flash_pad:
         now = time.monotonic()
         kick = cached_audio.get("onset_kick", 0.0)
         beat = cached_audio.get("beat_pulse", 0.0)

@@ -131,14 +131,21 @@ class TestOfflineTransitions:
 
 
 class TestRecoveringTransitions:
-    def test_recovery_succeeded_to_healthy_does_not_reset_counter(self) -> None:
+    def test_recovery_succeeded_stays_recovering_until_frame_flow(self) -> None:
         # Reaching PLAYING is not proof of sustained frame flow — the
         # reset happens only when the frame-flow watchdog observes live
-        # frames post-grace (FRAME_FLOW_OBSERVED).
+        # post-rebuild frames.
         sm = make_sm(start=CameraState.RECOVERING, consecutive_failures=4)
         sm.dispatch(Event(EventKind.RECOVERY_SUCCEEDED))
-        assert sm.state == CameraState.HEALTHY
+        assert sm.state == CameraState.RECOVERING
         assert sm.consecutive_failures == 4
+        assert sm._swap_primary_calls == []  # type: ignore[attr-defined]
+
+    def test_frame_flow_observed_from_recovering_promotes_to_healthy(self) -> None:
+        sm = make_sm(start=CameraState.RECOVERING, consecutive_failures=4)
+        sm.dispatch(Event(EventKind.FRAME_FLOW_OBSERVED, reason="post-rebuild frame"))
+        assert sm.state == CameraState.HEALTHY
+        assert sm.consecutive_failures == 0
         assert sm._swap_primary_calls  # type: ignore[attr-defined]
 
     def test_playing_then_immediate_error_accumulates_failures(self) -> None:
@@ -149,8 +156,7 @@ class TestRecoveringTransitions:
         sm = make_sm(start=CameraState.RECOVERING, consecutive_failures=0)
         for _ in range(3):
             sm.dispatch(Event(EventKind.RECOVERY_SUCCEEDED))
-            sm.dispatch(Event(EventKind.PIPELINE_ERROR, reason="bandwidth"))
-            sm.dispatch(Event(EventKind.PIPELINE_ERROR, reason="not-negotiated"))
+            sm.dispatch(Event(EventKind.FRAME_FLOW_STALE, reason="no frame after rebuild"))
             sm.dispatch(Event(EventKind.BACKOFF_ELAPSED))
         assert sm.consecutive_failures >= 3
 
@@ -252,6 +258,7 @@ class TestThreadSafety:
         def rebuild_worker() -> None:
             sm.dispatch(Event(EventKind.BACKOFF_ELAPSED))
             sm.dispatch(Event(EventKind.RECOVERY_SUCCEEDED))
+            sm.dispatch(Event(EventKind.FRAME_FLOW_OBSERVED, reason="post-rebuild frame"))
 
         t1 = threading.Thread(target=error_worker)
         t2 = threading.Thread(target=rebuild_worker)
@@ -284,6 +291,7 @@ class TestTransitionCallbacks:
         sm.dispatch(Event(EventKind.SWAP_COMPLETED, reason="swapped"))
         sm.dispatch(Event(EventKind.BACKOFF_ELAPSED, reason="retry"))
         sm.dispatch(Event(EventKind.RECOVERY_SUCCEEDED, reason="reconnect ok"))
+        sm.dispatch(Event(EventKind.FRAME_FLOW_OBSERVED, reason="post-rebuild frame"))
         states = [(t[0], t[1]) for t in sm._transitions]  # type: ignore[attr-defined]
         assert states == [
             (CameraState.HEALTHY, CameraState.DEGRADED),

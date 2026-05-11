@@ -146,6 +146,7 @@ ci = [
     "vulture>=2.16",
 ]
 studio = [
+    "pyudev>=0.24.3",
     "ultralytics>=8.3.0",
 ]
 tui = [
