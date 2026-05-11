@@ -314,6 +314,9 @@ def _string_list(value: Any) -> list[str]:
 _ROLE_VISUAL_HOOKS: dict[str, str] = {
     "tier_list": (
         "TIER CHART HOOKS — the stream renders a live tier chart:\n"
+        "  MANDATORY: the OPENING beat must state the ordering criteria explicitly.\n"
+        "  Use language like 'ranked by...', 'evaluated using...', 'the criteria are...'.\n"
+        "  Without ordering criteria, the segment FAILS source readiness validation.\n"
         "  MANDATORY: every ranking/body beat must include at least one exact\n"
         "  tier placement phrase: 'Place [item] in [S/A/B/C/D]-tier'.\n"
         "  Generic history, summary, or analysis without a placement is not a\n"
@@ -452,11 +455,24 @@ def _build_full_segment_prompt(
         "== YOUR TASK ==\n"
         "Compose the COMPLETE narration for this segment — one SUBSTANTIAL block of "
         "broadcast-ready prose per beat. Also emit a model-authored "
-        "segment_prep_contract object for the final script with source_packet_refs, "
-        "claim_map, source_consequence_map, actionability_map, layout_need_map, "
-        "readback_obligations, loop_cards, and role_excellence_plan. The contract "
-        "must name the exact source refs and visible/doable objects the script uses; "
-        "validators may replay it but may not author it for you.\n\n"
+        "segment_prep_contract object for the final script.\n\n"
+        "== REQUIRED CONTRACT FIELDS (validators reject if missing) ==\n"
+        "The segment_prep_contract MUST include ALL of these:\n"
+        "- source_packet_refs: at least one source with evidence_refs pointing to vault/rag\n"
+        "- role_live_bit_mechanic: how this segment works as a live bit\n"
+        "- event_object: the specific thing being ranked/discussed/reacted-to\n"
+        "- audience_job: what the audience does during this segment\n"
+        "- payoff: what the audience gets by the end\n"
+        "- temporality_band: current/historical/timeless\n"
+        + (
+            "- tier_criteria: the EXPLICIT criteria used to rank items (REQUIRED for tier_list)\n"
+            if role_value == "tier_list"
+            else "- ordering_criterion: the EXPLICIT ordering rule (REQUIRED for top_10)\n"
+            if role_value == "top_10"
+            else ""
+        )
+        + "- claim_map, source_consequence_map, actionability_map, layout_need_map\n"
+        "- readback_obligations, loop_cards, role_excellence_plan\n\n"
         "Example format:\n"
         "{\n"
         '  "prepared_script": [\n'
@@ -464,11 +480,23 @@ def _build_full_segment_prompt(
         '    "Second beat — continues with depth and names sources with context..."\n'
         "  ],\n"
         '  "segment_prep_contract": {\n'
-        '    "source_packet_refs": [{"id": "packet:...", "source_ref": "vault:...", "evidence_refs": ["vault:..."]}],\n'
-        '    "claim_map": [],\n'
-        '    "source_consequence_map": [],\n'
-        '    "actionability_map": [],\n'
-        '    "layout_need_map": [],\n'
+        '    "source_packet_refs": [{"id": "packet:topic-sources", "source_ref": "vault:research-notes", "evidence_refs": ["vault:research-notes"]}],\n'
+        '    "role_live_bit_mechanic": "ranked tier placement with source-backed criteria",\n'
+        '    "event_object": "the specific items being ranked",\n'
+        '    "audience_job": "predict placements, challenge via chat",\n'
+        '    "payoff": "final tier chart with source-backed rationale",\n'
+        '    "temporality_band": "current",\n'
+        + (
+            '    "tier_criteria": "ranked by community ecosystem size, framework maturity, and hiring demand",\n'
+            if role_value == "tier_list"
+            else '    "ordering_criterion": "ordered by measurable impact on the field",\n'
+            if role_value == "top_10"
+            else ""
+        )
+        + '    "claim_map": [{"claim": "...", "evidence_ref": "vault:..."}],\n'
+        '    "source_consequence_map": [{"source_ref": "vault:...", "consequence": "changes ranking of..."}],\n'
+        '    "actionability_map": [{"beat_index": 0, "action": "tier_chart", "target": "..."}],\n'
+        '    "layout_need_map": [{"beat_index": 0, "need": "tier_visual", "evidence_ref": "vault:..."}],\n'
         '    "readback_obligations": [],\n'
         '    "loop_cards": [],\n'
         '    "role_excellence_plan": {"live_event_plan": {"bit_engine": "...", "audience_job": "...", "payoff": "..."}}\n'
