@@ -95,12 +95,19 @@ if [[ -z "$role" ]]; then
   fi
 fi
 if [[ -z "$role" ]]; then
+  _branch_name="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
+  if [[ "$_branch_name" =~ ^([a-z]+)/ ]]; then
+    _branch_role="${BASH_REMATCH[1]}"
+    case "$_branch_role" in
+      alpha|beta|gamma|delta|epsilon|zeta) role="$_branch_role" ;;
+    esac
+  fi
+fi
+if [[ -z "$role" ]]; then
   echo "cc-task-gate: BLOCKED — cannot determine session role (set HAPAX_AGENT_ROLE, CODEX_ROLE, or CLAUDE_ROLE)." >&2
   echo "  Protected mutations require role identification. Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
   exit 2
 fi
-
-# --- 5. Read claim file ---
 claim_file="$HOME/.cache/hapax/cc-active-task-$role"
 if [[ ! -f "$claim_file" ]]; then
   cat >&2 <<EOF
