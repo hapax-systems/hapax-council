@@ -236,8 +236,9 @@ class TestSharedLinkFiltering:
         )
 
         assert "Condition: cond-A" in description
-        assert "https://safe.old" in description
-        assert "https://safe.new" in description
+        description_lines = description.splitlines()
+        assert "https://safe.old" in description_lines
+        assert "https://safe.new" in description_lines
         assert "hapax-private" not in description
         assert "PRIVATE_MEDIA_ROLE" not in description
         assert "non-broadcast" not in description
