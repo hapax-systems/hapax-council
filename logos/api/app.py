@@ -1027,6 +1027,7 @@ from logos.api.routes.studio import router as studio_router
 from logos.api.routes.studio_compositor import router as studio_compositor_router
 from logos.api.routes.studio_effects import router as studio_effects_router
 from logos.api.routes.vault import router as vault_router
+from logos.api.routes.watch import router as watch_router
 from logos.api.routes.working_mode import router as working_mode_router
 from logos.api.routes.x402 import router as x402_router
 
@@ -1062,6 +1063,7 @@ app.include_router(events_router)
 app.include_router(exploration_router)
 app.include_router(orientation_router)
 app.include_router(awareness_router)
+app.include_router(watch_router)
 app.include_router(vault_router)
 app.include_router(chronicle_router)
 app.include_router(predictions_router)

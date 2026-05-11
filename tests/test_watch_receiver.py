@@ -9,7 +9,13 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from agents.watch_receiver import _hr_window, _hrv_window, _respiration_window, create_app
+from agents.watch_receiver import (
+    _hr_window,
+    _hrv_window,
+    _respiration_window,
+    create_app,
+    create_router,
+)
 
 
 @pytest.fixture
@@ -140,6 +146,47 @@ class TestSensorIngestion:
             },
         )
         assert resp.status_code == 403
+
+    def test_router_mount_supports_logos_api_embedding(self, state_dir):
+        """The shared router can be mounted by logos-api on port 8051."""
+        from fastapi import FastAPI
+
+        app = FastAPI()
+        app.include_router(create_router())
+        embedded_client = TestClient(app)
+
+        resp = embedded_client.post(
+            "/watch/sensors",
+            json={
+                "ts": int(time.time() * 1000),
+                "device_id": "pw4",
+                "readings": [
+                    {
+                        "type": "hrv",
+                        "rmssd_ms": 42.5,
+                        "ts": "2026-03-12T14:30:00-05:00",
+                    },
+                    {
+                        "type": "skin_temp",
+                        "temp_c": 33.2,
+                        "ts": "2026-03-12T14:30:00-05:00",
+                    },
+                ],
+            },
+        )
+
+        assert resp.status_code == 200
+        assert (state_dir / "hrv.json").exists()
+        assert (state_dir / "skin_temp.json").exists()
+
+    def test_logos_api_mounts_watch_receiver_routes(self):
+        """Logos API exposes the companion POST path on port 8051."""
+        from logos.api.app import app as logos_app
+
+        paths = {getattr(route, "path", "") for route in logos_app.routes}
+
+        assert "/watch/sensors" in paths
+        assert "/watch/status" in paths
 
 
 class TestStatusEndpoint:
