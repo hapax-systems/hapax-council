@@ -361,6 +361,28 @@ _DETECTOR_THEATER_RE = re.compile(
     re.IGNORECASE,
 )
 
+_COLLECTIVE_HOST_RE = re.compile(
+    r"(?i)\b(?:"
+    r"we'(?:ll|re|ve)|we (?:are|have|can|will|need|should|want|must)|"
+    r"our (?:first|second|third|next|final|last|segment|show|topic|"
+    r"listeners?|viewers?|audience|chat|community|discussion|conversation)|"
+    r"let'?s (?:dive|jump|move|turn|look|explore|examine|consider|discuss|"
+    r"talk|start|begin|wrap|close|review|take|see|hear|get|go|find|check|"
+    r"break|bring|think|recap)"
+    r")\b"
+)
+_STOCK_HOST_PHRASE_RE = re.compile(
+    r"(?i)(?:"
+    r"welcome to|thanks for (?:joining|tuning|watching|listening)|"
+    r"hello everyone|hi everyone|good (?:morning|afternoon|evening) everyone|"
+    r"moving on|without further ado|before we (?:go|wrap|close)|"
+    r"feel free to|share your thoughts|drop (?:it |a |your )?(?:in the|a) (?:chat|comment)|"
+    r"that'?s (?:all|it) for (?:today|this|now)|stay tuned|"
+    r"make sure (?:to|you) (?:like|subscribe|follow|share)|"
+    r"as (?:always|we mentioned|we discussed|you (?:can see|know))"
+    r")"
+)
+
 _ICEBERG_TRIGGERS: tuple[tuple[str, str], ...] = (
     ("surface level", "surface"),
     ("commonly known", "surface"),
@@ -722,6 +744,22 @@ def segment_personage_violations(script: Sequence[str]) -> list[dict[str, Any]]:
                     "line": line,
                     "source": "anti_personification_linter",
                     "rule_id": finding.rule_id,
+                }
+            )
+        for m in _COLLECTIVE_HOST_RE.finditer(text_value):
+            violations.append(
+                {
+                    "beat_index": beat_index,
+                    "rule_id": "collective_human_host_posture",
+                    "matched_text": m.group().strip(),
+                }
+            )
+        for m in _STOCK_HOST_PHRASE_RE.finditer(text_value):
+            violations.append(
+                {
+                    "beat_index": beat_index,
+                    "rule_id": "stock_human_host_phrase",
+                    "matched_text": m.group().strip(),
                 }
             )
     return violations
