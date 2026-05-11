@@ -38,6 +38,7 @@ dependency_sync_status="not_started"
 dependency_sync_message=""
 quarantined_untracked_count=0
 quarantined_untracked_path=""
+quarantined_symlink_count=0
 
 canonical_snapshot() {
     if [[ -d "$CANONICAL_REPO/.git" || -f "$CANONICAL_REPO/.git" ]]; then
@@ -67,7 +68,8 @@ write_receipt() {
         "$canonical_branch" "$canonical_head" "$canonical_main" \
         "$canonical_dirty_count" "$canonical_status_hash" \
         "$dependency_sync_status" "$dependency_sync_message" \
-        "$quarantined_untracked_count" "$quarantined_untracked_path" <<'PY'
+        "$quarantined_untracked_count" "$quarantined_untracked_path" \
+        "$quarantined_symlink_count" <<'PY'
 from __future__ import annotations
 
 import json
@@ -96,6 +98,7 @@ from pathlib import Path
     dependency_sync_message,
     quarantined_untracked_count,
     quarantined_untracked_path,
+    quarantined_symlink_count,
 ) = sys.argv[1:]
 
 record = {
@@ -124,6 +127,7 @@ record = {
     "source_hygiene": {
         "untracked_quarantine_count": int(quarantined_untracked_count),
         "untracked_quarantine_path": quarantined_untracked_path,
+        "untracked_symlink_removed_count": int(quarantined_symlink_count),
     },
 }
 
@@ -182,6 +186,10 @@ fi
 quarantine_untracked_active_source() {
     local rel
     local -a untracked_paths
+    local local_bin
+    local base
+    local link_path
+    local link_target
     mapfile -t untracked_paths < <(git -C "$ACTIVE_WORKTREE" ls-files --others --exclude-standard)
     if [[ "${#untracked_paths[@]}" -eq 0 ]]; then
         return 0
@@ -197,9 +205,24 @@ quarantine_untracked_active_source() {
         mkdir -p "$quarantined_untracked_path/$(dirname "$rel")"
         mv "$ACTIVE_WORKTREE/$rel" "$quarantined_untracked_path/$rel"
         quarantined_untracked_count=$((quarantined_untracked_count + 1))
+        case "$rel" in
+            scripts/hapax-*|scripts/cc-claim|scripts/cc-close)
+                local_bin="${HAPAX_SOURCE_ACTIVATE_LOCAL_BIN:-$HOME/.local/bin}"
+                base="$(basename "$rel")"
+                link_path="$local_bin/$base"
+                link_target="$(readlink "$link_path" 2>/dev/null || true)"
+                if [[ "$link_target" == "$ACTIVE_WORKTREE/$rel" ]]; then
+                    rm -f "$link_path"
+                    quarantined_symlink_count=$((quarantined_symlink_count + 1))
+                fi
+                ;;
+        esac
     done
 
     echo "hapax-source-activate: quarantined $quarantined_untracked_count untracked activation files to $quarantined_untracked_path"
+    if [[ "$quarantined_symlink_count" -gt 0 ]]; then
+        echo "hapax-source-activate: removed $quarantined_symlink_count activation-owned symlinks to quarantined files"
+    fi
 }
 
 quarantine_untracked_active_source
