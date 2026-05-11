@@ -284,30 +284,6 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "full_auto_or_nothing for the refusal_annex_renderer to aggregate."
         ),
     ),
-    "agents.publication_bus.omg_lol_pay_publisher": WireEntry(
-        module="agents.publication_bus.omg_lol_pay_publisher",
-        surface_slug="omg-lol-pay-receiver",
-        status="CRED_BLOCKED",
-        pass_key_required="omg-lol-pay/webhook-secret",
-        rationale=(
-            "Fifth monetization rail (cc-task "
-            "publication-bus-monetization-rails-surfaces). Substrate complete "
-            "and tested at shared/omg_lol_pay_receive_only_rail.py + this "
-            "publisher; surface registry entry registered as CONDITIONAL_ENGAGE. "
-            "Operator-action: configure omg.lol Pay webhook target at "
-            "logos.api.routes.payment_rails:receive_omg_lol_pay_webhook and "
-            "mint OMG_LOL_PAY_WEBHOOK_SECRET via pass "
-            "`omg-lol-pay/webhook-secret`. Disposition: review-by 2026-08-01. "
-            "Wire decision flips to WIRED via a follow-up adapter PR "
-            "(mirroring the github_sponsors_publisher / liberapay_publisher / "
-            "open_collective_publisher / stripe_payment_link_publisher "
-            "CRED_BLOCKED → WIRED transition) after the FastAPI route lands "
-            "and the secret is available. "
-            "Refund + subscription-cancellation events emit a RefusalEvent "
-            "to the canonical refusal log under axiom full_auto_or_nothing "
-            "for the refusal_annex_renderer to aggregate."
-        ),
-    ),
     "agents.publication_bus.github_sponsors_publisher": WireEntry(
         module="agents.publication_bus.github_sponsors_publisher",
         surface_slug="github-sponsors-receiver",

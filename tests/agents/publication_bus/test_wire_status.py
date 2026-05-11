@@ -63,6 +63,10 @@ def test_omg_weblog_is_wired():
     assert entry.status == "WIRED"
 
 
+def test_omg_lol_pay_publisher_is_not_catalogued():
+    assert "agents.publication_bus.omg_lol_pay_publisher" not in PUBLISHER_WIRE_REGISTRY
+
+
 def test_cred_blocked_majority():
     # Per beta's R-5 inflection: "mostly delete given the cred-arrival gates"
     # — but our decision is to keep them as CRED_BLOCKED rather than delete.
