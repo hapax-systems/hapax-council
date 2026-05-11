@@ -277,23 +277,26 @@ def process_preset_recruitment(compositor: Any | None = None) -> bool:
     last_recruited_ts = bias.get("last_recruited_ts")
     if not isinstance(family, str) or not isinstance(last_recruited_ts, (int, float)):
         return False
+    last_recruited_ts_f = float(last_recruited_ts)
+    # Already saw and consumed this exact recruitment ts -> no-op. This must
+    # run before the disabled-mutation branch as well; otherwise one suppressed
+    # recruitment becomes a permanent log/poll loop.
+    if last_recruited_ts_f <= _last_recruitment_ts_seen:
+        return False
     if not _fx_autonomous_mutations_enabled():
-        _last_recruitment_ts_seen = max(_last_recruitment_ts_seen, float(last_recruited_ts))
-        log.info(
-            "preset recruitment suppressed by %s=0 (family=%r, recruitment_ts=%.3f)",
-            _FX_AUTONOMOUS_MUTATIONS_ENV,
-            family,
-            last_recruited_ts,
-        )
+        _last_recruitment_ts_seen = last_recruited_ts_f
+        if _recruitment_is_fresh(bias, time.time()):
+            log.info(
+                "preset recruitment suppressed by %s=0 (family=%r, recruitment_ts=%.3f)",
+                _FX_AUTONOMOUS_MUTATIONS_ENV,
+                family,
+                last_recruited_ts_f,
+            )
         return False
     if not presets_for_family(family):
         log.debug("preset recruitment family unknown: %r", family)
         return False
-    # Two short-circuits before doing the picker work:
-    # 1) Already saw and consumed this exact recruitment ts → no-op.
-    if last_recruited_ts <= _last_recruitment_ts_seen:
-        return False
-    # 2) Cooldown gate. Fresh recruitments that arrive within the cooldown
+    # Fresh recruitments that arrive within the cooldown
     #    window after a previous activation are dropped. This protects the
     #    chain from thrashing when the director loop ticks faster than the
     #    cooldown allows.
@@ -303,7 +306,7 @@ def process_preset_recruitment(compositor: Any | None = None) -> bool:
     if not _recruitment_is_fresh(bias, time.time()):
         return False
 
-    seed = int(last_recruited_ts) ^ os.getpid()
+    seed = int(last_recruited_ts_f) ^ os.getpid()
 
     # Programme role bias — soft prior reweighting (audit-3-fix-4).
     # When HAPAX_SEGMENT_BIAS_DISABLED=1, the original family passes

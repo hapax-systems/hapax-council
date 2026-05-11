@@ -261,6 +261,54 @@ def test_process_honors_fx_autonomous_mutation_disable(
     assert prc._last_recruitment_ts_seen == ts
 
 
+def test_disabled_fx_autonomous_mutation_logs_once_per_recruitment(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from agents.studio_compositor.preset_family_selector import family_names
+
+    fam = next(iter(family_names()))
+    ts = time.time()
+    _write_recruitment(prc.RECRUITMENT_FILE, fam, ts=ts)
+    monkeypatch.setenv("HAPAX_FX_AUTONOMOUS_MUTATIONS", "0")
+    caplog.set_level("INFO", logger=prc.log.name)
+
+    assert prc.process_preset_recruitment() is False
+    assert prc.process_preset_recruitment() is False
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "preset recruitment suppressed by HAPAX_FX_AUTONOMOUS_MUTATIONS=0" in record.getMessage()
+    ]
+    assert len(messages) == 1
+    assert prc._last_recruitment_ts_seen == ts
+
+
+def test_disabled_fx_autonomous_mutation_consumes_stale_recruitment_silently(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from agents.studio_compositor.preset_family_selector import family_names
+
+    fam = next(iter(family_names()))
+    ts = time.time() - 30.0
+    _write_recruitment(prc.RECRUITMENT_FILE, fam, ts=ts, ttl_s=1.0)
+    monkeypatch.setenv("HAPAX_FX_AUTONOMOUS_MUTATIONS", "0")
+    caplog.set_level("INFO", logger=prc.log.name)
+
+    assert prc.process_preset_recruitment() is False
+    assert prc.process_preset_recruitment() is False
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "preset recruitment suppressed by HAPAX_FX_AUTONOMOUS_MUTATIONS=0" in record.getMessage()
+    ]
+    assert messages == []
+    assert prc._last_recruitment_ts_seen == ts
+
+
 def test_process_rejects_expired_recruitment_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
     from agents.studio_compositor.preset_family_selector import family_names
 
