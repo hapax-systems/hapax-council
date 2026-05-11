@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from agents.hapax_daimonion import daily_segment_prep as prep
 from shared.segment_quality_actionability import (
@@ -146,6 +147,27 @@ def test_quality_rubric_scores_exemplar_above_generic_script() -> None:
     assert generic["label"] == "generic"
 
 
+def test_full_segment_prompt_rejects_spoken_only_responsible_beats() -> None:
+    programme = SimpleNamespace(
+        role=SimpleNamespace(value="tier_list"),
+        content=SimpleNamespace(
+            narrative_beat="source-backed ranking segment",
+            segment_beats=[
+                "hook: introduce the ranking pressure",
+                "item_1: rank the first object",
+                "close: recap the final chart",
+            ],
+        ),
+    )
+
+    prompt = prep._build_full_segment_prompt(programme, "source seed")
+
+    assert "no beat may be spoken-only" in prompt
+    assert "Every beat, including hook, criteria, recap, breathe, and close beats" in prompt
+    assert "According to [source]" in prompt
+    assert "Place [item] in [S/A/B/C/D]-tier" in prompt
+
+
 def test_actionability_declares_expected_visible_or_doable_effects() -> None:
     alignment = validate_segment_actionability(EXCELLENT_SCRIPT, ["hook", "body", "close"])
 
@@ -259,6 +281,64 @@ def test_tier_list_gate_requires_final_non_skip_candidate_placement() -> None:
         for violation in gated["violations"]
         if violation["reason"] == "missing_tier_placement_phrase"
     ] == [2]
+
+
+def test_tier_list_gate_skips_numbered_criteria_and_recap_beats() -> None:
+    alignment = validate_segment_actionability(
+        [
+            "This opening names the tier-list premise and the stakes.",
+            "The criteria are impact, durability, and whether the example still teaches.",
+            "Place FORTRAN in A-tier because the legacy is visible in the ranking.",
+            "The recap ties the placements back to the audience reaction.",
+            "The scoring rubric keeps durability above novelty before the chart moves.",
+        ],
+        [
+            "hook with a tier rubric",
+            "item_1: discuss criteria for ranking",
+            "item_2: rank FORTRAN",
+            "item_7: summarize tier placements and chat reactions",
+            "criteria: score durability higher than novelty before moving to chat",
+        ],
+    )
+
+    gated = prep._with_tier_list_placement_gate(
+        {"ok": True, "violations": [], "runtime_layout_validation": {"ok": True}},
+        role="tier_list",
+        segment_beats=[
+            "hook with a tier rubric",
+            "item_1: discuss criteria for ranking",
+            "item_2: rank FORTRAN",
+            "item_7: summarize tier placements and chat reactions",
+            "criteria: score durability higher than novelty before moving to chat",
+        ],
+        beat_action_intents=alignment["beat_action_intents"],
+    )
+
+    assert gated["ok"] is True
+    assert gated["violations"] == []
+
+
+def test_tier_list_gate_still_rejects_skip_direction_with_placement_action() -> None:
+    alignment = validate_segment_actionability(
+        [
+            "This closing beat says the wildcard belongs in C-tier because the payoff is narrow.",
+        ],
+        ["closing: place the wildcard candidate"],
+    )
+
+    gated = prep._with_tier_list_placement_gate(
+        {"ok": True, "violations": [], "runtime_layout_validation": {"ok": True}},
+        role="tier_list",
+        segment_beats=["closing: place the wildcard candidate"],
+        beat_action_intents=alignment["beat_action_intents"],
+    )
+
+    assert gated["ok"] is False
+    assert [
+        violation["beat_index"]
+        for violation in gated["violations"]
+        if violation["reason"] == "missing_tier_placement_phrase"
+    ] == [0]
 
 
 def test_actionability_rejects_camera_director_command_prose() -> None:
