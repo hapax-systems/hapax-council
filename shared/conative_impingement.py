@@ -12,7 +12,7 @@ import json
 from collections.abc import Mapping
 from typing import Any, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 ActionTendency = Literal[
     "speak",
@@ -57,14 +57,24 @@ class ActionTendencyImpingement(BaseModel):
     speech_act_candidate: str = Field(min_length=1)
     strength_posterior: float = Field(ge=0.0, le=1.0)
     role_context: str = Field(min_length=1)
+    role_state_ref: str | None = None
     inhibition_policy: str = Field(min_length=1)
     wcs_snapshot_ref: str | None
+    speech_destination: str | None = None
+    claim_posture: str | None = None
+    selected_fulfillment: str | None = None
     learning_policy: str = Field(min_length=1)
     route_evidence_ref: str | None = None
     public_claim_evidence_ref: str | None = None
     terminal_state: ImpulseTerminalState = "pending"
     terminal_reason: str | None = None
     raw_drive_text_spoken: Literal[False] = False
+
+    @model_validator(mode="after")
+    def _terminal_impulses_keep_fulfillment_visible(self) -> ActionTendencyImpingement:
+        if self.terminal_state != "pending" and not self.selected_fulfillment:
+            raise ValueError("terminal conative impulses require selected_fulfillment")
+        return self
 
     @property
     def compulsion_band(self) -> CompulsionBand:
@@ -142,12 +152,19 @@ def action_tendency_impulse_from_impingement(
         ),
         strength_posterior=posterior,
         role_context=str(content_dict.get("role_context") or "livestream_public_voice"),
+        role_state_ref=_optional_ref(content_dict.get("role_state_ref"), default=None),
         inhibition_policy=str(
             content_dict.get("inhibition_policy") or "wcs_route_role_claim_gates"
         ),
         wcs_snapshot_ref=_optional_ref(
             content_dict.get("wcs_snapshot_ref"),
             default=wcs_default,
+        ),
+        speech_destination=_optional_ref(content_dict.get("speech_destination"), default=None),
+        claim_posture=_optional_ref(content_dict.get("claim_posture"), default=None),
+        selected_fulfillment=_selected_fulfillment(
+            content_dict.get("selected_fulfillment"),
+            terminal_state=terminal_state,
         ),
         learning_policy=str(
             content_dict.get("learning_policy") or "separate_drive_selection_execution_world_claim"
@@ -175,6 +192,9 @@ def narrative_drive_content_payload(
     stimmung_stance: str,
     programme_role: str | None,
     programme_authorization: dict[str, Any] | None = None,
+    role_state_ref: str | None = None,
+    speech_destination: str | None = "public_live",
+    claim_posture: str | None = "public_live",
 ) -> dict[str, Any]:
     """Build the conative content payload emitted by narrative_drive.
 
@@ -205,8 +225,11 @@ def narrative_drive_content_payload(
         speech_act_candidate="autonomous_narrative",
         strength_posterior=_clamp(strength_posterior, 0.0, 1.0),
         role_context=f"programme_role:{role}",
+        role_state_ref=role_state_ref,
         inhibition_policy="wcs_route_role_claim_gates",
         wcs_snapshot_ref="wcs:audio.broadcast_voice:voice-output-witness",
+        speech_destination=speech_destination,
+        claim_posture=claim_posture,
         route_evidence_ref="route:audio.broadcast_voice:health_witness_required",
         public_claim_evidence_ref="claim_posture:bounded_nonassertive_narration",
         learning_policy="separate_drive_selection_execution_world_claim",
@@ -327,6 +350,25 @@ def _optional_ref(value: object, *, default: str | None) -> str | None:
         return default
     text = str(value).strip()
     return text or None
+
+
+def _selected_fulfillment(
+    value: object,
+    *,
+    terminal_state: ImpulseTerminalState,
+) -> str | None:
+    text = _optional_ref(value, default=None)
+    if text:
+        return text
+    if terminal_state == "pending":
+        return None
+    return {
+        "completed": "spoken_narration",
+        "inhibited": "withheld",
+        "redirected": "redirected",
+        "interrupted": "withheld",
+        "failed": "withheld",
+    }[terminal_state]
 
 
 def _ref_available(value: str | None) -> bool:

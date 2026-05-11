@@ -66,6 +66,9 @@ from shared.capability_outcome import (
 from shared.capability_outcome import (
     PublicClaimEvidence as CapabilityPublicClaimEvidence,
 )
+from shared.conative_impingement import (
+    ActionTendencyImpingement as _LivestreamRoleActionTendencyImpingement,
+)
 from shared.content_programme_feedback_ledger import (
     append_feedback_event,
     audience_outcome_is_aggregate_only,
@@ -155,6 +158,7 @@ from shared.live_surface_truth import (
     snapshot_from_prometheus as _snapshot_from_prometheus,
 )
 from shared.livestream_health_group import LivestreamHealthEnvelope, LivestreamHealthGroup
+from shared.livestream_role_state import SpeechAct as _LivestreamRoleSpeechAct
 from shared.multimodal_environmental_evidence_envelope import (
     MultimodalClaimSupportDecision,
     MultimodalEnvironmentalEvidenceEnvelope,
@@ -204,6 +208,15 @@ from shared.scrim_wcs_claim_posture import (
     ScrimWCSClaimPostureProjection,
     WCSClaimReference,
 )
+from shared.scrim_wcs_claim_posture import (
+    ScrimWCSClaimPostureInput as _LivestreamRoleScrimWCSClaimPostureInput,
+)
+
+# Livestream role binding: Pydantic invokes these validators dynamically, and
+# downstream impulse consumers use the property as a stable compatibility field.
+_LivestreamRoleActionTendencyImpingement._terminal_impulses_keep_fulfillment_visible
+_LivestreamRoleSpeechAct.resolved_impulse_id
+_LivestreamRoleScrimWCSClaimPostureInput._role_state_must_match_scrim_posture
 
 # Public-API context manager. Called by the five per-outcome smoke tests
 # (vocal / programme_authoring / director_moves / chat_reactivity /
