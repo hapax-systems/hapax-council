@@ -378,6 +378,23 @@ class CameraPipeline:
             log.warning("Invalid HAPAX_HTTP_JPEG_CAMERA_TIMEOUT_S=%r; using 1.0", raw)
             return 1.0
 
+    def _http_duplicate_last_good_on_fetch_failure(self) -> bool:
+        raw = os.environ.get("HAPAX_HTTP_JPEG_CAMERA_DUPLICATE_LAST_GOOD_ON_FETCH_FAILURE", "0")
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _select_http_frame_for_push(
+        fetched: bytes | None,
+        last_good: bytes | None,
+        *,
+        duplicate_last_good: bool,
+    ) -> tuple[bytes | None, bytes | None]:
+        if fetched is not None:
+            return fetched, fetched
+        if duplicate_last_good and last_good is not None:
+            return last_good, last_good
+        return None, last_good
+
     def _build_http_jpeg_pipeline(self) -> None:
         Gst = self._Gst
         pipeline = Gst.Pipeline.new(self._pipeline_name)
@@ -548,16 +565,17 @@ class CameraPipeline:
         last_good: bytes | None = None
         interval = 1.0 / self._effective_http_fps()
         duration_ns = int(interval * Gst.SECOND)
+        duplicate_last_good = self._http_duplicate_last_good_on_fetch_failure()
         while not self._http_stop_event.is_set():
             loop_start = time.monotonic()
-            frame = self._http_fetch_frame()
-            if frame is not None:
-                last_good = frame
-            elif last_good is None:
+            frame, last_good = self._select_http_frame_for_push(
+                self._http_fetch_frame(),
+                last_good,
+                duplicate_last_good=duplicate_last_good,
+            )
+            if frame is None:
                 self._http_stop_event.wait(min(interval, 0.25))
                 continue
-            else:
-                frame = last_good
 
             buf = Gst.Buffer.new_allocate(None, len(frame), None)
             buf.fill(0, frame)
