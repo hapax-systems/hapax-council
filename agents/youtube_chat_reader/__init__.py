@@ -50,7 +50,10 @@ a single token covers both scopes.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from agents.youtube_chat_reader.reader import ChatReader
 
 
 class YoutubeChatReaderUnavailable(RuntimeError):
@@ -121,7 +124,20 @@ def clear_reader() -> None:
 _ACTIVE_READER: YoutubeChatReader | None = None
 
 
-from agents.youtube_chat_reader.reader import ChatReader  # noqa: E402
+def __getattr__(name: str) -> object:
+    """Lazy optional-dependency boundary for the concrete reader.
+
+    Lightweight submodules such as ``anonymize`` are imported by
+    compositor code that does not need the YouTube Data API client.
+    Import ``reader`` only when callers explicitly request
+    ``ChatReader``.
+    """
+    if name == "ChatReader":
+        from agents.youtube_chat_reader.reader import ChatReader
+
+        return ChatReader
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "ChatMessageSnapshot",
