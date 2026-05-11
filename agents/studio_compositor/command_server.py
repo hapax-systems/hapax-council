@@ -9,6 +9,7 @@ Supported commands:
 - ``compositor.surface.set_geometry`` ``{surface_id, x, y, w, h}``
 - ``compositor.surface.set_z_order`` ``{surface_id, z_order}``
 - ``compositor.assignment.set_opacity`` ``{source_id, surface_id, opacity}``
+- ``compositor.layout.activate`` ``{layout_name}`` — activate a loaded bounded layout
 - ``compositor.layout.save`` — flush :class:`LayoutAutoSaver` immediately
 - ``compositor.layout.reload`` — force a fresh read from disk
 - ``degraded.activate`` ``{reason, ttl_s?}`` — enter DEGRADED-STREAM mode
@@ -66,11 +67,17 @@ class CommandServer:
         *,
         flush_callback: Callable[[], None] | None = None,
         reload_callback: Callable[[], None] | None = None,
+        layout_resolver: Callable[[str], Layout | None] | None = None,
+        layout_names_provider: Callable[[], list[str]] | None = None,
+        layout_activation_callback: Callable[[str, Layout], None] | None = None,
     ) -> None:
         self._state = state
         self._socket_path = Path(socket_path)
         self._flush_callback = flush_callback
         self._reload_callback = reload_callback
+        self._layout_resolver = layout_resolver
+        self._layout_names_provider = layout_names_provider
+        self._layout_activation_callback = layout_activation_callback
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -305,6 +312,76 @@ def _handle_reload(server: CommandServer, args: dict[str, Any]) -> dict[str, Any
     return {}
 
 
+def _layout_name_hint(server: CommandServer, name: str) -> str:
+    if server._layout_names_provider is None:
+        return ""
+    try:
+        return _did_you_mean(name, server._layout_names_provider())
+    except Exception:
+        log.debug("layout names provider failed", exc_info=True)
+        return ""
+
+
+def _handle_activate_layout(server: CommandServer, args: dict[str, Any]) -> dict[str, Any]:
+    """Activate a loaded layout through the compositor control plane.
+
+    This is intentionally a whole-layout command, not arbitrary geometry
+    authority. Runtime components such as the director segment runner can
+    request one bounded layout selected by the responsibility controller;
+    free-form surface coordinates remain rejected by the proposal adapter.
+    """
+
+    raw_name = args.get("layout_name") or args.get("name")
+    if not isinstance(raw_name, str) or not raw_name.strip():
+        raise _CommandError({"error": "invalid_layout_name"})
+    layout_name = raw_name.strip()
+    if server._layout_resolver is None:
+        current = server._state.get()
+        if current.name == layout_name:
+            return {"layout_name": layout_name, "already_active": True}
+        raise _CommandError(
+            {
+                "error": "layout_activation_unavailable",
+                "layout_name": layout_name,
+                "hint": "command server was not wired with a layout resolver",
+            }
+        )
+
+    try:
+        layout = server._layout_resolver(layout_name)
+    except Exception as exc:
+        raise _CommandError(
+            {
+                "error": "layout_resolver_failed",
+                "layout_name": layout_name,
+                "detail": str(exc),
+            }
+        ) from exc
+    if layout is None:
+        raise _CommandError(
+            {
+                "error": "unknown_layout",
+                "layout_name": layout_name,
+                "hint": _layout_name_hint(server, layout_name),
+            }
+        )
+
+    if server._layout_activation_callback is not None:
+        try:
+            server._layout_activation_callback(layout_name, layout)
+        except Exception as exc:
+            raise _CommandError(
+                {
+                    "error": "layout_activation_callback_failed",
+                    "layout_name": layout_name,
+                    "detail": str(exc),
+                }
+            ) from exc
+
+    server._state.mutate(lambda _previous: layout)
+    return {"layout_name": layout_name}
+
+
 def _handle_degraded_activate(server: CommandServer, args: dict[str, Any]) -> dict[str, Any]:
     """Task #122 — enter DEGRADED-STREAM mode.
 
@@ -344,6 +421,7 @@ _COMMANDS: dict[str, Callable[[CommandServer, dict[str, Any]], dict[str, Any] | 
     "compositor.surface.set_geometry": _handle_set_geometry,
     "compositor.surface.set_z_order": _handle_set_z_order,
     "compositor.assignment.set_opacity": _handle_set_opacity,
+    "compositor.layout.activate": _handle_activate_layout,
     "compositor.layout.save": _handle_save,
     "compositor.layout.reload": _handle_reload,
     "degraded.activate": _handle_degraded_activate,

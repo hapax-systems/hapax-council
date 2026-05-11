@@ -47,6 +47,28 @@ def _minimal_layout() -> Layout:
     )
 
 
+def _alternate_layout() -> Layout:
+    return Layout(
+        name="segment-tier",
+        sources=[
+            SourceSchema(
+                id="tier-panel",
+                kind="cairo",
+                backend="cairo",
+                params={"class_name": "Stub"},
+            )
+        ],
+        surfaces=[
+            SurfaceSchema(
+                id="tier-panel-surface",
+                geometry=SurfaceGeometry(kind="rect", x=10, y=20, w=300, h=200),
+                z_order=20,
+            )
+        ],
+        assignments=[Assignment(source="tier-panel", surface="tier-panel-surface")],
+    )
+
+
 def _call(sock_path: Path, payload: dict) -> dict:
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(5.0)
@@ -191,6 +213,58 @@ def test_set_opacity_rejects_out_of_range(server_and_state) -> None:
     )
     assert resp["status"] == "error"
     assert resp["error"] == "invalid_opacity"
+
+
+def test_activate_layout_resolves_and_mutates_state(tmp_path: Path) -> None:
+    state = LayoutState(_minimal_layout())
+    alt = _alternate_layout()
+    sock_path = tmp_path / "compositor.sock"
+    activated: list[str] = []
+    server = CommandServer(
+        state,
+        sock_path,
+        layout_resolver=lambda name: alt if name == "segment-tier" else None,
+        layout_names_provider=lambda: ["default", "segment-tier"],
+        layout_activation_callback=lambda name, _layout: activated.append(name),
+    )
+    server.start()
+    time.sleep(0.05)
+    try:
+        resp = _call(
+            sock_path,
+            {
+                "command": "compositor.layout.activate",
+                "args": {"layout_name": "segment-tier"},
+            },
+        )
+        assert resp == {"status": "ok", "layout_name": "segment-tier"}
+        assert state.get().name == "segment-tier"
+        assert activated == ["segment-tier"]
+    finally:
+        server.stop()
+
+
+def test_activate_layout_reports_unknown_with_hint(tmp_path: Path) -> None:
+    state = LayoutState(_minimal_layout())
+    sock_path = tmp_path / "compositor.sock"
+    server = CommandServer(
+        state,
+        sock_path,
+        layout_resolver=lambda _name: None,
+        layout_names_provider=lambda: ["segment-tier"],
+    )
+    server.start()
+    time.sleep(0.05)
+    try:
+        resp = _call(
+            sock_path,
+            {"command": "compositor.layout.activate", "args": {"layout_name": "segment-tire"}},
+        )
+        assert resp["status"] == "error"
+        assert resp["error"] == "unknown_layout"
+        assert "segment-tier" in resp["hint"]
+    finally:
+        server.stop()
 
 
 def test_unknown_assignment_reports_error(server_and_state) -> None:
