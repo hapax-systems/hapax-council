@@ -465,7 +465,7 @@ def _build_full_segment_prompt(
         "BANNED — host openers: 'Welcome to', 'Thanks for joining', 'Good morning'\n"
         "BANNED — host transitions: 'Moving on', 'Let's dive in', 'Let's take a look'\n"
         "BANNED — audience phrasing: 'Feel free to', 'Stay tuned', 'Join us'\n"
-        "BANNED — human interiority: 'I feel', 'I believe', 'I think', 'I wonder'\n"
+        "The following are forbidden — human interiority: first-person emotion/belief verbs\n"
         "CORRECT: Hapax speaks in third person about itself or uses direct declaratives.\n"
         "WRONG: 'We'll start by looking at the evidence for X'\n"
         "RIGHT: 'The evidence for X starts with Zuboff\\'s 2019 finding that Y'\n"
