@@ -970,6 +970,7 @@ class StudioCompositor:
         self._layout_autosaver: Any = None
         self._layout_file_watcher: Any = None
         self._command_server: Any = None
+        self._director_segment_runner: Any = None
         self.pipeline: Any = None
         self.loop: Any = None
         self._running = False
@@ -1179,6 +1180,62 @@ class StudioCompositor:
         except Exception:
             log.exception("activity router tick failed")
         return self._running
+
+    def _resolve_control_plane_layout(self, layout_name: str) -> Layout | None:
+        """Resolve a named compositor layout for runtime control-plane activation."""
+
+        store = getattr(self, "_layout_store", None)
+        if store is None:
+            return None
+        try:
+            store.reload_changed()
+            return store.get(layout_name)
+        except Exception:
+            log.debug("layout control-plane resolver failed for %s", layout_name, exc_info=True)
+            return None
+
+    def _prepare_control_plane_layout_activation(self, layout_name: str, layout: Layout) -> None:
+        """Prepare registries before a named runtime layout becomes active."""
+
+        self._ensure_layout_sources_registered(layout)
+        try:
+            from agents.studio_compositor.ward_registry import populate_from_layout
+
+            populate_from_layout(layout)
+        except Exception:
+            log.debug("ward registry update failed for layout %s", layout_name, exc_info=True)
+        store = getattr(self, "_layout_store", None)
+        if store is not None:
+            try:
+                store.set_active(layout_name)
+            except Exception:
+                log.debug("layout store activation failed for %s", layout_name, exc_info=True)
+
+    def _ensure_layout_sources_registered(self, layout: Layout) -> None:
+        """Construct and start any source backends introduced by a runtime layout."""
+
+        registry = self.source_registry
+        if registry is None:
+            return
+        existing = set(registry.ids())
+        for source in layout.sources:
+            if source.id in existing:
+                continue
+            try:
+                backend = registry.construct_backend(source, budget_tracker=self._budget_tracker)
+                registry.register(source.id, backend)
+                start = getattr(backend, "start", None)
+                if start is not None:
+                    start()
+                existing.add(source.id)
+                log.info("runtime layout source registered: %s", source.id)
+            except Exception as exc:
+                log.exception(
+                    "failed to construct runtime layout source %s (backend=%s)",
+                    source.id,
+                    source.backend,
+                )
+                StudioCompositor._record_source_backend_error("runtime-layout", source, exc)
 
     def _publish_broadcast_manifest_and_gate(self) -> None:
         """Publish the provenance manifest and apply the egress gate."""
@@ -1843,13 +1900,11 @@ class StudioCompositor:
         # autosaver's immediate-flush path. ``reload_callback`` stays None —
         # the ``LayoutFileWatcher`` polling loop already picks up external
         # edits within ≤2 s, so a manual reload nudge isn't needed yet.
+        runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        command_sock = Path(runtime_dir) / "hapax-compositor-commands.sock"
         try:
-            import os
-
             from agents.studio_compositor.command_server import CommandServer
 
-            runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-            command_sock = Path(runtime_dir) / "hapax-compositor-commands.sock"
             flush_cb: Callable[[], None] | None = None
             if self._layout_autosaver is not None:
                 flush_cb = self._layout_autosaver.flush_now
@@ -1858,6 +1913,9 @@ class StudioCompositor:
                 command_sock,
                 flush_callback=flush_cb,
                 reload_callback=None,
+                layout_resolver=self._resolve_control_plane_layout,
+                layout_names_provider=self._layout_store.list_available,
+                layout_activation_callback=self._prepare_control_plane_layout_activation,
             )
             self._command_server.start()
         except Exception:
@@ -1865,6 +1923,18 @@ class StudioCompositor:
                 "failed to start compositor command server — "
                 "runtime layout mutation via window.__logos / MCP is unavailable"
             )
+
+        try:
+            from agents.studio_compositor.director_segment_runner import (
+                maybe_start_director_segment_runner,
+            )
+
+            self._director_segment_runner = maybe_start_director_segment_runner(
+                self,
+                command_socket_path=command_sock,
+            )
+        except Exception:
+            log.exception("failed to start director segment runner")
 
         # 2026-04-23 Gemini-audit Phase 3 — the compositor-embedded
         # recent-impingements publisher (added in #1209) read ``salience``
@@ -1934,6 +2004,14 @@ class StudioCompositor:
                 log.exception("camera_classifier_publisher stop failed")
                 StudioCompositor._record_stop_error("camera_classifier_publisher", exc)
             self._camera_classifier_publisher = None
+        runner = getattr(self, "_director_segment_runner", None)
+        if runner is not None:
+            try:
+                runner.stop()
+            except Exception as exc:
+                log.exception("director_segment_runner stop failed")
+                StudioCompositor._record_stop_error("director_segment_runner", exc)
+            self._director_segment_runner = None
         if self._command_server is not None:
             try:
                 self._command_server.stop()
