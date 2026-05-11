@@ -12,15 +12,26 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-live-surface-preflight"
 
 
-def _run(metrics: str, *args: str, tmp_path: Path) -> subprocess.CompletedProcess[str]:
+def _run(
+    metrics: str,
+    *args: str,
+    tmp_path: Path,
+    after_metrics: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     metrics_file = tmp_path / "metrics.prom"
     metrics_file.write_text(metrics, encoding="utf-8")
+    after_args: list[str] = []
+    if after_metrics is not None:
+        after_metrics_file = tmp_path / "metrics-after.prom"
+        after_metrics_file.write_text(after_metrics, encoding="utf-8")
+        after_args = ["--metrics-file-after", str(after_metrics_file)]
     return subprocess.run(
         [
             str(SCRIPT),
             "--no-systemd",
             "--metrics-file",
             str(metrics_file),
+            *after_args,
             *args,
         ],
         text=True,
@@ -163,6 +174,127 @@ hapax_ward_modulator_tick_total 5
     assert payload["state"] == "healthy"
     assert payload["full_surface_required"] is True
     assert payload["full_surface_failures"] == []
+
+
+def test_preflight_full_surface_performance_sample_can_pass(tmp_path: Path) -> None:
+    before = """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 10
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.1
+studio_compositor_render_stage_frames_total{stage="compositor_src"} 100
+studio_compositor_render_stage_frames_total{stage="output_tee_sink"} 100
+studio_compositor_render_stage_frames_total{stage="v4l2_appsink"} 100
+studio_compositor_render_stage_frames_total{stage="hls_parser_src"} 100
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 10
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.2
+studio_compositor_runtime_feature_active{feature="shader_fx"} 1
+studio_compositor_runtime_feature_active{feature="inline_fx"} 1
+studio_compositor_runtime_feature_active{feature="hero_effect"} 1
+studio_compositor_runtime_feature_active{feature="follow_mode"} 1
+studio_compositor_runtime_feature_active{feature="ward_modulator"} 1
+studio_compositor_runtime_feature_active{feature="flash_overlay"} 0
+studio_compositor_ward_blit_total{ward="programme-context"} 10
+studio_compositor_ward_blit_total{ward="tier-panel"} 10
+studio_compositor_ward_blit_total{ward="artifact-detail-panel"} 10
+hapax_compositor_layout_active{layout="segment-programme-context"} 1
+hapax_ward_modulator_tick_total 5
+"""
+    after = before.replace(
+        'studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 10',
+        'studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 13',
+    )
+    for stage in ("compositor_src", "output_tee_sink", "v4l2_appsink", "hls_parser_src"):
+        after = after.replace(
+            f'studio_compositor_render_stage_frames_total{{stage="{stage}"}} 100',
+            f'studio_compositor_render_stage_frames_total{{stage="{stage}"}} 130',
+        )
+
+    result = _run(
+        before,
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "true",
+        "--require-full-surface",
+        "--full-surface-sample-seconds",
+        "1",
+        "--env",
+        "HAPAX_COMPOSITOR_FX_SLOTS=8",
+        tmp_path=tmp_path,
+        after_metrics=after,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "healthy"
+    assert payload["full_surface_performance"]["sampled"] is True
+    assert payload["full_surface_performance"]["stage_fps"]["v4l2_appsink"] == 30.0
+
+
+def test_preflight_full_surface_performance_sample_blocks_slow_hls(tmp_path: Path) -> None:
+    before = """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 10
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.1
+studio_compositor_render_stage_frames_total{stage="compositor_src"} 100
+studio_compositor_render_stage_frames_total{stage="output_tee_sink"} 100
+studio_compositor_render_stage_frames_total{stage="v4l2_appsink"} 100
+studio_compositor_render_stage_frames_total{stage="hls_parser_src"} 100
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 10
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.2
+studio_compositor_runtime_feature_active{feature="shader_fx"} 1
+studio_compositor_runtime_feature_active{feature="inline_fx"} 1
+studio_compositor_runtime_feature_active{feature="hero_effect"} 1
+studio_compositor_runtime_feature_active{feature="follow_mode"} 1
+studio_compositor_runtime_feature_active{feature="ward_modulator"} 1
+studio_compositor_runtime_feature_active{feature="flash_overlay"} 0
+studio_compositor_ward_blit_total{ward="programme-context"} 10
+studio_compositor_ward_blit_total{ward="tier-panel"} 10
+studio_compositor_ward_blit_total{ward="artifact-detail-panel"} 10
+hapax_compositor_layout_active{layout="segment-programme-context"} 1
+hapax_ward_modulator_tick_total 5
+"""
+    after = before
+    replacements = {
+        "compositor_src": 130,
+        "output_tee_sink": 130,
+        "v4l2_appsink": 130,
+        "hls_parser_src": 120,
+    }
+    for stage, count in replacements.items():
+        after = after.replace(
+            f'studio_compositor_render_stage_frames_total{{stage="{stage}"}} 100',
+            f'studio_compositor_render_stage_frames_total{{stage="{stage}"}} {count}',
+        )
+    after = after.replace(
+        'studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 10',
+        'studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 13',
+    )
+
+    result = _run(
+        before,
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "true",
+        "--require-full-surface",
+        "--full-surface-sample-seconds",
+        "1",
+        "--env",
+        "HAPAX_COMPOSITOR_FX_SLOTS=8",
+        tmp_path=tmp_path,
+        after_metrics=after,
+    )
+
+    assert result.returncode == 10
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "degraded_containment"
+    assert (
+        "full_surface:LSC-EGRESS-002:stage_fps_below_floor:hls_parser_src:20.00<29.00"
+        in payload["reasons"]
+    )
 
 
 def test_preflight_allow_containment_does_not_normalize_full_surface_failure(
