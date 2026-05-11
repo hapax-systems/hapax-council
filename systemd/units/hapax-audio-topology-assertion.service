@@ -2,6 +2,7 @@
 Description=Hapax audio topology boot-time + recurring assertion
 Documentation=file:///home/hapax/projects/hapax-council/scripts/hapax-audio-topology
 Documentation=file:///home/hapax/projects/hapax-council/docs/governance/option-c-private-track-fenced-routing.md
+Requires=pipewire.service
 After=pipewire.service wireplumber.service pipewire-pulse.service
 Wants=pipewire.service wireplumber.service pipewire-pulse.service
 
