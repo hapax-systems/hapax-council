@@ -228,27 +228,6 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "the canonical refusal log."
         ),
     ),
-    "omg-lol-pay-receiver": SurfaceSpec(
-        automation_status=AutomationStatus.CONDITIONAL_ENGAGE,
-        api="webhook",
-        dispatch_entry="logos.api.routes.payment_rails:receive_omg_lol_pay_webhook",
-        activation_path="agents.publication_bus.omg_lol_pay_publisher.OmgLolPayPublisher",
-        scope_note=(
-            "Fifth wired monetization rail (closes the cc-task "
-            "publication-bus-monetization-rails-surfaces keystone — 4 of 5 "
-            "rails shipped previously: github-sponsors, stripe-payment-link, "
-            "open-collective, liberapay; this entry completes the set). "
-            "POST /api/payment-rails/omg-lol-pay on logos :8051. omg.lol Pay "
-            "is the operator-owned weblog/profile platform's payments feature; "
-            "the operator already runs the omg.lol weblog publisher so the "
-            "Pay rail completes monetization on the same surface. HMAC "
-            "SHA-256 via X-OMG-Signature + OMG_LOL_PAY_WEBHOOK_SECRET env; "
-            "IP allowlist gate via OMG_LOL_PAY_REQUIRE_IP_ALLOWLIST=1. "
-            "CONDITIONAL_ENGAGE until the operator configures the omg.lol "
-            "Pay webhook target. Refund + subscription-cancellation events "
-            "auto-link to the canonical refusal log."
-        ),
-    ),
     "arena-post": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="REST",
