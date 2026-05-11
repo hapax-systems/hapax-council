@@ -92,7 +92,7 @@ PYEOF
 }
 
 closed_duplicate=""
-for candidate in "$vault_root/closed/$task_id-"*.md "$vault_root/closed/$task_id.md"; do
+for candidate in "$vault_root/closed/$task_id.md"; do
   [[ -f "$candidate" ]] || continue
   candidate_task_id="$(frontmatter_task_id "$candidate" || true)"
   if [[ "$candidate_task_id" == "$task_id" ]]; then
