@@ -1,42 +1,50 @@
-"""Governance package — consent, authority, and values as type-level invariants.
+"""Governance package — thin wrapper re-exporting from the agentgov package.
 
-This package implements the core governance primitives described in the
-computational constitutional governance specification. It is designed to
-be readable as a standalone reference implementation:
+The algebraic governance core (consent labels, principals, provenance,
+governors, carriers, revocation, VetoChain, Says) lives in the standalone
+``agentgov`` package (packages/agentgov/). This module re-exports
+everything for backwards compatibility.
 
-- PL researchers: start with consent_label.py (DLM operations)
-- MAS researchers: start with carrier.py (factor graph correspondence)
-- AI Safety researchers: start with agent_governor.py (separation of powers)
-
-All modules are pure governance logic with no operational dependencies.
-The only external dependency is carrier_intake.py which uses
-shared.frontmatter for consent label extraction from filesystem files.
-
-Algebraic properties proven via hypothesis:
-- ConsentLabel: join-semilattice (associative, commutative, idempotent)
-- Labeled[T]: functor (identity, composition)
-- Principal: non-amplification (bound ⊆ delegator authority)
-- Governor: consistent with can_flow_to (6 properties)
-- Consent threading: invariant through 10 composition layers
+Hapax-specific modules (consent_gate, consent_channels, content_risk,
+monetization_safety, etc.) remain here as they depend on council internals.
 """
 
-from shared.governance.agent_governor import create_agent_governor
-from shared.governance.carrier import CarrierFact, CarrierRegistry, DisplacementResult
-from shared.governance.consent import ConsentContract, ConsentRegistry, load_contracts
-from shared.governance.consent_label import ConsentLabel
-from shared.governance.primitives import (
+from agentgov import (
     Candidate,
+    CarrierFact,
+    CarrierRegistry,
+    ConsentContract,
+    ConsentLabel,
+    ConsentRegistry,
+    DisplacementResult,
     FallbackChain,
     GatedResult,
+    GovernorDenial,
+    GovernorPolicy,
+    GovernorResult,
+    GovernorWrapper,
+    Labeled,
+    Principal,
+    PrincipalKind,
+    ProvenanceExpr,
+    PurgeResult,
+    RevocationPropagator,
+    RevocationReport,
+    Says,
     Selected,
     Veto,
     VetoChain,
     VetoResult,
+    check_provenance,
+    consent_input_policy,
+    consent_output_policy,
+    create_agent_governor,
+    load_contracts,
 )
 
 
 def __getattr__(name: str):
-    """Lazy imports to break circular dependency with shared.frontmatter."""
+    """Lazy imports for hapax-specific modules."""
     if name == "CarrierIntakeResult":
         from shared.governance.carrier_intake import CarrierIntakeResult
 
@@ -48,22 +56,8 @@ def __getattr__(name: str):
     raise AttributeError(f"module 'shared.governance' has no attribute {name}")
 
 
-from shared.governance.governor import (
-    GovernorDenial,
-    GovernorPolicy,
-    GovernorResult,
-    GovernorWrapper,
-    consent_input_policy,
-    consent_output_policy,
-)
-from shared.governance.labeled import Labeled
-from shared.governance.principal import Principal, PrincipalKind
-from shared.governance.revocation import (
-    PurgeResult,
-    RevocationPropagator,
-    RevocationReport,
-    check_provenance,
-)
+from agentgov.revocation import check_provenance  # noqa: F811
+
 from shared.governance.revocation_wiring import (
     get_revocation_propagator,
     set_revocation_propagator,
@@ -80,6 +74,8 @@ __all__ = [
     "load_contracts",
     # Labeled data
     "Labeled",
+    # Provenance
+    "ProvenanceExpr",
     # Carrier dynamics
     "CarrierFact",
     "CarrierRegistry",
@@ -109,4 +105,6 @@ __all__ = [
     "Veto",
     "VetoChain",
     "VetoResult",
+    # Says monad
+    "Says",
 ]
