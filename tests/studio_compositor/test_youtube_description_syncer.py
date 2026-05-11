@@ -180,30 +180,34 @@ class TestSyncOnce:
             captured["description"] = description
             return True
 
-        sync.sync_once(
-            video_id="vid-private-filter",
-            marker_reader=lambda: {
-                "condition_id": "PRIVATE_MEDIA_ROLE",
-                "claim_id": "claim-PRIVATE",
-            },
-            objectives_reader=lambda: [
-                {
-                    "title": "non-broadcast private monitor route",
-                    "priority": "high",
-                    "objective_id": "obj-private",
-                }
-            ],
-            attribution_reader=lambda: [],
-            substrate_model="hapax-private",
-            updater=_updater,
+        assert (
+            sync.sync_once(
+                video_id="vid-private-filter",
+                marker_reader=lambda: {
+                    "condition_id": "PRIVATE_MEDIA_ROLE",
+                    "claim_id": "claim-PRIVATE",
+                },
+                objectives_reader=lambda: [
+                    {
+                        "title": "non-broadcast private monitor route",
+                        "priority": "high",
+                        "objective_id": "obj-private",
+                    }
+                ],
+                attribution_reader=lambda: [],
+                substrate_model="hapax-private",
+                updater=_updater,
+            )
+            is True
         )
 
         description = captured["description"]
+        description_lower = description.lower()
         assert "Condition: unknown" in description
         assert "Substrate: unknown" in description
-        assert "PRIVATE" not in description
-        assert "non-broadcast" not in description
-        assert "hapax-private" not in description
+        assert "private" not in description_lower
+        assert "non-broadcast" not in description_lower
+        assert "hapax-private" not in description_lower
 
 
 class TestStateHash:
