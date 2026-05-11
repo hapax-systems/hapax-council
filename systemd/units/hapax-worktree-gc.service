@@ -1,0 +1,13 @@
+[Unit]
+Description=Hapax stale worktree garbage collection
+Documentation=file:%h/projects/hapax-council/systemd/README.md
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/hapax-council/scripts/hapax-worktree-gc.sh --repo %h/projects/hapax-council
+WorkingDirectory=%h/projects/hapax-council
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
