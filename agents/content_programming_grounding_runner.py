@@ -45,6 +45,7 @@ from shared.content_programme_run_store import (
     WcsHealthState,
     WitnessedOutcomeRecord,
     WitnessRequirement,
+    build_livestream_role_state_for_run,
 )
 from shared.content_programme_scheduler_policy import (
     PublicPrivateMode,
@@ -424,6 +425,28 @@ def _materialize_run(
         capability_outcome_ref=f"coe:{run_id}:grounding",
         posterior_update_allowed=bool(evidence_envelope_refs and final_status == "completed"),
     )
+    substrate_refs = _substrate_refs(item)
+    director_snapshot_ref = (
+        item.director_snapshot_ref
+        or f"director-snapshot:{opportunity.format_id}:{opportunity.opportunity_id}"
+    )
+    role_state = build_livestream_role_state_for_run(
+        run_id=run_id,
+        public_private_mode=effective_mode,
+        final_status=final_status,
+        grounding_question=opportunity.grounding_question,
+        director_snapshot_ref=director_snapshot_ref,
+        available_wcs_surfaces=tuple(
+            dict.fromkeys(
+                (*evidence_refs,)
+                if effective_mode == "private"
+                else (*substrate_refs, *evidence_refs, *item.broadcast_refs)
+            )
+        ),
+        blocked_wcs_surfaces=tuple(f"blocker:{reason}" for reason in unavailable),
+        private_only_wcs_surfaces=substrate_refs if effective_mode == "private" else (),
+        monetization_ready=rights_posture.monetization_state == "ready",
+    )
     run = ContentProgrammeRunEnvelope(
         run_id=run_id,
         programme_id=programme_id,
@@ -436,6 +459,7 @@ def _materialize_run(
         requested_public_private_mode=requested_mode,
         public_private_mode=effective_mode,
         rights_privacy_public_mode=rights_posture,
+        role_state=role_state,
         selected_opportunity=SelectedOpportunityRef(
             decision_id=decision.decision_id,
             decision_ref=f"content-programme-scheduler-policy:{decision.decision_id}",
@@ -456,11 +480,10 @@ def _materialize_run(
         if effective_mode in {"public_archive", "public_monetizable"}
         else (),
         selected_input_refs=_selected_input_refs(item),
-        substrate_refs=_substrate_refs(item),
+        substrate_refs=substrate_refs,
         semantic_capability_refs=_semantic_capability_refs(item),
         director_plan=DirectorPlanRef(
-            director_snapshot_ref=item.director_snapshot_ref
-            or f"director-snapshot:{opportunity.format_id}:{opportunity.opportunity_id}",
+            director_snapshot_ref=director_snapshot_ref,
             director_plan_ref=item.director_plan_ref
             or f"director-plan:{opportunity.format_id}:{decision.route.value}",
             director_move_refs=_director_move_refs(item),
@@ -482,7 +505,7 @@ def _materialize_run(
             public_event_gate_refs=(f"public-event-gate:{run_id}:{effective_mode}",),
         ),
         wcs=WcsBinding(
-            semantic_substrate_refs=_substrate_refs(item),
+            semantic_substrate_refs=substrate_refs,
             grounding_contract_refs=(f"grounding-contract:{opportunity.format_id}",),
             evidence_envelope_refs=evidence_envelope_refs,
             witness_requirements=(

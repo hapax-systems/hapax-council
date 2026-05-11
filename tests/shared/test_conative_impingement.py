@@ -49,6 +49,8 @@ def test_narrative_drive_payload_carries_required_conative_fields() -> None:
     assert impulse.action_tendency == "speak"
     assert impulse.speech_act_candidate == "autonomous_narrative"
     assert impulse.strength_posterior == 0.43
+    assert impulse.speech_destination == "public_live"
+    assert impulse.claim_posture == "public_live"
     assert impulse.raw_drive_text_spoken is False
     assert "source:endogenous.narrative_drive" in impulse.evidence_refs
     assert payload["narrative"] == "Internal drive to narrate the live shift."
@@ -66,6 +68,9 @@ def test_build_from_legacy_impingement_preserves_existing_impulse_id_and_refs() 
             "evidence_refs": ["wcs:audio.broadcast_voice"],
             "strength_posterior": 0.57,
             "action_tendency": "speak",
+            "role_state_ref": "livestream-role-state:test",
+            "speech_destination": "public_live",
+            "claim_posture": "public_live",
         },
     )
 
@@ -73,6 +78,8 @@ def test_build_from_legacy_impingement_preserves_existing_impulse_id_and_refs() 
 
     assert impulse.impulse_id == "impulse-explicit"
     assert impulse.content_summary == "A bounded narration impulse."
+    assert impulse.role_state_ref == "livestream-role-state:test"
+    assert impulse.speech_destination == "public_live"
     assert "wcs:audio.broadcast_voice" in impulse.evidence_refs
     assert impulse.route_evidence_ref == "route:audio.broadcast_voice:health_witness_required"
 
