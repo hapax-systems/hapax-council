@@ -1,0 +1,16 @@
+[Unit]
+Description=Hapax perception fusion — aggregate multi-source perception to /dev/shm
+After=pipewire.service
+ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
+
+[Service]
+Type=simple
+Environment=CUDA_VISIBLE_DEVICES=
+WorkingDirectory=%h/.cache/hapax/rebuild/worktree
+ExecStart=%h/.local/bin/uv run python -m agents.perception_fusion
+Restart=on-failure
+RestartSec=5
+MemoryMax=256M
+
+[Install]
+WantedBy=default.target

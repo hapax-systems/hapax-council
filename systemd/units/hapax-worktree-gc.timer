@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Hapax stale worktree garbage collection every 6 hours
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=6h
+AccuracySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

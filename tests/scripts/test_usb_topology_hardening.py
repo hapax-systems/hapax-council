@@ -10,6 +10,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from types import ModuleType
+from unittest.mock import Mock, patch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WITNESS = REPO_ROOT / "scripts" / "hapax-usb-topology-witness"
@@ -342,6 +343,39 @@ def test_copied_witness_uses_installed_policy_env_path(tmp_path: Path) -> None:
     output = json.loads(status.read_text(encoding="utf-8"))
     assert output["issues"] == []
     assert "s4_usb_missing_known_absence:hardware_fault_diagnosed_2026-05-08" in output["warnings"]
+
+
+def test_start_user_unit_reports_repair_only_when_start_needed() -> None:
+    witness = load_witness_module()
+    active = subprocess.CompletedProcess(["systemctl"], 0, "", "")
+    inactive = subprocess.CompletedProcess(["systemctl"], 3, "", "")
+    started = subprocess.CompletedProcess(["systemctl"], 0, "", "")
+    mocked_run = Mock(side_effect=[active, inactive, started])
+
+    with patch.object(witness, "run", mocked_run):
+        assert witness.start_user_unit("hapax-audio-router.service") is False
+        assert witness.start_user_unit("hapax-usb-router.service") is True
+
+    assert mocked_run.call_args_list[0].args[0] == [
+        "systemctl",
+        "--user",
+        "is-active",
+        "--quiet",
+        "hapax-audio-router.service",
+    ]
+    assert mocked_run.call_args_list[1].args[0] == [
+        "systemctl",
+        "--user",
+        "is-active",
+        "--quiet",
+        "hapax-usb-router.service",
+    ]
+    assert mocked_run.call_args_list[2].args[0] == [
+        "systemctl",
+        "--user",
+        "start",
+        "hapax-usb-router.service",
+    ]
 
 
 def test_installer_dry_run_lists_durable_policy_files(tmp_path: Path) -> None:

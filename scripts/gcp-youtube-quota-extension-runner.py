@@ -20,12 +20,17 @@ DEFAULT_OUTPUT = Path.home() / ".local/state/hapax/gcp-youtube-quota-extension-r
 DEFAULT_TEMPLATE = (
     Path.home() / "Documents/Personal/30-areas/hapax/youtube-quota-justification-template.md"
 )
+DEFAULT_GRAFANA_URL = os.environ.get(
+    "HAPAX_YOUTUBE_QUOTA_GRAFANA_URL",
+    "http://localhost:3000/d/yt-quota/youtube-data-api-quota-ytb-001?orgId=1",
+)
 DEFAULT_PROFILE = Path(
     os.environ.get(
         "HAPAX_GCP_YOUTUBE_QUOTA_PROFILE",
         str(Path.home() / ".cache/hapax/playwright/gcp-youtube-quota"),
     )
 )
+MIN_PEAK_UNITS_DEFAULT = 1.0
 PROMQL = {
     "used_units_current": "last_over_time(hapax_broadcast_yt_quota_units_used[7d])",
     "remaining_units_current": "last_over_time(hapax_broadcast_yt_quota_remaining[7d])",
@@ -37,6 +42,16 @@ PROMQL = {
     "used_units_peak_7d": "max_over_time(hapax_broadcast_yt_quota_units_used[7d])",
     "rate_per_min_peak_7d": "max_over_time(hapax_broadcast_yt_quota_rate_per_min[7d])",
 }
+QUOTA_FORM_ANSWER_KEYS = (
+    "Which API Client are you requesting a quota increase for?",
+    "What API project number are you requesting increased quota for?",
+    "Which YouTube API Service(s) are you requesting a quota increase for?",
+    'How much "Additional Quota" are you requesting?',
+    "Justification for requesting additional quota?",
+    "Explain in detail how you use YouTube API Services today",
+    "What functionality would your API client be lacking without more quota?",
+    "What potential workarounds would you use to compensate for less quota?",
+)
 FIELDS = (
     (("Project name", "API project", "Google Cloud project"), "project_name"),
     (("Project ID", "Project number", "API key project"), "project_id"),
@@ -81,6 +96,116 @@ def _render(template: Path, values: dict[str, Any]) -> str:
     for key, value in values.items():
         text = text.replace("{{" + key + "}}", str(value))
     return text
+
+
+def evidence_blockers(evidence: dict[str, str | float], *, min_peak_units: float) -> list[str]:
+    """Return fail-closed reasons that make a live quota filing premature."""
+    used_peak = float(evidence.get("used_units_peak_7d", 0.0))
+    rate_peak = float(evidence.get("rate_per_min_peak_7d", 0.0))
+    if used_peak >= min_peak_units or rate_peak > 0.0:
+        return []
+    return [
+        (
+            f"insufficient observed YouTube API quota burn: 7-day peak={used_peak:g} "
+            f"units, peak_rate={rate_peak:g} units/min, required_peak>={min_peak_units:g}"
+        )
+    ]
+
+
+def build_quota_form_answers(request: dict[str, Any]) -> dict[str, str]:
+    """Build the quota-section answer packet for operator review and filing."""
+    additional_quota = int(request["additional_quota_units"])
+    requested = int(request["requested_quota_units"])
+    current = int(request["current_quota_units"])
+    evidence = request["evidence"]
+    current_use = (
+        "Hapax uses the YouTube Data API for a single-operator, operator-owned 24/7 "
+        "AI livestream stack: broadcast lifecycle checks, metadata/description updates, "
+        "retention and viewer telemetry ingestion, Content ID monitoring, captions, "
+        "and a Shorts extraction/upload pipeline. The API client does not redistribute "
+        "third-party data, does not operate as a multi-user SaaS product, and remains "
+        "scoped to the operator's own channel and broadcast artifacts."
+    )
+    missing_functionality = (
+        "Without higher daily quota, Hapax must sharply reduce autonomous metadata "
+        "refresh cadence, Shorts upload throughput, captions publication, analytics "
+        "ingestion, and Content ID monitoring. Those reductions degrade the public "
+        "research archive and force manual batching around the 10,000-unit default "
+        "allocation instead of allowing reliable always-on livestream operations."
+    )
+    workarounds = (
+        "Fallback would be lower-frequency polling, smaller samples, deferred Shorts "
+        "uploads, skipped caption updates, and local estimation from already-cached "
+        "state. Hapax will not shard traffic across extra projects to evade quota; "
+        "the preferred mitigation is one compliant quota extension on the existing "
+        "YouTube Data API project."
+    )
+    justification = (
+        f"Requesting {additional_quota} additional units/day so the project can move "
+        f"from {current} to {requested} units/day. Current Prometheus evidence sampled "
+        f"{evidence['sampled_at']} shows current usage {evidence['used_units_current']} "
+        f"units, seven-day peak usage {evidence['used_units_peak_7d']} units, current "
+        f"burn rate {evidence['rate_per_min_current']} units/min, and seven-day peak "
+        f"rate {evidence['rate_per_min_peak_7d']} units/min. The request supports "
+        "bounded single-operator livestream orchestration and gives the compliance "
+        "reviewer arithmetic evidence for the requested headroom."
+    )
+    return {
+        QUOTA_FORM_ANSWER_KEYS[0]: str(request["project_name"]),
+        QUOTA_FORM_ANSWER_KEYS[1]: str(request["project_id"]),
+        QUOTA_FORM_ANSWER_KEYS[2]: "YouTube Data API v3",
+        QUOTA_FORM_ANSWER_KEYS[3]: str(additional_quota),
+        QUOTA_FORM_ANSWER_KEYS[4]: justification,
+        QUOTA_FORM_ANSWER_KEYS[5]: current_use,
+        QUOTA_FORM_ANSWER_KEYS[6]: missing_functionality,
+        QUOTA_FORM_ANSWER_KEYS[7]: workarounds,
+    }
+
+
+def write_response_tracking(output_dir: Path, summary: dict[str, Any]) -> None:
+    receipt = summary.get("receipt_url") or "not submitted"
+    status = summary.get("status") or "packet_created"
+    blockers = summary.get("evidence_blockers") or []
+    blocker_lines = "\n".join(f"- {reason}" for reason in blockers) if blockers else "- none"
+    output_dir.joinpath("response-tracking.md").write_text(
+        "\n".join(
+            [
+                "# YouTube API quota extension response tracking",
+                "",
+                f"- status: {status}",
+                f"- receipt_url: {receipt}",
+                f"- form_url: {FORM_URL}",
+                f"- grafana_dashboard_url: {summary.get('grafana_dashboard_url')}",
+                f"- grafana_screenshot_path: {summary.get('grafana_screenshot_path') or 'not captured'}",
+                "",
+                "## Evidence blockers",
+                "",
+                blocker_lines,
+                "",
+                "## Follow-up",
+                "",
+                "- Replace `status` with approval / request-for-more-info / denial when Google responds.",
+                "- Attach the Grafana quota-consumption screenshot before live filing.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def capture_grafana_dashboard(url: str, *, output_dir: Path) -> str:
+    """Capture the quota dashboard as evidence for the Google form."""
+    from playwright.sync_api import sync_playwright
+
+    screenshot = output_dir / "grafana-quota-dashboard.png"
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1600, "height": 1200})
+        page.set_default_timeout(20_000)
+        page.goto(url, wait_until="networkidle")
+        page.screenshot(path=str(screenshot), full_page=True)
+        browser.close()
+    return str(screenshot)
 
 
 def _fill(page: Any, labels: tuple[str, ...], value: str) -> None:
@@ -130,8 +255,12 @@ def _args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--contact-email", default=os.environ.get("HAPAX_OPERATOR_EMAIL", ""))
     parser.add_argument("--current-quota", type=int, default=10_000)
     parser.add_argument("--requested-quota", type=int, default=100_000)
+    parser.add_argument("--min-peak-units", type=float, default=MIN_PEAK_UNITS_DEFAULT)
     parser.add_argument("--template", type=Path, default=DEFAULT_TEMPLATE)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--grafana-url", default=DEFAULT_GRAFANA_URL)
+    parser.add_argument("--capture-grafana", action="store_true")
+    parser.add_argument("--allow-insufficient-evidence", action="store_true")
     parser.add_argument("--open-browser", action="store_true")
     parser.add_argument("--submit", action="store_true")
     return parser.parse_args(argv)
@@ -142,6 +271,7 @@ def main(
     *,
     opener: Any = urlopen,
     form_submitter: Any = fill_quota_form,
+    grafana_capturer: Any = capture_grafana_dashboard,
     env: dict[str, str] | os._Environ[str] = os.environ,
 ) -> int:
     args = _args(argv)
@@ -152,24 +282,56 @@ def main(
         "contact_email": args.contact_email,
         "current_quota_units": args.current_quota,
         "requested_quota_units": args.requested_quota,
+        "additional_quota_units": max(0, args.requested_quota - args.current_quota),
         "form_url": FORM_URL,
+        "grafana_dashboard_url": args.grafana_url,
         "evidence": evidence,
     }
     request["justification"] = _render(args.template, {**request, **evidence})
+    request["quota_form_answers"] = build_quota_form_answers(request)
+    blockers = evidence_blockers(evidence, min_peak_units=args.min_peak_units)
+    request["evidence_blockers"] = blockers
+    request["evidence_status"] = "ready" if not blockers else "insufficient_evidence"
     output_dir = args.output_dir / datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "quota-request.json").write_text(
         json.dumps(request, indent=2, sort_keys=True) + "\n"
     )
     (output_dir / "justification.md").write_text(request["justification"] + "\n")
-    outcome: dict[str, str | None] = {"receipt_url": None, "screenshot_path": None}
+    (output_dir / "quota-form-answers.json").write_text(
+        json.dumps(request["quota_form_answers"], indent=2, sort_keys=True) + "\n"
+    )
+    grafana_screenshot_path: str | None = None
+    if args.capture_grafana:
+        grafana_screenshot_path = grafana_capturer(args.grafana_url, output_dir=output_dir)
+    outcome: dict[str, Any] = {
+        "receipt_url": None,
+        "screenshot_path": None,
+        "grafana_screenshot_path": grafana_screenshot_path,
+        "grafana_dashboard_url": args.grafana_url,
+        "evidence_status": request["evidence_status"],
+        "evidence_blockers": blockers,
+    }
     if args.submit and env.get(LIVE_ENV) != "1":
         print(f"refusing live submit: set {LIVE_ENV}=1 and pass --submit", file=sys.stderr)
         return 2
+    if (args.open_browser or args.submit) and blockers and not args.allow_insufficient_evidence:
+        outcome["status"] = "blocked_insufficient_evidence"
+        summary = {"output_dir": str(output_dir), **outcome}
+        (output_dir / "outcome.json").write_text(json.dumps(summary, indent=2) + "\n")
+        write_response_tracking(output_dir, summary)
+        print(json.dumps(summary, sort_keys=True))
+        return 3
     if args.open_browser or args.submit:
         outcome = form_submitter(request, output_dir=output_dir, submit=args.submit)
+        outcome.setdefault("grafana_screenshot_path", grafana_screenshot_path)
+        outcome.setdefault("grafana_dashboard_url", args.grafana_url)
+        outcome.setdefault("evidence_status", request["evidence_status"])
+        outcome.setdefault("evidence_blockers", blockers)
+    outcome.setdefault("status", "submitted" if outcome.get("receipt_url") else "packet_created")
     summary = {"output_dir": str(output_dir), **outcome}
     (output_dir / "outcome.json").write_text(json.dumps(summary, indent=2) + "\n")
+    write_response_tracking(output_dir, summary)
     print(json.dumps(summary, sort_keys=True))
     return 0
 
