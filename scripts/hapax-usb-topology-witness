@@ -311,7 +311,7 @@ def set_default(kind: str, name: str) -> bool:
 def start_user_unit(unit: str) -> bool:
     active = run(["systemctl", "--user", "is-active", "--quiet", unit])
     if active.returncode == 0:
-        return True
+        return False
     return run(["systemctl", "--user", "start", unit]).returncode == 0
 
 
