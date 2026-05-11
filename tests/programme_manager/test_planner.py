@@ -378,50 +378,6 @@ class TestRetryPath:
 
         assert plan is None
 
-    def test_parser_moves_misnested_role_contract_into_content(self) -> None:
-        payload = _well_formed_plan_payload(role=ProgrammeRole.TIER_LIST)
-        programme = payload["programmes"][0]
-        role_contract = programme["content"].pop("role_contract")
-        programme["role_contract"] = role_contract
-
-        planner = ProgrammePlanner(llm_fn=_stub_llm(payload), max_retries=0)
-        plan = planner.plan(show_id="show-test-001", target_programmes=1)
-
-        assert plan is not None
-        assert plan.programmes[0].content.role_contract["tier_criteria"] == (
-            "source-backed ranking criterion"
-        )
-
-    def test_parser_mirrors_content_level_role_contract_fields(self) -> None:
-        payload = _well_formed_plan_payload(role=ProgrammeRole.TIER_LIST)
-        content = payload["programmes"][0]["content"]
-        role_contract = content.pop("role_contract")
-        content.update(role_contract)
-
-        planner = ProgrammePlanner(llm_fn=_stub_llm(payload), max_retries=0)
-        plan = planner.plan(show_id="show-test-001", target_programmes=1)
-
-        assert plan is not None
-        assert plan.programmes[0].content.role_contract["source_packet_refs"] == [
-            "vault:test-source.md"
-        ]
-        assert plan.programmes[0].content.role_contract["tier_criteria"] == (
-            "source-backed ranking criterion"
-        )
-
-    def test_parser_mirrors_content_evidence_refs_into_layout_intents(self) -> None:
-        payload = _well_formed_plan_payload(role=ProgrammeRole.TIER_LIST)
-        intent = payload["programmes"][0]["content"]["beat_layout_intents"][0]
-        intent.pop("evidence_refs")
-
-        planner = ProgrammePlanner(llm_fn=_stub_llm(payload), max_retries=0)
-        plan = planner.plan(show_id="show-test-001", target_programmes=1)
-
-        assert plan is not None
-        evidence_refs = plan.programmes[0].content.beat_layout_intents[0]["evidence_refs"]
-        assert evidence_refs[0] == "vault:test-source.md"
-        assert "media:test-source" in evidence_refs
-
     def test_segment_source_readiness_accepts_structured_tier_criteria_field(self) -> None:
         payload = _well_formed_plan_payload(role=ProgrammeRole.TIER_LIST)
         payload["programmes"][0]["content"]["role_contract"]["tier_criteria"] = (

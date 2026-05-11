@@ -24,7 +24,6 @@ import json
 import logging
 import os
 import re
-import re as _re
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -435,10 +434,6 @@ def _build_full_segment_prompt(
         "Do not issue camera, layout, surface, panel, clip, or cue commands. "
         "The script proposes needs through spoken source/action/chat patterns; "
         "runtime owns layout decisions and readback.\n\n"
-        "== CRITICAL: NO TEMPLATE SYNTAX ==\n"
-        "NEVER emit placeholder patterns like {topic}, {item}, {source}, item_1:, item_2:.\n"
-        "These are REJECTED by validators. Write the actual content, not template variables.\n"
-        "For tier_list/ranking: state the ORDERING CRITERIA explicitly in at least one beat.\n\n"
         "== CRITICAL: SPOKEN PROSE ONLY ==\n"
         "Write ONLY words you would SAY OUT LOUD on a live broadcast.\n"
         "NEVER include stage directions, beat labels, action cues, or meta-instructions.\n"
@@ -506,18 +501,6 @@ def _build_full_segment_prompt(
         "forceful, and intelligible to humans. Use marked analogies when useful. Do "
         "not claim human feeling, empathy, taste, intuition, memory, concern, or a "
         "human host identity.\n\n"
-        "== CRITICAL: HAPAX VOICE — NOT A PODCAST HOST ==\n"
-        "Hapax is a nonhuman cognitive substrate, NOT a human presenter.\n"
-        "BANNED phrases (these FAIL validation):\n"
-        "- Collective we/our/let's: 'We'll', 'Our first', 'Let's dive', 'we have'\n"
-        "- Stock host greetings: 'welcome to', 'hello everyone', 'thanks for joining'\n"
-        "- Stock transitions: 'Moving on', 'without further ado', 'before we go'\n"
-        "- Audience pandering: 'feel free', 'share your thoughts', 'drop it in the chat'\n"
-        "INSTEAD use Hapax voice:\n"
-        "- 'The evidence shifts here' not 'Let's move on'\n"
-        "- 'This source changes the ranking' not 'We'll see why this matters'\n"
-        "- 'The chart requires a response from chat' not 'Feel free to share your thoughts'\n"
-        "- Third person or bare assertions: 'The data shows', 'This collapses', 'Notice the gap'\n\n"
         "RHETORIC — every beat must satisfy ALL of these:\n"
         "1. CLAIM → EVIDENCE → SO-WHAT → IMPLICATION chain per beat.\n"
         "2. Every sentence has at least one TECHNICAL NOUN or PROPER NAME.\n"
@@ -548,30 +531,6 @@ _PREP_LLM_TIMEOUT_S = float(os.environ.get("HAPAX_SEGMENT_PREP_LLM_TIMEOUT_S", "
 # generator so prep artifacts have a coherent model provenance.
 RESIDENT_PREP_MODEL = RESIDENT_COMMAND_R_MODEL
 _ALLOWED_PREP_MODELS = {RESIDENT_PREP_MODEL}
-
-
-def _retrieve_broad_fore_understanding() -> list[dict[str, Any]]:
-    """Retrieve recent source-consequence encounters across all topics.
-
-    Provides the planner with accumulated interpretive context so it can
-
-    select topics informed by prior cycles."""
-    try:
-        from shared.config import get_qdrant
-        from shared.hermeneutic_spiral import COLLECTION_NAME
-
-        client = get_qdrant()
-        results = client.scroll(
-            collection_name=COLLECTION_NAME,
-            limit=20,
-            with_payload=True,
-            order_by="persisted_at",
-        )
-        points, _ = results
-        return [{k: v for k, v in (dict(p.payload) if p.payload else {}).items()} for p in points]
-    except Exception:
-        log.debug("_retrieve_broad_fore_understanding: unavailable", exc_info=True)
-        return []
 
 
 def _prep_model() -> str:
@@ -641,31 +600,6 @@ def _record_llm_call(
     }
     calls.append(record)
     return record
-
-
-_HOST_COLLECTIVE_RE = _re.compile(
-    r"(?i)\b(?:we'(?:ll|re|ve)|we (?:are|have|can|will|need|should|want|must))\b"
-)
-_HOST_STOCK_RE = _re.compile(
-    r"(?i)(?:"
-    r"[Ww]elcome to|[Tt]hanks for (?:joining|tuning|watching|listening)|"
-    r"[Hh]ello everyone|[Mm]oving on|[Ww]ithout further ado|"
-    r"[Ff]eel free to|[Ss]hare your thoughts|[Ss]tay tuned|"
-    r"[Aa]s (?:always|we mentioned))"
-)
-
-
-def _scrub_host_posture(script: list[str]) -> list[str]:
-    """Best-effort rewrite of common host-posture violations."""
-    out: list[str] = []
-    for beat in script:
-        cleaned = _HOST_STOCK_RE.sub("", beat)
-        cleaned = _HOST_COLLECTIVE_RE.sub("The analysis", cleaned)
-        cleaned = _re.sub(r"\b[Oo]ur (first|second|third|next|final)", r"The \1", cleaned)
-        cleaned = _re.sub(r"\b[Ll]et'?s (\w+)", r"The argument \1s", cleaned)
-        cleaned = _re.sub(r"  +", " ", cleaned).strip()
-        out.append(cleaned)
-    return out
 
 
 def _call_llm(
@@ -816,23 +750,12 @@ def _build_seed(programme: Any) -> str:
             NarrativeContext,
         )
 
-        perception_line = ""
-        try:
-            from agents.perception_fusion import format_perception_context, read_fused_perception
-
-            perception_line = format_perception_context(read_fused_perception())
-        except Exception:
-            pass
-
         ctx = NarrativeContext(
             programme=programme,
             stimmung_tone="segment_prep",
             director_activity="segment_prep",
         )
-        seed = _build_seed(ctx)
-        if perception_line:
-            seed = f"{seed}\n{perception_line}" if seed else perception_line
-        return seed
+        return _build_seed(ctx)
     except Exception:
         # Fallback: use narrative_beat as seed
         content = getattr(programme, "content", None)
@@ -1324,8 +1247,6 @@ def prep_segment(
             prog_id,
         )
         model_contract = None
-    script = _scrub_host_posture(script)
-
     actionability = validate_segment_actionability(
         script,
         [str(item) for item in beats],
@@ -1415,6 +1336,13 @@ def prep_segment(
         programme_id=prog_id,
         role=role,
         topic=topic,
+    )
+    persist_source_consequences(
+        source_consequence_map,
+        programme_id=prog_id,
+        role=role,
+        topic=topic,
+        prep_session_id=prep_session["prep_session_id"],
     )
     live_event_viability = build_live_event_viability(
         script,
@@ -1688,14 +1616,6 @@ def prep_segment(
         final_avg,
     )
 
-    persist_source_consequences(
-        source_consequence_map,
-        programme_id=prog_id,
-        role=role,
-        topic=topic,
-        prep_session_id=prep_session["prep_session_id"],
-    )
-
     # Pass 3: Self-evaluation → emit impingement
     # This is how taste develops. Hapax evaluates its own output and
     # the evaluation flows through the impingement bus into the
@@ -1954,11 +1874,9 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
             segmented_count=len(segmented),
         )
         try:
-            recent_fore = _retrieve_broad_fore_understanding()
             plan = planner.plan(
                 show_id=show_id,
                 target_programmes=planner_target_programmes,
-                fore_understanding=recent_fore or None,
             )
         except Exception as exc:
             _update_prep_status(
