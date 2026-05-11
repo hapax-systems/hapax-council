@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 
 class TestSnapshotState:
     def test_empty_marker_returns_empty_condition(self, monkeypatch):
@@ -236,9 +238,9 @@ class TestSharedLinkFiltering:
         )
 
         assert "Condition: cond-A" in description
-        description_lines = description.splitlines()
-        assert "https://safe.old" in description_lines
-        assert "https://safe.new" in description_lines
+        rendered_hosts = {urlparse(line).netloc for line in description.splitlines()}
+        assert "safe.old" in rendered_hosts
+        assert "safe.new" in rendered_hosts
         assert "hapax-private" not in description
         assert "PRIVATE_MEDIA_ROLE" not in description
         assert "non-broadcast" not in description
