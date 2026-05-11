@@ -360,6 +360,18 @@ _DETECTOR_THEATER_RE = re.compile(
     r"(?:saw|sees|proved|proves|triggered|changed|guarantees|confirms|certifies)\b",
     re.IGNORECASE,
 )
+_TEMPLATE_LEAK_RE = re.compile(
+    r"\{(?:topic|item|hook|close|body|subject|source|beat|segment|title|name|"
+    r"item_\d+|beat_\d+|criteria|ranking|tier|description|argument|claim|"
+    r"source_\w+|evidence|counterexample)\}",
+    re.IGNORECASE,
+)
+_TIER_LIST_ORDERING_RE = re.compile(
+    r"\b(?:criter(?:ia|ion)|rank(?:ed|ing)?\s+(?:by|based\s+on|according\s+to)|"
+    r"(?:judg|evaluat|assess|measur|scor|grad|compar|weight)(?:ed|ing)\s+"
+    r"(?:by|on|against|using)|tier(?:ed|ing)?\s+(?:by|based\s+on))\b",
+    re.IGNORECASE,
+)
 
 _COLLECTIVE_HOST_RE = re.compile(
     r"(?i)\b(?:"
@@ -769,6 +781,75 @@ def _detector_theater_lines(text: str) -> list[str]:
     return [sentence for sentence in _sentences(text) if _DETECTOR_THEATER_RE.search(sentence)]
 
 
+def _template_leak_lines(text: str) -> list[str]:
+    return [sentence for sentence in _sentences(text) if _TEMPLATE_LEAK_RE.search(sentence)]
+
+
+def detect_template_leaks(script: list[str]) -> list[dict[str, Any]]:
+    """Detect {placeholder} template syntax the LLM emitted instead of content."""
+    leaks: list[dict[str, Any]] = []
+    for beat_index, text in enumerate(script):
+        for line in _template_leak_lines(str(text)):
+            matches = _TEMPLATE_LEAK_RE.findall(line)
+            leaks.append(
+                {
+                    "beat_index": beat_index,
+                    "line": line,
+                    "placeholders": matches,
+                    "failure": "narrative_beat_template_leak",
+                }
+            )
+    return leaks
+
+
+def validate_role_contract_fields(
+    role_value: str,
+    script: list[str],
+    segment_beats: list[str] | None = None,
+    *,
+    prep_contract: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Validate role-specific required fields are present."""
+    failures: list[dict[str, Any]] = []
+    if not script:
+        failures.append(
+            {
+                "failure": "missing_role_contract_fields",
+                "detail": "empty script",
+            }
+        )
+        return failures
+
+    if role_value in ("tier_list", "ranking", "bracket"):
+        has_ordering = any(_TIER_LIST_ORDERING_RE.search(str(beat)) for beat in script)
+        if not has_ordering:
+            failures.append(
+                {
+                    "failure": "tier_list_requires_ordering_criteria",
+                    "detail": (
+                        f"Role '{role_value}' requires explicit ordering criteria "
+                        f"(e.g. 'ranked by...', 'criteria:', 'evaluated using...'). "
+                        f"No ordering language found in any beat."
+                    ),
+                    "role": role_value,
+                }
+            )
+
+    contract = dict(prep_contract) if prep_contract else {}
+    required_contract_keys = ("source_packet_refs", "claim_map", "actionability_map")
+    missing = [k for k in required_contract_keys if not contract.get(k)]
+    if missing and prep_contract is not None:
+        failures.append(
+            {
+                "failure": "missing_role_contract_fields",
+                "detail": f"prep_contract missing: {', '.join(missing)}",
+                "missing_keys": missing,
+            }
+        )
+
+    return failures
+
+
 def _remove_unsupported_action_lines(text: str) -> tuple[str, list[str]]:
     removed = _unsupported_action_lines(text)
     if not removed:
@@ -807,6 +888,7 @@ def validate_segment_actionability(
     segment_beats: list[str] | None = None,
     *,
     prep_contract: Mapping[str, Any] | None = None,
+    role_value: str = "",
 ) -> dict[str, Any]:
     """Return sanitized script plus beat action declarations."""
     sanitized: list[str] = []
@@ -823,7 +905,17 @@ def validate_segment_actionability(
             personage_violations.append(item)
         for line in _detector_theater_lines(text):
             detector_theater_lines.append({"beat_index": index, "line": line})
-    ok = not removed and not personage_violations and not detector_theater_lines
+    template_leaks = detect_template_leaks(sanitized)
+    role_contract_failures = validate_role_contract_fields(
+        role_value, sanitized, segment_beats, prep_contract=prep_contract
+    )
+    ok = (
+        not removed
+        and not personage_violations
+        and not detector_theater_lines
+        and not template_leaks
+        and not role_contract_failures
+    )
     result: dict[str, Any] = {
         "rubric_version": ACTIONABILITY_RUBRIC_VERSION,
         "ok": ok,
@@ -836,6 +928,8 @@ def validate_segment_actionability(
         "removed_unsupported_action_lines": removed,
         "personage_violations": personage_violations,
         "detector_theater_lines": detector_theater_lines,
+        "template_leaks": template_leaks,
+        "role_contract_failures": role_contract_failures,
     }
     if ok:
         result["prepared_script"] = sanitized
