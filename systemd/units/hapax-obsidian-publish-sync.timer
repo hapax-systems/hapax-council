@@ -1,0 +1,12 @@
+[Unit]
+Description=Hapax Obsidian Publish sync timer
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=30min
+RandomizedDelaySec=5min
+Persistent=true
+Unit=hapax-obsidian-publish-sync.service
+
+[Install]
+WantedBy=timers.target
