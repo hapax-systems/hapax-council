@@ -292,6 +292,20 @@ _FALLBACK_LAYOUT = Layout(
             ward_id="durf",
         ),
         SourceSchema(
+            id="coding_session_reveal",
+            kind="cairo",
+            backend="cairo",
+            params={
+                "class_name": "CodingSessionReveal",
+                "natural_w": 960,
+                "natural_h": 720,
+            },
+            update_cadence="rate",
+            rate_hz=6.0,
+            tags=["homage", "durf", "coding-session", "operator-foot-terminal"],
+            ward_id="coding-session-reveal",
+        ),
+        SourceSchema(
             id="m8-display",
             kind="external_rgba",
             backend="shm_rgba",
@@ -683,6 +697,18 @@ _FALLBACK_LAYOUT = Layout(
             z_order=1,
         ),
         SurfaceSchema(
+            id="coding-session-fullframe",
+            geometry=SurfaceGeometry(kind="rect", x=480, y=80, w=960, h=720),
+            z_order=10,
+            update_cadence="rate",
+        ),
+        SurfaceSchema(
+            id="coding-session-peek",
+            geometry=SurfaceGeometry(kind="rect", x=1448, y=280, w=448, h=320),
+            z_order=10,
+            update_cadence="rate",
+        ),
+        SurfaceSchema(
             id="research-dashboard-right",
             geometry=SurfaceGeometry(kind="rect", x=1380, y=860, w=500, h=180),
             z_order=22,
@@ -780,6 +806,18 @@ _FALLBACK_LAYOUT = Layout(
         Assignment(source="egress_footer", surface="egress-footer-bottom"),
         Assignment(source="programme_banner", surface="programme-banner-bottom"),
         Assignment(source="durf", surface="durf-fullframe", render_stage="pre_fx"),
+        Assignment(
+            source="coding_session_reveal",
+            surface="coding-session-fullframe",
+            opacity=0.0,
+            render_stage="pre_fx",
+        ),
+        Assignment(
+            source="coding_session_reveal",
+            surface="coding-session-peek",
+            opacity=0.0,
+            render_stage="pre_fx",
+        ),
         Assignment(source="research_instrument_dashboard", surface="research-dashboard-right"),
         Assignment(source="steamdeck-display", surface="steamdeck-display-pip", opacity=1.0),
         Assignment(source="steamdeck-display", surface="steamdeck-display-fullscreen", opacity=0.0),
