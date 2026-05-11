@@ -590,13 +590,20 @@ def _paint_cached_layout_composite(
         entry = _LAYOUT_COMPOSITE_CACHE.get(stage)
     if entry is None:
         return False
-    if entry.get("signature") != signature:
-        return False
     rendered_at = float(entry.get("rendered_at", 0.0))
-    if min_interval_s > 0.0 and now - rendered_at >= min_interval_s:
-        return False
     surface = entry.get("surface")
     if not isinstance(surface, cairo.ImageSurface):
+        return False
+    if min_interval_s > 0.0 and now - rendered_at < min_interval_s:
+        # Explicit composite-Hz settings bound expensive full-layer redraws.
+        # Dynamic wards may swap Cairo surface objects faster than the stream
+        # can afford to repaint the whole post-FX layer; reuse the last
+        # composite until the refresh interval opens, then honor the new
+        # signature on the next render.
+        cr.set_source_surface(surface, 0, 0)
+        cr.paint()
+        return True
+    if entry.get("signature") != signature:
         return False
     cr.set_source_surface(surface, 0, 0)
     cr.paint()
