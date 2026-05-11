@@ -1,0 +1,17 @@
+[Unit]
+Description=Hapax coordination daemon — Gemini-backed intelligent triage + lane dispatch
+After=network.target
+ConditionPathExists=%h/.cache/hapax/rebuild/worktree/pyproject.toml
+
+[Service]
+Type=simple
+Environment=HAPAX_COORDINATOR_TICK_S=30
+Environment=HAPAX_AGENT_ROLE=coordinator
+WorkingDirectory=%h/.cache/hapax/rebuild/worktree
+ExecStart=%h/.local/bin/uv run python -m agents.coordinator
+Restart=on-failure
+RestartSec=10
+MemoryMax=512M
+
+[Install]
+WantedBy=default.target
