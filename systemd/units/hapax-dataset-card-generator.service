@@ -1,0 +1,14 @@
+[Unit]
+Description=Hapax dataset card generator
+After=hapax-secrets.service
+ConditionPathExists=%h/projects/hapax-council/config/research-corpus-export-ledger.yaml
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/hapax-council
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/projects/hapax-council
+ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.dataset_card_generator --output %h/hapax-state/research/dataset-cards.md
+
+[Install]
+WantedBy=default.target
