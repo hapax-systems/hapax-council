@@ -148,6 +148,7 @@ def test_l12_mainmix_tap_is_secondary_monitor_only() -> None:
 
     assert tap.kind == "tap"
     assert tap.pipewire_name == "hapax-obs-broadcast-mainmix-tap"
+    assert tap.params["audit_classification"] == "systemd-managed-loopback-shape"
     assert tap.params["secondary_obs_source"] is True
     assert tap.params["operator_obs_mute_required"] is True
     assert tap.params["no_rtmp_egress"] is True
