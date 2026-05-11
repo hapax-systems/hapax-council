@@ -63,7 +63,10 @@ FULL_SURFACE_STAGE_FPS_FLOORS = (
     ("output_tee_sink", 29.0, "LSC-PERF-001"),
     ("v4l2_appsink", 29.5, "LSC-EGRESS-001"),
     ("hls_parser_src", 29.0, "LSC-EGRESS-002"),
-    ("final_egress_snapshot", 2.5, "LSC-VIEWER-001"),
+    # Final-egress proof snapshots are diagnostic consumer-boundary samples,
+    # not the frame-rate path itself. V4l2OutputPipeline defaults to one proof
+    # JPEG per second; frame cadence is enforced on v4l2_appsink/HLS above.
+    ("final_egress_snapshot", 0.8, "LSC-VIEWER-001"),
 )
 FULL_SURFACE_CPU_TARGET_CORES = 2.0
 
