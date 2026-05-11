@@ -15,8 +15,7 @@
 #   Gemini:  idle = input box visible (▄/▀ bars) with no streaming output
 #
 # Runs as systemd oneshot (hapax-lane-idle-watchdog.timer, every 2 min).
-# Redispatches at most ONE lane per invocation to avoid thundering herd.
-# Cooldown: 120s per lane between kicks.
+# Dispatches ALL idle lanes per tick. Cooldown: 120s per lane between kicks.
 set -euo pipefail
 
 # ─── Configuration ───────────────────────────────────────────────────────────
@@ -189,46 +188,8 @@ if [ ${#IDLE_LANES[@]} -eq 0 ]; then
     exit 0
 fi
 
-# ─── Select ONE lane to redispatch (longest idle, past cooldown) ─────────────
+# ─── Dispatch ALL idle lanes past cooldown ──────────────────────────────────
 
-best_session=""
-best_idle=0
-
-for session in "${!IDLE_LANES[@]}"; do
-    idle_s="${IDLE_LANES[$session]}"
-
-    # Check cooldown
-    cooldown_file="$STATE_DIR/${session}.last_kick"
-    if [ -f "$cooldown_file" ]; then
-        last_kick=$(cat "$cooldown_file")
-        elapsed=$((now - last_kick))
-        if [ "$elapsed" -lt "$COOLDOWN_S" ]; then
-            continue
-        fi
-    fi
-
-    if [ "$idle_s" -gt "$best_idle" ]; then
-        best_idle=$idle_s
-        best_session=$session
-    fi
-done
-
-if [ -z "$best_session" ]; then
-    log "all idle lanes in cooldown"
-    exit 0
-fi
-
-# ─── Find next task to assign ────────────────────────────────────────────────
-
-# Determine lane name from session
-platform="${LANES[$best_session]}"
-case "$best_session" in
-    hapax-claude-*)  lane="${best_session#hapax-claude-}" ;;
-    hapax-codex-*)   lane="${best_session#hapax-codex-}" ;;
-    hapax-gemini-*)  lane="${best_session#hapax-gemini-}" ;;
-esac
-
-# Check if lane has a claimed task already
 find_claimed_task() {
     local assignee="$1"
     if [ -d "$TASK_ROOT" ]; then
@@ -247,7 +208,6 @@ find_claimed_task() {
     return 1
 }
 
-# Find highest-WSJF unassigned + unblocked task
 find_next_wsjf_task() {
     if [ ! -d "$TASK_ROOT" ]; then
         return 1
@@ -285,69 +245,88 @@ if best_id:
 " 2>/dev/null
 }
 
-# Build redispatch message
-dispatch_msg=""
+dispatched=0
+skipped_cooldown=0
 
-# First: check for already-claimed task
-claimed=$(find_claimed_task "$lane" 2>/dev/null || true)
-if [ -n "$claimed" ]; then
-    dispatch_msg="IDLE WATCHDOG: You have been idle for $((best_idle/60))m with an active task: $claimed. Resume work immediately. Ship a PR and cc-close --pr N after merge."
-else
-    # Find next WSJF task
-    next_task=$(find_next_wsjf_task || true)
-    if [ -n "$next_task" ]; then
-        dispatch_msg="IDLE WATCHDOG: You have been idle for $((best_idle/60))m. Claim and start: cc-claim $next_task. Do the work, ship a PR, then cc-close --pr N."
-    else
-        # No available tasks — check requests
-        if [ -d "$REQUEST_ROOT" ] && [ "$(ls "$REQUEST_ROOT"/*.md 2>/dev/null | wc -l)" -gt 0 ]; then
-            dispatch_msg="IDLE WATCHDOG: You have been idle for $((best_idle/60))m. No offered cc-tasks available. Check ~/Documents/Personal/20-projects/hapax-requests/active/ for request backlog items."
-        else
-            dispatch_msg="IDLE WATCHDOG: You have been idle for $((best_idle/60))m. No tasks available. Run: ls ~/Documents/Personal/20-projects/hapax-cc-tasks/active/ and find the highest-WSJF offered task to claim."
+for session in "${!IDLE_LANES[@]}"; do
+    idle_s="${IDLE_LANES[$session]}"
+
+    cooldown_file="$STATE_DIR/${session}.last_kick"
+    if [ -f "$cooldown_file" ]; then
+        last_kick=$(cat "$cooldown_file")
+        elapsed=$((now - last_kick))
+        if [ "$elapsed" -lt "$COOLDOWN_S" ]; then
+            skipped_cooldown=$((skipped_cooldown + 1))
+            continue
         fi
     fi
+
+    platform="${LANES[$session]}"
+    case "$session" in
+        hapax-claude-*)  lane="${session#hapax-claude-}" ;;
+        hapax-codex-*)   lane="${session#hapax-codex-}" ;;
+        hapax-gemini-*)  lane="${session#hapax-gemini-}" ;;
+    esac
+
+    dispatch_msg=""
+    claimed=$(find_claimed_task "$lane" 2>/dev/null || true)
+    if [ -n "$claimed" ]; then
+        dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m with an active task: $claimed. Resume work immediately. Ship a PR and cc-close --pr N after merge."
+    else
+        next_task=$(find_next_wsjf_task || true)
+        if [ -n "$next_task" ]; then
+            dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. Claim and start: cc-claim $next_task. Do the work, ship a PR, then cc-close --pr N."
+        else
+            if [ -d "$REQUEST_ROOT" ] && [ "$(ls "$REQUEST_ROOT"/*.md 2>/dev/null | wc -l)" -gt 0 ]; then
+                dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. No offered cc-tasks available. Check ~/Documents/Personal/20-projects/hapax-requests/active/ for request backlog items."
+            else
+                dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. No tasks available. Run: ls ~/Documents/Personal/20-projects/hapax-cc-tasks/active/ and find the highest-WSJF offered task to claim."
+            fi
+        fi
+    fi
+
+    send_success=false
+    case "$platform" in
+        claude)
+            if [ -x "$CLAUDE_SEND" ]; then
+                "$CLAUDE_SEND" --session "$lane" -- "$dispatch_msg" 2>/dev/null && send_success=true
+            else
+                tmux send-keys -t "$session" "$dispatch_msg" Enter 2>/dev/null && send_success=true
+            fi
+            ;;
+        codex)
+            if [ -x "$CODEX_SEND" ]; then
+                "$CODEX_SEND" --session "$lane" -- "$dispatch_msg" 2>/dev/null && send_success=true
+            else
+                tmux send-keys -t "$session" "$dispatch_msg" Enter 2>/dev/null && send_success=true
+            fi
+            ;;
+        gemini)
+            tmux send-keys -t "$session" "$dispatch_msg" Enter 2>/dev/null && send_success=true
+            ;;
+    esac
+
+    echo "$now" > "$STATE_DIR/${session}.last_kick"
+
+    if [ "$send_success" = true ]; then
+        log "DISPATCHED $session ($platform/$lane): idle ${idle_s}s → ${claimed:-${next_task:-generic}}"
+        rm -f "$STATE_DIR/${session}.idle_since" 2>/dev/null
+        dispatched=$((dispatched + 1))
+    else
+        log "FAILED to dispatch $session ($platform/$lane): idle ${idle_s}s"
+        curl -sf -d "Lane idle watchdog: failed to dispatch $lane ($platform) after ${idle_s}s idle" \
+            -H "Title: Lane dispatch failure" \
+            -H "Priority: high" \
+            -H "Tags: warning" \
+            "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+    fi
+done
+
+if [ "$dispatched" -eq 0 ] && [ "$skipped_cooldown" -gt 0 ]; then
+    log "all ${#IDLE_LANES[@]} idle lanes in cooldown"
 fi
 
-# ─── Send the dispatch ───────────────────────────────────────────────────────
-
-send_success=false
-
-case "$platform" in
-    claude)
-        if [ -x "$CLAUDE_SEND" ]; then
-            "$CLAUDE_SEND" --session "$lane" -- "$dispatch_msg" 2>/dev/null && send_success=true
-        else
-            tmux send-keys -t "$best_session" "$dispatch_msg" Enter 2>/dev/null && send_success=true
-        fi
-        ;;
-    codex)
-        if [ -x "$CODEX_SEND" ]; then
-            "$CODEX_SEND" --session "$lane" -- "$dispatch_msg" 2>/dev/null && send_success=true
-        else
-            tmux send-keys -t "$best_session" "$dispatch_msg" Enter 2>/dev/null && send_success=true
-        fi
-        ;;
-    gemini)
-        # Gemini uses direct tmux send-keys
-        tmux send-keys -t "$best_session" "$dispatch_msg" Enter 2>/dev/null && send_success=true
-        ;;
-esac
-
-# Record the kick
-echo "$now" > "$STATE_DIR/${best_session}.last_kick"
-
-if [ "$send_success" = true ]; then
-    log "DISPATCHED $best_session ($platform/$lane): idle ${best_idle}s → ${claimed:-${next_task:-generic}}"
-    # Clear idle state — lane should now be working
-    rm -f "$STATE_DIR/${best_session}.idle_since" 2>/dev/null
-else
-    log "FAILED to dispatch $best_session ($platform/$lane): idle ${best_idle}s"
-    # Alert via ntfy
-    curl -sf -d "Lane idle watchdog: failed to dispatch $lane ($platform) after ${best_idle}s idle" \
-        -H "Title: Lane dispatch failure" \
-        -H "Priority: high" \
-        -H "Tags: warning" \
-        "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
-fi
+log "dispatched $dispatched of ${#IDLE_LANES[@]} idle lanes"
 
 # ─── Summary alert if many lanes idle ────────────────────────────────────────
 
