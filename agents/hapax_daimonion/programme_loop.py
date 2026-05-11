@@ -1098,6 +1098,13 @@ def _active_segment_payload(active: Any, role_value: str, beat_index: int) -> di
     topic = (
         getattr(content, "declared_topic", None) or getattr(active, "topic", None) or narrative_beat
     )
+    now = time.time()
+    started_at = getattr(active, "actual_started_at", None) or now
+    planned_duration = getattr(active, "planned_duration_s", 3600.0)
+    elapsed = now - started_at
+    total_beats = len(beats)
+    current_beat_text = str(beats[beat_index])[:200] if 0 <= beat_index < total_beats else ""
+    beat_progress = (beat_index + 1) / total_beats if total_beats > 0 else 0.0
     payload = {
         "programme_id": str(active.programme_id),
         "role": role_value,
@@ -1107,8 +1114,13 @@ def _active_segment_payload(active: Any, role_value: str, beat_index: int) -> di
         "subject": getattr(content, "subject", None),
         "segment_beats": [str(b)[:100] for b in beats[:12]],
         "current_beat_index": beat_index,
-        "started_at": getattr(active, "actual_started_at", None) or time.time(),
-        "planned_duration_s": getattr(active, "planned_duration_s", 3600.0),
+        "current_beat_text": current_beat_text,
+        "total_beats": total_beats,
+        "beat_progress": round(beat_progress, 3),
+        "beat_elapsed_s": round(elapsed, 1),
+        "started_at": started_at,
+        "planned_duration_s": planned_duration,
+        "updated_at": now,
         "prepared_artifact_ref": getattr(content, "prepared_artifact_ref", None),
         "artifact_path_diagnostic": getattr(content, "artifact_path_diagnostic", None),
         "hosting_context": getattr(content, "hosting_context", None),
