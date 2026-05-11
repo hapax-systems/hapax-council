@@ -1,0 +1,21 @@
+[Unit]
+Description=Hapax Obsidian Publish sync
+Documentation=file:///home/hapax/projects/hapax-council/docs/runbooks/obsidian-publish-sync.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Documents/Personal
+Environment=HAPAX_OBSIDIAN_VAULT=%h/Documents/Personal
+Environment=HAPAX_OBSIDIAN_PUBLISH_CONFIG=%h/projects/hapax-council/config/obsidian-publish
+Environment=HAPAX_OBSIDIAN_HEADLESS_BIN=%h/.npm-global/bin/ob
+ExecStart=%h/projects/hapax-council/scripts/hapax-obsidian-publish-sync --install-headless
+MemoryMax=512M
+CPUQuota=50%
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-obsidian-publish-sync
+
+[Install]
+WantedBy=default.target
