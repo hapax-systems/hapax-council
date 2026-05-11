@@ -6,6 +6,7 @@ shmsink/v4l2sink selection logic.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from agents.studio_compositor.shmsink_output_pipeline import (
@@ -187,3 +188,45 @@ class TestPipelineSelection:
                 fps=30,
             )
             assert isinstance(pipe, V4l2OutputPipeline)
+
+
+class TestSystemdBridgeActivation:
+    """Verifies the systemd unit enables the shmsink bridge path."""
+
+    def test_compositor_service_enables_bridge(self) -> None:
+        service = (Path(__file__).parents[2] / "systemd/units/studio-compositor.service").read_text(
+            encoding="utf-8"
+        )
+        assert "HAPAX_V4L2_BRIDGE_ENABLED=1" in service
+
+    def test_compositor_dropin_enables_bridge(self) -> None:
+        dropin = (
+            Path(__file__).parents[2] / "systemd/units/studio-compositor.service.d/v4l2-bridge.conf"
+        ).read_text(encoding="utf-8")
+        assert "HAPAX_V4L2_BRIDGE_ENABLED=1" in dropin
+
+    def test_compositor_service_creates_shm_directory(self) -> None:
+        service = (Path(__file__).parents[2] / "systemd/units/studio-compositor.service").read_text(
+            encoding="utf-8"
+        )
+        assert "/dev/shm/hapax-compositor" in service
+        assert "mkdir -p" in service
+
+    def test_compositor_service_cleans_stale_sockets(self) -> None:
+        service = (Path(__file__).parents[2] / "systemd/units/studio-compositor.service").read_text(
+            encoding="utf-8"
+        )
+        assert "v4l2-bridge.sock" in service
+        assert "find /dev/shm/hapax-compositor" in service
+
+    def test_bridge_service_binds_to_compositor(self) -> None:
+        bridge = (Path(__file__).parents[2] / "systemd/units/hapax-v4l2-bridge.service").read_text(
+            encoding="utf-8"
+        )
+        assert "BindsTo=studio-compositor.service" in bridge
+
+    def test_compositor_wants_bridge_service(self) -> None:
+        service = (Path(__file__).parents[2] / "systemd/units/studio-compositor.service").read_text(
+            encoding="utf-8"
+        )
+        assert "hapax-v4l2-bridge.service" in service

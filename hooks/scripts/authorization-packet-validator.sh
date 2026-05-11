@@ -53,6 +53,15 @@ if [[ -z "$role" ]] && declare -F hapax_agent_role >/dev/null 2>&1; then
   role="$(hapax_agent_role 2>/dev/null || true)"
 fi
 if [[ -z "$role" ]]; then
+  _branch_name="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
+  if [[ "$_branch_name" =~ ^([a-z]+)/ ]]; then
+    _branch_role="${BASH_REMATCH[1]}"
+    case "$_branch_role" in
+      alpha|beta|gamma|delta|epsilon|zeta) role="$_branch_role" ;;
+    esac
+  fi
+fi
+if [[ -z "$role" ]]; then
   echo "authorization-packet-validator: BLOCKED — cannot determine role for push/PR validation." >&2
   echo "  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
   exit 2
