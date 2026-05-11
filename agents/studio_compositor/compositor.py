@@ -959,8 +959,8 @@ def load_layout_or_fallback(path: Path) -> Layout:
         _notify_fallback(target, f"schema validation failed: {exc}")
         return _FALLBACK_LAYOUT
     expected_name = target.stem
-    if expected_name and layout.name != expected_name:
-        if target.name == "default.json" and target.resolve() != _DEFAULT_LAYOUT_PATH.resolve():
+    if expected_name and layout.name != expected_name and target.name == "default.json":
+        if target.resolve() != _DEFAULT_LAYOUT_PATH.resolve():
             log.warning(
                 "compositor layout %s internal name %r does not match file stem %r — "
                 "using repo default layout instead",
@@ -971,12 +971,12 @@ def load_layout_or_fallback(path: Path) -> Layout:
             _notify_fallback(target, "layout name/path mismatch")
             return load_layout_or_fallback(_DEFAULT_LAYOUT_PATH)
         log.warning(
-            "compositor layout %s internal name %r does not match file stem %r — using fallback",
+            "repo default layout %s internal name %r does not match file stem %r — using fallback",
             target,
             layout.name,
             expected_name,
         )
-        _notify_fallback(target, "layout name/path mismatch")
+        _notify_fallback(target, "repo default layout name/path mismatch")
         return _FALLBACK_LAYOUT
     # A+ Stage 2: layouts are authored in 1920×1080 absolute coords. The
     # canvas is currently 1280×720 (or whatever HAPAX_COMPOSITOR_OUTPUT_*
