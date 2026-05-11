@@ -96,6 +96,7 @@ _WEBLOG_DENIED_SURFACES: tuple[Surface, ...] = (
 
 FetchRss = Callable[[str], bytes | None]
 TimeFn = Callable[[], float]
+PosseCallback = Callable[["WeblogRssItem", "ResearchVehiclePublicEvent"], None]
 
 
 @dataclass(frozen=True)
@@ -134,6 +135,7 @@ class WeblogPublishPublicEventProducer:
         fetcher: FetchRss | None = None,
         time_fn: TimeFn = time.time,
         emit_existing_on_first_run: bool = False,
+        posse_callback: PosseCallback | None = None,
     ) -> None:
         self._rss_url = rss_url
         self._public_event_path = public_event_path
@@ -142,6 +144,7 @@ class WeblogPublishPublicEventProducer:
         self._fetcher = fetcher or fetch_rss
         self._time = time_fn
         self._emit_existing_on_first_run = emit_existing_on_first_run
+        self._posse_callback = posse_callback
         self._known_event_ids: set[str] | None = None
 
     def run_once(self) -> int:
@@ -180,6 +183,7 @@ class WeblogPublishPublicEventProducer:
                 continue
             if not self._append_public_event(event):
                 break
+            self._fire_posse(item, event)
             seen.add(item.item_id)
             changed = True
             written += 1
@@ -199,6 +203,14 @@ class WeblogPublishPublicEventProducer:
         if self._known_event_ids is not None:
             self._known_event_ids.add(event.event_id)
         return True
+
+    def _fire_posse(self, item: WeblogRssItem, event: ResearchVehiclePublicEvent) -> None:
+        if self._posse_callback is None:
+            return
+        try:
+            self._posse_callback(item, event)
+        except Exception:
+            log.warning("POSSE callback failed for %s", event.event_id, exc_info=True)
 
     def _event_already_written(self, event_id: str) -> bool:
         if self._known_event_ids is None:
@@ -497,6 +509,31 @@ def _sanitize_event_id(value: str) -> str:
     return cleaned
 
 
+BRIDGY_ALLOWLIST_TARGET = "https://hapax.omg.lol/weblog"
+
+
+def bridgy_posse_callback(item: WeblogRssItem, event: ResearchVehiclePublicEvent) -> None:
+    """Fire Bridgy webmention for POSSE fanout to Mastodon + Bluesky."""
+    if not item.link:
+        log.info("POSSE skipped (no link): %s", event.event_id)
+        return
+    from agents.publication_bus.bridgy_publisher import BridgyPublisher
+    from agents.publication_bus.publisher_kit.base import PublisherPayload
+
+    publisher = BridgyPublisher()
+    payload = PublisherPayload(
+        target=BRIDGY_ALLOWLIST_TARGET,
+        text=item.link,
+    )
+    result = publisher.publish(payload)
+    if result.ok:
+        log.info("POSSE OK via Bridgy for %s", item.link)
+    elif result.refused:
+        log.warning("POSSE refused for %s: %s", item.link, result.detail)
+    else:
+        log.warning("POSSE error for %s: %s", item.link, result.detail)
+
+
 def _run_forever(producer: WeblogPublishPublicEventProducer, tick_s: float) -> None:
     stop = False
 
@@ -526,16 +563,23 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="emit current feed items on first run instead of seeding a baseline",
     )
+    parser.add_argument(
+        "--no-posse",
+        action="store_true",
+        help="disable Bridgy POSSE fanout to Mastodon/Bluesky",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
         level=os.environ.get("LOG_LEVEL", os.environ.get("HAPAX_LOG_LEVEL", "INFO"))
     )
+    posse_cb = None if args.no_posse else bridgy_posse_callback
     producer = WeblogPublishPublicEventProducer(
         rss_url=args.rss_url,
         public_event_path=args.public_event_path,
         state_path=args.state_path,
         emit_existing_on_first_run=args.emit_existing,
+        posse_callback=posse_cb,
     )
     if args.once:
         return 0 if producer.run_once() >= 0 else 1
@@ -554,6 +598,7 @@ __all__ = [
     "WeblogPublishPolicyConfig",
     "WeblogPublishPublicEventProducer",
     "WeblogRssItem",
+    "bridgy_posse_callback",
     "build_weblog_publish_public_event",
     "fetch_rss",
     "main",
