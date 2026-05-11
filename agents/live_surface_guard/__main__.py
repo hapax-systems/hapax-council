@@ -34,6 +34,34 @@ class RuntimeState:
     previous_obs_hash: str | None = None
 
 
+def _read_obs_websocket_password(config_path: Path) -> str:
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if data.get("server_enabled") is False:
+        return ""
+    if data.get("auth_required") is False:
+        return ""
+    password = data.get("server_password")
+    return password if isinstance(password, str) else ""
+
+
+def _default_obs_password() -> str:
+    return (
+        os.environ.get("HAPAX_OBS_WEBSOCKET_PASSWORD")
+        or os.environ.get("OBS_WEBSOCKET_PASSWORD")
+        or _read_obs_websocket_password(
+            Path.home()
+            / ".config"
+            / "obs-studio"
+            / "plugin_config"
+            / "obs-websocket"
+            / "config.json"
+        )
+    )
+
+
 class CommandRemediationExecutor:
     def __init__(self, *, dry_run: bool = True) -> None:
         self._dry_run = dry_run
@@ -234,12 +262,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--obs-source-name", default="StudioCompositor")
     parser.add_argument("--obs-host", default="localhost")
     parser.add_argument("--obs-port", type=int, default=4455)
-    parser.add_argument(
-        "--obs-password",
-        default=os.environ.get("HAPAX_OBS_WEBSOCKET_PASSWORD")
-        or os.environ.get("OBS_WEBSOCKET_PASSWORD")
-        or "",
-    )
+    parser.add_argument("--obs-password", default=_default_obs_password())
     parser.add_argument("--disable-obs-websocket-sampling", action="store_true")
     parser.add_argument("--bridge-inactive", action="store_true")
     parser.add_argument("--require-hls", action="store_true")
