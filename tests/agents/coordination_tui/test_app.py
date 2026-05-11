@@ -6,8 +6,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agents.coordination_tui.app import CoordinationApp
-from agents.coordination_tui.data import (
+pytest.importorskip("textual", reason="textual not installed (optional [tui] extra)")
+
+from agents.coordination_tui.app import CoordinationApp  # noqa: E402
+from agents.coordination_tui.data import (  # noqa: E402
     DashboardState,
     LaneInfo,
     PRInfo,
