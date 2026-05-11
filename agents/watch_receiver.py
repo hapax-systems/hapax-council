@@ -21,7 +21,7 @@ from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 HAPAX_HOME: Path = Path(os.environ.get("HAPAX_HOME", str(Path.home())))
@@ -304,21 +304,21 @@ def _update_connection(device_id: str, battery_pct: int | None = None) -> None:
     )
 
 
-# ── App factory ──────────────────────────────────────────────────────────
+# ── Router / app factory ─────────────────────────────────────────────────
 
 
-def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
-    _app = FastAPI(title="Hapax Watch Receiver", version="0.1.0")
+def create_router() -> APIRouter:
+    """Create the watch receiver router.
 
-    try:
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    The standalone ``hapax-watch-receiver`` service mounts this router on
+    port 8042. Logos API also mounts the same router on port 8051 so the
+    Wear OS companion can post to the canonical API without changing the
+    sensor-processing contract.
+    """
 
-        FastAPIInstrumentor.instrument_app(_app)
-    except Exception:
-        pass
+    _router = APIRouter(tags=["watch-receiver"])
 
-    @_app.post("/watch/sensors")
+    @_router.post("/watch/sensors")
     async def ingest_sensors(payload: SensorPayload) -> dict[str, str]:
         if payload.device_id not in ALLOWED_DEVICE_IDS:
             raise HTTPException(status_code=403, detail="Unknown device")
@@ -350,7 +350,7 @@ def create_app() -> FastAPI:
             emit_sensor_impingement("watch", "energy_and_attention", list(set(sensor_types)))
         return {"status": "ok", "readings_processed": str(len(payload.readings))}
 
-    @_app.get("/watch/status")
+    @_router.get("/watch/status")
     async def watch_status() -> dict[str, object]:
         conn_file = _get_watch_state_dir() / "connection.json"
         conn = {}
@@ -361,7 +361,7 @@ def create_app() -> FastAPI:
                 log.warning("Failed to parse connection.json: %s", exc)
         return {"status": "ok", "connection": conn}
 
-    @_app.post("/phone/health-summary")
+    @_router.post("/phone/health-summary")
     async def phone_health_summary(payload: HealthSummaryPayload) -> dict[str, str]:
         if payload.device_id not in ALLOWED_DEVICE_IDS:
             raise HTTPException(status_code=403, detail="Unknown device")
@@ -394,7 +394,7 @@ def create_app() -> FastAPI:
         _atomic_write_text(rag_file, md_content)
         return {"status": "ok", "date": payload.date}
 
-    @_app.post("/watch/voice-trigger")
+    @_router.post("/watch/voice-trigger")
     async def voice_trigger(payload: VoiceTriggerPayload) -> dict[str, str]:
         if payload.device_id not in ALLOWED_DEVICE_IDS:
             raise HTTPException(status_code=403, detail="Unknown device")
@@ -407,7 +407,7 @@ def create_app() -> FastAPI:
         )
         return {"status": "ok"}
 
-    @_app.post("/watch/gesture")
+    @_router.post("/watch/gesture")
     async def watch_gesture(payload: GesturePayload) -> dict[str, str]:
         """Receive gesture intent from watch accelerometer/gyro/proximity."""
         if payload.device_id not in ALLOWED_DEVICE_IDS:
@@ -424,7 +424,7 @@ def create_app() -> FastAPI:
         log.info("Watch gesture received: %s from %s", payload.gesture, payload.device_id)
         return {"status": "ok", "gesture": payload.gesture}
 
-    @_app.post("/phone/context")
+    @_router.post("/phone/context")
     async def phone_context(payload: PhoneContextPayload) -> dict[str, str]:
         """Receive coarse context from phone (activity, screen, ringer)."""
         if payload.device_id not in ALLOWED_DEVICE_IDS:
@@ -446,6 +446,32 @@ def create_app() -> FastAPI:
         )
         return {"status": "ok"}
 
+    # FastAPI retains these through decorator side effects; keep explicit refs
+    # so the diff-aware vulture hook recognizes them as dynamic entrypoints.
+    _ = (
+        ingest_sensors,
+        watch_status,
+        phone_health_summary,
+        voice_trigger,
+        watch_gesture,
+        phone_context,
+    )
+
+    return _router
+
+
+def create_app() -> FastAPI:
+    """Create and configure the standalone FastAPI application."""
+    _app = FastAPI(title="Hapax Watch Receiver", version="0.1.0")
+
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+        FastAPIInstrumentor.instrument_app(_app)
+    except Exception:
+        pass
+
+    _app.include_router(create_router())
     return _app
 
 
