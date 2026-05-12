@@ -112,9 +112,29 @@ class TestSourceRegistryDispatch:
         assert isinstance(backend, ShmRgbaReader)
         assert backend._max_age_s is None
 
-    def test_dispatch_non_substrate_shm_rgba_gets_default_stale_gate(self):
+    def test_dispatch_non_substrate_shm_rgba_gets_default_stale_gate(self, monkeypatch):
         from agents.studio_compositor.shm_rgba_reader import ShmRgbaReader
 
+        monkeypatch.delenv("HAPAX_SHM_RGBA_MAX_AGE_S", raising=False)
+        registry = SourceRegistry()
+        src = SourceSchema(
+            id="m8-display",
+            kind="external_rgba",
+            backend="shm_rgba",
+            params={
+                "natural_w": 320,
+                "natural_h": 240,
+                "shm_path": "/tmp/m8-display.rgba",
+            },
+        )
+        backend = registry.construct_backend(src)
+        assert isinstance(backend, ShmRgbaReader)
+        assert backend._max_age_s == 30.0
+
+    def test_dispatch_non_substrate_shm_rgba_invalid_env_uses_default(self, monkeypatch):
+        from agents.studio_compositor.shm_rgba_reader import ShmRgbaReader
+
+        monkeypatch.setenv("HAPAX_SHM_RGBA_MAX_AGE_S", "not-a-number")
         registry = SourceRegistry()
         src = SourceSchema(
             id="m8-display",
