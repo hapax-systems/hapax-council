@@ -26,24 +26,99 @@ def test_build_reindex_report_honors_max_files_and_supported_extensions(tmp_path
     source_dir.mkdir()
     (source_dir / "a.md").write_text("a")
     (source_dir / "b.txt").write_text("b")
+    (source_dir / "c.py").write_text("print('covered')")
     (source_dir / "ignored.bin").write_text("ignored")
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        """
+        {
+          "queries": [
+            {
+              "id": "q1",
+              "expected_sources": [
+                {"source_contains": "a.md", "grade": 3},
+                {"text_contains": "covered", "grade": 2}
+              ]
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
 
     report = shadow.build_reindex_report(
         source_dirs=[source_dir],
         source_collection="documents",
         target_collection="documents_v2",
-        max_files=1,
+        max_files=None,
         dry_run=True,
         report_only=False,
         force=False,
         qdrant_url="http://qdrant",
         embedding_model="nomic-embed-cpu",
+        suite_path=suite_path,
     )
 
     assert report["writes_enabled"] is False
-    assert report["files_discovered"] == 2
-    assert report["files_selected"] == 1
+    assert report["files_discovered"] == 3
+    assert report["files_selected"] == 3
     assert any(path.endswith("a.md") for path in report["selected_files"])
+    assert any(path.endswith("c.py") for path in report["selected_files"])
+    assert report["selected_source_categories"] == {"other": 3}
+    coverage = report["golden_label_coverage"]
+    assert coverage["covered_label_count"] == 2
+    assert coverage["expected_label_count"] == 2
+
+
+def test_default_source_dirs_include_audit_research_and_code_roots(
+    tmp_path: Path, monkeypatch
+) -> None:
+    shadow = _load_script_module()
+    personal = tmp_path / "Personal"
+    repo = tmp_path / "repo"
+    home = tmp_path / "home"
+    monkeypatch.setenv("HAPAX_PERSONAL_ROOT", str(personal))
+    monkeypatch.setenv("HAPAX_REPO_ROOT", str(repo))
+    monkeypatch.setenv("HAPAX_HOME", str(home))
+
+    dirs = [str(path) for path in shadow.default_source_dirs()]
+
+    assert str(personal / "20-projects" / "hapax-research" / "audit") in dirs
+    assert str(personal / "20-projects" / "hapax-research" / "foundations") in dirs
+    assert str(personal / "20-projects" / "hapax-research" / "lab-journals") in dirs
+    assert str(personal / "20-projects" / "hapax-requests" / "active") in dirs
+    assert str(personal / "20-projects" / "hapax-cc-tasks" / "closed") in dirs
+    assert str(repo / "scripts") in dirs
+    assert str(repo / "shared") in dirs
+
+
+def test_golden_label_coverage_surfaces_source_label_text_evidence(tmp_path: Path) -> None:
+    shadow = _load_script_module()
+    source = tmp_path / "audit.md"
+    source.write_text("The LivingPresentEnvelope appears in text, not path.", encoding="utf-8")
+    suite = tmp_path / "suite.json"
+    suite.write_text(
+        """
+        {
+          "queries": [
+            {
+              "id": "q1",
+              "expected_sources": [
+                {"source_contains": "LivingPresentEnvelope", "grade": 3}
+              ]
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    coverage = shadow.golden_label_coverage([source], suite)
+
+    assert coverage["covered_label_count"] == 0
+    assert coverage["source_label_text_evidence"][0]["label"] == {
+        "source_contains": "LivingPresentEnvelope"
+    }
 
 
 def test_ensure_collection_creates_shadow_schema_with_selected_vector_size() -> None:

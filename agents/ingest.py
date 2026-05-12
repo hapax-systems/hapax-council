@@ -30,6 +30,7 @@ DEFAULT_DOCUMENTS_COLLECTION = "documents"
 RAG_SOURCES_DIR = _HAPAX_HOME / "documents" / "rag-sources"
 RAG_INGEST_STATE_DIR = _HAPAX_HOME / ".cache" / "rag-ingest"
 HAPAX_PROJECTS_DIR = _HAPAX_HOME / "projects"
+PLAIN_TEXT_SOURCE_EXTENSIONS = {".html", ".md", ".py", ".txt"}
 
 from agents._log_setup import configure_logging
 
@@ -80,13 +81,14 @@ class Config:
             ".pptx",
             ".html",
             ".md",
+            ".py",
             ".txt",
         }
     )
     qdrant_url: str = QDRANT_URL
     collection: str = field(default_factory=resolve_documents_collection)
     embedding_model: str = EMBEDDING_MODEL
-    chunk_max_tokens: int = 512
+    chunk_max_tokens: int = 1024
     chunk_tokenizer: str = "Qwen/Qwen2.5-7B-Instruct"
     debounce_seconds: float = 2.0  # Wait before processing (avoid partial writes)
 
@@ -109,6 +111,11 @@ class RetryEntry:
     attempts: int
     next_retry: float  # unix timestamp
     first_failed: float  # unix timestamp
+
+
+@dataclass(frozen=True)
+class TextChunk:
+    text: str
 
 
 # ── Lazy imports (heavy deps loaded only when needed) ────────────────────────
@@ -138,6 +145,41 @@ def get_chunker():
         )
         log.info(f"Chunker initialized: {CFG.chunk_max_tokens} max tokens")
     return _chunker
+
+
+def plain_text_chunks(text: str, *, max_chars: int = 4096) -> list[TextChunk]:
+    """Chunk source-like text without Docling so common RAG paths stay lightweight."""
+    chunks: list[str] = []
+    current: list[str] = []
+    current_size = 0
+    for line in text.splitlines(keepends=True):
+        line_size = len(line)
+        if current and current_size + line_size > max_chars:
+            chunks.append("".join(current).strip())
+            current = []
+            current_size = 0
+        if line_size > max_chars:
+            chunks.extend(
+                line[index : index + max_chars].strip()
+                for index in range(0, line_size, max_chars)
+                if line[index : index + max_chars].strip()
+            )
+            continue
+        current.append(line)
+        current_size += line_size
+    if current:
+        chunks.append("".join(current).strip())
+    return [TextChunk(text=chunk) for chunk in chunks if chunk]
+
+
+def extract_chunks(path: Path) -> list[TextChunk]:
+    if path.suffix.lower() in PLAIN_TEXT_SOURCE_EXTENSIONS:
+        return plain_text_chunks(
+            path.read_text(encoding="utf-8", errors="replace"),
+            max_chars=CFG.chunk_max_tokens * 4,
+        )
+    result = get_converter().convert(str(path))
+    return [TextChunk(text=chunk.text) for chunk in get_chunker().chunk(result.document)]
 
 
 _qclient = None
@@ -609,9 +651,8 @@ def ingest_file(path: Path) -> tuple[bool, str]:
     start = time.monotonic()
 
     try:
-        # Parse document
-        result = get_converter().convert(str(path))
-        chunks = list(get_chunker().chunk(result.document))
+        # Parse document or source-like text.
+        chunks = extract_chunks(path)
 
         if not chunks:
             log.warning(f"  No chunks extracted from {path.name}")
@@ -732,11 +773,44 @@ def bulk_ingest(
     *,
     max_files: int | None = None,
     dry_run: bool = False,
+    source_files: list[Path] | None = None,
+    process_retry_queue: bool = True,
 ):
     """Initial scan of all watched directories."""
     tracker = {} if force else _load_dedup_tracker()
     skipped = 0
     total = 0
+    if source_files is not None:
+        files = sorted(
+            {
+                f
+                for f in source_files
+                if f.is_file() and f.suffix.lower() in CFG.supported_extensions
+            }
+        )
+        log.info("Bulk ingesting %d explicit source files", len(files))
+        for f in files:
+            if max_files is not None and total >= max_files:
+                break
+            if not force and _should_skip(f, tracker, collection=CFG.collection):
+                skipped += 1
+                continue
+            if dry_run:
+                log.info("DRY RUN: would ingest %s into %s", f, CFG.collection)
+                total += 1
+                continue
+            success, error = ingest_file(f)
+            if success:
+                _record_ingested(f, tracker, collection=CFG.collection)
+            else:
+                queue_retry(f, error)
+            total += 1
+        if not force and not dry_run:
+            _save_dedup_tracker(tracker)
+        if skipped:
+            log.info("Skipped %d unchanged files (use --force to re-ingest)", skipped)
+        return total
+
     for d in CFG.watch_dirs:
         if max_files is not None and total >= max_files:
             break
@@ -752,7 +826,7 @@ def bulk_ingest(
         for f in sorted(files):
             if max_files is not None and total >= max_files:
                 break
-            if not force and _should_skip(f, tracker):
+            if not force and _should_skip(f, tracker, collection=CFG.collection):
                 skipped += 1
                 continue
             if dry_run:
@@ -761,7 +835,7 @@ def bulk_ingest(
                 continue
             success, error = ingest_file(f)
             if success:
-                _record_ingested(f, tracker)
+                _record_ingested(f, tracker, collection=CFG.collection)
             else:
                 queue_retry(f, error)
             total += 1
@@ -770,7 +844,7 @@ def bulk_ingest(
     if skipped:
         log.info("Skipped %d unchanged files (use --force to re-ingest)", skipped)
     # Process any retries from previous runs
-    if not dry_run:
+    if not dry_run and process_retry_queue:
         process_retries()
     return total
 
@@ -830,6 +904,20 @@ if __name__ == "__main__":
         help="Override watched/source directory. May be repeated.",
     )
     parser.add_argument(
+        "--source-file",
+        action="append",
+        type=Path,
+        default=[],
+        help="Explicit file to ingest instead of scanning watch directories. May be repeated.",
+    )
+    parser.add_argument(
+        "--source-file-list",
+        action="append",
+        type=Path,
+        default=[],
+        help="Text file containing one source path per line. Blank lines and # comments ignored.",
+    )
+    parser.add_argument(
         "--max-files",
         type=int,
         default=None,
@@ -844,8 +932,15 @@ if __name__ == "__main__":
     parser.add_argument(
         "--force", action="store_true", help="Bypass dedup tracking, re-ingest all files"
     )
+    parser.add_argument(
+        "--skip-retries",
+        action="store_true",
+        help="Do not process the global retry queue after this bulk run.",
+    )
     args = parser.parse_args()
     if args.dry_run:
+        args.bulk_only = True
+    if args.source_file or args.source_file_list:
         args.bulk_only = True
 
     CFG.collection = args.collection
@@ -853,6 +948,12 @@ if __name__ == "__main__":
     CFG.embedding_model = args.embedding_model
     if args.watch_dir:
         CFG.watch_dirs = args.watch_dir
+    source_files = list(args.source_file)
+    for list_path in args.source_file_list:
+        for line in list_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                source_files.append(Path(stripped))
 
     if args.retry_status:
         from datetime import datetime
@@ -894,7 +995,13 @@ if __name__ == "__main__":
                 "rag.collection": CFG.collection,
             },
         ):
-            count = bulk_ingest(force=args.force, max_files=args.max_files, dry_run=args.dry_run)
+            count = bulk_ingest(
+                force=args.force,
+                max_files=args.max_files,
+                dry_run=args.dry_run,
+                source_files=source_files or None,
+                process_retry_queue=not args.skip_retries and not source_files,
+            )
             log.info(f"Bulk ingest complete: {count} files processed")
 
     if not args.bulk_only:

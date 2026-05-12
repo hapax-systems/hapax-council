@@ -22,19 +22,99 @@ DEFAULT_SHADOW_COLLECTION = "documents_v2"
 DEFAULT_QDRANT_URL = "http://localhost:6333"
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_EMBEDDING_MODEL = "nomic-embed-cpu"
-SUPPORTED_EXTENSIONS = (".pdf", ".docx", ".pptx", ".html", ".md", ".txt")
+DEFAULT_GOLDEN_SUITE = Path("evals/rag/golden_queries.json")
+SUPPORTED_EXTENSIONS = (".pdf", ".docx", ".pptx", ".html", ".md", ".txt", ".py")
+TEXT_COVERAGE_EXTENSIONS = {".html", ".md", ".py", ".txt"}
 
 
 def _hapax_home() -> Path:
     return Path(os.environ.get("HAPAX_HOME", str(Path.home())))
 
 
+def _repo_root() -> Path:
+    return Path(os.environ.get("HAPAX_REPO_ROOT", str(Path(__file__).resolve().parents[1])))
+
+
+def _personal_root() -> Path:
+    return Path(os.environ.get("HAPAX_PERSONAL_ROOT", str(Path.home() / "Documents" / "Personal")))
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped
+
+
 def default_source_dirs() -> list[Path]:
     home = _hapax_home()
-    return [
-        home / "documents" / "rag-sources",
-        home / "projects" / "docs",
+    repo = _repo_root()
+    personal = _personal_root()
+    research = personal / "20-projects" / "hapax-research"
+    cc_tasks = personal / "20-projects" / "hapax-cc-tasks"
+    requests = personal / "20-projects" / "hapax-requests"
+    return _dedupe_paths(
+        [
+            home / "documents" / "rag-sources",
+            research / "audit",
+            research / "codex-handoffs",
+            research / "foundations",
+            research / "lab-journals",
+            research / "ledgers",
+            research / "exposition",
+            requests / "active",
+            requests / "closed",
+            cc_tasks / "active",
+            cc_tasks / "closed",
+            repo / "README.md",
+            repo / "docs",
+            repo / "scripts",
+            repo / "agents",
+            repo / "shared",
+            repo / "packages" / "agentgov",
+        ]
+    )
+
+
+def classify_source_path(path: Path) -> str:
+    normalized = str(path)
+    categories = [
+        ("/hapax-research/audit/", "audit"),
+        ("/hapax-research/codex-handoffs/", "handoff"),
+        ("/hapax-research/foundations/", "foundation"),
+        ("/hapax-research/lab-journals/", "lab_journal"),
+        ("/hapax-research/ledgers/", "ledger"),
+        ("/hapax-research/exposition/", "exposition"),
+        ("/hapax-requests/active/", "request"),
+        ("/hapax-requests/closed/", "request"),
+        ("/hapax-cc-tasks/active/", "cc_task"),
+        ("/hapax-cc-tasks/closed/", "cc_task"),
+        ("/documents/rag-sources/", "rag_source"),
+        ("/packages/agentgov/", "agentgov"),
+        ("/docs/", "repo_docs"),
+        ("/scripts/", "repo_scripts"),
+        ("/agents/", "repo_agents"),
+        ("/shared/", "repo_shared"),
     ]
+    for needle, category in categories:
+        if needle in normalized:
+            return category
+    if path.name == "README.md":
+        return "repo_docs"
+    return "other"
+
+
+def source_category_counts(files: list[Path]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for file in files:
+        category = classify_source_path(file)
+        counts[category] = counts.get(category, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def discover_source_files(
@@ -55,6 +135,124 @@ def discover_source_files(
     return sorted(files)
 
 
+def _load_golden_suite(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _label_key(label: dict[str, Any]) -> str:
+    parts = []
+    for key, value in sorted(label.items()):
+        if key == "grade":
+            continue
+        parts.append(f"{key}={value}")
+    return "|".join(parts)
+
+
+def _golden_labels(suite: dict[str, Any]) -> list[dict[str, Any]]:
+    labels: dict[str, dict[str, Any]] = {}
+    for query in suite.get("queries", []):
+        if not isinstance(query, dict):
+            continue
+        for label in query.get("expected_sources", []) or []:
+            if not isinstance(label, dict):
+                continue
+            key = _label_key(label)
+            if key:
+                labels.setdefault(key, {k: v for k, v in label.items() if k != "grade"})
+    return [labels[key] for key in sorted(labels)]
+
+
+def _safe_read_text(path: Path, *, max_bytes: int = 2_000_000) -> str:
+    if path.suffix.lower() not in TEXT_COVERAGE_EXTENSIONS:
+        return ""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return ""
+    return data[:max_bytes].decode("utf-8", errors="replace")
+
+
+def _contains(haystack: str, needle: object) -> bool:
+    return str(needle).lower() in haystack.lower()
+
+
+def _label_matches_file(label: dict[str, Any], path: Path, text: str) -> bool:
+    checks: list[bool] = []
+    if "source_contains" in label:
+        checks.append(_contains(str(path), label["source_contains"]))
+    if "text_contains" in label:
+        checks.append(_contains(text, label["text_contains"]))
+    return bool(checks) and all(checks)
+
+
+def _source_label_has_text_evidence(label: dict[str, Any], text: str) -> bool:
+    return "source_contains" in label and _contains(text, label["source_contains"])
+
+
+def golden_label_coverage(files: list[Path], suite_path: Path) -> dict[str, Any]:
+    if not suite_path.exists():
+        return {
+            "available": False,
+            "suite_path": str(suite_path),
+            "error": "suite_not_found",
+        }
+    try:
+        labels = _golden_labels(_load_golden_suite(suite_path))
+    except Exception as exc:
+        return {
+            "available": False,
+            "suite_path": str(suite_path),
+            "error": str(exc),
+        }
+
+    texts = {file: _safe_read_text(file) for file in files}
+    covered: list[dict[str, Any]] = []
+    uncovered: list[dict[str, Any]] = []
+    text_evidence_for_source_labels: list[dict[str, Any]] = []
+    for label in labels:
+        matches = [
+            str(file) for file in files if _label_matches_file(label, file, texts.get(file, ""))
+        ]
+        record = {"label": label, "matched_files": matches[:10], "match_count": len(matches)}
+        if matches:
+            covered.append(record)
+            continue
+        uncovered.append(record)
+        text_matches = [
+            str(file)
+            for file in files
+            if _source_label_has_text_evidence(label, texts.get(file, ""))
+        ]
+        if text_matches:
+            text_evidence_for_source_labels.append(
+                {
+                    "label": label,
+                    "matched_files": text_matches[:10],
+                    "match_count": len(text_matches),
+                }
+            )
+
+    denominator = len(labels)
+    numerator = len(covered)
+    source_labels = [label for label in labels if "source_contains" in label]
+    covered_source_labels = [item for item in covered if "source_contains" in item["label"]]
+    return {
+        "available": True,
+        "suite_path": str(suite_path),
+        "expected_label_count": denominator,
+        "covered_label_count": numerator,
+        "coverage_rate": round(numerator / denominator, 4) if denominator else None,
+        "source_contains_label_count": len(source_labels),
+        "covered_source_contains_label_count": len(covered_source_labels),
+        "source_contains_coverage_rate": (
+            round(len(covered_source_labels) / len(source_labels), 4) if source_labels else None
+        ),
+        "covered_labels": covered,
+        "uncovered_labels": uncovered,
+        "source_label_text_evidence": text_evidence_for_source_labels,
+    }
+
+
 def build_reindex_report(
     *,
     source_dirs: list[Path],
@@ -66,10 +264,11 @@ def build_reindex_report(
     force: bool,
     qdrant_url: str,
     embedding_model: str,
+    suite_path: Path | None = None,
 ) -> dict[str, Any]:
     files = discover_source_files(source_dirs)
     selected = files[:max_files] if max_files is not None else files
-    return {
+    report = {
         "generated_at": datetime.now(UTC).isoformat(),
         "operation": "rag_documents_v2_reindex",
         "source_collection": source_collection,
@@ -85,7 +284,12 @@ def build_reindex_report(
         "max_files": max_files,
         "files_selected": len(selected),
         "selected_files": [str(path) for path in selected],
+        "discovered_source_categories": source_category_counts(files),
+        "selected_source_categories": source_category_counts(selected),
     }
+    if suite_path is not None:
+        report["golden_label_coverage"] = golden_label_coverage(selected, suite_path)
+    return report
 
 
 def _get_attr(obj: Any, path: tuple[str, ...]) -> Any:
@@ -243,6 +447,7 @@ def run_reindex(args: argparse.Namespace) -> int:
         force=args.force,
         qdrant_url=args.qdrant_url,
         embedding_model=args.embedding_model,
+        suite_path=args.suite,
     )
 
     if args.dry_run or args.report_only:
@@ -387,6 +592,7 @@ def build_parser() -> argparse.ArgumentParser:
     reindex.add_argument("--target-collection", default=DEFAULT_SHADOW_COLLECTION)
     reindex.add_argument("--source-dir", action="append", type=Path, default=[])
     reindex.add_argument("--max-files", type=int, default=None)
+    reindex.add_argument("--suite", type=Path, default=DEFAULT_GOLDEN_SUITE)
     reindex.add_argument("--dry-run", action="store_true")
     reindex.add_argument("--report-only", action="store_true")
     reindex.add_argument("--force", action="store_true")

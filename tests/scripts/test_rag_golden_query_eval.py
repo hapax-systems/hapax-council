@@ -57,10 +57,26 @@ def test_query_metrics_precision_recall_mrr_ndcg_and_metadata_rate() -> None:
     assert metrics["no_relevant_evidence"] is False
 
 
+def test_query_metrics_ndcg_deduplicates_repeated_label_hits() -> None:
+    module = _load_module()
+    labels = [{"source_contains": "target", "grade": 3}]
+    hits = [
+        {"source": "/tmp/target.md", "text": "", "is_metadata_hit": False},
+        {"source": "/tmp/target.md", "text": "", "is_metadata_hit": False},
+        {"source": "/tmp/target.md", "text": "", "is_metadata_hit": False},
+    ]
+
+    metrics = module.query_metrics(hits, labels, precision_k=5, recall_k=3, ndcg_k=3)
+
+    assert metrics["ndcg_at_k"] == 1.0
+    assert metrics["recall_at_k"] == 1.0
+
+
 def test_aggregate_metrics_reports_no_evidence_and_utilization() -> None:
     module = _load_module()
     query_reports = [
         {
+            "expected_sources": [{"source_contains": "a.md", "grade": 3}],
             "retrieval_metrics": {
                 "precision_at_5": 0.2,
                 "recall_at_k": 1.0,
@@ -73,6 +89,7 @@ def test_aggregate_metrics_reports_no_evidence_and_utilization() -> None:
             "hits": [{"source": "/tmp/a.md", "source_service": "obsidian"}],
         },
         {
+            "expected_sources": [{"source_contains": "missing.md", "grade": 3}],
             "retrieval_metrics": {
                 "precision_at_5": 0.0,
                 "recall_at_k": 0.0,
@@ -92,6 +109,12 @@ def test_aggregate_metrics_reports_no_evidence_and_utilization() -> None:
     assert summary["no_relevant_evidence_rate"] == 0.5
     assert summary["unique_source_count"] == 2
     assert summary["source_service_distribution"] == {"obsidian": 1, "gdrive": 1}
+    assert summary["source_label_utilization_numerator"] == 1
+    assert summary["source_label_utilization_denominator"] == 2
+    assert summary["source_label_utilization_rate"] == 0.5
+    assert summary["corpus_utilization"]["unmatched_expected_source_labels"] == [
+        {"source_contains": "missing.md"}
+    ]
 
 
 def test_run_suite_with_fake_client_separates_faithfulness() -> None:
@@ -138,7 +161,39 @@ def test_run_suite_with_fake_client_separates_faithfulness() -> None:
     )
 
     assert report["retrieval_summary"]["mean_recall_at_k"] == 1.0
+    assert report["retrieval_summary"]["golden_label_utilization_rate"] == 1.0
     assert report["answer_faithfulness"]["status"] == "not_evaluated"
+
+
+def test_corpus_utilization_metrics_use_explicit_label_denominator() -> None:
+    module = _load_module()
+    query_reports = [
+        {
+            "expected_sources": [
+                {"source_contains": "target-a", "grade": 3},
+                {"text_contains": "target text", "grade": 2},
+            ],
+            "hits": [
+                {
+                    "source": "/tmp/target-a.md",
+                    "text": "target text",
+                    "is_metadata_hit": False,
+                }
+            ],
+        },
+        {
+            "expected_sources": [{"source_contains": "target-b", "grade": 3}],
+            "hits": [{"source": "/tmp/wrong.md", "text": "", "is_metadata_hit": False}],
+        },
+    ]
+
+    utilization = module.corpus_utilization_metrics(query_reports)
+
+    assert utilization["matched_label_numerator"] == 2
+    assert utilization["expected_label_denominator"] == 3
+    assert utilization["golden_label_utilization_rate"] == 0.6667
+    assert utilization["matched_source_label_numerator"] == 1
+    assert utilization["expected_source_label_denominator"] == 2
 
 
 def test_exclude_inventory_overfetches_and_drops_legacy_metadata_stubs() -> None:
