@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -45,11 +47,20 @@ class ShmRgbaReader:
     # and ``agents/studio_compositor/homage/substrate_source.py``.
     is_substrate: bool = False
 
-    def __init__(self, path: Path, *, is_substrate: bool = False) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        is_substrate: bool = False,
+        max_age_s: float | None = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
         self._path = Path(path)
         self._sidecar_path = self._path.with_suffix(self._path.suffix + ".json")
         self._cached_surface: cairo.ImageSurface | None = None
         self._cached_frame_id: int | None = None
+        self._max_age_s = max_age_s if max_age_s is None or max_age_s > 0 else None
+        self._clock = clock
         # Instance-level override of the class default. Setting it on the
         # instance (not just the class) means ``isinstance(reader,
         # HomageSubstrateSource)`` evaluates correctly per-instance —
@@ -60,6 +71,18 @@ class ShmRgbaReader:
         # build time to pick up the natural dimensions. Phase 6b will add
         # a sidecar-watching push thread that feeds the element.
         self._gst_appsrc: Any = None
+
+    def _frame_is_stale(self) -> bool:
+        """Return True when either the RGBA payload or sidecar is too old."""
+        if self._max_age_s is None:
+            return False
+        try:
+            payload_mtime = self._path.stat().st_mtime
+            sidecar_mtime = self._sidecar_path.stat().st_mtime
+        except OSError:
+            return False
+        oldest_mtime = min(payload_mtime, sidecar_mtime)
+        return self._clock() - oldest_mtime > self._max_age_s
 
     def gst_appsrc(self) -> Any:
         """Return (or lazily create) a GStreamer appsrc element for this source.
@@ -150,6 +173,10 @@ class ShmRgbaReader:
         if meta is None:
             return None
         if not self._path.exists():
+            return None
+        if self._frame_is_stale():
+            self._cached_surface = None
+            self._cached_frame_id = None
             return None
 
         frame_id = meta.get("frame_id")

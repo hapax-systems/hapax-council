@@ -110,6 +110,44 @@ class TestSourceRegistryDispatch:
         )
         backend = registry.construct_backend(src)
         assert isinstance(backend, ShmRgbaReader)
+        assert backend._max_age_s is None
+
+    def test_dispatch_non_substrate_shm_rgba_gets_default_stale_gate(self):
+        from agents.studio_compositor.shm_rgba_reader import ShmRgbaReader
+
+        registry = SourceRegistry()
+        src = SourceSchema(
+            id="m8-display",
+            kind="external_rgba",
+            backend="shm_rgba",
+            params={
+                "natural_w": 320,
+                "natural_h": 240,
+                "shm_path": "/tmp/m8-display.rgba",
+            },
+        )
+        backend = registry.construct_backend(src)
+        assert isinstance(backend, ShmRgbaReader)
+        assert backend._max_age_s == 30.0
+
+    def test_dispatch_non_substrate_shm_rgba_honors_explicit_max_age(self):
+        from agents.studio_compositor.shm_rgba_reader import ShmRgbaReader
+
+        registry = SourceRegistry()
+        src = SourceSchema(
+            id="m8-display",
+            kind="external_rgba",
+            backend="shm_rgba",
+            params={
+                "natural_w": 320,
+                "natural_h": 240,
+                "shm_path": "/tmp/m8-display.rgba",
+                "max_age_seconds": 5,
+            },
+        )
+        backend = registry.construct_backend(src)
+        assert isinstance(backend, ShmRgbaReader)
+        assert backend._max_age_s == 5.0
 
     def test_dispatch_shm_rgba_missing_path_raises(self):
         registry = SourceRegistry()

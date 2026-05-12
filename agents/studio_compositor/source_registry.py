@@ -13,6 +13,7 @@ Part of the compositor source-registry epic PR 1. See
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
@@ -22,6 +23,8 @@ if TYPE_CHECKING:
     from shared.compositor_model import SourceSchema
 
 log = logging.getLogger(__name__)
+
+_DEFAULT_NON_SUBSTRATE_SHM_RGBA_MAX_AGE_S = 30.0
 
 
 class UnknownSourceError(KeyError):
@@ -201,5 +204,16 @@ class SourceRegistry:
             is_substrate = source.id in SUBSTRATE_SOURCE_REGISTRY or bool(
                 source.params.get("is_substrate")
             )
-            return ShmRgbaReader(Path(shm_path), is_substrate=is_substrate)
+            max_age_raw = source.params.get("max_age_s", source.params.get("max_age_seconds"))
+            if max_age_raw is None and not is_substrate:
+                max_age_raw = os.environ.get(
+                    "HAPAX_SHM_RGBA_MAX_AGE_S",
+                    str(_DEFAULT_NON_SUBSTRATE_SHM_RGBA_MAX_AGE_S),
+                )
+            max_age_s = float(max_age_raw) if max_age_raw not in (None, "") else None
+            return ShmRgbaReader(
+                Path(shm_path),
+                is_substrate=is_substrate,
+                max_age_s=max_age_s,
+            )
         raise UnknownBackendError(f"unknown backend: {source.backend}")
