@@ -103,7 +103,45 @@ def test_camera_legible_graph_policy_blocks_full_frame_noise_nodes() -> None:
     assert decision.matched == ("noise", "noise_overlay")
 
 
-def test_camera_legible_graph_policy_blocks_unbound_content_slots() -> None:
+def test_live_surface_graph_policy_is_on_by_default() -> None:
+    graph = _graph(
+        {
+            "noise": NodeInstance(type="noise_overlay", params={"intensity": 0.02}),
+            "out": NodeInstance(type="output"),
+        },
+        [["@live", "noise"], ["noise", "out"]],
+    )
+
+    decision = evaluate_preset_graph_policy(
+        graph,
+        registry=_registry(),
+        env={},
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "camera_legible_full_frame_noise"
+
+
+def test_live_surface_graph_policy_can_be_disabled_for_offline_tools() -> None:
+    graph = EffectGraph(
+        name="Offline Tool Probe",
+        nodes={
+            "noise": NodeInstance(type="noise_overlay", params={"intensity": 0.02}),
+            "out": NodeInstance(type="output"),
+        },
+        edges=[["@live", "noise"], ["noise", "out"]],
+    )
+
+    decision = evaluate_preset_graph_policy(
+        graph,
+        registry=_registry(),
+        env={"HAPAX_LIVE_SURFACE_EFFECT_POLICY": "0"},
+    )
+
+    assert decision.allowed is True
+
+
+def test_camera_legible_graph_policy_allows_neutral_content_slot_nodes() -> None:
     graph = _graph(
         {
             "content": NodeInstance(type="content_layer"),
@@ -118,9 +156,64 @@ def test_camera_legible_graph_policy_blocks_unbound_content_slots() -> None:
         env=_camera_legible_env(),
     )
 
+    assert decision.allowed is True
+
+
+def test_content_layer_manifest_declares_camera_legible_slot_contract() -> None:
+    content_layer = _registry().get("content_layer")
+
+    assert content_layer is not None
+    assert content_layer.content_slot_policy == {
+        "provider": "content_source_manager",
+        "missing": "transparent_noop",
+        "manager_required": True,
+        "opacity_source": "family_filtered",
+        "camera_legible_max_opacity": 0.35,
+        "camera_geometry_policy": {"overlay_only": True, "destructive": False},
+    }
+
+
+def test_camera_legible_graph_policy_blocks_active_unbound_content_slots() -> None:
+    graph = _graph(
+        {
+            "content": NodeInstance(
+                type="content_layer",
+                params={"salience": 0.2, "intensity": 0.1},
+            ),
+            "out": NodeInstance(type="output"),
+        },
+        [["@live", "content"], ["content", "out"]],
+    )
+
+    decision = evaluate_preset_graph_policy(
+        graph,
+        registry=_registry(),
+        env=_camera_legible_env(),
+    )
+
     assert decision.allowed is False
     assert decision.reason == "camera_legible_unbound_content_slots"
     assert decision.matched == ("content", "content_layer")
+
+
+def test_camera_legible_graph_policy_blocks_content_slots_without_contract() -> None:
+    graph = _graph(
+        {
+            "content": NodeInstance(type="sierpinski_content"),
+            "out": NodeInstance(type="output"),
+        },
+        [["@live", "content"], ["content", "out"]],
+    )
+
+    decision = evaluate_preset_graph_policy(
+        graph,
+        registry=_registry(),
+        env=_camera_legible_env(),
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "camera_legible_content_slot_contract"
+    assert decision.matched == ("content", "sierpinski_content")
 
 
 def test_camera_legible_graph_policy_blocks_low_posterize_defaults() -> None:

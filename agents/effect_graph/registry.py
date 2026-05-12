@@ -6,6 +6,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .types import ParamDef, PortType
 
@@ -33,6 +34,12 @@ class LoadedShaderDef:
     # (Sierpinski) for prominent display. Empty/missing-family passes
     # bind a 1×1 transparent placeholder rather than cross-bleed.
     slot_family: str = "narrative"
+    # Optional machine-readable safety contract for nodes that bind
+    # content_slot_* textures. This is intentionally carried through the
+    # registry instead of hard-coding node names in policy code: content
+    # slots are a live compositing substrate, and eligibility needs to be
+    # based on declared runtime behavior.
+    content_slot_policy: dict[str, Any] | None = None
 
 
 class ShaderRegistry:
@@ -67,6 +74,7 @@ class ShaderRegistry:
             requires_content_slots=raw.get("requires_content_slots", False),
             backend=raw.get("backend", "wgsl_render"),
             slot_family=raw.get("slot_family", "narrative"),
+            content_slot_policy=raw.get("content_slot_policy"),
         )
 
     @property
@@ -90,6 +98,7 @@ class ShaderRegistry:
             "requires_content_slots": d.requires_content_slots,
             "backend": d.backend,
             "slot_family": d.slot_family,
+            "content_slot_policy": d.content_slot_policy,
         }
 
     def all_schemas(self) -> dict[str, object]:

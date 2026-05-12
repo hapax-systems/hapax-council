@@ -10,13 +10,12 @@ primitive is responsible for its own per-step pacing.
 Five primitives cover the chain-level transition vocabulary
 (research §5.5):
 
-- ``fade_smooth`` — 12-step brightness crossfade, the historical default
+- ``fade_smooth`` — 12-step bounded-luminance handoff
 - ``cut_hard`` — single-frame swap, no intermediate state
-- ``netsplit_burst`` — fast clear-to-black + brief hold + sharp re-fill
+- ``netsplit_burst`` — quick low-luminance floor pulse + sharp re-fill
 - ``ticker_scroll`` — sigmoid (S-curve) brightness ramp, perceptually
   distinct from the linear ``fade_smooth`` (slow start + slow end)
-- ``dither_noise`` — high-frequency alternation between out and in
-  graphs over several short steps before settling on in
+- ``dither_noise`` — two bounded shimmer writes before settling on in
 
 All primitives are deterministic given fixed timing — the only
 non-determinism is wall-clock ``sleep`` resolution under load. Tests
@@ -24,9 +23,9 @@ inject a capture-writer + no-op sleep and assert the expected
 sequence of graph mutations.
 
 Visual goal: each primitive should be distinguishable on /dev/video42
-within ~1s of observation. Brightness curves below are tuned so the
-perceptual signature differs even when two primitives share the
-underlying brightness-scaling mechanism.
+without coherent full-frame pumping, held-black frames, or high-frequency
+alternation. Brightness curves below are bounded so transitions read as
+surface changes while preserving camera geometry and ward legibility.
 """
 
 from __future__ import annotations
@@ -58,8 +57,9 @@ NETSPLIT_HOLD_MS: Final[int] = 150  # total ≈ 350 ms
 TICKER_STEPS: Final[int] = 12
 TICKER_STEP_MS: Final[int] = 100  # 12 × 100 = 1200 ms (sigmoid)
 
-DITHER_FLIPS: Final[int] = 6
-DITHER_STEP_MS: Final[int] = 60  # 6 × 60 = 360 ms before settle
+DITHER_FLIPS: Final[int] = 2
+DITHER_STEP_MS: Final[int] = 220
+MIN_TRANSITION_BRIGHTNESS: Final[float] = 0.85
 
 
 # Names used by the affordance recruitment layer. Mirror the
@@ -90,21 +90,29 @@ def _scale_colorgrade_brightness(graph: Graph, brightness: float) -> Graph:
     return g
 
 
+def _surface_safe_brightness(value: float) -> float:
+    """Clamp transition brightness so graph handoffs cannot blank the frame."""
+
+    return max(MIN_TRANSITION_BRIGHTNESS, value)
+
+
 def fade_smooth(
     out: Graph | None,
     in_g: Graph,
     writer: GraphWriter,
     sleep: SleepFn = time.sleep,
 ) -> None:
-    """12-step linear brightness crossfade. The historical default."""
+    """12-step bounded-luminance handoff."""
     if out is not None:
         for i in range(FADE_STEPS):
-            brightness = 1.0 - (i + 1) / FADE_STEPS
-            writer(_scale_colorgrade_brightness(out, max(brightness, 0.0)))
+            t = (i + 1) / FADE_STEPS
+            brightness = 1.0 - (1.0 - MIN_TRANSITION_BRIGHTNESS) * t
+            writer(_scale_colorgrade_brightness(out, _surface_safe_brightness(brightness)))
             sleep(FADE_STEP_MS / 1000.0)
     for i in range(FADE_STEPS):
-        brightness = (i + 1) / FADE_STEPS
-        writer(_scale_colorgrade_brightness(in_g, brightness))
+        t = (i + 1) / FADE_STEPS
+        brightness = MIN_TRANSITION_BRIGHTNESS + (1.0 - MIN_TRANSITION_BRIGHTNESS) * t
+        writer(_scale_colorgrade_brightness(in_g, _surface_safe_brightness(brightness)))
         sleep(FADE_STEP_MS / 1000.0)
 
 
@@ -125,24 +133,23 @@ def netsplit_burst(
     writer: GraphWriter,
     sleep: SleepFn = time.sleep,
 ) -> None:
-    """Sharp clear-to-black, brief hold, sharp re-fill.
+    """Sharp bounded-floor pulse, brief hold, sharp re-fill.
 
-    Reads as a network-style cut: the surface drops, holds dark for a
-    perceptible beat, then snaps the new graph in at full brightness.
+    Reads as a network-style cut without letting the surface drop to
+    black. The floor pulse marks the cut while preserving camera geometry.
     """
     if out is not None:
         for i in range(NETSPLIT_OUT_STEPS):
-            brightness = 1.0 - (i + 1) / NETSPLIT_OUT_STEPS
-            writer(_scale_colorgrade_brightness(out, max(brightness, 0.0)))
+            t = (i + 1) / NETSPLIT_OUT_STEPS
+            brightness = 1.0 - (1.0 - MIN_TRANSITION_BRIGHTNESS) * t
+            writer(_scale_colorgrade_brightness(out, _surface_safe_brightness(brightness)))
             sleep(NETSPLIT_STEP_MS / 1000.0)
-    # Hold black: write the incoming graph at zero brightness so the
-    # mutation file already references the new structure when the
-    # operator sees the dark frame.
-    writer(_scale_colorgrade_brightness(in_g, 0.0))
+    writer(_scale_colorgrade_brightness(in_g, MIN_TRANSITION_BRIGHTNESS))
     sleep(NETSPLIT_HOLD_MS / 1000.0)
     for i in range(NETSPLIT_IN_STEPS):
-        brightness = (i + 1) / NETSPLIT_IN_STEPS
-        writer(_scale_colorgrade_brightness(in_g, brightness))
+        t = (i + 1) / NETSPLIT_IN_STEPS
+        brightness = MIN_TRANSITION_BRIGHTNESS + (1.0 - MIN_TRANSITION_BRIGHTNESS) * t
+        writer(_scale_colorgrade_brightness(in_g, _surface_safe_brightness(brightness)))
         sleep(NETSPLIT_STEP_MS / 1000.0)
 
 
@@ -177,13 +184,13 @@ def ticker_scroll(
     if out is not None:
         for i in range(TICKER_STEPS):
             t = (i + 1) / TICKER_STEPS
-            brightness = 1.0 - _sigmoid_01(t)
-            writer(_scale_colorgrade_brightness(out, max(brightness, 0.0)))
+            brightness = 1.0 - (1.0 - MIN_TRANSITION_BRIGHTNESS) * _sigmoid_01(t)
+            writer(_scale_colorgrade_brightness(out, _surface_safe_brightness(brightness)))
             sleep(TICKER_STEP_MS / 1000.0)
     for i in range(TICKER_STEPS):
         t = (i + 1) / TICKER_STEPS
-        brightness = _sigmoid_01(t)
-        writer(_scale_colorgrade_brightness(in_g, brightness))
+        brightness = MIN_TRANSITION_BRIGHTNESS + (1.0 - MIN_TRANSITION_BRIGHTNESS) * _sigmoid_01(t)
+        writer(_scale_colorgrade_brightness(in_g, _surface_safe_brightness(brightness)))
         sleep(TICKER_STEP_MS / 1000.0)
 
 
@@ -193,17 +200,16 @@ def dither_noise(
     writer: GraphWriter,
     sleep: SleepFn = time.sleep,
 ) -> None:
-    """High-frequency alternation between out and in before settling.
+    """Bounded shimmer handoff before settling.
 
-    Reads as a perceptual dither — the surface flickers between the
-    two graphs at ~16 Hz for ~360 ms, then locks on the new graph. No
-    actual noise mask shader required; the temporal flicker creates
-    the dither sensation directly.
+    The old implementation flickered between graphs at ~16 Hz, which is
+    exactly the whole-frame pumping failure class the live surface now
+    forbids. Keep a distinguishable transition by writing one bounded
+    outgoing shimmer, one bounded incoming shimmer, then the final graph.
     """
     if out is not None:
-        for flip in range(DITHER_FLIPS):
-            target = in_g if flip % 2 == 0 else out
-            writer(_scale_colorgrade_brightness(target, 1.0))
+        for target in (out, in_g):
+            writer(_scale_colorgrade_brightness(target, 0.93))
             sleep(DITHER_STEP_MS / 1000.0)
     writer(_scale_colorgrade_brightness(in_g, 1.0))
 
@@ -224,6 +230,7 @@ __all__ = [
     "DITHER_STEP_MS",
     "FADE_STEPS",
     "FADE_STEP_MS",
+    "MIN_TRANSITION_BRIGHTNESS",
     "NETSPLIT_HOLD_MS",
     "NETSPLIT_IN_STEPS",
     "NETSPLIT_OUT_STEPS",
