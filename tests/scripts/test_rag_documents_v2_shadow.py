@@ -43,7 +43,7 @@ def test_build_reindex_report_honors_max_files_and_supported_extensions(tmp_path
     assert report["writes_enabled"] is False
     assert report["files_discovered"] == 2
     assert report["files_selected"] == 1
-    assert report["selected_files"][0].endswith("a.md")
+    assert any(path.endswith("a.md") for path in report["selected_files"])
 
 
 def test_ensure_collection_creates_shadow_schema_with_selected_vector_size() -> None:
@@ -56,8 +56,12 @@ def test_ensure_collection_creates_shadow_schema_with_selected_vector_size() -> 
         def get_collections(self):
             return SimpleNamespace(collections=[])
 
-        def create_collection(self, **kwargs):
-            self.created = kwargs
+        def create_collection(self, collection_name, vectors_config, **kwargs):
+            self.created = {
+                "collection_name": collection_name,
+                "vectors_config": vectors_config,
+                **kwargs,
+            }
 
     client = FakeClient()
     created = shadow.ensure_collection(client, "documents_v2", 1024)
@@ -75,7 +79,7 @@ def test_ensure_collection_does_not_recreate_existing_shadow_collection() -> Non
         def get_collections(self):
             return SimpleNamespace(collections=[SimpleNamespace(name="documents_v2")])
 
-        def create_collection(self, **kwargs):
+        def create_collection(self, collection_name, vectors_config, **kwargs):
             raise AssertionError("create_collection should not be called")
 
     assert shadow.ensure_collection(FakeClient(), "documents_v2", 768) is False
@@ -88,14 +92,14 @@ def test_compare_shadow_retrieval_queries_documents_and_shadow() -> None:
         def __init__(self) -> None:
             self.collections = []
 
-        def query_points(self, collection, **kwargs):
-            self.collections.append(collection)
+        def query_points(self, collection_name, **kwargs):
+            self.collections.append(collection_name)
             point = SimpleNamespace(
-                score=0.9 if collection == "documents" else 0.8,
+                score=0.9 if collection_name == "documents" else 0.8,
                 payload={
-                    "source": f"/{collection}/doc.md",
+                    "source": f"/{collection_name}/doc.md",
                     "source_service": "obsidian",
-                    "text": f"{collection} text",
+                    "text": f"{collection_name} text",
                 },
             )
             return SimpleNamespace(points=[point])

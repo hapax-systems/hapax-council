@@ -195,6 +195,17 @@ class TestCollectionConfig:
             == "documents_shadow"
         )
 
+    def test_hapax_rag_collection_takes_precedence_over_legacy_env(self):
+        assert (
+            ingest.resolve_documents_collection(
+                {
+                    "HAPAX_RAG_COLLECTION": "documents_v2",
+                    "RAG_DOCUMENTS_COLLECTION": "documents_shadow",
+                }
+            )
+            == "documents_v2"
+        )
+
     def test_dedup_key_preserves_default_documents_key(self, tmp_path):
         path = tmp_path / "doc.md"
         assert ingest._dedup_key(path, "documents") == str(path)
@@ -211,8 +222,12 @@ class TestCollectionConfig:
             def get_collections(self):
                 return SimpleNamespace(collections=[])
 
-            def create_collection(self, **kwargs):
-                self.created = kwargs
+            def create_collection(self, collection_name, vectors_config, **kwargs):
+                self.created = {
+                    "collection_name": collection_name,
+                    "vectors_config": vectors_config,
+                    **kwargs,
+                }
 
         client = FakeClient()
         created = ingest.ensure_collection("documents_v2", vector_size=1536, client=client)
@@ -227,7 +242,7 @@ class TestCollectionConfig:
             def get_collections(self):
                 return SimpleNamespace(collections=[SimpleNamespace(name="documents_v2")])
 
-            def create_collection(self, **kwargs):
+            def create_collection(self, collection_name, vectors_config, **kwargs):
                 raise AssertionError("create_collection should not be called")
 
         assert (
