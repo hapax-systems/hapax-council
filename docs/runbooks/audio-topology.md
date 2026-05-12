@@ -299,8 +299,8 @@ private voice must remain silent rather than fall back.
 Expected healthy state:
 
 - `private_monitor_state=ready`;
-- status JSON reports `surface_id: audio.yeti_monitor`;
-- status JSON reports `route_id: route:private.yeti_monitor`;
+- status JSON reports `surface_id: audio.s4_private_monitor`;
+- status JSON reports `route_id: route:private.s4_track_fenced`;
 - status JSON reports `fallback_policy: no_default_fallback`;
 - `scripts/audio-leak-guard.sh` reports no leak risk.
 
@@ -310,7 +310,7 @@ correct failure mode. Do not route private comms to a default sink or public
 route to "make it audible."
 
 The status JSON is intentionally sanitized. It uses semantic refs such as
-`audio.yeti_monitor` and `route:private.yeti_monitor`; do not paste raw
+`audio.s4_private_monitor` and `route:private.s4_track_fenced`; do not paste raw
 PipeWire hardware identifiers into relay/task notes or chat.
 
 ## 8. Install + verify sequence

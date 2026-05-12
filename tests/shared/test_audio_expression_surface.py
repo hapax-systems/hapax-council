@@ -76,11 +76,11 @@ def _write_private_status(path: Path) -> None:
         "fallback_policy": "no_default_fallback",
         "operator_visible_reason": "Exact private monitor target is present.",
         "reason_code": "exact_private_monitor_bound",
-        "route_id": "route:private.yeti_monitor",
+        "route_id": "route:private.s4_track_fenced",
         "sanitized": True,
         "state": "ready",
-        "surface_id": "audio.yeti_monitor",
-        "target_ref": "audio.yeti_monitor",
+        "surface_id": "audio.s4_private_monitor",
+        "target_ref": "audio.s4_private_monitor",
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
 

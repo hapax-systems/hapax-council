@@ -64,7 +64,7 @@ PRIVATE_AUDIO_SURFACE_IDS = frozenset(
     {
         "audio.private_assistant_monitor",
         "audio.private_notification_monitor",
-        "audio.yeti_monitor",
+        "audio.s4_private_monitor",
     }
 )
 
