@@ -519,9 +519,10 @@ point and adapt to the declared topic.
 - **Beats**: introduce topic + tier rubric → walk S tier with
   justifications → A → B → C → D → invite chat dissent →
   re-rank if reactions warrant → close with operator's distillation.
-- **`narrative_beat` example**: `"tier-list segment on '{topic}'.
-  Source candidates from vault + RAG; rank against operator
-  positions; narrate placements; invite chat reactions"`
+- **`narrative_beat` example**: `"tier-list segment on governance
+  enforcement failures. Use the May 2026 agentgov audit packets as
+  candidates; rank each failure against refusal, provenance, and
+  rollback evidence; invite chat to challenge the borderline cases"`
 
 ### `top_10`
 
@@ -531,9 +532,10 @@ point and adapt to the declared topic.
 - **Beats**: introduce topic + countdown framing → 10 → 9 → ... → 1
   with reasoning at each step → reveal the #1 with operator's
   distinctive angle → close with chat invitation.
-- **`narrative_beat` example**: `"top-10 countdown on '{topic}'.
-  Source from vault + RAG; narrate the climb with operator
-  reasoning; reveal #1 with distinctive angle"`
+- **`narrative_beat` example**: `"top-10 countdown on launch blockers
+  before the HN drop. Source candidates from the readiness tree and
+  live receipts; climb from cosmetic polish to hard runtime blockers;
+  reveal the blocker that would most directly make launch dishonest"`
 
 ### `rant`
 
@@ -545,9 +547,10 @@ point and adapt to the declared topic.
 - **Beats**: ground in the trigger / context → state the position
   → escalate with examples and analogies → land the punchline →
   brief de-escalation / acknowledgement of nuance.
-- **`narrative_beat` example**: `"rant on '{topic}'. Ground in
-  operator positions from profile-facts; escalate with examples;
-  land punchline; do not invent operator positions"`
+- **`narrative_beat` example**: `"rant on false green launch claims.
+  Ground in operator profile facts about evidence discipline; escalate
+  from stale task closure to runtime receipts; land on why merged code
+  is not launch proof"`
 
 ### `react`
 
@@ -559,9 +562,10 @@ point and adapt to the declared topic.
   → time-stamped first impressions → mid-piece pivot if the
   source surprises → reflective synthesis → source-and-profile-grounded
   take.
-- **`narrative_beat` example**: `"react segment on '{source_uri}'.
-  Resolve via content-resolver; emit time-stamped reactions;
-  synthesise with source-and-profile-grounded take"`
+- **`narrative_beat` example**: `"react segment on the Tuesday systems
+  readiness log. Resolve the log through the content resolver; pause on
+  the compositor, voice, YouTube, and OBS failures; synthesize what the
+  operator should trust next"`
 
 ### `iceberg`
 
@@ -573,9 +577,10 @@ point and adapt to the declared topic.
   / familiar) → middle layer (vault-specific) → deeper layer
   (research / specialised) → deepest layer (operator's edge
   thinking) → return to surface with a re-frame.
-- **`narrative_beat` example**: `"iceberg segment on '{topic}'.
-  Surface from RAG; descend through vault notes; deepest layer
-  from operator edge thinking; close with re-frame"`
+- **`narrative_beat` example**: `"iceberg segment on AI coding-agent
+  governance. Surface with public README claims; descend through vault
+  methodology notes and refusal briefs; deepest layer shows why
+  task-tree discipline carries the launch"`
 
 ### `interview`
 
@@ -587,9 +592,10 @@ point and adapt to the declared topic.
 - **Beats**: introduce subject + premise → opening question
   (warm) → 2-4 substantive questions → one challenging question
   → reflective close → invite chat questions if applicable.
-- **`narrative_beat` example**: `"interview segment with
-  '{subject}'. Prep from operator profile + RAG; warm-then-deep
-  question arc; invite chat questions"`
+- **`narrative_beat` example**: `"interview segment with a maintainer
+  reviewing agentgov adoption. Prep from the public repo, README, and
+  operator profile; start with installation questions, move to failure
+  cases, then invite chat questions about real rollout"`
 
 ### `lecture`
 
@@ -602,9 +608,30 @@ point and adapt to the declared topic.
   with an example) → synthesis (how the points connect) →
   questions (invite chat or reflect on operator-asked
   questions from prior windows).
-- **`narrative_beat` example**: `"lecture segment on '{topic}'.
-  Outline from operator vault notes; cite sources inline;
-  motivation → framing → main points → synthesis → questions"`
+- **`narrative_beat` example**: `"lecture segment on mechanical
+  governance before a public launch. Outline from the HN readiness tree
+  and agentgov README; teach why source receipts, live checks, and soak
+  gates are separate; demonstrate with one blocker moving from false
+  green to explicit cc-task; close with questions"`
+
+Lecture role contract fields are mandatory. A lecture programme must
+include concrete values for at least:
+
+```json
+{
+  "role_contract": {
+    "source_packet_refs": ["vault:hn-readiness-tree.md"],
+    "role_live_bit_mechanic": "teach one readiness concept by walking a live receipt",
+    "event_object": "one blocker moving through the task tree",
+    "audience_job": "learn how to distinguish source proof from launch proof",
+    "payoff": "the launch decision becomes auditable instead of vibes-based",
+    "temporality_band": "current",
+    "teaching_objective": "explain why merged code, runtime evidence, and soak receipts are distinct gates",
+    "demonstration_object": "the programme E2E blocker and its scratch harness receipt",
+    "worked_example": "trace the segment-prep failure from zero saved programmes to an explicit unblock task"
+  }
+}
+```
 
 ## Response format
 

@@ -360,6 +360,41 @@ class TestRetryPath:
         assert "programme_narrative_beat_template_leak" in captured_prompts[1]
         assert "tier_criteria" in captured_prompts[1]
 
+    def test_lecture_source_readiness_failure_triggers_specific_retry_guidance(self) -> None:
+        bad = _well_formed_plan_payload(role=ProgrammeRole.LECTURE)
+        role_contract = bad["programmes"][0]["content"]["role_contract"]
+        role_contract.pop("demonstration_object")
+        role_contract.pop("worked_example")
+        bad["programmes"][0]["content"]["narrative_beat"] = (
+            "lecture segment on '{topic}'. Outline from operator vault notes; "
+            "cite sources inline; motivation -> framing -> main points -> synthesis -> questions"
+        )
+        bad["programmes"][0]["content"]["segment_beats"] = [
+            "hook: Introduce the topic and why it matters.",
+            "main point: Explain the concept in general terms.",
+            "close: Summarize and invite questions.",
+        ]
+        good = _well_formed_plan_payload(role=ProgrammeRole.LECTURE)
+        captured_prompts: list[str] = []
+
+        def capture_llm(prompt: str) -> str:
+            captured_prompts.append(prompt)
+            if len(captured_prompts) == 1:
+                return json.dumps(bad)
+            return json.dumps(good)
+
+        planner = ProgrammePlanner(llm_fn=capture_llm)
+        plan = planner.plan(show_id="show-test-001", target_programmes=1)
+
+        assert plan is not None
+        assert len(captured_prompts) == 2
+        assert "segment source readiness failed" in captured_prompts[1]
+        assert "demonstration_object" in captured_prompts[1]
+        assert "worked_example" in captured_prompts[1]
+        assert "lecture_requires_demonstration_object" in captured_prompts[1]
+        assert "programme_narrative_beat_template_leak" in captured_prompts[1]
+        assert "never copy `narrative_beat_template`" in captured_prompts[1]
+
     def test_segment_source_readiness_failure_returns_none_without_retry(self) -> None:
         bad = _well_formed_plan_payload(role=ProgrammeRole.TIER_LIST)
         bad["programmes"][0]["content"]["role_contract"].pop("tier_criteria")

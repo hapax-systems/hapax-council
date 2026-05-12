@@ -79,6 +79,7 @@ and `obs_clean_feed`; warning: `logos_api`.
 | 20.0 | `hn-launch-runtime-evidence-audit` | done/closed | Ten-surface runtime table captured. |
 | 19.0 | `hn-launch-public-metrics-proof` | done | Repo receipt exists; live weblog, landing page, and HN first-comment draft corrected/verified. |
 | 19.0 | `hn-launch-programme-e2e-readiness` | blocked | Live segment-prep history reconciled plus programme evidence that the final soak can re-sample and cite. |
+| 18.9 | `hn-launch-segment-prep-live-output-unblock` | in progress | Fresh controlled segment-prep run produces loadable programmes with non-empty layout/action intents. |
 | 18.8 | `hn-launch-programme-e2e-smoke-harness-repair` | done | Current-API scratch-only E2E harness repaired; receipt generated. |
 | 18.5 | `hn-launch-compositor-sierpinski-proof` | blocked | Fresh Sierpinski layout-mode proof plus nonblank frame evidence. |
 | 18.0 | `hn-launch-agentgov-cli-extraction` | done | Public repo/package/CLI install/README/license/CI acceptance checked. |
@@ -110,3 +111,13 @@ and `obs_clean_feed`; warning: `logos_api`.
   `uv run pytest tests/studio_compositor/test_director_segment_runner.py tests/hapax_daimonion/test_programme_delivery_smoke.py -q`
   -> `5 passed, 1 warning`; scratch run returned `ok=true` at
   `/tmp/hapax-hn-programme-delivery-smoke-20260512T162123Z/programme-delivery-smoke-receipt.json`.
+- Live segment-prep output remains a blocker. The latest live sample has
+  `completed_no_programmes`, `saved_count=0`, `segmented_count=0`, empty
+  active-segment layout/action intents, and a segment-layout refusal
+  `missing_current_beat_layout_intents`.
+- This PR now includes a bounded planner prompt/retry fix for the zero-output
+  root cause: concrete segmented-content examples, mandatory lecture
+  `role_contract` guidance, and retry text for missing lecture fields and
+  `narrative_beat_template` leaks. Focused tests passed:
+  `uv run pytest tests/programme_manager/test_planner.py -q` -> `41 passed,
+  1 warning`; adjacent contract tests passed -> `90 passed, 1 warning`.
