@@ -31,6 +31,8 @@ def test_label_matching_and_metadata_detection() -> None:
     assert module.label_matches_hit({"text_contains": "metadata contamination"}, hit)
     assert not module.label_matches_hit({"source_service": "gdrive"}, hit)
     assert module.is_metadata_hit({"source": "/gdrive/.meta/file.md", "text": "x"})
+    assert module.is_metadata_hit({"content_tier": "metadata_only"})
+    assert module.is_metadata_hit({"text": "**Drive link:** https://drive.google.com/file/d/x"})
 
 
 def test_query_metrics_precision_recall_mrr_ndcg_and_metadata_rate() -> None:
@@ -137,6 +139,52 @@ def test_run_suite_with_fake_client_separates_faithfulness() -> None:
 
     assert report["retrieval_summary"]["mean_recall_at_k"] == 1.0
     assert report["answer_faithfulness"]["status"] == "not_evaluated"
+
+
+def test_exclude_inventory_overfetches_and_drops_legacy_metadata_stubs() -> None:
+    module = _load_module()
+    calls = []
+
+    class FakeClient:
+        def query_points(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                points=[
+                    SimpleNamespace(
+                        id=1,
+                        score=0.99,
+                        payload={
+                            "source": "/home/hapax/documents/rag-sources/gdrive/.meta/kick.wav.md",
+                            "source_service": "drive",
+                            "text": "**Drive link:** https://drive.google.com/file/d/abc",
+                        },
+                    ),
+                    SimpleNamespace(
+                        id=2,
+                        score=0.88,
+                        payload={
+                            "source": "/home/hapax/projects/hapax-council/docs/target.md",
+                            "source_service": "git",
+                            "text": "substantive evidence",
+                        },
+                    ),
+                ]
+            )
+
+    hits = module.query_qdrant(
+        FakeClient(),
+        "documents",
+        "target",
+        limit=1,
+        embedder=lambda _query: [0.1, 0.2],
+        exclude_inventory=True,
+    )
+
+    assert [hit["source"] for hit in hits] == ["/home/hapax/projects/hapax-council/docs/target.md"]
+    assert calls[0]["limit"] == 10
+    query_filter = calls[0]["query_filter"]
+    excluded_keys = {condition.key for condition in query_filter.must_not}
+    assert {"retrieval_eligible", "is_metadata_only", "content_tier"} <= excluded_keys
 
 
 def test_compare_reports_returns_metric_deltas() -> None:

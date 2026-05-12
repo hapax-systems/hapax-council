@@ -15,6 +15,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from shared.rag_inventory import is_inventory_payload
+
 DEFAULT_COLLECTION = "documents"
 DEFAULT_LIMIT = 10
 DEFAULT_PRECISION_K = 5
@@ -38,19 +40,7 @@ def load_suite(path: Path) -> dict[str, Any]:
 
 
 def is_metadata_hit(payload: Mapping[str, Any]) -> bool:
-    source = str(payload.get("source", "")).lower()
-    text = str(payload.get("text", "")).lower()
-    content_tier = str(payload.get("content_tier", "")).lower()
-    retrieval_eligible = payload.get("retrieval_eligible")
-    return (
-        payload.get("is_metadata_only") is True
-        or content_tier in {"metadata_only", "metadata-only", "stub", "inventory"}
-        or retrieval_eligible is False
-        or str(retrieval_eligible).lower() == "false"
-        or "/.meta/" in source
-        or "**drive link:**" in text
-        or "gdrive_link:" in text
-    )
+    return is_inventory_payload(payload)
 
 
 def normalize_hit(point: Any) -> dict[str, Any]:
@@ -232,10 +222,17 @@ def _points_from_response(response: Any) -> Sequence[Any]:
 def _inventory_filter(exclude_inventory: bool) -> Any:
     if not exclude_inventory:
         return None
-    from qdrant_client.models import FieldCondition, Filter, MatchValue
+    from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchValue
 
     return Filter(
-        must_not=[FieldCondition(key="retrieval_eligible", match=MatchValue(value=False))]
+        must_not=[
+            FieldCondition(key="retrieval_eligible", match=MatchValue(value=False)),
+            FieldCondition(key="is_metadata_only", match=MatchValue(value=True)),
+            FieldCondition(
+                key="content_tier",
+                match=MatchAny(any=["metadata_only", "metadata-only", "stub", "inventory"]),
+            ),
+        ]
     )
 
 
@@ -249,15 +246,19 @@ def query_qdrant(
     exclude_inventory: bool = False,
 ) -> list[dict[str, Any]]:
     vector = embedder(query)
+    query_limit = limit * 10 if exclude_inventory else limit
     response = client.query_points(
         collection_name=collection,
         query=vector,
         query_filter=_inventory_filter(exclude_inventory),
-        limit=limit,
+        limit=query_limit,
         with_payload=True,
         with_vectors=False,
     )
-    return [normalize_hit(point) for point in _points_from_response(response)]
+    hits = [normalize_hit(point) for point in _points_from_response(response)]
+    if exclude_inventory:
+        hits = [hit for hit in hits if not hit["is_metadata_hit"]]
+    return hits[:limit]
 
 
 def run_suite(

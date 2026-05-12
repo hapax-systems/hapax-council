@@ -31,6 +31,12 @@ records that carry `retrieval_eligible: false`:
 uv run python scripts/rag_golden_query_eval.py --exclude-inventory
 ```
 
+`--exclude-inventory` also applies source-side post-filtering for legacy
+Google Drive `.meta` stubs and Drive-link metadata records that predate
+`retrieval_eligible: false`. If metadata-hit rate drops but Precision/Recall do
+not improve, treat that as a source coverage or reindex blocker, not as an
+embedding-runtime failure.
+
 The report emits JSON and Markdown. It includes Precision@5, Recall@k, MRR,
 nDCG@k, metadata-hit rate, no-hit rate, no-relevant-evidence rate, and corpus
 utilization counts. Use `--compare previous-report.json` to produce before/after
