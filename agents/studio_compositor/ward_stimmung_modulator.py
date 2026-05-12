@@ -86,6 +86,8 @@ DEPTH_CONTRAST: float = 1.18
 DEPTH_CONTRAST_MIN: float = 0.5
 DEPTH_CONTRAST_MAX: float = 1.6
 DEPTH_CONTRAST_ENV: str = "HAPAX_WARD_MODULATOR_DEPTH_CONTRAST"
+VISUAL_PUMPING_ENV: str = "HAPAX_VISUAL_PUMPING_ENABLED"
+ALPHA_MODULATION_ENV: str = "HAPAX_WARD_MODULATOR_ALPHA_ENABLED"
 
 
 @dataclass
@@ -186,7 +188,11 @@ class WardStimmungModulator:
         # Coherence pulls deeper-plane wards forward at high coherence
         # (convergence) and pushes them back at low coherence (divergence).
         convergence = (coherence_val - 0.5) * 0.2
-        # Depth dim attenuates beyond/mid-scrim alpha continuously.
+        # Depth dim attenuates beyond/mid-scrim alpha continuously when
+        # alpha movement is explicitly allowed. Under the live no-pumping
+        # regime the modulator still advances z/depth state but leaves
+        # alpha untouched so restoring the ward modulator cannot reintroduce
+        # whole-frame luma/opacity pulsing.
         if z_plane == "beyond-scrim":
             target_alpha = _clip01(0.5 + 0.5 * (1.0 - depth_val))
         elif z_plane == "mid-scrim":
@@ -196,7 +202,10 @@ class WardStimmungModulator:
         target_z_idx = _clip01(z_base - convergence)
         current_alpha = _clip01(base.alpha)
         current_z_idx = _clip01(base.z_index_float)
-        new_alpha = _bounded_step(current_alpha, target_alpha, _max_alpha_step())
+        if _alpha_modulation_enabled():
+            new_alpha = _bounded_step(current_alpha, target_alpha, _max_alpha_step())
+        else:
+            new_alpha = base.alpha
         new_z_idx = _bounded_step(current_z_idx, target_z_idx, _max_z_index_step())
         # 2026-04-23 blink-kill: epsilon-gate. Only write if the new
         # alpha / z_index has moved by at least MIN_DELTA (0.02 of the
@@ -242,6 +251,13 @@ def _max_z_index_step() -> float:
     return _positive_env_float(MAX_Z_INDEX_STEP_ENV, MAX_Z_INDEX_STEP)
 
 
+def _alpha_modulation_enabled() -> bool:
+    explicit = os.environ.get(ALPHA_MODULATION_ENV)
+    if explicit is not None:
+        return _env_truthy(explicit)
+    return _env_enabled(VISUAL_PUMPING_ENV, default=True)
+
+
 def _depth_contrast() -> float:
     return _bounded_env_float(
         DEPTH_CONTRAST_ENV,
@@ -276,6 +292,17 @@ def _positive_env_float(name: str, default: float) -> float:
     except ValueError:
         return default
     return value if value > 0.0 else default
+
+
+def _env_enabled(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return _env_truthy(raw)
+
+
+def _env_truthy(raw: str) -> bool:
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _bounded_step(current: float, target: float, max_delta: float) -> float:
@@ -345,9 +372,11 @@ def _emit_z_plane_counts() -> None:
 __all__ = [
     "CURRENT_PATH",
     "ENABLE_ENV",
+    "ALPHA_MODULATION_ENV",
     "STALENESS_ENV",
     "STALENESS_S",
     "TICK_EVERY_N",
+    "VISUAL_PUMPING_ENV",
     "WARD_PROPERTIES_TTL_S",
     "WardStimmungModulator",
 ]
