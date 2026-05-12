@@ -5,8 +5,9 @@ Each agent carries a small set of foreign-domain facts observed incidentally
 through contact topology. Carrier facts are Labeled[Any] values — consent
 labels travel with carried facts via the DLM join.
 
-The carrier mechanism provides near-optimal cross-domain error correction
-(§9.4, factor graph equivalence) with O(1) carrier capacity per agent.
+The carrier mechanism is a prototype surface for sparse cross-domain
+consistency checks. Formal factor-graph and LDPC-style claims require the
+separate support note in docs/research/2026-05-12-carrier-dynamics-formalization-track.md.
 """
 
 from __future__ import annotations

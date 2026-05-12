@@ -1,5 +1,12 @@
 # Level 4: Carrier Dynamics — The Original Contribution
 
+Audit note, 2026-05-12: this exposition is an older positioning document. Use
+`docs/research/2026-05-12-carrier-dynamics-formalization-track.md` as the
+current scoped support artifact. Claims below about proven bounds,
+near-optimality, and LDPC equivalence should be read as research hypotheses
+until the prototype defines a code/channel/noise model or reports simulation
+results.
+
 ## Why This Is the Paper That Matters Most
 
 Everything in Levels 2-3 applies existing formalisms (DLM, LIO, NorMAS, defeasible logic) to a new domain. That's valuable — novel application of known theory. But carrier dynamics is a **new mechanism** addressing a **named problem** with **formal backing** from information theory. This is the part that's independently publishable and potentially influential.
