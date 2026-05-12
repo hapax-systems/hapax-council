@@ -28,7 +28,7 @@ local services, local IPC, and governed handoff points.
 | Operator model | One operator, one workstation-centered environment, no multi-user product promise. | Enterprise collaboration, role-based access control, or general SaaS deployment. |
 | Privacy posture | Local/private by default: Obsidian vault, local Qdrant, local service bus, `/dev/shm` state, and systemd user services. | Claims that no data ever leaves the machine. Cloud model routes and external APIs exist and must be named when used. |
 | Cloud routing | Explicit LiteLLM routes for cloud models through the model alias layer. | Hidden or accidental cloud fallback claims. If a workflow uses Claude, Gemini, GitHub, Google, YouTube, or another external API, say so. |
-| Local inference | Local TabbyAPI route on `:5000`, CPU embedding through Ollama-compatible `nomic-embed-cpu`, local visual/speech runtimes. | Unverified throughput, latency, quality, or cost comparisons. |
+| Local inference | Local TabbyAPI route on `:5000`, configured CPU embedding through an Ollama-compatible route, and local control loops for visual/speech surfaces where current model receipts exist. | Unverified throughput, latency, quality, cost comparisons, or stale model claims. |
 | Evidence basis | Runtime configuration, service units, package tests, and audit-validated architecture notes. | Token compounding, corpus appreciation, or RAG utilization claims. |
 
 ## Runtime Inventory
@@ -37,12 +37,12 @@ local services, local IPC, and governed handoff points.
 | --- | --- | --- | --- |
 | LiteLLM gateway | Model route gateway on `http://localhost:4000`; exposes local and cloud aliases through `shared.config.MODELS`. | [`shared/config.py`](../../shared/config.py) | Cloud use is explicit by alias; do not imply every LLM call is local. |
 | TabbyAPI | Local EXL3 inference service on `:5000`; repo service comment says Command-R residency is expected. | [`systemd/units/tabbyapi.service`](../../systemd/units/tabbyapi.service) | Claim local model residency only after checking `/v1/models`; do not claim performance without a receipt. |
-| Ollama-compatible embedding | CPU embedding endpoint defaulting to `http://localhost:11434`; embedding model is `nomic-embed-cpu` with 768 dimensions. | [`shared/config.py`](../../shared/config.py) | This supports local document vectors; it is not a claim about answer quality. |
+| Ollama-compatible embedding | CPU embedding endpoint defaulting to `http://localhost:11434`; configured embedding model is `nomic-embed-cpu` with 768 dimensions. | [`shared/config.py`](../../shared/config.py) | Treat this as configured intent until a live model receipt exists. The 2026-05-12 golden-query smoke observed the alias missing from local Ollama, so public copy must not claim this route is currently healthy. |
 | Qdrant | Local vector database defaulting to `http://localhost:6333`. | [`shared/config.py`](../../shared/config.py) | Retrieval quality is under RAG repair; do not use Qdrant presence as proof of RAG correctness. |
 | RAG ingest | Local watchdog using an isolated ingest venv, retry state, memory ceiling, and CPU quota. | [`systemd/units/rag-ingest.service`](../../systemd/units/rag-ingest.service) | Current RAG claims must remain measurement-gated by the epistemic repair track. |
 | Logos API | Local FastAPI backend on `:8051`; starts from this repo with secrets injected from the user service environment. | [`systemd/units/logos-api.service`](../../systemd/units/logos-api.service) | Internal control plane, not a public API availability claim. |
-| Daimonion | Persistent local voice daemon with local process supervision, STT/TTS working set limits, and programme auto-plan enabled. | [`systemd/units/hapax-daimonion.service`](../../systemd/units/hapax-daimonion.service) | Speech stack is a local runtime surface; publish no latency or accuracy numbers without a dated run. |
-| Voice tiers | Local voice transformation catalog, including Kokoro raw/unadorned and processed tiers. | [`shared/voice_tier.py`](../../shared/voice_tier.py) | Good demo surface for local speech control; do not claim universal accessibility or intelligibility. |
+| Daimonion | Persistent local voice daemon with local process supervision, STT/TTS working set limits, and programme auto-plan enabled. | [`systemd/units/hapax-daimonion.service`](../../systemd/units/hapax-daimonion.service) | Speech control is local; active STT/TTS model residency requires a dated receipt before publication. |
+| Voice tiers | Local voice transformation catalog; several labels and service comments still reference Kokoro. | [`shared/voice_tier.py`](../../shared/voice_tier.py) and [`systemd/units/hapax-daimonion.service`](../../systemd/units/hapax-daimonion.service) | Research compendium says Kokoro was superseded by Voxtral via Mistral API. Treat Kokoro/Parakeet as planned, legacy, or unverified until active daemon logs/config prove otherwise. |
 | Watch receiver | LAN-local receiver on `:8042` for watch sensor summaries. | [`systemd/units/hapax-watch-receiver.service`](../../systemd/units/hapax-watch-receiver.service) | Operator biometric/context surface; keep public artifacts aggregate and redacted. |
 | Visual layer aggregator | Local bridge from Logos/perception state to compositor overlay state. | [`systemd/units/visual-layer-aggregator.service`](../../systemd/units/visual-layer-aggregator.service) | Supports local visual evidence, not a cloud dashboard claim. |
 | Studio compositor | GPU-accelerated local camera, recording, HLS, and overlay pipeline with watchdog liveness. | [`systemd/units/studio-compositor.service`](../../systemd/units/studio-compositor.service) | Public egress is separately readiness-gated; do not treat local rendering as public-safe. |
@@ -52,7 +52,7 @@ local services, local IPC, and governed handoff points.
 
 | Value axis | Case study claim | Evidence to show | What not to say |
 | --- | --- | --- | --- |
-| Privacy | The default architecture keeps memory, retrieval state, voice runtime, perception state, and orchestration inside local services unless a route explicitly crosses a boundary. | Configured localhost endpoints, systemd user units, local vault/Qdrant paths, and model alias tables. | "No data leaves the machine" or "privacy guaranteed." |
+| Privacy | The default architecture keeps memory, retrieval state, perception state, orchestration, and speech control inside local services unless a route explicitly crosses a boundary. | Configured localhost endpoints, systemd user units, local vault/Qdrant paths, model alias tables, and speech route receipts. | "No data leaves the machine," "privacy guaranteed," or "all voice models are local" without current receipts. |
 | Latency | Edge placement makes latency observable and tunable because sensors, voice, IPC, model routes, and visual surfaces are in one local control plane. | `/dev/shm` bridges, local service ports, watchdogs, and dated latency receipts when available. | Any numeric latency claim without a current measurement. |
 | Resilience | Core surfaces are supervised by systemd user units with restart policies, memory ceilings, watchdogs, and local degradation paths. | Unit files, journal receipts, and service status snapshots. | "Always available" or "fault tolerant" without soak evidence. |
 | Data locality | Work state and long-term memory are file/vault/Qdrant centered, with local ingestion and local embeddings as first-class paths. | `shared.config` paths, RAG source directories, Qdrant settings, and ingest state receipts. | "RAG works" or "corpus value compounds" before the RAG recovery reports are green. |
@@ -108,11 +108,12 @@ One-paragraph abstract:
 
 > This case study describes a single-operator AI environment built around
 > sovereign edge constraints: local memory, local service supervision, local
-> speech and perception loops, local embedding and retrieval infrastructure, and
-> explicit cloud routes for tasks that need larger models. The result is not an
-> air-gapped product or an enterprise compliance story. It is a practical
-> pattern for making privacy, latency, resilience, and data locality inspectable
-> in an AI system that remains useful under real operational constraints.
+> speech/perception control loops, configured local embedding and retrieval
+> infrastructure, and explicit cloud routes for tasks that need larger models.
+> The result is not an air-gapped product or an enterprise compliance story. It
+> is a practical pattern for making privacy, latency, resilience, and data
+> locality inspectable in an AI system that remains useful under real
+> operational constraints.
 
 ## Artifact Checklist
 
@@ -122,6 +123,9 @@ Minimum publication pack:
       cloud exits.
 - [ ] Current model inventory receipt:
       `curl -s http://localhost:5000/v1/models` and local embedding model check.
+- [ ] Speech route receipt: active daemon config/log excerpt identifying whether
+      STT/TTS is local, cloud-routed, legacy Kokoro, Voxtral/Mistral, Parakeet,
+      or another model. Do not infer from stale comments.
 - [ ] Service inventory receipt:
       `systemctl --user status tabbyapi logos-api hapax-daimonion rag-ingest`
       plus the visual stack surfaces used in the demo.
@@ -154,4 +158,12 @@ Suggested evidence refresh before any public derivative:
 curl -s http://localhost:5000/v1/models
 systemctl --user status tabbyapi logos-api hapax-daimonion rag-ingest
 systemctl --user status hapax-watch-receiver visual-layer-aggregator studio-compositor
+```
+
+Research-basis guardrail:
+
+```bash
+rg -n "Kokoro|Voxtral|Parakeet|nomic-embed-cpu" \
+  docs/applications/2026-sovereign-edge-case-study-pack.md \
+  shared/config.py shared/voice_tier.py systemd/units/hapax-daimonion.service
 ```
