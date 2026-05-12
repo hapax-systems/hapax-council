@@ -30,7 +30,7 @@ class TestParseFrontmatter:
         assert meta["title"] == "A title with: colons"
 
     def test_boolean_values(self):
-        text = "---\nis_metadata_only: true\nretrieval_eligible: false\n---\nBody."
+        text = "---\nis_metadata_only: TRUE\nretrieval_eligible: False\n---\nBody."
         meta, body = ingest.parse_frontmatter(text)
         assert meta["is_metadata_only"] is True
         assert meta["retrieval_eligible"] is False
@@ -69,12 +69,11 @@ class TestParseFrontmatter:
         meta, body = ingest.parse_frontmatter(text)
         assert meta["tags"] == []
 
-    def test_skips_lines_without_colon(self):
+    def test_invalid_yaml_frontmatter_fails_closed(self):
         text = "---\ntitle: Good\nno-colon-here\nauthor: Also Good\n---\nBody."
         meta, body = ingest.parse_frontmatter(text)
-        assert meta["title"] == "Good"
-        assert meta["author"] == "Also Good"
-        assert len(meta) == 2
+        assert meta == {}
+        assert body == text
 
 
 # ── enrich_payload ───────────────────────────────────────────────────────────

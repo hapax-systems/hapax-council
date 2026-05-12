@@ -56,7 +56,7 @@ class TestSearchDocumentsHandler:
         query_filter = mock_qdrant.query_points.call_args.kwargs.get("query_filter")
         assert query_filter is not None
         assert query_filter.must_not
-        assert query_filter.must_not[0].key == "retrieval_eligible"
+        assert any(item.key == "retrieval_eligible" for item in query_filter.must_not)
         mock_fn_params.result_callback.assert_awaited_once()
         result = mock_fn_params.result_callback.call_args[0][0]
         assert "test.md" in result
@@ -78,7 +78,7 @@ class TestSearchDocumentsHandler:
         query_filter = call_kwargs.kwargs.get("query_filter")
         assert query_filter is not None
         assert query_filter.must_not
-        assert query_filter.must_not[0].key == "retrieval_eligible"
+        assert any(item.key == "retrieval_eligible" for item in query_filter.must_not)
 
     @pytest.mark.asyncio
     async def test_no_results(self, mock_fn_params, mock_embed):

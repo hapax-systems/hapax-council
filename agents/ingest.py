@@ -22,6 +22,8 @@ from pathlib import Path
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+from agents._frontmatter import parse_frontmatter
+
 # Self-contained config (no shared.config import — this module runs in an
 # isolated venv without pydantic-ai due to docling/huggingface-hub conflict).
 _HAPAX_HOME = Path(os.environ.get("HAPAX_HOME", str(Path.home())))
@@ -346,49 +348,6 @@ def process_retries():
                 )
 
     _write_queue(remaining)
-
-
-def parse_frontmatter(text: str) -> tuple[dict, str]:
-    """Parse YAML frontmatter from markdown text.
-
-    Returns (metadata_dict, remaining_text). If no frontmatter found,
-    returns ({}, original_text).
-    """
-    if not text.startswith("---"):
-        return {}, text
-
-    # Find closing ---
-    end = text.find("\n---", 3)
-    if end == -1:
-        return {}, text
-
-    front = text[3:end].strip()
-    body = text[end + 4 :].strip()
-
-    metadata: dict = {}
-    for line in front.splitlines():
-        line = line.strip()
-        if not line or ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        key = key.strip()
-        value = value.strip()
-
-        # Parse list values: [a, b, c]
-        if value.startswith("[") and value.endswith("]"):
-            items = [v.strip() for v in value[1:-1].split(",") if v.strip()]
-            metadata[key] = items
-        # Strip quotes
-        elif value.startswith('"') and value.endswith('"'):
-            metadata[key] = value[1:-1]
-        elif value.lower() == "true":
-            metadata[key] = True
-        elif value.lower() == "false":
-            metadata[key] = False
-        else:
-            metadata[key] = value
-
-    return metadata, body
 
 
 def enrich_payload(base_payload: dict, frontmatter: dict) -> dict:
