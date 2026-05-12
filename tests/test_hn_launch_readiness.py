@@ -84,6 +84,28 @@ def test_hn_launch_readiness_passes_when_all_truth_surfaces_are_green(tmp_path: 
     assert [check.status.value for check in report.checks] == ["pass"] * 10
 
 
+def test_hn_launch_readiness_warnings_do_not_block_ready(tmp_path: Path) -> None:
+    config = _ready_fixture(tmp_path)
+
+    def degraded_logos_getter(url: str, *, timeout: float = 5.0) -> dict[str, Any]:
+        if url.endswith("/api/health"):
+            return {"overall_status": "failed", "failed_checks": ["connectivity.phone"]}
+        return _json_getter_ready(url, timeout=timeout)
+
+    report = collect_hn_launch_readiness(
+        config,
+        runner=FakeRunner(active_units=_all_active_units()),
+        json_getter=degraded_logos_getter,
+        text_getter=_text_getter_ready,
+        now_epoch=NOW,
+    )
+
+    checks = {check.id: check for check in report.checks}
+    assert report.status.value == "warn"
+    assert report.ready is True
+    assert checks["logos_api"].status.value == "warn"
+
+
 def test_hn_launch_readiness_flags_private_voice_obs_youtube_and_failed_units(
     tmp_path: Path,
 ) -> None:
