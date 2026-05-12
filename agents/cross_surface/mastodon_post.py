@@ -151,6 +151,7 @@ class MastodonPoster:
         self._stop_evt = threading.Event()
         self._client = None  # built on first non-dry-run apply
         self._processed_event_ids: set[str] | None = None
+        self._post_receipts: dict[str, dict[str, Any]] | None = None
 
         self.posts_total = Counter(
             "hapax_broadcast_mastodon_posts_total",
@@ -323,13 +324,14 @@ class MastodonPoster:
         try:
             self._idempotency_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._idempotency_path.with_suffix(".tmp")
-            post_receipts = self._read_post_receipts()
+            if self._post_receipts is None:
+                self._post_receipts = self._read_post_receipts()
             if receipt is not None:
-                post_receipts[event_id] = receipt
+                self._post_receipts[event_id] = receipt
             payload = {
                 "schema_version": 2,
                 "event_ids": sorted(self._processed_event_ids),
-                "posts": [post_receipts[key] for key in sorted(post_receipts)],
+                "posts": [self._post_receipts[key] for key in sorted(self._post_receipts)],
             }
             tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
             tmp.replace(self._idempotency_path)

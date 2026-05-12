@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from typing import Any
 
@@ -44,7 +45,11 @@ def deploy_module(monkeypatch: pytest.MonkeyPatch) -> Any:
             "salience": 1.0,
         },
     )
-    monkeypatch.setattr(module, "check_social_fanout", lambda event_id: {})
+    monkeypatch.setattr(
+        module,
+        "check_social_fanout",
+        lambda event_id: {"mastodon": True, "bluesky": True},
+    )
     monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
     return module
 
@@ -112,11 +117,39 @@ def test_check_social_fanout_reads_schema_v2_receipts(
     mastodon = tmp_path / "mastodon.json"
     bluesky = tmp_path / "bluesky.json"
     mastodon.write_text(
-        '{"schema_version": 2, "event_ids": ["event-1"], "posts": []}',
+        json.dumps(
+            {
+                "schema_version": 2,
+                "event_ids": ["event-1"],
+                "posts": [
+                    {
+                        "event_id": "event-1",
+                        "event_public_url": "https://hapax.weblog.lol/post",
+                        "public_url": "https://mastodon.test/@hapax/1",
+                        "result": "ok",
+                        "text": "Hapax weblog. https://hapax.weblog.lol/post",
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
     )
     bluesky.write_text(
-        '{"schema_version": 2, "event_ids": [], "posts": [{"event_id": "event-1"}]}',
+        json.dumps(
+            {
+                "schema_version": 2,
+                "event_ids": [],
+                "posts": [
+                    {
+                        "event_id": "event-1",
+                        "event_public_url": "https://hapax.weblog.lol/post",
+                        "result": "ok",
+                        "text": "Hapax weblog. https://hapax.weblog.lol/post",
+                        "uri": "at://did:plc:example/app.bsky.feed.post/1",
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(module, "MASTODON_IDS_PATH", mastodon)
@@ -126,3 +159,51 @@ def test_check_social_fanout_reads_schema_v2_receipts(
         "mastodon": True,
         "bluesky": True,
     }
+
+
+def test_check_social_fanout_schema_v2_event_id_without_receipt_is_not_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_module()
+    mastodon = tmp_path / "mastodon.json"
+    bluesky = tmp_path / "bluesky.json"
+    mastodon.write_text(
+        '{"schema_version": 2, "event_ids": ["event-1"], "posts": []}',
+        encoding="utf-8",
+    )
+    bluesky.write_text(
+        '{"schema_version": 2, "event_ids": ["event-1"], "posts": [{"event_id": "event-1"}]}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "MASTODON_IDS_PATH", mastodon)
+    monkeypatch.setattr(module, "BLUESKY_IDS_PATH", bluesky)
+
+    assert module.check_social_fanout("event-1") == {
+        "mastodon": False,
+        "bluesky": False,
+    }
+
+
+def test_check_only_fails_when_social_fanout_missing(
+    deploy_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(deploy_module, "check_social_fanout", lambda event_id: {})
+
+    assert deploy_module.main([]) == 1
+
+
+def test_live_egress_fails_when_social_fanout_missing_and_cleans_up(
+    deploy_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deleted = False
+
+    def _delete_test_post() -> bool:
+        nonlocal deleted
+        deleted = True
+        return True
+
+    monkeypatch.setattr(deploy_module, "check_social_fanout", lambda event_id: {})
+    monkeypatch.setattr(deploy_module, "delete_test_post", _delete_test_post)
+
+    assert deploy_module.main(["--live-egress", "--cleanup-live"]) == 1
+    assert deleted is True

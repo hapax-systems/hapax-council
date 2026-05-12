@@ -84,3 +84,15 @@ class TestPublisher:
 
         assert result.error is True
         assert result.detail == "network_error"
+
+    def test_invalid_timeout_falls_back_to_default(self) -> None:
+        session = MagicMock()
+        session.post.return_value.status_code = 200
+        publisher = OmgLolStatuslogPublisher(session=session)
+        payload = _payload()
+        payload.metadata["timeout_s"] = "not-a-float"
+
+        result = publisher.publish(payload)
+
+        assert result.ok is True
+        assert session.post.call_args.kwargs["timeout"] == 10.0

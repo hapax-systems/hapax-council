@@ -139,6 +139,7 @@ class BlueskyPoster:
         self._stop_evt = threading.Event()
         self._client = None  # built on first non-dry-run apply
         self._processed_event_ids: set[str] | None = None
+        self._post_receipts: dict[str, dict[str, Any]] | None = None
 
         self.posts_total = Counter(
             "hapax_broadcast_bluesky_posts_total",
@@ -311,13 +312,14 @@ class BlueskyPoster:
         try:
             self._idempotency_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._idempotency_path.with_suffix(".tmp")
-            post_receipts = self._read_post_receipts()
+            if self._post_receipts is None:
+                self._post_receipts = self._read_post_receipts()
             if receipt is not None:
-                post_receipts[event_id] = receipt
+                self._post_receipts[event_id] = receipt
             payload = {
                 "schema_version": 2,
                 "event_ids": sorted(self._processed_event_ids),
-                "posts": [post_receipts[key] for key in sorted(post_receipts)],
+                "posts": [self._post_receipts[key] for key in sorted(self._post_receipts)],
             }
             tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
             tmp.replace(self._idempotency_path)
@@ -504,7 +506,7 @@ def _extract_post_uri(raw_result: Any) -> str | None:
 
 
 def _bsky_public_url_from_uri(uri: str | None, handle: str | None) -> str | None:
-    if not uri or not handle:
+    if not uri:
         return None
     marker = "/app.bsky.feed.post/"
     if marker not in uri:
@@ -512,7 +514,14 @@ def _bsky_public_url_from_uri(uri: str | None, handle: str | None) -> str | None
     rkey = uri.rsplit(marker, 1)[-1].strip("/")
     if not rkey:
         return None
-    return f"https://bsky.app/profile/{handle}/post/{rkey}"
+    profile = handle
+    if uri.startswith("at://"):
+        repo = uri.removeprefix("at://").split("/", 1)[0]
+        if repo.startswith("did:"):
+            profile = repo
+    if not profile:
+        return None
+    return f"https://bsky.app/profile/{profile}/post/{rkey}"
 
 
 def _post_receipt(

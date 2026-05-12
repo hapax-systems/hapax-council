@@ -51,7 +51,11 @@ class OmgLolStatuslogPublisher(Publisher):
             return PublisherResult(refused=True, detail="missing bearer token")
 
         skip_mastodon = bool(payload.metadata.get("skip_mastodon_post", True))
-        timeout_s = float(payload.metadata.get("timeout_s", 10.0))
+        try:
+            timeout_s = float(payload.metadata.get("timeout_s", 10.0))
+        except (TypeError, ValueError):
+            log.warning("invalid omg.lol statuslog timeout; falling back to 10s")
+            timeout_s = 10.0
         url = OMG_STATUSLOG_API_URL.format(address=payload.target)
         try:
             response = self.session.post(

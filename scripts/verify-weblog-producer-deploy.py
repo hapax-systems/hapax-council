@@ -118,16 +118,41 @@ def check_social_fanout(event_id: str) -> dict[str, bool]:
         if isinstance(ids, dict):
             event_ids = ids.get("event_ids")
             posts = ids.get("posts")
-            listed = isinstance(event_ids, list) and event_id in event_ids
-            receipted = isinstance(posts, list) and any(
-                isinstance(post, dict) and post.get("event_id") == event_id for post in posts
-            )
-            results[name] = listed or receipted
+            if ids.get("schema_version") == 2 or isinstance(posts, list):
+                results[name] = isinstance(posts, list) and any(
+                    _post_receipt_proves_public_fanout(post, event_id) for post in posts
+                )
+                continue
+            results[name] = isinstance(event_ids, list) and event_id in event_ids
         elif isinstance(ids, list):
             results[name] = event_id in ids
         else:
             results[name] = False
     return results
+
+
+def _post_receipt_proves_public_fanout(post: object, event_id: str) -> bool:
+    if not isinstance(post, dict):
+        return False
+    if post.get("event_id") != event_id or post.get("result") != "ok":
+        return False
+    event_public_url = post.get("event_public_url")
+    text = post.get("text")
+    if not isinstance(event_public_url, str) or not event_public_url:
+        return False
+    if not isinstance(text, str) or event_public_url not in text:
+        return False
+    return bool(post.get("public_url") or post.get("uri"))
+
+
+def _required_social_fanout_ok(fanout: dict[str, bool]) -> bool:
+    return all(
+        fanout.get(surface, False)
+        for surface in (
+            "mastodon",
+            "bluesky",
+        )
+    )
 
 
 def wait_for_event(after_ts: float) -> dict | None:
@@ -189,7 +214,10 @@ def main(argv: list[str] | None = None) -> int:
             log.info("found weblog event: %s", event.get("event_id"))
             fanout = check_social_fanout(event["event_id"])
             log.info("social fanout: %s", fanout)
-            return 0
+            if _required_social_fanout_ok(fanout):
+                return 0
+            log.error("missing required social fanout proof for %s", event.get("event_id"))
+            return 1
         log.warning("no weblog events found in events.jsonl")
         return 1
 
@@ -222,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cleanup_live:
         delete_test_post()
 
-    all_ok = event is not None
+    all_ok = event is not None and _required_social_fanout_ok(fanout)
     if all_ok:
         log.info("PASS: weblog event producer deployment verified")
     else:

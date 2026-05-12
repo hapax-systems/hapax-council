@@ -212,7 +212,7 @@ class TestCursor:
             {
                 "event_id": "rvpe:broadcast_boundary:proof",
                 "event_public_url": "https://www.youtube.com/watch?v=broadcast-123",
-                "public_url": "https://bsky.app/profile/hapax.bsky.social/post/3proof",
+                "public_url": "https://bsky.app/profile/did:plc:example/post/3proof",
                 "recorded_at": state["posts"][0]["recorded_at"],
                 "result": "ok",
                 "text": "proof post",
