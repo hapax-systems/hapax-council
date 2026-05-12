@@ -6,6 +6,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UNIT = REPO_ROOT / "systemd" / "units" / "mediamtx.service"
+SOURCE_ACTIVATION_DROPIN = (
+    REPO_ROOT / "systemd" / "units" / "mediamtx.service.d" / "20-source-activation-worktree.conf"
+)
 
 
 def _sections() -> dict[str, set[str]]:
@@ -41,3 +44,11 @@ def test_mediamtx_is_not_lifecycle_bound_to_compositor() -> None:
 
     assert "PartOf=studio-compositor.service" not in sections["Unit"]
     assert "After=network-online.target hapax-secrets.service" in sections["Unit"]
+
+
+def test_mediamtx_runtime_uses_source_activation_worktree() -> None:
+    text = SOURCE_ACTIVATION_DROPIN.read_text(encoding="utf-8")
+
+    assert "WorkingDirectory=%h/.cache/hapax/source-activation/worktree" in text
+    assert "ExecStart=\n" in text
+    assert "ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/mediamtx-start.sh" in text
