@@ -53,7 +53,7 @@ def test_graph_runtime_honors_camera_legible_allowlist(monkeypatch) -> None:
     assert runtime.current_graph.name == "Clean"
 
 
-def test_graph_runtime_blocks_camera_legible_graph_body_violation(monkeypatch) -> None:
+def test_graph_runtime_allows_clampable_camera_legible_graph_body(monkeypatch) -> None:
     monkeypatch.setenv("HAPAX_CAMERA_LEGIBLE_FX_ONLY", "1")
     monkeypatch.setenv("HAPAX_CAMERA_LEGIBLE_PRESET_ALLOWLIST", "clean")
     runtime = _runtime()
@@ -66,11 +66,9 @@ def test_graph_runtime_blocks_camera_legible_graph_body_violation(monkeypatch) -
         edges=[["@live", "post"], ["post", "o"]],
     )
 
-    with pytest.raises(PresetPolicyError) as exc:
-        runtime.load_graph(graph)
+    runtime.load_graph(graph)
 
-    assert exc.value.decision.reason == "camera_legible_anonymize"
-    assert runtime.current_graph is None
+    assert runtime.current_graph == graph
 
 
 def test_graph_runtime_enforces_live_surface_policy_by_default() -> None:
@@ -78,7 +76,7 @@ def test_graph_runtime_enforces_live_surface_policy_by_default() -> None:
     graph = EffectGraph(
         name="Ambient",
         nodes={
-            "noise": NodeInstance(type="noise_overlay", params={"intensity": 0.02}),
+            "noise": NodeInstance(type="noise_gen", params={"amplitude": 0.02}),
             "o": NodeInstance(type="output"),
         },
         edges=[["@live", "noise"], ["noise", "o"]],
@@ -87,5 +85,5 @@ def test_graph_runtime_enforces_live_surface_policy_by_default() -> None:
     with pytest.raises(PresetPolicyError) as exc:
         runtime.load_graph(graph)
 
-    assert exc.value.decision.reason == "camera_legible_full_frame_noise"
+    assert exc.value.decision.reason == "camera_legible_blocked_node"
     assert runtime.current_graph is None

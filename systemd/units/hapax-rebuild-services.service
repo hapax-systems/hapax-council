@@ -54,6 +54,12 @@ ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/
 # hapax-reverie: visual expression Python daemon (distinct from the Rust wgpu binary)
 ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-reverie.service --watch "agents/reverie/ shared/" --sha-key reverie
 
+# hapax-parametric-modulation-heartbeat: writes live visual-parameter
+# overrides into the same Reverie/imagination uniform surface. Restart on
+# edits to the heartbeat or shared policy so live effect bounds are not
+# stranded in the source tree while the old walker keeps writing /dev/shm.
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-parametric-modulation-heartbeat.service --watch "agents/parametric_modulation_heartbeat/ shared/" --sha-key parametric-modulation-heartbeat
+
 # hapax-imagination-loop: imagination daemon loop (single-file modules)
 ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-imagination-loop.service --watch "agents/imagination.py agents/imagination_loop.py agents/imagination_resolver.py agents/imagination_context.py shared/" --sha-key imagination-loop
 

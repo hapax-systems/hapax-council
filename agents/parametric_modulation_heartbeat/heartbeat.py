@@ -82,6 +82,7 @@ from shared.parameter_envelopes import (
     envelopes,
     joint_constraints,
 )
+from shared.reverie_uniform_policy import clamp_reverie_live_uniforms
 
 log = logging.getLogger(__name__)
 
@@ -491,7 +492,7 @@ def write_uniform_overrides(
                 existing = {k: float(v) for k, v in data.items() if isinstance(v, (int, float))}
         except (OSError, json.JSONDecodeError):
             log.warning("parametric walker: malformed uniforms file at %s — overwriting", path)
-    merged = {**existing, **values}
+    merged = clamp_reverie_live_uniforms({**existing, **values})
     atomic_write_json(merged, path)
 
 

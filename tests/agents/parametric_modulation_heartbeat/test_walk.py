@@ -302,7 +302,7 @@ class TestUniformOverlay:
         hb.write_uniform_overrides({"color.brightness": 1.1}, path=path)
         payload = _read_json(path)
         assert payload["signal.stance"] == 0.25
-        assert payload["noise.amplitude"] == 0.5
+        assert payload["noise.amplitude"] == 0.25
         assert payload["color.brightness"] == 1.1
 
     def test_overwrites_when_key_collides(self, tmp_path: Path) -> None:

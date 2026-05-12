@@ -12,6 +12,8 @@ OBS = UNITS_DIR / "hapax-obs-livestream.service"
 OBS_SOURCE_RESET = UNITS_DIR / "hapax-obs-v4l2-source-reset.service"
 LIVE_SURFACE_GUARD = UNITS_DIR / "hapax-live-surface-guard.service"
 HLS_NO_CACHE = UNITS_DIR / "hapax-hls-no-cache.service"
+REVERIE = UNITS_DIR / "hapax-reverie.service"
+PARAMETRIC_HEARTBEAT = UNITS_DIR / "hapax-parametric-modulation-heartbeat.service"
 LAYOUT_MODE_DROPIN = UNITS_DIR / "studio-compositor.service.d" / "layout-mode-persist.conf"
 SOURCE_ROOT = "%h/.cache/hapax/source-activation/worktree"
 
@@ -64,6 +66,23 @@ def test_studio_compositor_runs_from_activation_worktree() -> None:
     assert any("hapax-v4l2-video42-format-guard --verify-only" in line for line in lines)
     assert any("v4l2-bridge.sock*" in line and "-delete" in line for line in execution_lines)
     assert any("HAPAX_COMPOSITOR_LAYOUT_PATH=" in line for line in lines)
+
+
+def test_reverie_and_parametric_heartbeat_run_from_activation_worktree() -> None:
+    for unit in (REVERIE, PARAMETRIC_HEARTBEAT):
+        parser = _load_unit(unit)
+        assert parser.get("Service", "WorkingDirectory") == SOURCE_ROOT
+        assert parser.get("Service", "ExecStart").startswith(f"{SOURCE_ROOT}/.venv/bin/python")
+        exec_start_pre = "\n".join(_raw_keys(unit, "Service", "ExecStartPre"))
+        assert "hapax-compositor-runtime-source-check" in exec_start_pre
+        lines = _active_unit_lines(unit)
+        execution_lines = [
+            line
+            for line in lines
+            if line.startswith(("ExecStart=", "ExecStartPre=", "WorkingDirectory="))
+        ]
+        assert all("%h/projects/hapax-council" not in line for line in execution_lines)
+        assert any(f"PYTHONPATH={SOURCE_ROOT}" in line for line in lines)
 
 
 def test_studio_compositor_starts_bridge_sidecar() -> None:
