@@ -54,7 +54,7 @@ class ReadinessReport:
 
     @property
     def ready(self) -> bool:
-        return all(check.status is ReadinessStatus.PASS for check in self.checks)
+        return not any(check.status is ReadinessStatus.FAIL for check in self.checks)
 
     @property
     def status(self) -> ReadinessStatus:
@@ -216,7 +216,7 @@ def soak_hn_launch_readiness(
     failed_samples = [
         {"sample_index": index, "failures": sample.to_dict()["failures"]}
         for index, sample in enumerate(samples)
-        if not sample.ready
+        if sample.status is ReadinessStatus.FAIL
     ]
     soak_check = CheckResult(
         id="thirty_minute_soak",

@@ -8,7 +8,8 @@ ConditionPathExists=/var/lib/hapax/m8-stems
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/find ${HAPAX_M8_STEM_DIR:-/var/lib/hapax/m8-stems} -type f -name "*.flac" -mtime +30 -delete
+Environment=HAPAX_M8_STEM_DIR=/var/lib/hapax/m8-stems
+ExecStart=/usr/bin/find ${HAPAX_M8_STEM_DIR} -type f -name "*.flac" -mtime +30 -delete
 # Read-only otherwise; the sweep is the one mutation. Leading `-` makes
 # the path optional so namespace setup succeeds even before the directory
 # exists (m8-stem-recorder.sh creates it on first record).
