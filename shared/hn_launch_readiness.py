@@ -28,6 +28,13 @@ class ReadinessStatus(StrEnum):
     FAIL = "fail"
 
 
+LOGOS_API_WARNING_CLASSIFICATION = "non_blocking_hn_launch_warning"
+LOGOS_API_WARNING_RATIONALE = (
+    "HN launch requires logos-api liveness plus ready/ok SHM health; failed aggregate "
+    "/api/health sub-checks are recorded as non-launch-critical platform posture debt."
+)
+
+
 @dataclass(frozen=True)
 class CheckResult:
     id: str
@@ -465,6 +472,8 @@ def _check_logos_api(context: _CheckContext) -> CheckResult:
     shm_payload = _json_payload(shm_health)
     api_health = _get_json_safe(context.json_getter, f"{context.config.logos_base_url}/api/health")
     api_payload = api_health.get("data")
+    api_overall_status = None
+    api_failed_checks: list[str] = []
 
     failed_reasons: list[str] = []
     warning_reasons: list[str] = []
@@ -479,9 +488,19 @@ def _check_logos_api(context: _CheckContext) -> CheckResult:
     if api_health.get("error"):
         failed_reasons.append("logos API health endpoint is unreachable")
     elif isinstance(api_payload, Mapping):
-        overall = api_payload.get("overall_status") or api_payload.get("status")
-        if overall not in {"healthy", "ok"}:
-            warning_reasons.append(f"logos API overall status is {overall!r}")
+        api_overall_status = api_payload.get("overall_status") or api_payload.get("status")
+        api_failed_checks = _string_list(api_payload.get("failed_checks"))
+        if api_overall_status not in {"healthy", "ok"}:
+            failed_checks_summary = (
+                f"; failed health checks: {', '.join(api_failed_checks)}"
+                if api_failed_checks
+                else ""
+            )
+            warning_reasons.append(
+                f"logos API overall status is {api_overall_status!r}"
+                f"; classified as {LOGOS_API_WARNING_CLASSIFICATION}"
+                f"{failed_checks_summary}"
+            )
 
     if failed_reasons:
         status = ReadinessStatus.FAIL
@@ -505,7 +524,11 @@ def _check_logos_api(context: _CheckContext) -> CheckResult:
             "shm_ready": shm_payload.get("ready") if isinstance(shm_payload, Mapping) else None,
             "shm_status": shm_payload.get("status") if isinstance(shm_payload, Mapping) else None,
             "api_health": api_payload,
+            "api_overall_status": api_overall_status,
+            "api_failed_checks": api_failed_checks,
             "api_error": api_health.get("error"),
+            "warning_classification": LOGOS_API_WARNING_CLASSIFICATION if warning_reasons else None,
+            "warning_rationale": LOGOS_API_WARNING_RATIONALE if warning_reasons else None,
         },
     )
 
@@ -910,6 +933,12 @@ def _probe_json_file(
 
 def _json_payload(probe: Mapping[str, Any]) -> Any:
     return probe.get("json")
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes | bytearray):
+        return []
+    return [item for item in value if isinstance(item, str)]
 
 
 def _read_text_file(path: Path) -> str:
