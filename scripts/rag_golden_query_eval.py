@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import math
 import os
+import sys
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -19,6 +21,8 @@ DEFAULT_PRECISION_K = 5
 DEFAULT_QDRANT_URL = "http://localhost:6333"
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_EMBEDDING_MODEL = "nomic-embed-cpu"
+DEFAULT_EMBEDDING_BASE_MODEL = "nomic-embed-text-v2-moe"
+DEFAULT_EXPECTED_EMBED_DIMENSIONS = 768
 DEFAULT_SUITE = Path("evals/rag/golden_queries.json")
 
 
@@ -451,15 +455,65 @@ def build_parser() -> argparse.ArgumentParser:
         "--embedding-model",
         default=os.environ.get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
     )
+    parser.add_argument(
+        "--embedding-base-model",
+        default=os.environ.get("NOMIC_BASE_MODEL", DEFAULT_EMBEDDING_BASE_MODEL),
+        help="Base Ollama model expected before the embedding alias is copied.",
+    )
+    parser.add_argument(
+        "--expected-embed-dimensions",
+        type=int,
+        default=int(os.environ.get("EXPECTED_EMBED_DIMENSIONS", DEFAULT_EXPECTED_EMBED_DIMENSIONS)),
+    )
     parser.add_argument("--ollama-url", default=os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_URL))
+    parser.add_argument(
+        "--skip-embedding-health-check",
+        action="store_true",
+        help="Skip the local Ollama alias/dimension preflight.",
+    )
     parser.add_argument("--exclude-inventory", action="store_true")
     parser.add_argument("--compare", type=Path, default=None)
     parser.add_argument("--output", type=Path, default=None)
     return parser
 
 
+def run_embedding_health_preflight(
+    *,
+    ollama_url: str,
+    embedding_model: str,
+    embedding_base_model: str | None,
+    expected_dimensions: int,
+) -> dict[str, Any]:
+    script_path = Path(__file__).resolve().with_name("nomic_embedding_health_check.py")
+    spec = importlib.util.spec_from_file_location("_nomic_embedding_health_check", script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load embedding health check from {script_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.run_health_check(
+        ollama_url=ollama_url,
+        model_alias=embedding_model,
+        base_model=embedding_base_model,
+        expected_dimensions=expected_dimensions,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not args.skip_embedding_health_check:
+        health_report = run_embedding_health_preflight(
+            ollama_url=args.ollama_url,
+            embedding_model=args.embedding_model,
+            embedding_base_model=args.embedding_base_model,
+            expected_dimensions=args.expected_embed_dimensions,
+        )
+        if not health_report["ok"]:
+            print("embedding health check failed:", file=sys.stderr)
+            print(json.dumps(health_report, indent=2, sort_keys=True), file=sys.stderr)
+            return 2
+        dimensions = health_report["checks"]["embedding_dimensions"]["observed"][0]
+        print(f"embedding health: ok model={args.embedding_model} dimensions={dimensions}")
     suite = load_suite(args.suite)
     report = run_suite(
         suite,
