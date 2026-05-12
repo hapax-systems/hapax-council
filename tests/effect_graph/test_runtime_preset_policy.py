@@ -71,3 +71,21 @@ def test_graph_runtime_blocks_camera_legible_graph_body_violation(monkeypatch) -
 
     assert exc.value.decision.reason == "camera_legible_anonymize"
     assert runtime.current_graph is None
+
+
+def test_graph_runtime_enforces_live_surface_policy_by_default() -> None:
+    runtime = _runtime()
+    graph = EffectGraph(
+        name="Ambient",
+        nodes={
+            "noise": NodeInstance(type="noise_overlay", params={"intensity": 0.02}),
+            "o": NodeInstance(type="output"),
+        },
+        edges=[["@live", "noise"], ["noise", "o"]],
+    )
+
+    with pytest.raises(PresetPolicyError) as exc:
+        runtime.load_graph(graph)
+
+    assert exc.value.decision.reason == "camera_legible_full_frame_noise"
+    assert runtime.current_graph is None

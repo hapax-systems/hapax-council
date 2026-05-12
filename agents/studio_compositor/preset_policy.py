@@ -9,10 +9,13 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 _TRUTHY = frozenset({"1", "true", "yes", "on", "enabled", "active"})
+_FALSY = frozenset({"0", "false", "no", "off", "disabled", "inactive"})
 _IMPLICIT_CAMERA_LEGIBLE_PRESETS = frozenset({"clean"})
 _FULL_FRAME_NOISE_NODE_TYPES = frozenset({"noise_gen", "noise_overlay"})
 _MAX_CAMERA_LEGIBLE_ANONYMIZE = 0.5
 _MIN_CAMERA_LEGIBLE_POSTERIZE_LEVELS = 8.0
+_MAX_NEUTRAL_CONTENT_SLOT_PARAM = 0.01
+_MAX_CAMERA_LEGIBLE_CONTENT_OPACITY = 0.35
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,10 @@ def _csv_names(raw: str | None) -> frozenset[str]:
 
 def _truthy(raw: str | None) -> bool:
     return (raw or "").strip().lower() in _TRUTHY
+
+
+def _falsy(raw: str | None) -> bool:
+    return (raw or "").strip().lower() in _FALSY
 
 
 def autonomous_fx_mutations_enabled(env: Mapping[str, str] | None = None) -> bool:
@@ -135,6 +142,8 @@ def _camera_legible_contract_enabled(
     env: Mapping[str, str] | None = None,
 ) -> bool:
     effective_env = os.environ if env is None else env
+    if not _falsy(effective_env.get("HAPAX_LIVE_SURFACE_EFFECT_POLICY")):
+        return True
     if any(name in _IMPLICIT_CAMERA_LEGIBLE_PRESETS for name in candidates):
         return True
     return _truthy(effective_env.get("HAPAX_CAMERA_LEGIBLE_FX_ONLY"))
@@ -166,6 +175,54 @@ def _param_float(
         return float(raw)
     except (TypeError, ValueError):
         return default
+
+
+def _content_slot_use_is_neutral(node: Any, *, registry: Any = None) -> bool:
+    """Return whether a content-slot node is declared but inert.
+
+    Most historical presets include ``content_layer`` as a latent recruitment
+    point. In the GL compositor path that layer is only camera-safe while it
+    remains a pass-through; nonzero content salience/intensity needs runtime
+    slot-binding and opacity proof before it can be considered camera-legible.
+    """
+
+    salience = _param_float(
+        node,
+        "salience",
+        registry=registry,
+        default=0.0,
+    )
+    intensity = _param_float(
+        node,
+        "intensity",
+        registry=registry,
+        default=0.0,
+    )
+    return (
+        salience <= _MAX_NEUTRAL_CONTENT_SLOT_PARAM and intensity <= _MAX_NEUTRAL_CONTENT_SLOT_PARAM
+    )
+
+
+def _content_slot_policy_is_camera_legible(node_def: Any) -> bool:
+    policy = getattr(node_def, "content_slot_policy", None)
+    if not isinstance(policy, Mapping):
+        return False
+    geometry = policy.get("camera_geometry_policy")
+    if not isinstance(geometry, Mapping):
+        return False
+    try:
+        max_opacity = float(policy.get("camera_legible_max_opacity", 1.0))
+    except (TypeError, ValueError):
+        return False
+    return (
+        policy.get("provider") == "content_source_manager"
+        and policy.get("missing") == "transparent_noop"
+        and policy.get("manager_required") is True
+        and policy.get("opacity_source") == "family_filtered"
+        and max_opacity <= _MAX_CAMERA_LEGIBLE_CONTENT_OPACITY
+        and geometry.get("overlay_only") is True
+        and geometry.get("destructive") is False
+    )
 
 
 def evaluate_preset_graph_policy(
@@ -203,12 +260,20 @@ def evaluate_preset_graph_policy(
 
         node_def = registry.get(node_type) if registry is not None else None
         if getattr(node_def, "requires_content_slots", False):
-            return PresetPolicyDecision(
-                allowed=False,
-                reason="camera_legible_unbound_content_slots",
-                preset=primary,
-                matched=(node_id, node_type),
-            )
+            if not _content_slot_policy_is_camera_legible(node_def):
+                return PresetPolicyDecision(
+                    allowed=False,
+                    reason="camera_legible_content_slot_contract",
+                    preset=primary,
+                    matched=(node_id, node_type),
+                )
+            if not _content_slot_use_is_neutral(node, registry=registry):
+                return PresetPolicyDecision(
+                    allowed=False,
+                    reason="camera_legible_unbound_content_slots",
+                    preset=primary,
+                    matched=(node_id, node_type),
+                )
 
         if node_type == "postprocess":
             anonymize = _param_float(
