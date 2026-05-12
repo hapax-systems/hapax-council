@@ -69,8 +69,8 @@ def _private_ready() -> AudioSurfaceObservation:
     return AudioSurfaceObservation(
         health_state=AudioHealthState.SAFE,
         evidence_refs=("evidence:private-monitor-target",),
-        witness_refs=("witness:audio.private_monitor:exact-yeti",),
-        route_refs=("route:private.yeti_monitor",),
+        witness_refs=("witness:audio.private_monitor:exact-s4",),
+        route_refs=("route:private.s4_track_fenced",),
         confidence=0.86,
         private_only=True,
     )
@@ -240,7 +240,7 @@ def test_private_monitor_blocked_absent_surfaces_without_broadcast_fallback() ->
     blocked = AudioSurfaceObservation(
         health_state=AudioHealthState.BLOCKED_ABSENT,
         evidence_refs=("evidence:private-monitor-target",),
-        route_refs=("route:private.yeti_monitor",),
+        route_refs=("route:private.s4_track_fenced",),
         blocking_reasons=("exact_private_monitor_target_absent",),
         confidence=0.8,
     )

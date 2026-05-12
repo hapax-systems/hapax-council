@@ -25,7 +25,7 @@ REQUIRED_AUDIO_SURFACE_IDS = frozenset(
         "audio.programme_audio",
         "audio.stt_captions",
         "audio.l12_capture",
-        "audio.yeti_monitor",
+        "audio.s4_private_monitor",
         "audio.broadcast_egress",
         "audio.broadcast_health",
         "audio.no_private_leak",

@@ -175,7 +175,7 @@ def _write_private_monitor_ready(path: Path) -> None:
                 "reason_code": "exact_private_monitor_bound",
                 "sanitized": True,
                 "state": "ready",
-                "target_ref": "audio.yeti_monitor",
+                "target_ref": "audio.s4_private_monitor",
             }
         ),
         encoding="utf-8",

@@ -147,7 +147,7 @@
           "target_ref": "pipewire:hapax-private-monitor-capture",
           "route_id": "route:private.assistant_monitor",
           "substrate_ref": "audio.private_assistant_monitor",
-          "concrete_interface": "Assistant role to private monitor bridge and exact Yeti playback target",
+          "concrete_interface": "Assistant role to private monitor bridge and exact S-4 private-monitor target",
           "raw_high_level_target_assumption": false,
           "implementation_truth_source_refs": ["config:audio-topology.yaml", "config:pipewire/private-monitor-bridge"]
         },
@@ -168,8 +168,8 @@
         "failure_reason": "private_monitor_presence_not_witnessed"
       },
       "public_claim_allowed": false,
-      "blocked_reasons": ["seed_fixture_not_runtime_truth", "exact_yeti_target_not_witnessed"],
-      "notes": "Missing Yeti or orphaned playback is blocked_absent and must not fallback to public audio."
+      "blocked_reasons": ["seed_fixture_not_runtime_truth", "exact_s4_target_not_witnessed"],
+      "notes": "Missing S-4 private monitor or orphaned playback is blocked_absent and must not fallback to public audio."
     },
     {
       "schema_version": 1,
@@ -188,7 +188,7 @@
           "target_ref": "pipewire:hapax-notification-private",
           "route_id": "route:private.notification_monitor",
           "substrate_ref": "audio.private_notification_monitor",
-          "concrete_interface": "Notification role to private notification monitor bridge and exact Yeti target",
+          "concrete_interface": "Notification role to private notification monitor bridge and exact S-4 private-monitor target",
           "raw_high_level_target_assumption": false,
           "implementation_truth_source_refs": ["config:audio-topology.yaml", "config:pipewire/private-notification-monitor"]
         },
@@ -337,31 +337,31 @@
     },
     {
       "schema_version": 1,
-      "surface_id": "audio.yeti_monitor",
-      "label": "Yeti private monitor",
-      "world_capability_ref": "audio.yeti_monitor",
-      "semantic_destination": "yeti_monitor",
+      "surface_id": "audio.s4_private_monitor",
+      "label": "S-4 private monitor",
+      "world_capability_ref": "audio.s4_private_monitor",
+      "semantic_destination": "s4_private_monitor",
       "surface_role": "observation",
       "grounding_status": "non_grounding_private",
       "health_state": "blocked_absent",
       "route_result": {
-        "semantic_destination": "yeti_monitor",
+        "semantic_destination": "s4_private_monitor",
         "concrete_target_binding": {
-          "binding_id": "binding:yeti_monitor",
+          "binding_id": "binding:s4_private_monitor",
           "media_role": "Assistant",
-          "target_ref": "hardware:blue-yeti-playback-exact",
-          "route_id": "route:private.yeti_monitor",
-          "substrate_ref": "audio.yeti_monitor",
-          "concrete_interface": "Exact Blue Yeti playback target and private monitor loopback state",
+          "target_ref": "audio.s4_private_monitor",
+          "route_id": "route:private.s4_track_fenced",
+          "substrate_ref": "audio.s4_private_monitor",
+          "concrete_interface": "Exact S-4 USB IN private-monitor target and fail-closed bridge state",
           "raw_high_level_target_assumption": false,
           "implementation_truth_source_refs": ["config:audio-topology.yaml", "private-monitor-presence-contract"]
         },
         "privacy_posture": "private_only",
         "fallback_policy": {
           "mode": "blocked_absent_silence",
-          "reason_code": "yeti_monitor_absent",
+          "reason_code": "s4_private_monitor_absent",
           "prohibited_fallback_refs": ["pipewire:default", "route:l12", "route:broadcast"],
-          "operator_visible_reason": "Yeti monitor absence is blocked_absent and must never route private comms elsewhere."
+          "operator_visible_reason": "S-4 private monitor absence is blocked_absent and must never route private comms elsewhere."
         },
         "witness_class": "private_audio_witness",
         "freshness": {
@@ -370,10 +370,10 @@
           "checked_at": null,
           "evidence_ref": null
         },
-        "failure_reason": "exact_yeti_monitor_not_present"
+        "failure_reason": "exact_s4_private_monitor_not_present"
       },
       "public_claim_allowed": false,
-      "blocked_reasons": ["seed_fixture_not_runtime_truth", "yeti_exact_target_missing"],
+      "blocked_reasons": ["seed_fixture_not_runtime_truth", "s4_exact_target_missing"],
       "notes": "Sink 4294967295 or orphaned playback is failure, not fallback."
     },
     {
