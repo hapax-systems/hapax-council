@@ -1,12 +1,15 @@
 # Monetization Rails — Capability Matrix
 
-**Status:** 10/10 rails wired end-to-end + sharing the idempotency registry as of 2026-05-03.
+**Status:** 10/10 receive-only rail receivers wired end-to-end + sharing the
+idempotency registry as of 2026-05-03. This is implementation capability, not a
+public-launch claim that every external account, public page, credential, and
+upstream service is active.
 
 Operator-facing reference for grant/sponsor outreach planning. Lists every wired payment rail with its auth shape, hosting cost, API endpoint, webhook event, 2026 changes, and current status.
 
 For governance status (egress posture, refusal behavior, V5 publisher invariants), see `docs/governance/2026-05-03-monetization-rails-tier-1-wired-complete.md`.
 
-## Active rails (10)
+## Wired receiver rails (10)
 
 | Rail | Auth | Cost | API endpoint | Webhook event(s) | 2026 changes | Status |
 |---|---|---|---|---|---|---|
