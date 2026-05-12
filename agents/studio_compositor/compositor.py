@@ -71,6 +71,33 @@ def _ingest_camera_salience_livestream_status(status: dict[str, Any]) -> bool:
         return False
 
 
+def _env_enabled(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+
+
+def _layout_source_ids_for_enabled_stages(layout: Layout) -> list[str]:
+    """Return assigned source IDs whose render stage is enabled this boot."""
+
+    enabled_stages: set[str] = set()
+    if _env_enabled("HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED", default=True):
+        enabled_stages.add("pre_fx")
+    if not _env_enabled("HAPAX_COMPOSITOR_DISABLE_POST_FX_OVERLAY", default=False):
+        enabled_stages.add("post_fx")
+
+    active: list[str] = []
+    seen: set[str] = set()
+    for assignment in layout.assignments:
+        stage = getattr(assignment, "render_stage", "post_fx")
+        if stage not in enabled_stages or assignment.source in seen:
+            continue
+        active.append(assignment.source)
+        seen.add(assignment.source)
+    return active
+
+
 # ---------------------------------------------------------------------------
 # Source-registry epic Phase D task 13 — Layout loader + hardcoded rescue
 #
@@ -1867,14 +1894,23 @@ class StudioCompositor:
         self.layout_state = state
         self.source_registry = registry
 
-        # Drop #41 BT-1 fix: start every registered backend that exposes
+        # Drop #41 BT-1 fix: start registered backends that expose
         # a start() method. Previously this was missing, leaving
         # layout-declared Cairo sources (token_pole, album,
         # stream_overlay, reverie) constructed-but-dormant — their
         # background render threads never ran and pip_draw_from_layout
         # silently skipped them. See SourceRegistry.start_all docstring
-        # for the full analysis.
-        registry.start_all()
+        # for the full analysis. The start set is bounded to render
+        # stages active for this boot so incident containment does not
+        # keep hidden Cairo runners burning CPU behind a disabled stage.
+        registered_source_ids = set(registry.ids())
+        registry.start_all(
+            [
+                source_id
+                for source_id in _layout_source_ids_for_enabled_stages(layout)
+                if source_id in registered_source_ids
+            ]
+        )
         self._activity_router = self._build_activity_router(layout, registry)
 
         # LRR Phase 2 item 10b: populate CairoSourceRegistry from the
