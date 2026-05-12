@@ -740,6 +740,147 @@ studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapsh
     assert "geometry_decorrelation_final_egress_collapse" in payload["reasons"]
 
 
+def test_preflight_require_final_pixel_proof_degrades_on_bad_series(
+    tmp_path: Path,
+) -> None:
+    final_path = tmp_path / "final-noise.png"
+    upstream_path = tmp_path / "upstream-content.png"
+    upstream = Image.new("RGB", (128, 72), (0, 0, 0))
+    upstream_pixels = upstream.load()
+    for y in range(8, 64):
+        for x in range(12, 116):
+            if (x // 12 + y // 10) % 2 == 0:
+                upstream_pixels[x, y] = (220, 120, 40)
+            elif (x // 15 + y // 9) % 2 == 0:
+                upstream_pixels[x, y] = (40, 180, 230)
+    upstream.save(upstream_path)
+    final = Image.new("RGB", (128, 72), (0, 0, 0))
+    final_pixels = final.load()
+    for y in range(72):
+        for x in range(128):
+            n = (x * 41 + y * 67 + ((x * y) % 53)) % 256
+            final_pixels[x, y] = (n, (n * 7) % 256, (n * 13) % 256)
+    final.save(final_path)
+
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 140
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 11
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.4
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "false",
+        "--final-frame-image",
+        str(final_path),
+        "--upstream-frame-image",
+        str(upstream_path),
+        "--require-final-pixel-proof",
+        "--final-frame-window-seconds",
+        "0",
+        "--final-frame-interval-ms",
+        "0",
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 10
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "degraded_containment"
+    assert payload["final_pixel_proof"]["frame_count"] == 6
+    assert any(
+        reason.startswith("final_pixel_proof:edge_correlation_median_below_threshold")
+        for reason in payload["reasons"]
+    )
+
+
+def test_preflight_consumes_ward_visibility_json_as_gate(tmp_path: Path) -> None:
+    ward_visibility = tmp_path / "ward-visibility.json"
+    ward_visibility.write_text(
+        json.dumps(
+            {
+                "ok": False,
+                "reasons": [
+                    "active_ward_missing:tier-panel",
+                    "visible_ward_count_below_min:1<3",
+                ],
+                "wards": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 140
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 11
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.4
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "false",
+        "--ward-visibility-json",
+        str(ward_visibility),
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 10
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "degraded_containment"
+    assert "ward_visibility:active_ward_missing:tier-panel" in payload["reasons"]
+    assert "ward_visibility:visible_ward_count_below_min:1<3" in payload["reasons"]
+    assert payload["ward_visibility"]["ok"] is False
+
+
+def test_preflight_consumes_effect_surface_json_as_gate(tmp_path: Path) -> None:
+    effect_surface = tmp_path / "effect-surface.json"
+    effect_surface.write_text(
+        json.dumps(
+            {
+                "ok": False,
+                "reasons": [
+                    "visual_governance_missing_preset:missing",
+                    "preset_node_type_unknown:bad:node:mystery",
+                ],
+                "summary": {"reason_count": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 140
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 11
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.4
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "false",
+        "--effect-surface-json",
+        str(effect_surface),
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 10
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "degraded_containment"
+    assert "effect_surface:visual_governance_missing_preset:missing" in payload["reasons"]
+    assert "effect_surface:preset_node_type_unknown:bad:node:mystery" in payload["reasons"]
+    assert payload["effect_surface"]["ok"] is False
+
+
 def test_preflight_can_require_fresh_hls_playlist(tmp_path: Path) -> None:
     playlist = tmp_path / "stream.m3u8"
     playlist.write_text("#EXTM3U\n", encoding="utf-8")
