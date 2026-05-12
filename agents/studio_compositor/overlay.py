@@ -30,6 +30,11 @@ def pre_fx_layout_draw_enabled() -> bool:
     return _env_enabled("HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED", default=True)
 
 
+def sierpinski_base_overlay_enabled() -> bool:
+    """Return whether the legacy full-canvas Sierpinski/GEAL base overlay may run."""
+    return _env_enabled("HAPAX_SIERPINSKI_BASE_OVERLAY_ENABLED", default=True)
+
+
 def _paint_face_obscure_rects(compositor: Any, cr: Any) -> None:
     """Paint Gruvbox-dark rectangles over detected face regions.
 
@@ -94,31 +99,32 @@ def on_draw(compositor: Any, overlay: Any, cr: Any, timestamp: int, duration: in
     # if downstream ward rendering or shaders fail.
     _paint_face_obscure_rects(compositor, cr)
 
-    # Sierpinski triangle with video content (drawn BEFORE GL effects apply)
-    sierpinski = getattr(compositor, "_sierpinski_renderer", None)
-    if sierpinski is not None:
-        # Feed audio energy for reactive line width
-        if hasattr(compositor, "_cached_audio"):
-            sierpinski.set_audio_energy(compositor._cached_audio.get("mixer_energy", 0.0))
-        # Sync active slot from loader to renderer
-        loader = getattr(compositor, "_sierpinski_loader", None)
-        if loader is not None:
-            sierpinski.set_active_slot(loader._active_slot)
-        sierpinski.draw(cr, canvas_w, canvas_h)
+    if sierpinski_base_overlay_enabled():
+        # Sierpinski triangle with video content (drawn BEFORE GL effects apply)
+        sierpinski = getattr(compositor, "_sierpinski_renderer", None)
+        if sierpinski is not None:
+            # Feed audio energy for reactive line width
+            if hasattr(compositor, "_cached_audio"):
+                sierpinski.set_audio_energy(compositor._cached_audio.get("mixer_energy", 0.0))
+            # Sync active slot from loader to renderer
+            loader = getattr(compositor, "_sierpinski_loader", None)
+            if loader is not None:
+                sierpinski.set_active_slot(loader._active_slot)
+            sierpinski.draw(cr, canvas_w, canvas_h)
 
-    # GEAL (Grounding Expression Anchoring Layer) — extends Sierpinski
-    # with voice halos + stance depth + grounding extrusions. Renders
-    # ON TOP of Sierpinski so its additive halos + overlays layer onto
-    # the same main-layer cairooverlay. No-op when HAPAX_GEAL_ENABLED
-    # is unset; the gate lives inside render() so cost is essentially
-    # zero in the disabled path.
-    geal = getattr(compositor, "_geal_source", None)
-    if geal is not None:
-        state: dict[str, Any] = {}
-        cached_audio = getattr(compositor, "_cached_audio", None)
-        if cached_audio is not None:
-            state["tts_active"] = cached_audio.get("tts_active", False)
-        geal.render(cr, canvas_w, canvas_h, time.monotonic(), state)
+        # GEAL (Grounding Expression Anchoring Layer) — extends Sierpinski
+        # with voice halos + stance depth + grounding extrusions. Renders
+        # ON TOP of Sierpinski so its additive halos + overlays layer onto
+        # the same main-layer cairooverlay. No-op when HAPAX_GEAL_ENABLED
+        # is unset; the gate lives inside render() so cost is essentially
+        # zero in the disabled path.
+        geal = getattr(compositor, "_geal_source", None)
+        if geal is not None:
+            state: dict[str, Any] = {}
+            cached_audio = getattr(compositor, "_cached_audio", None)
+            if cached_audio is not None:
+                state["tts_active"] = cached_audio.get("tts_active", False)
+            geal.render(cr, canvas_w, canvas_h, time.monotonic(), state)
 
     # Render content overlay zones (markdown/ANSI from Obsidian via Pango)
     if overlay_zone_manager_draw_enabled() and hasattr(compositor, "_overlay_zone_manager"):
