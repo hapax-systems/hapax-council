@@ -250,6 +250,23 @@ class TestCollectionConfig:
         )
 
 
+class TestPlainTextSourceChunking:
+    def test_text_and_python_sources_are_supported_for_shadow_ingest(self):
+        assert ".md" in ingest.CFG.supported_extensions
+        assert ".py" in ingest.CFG.supported_extensions
+        assert {".html", ".md", ".py", ".txt"} == ingest.PLAIN_TEXT_SOURCE_EXTENSIONS
+
+    def test_plain_text_chunks_preserve_line_content_without_docling(self):
+        text = "def a():\n    return 1\n\n" + "x" * 20
+
+        chunks = ingest.plain_text_chunks(text, max_chars=24)
+
+        assert [chunk.text for chunk in chunks] == ["def a():\n    return 1", "x" * 20]
+
+    def test_default_chunk_budget_moves_to_1024_tokens(self):
+        assert ingest.Config().chunk_max_tokens == 1024
+
+
 # ── point_id ─────────────────────────────────────────────────────────────────
 
 
@@ -614,6 +631,37 @@ class TestBulkIngestDedup:
         assert "hash" in saved_tracker[str(f)]
         assert "mtime" in saved_tracker[str(f)]
 
+    def test_shadow_bulk_ingest_records_collection_scoped_dedup_key(self, tmp_path, monkeypatch):
+        watch_dir = tmp_path / "docs"
+        watch_dir.mkdir()
+        f = watch_dir / "new.md"
+        f.write_text("brand new")
+
+        monkeypatch.setattr(
+            ingest,
+            "CFG",
+            ingest.Config(
+                watch_dirs=[watch_dir],
+                supported_extensions={".md"},
+                collection="documents_v2",
+            ),
+        )
+
+        saved_tracker = {}
+
+        def fake_save(t):
+            saved_tracker.update(t)
+
+        monkeypatch.setattr(ingest, "_load_dedup_tracker", lambda: {})
+        monkeypatch.setattr(ingest, "_save_dedup_tracker", fake_save)
+        monkeypatch.setattr(ingest, "process_retries", lambda: None)
+        monkeypatch.setattr(ingest, "ingest_file", MagicMock(return_value=(True, "")))
+
+        ingest.bulk_ingest(force=False)
+
+        assert str(f) not in saved_tracker
+        assert f"documents_v2:{f}" in saved_tracker
+
     def test_dedup_does_not_record_on_failure(self, tmp_path, monkeypatch):
         """Failed ingestions should not be recorded in the tracker."""
         watch_dir = tmp_path / "docs"
@@ -673,6 +721,43 @@ class TestBulkIngestDedup:
         assert total == 1
         mock_ingest.assert_not_called()
         mock_save.assert_not_called()
+        mock_retries.assert_not_called()
+
+    def test_explicit_source_files_avoid_directory_scan(self, tmp_path, monkeypatch):
+        watch_dir = tmp_path / "docs"
+        watch_dir.mkdir()
+        selected = tmp_path / "selected.md"
+        skipped = tmp_path / "ignored.bin"
+        selected.write_text("selected")
+        skipped.write_text("ignored")
+
+        monkeypatch.setattr(
+            ingest,
+            "CFG",
+            ingest.Config(
+                watch_dirs=[watch_dir],
+                supported_extensions={".md"},
+                collection="documents_v2",
+            ),
+        )
+
+        saved_tracker = {}
+
+        def fake_save(t):
+            saved_tracker.update(t)
+
+        mock_ingest = MagicMock(return_value=(True, ""))
+        monkeypatch.setattr(ingest, "ingest_file", mock_ingest)
+        monkeypatch.setattr(ingest, "_load_dedup_tracker", lambda: {})
+        monkeypatch.setattr(ingest, "_save_dedup_tracker", fake_save)
+        mock_retries = MagicMock()
+        monkeypatch.setattr(ingest, "process_retries", mock_retries)
+
+        total = ingest.bulk_ingest(source_files=[selected, skipped])
+
+        assert total == 1
+        mock_ingest.assert_called_once_with(selected)
+        assert f"documents_v2:{selected}" in saved_tracker
         mock_retries.assert_not_called()
 
 

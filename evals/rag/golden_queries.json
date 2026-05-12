@@ -39,7 +39,7 @@
       "topic": "research-basis",
       "query": "What claim maturity markers should audit-affected research documents use?",
       "expected_sources": [
-        {"source_contains": "2026-05-12-epistemic-audit-realignment", "grade": 3},
+        {"source_contains": "epistemic-audit-realignment", "grade": 3},
         {"source_contains": "2026-05-12-epistemic-audit-handoff", "grade": 2}
       ],
       "expected_answer_terms": ["hypothesis", "instrumented", "publishable"]
@@ -59,7 +59,7 @@
       "topic": "architecture",
       "query": "What is the role of the LivingPresentEnvelope in preventing hallucination or context drift?",
       "expected_sources": [
-        {"source_contains": "LivingPresentEnvelope", "grade": 3},
+        {"text_contains": "LivingPresentEnvelope", "grade": 3},
         {"text_contains": "Husserlian", "grade": 2}
       ],
       "expected_answer_terms": ["retention", "protention", "Husserl"]
@@ -69,7 +69,7 @@
       "topic": "privacy",
       "query": "How does ConsentGatedReader enforce privacy before LLM access?",
       "expected_sources": [
-        {"source_contains": "ConsentGatedReader", "grade": 3},
+        {"text_contains": "ConsentGatedReader", "grade": 3},
         {"text_contains": "IFC", "grade": 2},
         {"text_contains": "LIO", "grade": 2}
       ],
@@ -142,7 +142,7 @@
       "query": "Why should RAG repairs use a documents_v2 shadow collection instead of destructive reindexing?",
       "expected_sources": [
         {"source_contains": "epistemic-rag-documents-v2-shadow-path", "grade": 3},
-        {"source_contains": "2026-05-12-epistemic-audit-realignment", "grade": 2}
+        {"source_contains": "epistemic-audit-realignment", "grade": 2}
       ],
       "expected_answer_terms": ["documents_v2", "shadow", "reindex"]
     },
@@ -152,7 +152,7 @@
       "query": "Which retrieval metrics should determine whether RAG repair worked?",
       "expected_sources": [
         {"source_contains": "epistemic-rag-golden-query-suite", "grade": 3},
-        {"source_contains": "2026-05-12-epistemic-audit-realignment", "grade": 2}
+        {"source_contains": "epistemic-audit-realignment", "grade": 2}
       ],
       "expected_answer_terms": ["Precision@5", "Recall", "MRR"]
     },
@@ -201,7 +201,7 @@
       "topic": "research-basis",
       "query": "How should the broken RAG result be preserved as a research finding instead of hidden?",
       "expected_sources": [
-        {"source_contains": "2026-05-12-epistemic-audit-realignment", "grade": 3},
+        {"source_contains": "epistemic-audit-realignment", "grade": 3},
         {"source_contains": "2026-05-12-full-corpus-hardening-audit", "grade": 2}
       ],
       "expected_answer_terms": ["design-science", "falsifier", "baseline"]

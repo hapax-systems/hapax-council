@@ -99,6 +99,78 @@ def _round_metric(value: float | None) -> float | None:
     return None if value is None else round(value, 4)
 
 
+def label_signature(label: Mapping[str, Any]) -> str:
+    return "|".join(f"{key}={value}" for key, value in sorted(label.items()) if key != "grade")
+
+
+def _label_record(label: Mapping[str, Any]) -> dict[str, str]:
+    return {str(key): str(value) for key, value in label.items() if key != "grade"}
+
+
+def _hit_with_match_text(hit: Mapping[str, Any]) -> Mapping[str, Any]:
+    if hit.get("text"):
+        return hit
+    hit_with_text = dict(hit)
+    for key in ("text_excerpt", "snippet", "content"):
+        fallback = hit.get(key)
+        if fallback:
+            hit_with_text["text"] = fallback
+            break
+    return hit_with_text
+
+
+def corpus_utilization_metrics(query_reports: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    labels_by_signature: dict[str, Mapping[str, Any]] = {}
+    source_labels_by_signature: dict[str, Mapping[str, Any]] = {}
+    matched_signatures: set[str] = set()
+    matched_source_signatures: set[str] = set()
+    for report in query_reports:
+        labels = [
+            label for label in report.get("expected_sources", []) if isinstance(label, Mapping)
+        ]
+        for label in labels:
+            signature = label_signature(label)
+            if not signature:
+                continue
+            labels_by_signature.setdefault(signature, label)
+            if "source_contains" in label:
+                source_labels_by_signature.setdefault(signature, label)
+        for hit in report.get("hits", []):
+            if not isinstance(hit, Mapping):
+                continue
+            hit_with_text = _hit_with_match_text(hit)
+            for index in matched_label_indexes(hit_with_text, labels):
+                signature = label_signature(labels[index])
+                matched_signatures.add(signature)
+                if "source_contains" in labels[index]:
+                    matched_source_signatures.add(signature)
+
+    expected_count = len(labels_by_signature)
+    expected_source_count = len(source_labels_by_signature)
+    matched_count = len(matched_signatures)
+    matched_source_count = len(matched_source_signatures)
+    return {
+        "expected_label_denominator": expected_count,
+        "matched_label_numerator": matched_count,
+        "golden_label_utilization_rate": _round_metric(
+            matched_count / expected_count if expected_count else None
+        ),
+        "expected_source_label_denominator": expected_source_count,
+        "matched_source_label_numerator": matched_source_count,
+        "source_label_utilization_rate": _round_metric(
+            matched_source_count / expected_source_count if expected_source_count else None
+        ),
+        "unmatched_expected_labels": [
+            _label_record(labels_by_signature[signature])
+            for signature in sorted(set(labels_by_signature) - matched_signatures)
+        ],
+        "unmatched_expected_source_labels": [
+            _label_record(source_labels_by_signature[signature])
+            for signature in sorted(set(source_labels_by_signature) - matched_source_signatures)
+        ],
+    }
+
+
 def query_metrics(
     hits: Sequence[Mapping[str, Any]],
     labels: Sequence[Mapping[str, Any]],
@@ -110,6 +182,16 @@ def query_metrics(
     recall_limit = recall_k or len(hits)
     ndcg_limit = ndcg_k or len(hits)
     grades = [hit_grade(hit, labels) for hit in hits]
+    matched_for_ranking: set[int] = set()
+    ndcg_grades = []
+    for hit in hits:
+        new_label_grades = []
+        for index in matched_label_indexes(hit, labels):
+            if index in matched_for_ranking:
+                continue
+            matched_for_ranking.add(index)
+            new_label_grades.append(int(labels[index].get("grade", 1)))
+        ndcg_grades.append(max(new_label_grades, default=0))
     relevant_ranks = [index + 1 for index, grade in enumerate(grades) if grade > 0]
     precision_hits = sum(1 for grade in grades[:precision_k] if grade > 0)
     matched_labels = {
@@ -119,7 +201,7 @@ def query_metrics(
     ideal_grades = sorted((int(label.get("grade", 1)) for label in labels), reverse=True)[
         :ndcg_limit
     ]
-    dcg = _dcg(grades[:ndcg_limit])
+    dcg = _dcg(ndcg_grades[:ndcg_limit])
     ideal_dcg = _dcg(ideal_grades)
     metadata_hits = sum(1 for hit in hits if hit.get("is_metadata_hit"))
 
@@ -160,6 +242,7 @@ def aggregate_metrics(query_reports: Sequence[Mapping[str, Any]]) -> dict[str, A
     )
     total = len(metrics)
     query_error_count = sum(1 for report in query_reports if report.get("errors"))
+    utilization = corpus_utilization_metrics(query_reports)
     return {
         "query_count": total,
         "query_error_count": query_error_count,
@@ -177,6 +260,13 @@ def aggregate_metrics(query_reports: Sequence[Mapping[str, Any]]) -> dict[str, A
         ),
         "unique_source_count": len(unique_sources),
         "source_service_distribution": dict(services.most_common()),
+        "corpus_utilization": utilization,
+        "golden_label_utilization_rate": utilization["golden_label_utilization_rate"],
+        "golden_label_utilization_numerator": utilization["matched_label_numerator"],
+        "golden_label_utilization_denominator": utilization["expected_label_denominator"],
+        "source_label_utilization_rate": utilization["source_label_utilization_rate"],
+        "source_label_utilization_numerator": utilization["matched_source_label_numerator"],
+        "source_label_utilization_denominator": utilization["expected_source_label_denominator"],
     }
 
 
@@ -190,6 +280,8 @@ def compare_reports(current: Mapping[str, Any], baseline: Mapping[str, Any]) -> 
         "mean_ndcg_at_k",
         "mean_metadata_hit_rate",
         "no_relevant_evidence_rate",
+        "golden_label_utilization_rate",
+        "source_label_utilization_rate",
     ]
     deltas: dict[str, float | None] = {}
     for key in compared_keys:
@@ -371,7 +463,30 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         "",
     ]
     for key, value in summary.items():
+        if key == "corpus_utilization":
+            continue
         lines.append(f"- `{key}`: {value}")
+
+    utilization = summary.get("corpus_utilization")
+    if isinstance(utilization, Mapping):
+        lines.extend(["", "## Corpus Utilization", ""])
+        lines.append(
+            "- Golden label utilization: `{num}/{den}` (`{rate}`)".format(
+                num=utilization.get("matched_label_numerator"),
+                den=utilization.get("expected_label_denominator"),
+                rate=utilization.get("golden_label_utilization_rate"),
+            )
+        )
+        lines.append(
+            "- Source label utilization: `{num}/{den}` (`{rate}`)".format(
+                num=utilization.get("matched_source_label_numerator"),
+                den=utilization.get("expected_source_label_denominator"),
+                rate=utilization.get("source_label_utilization_rate"),
+            )
+        )
+        unmatched = utilization.get("unmatched_expected_source_labels") or []
+        if unmatched:
+            lines.append(f"- Unmatched source labels: `{len(unmatched)}`")
 
     lines.extend(
         [
