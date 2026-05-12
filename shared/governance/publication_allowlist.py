@@ -51,7 +51,6 @@ CLAIM_BEARING_STATE_KIND_PATTERNS: Final[tuple[str, ...]] = (
     "director.activity_transition",
     "director.youtube_direction",
     "governance.enforcement",
-    "omg.weblog",
     "programme.boundary",
     "programme.completed_plan",
     "programme.narrative_beat",
@@ -61,7 +60,6 @@ CLAIM_BEARING_STATE_KIND_PATTERNS: Final[tuple[str, ...]] = (
     "research_instrument.*",
     "shorts.upload",
     "velocity.digest",
-    "weblog.entry",
 )
 NON_CLAIM_BEARING_STATE_KIND_PATTERNS: Final[tuple[str, ...]] = (
     "aesthetic.frame_capture",
@@ -69,6 +67,8 @@ NON_CLAIM_BEARING_STATE_KIND_PATTERNS: Final[tuple[str, ...]] = (
     "broadcast.current_live_url",
     "broadcast.recent_vods",
     "programme.thematic_groups",
+    "omg.weblog",
+    "weblog.entry",
     "working_mode",
 )
 _GROUNDING_GATE_KEYS: Final[tuple[str, ...]] = (
