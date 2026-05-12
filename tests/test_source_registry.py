@@ -26,6 +26,15 @@ class _FakeBackend:
         return self._surface
 
 
+class _StartableBackend(_FakeBackend):
+    def __init__(self, surface: cairo.ImageSurface) -> None:
+        super().__init__(surface)
+        self.start_count = 0
+
+    def start(self) -> None:
+        self.start_count += 1
+
+
 def _make_source(id: str, backend: str, params: dict | None = None) -> SourceSchema:
     return SourceSchema(id=id, kind="cairo", backend=backend, params=params or {})
 
@@ -55,6 +64,32 @@ class TestSourceRegistryLookup:
         registry.register("src1", _FakeBackend(surf))
         registry.register("src2", _FakeBackend(surf))
         assert set(registry.ids()) == {"src1", "src2"}
+
+    def test_start_all_can_be_bounded_to_selected_sources(self):
+        registry = SourceRegistry()
+        surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, 10, 10)
+        started = _StartableBackend(surf)
+        hidden = _StartableBackend(surf)
+        registry.register("started", started)
+        registry.register("hidden", hidden)
+
+        registry.start_all(["started"])
+
+        assert started.start_count == 1
+        assert hidden.start_count == 0
+
+    def test_start_all_without_selection_starts_every_startable_source(self):
+        registry = SourceRegistry()
+        surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, 10, 10)
+        src1 = _StartableBackend(surf)
+        src2 = _StartableBackend(surf)
+        registry.register("src1", src1)
+        registry.register("src2", src2)
+
+        registry.start_all()
+
+        assert src1.start_count == 1
+        assert src2.start_count == 1
 
 
 class TestSourceRegistryDispatch:

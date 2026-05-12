@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
@@ -94,8 +95,8 @@ class SourceRegistry:
         """Return the list of registered source_ids in insertion order."""
         return list(self._backends.keys())
 
-    def start_all(self) -> None:
-        """Start every registered backend that exposes a ``start()`` method.
+    def start_all(self, source_ids: Iterable[str] | None = None) -> None:
+        """Start selected registered backends that expose a ``start()`` method.
 
         Drop #41 BT-1 fix: Phase 9 Task 29 of the compositor unification
         epic removed the legacy Cairo-source facades' draw calls but
@@ -113,20 +114,31 @@ class SourceRegistry:
         (``sierpinski-lines`` + ``overlay-zones``), confirming the
         other 4 sources had never ticked.
 
-        This method is idempotent and type-tolerant: any backend with
-        a ``start()`` attribute gets called. ``ShmRgbaReader`` and
-        similar passive backends that don't expose ``start()`` are
-        left alone. Per-backend start failures are logged and
-        swallowed — a broken cairo class must not take down the
-        compositor's layout wiring. ``CairoSourceRunner.start()`` is
-        itself idempotent (the runner tracks its own thread state),
-        so calling ``start_all()`` twice is safe.
+        This method is idempotent and type-tolerant: any selected backend
+        with a ``start()`` attribute gets called. ``ShmRgbaReader`` and
+        similar passive backends that don't expose ``start()`` are left
+        alone. Per-backend start failures are logged and swallowed — a
+        broken cairo class must not take down the compositor's layout
+        wiring. ``CairoSourceRunner.start()`` is itself idempotent (the
+        runner tracks its own thread state), so calling ``start_all()``
+        twice is safe.
+
+        When ``source_ids`` is omitted, every registered backend is
+        considered. When supplied, only those IDs are considered. The
+        bounded form is used by incident containment/restoration paths so
+        hidden render-stage sources do not keep burning CPU while their
+        stage is explicitly disabled.
 
         Called at the end of
         :meth:`StudioCompositor.start_layout_only`, after all
         registrations complete.
         """
-        for source_id, backend in self._backends.items():
+        target_ids = list(self._backends) if source_ids is None else list(dict.fromkeys(source_ids))
+        for source_id in target_ids:
+            backend = self._backends.get(source_id)
+            if backend is None:
+                log.warning("SourceRegistry.start_all: source %s is not registered", source_id)
+                continue
             start = getattr(backend, "start", None)
             if start is None:
                 continue
