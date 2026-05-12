@@ -1,0 +1,11 @@
+[Unit]
+Description=Hapax dataset card generator Timer (daily)
+
+[Timer]
+Unit=hapax-dataset-card-generator.service
+OnCalendar=*-*-* 05:20:00 UTC
+Persistent=true
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target

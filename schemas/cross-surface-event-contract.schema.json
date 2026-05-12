@@ -109,10 +109,12 @@
         "metadata.update",
         "channel_section.candidate",
         "arena_block.candidate",
+        "governance.enforcement",
         "omg.statuslog",
         "omg.weblog",
         "publication.artifact",
         "archive.segment",
+        "velocity.digest",
         "monetization.review",
         "fanout.decision"
       ]

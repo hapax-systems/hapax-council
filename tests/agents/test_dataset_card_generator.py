@@ -10,6 +10,7 @@ from agents.dataset_card_generator import (
     ReleaseVerdict,
     generate_cards,
     load_ledger,
+    main,
     render_batch_markdown,
     render_card_markdown,
     scan_text_for_pii,
@@ -228,6 +229,19 @@ def test_load_ledger_from_real_config() -> None:
     assert "cc_tasks" in corpus_ids
     assert "refusal_briefs" in corpus_ids
     assert "velocity_evidence" in corpus_ids
+
+
+def test_cli_main_writes_markdown_output(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "ledger.yaml"
+    output_path = tmp_path / "dataset-cards.md"
+    import yaml
+
+    ledger_path.write_text(yaml.safe_dump(_minimal_ledger()), encoding="utf-8")
+
+    assert main(["--ledger", str(ledger_path), "--output", str(output_path)]) == 0
+    output = output_path.read_text(encoding="utf-8")
+    assert "# Research Artifact Dataset Cards" in output
+    assert "Dataset Card: Test Corpus" in output
 
 
 def test_not_releasable_card_includes_blockers_in_markdown() -> None:

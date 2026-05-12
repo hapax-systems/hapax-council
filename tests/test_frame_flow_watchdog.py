@@ -22,6 +22,7 @@ from agents.studio_compositor.camera_state_machine import (
 )
 from agents.studio_compositor.pipeline_manager import (
     _FRAME_FLOW_GRACE_S,
+    _RECOVERY_FRAME_PROOF_S,
     PipelineManager,
 )
 
@@ -79,15 +80,38 @@ class TestFrameFlowWatchdog:
         pm._frame_flow_tick_once()
         assert pm._state_machines["brio-operator"].state == CameraState.DEGRADED
 
-    def test_non_healthy_camera_ignored(self) -> None:
+    def test_offline_camera_ignored(self) -> None:
         pm = _make_pm(["brio-operator"])
-        # Force the FSM into RECOVERING — the watchdog should not touch it
-        # (RECOVERING does not consume FRAME_FLOW_STALE anyway, but the
-        # watchdog should skip it explicitly to keep counters honest).
-        pm._state_machines["brio-operator"]._state = CameraState.RECOVERING
+        # OFFLINE cameras are owned by the reconnect supervisor. The
+        # frame-flow watchdog must not add extra failure pressure there.
+        pm._state_machines["brio-operator"]._state = CameraState.OFFLINE
         _set_age(pm, "brio-operator", STALENESS_THRESHOLD_S + 5.0)
         pm._frame_flow_tick_once()
+        assert pm._state_machines["brio-operator"].state == CameraState.OFFLINE
+
+    def test_recovering_camera_inside_grace_waits_for_frame_proof(self) -> None:
+        pm = _make_pm(["brio-operator"])
+        pm._state_machines["brio-operator"]._state = CameraState.RECOVERING
+        pm._last_recovery_at["brio-operator"] = time.monotonic()
+        _set_age(pm, "brio-operator", 0.05)
+        pm._frame_flow_tick_once()
         assert pm._state_machines["brio-operator"].state == CameraState.RECOVERING
+
+    def test_recovering_camera_promotes_after_frame_proof_window(self) -> None:
+        pm = _make_pm(["brio-operator"])
+        pm._state_machines["brio-operator"]._state = CameraState.RECOVERING
+        pm._last_recovery_at["brio-operator"] = time.monotonic() - _RECOVERY_FRAME_PROOF_S - 0.1
+        _set_age(pm, "brio-operator", 0.05)
+        pm._frame_flow_tick_once()
+        assert pm._state_machines["brio-operator"].state == CameraState.HEALTHY
+
+    def test_recovering_camera_stale_after_grace_goes_offline(self) -> None:
+        pm = _make_pm(["brio-operator"])
+        pm._state_machines["brio-operator"]._state = CameraState.RECOVERING
+        pm._last_recovery_at["brio-operator"] = time.monotonic() - _FRAME_FLOW_GRACE_S - 1.0
+        _set_age(pm, "brio-operator", STALENESS_THRESHOLD_S + 5.0)
+        pm._frame_flow_tick_once()
+        assert pm._state_machines["brio-operator"].state == CameraState.OFFLINE
 
     def test_only_stale_camera_is_dispatched_in_mixed_set(self) -> None:
         pm = _make_pm(["brio-operator", "c920-desk", "brio-room"])

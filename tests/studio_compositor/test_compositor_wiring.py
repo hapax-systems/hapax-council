@@ -79,6 +79,7 @@ class TestStartLayoutOnly:
             "cbip_signal_density",
             "chat_ambient",
             "chronicle_ticker",
+            "coding_session_reveal",
             "constructivist_research_poster",
             "durf",
             "egress_footer",
@@ -154,6 +155,7 @@ class TestStartLayoutOnly:
             "cbip_signal_density",
             "chat_ambient",
             "chronicle_ticker",
+            "coding_session_reveal",
             "programme_state",
             "polyend_instrument_reveal",
             "interactive_lore_query",
@@ -262,6 +264,30 @@ class TestStartLayoutOnly:
             "backend": "cairo",
             "exception_class": "KeyError",
         } in counter.labels_seen
+
+    def test_start_layout_only_wires_director_segment_runner(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        layout_file = tmp_path / "default.json"
+        layout_file.write_text(DEFAULT_JSON.read_text())
+        runner = SimpleNamespace(stop=lambda: None)
+        calls: list[Path] = []
+
+        def _fake_start(compositor: StudioCompositor, *, command_socket_path: Path):
+            calls.append(command_socket_path)
+            return runner
+
+        monkeypatch.setattr(
+            "agents.studio_compositor.director_segment_runner.maybe_start_director_segment_runner",
+            _fake_start,
+        )
+        compositor = _make_compositor(layout_path=layout_file)
+
+        compositor.start_layout_only()
+
+        assert compositor._director_segment_runner is runner
+        assert calls
+        assert calls[0].name == "hapax-compositor-commands.sock"
 
     def test_start_layout_only_wires_autosaver_and_file_watcher(self, tmp_path: Path) -> None:
         """Post-epic audit finding #1 regression pin.

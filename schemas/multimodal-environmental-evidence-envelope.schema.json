@@ -1,0 +1,613 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.local/schemas/multimodal-environmental-evidence-envelope.schema.json",
+  "title": "MultimodalEnvironmentalEvidenceEnvelopeFixtures",
+  "description": "Fixture-backed contract for authority-bounded environmental evidence spanning raw camera, IR fusion, composed livestream, archive replay, public reembed, classifier labels, HOMAGE/render state, decorative wards, and synthetic/audit markers.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "generated_from",
+    "declared_at",
+    "required_source_classes",
+    "required_fixture_cases",
+    "evidence_envelope_required_fields",
+    "fail_closed_policy",
+    "envelopes",
+    "claim_support_fixtures"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "fixture_set_id": {"type": "string", "minLength": 1},
+    "schema_ref": {"const": "schemas/multimodal-environmental-evidence-envelope.schema.json"},
+    "generated_from": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "declared_at": {"type": "string", "format": "date-time"},
+    "required_source_classes": {
+      "type": "array",
+      "minItems": 9,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/source_class"}
+    },
+    "required_fixture_cases": {
+      "type": "array",
+      "minItems": 8,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "evidence_envelope_required_fields": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "fail_closed_policy": {"$ref": "#/$defs/fail_closed_policy"},
+    "envelopes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/multimodal_evidence_envelope"}
+    },
+    "claim_support_fixtures": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/claim_support_fixture"}
+    }
+  },
+  "x-required_source_classes": [
+    "raw_camera",
+    "ir_fusion",
+    "composed_livestream",
+    "archive_replay",
+    "public_event",
+    "classifier_label",
+    "homage_render_state",
+    "decorative_ward_render_state",
+    "synthetic_marker"
+  ],
+  "x-required_fixture_cases": [
+    "fresh",
+    "stale",
+    "missing",
+    "blank",
+    "contradictory",
+    "archive_only",
+    "public_reembed",
+    "synthetic_only"
+  ],
+  "x-evidence_envelope_required_fields": [
+    "schema_version",
+    "envelope_id",
+    "source_family",
+    "source_class",
+    "source_payload_state",
+    "observed_at",
+    "valid_until",
+    "raw_refs",
+    "transform_chain",
+    "aperture_id",
+    "camera_role",
+    "perceptual_field_key",
+    "confidence",
+    "uncertainty",
+    "freshness",
+    "observation_polarity",
+    "privacy_state",
+    "rights_state",
+    "witness_kind",
+    "witness_refs",
+    "temporal_span_refs",
+    "wcs_refs",
+    "public_event_refs",
+    "claim_authority_ceiling",
+    "ir_training_state",
+    "scene_classifier_fallback",
+    "diagnostic_reason_codes",
+    "fixture_case"
+  ],
+  "x-fail_closed_policy": {
+    "raw_camera_implies_public_claim": false,
+    "ir_no_detection_undertrained_counts_as_absence": false,
+    "scene_classifier_fallback_zero_confidence_satisfies_claim": false,
+    "composed_livestream_blank_counts_as_negative_truth": false,
+    "archive_replay_counts_as_live": false,
+    "public_reembed_counts_as_live_scene_truth": false,
+    "synthetic_marker_satisfies_factual_claim": false,
+    "decorative_ward_render_state_satisfies_factual_claim": false
+  },
+  "$defs": {
+    "source_family": {
+      "enum": [
+        "camera",
+        "ir",
+        "livestream",
+        "archive",
+        "public_event",
+        "classifier",
+        "render_state",
+        "synthetic"
+      ]
+    },
+    "source_class": {
+      "enum": [
+        "raw_camera",
+        "ir_fusion",
+        "composed_livestream",
+        "archive_replay",
+        "public_event",
+        "classifier_label",
+        "homage_render_state",
+        "decorative_ward_render_state",
+        "synthetic_marker"
+      ]
+    },
+    "source_payload_state": {
+      "enum": [
+        "fresh",
+        "stale",
+        "missing",
+        "blank",
+        "contradictory",
+        "archive_only",
+        "public_reembed",
+        "synthetic_only",
+        "render_state"
+      ]
+    },
+    "freshness": {
+      "enum": ["fresh", "stale", "expired", "missing", "unknown", "not_applicable"]
+    },
+    "observation_polarity": {
+      "enum": ["positive", "negative", "neutral", "unknown", "diagnostic", "render_state"]
+    },
+    "privacy_state": {
+      "enum": ["public_safe", "private_only", "blocked", "unknown", "not_applicable"]
+    },
+    "rights_state": {
+      "enum": [
+        "public_clear",
+        "private_only",
+        "blocked",
+        "missing",
+        "unknown",
+        "not_applicable"
+      ]
+    },
+    "witness_kind": {
+      "enum": [
+        "sensor_frame",
+        "ir_fusion_report",
+        "broadcast_frame",
+        "archive_span",
+        "public_event",
+        "classifier_output",
+        "render_state",
+        "synthetic_fixture"
+      ]
+    },
+    "claim_authority_ceiling": {
+      "enum": [
+        "no_claim",
+        "diagnostic_only",
+        "render_state_only",
+        "last_observed_only",
+        "private_evidence_bound",
+        "public_gate_required"
+      ]
+    },
+    "camera_role": {
+      "enum": [
+        "operator",
+        "desk",
+        "overhead",
+        "room",
+        "livestream_composite",
+        "archive_replay",
+        "public_event",
+        "homage",
+        "decorative_ward",
+        "synthetic",
+        "not_applicable"
+      ]
+    },
+    "ir_training_state": {
+      "enum": ["calibrated", "undertrained", "unknown", "not_applicable"]
+    },
+    "claim_shape": {
+      "enum": [
+        "present_current",
+        "absence",
+        "public_live",
+        "last_observed",
+        "public_reembed",
+        "archive_replay",
+        "diagnostic",
+        "render_state"
+      ]
+    },
+    "claim_support_status": {
+      "enum": [
+        "allowed",
+        "allowed_last_observed_only",
+        "allowed_public_reembed_refs_only",
+        "allowed_diagnostic_only",
+        "allowed_render_state_only",
+        "blocked_stale_or_expired",
+        "blocked_missing_or_blank",
+        "blocked_contradictory",
+        "blocked_neutral_ir_no_detection",
+        "blocked_classifier_fallback",
+        "blocked_synthetic_only",
+        "blocked_render_state_not_factual",
+        "blocked_archive_not_live",
+        "blocked_public_reembed_not_live_scene",
+        "blocked_public_gate",
+        "blocked_privacy_rights",
+        "blocked_missing_witness",
+        "blocked_authority_ceiling",
+        "blocked_observation_polarity"
+      ]
+    },
+    "rendered_claim_mode": {
+      "enum": [
+        "present_current",
+        "public_live",
+        "last_observed_with_age_window",
+        "public_reembed_refs_only",
+        "diagnostic_only",
+        "render_state_only",
+        "none"
+      ]
+    },
+    "string_array": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "fail_closed_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "raw_camera_implies_public_claim",
+        "ir_no_detection_undertrained_counts_as_absence",
+        "scene_classifier_fallback_zero_confidence_satisfies_claim",
+        "composed_livestream_blank_counts_as_negative_truth",
+        "archive_replay_counts_as_live",
+        "public_reembed_counts_as_live_scene_truth",
+        "synthetic_marker_satisfies_factual_claim",
+        "decorative_ward_render_state_satisfies_factual_claim"
+      ],
+      "properties": {
+        "raw_camera_implies_public_claim": {"const": false},
+        "ir_no_detection_undertrained_counts_as_absence": {"const": false},
+        "scene_classifier_fallback_zero_confidence_satisfies_claim": {"const": false},
+        "composed_livestream_blank_counts_as_negative_truth": {"const": false},
+        "archive_replay_counts_as_live": {"const": false},
+        "public_reembed_counts_as_live_scene_truth": {"const": false},
+        "synthetic_marker_satisfies_factual_claim": {"const": false},
+        "decorative_ward_render_state_satisfies_factual_claim": {"const": false}
+      }
+    },
+    "multimodal_evidence_envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "envelope_id",
+        "source_family",
+        "source_class",
+        "source_payload_state",
+        "observed_at",
+        "valid_until",
+        "raw_refs",
+        "transform_chain",
+        "aperture_id",
+        "camera_role",
+        "perceptual_field_key",
+        "confidence",
+        "uncertainty",
+        "freshness",
+        "observation_polarity",
+        "privacy_state",
+        "rights_state",
+        "witness_kind",
+        "witness_refs",
+        "temporal_span_refs",
+        "wcs_refs",
+        "public_event_refs",
+        "claim_authority_ceiling",
+        "ir_training_state",
+        "scene_classifier_fallback",
+        "diagnostic_reason_codes",
+        "fixture_case"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "envelope_id": {
+          "type": "string",
+          "pattern": "^multimodal-evidence:[a-z0-9_.:-]+$"
+        },
+        "source_family": {"$ref": "#/$defs/source_family"},
+        "source_class": {"$ref": "#/$defs/source_class"},
+        "source_payload_state": {"$ref": "#/$defs/source_payload_state"},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "valid_until": {"type": "string", "format": "date-time"},
+        "raw_refs": {"$ref": "#/$defs/string_array"},
+        "transform_chain": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "aperture_id": {
+          "type": "string",
+          "pattern": "^aperture:[a-z0-9_.:-]+$"
+        },
+        "camera_role": {"$ref": "#/$defs/camera_role"},
+        "perceptual_field_key": {
+          "oneOf": [
+            {"type": "string", "minLength": 1},
+            {"type": "null"}
+          ]
+        },
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "uncertainty": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "freshness": {"$ref": "#/$defs/freshness"},
+        "observation_polarity": {"$ref": "#/$defs/observation_polarity"},
+        "privacy_state": {"$ref": "#/$defs/privacy_state"},
+        "rights_state": {"$ref": "#/$defs/rights_state"},
+        "witness_kind": {"$ref": "#/$defs/witness_kind"},
+        "witness_refs": {"$ref": "#/$defs/string_array"},
+        "temporal_span_refs": {"$ref": "#/$defs/string_array"},
+        "wcs_refs": {"$ref": "#/$defs/string_array"},
+        "public_event_refs": {"$ref": "#/$defs/string_array"},
+        "claim_authority_ceiling": {"$ref": "#/$defs/claim_authority_ceiling"},
+        "ir_training_state": {"$ref": "#/$defs/ir_training_state"},
+        "scene_classifier_fallback": {"type": "boolean"},
+        "diagnostic_reason_codes": {"$ref": "#/$defs/string_array"},
+        "fixture_case": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"source_class": {"const": "raw_camera"}}, "required": ["source_class"]},
+          "then": {"properties": {"source_family": {"const": "camera"}}}
+        },
+        {
+          "if": {"properties": {"source_class": {"const": "ir_fusion"}}, "required": ["source_class"]},
+          "then": {
+            "properties": {
+              "source_family": {"const": "ir"},
+              "witness_kind": {"const": "ir_fusion_report"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"source_class": {"const": "composed_livestream"}}, "required": ["source_class"]},
+          "then": {"properties": {"source_family": {"const": "livestream"}}}
+        },
+        {
+          "if": {"properties": {"source_class": {"const": "archive_replay"}}, "required": ["source_class"]},
+          "then": {"properties": {"source_family": {"const": "archive"}}}
+        },
+        {
+          "if": {"properties": {"source_class": {"const": "public_event"}}, "required": ["source_class"]},
+          "then": {"properties": {"source_family": {"const": "public_event"}}}
+        },
+        {
+          "if": {"properties": {"source_class": {"const": "classifier_label"}}, "required": ["source_class"]},
+          "then": {
+            "properties": {
+              "source_family": {"const": "classifier"},
+              "witness_kind": {"const": "classifier_output"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "source_class": {
+                "enum": ["homage_render_state", "decorative_ward_render_state"]
+              }
+            },
+            "required": ["source_class"]
+          },
+          "then": {
+            "properties": {
+              "source_family": {"const": "render_state"},
+              "witness_kind": {"const": "render_state"},
+              "claim_authority_ceiling": {
+                "enum": ["no_claim", "diagnostic_only", "render_state_only"]
+              }
+            }
+          }
+        },
+        {
+          "if": {"properties": {"source_class": {"const": "synthetic_marker"}}, "required": ["source_class"]},
+          "then": {
+            "properties": {
+              "source_family": {"const": "synthetic"},
+              "witness_kind": {"const": "synthetic_fixture"},
+              "claim_authority_ceiling": {"enum": ["no_claim", "diagnostic_only"]}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "source_payload_state": {
+                "enum": ["fresh", "archive_only", "public_reembed", "render_state"]
+              }
+            },
+            "required": ["source_payload_state"]
+          },
+          "then": {"properties": {"raw_refs": {"minItems": 1}}}
+        },
+        {
+          "if": {
+            "properties": {
+              "source_payload_state": {
+                "enum": ["missing", "blank", "contradictory"]
+              }
+            },
+            "required": ["source_payload_state"]
+          },
+          "then": {
+            "properties": {
+              "claim_authority_ceiling": {"const": "no_claim"},
+              "diagnostic_reason_codes": {"minItems": 1}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"source_payload_state": {"const": "stale"}}, "required": ["source_payload_state"]},
+          "then": {
+            "properties": {
+              "claim_authority_ceiling": {
+                "enum": ["no_claim", "last_observed_only"]
+              }
+            }
+          }
+        },
+        {
+          "if": {"properties": {"source_payload_state": {"const": "synthetic_only"}}, "required": ["source_payload_state"]},
+          "then": {
+            "properties": {
+              "witness_kind": {"const": "synthetic_fixture"},
+              "claim_authority_ceiling": {"enum": ["no_claim", "diagnostic_only"]}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"scene_classifier_fallback": {"const": true}}, "required": ["scene_classifier_fallback"]},
+          "then": {
+            "properties": {
+              "confidence": {"const": 0.0},
+              "claim_authority_ceiling": {"enum": ["no_claim", "diagnostic_only"]}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"confidence": {"const": 0.0}}, "required": ["confidence"]},
+          "then": {
+            "properties": {
+              "claim_authority_ceiling": {"enum": ["no_claim", "diagnostic_only"]}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"claim_authority_ceiling": {"const": "public_gate_required"}}, "required": ["claim_authority_ceiling"]},
+          "then": {
+            "properties": {
+              "privacy_state": {"const": "public_safe"},
+              "rights_state": {"const": "public_clear"},
+              "witness_refs": {"minItems": 1},
+              "temporal_span_refs": {"minItems": 1},
+              "public_event_refs": {"minItems": 1}
+            }
+          }
+        },
+        {
+          "not": {
+            "properties": {
+              "source_class": {"const": "ir_fusion"},
+              "ir_training_state": {"const": "undertrained"},
+              "observation_polarity": {"const": "negative"}
+            },
+            "required": ["source_class", "ir_training_state", "observation_polarity"]
+          }
+        }
+      ]
+    },
+    "claim_support_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_id",
+        "claim_name",
+        "claim_shape",
+        "public_or_director",
+        "now",
+        "includes_age_window_language"
+      ],
+      "properties": {
+        "claim_id": {"type": "string", "pattern": "^claim:[a-z0-9_.:-]+$"},
+        "claim_name": {"type": "string", "minLength": 1},
+        "claim_shape": {"$ref": "#/$defs/claim_shape"},
+        "public_or_director": {"type": "boolean"},
+        "now": {"type": "string", "format": "date-time"},
+        "includes_age_window_language": {"type": "boolean"}
+      }
+    },
+    "claim_support_decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_id",
+        "envelope_id",
+        "allowed",
+        "status",
+        "rendered_claim_mode",
+        "authority_ceiling",
+        "reason_codes",
+        "required_language"
+      ],
+      "properties": {
+        "claim_id": {"type": "string", "pattern": "^claim:[a-z0-9_.:-]+$"},
+        "envelope_id": {
+          "type": "string",
+          "pattern": "^multimodal-evidence:[a-z0-9_.:-]+$"
+        },
+        "allowed": {"type": "boolean"},
+        "status": {"$ref": "#/$defs/claim_support_status"},
+        "rendered_claim_mode": {"$ref": "#/$defs/rendered_claim_mode"},
+        "authority_ceiling": {"$ref": "#/$defs/claim_authority_ceiling"},
+        "reason_codes": {"$ref": "#/$defs/string_array"},
+        "required_language": {"$ref": "#/$defs/string_array"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"allowed": {"const": false}}, "required": ["allowed"]},
+          "then": {
+            "properties": {
+              "rendered_claim_mode": {"const": "none"},
+              "status": {
+                "enum": [
+                  "blocked_stale_or_expired",
+                  "blocked_missing_or_blank",
+                  "blocked_contradictory",
+                  "blocked_neutral_ir_no_detection",
+                  "blocked_classifier_fallback",
+                  "blocked_synthetic_only",
+                  "blocked_render_state_not_factual",
+                  "blocked_archive_not_live",
+                  "blocked_public_reembed_not_live_scene",
+                  "blocked_public_gate",
+                  "blocked_privacy_rights",
+                  "blocked_missing_witness",
+                  "blocked_authority_ceiling",
+                  "blocked_observation_polarity"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "claim_support_fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixture_case", "envelope_ref", "request", "expected"],
+      "properties": {
+        "fixture_case": {"type": "string", "minLength": 1},
+        "envelope_ref": {
+          "type": "string",
+          "pattern": "^multimodal-evidence:[a-z0-9_.:-]+$"
+        },
+        "request": {"$ref": "#/$defs/claim_support_request"},
+        "expected": {"$ref": "#/$defs/claim_support_decision"}
+      }
+    }
+  }
+}

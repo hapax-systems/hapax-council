@@ -142,14 +142,32 @@ The operator does NOT write the outline.
           "event_object": "<source-backed object the audience can inspect>",
           "audience_job": "<what the audience is asked to inspect, vote on, or challenge>",
           "payoff": "<how the closing beat resolves the opening pressure>",
-          "temporality_band": "<evergreen|current|archival|retrospective>"
+          "temporality_band": "<evergreen|current|archival|retrospective>",
+          "tier_criteria": "<required when role=tier_list: source-backed tier placement criteria; omit otherwise>",
+          "ordering_criterion": "<required when role=top_10: source-backed ordering rule; omit otherwise>",
+          "bounded_claim": "<required when role=rant: source-bounded claim under pressure; omit otherwise>",
+          "receipt_flip": "<required when role=rant: what source receipt changes in the argument; omit otherwise>",
+          "media_ref": "<required when role=react: media/source object ref; omit otherwise>",
+          "timestamp_or_locator": "<required when role=react: concrete media locator; omit otherwise>",
+          "claim_under_reaction": "<required when role=react: claim tested by the reaction; omit otherwise>",
+          "layer_refs": ["<required when role=iceberg: source refs by layer; omit otherwise>"],
+          "bottom_payoff": "<required when role=iceberg: deepest-layer payoff; omit otherwise>",
+          "subject_context": "<required when role=interview: source-backed subject context; omit otherwise>",
+          "question_ladder": ["<required when role=interview: structured source-backed questions; omit otherwise>"],
+          "answer_source_policy": {"operator_answer_authority": "<required when role=interview: source-answer boundary; omit otherwise>"},
+          "topic_selection": "<required when operator-driven interview: why this topic/source now; omit otherwise>",
+          "operator_agency_policy": "<required when operator-driven interview: stop/skip/private/off-record policy; omit otherwise>",
+          "teaching_objective": "<required when role=lecture: source-bound teaching objective; omit otherwise>",
+          "demonstration_object": "<required when role=lecture: object/example shown or compared; omit otherwise>",
+          "worked_example": "<required when role=lecture: concrete source-backed example; omit otherwise>"
         },
         "hosting_context": "hapax_responsible_live",
         "authority": "prior_only",
         "segment_beats": [
-          "hook: <what to open with — topic frame, why it matters NOW>",
-          "item_N: <beat-by-beat directions, NOT scripted lines>",
-          "close: <how to land the segment — chat invite, tease next>"
+          "hook: Introduce the ranking topic and state the criteria used to evaluate entries",
+          "Evaluate the first entry against the declared criteria with source evidence",
+          "Evaluate the next entry — compare against previous placements",
+          "close: Recap the final ranking, invite chat reactions, tease implications"
         ],
         "beat_layout_intents": [
           {
@@ -198,12 +216,14 @@ Every segment MUST have this structure:
    these and what criteria we're using. Tease a controversial placement."`
 
 2. **Body beats** (middle beats, minimum 3): Beat-by-beat delivery of
-   the segment content. Each beat is a specific action:
-   - Tier list: `"item: Place X in A-tier — reasoning from vault notes"`
-   - Rant: `"escalation: Build the case using evidence from operator profile"`
-   - React: `"react: Pause source, react to the claim about X"`
-   - Iceberg: `"layer_3: Descend to lesser-known facts about X"`
-   - Lecture: `"point_2: Present evidence for thesis from research notes"`
+   the segment content. Each beat describes what to deliver in concrete
+   language. NEVER use template placeholders like `item_1:`, `item_N:`,
+   `{topic}`, or `{item}`. Write real content directions:
+   - Tier list: `"Evaluate Python against the declared criteria — cite framework ecosystem evidence from vault"`
+   - Rant: `"Escalate the governance argument using the Zuboff source and operator profile facts"`
+   - React: `"Pause at the 3:42 mark — react to the speaker's claim about alignment"`
+   - Iceberg: `"Descend to the third layer — the lesser-known connection between X and Y"`
+   - Lecture: `"Present the second piece of evidence for the thesis from the research notes"`
 
 3. **Closing beat** (last beat): Land the segment, invite audience
    response, tease what's next. This is the segment's EXIT.
@@ -214,6 +234,14 @@ Segments with fewer than 8 total beats are TOO SHORT. Aim for 10-20
 beats for a 30-60 minute segment. Each beat should BREATHE — never
 rush through a layer to get to the next one. A beat that can be
 summarized in one sentence wasn't developed enough.
+
+**CRITICAL: NO TEMPLATE SYNTAX IN BEATS.** Every beat must contain
+concrete content directions. The following patterns are REJECTED by
+source readiness validation and will block the segment:
+- `item_1:`, `item_2:`, `item_N:` — write the actual item name
+- `{topic}`, `{item}`, `{source}` — write the actual value
+- Generic directions like "Source candidates from vault + RAG" — name
+  the specific sources
 
 **Arc shaping**: Every segment has dramatic energy, not just
 information. Open with tension. Build through the body — each beat

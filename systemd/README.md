@@ -247,11 +247,19 @@ compiler's node-id filename convention.
 
 ## Storage Management
 
-Two automated systems prevent disk exhaustion:
+Automated systems prevent disk exhaustion:
 
 ### Cache Cleanup (`cache-cleanup.timer` — weekly Sun 03:00)
 
 Prunes reproducible caches: Docker build cache (168h+), dangling images, uv cache, pacman cache, stale worktree `.venv` dirs (7d+), leaked wav files in `/tmp` and `~/.cache/hapax/tmp-wav/`, Chrome crash reports, `__pycache__` (7d+), perception logs (7d), systemd journal (7d).
+
+### Worktree GC (`hapax-worktree-gc.timer` — every 6h)
+
+Runs `scripts/hapax-worktree-gc.sh` against the canonical council checkout.
+It removes non-primary git worktrees older than 48h only when their branch is
+merged into `origin/main` and the worktree has no uncommitted or untracked
+changes. Worktrees older than 7d whose branches are not merged are left in
+place and reported to ntfy topic `hapax-worktree-gc` for manual review.
 
 ### Ryzen pin-glitch watchdog (`hapax-pin-check.timer` — every 120s)
 

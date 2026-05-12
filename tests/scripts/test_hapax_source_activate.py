@@ -165,6 +165,36 @@ def test_same_sha_rerun_writes_no_op_and_does_not_redeploy(tmp_path: Path) -> No
     assert '"status": "no_op"' in history
 
 
+def test_activation_quarantines_untracked_active_source_before_sweep(tmp_path: Path) -> None:
+    canonical, _origin, new_sha = _make_repos(tmp_path)
+
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    active_source = tmp_path / "active-source"
+    rogue = active_source / "scripts" / "hapax-rogue-untracked"
+    rogue.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    rogue.chmod(0o755)
+    local_bin = tmp_path / "home" / ".local" / "bin"
+    local_bin.mkdir(parents=True, exist_ok=True)
+    (local_bin / "hapax-rogue-untracked").symlink_to(rogue)
+
+    second = _run_activate(tmp_path, canonical)
+
+    assert second.returncode == 0, second.stderr
+    assert _git(active_source, "rev-parse", "HEAD") == new_sha
+    assert not rogue.exists()
+    assert not (local_bin / "hapax-rogue-untracked").exists()
+    quarantined = list(
+        (tmp_path / "state" / "untracked-quarantine").glob("*/scripts/hapax-rogue-untracked")
+    )
+    assert len(quarantined) == 1
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "no_op"
+    assert receipt["source_hygiene"]["untracked_quarantine_count"] == 1
+    assert receipt["source_hygiene"]["untracked_symlink_removed_count"] == 1
+    assert "untracked-quarantine" in receipt["source_hygiene"]["untracked_quarantine_path"]
+
+
 def test_failed_deploy_writes_failed_receipt_without_last_success(tmp_path: Path) -> None:
     canonical, _origin, new_sha = _make_repos(tmp_path)
 

@@ -1,11 +1,9 @@
 """Livestream role + speech-act binding contract envelopes.
 
 Per cc-task ``livestream-role-speech-programme-binding-contract``
-(WSJF 9.4). The envelopes here are the Phase 0 schema/fixture surface
-that programme runner, director, scrim, audio, captions, archive, and
-public adapters consume in subsequent phases. This file deliberately
-ships **schema + validators + fixtures only** — wiring into the
-director/programme/scrim runners is Phase 1+ follow-on work.
+(WSJF 9.4). The envelopes here are the shared role-state and speech-act
+binding surface consumed by programme runner, director, scrim, captions,
+archive, and public adapters.
 
 Spec reference:
 ``hapax-research/specs/2026-04-29-autonomous-speech-programme-role-
@@ -38,6 +36,8 @@ The validators here gate-CLOSE every one of those at the schema layer.
 from __future__ import annotations
 
 import enum
+from collections.abc import Iterable
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -112,6 +112,26 @@ class PublicMode(enum.StrEnum):
     BLOCKED = "blocked"
 
 
+class SpeechPosture(enum.StrEnum):
+    """Expected voice/caption posture for the current role state."""
+
+    SILENT = "silent"
+    PRIVATE_NOTE = "private_note"
+    DIRECTOR_DRY_RUN = "director_dry_run"
+    PUBLIC_NARRATION = "public_narration"
+    PUBLIC_CAPTION = "public_caption"
+    ARCHIVE_ONLY = "archive_only"
+
+
+class MonetizationPosture(enum.StrEnum):
+    """Whether the role may make conversion/support cues public."""
+
+    NOT_REQUESTED = "not_requested"
+    HELD = "held"
+    READY = "ready"
+    BLOCKED = "blocked"
+
+
 class AuthorityCeiling(enum.StrEnum):
     """Maximum claim authority the role can authorize.
 
@@ -166,6 +186,19 @@ class SpeechActDestination(enum.StrEnum):
     """VOD / replay write; requires playback witness."""
 
 
+class SpeechFulfillment(enum.StrEnum):
+    """How an originating conative impulse was fulfilled or redirected."""
+
+    SPOKEN_NARRATION = "spoken_narration"
+    CAPTION = "caption"
+    SCRIM_GESTURE = "scrim_gesture"
+    PRIVATE_NOTE = "private_note"
+    REFUSAL = "refusal"
+    CORRECTION = "correction"
+    WITHHELD = "withheld"
+    REDIRECTED = "redirected"
+
+
 class LivestreamRoleState(BaseModel):
     """Public-office state for one livestream run.
 
@@ -193,8 +226,10 @@ class LivestreamRoleState(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    role_state_id: str = ""
     current_role: LivestreamRole
     public_mode: PublicMode
+    expected_speech_posture: SpeechPosture = SpeechPosture.PRIVATE_NOTE
     authority_ceiling: AuthorityCeiling
     grounding_question: str = Field(default="", min_length=0)
     """Free-text grounding question the run is attempting (spec
@@ -207,6 +242,7 @@ class LivestreamRoleState(BaseModel):
     director_move_snapshot_ref: str = ""
     """Reference to the director move snapshot staging the run."""
 
+    required_wcs_surfaces: tuple[str, ...] = ()
     available_wcs_surfaces: tuple[str, ...] = ()
     blocked_wcs_surfaces: tuple[str, ...] = ()
     stale_wcs_surfaces: tuple[str, ...] = ()
@@ -217,7 +253,14 @@ class LivestreamRoleState(BaseModel):
     emission. A speech act whose kind is not in this set MUST be
     inhibited at the speech-act validator."""
 
+    speech_destination_policy: frozenset[SpeechActDestination] = frozenset()
+    """Explicit destination allow-set. Empty means derive from public_mode."""
+
+    completion_witness_requirements: tuple[str, ...] = ()
+    """Witness requirement refs shared by voice, captions, archive, and scrim."""
+
     monetization_ready: bool = False
+    monetization_posture: MonetizationPosture = MonetizationPosture.NOT_REQUESTED
 
     refusal_posture: str = ""
     """Current refusal articulation posture; empty when no refusal is
@@ -279,6 +322,35 @@ class LivestreamRoleState(BaseModel):
 
         return self
 
+    def allowed_destinations(self) -> frozenset[SpeechActDestination]:
+        """Return destinations authorized by this role state."""
+
+        if self.speech_destination_policy:
+            return self.speech_destination_policy
+        if self.public_mode is PublicMode.PUBLIC_LIVE:
+            return frozenset(
+                {
+                    SpeechActDestination.PRIVATE,
+                    SpeechActDestination.PUBLIC_LIVE,
+                    SpeechActDestination.PUBLIC_ARCHIVE,
+                }
+            )
+        if self.public_mode is PublicMode.PUBLIC_ARCHIVE:
+            return frozenset(
+                {
+                    SpeechActDestination.PRIVATE,
+                    SpeechActDestination.PUBLIC_ARCHIVE,
+                }
+            )
+        if self.public_mode is PublicMode.DRY_RUN:
+            return frozenset(
+                {
+                    SpeechActDestination.PRIVATE,
+                    SpeechActDestination.DIRECTOR_DRY_RUN,
+                }
+            )
+        return frozenset({SpeechActDestination.PRIVATE})
+
 
 class SpeechAct(BaseModel):
     """One classified speech-act emission.
@@ -310,15 +382,24 @@ class SpeechAct(BaseModel):
 
     act_kind: SpeechActKind
     role: LivestreamRole
+    role_state_ref: str = ""
     destination: SpeechActDestination
     claim_posture: AuthorityCeiling
 
     programme_run_ref: str = ""
+    impulse_id: str = ""
     originating_impulse_ref: str = ""
+    action_tendency: str = ""
+    selected_fulfillment: SpeechFulfillment | None = None
     wcs_snapshot_ref: str = ""
+    route_ref: str = ""
 
     completion_witness_required: bool = True
+    completion_witness_refs: tuple[str, ...] = ()
     terminal_outcome: TerminalOutcome | None = None
+    truth_source_allowed: Literal[False] = False
+    scheduler_action_allowed: Literal[False] = False
+    wcs_substitute_allowed: Literal[False] = False
     """``None`` when the act is in-flight; required when the act
     references an ``originating_impulse_ref`` (impulse must always
     reach a terminal state)."""
@@ -336,6 +417,16 @@ class SpeechAct(BaseModel):
                 raise ValueError(
                     "public_live destination requires non-empty wcs_snapshot_ref "
                     "(claims cannot flow without WCS evidence)"
+                )
+            if not self.route_ref:
+                raise ValueError(
+                    "public_live destination requires non-empty route_ref "
+                    "(public narration must name the audio/caption route)"
+                )
+            if not self.completion_witness_refs:
+                raise ValueError(
+                    "public_live destination requires completion_witness_refs "
+                    "(completion must be witnessable before public emission)"
                 )
 
         # Public-archive destinations require WCS snapshot.
@@ -364,6 +455,10 @@ class SpeechAct(BaseModel):
                 "wcs_snapshot_ref (no completed-without-evidence speech acts)"
             )
 
+        if self.impulse_id and self.originating_impulse_ref:
+            if self.impulse_id != self.originating_impulse_ref:
+                raise ValueError("impulse_id and originating_impulse_ref must match when both set")
+
         # Impulse-disappearance guard: any act referencing an originating
         # impulse must record a terminal outcome before it is closed.
         # (None is valid while in-flight; the consumer must verify before
@@ -371,11 +466,54 @@ class SpeechAct(BaseModel):
         # together imply terminal_outcome must not be None when the
         # consumer marks the act closed. Here we only enforce that the
         # type is correct.
-        if self.originating_impulse_ref and self.terminal_outcome is None:
+        linked_impulse = self.impulse_id or self.originating_impulse_ref
+        if linked_impulse and self.terminal_outcome is None:
             # Allowed (in-flight); consumer must finalize.
             pass
+        if linked_impulse and self.terminal_outcome is not None:
+            if not self.action_tendency:
+                raise ValueError(
+                    "terminal speech acts resolving an impulse require action_tendency"
+                )
+            if self.selected_fulfillment is None:
+                raise ValueError(
+                    "terminal speech acts resolving an impulse require selected_fulfillment"
+                )
 
         return self
+
+    @property
+    def resolved_impulse_id(self) -> str:
+        """Return the originating impulse id using the new field first."""
+
+        return self.impulse_id or self.originating_impulse_ref
+
+
+class SpeechAuthorizationDecision(BaseModel):
+    """Result of applying role/WCS/route policy to one speech act."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    authorized: bool
+    reasons: tuple[str, ...] = ()
+    role_state_ref: str = ""
+    speech_act_kind: SpeechActKind
+    requested_destination: SpeechActDestination
+    effective_destination: SpeechActDestination
+    selected_fulfillment: SpeechFulfillment
+    terminal_outcome: TerminalOutcome | None = None
+
+
+_AUTHORITY_RANK: dict[AuthorityCeiling, int] = {
+    AuthorityCeiling.NONE: 0,
+    AuthorityCeiling.DIAGNOSTIC: 1,
+    AuthorityCeiling.PRIVATE_ONLY: 2,
+    AuthorityCeiling.WITNESSED_PRESENCE: 3,
+    AuthorityCeiling.GROUNDED_PRIVATE: 4,
+    AuthorityCeiling.PUBLIC_VISIBLE: 5,
+    AuthorityCeiling.PUBLIC_LIVE: 6,
+    AuthorityCeiling.ACTION_AUTHORIZING: 7,
+}
 
 
 def is_speech_act_authorized_by_role(
@@ -398,14 +536,128 @@ def is_speech_act_authorized_by_role(
     )
 
 
+def authorize_speech_act(
+    role_state: LivestreamRoleState,
+    speech_act: SpeechAct,
+    *,
+    route_ref: str | None = None,
+    route_witness_refs: Iterable[str] = (),
+    director_snapshot_ref: str | None = None,
+    wcs_snapshot_ref: str | None = None,
+    public_event_refs: Iterable[str] = (),
+) -> SpeechAuthorizationDecision:
+    """Apply livestream role, WCS, route, and speech-act policy.
+
+    This is the director/speech gate. It does not create or erase an
+    originating urge; it decides whether the selected speech fulfillment can
+    execute publicly, must be inhibited, or must be redirected to a private
+    destination.
+    """
+
+    reasons: list[str] = []
+    allowed_destinations = role_state.allowed_destinations()
+    effective_wcs_ref = wcs_snapshot_ref or speech_act.wcs_snapshot_ref
+    effective_route_ref = route_ref or speech_act.route_ref
+    witness_refs = tuple(route_witness_refs) or speech_act.completion_witness_refs
+    is_public_destination = speech_act.destination in {
+        SpeechActDestination.PUBLIC_LIVE,
+        SpeechActDestination.PUBLIC_ARCHIVE,
+    }
+
+    if not is_speech_act_authorized_by_role(role_state, speech_act):
+        reasons.append("speech_act_not_allowed_by_role")
+    if speech_act.destination not in allowed_destinations:
+        reasons.append("destination_not_allowed_by_role_state")
+    if not _authority_allows(role_state.authority_ceiling, speech_act.claim_posture):
+        reasons.append("authority_ceiling_below_claim_posture")
+    if (
+        role_state.active_programme_run_ref
+        and speech_act.programme_run_ref
+        and role_state.active_programme_run_ref != speech_act.programme_run_ref
+    ):
+        reasons.append("programme_run_mismatch")
+
+    if speech_act.destination is SpeechActDestination.PUBLIC_LIVE:
+        if role_state.public_mode is not PublicMode.PUBLIC_LIVE:
+            reasons.append("role_state_not_public_live")
+        if not effective_route_ref:
+            reasons.append("route_ref_missing")
+        elif effective_route_ref not in role_state.available_wcs_surfaces:
+            reasons.append("route_not_available_in_role_state")
+        if not effective_wcs_ref:
+            reasons.append("wcs_snapshot_ref_missing")
+        if not (director_snapshot_ref or role_state.director_move_snapshot_ref):
+            reasons.append("director_snapshot_ref_missing")
+        if speech_act.completion_witness_required and not witness_refs:
+            reasons.append("completion_witness_requirement_missing")
+        if not tuple(public_event_refs) and role_state.public_mode is PublicMode.PUBLIC_LIVE:
+            reasons.append("public_event_ref_missing")
+
+    if speech_act.destination is SpeechActDestination.PUBLIC_ARCHIVE:
+        if not effective_wcs_ref:
+            reasons.append("wcs_snapshot_ref_missing")
+
+    if speech_act.act_kind is SpeechActKind.CONVERSION_CUE and not role_state.monetization_ready:
+        reasons.append("monetization_not_ready")
+
+    if reasons:
+        return SpeechAuthorizationDecision(
+            authorized=False,
+            reasons=tuple(dict.fromkeys(reasons)),
+            role_state_ref=role_state.role_state_id,
+            speech_act_kind=speech_act.act_kind,
+            requested_destination=speech_act.destination,
+            effective_destination=(
+                SpeechActDestination.PRIVATE if is_public_destination else speech_act.destination
+            ),
+            selected_fulfillment=_blocked_fulfillment_for(speech_act),
+            terminal_outcome=(
+                TerminalOutcome.REDIRECTED
+                if "destination_not_allowed_by_role_state" in reasons
+                else TerminalOutcome.INHIBITED
+            ),
+        )
+
+    return SpeechAuthorizationDecision(
+        authorized=True,
+        role_state_ref=role_state.role_state_id,
+        speech_act_kind=speech_act.act_kind,
+        requested_destination=speech_act.destination,
+        effective_destination=speech_act.destination,
+        selected_fulfillment=speech_act.selected_fulfillment or SpeechFulfillment.SPOKEN_NARRATION,
+    )
+
+
+def _authority_allows(ceiling: AuthorityCeiling, claim_posture: AuthorityCeiling) -> bool:
+    return _AUTHORITY_RANK[ceiling] >= _AUTHORITY_RANK[claim_posture]
+
+
+def _blocked_fulfillment_for(speech_act: SpeechAct) -> SpeechFulfillment:
+    if speech_act.act_kind is SpeechActKind.REFUSAL_ARTICULATION:
+        return SpeechFulfillment.REFUSAL
+    if speech_act.act_kind is SpeechActKind.CORRECTION_ARTICULATION:
+        return SpeechFulfillment.CORRECTION
+    if speech_act.destination in {
+        SpeechActDestination.PUBLIC_LIVE,
+        SpeechActDestination.PUBLIC_ARCHIVE,
+    }:
+        return SpeechFulfillment.PRIVATE_NOTE
+    return SpeechFulfillment.WITHHELD
+
+
 __all__ = [
     "AuthorityCeiling",
     "LivestreamRole",
     "LivestreamRoleState",
+    "MonetizationPosture",
     "PublicMode",
+    "SpeechAuthorizationDecision",
     "SpeechAct",
     "SpeechActDestination",
+    "SpeechFulfillment",
     "SpeechActKind",
+    "SpeechPosture",
     "TerminalOutcome",
+    "authorize_speech_act",
     "is_speech_act_authorized_by_role",
 ]

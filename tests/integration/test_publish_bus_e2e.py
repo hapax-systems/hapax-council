@@ -19,12 +19,14 @@ return-string vocabulary drifts, this test fails loudly.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from unittest import mock
 
 from prometheus_client import CollectorRegistry
 
 from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY, Orchestrator
 from shared.preprint_artifact import PreprintArtifact
+from shared.publication_hardening.review import ReviewReport
 
 
 def _drop_approved_artifact(
@@ -54,6 +56,23 @@ def _read_log(state_root, slug: str, surface: str) -> dict:
     log_path = state_root / "publish" / "log" / f"{slug}.{surface}.json"
     assert log_path.exists(), f"missing log at {log_path}"
     return json.loads(log_path.read_text())
+
+
+class _ApprovingReviewPass:
+    def review_text(
+        self,
+        text: str,
+        *,
+        author_model: str | None = None,
+        lint_report: str | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> ReviewReport:
+        del text, lint_report, metadata
+        return ReviewReport(
+            reviewer_model="test-reviewer",
+            author_model=author_model,
+            overall_confidence=0.99,
+        )
 
 
 # ── Phase 1 publishers: real SURFACE_REGISTRY, mocked transports ────
@@ -110,6 +129,7 @@ class TestPhase1PublishBusEndToEnd:
         orch = Orchestrator(
             state_root=tmp_path,
             public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=_ApprovingReviewPass(),
             registry=CollectorRegistry(),
         )
 
@@ -137,6 +157,7 @@ class TestPhase1PublishBusEndToEnd:
         orch = Orchestrator(
             state_root=tmp_path,
             public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=_ApprovingReviewPass(),
             registry=CollectorRegistry(),
         )
 
@@ -173,6 +194,7 @@ class TestPhase1PublishBusEndToEnd:
         orch = Orchestrator(
             state_root=tmp_path,
             public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=_ApprovingReviewPass(),
             registry=CollectorRegistry(),
         )
 
@@ -193,6 +215,7 @@ class TestPhase1PublishBusEndToEnd:
         orch = Orchestrator(
             state_root=tmp_path,
             public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=_ApprovingReviewPass(),
             registry=CollectorRegistry(),
         )
 
@@ -239,6 +262,7 @@ class TestPhase1PublishBusEndToEnd:
         orch = Orchestrator(
             state_root=tmp_path,
             public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=_ApprovingReviewPass(),
             registry=CollectorRegistry(),
         )
 
@@ -268,6 +292,7 @@ class TestPhase1PublishBusEndToEnd:
         orch = Orchestrator(
             state_root=tmp_path,
             public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=_ApprovingReviewPass(),
             registry=CollectorRegistry(),
         )
         handled = orch.run_once()

@@ -213,7 +213,7 @@ class ApperceptionTick:
 
         # 3. Stimmung transition
         if stance != self._prev_stimmung_stance:
-            stances = ["nominal", "cautious", "degraded", "critical"]
+            stances = ["nominal", "seeking", "cautious", "degraded", "critical"]
             try:
                 improving = stances.index(stance) < stances.index(self._prev_stimmung_stance)
             except ValueError:

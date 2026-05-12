@@ -151,6 +151,11 @@ def test_live_surface_guard_runs_from_activation_worktree() -> None:
     assert parser.get("Service", "ExecStart").startswith(f"{SOURCE_ROOT}/.venv/bin/python")
     assert "agents.live_surface_guard" in parser.get("Service", "ExecStart")
     assert "--require-obs-decoder" in parser.get("Service", "ExecStart")
+    assert (
+        "--textfile-path %h/.local/share/node_exporter/textfile_collector/"
+        "hapax-live-surface-guard.prom"
+    ) in parser.get("Service", "ExecStart")
+    assert parser.get("Service", "EnvironmentFile") == "-%t/hapax-secrets.env"
     assert "hapax-compositor-runtime-source-check" in parser.get("Service", "ExecStartPre")
     lines = _active_unit_lines(LIVE_SURFACE_GUARD)
     assert all("%h/projects/hapax-council" not in line for line in lines)

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
 import json
 import os
 import shutil
 import subprocess
 from pathlib import Path
+from types import ModuleType
+from unittest.mock import Mock, patch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WITNESS = REPO_ROOT / "scripts" / "hapax-usb-topology-witness"
@@ -31,17 +35,39 @@ L12_SOURCE = (
 )
 
 
+def load_witness_module() -> ModuleType:
+    loader = importlib.machinery.SourceFileLoader("hapax_usb_topology_witness", str(WITNESS))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise AssertionError("could not load hapax-usb-topology-witness spec")
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
 def known_good_snapshot() -> dict[str, object]:
     return {
         "kernel": {"usbfs_memory_mb": "128", "uvcvideo_quirks": "256"},
         "s4": {
             "device": "3-1.5",
+            "sysfs_path": "/sys/bus/usb/devices/3-1.5",
             "path": "pci-0000:71:00.0-usb-0:1.5",
+            "serial": "fedcba9876543220",
+            "vendor_id": "1d6b",
+            "product_id": "0104",
+            "product": "S-4",
+            "manufacturer": "Torso Electronics",
+            "stable_id": "usb:1d6b:0104:fedcba9876543220",
             "power_control": "on",
             "block": {
                 "node": "/dev/disk/by-id/usb-Linux_File-Stor_Gadget_fedcba9876543220-0:0",
+                "devname": "/dev/sdz",
+                "match_source": "dev-disk-by-id",
                 "udisks_ignore": "1",
                 "modemmanager_ignore": "1",
+                "id_serial_short": "fedcba9876543220",
+                "id_vendor_id": "1d6b",
+                "id_model_id": "0104",
             },
             "net": {
                 "interface": "enp113s0u1u5",
@@ -52,7 +78,14 @@ def known_good_snapshot() -> dict[str, object]:
         },
         "l12": {
             "device": "3-1.1.2.2",
+            "sysfs_path": "/sys/bus/usb/devices/3-1.1.2.2",
             "path": "pci-0000:71:00.0-usb-0:1.1.2.2",
+            "serial": "8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF",
+            "vendor_id": "1686",
+            "product_id": "03d5",
+            "product": "L-12",
+            "manufacturer": "ZOOM Corporation",
+            "stable_id": "usb:1686:03d5:8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF",
             "default_sink": L12_SINK,
             "default_source": L12_SOURCE,
         },
@@ -108,15 +141,15 @@ def test_witness_accepts_current_nested_s4_caldigit_path(tmp_path: Path) -> None
     assert status["issues"] == []
 
 
-def test_witness_warns_on_unapproved_s4_path(tmp_path: Path) -> None:
-    """Path drift surfaces as a warning, not a failure.
+def test_witness_ignores_s4_bus_path_drift_when_stable_attrs_match(tmp_path: Path) -> None:
+    """Path drift is diagnostic only, not a warning or failure.
 
     S-4 routing is pinned by serial+vid:pid via the persistent ALSA
     card-id rules (PR #2222). Sink/source identity is what drives
     routing, so a fresh enumeration path (e.g. moving between CalDigit
-    ports) should not flap the witness into a failed unit state — the
-    operator gets the new path in `warnings` for promotion or cabling
-    investigation. Mirrors the L-12 path-drift policy.
+    ports) should not flap the witness into a failed or degraded unit
+    state. The current bus path remains in the JSON snapshot for
+    diagnostics.
     """
     snapshot = known_good_snapshot()
     snapshot["s4"]["device"] = "1-9"
@@ -127,7 +160,9 @@ def test_witness_warns_on_unapproved_s4_path(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stdout
     status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
     assert status["ok"] is True
-    assert "s4_path_drift:pci-0000:09:00.0-usb-0:9" in status["warnings"]
+    assert status["s4"]["stable_id"] == "usb:1d6b:0104:fedcba9876543220"
+    assert status["s4"]["path"] == "pci-0000:09:00.0-usb-0:9"
+    assert not any(warning.startswith("s4_path_drift") for warning in status["warnings"])
     assert not any(issue.startswith("s4_path_drift") for issue in status["issues"])
 
 
@@ -141,7 +176,41 @@ def test_witness_accepts_post_128gb_l12_path(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stdout
     status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
     assert status["ok"] is True
+    assert status["l12"]["stable_id"] == "usb:1686:03d5:8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF"
     assert not any(warning.startswith("l12_path_drift") for warning in status["warnings"])
+
+
+def test_s4_block_policy_falls_back_to_udev_attrs_without_by_id(
+    monkeypatch, tmp_path: Path
+) -> None:
+    witness = load_witness_module()
+    block_root = tmp_path / "sys" / "class" / "block"
+    block_dev = block_root / "sdz"
+    block_dev.mkdir(parents=True)
+
+    monkeypatch.setattr(witness.glob, "glob", lambda _pattern: [])
+
+    def fake_udev_props_for_path(path: Path) -> dict[str, str]:
+        assert path == block_dev
+        return {
+            "DEVNAME": "/dev/sdz",
+            "ID_SERIAL_SHORT": "fedcba9876543220",
+            "ID_VENDOR_ID": "1d6b",
+            "ID_MODEL_ID": "0104",
+            "UDISKS_IGNORE": "1",
+            "UDISKS_PRESENTATION_HIDE": "1",
+            "ID_MM_DEVICE_IGNORE": "1",
+        }
+
+    monkeypatch.setattr(witness, "udev_props_for_path", fake_udev_props_for_path)
+
+    policy = witness.s4_block_policy(block_root=block_root)
+
+    assert policy["match_source"] == "udev-attrs"
+    assert policy["node"] == ""
+    assert policy["devname"] == "/dev/sdz"
+    assert policy["id_serial_short"] == "fedcba9876543220"
+    assert policy["udisks_ignore"] == "1"
 
 
 def test_witness_reports_kernel_policy_and_camera_drift(tmp_path: Path) -> None:
@@ -276,6 +345,39 @@ def test_copied_witness_uses_installed_policy_env_path(tmp_path: Path) -> None:
     assert "s4_usb_missing_known_absence:hardware_fault_diagnosed_2026-05-08" in output["warnings"]
 
 
+def test_start_user_unit_reports_repair_only_when_start_needed() -> None:
+    witness = load_witness_module()
+    active = subprocess.CompletedProcess(["systemctl"], 0, "", "")
+    inactive = subprocess.CompletedProcess(["systemctl"], 3, "", "")
+    started = subprocess.CompletedProcess(["systemctl"], 0, "", "")
+    mocked_run = Mock(side_effect=[active, inactive, started])
+
+    with patch.object(witness, "run", mocked_run):
+        assert witness.start_user_unit("hapax-audio-router.service") is False
+        assert witness.start_user_unit("hapax-usb-router.service") is True
+
+    assert mocked_run.call_args_list[0].args[0] == [
+        "systemctl",
+        "--user",
+        "is-active",
+        "--quiet",
+        "hapax-audio-router.service",
+    ]
+    assert mocked_run.call_args_list[1].args[0] == [
+        "systemctl",
+        "--user",
+        "is-active",
+        "--quiet",
+        "hapax-usb-router.service",
+    ]
+    assert mocked_run.call_args_list[2].args[0] == [
+        "systemctl",
+        "--user",
+        "start",
+        "hapax-usb-router.service",
+    ]
+
+
 def test_installer_dry_run_lists_durable_policy_files(tmp_path: Path) -> None:
     result = subprocess.run(
         [
@@ -348,6 +450,7 @@ def test_usb_topology_witness_service_sets_policy_path() -> None:
     text = USB_WITNESS_SERVICE.read_text(encoding="utf-8")
 
     assert "Environment=HAPAX_USB_TOPOLOGY_POLICY=%h/.config/hapax/usb-topology-policy.json" in text
+    assert "ExecStartPre=/usr/bin/udevadm settle --timeout=30" in text
 
 
 def test_midi_route_skips_cleanly_when_legacy_binary_absent() -> None:

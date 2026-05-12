@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Send an instruction to a live tmux-backed Vibe lane.
+
+set -euo pipefail
+
+SESSION=""
+SUBMIT=1
+INFLECTION_MODE=0
+MESSAGE_PARTS=()
+
+usage() {
+  cat <<'EOF'
+usage: hapax-vibe-send --session vbe-N [--no-submit] [--inflection] -- MESSAGE...
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --session|--name)
+      SESSION="${2:-}"
+      shift 2
+      ;;
+    --session=*)
+      SESSION="${1#--session=}"
+      shift
+      ;;
+    --no-submit)
+      SUBMIT=0
+      shift
+      ;;
+    --inflection)
+      INFLECTION_MODE=1
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      MESSAGE_PARTS+=("$@")
+      break
+      ;;
+    *)
+      MESSAGE_PARTS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+[ -n "$SESSION" ] || { echo "hapax-vibe-send: --session required" >&2; usage >&2; exit 2; }
+if ! [[ "$SESSION" =~ ^vbe-[a-z0-9][a-z0-9-]*$ ]]; then
+  echo "hapax-vibe-send: invalid session '$SESSION' (expected vbe-<slug>)" >&2
+  exit 2
+fi
+[ "${#MESSAGE_PARTS[@]}" -gt 0 ] || { echo "hapax-vibe-send: no message" >&2; exit 2; }
+
+MESSAGE="${MESSAGE_PARTS[*]}"
+TMUX_NAME="hapax-vibe-$SESSION"
+
+if [ "$INFLECTION_MODE" -eq 1 ]; then
+  INFLECTION_DIR="${HAPAX_VIBE_RELAY_DIR:-$HOME/.cache/hapax/relay}/inflections"
+  mkdir -p "$INFLECTION_DIR"
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  parent="${HAPAX_AGENT_NAME:-${USER:-unknown}}"
+  out="$INFLECTION_DIR/$ts-$parent-to-$SESSION.md"
+  cat > "$out" <<EOF_INF
+# $ts - for: $SESSION
+
+from: $parent
+interface: ${HAPAX_AGENT_INTERFACE:-shell}
+
+$MESSAGE
+EOF_INF
+  echo "wrote inflection: $out"
+  exit 0
+fi
+
+TMUX_BIN="$(command -v tmux || true)"
+[ -n "$TMUX_BIN" ] || { echo "hapax-vibe-send: tmux not found" >&2; exit 4; }
+
+if ! "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null; then
+  cat >&2 <<EOF
+hapax-vibe-send: no tmux session '$TMUX_NAME' running.
+
+Either:
+  - launch the lane: hapax-vibe --session $SESSION --terminal tmux ...
+  - or use --inflection to drop a relay note the lane reads on next start
+EOF
+  exit 5
+fi
+
+"$TMUX_BIN" set-buffer -- "$MESSAGE"
+"$TMUX_BIN" paste-buffer -t "$TMUX_NAME"
+if [ "$SUBMIT" -eq 1 ]; then
+  "$TMUX_BIN" send-keys -t "$TMUX_NAME" Enter
+  echo "sent + submitted to $TMUX_NAME"
+else
+  echo "pasted to $TMUX_NAME (not submitted)"
+fi

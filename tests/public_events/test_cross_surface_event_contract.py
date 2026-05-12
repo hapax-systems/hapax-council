@@ -13,6 +13,7 @@ from shared.cross_surface_event_contract import (
     cross_surface_contract_payload,
     cross_surface_decision_id,
     decide_cross_surface_fanout,
+    get_aperture_contract,
 )
 from shared.research_vehicle_public_event import (
     PublicEventChapterRef,
@@ -208,6 +209,77 @@ def test_weblog_event_allows_social_and_arena_fanout() -> None:
         decision = decide_cross_surface_fanout(event, aperture, "publish")
         assert decision.decision == "allow", (aperture, decision.reasons)
         assert decision.target_surfaces == [aperture]
+
+
+def test_non_broadcast_social_events_are_in_fanout_contract() -> None:
+    expected = {"governance.enforcement", "omg.weblog", "velocity.digest"}
+
+    for aperture in ("mastodon", "bluesky", "arena"):
+        contract = get_aperture_contract(aperture)
+        assert expected <= set(contract.allowed_event_types)
+
+
+def test_non_broadcast_social_events_bypass_stale_egress_gate() -> None:
+    cases = (
+        ("omg.weblog", "public_post"),
+        ("velocity.digest", "research_observation"),
+        ("governance.enforcement", "governance_state"),
+    )
+
+    for event_type, state_kind in cases:
+        event = _event(
+            event_id=f"rvpe:{event_type.replace('.', '_')}:egress_bypass",
+            event_type=event_type,
+            state_kind=state_kind,
+            broadcast_id=None,
+            public_url="https://hapax.weblog.lol/visibility-engine",
+            surface_policy=PublicEventSurfacePolicy(
+                allowed_surfaces=["mastodon", "bluesky", "arena", "archive"],
+                denied_surfaces=[],
+                claim_live=False,
+                claim_archive=True,
+                claim_monetizable=False,
+                requires_egress_public_claim=True,
+                requires_audio_safe=True,
+                requires_provenance=True,
+                requires_human_review=False,
+                rate_limit_key=f"{event_type}:{state_kind}",
+                redaction_policy="none",
+                fallback_action="hold",
+                dry_run_reason=None,
+            ),
+        )
+
+        for aperture in ("mastodon", "bluesky", "arena"):
+            decision = decide_cross_surface_fanout(event, aperture, "publish")
+            assert decision.decision == "allow", (event_type, aperture, decision.reasons)
+            assert "egress_blocked" not in decision.reasons
+
+
+def test_broadcast_boundary_still_requires_live_egress_claim() -> None:
+    event = _event(
+        surface_policy=PublicEventSurfacePolicy(
+            allowed_surfaces=["mastodon", "archive"],
+            denied_surfaces=[],
+            claim_live=False,
+            claim_archive=True,
+            claim_monetizable=False,
+            requires_egress_public_claim=True,
+            requires_audio_safe=True,
+            requires_provenance=True,
+            requires_human_review=False,
+            rate_limit_key="broadcast.boundary:live_state",
+            redaction_policy="operator_referent",
+            fallback_action="hold",
+            dry_run_reason=None,
+        )
+    )
+
+    decision = decide_cross_surface_fanout(event, "mastodon", "publish")
+
+    assert decision.decision == "hold"
+    assert decision.health_status == "degraded"
+    assert "egress_blocked" in decision.reasons
 
 
 def test_archive_and_replay_actions_use_archive_claim_and_refs() -> None:

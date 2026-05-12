@@ -31,7 +31,7 @@ Type=notify
 NotifyAccess=main
 WatchdogSec=60s
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
-ExecStartPre=/usr/bin/mkdir -p %h/video-recording %h/.cache/hapax-compositor/hls
+ExecStartPre=/usr/bin/mkdir -p %h/video-recording %h/.cache/hapax-compositor/hls /dev/shm/hapax-compositor
 ExecStartPre=/usr/bin/find /dev/shm/hapax-compositor -maxdepth 1 -type s -name v4l2-bridge.sock* -delete
 ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file agents/studio_compositor/shmsink_output_pipeline.py --require-file scripts/hapax-v4l2-bridge
 ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-v4l2-video42-format-guard --verify-only
@@ -86,6 +86,7 @@ Environment=HAPAX_COMPOSITOR_LAYOUT_PATH=%h/.config/hapax-compositor/layouts/def
 # C2+C3 findings. Defaults are correct today; this makes the intent
 # durable in the unit file itself.
 Environment=CUDA_VISIBLE_DEVICES=0
+Environment=HAPAX_V4L2_BRIDGE_ENABLED=1
 # Cap OpenTelemetry BatchSpanProcessor so Langfuse outages can't fill the
 # Python heap with pending spans — same treatment as hapax-daimonion got
 # in PR #731's OOM-cascade containment. Defaults are 2048 queue and 30 s

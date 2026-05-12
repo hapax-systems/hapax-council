@@ -13,9 +13,12 @@ def test_batch_prep_checks_authority_gate_before_model_probe() -> None:
     body = _read(REPO_ROOT / "scripts" / "batch_prep_segments.sh")
 
     authority = body.index("if ! check_prep_authority; then")
+    canary = body.index("if ! check_next_nine_canary; then")
     model_probe = body.index("\nverify_resident_model\n\ngenerated=")
     assert authority < model_probe
+    assert canary < model_probe
     assert "shared.segment_prep_pause --check --activity pool_generation" in body
+    assert "assert_next_nine_canary_ready" in body
     assert "require_selected=False" in body
 
 

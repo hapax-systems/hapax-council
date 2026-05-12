@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+# hapax-lane-rate-limit-watchdog — detects idle Claude lanes and re-kicks them.
+#
+# Problem: when a lane hits a rate limit, it dies at the prompt. The watchdog
+# kicks it, but the kick itself gets rate-limited too, creating a spam loop.
+#
+# Solution: one-at-a-time kicks with cooldown.
+# - Track last kick time per lane in /tmp/hapax-lane-watchdog/
+# - Only kick ONE lane per invocation (the one idle longest past cooldown)
+# - 90s cooldown per lane so we don't spam a rate-limited session
+# - Timer fires every 60s, so worst case a lane waits 90s for a retry
+set -euo pipefail
+
+COOLDOWN_DIR="/tmp/hapax-lane-watchdog"
+COOLDOWN_S=90
+
+mkdir -p "$COOLDOWN_DIR"
+now=$(date +%s)
+
+# Governance sweep — run every tick, log violations but don't block watchdog
+GOVERNANCE_SCRIPT="$(dirname "$0")/cc-governance-sweep"
+if [[ -x "$GOVERNANCE_SCRIPT" ]]; then
+  if ! "$GOVERNANCE_SCRIPT" 2>&1 | while IFS= read -r line; do
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) watchdog/governance: $line"
+  done; then
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) watchdog: governance violations detected — check cc-governance-sweep output"
+  fi
+fi
+
+# Dead-lane auto-restart: if a lane worktree exists but the process is dead,
+# relaunch it. Lanes must NEVER be idle — operator directive.
+EXPECTED_LANES="beta gamma delta epsilon zeta"
+HEADLESS_BIN="$HOME/.local/bin/hapax-claude-headless"
+RESTART_COOLDOWN_S=120
+
+for lane in $EXPECTED_LANES; do
+    worktree="$HOME/projects/hapax-council--$lane"
+    [ -d "$worktree" ] || continue
+
+    pidfile="/run/user/$(id -u)/hapax-claude/$lane.pid"
+    pid=""
+    [ -f "$pidfile" ] && pid=$(cat "$pidfile" 2>/dev/null)
+
+    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+        restart_marker="$COOLDOWN_DIR/${lane}-restart"
+        if [ -f "$restart_marker" ]; then
+            last_restart=$(cat "$restart_marker" 2>/dev/null || echo 0)
+            elapsed=$((now - last_restart))
+            if [ "$elapsed" -lt "$RESTART_COOLDOWN_S" ]; then
+                continue
+            fi
+        fi
+
+        if [ -x "$HEADLESS_BIN" ]; then
+            vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
+            assigned=$(grep -rl "^assigned_to: $lane" "$vault_root/active/" 2>/dev/null | head -1)
+            if [ -n "$assigned" ]; then
+                task_id=$(basename "$assigned" .md)
+                task_title=$(grep -m1 "^title:" "$assigned" | sed 's/^title:\s*//' | tr -d '"')
+                msg="Resume your assigned task: $task_id — $task_title. Ship a PR and cc-close --pr N after merge."
+            else
+                msg="Claim the highest-WSJF offered task from ~/Documents/Personal/20-projects/hapax-cc-tasks/active/ and start work. Ship a PR and cc-close --pr N after merge."
+            fi
+
+            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $lane: DEAD — auto-restarting via setsid"
+            setsid "$HEADLESS_BIN" "$lane" "$msg" > /tmp/hapax-headless-$lane.log 2>&1 &
+            disown
+            echo "$now" > "$restart_marker"
+        fi
+    fi
+done
+
+# Skip lanes that are quota-blocked (receipt exists from detect-quota-wall)
+RECEIPT_DIR="$HOME/.cache/hapax/relay/receipts"
+
+# Collect eligible lanes (idle + past cooldown), pick the one idle longest
+best_lane=""
+best_age=0
+
+# Check tmux-based lanes
+for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^hapax-claude-' | sort); do
+    lane="${session#hapax-claude-}"
+    [ "$lane" = "alpha" ] && continue
+
+    # Skip quota-blocked lanes
+    if [ -f "$RECEIPT_DIR/${lane}-quota-wall.yaml" ]; then
+        continue
+    fi
+
+    pane_text=$(tmux capture-pane -t "$session" -p -S -5 2>/dev/null) || continue
+
+    if ! echo "$pane_text" | tail -3 | grep -q "bypass permissions on"; then
+        rm -f "$COOLDOWN_DIR/$lane" 2>/dev/null
+        continue
+    fi
+
+    if [ -f "$COOLDOWN_DIR/$lane" ]; then
+        last_kick=$(cat "$COOLDOWN_DIR/$lane" 2>/dev/null || echo 0)
+        elapsed=$((now - last_kick))
+        if [ "$elapsed" -lt "$COOLDOWN_S" ]; then
+            continue
+        fi
+        if [ "$elapsed" -gt "$best_age" ]; then
+            best_age=$elapsed
+            best_lane=$lane
+        fi
+    else
+        best_lane=$lane
+        best_age=999999
+    fi
+done
+
+# Check headless (stream-json) lanes — detect idle by output file staleness
+HEADLESS_STALE_S=600  # 10 minutes without output = idle
+for pidfile in /run/user/$(id -u)/hapax-claude/*.pid; do
+    [ -f "$pidfile" ] || continue
+    lane=$(basename "$pidfile" .pid)
+    [ "$lane" = "alpha" ] && continue
+    pid=$(cat "$pidfile" 2>/dev/null)
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
+
+    # Skip quota-blocked lanes
+    if [ -f "$RECEIPT_DIR/${lane}-quota-wall.yaml" ]; then
+        continue
+    fi
+
+    # Skip if tmux already found this lane
+    tmux has-session -t "hapax-claude-$lane" 2>/dev/null && continue
+
+    logfile="$HOME/.cache/hapax/claude-headless/$lane/output.jsonl"
+    [ -f "$logfile" ] || continue
+    log_mod=$(stat --format="%Y" "$logfile" 2>/dev/null || echo 0)
+    stale_s=$(( now - log_mod ))
+
+    if [ "$stale_s" -lt "$HEADLESS_STALE_S" ]; then
+        rm -f "$COOLDOWN_DIR/$lane" 2>/dev/null
+        continue
+    fi
+
+    if [ -f "$COOLDOWN_DIR/$lane" ]; then
+        last_kick=$(cat "$COOLDOWN_DIR/$lane" 2>/dev/null || echo 0)
+        elapsed=$((now - last_kick))
+        if [ "$elapsed" -lt "$COOLDOWN_S" ]; then
+            continue
+        fi
+        if [ "$stale_s" -gt "$best_age" ]; then
+            best_age=$stale_s
+            best_lane=$lane
+        fi
+    else
+        best_lane=$lane
+        best_age=$stale_s
+    fi
+done
+
+if [ -n "$best_lane" ]; then
+    # Prefer headless pipe transport over tmux send-keys
+    headless_pipe="/run/user/$(id -u)/hapax-claude/$best_lane.stdin"
+    send_msg() {
+        local msg="$1"
+        if [ -p "$headless_pipe" ]; then
+            local json_msg
+            json_msg=$(python3 -c "
+import json, sys
+msg = {'type': 'user', 'message': {'role': 'user', 'content': [{'type': 'text', 'text': sys.argv[1]}]}}
+print(json.dumps(msg))
+" "$msg")
+            echo "$json_msg" > "$headless_pipe"
+        else
+            tmux send-keys -t "hapax-claude-${best_lane}" "$msg" Enter 2>/dev/null
+        fi
+    }
+
+    claim_file="$HOME/.cache/hapax/cc-active-task-$best_lane"
+    if [ -f "$claim_file" ]; then
+        claimed_task=$(head -n1 "$claim_file" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$claimed_task" ]; then
+            # Lane has a claimed task — remind it to continue, don't ask it to claim another
+            vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
+            task_status=$(python3 -c "
+from pathlib import Path
+import re
+for p in Path('$vault_root/active').glob('${claimed_task}*'):
+    text = p.read_text()
+    m = re.search(r'^status:\s*(\S+)$', text, re.MULTILINE)
+    if m: print(m.group(1)); break
+" 2>/dev/null || echo "unknown")
+            if [ "$task_status" = "in_progress" ] || [ "$task_status" = "claimed" ]; then
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $best_lane: idle with active task '$claimed_task' ($task_status) — resuming"
+                send_msg "You have an active cc-task: $claimed_task (status: $task_status). Resume work on it now. Run 'scripts/compositor-inspect before ${best_lane}-$(echo $claimed_task | cut -c1-20)' if you haven't captured a baseline yet."
+                echo "$now" > "$COOLDOWN_DIR/$best_lane"
+                exit 0
+            fi
+        fi
+    fi
+    # No claimed task or task is completed — prompt to claim next
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $best_lane: idle past cooldown, no active task — kicking (1 of 1)"
+    send_msg "Claim the highest-WSJF offered cc-task: cc-claim <task_id>. Tasks are at ~/Documents/Personal/20-projects/hapax-cc-tasks/. Run: ls ~/Documents/Personal/20-projects/hapax-cc-tasks/active/ | head -10 to find offered tasks. Then do the work and ship a PR."
+    echo "$now" > "$COOLDOWN_DIR/$best_lane"
+fi

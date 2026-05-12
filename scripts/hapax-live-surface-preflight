@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -32,8 +33,119 @@ CONTAINMENT_ENV = (
     "HAPAX_FOLLOW_MODE_ACTIVE",
 )
 EGRESS_ENV = ("HAPAX_V4L2_BRIDGE_ENABLED",)
-SELECTED_ENV = CONTAINMENT_ENV + EGRESS_ENV
+FULL_SURFACE_ENV = (
+    "HAPAX_COMPOSITOR_DISABLE_SHADER_FX",
+    "HAPAX_FOLLOW_MODE_ACTIVE",
+    "HAPAX_WARD_MODULATOR_ACTIVE",
+    "HAPAX_LAYOUT_TICK_DISABLED",
+    "HAPAX_U4_MICROMOVE_DISABLED",
+    "HAPAX_U5_VERB_DISABLED",
+    "HAPAX_ATMOSPHERIC_ROTATE_ON_STABLE",
+    "HAPAX_PRESET_RECRUITMENT_SINGLE_WRITE_TRANSITIONS",
+    "HAPAX_COMPOSITOR_FX_SLOTS",
+    "HAPAX_FX_AUTONOMOUS_MUTATIONS",
+    "HAPAX_VISUAL_PUMPING_ENABLED",
+    "HAPAX_CAMERA_LEGIBLE_FX_ONLY",
+    "HAPAX_CAMERA_LEGIBLE_PRESET_ALLOWLIST",
+    "HAPAX_GEM_SUBSTRATE_ENABLED",
+    "HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED",
+    "HAPAX_HERO_SMALL_OVERLAY_ENABLED",
+    "HAPAX_PRE_FX_LAYOUT_BACKGROUND_COMPOSITE_ENABLED",
+    "HAPAX_PRE_FX_LAYOUT_COMPOSITE_CACHE_ENABLED",
+)
+SELECTED_ENV = tuple(dict.fromkeys(CONTAINMENT_ENV + EGRESS_ENV + FULL_SURFACE_ENV))
 DEFAULT_MAX_HLS_TARGET_DURATION_SECONDS = 120.0
+FULL_SURFACE_MIN_FX_SLOTS = 8
+FULL_SURFACE_MIN_VISIBLE_WARDS = 3
+FULL_SURFACE_LEGACY_STATIC_LAYOUTS = frozenset({"default", "garage-door"})
+FULL_SURFACE_STAGE_FPS_FLOORS = (
+    ("compositor_src", 29.5, "LSC-PERF-001"),
+    ("output_tee_sink", 29.0, "LSC-PERF-001"),
+    ("v4l2_appsink", 29.5, "LSC-EGRESS-001"),
+    ("hls_parser_src", 29.0, "LSC-EGRESS-002"),
+    # Final-egress proof snapshots are diagnostic consumer-boundary samples,
+    # not the frame-rate path itself. V4l2OutputPipeline defaults to one proof
+    # JPEG per second; frame cadence is enforced on v4l2_appsink/HLS above.
+    ("final_egress_snapshot", 0.8, "LSC-VIEWER-001"),
+)
+FULL_SURFACE_CPU_TARGET_CORES = 2.0
+
+FULL_SURFACE_BLOCKING_ENV = (
+    (
+        "HAPAX_COMPOSITOR_DISABLE_SHADER_FX",
+        "1",
+        "LSC-FX-001",
+        "shader_fx_disabled",
+    ),
+    ("HAPAX_FOLLOW_MODE_ACTIVE", "0", "LSC-FOLLOW-001", "follow_mode_disabled"),
+    (
+        "HAPAX_WARD_MODULATOR_ACTIVE",
+        "0",
+        "LSC-WARD-002",
+        "ward_modulator_disabled",
+    ),
+    ("HAPAX_LAYOUT_TICK_DISABLED", "1", "LSC-LAYOUT-003", "layout_tick_disabled"),
+    ("HAPAX_U4_MICROMOVE_DISABLED", "1", "LSC-DIRECTOR-001", "u4_micromove_disabled"),
+    ("HAPAX_U5_VERB_DISABLED", "1", "LSC-DIRECTOR-001", "u5_verb_disabled"),
+    (
+        "HAPAX_ATMOSPHERIC_ROTATE_ON_STABLE",
+        "0",
+        "LSC-DIRECTOR-001",
+        "atmospheric_rotation_disabled",
+    ),
+    (
+        "HAPAX_PRESET_RECRUITMENT_SINGLE_WRITE_TRANSITIONS",
+        "1",
+        "LSC-TRANSITION-001",
+        "preset_recruitment_single_write",
+    ),
+    (
+        "HAPAX_FX_AUTONOMOUS_MUTATIONS",
+        "0",
+        "LSC-FX-002",
+        "fx_autonomous_mutations_disabled",
+    ),
+    ("HAPAX_CAMERA_LEGIBLE_FX_ONLY", "1", "LSC-FX-001", "camera_legible_fx_only"),
+    (
+        "HAPAX_CAMERA_LEGIBLE_PRESET_ALLOWLIST",
+        "clean",
+        "LSC-PRESET-001",
+        "preset_allowlist_clean",
+    ),
+    ("HAPAX_GEM_SUBSTRATE_ENABLED", "0", "LSC-SCRIM-001", "gem_substrate_disabled"),
+    (
+        "HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED",
+        "0",
+        "LSC-LAYOUT-001",
+        "pre_fx_layout_draw_disabled",
+    ),
+    (
+        "HAPAX_HERO_SMALL_OVERLAY_ENABLED",
+        "0",
+        "LSC-FX-001",
+        "hero_small_overlay_disabled",
+    ),
+    (
+        "HAPAX_PRE_FX_LAYOUT_BACKGROUND_COMPOSITE_ENABLED",
+        "0",
+        "LSC-LAYOUT-001",
+        "pre_fx_layout_background_composite_disabled",
+    ),
+    (
+        "HAPAX_PRE_FX_LAYOUT_COMPOSITE_CACHE_ENABLED",
+        "0",
+        "LSC-LAYOUT-001",
+        "pre_fx_layout_composite_cache_disabled",
+    ),
+)
+
+FULL_SURFACE_REQUIRED_FEATURES = (
+    ("shader_fx", "LSC-FX-001"),
+    ("inline_fx", "LSC-FX-001"),
+    ("hero_effect", "LSC-FX-001"),
+    ("follow_mode", "LSC-FOLLOW-001"),
+    ("ward_modulator", "LSC-WARD-002"),
+)
 
 
 def _bool_arg(value: str) -> bool:
@@ -86,10 +198,41 @@ def _selected_proc_env(pid: int | None) -> dict[str, str]:
 
 
 def _load_metrics(args: argparse.Namespace) -> str:
+    metrics_file_after = getattr(args, "metrics_file_after", None)
+    if metrics_file_after and getattr(args, "_loading_after_sample", False):
+        return Path(metrics_file_after).read_text(encoding="utf-8")
     if args.metrics_file:
         return Path(args.metrics_file).read_text(encoding="utf-8")
     with urllib.request.urlopen(args.metrics_url, timeout=2.0) as response:
         return response.read().decode("utf-8", "replace")
+
+
+def _proc_cpu_seconds(pid: int | None) -> float | None:
+    if pid is None:
+        return None
+    stat_path = Path(f"/proc/{pid}/stat")
+    try:
+        raw = stat_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    close_idx = raw.rfind(")")
+    if close_idx < 0:
+        return None
+    fields = raw[close_idx + 2 :].split()
+    if len(fields) <= 12:
+        return None
+    try:
+        user_ticks = float(fields[11])
+        system_ticks = float(fields[12])
+    except (TypeError, ValueError):
+        return None
+    try:
+        ticks_per_second = float(os.sysconf("SC_CLK_TCK"))
+    except (AttributeError, OSError, ValueError):
+        return None
+    if ticks_per_second <= 0:
+        return None
+    return (user_ticks + system_ticks) / ticks_per_second
 
 
 def _file_age_seconds(path: Path) -> float | None:
@@ -140,10 +283,166 @@ def _with_extra_degraded_reasons(
     return state, merged
 
 
+def _full_surface_reason(criterion_id: str, slug: str) -> str:
+    return f"full_surface:{criterion_id}:{slug}"
+
+
+def _full_surface_env_failures(env: dict[str, str]) -> list[str]:
+    failures: list[str] = []
+    for key, blocked_value, criterion_id, slug in FULL_SURFACE_BLOCKING_ENV:
+        value = env.get(key)
+        if value is not None and value.strip().lower() == blocked_value:
+            failures.append(_full_surface_reason(criterion_id, slug))
+
+    raw_slots = env.get("HAPAX_COMPOSITOR_FX_SLOTS")
+    if raw_slots is not None:
+        try:
+            slots = int(raw_slots)
+        except ValueError:
+            failures.append(_full_surface_reason("LSC-FX-001", "fx_slots_invalid"))
+        else:
+            if slots < FULL_SURFACE_MIN_FX_SLOTS:
+                failures.append(
+                    _full_surface_reason(
+                        "LSC-FX-001",
+                        f"fx_slots_below_min:{slots}<{FULL_SURFACE_MIN_FX_SLOTS}",
+                    )
+                )
+    return failures
+
+
+def _full_surface_metric_failures(metrics: dict[str, float]) -> list[str]:
+    failures: list[str] = []
+    for feature, criterion_id in FULL_SURFACE_REQUIRED_FEATURES:
+        key = f"studio_compositor_runtime_feature_active:feature:{feature}"
+        if key not in metrics:
+            failures.append(_full_surface_reason(criterion_id, f"feature_unknown:{feature}"))
+        elif metrics[key] <= 0:
+            failures.append(_full_surface_reason(criterion_id, f"feature_inactive:{feature}"))
+
+    flash_key = "studio_compositor_runtime_feature_active:feature:flash_overlay"
+    if metrics.get(flash_key, 0) > 0:
+        failures.append(_full_surface_reason("LSC-AUDIOREACT-001", "visual_pumping_active"))
+
+    ward_blits = {
+        key.removeprefix("studio_compositor_ward_blit_total:ward:"): value
+        for key, value in metrics.items()
+        if key.startswith("studio_compositor_ward_blit_total:ward:")
+    }
+    visible_wards = sum(1 for value in ward_blits.values() if value > 0)
+    if visible_wards < FULL_SURFACE_MIN_VISIBLE_WARDS:
+        failures.append(
+            _full_surface_reason(
+                "LSC-WARD-001",
+                f"visible_ward_count_below_min:{visible_wards}<{FULL_SURFACE_MIN_VISIBLE_WARDS}",
+            )
+        )
+
+    if metrics.get("hapax_ward_modulator_tick_total", 0) <= 0:
+        failures.append(_full_surface_reason("LSC-WARD-002", "ward_modulator_no_ticks"))
+
+    active_layouts = {
+        key.removeprefix("hapax_compositor_layout_active:layout:"): value
+        for key, value in metrics.items()
+        if key.startswith("hapax_compositor_layout_active:layout:")
+    }
+    active_names = [name for name, value in active_layouts.items() if value > 0]
+    if not active_names:
+        failures.append(_full_surface_reason("LSC-LAYOUT-003", "active_layout_unknown"))
+    for layout_name in sorted(active_names):
+        if layout_name in FULL_SURFACE_LEGACY_STATIC_LAYOUTS:
+            failures.append(
+                _full_surface_reason(
+                    "LSC-LAYOUT-003",
+                    f"legacy_static_layout_active:{layout_name}",
+                )
+            )
+    return failures
+
+
+def _render_stage_count(metrics: dict[str, float], stage: str) -> float | None:
+    return metrics.get(f"studio_compositor_render_stage_frames_total:stage:{stage}")
+
+
+def _full_surface_performance_sample(
+    args: argparse.Namespace,
+    before_metrics: dict[str, float],
+    *,
+    pid: int | None,
+) -> tuple[list[str], dict[str, object]]:
+    has_synthetic_after = bool(args.metrics_file_after)
+    if args.full_surface_sample_seconds is None:
+        sample_seconds = 0.0 if args.metrics_file and not has_synthetic_after else 10.0
+    else:
+        sample_seconds = float(args.full_surface_sample_seconds)
+    if sample_seconds <= 0 and not has_synthetic_after:
+        return [], {"sampled": False}
+
+    cpu_before = _proc_cpu_seconds(pid)
+    start = time.monotonic()
+    if has_synthetic_after:
+        elapsed = sample_seconds if sample_seconds > 0 else 1.0
+    else:
+        time.sleep(sample_seconds)
+        elapsed = max(time.monotonic() - start, 0.001)
+
+    try:
+        args._loading_after_sample = True
+        after_metrics = parse_prometheus_scalars(_load_metrics(args))
+    finally:
+        args._loading_after_sample = False
+    cpu_after = _proc_cpu_seconds(pid)
+
+    failures: list[str] = []
+    rates: dict[str, float | None] = {}
+    for stage, floor_fps, criterion_id in FULL_SURFACE_STAGE_FPS_FLOORS:
+        before = _render_stage_count(before_metrics, stage)
+        after = _render_stage_count(after_metrics, stage)
+        if before is None or after is None:
+            rates[stage] = None
+            failures.append(_full_surface_reason(criterion_id, f"stage_fps_unknown:{stage}"))
+            continue
+        fps = max(0.0, (after - before) / elapsed)
+        rates[stage] = fps
+        if fps < floor_fps:
+            failures.append(
+                _full_surface_reason(
+                    criterion_id,
+                    f"stage_fps_below_floor:{stage}:{fps:.2f}<{floor_fps:.2f}",
+                )
+            )
+
+    cpu_cores: float | None = None
+    if cpu_before is not None and cpu_after is not None:
+        cpu_cores = max(0.0, (cpu_after - cpu_before) / elapsed)
+        if cpu_cores > FULL_SURFACE_CPU_TARGET_CORES:
+            failures.append(
+                _full_surface_reason(
+                    "LSC-PERF-002",
+                    f"cpu_above_target_cores:{cpu_cores:.2f}>{FULL_SURFACE_CPU_TARGET_CORES:.2f}",
+                )
+            )
+
+    return failures, {
+        "sampled": True,
+        "elapsed_seconds": elapsed,
+        "stage_fps": rates,
+        "cpu_cores": cpu_cores,
+        "cpu_target_cores": FULL_SURFACE_CPU_TARGET_CORES,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--metrics-url", default="http://127.0.0.1:9482/metrics")
     parser.add_argument("--metrics-file")
+    parser.add_argument(
+        "--metrics-file-after",
+        help=(
+            "second Prometheus exposition used for deterministic performance-sample "
+            "tests; live runs normally rescrape --metrics-url after sleeping"
+        ),
+    )
     parser.add_argument("--service-active", choices=("true", "false"))
     parser.add_argument("--bridge-active", choices=("true", "false"))
     parser.add_argument("--env", action="append", default=[], metavar="KEY=VALUE")
@@ -155,6 +454,23 @@ def main() -> int:
     parser.add_argument("--require-rtmp", action="store_true")
     parser.add_argument("--require-obs-decoder", action="store_true")
     parser.add_argument("--require-public-output", action="store_true")
+    parser.add_argument(
+        "--require-full-surface",
+        action="store_true",
+        help=(
+            "require the full livestream surface criteria packet rather than "
+            "operational liveness containment"
+        ),
+    )
+    parser.add_argument(
+        "--full-surface-sample-seconds",
+        type=float,
+        default=None,
+        help=(
+            "sample render-stage counters over this interval when --require-full-surface "
+            "is active; live runs default to 10s, metrics-file tests default to 0"
+        ),
+    )
     parser.add_argument("--max-obs-screenshot-age-seconds", type=float)
     parser.add_argument("--max-director-silence-seconds", type=float, default=180.0)
     parser.add_argument(
@@ -188,7 +504,8 @@ def main() -> int:
         else (False if args.no_systemd else _systemd_active("hapax-v4l2-bridge.service"))
     )
 
-    env = _selected_proc_env(None if args.no_systemd else _main_pid("studio-compositor.service"))
+    main_pid = None if args.no_systemd else _main_pid("studio-compositor.service")
+    env = _selected_proc_env(main_pid)
     for assignment in args.env:
         if "=" not in assignment:
             parser.error(f"--env expects KEY=VALUE, got {assignment!r}")
@@ -268,6 +585,24 @@ def main() -> int:
         list(assessment.reasons),
         hls_proof_reasons,
     )
+    full_surface_failures: list[str] = []
+    full_surface_performance: dict[str, object] = {"sampled": False}
+    if args.require_full_surface:
+        performance_failures, full_surface_performance = _full_surface_performance_sample(
+            args,
+            metrics,
+            pid=main_pid,
+        )
+        full_surface_failures = [
+            *_full_surface_env_failures(env),
+            *_full_surface_metric_failures(metrics),
+            *performance_failures,
+        ]
+        state, reasons = _with_extra_degraded_reasons(
+            state,
+            reasons,
+            full_surface_failures,
+        )
     final_frame_payload: dict[str, object] | None = None
     if args.final_frame_image:
         try:
@@ -315,6 +650,9 @@ def main() -> int:
                 "watchdog_last_fed_age_seconds": snapshot.watchdog_last_fed_age_seconds,
                 "director_last_intent_age_seconds": snapshot.director_last_intent_age_seconds,
                 "final_frame_classification": final_frame_payload,
+                "full_surface_required": args.require_full_surface,
+                "full_surface_failures": full_surface_failures,
+                "full_surface_performance": full_surface_performance,
             },
             sort_keys=True,
         )

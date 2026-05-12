@@ -403,6 +403,7 @@ nodes:
       count: 2
       positions: [FL, FR]
     params:
+      audit_classification: systemd-managed-loopback-shape
       monitor.passthrough: true
       monitor_only: true
       secondary_obs_source: true

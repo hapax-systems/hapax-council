@@ -3,8 +3,10 @@ state_kinds:
   - arena_block.candidate
   - aesthetic.frame_capture
   - chronicle.high_salience
+  - governance.enforcement
   - omg.weblog
   - publication.artifact
+  - velocity.digest
 redactions:
   - operator_profile.*
   - operator_identity.*

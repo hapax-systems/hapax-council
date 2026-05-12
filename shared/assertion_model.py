@@ -63,6 +63,8 @@ class Assertion(BaseModel):
     source_uri: str
     source_span: tuple[int, int] | None = None
     confidence: float = 1.0
+    score: float | None = Field(default=None, ge=0.0, le=1.0)
+    value_scores: dict[str, float] = Field(default_factory=dict)
     domain: str = "general"
     assertion_type: AssertionType
     provenance: ProvenanceRecord = Field(default_factory=ProvenanceRecord)

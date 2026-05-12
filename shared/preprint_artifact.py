@@ -120,6 +120,21 @@ class PreprintArtifact(BaseModel):
     """Optional hero image / OG card. Most surfaces (Bluesky, Mastodon,
     Are.na, omg.lol) consume; PDF surfaces (OSF, arXiv) ignore."""
 
+    source_path: str | None = None
+    """Optional source Markdown path for vault-originated drafts.
+
+    When present, publication hardening can write review metadata back
+    into the draft frontmatter before fan-out.
+    """
+
+    author_model: str | None = None
+    """Optional frontmatter-provided model identifier for cross-provider review."""
+
+    publication_review: dict[str, object] | None = None
+    """Latest cross-provider publication review report attached before fan-out."""
+
+    grounding_gate_result: dict[str, object] | None = None
+
     # ── Inbox helpers ──────────────────────────────────────────────
 
     def inbox_path(self, *, state_root: Path) -> Path:

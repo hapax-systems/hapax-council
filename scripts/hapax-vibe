@@ -1,0 +1,398 @@
+#!/usr/bin/env bash
+# Launch Mistral Vibe as a first-class Hapax coding interface (vbe-* lane).
+
+set -euo pipefail
+
+COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+WORKTREE_ROOT="${HAPAX_VIBE_WORKTREE_ROOT:-$HOME/projects}"
+RELAY_DIR="${HAPAX_VIBE_RELAY_DIR:-$HOME/.cache/hapax/relay}"
+SPAWN_DIR="${HAPAX_VIBE_SPAWN_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/hapax/vibe-spawns}"
+mkdir -p "$SPAWN_DIR"
+
+usage() {
+  cat <<'EOF'
+usage: hapax-vibe --session vbe-N [--task TASK_ID] [--cd DIR]
+                  [--terminal none|tmux|foot] [--agent relay|scout|...]
+                  [--prompt PROMPT] [--max-turns N] [--max-price DOLLARS]
+                  [--output text|json|streaming]
+                  [--resume SESSION_ID] [--continue]
+                  [--no-claim] [--force]
+                  [--] [vibe args...]
+EOF
+}
+
+SESSION=""
+TASK_ID=""
+WORKDIR=""
+WORKDIR_EXPLICIT=0
+TERMINAL="${HAPAX_VIBE_TERMINAL:-none}"
+AGENT="${HAPAX_VIBE_AGENT:-relay}"
+HEADLESS_PROMPT=""
+HEADLESS_MAX_TURNS=""
+HEADLESS_MAX_PRICE=""
+HEADLESS_OUTPUT=""
+RESUME_ID=""
+CONTINUE=0
+CLAIM_TASK=1
+FORCE=0
+VIBE_EXTRA=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --session|--name|--lane)
+      SESSION="${2:-}"
+      shift 2
+      ;;
+    --session=*|--name=*|--lane=*)
+      SESSION="${1#*=}"
+      shift
+      ;;
+    --task)
+      TASK_ID="${2:-}"
+      shift 2
+      ;;
+    --task=*)
+      TASK_ID="${1#--task=}"
+      shift
+      ;;
+    --cd|-C|--workdir)
+      WORKDIR="${2:-}"
+      WORKDIR_EXPLICIT=1
+      shift 2
+      ;;
+    --cd=*|--workdir=*)
+      WORKDIR="${1#*=}"
+      WORKDIR_EXPLICIT=1
+      shift
+      ;;
+    --terminal)
+      TERMINAL="${2:-}"
+      shift 2
+      ;;
+    --terminal=*)
+      TERMINAL="${1#--terminal=}"
+      shift
+      ;;
+    --agent)
+      AGENT="${2:-}"
+      shift 2
+      ;;
+    --agent=*)
+      AGENT="${1#--agent=}"
+      shift
+      ;;
+    --prompt|-p)
+      HEADLESS_PROMPT="${2:-}"
+      shift 2
+      ;;
+    --prompt=*)
+      HEADLESS_PROMPT="${1#--prompt=}"
+      shift
+      ;;
+    --max-turns)
+      HEADLESS_MAX_TURNS="${2:-}"
+      shift 2
+      ;;
+    --max-turns=*)
+      HEADLESS_MAX_TURNS="${1#--max-turns=}"
+      shift
+      ;;
+    --max-price)
+      HEADLESS_MAX_PRICE="${2:-}"
+      shift 2
+      ;;
+    --max-price=*)
+      HEADLESS_MAX_PRICE="${1#--max-price=}"
+      shift
+      ;;
+    --output)
+      HEADLESS_OUTPUT="${2:-}"
+      shift 2
+      ;;
+    --output=*)
+      HEADLESS_OUTPUT="${1#--output=}"
+      shift
+      ;;
+    --resume)
+      RESUME_ID="${2:-}"
+      shift 2
+      ;;
+    --resume=*)
+      RESUME_ID="${1#--resume=}"
+      shift
+      ;;
+    --continue|-c)
+      CONTINUE=1
+      shift
+      ;;
+    --no-claim)
+      CLAIM_TASK=0
+      shift
+      ;;
+    --force)
+      FORCE=1
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      VIBE_EXTRA+=("$@")
+      break
+      ;;
+    vbe-*)
+      if [ -z "$SESSION" ]; then
+        SESSION="$1"
+      else
+        VIBE_EXTRA+=("$1")
+      fi
+      shift
+      ;;
+    *)
+      VIBE_EXTRA+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$SESSION" ]; then
+  SESSION="${HAPAX_AGENT_NAME:-${HAPAX_VIBE_DEFAULT_SESSION:-}}"
+fi
+if [ -z "$SESSION" ]; then
+  echo "hapax-vibe: --session required (vbe-1 / vbe-2 / ...)" >&2
+  usage >&2
+  exit 2
+fi
+
+if ! [[ "$SESSION" =~ ^vbe-[a-z0-9][a-z0-9-]*$ ]]; then
+  echo "hapax-vibe: invalid session '$SESSION' (expected vbe-<slug>)" >&2
+  exit 2
+fi
+
+case "$TERMINAL" in
+  none|tmux|foot) ;;
+  *)
+    echo "hapax-vibe: invalid --terminal '$TERMINAL' (none|tmux|foot)" >&2
+    exit 2
+    ;;
+esac
+
+VIBE_BIN="$(command -v vibe || true)"
+if [ -z "$VIBE_BIN" ]; then
+  echo "hapax-vibe: vibe binary not on PATH" >&2
+  echo "  install: uv tool install mistral-vibe" >&2
+  exit 4
+fi
+
+if [ -z "${MISTRAL_API_KEY:-}" ] && [ -r "$HOME/.vibe/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$HOME/.vibe/.env"
+  set +a
+fi
+if [ -z "${MISTRAL_API_KEY:-}" ]; then
+  echo "hapax-vibe: MISTRAL_API_KEY not set and not in ~/.vibe/.env" >&2
+  exit 5
+fi
+
+if [ -z "$WORKDIR" ]; then
+  WORKDIR="$WORKTREE_ROOT/hapax-council--$SESSION"
+fi
+
+ensure_worktree() {
+  local target="$1"
+  local base_ref="${HAPAX_VIBE_WORKTREE_BASE:-main}"
+  local branch_prefix="${HAPAX_VIBE_BRANCH_PREFIX:-vibe}"
+  local branch="$branch_prefix/$SESSION/scratch"
+
+  [ ! -d "$target" ] || return 0
+  git -C "$COUNCIL_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+    echo "hapax-vibe: $COUNCIL_DIR is not a git worktree" >&2
+    return 1
+  }
+  mkdir -p "$(dirname "$target")"
+
+  if git -C "$COUNCIL_DIR" rev-parse --verify --quiet "origin/$base_ref" >/dev/null; then
+    base_ref="origin/$base_ref"
+  elif ! git -C "$COUNCIL_DIR" rev-parse --verify --quiet "$base_ref" >/dev/null; then
+    base_ref="HEAD"
+  fi
+
+  if git -C "$COUNCIL_DIR" show-ref --verify --quiet "refs/heads/$branch"; then
+    git -C "$COUNCIL_DIR" worktree add "$target" "$branch" >/dev/null
+  else
+    git -C "$COUNCIL_DIR" worktree add -b "$branch" "$target" "$base_ref" >/dev/null
+  fi
+}
+
+if [ ! -d "$WORKDIR" ]; then
+  if [ "$WORKDIR_EXPLICIT" -eq 1 ]; then
+    echo "hapax-vibe: --cd '$WORKDIR' does not exist" >&2
+    exit 3
+  fi
+  ensure_worktree "$WORKDIR" || {
+    echo "hapax-vibe: could not create worktree at $WORKDIR" >&2
+    exit 3
+  }
+fi
+WORKDIR="$(cd "$WORKDIR" && pwd)"
+
+WORKTREE_AGENTS="$WORKDIR/AGENTS.md"
+if [ ! -f "$WORKTREE_AGENTS" ] || head -1 "$WORKTREE_AGENTS" 2>/dev/null | grep -qF '<!-- HAPAX-VIBE-MANAGED'; then
+  cat > "$WORKTREE_AGENTS" <<EOF_AGENTS
+<!-- HAPAX-VIBE-MANAGED: regenerated on every hapax-vibe launch. Do not hand-edit. -->
+
+# Hapax Vibe Lane - $SESSION
+
+You are Mistral Vibe operating as the $SESSION lane in the Hapax relay
+protocol. Read ~/.cache/hapax/relay/onboarding-vbe.md first, then invoke the
+relay-protocol skill.
+
+- Lane: $SESSION
+- Worktree: $WORKDIR
+- Interface: vibe
+- Tier: jr-plus
+
+Active task:
+\$(cat ~/.cache/hapax/cc-active-task-$SESSION 2>/dev/null || echo "no active task")
+EOF_AGENTS
+  echo "hapax-vibe: refreshed $WORKTREE_AGENTS" >&2
+fi
+
+if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
+  CC_CLAIM="$(command -v cc-claim || echo "$COUNCIL_DIR/scripts/cc-claim")"
+  if [ ! -x "$CC_CLAIM" ]; then
+    echo "hapax-vibe: cc-claim not executable at $CC_CLAIM; skipping claim" >&2
+  else
+    HAPAX_AGENT_NAME="$SESSION" HAPAX_AGENT_ROLE="$SESSION" CLAUDE_ROLE="$SESSION" \
+      "$CC_CLAIM" "$TASK_ID" || {
+        echo "hapax-vibe: cc-claim failed for '$TASK_ID' - refusing to launch" >&2
+        exit 8
+      }
+  fi
+fi
+
+PARENT_INTERFACE="${HAPAX_PARENT_AGENT_INTERFACE:-${HAPAX_AGENT_INTERFACE:-unknown}}"
+PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-unknown}}"
+
+export HAPAX_AGENT_INTERFACE="vibe"
+export HAPAX_AGENT_NAME="$SESSION"
+export HAPAX_AGENT_SLOT="$SESSION"
+export HAPAX_AGENT_ROLE="$SESSION"
+export HAPAX_WORKTREE_ROLE="$SESSION"
+export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
+export CLAUDE_ROLE="$SESSION"
+export HAPAX_PARENT_AGENT_INTERFACE="$PARENT_INTERFACE"
+export HAPAX_PARENT_AGENT_NAME="$PARENT_NAME"
+export PASSWORD_STORE_DIR="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
+export LOGOS_BASE_URL="${LOGOS_BASE_URL:-http://localhost:8051/api}"
+
+VIBE_ARGS=()
+if [ -n "$HEADLESS_PROMPT" ]; then
+  VIBE_ARGS+=(-p "$HEADLESS_PROMPT")
+  if [ -n "$HEADLESS_MAX_TURNS" ]; then
+    VIBE_ARGS+=(--max-turns "$HEADLESS_MAX_TURNS")
+  else
+    VIBE_ARGS+=(--max-turns 30)
+  fi
+  if [ -n "$HEADLESS_MAX_PRICE" ]; then
+    VIBE_ARGS+=(--max-price "$HEADLESS_MAX_PRICE")
+  fi
+  if [ -n "$HEADLESS_OUTPUT" ]; then
+    VIBE_ARGS+=(--output "$HEADLESS_OUTPUT")
+  else
+    VIBE_ARGS+=(--output streaming)
+  fi
+fi
+if [ -n "$RESUME_ID" ]; then
+  VIBE_ARGS+=(--resume "$RESUME_ID")
+elif [ "$CONTINUE" -eq 1 ]; then
+  VIBE_ARGS+=(-c)
+fi
+if [ -n "$AGENT" ]; then
+  VIBE_ARGS+=(--agent "$AGENT")
+fi
+VIBE_ARGS+=(--workdir "$WORKDIR" --trust)
+if [ "${#VIBE_EXTRA[@]}" -gt 0 ]; then
+  VIBE_ARGS+=("${VIBE_EXTRA[@]}")
+fi
+
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+slug="$(printf '%s\n' "$SESSION-${TASK_ID:-no-task}" | tr -cs 'A-Za-z0-9_.-' '-' | sed 's/^-//; s/-$//')"
+SPAWN_RECORD="$SPAWN_DIR/$stamp-$slug.yaml"
+cat > "$SPAWN_RECORD" <<EOF_SPAWN
+spawn:
+  ts_utc: $stamp
+  session: $SESSION
+  task: ${TASK_ID:-none}
+  workdir: $WORKDIR
+  agent: $AGENT
+  parent_interface: $PARENT_INTERFACE
+  parent_name: $PARENT_NAME
+  terminal: $TERMINAL
+  headless: $([ -n "$HEADLESS_PROMPT" ] && echo true || echo false)
+  vibe_version: $("$VIBE_BIN" --version 2>/dev/null | head -1 || echo unknown)
+EOF_SPAWN
+
+TMUX_NAME="hapax-vibe-$SESSION"
+
+write_runner() {
+  local runner="$1"
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' 'set -euo pipefail'
+    printf 'cd %q\n' "$WORKDIR"
+    printf 'export HAPAX_AGENT_INTERFACE=vibe\n'
+    printf 'export HAPAX_AGENT_NAME=%q\n' "$SESSION"
+    printf 'export HAPAX_AGENT_SLOT=%q\n' "$SESSION"
+    printf 'export HAPAX_AGENT_ROLE=%q\n' "$SESSION"
+    printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
+    printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
+    printf 'exec %q' "$VIBE_BIN"
+    for arg in "${VIBE_ARGS[@]}"; do
+      printf ' %q' "$arg"
+    done
+    printf '\n'
+  } > "$runner"
+  chmod 700 "$runner"
+}
+
+case "$TERMINAL" in
+  none)
+    cd "$WORKDIR"
+    exec "$VIBE_BIN" "${VIBE_ARGS[@]}"
+    ;;
+  tmux)
+    TMUX_BIN="$(command -v tmux || true)"
+    [ -n "$TMUX_BIN" ] || { echo "hapax-vibe: tmux not found" >&2; exit 10; }
+    if "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
+      echo "hapax-vibe: tmux session already exists: $TMUX_NAME (use --force to recreate)" >&2
+      exit 11
+    fi
+    if "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null && [ "$FORCE" -eq 1 ]; then
+      "$TMUX_BIN" kill-session -t "$TMUX_NAME"
+    fi
+    RUNNER="$SPAWN_DIR/run-$stamp-$slug.sh"
+    write_runner "$RUNNER"
+    "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+    echo "$TMUX_NAME"
+    ;;
+  foot)
+    FOOT_BIN="$(command -v footclient || command -v foot || true)"
+    TMUX_BIN="$(command -v tmux || true)"
+    [ -n "$FOOT_BIN" ] || { echo "hapax-vibe: foot/footclient not found" >&2; exit 10; }
+    [ -n "$TMUX_BIN" ] || { echo "hapax-vibe: tmux required for foot mode" >&2; exit 10; }
+    RUNNER="$SPAWN_DIR/run-$stamp-$slug.sh"
+    write_runner "$RUNNER"
+    if "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null && [ "$FORCE" -eq 1 ]; then
+      "$TMUX_BIN" kill-session -t "$TMUX_NAME"
+    fi
+    if ! "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null; then
+      "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+    fi
+    "$FOOT_BIN" --app-id "hapax-vibe-$SESSION" --title "$SESSION (vibe)" \
+      --working-directory "$WORKDIR" "$TMUX_BIN" attach-session -t "$TMUX_NAME"
+    ;;
+esac

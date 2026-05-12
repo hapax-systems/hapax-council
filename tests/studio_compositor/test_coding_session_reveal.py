@@ -24,10 +24,17 @@ from agents.studio_compositor import coding_session_reveal as csr
 from agents.studio_compositor.coding_session_reveal import (
     CODING_OFF_ENV,
     CODING_PREFIX_ENV,
+    CODING_RAW_ENV,
     CODING_TARGET_ENV,
     DEFAULT_AUTO_DETECT_PREFIXES,
+    DEFAULT_BASE_LEVEL,
+    VISIBILITY_THRESHOLD,
+    CodingSessionMetadata,
+    CodingSessionReveal,
     CodingSessionRevealCore,
     CodingSessionState,
+    branch_glyph,
+    compute_visibility_score,
     discover_coding_sessions,
 )
 from agents.studio_compositor.durf_redaction import RISK_PATTERNS, RedactionAction
@@ -57,6 +64,10 @@ class TestExtendedRiskPatterns:
         assert "claude_cli_chat_marker" in names
         assert "envrc_path" in names
         assert "pass_command" in names
+        assert "operator_email" in names
+        assert "operator_legal_name" in names
+        assert "vault_path" in names
+        assert "suspicious_long_hex" in names
 
     def test_ssh_rsa_public_key_suppresses(self) -> None:
         lines = ("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABA real key material here",)
@@ -124,6 +135,35 @@ class TestExtendedRiskPatterns:
         result = redact_terminal_lines(lines)
         assert result.action == RedactionAction.SUPPRESS
         assert result.matched_pattern == "pass_command"
+
+    def test_operator_email_suppresses(self) -> None:
+        lines = ("git config user.email operator@example.com",)
+        result = redact_terminal_lines(lines)
+        assert result.action == RedactionAction.SUPPRESS
+        assert result.matched_pattern == "operator_email"
+
+    def test_operator_legal_name_suppresses(self) -> None:
+        lines = ("Author: Ryan Lee Kleeberger",)
+        result = redact_terminal_lines(lines)
+        assert result.action == RedactionAction.SUPPRESS
+        assert result.matched_pattern == "operator_legal_name"
+
+    def test_vault_path_suppresses(self) -> None:
+        path = _operator_home_str() + "Documents/Personal/20-projects/secret-note.md"
+        result = redact_terminal_lines((f"nvim {path}",))
+        assert result.action == RedactionAction.SUPPRESS
+        assert result.matched_pattern == "vault_path"
+
+    def test_operator_project_path_normalizes_without_suppression(self) -> None:
+        path = _operator_home_str() + "projects/hapax-council"
+        result = redact_terminal_lines((f"cd {path}",))
+        assert result.action == RedactionAction.CLEAN
+        assert result.lines == ("cd ~/projects/hapax-council",)
+
+    def test_suspicious_long_hex_suppresses(self) -> None:
+        result = redact_terminal_lines(("token=abcdef1234567890abcdef1234567890abcdef12",))
+        assert result.action == RedactionAction.SUPPRESS
+        assert result.matched_pattern == "suspicious_long_hex"
 
     def test_clean_lines_remain_clean(self) -> None:
         lines = (
@@ -310,6 +350,24 @@ class TestPollOnce:
         assert snap.egress_allowed is False
         assert snap.suppression_reason == "raw_bypass_active"
 
+    def test_coding_raw_bypass_disables_text_redaction(self, monkeypatch, tmp_path: Path) -> None:
+        monkeypatch.delenv(CODING_OFF_ENV, raising=False)
+        monkeypatch.setenv(CODING_TARGET_ENV, "coding-hapax:0.0")
+        monkeypatch.setenv(CODING_RAW_ENV, "1")
+        core = self._core(tmp_path)
+
+        risky_capture = TmuxCaptureResult(
+            ok=True,
+            lines=("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABA real key material",),
+            command=("tmux", "capture-pane"),
+        )
+        with patch.object(csr, "capture_tmux_text", return_value=risky_capture):
+            snap = core.poll_once(now=1234.0)
+
+        assert snap.sessions[0].visible is True
+        assert snap.sessions[0].redaction_state == "raw_bypass"
+        assert snap.egress_allowed is False
+
     def test_state_dict_shape_mirrors_durf_source(self, monkeypatch, tmp_path: Path) -> None:
         # Phase-1 migration to ActivityRevealMixin will rely on the
         # state-dict shape staying the same as durf_source.state(); pin
@@ -365,3 +423,61 @@ class TestWcsRow:
         assert row["visible_count"] == 0
         assert row["suppressed_reasons"] == []
         assert row["egress_allowed"] is False
+
+
+class TestMetadataAndVisibility:
+    def test_branch_glyph_is_initial_plus_hash(self) -> None:
+        glyph = branch_glyph("codex/durf-foot-coding-session-reveal")
+        assert len(glyph) == 4
+        assert glyph[0] == "C"
+
+    def test_visibility_score_matches_task_formula(self) -> None:
+        score = compute_visibility_score(
+            narrative_recruitment=0.8,
+            ceiling_budget=1.0,
+            consent_gate=1.0,
+            redaction_pass=1.0,
+            hardm_pass=1.0,
+        )
+        assert score == DEFAULT_BASE_LEVEL * 0.8
+        assert score >= VISIBILITY_THRESHOLD
+        assert compute_visibility_score(narrative_recruitment=0.8, redaction_pass=0.0) == 0.0
+
+    def test_cairo_source_capture_updates_activity_claim(self, monkeypatch, tmp_path: Path) -> None:
+        monkeypatch.delenv(CODING_OFF_ENV, raising=False)
+        monkeypatch.setenv(CODING_TARGET_ENV, "coding-hapax:0.0")
+        cfg = tmp_path / "panes.yaml"
+        cfg.write_text("panes: []\n", encoding="utf-8")
+        metadata = CodingSessionMetadata(
+            branch="codex/durf-foot-coding-session-reveal",
+            branch_glyph="C123",
+            commits_since_main=3,
+            open_pr_count=2,
+            captured_at=1234.0,
+        )
+        clean_capture = TmuxCaptureResult(
+            ok=True,
+            lines=("def foo():", "    return 42"),
+            command=("tmux", "capture-pane"),
+        )
+        with (
+            patch.object(csr, "read_git_metadata", return_value=metadata),
+            patch.object(csr, "capture_tmux_text", return_value=clean_capture),
+        ):
+            source = CodingSessionReveal(config_path=cfg, start_thread=False)
+            snap = source._capture_poll_once(now=1234.0)
+
+        assert snap.sessions[0].visible is True
+        assert snap.sessions[0].glyph == "C123"
+        claim = source.current_claim()
+        assert claim.ward_id == "coding-session-reveal"
+        assert claim.want_visible is True
+        assert claim.score >= VISIBILITY_THRESHOLD
+        assert "affordance:studio.coding_session_reveal" in claim.source_refs
+
+    def test_affordance_registry_contains_coding_session_reveal(self) -> None:
+        from shared.affordance_registry import ALL_AFFORDANCES
+
+        record = next(r for r in ALL_AFFORDANCES if r.name == "studio.coding_session_reveal")
+        assert record.operational.consent_required is False
+        assert record.operational.medium == "visual"

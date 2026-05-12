@@ -1,0 +1,116 @@
+/*
+ * Hapax Obsidian Publish theme.
+ * Palette: Gruvbox Hard Dark, expressed as publish-safe CSS variables.
+ */
+
+:root {
+  --hapax-bg-hard: #1d2021;
+  --hapax-bg: #282828;
+  --hapax-bg-soft: #32302f;
+  --hapax-fg: #ebdbb2;
+  --hapax-muted: #a89984;
+  --hapax-red: #fb4934;
+  --hapax-green: #b8bb26;
+  --hapax-yellow: #fabd2f;
+  --hapax-blue: #83a598;
+  --hapax-purple: #d3869b;
+  --hapax-aqua: #8ec07c;
+  --hapax-orange: #fe8019;
+}
+
+body {
+  background: var(--hapax-bg-hard);
+  color: var(--hapax-fg);
+  font-family: "IBM Plex Mono", "Iosevka", "SFMono-Regular", Consolas, monospace;
+  letter-spacing: 0;
+}
+
+.published-container,
+.markdown-preview-view,
+.markdown-rendered {
+  background: var(--hapax-bg-hard);
+  color: var(--hapax-fg);
+}
+
+.site-body-left-column,
+.site-body-right-column,
+.site-header,
+.site-footer {
+  background: var(--hapax-bg);
+  border-color: var(--hapax-bg-soft);
+}
+
+.site-body-center-column {
+  max-width: 76ch;
+}
+
+a,
+.tree-item-self.is-clickable {
+  color: var(--hapax-aqua);
+  text-decoration-color: var(--hapax-muted);
+}
+
+a:hover,
+.tree-item-self.is-clickable:hover {
+  color: var(--hapax-yellow);
+  text-decoration-color: var(--hapax-yellow);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  color: var(--hapax-yellow);
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+h1 {
+  border-bottom: 1px solid var(--hapax-bg-soft);
+  padding-bottom: 0.35rem;
+}
+
+blockquote {
+  border-left: 3px solid var(--hapax-orange);
+  color: var(--hapax-muted);
+  background: color-mix(in srgb, var(--hapax-bg) 80%, transparent);
+}
+
+code,
+pre {
+  background: var(--hapax-bg);
+  color: var(--hapax-green);
+  border: 1px solid var(--hapax-bg-soft);
+}
+
+hr {
+  border-color: var(--hapax-bg-soft);
+}
+
+table,
+th,
+td {
+  border-color: var(--hapax-bg-soft);
+}
+
+th {
+  background: var(--hapax-bg);
+  color: var(--hapax-yellow);
+}
+
+.h-card {
+  border-left: 3px solid var(--hapax-aqua);
+  margin: 0 0 1.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--hapax-bg);
+}
+
+.h-card .p-name {
+  margin-top: 0;
+}
+
+.h-card .p-note {
+  color: var(--hapax-muted);
+}

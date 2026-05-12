@@ -64,6 +64,13 @@ WARD_Z_PLANE_DEFAULTS: Final[dict[str, str]] = {
     # DURF still composites pre_fx (in the scrim) so the scrim is felt,
     # but its depth-attenuation factor is at the surface ceiling.
     "durf": "surface-scrim",
+    # ytb-LORE-EXT future wards: the task requires the lore family to
+    # render at the surface scrim depth so the typography remains legible
+    # while still flowing through the ward FX/depth path.
+    "precedent_ticker": "surface-scrim",
+    "programme_history": "surface-scrim",
+    "research_instrument_dashboard": "surface-scrim",
+    "interactive_lore_query": "surface-scrim",
     # Mid — informational backdrop
     "chat_ambient": "mid-scrim",
     "impingement_cascade": "mid-scrim",

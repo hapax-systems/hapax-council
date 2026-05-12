@@ -19,9 +19,9 @@ Coverage:
   - **No-contributor stance.** The README must explicitly state the
     not-a-product / not-seeking-contributors stance.
   - **Metadata coherence.** The README's license posture must defer to
-    NOTICE / CITATION / codemeta (the three canonical surfaces already
-    converged on PolyForm Strict). The Apache-2.0 badge that the
-    pre-rewrite README carried must NOT reappear.
+    NOTICE / CITATION / codemeta, all converged on PolyForm Strict.
+    The Apache-2.0 badge that the pre-rewrite README carried must NOT
+    reappear.
   - **Refusal / governance pointers.** The README must point at the
     refusal-and-governance surfaces that exist (NOTICE, CONTRIBUTING,
     governance docs, Refusal Brief, Manifesto v0).
@@ -161,11 +161,30 @@ class TestMetadataCoherence:
         assert "CITATION.cff" in body
 
     def test_license_reconciliation_status_referenced(self) -> None:
-        # When the on-disk LICENSE file diverges from NOTICE / CITATION
-        # / codemeta, the README must point at the status doc that
-        # records the divergence so readers can audit the posture.
+        # Keep the status doc linked after reconciliation so readers
+        # can audit how the public license posture was resolved.
         body = _readme()
         assert "license-reconciliation-status" in body
+
+    def test_repo_urls_use_current_public_org(self) -> None:
+        body = _readme()
+        assert "https://github.com/hapax-systems/hapax-council" in body
+        assert "git@github.com:hapax-systems/hapax-council.git" in body
+        assert "https://github.com/ryanklee/hapax-council" not in body
+        assert "git@github.com:ryanklee/hapax-council.git" not in body
+
+    def test_private_repos_not_linked_as_public_entry_points(self) -> None:
+        body = _readme()
+        for private_repo in ("hapax-mcp", "hapax-watch", "hapax-phone"):
+            assert f"https://github.com/ryanklee/{private_repo}" not in body
+            assert f"| {private_repo} |" in body
+        assert "private/not a public repo as of 2026-05-11" in body
+
+    def test_public_refusal_links_exist_locally(self) -> None:
+        body = _readme()
+        for local_doc in ("CONTRIBUTING.md", "NOTICE.md", "CITATION.cff"):
+            assert local_doc in body
+            assert (REPO_ROOT / local_doc).exists()
 
 
 # ── Refusal / governance pointers ────────────────────────────────────

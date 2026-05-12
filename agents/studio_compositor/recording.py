@@ -223,6 +223,20 @@ def add_hls_branch(compositor: Any, pipeline: Any, tee: Any, fps: int) -> None:
     valve = _make_element(Gst, "valve", "hls-valve", branch)
     valve.set_property("drop", not compositor._consent_recording_allowed)
 
+    output_width = int(getattr(compositor.config, "output_width", 1280))
+    output_height = int(getattr(compositor.config, "output_height", 720))
+
+    rate = _make_element(Gst, "videorate", "hls-videorate", branch)
+    rate.set_property("skip-to-first", True)
+    rate.set_property("max-closing-segment-duplication-duration", 0)
+    rate_caps = _make_element(Gst, "capsfilter", "hls-rate-caps", branch)
+    rate_caps.set_property(
+        "caps",
+        Gst.Caps.from_string(
+            f"video/x-raw,format=BGRA,width={output_width},height={output_height},framerate={fps}/1"
+        ),
+    )
+
     upload = _make_element(Gst, "cudaupload", "hls-upload", branch)
     cuda_convert = _make_element(Gst, "cudaconvert", "hls-cudaconv", branch)
     for cuda_element, label in ((upload, "cudaupload"), (cuda_convert, "cudaconvert")):
@@ -255,7 +269,26 @@ def add_hls_branch(compositor: Any, pipeline: Any, tee: Any, fps: int) -> None:
     encoder.set_property("rc-mode", 2)  # 2 = cbr
     encoder.set_property("bitrate", hls_cfg.bitrate)
     encoder.set_property("gop-size", fps * hls_cfg.target_duration)
+    encoder.set_property("zerolatency", True)
+    encoder.set_property("tune", 3)  # 3 = ultra-low-latency
+    try:
+        encoder.set_property("bframes", 0)
+    except Exception:
+        log.debug("nvh264enc (hls-enc): bframes property not supported", exc_info=True)
+    try:
+        encoder.set_property("repeat-sequence-header", True)
+    except Exception:
+        log.debug(
+            "nvh264enc (hls-enc): repeat-sequence-header property not supported",
+            exc_info=True,
+        )
     parser = _make_element(Gst, "h264parse", "hls-parse", branch)
+    parser.set_property("config-interval", -1)
+    h264_caps = _make_element(Gst, "capsfilter", "hls-h264-caps", branch)
+    h264_caps.set_property(
+        "caps",
+        Gst.Caps.from_string("video/x-h264,stream-format=byte-stream,alignment=au"),
+    )
 
     hls_dir = Path(hls_cfg.output_dir)
     hls_dir.mkdir(parents=True, exist_ok=True)
@@ -264,17 +297,30 @@ def add_hls_branch(compositor: Any, pipeline: Any, tee: Any, fps: int) -> None:
     hls_sink.set_property("target-duration", hls_cfg.target_duration)
     hls_sink.set_property("playlist-length", hls_cfg.playlist_length)
     hls_sink.set_property("max-files", hls_cfg.max_files)
+    hls_sink.set_property("send-keyframe-requests", True)
     hls_sink.set_property("location", str(hls_dir / "segment%05d.ts"))
     hls_sink.set_property("playlist-location", str(hls_dir / "stream.m3u8"))
     hls_sink.set_property("async-handling", True)
 
-    elements = [queue, valve, upload, cuda_convert, nv12_caps, encoder, parser, hls_sink]
+    elements = [
+        queue,
+        valve,
+        rate,
+        rate_caps,
+        upload,
+        cuda_convert,
+        nv12_caps,
+        encoder,
+        parser,
+        h264_caps,
+        hls_sink,
+    ]
     for el in elements:
         pipeline.add(el)
 
     for src, dst in zip(elements[:-2], elements[1:-1], strict=False):
         _link_or_raise(src, dst, branch)
-    _link_src_to_request_sink_pad_or_raise(Gst, parser, hls_sink, "video", branch=branch)
+    _link_src_to_request_sink_pad_or_raise(Gst, h264_caps, hls_sink, "video", branch=branch)
 
     _add_render_stage_probe(Gst, queue, "sink", "hls_queue_sink")
     _add_render_stage_probe(Gst, valve, "src", "hls_valve_src")

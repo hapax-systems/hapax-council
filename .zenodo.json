@@ -1,5 +1,7 @@
 {
   "title": "hapax-council",
+  "doi": "10.5281/zenodo.20113515",
+  "conceptdoi": "10.5281/zenodo.20113514",
   "description": "Constituent of the Hapax operating environment. Single-operator research apparatus for externalised executive function, built by a neurodivergent solo operator. Stigmergic cognitive mesh with formal constitutional governance, 200+ agents, voice daemon, GPU visual expression, and 24/7 livestream as research instrument. Not a product, not seeking contributors. Research infrastructure published as artifact.",
   "creators": [
     {
@@ -9,6 +11,9 @@
   ],
   "access_right": "open",
   "upload_type": "software",
+  "publication_date": "2026-05-10",
+  "license": "other-closed",
+  "notes": "Repository license: PolyForm Strict 1.0.0 (https://polyformproject.org/licenses/strict/1.0.0).",
   "keywords": [
     "research-software",
     "single-operator",

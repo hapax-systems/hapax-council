@@ -15,6 +15,8 @@
 #   {
 #     "checked_at":  "<iso-8601 UTC>",
 #     "exit_code":   <int>,
+#     "attempts":    <int>,
+#     "waited_s":    <int>,
 #     "ok":          <bool>,
 #     "status_path": "<wrapper status path>",
 #     "structured_report_path": "<verify --output path>",
@@ -29,11 +31,48 @@ OUT_DIR="${HAPAX_AUDIO_TOPOLOGY_OUT_DIR:-/dev/shm/hapax-audio}"
 OUT_FILE="${HAPAX_AUDIO_TOPOLOGY_ASSERTION_STATUS:-$OUT_DIR/topology-assertion-status.json}"
 REPORT_FILE="${HAPAX_AUDIO_TOPOLOGY_ASSERTION_REPORT:-$OUT_DIR/topology-assertion-verify.json}"
 CLI="${HAPAX_AUDIO_TOPOLOGY_CLI:-$HOME/.local/bin/hapax-audio-topology}"
+READY_TIMEOUT_S="${HAPAX_AUDIO_TOPOLOGY_READY_TIMEOUT_S:-30}"
+READY_POLL_S="${HAPAX_AUDIO_TOPOLOGY_READY_POLL_S:-1}"
 
 mkdir -p "$OUT_DIR" "$(dirname "$OUT_FILE")" "$(dirname "$REPORT_FILE")"
 
-OUTPUT="$("$CLI" verify --strict "$DESCRIPTOR" --output "$REPORT_FILE" --prometheus-textfile "" 2>&1)"
-RC=$?
+is_retryable_boot_gap() {
+    local text="$1"
+
+    # Boot ordering can make PipeWire reachable while the declared nodes/links
+    # are still materialising. Retry only those readiness-shaped failures; true
+    # drift still hard-fails immediately.
+    grep -Eq \
+        "failed to load live graph|expected but missing|descriptor-declared but not live|TTS broadcast path FAIL|missing_nodes" \
+        <<<"$text"
+}
+
+START_S="$SECONDS"
+ATTEMPTS=0
+WAITED_S=0
+OUTPUT=""
+RC=1
+
+while true; do
+    ATTEMPTS=$((ATTEMPTS + 1))
+    OUTPUT="$("$CLI" verify --strict "$DESCRIPTOR" --output "$REPORT_FILE" --prometheus-textfile "" 2>&1)"
+    RC=$?
+    WAITED_S=$((SECONDS - START_S))
+
+    if [ "$RC" -eq 0 ]; then
+        break
+    fi
+    if ! is_retryable_boot_gap "$OUTPUT"; then
+        break
+    fi
+    if [ "$WAITED_S" -ge "$READY_TIMEOUT_S" ]; then
+        OUTPUT="$OUTPUT"$'\n'"timeout: waited ${WAITED_S}s for expected PipeWire nodes/links to appear"
+        break
+    fi
+
+    sleep "$READY_POLL_S"
+done
+
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 OK=false
 if [ "$RC" -eq 0 ]; then
@@ -44,7 +83,7 @@ fi
 # file stays tail-friendly and bounded.
 TMP="$(mktemp -p "$(dirname "$OUT_FILE")" topology-assertion-status.XXXXXX.json)"
 TRUNCATED="$(printf '%s' "$OUTPUT" | tail -c 4096)"
-HAPAX_OUT="$TRUNCATED" python3 - "$TMP" "$NOW" "$RC" "$OK" "$OUT_FILE" "$REPORT_FILE" "$DESCRIPTOR" "$CLI" <<'PY'
+HAPAX_OUT="$TRUNCATED" python3 - "$TMP" "$NOW" "$RC" "$OK" "$OUT_FILE" "$REPORT_FILE" "$DESCRIPTOR" "$CLI" "$ATTEMPTS" "$WAITED_S" "$READY_TIMEOUT_S" <<'PY'
 import json
 import os
 import pathlib
@@ -58,11 +97,17 @@ status_path = sys.argv[5]
 structured_report_path = sys.argv[6]
 descriptor = sys.argv[7]
 cli = sys.argv[8]
+attempts = int(sys.argv[9])
+waited_s = int(sys.argv[10])
+ready_timeout_s = int(sys.argv[11])
 output = os.environ.get("HAPAX_OUT", "")
 
 payload = {
     "checked_at": checked_at,
     "exit_code": exit_code,
+    "attempts": attempts,
+    "waited_s": waited_s,
+    "ready_timeout_s": ready_timeout_s,
     "ok": ok,
     "status_path": status_path,
     "structured_report_path": structured_report_path,

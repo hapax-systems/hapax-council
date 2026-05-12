@@ -32,7 +32,7 @@ public event.
 
 Per the canonical cross-surface aperture contract
 (``shared/cross_surface_event_contract.py::CROSS_SURFACE_APERTURES``),
-arena consumes four event types:
+arena consumes event types that can materialize as public blocks:
 
 - ``arena_block.candidate`` — producer-materialized block candidate
   (the canonical replacement for raw ``broadcast.boundary`` on this
@@ -42,8 +42,12 @@ arena consumes four event types:
   becomes the link source.
 - ``chronicle.high_salience`` — high-salience observation block;
   ``public_url`` becomes the link source.
+- ``governance.enforcement`` — governance event block.
+- ``omg.weblog`` — weblog post block; ``public_url`` becomes the link
+  source.
 - ``publication.artifact`` — published-artifact block (concept-DOI,
   weblog URL); ``public_url`` becomes the link source.
+- ``velocity.digest`` — daily digest block.
 
 Any other event type is silently skipped. Note that ``broadcast.boundary``
 is intentionally not accepted directly — producers must materialize an
@@ -134,8 +138,10 @@ ALLOWED_PUBLIC_EVENT_TYPES = frozenset(
         "arena_block.candidate",
         "aesthetic.frame_capture",
         "chronicle.high_salience",
+        "governance.enforcement",
         "omg.weblog",
         "publication.artifact",
+        "velocity.digest",
     }
 )
 
@@ -487,16 +493,22 @@ def _event_intent(event: ResearchVehiclePublicEvent) -> str:
         return "aesthetic frame"
     if event.event_type == "chronicle.high_salience":
         return "high-salience observation"
+    if event.event_type == "governance.enforcement":
+        return "governance enforcement"
     if event.event_type == "omg.weblog":
         return "weblog post"
     if event.event_type == "arena_block.candidate":
         return "arena block candidate"
     if event.event_type == "publication.artifact":
         return "publication artifact"
+    if event.event_type == "velocity.digest":
+        return "daily velocity digest"
     return event.event_type
 
 
 def _fallback_public_event_content(event: ResearchVehiclePublicEvent) -> str:
+    if event.event_type in {"governance.enforcement", "omg.weblog", "velocity.digest"}:
+        return f"Hapax {_event_intent(event)}."
     return f"Hapax livestream: {_event_intent(event)}."
 
 
@@ -522,9 +534,11 @@ def _allowlist_payload(event: ResearchVehiclePublicEvent) -> dict[str, Any]:
     payload: dict[str, Any] = {"event": event.model_dump(mode="json")}
     if event.event_type in {
         "chronicle.high_salience",
+        "governance.enforcement",
         "aesthetic.frame_capture",
         "omg.weblog",
         "publication.artifact",
+        "velocity.digest",
     }:
         payload["grounding_gate_result"] = _grounding_gate_from_public_event(event)
     return payload

@@ -11,7 +11,7 @@ packages = ["agents", "logos", "shared"]
 [project]
 name = "hapax-council"
 version = "0.3.7"
-description = "Personal agent infrastructure for a single-user LLM-first computing environment"
+description = "Single-operator Hapax operating-environment runtime and research infrastructure"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -54,6 +54,7 @@ dependencies = [
     "atproto>=0.0.65",
     "mastodon-py>=2.2.1",
     "mcp>=1.26",
+    "agentgov",
 ]
 
 [project.optional-dependencies]
@@ -145,13 +146,18 @@ ci = [
     "vulture>=2.16",
 ]
 studio = [
+    "pyudev>=0.24.3",
     "ultralytics>=8.3.0",
+]
+tui = [
+    "textual>=3.0",
 ]
 host = [
     # Everything — for local development on the host machine
     "hapax-council[ci]",
     "hapax-council[audio]",
     "hapax-council[studio]",
+    "hapax-council[tui]",
 ]
 
 [project.scripts]
@@ -185,3 +191,6 @@ markers = [
     "e2e: end-to-end tests requiring live services + browser (run with '-m e2e')",
     "revocation_drill: DESTRUCTIVE — actually revokes the operator's mail-monitor OAuth token. Run with '-m revocation_drill' only on explicit operator intent; manual re-bootstrap is required after. Default-deselected.",
 ]
+
+[tool.uv.sources]
+agentgov = { path = "packages/agentgov", editable = true }

@@ -22,6 +22,7 @@ class TestConstants:
         """Pin the canonical stance → numeric mapping."""
         assert STANCE_MAP == {
             "nominal": 0.0,
+            "seeking": 0.1,
             "cautious": 0.25,
             "degraded": 0.5,
             "critical": 1.0,

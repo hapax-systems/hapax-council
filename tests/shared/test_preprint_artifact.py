@@ -214,3 +214,33 @@ class TestPydanticSemantics:
         artifact = PreprintArtifact.model_validate_json(encoded)
         assert artifact.slug == "x"
         assert not hasattr(artifact, "future_field")
+
+
+def test_grounding_gate_result_survives_round_trip() -> None:
+    """grounding_gate_result must survive JSON serialization/deserialization."""
+    gate = {
+        "claim": {
+            "evidence_refs": ["vault:research/source-1"],
+            "provenance": {"source_refs": ["vault:research/source-1"]},
+            "freshness": {"checked_at": "2026-05-11T00:00:00Z"},
+            "refusal_correction_path": {"correction": "none"},
+            "public_private_mode": "public",
+        },
+        "gate_result": {"passed": True},
+        "public_private_mode": "public",
+    }
+    artifact = PreprintArtifact(
+        slug="grounding-test",
+        title="Grounding gate round-trip test",
+        grounding_gate_result=gate,
+    )
+    data = artifact.model_dump()
+    assert data["grounding_gate_result"] == gate
+
+    restored = PreprintArtifact.model_validate(data)
+    assert restored.grounding_gate_result == gate
+
+
+def test_grounding_gate_result_defaults_to_none() -> None:
+    artifact = PreprintArtifact(slug="no-gate", title="No grounding gate")
+    assert artifact.grounding_gate_result is None

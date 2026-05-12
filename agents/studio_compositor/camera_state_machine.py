@@ -191,11 +191,18 @@ class CameraStateMachine:
 
         if s == CameraState.RECOVERING:
             if e == EventKind.RECOVERY_SUCCEEDED:
-                # Pipeline reached PLAYING but no frames are guaranteed
-                # yet. Do not reset _consecutive_failures — that happens
-                # when the watchdog reports sustained FRAME_FLOW_OBSERVED
-                # in HEALTHY.
+                # Pipeline reached PLAYING but no frames are guaranteed yet.
+                # Stay RECOVERING; promotion back to HEALTHY happens only
+                # after the frame-flow watchdog observes post-rebuild buffers.
+                return CameraState.RECOVERING
+            if e == EventKind.FRAME_FLOW_OBSERVED:
+                self._consecutive_failures = 0
                 return CameraState.HEALTHY
+            if e == EventKind.FRAME_FLOW_STALE:
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    return CameraState.DEAD
+                return CameraState.OFFLINE
             if e == EventKind.RECOVERY_FAILED:
                 self._consecutive_failures += 1
                 if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES:

@@ -735,7 +735,13 @@ class StimmungCollector:
                 pass  # Chronicle unavailable — non-fatal
 
         # Publish perceptual control signal for mesh-wide health aggregation
-        _stance_error_map = {"nominal": 0.0, "cautious": 0.3, "degraded": 0.6, "critical": 1.0}
+        _stance_error_map = {
+            "nominal": 0.0,
+            "seeking": 0.05,
+            "cautious": 0.3,
+            "degraded": 0.6,
+            "critical": 1.0,
+        }
         sig = ControlSignal(
             component="stimmung",
             reference=0.0,  # target is nominal

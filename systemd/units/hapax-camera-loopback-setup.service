@@ -1,0 +1,13 @@
+[Unit]
+# Hapax-Install-Scope: system
+Description=Hapax camera sharing v4l2loopback device setup
+After=systemd-udevd.service
+ConditionPathExists=/home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-camera-loopback-setup
+
+[Service]
+Type=oneshot
+ExecStart=/home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-camera-loopback-setup
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

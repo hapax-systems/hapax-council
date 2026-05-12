@@ -36,6 +36,7 @@ log = logging.getLogger(__name__)
 
 # ── Source paths (existing, not introduced by this module) ────────────────
 
+_AUDIO_GROUNDING_STATE = Path("/dev/shm/hapax-audio-grounding/state.json")
 _PERCEPTION_STATE = Path(os.path.expanduser("~/.cache/hapax-daimonion/perception-state.json"))
 _STIMMUNG_STATE = Path("/dev/shm/hapax-stimmung/state.json")
 _ALBUM_STATE = Path("/dev/shm/hapax-compositor/album-state.json")
@@ -105,6 +106,16 @@ class VadState(BaseModel):
     operator_speech_active: bool | None = None
 
 
+class SceneClassificationState(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    scene: str | None = None
+    scene_label: str | None = None
+    scene_confidence: float | None = None
+    genre: str | None = None
+    music_score: float | None = None
+
+
 class AudioField(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -112,6 +123,7 @@ class AudioField(BaseModel):
     midi: MidiState = Field(default_factory=MidiState)
     studio_ingestion: StudioIngestionState = Field(default_factory=StudioIngestionState)
     vad: VadState = Field(default_factory=VadState)
+    scene_classification: SceneClassificationState = Field(default_factory=SceneClassificationState)
 
 
 class VisualField(BaseModel):
@@ -376,6 +388,19 @@ def _safe_load_json(path: Path) -> dict | None:
 
 def _read_perception_state() -> dict:
     return _safe_load_json(_PERCEPTION_STATE) or {}
+
+
+def _read_scene_classification() -> SceneClassificationState:
+    data = _safe_load_json(_AUDIO_GROUNDING_STATE) or {}
+    if data.get("error"):
+        return SceneClassificationState()
+    return SceneClassificationState(
+        scene=data.get("scene"),
+        scene_label=data.get("scene_label"),
+        scene_confidence=data.get("scene_confidence"),
+        genre=data.get("genre"),
+        music_score=data.get("music_score"),
+    )
 
 
 def _read_stimmung() -> tuple[dict, str | None]:
@@ -681,11 +706,13 @@ def build_perceptual_field(
     vad = VadState(
         operator_speech_active=perception.get("operator_speech_active"),
     )
+    scene_classification = _read_scene_classification()
     audio = AudioField(
         contact_mic=contact_mic,
         midi=midi,
         studio_ingestion=ingestion,
         vad=vad,
+        scene_classification=scene_classification,
     )
 
     # ── Visual ────────────────────────────────────────────────────────────

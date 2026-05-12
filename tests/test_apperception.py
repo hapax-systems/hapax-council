@@ -662,7 +662,7 @@ class TestFullCascade:
             assert result.source == source
             assert result.stimmung_stance == "nominal"
 
-    @pytest.mark.parametrize("stance", ["nominal", "cautious", "degraded", "critical"])
+    @pytest.mark.parametrize("stance", ["nominal", "seeking", "cautious", "degraded", "critical"])
     def test_correction_retained_all_stances(self, stance: str):
         """Corrections are retained regardless of stimmung stance."""
         cascade = _make_cascade()
@@ -675,7 +675,7 @@ class TestFullCascade:
         assert result is not None
         assert result.source == "correction"
 
-    @pytest.mark.parametrize("stance", ["nominal", "cautious", "degraded", "critical"])
+    @pytest.mark.parametrize("stance", ["nominal", "seeking", "cautious", "degraded", "critical"])
     def test_stimmung_affects_noise(self, stance: str):
         """Each stance produces expected noise modulation."""
         cascade = _make_cascade()
@@ -735,7 +735,7 @@ class TestSourceStimmungMatrix:
     Ensures no combination crashes and critical stance filtering is correct.
     """
 
-    _STANCES = ["nominal", "cautious", "degraded", "critical"]
+    _STANCES = ["nominal", "seeking", "cautious", "degraded", "critical"]
     _CRITICAL_ALLOWED = {"prediction_error", "correction"}
 
     @pytest.mark.parametrize("source", ALL_SOURCES)

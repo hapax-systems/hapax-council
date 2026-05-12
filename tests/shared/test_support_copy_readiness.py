@@ -110,7 +110,7 @@ def test_refused_generic_surface_emits_conversion_explanation() -> None:
         _registry(),
         _ledger(ALL_DIMS),
         readiness_refs=_refs(),
-        surface_id="github_sponsors",
+        surface_id="patreon",
     )
 
     assert decision.state == "refused"

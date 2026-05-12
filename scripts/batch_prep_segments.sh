@@ -44,6 +44,16 @@ check_prep_authority() {
     )
 }
 
+check_next_nine_canary() {
+    if [[ "$TOTAL" -le 1 ]]; then
+        return 0
+    fi
+    (
+        cd "$PROJECT_DIR"
+        uv run python -c 'from shared.segment_iteration_review import assert_next_nine_canary_ready; assert_next_nine_canary_ready()'
+    )
+}
+
 count_existing() {
     if [[ -f "$PREP_DIR/manifest.json" ]]; then
         (
@@ -75,6 +85,10 @@ if ! check_prep_authority; then
     echo "[fatal] segment prep authority gate blocked pool_generation" >&2
     exit 4
 fi
+if ! check_next_nine_canary; then
+    echo "[fatal] next-nine generation requires a passing one-segment canary review receipt" >&2
+    exit 5
+fi
 verify_resident_model
 
 generated="$(count_existing)"
@@ -92,6 +106,10 @@ while [[ "$generated" -lt "$TOTAL" && "$failures" -lt "$max_failures" ]]; do
     if ! check_prep_authority; then
         echo "[fatal] segment prep authority gate blocked pool_generation" >&2
         exit 4
+    fi
+    if ! check_next_nine_canary; then
+        echo "[fatal] next-nine generation requires a passing one-segment canary review receipt" >&2
+        exit 5
     fi
     verify_resident_model
 
