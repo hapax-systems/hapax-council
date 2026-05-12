@@ -353,6 +353,13 @@ def test_planning_feed_produces_valid_json(tmp_path: Path) -> None:
     assert data["dispatch"]["ranking_basis"] == "wsjf_v0"
 
 
+def test_planning_feed_pythonpath_includes_agentgov_src() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+
+    assert 'AGENTGOV_SRC="$REPO_ROOT/packages/agentgov/src"' in text
+    assert 'PYTHONPATH="$REPO_ROOT:$AGENTGOV_SRC:${PYTHONPATH:-}"' in text
+
+
 def test_planning_feed_task_active_coverage(tmp_path: Path) -> None:
     active = tmp_path / "requests" / "active"
     active.mkdir(parents=True)
