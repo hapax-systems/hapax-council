@@ -72,7 +72,11 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
         automation_status=AutomationStatus.FULL_AUTO,
         api="ATProto",
         dispatch_entry="agents.cross_surface.bluesky_post:publish_artifact",
-        scope_note="legacy cross-surface post adapter",
+        activation_path=(
+            "agents.publication_bus.bluesky_publisher.BlueskyPostPublisher "
+            "+ systemd/units/hapax-bluesky-post.service"
+        ),
+        scope_note="public-event Bluesky fanout routed through publication bus",
     ),
     "bridgy-webmention-publish": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
@@ -238,7 +242,11 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
         automation_status=AutomationStatus.FULL_AUTO,
         api="REST",
         dispatch_entry="agents.cross_surface.mastodon_post:publish_artifact",
-        scope_note="legacy cross-surface Mastodon adapter",
+        activation_path=(
+            "agents.publication_bus.mastodon_publisher.MastodonPublisher "
+            "+ systemd/units/hapax-mastodon-post.service"
+        ),
+        scope_note="public-event Mastodon fanout routed through publication bus",
     ),
     "omg-weblog": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,

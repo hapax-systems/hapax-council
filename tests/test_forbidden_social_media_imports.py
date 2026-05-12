@@ -28,10 +28,11 @@ All refusals trace to ``feedback_full_automation_or_no_engagement``
 grep-based test (no AST parsing required) that walks the agents/,
 shared/, scripts/, and logos/ trees.
 
-Bridgy POSSE fan-out from omg.lol weblog reaches Mastodon + Bluesky;
-that is the only authorized social fan-out path. Wikipedia citations
-to Hapax can arrive organically via third-party editors who notice
-arXiv preprint / Zenodo DOI — daemon participation is unnecessary.
+Authorized social fan-out must route through publication-bus publishers
+(including Bridgy POSSE and the bus-backed Mastodon/Bluesky public-event
+posters). Wikipedia citations to Hapax can arrive organically via third-party
+editors who notice arXiv preprint / Zenodo DOI — daemon participation is
+unnecessary.
 
 Editing the forbidden list directly is governance-protected — these
 strings come out of the operator's constitutional posture and
@@ -228,8 +229,8 @@ class TestForbiddenSocialMediaImportGuard:
             )
             + "\n\n"
             "Per leverage-REFUSED-* cc-tasks, these surfaces are "
-            "constitutionally refused. Use Bridgy POSSE fan-out from "
-            "omg.lol weblog instead (reaches Mastodon + Bluesky)."
+            "constitutionally refused. Use publication-bus-backed fan-out "
+            "paths instead."
         )
 
     def test_scanner_detects_forbidden_import(self, tmp_path: Path) -> None:

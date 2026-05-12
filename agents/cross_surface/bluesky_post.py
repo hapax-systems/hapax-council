@@ -54,6 +54,8 @@ from typing import Any
 from prometheus_client import REGISTRY, CollectorRegistry, Counter, start_http_server
 from pydantic import ValidationError
 
+from agents.publication_bus.bluesky_publisher import BlueskyPostPublisher
+from agents.publication_bus.publisher_kit import PublisherPayload, PublisherResult
 from shared.cross_surface_event_contract import decide_cross_surface_fanout
 from shared.governance.publication_allowlist import check as allowlist_check
 from shared.research_vehicle_public_event import ResearchVehiclePublicEvent
@@ -81,6 +83,7 @@ DEFAULT_IDEMPOTENCY_PATH = Path(
 METRICS_PORT: int = int(os.environ.get("HAPAX_BLUESKY_METRICS_PORT", "9501"))
 DEFAULT_TICK_S: float = float(os.environ.get("HAPAX_BLUESKY_TICK_S", "30"))
 BLUESKY_TEXT_LIMIT = 300
+DEFAULT_PUBLICATION_TARGET = os.environ.get("HAPAX_BLUESKY_PUBLICATION_TARGET", "hapax")
 
 ALLOWLIST_SURFACE = "bluesky-post"
 ALLOWED_PUBLIC_EVENT_TYPES = frozenset(
@@ -119,7 +122,8 @@ class BlueskyPoster:
         handle: str | None = None,
         app_password: str | None = None,
         compose_fn=None,
-        client_factory=None,
+        publisher_factory=None,
+        publication_target: str = DEFAULT_PUBLICATION_TARGET,
         event_path: Path = EVENT_PATH,
         cursor_path: Path = DEFAULT_CURSOR_PATH,
         idempotency_path: Path = DEFAULT_IDEMPOTENCY_PATH,
@@ -130,14 +134,14 @@ class BlueskyPoster:
         self._handle = handle
         self._app_password = app_password
         self._compose_fn = compose_fn
-        self._client_factory = client_factory
+        self._publisher_factory = publisher_factory
+        self._publication_target = publication_target
         self._event_path = event_path
         self._cursor_path = cursor_path
         self._idempotency_path = idempotency_path
         self._tick_s = max(1.0, tick_s)
         self._dry_run = dry_run
         self._stop_evt = threading.Event()
-        self._client = None  # built on first non-dry-run apply
         self._processed_event_ids: set[str] | None = None
         self._post_receipts: dict[str, dict[str, Any]] | None = None
 
@@ -403,33 +407,43 @@ class BlueskyPoster:
         return _default_compose(event)
 
     def _send_post(self, text: str) -> _SendResult:
-        if not (self._handle and self._app_password):
-            log.warning(
-                "HAPAX_BLUESKY_HANDLE / HAPAX_BLUESKY_APP_PASSWORD not set; skipping live post"
-            )
-            return _SendResult("no_credentials")
-
         try:
-            client = self._ensure_client()
+            publisher = self._build_publisher()
         except Exception:  # noqa: BLE001
-            log.exception("bluesky login failed")
+            log.exception("bluesky publication-bus publisher init failed")
             return _SendResult("auth_error")
 
         try:
-            raw_result = client.send_post(text=text)
+            result = publisher.publish(PublisherPayload(target=self._publication_target, text=text))
         except Exception:  # noqa: BLE001
-            log.exception("bluesky send_post raised")
+            log.exception("bluesky publication-bus publish raised")
             return _SendResult("error")
-        uri = _extract_post_uri(raw_result)
-        public_url = _bsky_public_url_from_uri(uri, self._handle)
-        return _SendResult("ok", uri=uri, public_url=public_url)
 
-    def _ensure_client(self):
-        if self._client is not None:
-            return self._client
-        factory = self._client_factory or _default_client_factory
-        self._client = factory(self._handle, self._app_password)
-        return self._client
+        if result.ok:
+            uri = _extract_publisher_uri(result)
+            return _SendResult(
+                "ok", uri=uri, public_url=_bsky_public_url_from_uri(uri, self._handle)
+            )
+        if result.refused:
+            if "credential" in result.detail.lower() or "creds" in result.detail.lower():
+                return _SendResult("no_credentials")
+            return _SendResult("denied")
+        if result.error:
+            return _SendResult("error")
+        return _SendResult("error")
+
+    def _build_publisher(self):
+        factory = self._publisher_factory or _default_publisher_factory
+        return factory(self._handle, self._app_password)
+
+
+def _default_publisher_factory(handle: str | None, app_password: str | None):
+    return BlueskyPostPublisher(handle=handle or "", app_password=app_password or "")
+
+
+def _extract_publisher_uri(result: PublisherResult) -> str | None:
+    uri = result.detail.strip()
+    return uri if uri.startswith("at://") else None
 
 
 # ── Default helpers (composer + atproto client) ──────────────────────
@@ -495,14 +509,6 @@ def _fallback_public_event_text(event: ResearchVehiclePublicEvent) -> str:
     if event.event_type in {"governance.enforcement", "velocity.digest"}:
         return f"Hapax {_event_intent(event)}."
     return f"Hapax livestream: {_event_intent(event)}."
-
-
-def _extract_post_uri(raw_result: Any) -> str | None:
-    if isinstance(raw_result, dict):
-        uri = raw_result.get("uri")
-    else:
-        uri = getattr(raw_result, "uri", None)
-    return uri if isinstance(uri, str) and uri else None
 
 
 def _bsky_public_url_from_uri(uri: str | None, handle: str | None) -> str | None:
@@ -621,15 +627,6 @@ def _dedupe(values: list[str | None]) -> list[str]:
     return result
 
 
-def _default_client_factory(handle: str, app_password: str):
-    """Lazy-build + login an atproto Client."""
-    from atproto import Client
-
-    client = Client()
-    client.login(handle, app_password)
-    return client
-
-
 def _credentials_from_env() -> tuple[str | None, str | None]:
     handle = os.environ.get("HAPAX_BLUESKY_HANDLE", "").strip() or None
     pw = os.environ.get("HAPAX_BLUESKY_APP_PASSWORD", "").strip() or None
@@ -654,23 +651,39 @@ def publish_artifact(artifact) -> str:  # type: ignore[no-untyped-def]
     without the tail-mode rewrite.
     """
     handle, app_password = _credentials_from_env()
-    if not (handle and app_password):
-        return "no_credentials"
 
     text = _compose_artifact_text(artifact)
     if not text:
         return "error"
 
     try:
-        client = _default_client_factory(handle, app_password)
+        publisher = _default_publisher_factory(handle, app_password)
     except Exception:  # noqa: BLE001
-        log.exception("bluesky login failed for artifact %s", getattr(artifact, "slug", "?"))
+        log.exception(
+            "bluesky publisher init failed for artifact %s", getattr(artifact, "slug", "?")
+        )
         return "auth_error"
 
     try:
-        client.send_post(text=text)
+        result = publisher.publish(
+            PublisherPayload(
+                target=DEFAULT_PUBLICATION_TARGET,
+                text=text,
+                metadata={"artifact_slug": getattr(artifact, "slug", "")},
+            )
+        )
     except Exception:  # noqa: BLE001
-        log.exception("bluesky send_post raised for artifact %s", getattr(artifact, "slug", "?"))
+        log.exception(
+            "bluesky publication-bus publish raised for artifact %s", getattr(artifact, "slug", "?")
+        )
+        return "error"
+    if result.ok:
+        return "ok"
+    if result.refused:
+        if "credential" in result.detail.lower() or "creds" in result.detail.lower():
+            return "no_credentials"
+        return "denied"
+    if result.error:
         return "error"
     return "ok"
 

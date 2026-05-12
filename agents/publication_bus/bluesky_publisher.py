@@ -66,6 +66,9 @@ BLUESKY_SURFACE: str = "bluesky-atproto-multi-identity"
 """Stable surface identifier; mirrored in
 :data:`agents.publication_bus.surface_registry.SURFACE_REGISTRY`."""
 
+BLUESKY_POST_SURFACE: str = "bluesky-post"
+"""Legacy/public-event Bluesky surface, now backed by this bus publisher."""
+
 BLUESKY_ATPROTO_ENDPOINT: str = "https://bsky.social/xrpc"
 """Public Bluesky PDS XRPC endpoint root."""
 
@@ -77,6 +80,12 @@ DEFAULT_BLUESKY_ALLOWLIST: AllowlistGate = load_allowlist(
 )
 """Empty default allowlist — operator-curated identity strings
 (e.g., ``operator``, ``hapax``) added via class-level reassignment."""
+
+DEFAULT_BLUESKY_POST_ALLOWLIST: AllowlistGate = load_allowlist(
+    BLUESKY_POST_SURFACE,
+    permitted=["hapax"],
+)
+"""Default allowlist for the operator-owned public-event Bluesky account."""
 
 
 class BlueskyPublisher(Publisher):
@@ -183,6 +192,13 @@ class BlueskyPublisher(Publisher):
         )
 
 
+class BlueskyPostPublisher(BlueskyPublisher):
+    """Bus-backed publisher for the ``bluesky-post`` public-event surface."""
+
+    surface_name: ClassVar[str] = BLUESKY_POST_SURFACE
+    allowlist: ClassVar[AllowlistGate] = DEFAULT_BLUESKY_POST_ALLOWLIST
+
+
 def _now_iso() -> str:
     from datetime import UTC, datetime
 
@@ -191,8 +207,11 @@ def _now_iso() -> str:
 
 __all__ = [
     "BLUESKY_ATPROTO_ENDPOINT",
+    "BLUESKY_POST_SURFACE",
     "BLUESKY_REQUEST_TIMEOUT_S",
     "BLUESKY_SURFACE",
+    "BlueskyPostPublisher",
     "BlueskyPublisher",
     "DEFAULT_BLUESKY_ALLOWLIST",
+    "DEFAULT_BLUESKY_POST_ALLOWLIST",
 ]
