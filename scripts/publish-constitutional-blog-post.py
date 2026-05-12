@@ -19,14 +19,8 @@ DRAFT_PATH = (
 )
 
 ENTRY_SLUG = "constitutional-governance-beyond-prompt-engineering"
-
-
-def _strip_frontmatter(text: str) -> str:
-    if text.startswith("---"):
-        parts = text.split("---", 2)
-        if len(parts) >= 3:
-            return parts[2].lstrip("\n")
-    return text
+PUBLIC_LOCATION = f"/2026/05/{ENTRY_SLUG}"
+PUBLIC_URL = f"https://hapax.weblog.lol{PUBLIC_LOCATION}"
 
 
 def main() -> int:
@@ -38,11 +32,10 @@ def main() -> int:
         print(f"Draft not found: {DRAFT_PATH}", file=sys.stderr)
         return 1
 
-    raw = DRAFT_PATH.read_text()
-    body = _strip_frontmatter(raw)
+    body = DRAFT_PATH.read_text()
 
     if args.dry_run:
-        print(f"=== DRY RUN: would publish to hapax.omg.lol/weblog/{ENTRY_SLUG} ===")
+        print(f"=== DRY RUN: would publish to {PUBLIC_URL} ===")
         print(f"=== Body length: {len(body)} chars ===")
         print(body[:500])
         print("...")
@@ -65,9 +58,16 @@ def main() -> int:
         OmgLolWeblogPublisher.surface_name, [ENTRY_SLUG]
     )
     publisher = OmgLolWeblogPublisher(client=client, address="hapax")
-    payload = PublisherPayload(target=ENTRY_SLUG, text=body)
+    payload = PublisherPayload(
+        target=ENTRY_SLUG,
+        text=body,
+        metadata={
+            "location": PUBLIC_LOCATION,
+            "slug": ENTRY_SLUG,
+        },
+    )
 
-    print(f"Publishing to hapax.omg.lol/weblog/{ENTRY_SLUG}...")
+    print(f"Publishing to {PUBLIC_URL}...")
     result = publisher.publish(payload)
 
     if result.ok:

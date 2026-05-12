@@ -234,7 +234,7 @@ Show HN weblog source:
 `docs/publication-drafts/2026-05-10-show-hn-governance-that-ships.md`
 
 Live Show HN weblog:
-`https://hapax.weblog.lol/show-hn-governance-that-ships`
+`https://hapax.weblog.lol/2026/05/show-hn-governance-that-ships`
 
 Landing page source:
 `agents/omg_web_builder/static/index.html`
@@ -254,11 +254,14 @@ Corrections made on 2026-05-12:
   count, governance-code LOC, consent-test-file count, and exact research /
   programme-type counts.
 - Removed unqualified `zero governance failures` and all-audio revert wording.
+- Repaired the weblog publication path through the publication bus so the
+  entry source carries concrete `Location: /2026/05/show-hn-governance-that-ships`;
+  `https://hapax.weblog.lol/show-hn-governance-that-ships` is not the launch URL.
 
 Verification commands:
 
 ```bash
-curl -fsSL https://hapax.weblog.lol/show-hn-governance-that-ships |
+curl -fsSL https://hapax.weblog.lol/2026/05/show-hn-governance-that-ships |
   rg -n '3,034|2,869|44 hook|48 refusal|zero governance|all five|five were audio|0\.3%|62 days|3,000\+ merged|merged over 3,000'
 ```
 

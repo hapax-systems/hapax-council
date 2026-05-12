@@ -2,7 +2,7 @@
 Date: 2026-05-10
 Title: Show HN: Mechanical Governance for AI Coding Agents at 3,000+ PRs
 Type: post
-Location: /weblog
+Location: /2026/05/show-hn-governance-that-ships
 Tags: ai-governance, claude-code, autonomous-agents, show-hn
 Slug: show-hn-governance-that-ships
 ---

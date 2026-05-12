@@ -2,7 +2,7 @@
 Date: 2026-05-11
 Title: Constitutional Governance for AI Agents: Beyond Prompt Engineering
 Type: post
-Location: /weblog
+Location: /2026/05/constitutional-governance-beyond-prompt-engineering
 Tags: ai-governance, constitutional-ai, autonomous-agents, agent-architecture
 Slug: constitutional-governance-beyond-prompt-engineering
 ---
