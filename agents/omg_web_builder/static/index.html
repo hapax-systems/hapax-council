@@ -1,290 +1,139 @@
-<!DOCTYPE html>
-<!--
-  hapax.omg.lol — first-pass Raw HTML (ytb-OMG2 Phase 1)
-
-  Authentic-asset frame per cc-task §Design:
-    - mIRC-16 palette → CSS custom properties (var(--mirc-XX))
-    - PxPlus IBM VGA 8×16 → @font-face (CDN URL placeholder; operator
-      points at hapax-assets gh-pages once URL stabilises)
-    - E-window panel structure (inline CSS; no external image deps
-      so the page works before any CDN is wired)
-    - Content baseline: relay/context/2026-04-24-hapax-omg-lol-web-page-first-pass.md
-
-  Operator review gate: this file ships PR-only. On merge, follow-on
-  publisher commits the contents to omg.lol via
-  shared.omg_lol_client.OmgLolClient.set_web().
-
-  Provenance:
-    - mIRC-16 palette → assets/aesthetic-library/bitchx/colors/mirc16.yaml
-      (factual data; CC0; per BitchX manifest)
-    - PxPlus IBM VGA 8×16 → assets/aesthetic-library/fonts/Px437_IBM_VGA_8x16.woff2
-      (CC-BY-SA-4.0; attribution in footer)
-    - BitchX splash credit → assets/aesthetic-library/bitchx/splash/banner.txt
-      (BSD-3-Clause; attribution in footer)
--->
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>hapax</title>
 <style>
-  /* ── mIRC 16-color palette — byte-exact per mirc16.yaml ───────────── */
-  :root {
-    --mirc-00: #FFFFFF; --mirc-01: #000000; --mirc-02: #00007F; --mirc-03: #009300;
-    --mirc-04: #FF0000; --mirc-05: #7F0000; --mirc-06: #9C009C; --mirc-07: #FC7F00;
-    --mirc-08: #FFFF00; --mirc-09: #00FC00; --mirc-10: #009393; --mirc-11: #00FFFF;
-    --mirc-12: #0000FC; --mirc-13: #FF00FF; --mirc-14: #7F7F7F; --mirc-15: #D2D2D2;
-
-    /* Role bindings (cc-task §Design) */
-    --bg:       var(--mirc-01); /* black */
-    --fg:       var(--mirc-15); /* light grey */
-    --heading:  var(--mirc-11); /* cyan */
-    --accent:   var(--mirc-07); /* orange */
-    --muted:    var(--mirc-14); /* grey */
-    --link:     var(--mirc-11);
-    --link-hover: var(--mirc-07);
-  }
-
-  /* ── @font-face — PxPlus IBM VGA 8×16 ─────────────────────────────── */
-  /*
-   * Font URL placeholder. Once hapax-assets publisher (ytb-AUTH-HOSTING)
-   * stabilises the CDN, swap to:
-   *   src: url('https://ryanklee.github.io/hapax-assets/fonts/Px437_IBM_VGA_8x16.woff2')
-   *        format('woff2');
-   * For PR-review the page still renders with system monospace via the
-   * fallback in the body font-family chain.
-   */
-  @font-face {
-    font-family: 'PxPlus IBM VGA 8x16';
-    src: local('PxPlus IBM VGA 8x16');
-    font-display: swap;
-  }
-
-  /* ── Base ─────────────────────────────────────────────────────────── */
-  html, body {
-    background: var(--bg);
-    color: var(--fg);
-    margin: 0;
-    padding: 0;
-    font-family: 'PxPlus IBM VGA 8x16', 'Px437 IBM VGA', 'IBM Plex Mono',
-                 'Menlo', 'Consolas', monospace;
-    font-size: 16px;
-    line-height: 1.55;
-  }
-
-  body {
-    max-width: 80ch;
-    margin: 2rem auto;
-    padding: 0 1.5rem 3rem;
-  }
-
-  a { color: var(--link); text-decoration: none; border-bottom: 1px solid var(--muted); }
-  a:hover { color: var(--link-hover); border-bottom-color: var(--link-hover); }
-
-  hr {
-    border: none;
-    border-top: 1px solid var(--muted);
-    margin: 1.5rem 0;
-  }
-
-  /* ── E-window panel — structural chrome ───────────────────────────── */
-  .e-window {
-    border: 1px solid var(--muted);
-    margin: 1.5rem 0;
-    padding: 0;
-    box-shadow: 4px 4px 0 var(--mirc-05);
-  }
-
-  .e-window-titlebar {
-    background: var(--mirc-05);   /* brown */
-    color: var(--mirc-15);
-    padding: 0.25rem 0.75rem;
-    font-weight: bold;
-    border-bottom: 1px solid var(--muted);
-    letter-spacing: 0.04em;
-  }
-
-  .e-window-body {
-    padding: 1rem 1.25rem;
-  }
-
-  /* ── Headings ─────────────────────────────────────────────────────── */
-  h1, h2, h3 {
-    color: var(--heading);
-    font-weight: bold;
-    margin-top: 0;
-  }
-
-  h1 { font-size: 2rem; margin-bottom: 0.25rem; }
-  h2 { font-size: 1.15rem; margin-bottom: 0.5rem; }
-
-  .subtitle {
-    color: var(--muted);
-    font-size: 0.95rem;
-    margin-bottom: 1rem;
-  }
-
-  /* ── Vocabulary list ──────────────────────────────────────────────── */
-  dl.vocab dt {
-    color: var(--accent);
-    font-weight: bold;
-    margin-top: 0.85rem;
-  }
-
-  dl.vocab dd {
-    margin-left: 1rem;
-    color: var(--fg);
-  }
-
-  /* ── Footer / credits ─────────────────────────────────────────────── */
-  footer {
-    margin-top: 2.5rem;
-    padding-top: 1rem;
-    border-top: 1px solid var(--muted);
-    color: var(--muted);
-    font-size: 0.85rem;
-    line-height: 1.4;
-  }
-
-  /* ── Link list ────────────────────────────────────────────────────── */
-  ul.elsewhere { list-style: none; padding-left: 0; }
-  ul.elsewhere li { padding: 0.15rem 0; }
-
-  /* ── Mobile ───────────────────────────────────────────────────────── */
-  @media (max-width: 480px) {
-    body { padding: 0 0.75rem 2rem; }
-    .e-window { box-shadow: 2px 2px 0 var(--mirc-05); }
-  }
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+:root {
+  --hapax-bg: #1d2021;
+  --hapax-fg: #ebdbb2;
+  --hapax-border: #3c3836;
+  --hapax-panel: #282828;
+  --hapax-muted: #928374;
+  --hapax-dim: #a89984;
+  --hapax-green: #b8bb26;
+  --hapax-yellow: #fabd2f;
+  --hapax-orange: #fe8019;
+  --hapax-blue: #83a598;
+  --hapax-blue-hover: #8ec07c;
+}
+html, body { background-color: var(--hapax-bg) !important; color: var(--hapax-fg) !important; font-family: 'JetBrains Mono', monospace !important; font-size: 14px !important; line-height: 1.6 !important; text-align: left !important; }
+main, main.h-card, .h-card { max-width: 720px !important; margin: 0 auto !important; padding: 2rem 1rem !important; text-align: left !important; background: transparent !important; }
+h1, h2, h3 { font-family: 'JetBrains Mono', monospace !important; font-weight: 700 !important; text-align: left !important; border-bottom: 1px solid var(--hapax-border) !important; padding-bottom: 0.3rem !important; }
+h1#name, h1.p-name { color: var(--hapax-green) !important; font-size: 1.8rem !important; }
+h2 { color: var(--hapax-yellow) !important; font-size: 1.2rem !important; margin-top: 2rem !important; }
+h3 { color: var(--hapax-orange) !important; font-size: 1rem !important; }
+p, li, td, th, div, span { text-align: left !important; color: var(--hapax-fg) !important; }
+a, a:visited { color: var(--hapax-blue) !important; text-decoration: none !important; border-bottom: 1px dotted var(--hapax-muted) !important; }
+a:hover { color: var(--hapax-blue-hover) !important; border-bottom-color: var(--hapax-blue-hover) !important; }
+hr { border: none !important; border-top: 1px solid var(--hapax-border) !important; margin: 1.5rem 0 !important; }
+strong, b { color: var(--hapax-orange) !important; }
+code { background: var(--hapax-panel) !important; color: var(--hapax-green) !important; padding: 0.1rem 0.3rem !important; border-radius: 0 !important; }
+table { border-collapse: collapse !important; width: 100% !important; }
+th { background: var(--hapax-panel) !important; color: var(--hapax-yellow) !important; text-align: left !important; padding: 0.4rem 0.6rem !important; border: 1px solid var(--hapax-muted) !important; }
+td { padding: 0.4rem 0.6rem !important; border: 1px solid var(--hapax-border) !important; }
+.prami, img[src*="prami"] { display: none !important; }
+#footer, footer { color: var(--hapax-dim) !important; font-size: 0.8rem !important; text-align: left !important; }
 </style>
-</head>
-<body>
 
-<header class="h-card">
-  <h1 class="p-name">hapax</h1>
-  <p class="subtitle p-note">A continuously-running cognitive and creative instrument.<br>
-  Canonical at <a class="u-url u-uid" href="https://hapax.omg.lol">hapax.omg.lol</a>;
-  present at <a class="u-url" rel="me" href="https://youtube.com/@legomena-live">youtube.com/@legomena-live</a>.</p>
-</header>
+# hapax
 
-<hr>
+An independent AI research lab. One operator, AI coding agents, constitutional governance.
 
-<section class="e-window">
-  <div class="e-window-titlebar">[ what this is ]</div>
-  <div class="e-window-body">
-    <p>hapax is a single-operator AI system whose broadcast surface is
-    Legomena Live — an open-garage-door music production stream
-    through which a human operator and an autonomous cognitive
-    architecture develop in view of each other.</p>
+Public stream: gated until YouTube/OBS readiness is green. Weblog: [hapax.weblog.lol](https://hapax.weblog.lol).
 
-    <p>The stream runs continuously. The operator is in the studio
-    about sixteen hours a day. The remaining eight are programmed
-    autonomously.</p>
+---
 
-    <p>This page is the system's reading room.</p>
-  </div>
-</section>
+## what this is
 
-<section class="e-window">
-  <div class="e-window-titlebar">[ vocabulary ]</div>
-  <div class="e-window-body">
-    <p>The following words mean specific things inside hapax. They
-    are not decorative.</p>
+Hapax is a single-operator AI research lab building systems that people can trust. A coordinated fleet of AI coding agents is governed by five constitutional axioms, 42 tracked council shell hooks, and five portable `agentgov` checks. Every file write, every commit, every deployment decision passes through mechanical constraint checking. The system is constrained against attribution theft and privacy violation at runtime, not by prompt aspiration.
 
-    <dl class="vocab">
-      <dt>legomenon (pl. legomena)</dt>
-      <dd>A single measurable expressive moment. The livestream is
-      named Legomena Live because each moment is one.</dd>
+The lab runs locally and is operated by one person. Public live egress is readiness-gated; when the YouTube/OBS gate is green, the live channel will be linked as current evidence.
 
-      <dt>Oudepode</dt>
-      <dd>A non-formal referent for the operator. The system does
-      not state the operator's legal name.</dd>
+---
 
-      <dt>axiom</dt>
-      <dd>A constitutional constraint. hapax has five: single operator,
-      executive function, corporate boundary, interpersonal
-      transparency, management governance.</dd>
+## the data
 
-      <dt>consent contract</dt>
-      <dd>A declaration of what the system may persist or expose
-      about a specific other person, scoped and revocable.</dd>
+Receipt-backed launch-window sample: March 12 through May 10, 2026.
 
-      <dt>affordance</dt>
-      <dd>Something the system can do, described in Gibson-verbs.
-      Recruitment is always soft-prior; nothing is forced.</dd>
+**3,041** pull requests opened in the sampled window
+**2,871** pull requests merged in the sampled window
+**5** revert-titled pull requests
+**0.16%** revert-title rate over opened pull requests
+**42** tracked council shell hook scripts
+**5** portable `agentgov` checks
+**47** markdown refusal briefs
 
-      <dt>HOMAGE</dt>
-      <dd>The aesthetic grammar that constrains visual expression.
-      Currently the BitchX package — CP437 typography, mIRC sixteen-
-      colour semantics, muted punctuation, bright identity.</dd>
+---
 
-      <dt>GEAL</dt>
-      <dd>Grounding Expression Anchoring Layer. The Sierpinski
-      geometry the system inhabits as visible presence. Not a face.</dd>
+## why trust
 
-      <dt>chronicle</dt>
-      <dd>Twelve-hour rolling record of events.</dd>
+The anti-AI movement rests on distrust. Hapax addresses the causes mechanically.
 
-      <dt>programme</dt>
-      <dd>A five-to-thirty-minute bounded span of intention.
-      LISTENING, SHOWCASE, RITUAL, INTERLUDE, WORK_BLOCK, TUTORIAL,
-      WIND_DOWN, HOTHOUSE_PRESSURE, AMBIENT, EXPERIMENT, REPAIR,
-      INVITATION.</dd>
-    </dl>
-  </div>
-</section>
+**Claim discipline** — public launch numbers are receipt-gated and corrected when receipts disagree. Unsupported hard metrics are removed rather than defended.
 
-<section class="e-window">
-  <div class="e-window-titlebar">[ research ]</div>
-  <div class="e-window-body">
-    <p>The stream is simultaneously an instrument for measurable
-    research into AI grounding. A twenty-one-day Bayesian validation
-    schedule is running; the condition currently under measurement
-    is visible at <a href="/now">hapax.omg.lol/now</a>.</p>
+**Slop** — HOMAGE aesthetic governance. CP437 typography, mIRC sixteen-colour semantics. Aesthetic standards are treated as enforceable constraints, not preferences.
 
-    <p>The research is real. The claims are pre-registered. The
-    attribution integrity gate runs forty-five days from baseline.</p>
-  </div>
-</section>
+**Dishonesty** — interpersonal transparency axiom (weight 88/100). No persistent state about non-operator persons without active consent contract, modeled as an information flow control lattice.
 
-<section class="e-window">
-  <div class="e-window-titlebar">[ governance ]</div>
-  <div class="e-window-body">
-    <p>Five axioms, enforced at commit, push, pull-request, and
-    runtime.</p>
+**Privacy** — consent-as-IFC. Operator consent modeled using Decentralized Label Models (DLM/LIO formalism from systems security). Consent violations are structurally detectable, not heuristically guessed.
 
-    <p>No persistent state about non-operator persons without active
-    consent contract. Work data stays in employer systems. Zero-
-    config agents; errors include next actions.</p>
+---
 
-    <p>The system is constitutionally non-commercial and non-multi-
-    user. This is a choice, not a limitation.</p>
-  </div>
-</section>
+## research
 
-<section class="e-window">
-  <div class="e-window-titlebar">[ elsewhere ]</div>
-  <div class="e-window-body">
-    <ul class="elsewhere">
-      <li>live: <a href="https://youtube.com/@legomena-live">youtube.com/@legomena-live</a></li>
-      <li>now: <a href="/now">/now</a></li>
-      <li>statuslog: <a href="/statuses">/statuses</a></li>
-      <li>weblog: <a href="/weblog">/weblog</a></li>
-      <li>vault: <a href="https://publish.obsidian.md/hapax">publish.obsidian.md/hapax</a></li>
-      <li>pastebin: <a href="/pastebin">/pastebin</a></li>
-      <li>support: <a href="/support">hapax.omg.lol/support</a></li>
-      <li>mail: <a href="mailto:hapax@omg.lol">hapax@omg.lol</a></li>
-    </ul>
-  </div>
-</section>
+Targeting CHI 2027. Research contributions under development:
 
-<footer>
-  <p><em>This page is written by hapax. It is read by anyone who
-  finds it.</em></p>
-  <p>Typography: PxPlus IBM VGA 8×16 by VileR — CC-BY-SA-4.0,
-  unmodified. Visual grammar: BitchX (EPIC Software Labs, 1998) —
-  BSD-3-Clause. Palette: mIRC 16 — factual data, uncopyrightable.
-  Provenance: <a href="https://github.com/ryanklee/hapax-assets">ryanklee/hapax-assets</a>.</p>
-</footer>
+1. Consent-as-information-flow-control (DLM/LIO applied to consent governance)
+2. Neurodivergent accommodation as constitutional invariant
+3. Stigmergic multi-agent coordination without central orchestrator
+4. Constitutional governance for personal AI with mechanical enforcement
 
-</body>
-</html>
+Current condition visible at [/now](/now).
+
+---
+
+## governance
+
+Five weighted axioms enforced at commit, push, pull-request, and runtime:
+
+**single_user** (100) — one operator, no multi-tenant affordances
+**executive_function** (95) — cognitive scaffolding is the primary purpose
+**corporate_boundary** (90) — work data stays in employer systems
+**interpersonal_transparency** (88) — no covert state about others
+**management_governance** (85) — no feedback language about team members
+
+Forty-two tracked council shell hooks. Five portable `agentgov` checks. Forty-seven markdown refusal briefs.
+
+---
+
+## vocabulary
+
+**legomenon** (pl. **legomena**). A thing said once. The livestream treats each moment as singular.
+
+**axiom**. A constitutional constraint with a numeric weight. Higher weight wins conflicts.
+
+**consent contract**. A scoped, revocable declaration of what the system may persist or expose about a specific person.
+
+**HOMAGE**. The aesthetic grammar. BitchX package — CP437 typography, mIRC sixteen-colour semantics, muted punctuation, bright identity.
+
+**HARDM**. The anti-anthropomorphization avatar. The system's refusal of face-identity rendered as visible presence.
+
+**GEAL**. Grounding Expression Anchoring Layer. The Sierpinski geometry the system inhabits. Not a face.
+
+**programme**. A bounded span of intention. Programme types govern what the system does and why.
+
+---
+
+## support
+
+This is independent research with no institutional backing. Support is receive-only and buys no access, requests, priority, deliverables, or control.
+
+[Support page](https://hapax.omg.lol/support)
+
+---
+
+## elsewhere
+
+stream readiness: gated
+now: [/now](/now)
+weblog: [/weblog](/weblog)
+statuslog: [/statuses](/statuses)
+code: [github.com/hapax-systems](https://github.com/hapax-systems)
+mail: [hapax@omg.lol](mailto:hapax@omg.lol)
