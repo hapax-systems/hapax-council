@@ -43,7 +43,9 @@ def test_audit_live_effect_surface_covers_non_preset_surfaces() -> None:
     assert "visual_output_bridges" in payload["surfaces"]
     assert "visual_output_branches" in payload["surfaces"]
     assert "visual_command_surfaces" in payload["surfaces"]
+    assert "visual_systemd_units" in payload["surfaces"]
     assert "visual_plugins" in payload["surfaces"]
+    assert "shared_visual_policy_models" in payload["surfaces"]
     assert "visual_manifests_configs" in payload["surfaces"]
     assert "logos_visual_ui" in payload["surfaces"]
     assert "homage_visuals" in payload["surfaces"]
@@ -61,7 +63,9 @@ def test_audit_live_effect_surface_covers_non_preset_surfaces() -> None:
     assert payload["summary"]["visual_output_bridge_file_count"] > 0
     assert payload["summary"]["visual_output_branch_file_count"] > 0
     assert payload["summary"]["visual_command_surface_file_count"] > 0
+    assert payload["summary"]["visual_systemd_unit_file_count"] > 0
     assert payload["summary"]["visual_plugin_file_count"] > 0
+    assert payload["summary"]["shared_visual_policy_model_file_count"] > 0
     assert payload["summary"]["visual_script_file_count"] > 0
     assert payload["summary"]["logos_visual_ui_file_count"] > 0
     assert payload["summary"]["homage_visual_file_count"] > 0
@@ -85,6 +89,13 @@ def test_audit_live_effect_surface_covers_non_preset_surfaces() -> None:
     )
     assert "visual_command_surfaces_can_mutate_layout_or_effect_state" in payload["coverage_gaps"]
     assert "visual_output_branches_need_viewer_truth_exercise_proof" in payload["coverage_gaps"]
+    assert "visual_systemd_units_are_runtime_activation_surfaces" in payload["coverage_gaps"]
+    assert (
+        "visual_maintenance_scripts_can_mutate_or_restore_effect_state" in payload["coverage_gaps"]
+    )
+    assert (
+        "shared_visual_policy_models_need_same_coverage_as_effect_code" in payload["coverage_gaps"]
+    )
     assert (
         "standalone_wgsl_files_need_manifest_or_helper_classification" in payload["coverage_gaps"]
     )
