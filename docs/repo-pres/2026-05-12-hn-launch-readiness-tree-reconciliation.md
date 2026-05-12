@@ -33,8 +33,9 @@ Warning:
 Current passes include thin programme segment freshness, reverie/imagination
 freshness, GitHub README, omg.lol weblog reachability, and systemd
 timer/failed-unit budget. Programme freshness is not enough to close
-`hn-launch-programme-e2e-readiness`; runner/layout/prep receipts remain missing
-and the latest active segment has empty layout/action intents.
+`hn-launch-programme-e2e-readiness`. A scratch current-API programme smoke
+receipt now proves the runner/layout command path, but live segment-prep history
+and soak-citable programme evidence remain unresolved.
 The gate has been volatile across samples, and the latest sample is still
 NO-GO.
 
@@ -49,7 +50,7 @@ and `obs_clean_feed`; warning: `logos_api`.
 | HN systems readiness is complete | false | `hn-launch-systems-readiness` is active/blocked; latest checker still fails compositor layout mode, voice, YouTube, and OBS. | Blocks soak and HN post. |
 | PR #3149 makes HN ready | false | PR #3149 merged 2026-05-12T14:21:18Z as a warning-budget/support fix. It does not clear hard readiness failures. | Must not auto-close systems readiness. |
 | Compositor visual surface is live | partial/stale | Earlier reconciliation sample reported pass; final pre-PR sample reports `compositor_visual_surface: fail` because layout mode is not Sierpinski. | Requires fresh stable pass before soak. |
-| Programme segments are launch-ready | partial | Latest checker sees a fresh populated active segment, but runner receipt, layout-mode proof, and segment-prep receipt are missing. Freshness is not end-to-end delivery. | Requires `hn-launch-programme-e2e-readiness`. |
+| Programme segments are launch-ready | partial | Latest checker sees a fresh populated active segment. Repaired scratch harness receipt `/tmp/hapax-hn-programme-delivery-smoke-20260512T162123Z/programme-delivery-smoke-receipt.json` proves current runner/layout command acceptance, but live segment-prep receipt/history and soak-citable evidence are still missing. | Requires `hn-launch-programme-e2e-readiness`. |
 | Daimonion voice is speaking launch segments | false | Latest checker reports `daimonion_voice_segments: fail`. | Requires operator/hardware route unblock. |
 | Reverie/imagination surface is fresh | partial | Checker pass is freshness evidence, not correlated response proof. | May enter passive observation only after hard failures clear. |
 | Logos API is healthy | partial | Service/SHM evidence can be ready, but API overall status is `failed`. | `hn-launch-logos-health-unblock` must resolve warning semantics. |
@@ -77,8 +78,8 @@ and `obs_clean_feed`; warning: `logos_api`.
 | 21.0 | `hn-launch-pr-and-source-claim-audit` | done/closed | Merged PR/source claims classified against tests and deployment evidence. |
 | 20.0 | `hn-launch-runtime-evidence-audit` | done/closed | Ten-surface runtime table captured. |
 | 19.0 | `hn-launch-public-metrics-proof` | done | Repo receipt exists; live weblog, landing page, and HN first-comment draft corrected/verified. |
-| 19.0 | `hn-launch-programme-e2e-readiness` | blocked | Active segment, director receipt, layout/action satisfaction, and soak-survivable proof. |
-| 18.8 | `hn-launch-programme-e2e-smoke-harness-repair` | blocked | Current-API scratch-only E2E harness before any write-producing programme proof run. |
+| 19.0 | `hn-launch-programme-e2e-readiness` | blocked | Live segment-prep history reconciled plus programme evidence that the final soak can re-sample and cite. |
+| 18.8 | `hn-launch-programme-e2e-smoke-harness-repair` | done | Current-API scratch-only E2E harness repaired; receipt generated. |
 | 18.5 | `hn-launch-compositor-sierpinski-proof` | blocked | Fresh Sierpinski layout-mode proof plus nonblank frame evidence. |
 | 18.0 | `hn-launch-agentgov-cli-extraction` | done | Public repo/package/CLI install/README/license/CI acceptance checked. |
 | 18.0 | `hn-launch-livestream-evidence-intake` | blocked | Current YouTube id, OBS service, RTMP, MediaMTX HLS, and audio-floor proof. |
@@ -92,16 +93,20 @@ and `obs_clean_feed`; warning: `logos_api`.
 
 ## Corrections
 
-- `hn-launch-systems-readiness` stays active/blocked until launch-critical
-  checker failures are zero and the 30-minute soak passes.
+- `hn-launch-systems-readiness` is the pre-soak systems-green gate. It stays
+  active/blocked until launch-critical checker failures are zero; the
+  downstream `hn-launch-30min-soak-receipt` task owns the final soak.
 - `hn-launch-post-submission` should depend on live syndication proof, not the
   superseded `hn-launch-syndication-unblock` task.
+- Historical closed fanout tasks are superseded/partial only:
+  `hn-launch-weblog-producer-deploy` had unchecked fanout acceptance, and
+  `hn-launch-syndication-unblock` does not prove public Mastodon/Bluesky URLs.
 - Merged PRs are treated as implementation evidence only. They are not launch
   evidence unless the task acceptance and live/deployed checks also pass.
 - The current HN launch request is a no-go while compositor layout mode,
   programme end-to-end proof, voice, YouTube, OBS, and social syndication proof
   remain unresolved.
-- Programme E2E proof has a newly exposed implementation dependency:
-  `scripts/programme-delivery-smoke` is API-stale and must not be used as launch
-  evidence until repaired to the current `DirectorSegmentRunner.process_once()`
-  API with scratch-only writes.
+- Programme E2E harness repair is complete in this PR. Focused tests passed:
+  `uv run pytest tests/studio_compositor/test_director_segment_runner.py tests/hapax_daimonion/test_programme_delivery_smoke.py -q`
+  -> `5 passed, 1 warning`; scratch run returned `ok=true` at
+  `/tmp/hapax-hn-programme-delivery-smoke-20260512T162123Z/programme-delivery-smoke-receipt.json`.
