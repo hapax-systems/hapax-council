@@ -164,6 +164,49 @@ def apply_layout_mode(compositor: Any, mode: str) -> None:
     log.info("Layout mode: %s (applied to %d cameras)", mode, applied)
 
 
+def publish_active_layout_readback(compositor: Any) -> None:
+    """Publish active ward/layout readback independent of visual blit paths."""
+    layout_state = getattr(compositor, "layout_state", None)
+    source_registry = getattr(compositor, "source_registry", None)
+    if layout_state is None or source_registry is None:
+        return
+    try:
+        layout = layout_state.get()
+        surface_by_id = getattr(layout, "surface_by_id", None)
+        active_ids: list[str] = []
+        for assignment in getattr(layout, "assignments", ()):
+            source_id = getattr(assignment, "source", None)
+            if not isinstance(source_id, str) or not source_id:
+                continue
+            surface_id = getattr(assignment, "surface", None)
+            if callable(surface_by_id) and surface_id is not None:
+                try:
+                    if surface_by_id(surface_id) is None:
+                        continue
+                except Exception:
+                    continue
+            try:
+                source_surface = source_registry.get_current_surface(source_id)
+            except KeyError:
+                continue
+            if source_surface is None:
+                continue
+            active_ids.append(source_id)
+
+        from . import active_wards
+
+        layout_name = getattr(layout, "name", None)
+        layout_mode = getattr(compositor, "_layout_mode", None)
+        active_wards.publish(active_ids)
+        active_wards.publish_current_layout_state(
+            layout_name=layout_name if isinstance(layout_name, str) else None,
+            layout_mode=layout_mode if isinstance(layout_mode, str) else None,
+            active_ward_ids=active_ids,
+        )
+    except Exception:
+        log.debug("active layout readback publish failed", exc_info=True)
+
+
 def try_reconnect_camera(compositor: Any, role: str) -> bool:
     """Attempt to reconnect an offline camera.
 
@@ -340,6 +383,7 @@ def state_reader_loop(compositor: Any) -> None:
                         log.info("Layouts reloaded: %s", changed)
             except Exception as exc:
                 log.debug("Layout reload failed: %s", exc)
+            publish_active_layout_readback(compositor)
 
         # Camera profiles every ~10s
         profile_check_counter += 1
