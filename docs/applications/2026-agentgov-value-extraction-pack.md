@@ -18,7 +18,19 @@ explain tool use before an agent mutates files, data, or infrastructure.
 
 The claim is intentionally narrow. `agentgov` is not a certification program,
 not an AI Act compliance product, and not dependent on Token Capital, RAG
-quality, or corpus retrieval. It is a small, inspectable package of enforcement
+quality, or corpus retrieval.
+
+There are two value surfaces that must not be conflated:
+
+1. The public `hapax-agentgov` package currently ships the CLI/hook layer:
+   `agentgov init`, `agentgov check`, and `agentgov report` for Claude Code
+   hook governance.
+2. The council-local `packages/agentgov` package contains the richer algebraic
+   governance primitives. Public copy can discuss these as validated source
+   primitives, but should not claim they are present in the current public PyPI
+   package until a release verifies package parity.
+
+The richer primitive surface is a small, inspectable set of enforcement
 primitives extracted from a live single-operator agent system:
 
 - `VetoChain`: deny-wins composition for pre-execution policy gates.
@@ -42,7 +54,14 @@ prompted, or delegated through another agent.
 
 ## Public Copy
 
-Short version:
+Safe public CLI version:
+
+> `hapax-agentgov` adds deployment-time hook governance to AI coding-agent
+> projects. It scaffolds pre-execution controls for secrets, PII, git hygiene,
+> package-manager discipline, and protected paths so dangerous tool calls can
+> be blocked before they mutate a repository.
+
+Core primitive version, only after public package parity is verified:
 
 > `agentgov` is a deployment-time governance layer for AI agents. It packages
 > consent labels, provenance, delegated authority, revocation, and deny-wins
@@ -50,7 +69,7 @@ Short version:
 > careful" is not enough and an agent needs pre-execution controls with an audit
 > trail.
 
-Longer version:
+Longer primitive version:
 
 > Most agent governance is advisory: a system prompt tells the model what it
 > should not do. `agentgov` makes the boundary mechanical. Data can carry a
@@ -64,7 +83,9 @@ Longer version:
 
 | Claim | Evidence | Boundary |
 | --- | --- | --- |
-| `agentgov` provides typed governance primitives for agent systems. | [`packages/agentgov/src/agentgov/`](../../packages/agentgov/src/agentgov/) and [`packages/agentgov/README.md`](../../packages/agentgov/README.md). | This is a library claim, not an end-to-end platform claim. |
+| The public `hapax-agentgov` CLI scaffolds governance hooks. | Public repo `hapax-systems/agentgov`, a local public-repo checkout, and `uv run agentgov --help`. | This is the currently shippable public package claim; it does not imply core primitive parity. |
+| The public CLI package exposes `init`, `check`, and `report`. | Public-repo `tests` and `src/agentgov/cli.py`. | CLI coverage is hook-scaffold coverage, not a complete governance runtime. |
+| The council-local `packages/agentgov` source provides typed governance primitives for agent systems. | [`packages/agentgov/src/agentgov/`](../../packages/agentgov/src/agentgov/) and [`packages/agentgov/README.md`](../../packages/agentgov/README.md). | This is a source/library claim. Do not state that current PyPI `hapax-agentgov` exposes all primitives until package parity is released and tested. |
 | Consent labels compose monotonically. | [`packages/agentgov/tests/test_consent_label.py`](../../packages/agentgov/tests/test_consent_label.py). | DLM-style label algebra only; does not prove every downstream integration calls it. |
 | Bound agents cannot delegate more authority than they were granted. | [`packages/agentgov/tests/test_principal.py`](../../packages/agentgov/tests/test_principal.py). | Covers the packaged `Principal` model, not arbitrary host identity systems. |
 | Veto chains are deny-wins policy composition. | [`packages/agentgov/tests/test_primitives.py`](../../packages/agentgov/tests/test_primitives.py). | Enforces only where host runtimes route decisions through the chain. |
@@ -74,7 +95,8 @@ Longer version:
 
 ## External Framework Crosswalk
 
-This section is a positioning map, not a compliance statement.
+This section is a positioning map, not a compliance statement. Sources were
+checked on 2026-05-12.
 
 | Framework | What it asks for | How `agentgov` can support it | What not to claim |
 | --- | --- | --- | --- |
@@ -98,7 +120,18 @@ References:
 
 ### Demo
 
-Build a five-minute terminal demo called "deny before tool use":
+Build two demos and label them separately.
+
+Public CLI demo, safe now:
+
+1. Create a temporary repository.
+2. Run `pip install hapax-agentgov` or `uvx --from hapax-agentgov agentgov`.
+3. Run `agentgov init --preset safe`.
+4. Run `agentgov check` and `agentgov report --json`.
+5. Attempt a hook-covered write that contains a synthetic secret pattern and
+   show the pre-tool-use denial path.
+
+Core primitive demo, local now and public only after package parity:
 
 1. Create a `VetoChain` with `budget`, `consent`, and `branch_clean` vetoes.
 2. Pass an action context that fails `consent`.
@@ -108,8 +141,8 @@ Build a five-minute terminal demo called "deny before tool use":
 5. Revoke a contract through `RevocationPropagator` and show a registered purge
    handler receiving the contract id.
 
-This demo does not need a live RAG index or Token Capital claims. It runs
-entirely from package primitives and can be backed by:
+Neither demo needs a live RAG index or Token Capital claims. The primitive demo
+runs entirely from source primitives and can be backed by:
 
 - [`packages/agentgov/tests/test_primitives.py`](../../packages/agentgov/tests/test_primitives.py)
 - [`packages/agentgov/src/agentgov/labeled.py`](../../packages/agentgov/src/agentgov/labeled.py)
@@ -118,13 +151,18 @@ entirely from package primitives and can be backed by:
 
 ### Docs Page
 
-Use the package README as the first docs page:
+Use two docs pages, with different claims:
 
-- Source: [`packages/agentgov/README.md`](../../packages/agentgov/README.md)
-- Required next edit before publication push: add this value-extraction framing
-  as a "Where this fits" section, including the "not compliance" boundary.
-- Keep install copy tied to the actual package name: `pip install
-  hapax-agentgov`; import remains `agentgov`.
+- Public CLI docs now: <https://github.com/hapax-systems/agentgov#readme>
+  and the local checkout of that public repository.
+- Core primitive docs before publication push:
+  [`packages/agentgov/README.md`](../../packages/agentgov/README.md), after
+  adding a "Where this fits" section and either extracting the primitives into
+  the public repo or explicitly marking the page as council-local source.
+- Keep install copy tied to verified package contents. Current public install
+  claim: `pip install hapax-agentgov` provides the CLI/hook scaffold. Do not
+  imply it provides `ConsentLabel`, `VetoChain`, or `RevocationPropagator`
+  until a package-parity release proves that import surface.
 
 ### Outreach Artifact
 
@@ -145,7 +183,7 @@ too broad and not provable. The sharper problem is:
 > I want autonomous coding agents to run useful workflows, but I need certain
 > actions to be impossible unless runtime facts satisfy explicit policy.
 
-`agentgov` answers that with least-privilege mechanics:
+The full `agentgov` architecture answers that with least-privilege mechanics:
 
 1. A human or host system is a `Principal`.
 2. Delegated agents are bound principals with narrower authority.
@@ -153,6 +191,11 @@ too broad and not provable. The sharper problem is:
 4. Tool use is routed through a `VetoChain`.
 5. Denials are explicit, inspectable, and order-independent.
 6. Revocation propagates by provenance to registered purge handlers.
+
+The public CLI package already covers a narrower hook-scaffold subset of this
+story. The next value-extraction implementation move is to reconcile package
+parity: either publish the primitives in `hapax-agentgov` or split the names so
+the CLI package and primitive library cannot be confused.
 
 This is enough to produce useful demos and docs now. It is not enough to claim
 general enterprise compliance, complete agent security, or validated RAG-backed
@@ -162,6 +205,9 @@ research conclusions.
 
 - `agentgov` is a library. It becomes enforcement only when the host runtime
   calls it at the right boundaries.
+- The current public `hapax-agentgov` package and the council-local
+  `packages/agentgov` primitive source are not the same surface. Public claims
+  must stay pinned to the tested package.
 - Hook scanners are intentionally narrow and should be complemented by normal
   security tooling.
 - The current package proves algebraic behavior with tests; it does not prove
@@ -174,14 +220,22 @@ research conclusions.
 
 ## Verification Hook
 
-Recommended package verification for this pack:
+Recommended council-local primitive verification for this pack:
 
 ```bash
 uv run pytest packages/agentgov/tests -q
 ```
 
+Recommended public CLI verification:
+
+```bash
+# from the local checkout of hapax-systems/agentgov
+uv run pytest -q
+uv run agentgov --help
+```
+
 Recommended claim discipline before publishing any derived page:
 
 ```bash
-rg -n "compliance|certified|guarantee|Token Capital|token compounding|RAG proves" docs packages/agentgov
+rg -n "compliance|certified|guarantee|Token Capital|token compounding|RAG proves|pip install hapax-agentgov.*VetoChain|pip install hapax-agentgov.*ConsentLabel" docs packages/agentgov
 ```
