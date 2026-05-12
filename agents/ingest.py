@@ -381,6 +381,10 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
         # Strip quotes
         elif value.startswith('"') and value.endswith('"'):
             metadata[key] = value[1:-1]
+        elif value.lower() == "true":
+            metadata[key] = True
+        elif value.lower() == "false":
+            metadata[key] = False
         else:
             metadata[key] = value
 
@@ -404,9 +408,12 @@ def enrich_payload(base_payload: dict, frontmatter: dict) -> dict:
         "service",  # takeout frontmatter uses these names
         "record_id",
         "categories",
+        "content_tier",
+        "is_metadata_only",
         "location",
         "gdrive_folder",
         "provenance",  # DD-20: why-provenance contract IDs
+        "retrieval_eligible",
     }
 
     # DD-11: Extract consent label from frontmatter if present
@@ -429,9 +436,9 @@ def enrich_payload(base_payload: dict, frontmatter: dict) -> dict:
             value = frontmatter[key]
             # Normalize key names for consistency in Qdrant
             if key == "platform":
-                base_payload["source_platform"] = value
+                base_payload.setdefault("source_platform", value)
             elif key == "service":
-                base_payload["source_service"] = value
+                base_payload.setdefault("source_service", value)
             else:
                 base_payload[key] = value
 

@@ -29,6 +29,13 @@ class TestParseFrontmatter:
         meta, body = ingest.parse_frontmatter(text)
         assert meta["title"] == "A title with: colons"
 
+    def test_boolean_values(self):
+        text = "---\nis_metadata_only: true\nretrieval_eligible: false\n---\nBody."
+        meta, body = ingest.parse_frontmatter(text)
+        assert meta["is_metadata_only"] is True
+        assert meta["retrieval_eligible"] is False
+        assert body == "Body."
+
     def test_no_frontmatter(self):
         text = "Just plain text without any frontmatter."
         meta, body = ingest.parse_frontmatter(text)
@@ -114,6 +121,21 @@ class TestEnrichPayload:
         fm = {"modality_tags": ["text", "temporal"]}
         result = ingest.enrich_payload(base, fm)
         assert result["modality_tags"] == ["text", "temporal"]
+
+    def test_metadata_quality_gates(self):
+        base = {}
+        fm = {
+            "service": "drive",
+            "source_service": "gdrive",
+            "content_tier": "metadata_only",
+            "is_metadata_only": True,
+            "retrieval_eligible": False,
+        }
+        result = ingest.enrich_payload(base, fm)
+        assert result["source_service"] == "gdrive"
+        assert result["content_tier"] == "metadata_only"
+        assert result["is_metadata_only"] is True
+        assert result["retrieval_eligible"] is False
 
     def test_people(self):
         base = {}
