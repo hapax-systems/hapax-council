@@ -114,6 +114,67 @@ class TestStartLayoutOnly:
             "interactive_lore_query",
         }
 
+    def test_start_layout_only_starts_only_enabled_render_stage_sources(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        layout_file = tmp_path / "default.json"
+        layout_file.write_text(DEFAULT_JSON.read_text())
+        monkeypatch.setenv("HAPAX_COMPOSITOR_DISABLE_POST_FX_OVERLAY", "1")
+        monkeypatch.delenv("HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED", raising=False)
+
+        compositor = _make_compositor(layout_path=layout_file)
+        with mock.patch(
+            "agents.studio_compositor.source_registry.SourceRegistry.start_all",
+            autospec=True,
+        ) as start_all:
+            try:
+                compositor.start_layout_only()
+
+                assert compositor.layout_state is not None
+                assert compositor.source_registry is not None
+                layout = compositor.layout_state.get()
+                registered = set(compositor.source_registry.ids())
+                expected = {
+                    assignment.source
+                    for assignment in layout.assignments
+                    if assignment.render_stage == "pre_fx"
+                } & registered
+                actual = set(start_all.call_args.args[1])
+                assert actual == expected
+                assert all(
+                    assignment.render_stage == "pre_fx"
+                    for assignment in layout.assignments
+                    if assignment.source in actual
+                )
+            finally:
+                try:
+                    compositor.stop()
+                except Exception:
+                    pass
+
+    def test_start_layout_only_starts_no_layout_sources_when_both_stages_disabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        layout_file = tmp_path / "default.json"
+        layout_file.write_text(DEFAULT_JSON.read_text())
+        monkeypatch.setenv("HAPAX_COMPOSITOR_DISABLE_POST_FX_OVERLAY", "1")
+        monkeypatch.setenv("HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED", "0")
+
+        compositor = _make_compositor(layout_path=layout_file)
+        with mock.patch(
+            "agents.studio_compositor.source_registry.SourceRegistry.start_all",
+            autospec=True,
+        ) as start_all:
+            try:
+                compositor.start_layout_only()
+
+                assert start_all.call_args.args[1] == []
+            finally:
+                try:
+                    compositor.stop()
+                except Exception:
+                    pass
+
     def test_missing_layout_file_resolves_to_fallback(self, tmp_path: Path) -> None:
         """Missing on-disk layout must NOT stop the compositor from booting."""
         compositor = _make_compositor(layout_path=tmp_path / "does-not-exist.json")
