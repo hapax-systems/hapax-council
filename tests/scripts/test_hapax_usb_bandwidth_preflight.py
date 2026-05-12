@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import shutil
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -13,6 +15,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-usb-bandwidth-preflight"
+INSTALLER = REPO_ROOT / "scripts" / "install-usb-topology-hardening.sh"
 
 
 def _load_module() -> types.ModuleType:
@@ -137,6 +140,56 @@ def test_respeaker_xvf3800_profiles_are_known(vid: str, pid: str) -> None:
     assert profile is not None
     assert "XVF3800" in profile.name
     assert profile.bandwidth_mbps == pytest.approx(10.0)
+
+
+def test_installed_script_resolves_packaged_table_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The /usr/local/bin install cannot infer the repo from __file__."""
+
+    install_root = tmp_path / "usr-local-share-hapax-council"
+    packaged_shared = install_root / "shared"
+    packaged_shared.mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "shared" / "usb_bandwidth_table.py", packaged_shared)
+
+    bin_dir = tmp_path / "usr-local-bin"
+    bin_dir.mkdir()
+    installed_script = bin_dir / "hapax-usb-bandwidth-preflight"
+    shutil.copy2(SCRIPT, installed_script)
+
+    monkeypatch.setenv("HAPAX_USB_BANDWIDTH_TABLE_ROOT", str(install_root))
+    monkeypatch.delitem(sys.modules, "shared", raising=False)
+    monkeypatch.delitem(sys.modules, "shared.usb_bandwidth_table", raising=False)
+
+    loader = importlib.machinery.SourceFileLoader(
+        "hapax_usb_bandwidth_preflight_installed_under_test", str(installed_script)
+    )
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[loader.name] = module
+    loader.exec_module(module)
+
+    assert install_root == module._REPO_ROOT
+    assert module.lookup("1686", "03d5") is not None
+
+
+def test_topology_hardening_installer_packages_bandwidth_table(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            str(INSTALLER),
+            "--dry-run",
+            "--root",
+            str(tmp_path / "root"),
+            "--home",
+            str(tmp_path / "home"),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "/usr/local/share/hapax-council/shared/usb_bandwidth_table.py" in result.stdout
 
 
 # ---------------------------------------------------------------------------
