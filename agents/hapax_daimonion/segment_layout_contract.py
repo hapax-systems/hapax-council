@@ -1272,7 +1272,8 @@ def current_beat_layout_proposals(
             for value in (parent_index, beat_index_value)
             if isinstance(value, int) and not isinstance(value, bool) and value >= 0
         }
-        if (parent_index is not None or beat_index_value is not None) and not index_values:
+        has_explicit_index = parent_index is not None or beat_index_value is not None
+        if has_explicit_index and not index_values:
             return ()
         if len(index_values) > 1:
             return ()
@@ -1280,7 +1281,9 @@ def current_beat_layout_proposals(
         beat_id = _optional_str(projected.get("beat_id"))
         if parent_beat_index is None and beat_id is None:
             return ()
-        if parent_beat_index == beat_index or (beat_id is not None and beat_id in beat_ids):
+        if parent_beat_index == beat_index or (
+            not has_explicit_index and beat_id is not None and beat_id in beat_ids
+        ):
             matches.append(projected)
     if not matches:
         return ()

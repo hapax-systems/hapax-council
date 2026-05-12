@@ -442,6 +442,30 @@ def test_current_beat_layout_proposals_select_by_beat_key_not_position() -> None
     assert current_beat_layout_proposals(content, 0) == ()
 
 
+def test_current_beat_layout_proposals_explicit_index_prevents_adjacent_beat_id_bleed() -> None:
+    content = SimpleNamespace(
+        segment_beats=["open: cite", "compare: contrast"],
+        beat_layout_intents=[
+            {
+                "beat_id": "beat-1",
+                "parent_beat_index": 0,
+                "needs": ["source_visible"],
+            },
+            {
+                "beat_id": "beat-2",
+                "parent_beat_index": 1,
+                "needs": ["comparison_visible"],
+            },
+        ],
+    )
+
+    proposals = current_beat_layout_proposals(content, 1)
+
+    assert len(proposals) == 1
+    assert proposals[0]["beat_id"] == "beat-2"
+    assert proposals[0]["needs"] == ["comparison_visible"]
+
+
 def test_current_beat_layout_proposals_fail_closed_for_unkeyed_ambiguous_rows() -> None:
     content = SimpleNamespace(
         segment_beats=["hook: open"],
