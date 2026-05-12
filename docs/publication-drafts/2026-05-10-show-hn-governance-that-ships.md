@@ -89,11 +89,17 @@ No prompt engineering required. No model-specific tuning. The enforcement layer 
 
 Repository: [github.com/hapax-systems/agentgov](https://github.com/hapax-systems/agentgov)
 
+Full system: [github.com/hapax-systems/hapax-council](https://github.com/hapax-systems/hapax-council)
+
+Public landing page: [hapax.omg.lol](https://hapax.omg.lol/)
+
+Support page: [hapax.omg.lol/support](https://hapax.omg.lol/support)
+
 ## Live Evidence
 
 The production system is built to publish live evidence, but public live egress is readiness-gated. Right now the YouTube/OBS gate is red, so this post does not claim an active livestream as evidence.
 
-The same governed fleet builds the production compositor, camera pipeline, audio routing, overlay system, publication bus, and GitHub workflow. When the public egress gate is green, the live channel becomes current evidence again; until then, the repository, PyPI package, weblog, and CI history are the public record.
+The same governed fleet builds the production compositor, camera pipeline, audio routing, overlay system, publication bus, and GitHub workflow. When the public egress gate is green, [Legomena Live](https://www.youtube.com/@LegomenaLive) becomes current evidence again; until then, the repository, PyPI package, weblog, and CI history are the public record.
 
 ## What's Next
 
