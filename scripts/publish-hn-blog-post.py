@@ -5,9 +5,8 @@ Usage:
     uv run python scripts/publish-hn-blog-post.py [--dry-run]
 
 Reads the draft from docs/publication-drafts/2026-05-10-show-hn-governance-that-ships.md,
-strips the YAML frontmatter, and publishes to hapax.omg.lol/weblog via
-OmgLolWeblogPublisher. Optionally triggers Bridgy POSSE fanout to
-Mastodon + Bluesky.
+and publishes the full weblog source through OmgLolWeblogPublisher. Optionally
+triggers Bridgy POSSE fanout to Mastodon + Bluesky.
 """
 
 from __future__ import annotations
@@ -24,14 +23,8 @@ DRAFT_PATH = (
 )
 
 ENTRY_SLUG = "show-hn-governance-that-ships"
-
-
-def _strip_frontmatter(text: str) -> str:
-    if text.startswith("---"):
-        parts = text.split("---", 2)
-        if len(parts) >= 3:
-            return parts[2].lstrip("\n")
-    return text
+PUBLIC_LOCATION = f"/2026/05/{ENTRY_SLUG}"
+PUBLIC_URL = f"https://hapax.weblog.lol{PUBLIC_LOCATION}"
 
 
 def main() -> int:
@@ -44,11 +37,10 @@ def main() -> int:
         print(f"Draft not found: {DRAFT_PATH}", file=sys.stderr)
         return 1
 
-    raw = DRAFT_PATH.read_text()
-    body = _strip_frontmatter(raw)
+    body = DRAFT_PATH.read_text()
 
     if args.dry_run:
-        print(f"=== DRY RUN: would publish to hapax.omg.lol/weblog/{ENTRY_SLUG} ===")
+        print(f"=== DRY RUN: would publish to {PUBLIC_URL} ===")
         print(f"=== Body length: {len(body)} chars ===")
         print(body[:500])
         print("...")
@@ -68,9 +60,16 @@ def main() -> int:
         OmgLolWeblogPublisher.surface_name, [ENTRY_SLUG]
     )
     publisher = OmgLolWeblogPublisher(client=client, address="hapax")
-    payload = PublisherPayload(target=ENTRY_SLUG, text=body)
+    payload = PublisherPayload(
+        target=ENTRY_SLUG,
+        text=body,
+        metadata={
+            "location": PUBLIC_LOCATION,
+            "slug": ENTRY_SLUG,
+        },
+    )
 
-    print(f"Publishing to hapax.omg.lol/weblog/{ENTRY_SLUG}...")
+    print(f"Publishing to {PUBLIC_URL}...")
     result = publisher.publish(payload)
 
     if result.ok:
@@ -85,9 +84,8 @@ def main() -> int:
     if not args.no_posse:
         from agents.publication_bus.bridgy_posse_fanout import posse_after_weblog_publish
 
-        entry_url = f"https://hapax.omg.lol/weblog/{ENTRY_SLUG}"
-        print(f"POSSE fanout to Mastodon + Bluesky for {entry_url}...")
-        outcomes = posse_after_weblog_publish(entry_url=entry_url)
+        print(f"POSSE fanout to Mastodon + Bluesky for {PUBLIC_URL}...")
+        outcomes = posse_after_weblog_publish(entry_url=PUBLIC_URL)
         for target, res in outcomes.items():
             status = "ok" if res.ok else ("refused" if res.refused else "error")
             print(f"  {target}: {status} ({res.detail})")

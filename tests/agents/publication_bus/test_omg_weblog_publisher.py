@@ -72,3 +72,86 @@ class TestPublisher:
         publisher.publish(PublisherPayload(target="entry-1", text="body"))
         # First positional arg is the address
         assert client.set_entry.call_args.args[0] == "oudepode"
+
+    def test_metadata_payload_rewrites_collection_location(self) -> None:
+        client = _make_client(
+            set_entry_returns={
+                "response": {
+                    "entry": {
+                        "entry": "show-hn-governance-that-ships",
+                        "location": "/2026/05/show-hn-governance-that-ships",
+                    }
+                }
+            }
+        )
+        OmgLolWeblogPublisher.allowlist = load_allowlist(
+            OMG_WEBLOG_SURFACE, ["show-hn-governance-that-ships"]
+        )
+        publisher = OmgLolWeblogPublisher(client=client, address="hapax")
+
+        text = (
+            "---\n"
+            "Date: 2026-05-10\n"
+            "Title: Show HN: Mechanical Governance for AI Coding Agents at 3,000+ PRs\n"
+            "Type: post\n"
+            "Location: /weblog\n"
+            "Tags: ai-governance, show-hn\n"
+            "Slug: show-hn-governance-that-ships\n"
+            "---\n\n"
+            "# Show HN: Mechanical Governance\n\n"
+            "Body.\n"
+        )
+        result = publisher.publish(
+            PublisherPayload(
+                target="show-hn-governance-that-ships",
+                text=text,
+                metadata={"location": "/2026/05/show-hn-governance-that-ships"},
+            )
+        )
+
+        assert result.ok is True
+        content = client.set_entry.call_args.kwargs["content"]
+        assert "Location: /2026/05/show-hn-governance-that-ships" in content
+        assert "Location: /weblog" not in content
+        assert "Title: Show HN: Mechanical Governance for AI Coding Agents at 3,000+ PRs" in content
+        assert "# Show HN: Mechanical Governance" in content
+
+    def test_refuses_collection_location_without_derivation_data(self) -> None:
+        client = _make_client()
+        OmgLolWeblogPublisher.allowlist = load_allowlist(OMG_WEBLOG_SURFACE, ["entry-1"])
+        publisher = OmgLolWeblogPublisher(client=client, address="hapax")
+        text = "---\nLocation: /weblog\n---\n\n# Entry\n\nBody.\n"
+
+        result = publisher.publish(PublisherPayload(target="entry-1", text=text))
+
+        assert result.refused is True
+        assert "unsafe weblog Location" in result.detail
+        client.set_entry.assert_not_called()
+
+    def test_location_mismatch_from_omg_lol_is_error(self) -> None:
+        client = _make_client(
+            set_entry_returns={
+                "response": {
+                    "entry": {
+                        "entry": "entry-1",
+                        "location": "/2026/05/unexpected",
+                    }
+                }
+            }
+        )
+        OmgLolWeblogPublisher.allowlist = load_allowlist(OMG_WEBLOG_SURFACE, ["entry-1"])
+        publisher = OmgLolWeblogPublisher(client=client, address="hapax")
+        text = (
+            "---\n"
+            "Date: 2026-05-12\n"
+            "Slug: entry-1\n"
+            "Location: /2026/05/entry-1\n"
+            "---\n\n"
+            "# Entry\n\n"
+            "Body.\n"
+        )
+
+        result = publisher.publish(PublisherPayload(target="entry-1", text=text))
+
+        assert result.error is True
+        assert "expected '/2026/05/entry-1'" in result.detail
