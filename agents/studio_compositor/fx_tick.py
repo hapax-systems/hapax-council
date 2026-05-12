@@ -79,6 +79,12 @@ def _degraded_active() -> bool:
         return False
 
 
+def _autonomous_fx_mutations_enabled() -> bool:
+    from .preset_policy import autonomous_fx_mutations_enabled
+
+    return autonomous_fx_mutations_enabled()
+
+
 def _pin_slots_to_passthrough(compositor: Any) -> None:
     """Force every non-passthrough slot to passthrough (task #122).
 
@@ -137,6 +143,9 @@ def tick_governance(compositor: Any, t: float) -> None:
     # suppress. The slot pinner (tick_slot_pipeline) is the defense
     # in depth; suppressing the selector here avoids the wasted work.
     if _degraded_active():
+        return
+
+    if not _autonomous_fx_mutations_enabled():
         return
 
     # User override hold: when the user explicitly selects a preset via API,

@@ -286,6 +286,9 @@ def test_cuda_camera_branch_pins_cuda_memory_caps(monkeypatch: object) -> None:
         "width": 640,
         "height": 360,
     }
+    assert compositor._camera_elements["operator"]["scale_caps"] is scale_caps
+    assert compositor._camera_elements["operator"]["fps"] == 30
+    assert compositor._camera_elements["operator"]["use_cuda"] is True
 
 
 def test_build_pipeline_caps_cuda_output_before_cudadownload(monkeypatch: object) -> None:

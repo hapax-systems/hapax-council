@@ -96,6 +96,11 @@ def _load_cycle_graph(
 
 def _write_mutation(graph: dict) -> None:
     """Write a graph dict to the SHM mutation file (primitive callback)."""
+    from agents.studio_compositor.preset_policy import autonomous_fx_mutations_enabled
+
+    if not autonomous_fx_mutations_enabled():
+        log.info("random_mode mutation suppressed by HAPAX_FX_AUTONOMOUS_MUTATIONS=0")
+        return
     write_graph_mutation(graph, path=MUTATION_FILE)
 
 
@@ -176,6 +181,11 @@ def apply_graph_with_brightness(graph: dict, brightness: float) -> None:
         if node.get("type") == "colorgrade":
             node["params"]["brightness"] = node["params"].get("brightness", 1.0) * brightness
             break
+    from agents.studio_compositor.preset_policy import autonomous_fx_mutations_enabled
+
+    if not autonomous_fx_mutations_enabled():
+        log.info("random_mode brightness mutation suppressed by HAPAX_FX_AUTONOMOUS_MUTATIONS=0")
+        return
     write_graph_mutation(g, path=MUTATION_FILE)
 
 
@@ -231,6 +241,12 @@ def run(interval: float = 30.0) -> None:
     current_graph = None
 
     while True:
+        from agents.studio_compositor.preset_policy import autonomous_fx_mutations_enabled
+
+        if not autonomous_fx_mutations_enabled():
+            time.sleep(1)
+            continue
+
         if CONTROL_FILE.exists():
             state = CONTROL_FILE.read_text().strip().lower()
             if state == "off":

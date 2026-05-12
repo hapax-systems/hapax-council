@@ -443,6 +443,7 @@ class TestUserYamlClassificationOverlay:
         assert by_role["brio-operator"].operator_visible is True
         assert by_role["c920-overhead"].subject_ontology == ["hands", "mpc", "desk"]
         assert by_role["c920-overhead"].angle == "top-down"
+        assert by_role["c920-overhead"].watchdog_timeout_ms == 5000
         assert by_role["brio-synths"].subject_ontology == ["turntable", "vinyl"]
 
     def test_yaml_classification_wins_over_default(self, tmp_path: Path) -> None:

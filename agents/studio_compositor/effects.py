@@ -70,6 +70,23 @@ def try_graph_preset(compositor: Any, name: str) -> bool:
     if alias:
         candidates.append(alias)
 
+    from .preset_policy import (
+        PresetPolicyError,
+        evaluate_preset_graph_policy,
+        evaluate_preset_policy,
+    )
+
+    policy = evaluate_preset_policy(name, aliases=tuple(candidates))
+    if not policy.allowed:
+        log.warning("Blocked graph preset %s by policy: %s", name, policy.reason)
+        try:
+            from . import metrics as _metrics
+
+            _metrics.record_preset_load_failed(preset=name, reason=policy.reason)
+        except Exception:
+            pass
+        return False
+
     for dir_ in (
         Path.home() / ".config" / "hapax" / "effect-presets",
         Path(__file__).parent.parent.parent / "presets",
@@ -82,11 +99,35 @@ def try_graph_preset(compositor: Any, name: str) -> bool:
 
                     raw = json.loads(preset_path.read_text())
                     graph = EffectGraph(**raw)
+                    graph_policy = evaluate_preset_graph_policy(
+                        graph,
+                        preset_name=name,
+                        aliases=tuple(candidates),
+                        registry=getattr(compositor._graph_runtime, "_registry", None),
+                    )
+                    if not graph_policy.allowed:
+                        raise PresetPolicyError(graph_policy)
                     graph = merge_default_modulations(graph)
                     compositor._graph_runtime.load_graph(graph)
                     log.info("Activated graph preset: %s (file: %s)", name, candidate)
                     _maybe_publish_family_change(compositor, name, candidate)
                     return True
+                except PresetPolicyError as exc:
+                    log.warning(
+                        "Blocked graph preset %s by graph policy: %s",
+                        candidate,
+                        exc.decision.reason,
+                    )
+                    try:
+                        from . import metrics as _metrics
+
+                        _metrics.record_preset_load_failed(
+                            preset=name,
+                            reason=exc.decision.reason,
+                        )
+                    except Exception:
+                        pass
+                    return False
                 except Exception:
                     log.warning("Failed to load graph preset %s", candidate, exc_info=True)
     return False

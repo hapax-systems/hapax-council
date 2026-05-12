@@ -508,6 +508,12 @@ def process_graph_patch_recruitment() -> bool:
     pipeline recruits node patch capabilities and this
     consumer mutates the live graph by surgical patch.
     """
+    from .preset_policy import autonomous_fx_mutations_enabled
+
+    if not autonomous_fx_mutations_enabled():
+        log.info("graph-patch consumer suppressed by HAPAX_FX_AUTONOMOUS_MUTATIONS=0")
+        return False
+
     global _last_activation_t
     if not RECRUITMENT_FILE.exists():
         return False

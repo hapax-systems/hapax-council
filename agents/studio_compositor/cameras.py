@@ -323,5 +323,8 @@ def add_camera_branch(
         "src": src,
         "tee": camera_tee,
         "comp_pad": pad,
+        "scale_caps": scale_caps,
+        "fps": fps,
+        "use_cuda": use_cuda,
     }
     compositor._camera_specs[cam.role] = cam

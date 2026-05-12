@@ -253,6 +253,25 @@ def _flat_image_data(image_data: str) -> bool:
         return False
 
 
+def _get_source_active_response(client: Any, source_name: str) -> Any:
+    try:
+        return client.get_source_active(source_name=source_name)
+    except TypeError:
+        return client.get_source_active(source_name)
+
+
+def _get_source_screenshot_response(client: Any, source_name: str) -> Any:
+    try:
+        return client.get_source_screenshot(
+            source_name=source_name,
+            image_format="png",
+            image_width=16,
+            image_height=16,
+        )
+    except TypeError:
+        return client.get_source_screenshot(source_name, "png", 16, 16, 50)
+
+
 def sample_obs_decoder(
     client: Any,
     source_name: str,
@@ -265,7 +284,7 @@ def sample_obs_decoder(
     playing: bool | None = None
     try:
         source_active = _resp_bool(
-            client.get_source_active(source_name=source_name),
+            _get_source_active_response(client, source_name),
             "video_active",
             "active",
         )
@@ -283,12 +302,7 @@ def sample_obs_decoder(
         playing = None
 
     try:
-        resp = client.get_source_screenshot(
-            source_name=source_name,
-            image_format="png",
-            image_width=16,
-            image_height=16,
-        )
+        resp = _get_source_screenshot_response(client, source_name)
         image_data = _obs_image_data(resp)
         if image_data is None:
             raise RuntimeError("OBS screenshot response did not include image_data")
