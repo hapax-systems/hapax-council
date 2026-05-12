@@ -83,7 +83,7 @@ The refused surfaces list is arguably more interesting than the capabilities lis
 
 ## The Tool
 
-We're extracting the hook-based governance system into a standalone open-source package: **agentgov**. It will be a `pip install` away from adding mechanical enforcement to any Claude Code, Codex, or similar agent deployment.
+We're publishing the hook-based governance system as a standalone open-source package: **hapax-agentgov**. It is a `pip install hapax-agentgov` away from adding mechanical enforcement to any Claude Code, Codex, or similar agent deployment. The import and CLI command remain `agentgov`.
 
 The core idea is simple: hooks intercept tool calls. You write shell scripts that check preconditions. If the precondition fails, the tool call is blocked. The agent receives the error and adapts.
 
@@ -91,11 +91,11 @@ No prompt engineering required. No model-specific tuning. The enforcement layer 
 
 Repository: [github.com/hapax-systems/agentgov](https://github.com/hapax-systems/agentgov)
 
-## The Livestream
+## Live Evidence
 
-The entire system runs 24/7 on a livestream: [Legomena Live](https://youtube.com/@legomenalive). You can watch autonomous agents write code, hit governance hooks, adapt their behavior, and merge pull requests in real time. The compositor, camera pipeline, audio routing, and overlay system are all built and operated by the same governed agent fleet.
+The production system is built to publish live evidence, but public live egress is readiness-gated. Right now the YouTube/OBS gate is red, so this post does not claim an active livestream as evidence.
 
-This isn't a demo. It's the actual production environment. When an agent's PR fails CI at 3am, you can watch it read the error, fix the code, and re-push — all within the governance constraints.
+The same governed fleet builds the production compositor, camera pipeline, audio routing, overlay system, publication bus, and GitHub workflow. When the public egress gate is green, the live channel becomes current evidence again; until then, the repository, PyPI package, weblog, and CI history are the public record.
 
 ## What's Next
 
