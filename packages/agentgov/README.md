@@ -1,6 +1,6 @@
 # agentgov
 
-[![PyPI](https://img.shields.io/pypi/v/agentgov)](https://pypi.org/project/agentgov/)
+[![PyPI](https://img.shields.io/pypi/v/hapax-agentgov)](https://pypi.org/project/hapax-agentgov/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 Computational constitutional governance for AI agent systems.
@@ -10,7 +10,7 @@ agentgov provides algebraically-verified primitives for governing multi-agent sy
 ## Install
 
 ```bash
-pip install agentgov
+pip install hapax-agentgov
 ```
 
 ## Core Concepts
