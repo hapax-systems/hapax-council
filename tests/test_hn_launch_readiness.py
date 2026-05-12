@@ -104,6 +104,13 @@ def test_hn_launch_readiness_warnings_do_not_block_ready(tmp_path: Path) -> None
     assert report.status.value == "warn"
     assert report.ready is True
     assert checks["logos_api"].status.value == "warn"
+    assert checks["logos_api"].evidence["api_failed_checks"] == ["connectivity.phone"]
+    assert (
+        checks["logos_api"].evidence["warning_classification"] == "non_blocking_hn_launch_warning"
+    )
+    assert "connectivity.phone" in checks["logos_api"].summary
+    assert report.to_dict()["failures"] == []
+    assert report.to_dict()["warnings"] == ["logos_api"]
 
 
 def test_hn_launch_readiness_flags_private_voice_obs_youtube_and_failed_units(
