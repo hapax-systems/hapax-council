@@ -94,6 +94,8 @@ def find_weblog_event(after_ts: float) -> dict | None:
             continue
         if event.get("event_type") != "omg.weblog":
             continue
+        if not _event_generated_after(event, after_ts):
+            continue
         if TEST_ENTRY_ID in event.get("event_id", ""):
             return event
         if TEST_ENTRY_ID in (event.get("source", {}).get("evidence_ref") or ""):
@@ -102,6 +104,22 @@ def find_weblog_event(after_ts: float) -> dict | None:
         if "deployment verification" in title.lower():
             return event
     return None
+
+
+def _event_generated_after(event: dict, after_ts: float) -> bool:
+    if after_ts <= 0:
+        return True
+    provenance = event.get("provenance")
+    generated_at = provenance.get("generated_at") if isinstance(provenance, dict) else None
+    if not isinstance(generated_at, str) or not generated_at.strip():
+        return False
+    try:
+        parsed = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.timestamp() > after_ts
 
 
 def check_social_fanout(event_id: str) -> dict[str, bool]:

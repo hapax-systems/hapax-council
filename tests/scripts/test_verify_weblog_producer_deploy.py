@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -108,6 +109,55 @@ def test_no_cleanup_opt_out_leaves_test_post(
 
     assert deploy_module.main(["--live-egress", "--no-cleanup"]) == 0
     assert deleted is False
+
+
+def test_live_egress_default_leaves_test_post(
+    deploy_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deleted = False
+
+    def _delete_test_post() -> bool:
+        nonlocal deleted
+        deleted = True
+        return True
+
+    monkeypatch.setattr(deploy_module, "delete_test_post", _delete_test_post)
+
+    assert deploy_module.main(["--live-egress"]) == 0
+    assert deleted is False
+
+
+def test_find_weblog_event_rejects_stale_live_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_module()
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in (
+                {
+                    "event_id": "rvpe:omg_weblog:deploy-verify-weblog-producer:old",
+                    "event_type": "omg.weblog",
+                    "provenance": {"generated_at": "2026-05-12T11:59:59Z"},
+                },
+                {
+                    "event_id": "rvpe:omg_weblog:deploy-verify-weblog-producer:new",
+                    "event_type": "omg.weblog",
+                    "provenance": {"generated_at": "2026-05-12T12:00:01Z"},
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "PUBLIC_EVENT_PATH", events)
+    after_ts = datetime(2026, 5, 12, 12, 0, 0, tzinfo=UTC).timestamp()
+
+    found = module.find_weblog_event(after_ts)
+
+    assert found is not None
+    assert found["event_id"] == "rvpe:omg_weblog:deploy-verify-weblog-producer:new"
 
 
 def test_check_social_fanout_reads_schema_v2_receipts(
