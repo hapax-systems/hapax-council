@@ -16,9 +16,25 @@ from opentelemetry import trace
 from agents._config import embed, get_qdrant
 from agents._ops_db import _load_json
 from agents._profile_store import ProfileStore
+from shared.rag_inventory import is_inventory_payload
 
 log = logging.getLogger("shared.knowledge_search")
 _rag_tracer = trace.get_tracer("hapax.rag")
+_INVENTORY_OVERFETCH_FACTOR = 10
+
+
+def _inventory_must_not_conditions() -> list:
+    """Qdrant-side exact filters for metadata-only inventory payloads."""
+    from qdrant_client.models import FieldCondition, MatchAny, MatchValue
+
+    return [
+        FieldCondition(key="retrieval_eligible", match=MatchValue(value=False)),
+        FieldCondition(key="is_metadata_only", match=MatchValue(value=True)),
+        FieldCondition(
+            key="content_tier",
+            match=MatchAny(any=["metadata_only", "metadata-only", "stub", "inventory"]),
+        ),
+    ]
 
 
 # ── Qdrant Search ────────────────────────────────────────────────────────────
@@ -61,29 +77,31 @@ def search_documents(
             if conditions:
                 filter_kwargs["must"] = conditions
             if not include_inventory:
-                filter_kwargs["must_not"] = [
-                    FieldCondition(
-                        key="retrieval_eligible",
-                        match=MatchValue(value=False),
-                    )
-                ]
+                filter_kwargs["must_not"] = _inventory_must_not_conditions()
             query_filter = Filter(**filter_kwargs) if filter_kwargs else None
+            query_limit = limit if include_inventory else limit * _INVENTORY_OVERFETCH_FACTOR
 
             results = client.query_points(
                 "documents",
                 query=query_vec,
                 query_filter=query_filter,
-                limit=limit,
+                limit=query_limit,
             )
         except Exception as e:
             span.set_attribute("rag.result_count", 0)
             return f"Document search error: {e}"
 
-        span.set_attribute("rag.result_count", len(results.points))
-        if results.points:
-            span.set_attribute("rag.top_score", results.points[0].score)
+        points = list(results.points)
+        if not include_inventory:
+            points = [pt for pt in points if not is_inventory_payload(pt.payload or {})][:limit]
+        else:
+            points = points[:limit]
 
-        if not results.points:
+        span.set_attribute("rag.result_count", len(points))
+        if points:
+            span.set_attribute("rag.top_score", points[0].score)
+
+        if not points:
             filters = []
             if source_service:
                 filters.append(f"source_service={source_service}")
@@ -105,14 +123,14 @@ def search_documents(
                         "score": round(pt.score, 2),
                         "text": pt.payload.get("text", "")[:300],
                     }
-                    for pt in results.points
+                    for pt in points
                 ]
             }
-            return f"Found {len(results.points)} results for '{query}':\n{to_toon(result_data)}"
+            return f"Found {len(points)} results for '{query}':\n{to_toon(result_data)}"
         except Exception:
             # Fall back to markdown formatting
-            lines = [f"Found {len(results.points)} results for '{query}':", ""]
-            for i, pt in enumerate(results.points, 1):
+            lines = [f"Found {len(points)} results for '{query}':", ""]
+            for i, pt in enumerate(points, 1):
                 p = pt.payload
                 text = p.get("text", "")[:300]
                 source = p.get("source", "unknown")
