@@ -3,12 +3,16 @@
 [![CI](https://github.com/hapax-systems/hapax-council/actions/workflows/ci.yml/badge.svg)](https://github.com/hapax-systems/hapax-council/actions/workflows/ci.yml)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20113515.svg)](https://doi.org/10.5281/zenodo.20113515)
 [![Sponsor Hapax research](https://img.shields.io/badge/Sponsor-Hapax%20research-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/hapax-systems)
-[![License: PolyForm Strict](https://img.shields.io/badge/license-PolyForm%20Strict%201.0-blue)](LICENSE)
+[![License: PolyForm Strict](https://img.shields.io/badge/license-PolyForm%20Strict%201.0.0-blue)](LICENSE)
 [![Built with Claude Code](https://img.shields.io/badge/built%20with-Claude%20Code-blueviolet)](https://claude.ai/claude-code)
 
-**What happens when 200+ AI agents run 24/7 and can't lie to you -- by design.**
+## Project spine
 
-Hapax is a single-operator autonomous system: 200+ agents, a voice daemon, a GPU visual surface, a studio compositor, and a 24/7 livestream -- all governed by a formal constitution that makes sycophancy, slop, and dishonesty structurally impossible.
+Single-operator operating environment, externalized executive function, semantic recruitment across perception/expression/recall/action, temporal and perceptual grounding discipline, studio/livestream research instrument, refusal-as-data substrate, and value-braid loop from runtime truth to artifacts, support, grants, and posteriors.
+
+**What happens when 200+ total AI agents run 24/7 and can't lie to you -- by design.**
+
+Hapax is a single-operator autonomous system: 200+ total agents, including 180+ runtime agent modules, plus a voice daemon, a GPU visual surface, a studio compositor, and a 24/7 livestream -- all governed by a formal constitution that makes sycophancy, slop, and dishonesty structurally impossible.
 
 This is not a framework. This is not a demo. This is the production system one neurodivergent operator uses to externalize executive function, and the research artifact that proves what happens when you take agent governance seriously.
 
@@ -63,7 +67,7 @@ Hapax takes a different position: **governance is architecture, not policy.** Fi
 
 ### Filesystem-as-bus
 
-Agents read and write markdown + YAML on disk. An inotify-driven reactive engine cascades work across the system. No message broker. No queue. The filesystem is the bus, and `git log` is the audit trail.
+Agents read and write Markdown + YAML on disk. An inotify-driven reactive engine cascades work across the system. No message broker. No queue. The filesystem is the bus, and `git log` is the audit trail.
 
 ### Multi-lane coordination
 
