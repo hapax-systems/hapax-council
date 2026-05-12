@@ -1,15 +1,15 @@
 ---
 Date: 2026-05-10
-Title: Show HN: 3,000 PRs in 60 Days with Zero Governance Failures
+Title: Show HN: Mechanical Governance for AI Coding Agents at 3,000+ PRs
 Type: post
 Location: /weblog
 Tags: ai-governance, claude-code, autonomous-agents, show-hn
 Slug: show-hn-governance-that-ships
 ---
 
-# Show HN: 3,000 PRs in 60 Days with Zero Governance Failures
+# Show HN: Mechanical Governance for AI Coding Agents at 3,000+ PRs
 
-I run a fleet of autonomous AI agents — Claude Code, Codex, Gemini CLI — building a system 24 hours a day. They've merged over 3,000 pull requests in 60 days. The revert rate is 0.16%.
+I run a fleet of autonomous AI agents — Claude Code, Codex, Gemini CLI — building a system 24 hours a day. In a sampled 60-day launch window, the repo saw 3,041 pull requests opened and 2,871 merged. A title-search audit finds five revert-titled PRs, about 0.16% of opened PRs.
 
 That number should make you suspicious. It makes me suspicious too. So here's how it works.
 
@@ -29,7 +29,7 @@ Prompt-based governance has three fatal flaws:
 
 We built mechanical enforcement. Not guidelines — gates.
 
-The system has five constitutional axioms, weighted 85–100, that constrain every action an agent takes. These aren't prompt decorations. They're enforced by 44 hook scripts that intercept tool calls before execution and block violations at the shell level.
+The system has five constitutional axioms, weighted 85–100, that constrain every action an agent takes. These aren't prompt decorations. In the production council repo, 42 tracked shell hook scripts intercept tool calls before execution and block violations at the shell level. The standalone `hapax-agentgov` package extracts five portable checks for other agent deployments.
 
 Here's what that means concretely:
 
@@ -45,27 +45,25 @@ These hooks run outside the model. The model doesn't get to evaluate whether the
 
 ## The Data
 
-Here's what 60 days of mechanically enforced governance produces:
+Here's what the sampled 60-day launch window produced:
 
 | Metric | Value |
 |--------|-------|
-| Total pull requests | 3,034 |
-| Merged | 2,869 |
-| Reverts | 5 |
-| Revert rate | 0.16% |
-| Days | 60 |
-| PRs per day | ~48 |
+| Window | 2026-03-12 through 2026-05-10 |
+| Pull requests opened | 3,041 |
+| Pull requests merged | 2,871 |
+| Revert-titled PRs | 5 |
+| Revert-title rate | 0.16% of opened PRs |
+| Opened PRs per day | ~51 |
 | Human operators | 1 |
-| Concurrent agent sessions | up to 12 |
-| Hook scripts | 44 |
+| Council shell hook scripts | 42 |
+| Portable agentgov checks | 5 |
 | Constitutional axioms | 5 |
-| Test files | 2,158 |
-| Refused publication surfaces | 12 |
-| Refusal briefs (documented) | 48 |
+| Refusal briefs (markdown) | 47 |
 
-The revert rate deserves scrutiny. Five reverts in 3,034 PRs. All five were audio routing changes where the live system behaved differently from the test environment. None were governance failures — they were domain-specific integration surprises that couldn't be caught by pre-merge testing alone.
+The revert metric deserves scrutiny. This is a title-search audit, not a root-cause audit. The five titles include audio routing, Logos overlay, and Reverie/service-dependency follow-ups, so I am making the narrower claim: five revert-titled PRs in 3,041 opened PRs during the sampled window.
 
-Zero reverts were caused by: agents merging broken code, agents pushing to the wrong branch, agents committing secrets, agents bypassing review, or agents doing something they were told not to do.
+The point is not that the system never changes course. It changes course constantly. The point is that the governance failures people fear most — agents pushing to the wrong branch, committing secrets, bypassing review, or continuing after a mechanical block — are handled below the model's preferences.
 
 The hook system didn't just prevent failures — it shaped agent behavior. When an agent hits a `no-stale-branches` block, it doesn't retry the same command. It reads the error, identifies the blocking branches, and cleans them up. The constraint becomes a workflow. After 3,000 PRs, the agents have internalized the governance patterns so thoroughly that hooks fire less frequently now than they did in week one.
 
@@ -77,7 +75,7 @@ An agent in this system cannot push code without running tests. Not "shouldn't" 
 
 This is a fundamentally different trust model than "we prompted the AI to be careful." It's closer to how we trust bridges: not because the engineer promised to be careful, but because the physics of steel and concrete enforce load limits whether the engineer is paying attention or not.
 
-The system also documents what it refuses to do. We maintain 48 refusal briefs — formal records of platforms and actions the system has evaluated and declined. Reddit, Discord, LinkedIn, Twitter/X, Wikipedia — each has a documented refusal with the specific axiom violation that prevents engagement. The system doesn't silently ignore these platforms. It records *why* it refuses, so the refusal is auditable.
+The system also documents what it refuses to do. We maintain 47 markdown refusal briefs — formal records of platforms and actions the system has evaluated and declined. Reddit, Discord, LinkedIn, Twitter/X, Wikipedia — each has a documented refusal with the specific axiom violation that prevents engagement. The system doesn't silently ignore these platforms. It records *why* it refuses, so the refusal is auditable.
 
 The refused surfaces list is arguably more interesting than the capabilities list. A system that can explain what it won't do, and why, is a system you can reason about.
 
@@ -91,11 +89,17 @@ No prompt engineering required. No model-specific tuning. The enforcement layer 
 
 Repository: [github.com/hapax-systems/agentgov](https://github.com/hapax-systems/agentgov)
 
+Full system: [github.com/hapax-systems/hapax-council](https://github.com/hapax-systems/hapax-council)
+
+Public landing page: [hapax.omg.lol](https://hapax.omg.lol/)
+
+Support page: [hapax.omg.lol/support](https://hapax.omg.lol/support)
+
 ## Live Evidence
 
 The production system is built to publish live evidence, but public live egress is readiness-gated. Right now the YouTube/OBS gate is red, so this post does not claim an active livestream as evidence.
 
-The same governed fleet builds the production compositor, camera pipeline, audio routing, overlay system, publication bus, and GitHub workflow. When the public egress gate is green, the live channel becomes current evidence again; until then, the repository, PyPI package, weblog, and CI history are the public record.
+The same governed fleet builds the production compositor, camera pipeline, audio routing, overlay system, publication bus, and GitHub workflow. When the public egress gate is green, [Legomena Live](https://www.youtube.com/@LegomenaLive) becomes current evidence again; until then, the repository, PyPI package, weblog, and CI history are the public record.
 
 ## What's Next
 

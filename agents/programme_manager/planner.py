@@ -275,9 +275,12 @@ class ProgrammePlanner:
             '"hapax"`.\n'
             "- Segmented-content programmes must satisfy source readiness before "
             "composition: include required `role_contract` fields such as "
-            "`tier_criteria`/`ordering_criterion`, use real source evidence refs, "
-            "write concrete segment beats rather than template/example language, "
-            "and bind layout intents to content evidence with "
+            "`tier_criteria`/`ordering_criterion`; for lecture also include "
+            "`teaching_objective`, `demonstration_object`, and `worked_example`. "
+            "Use real source evidence refs, write concrete segment beats rather "
+            "than template/example language, never copy `narrative_beat_template` "
+            "or placeholder examples such as `{topic}`, and bind layout intents "
+            "to content evidence with "
             "`default_static_success_allowed: false`."
         )
 
