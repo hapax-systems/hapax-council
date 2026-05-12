@@ -529,10 +529,16 @@ def _publish_rendered_layout_state(
     try:
         from agents.studio_compositor import active_wards
 
-        active_wards.publish(active_union)
+        published_active_union = active_union
+        if not published_active_union:
+            fallback_ids = active_wards.visible_ward_property_ids()
+            if fallback_ids:
+                published_active_union = tuple(fallback_ids)
+
+        active_wards.publish(published_active_union)
         active_wards.publish_current_layout_state(
             layout_name=layout_name_text,
-            active_ward_ids=active_union,
+            active_ward_ids=published_active_union,
         )
     except Exception:
         log.debug("rendered layout state publish failed", exc_info=True)

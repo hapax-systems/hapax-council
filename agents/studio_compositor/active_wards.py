@@ -48,6 +48,7 @@ log = logging.getLogger(__name__)
 
 ACTIVE_WARDS_FILE: Path = Path("/dev/shm/hapax-compositor/active_wards.json")
 CURRENT_LAYOUT_STATE_FILE: Path = Path("/dev/shm/hapax-compositor/current-layout-state.json")
+WARD_PROPERTIES_FILE: Path = Path("/dev/shm/hapax-compositor/ward-properties.json")
 ACTIVE_WARDS_STALE_S: float = 5.0
 
 
@@ -125,6 +126,31 @@ def publish_current_layout_state(
         log.debug("current layout state publish failed", exc_info=True)
 
 
+def visible_ward_property_ids(*, path: Path | None = None) -> list[str]:
+    """Return ward IDs marked visible in the ward-properties snapshot.
+
+    This is an observability fallback for layouts whose render readbacks are
+    suppressed or not wired through a SourceRegistry surface yet.
+    """
+    if path is None:
+        path = WARD_PROPERTIES_FILE
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    wards = payload.get("wards") if isinstance(payload, dict) else None
+    if not isinstance(wards, dict):
+        return []
+    active_ids: list[str] = []
+    for ward_id, props in wards.items():
+        if not isinstance(ward_id, str) or not ward_id:
+            continue
+        if isinstance(props, dict) and props.get("visible") is False:
+            continue
+        active_ids.append(ward_id)
+    return sorted(set(active_ids))
+
+
 def read(*, path: Path | None = None, stale_s: float = ACTIVE_WARDS_STALE_S) -> list[str]:
     """Return the current active-ward list.
 
@@ -157,7 +183,9 @@ __all__ = [
     "ACTIVE_WARDS_FILE",
     "ACTIVE_WARDS_STALE_S",
     "CURRENT_LAYOUT_STATE_FILE",
+    "WARD_PROPERTIES_FILE",
     "publish_current_layout_state",
     "publish",
     "read",
+    "visible_ward_property_ids",
 ]
