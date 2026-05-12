@@ -265,6 +265,7 @@ nodes:
     params:
       capture_source: hapax-private
       stream.capture.sink: true
+      node.autoconnect: false
       node.dont-fallback: true
       node.dont-reconnect: true
       node.dont-move: true
@@ -309,6 +310,7 @@ nodes:
     params:
       capture_source: hapax-notification-private
       stream.capture.sink: true
+      node.autoconnect: false
       node.dont-fallback: true
       node.dont-reconnect: true
       node.dont-move: true
@@ -709,23 +711,40 @@ nodes:
       count: 2
       positions: [FL, FR]
     params:
+      audit_classification: external-hardware-optional
       fallback_to_l12_is_runtime_drift: true
+      optional_branch_state_space: present absent inactive reconnecting failed
+      absent_state: absent
+      node.autoconnect: false
+      node.dont-fallback: true
+      node.dont-reconnect: true
+      node.dont-move: true
+      node.linger: true
+      state.restore: false
+      stream.dont-remix: true
+      fail_closed_on_target_absent: true
 
   - id: m8-loudnorm
     kind: filter_chain
     pipewire_name: hapax-m8-loudnorm
     industrial_name: chain.m8.loudnorm
-    description: M8 instrument loudnorm routed directly to livestream tap, bypassing L-12
-    target_object: hapax-livestream-tap
+    description: M8 instrument loudnorm exported on AUX10/AUX11 for reconciler-owned L-12 return
+    target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
     channels:
       count: 2
-      positions: [FL, FR]
+      positions: [AUX10, AUX11]
     chain_kind: loudnorm
     limit_db: -18.0
     release_s: 0.20
     params:
-      bypasses_l12: true
-      playback_target: hapax-livestream-tap
+      audit_classification: external-hardware-optional
+      no_direct_livestream_tap: true
+      node.autoconnect: false
+      allowed_l12_return_direction: broadcast
+      playback_positions: AUX10 AUX11
+      playback_target: l12-usb-return
+      reconciler_owned_handoff: true
+      broadcast_forward_path: hapax-m8-loudnorm-playback l12-usb-return hapax-livestream-tap
 
   - id: polyend-instrument-source
     kind: alsa_source
@@ -832,6 +851,12 @@ edges:
   # runtime artifact explicitly instead of encoding it as intended graph.
   - source: m8-usb-source
     target: m8-instrument-capture
+
+  - source: m8-instrument-capture
+    target: m8-loudnorm
+
+  - source: m8-loudnorm
+    target: l12-usb-return
 
   # PR A — hapax-pc-router fork (Phase 3 PC volume isolation foundation).
   # Both subscribers read pc-router's monitor port. Dormant in PR A

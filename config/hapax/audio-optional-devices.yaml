@@ -1,0 +1,31 @@
+schema_version: 1
+description: >
+  Optional audio graph branches whose hardware targets may be absent during
+  normal operation. These branches must fail closed and must not depend on
+  WirePlumber autoconnect retries while absent.
+state_path: /run/user/1000/hapax-audio/optional-devices.json
+allowed_states:
+  - present
+  - absent
+  - inactive
+  - reconnecting
+  - failed
+branches:
+  - id: m8-instrument-capture
+    node_name: hapax-m8-instrument-capture
+    target_object: alsa_input.usb-Dirtywave_M8_16558390-02.analog-stereo
+    source_config: config/pipewire/hapax-m8-loudnorm.conf
+    fail_closed_when_absent: true
+    autoconnect: false
+  - id: private-monitor-output
+    node_name: hapax-private-playback
+    target_object: alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output
+    source_config: config/pipewire/hapax-private-monitor-bridge.conf
+    fail_closed_when_absent: true
+    autoconnect: false
+  - id: notification-private-monitor-output
+    node_name: hapax-notification-private-playback
+    target_object: alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output
+    source_config: config/pipewire/hapax-private-monitor-bridge.conf
+    fail_closed_when_absent: true
+    autoconnect: false

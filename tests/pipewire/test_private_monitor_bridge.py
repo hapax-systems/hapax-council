@@ -77,6 +77,7 @@ def test_playback_streams_are_fail_closed_when_s4_is_absent() -> None:
     for node_name in ("hapax-private-playback", "hapax-notification-private-playback"):
         playback = _node_block(active, node_name)
         assert "node.dont-fallback = true" in playback
+        assert "node.autoconnect = false" in playback
         assert "node.dont-reconnect = true" in playback
         assert "node.dont-move = true" in playback
         assert "node.linger = true" in playback
