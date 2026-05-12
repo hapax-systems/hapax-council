@@ -939,6 +939,22 @@ class FlashScheduler:
 
 def _ensure_base_cairo_sources(compositor: Any) -> None:
     """Create renderer state expected by the base cairooverlay draw path."""
+    from .overlay import sierpinski_base_overlay_enabled
+
+    if not sierpinski_base_overlay_enabled():
+        for attr in ("_sierpinski_loader", "_sierpinski_renderer"):
+            source = getattr(compositor, attr, None)
+            if source is not None and hasattr(source, "stop"):
+                try:
+                    source.stop()
+                except Exception:
+                    log.debug("Failed to stop %s after Sierpinski base overlay disable", attr)
+            setattr(compositor, attr, None)
+        compositor._geal_source = None
+        _publish_fx_runtime_feature("sierpinski_base_overlay", False)
+        log.info("Sierpinski/GEAL base overlay disabled by HAPAX_SIERPINSKI_BASE_OVERLAY_ENABLED")
+        return
+
     if getattr(compositor, "_sierpinski_loader", None) is None:
         from .sierpinski_loader import SierpinskiLoader
 
@@ -957,6 +973,7 @@ def _ensure_base_cairo_sources(compositor: Any) -> None:
         compositor._geal_source = GealCairoSource(
             _sierpinski_geom_provider=compositor._sierpinski_renderer._source,
         )
+    _publish_fx_runtime_feature("sierpinski_base_overlay", True)
 
 
 def _build_overlay_only_chain(
