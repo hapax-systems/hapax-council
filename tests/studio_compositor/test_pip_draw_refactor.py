@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import cairo
 
+from agents.studio_compositor import fx_chain
 from agents.studio_compositor.fx_chain import (
     blit_scaled,
     clear_blit_readbacks,
@@ -114,6 +115,46 @@ def test_blit_scaled_honors_opacity() -> None:
     assert 126 <= r <= 130
     assert 126 <= g <= 130
     assert 126 <= b <= 130
+
+
+def test_layout_composite_interval_reuses_cache_across_signature_change(monkeypatch) -> None:
+    fx_chain.clear_layout_composite_cache()
+    cached = _solid_surface(20, 20, (1.0, 0.0, 0.0))
+    monkeypatch.setattr(fx_chain.time, "monotonic", lambda: 100.0)
+    fx_chain._store_layout_composite("post_fx", ("old",), cached)
+
+    canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, 20, 20)
+    cr = _paint_black(canvas)
+    monkeypatch.setattr(fx_chain.time, "monotonic", lambda: 100.05)
+
+    assert fx_chain._paint_cached_layout_composite(
+        cr,
+        stage="post_fx",
+        signature=("new",),
+        min_interval_s=0.1,
+    )
+    canvas.flush()
+    assert _pixel(canvas, 10, 10)[:3] == (0xFF, 0x00, 0x00)
+
+
+def test_layout_composite_interval_expires_before_signature_change(monkeypatch) -> None:
+    fx_chain.clear_layout_composite_cache()
+    cached = _solid_surface(20, 20, (1.0, 0.0, 0.0))
+    monkeypatch.setattr(fx_chain.time, "monotonic", lambda: 100.0)
+    fx_chain._store_layout_composite("post_fx", ("old",), cached)
+
+    canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, 20, 20)
+    cr = _paint_black(canvas)
+    monkeypatch.setattr(fx_chain.time, "monotonic", lambda: 100.2)
+
+    assert not fx_chain._paint_cached_layout_composite(
+        cr,
+        stage="post_fx",
+        signature=("new",),
+        min_interval_s=0.1,
+    )
+    canvas.flush()
+    assert _pixel(canvas, 10, 10)[:3] == (0x00, 0x00, 0x00)
 
 
 # ── pip_draw_from_layout ────────────────────────────────────────────

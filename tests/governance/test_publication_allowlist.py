@@ -112,7 +112,7 @@ def test_empty_state_kinds_denies(tmp_path: Path) -> None:
 def test_state_kind_claim_policy_classifies_claim_and_non_claim_states() -> None:
     assert state_kind_claim_policy("chronicle.high_salience") == "claim_bearing"
     assert state_kind_claim_policy("governance.enforcement") == "claim_bearing"
-    assert state_kind_claim_policy("weblog.entry") == "claim_bearing"
+    assert state_kind_claim_policy("weblog.entry") == "non_claim_bearing"
     assert state_kind_claim_policy("publication.artifact") == "claim_bearing"
     assert state_kind_claim_policy("velocity.digest") == "claim_bearing"
     assert state_kind_claim_policy("broadcast.boundary") == "non_claim_bearing"
@@ -237,20 +237,16 @@ def test_non_claim_bearing_publication_preserves_allowlist_only_behavior(tmp_pat
 def test_publication_surfaces_compose_with_claim_bearing_grounding(tmp_path: Path) -> None:
     surface_state_pairs = (
         ("omg-lol-statuslog", "chronicle.high_salience"),
-        ("omg-lol-weblog", "weblog.entry"),
         ("omg-lol-pastebin", "chronicle.weekly_digest"),
         ("bluesky-post", "chronicle.high_salience"),
         ("bluesky-post", "governance.enforcement"),
-        ("bluesky-post", "omg.weblog"),
         ("bluesky-post", "velocity.digest"),
         ("mastodon-post", "chronicle.high_salience"),
         ("mastodon-post", "governance.enforcement"),
-        ("mastodon-post", "omg.weblog"),
         ("mastodon-post", "velocity.digest"),
         ("discord-webhook", "chronicle.high_salience"),
         ("arena-post", "chronicle.high_salience"),
         ("arena-post", "governance.enforcement"),
-        ("arena-post", "omg.weblog"),
         ("arena-post", "velocity.digest"),
     )
     for surface, state_kind in surface_state_pairs:

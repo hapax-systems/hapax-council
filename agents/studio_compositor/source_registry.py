@@ -13,6 +13,7 @@ Part of the compositor source-registry epic PR 1. See
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
@@ -22,6 +23,30 @@ if TYPE_CHECKING:
     from shared.compositor_model import SourceSchema
 
 log = logging.getLogger(__name__)
+
+_DEFAULT_NON_SUBSTRATE_SHM_RGBA_MAX_AGE_S = 30.0
+
+
+def _parse_shm_rgba_max_age_s(
+    raw: object,
+    *,
+    source_id: str,
+    origin: str,
+    fallback: float | None,
+) -> float | None:
+    if raw in (None, ""):
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        log.warning(
+            "Invalid shm_rgba max_age_s for source %s from %s: %r; using %r",
+            source_id,
+            origin,
+            raw,
+            fallback,
+        )
+        return fallback
 
 
 class UnknownSourceError(KeyError):
@@ -201,5 +226,24 @@ class SourceRegistry:
             is_substrate = source.id in SUBSTRATE_SOURCE_REGISTRY or bool(
                 source.params.get("is_substrate")
             )
-            return ShmRgbaReader(Path(shm_path), is_substrate=is_substrate)
+            max_age_origin = "source params"
+            max_age_raw = source.params.get("max_age_s", source.params.get("max_age_seconds"))
+            fallback_max_age_s = None if is_substrate else _DEFAULT_NON_SUBSTRATE_SHM_RGBA_MAX_AGE_S
+            if max_age_raw is None and not is_substrate:
+                max_age_origin = "HAPAX_SHM_RGBA_MAX_AGE_S"
+                max_age_raw = os.environ.get(
+                    "HAPAX_SHM_RGBA_MAX_AGE_S",
+                    str(_DEFAULT_NON_SUBSTRATE_SHM_RGBA_MAX_AGE_S),
+                )
+            max_age_s = _parse_shm_rgba_max_age_s(
+                max_age_raw,
+                source_id=source.id,
+                origin=max_age_origin,
+                fallback=fallback_max_age_s,
+            )
+            return ShmRgbaReader(
+                Path(shm_path),
+                is_substrate=is_substrate,
+                max_age_s=max_age_s,
+            )
         raise UnknownBackendError(f"unknown backend: {source.backend}")
