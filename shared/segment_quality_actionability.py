@@ -295,7 +295,7 @@ def forbidden_layout_authority_fields(value: Any, path: str = "$") -> list[dict[
 
 
 _TIER_RE = re.compile(
-    r"^place\s+(?P<target>[^.?!]{2,80}?)\s+in\s+(?P<tier>[sabcd])-tier\b",
+    r"^place\s+(?P<target>[^.?!]{2,80}?)\s+in\s+(?:the\s+)?(?P<tier>[sabcd])-tier\b",
     re.IGNORECASE,
 )
 _COUNTDOWN_RE = re.compile(r"\b(?:#|number\s+)(?P<number>\d{1,2})\s*(?:is|:)", re.IGNORECASE)

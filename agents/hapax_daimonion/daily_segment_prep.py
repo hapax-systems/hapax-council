@@ -319,6 +319,8 @@ _ROLE_VISUAL_HOOKS: dict[str, str] = {
         "  Without ordering criteria, the segment FAILS source readiness validation.\n"
         "  MANDATORY: every ranking/body beat must include at least one exact\n"
         "  tier placement phrase: 'Place [item] in [S/A/B/C/D]-tier'.\n"
+        "  The item must be named in that sentence. Do not write 'Place this',\n"
+        "  'Place it', or 'Place the case'; those pronoun placements fail.\n"
         "  Generic history, summary, or analysis without a placement is not a\n"
         "  responsible tier-list beat and will be quarantined.\n"
         "  Items appear on the tier chart only after runtime readback confirms\n"
@@ -532,8 +534,8 @@ def _build_full_segment_prompt(
         "---\n"
         f"{seed}\n"
         "---\n\n"
-        "Output ONLY the JSON array. No preamble, no markdown fences, "
-        "no explanation. Start with [ and end with ]."
+        "Output ONLY the JSON object in the example format. No preamble, "
+        "no markdown fences, no explanation. Start with { and end with }."
     )
 
 
@@ -756,8 +758,10 @@ def _parse_segment_generation(raw: str) -> tuple[list[str], dict[str, Any] | Non
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
-        log.warning("segment prep: LLM response is not valid JSON")
-        return [], None
+        parsed = _extract_json_payload(text)
+        if parsed is None:
+            log.warning("segment prep: LLM response is not valid JSON")
+            return [], None
 
     model_contract: dict[str, Any] | None = None
     if isinstance(parsed, dict):
@@ -803,6 +807,22 @@ def _parse_segment_generation(raw: str) -> tuple[list[str], dict[str, Any] | Non
         if text:
             beats.append(text)
     return beats, model_contract
+
+
+def _extract_json_payload(text: str) -> Any | None:
+    """Return the first JSON object/array embedded in a model response."""
+
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char not in "[{":
+            continue
+        try:
+            parsed, _end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict | list):
+            return parsed
+    return None
 
 
 def _build_seed(programme: Any) -> str:
@@ -901,6 +921,21 @@ _TIER_PLACEMENT_ACTION_DIRECTION_RE = re.compile(
     r"\b(?:place|placing|assign|slot|promote|demote)\b",
     re.IGNORECASE,
 )
+_SCRIPT_TIER_PLACEMENT_RE = re.compile(
+    r"(?:^|(?<=[.!?])\s+)place\s+(?P<target>[^.?!]{2,80}?)\s+in\s+"
+    r"(?:the\s+)?(?P<tier>[sabcd])-tier\b",
+    re.IGNORECASE,
+)
+_PRONOUN_TIER_PLACEMENT_RE = re.compile(
+    r"\b(?:we\s+place\s+(?:this(?:\s+failure)?|it|the\s+case)|"
+    r"(?:this(?:\s+failure)?|it|the\s+case)\s+is\s+placed)\s+in\s+"
+    r"(?:the\s+)?(?P<tier>[sabcd])-tier\b",
+    re.IGNORECASE,
+)
+_QUOTED_TARGET_RE = re.compile(r"['\"](?P<target>[^'\"]{2,80})['\"]")
+_BEAT_EVIDENCE_REF_RE = re.compile(
+    r"\b(?P<ref>(?:vault|rag|packet|receipt|profile|media|source):[^\s,;)\]]+)"
+)
 
 
 def _tier_list_placement_violations(
@@ -963,6 +998,96 @@ def _with_tier_list_placement_gate(
     if isinstance(runtime_validation, dict):
         runtime_validation["ok"] = False
     return gated
+
+
+def _repair_tier_list_placement_phrases(script: list[str]) -> list[str]:
+    """Make pronoun tier placements explicit enough for runtime actionability."""
+
+    repaired: list[str] = []
+    known_placements: dict[str, str] = {}
+    for beat in script:
+        placement_matches = list(_SCRIPT_TIER_PLACEMENT_RE.finditer(beat))
+        if placement_matches:
+            repaired.append(beat)
+            for match in placement_matches:
+                target = match.group("target").strip()
+                tier = match.group("tier").upper()
+                if target and tier:
+                    known_placements[target] = tier
+            continue
+        placement = _PRONOUN_TIER_PLACEMENT_RE.search(beat)
+        if placement is not None:
+            quoted_targets = [
+                match.group("target").strip()
+                for match in _QUOTED_TARGET_RE.finditer(beat)
+                if match.group("target").strip()
+            ]
+            if quoted_targets:
+                tier = placement.group("tier").upper()
+                target = quoted_targets[-1]
+                known_placements[target] = tier
+                repaired.append(
+                    f"{beat} Place {target} in {tier}-tier under the stated source criteria."
+                )
+                continue
+        referenced = [
+            (target, tier)
+            for target, tier in known_placements.items()
+            if re.search(rf"\b{re.escape(target)}\b", beat, re.IGNORECASE)
+        ]
+        if not referenced:
+            repaired.append(beat)
+            continue
+        suffix = " ".join(
+            f"Place {target} in {tier}-tier under the stated source criteria."
+            for target, tier in referenced[:2]
+        )
+        repaired.append(f"{beat} {suffix}")
+    return repaired
+
+
+def _source_label_from_ref(ref: str) -> str:
+    """Convert a content evidence ref into a speakable citation target."""
+
+    label = ref.split(":", 1)[-1].rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    words = [part for part in re.split(r"[^A-Za-z0-9]+", label) if part]
+    if not words:
+        return "the cited source"
+    normalized = [
+        "HN" if word.lower() == "hn" else word.upper() if word.isupper() else word.title()
+        for word in words
+    ]
+    return " ".join(normalized)
+
+
+def _has_responsible_visible_trigger(beat: str) -> bool:
+    alignment = validate_segment_actionability([beat], ["repair visibility trigger"])
+    return any(
+        isinstance(intent, dict) and intent.get("kind") != "spoken_argument"
+        for declaration in alignment.get("beat_action_intents", []) or []
+        for intent in declaration.get("intents", []) or []
+    )
+
+
+def _repair_source_visible_beats(script: list[str], segment_beats: list[str]) -> list[str]:
+    """Append a real source-citation trigger when a beat would be spoken-only."""
+
+    repaired: list[str] = []
+    last_ref = ""
+    for index, beat in enumerate(script):
+        direction = segment_beats[index] if index < len(segment_beats) else ""
+        refs = [
+            match.group("ref").rstrip(".") for match in _BEAT_EVIDENCE_REF_RE.finditer(direction)
+        ]
+        if refs:
+            last_ref = refs[0]
+        source_ref = refs[0] if refs else last_ref
+        if not source_ref or _has_responsible_visible_trigger(beat):
+            repaired.append(beat)
+            continue
+        label = _source_label_from_ref(source_ref)
+        repaired.append(f"{beat} According to {label}, this source changes the visible obligation.")
+    return repaired
 
 
 def _refine_script(
@@ -1281,16 +1406,30 @@ def prep_segment(
         )
         return None
 
-    # Pad or truncate to match beat count
+    # Align the accepted script with the beat count. Blank padding produces
+    # impossible spoken-only beats, so a shorter model response narrows the
+    # planned beat list to the blocks the model actually authored.
     if len(script) < len(beats):
         log.warning(
-            "prep_segment: script has %d blocks but %d beats; padding",
+            "prep_segment: script has %d blocks but %d beats; trimming beat plan",
             len(script),
             len(beats),
         )
-        script.extend([""] * (len(beats) - len(script)))
+        beats = list(beats[: len(script)])
+        source_hashes = _source_hashes_from_fields(
+            programme_id=prog_id,
+            role=role,
+            topic=topic,
+            segment_beats=[str(item) for item in beats],
+            seed_sha256=_sha256_text(seed),
+            prompt_sha256=_sha256_text(prompt),
+        )
     elif len(script) > len(beats):
         script = script[: len(beats)]
+
+    if role == "tier_list":
+        script = _repair_tier_list_placement_phrases(script)
+    script = _repair_source_visible_beats(script, [str(item) for item in beats])
 
     avg_chars = sum(len(b) for b in script) / max(len(script), 1)
     log.info(

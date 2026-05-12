@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -109,6 +110,13 @@ _ROLE_CONTRACT_KEYS = frozenset(
         "demonstration_object",
         "worked_example",
     }
+)
+_GENERIC_STAGE_BEAT_RE = re.compile(
+    r"^\s*(?P<phase>hook|opening|intro|motivation|framing|main[_ -]?points?|body|"
+    r"synthesis|questions?|recap|closing|close)\s*:\s*"
+    r"(?:introduce|explain|define|present|connect|invite|recap|summari[sz]e|"
+    r"land|set\s+context|discuss|outline|tease)\b",
+    re.IGNORECASE,
 )
 
 
@@ -279,8 +287,10 @@ class ProgrammePlanner:
             "`teaching_objective`, `demonstration_object`, and `worked_example`. "
             "Use real source evidence refs, write concrete segment beats rather "
             "than template/example language, never copy `narrative_beat_template` "
-            "or placeholder examples such as `{topic}`, and bind layout intents "
-            "to content evidence with "
+            "or placeholder examples such as `{topic}`, replace generic stage "
+            "beats like `hook: Introduce`, `motivation: Explain`, or "
+            "`main_points: Present` with source-bound beats that name the "
+            "object/source/consequence, and bind layout intents to content evidence with "
             "`default_static_success_allowed: false`."
         )
 
@@ -438,7 +448,140 @@ def _normalize_role_contract_shape(plan_obj: dict[str, Any]) -> None:
                     normalized.setdefault(key, value)
         if normalized:
             content["role_contract"] = normalized
+        _repair_generic_stage_segment_beats(programme, content)
         _normalize_layout_intent_evidence_refs(content)
+
+
+def _first_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in (
+            "source_ref",
+            "id",
+            "title",
+            "claim",
+            "consequence",
+            "question_text",
+            "text",
+        ):
+            text = _first_text(value.get(key))
+            if text:
+                return text
+        return ""
+    if isinstance(value, list | tuple):
+        for item in value:
+            text = _first_text(item)
+            if text:
+                return text
+    return ""
+
+
+def _contract_text(role_contract: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        text = _first_text(role_contract.get(key))
+        if text:
+            return text
+    return ""
+
+
+def _repair_generic_stage_segment_beats(programme: dict[str, Any], content: dict[str, Any]) -> None:
+    beats = content.get("segment_beats")
+    role_contract = content.get("role_contract")
+    if not isinstance(beats, list) or not isinstance(role_contract, dict):
+        return
+    source_refs = _evidence_refs_from_value(
+        [
+            content.get("source_refs"),
+            content.get("evidence_refs"),
+            content.get("source_packet_refs"),
+            content.get("asset_attributions"),
+            role_contract,
+        ]
+    )
+    source_ref = source_refs[0] if source_refs else ""
+    if not source_ref:
+        return
+    role = str(programme.get("role") or "")
+    topic = (
+        _first_text(content.get("declared_topic"))
+        or _first_text(content.get("narrative_beat"))
+        or _contract_text(role_contract, "event_object")
+        or "the segment object"
+    )
+    event_object = _contract_text(role_contract, "event_object") or topic
+    audience_job = _contract_text(role_contract, "audience_job") or "inspect the source consequence"
+    payoff = _contract_text(role_contract, "payoff") or "make the consequence auditable"
+    role_mechanic = (
+        _contract_text(role_contract, "role_live_bit_mechanic") or "source-backed live bit"
+    )
+
+    if role == "lecture":
+        teaching_objective = _contract_text(role_contract, "teaching_objective") or topic
+        demonstration_object = _contract_text(role_contract, "demonstration_object") or event_object
+        worked_example = _contract_text(role_contract, "worked_example") or demonstration_object
+
+        def replacement(phase: str) -> str:
+            phase_key = phase.lower().replace("_", "-").replace(" ", "-")
+            if phase_key in {"hook", "opening", "intro", "motivation"}:
+                return (
+                    f"open {topic} by citing {source_ref} and naming why "
+                    f"{demonstration_object} makes {teaching_objective} inspectable"
+                )
+            if phase_key in {"framing", "body", "main-points", "main-point"}:
+                return (
+                    f"work through {worked_example} from {source_ref} and compare it "
+                    f"against {demonstration_object}"
+                )
+            if phase_key in {"questions", "question"}:
+                return (
+                    f"ask What's your pick? after {source_ref} changes the audience job: "
+                    f"{audience_job}"
+                )
+            return f"resolve {topic} by citing {source_ref}, tying {worked_example} to {payoff}"
+
+    else:
+        role_object = (
+            _contract_text(
+                role_contract,
+                "tier_criteria",
+                "ordering_criterion",
+                "bounded_claim",
+                "media_ref",
+                "bottom_payoff",
+                "subject_context",
+            )
+            or event_object
+        )
+
+        def replacement(phase: str) -> str:
+            phase_key = phase.lower().replace("_", "-").replace(" ", "-")
+            if phase_key in {"hook", "opening", "intro", "motivation"}:
+                return (
+                    f"open {topic} through {source_ref}; make {role_object} visible as "
+                    f"{role_mechanic}"
+                )
+            if phase_key in {"questions", "question"}:
+                return f"ask What's your pick? after {source_ref} changes {audience_job}"
+            return (
+                f"use {source_ref} to compare {role_object} against {event_object} and "
+                f"land {payoff}"
+            )
+
+    repaired: list[Any] = []
+    changed = False
+    for beat in beats:
+        if not isinstance(beat, str):
+            repaired.append(beat)
+            continue
+        match = _GENERIC_STAGE_BEAT_RE.search(beat)
+        if match is None:
+            repaired.append(beat)
+            continue
+        repaired.append(replacement(match.group("phase")))
+        changed = True
+    if changed:
+        content["segment_beats"] = repaired
 
 
 def _evidence_refs_from_value(value: Any) -> list[str]:

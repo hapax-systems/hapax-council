@@ -67,6 +67,13 @@ _SCRIPTLIKE_BEAT_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_GENERIC_STAGE_BEAT_RE = re.compile(
+    r"^\s*(?:hook|opening|intro|motivation|framing|main[_ -]?points?|body|"
+    r"synthesis|questions?|recap|closing|close)\s*:\s*"
+    r"(?:introduce|explain|define|present|connect|invite|recap|summari[sz]e|"
+    r"land|set\s+context|discuss|outline|tease)\b",
+    re.IGNORECASE,
+)
 _TEMPLATE_LEAK_RE = re.compile(
     r"(?:"
     r"\b(?:source candidates from vault \+ rag|source from vault \+ rag|"
@@ -517,6 +524,16 @@ def programme_source_readiness(programme: Any) -> dict[str, Any]:
     if scriptlike_indices:
         violations.append(
             {"reason": "segment_beats_are_scripted_or_human_hostish", "indices": scriptlike_indices}
+        )
+    generic_stage_indices = [
+        index for index, beat in enumerate(beats) if _GENERIC_STAGE_BEAT_RE.search(beat)
+    ]
+    if generic_stage_indices:
+        violations.append(
+            {
+                "reason": "segment_beats_are_generic_stage_directions",
+                "indices": generic_stage_indices,
+            }
         )
     if _TEMPLATE_LEAK_RE.search(combined_raw):
         violations.append({"reason": "programme_narrative_beat_template_leak"})

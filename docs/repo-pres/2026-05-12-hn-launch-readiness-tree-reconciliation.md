@@ -17,7 +17,7 @@ uv run python scripts/hn-launch-systems-readiness --json
 
 Result: `fail`; `ready=false`.
 
-Hard failures in the latest 2026-05-12T15:45Z verification sample:
+Hard failures in the latest 2026-05-12T17:21Z verification sample:
 
 - `compositor_visual_surface`: layout mode is `forcefield`, not Sierpinski.
 - `daimonion_voice_segments`: no completed playback is recorded in
@@ -39,7 +39,7 @@ and soak-citable programme evidence remain unresolved.
 The gate has been volatile across samples, and the latest sample is still
 NO-GO.
 
-The 2026-05-12T15:45Z run still reports `ready=false`, `status=fail`; failures:
+The 2026-05-12T17:21Z run still reports `ready=false`, `status=fail`; failures:
 `compositor_visual_surface`, `daimonion_voice_segments`, `youtube_livestream`,
 and `obs_clean_feed`; warning: `logos_api`.
 
@@ -121,3 +121,31 @@ and `obs_clean_feed`; warning: `logos_api`.
   `narrative_beat_template` leaks. Focused tests passed:
   `uv run pytest tests/programme_manager/test_planner.py -q` -> `41 passed,
   1 warning`; adjacent contract tests passed -> `90 passed, 1 warning`.
+- Segment-prep hardening continued in this PR after controlled scratch runs.
+  Added parse tolerance for embedded JSON objects, source-readiness rejection
+  and repair for generic stage beats, tier-placement detection with optional
+  `the`, tier comparison repair using prior named placements, source-visible
+  repair from beat evidence refs, and short-script beat trimming instead of
+  blank padding. Focused verification now passes:
+  `uv run pytest tests/programme_manager/test_planner.py tests/hapax_daimonion/test_daily_segment_prep_residency.py tests/hapax_daimonion/test_segment_quality_actionability.py -q`
+  -> `134 passed, 1 warning`; ruff and `git diff --check` pass.
+- Fresh controlled segment-prep proofs remain **not loadable**:
+  `/tmp/hapax-hn-segment-prep-proof-20260512T172026Z/2026-05-12/prep-status.json`
+  reached `segmented_count=1`, `saved_count=0` and quarantined on
+  `layout_responsibility_failed`;
+  `/tmp/hapax-hn-segment-prep-proof-20260512T173238Z/2026-05-12/prep-status.json`
+  reached `segmented_count=0`, `saved_count=0` because both planner attempts
+  emitted generic stage beats;
+  `/tmp/hapax-hn-segment-prep-proof-20260512T174434Z/2026-05-12/prep-status.json`
+  reached `segmented_count=1`, `saved_count=0` and quarantined on tier/list
+  placement and layout issues;
+  `/tmp/hapax-hn-segment-prep-proof-20260512T175828Z/2026-05-12/prep-status.json`
+  reached `segmented_count=1`, `saved_count=0` and quarantined on spoken-only
+  lecture layout needs; and
+  `/tmp/hapax-hn-segment-prep-proof-20260512T180950Z/2026-05-12/prep-status.json`
+  reached `segmented_count=1`, `saved_count=0` but moved the terminal blocker
+  to `segment_prep_contract_or_live_event_failed`. Current next blocker:
+  model/deterministic contract materialization for valid `claim_map`,
+  `source_consequence_map`, `actionability_map`, `layout_need_map`,
+  `readback_obligations`, and evidence-backed loop cards, plus live-event
+  temporal/payoff coherence.
