@@ -3,6 +3,7 @@
 import hashlib
 import json
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agents import ingest
@@ -173,6 +174,80 @@ class TestEnrichPayload:
         # Returns the same dict (modified in place)
         assert result is base
         assert result["content_type"] == "note"
+
+
+# ── collection config / schema ───────────────────────────────────────────────
+
+
+class TestCollectionConfig:
+    def test_default_collection_resolution_stays_documents(self):
+        assert ingest.resolve_documents_collection({}) == "documents"
+
+    def test_hapax_rag_collection_env_wins(self):
+        assert (
+            ingest.resolve_documents_collection({"HAPAX_RAG_COLLECTION": "documents_v2"})
+            == "documents_v2"
+        )
+
+    def test_legacy_rag_documents_collection_env_supported(self):
+        assert (
+            ingest.resolve_documents_collection({"RAG_DOCUMENTS_COLLECTION": "documents_shadow"})
+            == "documents_shadow"
+        )
+
+    def test_hapax_rag_collection_takes_precedence_over_legacy_env(self):
+        assert (
+            ingest.resolve_documents_collection(
+                {
+                    "HAPAX_RAG_COLLECTION": "documents_v2",
+                    "RAG_DOCUMENTS_COLLECTION": "documents_shadow",
+                }
+            )
+            == "documents_v2"
+        )
+
+    def test_dedup_key_preserves_default_documents_key(self, tmp_path):
+        path = tmp_path / "doc.md"
+        assert ingest._dedup_key(path, "documents") == str(path)
+
+    def test_dedup_key_scopes_shadow_collections(self, tmp_path):
+        path = tmp_path / "doc.md"
+        assert ingest._dedup_key(path, "documents_v2") == f"documents_v2:{path}"
+
+    def test_ensure_collection_creates_missing_collection_with_vector_size(self):
+        class FakeClient:
+            def __init__(self):
+                self.created = None
+
+            def get_collections(self):
+                return SimpleNamespace(collections=[])
+
+            def create_collection(self, collection_name, vectors_config, **kwargs):
+                self.created = {
+                    "collection_name": collection_name,
+                    "vectors_config": vectors_config,
+                    **kwargs,
+                }
+
+        client = FakeClient()
+        created = ingest.ensure_collection("documents_v2", vector_size=1536, client=client)
+
+        assert created is True
+        assert client.created["collection_name"] == "documents_v2"
+        assert client.created["vectors_config"].size == 1536
+        assert client.created["vectors_config"].distance.name == "COSINE"
+
+    def test_ensure_collection_leaves_existing_collection_alone(self):
+        class FakeClient:
+            def get_collections(self):
+                return SimpleNamespace(collections=[SimpleNamespace(name="documents_v2")])
+
+            def create_collection(self, collection_name, vectors_config, **kwargs):
+                raise AssertionError("create_collection should not be called")
+
+        assert (
+            ingest.ensure_collection("documents_v2", vector_size=768, client=FakeClient()) is False
+        )
 
 
 # ── point_id ─────────────────────────────────────────────────────────────────
@@ -395,6 +470,17 @@ class TestRecordIngested:
         ingest._record_ingested(f, tracker)
         assert tracker[str(f)]["hash"] != old_hash
 
+    def test_shadow_collection_uses_collection_scoped_tracker_key(self, tmp_path):
+        f = tmp_path / "doc.md"
+        f.write_text("hello world")
+        tracker = {}
+
+        ingest._record_ingested(f, tracker, collection="documents_v2")
+
+        assert f"documents_v2:{f}" in tracker
+        assert ingest._should_skip(f, tracker, collection="documents_v2") is True
+        assert ingest._should_skip(f, tracker, collection="documents") is False
+
 
 # ── _file_hash ───────────────────────────────────────────────────────────────
 
@@ -558,6 +644,36 @@ class TestBulkIngestDedup:
         ingest.bulk_ingest(force=False)
 
         assert str(f) not in saved_tracker
+
+    def test_dry_run_respects_max_files_without_ingesting(self, tmp_path, monkeypatch):
+        watch_dir = tmp_path / "docs"
+        watch_dir.mkdir()
+        (watch_dir / "a.md").write_text("a")
+        (watch_dir / "b.md").write_text("b")
+
+        monkeypatch.setattr(
+            ingest,
+            "CFG",
+            ingest.Config(
+                watch_dirs=[watch_dir],
+                supported_extensions={".md"},
+            ),
+        )
+
+        mock_ingest = MagicMock()
+        monkeypatch.setattr(ingest, "ingest_file", mock_ingest)
+        mock_save = MagicMock()
+        monkeypatch.setattr(ingest, "_save_dedup_tracker", mock_save)
+        mock_retries = MagicMock()
+        monkeypatch.setattr(ingest, "process_retries", mock_retries)
+        monkeypatch.setattr(ingest, "_load_dedup_tracker", lambda: {})
+
+        total = ingest.bulk_ingest(max_files=1, dry_run=True)
+
+        assert total == 1
+        mock_ingest.assert_not_called()
+        mock_save.assert_not_called()
+        mock_retries.assert_not_called()
 
 
 import pytest

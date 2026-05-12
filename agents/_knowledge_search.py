@@ -43,16 +43,17 @@ def _inventory_must_not_conditions() -> list:
 def search_documents(
     query: str,
     *,
+    collection: str = "documents",
     source_service: str | None = None,
     content_type: str | None = None,
     days_back: int | None = None,
     limit: int = 10,
     include_inventory: bool = False,
 ) -> str:
-    """Semantic search over the documents collection."""
+    """Semantic search over a documents-compatible collection."""
     with _rag_tracer.start_as_current_span("rag.search") as span:
         span.set_attribute("rag.query", query[:200])
-        span.set_attribute("rag.collection", "documents")
+        span.set_attribute("rag.collection", collection)
         span.set_attribute("rag.top_k", limit)
         try:
             from qdrant_client.models import FieldCondition, Filter, MatchValue, Range
@@ -82,7 +83,7 @@ def search_documents(
             query_limit = limit if include_inventory else limit * _INVENTORY_OVERFETCH_FACTOR
 
             results = client.query_points(
-                "documents",
+                collection,
                 query=query_vec,
                 query_filter=query_filter,
                 limit=query_limit,
