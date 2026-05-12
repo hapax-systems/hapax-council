@@ -29,3 +29,10 @@ def test_mediamtx_read_timeout_covers_async_rtmp_connect_window() -> None:
     assert config["rtmp"] is True
     assert config["rtmpAddress"] == "127.0.0.1:1935"
     assert config["readTimeout"] == "60s"
+
+
+def test_mediamtx_exposes_local_hls_for_studio_readiness() -> None:
+    config = _config()
+
+    assert config["hls"] is True
+    assert config["hlsAddress"] == "127.0.0.1:8888"

@@ -12,7 +12,10 @@ rtmpAddress: 127.0.0.1:1935
 readTimeout: 60s
 writeTimeout: 10s
 
-hls: no
+# Local-only HLS preview/readiness endpoint. The studio path is available at
+# http://127.0.0.1:8888/studio/index.m3u8 while an RTMP publisher is active.
+hls: yes
+hlsAddress: 127.0.0.1:8888
 webrtc: no
 srt: no
 api: no
