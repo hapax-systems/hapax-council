@@ -30,6 +30,8 @@ from typing import Any
 
 from agents.studio_compositor.youtube_description import (
     assemble_description,
+    description_text_has_private_marker,
+    sanitize_description_text,
     update_video_description,
 )
 from agents.studio_compositor.yt_shared_links import (
@@ -290,7 +292,7 @@ def _append_links_to_description(
     Oldest URLs are dropped from the head of the block if the total
     would overflow ``max_chars``.
     """
-    existing = existing or ""
+    existing = _sanitize_existing_description(existing or "")
     marker = _SHARED_LINKS_MARKER
     head = existing
     old_links: list[str] = []
@@ -304,11 +306,15 @@ def _append_links_to_description(
             # Stop at the next separator block (another "---" section).
             if stripped.startswith("---") and stripped != marker:
                 break
-            old_links.append(stripped)
+            if not description_text_has_private_marker(stripped):
+                old_links.append(stripped)
 
     seen: set[str] = set()
     merged: list[str] = []
     for url in old_links + list(urls):
+        url = str(url).strip()
+        if not url or description_text_has_private_marker(url):
+            continue
         if url in seen:
             continue
         seen.add(url)
@@ -326,6 +332,20 @@ def _append_links_to_description(
         merged.pop(0)
         composed = _compose(merged)
     return composed
+
+
+def _sanitize_existing_description(existing: str) -> str:
+    """Drop private/non-broadcast lines from an existing YouTube description."""
+
+    safe_lines: list[str] = []
+    for line in existing.splitlines():
+        if not line.strip():
+            safe_lines.append(line)
+            continue
+        sanitized = sanitize_description_text(line)
+        if sanitized is not None:
+            safe_lines.append(sanitized)
+    return "\n".join(safe_lines).strip()
 
 
 def sync_shared_links_once(
@@ -364,7 +384,24 @@ def sync_shared_links_once(
     video_id = video_id or os.environ.get("HAPAX_YOUTUBE_VIDEO_ID", "").strip()
 
     cursor_ts = cursor_loader()
-    records = [r for r in links_reader(since_ts=cursor_ts) if isinstance(r, dict) and r.get("url")]
+    raw_records = [
+        r for r in links_reader(since_ts=cursor_ts) if isinstance(r, dict) and r.get("url")
+    ]
+    records: list[dict[str, Any]] = []
+    max_seen_ts = cursor_ts
+    for rec in raw_records:
+        try:
+            max_seen_ts = max(max_seen_ts, float(rec.get("ts", 0.0)))
+        except (TypeError, ValueError):
+            pass
+        if description_text_has_private_marker(str(rec.get("url", ""))):
+            continue
+        if description_text_has_private_marker(str(rec.get("source", ""))):
+            continue
+        records.append(rec)
+    if raw_records and not records:
+        cursor_saver(max_seen_ts)
+        return 0
     if not records:
         return 0
 
@@ -373,9 +410,8 @@ def sync_shared_links_once(
         # No live broadcast target — queue every record.
         for rec in records:
             queue_writer(rec)
-            cursor_ts = max(cursor_ts, float(rec.get("ts", 0.0)))
             processed += 1
-        cursor_saver(cursor_ts)
+        cursor_saver(max_seen_ts)
         log.info(
             "yt-shared-links: no video_id; queued %d link(s) for next broadcast",
             processed,
@@ -396,10 +432,8 @@ def sync_shared_links_once(
 
     sent = updater(video_id, new_description, dry_run=dry_run)
     if sent:
-        for rec in records:
-            cursor_ts = max(cursor_ts, float(rec.get("ts", 0.0)))
-            processed += 1
-        cursor_saver(cursor_ts)
+        processed = len(records)
+        cursor_saver(max_seen_ts)
         log.info(
             "yt-shared-links: appended %d URL(s) to broadcast %s",
             processed,
@@ -410,9 +444,8 @@ def sync_shared_links_once(
     # Updater refused (quota / no-such-video) — queue every record.
     for rec in records:
         queue_writer(rec)
-        cursor_ts = max(cursor_ts, float(rec.get("ts", 0.0)))
         processed += 1
-    cursor_saver(cursor_ts)
+    cursor_saver(max_seen_ts)
     log.info(
         "yt-shared-links: updater declined; queued %d link(s) for next broadcast",
         processed,

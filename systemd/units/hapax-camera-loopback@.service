@@ -1,0 +1,23 @@
+[Unit]
+Description=Hapax camera sharing loopback sidecar for %i
+Documentation=file:///home/hapax/.cache/hapax/source-activation/worktree/config/camera-loopbacks/%i.env
+After=pipewire.service wireplumber.service studio-compositor.service
+Wants=studio-compositor.service
+PartOf=hapax-camera-loopbacks.target
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-camera-loopback-sidecar
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/config/camera-loopbacks/%i.env
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=%h/.cache/hapax/source-activation/worktree/config/camera-loopbacks/%i.env
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-camera-loopback-sidecar --check
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-camera-loopback-sidecar
+Restart=on-failure
+RestartSec=2s
+TimeoutStartSec=15s
+SyslogIdentifier=hapax-camera-loopback-%i
+
+[Install]
+WantedBy=hapax-camera-loopbacks.target

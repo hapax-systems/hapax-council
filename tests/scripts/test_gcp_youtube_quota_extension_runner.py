@@ -74,6 +74,14 @@ _PROM_VALUES = {
     "max_over_time(hapax_broadcast_yt_quota_rate_per_min[7d])": 125.0,
 }
 
+_ZERO_PROM_VALUES = {
+    **_PROM_VALUES,
+    "last_over_time(hapax_broadcast_yt_quota_units_used[7d])": 0.0,
+    "last_over_time(hapax_broadcast_yt_quota_rate_per_min[7d])": 0.0,
+    "max_over_time(hapax_broadcast_yt_quota_units_used[7d])": 0.0,
+    "max_over_time(hapax_broadcast_yt_quota_rate_per_min[7d])": 0.0,
+}
+
 
 def test_collect_evidence_queries_current_and_seven_day_snapshot(runner_mod: ModuleType):
     seen: list[str] = []
@@ -122,11 +130,19 @@ def test_main_dry_run_writes_request_and_never_opens_browser(
     out_dir = Path(summary["output_dir"])
     request = json.loads((out_dir / "quota-request.json").read_text(encoding="utf-8"))
     assert request["project_id"] == "hapax-youtube"
+    assert request["additional_quota_units"] == 90_000
+    assert request["evidence_status"] == "ready"
     assert request["evidence"]["used_units_peak_7d"] == 8_750.0
+    answers = json.loads((out_dir / "quota-form-answers.json").read_text(encoding="utf-8"))
+    assert answers['How much "Additional Quota" are you requesting?'] == "90000"
+    assert answers["Which YouTube API Service(s) are you requesting a quota increase for?"] == (
+        "YouTube Data API v3"
+    )
     assert (out_dir / "justification.md").read_text(encoding="utf-8").strip() == (
         "Project Hapax YouTube peak 8750.0"
     )
     assert json.loads((out_dir / "outcome.json").read_text(encoding="utf-8"))["receipt_url"] is None
+    assert (out_dir / "response-tracking.md").exists()
 
 
 def test_submit_requires_flag_and_live_env(runner_mod: ModuleType, tmp_path: Path):
@@ -152,6 +168,73 @@ def test_submit_requires_flag_and_live_env(runner_mod: ModuleType, tmp_path: Pat
 
     assert rc == 2
     assert called is False
+
+
+def test_live_form_action_blocks_when_quota_burn_is_zero(
+    runner_mod: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    called = False
+
+    def submitter(*_args: Any, **_kwargs: Any) -> dict[str, str | None]:
+        nonlocal called
+        called = True
+        return {"receipt_url": "https://support.google.com/receipt", "screenshot_path": None}
+
+    rc = runner_mod.main(
+        [
+            "--prometheus-url",
+            "http://prometheus.invalid",
+            "--open-browser",
+            "--output-dir",
+            str(tmp_path / "out"),
+        ],
+        opener=_opener(_ZERO_PROM_VALUES),
+        form_submitter=submitter,
+        env={runner_mod.LIVE_ENV: "1"},
+    )
+
+    assert rc == 3
+    assert called is False
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["status"] == "blocked_insufficient_evidence"
+    assert "insufficient observed YouTube API quota burn" in summary["evidence_blockers"][0]
+    out_dir = Path(summary["output_dir"])
+    request = json.loads((out_dir / "quota-request.json").read_text(encoding="utf-8"))
+    assert request["evidence_status"] == "insufficient_evidence"
+    tracking = (out_dir / "response-tracking.md").read_text(encoding="utf-8")
+    assert "blocked_insufficient_evidence" in tracking
+
+
+def test_capture_grafana_writes_screenshot_path(
+    runner_mod: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    captured: list[str] = []
+
+    def capturer(url: str, *, output_dir: Path) -> str:
+        captured.append(url)
+        screenshot = output_dir / "grafana.png"
+        screenshot.write_bytes(b"png")
+        return str(screenshot)
+
+    rc = runner_mod.main(
+        [
+            "--prometheus-url",
+            "http://prometheus.invalid",
+            "--capture-grafana",
+            "--grafana-url",
+            "http://grafana.invalid/d/yt-quota",
+            "--output-dir",
+            str(tmp_path / "out"),
+        ],
+        opener=_opener(_PROM_VALUES),
+        grafana_capturer=capturer,
+        env={},
+    )
+
+    assert rc == 0
+    assert captured == ["http://grafana.invalid/d/yt-quota"]
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["grafana_screenshot_path"].endswith("grafana.png")
 
 
 def test_submit_with_live_env_captures_receipt(

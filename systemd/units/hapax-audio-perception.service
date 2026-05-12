@@ -1,0 +1,29 @@
+[Unit]
+Description=Hapax audio perception daemon — CPU-only scene classification
+After=pipewire.service pipewire-pulse.service hapax-secrets.service
+Wants=pipewire-pulse.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStart=/home/hapax/.local/bin/uv run python -m agents.audio_perception
+Restart=always
+RestartSec=10
+EnvironmentFile=/run/user/1000/hapax-secrets.env
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=CUDA_VISIBLE_DEVICES=
+Environment=OMP_NUM_THREADS=2
+Environment=MKL_NUM_THREADS=2
+Environment=OPENBLAS_NUM_THREADS=2
+MemoryMax=2G
+MemoryHigh=1G
+CPUQuota=200%
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-audio-perception
+
+[Install]
+WantedBy=default.target

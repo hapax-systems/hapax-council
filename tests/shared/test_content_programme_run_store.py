@@ -222,6 +222,8 @@ def test_fixture_envelopes_cover_required_cases_and_keep_separation_policy() -> 
         assert envelope.operator_labor_policy.single_operator_only is True
         assert envelope.operator_labor_policy.request_queue_allowed is False
         assert envelope.boundary_event_refs[0].duplicate_key
+        assert envelope.role_state.active_programme_run_ref == envelope.run_id
+        assert envelope.role_state.grounding_question == envelope.grounding_question
 
     public_live_blocked = build_fixture_envelope("public_live_blocked_run")
     assert public_live_blocked.requested_public_private_mode == "public_live"

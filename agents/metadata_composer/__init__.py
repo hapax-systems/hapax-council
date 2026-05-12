@@ -12,8 +12,15 @@ cc-task: ytb-008
 from agents.metadata_composer.chapters import ChapterMarker
 from agents.metadata_composer.composer import (
     ComposedMetadata,
+    MetadataPublicClaimGateResult,
     Scope,
     compose_metadata,
 )
 
-__all__ = ["ChapterMarker", "ComposedMetadata", "Scope", "compose_metadata"]
+__all__ = [
+    "ChapterMarker",
+    "ComposedMetadata",
+    "MetadataPublicClaimGateResult",
+    "Scope",
+    "compose_metadata",
+]

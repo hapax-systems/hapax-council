@@ -264,6 +264,8 @@ class TestServiceAutoEnableList:
         "hapax-private-broadcast-leak-guard.service",
         "hapax-broadcast-egress-loopback-producer.service",
         "hapax-parametric-modulation-heartbeat.service",
+        "hapax-hls-no-cache.service",
+        "hapax-live-surface-guard.service",
     )
 
     def test_auto_enable_array_declared(self) -> None:
@@ -347,6 +349,8 @@ class TestAuditedUnitsExist:
         "hapax-private-broadcast-leak-guard.service",
         "hapax-broadcast-egress-loopback-producer.service",
         "hapax-parametric-modulation-heartbeat.service",
+        "hapax-hls-no-cache.service",
+        "hapax-live-surface-guard.service",
         # Decommissioned but file must still be present so the disable+mask
         # path has something to act on.
     )

@@ -1,53 +1,48 @@
 schema_version = 1
 
 [profile]
-account = "hapax-llc"
-legal_name = "Hapax LLC"
-display_name = "Hapax · Claude Code · Oudepode"
+account = "hapax-systems"
+legal_name = "Hapax Systems"
+display_name = "Hapax Systems"
 description = """
-Operator-authored research infrastructure, public refusal artifacts, and
-sponsorware-rotated field notes. Tier copy stays descriptive: no guarantees,
-no delivery promises, and no private-supporter identity publication.
+Public research infrastructure for single-operator AI governance,
+refusal-as-data, and multimodal operating environments. Sponsorships support
+compute, archive storage, rights-safe production, and publication plumbing.
+No access, requests, private advice, priority, shoutouts, guarantees, client
+service, deliverables, or control are sold. Work continues regardless of
+support.
 """
 profile_url_pass_key = "github-sponsors/profile-url"
 tier_id_pass_key_prefix = "github-sponsors/tiers"
 
 [[tiers]]
-slug = "supporter"
+slug = "one-dollar"
+kind = "monthly"
+amount_usd_cents = 100
+title = "Research support"
+description = "Monthly support for public Hapax research infrastructure. No perks, access, requests, priority, deliverables, or control."
+sponsorware_threshold = ""
+
+[[tiers]]
+slug = "five-dollar"
 kind = "monthly"
 amount_usd_cents = 500
-title = "Supporter"
-description = "Monthly support for public Hapax research infrastructure."
-sponsorware_threshold = "public-feed acknowledgement only; no gated promise"
+title = "Research support"
+description = "Monthly support for public Hapax research infrastructure. No perks, access, requests, priority, deliverables, or control."
+sponsorware_threshold = ""
 
 [[tiers]]
-slug = "studio"
+slug = "ten-dollar"
+kind = "monthly"
+amount_usd_cents = 1000
+title = "Research support"
+description = "Monthly support for public Hapax research infrastructure. No perks, access, requests, priority, deliverables, or control."
+sponsorware_threshold = ""
+
+[[tiers]]
+slug = "twenty-five-dollar"
 kind = "monthly"
 amount_usd_cents = 2500
-title = "Studio"
-description = "Monthly support for research-vehicle surfaces and field-note maintenance."
-sponsorware_threshold = "rotating early-access artifact eligibility when operator-published"
-
-[[tiers]]
-slug = "lab"
-kind = "monthly"
-amount_usd_cents = 10000
-title = "Lab"
-description = "Monthly support for archival, citation-graph, and infrastructure costs."
-sponsorware_threshold = "rotating sponsorware artifacts; no guaranteed cadence"
-
-[[tiers]]
-slug = "patron"
-kind = "monthly"
-amount_usd_cents = 50000
-title = "Patron"
-description = "High-signal monthly backing for public research operations."
-sponsorware_threshold = "same artifact eligibility as Lab; no extra private influence"
-
-[[tiers]]
-slug = "one-time-field-note"
-kind = "one_time"
-amount_usd_cents = 2500
-title = "One-time field note"
-description = "One-time support for a public field-note or refusal-artifact cycle."
-sponsorware_threshold = "one-time acknowledgement only"
+title = "Research support"
+description = "Monthly support for public Hapax research infrastructure. No perks, access, requests, priority, deliverables, or control."
+sponsorware_threshold = ""

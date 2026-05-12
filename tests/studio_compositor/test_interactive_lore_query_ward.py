@@ -85,6 +85,14 @@ class TestLoadAllowlist:
 
 
 class TestIngest:
+    def test_default_constructor_loads_empty_allowlist_without_crashing(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv(ALLOWLIST_ENV, str(tmp_path / "missing.yaml"))
+        ward = InteractiveLoreQueryWard(chat_state_path=tmp_path / "recent.jsonl")
+
+        assert ward.ring == ()
+
     def test_allowlisted_lore_command_appends_entry(self, tmp_path):
         anon = AuthorAnonymizer()
         allow = _make_allowlist(anon, ["UC_alice"])

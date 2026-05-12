@@ -13,6 +13,12 @@ from pathlib import Path
 from typing import Any
 
 S4_SERIAL = "fedcba9876543220"
+S4_VENDOR_ID = "1d6b"
+S4_PRODUCT_ID = "0104"
+# Historical bus paths kept for status interpretation only. They are not
+# validation criteria: the USB witness keys device identity on stable
+# serial/vendor/product attributes because ID_PATH drifts across reboots and
+# port changes.
 S4_EXPECTED_PATHS = {
     # CalDigit hub paths (legacy primary).
     "pci-0000:71:00.0-usb-0:1.5",
@@ -28,14 +34,12 @@ S4_SINK = "alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichanne
 S4_SOURCE = "alsa_input.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-input"
 
 L12_SERIAL = "8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF"
-# Multiple known-good L12 PCI bus paths. PR #2222 (persistent ALSA card-id
-# rules) made the L-12 reachable via stable symbolic id (`hw:CARD=L12`) +
-# serial-keyed PipeWire node names — bus-path drift no longer breaks
-# routing. Listed paths are the historical canonical (CalDigit hub), the
-# front-PC-case enumeration observed 2026-05-03 after a re-plug, and the
-# post-128GB RAM install root-port enumeration observed 2026-05-10.
-# Drift OUT of this set still triggers a non-fatal `l12_path_drift_warning`
-# in the witness output (see validate()), but does not flip ok=False.
+L12_VENDOR_ID = "1686"
+L12_PRODUCT_ID = "03d5"
+# Historical bus paths kept for status interpretation only. PR #2222
+# (persistent ALSA card-id rules) made the L-12 reachable via stable symbolic
+# id (`hw:CARD=L12`) + serial-keyed PipeWire node names. ID_PATH is now
+# diagnostic only because it drifts across reboots and port changes.
 L12_EXPECTED_PATHS = {
     "pci-0000:71:00.0-usb-0:1.1.2.2",
     "pci-0000:71:00.0-usb-0:2.1.2.1",
@@ -157,35 +161,107 @@ def command_stdout(args: list[str]) -> str:
     return proc.stdout if proc.returncode == 0 else ""
 
 
-def find_usb_device(serial: str, product: str | None = None) -> dict[str, str]:
+def find_usb_device(
+    serial: str,
+    product: str | None = None,
+    vendor_id: str | None = None,
+    product_id: str | None = None,
+) -> dict[str, str]:
     for entry in sorted(Path("/sys/bus/usb/devices").glob("*")):
         if not (entry / "serial").exists():
             continue
         if read_text(entry / "serial") != serial:
             continue
+        entry_vendor_id = read_text(entry / "idVendor")
+        entry_product_id = read_text(entry / "idProduct")
+        if vendor_id and entry_vendor_id != vendor_id:
+            continue
+        if product_id and entry_product_id != product_id:
+            continue
         if product and read_text(entry / "product") != product:
             continue
+        entry_serial = read_text(entry / "serial")
+        entry_product = read_text(entry / "product")
+        entry_manufacturer = read_text(entry / "manufacturer")
         props = udev_props_for_path(entry)
         return {
             "device": entry.name,
+            "sysfs_path": str(entry),
             "path": props.get("ID_PATH", ""),
+            "serial": entry_serial,
+            "vendor_id": entry_vendor_id,
+            "product_id": entry_product_id,
+            "product": entry_product,
+            "manufacturer": entry_manufacturer,
+            "stable_id": f"usb:{entry_vendor_id}:{entry_product_id}:{entry_serial}",
             "power_control": read_text(entry / "power" / "control"),
         }
-    return {"device": "", "path": "", "power_control": ""}
+    return {
+        "device": "",
+        "sysfs_path": "",
+        "path": "",
+        "serial": "",
+        "vendor_id": "",
+        "product_id": "",
+        "product": "",
+        "manufacturer": "",
+        "stable_id": "",
+        "power_control": "",
+    }
 
 
-def s4_block_policy() -> dict[str, str]:
+def empty_s4_block_policy() -> dict[str, str]:
+    return {
+        "node": "",
+        "devname": "",
+        "match_source": "",
+        "udisks_ignore": "",
+        "udisks_hide": "",
+        "modemmanager_ignore": "",
+        "id_serial_short": "",
+        "id_vendor_id": "",
+        "id_model_id": "",
+    }
+
+
+def s4_block_policy(block_root: Path = Path("/sys/class/block")) -> dict[str, str]:
     for node in sorted(glob.glob(f"/dev/disk/by-id/*{S4_SERIAL}*")):
         props = udev_props_for_node(node)
         if props.get("ID_SERIAL_SHORT") != S4_SERIAL:
             continue
         return {
             "node": node,
+            "devname": props.get("DEVNAME", ""),
+            "match_source": "dev-disk-by-id",
             "udisks_ignore": props.get("UDISKS_IGNORE", ""),
             "udisks_hide": props.get("UDISKS_PRESENTATION_HIDE", ""),
             "modemmanager_ignore": props.get("ID_MM_DEVICE_IGNORE", ""),
+            "id_serial_short": props.get("ID_SERIAL_SHORT", ""),
+            "id_vendor_id": props.get("ID_VENDOR_ID", ""),
+            "id_model_id": props.get("ID_MODEL_ID", ""),
         }
-    return {"node": "", "udisks_ignore": "", "udisks_hide": "", "modemmanager_ignore": ""}
+
+    # Early boot can run before /dev/disk/by-id symlinks are populated. Fall
+    # back to udev attributes on sysfs block devices so a volatile /dev/sdX
+    # name never becomes the matching contract.
+    for block_path in sorted(block_root.glob("*")):
+        props = udev_props_for_path(block_path)
+        if props.get("ID_SERIAL_SHORT") != S4_SERIAL:
+            continue
+        if props.get("ID_VENDOR_ID") != S4_VENDOR_ID or props.get("ID_MODEL_ID") != S4_PRODUCT_ID:
+            continue
+        return {
+            "node": "",
+            "devname": props.get("DEVNAME", ""),
+            "match_source": "udev-attrs",
+            "udisks_ignore": props.get("UDISKS_IGNORE", ""),
+            "udisks_hide": props.get("UDISKS_PRESENTATION_HIDE", ""),
+            "modemmanager_ignore": props.get("ID_MM_DEVICE_IGNORE", ""),
+            "id_serial_short": props.get("ID_SERIAL_SHORT", ""),
+            "id_vendor_id": props.get("ID_VENDOR_ID", ""),
+            "id_model_id": props.get("ID_MODEL_ID", ""),
+        }
+    return empty_s4_block_policy()
 
 
 def s4_net_policy() -> dict[str, str]:
@@ -235,7 +311,7 @@ def set_default(kind: str, name: str) -> bool:
 def start_user_unit(unit: str) -> bool:
     active = run(["systemctl", "--user", "is-active", "--quiet", unit])
     if active.returncode == 0:
-        return True
+        return False
     return run(["systemctl", "--user", "start", unit]).returncode == 0
 
 
@@ -264,12 +340,12 @@ def live_snapshot() -> dict[str, Any]:
             "uvcvideo_quirks": read_text(Path("/sys/module/uvcvideo/parameters/quirks")),
         },
         "s4": {
-            **find_usb_device(S4_SERIAL, "S-4"),
+            **find_usb_device(S4_SERIAL, "S-4", S4_VENDOR_ID, S4_PRODUCT_ID),
             "block": s4_block_policy(),
             "net": s4_net_policy(),
         },
         "l12": {
-            **find_usb_device(L12_SERIAL, "L-12"),
+            **find_usb_device(L12_SERIAL, "L-12", L12_VENDOR_ID, L12_PRODUCT_ID),
             "default_sink": get_default("sink"),
             "default_source": get_default("source"),
         },
@@ -310,17 +386,6 @@ def validate(
         warnings.append(f"s4_usb_missing_known_absence:{policy_reason(s4_known_absence)}")
     elif not s4.get("device"):
         issues.append("s4_usb_missing")
-    elif s4.get("path") not in S4_EXPECTED_PATHS:
-        # Path drift is observability-only — same logic as the L-12 path
-        # drift handling below. PR #2222 (persistent ALSA card-id rules)
-        # pins the S-4 by serial+vid:pid → stable `hw:CARD=S4` + PipeWire
-        # serial-keyed node names. Sink/source identity (S4_SINK,
-        # S4_SOURCE) is what drives routing; the bus path is surfaced so
-        # the operator can promote it to S4_EXPECTED_PATHS or investigate
-        # cabling. Demoted from `issues` (flips ok=False, exits 2) to
-        # `warnings` so the systemd timer doesn't restart-storm on
-        # benign re-plugs (e.g. moving the S-4 between CalDigit ports).
-        warnings.append(f"s4_path_drift:{s4.get('path', '')}")
     if not s4_known_absence:
         if s4.get("power_control") != "on":
             issues.append(f"s4_power_control_drift:{s4.get('power_control', '')}")
@@ -342,16 +407,6 @@ def validate(
 
     if not l12.get("device"):
         issues.append("l12_usb_missing")
-    elif l12.get("path") not in L12_EXPECTED_PATHS:
-        # Path drift is observability-only after PR #2222 (persistent ALSA
-        # card-id rules pin L-12 by serial+vid:pid → stable `hw:CARD=L12`
-        # + PipeWire serial-keyed node names). Sink/source identity is what
-        # actually drives broadcast routing; we still surface the new bus
-        # path so the operator can promote it to L12_EXPECTED_PATHS or
-        # investigate cabling. Demoted from `issues` (which flips ok=False
-        # and exits 2) to `warnings` so the systemd timer doesn't restart-
-        # storm on benign re-plugs.
-        warnings.append(f"l12_path_drift:{l12.get('path', '')}")
 
     default_sink = l12.get("default_sink", "")
     default_source = l12.get("default_source", "")

@@ -373,6 +373,25 @@ STUDIO_AFFORDANCES = [
             consent_required=False,
         ),
     ),
+    # Cc-task ``durf-foot-coding-session-reveal`` (2026-05-11):
+    # operator foot-terminal coding-session reveal. Default presence
+    # weighting lives in ``coding_session_reveal.DEFAULT_BASE_LEVEL`` at
+    # 0.75 because ``CapabilityRecord`` does not carry per-capability
+    # base-level fields; the registry entry makes the ward recruitable
+    # by the same visual affordance pipeline as DURF and M8.
+    CapabilityRecord(
+        name="studio.coding_session_reveal",
+        description=(
+            "Reveal the operator's active foot-terminal tmux coding pane in "
+            "the broadcast composite when development work is recruited"
+        ),
+        daemon="compositor",
+        operational=_public_operational(
+            latency_class="fast",
+            medium="visual",
+            consent_required=False,
+        ),
+    ),
     # Cc-task ``activity-reveal-ward-p5-polyend-variant`` (2026-05-05):
     # Polyend-class USB instrument reveal. Unlike the M8 LCD path there
     # is no display protocol; the ward renders aggregate UAC waveform

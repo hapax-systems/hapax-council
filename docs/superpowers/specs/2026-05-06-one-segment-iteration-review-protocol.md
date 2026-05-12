@@ -23,6 +23,13 @@ nine. Passing eligibility is not a claim that the segment is good.
 5. Re-run the review with `--team-receipts <team-receipts.json>`.
 6. Generate the next nine only when `ready_for_next_nine` is true.
 
+Pool generation must be able to read the passing canary receipt before it
+probes the resident model. The default receipt path is
+`~/hapax-state/segment-prep/canary-review.json`; set
+`HAPAX_SEGMENT_PREP_CANARY_REVIEW_RECEIPT` to point at a different reviewed
+receipt. Missing, stale, mutated, or non-passing receipts block next-nine
+generation.
+
 ## Automated Pass Criteria
 
 - Exactly one manifest-accepted artifact is present.

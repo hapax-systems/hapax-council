@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# Sync the Hapax Obsidian vault to Obsidian Publish via obsidian-headless.
+
+set -euo pipefail
+
+OBSIDIAN_HEADLESS_VERSION="0.0.8"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VAULT_DIR="${HAPAX_OBSIDIAN_VAULT:-$HOME/Documents/Personal}"
+CONFIG_DIR="${HAPAX_OBSIDIAN_PUBLISH_CONFIG:-$REPO_ROOT/config/obsidian-publish}"
+OB_BIN="${HAPAX_OBSIDIAN_HEADLESS_BIN:-ob}"
+PUBLISH_SITE="${HAPAX_OBSIDIAN_PUBLISH_SITE:-}"
+
+dry_run=0
+install_headless=0
+install_assets_only=0
+skip_assets=0
+
+usage() {
+  cat <<'EOF'
+usage: hapax-obsidian-publish-sync [--dry-run] [--install-headless] [--install-assets-only] [--skip-assets]
+
+Copies repo-owned Obsidian Publish assets into the Hapax vault, then runs:
+  ob publish --path <vault> --yes
+
+Options:
+  --dry-run              Run obsidian-headless publish planning only.
+  --install-headless     Install obsidian-headless with npm if `ob` is missing.
+  --install-assets-only  Copy Home.md and publish.css, then exit.
+  --skip-assets          Do not copy repo-owned publish assets before publish.
+  -h, --help             Show this help.
+EOF
+}
+
+log() {
+  printf 'hapax-obsidian-publish-sync: %s\n' "$*" >&2
+}
+
+fail() {
+  log "ERROR: $*"
+  exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) dry_run=1; shift ;;
+    --install-headless) install_headless=1; shift ;;
+    --install-assets-only) install_assets_only=1; shift ;;
+    --skip-assets) skip_assets=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) fail "unknown argument: $1" ;;
+  esac
+done
+
+require_vault() {
+  [[ -d "$VAULT_DIR" ]] || fail "vault directory not found: $VAULT_DIR"
+  [[ -d "$VAULT_DIR/.obsidian" ]] || fail "not an Obsidian vault: $VAULT_DIR"
+  [[ -f "$VAULT_DIR/.obsidian/publish.json" ]] || fail "missing .obsidian/publish.json"
+  grep -q '"siteId"' "$VAULT_DIR/.obsidian/publish.json" || fail "publish.json missing siteId"
+}
+
+require_node22() {
+  [[ "${HAPAX_OBSIDIAN_SKIP_NODE_CHECK:-0}" == "1" ]] && return 0
+  command -v node >/dev/null 2>&1 || fail "node is required for obsidian-headless"
+  node -e 'const v = Number(process.versions.node.split(".")[0]); process.exit(v >= 22 ? 0 : 1)' \
+    || fail "obsidian-headless requires Node.js 22 or newer"
+}
+
+install_assets() {
+  [[ -f "$CONFIG_DIR/Home.md" ]] || fail "missing $CONFIG_DIR/Home.md"
+  [[ -f "$CONFIG_DIR/publish.css" ]] || fail "missing $CONFIG_DIR/publish.css"
+  install -m 0644 "$CONFIG_DIR/Home.md" "$VAULT_DIR/Home.md"
+  install -m 0644 "$CONFIG_DIR/publish.css" "$VAULT_DIR/publish.css"
+  log "installed Home.md and publish.css into $VAULT_DIR"
+}
+
+ensure_headless() {
+  if command -v "$OB_BIN" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [[ "$install_headless" != "1" ]]; then
+    fail "obsidian-headless ob command not found; run with --install-headless after confirming npm global prefix"
+  fi
+
+  command -v npm >/dev/null 2>&1 || fail "npm is required to install obsidian-headless"
+  npm install -g "obsidian-headless@$OBSIDIAN_HEADLESS_VERSION"
+  command -v "$OB_BIN" >/dev/null 2>&1 || fail "obsidian-headless installed but ob is still not on PATH"
+}
+
+publish_site() {
+  if [[ -n "$PUBLISH_SITE" ]]; then
+    printf '%s\n' "$PUBLISH_SITE"
+    return 0
+  fi
+
+  node -e '
+const fs = require("node:fs");
+const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+if (!cfg.siteId) process.exit(1);
+process.stdout.write(cfg.siteId + "\n");
+' "$VAULT_DIR/.obsidian/publish.json" || fail "could not read siteId from .obsidian/publish.json"
+}
+
+ensure_publish_setup() {
+  if "$OB_BIN" publish-config --path "$VAULT_DIR" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local site
+  site="$(publish_site)"
+  log "connecting obsidian-headless to Publish site $site"
+  "$OB_BIN" publish-setup --site "$site" --path "$VAULT_DIR"
+  "$OB_BIN" publish-config --path "$VAULT_DIR" --includes "" --excludes ""
+}
+
+require_vault
+
+if [[ "$skip_assets" != "1" ]]; then
+  install_assets
+fi
+
+if [[ "$install_assets_only" == "1" ]]; then
+  exit 0
+fi
+
+require_node22
+ensure_headless
+ensure_publish_setup
+
+publish_args=(publish --path "$VAULT_DIR")
+if [[ "$dry_run" == "1" ]]; then
+  publish_args+=(--dry-run)
+else
+  publish_args+=(--yes)
+fi
+
+log "running: $OB_BIN ${publish_args[*]}"
+exec "$OB_BIN" "${publish_args[@]}"

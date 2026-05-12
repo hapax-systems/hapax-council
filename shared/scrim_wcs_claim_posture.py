@@ -14,6 +14,7 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from shared.livestream_role_state import LivestreamRoleState, PublicMode
 from shared.world_surface_health import (
     AuthorityCeiling,
     FreshnessState,
@@ -248,6 +249,18 @@ class ScrimWCSClaimPostureInput(FrozenModel):
     trend_pressure: float = Field(default=0.0, ge=0.0, le=1.0)
     revenue_pressure: float = Field(default=0.0, ge=0.0, le=1.0)
     spectacle_intensity_requested: float = Field(default=0.0, ge=0.0, le=1.0)
+    livestream_role_state: LivestreamRoleState | None = None
+
+    @model_validator(mode="after")
+    def _role_state_must_match_scrim_posture(self) -> Self:
+        if self.livestream_role_state is None:
+            return self
+        expected_mode = _scrim_mode_for_role(self.livestream_role_state.public_mode)
+        if self.scrim_state.public_private_mode != expected_mode:
+            raise ValueError("scrim public_private_mode must mirror livestream role public_mode")
+        if self.conversion_cue == "ready" and not self.livestream_role_state.monetization_ready:
+            raise ValueError("conversion-ready scrim posture requires monetization-ready role")
+        return self
 
 
 class ScrimNoGrantPolicy(FrozenModel):
@@ -486,6 +499,7 @@ def project_scrim_claim_posture_input(
     visual_confidence = round(
         min(inputs.evidence.confidence, inputs.health.confidence, max_visual_confidence), 3
     )
+
     inherited_public_claim_allowed = _inherited_public_claim_allowed(inputs, blocker_families)
     non_truth_refs = _non_truth_signal_refs(inputs)
 
@@ -523,6 +537,16 @@ def project_scrim_claim_posture_input(
         spectacle_intensity=_spectacle_intensity(inputs, blocker_families, posture),
         blocked_media_neutralized=posture == "neutralize_blocked_media",
     )
+
+
+def _scrim_mode_for_role(public_mode: PublicMode) -> ScrimPublicPrivateModeValue:
+    if public_mode is PublicMode.PUBLIC_LIVE:
+        return "public_live"
+    if public_mode is PublicMode.PUBLIC_ARCHIVE:
+        return "public_archive"
+    if public_mode is PublicMode.DRY_RUN:
+        return "dry_run"
+    return "private"
 
 
 def _derive_blockers(

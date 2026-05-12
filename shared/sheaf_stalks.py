@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-STANCE_MAP = {"nominal": 0.0, "cautious": 0.25, "degraded": 0.5, "critical": 1.0}
+STANCE_MAP = {"nominal": 0.0, "seeking": 0.1, "cautious": 0.25, "degraded": 0.5, "critical": 1.0}
 TREND_MAP = {"stable": 0.0, "rising": 0.5, "falling": -0.5}
 
 

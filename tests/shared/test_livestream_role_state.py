@@ -36,6 +36,7 @@ from shared.livestream_role_state import (
     SpeechAct,
     SpeechActDestination,
     SpeechActKind,
+    SpeechFulfillment,
     TerminalOutcome,
     is_speech_act_authorized_by_role,
 )
@@ -223,9 +224,14 @@ class TestSpeechActSchema:
             destination=SpeechActDestination.PUBLIC_LIVE,
             claim_posture=AuthorityCeiling.PUBLIC_LIVE,
             programme_run_ref="prog-run-1",
+            impulse_id="impulse-2",
             originating_impulse_ref="impulse-2",
+            action_tendency="speak",
+            selected_fulfillment=SpeechFulfillment.SPOKEN_NARRATION,
             wcs_snapshot_ref="wcs-snap-3",
+            route_ref="audio_route:broadcast.master.normalized",
             completion_witness_required=True,
+            completion_witness_refs=("witness:egress",),
             terminal_outcome=TerminalOutcome.COMPLETED,
         )
         assert act.programme_run_ref == "prog-run-1"
@@ -294,6 +300,8 @@ class TestConversionCueRestriction:
             destination=SpeechActDestination.PUBLIC_LIVE,
             claim_posture=AuthorityCeiling.PUBLIC_LIVE,
             wcs_snapshot_ref="wcs-1",
+            route_ref="audio_route:broadcast.master.normalized",
+            completion_witness_refs=("witness:egress",),
         )
         assert act.act_kind is SpeechActKind.CONVERSION_CUE
 
@@ -331,6 +339,8 @@ class TestRoleAuthorization:
             destination=SpeechActDestination.PUBLIC_LIVE,
             claim_posture=AuthorityCeiling.PUBLIC_LIVE,
             wcs_snapshot_ref="wcs-1",
+            route_ref="audio_route:broadcast.master.normalized",
+            completion_witness_refs=("witness:egress",),
         )
         assert is_speech_act_authorized_by_role(state, act) is False
 
@@ -420,6 +430,8 @@ class TestImpulseFulfillment:
             destination=SpeechActDestination.PRIVATE,
             claim_posture=AuthorityCeiling.PRIVATE_ONLY,
             originating_impulse_ref="impulse-7",
+            action_tendency="speak",
+            selected_fulfillment=SpeechFulfillment.SPOKEN_NARRATION,
             wcs_snapshot_ref="wcs-1",
             terminal_outcome=outcome,
         )

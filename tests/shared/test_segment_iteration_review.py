@@ -7,7 +7,12 @@ from typing import Any
 
 from agents.hapax_daimonion import daily_segment_prep as prep
 from scripts.review_one_segment_iteration import main as review_cli_main
-from shared.segment_iteration_review import review_one_segment_iteration
+from shared.segment_iteration_review import (
+    SegmentCanaryGateError,
+    assert_next_nine_canary_ready,
+    review_one_segment_iteration,
+    validate_next_nine_canary_receipt,
+)
 from shared.segment_prep_consultation import (
     build_consultation_manifest,
     build_live_event_viability,
@@ -408,6 +413,58 @@ def test_one_segment_review_accepts_after_automation_and_team_receipts() -> None
         "no_qwen": True,
         "no_unload_or_swap": True,
     }
+    assert receipt["review_gate_sections"]["migration_guard"] == {
+        "projection_only": True,
+        "current_release_gate_unchanged": True,
+        "unknown_criteria_default_to_hard_authority": True,
+        "current_automated_gate_passed": True,
+        "current_failed_criteria": [],
+        "advisory_or_structural_failures_still_block_current_release": [],
+        "unknown_criteria": [],
+    }
+    assert receipt["review_gate_sections"]["hard_authority_gate"]["passed"] is True
+    assert receipt["review_gate_sections"]["structural_readout"]["passed"] is True
+    assert receipt["review_gate_sections"]["advisory_excellence_report"]["passed"] is True
+
+
+def test_next_nine_canary_gate_accepts_passing_review_receipt(tmp_path: Path) -> None:
+    artifact = _artifact(EXCELLENT_SCRIPT)
+    receipt = review_one_segment_iteration(
+        [artifact],
+        team_critique_receipts=_team_receipts_for(artifact),
+    )
+    path = tmp_path / "canary-review.json"
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    report = assert_next_nine_canary_ready(path)
+
+    assert report["ok"] is True
+    assert report["path"] == str(path)
+    assert report["receipt"]["programme_id"] == artifact["programme_id"]
+    assert report["receipt"]["artifact_sha256"] == artifact["artifact_sha256"]
+
+
+def test_next_nine_canary_gate_rejects_stale_or_nonpassing_receipt() -> None:
+    artifact = _artifact(EXCELLENT_SCRIPT)
+    receipt = review_one_segment_iteration(
+        [artifact],
+        team_critique_receipts=_team_receipts_for(artifact),
+    )
+    receipt["ready_for_next_nine"] = False
+
+    report = validate_next_nine_canary_receipt(receipt)
+
+    assert report["ok"] is False
+    reasons = {item["reason"] for item in report["violations"]}
+    assert "ready_for_next_nine_not_true" in reasons
+    assert "review_receipt_sha256_mismatch" in reasons
+
+    try:
+        assert_next_nine_canary_ready(Path("/tmp/does-not-exist-canary-review.json"))
+    except SegmentCanaryGateError as exc:
+        assert "requires a passing canary review receipt" in str(exc)
+    else:
+        raise AssertionError("missing canary receipt should block next-nine generation")
 
 
 def test_one_segment_review_accepts_multi_phase_resident_call_provenance() -> None:

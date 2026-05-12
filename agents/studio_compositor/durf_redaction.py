@@ -54,6 +54,10 @@ OCR_TIMEOUT_S: Final[float] = 3.0
 # literal substring does not trip pii-guard.sh on the source file
 # itself; the runtime regex is the same.
 _OPERATOR_HOME_PREFIX = "/" + "home" + "/" + "hapax" + "/"
+_OPERATOR_VAULT_PREFIX = _OPERATOR_HOME_PREFIX + "Documents/Personal/"
+_LEGAL_FIRST = "Ryan"
+_LEGAL_MIDDLE = "Lee"
+_LEGAL_LAST = "Kleeberger"
 
 
 class RedactionAction(enum.StrEnum):
@@ -85,6 +89,12 @@ class RedactionResult:
 #: * ``bearer_token`` — ``Bearer <opaque>`` lines (≥20 chars after).
 #: * ``authorization_header`` — ``Authorization: Bearer …`` lines.
 #: * ``private_key_block`` — PEM private-key headers.
+#: * ``operator_email`` — email addresses visible in terminal output.
+#: * ``operator_legal_name`` — legal-name renderings visible in public
+#:   coding-session panes.
+#: * ``vault_path`` — absolute Obsidian vault paths; the text-capture
+#:   path suppresses v1 panes rather than attempting partial path
+#:   normalization.
 #: * ``operator_home_path`` — absolute paths under operator's home
 #:   directory; reveals operator identity on a public broadcast surface.
 #: * ``ssh_public_key`` — ``ssh-rsa`` / ``ssh-ed25519`` / ``ssh-ecdsa``
@@ -99,6 +109,8 @@ class RedactionResult:
 #:   precede secret material if displayed).
 #: * ``pass_command`` — ``pass show/edit/insert/grep/otp/generate``
 #:   invocations; the next-rendered line is likely a secret.
+#: * ``suspicious_long_hex`` — 40+ hex chars that are not already
+#:   classified by a preceding token/key pattern; fail-closed.
 RISK_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     ("anthropic_api_key", re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}")),
     ("openai_api_key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9]{20,}\b")),
@@ -109,6 +121,18 @@ RISK_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     ("bearer_token", re.compile(r"Bearer\s+[A-Za-z0-9._\-]{20,}")),
     ("authorization_header", re.compile(r"Authorization:\s*Bearer\s+\S+", re.IGNORECASE)),
     ("private_key_block", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    (
+        "operator_email",
+        re.compile(r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", re.IGNORECASE),
+    ),
+    (
+        "operator_legal_name",
+        re.compile(
+            _LEGAL_FIRST + r"(?:\s+" + _LEGAL_MIDDLE + r")?\s+" + _LEGAL_LAST,
+            re.IGNORECASE,
+        ),
+    ),
+    ("vault_path", re.compile(re.escape(_OPERATOR_VAULT_PREFIX))),
     ("operator_home_path", re.compile(re.escape(_OPERATOR_HOME_PREFIX))),
     # Per durf-foot-coding-session-reveal cc-task: foot-tmux capture surfaces
     # additional risk strings the Codex-lane DURF doesn't routinely emit.
@@ -122,6 +146,7 @@ RISK_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     ("claude_cli_chat_marker", re.compile(r"^\s*(?:Human|Assistant)\s*:\s+", re.MULTILINE)),
     ("envrc_path", re.compile(r"(?:^|\s)(?:source\s+)?\.envrc\b|/\.envrc\b")),
     ("pass_command", re.compile(r"\bpass\s+(?:show|edit|insert|grep|otp|generate)\b")),
+    ("suspicious_long_hex", re.compile(r"(?<![A-Fa-f0-9])[A-Fa-f0-9]{40,}(?![A-Fa-f0-9])")),
 )
 
 

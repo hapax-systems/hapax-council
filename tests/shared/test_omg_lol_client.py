@@ -316,6 +316,20 @@ class TestEndpointMethods:
         body = call.kwargs["json"]
         assert body["content"] == "new bio"
 
+    def test_delete_weblog_entry_shape(self) -> None:
+        client = OmgLolClient()
+        mock_session = MagicMock()
+        mock_session.request.return_value = _fake_response(200, {})
+        client._session = mock_session
+
+        client.delete_entry("hapax", "deploy-verify-weblog-producer")
+
+        call = mock_session.request.call_args
+        assert (call.kwargs.get("method") or call.args[0]) == "DELETE"
+        url = call.kwargs.get("url") or call.args[1]
+        assert url.endswith("/address/hapax/weblog/delete/deploy-verify-weblog-producer")
+        assert "/weblog/entry/" not in url
+
 
 class TestOmgLolHttpError:
     def test_error_carries_status_and_message(self) -> None:

@@ -49,7 +49,7 @@ class SponsorsProfile:
 
     @property
     def dashboard_url(self) -> str:
-        return f"{GITHUB_SPONSORS_URL}/accounts/{self.account}/dashboard/profile"
+        return f"{GITHUB_SPONSORS_URL}/{self.account}/dashboard"
 
 
 @dataclass(frozen=True)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 
 class TestSnapshotState:
     def test_empty_marker_returns_empty_condition(self, monkeypatch):
@@ -168,6 +170,45 @@ class TestSyncOnce:
         )
         assert seen["video_id"] == "env-vid-999"
 
+    def test_sync_filters_private_markers_before_update(self, monkeypatch, tmp_path):
+        from agents.studio_compositor import youtube_description_syncer as sync
+
+        monkeypatch.setattr(sync, "LAST_STATE_FILE", tmp_path / "last.json")
+        captured = {}
+
+        def _updater(video_id, description, *, dry_run=False):
+            captured["description"] = description
+            return True
+
+        assert (
+            sync.sync_once(
+                video_id="vid-private-filter",
+                marker_reader=lambda: {
+                    "condition_id": "PRIVATE_MEDIA_ROLE",
+                    "claim_id": "claim-PRIVATE",
+                },
+                objectives_reader=lambda: [
+                    {
+                        "title": "non-broadcast private monitor route",
+                        "priority": "high",
+                        "objective_id": "obj-private",
+                    }
+                ],
+                attribution_reader=lambda: [],
+                substrate_model="hapax-private",
+                updater=_updater,
+            )
+            is True
+        )
+
+        description = captured["description"]
+        description_lower = description.lower()
+        assert "Condition: unknown" in description
+        assert "Substrate: unknown" in description
+        assert "private" not in description_lower
+        assert "non-broadcast" not in description_lower
+        assert "hapax-private" not in description_lower
+
 
 class TestStateHash:
     def test_same_state_same_hash(self):
@@ -183,6 +224,67 @@ class TestStateHash:
         s1 = {"condition_id": "x", "objectives": []}
         s2 = {"condition_id": "y", "objectives": []}
         assert _state_hash(s1) != _state_hash(s2)
+
+
+class TestSharedLinkFiltering:
+    def test_append_links_filters_private_markers_from_existing_and_new_urls(self):
+        from agents.studio_compositor.youtube_description_syncer import (
+            _append_links_to_description,
+        )
+
+        description = _append_links_to_description(
+            "Condition: cond-A\nSubstrate: hapax-private\n--- Links ---\nhttps://safe.old\n",
+            [
+                "https://safe.new",
+                "https://example.invalid/PRIVATE_MEDIA_ROLE",
+                "https://example.invalid/non-broadcast",
+            ],
+        )
+
+        assert "Condition: cond-A" in description
+        rendered_hosts = {urlparse(line).netloc for line in description.splitlines()}
+        assert "safe.old" in rendered_hosts
+        assert "safe.new" in rendered_hosts
+        assert "hapax-private" not in description
+        assert "PRIVATE_MEDIA_ROLE" not in description
+        assert "non-broadcast" not in description
+
+    def test_shared_link_sync_advances_cursor_for_filtered_private_records(self, tmp_path):
+        from agents.studio_compositor import youtube_description_syncer as sync
+
+        cursor = {"value": 0.0}
+        calls = {"updater": 0, "queued": 0}
+
+        def _links_reader(*, since_ts):
+            assert since_ts == 0.0
+            return [
+                {
+                    "ts": 10.0,
+                    "url": "https://example.invalid/PRIVATE_MEDIA_ROLE",
+                    "source": "sidechat",
+                }
+            ]
+
+        def _updater(*_args, **_kwargs):
+            calls["updater"] += 1
+            return True
+
+        def _queue_writer(_record):
+            calls["queued"] += 1
+
+        processed = sync.sync_shared_links_once(
+            video_id="vid",
+            links_reader=_links_reader,
+            updater=_updater,
+            description_reader=lambda _video_id: "",
+            cursor_loader=lambda: cursor["value"],
+            cursor_saver=lambda ts: cursor.update(value=ts),
+            queue_writer=_queue_writer,
+        )
+
+        assert processed == 0
+        assert cursor["value"] == 10.0
+        assert calls == {"updater": 0, "queued": 0}
 
 
 # ── YT bundle B2 — attribution backflow into syncer ──────────────────

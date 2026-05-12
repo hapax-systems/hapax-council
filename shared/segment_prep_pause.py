@@ -65,6 +65,8 @@ MODE_ALIASES: dict[str, str] = {
     "runtime_allowed": "runtime_pool_load_allowed",
 }
 
+CANARY_REVIEW_UNLOCK_MODES = frozenset({"open", "runtime_pool_load_allowed"})
+
 
 class SegmentPrepPauseError(RuntimeError):
     """Raised when the pause state cannot be read or normalized."""
@@ -219,10 +221,16 @@ def save_pause_state(
     updated_by: str | None = None,
     path: Path | str | None = None,
     env: Mapping[str, str] | None = None,
+    canary_review_receipt_path: Path | str | None = None,
 ) -> SegmentPrepPauseState:
     resolved = pause_state_path(path, env=env)
+    normalized_mode = normalize_mode(mode)
+    if normalized_mode in CANARY_REVIEW_UNLOCK_MODES:
+        from shared.segment_iteration_review import assert_next_nine_canary_ready
+
+        assert_next_nine_canary_ready(canary_review_receipt_path, env=env)
     state = _state_from_mode(
-        mode,
+        normalized_mode,
         reason=reason,
         updated_at=datetime.now(tz=UTC).isoformat(),
         updated_by=updated_by or os.environ.get("USER", "unknown"),
@@ -294,6 +302,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--set", dest="set_mode", help="write a pause mode")
     parser.add_argument("--reason", default="", help="reason to store with --set")
     parser.add_argument("--updated-by", default=None, help="operator/session label for --set")
+    parser.add_argument(
+        "--canary-review-receipt",
+        type=Path,
+        default=None,
+        help="passing canary review receipt required before setting an open runtime mode",
+    )
     parser.add_argument("--clear", action="store_true", help="remove the pause file")
     parser.add_argument("--path", type=Path, default=None, help="override pause-state file path")
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
@@ -308,6 +322,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reason=args.reason,
                 updated_by=args.updated_by,
                 path=args.path,
+                canary_review_receipt_path=args.canary_review_receipt,
             )
         else:
             state = load_pause_state(args.path)

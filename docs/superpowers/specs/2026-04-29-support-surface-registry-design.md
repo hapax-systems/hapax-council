@@ -42,11 +42,11 @@ Required active or guarded surfaces:
 - `lightning_invoice_receive`
 - `nostr_zaps`
 - `kofi_tips_guarded`
+- `github_sponsors`
 - `sponsor_support_copy`
 
 Required refusal conversions:
 
-- `github_sponsors`
 - `patreon`
 - `substack_paid_subscription`
 - `discord_community_subscriptions`
@@ -107,8 +107,9 @@ false.
 
 The following older assumptions are superseded:
 
-- GitHub Sponsors profile copy and repo funding files are refused. The buildable
-  conversion is no-perk support copy plus license-request routing.
+- Older sponsorware-shaped GitHub Sponsors profile copy remains refused. The
+  buildable surface is now the `hapax-systems` org Sponsors profile with
+  no-perk tiers, aggregate-only receipt projection, and repo funding metadata.
 - Patreon tiers, posts, role sync, and perk ladders are refused. The buildable
   conversion is no-perk support through Liberapay, Lightning, and Nostr zaps.
 - Discord community/server subscriptions and role-gated channels are refused.

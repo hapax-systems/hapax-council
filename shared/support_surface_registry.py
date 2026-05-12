@@ -46,7 +46,6 @@ REQUIRED_SURFACE_IDS: frozenset[str] = frozenset(
 )
 REQUIRED_REFUSAL_CONVERSIONS: frozenset[str] = frozenset(
     {
-        "github_sponsors",
         "patreon",
         "substack_paid_subscription",
         "discord_community_subscriptions",

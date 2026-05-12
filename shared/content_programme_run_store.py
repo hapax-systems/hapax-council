@@ -8,6 +8,17 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from shared.livestream_role_state import (
+    AuthorityCeiling,
+    LivestreamRole,
+    LivestreamRoleState,
+    MonetizationPosture,
+    PublicMode,
+    SpeechActDestination,
+    SpeechActKind,
+    SpeechPosture,
+)
+
 type PublicPrivateMode = Literal[
     "private",
     "dry_run",
@@ -485,6 +496,7 @@ class ContentProgrammeRunEnvelope(RunStoreModel):
     requested_public_private_mode: PublicPrivateMode
     public_private_mode: PublicPrivateMode
     rights_privacy_public_mode: RightsPrivacyPublicMode
+    role_state: LivestreamRoleState
     selected_opportunity: SelectedOpportunityRef
     selected_format: SelectedFormatRef
     broadcast_refs: tuple[str, ...] = Field(default_factory=tuple)
@@ -515,6 +527,20 @@ class ContentProgrammeRunEnvelope(RunStoreModel):
     def _validate_nested_outcome_graph(self) -> Self:
         if self.nested_outcomes:
             validate_nested_programme_outcomes(self.nested_outcomes)
+        if self.role_state.active_programme_run_ref not in {
+            "",
+            self.run_id,
+            f"ContentProgrammeRunEnvelope:{self.run_id}",
+        }:
+            raise ValueError("role_state.active_programme_run_ref must reference the run")
+        if (
+            self.role_state.grounding_question
+            and self.role_state.grounding_question != self.grounding_question
+        ):
+            raise ValueError("role_state.grounding_question must mirror programme run")
+        expected_public_mode = public_mode_for_programme_mode(self.public_private_mode)
+        if self.role_state.public_mode is not expected_public_mode:
+            raise ValueError("role_state.public_mode must mirror programme effective mode")
         return self
 
 
@@ -693,6 +719,68 @@ def witnessed_outcome_allows_posterior_update(outcome: WitnessedOutcomeRecord) -
     )
 
 
+def public_mode_for_programme_mode(mode: PublicPrivateMode) -> PublicMode:
+    """Map programme run modes into the shared livestream role vocabulary."""
+
+    if mode == "public_live":
+        return PublicMode.PUBLIC_LIVE
+    if mode in {"public_archive", "public_monetizable"}:
+        return PublicMode.PUBLIC_ARCHIVE
+    if mode == "dry_run":
+        return PublicMode.DRY_RUN
+    return PublicMode.PRIVATE
+
+
+def build_livestream_role_state_for_run(
+    *,
+    run_id: str,
+    public_private_mode: PublicPrivateMode,
+    final_status: RunFinalStatus,
+    grounding_question: str,
+    director_snapshot_ref: str,
+    available_wcs_surfaces: Iterable[str],
+    blocked_wcs_surfaces: Iterable[str] = (),
+    stale_wcs_surfaces: Iterable[str] = (),
+    private_only_wcs_surfaces: Iterable[str] = (),
+    monetization_ready: bool = False,
+) -> LivestreamRoleState:
+    """Build the role-state binding for a programme run envelope."""
+
+    public_mode = public_mode_for_programme_mode(public_private_mode)
+    available = tuple(dict.fromkeys(available_wcs_surfaces))
+    blocked = tuple(dict.fromkeys(blocked_wcs_surfaces))
+    stale = tuple(dict.fromkeys(stale_wcs_surfaces))
+    private_only = tuple(dict.fromkeys(private_only_wcs_surfaces))
+    return LivestreamRoleState(
+        role_state_id=f"livestream-role-state:{run_id}",
+        current_role=_role_for_final_status(final_status),
+        public_mode=public_mode,
+        expected_speech_posture=_speech_posture_for_mode(public_mode),
+        authority_ceiling=_authority_for_mode(public_mode),
+        grounding_question=grounding_question,
+        active_programme_run_ref=run_id,
+        director_move_snapshot_ref=director_snapshot_ref,
+        required_wcs_surfaces=tuple(dict.fromkeys((*available, *blocked, *stale, *private_only))),
+        available_wcs_surfaces=available,
+        blocked_wcs_surfaces=blocked,
+        stale_wcs_surfaces=stale,
+        private_only_wcs_surfaces=private_only,
+        allowed_speech_acts=_speech_acts_for_run(
+            public_mode=public_mode,
+            final_status=final_status,
+            monetization_ready=monetization_ready,
+        ),
+        speech_destination_policy=_destinations_for_mode(public_mode),
+        completion_witness_requirements=_completion_requirements_for_mode(public_mode),
+        monetization_ready=monetization_ready,
+        monetization_posture=(
+            MonetizationPosture.READY if monetization_ready else MonetizationPosture.NOT_REQUESTED
+        ),
+        refusal_posture="programme_failed_closed" if final_status == "refused" else "",
+        correction_posture="programme_correction" if final_status == "corrected" else "",
+    )
+
+
 def public_conversion_is_allowed(candidate: ConversionCandidate) -> bool:
     """Check public conversion blockers without re-evaluating programme semantics."""
 
@@ -710,6 +798,87 @@ def public_conversion_is_allowed(candidate: ConversionCandidate) -> bool:
     return not (
         candidate.conversion_type == "monetization" and candidate.monetization_readiness_ref is None
     )
+
+
+def _role_for_final_status(final_status: RunFinalStatus) -> LivestreamRole:
+    if final_status == "refused":
+        return LivestreamRole.REFUSAL_CLERK
+    if final_status == "corrected":
+        return LivestreamRole.CORRECTION_WITNESS
+    if final_status == "conversion_held":
+        return LivestreamRole.ARCHIVE_NARRATOR
+    if final_status == "blocked":
+        return LivestreamRole.REFUSAL_CLERK
+    return LivestreamRole.PROGRAMME_HOST
+
+
+def _speech_posture_for_mode(public_mode: PublicMode) -> SpeechPosture:
+    if public_mode is PublicMode.PUBLIC_LIVE:
+        return SpeechPosture.PUBLIC_NARRATION
+    if public_mode is PublicMode.PUBLIC_ARCHIVE:
+        return SpeechPosture.ARCHIVE_ONLY
+    if public_mode is PublicMode.DRY_RUN:
+        return SpeechPosture.DIRECTOR_DRY_RUN
+    return SpeechPosture.PRIVATE_NOTE
+
+
+def _authority_for_mode(public_mode: PublicMode) -> AuthorityCeiling:
+    if public_mode is PublicMode.PUBLIC_LIVE:
+        return AuthorityCeiling.PUBLIC_LIVE
+    if public_mode is PublicMode.PUBLIC_ARCHIVE:
+        return AuthorityCeiling.PUBLIC_VISIBLE
+    if public_mode is PublicMode.DRY_RUN:
+        return AuthorityCeiling.DIAGNOSTIC
+    return AuthorityCeiling.PRIVATE_ONLY
+
+
+def _destinations_for_mode(public_mode: PublicMode) -> frozenset[SpeechActDestination]:
+    if public_mode is PublicMode.PUBLIC_LIVE:
+        return frozenset(
+            {
+                SpeechActDestination.PRIVATE,
+                SpeechActDestination.PUBLIC_LIVE,
+                SpeechActDestination.PUBLIC_ARCHIVE,
+            }
+        )
+    if public_mode is PublicMode.PUBLIC_ARCHIVE:
+        return frozenset({SpeechActDestination.PRIVATE, SpeechActDestination.PUBLIC_ARCHIVE})
+    if public_mode is PublicMode.DRY_RUN:
+        return frozenset({SpeechActDestination.PRIVATE, SpeechActDestination.DIRECTOR_DRY_RUN})
+    return frozenset({SpeechActDestination.PRIVATE})
+
+
+def _completion_requirements_for_mode(public_mode: PublicMode) -> tuple[str, ...]:
+    if public_mode is PublicMode.PUBLIC_LIVE:
+        return ("wcs_snapshot_ref", "route_ref", "egress_completion_witness")
+    if public_mode is PublicMode.PUBLIC_ARCHIVE:
+        return ("wcs_snapshot_ref", "archive_playback_witness")
+    if public_mode is PublicMode.DRY_RUN:
+        return ("director_dry_run_record",)
+    return ("private_audit_record",)
+
+
+def _speech_acts_for_run(
+    *,
+    public_mode: PublicMode,
+    final_status: RunFinalStatus,
+    monetization_ready: bool,
+) -> frozenset[SpeechActKind]:
+    acts = {
+        SpeechActKind.HOST_BEAT,
+        SpeechActKind.GROUNDING_ANNOTATION,
+        SpeechActKind.BOUNDARY_MARKER,
+        SpeechActKind.CONTINUITY_BRIDGE,
+    }
+    if public_mode in {PublicMode.PUBLIC_LIVE, PublicMode.PUBLIC_ARCHIVE}:
+        acts.add(SpeechActKind.ARCHIVE_MARKER)
+    if final_status in {"blocked", "refused", "conversion_held"}:
+        acts.add(SpeechActKind.REFUSAL_ARTICULATION)
+    if final_status == "corrected":
+        acts.add(SpeechActKind.CORRECTION_ARTICULATION)
+    if monetization_ready:
+        acts.add(SpeechActKind.CONVERSION_CUE)
+    return frozenset(acts)
 
 
 def validate_nested_programme_outcomes(outcomes: Sequence[NestedProgrammeOutcome]) -> None:
@@ -840,6 +1009,25 @@ def build_fixture_envelope(
         refusal_refs=(f"refusal:{case.case_id}",) if case.final_status == "refused" else (),
         correction_refs=(f"correction:{case.case_id}",) if case.final_status == "corrected" else (),
     )
+    grounding_question = f"What can this {case.format_id} run ground from declared evidence?"
+    director_snapshot_ref = f"director-snapshot:{case.case_id}"
+    role_state = build_livestream_role_state_for_run(
+        run_id=run_id,
+        public_private_mode=case.effective_mode,
+        final_status=case.final_status,
+        grounding_question=grounding_question,
+        director_snapshot_ref=director_snapshot_ref,
+        available_wcs_surfaces=(
+            (f"semantic-substrate:{case.case_id}",)
+            if case.effective_mode in {"public_live", "public_archive", "public_monetizable"}
+            else evidence_envelope_refs
+        ),
+        blocked_wcs_surfaces=tuple(f"blocker:{reason}" for reason in case.unavailable_reasons),
+        private_only_wcs_surfaces=(
+            (f"semantic-substrate:{case.case_id}",) if case.effective_mode == "private" else ()
+        ),
+        monetization_ready=case.effective_mode == "public_monetizable",
+    )
 
     return ContentProgrammeRunEnvelope(
         run_id=run_id,
@@ -849,10 +1037,11 @@ def build_fixture_envelope(
         condition_id="condition_content_programming_20260429",
         selected_at=now,
         selected_by="content_opportunity_model",
-        grounding_question=f"What can this {case.format_id} run ground from declared evidence?",
+        grounding_question=grounding_question,
         requested_public_private_mode=case.requested_mode,
         public_private_mode=case.effective_mode,
         rights_privacy_public_mode=rights_public_mode,
+        role_state=role_state,
         selected_opportunity=SelectedOpportunityRef(
             decision_id=decision_id,
             decision_ref=f"content-opportunity-model:{decision_id}",
@@ -878,7 +1067,7 @@ def build_fixture_envelope(
         substrate_refs=(f"substrate:{case.case_id}",),
         semantic_capability_refs=(f"capability:{case.format_id}",),
         director_plan=DirectorPlanRef(
-            director_snapshot_ref=f"director-snapshot:{case.case_id}",
+            director_snapshot_ref=director_snapshot_ref,
             director_plan_ref=f"director-plan:{case.case_id}",
             director_move_refs=(f"director-move:{case.case_id}",),
             condition_id="condition_content_programming_20260429",

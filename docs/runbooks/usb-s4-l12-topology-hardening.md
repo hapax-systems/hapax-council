@@ -32,6 +32,8 @@ replug witness:
 - `config/kernel-cmdline/hapax-usb-reliability.params`: bootloader parameter
   source for built-in usbcore and early uvcvideo defaults.
 - `scripts/hapax-usb-topology-witness`: JSON status witness and light repair.
+  S-4/L-12 identity is matched by stable USB serial/vendor/product attributes;
+  bus `ID_PATH` is diagnostic because it drifts across reboots and port moves.
 - `systemd/units/hapax-usb-topology-witness.service` and `.timer`: periodic
   user witness.
 - `scripts/hapax-usb-bandwidth-watchdog` and
@@ -82,6 +84,7 @@ Expected:
 - `usbfs_memory_mb` is `128`.
 - `uvcvideo` quirks is `256` or `0x100`.
 - Witness `ok` is `true`.
+- S-4/L-12 `stable_id` values are populated when those devices are present.
 
 Then preserve hardware evidence:
 
@@ -112,12 +115,14 @@ Expected:
 
 - S-4 serial is `fedcba9876543220`.
 - `UDISKS_IGNORE=1` and `ID_MM_DEVICE_IGNORE=1` are present for the storage
-  function.
+  function. The witness prefers `/dev/disk/by-id`; if that symlink is not ready
+  during boot, it falls back to udev attributes on sysfs block devices without
+  making a volatile `/dev/sdX` name part of the contract.
 - `NM_UNMANAGED=1` and `ID_MM_DEVICE_IGNORE=1` are present for the CDC
   Ethernet function.
 - `nmcli` reports the S-4 CDC Ethernet interface as unmanaged.
 - `power/control` is `on`.
-- No `s4_usb_missing`, `s4_path_drift:*`, `s4_sink_missing`,
+- No `s4_usb_missing`, `s4_sink_missing`,
   `s4_source_missing`, `s4_alsa_*_missing`, or `s4_*midi*_missing` issues.
 
 For L-12:
@@ -160,6 +165,8 @@ Load-bearing fields:
   `l12_default_sink_drift:*`, `camera_on_caldigit:*`, or
   `kernel_usbfs_memory_mb_drift:*`.
 - `s4.block`: udisks and ModemManager suppression evidence.
+- `s4.stable_id` / `l12.stable_id`: stable USB serial/vendor/product identity.
+- `s4.path` / `l12.path`: current bus path for diagnostics only.
 - `s4.net`: NetworkManager unmanaged and ModemManager suppression evidence.
 - `l12.default_sink` / `l12.default_source`: PipeWire role evidence.
 - `cameras[]`: Logitech serial/path placement evidence.
@@ -184,9 +191,9 @@ S-4 absent:
 
 1. Run `scripts/hapax-usb-topology-witness` and preserve the JSON output.
 2. Check `journalctl -k -b --no-pager | rg -i 'torso|s-4|usb|reset|disconnect'`.
-3. Replug S-4 on an approved CalDigit branch and re-run the witness. Current
-   approved branches are `pci-0000:71:00.0-usb-0:1.5` and
-   `pci-0000:71:00.0-usb-0:1.1.1.3`.
+3. Replug S-4 and re-run the witness. Confirm the returned `stable_id` matches
+   the S-4 serial/vendor/product identity; do not promote a volatile bus path
+   or `/dev/sdX` name into policy.
 4. Do not copy firmware or staged OS payloads unless the operator explicitly
    assigns a firmware task.
 

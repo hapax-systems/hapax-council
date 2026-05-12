@@ -35,6 +35,7 @@ def _make_spec(role: str = "test_cam", width: int = 320, height: int = 240) -> m
     spec.device = "/dev/null"  # not opened — build is lazy
     spec.width = width
     spec.height = height
+    spec.orientation = "identity"
     spec.input_format = "raw"
     spec.pixel_format = "YUY2"
     return spec
@@ -96,6 +97,91 @@ class TestCameraPipelineConstruction:
         Gst, _ = gst
         cam = CameraPipeline(_make_spec(), gst=Gst, fps=30)
         assert cam.last_frame_age_seconds == float("inf")
+
+    def test_clear_frame_observation_resets_prior_frame_proof(self, gst):
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        Gst, _ = gst
+        cam = CameraPipeline(_make_spec(), gst=Gst, fps=30)
+        cam._last_frame_monotonic = time.monotonic()  # type: ignore[attr-defined]
+        assert cam.last_frame_age_seconds < 1.0
+        cam.clear_frame_observation()
+        assert cam.last_frame_age_seconds == float("inf")
+
+    def test_buffer_allocation_context_names_loopback_producer(
+        self, gst, monkeypatch: pytest.MonkeyPatch
+    ):
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        Gst, _ = gst
+        cam = CameraPipeline(_make_spec(), gst=Gst, fps=30)
+        monkeypatch.setattr(cam, "_is_v4l2loopback_source", lambda: True)
+        context = cam._buffer_allocation_error_context()
+        assert "loopback producer" in context
+        assert "USB bus-kick" not in context
+
+    def test_buffer_allocation_context_names_physical_device(
+        self, gst, monkeypatch: pytest.MonkeyPatch
+    ):
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        Gst, _ = gst
+        cam = CameraPipeline(_make_spec(), gst=Gst, fps=30)
+        monkeypatch.setattr(cam, "_is_v4l2loopback_source", lambda: False)
+        context = cam._buffer_allocation_error_context()
+        assert "USB bus-kick" in context
+        assert "loopback producer" not in context
+
+    def test_http_duplicate_last_good_is_opt_in(self, gst, monkeypatch: pytest.MonkeyPatch) -> None:
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        Gst, _ = gst
+        cam = CameraPipeline(_make_spec(), gst=Gst, fps=30)
+        monkeypatch.delenv(
+            "HAPAX_HTTP_JPEG_CAMERA_DUPLICATE_LAST_GOOD_ON_FETCH_FAILURE", raising=False
+        )
+        assert cam._http_duplicate_last_good_on_fetch_failure() is False
+        monkeypatch.setenv("HAPAX_HTTP_JPEG_CAMERA_DUPLICATE_LAST_GOOD_ON_FETCH_FAILURE", "true")
+        assert cam._http_duplicate_last_good_on_fetch_failure() is True
+
+    def test_http_fetch_failure_does_not_push_last_good_by_default(self, gst) -> None:
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        Gst, _ = gst
+        cam = CameraPipeline(_make_spec(), gst=Gst, fps=30)
+        frame, last_good = cam._select_http_frame_for_push(
+            None,
+            b"previous-frame",
+            duplicate_last_good=False,
+        )
+        assert frame is None
+        assert last_good == b"previous-frame"
+
+    def test_http_fetch_failure_can_duplicate_last_good_when_enabled(self, gst) -> None:
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        Gst, _ = gst
+        cam = CameraPipeline(_make_spec(), gst=Gst, fps=30)
+        frame, last_good = cam._select_http_frame_for_push(
+            None,
+            b"previous-frame",
+            duplicate_last_good=True,
+        )
+        assert frame == b"previous-frame"
+        assert last_good == b"previous-frame"
+
+    def test_http_fresh_frame_replaces_last_good(self, gst) -> None:
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        Gst, _ = gst
+        cam = CameraPipeline(_make_spec(), gst=Gst, fps=30)
+        frame, last_good = cam._select_http_frame_for_push(
+            b"fresh-frame",
+            b"previous-frame",
+            duplicate_last_good=False,
+        )
+        assert frame == b"fresh-frame"
+        assert last_good == b"fresh-frame"
 
     def test_stop_without_build_is_idempotent(self, gst):
         from agents.studio_compositor.camera_pipeline import CameraPipeline
@@ -230,6 +316,7 @@ class TestDecodeQueueCapacity:
         spec.device = "/dev/null"
         spec.width = 1280
         spec.height = 720
+        spec.orientation = "identity"
         spec.input_format = "mjpeg"
         spec.pixel_format = None
         return spec
@@ -267,6 +354,65 @@ class TestDecodeQueueCapacity:
             f"stalls never backpressure into v4l2src; got {leaky}"
         )
         cam.teardown()
+
+
+class TestCameraOrientationNormalization:
+    def _http_spec(
+        self,
+        role: str = "http-rotated",
+        *,
+        orientation: str = "identity",
+        width: int = 640,
+        height: int = 360,
+    ) -> mock.Mock:
+        spec = _make_spec(role, width=width, height=height)
+        spec.device = "http://example.invalid/frame.jpg"
+        spec.input_format = "http_jpeg"
+        spec.pixel_format = None
+        spec.orientation = orientation
+        return spec
+
+    def test_orientation_aliases_map_to_videoflip_methods(self) -> None:
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        assert CameraPipeline._orientation_method("identity") is None
+        assert CameraPipeline._orientation_method("90r") == 1
+        assert CameraPipeline._orientation_method("clockwise") == 1
+        assert CameraPipeline._orientation_method("180") == 2
+        assert CameraPipeline._orientation_method("90l") == 3
+        assert CameraPipeline._orientation_method("counterclockwise") == 3
+
+    def test_unknown_orientation_fails_explicitly(self, gst) -> None:
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        Gst, _ = gst
+        cam = CameraPipeline(self._http_spec(orientation="sideways-ish"), gst=Gst, fps=30)
+        with pytest.raises(ValueError, match="unknown camera orientation"):
+            cam.build()
+
+    def test_http_pipeline_includes_videoflip_for_rotated_source(self, gst) -> None:
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        Gst, _ = gst
+        cam = CameraPipeline(self._http_spec(orientation="90r"), gst=Gst, fps=30)
+        cam.build()
+        try:
+            flip = cam._pipeline.get_by_name("flip_http_rotated")
+            assert flip is not None
+            assert int(flip.get_property("method")) == 1
+        finally:
+            cam.teardown()
+
+    def test_http_pipeline_omits_videoflip_for_identity_source(self, gst) -> None:
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        Gst, _ = gst
+        cam = CameraPipeline(self._http_spec(orientation="identity"), gst=Gst, fps=30)
+        cam.build()
+        try:
+            assert cam._pipeline.get_by_name("flip_http_rotated") is None
+        finally:
+            cam.teardown()
 
 
 class TestColdStartFrameFlowGrace:

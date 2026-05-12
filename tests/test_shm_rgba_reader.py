@@ -8,6 +8,7 @@ Plan task 5/29. See
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from agents.studio_compositor.shm_rgba_reader import ShmRgbaReader
@@ -49,6 +50,27 @@ class TestShmRgbaReaderHappyPath:
         first = reader.get_current_surface()
         second = reader.get_current_surface()
         assert first is second
+
+    def test_max_age_returns_none_for_stale_frame(self, tmp_path: Path):
+        path = _write_rgba_and_sidecar(tmp_path, w=4, h=3, fill=0xCC, frame_id=7)
+        sidecar = path.with_suffix(".rgba.json")
+        os.utime(path, (100.0, 100.0))
+        os.utime(sidecar, (100.0, 100.0))
+        reader = ShmRgbaReader(path, max_age_s=10.0, clock=lambda: 111.0)
+
+        assert reader.get_current_surface() is None
+
+    def test_max_age_clears_cached_surface_after_frame_goes_stale(self, tmp_path: Path):
+        now = 105.0
+        path = _write_rgba_and_sidecar(tmp_path, w=4, h=3, fill=0xCC, frame_id=7)
+        sidecar = path.with_suffix(".rgba.json")
+        os.utime(path, (100.0, 100.0))
+        os.utime(sidecar, (100.0, 100.0))
+        reader = ShmRgbaReader(path, max_age_s=10.0, clock=lambda: now)
+
+        assert reader.get_current_surface() is not None
+        now = 120.0
+        assert reader.get_current_surface() is None
 
 
 class TestShmRgbaReaderMissing:

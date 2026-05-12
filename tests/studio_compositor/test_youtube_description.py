@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -56,6 +57,37 @@ class TestAssemble:
         assert "Close LRR epic" in out
         assert "Reactions observed: 42" in out
         assert "Research stream" in out
+
+    def test_private_nonbroadcast_markers_are_omitted_from_text_fields(self):
+        out = assemble_description(
+            condition_id="PRIVATE_MEDIA_ROLE",
+            claim_id="claim-PRIVATE",
+            objective_title="Review non-broadcast private monitor route",
+            substrate_model="hapax-private",
+            extra="audio.private_assistant_monitor should stay local",
+        )
+
+        assert "Condition: unknown" in out
+        assert "Substrate: unknown" in out
+        assert "Claim:" not in out
+        assert "Current objective:" not in out
+        assert "private" not in out.lower()
+        assert "non-broadcast" not in out.lower()
+        assert "audio.private" not in out
+
+    def test_private_sentinel_redaction_does_not_leave_private_marker(self):
+        sentinel = "PRIVATE_SENTINEL_DO_NOT_PUBLISH_20260505_XSURF_9F4C2A"
+        out = assemble_description(
+            condition_id=f"condition {sentinel}",
+            claim_id=f"claim {sentinel}",
+            objective_title=f"public objective {sentinel}",
+            substrate_model=f"model {sentinel}",
+            extra=f"extra {sentinel}",
+        )
+
+        assert sentinel not in out
+        assert "PRIVATE" not in out
+        assert "[redacted]" in out
 
 
 class TestQuota:
@@ -254,6 +286,70 @@ class TestAttributionRendering:
         assert "Substrate: qwen3" in desc
         # Attribution section appears AFTER the rest.
         assert desc.index("Sources:") > desc.index("Substrate:")
+
+    def test_private_attribution_title_is_redacted_without_private_marker(self):
+        sentinel = "PRIVATE_SENTINEL_DO_NOT_PUBLISH_20260505_XSURF_9F4C2A"
+        entries = [self._entry("github", "https://github.com/x/y", title=f"repo {sentinel}")]
+        desc = assemble_description(
+            condition_id="cond-1",
+            claim_id=None,
+            objective_title=None,
+            substrate_model="x",
+            attributions=entries,
+        )
+
+        assert sentinel not in desc
+        assert "PRIVATE" not in desc
+        assert "repo [redacted]: https://github.com/x/y" in desc
+
+    def test_private_attribution_url_and_metadata_are_dropped(self):
+        sentinel = "PRIVATE_SENTINEL_DO_NOT_PUBLISH_20260505_XSURF_9F4C2A"
+        entries = [
+            self._entry(
+                "github",
+                "https://github.com/public/repo",
+                title="safe",
+                ts=3,
+            ),
+            self._entry(
+                "github",
+                "https://example.invalid/PRIVATE_MEDIA_ROLE",
+                title="bad url",
+                ts=2,
+            ),
+            self._entry(
+                "github",
+                f"https://example.invalid/{sentinel}",
+                title="bad sentinel url",
+                ts=2,
+            ),
+            replace(
+                self._entry(
+                    "other",
+                    "https://example.invalid/private-audio",
+                    title="private audio",
+                    ts=1,
+                ),
+                metadata={
+                    "broadcast_safe": False,
+                    "source_id": "hapax-private",
+                },
+            ),
+        ]
+        desc = assemble_description(
+            condition_id="cond-1",
+            claim_id=None,
+            objective_title=None,
+            substrate_model="x",
+            attributions=entries,
+        )
+
+        assert "https://github.com/public/repo" in desc
+        assert sentinel not in desc
+        assert "PRIVATE_MEDIA_ROLE" not in desc
+        assert "bad sentinel url" not in desc
+        assert "hapax-private" not in desc
+        assert "private audio" not in desc
 
 
 class TestReadQuotaState:

@@ -1,9 +1,8 @@
 """Auto-clip Shorts pipeline.
 
-The :mod:`segment_detection` submodule ships the LLM-assisted layer that
-scans a rolling transcript / impingement / chat window and proposes
-high-resonance segment candidates for the downstream clip-extraction
-pipeline (cc-task ``auto-clip-shorts-livestream-pipeline``, in flight).
+Detects livestream highlights via LLM, extracts clips from the HLS
+archive, renders vertical Shorts with V5 attribution, and dispatches
+to YouTube Shorts / Instagram Reels / TikTok.
 """
 
 from agents.auto_clip.segment_detection import (
