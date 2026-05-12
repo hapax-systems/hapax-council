@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,6 +27,8 @@ log = logging.getLogger(__name__)
 # budget; the Python re-encode replaces the GStreamer ``jpegenc`` element
 # so we can run face obscuring on the raw BGR buffer first.
 _JPEG_QUALITY = 75
+_DEFAULT_CAMERA_SNAPSHOT_FRAMERATE = Fraction(1, 5)
+_MAX_CAMERA_SNAPSHOT_FRAMERATE = Fraction(30, 1)
 
 
 def _is_filesystem_camera(cam: CameraSpec) -> bool:
@@ -37,21 +40,50 @@ def _is_filesystem_camera(cam: CameraSpec) -> bool:
     return not device.startswith(("http://", "https://"))
 
 
+def _camera_snapshot_framerate() -> Fraction:
+    raw = os.environ.get("HAPAX_CAMERA_SNAPSHOT_FRAMERATE")
+    if not raw:
+        return _DEFAULT_CAMERA_SNAPSHOT_FRAMERATE
+    try:
+        rate = Fraction(raw)
+    except (ValueError, ZeroDivisionError):
+        log.warning(
+            "Invalid HAPAX_CAMERA_SNAPSHOT_FRAMERATE=%r; using %s",
+            raw,
+            _DEFAULT_CAMERA_SNAPSHOT_FRAMERATE,
+        )
+        return _DEFAULT_CAMERA_SNAPSHOT_FRAMERATE
+    if rate <= 0:
+        log.warning(
+            "Non-positive HAPAX_CAMERA_SNAPSHOT_FRAMERATE=%r; using %s",
+            raw,
+            _DEFAULT_CAMERA_SNAPSHOT_FRAMERATE,
+        )
+        return _DEFAULT_CAMERA_SNAPSHOT_FRAMERATE
+    return min(rate, _MAX_CAMERA_SNAPSHOT_FRAMERATE)
+
+
 def add_camera_snapshot_branch(
     compositor: Any, pipeline: Any, camera_tee: Any, cam: CameraSpec
 ) -> None:
     """Add per-camera snapshot branch writing JPEG to /dev/shm."""
     Gst = compositor._Gst
     role = cam.role.replace("-", "_")
+    snapshot_rate = _camera_snapshot_framerate()
 
     queue = Gst.ElementFactory.make("queue", f"queue-camsnap-{role}")
     queue.set_property("leaky", 2)
     queue.set_property("max-size-buffers", 2)
-    convert = Gst.ElementFactory.make("videoconvert", f"camsnap-convert-{role}")
-    convert.set_property("dither", 0)  # none — Bayer default creates sawtooth columns
     rate = Gst.ElementFactory.make("videorate", f"camsnap-rate-{role}")
     rate_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-ratecaps-{role}")
-    rate_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,framerate=1/5"))
+    rate_caps.set_property(
+        "caps",
+        Gst.Caps.from_string(
+            f"video/x-raw,framerate={snapshot_rate.numerator}/{snapshot_rate.denominator}"
+        ),
+    )
+    convert = Gst.ElementFactory.make("videoconvert", f"camsnap-convert-{role}")
+    convert.set_property("dither", 0)  # none — Bayer default creates sawtooth columns
     scale = Gst.ElementFactory.make("videoscale", f"camsnap-scale-{role}")
     scale_caps = Gst.ElementFactory.make("capsfilter", f"camsnap-scalecaps-{role}")
     snap_w = min(cam.width, 640)
@@ -73,7 +105,10 @@ def add_camera_snapshot_branch(
     appsink.set_property("drop", True)
     appsink.set_property("max-buffers", 1)
 
-    chain = [queue, convert, rate, rate_caps, scale, scale_caps, appsink]
+    # Rate-limit before conversion/scaling/face-obscure/JPEG encode. Putting
+    # videorate after videoconvert made every camera snapshot branch pay
+    # conversion cost at live camera cadence before dropping frames.
+    chain = [queue, rate, rate_caps, convert, scale, scale_caps, appsink]
 
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     snap_role = cam.role
@@ -156,6 +191,13 @@ def add_camera_snapshot_branch(
     tee_pad = camera_tee.request_pad(camera_tee.get_pad_template("src_%u"), None, None)
     queue_sink = queue.get_static_pad("sink")
     tee_pad.link(queue_sink)
+    log.info(
+        "Camera snapshot branch %s: %dx%d JPEG @ %s fps",
+        cam.role,
+        snap_w,
+        snap_h,
+        f"{snapshot_rate.numerator}/{snapshot_rate.denominator}",
+    )
 
 
 def add_camera_branch(
