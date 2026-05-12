@@ -124,12 +124,16 @@ def discover_source_files(
 ) -> list[Path]:
     files: list[Path] = []
     supported = {ext.lower() for ext in supported_extensions}
-    for directory in source_dirs:
-        if not directory.exists():
+    for source_path in source_dirs:
+        if not source_path.exists():
+            continue
+        if source_path.is_file():
+            if source_path.suffix.lower() in supported:
+                files.append(source_path)
             continue
         files.extend(
             path
-            for path in directory.rglob("*")
+            for path in source_path.rglob("*")
             if path.is_file() and path.suffix.lower() in supported
         )
     return sorted(files)
@@ -166,10 +170,11 @@ def _safe_read_text(path: Path, *, max_bytes: int = 2_000_000) -> str:
     if path.suffix.lower() not in TEXT_COVERAGE_EXTENSIONS:
         return ""
     try:
-        data = path.read_bytes()
+        with path.open("rb") as file:
+            data = file.read(max_bytes)
     except OSError:
         return ""
-    return data[:max_bytes].decode("utf-8", errors="replace")
+    return data.decode("utf-8", errors="replace")
 
 
 def _contains(haystack: str, needle: object) -> bool:

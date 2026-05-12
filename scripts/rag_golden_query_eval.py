@@ -107,6 +107,18 @@ def _label_record(label: Mapping[str, Any]) -> dict[str, str]:
     return {str(key): str(value) for key, value in label.items() if key != "grade"}
 
 
+def _hit_with_match_text(hit: Mapping[str, Any]) -> Mapping[str, Any]:
+    if hit.get("text"):
+        return hit
+    hit_with_text = dict(hit)
+    for key in ("text_excerpt", "snippet", "content"):
+        fallback = hit.get(key)
+        if fallback:
+            hit_with_text["text"] = fallback
+            break
+    return hit_with_text
+
+
 def corpus_utilization_metrics(query_reports: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     labels_by_signature: dict[str, Mapping[str, Any]] = {}
     source_labels_by_signature: dict[str, Mapping[str, Any]] = {}
@@ -126,7 +138,8 @@ def corpus_utilization_metrics(query_reports: Sequence[Mapping[str, Any]]) -> di
         for hit in report.get("hits", []):
             if not isinstance(hit, Mapping):
                 continue
-            for index in matched_label_indexes(hit, labels):
+            hit_with_text = _hit_with_match_text(hit)
+            for index in matched_label_indexes(hit_with_text, labels):
                 signature = label_signature(labels[index])
                 matched_signatures.add(signature)
                 if "source_contains" in labels[index]:

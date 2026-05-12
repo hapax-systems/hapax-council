@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -167,27 +168,71 @@ def test_run_suite_with_fake_client_separates_faithfulness() -> None:
 
 def test_corpus_utilization_metrics_use_explicit_label_denominator() -> None:
     module = _load_module()
-    query_reports = [
-        {
-            "expected_sources": [
-                {"source_contains": "target-a", "grade": 3},
-                {"text_contains": "target text", "grade": 2},
-            ],
-            "hits": [
-                {
-                    "source": "/tmp/target-a.md",
-                    "text": "target text",
-                    "is_metadata_hit": False,
-                }
-            ],
-        },
-        {
-            "expected_sources": [{"source_contains": "target-b", "grade": 3}],
-            "hits": [{"source": "/tmp/wrong.md", "text": "", "is_metadata_hit": False}],
-        },
-    ]
+    suite = {
+        "suite_id": "test-suite",
+        "version": 1,
+        "queries": [
+            {
+                "id": "q1",
+                "topic": "rag",
+                "query": "target a",
+                "expected_sources": [
+                    {"source_contains": "target-a", "grade": 3},
+                    {"text_contains": "target text", "grade": 2},
+                ],
+            },
+            {
+                "id": "q2",
+                "topic": "rag",
+                "query": "target b",
+                "expected_sources": [{"source_contains": "target-b", "grade": 3}],
+            },
+        ],
+    }
 
-    utilization = module.corpus_utilization_metrics(query_reports)
+    class FakeClient:
+        def __init__(self) -> None:
+            self.responses = [
+                [
+                    SimpleNamespace(
+                        id=1,
+                        score=0.9,
+                        payload={
+                            "source": "/tmp/target-a.md",
+                            "text": "prefix target text suffix",
+                        },
+                    )
+                ],
+                [
+                    SimpleNamespace(
+                        id=2,
+                        score=0.8,
+                        payload={
+                            "source": "/tmp/wrong.md",
+                            "text": "wrong text",
+                        },
+                    )
+                ],
+            ]
+
+        def query_points(self, **_kwargs):
+            return SimpleNamespace(points=self.responses.pop(0))
+
+    report = module.run_suite(
+        suite,
+        collection="documents",
+        limit=5,
+        precision_k=5,
+        qdrant_url="http://localhost:6333",
+        embedding_model="nomic-embed-cpu",
+        ollama_url="http://localhost:11434",
+        client=FakeClient(),
+        embedder=lambda _query: [0.1, 0.2],
+    )
+    serialized = json.loads(json.dumps(report))
+
+    assert "text" not in serialized["queries"][0]["hits"][0]
+    utilization = module.aggregate_metrics(serialized["queries"])["corpus_utilization"]
 
     assert utilization["matched_label_numerator"] == 2
     assert utilization["expected_label_denominator"] == 3

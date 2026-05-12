@@ -31,8 +31,8 @@ audit, research-basis, request, cc-task, and code evidence files.
 - uncovered labels: `0`
 
 The default shadow roots now include audit, handoff, foundations, lab journals,
-ledgers, active requests, active/closed cc-tasks, repo docs, scripts, agents,
-shared modules, and `packages/agentgov`.
+ledgers, active/closed requests, active/closed cc-tasks, repo docs, scripts,
+agents, shared modules, and `packages/agentgov`.
 
 ## Shadow Retrieval Result
 
@@ -47,14 +47,14 @@ golden-evidence backfill.
 | mean nDCG@k | `0.0169` | `0.8038` | `+0.7869` |
 | mean metadata-hit rate | `0.0` | `0.0` | `0.0` |
 | no relevant evidence rate | `0.95` | `0.0` | `-0.95` |
-| golden-label utilization | `0/27` | `17/27` | `+0.6296` |
+| golden-label utilization | `0/27` | `18/27` | `+0.6667` |
 | source-label utilization | `0/18` | `17/18` | `+0.9444` |
 
 Report artifacts were written locally during verification:
 
 - `/tmp/rag-documents-v2-source-coverage-report.json`
 - `/tmp/rag-golden-documents-source-coverage-baseline.json`
-- `/tmp/rag-golden-documents-v2-golden-sources-compared.json`
+- `/tmp/rag-golden-documents-v2-golden-sources-compared-post-review.json`
 
 ## Remaining Limits
 
