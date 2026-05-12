@@ -160,3 +160,39 @@ def test_compare_reports_returns_metric_deltas() -> None:
 
     assert comparison["metric_deltas"]["mean_precision_at_5"] == 0.2
     assert comparison["metric_deltas"]["mean_metadata_hit_rate"] == -0.6
+
+
+def test_run_embedding_health_preflight_delegates_to_guardrail(monkeypatch) -> None:
+    module = _load_module()
+    calls = []
+
+    class FakeSpec:
+        name = "_nomic_embedding_health_check"
+        loader = None
+
+    class FakeLoader:
+        def exec_module(self, loaded_module):
+            loaded_module.run_health_check = lambda **kwargs: calls.append(kwargs) or {"ok": True}
+
+    FakeSpec.loader = FakeLoader()
+    monkeypatch.setattr(module.importlib.util, "spec_from_file_location", lambda *_args: FakeSpec)
+    monkeypatch.setattr(
+        module.importlib.util, "module_from_spec", lambda _spec: type("M", (), {})()
+    )
+
+    report = module.run_embedding_health_preflight(
+        ollama_url="http://ollama.test",
+        embedding_model="nomic-embed-cpu",
+        embedding_base_model="nomic-embed-text-v2-moe",
+        expected_dimensions=768,
+    )
+
+    assert report == {"ok": True}
+    assert calls == [
+        {
+            "ollama_url": "http://ollama.test",
+            "model_alias": "nomic-embed-cpu",
+            "base_model": "nomic-embed-text-v2-moe",
+            "expected_dimensions": 768,
+        }
+    ]

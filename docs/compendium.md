@@ -844,7 +844,7 @@ React Flow visualization of the system's circulatory anatomy. 9 nodes (Perceptio
 | Prometheus | :9090 | Metrics collection | Yes |
 | Grafana | :3001 | Dashboards | Yes |
 | ntfy | :2586 | Push notifications | Yes |
-| Ollama | :11434 | Local inference (RTX 3090) | No (native) |
+| Ollama | :11434 | Local inference and embeddings (GPU 1 pinned) | No (native) |
 | Redis | :6379 | Caching/queue | Yes |
 | ClickHouse | :8123 | Time-series analytics | Yes |
 | MinIO | :9000 | S3-compatible storage | Yes |
@@ -856,7 +856,7 @@ React Flow visualization of the system's circulatory anatomy. 9 nodes (Perceptio
 |------------|-----------|---------|--------|
 | claude-memory | 768 | Claude Code conversation memory | **Empty** (0 points) |
 | profile-facts | 768 | Operator behavioral facts (2,505 facts) | **Proven** |
-| documents | 768 | RAG source embeddings | **Proven** |
+| documents | 768 | RAG source embeddings | **Runtime repaired; retrieval failed audit** |
 | axiom-precedents | 768 | Governance decision precedents (31 seed) | **Working** |
 | studio-moments | 512 (CLAP) | Audio classification events | **Working** |
 | hapax-apperceptions | 768 | Self-observation archive | **Experimental** |
@@ -896,7 +896,9 @@ hapax-secrets.service          (oneshot) Load all credentials from pass store
 
 ### Embedding
 
-Model: `nomic-embed-text-v2-moe` via Ollama. 768 dimensions. `embed()` and `embed_batch()` in `shared/config.py`. Graceful degradation: `embed_safe()` and `embed_batch_safe()` return None instead of raising when Ollama is unavailable.
+Model family: `nomic-embed-text-v2-moe` via Ollama. Hapax code calls the stable alias `nomic-embed-cpu` through `embed()` and `embed_batch()` in `shared/config.py`; the alias name is historical and does not prove CPU-only execution. The live 2026-05-12 repair restored the alias to the same digest as `nomic-embed-text-v2-moe:latest` and verified 768-dimensional `/api/embed` responses. Guardrail command: `uv run python scripts/nomic_embedding_health_check.py --pretty`.
+
+Embedding availability is not RAG quality. The 2026-05-12 golden-query run cleared the `model 'nomic-embed-cpu' not found` blocker but still showed `mean_precision_at_5=0.05`, `mean_metadata_hit_rate=0.6`, and `no_relevant_evidence_rate=0.95`; this keeps retrieval repair and Token Capital evidence claims below publishable status until the metadata/filtering and shadow reindex work succeeds.
 
 ### Observability
 
