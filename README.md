@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/hapax-systems/hapax-council/actions/workflows/ci.yml/badge.svg)](https://github.com/hapax-systems/hapax-council/actions/workflows/ci.yml)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20113515.svg)](https://doi.org/10.5281/zenodo.20113515)
-[![Support Hapax research](https://img.shields.io/badge/Support-Hapax%20research-b8bb26)](https://hapax.omg.lol/support)
+[![Support Hapax research](https://img.shields.io/badge/Support-Hapax%20research-b8bb26)](https://hapax.weblog.lol/support)
 [![License: PolyForm Strict](https://img.shields.io/badge/license-PolyForm%20Strict%201.0.0-blue)](LICENSE)
 [![Built with Claude Code](https://img.shields.io/badge/built%20with-Claude%20Code-blueviolet)](https://claude.ai/claude-code)
 
@@ -118,7 +118,7 @@ One `AffordancePipeline` gates everything across 6 domains (perception, expressi
 | Governance | 5 constitutional axioms enforced via [hapax-constitution](https://github.com/ryanklee/hapax-constitution) and [`axioms/`](axioms/). |
 | License | PolyForm Strict 1.0.0. See [`NOTICE.md`](NOTICE.md), [`CITATION.cff`](CITATION.cff), and [`license-reconciliation-status`](docs/governance/license-reconciliation-status.md). |
 | Authorship | Indeterminate by design: co-produced by Hapax (the system), Claude Code, and the operator. See [Hapax Manifesto v0](https://hapax.weblog.lol/hapax-manifesto-v0). |
-| Support / sponsorship | Public support page: [hapax.omg.lol/support](https://hapax.omg.lol/support). The org GitHub Sponsors surface is pending; launch copy routes through the verified no-perk support page and does not claim perks, access, requests, priority, deliverables, or control. |
+| Support / sponsorship | Public support page: [hapax.weblog.lol/support](https://hapax.weblog.lol/support). The org GitHub Sponsors surface is pending; launch copy routes through the verified no-perk support page and does not claim perks, access, requests, priority, deliverables, or control. |
 
 ## Ecosystem
 

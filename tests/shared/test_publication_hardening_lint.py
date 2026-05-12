@@ -9,6 +9,7 @@ import pytest
 
 from shared.publication_hardening.lint import (
     check_heading_hierarchy,
+    check_public_claim_overreach,
     lint_file,
     run_vale,
 )
@@ -68,6 +69,47 @@ class TestHeadingHierarchy:
         doc = tmp_path / "good.md"
         doc.write_text("# Title\n\n## Section\n\n### Sub\n\n## Back to H2\n")
         assert check_heading_hierarchy(doc) == []
+
+
+class TestPublicClaimOverreach:
+    def test_flags_absolute_governance_claims(self, tmp_path: Path) -> None:
+        doc = tmp_path / "public.md"
+        doc.write_text(
+            "Every file write passes through checks.\n"
+            "The agent physically cannot create a branch.\n"
+            "This system is constitutionally incapable of failure.\n",
+            encoding="utf-8",
+        )
+
+        findings = check_public_claim_overreach(doc)
+        assert len(findings) == 3
+        assert {finding.rule for finding in findings} == {"Hapax.PublicClaimOverreach"}
+        assert all(finding.level == "error" for finding in findings)
+
+    def test_allows_scoped_governed_path_claims(self, tmp_path: Path) -> None:
+        doc = tmp_path / "public.md"
+        doc.write_text(
+            "Governed file-write paths use mechanical gates.\n"
+            "Missing test evidence blocks the governed push path.\n",
+            encoding="utf-8",
+        )
+
+        assert check_public_claim_overreach(doc) == []
+
+
+class TestValeMissing:
+    def test_missing_vale_binary_is_nonfatal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        doc = tmp_path / "public.md"
+        doc.write_text("# Title\n\nClear text.\n", encoding="utf-8")
+
+        def raise_missing(*_args: object, **_kwargs: object) -> None:
+            raise FileNotFoundError("vale")
+
+        monkeypatch.setattr("shared.publication_hardening.lint.subprocess.run", raise_missing)
+
+        assert run_vale(doc, config=VALE_INI) == []
 
 
 @requires_vale

@@ -29,15 +29,15 @@ Prompt-based governance has three fatal flaws:
 
 We built mechanical enforcement. Not guidelines — gates.
 
-The system has five constitutional axioms, weighted 85–100, that constrain every action an agent takes. These aren't prompt decorations. In the production council repo, 42 tracked shell hook scripts intercept tool calls before execution and block violations at the shell level. The standalone `hapax-agentgov` package extracts five portable checks for other agent deployments.
+The system has five constitutional axioms, weighted 85-100, that constrain governed council actions. These aren't prompt decorations. In the production council repo, 42 tracked shell hook scripts intercept covered tool calls before execution and block violations at the shell level. The standalone `hapax-agentgov` package extracts five portable checks for other agent deployments.
 
 Here's what that means concretely:
 
-**Before an agent creates a git branch**, a hook checks whether unmerged branches exist. If they do, the branch creation is blocked — not warned, blocked. The agent physically cannot create a new branch until prior work is resolved.
+**Before a governed agent creates a git branch**, a hook checks whether unmerged branches exist. If they do, the governed branch-creation path is blocked until prior work is resolved.
 
-**Before an agent pushes code**, a hook verifies that tests were run. No test results, no push.
+**Before a governed agent pushes code**, a hook verifies that tests were run. Missing test evidence blocks the governed push path.
 
-**Before an agent writes to any file**, a hook scans for PII patterns. Social security numbers, email addresses, API keys — if the content matches, the write is refused.
+**Before governed agent file writes**, a hook scans for PII patterns. Social security numbers, email addresses, API keys — if the content matches, the write is refused.
 
 **Before an agent edits code on a feature branch**, a hook checks whether there's already an open PR for that branch. If there is, the edit is blocked until the PR is resolved. This prevents the "infinite WIP" failure mode where agents pile changes onto branches that are already under review.
 
@@ -69,9 +69,9 @@ The hook system didn't just prevent failures — it shaped agent behavior. When 
 
 ## The Trust Angle
 
-This is a system that is constitutionally incapable of certain failures. Not unlikely to fail — incapable.
+This is a system designed to make certain failure modes mechanically unreachable on governed paths. The scope matters: when the hook is on the path, model preference cannot override it.
 
-An agent in this system cannot push code without running tests. Not "shouldn't" — cannot. The hook intercepts the git push and returns an error. There is no prompt that overrides this. There is no system message that bypasses it. The enforcement layer sits below the model's decision-making entirely.
+An agent on the governed push path cannot push code without test evidence. The hook intercepts the git push and returns an error. There is no prompt that overrides this hook on that path. The enforcement layer sits below the model's decision-making entirely.
 
 This is a fundamentally different trust model than "we prompted the AI to be careful." It's closer to how we trust bridges: not because the engineer promised to be careful, but because the physics of steel and concrete enforce load limits whether the engineer is paying attention or not.
 
@@ -93,7 +93,7 @@ Full system: [github.com/hapax-systems/hapax-council](https://github.com/hapax-s
 
 Public landing page: [hapax.omg.lol](https://hapax.omg.lol/)
 
-Support page: [hapax.omg.lol/support](https://hapax.omg.lol/support)
+Support page: [hapax.weblog.lol/support](https://hapax.weblog.lol/support)
 
 ## Live Evidence
 
@@ -103,10 +103,10 @@ The same governed fleet builds the production compositor, camera pipeline, audio
 
 ## What's Next
 
-We're writing this up for CHI 2027 as a case study in constitutional AI governance for autonomous development agents. The core claim: mechanical enforcement produces qualitatively different trust properties than prompt-based governance, and the empirical evidence from 3,000+ PRs supports this.
+We're writing this up for CHI 2027 as a case study in constitutional AI governance for autonomous development agents. The core claim: mechanical enforcement produces qualitatively different trust properties than prompt-based governance, and the 3,000+ PR launch-window record is candidate evidence for that claim pending broader root-cause and coverage analysis.
 
 The practical question isn't whether AI agents should have governance. It's whether governance should be advisory (prompts) or mechanical (hooks). After 60 days, we have a strong opinion: if you can enforce it mechanically, you should. Prompts are for preferences. Hooks are for invariants.
 
 ---
 
-*Built by one person and a fleet of governed agents. All code, infrastructure, and governance mechanisms described here are running in production.*
+*Built by one person and a fleet of governed agents. Claims above are scoped to the sampled window and governed council paths; live evidence remains readiness-gated.*

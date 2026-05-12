@@ -330,6 +330,38 @@ class TestEndpointMethods:
         assert url.endswith("/address/hapax/weblog/delete/deploy-verify-weblog-producer")
         assert "/weblog/entry/" not in url
 
+    def test_set_weblog_config_uses_raw_text_body(self) -> None:
+        client = OmgLolClient()
+        mock_session = MagicMock()
+        mock_session.request.return_value = _fake_response(200, {})
+        client._session = mock_session
+
+        client.set_weblog_config("hapax", configuration="Weblog title: Hapax Weblog")
+
+        call = mock_session.request.call_args
+        assert (call.kwargs.get("method") or call.args[0]) == "POST"
+        url = call.kwargs.get("url") or call.args[1]
+        assert url.endswith("/address/hapax/weblog/configuration")
+        assert call.kwargs["data"] == b"Weblog title: Hapax Weblog"
+        assert "json" not in call.kwargs
+        assert call.kwargs["headers"]["Content-Type"] == "text/plain; charset=utf-8"
+
+    def test_set_weblog_template_uses_raw_text_body(self) -> None:
+        client = OmgLolClient()
+        mock_session = MagicMock()
+        mock_session.request.return_value = _fake_response(200, {})
+        client._session = mock_session
+
+        client.set_template("hapax", template="{body}")
+
+        call = mock_session.request.call_args
+        assert (call.kwargs.get("method") or call.args[0]) == "POST"
+        url = call.kwargs.get("url") or call.args[1]
+        assert url.endswith("/address/hapax/weblog/template")
+        assert call.kwargs["data"] == b"{body}"
+        assert "json" not in call.kwargs
+        assert call.kwargs["headers"]["Content-Type"] == "text/plain; charset=utf-8"
+
 
 class TestOmgLolHttpError:
     def test_error_carries_status_and_message(self) -> None:
