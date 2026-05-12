@@ -129,6 +129,7 @@ system_installs=(
     "$REPO_DIR/scripts/hapax-xhci-death-watchdog|$(system_path /usr/local/bin/hapax-xhci-death-watchdog)|0755"
     "$REPO_DIR/systemd/units/hapax-xhci-death-watchdog.service|$(system_path /etc/systemd/system/hapax-xhci-death-watchdog.service)|0644"
     "$REPO_DIR/scripts/hapax-usb-bandwidth-preflight|$(system_path /usr/local/bin/hapax-usb-bandwidth-preflight)|0755"
+    "$REPO_DIR/shared/usb_bandwidth_table.py|$(system_path /usr/local/share/hapax-council/shared/usb_bandwidth_table.py)|0644"
     "$REPO_DIR/systemd/units/hapax-usb-bandwidth-preflight.service|$(system_path /etc/systemd/system/hapax-usb-bandwidth-preflight.service)|0644"
     "$REPO_DIR/systemd/units/hapax-usb-bandwidth-preflight.timer|$(system_path /etc/systemd/system/hapax-usb-bandwidth-preflight.timer)|0644"
     "$REPO_DIR/scripts/hapax-l12-critical-usb-guard|$(system_path /usr/local/bin/hapax-l12-critical-usb-guard)|0755"
