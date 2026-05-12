@@ -16,6 +16,8 @@ that is Phase 9 cleanup territory.
 
 from __future__ import annotations
 
+import json
+
 import cairo
 
 from agents.studio_compositor import fx_chain
@@ -524,6 +526,34 @@ def test_blit_records_recent_readback_for_responsible_layout() -> None:
         assert recent_blit_readbacks(("red",), now=observed_at + 3.0, ttl_s=1.0) == {}
     finally:
         clear_blit_readbacks()
+
+
+def test_pip_draw_publishes_fresh_active_wards_and_current_layout(monkeypatch, tmp_path) -> None:
+    from agents.studio_compositor import active_wards
+
+    with fx_chain._RENDERED_LAYOUT_STATE_LOCK:
+        fx_chain._RENDERED_LAYOUT_STAGE_WARDS.clear()
+        fx_chain._RENDERED_LAYOUT_STATE_LAST_PUBLISH_MONO = 0.0
+        fx_chain._RENDERED_LAYOUT_STATE_LAST_SIGNATURE = None
+    active_wards_path = tmp_path / "active_wards.json"
+    current_layout_path = tmp_path / "current-layout-state.json"
+    monkeypatch.setattr(active_wards, "ACTIVE_WARDS_FILE", active_wards_path)
+    monkeypatch.setattr(active_wards, "CURRENT_LAYOUT_STATE_FILE", current_layout_path)
+
+    state = LayoutState(_layout_with_two_rect_surfaces())
+    registry = SourceRegistry()
+    registry.register("red", _CannedBackend(_solid_surface(20, 30, (1.0, 0.0, 0.0))))
+    registry.register("green", _CannedBackend(_solid_surface(40, 50, (0.0, 1.0, 0.0))))
+
+    canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, 200, 200)
+    cr = _paint_black(canvas)
+    pip_draw_from_layout(cr, state, registry)
+
+    assert active_wards.read(path=active_wards_path, stale_s=60.0) == ["green", "red"]
+    current_layout = json.loads(current_layout_path.read_text(encoding="utf-8"))
+    assert current_layout["layout_name"] == "t"
+    assert current_layout["active_ward_ids"] == ["green", "red"]
+    assert current_layout["schema_version"] == 1
 
 
 def test_blit_observability_does_not_break_on_metric_failure(monkeypatch) -> None:

@@ -40,6 +40,12 @@ _SCALE_CACHE_LOCK = threading.Lock()
 _SCALE_CACHE: dict[tuple[object, ...], cairo.ImageSurface] = {}
 _LAYOUT_COMPOSITE_CACHE_LOCK = threading.Lock()
 _LAYOUT_COMPOSITE_CACHE: dict[str, dict[str, object]] = {}
+RENDERED_LAYOUT_STATE_PUBLISH_INTERVAL_S: float = 1.0
+RENDERED_LAYOUT_STAGE_TTL_S: float = 2.0
+_RENDERED_LAYOUT_STATE_LOCK = threading.Lock()
+_RENDERED_LAYOUT_STAGE_WARDS: dict[str, tuple[float, tuple[str, ...]]] = {}
+_RENDERED_LAYOUT_STATE_LAST_PUBLISH_MONO: float = 0.0
+_RENDERED_LAYOUT_STATE_LAST_SIGNATURE: tuple[str | None, tuple[str, ...]] | None = None
 
 
 def clear_blit_readbacks() -> None:
@@ -452,6 +458,11 @@ def pip_draw_from_layout(
             continue
         pairs.append((assignment, surface_schema, src, id(src)))
     pairs.sort(key=lambda p: p[1].z_order)
+    _publish_rendered_layout_state(
+        layout_name=getattr(layout, "name", None),
+        active_ward_ids=[assignment.source for assignment, *_rest in pairs],
+        stage=stage,
+    )
 
     target_size = _target_size_from_context(cr)
     if (
@@ -479,6 +490,52 @@ def pip_draw_from_layout(
         return
 
     _draw_layout_pairs(cr, pairs, stage=stage)
+
+
+def _publish_rendered_layout_state(
+    *,
+    layout_name: object,
+    active_ward_ids: list[str],
+    stage: Literal["pre_fx", "post_fx"] | None,
+) -> None:
+    global _RENDERED_LAYOUT_STATE_LAST_PUBLISH_MONO, _RENDERED_LAYOUT_STATE_LAST_SIGNATURE
+
+    now_mono = time.monotonic()
+    stage_key = stage or "all"
+    ward_ids = tuple(sorted(set(active_ward_ids)))
+    layout_name_text = layout_name if isinstance(layout_name, str) else None
+    with _RENDERED_LAYOUT_STATE_LOCK:
+        _RENDERED_LAYOUT_STAGE_WARDS[stage_key] = (now_mono, ward_ids)
+        active_union = tuple(
+            sorted(
+                {
+                    ward
+                    for observed_mono, observed_wards in _RENDERED_LAYOUT_STAGE_WARDS.values()
+                    if now_mono - observed_mono <= RENDERED_LAYOUT_STAGE_TTL_S
+                    for ward in observed_wards
+                }
+            )
+        )
+        signature = (layout_name_text, active_union)
+        if (
+            signature == _RENDERED_LAYOUT_STATE_LAST_SIGNATURE
+            and now_mono - _RENDERED_LAYOUT_STATE_LAST_PUBLISH_MONO
+            < RENDERED_LAYOUT_STATE_PUBLISH_INTERVAL_S
+        ):
+            return
+        _RENDERED_LAYOUT_STATE_LAST_SIGNATURE = signature
+        _RENDERED_LAYOUT_STATE_LAST_PUBLISH_MONO = now_mono
+
+    try:
+        from agents.studio_compositor import active_wards
+
+        active_wards.publish(active_union)
+        active_wards.publish_current_layout_state(
+            layout_name=layout_name_text,
+            active_ward_ids=active_union,
+        )
+    except Exception:
+        log.debug("rendered layout state publish failed", exc_info=True)
 
 
 def _draw_layout_pairs(

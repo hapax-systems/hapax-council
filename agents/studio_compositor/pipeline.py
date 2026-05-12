@@ -171,6 +171,12 @@ def build_pipeline(compositor: Any) -> Any:
     compositor._tile_layout = layout
     compositor._initial_layout_mode = startup_mode.mode
     compositor._layout_mode = startup_mode.mode
+    try:
+        from .active_wards import publish_current_layout_state
+
+        publish_current_layout_state(layout_mode=startup_mode.mode)
+    except Exception:
+        log.debug("startup layout state publish failed", exc_info=True)
     log.info(
         "Startup layout mode: %s (source=%s%s)",
         startup_mode.mode,

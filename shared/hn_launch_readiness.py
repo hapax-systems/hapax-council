@@ -261,6 +261,11 @@ def _check_compositor_visual_surface(context: _CheckContext) -> CheckResult:
             context.now_epoch,
             config.runtime_json_max_age_s,
         ),
+        "current_layout_state": _probe_json_file(
+            config.compositor_root / "current-layout-state.json",
+            context.now_epoch,
+            config.runtime_json_max_age_s,
+        ),
         "ward_properties": _probe_json_file(
             config.compositor_root / "ward-properties.json",
             context.now_epoch,
@@ -275,8 +280,12 @@ def _check_compositor_visual_surface(context: _CheckContext) -> CheckResult:
 
     active_wards = _json_payload(file_results["active_wards"])
     ward_ids = active_wards.get("ward_ids") if isinstance(active_wards, Mapping) else None
-    has_wards = isinstance(ward_ids, Sequence) and bool(ward_ids)
-    layout_mode = _read_text_file(config.compositor_root / "layout-mode.txt").strip()
+    has_wards = isinstance(ward_ids, Sequence) and not isinstance(ward_ids, str) and bool(ward_ids)
+    layout_state = _json_payload(file_results["current_layout_state"])
+    layout_mode_value = (
+        layout_state.get("layout_mode") if isinstance(layout_state, Mapping) else None
+    )
+    layout_mode = layout_mode_value if isinstance(layout_mode_value, str) else ""
     has_sierpinski = layout_mode == "sierpinski"
 
     failed_reasons: list[str] = []
@@ -304,6 +313,7 @@ def _check_compositor_visual_surface(context: _CheckContext) -> CheckResult:
             "files": file_results,
             "active_cameras": active_cameras,
             "layout_mode": layout_mode or None,
+            "current_layout_state": layout_state if isinstance(layout_state, Mapping) else None,
             "ward_count": len(ward_ids) if isinstance(ward_ids, Sequence) else 0,
             "egress_compositor": compositor_evidence,
             "egress_error": egress.get("error"),
