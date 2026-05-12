@@ -517,6 +517,23 @@ def test_fallback_layout_parses_to_same_shape_as_default_json() -> None:
     }
 
 
+def test_expensive_pre_fx_sources_are_rate_limited() -> None:
+    """Large Cairo substrate/status sources must not run at fallback 10 Hz.
+
+    The pre-FX layout path renders these continuously while the livestream is
+    active. Keeping their cadence explicit preserves the full surface without
+    letting hidden default-fps behavior consume the video budget.
+    """
+    raw = json.loads(DEFAULT_JSON.read_text())
+    disk = Layout.model_validate(raw)
+    by_id = {source.id: source for source in disk.sources}
+
+    for source_id in ("token_pole", "album", "sierpinski"):
+        source = by_id[source_id]
+        assert source.update_cadence == "rate"
+        assert source.rate_hz == 2.0
+
+
 def test_load_layout_or_fallback_rescales_to_canvas_size() -> None:
     """A+ Stage 2 invariant: layout JSON coords (1920×1080) get rescaled
     to the active canvas (LAYOUT_COORD_SCALE) before reaching the renderer.

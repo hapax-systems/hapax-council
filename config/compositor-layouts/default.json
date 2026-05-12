@@ -11,8 +11,8 @@
         "natural_w": 300,
         "natural_h": 300
       },
-      "update_cadence": "always",
-      "rate_hz": null,
+      "update_cadence": "rate",
+      "rate_hz": 2.0,
       "tags": [],
       "pair_role": "solo",
       "pair_leg": null,
@@ -27,8 +27,8 @@
         "natural_w": 400,
         "natural_h": 520
       },
-      "update_cadence": "always",
-      "rate_hz": null,
+      "update_cadence": "rate",
+      "rate_hz": 2.0,
       "tags": [],
       "pair_role": "solo",
       "pair_leg": null,
@@ -59,8 +59,8 @@
         "natural_w": 840,
         "natural_h": 840
       },
-      "update_cadence": "always",
-      "rate_hz": null,
+      "update_cadence": "rate",
+      "rate_hz": 2.0,
       "tags": [],
       "pair_role": "solo",
       "pair_leg": null,

@@ -131,6 +131,8 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_w": 300,
                 "natural_h": 300,
             },
+            update_cadence="rate",
+            rate_hz=2.0,
         ),
         SourceSchema(
             id="album",
@@ -141,6 +143,8 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_w": 400,
                 "natural_h": 520,
             },
+            update_cadence="rate",
+            rate_hz=2.0,
         ),
         SourceSchema(
             id="stream_overlay",
@@ -163,6 +167,8 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_w": 840,
                 "natural_h": 840,
             },
+            update_cadence="rate",
+            rate_hz=2.0,
         ),
         SourceSchema(
             id="reverie",
