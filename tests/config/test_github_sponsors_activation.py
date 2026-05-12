@@ -38,7 +38,8 @@ def test_launch_proof_downgrades_all_payment_rails_claim() -> None:
     )
 
     assert "all external rails as green" in proof
-    assert "not a public-launch claim" in matrix
+    assert "implementation capability" in matrix
+    assert "every external account" in matrix
 
 
 def test_sponsors_tier_example_is_no_perk_org_support() -> None:
