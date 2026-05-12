@@ -179,6 +179,44 @@ def test_pre_fx_snapshot_branch_raises_on_failed_chain_link(
         snapshots.add_snapshot_branch(fake_compositor(gst), FakePipeline(), fake_tee(gst))
 
 
+def test_pre_fx_snapshot_branch_honors_runtime_fps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(snapshots, "SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setenv("HAPAX_PRE_FX_SNAPSHOT_FPS", "2")
+    gst = FakeGst()
+
+    snapshots.add_snapshot_branch(fake_compositor(gst), FakePipeline(), fake_tee(gst))
+
+    assert gst.elements["snapshot-rate"].properties["drop-only"] is True
+    assert gst.elements["snapshot-rate"].properties["max-rate"] == 2
+    assert gst.elements["snapshot-rate-caps"].properties["caps"] == "video/x-raw,framerate=2/1"
+
+
+def test_snapshot_fps_clamps_instead_of_disabling(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(snapshots, "SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setenv("HAPAX_PRE_FX_SNAPSHOT_FPS", "0")
+    gst = FakeGst()
+
+    snapshots.add_snapshot_branch(fake_compositor(gst), FakePipeline(), fake_tee(gst))
+
+    assert gst.elements["snapshot-rate"].properties["max-rate"] == 1
+    assert gst.elements["snapshot-rate-caps"].properties["caps"] == "video/x-raw,framerate=1/1"
+
+
+def test_snapshot_fps_invalid_uses_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(snapshots, "SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setenv("HAPAX_PRE_FX_SNAPSHOT_FPS", "fast")
+    gst = FakeGst()
+
+    snapshots.add_snapshot_branch(fake_compositor(gst), FakePipeline(), fake_tee(gst))
+
+    assert gst.elements["snapshot-rate"].properties["max-rate"] == 10
+    assert gst.elements["snapshot-rate-caps"].properties["caps"] == "video/x-raw,framerate=10/1"
+
+
 def test_llm_frame_snapshot_branch_raises_on_failed_pad_link(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -193,6 +231,19 @@ def test_llm_frame_snapshot_branch_raises_on_failed_pad_link(
         )
 
 
+def test_llm_frame_snapshot_branch_honors_runtime_fps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(snapshots, "SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setenv("HAPAX_LLM_FRAME_SNAPSHOT_FPS", "1")
+    gst = FakeGst()
+
+    snapshots.add_llm_frame_snapshot_branch(fake_compositor(gst), FakePipeline(), fake_tee(gst))
+
+    assert gst.elements["llm-frame-rate"].properties["max-rate"] == 1
+    assert gst.elements["llm-frame-rate-caps"].properties["caps"] == "video/x-raw,framerate=1/1"
+
+
 def test_legacy_fx_snapshot_branch_raises_on_failed_chain_link(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -201,6 +252,19 @@ def test_legacy_fx_snapshot_branch_raises_on_failed_chain_link(
 
     with pytest.raises(DiagnosticBranchLinkError, match="fx-snap-rate-caps -> fx-snap-jpeg"):
         snapshots.add_fx_snapshot_branch(fake_compositor(gst), FakePipeline(), fake_tee(gst))
+
+
+def test_legacy_fx_snapshot_branch_honors_runtime_fps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(snapshots, "SNAPSHOT_DIR", tmp_path)
+    monkeypatch.setenv("HAPAX_FX_SNAPSHOT_FPS", "1")
+    gst = FakeGst()
+
+    snapshots.add_fx_snapshot_branch(fake_compositor(gst), FakePipeline(), fake_tee(gst))
+
+    assert gst.elements["fx-snap-rate"].properties["max-rate"] == 1
+    assert gst.elements["fx-snap-rate-caps"].properties["caps"] == "video/x-raw,framerate=1/1"
 
 
 def test_smooth_delay_branch_raises_and_clears_reference_on_failed_link() -> None:
