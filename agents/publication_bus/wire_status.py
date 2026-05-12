@@ -52,7 +52,22 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "publish_orchestrator.SURFACE_REGISTRY entry "
             "`bluesky-atproto-multi-identity`. Identifier from env "
             "HAPAX_BLUESKY_HANDLE (preferred) or HAPAX_BLUESKY_DID; "
-            "app-password from HAPAX_BLUESKY_APP_PASSWORD."
+            "app-password from HAPAX_BLUESKY_APP_PASSWORD. The same module "
+            "also exposes BlueskyPostPublisher for the `bluesky-post` "
+            "public-event daemon path."
+        ),
+    ),
+    "agents.publication_bus.mastodon_publisher": WireEntry(
+        module="agents.publication_bus.mastodon_publisher",
+        surface_slug="mastodon-post",
+        status="WIRED",
+        pass_key_required=None,
+        rationale=(
+            "Wired via agents.cross_surface.mastodon_post for both the "
+            "hapax-mastodon-post public-event systemd path and the "
+            "publish_orchestrator.SURFACE_REGISTRY compatibility entry "
+            "`mastodon-post`. Instance URL from HAPAX_MASTODON_INSTANCE_URL; "
+            "access token from HAPAX_MASTODON_ACCESS_TOKEN."
         ),
     ),
     "agents.publication_bus.bridgy_publisher": WireEntry(
@@ -94,6 +109,20 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "publish_orchestrator._DISPATCH_MAP entries `omg-weblog` and "
             "`oudepode-omg-weblog`. Also referenced by sc_attestation_publisher "
             "and omg_rss_fanout helper."
+        ),
+    ),
+    "agents.publication_bus.omg_statuslog_publisher": WireEntry(
+        module="agents.publication_bus.omg_statuslog_publisher",
+        surface_slug="omg-lol-statuslog",
+        status="WIRED",
+        pass_key_required="omg-lol/api-key",
+        rationale=(
+            "Wired via agents.operator_awareness.omg_lol_fanout, invoked by "
+            "systemd/units/hapax-omg-lol-fanout.service. The daemon renders a "
+            "public-filtered awareness summary, dedupes by hash, then publishes "
+            "through OmgLolStatuslogPublisher so the live statuslog egress path "
+            "uses the publication-bus allowlist/legal-name/counter/witness "
+            "invariants."
         ),
     ),
     "agents.publication_bus.osf_prereg_publisher": WireEntry(

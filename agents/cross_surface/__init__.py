@@ -3,8 +3,8 @@
 Five publishing adapters live in this package:
 
 - :mod:`agents.cross_surface.discord_webhook` — Discord webhook poster (PR #1319).
-- :mod:`agents.cross_surface.bluesky_post` — Bluesky atproto client (PR #1320).
-- :mod:`agents.cross_surface.mastodon_post` — Mastodon.py client.
+- :mod:`agents.cross_surface.bluesky_post` — bus-backed Bluesky public-event poster.
+- :mod:`agents.cross_surface.mastodon_post` — bus-backed Mastodon public-event poster.
 - :mod:`agents.cross_surface.arena_post` — Are.na PAT/channels client (PR #1953).
 - :mod:`agents.cross_surface.alphaxiv_post` — alphaXiv comments adapter.
 

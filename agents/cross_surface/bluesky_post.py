@@ -47,12 +47,15 @@ import sys
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from prometheus_client import REGISTRY, CollectorRegistry, Counter, start_http_server
 from pydantic import ValidationError
 
+from agents.publication_bus.bluesky_publisher import BlueskyPostPublisher
+from agents.publication_bus.publisher_kit import PublisherPayload, PublisherResult
 from shared.cross_surface_event_contract import decide_cross_surface_fanout
 from shared.governance.publication_allowlist import check as allowlist_check
 from shared.research_vehicle_public_event import ResearchVehiclePublicEvent
@@ -80,6 +83,7 @@ DEFAULT_IDEMPOTENCY_PATH = Path(
 METRICS_PORT: int = int(os.environ.get("HAPAX_BLUESKY_METRICS_PORT", "9501"))
 DEFAULT_TICK_S: float = float(os.environ.get("HAPAX_BLUESKY_TICK_S", "30"))
 BLUESKY_TEXT_LIMIT = 300
+DEFAULT_PUBLICATION_TARGET = os.environ.get("HAPAX_BLUESKY_PUBLICATION_TARGET", "hapax")
 
 ALLOWLIST_SURFACE = "bluesky-post"
 ALLOWED_PUBLIC_EVENT_TYPES = frozenset(
@@ -102,6 +106,13 @@ class _TailRecord:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class _SendResult:
+    result: str
+    uri: str | None = None
+    public_url: str | None = None
+
+
 class BlueskyPoster:
     """Tail canonical public events; post to Bluesky when policy permits."""
 
@@ -111,7 +122,8 @@ class BlueskyPoster:
         handle: str | None = None,
         app_password: str | None = None,
         compose_fn=None,
-        client_factory=None,
+        publisher_factory=None,
+        publication_target: str = DEFAULT_PUBLICATION_TARGET,
         event_path: Path = EVENT_PATH,
         cursor_path: Path = DEFAULT_CURSOR_PATH,
         idempotency_path: Path = DEFAULT_IDEMPOTENCY_PATH,
@@ -122,15 +134,16 @@ class BlueskyPoster:
         self._handle = handle
         self._app_password = app_password
         self._compose_fn = compose_fn
-        self._client_factory = client_factory
+        self._publisher_factory = publisher_factory
+        self._publication_target = publication_target
         self._event_path = event_path
         self._cursor_path = cursor_path
         self._idempotency_path = idempotency_path
         self._tick_s = max(1.0, tick_s)
         self._dry_run = dry_run
         self._stop_evt = threading.Event()
-        self._client = None  # built on first non-dry-run apply
         self._processed_event_ids: set[str] | None = None
+        self._post_receipts: dict[str, dict[str, Any]] | None = None
 
         self.posts_total = Counter(
             "hapax_broadcast_bluesky_posts_total",
@@ -160,8 +173,8 @@ class BlueskyPoster:
             if self._event_already_processed(event.event_id):
                 self._write_cursor(record.byte_after)
                 continue
-            self._apply(event)
-            self._mark_event_processed(event.event_id)
+            receipt = self._apply(event)
+            self._mark_event_processed(event.event_id, receipt=receipt)
             self._write_cursor(record.byte_after)
             handled += 1
         return handled
@@ -291,16 +304,26 @@ class BlueskyPoster:
             return set()
         return {item for item in ids if isinstance(item, str) and item}
 
-    def _mark_event_processed(self, event_id: str) -> None:
+    def _mark_event_processed(
+        self,
+        event_id: str,
+        *,
+        receipt: dict[str, Any] | None = None,
+    ) -> None:
         if self._processed_event_ids is None:
             self._processed_event_ids = self._read_processed_event_ids()
         self._processed_event_ids.add(event_id)
         try:
             self._idempotency_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._idempotency_path.with_suffix(".tmp")
+            if self._post_receipts is None:
+                self._post_receipts = self._read_post_receipts()
+            if receipt is not None:
+                self._post_receipts[event_id] = receipt
             payload = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "event_ids": sorted(self._processed_event_ids),
+                "posts": [self._post_receipts[key] for key in sorted(self._post_receipts)],
             }
             tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
             tmp.replace(self._idempotency_path)
@@ -311,9 +334,29 @@ class BlueskyPoster:
                 exc_info=True,
             )
 
+    def _read_post_receipts(self) -> dict[str, dict[str, Any]]:
+        try:
+            raw = json.loads(self._idempotency_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        posts = raw.get("posts")
+        if not isinstance(posts, list):
+            return {}
+
+        receipts: dict[str, dict[str, Any]] = {}
+        for item in posts:
+            if not isinstance(item, dict):
+                continue
+            event_id = item.get("event_id")
+            if isinstance(event_id, str) and event_id:
+                receipts[event_id] = item
+        return receipts
+
     # ── Per-event apply ───────────────────────────────────────────────
 
-    def _apply(self, event: ResearchVehiclePublicEvent) -> None:
+    def _apply(self, event: ResearchVehiclePublicEvent) -> dict[str, Any] | None:
         fanout = decide_cross_surface_fanout(event, "bluesky", "publish")
         if fanout.decision != "allow":
             log.warning(
@@ -322,7 +365,7 @@ class BlueskyPoster:
                 ",".join(fanout.reasons),
             )
             self.posts_total.labels(result="denied").inc()
-            return
+            return _post_receipt(event, result="denied")
 
         verdict = allowlist_check(
             ALLOWLIST_SURFACE,
@@ -332,56 +375,75 @@ class BlueskyPoster:
         if verdict.decision == "deny":
             log.warning("allowlist DENY for bluesky post: %s", verdict.reason)
             self.posts_total.labels(result="denied").inc()
-            return
+            return _post_receipt(event, result="denied")
 
         try:
             text = self._compose(event)
         except Exception:  # noqa: BLE001
             log.exception("composer failed for event")
             self.posts_total.labels(result="compose_error").inc()
-            return
+            return _post_receipt(event, result="compose_error")
 
         text = text[:BLUESKY_TEXT_LIMIT]
 
         if self._dry_run:
             log.info("DRY RUN — would post to bluesky: text=%r", text)
             self.posts_total.labels(result="dry_run").inc()
-            return
+            return _post_receipt(event, result="dry_run", text=text)
 
-        result = self._send_post(text)
-        self.posts_total.labels(result=result).inc()
+        send = self._send_post(text)
+        self.posts_total.labels(result=send.result).inc()
+        return _post_receipt(
+            event,
+            result=send.result,
+            text=text,
+            uri=send.uri,
+            public_url=send.public_url,
+        )
 
     def _compose(self, event: ResearchVehiclePublicEvent) -> str:
         if self._compose_fn is not None:
             return self._compose_fn(event)
         return _default_compose(event)
 
-    def _send_post(self, text: str) -> str:
-        if not (self._handle and self._app_password):
-            log.warning(
-                "HAPAX_BLUESKY_HANDLE / HAPAX_BLUESKY_APP_PASSWORD not set; skipping live post"
+    def _send_post(self, text: str) -> _SendResult:
+        try:
+            publisher = self._build_publisher()
+        except Exception:  # noqa: BLE001
+            log.exception("bluesky publication-bus publisher init failed")
+            return _SendResult("auth_error")
+
+        try:
+            result = publisher.publish(PublisherPayload(target=self._publication_target, text=text))
+        except Exception:  # noqa: BLE001
+            log.exception("bluesky publication-bus publish raised")
+            return _SendResult("error")
+
+        if result.ok:
+            uri = _extract_publisher_uri(result)
+            return _SendResult(
+                "ok", uri=uri, public_url=_bsky_public_url_from_uri(uri, self._handle)
             )
-            return "no_credentials"
+        if result.refused:
+            if "credential" in result.detail.lower() or "creds" in result.detail.lower():
+                return _SendResult("no_credentials")
+            return _SendResult("denied")
+        if result.error:
+            return _SendResult("error")
+        return _SendResult("error")
 
-        try:
-            client = self._ensure_client()
-        except Exception:  # noqa: BLE001
-            log.exception("bluesky login failed")
-            return "auth_error"
+    def _build_publisher(self):
+        factory = self._publisher_factory or _default_publisher_factory
+        return factory(self._handle, self._app_password)
 
-        try:
-            client.send_post(text=text)
-        except Exception:  # noqa: BLE001
-            log.exception("bluesky send_post raised")
-            return "error"
-        return "ok"
 
-    def _ensure_client(self):
-        if self._client is not None:
-            return self._client
-        factory = self._client_factory or _default_client_factory
-        self._client = factory(self._handle, self._app_password)
-        return self._client
+def _default_publisher_factory(handle: str | None, app_password: str | None):
+    return BlueskyPostPublisher(handle=handle or "", app_password=app_password or "")
+
+
+def _extract_publisher_uri(result: PublisherResult) -> str | None:
+    uri = result.detail.strip()
+    return uri if uri.startswith("at://") else None
 
 
 # ── Default helpers (composer + atproto client) ──────────────────────
@@ -389,6 +451,9 @@ class BlueskyPoster:
 
 def _default_compose(event: ResearchVehiclePublicEvent) -> str:
     """Build post text by deferring to metadata_composer."""
+    if event.event_type == "omg.weblog" and event.public_url:
+        return _fallback_public_event_text(event)
+
     from agents.metadata_composer.composer import compose_metadata
 
     composed = compose_metadata(
@@ -444,6 +509,48 @@ def _fallback_public_event_text(event: ResearchVehiclePublicEvent) -> str:
     if event.event_type in {"governance.enforcement", "velocity.digest"}:
         return f"Hapax {_event_intent(event)}."
     return f"Hapax livestream: {_event_intent(event)}."
+
+
+def _bsky_public_url_from_uri(uri: str | None, handle: str | None) -> str | None:
+    if not uri:
+        return None
+    marker = "/app.bsky.feed.post/"
+    if marker not in uri:
+        return None
+    rkey = uri.rsplit(marker, 1)[-1].strip("/")
+    if not rkey:
+        return None
+    profile = handle
+    if uri.startswith("at://"):
+        repo = uri.removeprefix("at://").split("/", 1)[0]
+        if repo.startswith("did:"):
+            profile = repo
+    if not profile:
+        return None
+    return f"https://bsky.app/profile/{profile}/post/{rkey}"
+
+
+def _post_receipt(
+    event: ResearchVehiclePublicEvent,
+    *,
+    result: str,
+    text: str | None = None,
+    uri: str | None = None,
+    public_url: str | None = None,
+) -> dict[str, Any]:
+    receipt: dict[str, Any] = {
+        "event_id": event.event_id,
+        "result": result,
+        "event_public_url": event.public_url,
+        "recorded_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    }
+    if text:
+        receipt["text"] = text
+    if uri:
+        receipt["uri"] = uri
+    if public_url:
+        receipt["public_url"] = public_url
+    return receipt
 
 
 def _allowlist_payload(event: ResearchVehiclePublicEvent) -> dict[str, Any]:
@@ -520,15 +627,6 @@ def _dedupe(values: list[str | None]) -> list[str]:
     return result
 
 
-def _default_client_factory(handle: str, app_password: str):
-    """Lazy-build + login an atproto Client."""
-    from atproto import Client
-
-    client = Client()
-    client.login(handle, app_password)
-    return client
-
-
 def _credentials_from_env() -> tuple[str | None, str | None]:
     handle = os.environ.get("HAPAX_BLUESKY_HANDLE", "").strip() or None
     pw = os.environ.get("HAPAX_BLUESKY_APP_PASSWORD", "").strip() or None
@@ -553,23 +651,39 @@ def publish_artifact(artifact) -> str:  # type: ignore[no-untyped-def]
     without the tail-mode rewrite.
     """
     handle, app_password = _credentials_from_env()
-    if not (handle and app_password):
-        return "no_credentials"
 
     text = _compose_artifact_text(artifact)
     if not text:
         return "error"
 
     try:
-        client = _default_client_factory(handle, app_password)
+        publisher = _default_publisher_factory(handle, app_password)
     except Exception:  # noqa: BLE001
-        log.exception("bluesky login failed for artifact %s", getattr(artifact, "slug", "?"))
+        log.exception(
+            "bluesky publisher init failed for artifact %s", getattr(artifact, "slug", "?")
+        )
         return "auth_error"
 
     try:
-        client.send_post(text=text)
+        result = publisher.publish(
+            PublisherPayload(
+                target=DEFAULT_PUBLICATION_TARGET,
+                text=text,
+                metadata={"artifact_slug": getattr(artifact, "slug", "")},
+            )
+        )
     except Exception:  # noqa: BLE001
-        log.exception("bluesky send_post raised for artifact %s", getattr(artifact, "slug", "?"))
+        log.exception(
+            "bluesky publication-bus publish raised for artifact %s", getattr(artifact, "slug", "?")
+        )
+        return "error"
+    if result.ok:
+        return "ok"
+    if result.refused:
+        if "credential" in result.detail.lower() or "creds" in result.detail.lower():
+            return "no_credentials"
+        return "denied"
+    if result.error:
         return "error"
     return "ok"
 

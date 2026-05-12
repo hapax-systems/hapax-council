@@ -67,22 +67,19 @@ echo ""
 # ── Invariant 1: TTS voice chain exists ──
 echo "Chain 1: TTS Voice Path"
 
-if echo "$GRAPH" | grep -q "output.loopback.sink.role.broadcast:output_FL" &&
-   echo "$GRAPH" | grep -q "hapax-voice-fx-capture:playback_FL"; then
+if link_present "output.loopback.sink.role.broadcast:output_FL" "hapax-voice-fx-capture:playback_FL"; then
     check "role.broadcast → voice-fx-capture" "PASS"
 else
     check "role.broadcast → voice-fx-capture" "link missing"
 fi
 
-if echo "$GRAPH" | grep -q "hapax-voice-fx-playback:output_FL" &&
-   echo "$GRAPH" | grep -q "hapax-loudnorm-capture:playback_FL"; then
+if link_present "hapax-voice-fx-playback:output_FL" "hapax-loudnorm-capture:playback_FL"; then
     check "voice-fx-playback → loudnorm-capture" "PASS"
 else
     check "voice-fx-playback → loudnorm-capture" "link missing"
 fi
 
-if echo "$GRAPH" | grep -q "hapax-loudnorm-playback:output_FL" &&
-   echo "$GRAPH" | grep "hapax-loudnorm-playback:output_FL" -A1 | grep -q "MPC.*playback_AUX2"; then
+if link_present "hapax-loudnorm-playback:output_FL" "playback_AUX2"; then
     check "loudnorm-playback → MPC AUX2" "PASS"
 else
     check "loudnorm-playback → MPC AUX2" "link missing — TTS not reaching MPC"
@@ -127,15 +124,13 @@ echo ""
 # ── Invariant 4: OBS chain intact ──
 echo "Chain 4: OBS Broadcast Chain"
 
-if echo "$GRAPH" | grep -q "hapax-obs-broadcast-remap:capture_FL" &&
-   echo "$GRAPH" | grep "hapax-obs-broadcast-remap:capture_FL" -A1 | grep -q "OBS:input_FL"; then
+if link_present "hapax-obs-broadcast-remap:capture_FL" "OBS:input_FL"; then
     check "obs-broadcast-remap → OBS" "PASS"
 else
     check "obs-broadcast-remap → OBS" "link missing — OBS not receiving broadcast"
 fi
 
-if echo "$GRAPH" | grep -q "hapax-broadcast-normalized:capture_FL" &&
-   echo "$GRAPH" | grep "hapax-broadcast-normalized:capture_FL" -A1 | grep -q "hapax-obs-broadcast-remap-capture"; then
+if link_present "hapax-broadcast-normalized:capture_FL" "hapax-obs-broadcast-remap-capture"; then
     check "broadcast-normalized → obs-remap" "PASS"
 else
     check "broadcast-normalized → obs-remap" "link missing"
