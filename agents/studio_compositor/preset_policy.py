@@ -14,6 +14,7 @@ _IMPLICIT_CAMERA_LEGIBLE_PRESETS = frozenset({"clean"})
 _FULL_FRAME_NOISE_NODE_TYPES = frozenset({"noise_gen", "noise_overlay"})
 _MAX_CAMERA_LEGIBLE_ANONYMIZE = 0.5
 _MIN_CAMERA_LEGIBLE_POSTERIZE_LEVELS = 8.0
+_MIN_CAMERA_LEGIBLE_MASTER_OPACITY = 0.85
 _MAX_NEUTRAL_CONTENT_SLOT_PARAM = 0.01
 _MAX_CAMERA_LEGIBLE_CONTENT_OPACITY = 0.35
 
@@ -147,6 +148,52 @@ def _camera_legible_contract_enabled(
     if any(name in _IMPLICIT_CAMERA_LEGIBLE_PRESETS for name in candidates):
         return True
     return _truthy(effective_env.get("HAPAX_CAMERA_LEGIBLE_FX_ONLY"))
+
+
+def live_surface_effect_policy_enabled(
+    preset_name: str = "",
+    *,
+    aliases: Sequence[str] = (),
+    env: Mapping[str, str] | None = None,
+) -> bool:
+    """Return whether live-surface effect safety is active for this context."""
+    candidates = _candidate_names(preset_name, aliases)
+    if not candidates and preset_name:
+        candidates = (_normalize_preset_name(preset_name),)
+    return _camera_legible_contract_enabled(candidates, env=env)
+
+
+def apply_live_surface_param_bounds(
+    node_type: str,
+    params: Mapping[str, Any],
+    *,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Clamp runtime params that can otherwise defeat graph-level safety.
+
+    Graph body policy blocks known destructive presets at load time. Runtime
+    modulation is a separate path: audio-reactive deltas are applied after the
+    preset has been accepted. These clamps keep live output inside the same
+    camera-legible contract after every modulation tick.
+    """
+
+    out = dict(params)
+    if not live_surface_effect_policy_enabled(env=env):
+        return out
+
+    if node_type == "posterize" and isinstance(out.get("levels"), (int, float)):
+        out["levels"] = max(float(out["levels"]), _MIN_CAMERA_LEGIBLE_POSTERIZE_LEVELS)
+
+    if node_type == "postprocess":
+        if isinstance(out.get("anonymize"), (int, float)):
+            out["anonymize"] = min(float(out["anonymize"]), _MAX_CAMERA_LEGIBLE_ANONYMIZE)
+        if isinstance(out.get("master_opacity"), (int, float)):
+            out["master_opacity"] = max(
+                float(out["master_opacity"]),
+                _MIN_CAMERA_LEGIBLE_MASTER_OPACITY,
+            )
+
+    return out
 
 
 def _param_default(registry: Any, node_type: str, param_name: str) -> object | None:
@@ -311,7 +358,9 @@ def evaluate_preset_graph_policy(
 __all__ = [
     "PresetPolicyDecision",
     "PresetPolicyError",
+    "apply_live_surface_param_bounds",
     "autonomous_fx_mutations_enabled",
     "evaluate_preset_graph_policy",
     "evaluate_preset_policy",
+    "live_surface_effect_policy_enabled",
 ]
