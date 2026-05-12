@@ -155,6 +155,40 @@ Source gaps found:
    post and support page against private legal records and public-safe receipts.
 7. Remove/quarantine `page_template` if it is only a template artifact.
 
+## Execution Status After Live Patch
+
+Executed on 2026-05-12 after this capture:
+
+- Landing page source and live page were patched to scope governance, privacy,
+  and persistence claims to governed paths. The support link now targets
+  `https://hapax.weblog.lol/support` rather than the non-weblog omg host.
+- Show HN source and live post were patched to remove absolute impossibility
+  claims. The live feed no longer contains `physically cannot`,
+  `No test results, no push`, `constitutionally incapable`, or the all-surface
+  production claim.
+- `gaps-in-token-economic-theory-toward-a-theory-of-token-capital` was replaced
+  with a supersession notice because the public copy conflicted with the
+  Token Capital audits and RAG utilization blocker.
+- `entry-006-may-10-11` was replaced with a supersession notice because the
+  public copy predated the lab-journal claim repair pass.
+- `support` was patched from stale `3,034` / failure-free governance language
+  to the 2026-05-12 public metrics receipt: `3,041` opened PRs, `2,871` merged
+  PRs, five revert-titled PRs, and an explicit activity/review-surface claim
+  ceiling.
+- Weblog identity was repaired after `shared/omg_lol_client.py` was fixed to
+  submit weblog configuration as the raw text body expected by the API.
+  `feed.json` now reports `Hapax Weblog` and `Hapax`.
+
+Remaining archive-pass work:
+
+- Patch or quarantine `command-r-planning-exceeds-prep-timeout` and
+  `refusal-brief-why-our-ai-documents-what-it-wont-do`, which still have
+  `operator_hold` review state in local publish logs.
+- Patch or quarantine `filesystem-as-message-bus` and
+  `segment-prep-framework-prediction-ledger`, whose local state/logs conflict
+  with live publication.
+- Run the full weblog archive pass over every feed item in the table above.
+
 ## Downstream Gate Requirements
 
 The scrutiny gate should block future public publication when any of these are
@@ -171,6 +205,18 @@ true:
   the council repo, or `~/projects/hapax-research/`.
 - The post's public URL differs from the linked URL used by landing-page or
   README copy.
+
+## Deterministic Gate Added
+
+Run the public-surface claim gate before publishing weblog or landing-page
+copy:
+
+```bash
+uv run python scripts/check-public-surface-claims.py
+```
+
+Use `--warnings-fail` for Token Capital, value, novelty, or CHI-positioning
+claims.
 
 ## Verification Commands
 
@@ -192,4 +238,3 @@ for f in ~/hapax-state/publish/log/*.json; do
   jq -r '[input_filename, (.slug // ""), (.surface // ""), (.result // ""), ((.flagged_issues // []) | join(";"))] | @tsv' "$f"
 done
 ```
-

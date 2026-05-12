@@ -22,10 +22,10 @@ def test_readme_and_omg_landing_route_through_no_perk_support_page() -> None:
         encoding="utf-8"
     )
 
-    assert "https://hapax.omg.lol/support" in readme
+    assert "https://hapax.weblog.lol/support" in readme
     assert "Support Hapax research" in readme
     assert "github.com/sponsors/hapax-systems" not in readme
-    assert "hapax.omg.lol/support" in landing
+    assert "hapax.weblog.lol/support" in landing
     assert "github.com/sponsors/hapax-systems" not in landing
 
 

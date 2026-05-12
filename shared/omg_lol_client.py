@@ -451,11 +451,14 @@ class OmgLolClient:
         )
 
     def set_weblog_config(self, address: str, *, configuration: str) -> dict | None:
+        # The weblog configuration endpoint expects the raw configuration file
+        # as the request body, not a JSON-wrapped {"content": ...} payload.
+        # A JSON body can return 200 while leaving the config unchanged.
         return self._execute(
             "POST",
             f"/address/{address}/weblog/configuration",
             endpoint="address.weblog.config.set",
-            json_body={"content": configuration},
+            text_body=configuration,
         )
 
     def get_template(self, address: str) -> dict | None:
@@ -466,11 +469,13 @@ class OmgLolClient:
         )
 
     def set_template(self, address: str, *, template: str) -> dict | None:
+        # The template endpoint follows the same raw-body contract as weblog
+        # configuration.
         return self._execute(
             "POST",
             f"/address/{address}/weblog/template",
             endpoint="address.weblog.template.set",
-            json_body={"content": template},
+            text_body=template,
         )
 
     # ── Pastebin ──────────────────────────────────────────────────────
