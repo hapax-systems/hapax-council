@@ -73,14 +73,28 @@ def publish_test_post() -> bool:
 
 
 def delete_test_post() -> bool:
+    from agents.publication_bus.omg_weblog_delete_publisher import OmgLolWeblogDeletePublisher
+    from agents.publication_bus.publisher_kit import PublisherPayload
+    from agents.publication_bus.publisher_kit.allowlist import load_allowlist
     from shared.omg_lol_client import OmgLolClient
 
     client = OmgLolClient()
-    result = client.delete_entry(ADDRESS, TEST_ENTRY_ID)
-    if result is not None:
+    OmgLolWeblogDeletePublisher.allowlist = load_allowlist(
+        OmgLolWeblogDeletePublisher.surface_name,
+        [TEST_ENTRY_ID],
+    )
+    publisher = OmgLolWeblogDeletePublisher(client=client, address=ADDRESS)
+    result = publisher.publish(
+        PublisherPayload(
+            target=TEST_ENTRY_ID,
+            text=f"delete weblog verification entry {TEST_ENTRY_ID}",
+            metadata={"address": ADDRESS},
+        )
+    )
+    if result.ok:
         log.info("test post deleted: %s", TEST_ENTRY_ID)
         return True
-    log.warning("failed to delete test post")
+    log.warning("failed to delete test post through publication bus: %s", result.detail)
     return False
 
 

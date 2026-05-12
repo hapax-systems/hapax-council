@@ -42,17 +42,27 @@ class OmgLolStatuslogPublisher(Publisher):
     allowlist: ClassVar[AllowlistGate] = DEFAULT_OMG_STATUSLOG_ALLOWLIST
     requires_legal_name: ClassVar[bool] = False
 
-    def __init__(self, *, session: Any = requests) -> None:
+    def __init__(
+        self,
+        *,
+        session: Any = requests,
+        token: str | None = None,
+        skip_mastodon_post: bool = True,
+        timeout_s: float = 10.0,
+    ) -> None:
         self.session = session
+        self.token = token or ""
+        self.skip_mastodon_post = skip_mastodon_post
+        self.timeout_s = timeout_s
 
     def _emit(self, payload: PublisherPayload) -> PublisherResult:
-        token = str(payload.metadata.get("token") or "")
+        token = str(payload.metadata.get("token") or self.token or "")
         if not token:
             return PublisherResult(refused=True, detail="missing bearer token")
 
-        skip_mastodon = bool(payload.metadata.get("skip_mastodon_post", True))
+        skip_mastodon = bool(payload.metadata.get("skip_mastodon_post", self.skip_mastodon_post))
         try:
-            timeout_s = float(payload.metadata.get("timeout_s", 10.0))
+            timeout_s = float(payload.metadata.get("timeout_s", self.timeout_s))
         except (TypeError, ValueError):
             log.warning("invalid omg.lol statuslog timeout; falling back to 10s")
             timeout_s = 10.0

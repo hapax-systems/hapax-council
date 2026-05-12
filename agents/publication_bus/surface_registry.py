@@ -236,7 +236,11 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
         automation_status=AutomationStatus.FULL_AUTO,
         api="REST",
         dispatch_entry="agents.cross_surface.arena_post:publish_artifact",
-        scope_note="legacy cross-surface Are.na adapter",
+        activation_path=(
+            "agents.publication_bus.arena_publisher.ArenaPublisher "
+            "+ systemd/units/hapax-arena-post.service"
+        ),
+        scope_note="public-event Are.na fanout routed through publication bus",
     ),
     "mastodon-post": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
@@ -268,6 +272,59 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "+ systemd/units/hapax-omg-lol-fanout.timer"
         ),
         scope_note="live awareness statuslog fanout routed through publication bus",
+    ),
+    "omg-lol-web": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="REST",
+        activation_path=(
+            "agents.publication_bus.omg_web_publisher.OmgLolWebPublisher "
+            "+ agents.omg_web_builder.publisher"
+        ),
+        scope_note="operator-owned hapax.omg.lol landing page routed through publication bus",
+    ),
+    "omg-lol-now": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="REST",
+        activation_path=(
+            "agents.publication_bus.omg_now_publisher.OmgLolNowPublisher + agents.omg_now_sync"
+        ),
+        scope_note="operator-owned omg.lol /now page routed through publication bus",
+    ),
+    "omg-lol-pastebin": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="REST",
+        activation_path=(
+            "agents.publication_bus.omg_pastebin_publisher.OmgLolPastebinPublisher "
+            "+ agents.omg_pastebin_publisher/agents.omg_credits_publisher"
+        ),
+        scope_note="operator-owned omg.lol pastebin artifacts routed through publication bus",
+    ),
+    "omg-lol-purl": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="REST",
+        activation_path=(
+            "agents.publication_bus.omg_purl_publisher.OmgLolPurlPublisher "
+            "+ agents.omg_purl_registrar"
+        ),
+        scope_note="operator-owned omg.lol PURL registrations routed through publication bus",
+    ),
+    "omg-lol-email-forward": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="REST",
+        activation_path=(
+            "agents.publication_bus.omg_email_publisher.OmgLolEmailPublisher "
+            "+ agents.omg_email_setup"
+        ),
+        scope_note="operator-owned omg.lol email forwarding configuration routed through publication bus",
+    ),
+    "omg-lol-weblog-delete": SurfaceSpec(
+        automation_status=AutomationStatus.FULL_AUTO,
+        api="REST",
+        activation_path=(
+            "agents.publication_bus.omg_weblog_delete_publisher.OmgLolWeblogDeletePublisher "
+            "+ scripts/verify-weblog-producer-deploy.py --cleanup-live"
+        ),
+        scope_note="tightly allowlisted weblog cleanup egress routed through publication bus",
     ),
     "orcid-auto-update": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,

@@ -7,6 +7,9 @@ import logging
 import sys
 from typing import Any
 
+from agents.publication_bus.omg_email_publisher import OmgLolEmailPublisher
+from agents.publication_bus.publisher_kit import PublisherPayload
+
 log = logging.getLogger(__name__)
 
 DEFAULT_ADDRESS = "hapax"
@@ -39,9 +42,11 @@ def configure_email_forwarding(
             log.info("omg-email: already configured to %s", forwards_to)
             return "unchanged"
 
-    resp = client.set_email(address, forwards_to=forwards_to)
-    if resp is None:
-        log.warning("omg-email: set_email returned None")
+    result = OmgLolEmailPublisher(client=client).publish(
+        PublisherPayload(target=address, text=forwards_to)
+    )
+    if not result.ok:
+        log.warning("omg-email: publication-bus publish failed: %s", result.detail)
         return "failed"
 
     log.info("omg-email: configured %s → %s", address, forwards_to)

@@ -1,9 +1,8 @@
 """Phase 1.5 publisher — POSTs ``static/index.html`` to omg.lol (ytb-OMG2).
 
 Reads the static HTML from disk, validates it is non-empty, and either
-prints what would be sent (default ``--dry-run``) or posts via
-:class:`shared.omg_lol_client.OmgLolClient.set_web` when ``--publish``
-is passed explicitly.
+prints what would be sent (default ``--dry-run``) or posts through the
+publication-bus omg.lol web publisher when ``--publish`` is passed explicitly.
 
 The dry-run default is the safety invariant — running the publisher
 with no flags **must not** mutate the live web page. ``--publish``
@@ -28,6 +27,8 @@ import logging
 import sys
 from pathlib import Path
 
+from agents.publication_bus.omg_web_publisher import OmgLolWebPublisher
+from agents.publication_bus.publisher_kit import PublisherPayload
 from shared.governance.omg_referent import OperatorNameLeak, safe_render
 
 log = logging.getLogger(__name__)
@@ -99,11 +100,14 @@ def publish(
         log.error("omg-web: legal-name leak detected — DROPPING publish")
         return 1
 
-    response = client.set_web(address, content=content, publish=True)
-    if response is None:
-        log.error("set_web returned None — see client logs for endpoint detail")
+    publisher = OmgLolWebPublisher(client=client)
+    result = publisher.publish(
+        PublisherPayload(target=address, text=content, metadata={"publish": True})
+    )
+    if not result.ok:
+        log.error("omg web publication-bus publish failed: %s", result.detail)
         return 1
-    log.info("set_web OK for /address/%s/web (bytes=%d)", address, len(content))
+    log.info("omg web publish OK through publication bus for %s (bytes=%d)", address, len(content))
     return 0
 
 
