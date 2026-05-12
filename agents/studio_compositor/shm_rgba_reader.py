@@ -24,6 +24,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from agents.studio_compositor.gst_appsrc_limits import configure_live_appsrc_queue
+
 if TYPE_CHECKING:
     import cairo
 
@@ -122,6 +124,7 @@ class ShmRgbaReader:
         elem.set_property("format", Gst.Format.TIME)
         elem.set_property("is-live", True)
         elem.set_property("do-timestamp", True)
+        configure_live_appsrc_queue(elem)
         self._gst_appsrc = elem
         log.info(
             "ShmRgbaReader %s: gst_appsrc created (%dx%d BGRA)",

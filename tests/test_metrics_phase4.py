@@ -224,6 +224,35 @@ class TestTtsClientTimeoutCounter:
         assert after == before + 2
 
 
+class TestCompositorContainmentMetrics:
+    def test_scaled_blit_cache_state_metrics(self) -> None:
+        metrics.set_scaled_blit_cache_state(entries=3, bytes_used=4096)
+
+        assert metrics.COMP_SCALED_BLIT_CACHE_ENTRIES._value.get() == 3
+        assert metrics.COMP_SCALED_BLIT_CACHE_BYTES._value.get() == 4096
+
+    def test_scaled_blit_cache_eviction_counter(self) -> None:
+        before = metrics.COMP_SCALED_BLIT_CACHE_EVICTIONS_TOTAL.labels(
+            reason="capacity"
+        )._value.get()
+
+        metrics.record_scaled_blit_cache_eviction(reason="capacity", count=2)
+
+        after = metrics.COMP_SCALED_BLIT_CACHE_EVICTIONS_TOTAL.labels(
+            reason="capacity"
+        )._value.get()
+        assert after == before + 2
+
+    def test_v4l2_appsink_copy_counters(self) -> None:
+        before_bytes = metrics.COMP_V4L2_APPSINK_COPIED_BYTES_TOTAL._value.get()
+        before_frames = metrics.COMP_V4L2_APPSINK_COPIED_FRAMES_TOTAL._value.get()
+
+        metrics.record_v4l2_appsink_copy(1024)
+
+        assert metrics.COMP_V4L2_APPSINK_COPIED_BYTES_TOTAL._value.get() == before_bytes + 1024
+        assert metrics.COMP_V4L2_APPSINK_COPIED_FRAMES_TOTAL._value.get() == before_frames + 1
+
+
 class TestCameraFrameIntervalHistogram:
     """Livestream-performance-map Sprint 6 F4 / W1.3: per-camera frame
     interval histogram. The research map's headline target is

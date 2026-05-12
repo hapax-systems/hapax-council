@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING, Any
 
 import cairo
 
+from agents.studio_compositor.gst_appsrc_limits import configure_live_appsrc_queue
+
 if TYPE_CHECKING:
     from agents.studio_compositor.budget import BudgetTracker
 
@@ -344,6 +346,7 @@ class CairoSourceRunner:
         elem.set_property("format", Gst.Format.TIME)
         elem.set_property("is-live", True)
         elem.set_property("do-timestamp", True)
+        configure_live_appsrc_queue(elem)
         self._gst_appsrc = elem
         log.info(
             "CairoSourceRunner %s: gst_appsrc created (%dx%d BGRA)",

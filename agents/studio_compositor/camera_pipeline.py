@@ -21,6 +21,7 @@ from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from .gst_appsrc_limits import configure_live_appsrc_queue
 from .models import CameraSpec
 
 log = logging.getLogger(__name__)
@@ -477,6 +478,7 @@ class CameraPipeline:
         src.set_property("format", Gst.Format.TIME)
         src.set_property("do-timestamp", True)
         src.set_property("block", False)
+        configure_live_appsrc_queue(src)
         # Advertise the compositor cadence even though the fetch loop may
         # push repeated/stale frames more slowly. Some downstream elements
         # treat the source caps as the branch contract; using the reduced
