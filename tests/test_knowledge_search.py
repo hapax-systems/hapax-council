@@ -47,6 +47,34 @@ class TestSearchDocuments:
         query_filter = call_kwargs.kwargs.get("query_filter") or call_kwargs[1].get("query_filter")
         assert query_filter is not None
 
+    @patch("shared.knowledge_search.get_qdrant")
+    @patch("shared.knowledge_search.embed")
+    def test_excludes_retrieval_ineligible_by_default(self, mock_embed, mock_qdrant):
+        mock_embed.return_value = [0.1] * 768
+        mock_qdrant.return_value.query_points.return_value.points = []
+
+        search_documents("test")
+        call_kwargs = mock_qdrant.return_value.query_points.call_args
+        query_filter = call_kwargs.kwargs.get("query_filter") or call_kwargs[1].get("query_filter")
+
+        assert query_filter is not None
+        assert query_filter.must_not
+        exclusion = query_filter.must_not[0]
+        assert exclusion.key == "retrieval_eligible"
+        assert exclusion.match.value is False
+
+    @patch("shared.knowledge_search.get_qdrant")
+    @patch("shared.knowledge_search.embed")
+    def test_inventory_search_can_include_retrieval_ineligible(self, mock_embed, mock_qdrant):
+        mock_embed.return_value = [0.1] * 768
+        mock_qdrant.return_value.query_points.return_value.points = []
+
+        search_documents("test", include_inventory=True)
+        call_kwargs = mock_qdrant.return_value.query_points.call_args
+        query_filter = call_kwargs.kwargs.get("query_filter") or call_kwargs[1].get("query_filter")
+
+        assert query_filter is None
+
     @patch("shared.knowledge_search.get_qdrant", side_effect=Exception("Connection refused"))
     @patch("shared.knowledge_search.embed", return_value=[0.1] * 768)
     def test_unavailable_returns_message(self, mock_embed, mock_qdrant):

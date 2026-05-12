@@ -445,6 +445,18 @@ _SOURCE_ALIASES: dict[str, list[str]] = {
 }
 
 
+def _retrieval_eligible_filter(
+    *,
+    must: list[FieldCondition] | None = None,
+    should: list[FieldCondition] | None = None,
+) -> Filter:
+    return Filter(
+        must=must,
+        should=should,
+        must_not=[FieldCondition(key="retrieval_eligible", match=MatchValue(value=False))],
+    )
+
+
 async def handle_search_documents(params) -> None:
     """Search Qdrant documents collection with semantic similarity."""
     query = params.arguments["query"]
@@ -459,16 +471,18 @@ async def handle_search_documents(params) -> None:
         if source:
             aliases = _SOURCE_ALIASES.get(source, [source])
             if len(aliases) == 1:
-                query_filter = Filter(
+                query_filter = _retrieval_eligible_filter(
                     must=[FieldCondition(key="source_service", match=MatchValue(value=aliases[0]))]
                 )
             else:
-                query_filter = Filter(
+                query_filter = _retrieval_eligible_filter(
                     should=[
                         FieldCondition(key="source_service", match=MatchValue(value=v))
                         for v in aliases
                     ]
                 )
+        else:
+            query_filter = _retrieval_eligible_filter()
 
         results = client.query_points(
             _DOCUMENTS_COLLECTION,
@@ -976,7 +990,7 @@ async def handle_search_drive(params) -> None:
         vector = embed(query, prefix="search_query")
         client = get_qdrant_grpc()
 
-        query_filter = Filter(
+        query_filter = _retrieval_eligible_filter(
             should=[
                 FieldCondition(key="source_service", match=MatchValue(value="gdrive")),
                 FieldCondition(key="source_service", match=MatchValue(value="drive")),

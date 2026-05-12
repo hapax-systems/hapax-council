@@ -31,6 +31,7 @@ def search_documents(
     content_type: str | None = None,
     days_back: int | None = None,
     limit: int = 10,
+    include_inventory: bool = False,
 ) -> str:
     """Semantic search over the documents collection."""
     with _rag_tracer.start_as_current_span("rag.search") as span:
@@ -56,7 +57,17 @@ def search_documents(
                 since_ts = (datetime.now(UTC) - timedelta(days=days_back)).timestamp()
                 conditions.append(FieldCondition(key="ingested_at", range=Range(gte=since_ts)))
 
-            query_filter = Filter(must=conditions) if conditions else None
+            filter_kwargs = {}
+            if conditions:
+                filter_kwargs["must"] = conditions
+            if not include_inventory:
+                filter_kwargs["must_not"] = [
+                    FieldCondition(
+                        key="retrieval_eligible",
+                        match=MatchValue(value=False),
+                    )
+                ]
+            query_filter = Filter(**filter_kwargs) if filter_kwargs else None
 
             results = client.query_points(
                 "documents",
