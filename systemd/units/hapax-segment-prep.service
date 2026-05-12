@@ -15,7 +15,7 @@ Environment=HAPAX_SEGMENT_PREP_MODEL=command-r-08-2024-exl3-5.0bpw
 ExecCondition=%h/.local/bin/uv run python -m shared.segment_prep_pause --check --activity pool_generation
 ExecStartPre=%h/.local/bin/uv run python -m shared.resident_command_r --check
 ExecStart=%h/.local/bin/uv run python -m agents.hapax_daimonion.daily_segment_prep
-TimeoutStartSec=2400
+TimeoutStartSec=7200
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=hapax-segment-prep

@@ -209,14 +209,16 @@ find_claimed_task() {
 }
 
 find_next_wsjf_task() {
+    local lane_platform="${1:-any}"
     if [ ! -d "$TASK_ROOT" ]; then
         return 1
     fi
     python3 -c "
+import re, sys
 from pathlib import Path
-import re
 
 task_root = Path('$TASK_ROOT')
+lane_platform = '$lane_platform'
 best_id = None
 best_wsjf = -1.0
 
@@ -234,6 +236,11 @@ for p in task_root.glob('*.md'):
     blocked_m = re.search(r'^blocked_reason:', text, re.MULTILINE)
     if blocked_m:
         continue
+    plat_m = re.search(r'^platform_suitability:\s*\[([^\]]*)\]', text, re.MULTILINE)
+    if plat_m:
+        platforms = [s.strip() for s in plat_m.group(1).split(',')]
+        if 'any' not in platforms and lane_platform not in platforms:
+            continue
     wsjf_m = re.search(r'^wsjf:\s*([0-9.]+)', text, re.MULTILINE)
     wsjf = float(wsjf_m.group(1)) if wsjf_m else 0.0
     if wsjf > best_wsjf:
@@ -273,7 +280,7 @@ for session in "${!IDLE_LANES[@]}"; do
     if [ -n "$claimed" ]; then
         dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m with an active task: $claimed. Resume work immediately. Ship a PR and cc-close --pr N after merge."
     else
-        next_task=$(find_next_wsjf_task || true)
+        next_task=$(find_next_wsjf_task "$platform" || true)
         if [ -n "$next_task" ]; then
             dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m. Claim and start: cc-claim $next_task. Do the work, ship a PR, then cc-close --pr N."
         else

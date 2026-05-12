@@ -109,7 +109,7 @@ DEFAULT_PREP_DIR = Path(
 )
 
 # Max wall-clock for the entire prep window.
-PREP_BUDGET_S = float(os.environ.get("HAPAX_SEGMENT_PREP_BUDGET_S", "1800"))  # 30 min
+PREP_BUDGET_S = float(os.environ.get("HAPAX_SEGMENT_PREP_BUDGET_S", "6600"))  # 110 min
 
 # How many segments to prep per run.  Fewer segments = more time per
 # segment for iterative refinement.  Each segment gets an initial
