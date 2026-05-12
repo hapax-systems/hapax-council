@@ -242,6 +242,10 @@ source readiness validation and will block the segment:
 - `{topic}`, `{item}`, `{source}` — write the actual value
 - Generic directions like "Source candidates from vault + RAG" — name
   the specific sources
+- Generic stage labels like `hook: Introduce`, `motivation: Explain`,
+  `framing: Define`, `main_points: Present`, `synthesis: Connect`,
+  or `questions: Invite` — name the source, object, consequence, and
+  visible/doable obligation for that beat
 
 **Arc shaping**: Every segment has dramatic energy, not just
 information. Open with tension. Build through the body — each beat
@@ -608,6 +612,12 @@ point and adapt to the declared topic.
   with an example) → synthesis (how the points connect) →
   questions (invite chat or reflect on operator-asked
   questions from prior windows).
+  Do not emit those phase names as generic beat text. A valid lecture
+  beat names the specific source note, demonstration object, worked
+  example, or audience question it will make visible/doable. Labels such
+  as `Motivate:`, `Frame:`, `Main point 1:`, and `Synthesize:` are still
+  generic stage text and are rejected unless rewritten as source-bound
+  beat directions.
 - **`narrative_beat` example**: `"lecture segment on mechanical
   governance before a public launch. Outline from the HN readiness tree
   and agentgov README; teach why source receipts, live checks, and soak

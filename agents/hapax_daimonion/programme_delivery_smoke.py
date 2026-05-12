@@ -11,7 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from agents.hapax_daimonion.autonomous_narrative.compose import check_beat_transition
-from agents.hapax_daimonion.programme_loop import _active_segment_payload
+from agents.hapax_daimonion.programme_loop import (
+    _active_segment_payload,
+    programme_from_prepped_artifact,
+)
 from agents.studio_compositor.director_segment_runner import (
     DirectorSegmentCommand,
     DirectorSegmentRunner,
@@ -100,6 +103,10 @@ def run_smoke(
     *,
     output_dir: Path,
     programme_id: str = "programme-delivery-smoke",
+    prep_dir: Path | None = None,
+    prepped_artifact: dict[str, Any] | None = None,
+    require_selected: bool = False,
+    strict_release_contract: bool = True,
     write_screenshots: bool = True,
 ) -> SmokeResult:
     output_dir = Path(output_dir)
@@ -110,6 +117,7 @@ def run_smoke(
     runner_command_log_path = output_dir / "director-segment-runner-commands.jsonl"
     runner_receipts_path = output_dir / "director-segment-runner-process-receipts.jsonl"
     tts_receipts_path = output_dir / "tts-delivery.jsonl"
+    active_segment_snapshots_dir = output_dir / "active-segment-snapshots"
     screenshots_dir = output_dir / "screenshots"
     output_dir.mkdir(parents=True, exist_ok=True)
     for stale in (
@@ -123,8 +131,25 @@ def run_smoke(
     ):
         stale.unlink(missing_ok=True)
 
-    programme = _build_programme(programme_id)
-    prep_artifact, manifest_path = _write_prep_manifest(output_dir, programme)
+    source_artifact = prepped_artifact or _load_first_prepped_artifact(
+        prep_dir,
+        require_selected=require_selected,
+        strict_release_contract=strict_release_contract,
+    )
+    if source_artifact is None:
+        programme = _build_programme(programme_id)
+    else:
+        programme = programme_from_prepped_artifact(
+            source_artifact,
+            parent_show_id="show-programme-delivery-smoke",
+            planned_duration_s=3600.0,
+        )
+        programme = _with_smoke_beat_durations(programme)
+    prep_artifact, manifest_path = _write_prep_manifest(
+        output_dir,
+        programme,
+        source_artifact=source_artifact,
+    )
     store = ProgrammePlanStore(output_dir / "programmes.jsonl")
     store.add(programme)
     active = store.activate(programme.programme_id, now=time.time())
@@ -148,8 +173,10 @@ def run_smoke(
 
     transition_count = 0
     accepted_layouts: list[str] = []
+    active_segment_snapshots: list[str] = []
+    active_segment_layout_intent_counts: list[int] = []
     observed_layout = "default"
-    durations = [15.0, 15.0, 15.0]
+    durations = _smoke_beat_durations(programme)
     layout_state = LayoutState(_layout("default", "default-panel"))
     layouts = _smoke_layouts()
     command_sink = _RecordingLayoutCommandSink(layout_state=layout_state, layouts=layouts)
@@ -165,7 +192,8 @@ def run_smoke(
     )
     _clear_smoke_blit_readbacks()
 
-    for beat_index, line in enumerate(_PREPARED_SCRIPT):
+    script_lines = list(programme.content.prepared_script or _PREPARED_SCRIPT)
+    for beat_index, line in enumerate(script_lines):
         elapsed = sum(durations[:beat_index]) + 0.25
         beat_active = active.model_copy(update={"actual_started_at": time.time() - elapsed})
         changed, current_beat = check_beat_transition(beat_active)
@@ -173,6 +201,17 @@ def run_smoke(
             transition_count += 1
         segment_payload = _active_segment_payload(beat_active, programme.role.value, current_beat)
         _write_json(active_segment_path, segment_payload)
+        active_segment_layout_intent_counts.append(
+            len(segment_payload.get("current_beat_layout_intents") or [])
+        )
+        active_segment_snapshots.append(
+            str(
+                _write_json(
+                    active_segment_snapshots_dir / f"beat-{beat_index + 1:02d}.json",
+                    segment_payload,
+                )
+            )
+        )
 
         pre_result = runner.process_once(now=time.time())
         if pre_result is None:
@@ -236,11 +275,18 @@ def run_smoke(
         "programme_id": programme.programme_id,
         "prep_manifest_path": str(manifest_path),
         "prep_artifact_path": str(prep_artifact),
+        "source_prep_artifact_path": (
+            str(source_artifact.get("artifact_path"))
+            if isinstance(source_artifact, dict) and source_artifact.get("artifact_path")
+            else None
+        ),
         "prep_manifest_ok": _manifest_lists_artifact(manifest_path, prep_artifact.name),
         "programme_loaded": loaded.programme_id == programme.programme_id,
         "beat_transition_count": transition_count,
         "director_command_count": len(command_sink.commands),
         "accepted_layouts": accepted_layouts,
+        "active_segment_snapshot_paths": active_segment_snapshots,
+        "active_segment_layout_intent_counts": active_segment_layout_intent_counts,
         "tts_delivered_count": _jsonl_count(tts_receipts_path),
         "screenshot_paths": screenshots,
         "runner_receipts_path": str(runner_receipts_path),
@@ -251,10 +297,12 @@ def run_smoke(
     receipt["ok"] = (
         receipt["prep_manifest_ok"]
         and receipt["programme_loaded"]
-        and receipt["beat_transition_count"] >= len(_BEATS)
-        and receipt["director_command_count"] >= len(_BEATS)
-        and len(receipt["accepted_layouts"]) >= len(_BEATS)
-        and receipt["tts_delivered_count"] >= len(_BEATS)
+        and receipt["beat_transition_count"] >= len(programme.content.segment_beats)
+        and receipt["director_command_count"] >= 1
+        and len(receipt["accepted_layouts"]) >= len(programme.content.segment_beats)
+        and len(receipt["active_segment_snapshot_paths"]) >= len(programme.content.segment_beats)
+        and all(count > 0 for count in receipt["active_segment_layout_intent_counts"])
+        and receipt["tts_delivered_count"] >= len(programme.content.segment_beats)
         and (not write_screenshots or len(receipt["screenshot_paths"]) == 3)
     )
     receipt_path = output_dir / "programme-delivery-smoke-receipt.json"
@@ -295,20 +343,67 @@ def _build_programme(programme_id: str) -> Programme:
     )
 
 
-def _write_prep_manifest(output_dir: Path, programme: Programme) -> tuple[Path, Path]:
+def _load_first_prepped_artifact(
+    prep_dir: Path | None,
+    *,
+    require_selected: bool,
+    strict_release_contract: bool,
+) -> dict[str, Any] | None:
+    if prep_dir is None:
+        return None
+    from agents.hapax_daimonion import daily_segment_prep
+
+    artifacts = daily_segment_prep.load_prepped_programmes(
+        prep_dir,
+        require_selected=require_selected,
+        strict_release_contract=strict_release_contract,
+    )
+    if not artifacts:
+        raise RuntimeError(f"no accepted prepped programmes loaded from {prep_dir}")
+    return dict(artifacts[0])
+
+
+def _with_smoke_beat_durations(programme: Programme) -> Programme:
+    count = len(programme.content.segment_beats)
+    if count <= 0:
+        return programme
+    content = programme.content.model_copy(update={"segment_beat_durations": [15.0] * count})
+    return programme.model_copy(update={"content": content})
+
+
+def _smoke_beat_durations(programme: Programme) -> list[float]:
+    count = len(programme.content.segment_beats)
+    durations = list(programme.content.segment_beat_durations or [])
+    if len(durations) >= count:
+        return [float(item) for item in durations[:count]]
+    return [15.0] * count
+
+
+def _write_prep_manifest(
+    output_dir: Path,
+    programme: Programme,
+    *,
+    source_artifact: dict[str, Any] | None = None,
+) -> tuple[Path, Path]:
     today = output_dir / "prep" / dt.date.today().isoformat()
     today.mkdir(parents=True, exist_ok=True)
     artifact = today / f"{programme.programme_id}.json"
-    payload = {
-        "programme_id": programme.programme_id,
-        "role": programme.role.value,
-        "topic": programme.content.declared_topic,
-        "accepted": True,
-        "prepared_script": programme.content.prepared_script,
-        "segment_beats": programme.content.segment_beats,
-        "beat_layout_intents": programme.content.beat_layout_intents,
-        "smoke_authority": "deterministic programme delivery smoke",
-    }
+    if source_artifact is None:
+        payload = {
+            "programme_id": programme.programme_id,
+            "role": programme.role.value,
+            "topic": programme.content.declared_topic,
+            "accepted": True,
+            "prepared_script": programme.content.prepared_script,
+            "segment_beats": programme.content.segment_beats,
+            "beat_layout_intents": programme.content.beat_layout_intents,
+            "smoke_authority": "deterministic programme delivery smoke",
+        }
+    else:
+        payload = dict(source_artifact) | {
+            "smoke_authority": "deterministic programme delivery smoke",
+            "smoke_loaded_as_programme": True,
+        }
     _write_json(artifact, payload)
     manifest = today / "manifest.json"
     _write_json(
@@ -341,8 +436,12 @@ def _write_screenshot(
     draw.text((150, 205), f"Programme: {programme.programme_id}", fill=(190, 220, 230))
     draw.text((150, 255), f"Layout: {layout}", fill=(240, 215, 155))
     if beat_index is not None:
-        draw.text((150, 305), f"Beat {beat_index + 1}: {_BEATS[beat_index]}", fill=(220, 220, 220))
-        draw.text((150, 355), _PREPARED_SCRIPT[beat_index], fill=(210, 225, 210))
+        beats = programme.content.segment_beats
+        scripts = programme.content.prepared_script
+        beat_text = beats[beat_index] if beat_index < len(beats) else f"Beat {beat_index + 1}"
+        script_text = scripts[beat_index] if beat_index < len(scripts) else ""
+        draw.text((150, 305), f"Beat {beat_index + 1}: {beat_text}", fill=(220, 220, 220))
+        draw.text((150, 355), script_text, fill=(210, 225, 210))
     else:
         draw.text(
             (150, 305),
@@ -440,11 +539,12 @@ def _jsonl_count(path: Path) -> int:
         return 0
 
 
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
+def _write_json(path: Path, payload: dict[str, Any]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(path)
+    return path
 
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
@@ -461,6 +561,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=Path("/tmp") / f"hapax-programme-delivery-smoke-{int(time.time())}",
     )
     parser.add_argument("--programme-id", default="programme-delivery-smoke")
+    parser.add_argument(
+        "--prep-dir",
+        type=Path,
+        default=None,
+        help="Load the first accepted daily segment-prep artifact from this root",
+    )
+    parser.add_argument("--require-selected", action="store_true")
+    parser.add_argument("--no-strict-release-contract", action="store_true")
     parser.add_argument("--skip-screenshots", action="store_true")
     return parser
 
@@ -470,6 +578,9 @@ def main(argv: list[str] | None = None) -> int:
     result = run_smoke(
         output_dir=args.out_dir,
         programme_id=args.programme_id,
+        prep_dir=args.prep_dir,
+        require_selected=args.require_selected,
+        strict_release_contract=not args.no_strict_release_contract,
         write_screenshots=not args.skip_screenshots,
     )
     print(json.dumps({"ok": result.receipt["ok"], "receipt_path": str(result.receipt_path)}))
