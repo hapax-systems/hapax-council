@@ -57,6 +57,7 @@ import sys
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +111,13 @@ class _TailRecord:
     byte_after: int
     event: ResearchVehiclePublicEvent | None
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class _StatusResult:
+    result: str
+    uri: str | None = None
+    public_url: str | None = None
 
 
 class MastodonPoster:
@@ -172,8 +180,8 @@ class MastodonPoster:
             if self._event_already_processed(event.event_id):
                 self._write_cursor(record.byte_after)
                 continue
-            self._apply(event)
-            self._mark_event_processed(event.event_id)
+            receipt = self._apply(event)
+            self._mark_event_processed(event.event_id, receipt=receipt)
             self._write_cursor(record.byte_after)
             handled += 1
         return handled
@@ -303,16 +311,25 @@ class MastodonPoster:
             return set()
         return {item for item in ids if isinstance(item, str) and item}
 
-    def _mark_event_processed(self, event_id: str) -> None:
+    def _mark_event_processed(
+        self,
+        event_id: str,
+        *,
+        receipt: dict[str, Any] | None = None,
+    ) -> None:
         if self._processed_event_ids is None:
             self._processed_event_ids = self._read_processed_event_ids()
         self._processed_event_ids.add(event_id)
         try:
             self._idempotency_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._idempotency_path.with_suffix(".tmp")
+            post_receipts = self._read_post_receipts()
+            if receipt is not None:
+                post_receipts[event_id] = receipt
             payload = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "event_ids": sorted(self._processed_event_ids),
+                "posts": [post_receipts[key] for key in sorted(post_receipts)],
             }
             tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
             tmp.replace(self._idempotency_path)
@@ -323,9 +340,29 @@ class MastodonPoster:
                 exc_info=True,
             )
 
+    def _read_post_receipts(self) -> dict[str, dict[str, Any]]:
+        try:
+            raw = json.loads(self._idempotency_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        posts = raw.get("posts")
+        if not isinstance(posts, list):
+            return {}
+
+        receipts: dict[str, dict[str, Any]] = {}
+        for item in posts:
+            if not isinstance(item, dict):
+                continue
+            event_id = item.get("event_id")
+            if isinstance(event_id, str) and event_id:
+                receipts[event_id] = item
+        return receipts
+
     # ── Per-event apply ───────────────────────────────────────────────
 
-    def _apply(self, event: ResearchVehiclePublicEvent) -> None:
+    def _apply(self, event: ResearchVehiclePublicEvent) -> dict[str, Any] | None:
         fanout = decide_cross_surface_fanout(event, "mastodon", "publish")
         if fanout.decision != "allow":
             log.warning(
@@ -334,7 +371,7 @@ class MastodonPoster:
                 ",".join(fanout.reasons),
             )
             self.posts_total.labels(result="denied").inc()
-            return
+            return _post_receipt(event, result="denied")
 
         verdict = allowlist_check(
             ALLOWLIST_SURFACE,
@@ -344,50 +381,59 @@ class MastodonPoster:
         if verdict.decision == "deny":
             log.warning("allowlist DENY for mastodon post: %s", verdict.reason)
             self.posts_total.labels(result="denied").inc()
-            return
+            return _post_receipt(event, result="denied")
 
         try:
             text = self._compose(event)
         except Exception:  # noqa: BLE001
             log.exception("composer failed for event")
             self.posts_total.labels(result="compose_error").inc()
-            return
+            return _post_receipt(event, result="compose_error")
 
         text = text[: self._text_limit]
 
         if self._dry_run:
             log.info("DRY RUN — would post to mastodon: text=%r", text)
             self.posts_total.labels(result="dry_run").inc()
-            return
+            return _post_receipt(event, result="dry_run", text=text)
 
-        result = self._status_post(text)
-        self.posts_total.labels(result=result).inc()
+        status = self._status_post(text)
+        self.posts_total.labels(result=status.result).inc()
+        return _post_receipt(
+            event,
+            result=status.result,
+            text=text,
+            uri=status.uri,
+            public_url=status.public_url,
+        )
 
     def _compose(self, event: ResearchVehiclePublicEvent) -> str:
         if self._compose_fn is not None:
             return self._compose_fn(event)
         return _default_compose(event)
 
-    def _status_post(self, text: str) -> str:
+    def _status_post(self, text: str) -> _StatusResult:
         if not (self._instance_url and self._access_token):
             log.warning(
                 "HAPAX_MASTODON_INSTANCE_URL / HAPAX_MASTODON_ACCESS_TOKEN not set; "
                 "skipping live post"
             )
-            return "no_credentials"
+            return _StatusResult("no_credentials")
 
         try:
             client = self._ensure_client()
         except Exception:  # noqa: BLE001
             log.exception("mastodon client init failed")
-            return "auth_error"
+            return _StatusResult("auth_error")
 
         try:
-            client.status_post(text)
+            raw_result = client.status_post(text)
         except Exception:  # noqa: BLE001
             log.exception("mastodon status_post raised")
-            return "error"
-        return "ok"
+            return _StatusResult("error")
+        uri = _extract_status_uri(raw_result)
+        public_url = _extract_status_public_url(raw_result)
+        return _StatusResult("ok", uri=uri, public_url=public_url)
 
     def _ensure_client(self):
         if self._client is not None:
@@ -402,6 +448,9 @@ class MastodonPoster:
 
 def _default_compose(event: ResearchVehiclePublicEvent) -> str:
     """Build post text by deferring to metadata_composer."""
+    if event.event_type == "omg.weblog" and event.public_url:
+        return _fallback_public_event_text(event)
+
     from agents.metadata_composer.composer import compose_metadata
 
     composed = compose_metadata(
@@ -457,6 +506,45 @@ def _fallback_public_event_text(event: ResearchVehiclePublicEvent) -> str:
     if event.event_type in {"governance.enforcement", "velocity.digest"}:
         return f"Hapax {_event_intent(event)}."
     return f"Hapax livestream: {_event_intent(event)}."
+
+
+def _extract_status_uri(raw_result: Any) -> str | None:
+    if isinstance(raw_result, dict):
+        uri = raw_result.get("uri")
+    else:
+        uri = getattr(raw_result, "uri", None)
+    return uri if isinstance(uri, str) and uri else None
+
+
+def _extract_status_public_url(raw_result: Any) -> str | None:
+    if isinstance(raw_result, dict):
+        url = raw_result.get("url")
+    else:
+        url = getattr(raw_result, "url", None)
+    return url if isinstance(url, str) and url else None
+
+
+def _post_receipt(
+    event: ResearchVehiclePublicEvent,
+    *,
+    result: str,
+    text: str | None = None,
+    uri: str | None = None,
+    public_url: str | None = None,
+) -> dict[str, Any]:
+    receipt: dict[str, Any] = {
+        "event_id": event.event_id,
+        "result": result,
+        "event_public_url": event.public_url,
+        "recorded_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    }
+    if text:
+        receipt["text"] = text
+    if uri:
+        receipt["uri"] = uri
+    if public_url:
+        receipt["public_url"] = public_url
+    return receipt
 
 
 def _allowlist_payload(event: ResearchVehiclePublicEvent) -> dict[str, Any]:

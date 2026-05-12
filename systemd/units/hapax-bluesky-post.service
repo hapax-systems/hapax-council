@@ -13,6 +13,7 @@ Environment=PATH=%h/projects/hapax-council/.venv/bin:/usr/bin
 Environment=HAPAX_BLUESKY_METRICS_PORT=9501
 Environment=HAPAX_BLUESKY_TICK_S=30
 Environment=HAPAX_RESEARCH_VEHICLE_PUBLIC_EVENT_PATH=/dev/shm/hapax-public-events/events.jsonl
+Environment=HAPAX_BLUESKY_CURSOR=%h/.cache/hapax/bluesky-post-cursor.txt
 Environment=HAPAX_BLUESKY_IDEMPOTENCY_PATH=%h/.cache/hapax/bluesky-post-event-ids.json
 Environment=HAPAX_LOG_LEVEL=INFO
 # Operator must export from hapax-secrets:
@@ -22,7 +23,7 @@ Environment=HAPAX_LOG_LEVEL=INFO
 ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.cross_surface.bluesky_post
 Restart=on-failure
 RestartSec=15
-MemoryMax=128M
+MemoryMax=256M
 
 [Install]
 WantedBy=default.target

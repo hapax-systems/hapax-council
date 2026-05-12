@@ -186,6 +186,40 @@ class TestCursor:
         assert poster.run_once() == 0
         factory.return_value.send_post.assert_called_once()
 
+    def test_persists_post_uri_receipt_for_public_proof(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        cursor = tmp_path / "cursor.txt"
+        event = _public_event(event_id="rvpe:broadcast_boundary:proof")
+        _write_events(bus, [event])
+
+        client = mock.Mock()
+        client.send_post.return_value = mock.Mock(
+            uri="at://did:plc:example/app.bsky.feed.post/3proof"
+        )
+        poster, _ = _make_poster(
+            event_path=bus,
+            cursor_path=cursor,
+            client_factory=mock.Mock(return_value=client),
+            compose_fn=mock.Mock(return_value="proof post"),
+            handle="hapax.bsky.social",
+        )
+
+        assert poster.run_once() == 1
+        state = json.loads(cursor.with_name("posted-event-ids.json").read_text())
+        assert state["schema_version"] == 2
+        assert "rvpe:broadcast_boundary:proof" in state["event_ids"]
+        assert state["posts"] == [
+            {
+                "event_id": "rvpe:broadcast_boundary:proof",
+                "event_public_url": "https://www.youtube.com/watch?v=broadcast-123",
+                "public_url": "https://bsky.app/profile/hapax.bsky.social/post/3proof",
+                "recorded_at": state["posts"][0]["recorded_at"],
+                "result": "ok",
+                "text": "proof post",
+                "uri": "at://did:plc:example/app.bsky.feed.post/3proof",
+            }
+        ]
+
 
 # ── Event filtering ──────────────────────────────────────────────────
 
@@ -344,6 +378,37 @@ class TestEventFiltering:
 
         assert poster.run_once() == 1
         client.send_post.assert_called_once()
+
+    def test_default_compose_weblog_uses_public_url_directly(self):
+        from agents.cross_surface import bluesky_post as mod
+
+        event = _public_event(
+            event_id="rvpe:omg_weblog:bsky",
+            event_type="omg.weblog",
+            state_kind="public_post",
+            public_url="https://hapax.weblog.lol/2026/05/show-hn-governance-that-ships",
+            chapter_ref=PublicEventChapterRef(
+                kind="chapter",
+                label="Show HN: Mechanical Governance for AI Coding Agents at 3,000+ PRs",
+                timecode="00:00",
+                source_event_id="rvpe:omg_weblog:bsky",
+            ),
+            surface_policy=_surface_policy(
+                claim_live=False,
+                claim_archive=True,
+                requires_egress_public_claim=False,
+                requires_audio_safe=False,
+                rate_limit_key="omg.weblog:public_post",
+            ),
+        )
+
+        with mock.patch("agents.metadata_composer.composer.compose_metadata") as compose:
+            text = mod._default_compose(event)
+
+        compose.assert_not_called()
+        assert "Show HN: Mechanical Governance" in text
+        assert "https://hapax.weblog.lol/2026/05/show-hn-governance-that-ships" in text
+        assert "metadata-public-claim-gate" not in text
 
     def test_non_broadcast_events_post_without_live_egress_claim(self, tmp_path):
         for event_type, state_kind in (

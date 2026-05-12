@@ -26,6 +26,16 @@ def deploy_module(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(module, "publish_test_post", lambda: True)
     monkeypatch.setattr(
         module,
+        "find_weblog_event",
+        lambda after_ts: {
+            "event_id": "rvpe:omg_weblog:deploy-verify-weblog-producer",
+            "event_type": "omg.weblog",
+            "state_kind": "weblog.entry",
+            "salience": 1.0,
+        },
+    )
+    monkeypatch.setattr(
+        module,
         "wait_for_event",
         lambda after_ts: {
             "event_id": "rvpe:omg_weblog:deploy-verify-weblog-producer",
@@ -39,7 +49,33 @@ def deploy_module(monkeypatch: pytest.MonkeyPatch) -> Any:
     return module
 
 
-def test_cleanup_runs_by_default(deploy_module: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_is_check_only_and_does_not_mutate(
+    deploy_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    published = False
+    deleted = False
+
+    def _publish_test_post() -> bool:
+        nonlocal published
+        published = True
+        return True
+
+    def _delete_test_post() -> bool:
+        nonlocal deleted
+        deleted = True
+        return True
+
+    monkeypatch.setattr(deploy_module, "publish_test_post", _publish_test_post)
+    monkeypatch.setattr(deploy_module, "delete_test_post", _delete_test_post)
+
+    assert deploy_module.main([]) == 0
+    assert published is False
+    assert deleted is False
+
+
+def test_live_egress_cleanup_runs_only_when_requested(
+    deploy_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     deleted = False
 
     def _delete_test_post() -> bool:
@@ -49,7 +85,7 @@ def test_cleanup_runs_by_default(deploy_module: Any, monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(deploy_module, "delete_test_post", _delete_test_post)
 
-    assert deploy_module.main([]) == 0
+    assert deploy_module.main(["--live-egress", "--cleanup-live"]) == 0
     assert deleted is True
 
 
@@ -65,5 +101,28 @@ def test_no_cleanup_opt_out_leaves_test_post(
 
     monkeypatch.setattr(deploy_module, "delete_test_post", _delete_test_post)
 
-    assert deploy_module.main(["--no-cleanup"]) == 0
+    assert deploy_module.main(["--live-egress", "--no-cleanup"]) == 0
     assert deleted is False
+
+
+def test_check_social_fanout_reads_schema_v2_receipts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_module()
+    mastodon = tmp_path / "mastodon.json"
+    bluesky = tmp_path / "bluesky.json"
+    mastodon.write_text(
+        '{"schema_version": 2, "event_ids": ["event-1"], "posts": []}',
+        encoding="utf-8",
+    )
+    bluesky.write_text(
+        '{"schema_version": 2, "event_ids": [], "posts": [{"event_id": "event-1"}]}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "MASTODON_IDS_PATH", mastodon)
+    monkeypatch.setattr(module, "BLUESKY_IDS_PATH", bluesky)
+
+    assert module.check_social_fanout("event-1") == {
+        "mastodon": True,
+        "bluesky": True,
+    }

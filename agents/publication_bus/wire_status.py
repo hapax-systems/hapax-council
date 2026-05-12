@@ -96,6 +96,20 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "and omg_rss_fanout helper."
         ),
     ),
+    "agents.publication_bus.omg_statuslog_publisher": WireEntry(
+        module="agents.publication_bus.omg_statuslog_publisher",
+        surface_slug="omg-lol-statuslog",
+        status="WIRED",
+        pass_key_required="omg-lol/api-key",
+        rationale=(
+            "Wired via agents.operator_awareness.omg_lol_fanout, invoked by "
+            "systemd/units/hapax-omg-lol-fanout.service. The daemon renders a "
+            "public-filtered awareness summary, dedupes by hash, then publishes "
+            "through OmgLolStatuslogPublisher so the live statuslog egress path "
+            "uses the publication-bus allowlist/legal-name/counter/witness "
+            "invariants."
+        ),
+    ),
     "agents.publication_bus.osf_prereg_publisher": WireEntry(
         module="agents.publication_bus.osf_prereg_publisher",
         surface_slug="osf-prereg",
