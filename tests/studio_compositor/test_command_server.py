@@ -215,7 +215,9 @@ def test_set_opacity_rejects_out_of_range(server_and_state) -> None:
     assert resp["error"] == "invalid_opacity"
 
 
-def test_activate_layout_resolves_and_mutates_state(tmp_path: Path) -> None:
+def test_activate_layout_blocks_fragment_layout_without_explicit_escape(
+    tmp_path: Path,
+) -> None:
     state = LayoutState(_minimal_layout())
     alt = _alternate_layout()
     sock_path = tmp_path / "compositor.sock"
@@ -237,9 +239,11 @@ def test_activate_layout_resolves_and_mutates_state(tmp_path: Path) -> None:
                 "args": {"layout_name": "segment-tier"},
             },
         )
-        assert resp == {"status": "ok", "layout_name": "segment-tier"}
-        assert state.get().name == "segment-tier"
-        assert activated == ["segment-tier"]
+        assert resp["status"] == "error"
+        assert resp["error"] == "segment_fragment_layout_not_full_surface"
+        assert resp["source_count"] == 1
+        assert state.get().name == "t"
+        assert activated == []
     finally:
         server.stop()
 
@@ -380,12 +384,12 @@ def test_reload_invokes_reload_callback(tmp_path: Path) -> None:
         server.stop()
 
 
-def test_activate_layout_mutates_state_and_marks_active(tmp_path: Path) -> None:
+def test_activate_non_segment_layout_mutates_state_and_marks_active(tmp_path: Path) -> None:
     state = LayoutState(_minimal_layout())
     sock_path = tmp_path / "compositor.sock"
     activated: list[str] = []
     layouts = {
-        "segment-compare": _minimal_layout().model_copy(update={"name": "segment-compare"}),
+        "operator-compare": _minimal_layout().model_copy(update={"name": "operator-compare"}),
     }
     server = CommandServer(
         state,
@@ -401,12 +405,12 @@ def test_activate_layout_mutates_state_and_marks_active(tmp_path: Path) -> None:
             sock_path,
             {
                 "command": "compositor.layout.activate",
-                "args": {"layout_name": "segment-compare"},
+                "args": {"layout_name": "operator-compare"},
             },
         )
-        assert resp == {"status": "ok", "layout_name": "segment-compare"}
-        assert state.get().name == "segment-compare"
-        assert activated == ["segment-compare"]
+        assert resp == {"status": "ok", "layout_name": "operator-compare"}
+        assert state.get().name == "operator-compare"
+        assert activated == ["operator-compare"]
     finally:
         server.stop()
 

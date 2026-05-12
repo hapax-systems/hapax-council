@@ -188,6 +188,59 @@ class TestProbeSource:
         assert probe.stall_seconds == 35.0
 
 
+class TestObswsCompatibility:
+    def test_probe_supports_positional_obsws_client(self, reset_mod: types.ModuleType) -> None:
+        class PositionalClient:
+            def get_source_active(self, source_name: str):
+                assert source_name == "Video Capture Device (V4L2)"
+                return MagicMock(video_active=True)
+
+            def get_source_screenshot(
+                self,
+                source_name: str,
+                image_format: str,
+                image_width: int,
+                image_height: int,
+                quality: int,
+            ):
+                assert source_name == "Video Capture Device (V4L2)"
+                assert image_format == "png"
+                assert (image_width, image_height, quality) == (8, 8, 50)
+                return MagicMock(image_data="frame")
+
+        probe = reset_mod._probe_source(
+            PositionalClient(),
+            "Video Capture Device (V4L2)",
+            previous_hash=None,
+            hash_stable_since=10.0,
+            now=15.0,
+        )
+
+        assert probe.state is reset_mod.SourceState.HEALTHY
+        assert probe.source_active is True
+        assert probe.screenshot_available is True
+
+    def test_scene_toggle_supports_positional_obsws_client(
+        self, reset_mod: types.ModuleType
+    ) -> None:
+        class PositionalClient:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, int, bool]] = []
+
+            def set_scene_item_enabled(
+                self,
+                scene_name: str,
+                item_id: int,
+                enabled: bool,
+            ) -> None:
+                self.calls.append((scene_name, item_id, enabled))
+
+        client = PositionalClient()
+        with patch.object(reset_mod.time, "sleep"):
+            assert reset_mod._toggle_visibility(client, "Scene", 7) is True
+        assert client.calls == [("Scene", 7, False), ("Scene", 7, True)]
+
+
 class TestHealthMetrics:
     def test_prometheus_includes_state_and_health_gauges(
         self,

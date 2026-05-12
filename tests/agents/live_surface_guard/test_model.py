@@ -40,6 +40,31 @@ class FakeObs:
         return SimpleNamespace(image_data=self.image_data)
 
 
+class PositionalFakeObs:
+    def __init__(self, image_data: str = ONE_PIXEL_PNG) -> None:
+        self.image_data = image_data
+
+    def get_source_active(self, source_name: str):
+        assert source_name == "Video Capture Device (V4L2)"
+        return SimpleNamespace(video_active=True)
+
+    def get_stream_status(self):
+        return SimpleNamespace(output_active=True)
+
+    def get_source_screenshot(
+        self,
+        source_name: str,
+        image_format: str,
+        image_width: int,
+        image_height: int,
+        quality: int,
+    ):
+        assert source_name == "Video Capture Device (V4L2)"
+        assert image_format == "png"
+        assert (image_width, image_height, quality) == (16, 16, 50)
+        return SimpleNamespace(image_data=self.image_data)
+
+
 class FakeExecutor:
     def __init__(self) -> None:
         self.actions: list[str] = []
@@ -103,6 +128,19 @@ def test_sample_obs_decoder_needs_hash_motion_not_playing_alone() -> None:
     assert first.screenshot_changed is False
     assert first.screenshot_flat is True
     assert second.screenshot_changed is False
+
+
+def test_sample_obs_decoder_supports_positional_obsws_client() -> None:
+    sample = sample_obs_decoder(
+        PositionalFakeObs(),
+        "Video Capture Device (V4L2)",
+        now=1000.0,
+    )
+
+    assert sample.source_active is True
+    assert sample.playing is True
+    assert sample.screenshot_hash is not None
+    assert sample.error is None
 
 
 def test_stale_obs_frame_plans_bounded_direct_remediation_with_receipt(tmp_path: Path) -> None:

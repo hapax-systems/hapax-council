@@ -673,3 +673,36 @@ def test_process_recruitment_non_dict_root_returns_false(
     path.write_text(payload)
     monkeypatch.setattr(gpc, "RECRUITMENT_FILE", path)
     assert gpc.process_graph_patch_recruitment() is False, f"non-dict root={kind} must yield False"
+
+
+def test_process_graph_patch_recruitment_honors_autonomous_disable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gpc.RECRUITMENT_FILE.write_text(
+        json.dumps(
+            {
+                "families": {
+                    "node.add": {
+                        "items": [
+                            {
+                                "capability": "node.add.feedback",
+                                "suffix": "feedback",
+                                "last_recruited_ts": time.time(),
+                                "ttl_s": 30.0,
+                            }
+                        ],
+                        "last_recruited_ts": time.time(),
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HAPAX_FX_AUTONOMOUS_MUTATIONS", "0")
+    monkeypatch.setattr(
+        gpc,
+        "_apply_patch_async",
+        lambda *_args, **_kwargs: pytest.fail("disabled graph patch must not apply"),
+    )
+
+    assert gpc.process_graph_patch_recruitment() is False

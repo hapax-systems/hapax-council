@@ -108,6 +108,21 @@ class TestCameraPipelineConstruction:
         cam.clear_frame_observation()
         assert cam.last_frame_age_seconds == float("inf")
 
+    def test_camera_spec_can_override_gst_watchdog_timeout(self, gst):
+        from agents.studio_compositor.camera_pipeline import CameraPipeline
+
+        Gst, _ = gst
+        spec = _make_spec("rtsp-loopback")
+        spec.watchdog_timeout_ms = 5000
+        cam = CameraPipeline(spec, gst=Gst, fps=30)
+        cam.build()
+        try:
+            watchdog = cam._pipeline.get_by_name("watchdog_rtsp_loopback")
+            assert watchdog is not None
+            assert watchdog.get_property("timeout") == 5000
+        finally:
+            cam.teardown()
+
     def test_buffer_allocation_context_names_loopback_producer(
         self, gst, monkeypatch: pytest.MonkeyPatch
     ):

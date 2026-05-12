@@ -1595,9 +1595,9 @@
       "source": "sierpinski",
       "surface": "sierpinski-overlay",
       "transform": {},
-      "opacity": 1.0,
+      "opacity": 0.1,
       "per_assignment_effects": [],
-      "non_destructive": false,
+      "non_destructive": true,
       "render_stage": "pre_fx"
     },
     {
@@ -1631,9 +1631,9 @@
       "source": "durf",
       "surface": "durf-fullframe",
       "transform": {},
-      "opacity": 1.0,
+      "opacity": 0.08,
       "per_assignment_effects": [],
-      "non_destructive": false,
+      "non_destructive": true,
       "render_stage": "pre_fx"
     },
     {
@@ -1760,7 +1760,7 @@
       "source": "segment_content",
       "surface": "segment-content-surface",
       "transform": {},
-      "opacity": 1.0,
+      "opacity": 0.0,
       "per_assignment_effects": [],
       "non_destructive": true,
       "render_stage": "post_fx"

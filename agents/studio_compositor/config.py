@@ -102,6 +102,7 @@ _DEFAULT_CAMERAS: list[dict[str, Any]] = [
         "width": 1280,
         "height": 720,
         "input_format": "mjpeg",
+        "watchdog_timeout_ms": 5000,
         "semantic_role": "operator-desk-topdown",
         "subject_ontology": ["hands", "mpc", "desk"],
         "angle": "top-down",
@@ -151,13 +152,16 @@ def _default_config() -> CompositorConfig:
 # hero-camera-override events in 15 min, every single one tagged
 # ``priority=5, repetition-3.0``. The 6 production cameras already carry
 # correct classifications in ``_DEFAULT_CAMERAS``; this overlay is what
-# carries them through to deployments whose YAML predates Task #135.
-_CLASSIFICATION_FIELDS: tuple[str, ...] = (
+# carries them through to deployments whose YAML predates Task #135. It
+# also carries per-role operational parameters whose absence would cause
+# legacy YAML to fall back to generic physical-camera behavior.
+_DEFAULT_OVERLAY_FIELDS: tuple[str, ...] = (
     "semantic_role",
     "subject_ontology",
     "angle",
     "operator_visible",
     "ambient_priority",
+    "watchdog_timeout_ms",
 )
 
 
@@ -183,7 +187,7 @@ def _merge_camera_classifications(
             merged.append(cam)
             continue
         filled = dict(cam)
-        for field in _CLASSIFICATION_FIELDS:
+        for field in _DEFAULT_OVERLAY_FIELDS:
             if field not in filled and field in defaults:
                 filled[field] = defaults[field]
         merged.append(filled)

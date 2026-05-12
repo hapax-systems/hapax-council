@@ -654,6 +654,92 @@ studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapsh
     assert payload["final_frame_classification"]["black_fraction"] == 1.0
 
 
+def test_preflight_degrades_on_uniform_grey_final_frame_with_live_upstream(
+    tmp_path: Path,
+) -> None:
+    final_path = tmp_path / "final-grey.jpg"
+    upstream_path = tmp_path / "upstream-content.jpg"
+    Image.new("RGB", (64, 36), (128, 128, 128)).save(final_path)
+    upstream = Image.new("RGB", (64, 36), (0, 0, 0))
+    pixels = upstream.load()
+    for y in range(4, 30):
+        for x in range(8, 56):
+            pixels[x, y] = (220, 120, 40)
+    upstream.save(upstream_path)
+
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 140
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 11
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.4
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "false",
+        "--final-frame-image",
+        str(final_path),
+        "--upstream-frame-image",
+        str(upstream_path),
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 10
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "degraded_containment"
+    assert "uniform_gray_final_egress_collapse" in payload["reasons"]
+    assert payload["final_frame_classification"]["upstream_luma_standard_deviation"] >= 8.0
+
+
+def test_preflight_degrades_on_geometry_decorrelated_final_frame(
+    tmp_path: Path,
+) -> None:
+    final_path = tmp_path / "final-noise.png"
+    upstream_path = tmp_path / "upstream-content.png"
+    upstream = Image.new("RGB", (128, 72), (0, 0, 0))
+    upstream_pixels = upstream.load()
+    for y in range(8, 64):
+        for x in range(12, 116):
+            if (x // 12 + y // 10) % 2 == 0:
+                upstream_pixels[x, y] = (220, 120, 40)
+    upstream.save(upstream_path)
+    final = Image.new("RGB", (128, 72), (0, 0, 0))
+    final_pixels = final.load()
+    for y in range(72):
+        for x in range(128):
+            n = (x * 41 + y * 67 + ((x * y) % 53)) % 256
+            final_pixels[x, y] = (n, (n * 7) % 256, (n * 13) % 256)
+    final.save(final_path)
+
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 140
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 11
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.4
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "false",
+        "--final-frame-image",
+        str(final_path),
+        "--upstream-frame-image",
+        str(upstream_path),
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 10
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "degraded_containment"
+    assert "geometry_decorrelation_final_egress_collapse" in payload["reasons"]
+
+
 def test_preflight_can_require_fresh_hls_playlist(tmp_path: Path) -> None:
     playlist = tmp_path / "stream.m3u8"
     playlist.write_text("#EXTM3U\n", encoding="utf-8")

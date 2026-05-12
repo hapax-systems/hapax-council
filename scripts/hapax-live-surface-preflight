@@ -478,6 +478,13 @@ def main() -> int:
         help="final egress proof image to classify for black/checkerboard fallthrough",
     )
     parser.add_argument(
+        "--upstream-frame-image",
+        help=(
+            "upstream/pre-FX proof image used to distinguish final-egress collapse "
+            "from globally blank input; defaults to compositor snapshot.jpg when present"
+        ),
+    )
+    parser.add_argument(
         "--hls-playlist",
         default=str(Path.home() / ".cache" / "hapax-compositor" / "hls" / "stream.m3u8"),
     )
@@ -606,7 +613,15 @@ def main() -> int:
     final_frame_payload: dict[str, object] | None = None
     if args.final_frame_image:
         try:
-            classification = classify_final_frame(Path(args.final_frame_image))
+            upstream_frame_image = (
+                Path(args.upstream_frame_image)
+                if args.upstream_frame_image
+                else Path("/dev/shm/hapax-compositor/snapshot.jpg")
+            )
+            classification = classify_final_frame(
+                Path(args.final_frame_image),
+                upstream_path=upstream_frame_image if upstream_frame_image.exists() else None,
+            )
         except OSError as exc:
             state, reasons = _with_extra_degraded_reasons(
                 state,

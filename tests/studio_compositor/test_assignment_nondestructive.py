@@ -196,9 +196,9 @@ def test_metric_labelled_per_source() -> None:
 
 
 def test_default_layout_non_destructive_flags() -> None:
-    """Default layout JSON: 12 informational wards use non_destructive=True
-    so the NONDESTRUCTIVE_ALPHA_CEILING (0.6) preserves underlying camera
-    content at ≥40% visibility."""
+    """Default layout JSON marks overlay wards as non-destructive so the
+    NONDESTRUCTIVE_ALPHA_CEILING (0.6) preserves underlying camera content at
+    >=40% visibility."""
     from pathlib import Path
 
     layout_path = (
@@ -221,6 +221,8 @@ def test_default_layout_non_destructive_flags() -> None:
         "segment_content",
         "m8_oscilloscope",
         "cbip_dual_ir_displacement",
+        "durf",
+        "sierpinski",
     }
 
 

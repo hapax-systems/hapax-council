@@ -1,6 +1,6 @@
 {
   "name": "Clean",
-  "description": "Minimal processing with subtle posterization for obscuring compliance.",
+  "description": "Minimal geometry-preserving processing with subtle color and posterization.",
   "transition_ms": 300,
   "nodes": {
     "color": {
@@ -23,15 +23,12 @@
       "type": "output",
       "params": {}
     },
-    "content_layer": {
-      "type": "content_layer",
-      "params": {}
-    },
     "postprocess": {
       "type": "postprocess",
       "params": {
         "vignette_strength": 0.0,
-        "sediment_strength": 0.1
+        "sediment_strength": 0.0,
+        "anonymize": 0.0
       }
     },
     "posterize": {
@@ -56,10 +53,6 @@
     ],
     [
       "posterize",
-      "content_layer"
-    ],
-    [
-      "content_layer",
       "postprocess"
     ],
     [

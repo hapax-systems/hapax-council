@@ -64,7 +64,7 @@ class CameraPipeline:
     Graph:
         v4l2src device=/dev/v4l/by-id/...
           ! capsfilter (image/jpeg or raw, native dimensions)
-          ! watchdog timeout=2000
+          ! watchdog timeout=<CameraSpec.watchdog_timeout_ms>
           ! jpegdec              (if mjpeg)
           ! videoconvert
           ! capsfilter (video/x-raw, format=NV12, native dimensions)
@@ -170,7 +170,7 @@ class CameraPipeline:
             watchdog = Gst.ElementFactory.make("watchdog", f"watchdog_{self._role_safe}")
             if watchdog is None:
                 raise RuntimeError(f"{self._spec.role}: watchdog element missing")
-            watchdog.set_property("timeout", 2000)  # ms
+            watchdog.set_property("timeout", self._watchdog_timeout_ms())
 
             decoder: Any = None
             # Delta 2026-04-14-camera-pipeline-systematic-walk finding F1:
@@ -380,6 +380,12 @@ class CameraPipeline:
         return getattr(self._spec, "input_format", "") == "http_jpeg" or device.startswith(
             ("http://", "https://")
         )
+
+    def _watchdog_timeout_ms(self) -> int:
+        raw = getattr(self._spec, "watchdog_timeout_ms", 2000)
+        if not isinstance(raw, (int, float)):
+            return 2000
+        return max(1000, int(raw))
 
     def _is_v4l2loopback_source(self) -> bool:
         device = str(getattr(self._spec, "device", "") or "")
