@@ -614,7 +614,10 @@ point and adapt to the declared topic.
   questions from prior windows).
   Do not emit those phase names as generic beat text. A valid lecture
   beat names the specific source note, demonstration object, worked
-  example, or audience question it will make visible/doable.
+  example, or audience question it will make visible/doable. Labels such
+  as `Motivate:`, `Frame:`, `Main point 1:`, and `Synthesize:` are still
+  generic stage text and are rejected unless rewritten as source-bound
+  beat directions.
 - **`narrative_beat` example**: `"lecture segment on mechanical
   governance before a public launch. Outline from the HN readiness tree
   and agentgov README; teach why source receipts, live checks, and soak

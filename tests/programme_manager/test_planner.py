@@ -465,8 +465,10 @@ class TestRetryPath:
     def test_parser_repairs_generic_stage_beats_from_role_contract(self) -> None:
         payload = _well_formed_plan_payload(role=ProgrammeRole.LECTURE)
         payload["programmes"][0]["content"]["segment_beats"] = [
-            "hook: Introduce the topic and why it matters.",
-            "framing: Define the prerequisite concept.",
+            "Motivate: Why does mechanical governance matter for public launches?",
+            "Frame: Define the key concepts: source receipts, live checks, soak gates",
+            "Main point 1: Source receipts: what they are and why they're essential",
+            "Synthesize: How these concepts work together",
             "questions: Invite chat questions.",
         ]
 
@@ -477,7 +479,9 @@ class TestRetryPath:
         beats = plan.programmes[0].content.segment_beats
         assert all("vault:test-source.md" in beat for beat in beats)
         assert all(
-            "Introduce" not in beat and "Define" not in beat and "Invite" not in beat
+            not beat.lower().startswith(
+                ("motivate:", "frame:", "main point", "synthesize:", "questions:")
+            )
             for beat in beats
         )
 
@@ -498,9 +502,9 @@ class TestRetryPath:
     def test_segment_source_readiness_rejects_generic_stage_beats(self) -> None:
         payload = _well_formed_plan_payload(role=ProgrammeRole.LECTURE)
         payload["programmes"][0]["content"]["segment_beats"] = [
-            "hook: Introduce the topic and why it matters.",
-            "motivation: Explain why the system needs live checks.",
-            "main_points: Present 3-5 main points with examples.",
+            "Motivate: Why does mechanical governance matter for public launches?",
+            "Frame: Define the key concepts: source receipts, live checks, soak gates",
+            "Main point 1: Source receipts: what they are and why they're essential",
         ]
         plan = ProgrammePlan.model_validate(payload)
 

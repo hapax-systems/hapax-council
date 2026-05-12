@@ -68,10 +68,9 @@ _SCRIPTLIKE_BEAT_RE = re.compile(
     re.IGNORECASE,
 )
 _GENERIC_STAGE_BEAT_RE = re.compile(
-    r"^\s*(?:hook|opening|intro|motivation|framing|main[_ -]?points?|body|"
-    r"synthesis|questions?|recap|closing|close)\s*:\s*"
-    r"(?:introduce|explain|define|present|connect|invite|recap|summari[sz]e|"
-    r"land|set\s+context|discuss|outline|tease)\b",
+    r"^\s*(?:hook|opening|intro|motivat(?:e|ion)|fram(?:e|ing)|"
+    r"main(?:[_ -]?points?|[_ -]?point(?:[_ -]*\d*)?)|body|synthesi[sz]e?|"
+    r"questions?|recap|closing|close)\s*:",
     re.IGNORECASE,
 )
 _TEMPLATE_LEAK_RE = re.compile(
@@ -312,6 +311,58 @@ def _slug(value: str) -> str:
     if token:
         return token[:80]
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def _entry_beat_index(entry: Mapping[str, Any], fallback_index: int, beat_count: int) -> int:
+    """Resolve model-emitted beat indexes, accepting either 0- or 1-based values."""
+
+    raw = entry.get("beat_index")
+    if raw is None:
+        raw = entry.get("beat_number")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = fallback_index
+    if beat_count <= 0:
+        return max(value, 0)
+    if 0 <= value < beat_count:
+        return value
+    if 1 <= value <= beat_count:
+        return value - 1
+    return max(0, min(fallback_index, beat_count - 1))
+
+
+def _beat_id_for_entry(
+    entry: Mapping[str, Any],
+    fallback_index: int,
+    beat_ids: Sequence[str],
+) -> str:
+    beat_id = str(entry.get("beat_id") or "").strip()
+    if beat_id:
+        return beat_id
+    beat_index = _entry_beat_index(entry, fallback_index, len(beat_ids))
+    if 0 <= beat_index < len(beat_ids):
+        return beat_ids[beat_index]
+    return f"beat-{beat_index + 1}"
+
+
+def _entry_refs(entry: Mapping[str, Any], *fields: str) -> list[str]:
+    refs: list[str] = []
+    for field in fields:
+        refs.extend(_string_list(entry.get(field)))
+    return _dedupe([ref for ref in refs if is_content_evidence_ref(ref)])
+
+
+def _first_non_empty_text(entry: Mapping[str, Any], *fields: str) -> str:
+    for field in fields:
+        value = entry.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            joined = "; ".join(str(item).strip() for item in value if str(item).strip())
+            if joined:
+                return joined
+    return ""
 
 
 def _content_refs_from_programme(programme: Any) -> list[str]:
@@ -733,6 +784,322 @@ def _loop_cards_from_contract_parts(
     return cards
 
 
+def _normalize_claim_map(
+    raw_claims: Sequence[Mapping[str, Any]],
+    *,
+    programme_id: str,
+    beat_ids: Sequence[str],
+    refs: Sequence[str],
+    raw_source_consequences: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    claims: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_claims):
+        beat_id = _beat_id_for_entry(raw, index, beat_ids)
+        fallback_ref = refs[min(index, len(refs) - 1)] if refs else ""
+        grounds = _entry_refs(
+            raw,
+            "grounds",
+            "evidence_refs",
+            "evidence_ref",
+            "source_refs",
+            "source_ref",
+            "source_packet_refs",
+            "source_packet_ref",
+        )
+        if not grounds and fallback_ref:
+            grounds = [fallback_ref]
+        consequence = _first_non_empty_text(
+            raw,
+            "source_consequence",
+            "consequence",
+            "what_source_changes",
+            "why_it_matters",
+        )
+        if not consequence and index < len(raw_source_consequences):
+            consequence = _first_non_empty_text(
+                raw_source_consequences[index],
+                "source_consequence",
+                "consequence",
+                "changed_field",
+                "what_source_changes",
+            )
+        claim_id = str(raw.get("claim_id") or "").strip()
+        if not claim_id:
+            claim_id = f"claim:{programme_id}:{_slug(beat_id)}:{index + 1}"
+        claims.append(
+            {
+                **dict(raw),
+                "claim_id": claim_id,
+                "beat_id": beat_id,
+                "claim_text": _first_non_empty_text(
+                    raw,
+                    "claim_text",
+                    "claim",
+                    "text",
+                    "assertion",
+                ),
+                "claim_kind": str(raw.get("claim_kind") or "livestream_segment_claim"),
+                "grounds": grounds,
+                "warrant": str(
+                    raw.get("warrant") or "source packet and beat plan must change the public claim"
+                ),
+                "qualifier_or_limit": str(
+                    raw.get("qualifier_or_limit") or "prep prior only pending runtime readback"
+                ),
+                "source_consequence": consequence,
+                "visible_object_ids": _string_list(raw.get("visible_object_ids"))
+                or [f"object:{programme_id}:{_slug(beat_id)}"],
+            }
+        )
+    return claims
+
+
+def _claim_ids_by_beat(claim_map: Sequence[Mapping[str, Any]]) -> dict[str, list[str]]:
+    by_beat: dict[str, list[str]] = {}
+    for claim in claim_map:
+        claim_id = str(claim.get("claim_id") or "").strip()
+        beat_id = str(claim.get("beat_id") or "").strip()
+        if claim_id and beat_id:
+            by_beat.setdefault(beat_id, []).append(claim_id)
+    return by_beat
+
+
+def _normalize_source_consequence_map(
+    raw_consequences: Sequence[Mapping[str, Any]],
+    *,
+    refs: Sequence[str],
+    claim_map: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    claim_ids = [str(claim.get("claim_id") or "") for claim in claim_map]
+    consequences: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_consequences):
+        fallback_ref = refs[min(index, len(refs) - 1)] if refs else ""
+        source_refs = _entry_refs(
+            raw,
+            "source_ref",
+            "evidence_ref",
+            "evidence_refs",
+            "source_refs",
+            "source_packet_refs",
+        )
+        source_ref = str(raw.get("source_ref") or (source_refs[0] if source_refs else fallback_ref))
+        linked_claim_ids = _string_list(raw.get("claim_ids") or raw.get("claim_id"))
+        if not linked_claim_ids and index < len(claim_ids) and claim_ids[index]:
+            linked_claim_ids = [claim_ids[index]]
+        changed_field = _first_non_empty_text(
+            raw,
+            "changed_field",
+            "consequence",
+            "source_consequence",
+            "what_source_changes",
+        )
+        consequences.append(
+            {
+                **dict(raw),
+                "source_ref": source_ref,
+                "claim_ids": linked_claim_ids,
+                "consequence_kind": str(
+                    raw.get("consequence_kind") or "scope_confidence_or_action_delta"
+                ),
+                "changed_field": changed_field,
+                "failure_if_missing": str(
+                    raw.get("failure_if_missing")
+                    or "quarantine or recruit stronger source before prep"
+                ),
+            }
+        )
+    return consequences
+
+
+def _normalize_actionability_map(
+    raw_actions: Sequence[Mapping[str, Any]],
+    *,
+    programme_id: str,
+    beat_ids: Sequence[str],
+    claims_by_beat: Mapping[str, Sequence[str]],
+) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    all_claim_ids = [
+        claim_id
+        for claim_ids in claims_by_beat.values()
+        for claim_id in claim_ids
+        if str(claim_id).strip()
+    ]
+    for index, raw in enumerate(raw_actions):
+        beat_id = _beat_id_for_entry(raw, index, beat_ids)
+        kind = _first_non_empty_text(raw, "kind", "action", "action_kind")
+        target = _first_non_empty_text(raw, "object", "target", "event_object")
+        action_id = str(raw.get("action_id") or "").strip()
+        if not action_id:
+            action_id = f"action:{programme_id}:{_slug(beat_id)}:{index + 1}"
+        linked_claim_ids = _string_list(raw.get("claim_ids") or raw.get("claim_id")) or list(
+            claims_by_beat.get(beat_id, ())
+        )
+        if not linked_claim_ids and all_claim_ids:
+            linked_claim_ids = [all_claim_ids[min(index, len(all_claim_ids) - 1)]]
+        actions.append(
+            {
+                **dict(raw),
+                "action_id": action_id,
+                "beat_id": beat_id,
+                "claim_ids": linked_claim_ids,
+                "kind": kind,
+                "object": target,
+                "operation": _first_non_empty_text(raw, "operation", "do", "visible_action")
+                or (f"make {target} inspectable" if target else ""),
+                "feedback": _first_non_empty_text(
+                    raw,
+                    "feedback",
+                    "expected_effect",
+                    "effect",
+                    "what_changes",
+                )
+                or "source changes the visible public object",
+                "fallback": _first_non_empty_text(raw, "fallback", "failure_mode")
+                or "narrow to spoken argument and say runtime readback is unavailable",
+            }
+        )
+    return actions
+
+
+def _normalize_layout_need_map(
+    raw_needs: Sequence[Mapping[str, Any]],
+    *,
+    programme_id: str,
+    beat_ids: Sequence[str],
+    refs: Sequence[str],
+    claims_by_beat: Mapping[str, Sequence[str]],
+    actions: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    action_ids_by_beat: dict[str, list[str]] = {}
+    for action in actions:
+        beat_id = str(action.get("beat_id") or "").strip()
+        action_id = str(action.get("action_id") or "").strip()
+        if beat_id and action_id:
+            action_ids_by_beat.setdefault(beat_id, []).append(action_id)
+    all_claim_ids = [
+        claim_id
+        for claim_ids in claims_by_beat.values()
+        for claim_id in claim_ids
+        if str(claim_id).strip()
+    ]
+    layout_needs: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_needs):
+        beat_id = _beat_id_for_entry(raw, index, beat_ids)
+        fallback_ref = refs[min(index, len(refs) - 1)] if refs else ""
+        source_packet_refs = _entry_refs(
+            raw,
+            "source_packet_refs",
+            "source_packet_ref",
+            "evidence_refs",
+            "evidence_ref",
+            "source_refs",
+            "source_ref",
+        )
+        if not source_packet_refs and fallback_ref:
+            source_packet_refs = [fallback_ref]
+        need_kind = _first_non_empty_text(raw, "need_kind", "need", "layout_need")
+        layout_need_id = str(raw.get("layout_need_id") or "").strip()
+        if not layout_need_id:
+            layout_need_id = f"need:{programme_id}:{_slug(beat_id)}:{index + 1}"
+        linked_claim_ids = _string_list(raw.get("claim_ids") or raw.get("claim_id")) or list(
+            claims_by_beat.get(beat_id, ())
+        )
+        if not linked_claim_ids and all_claim_ids:
+            linked_claim_ids = [all_claim_ids[min(index, len(all_claim_ids) - 1)]]
+        layout_needs.append(
+            {
+                **dict(raw),
+                "layout_need_id": layout_need_id,
+                "beat_id": beat_id,
+                "claim_ids": linked_claim_ids,
+                "action_ids": _string_list(raw.get("action_ids") or raw.get("action_id"))
+                or action_ids_by_beat.get(beat_id, []),
+                "source_packet_refs": source_packet_refs,
+                "need_kind": need_kind,
+                "why_visible": _first_non_empty_text(raw, "why_visible", "why", "reason")
+                or "viewer must inspect the object or consequence named by the claim",
+                "minimum_runtime_affordance": _first_non_empty_text(
+                    raw,
+                    "minimum_runtime_affordance",
+                    "affordance",
+                    "surface",
+                ),
+                "fallback_if_unavailable": _first_non_empty_text(
+                    raw,
+                    "fallback_if_unavailable",
+                    "fallback",
+                )
+                or "say the readback failed and narrow the claim",
+            }
+        )
+    return layout_needs
+
+
+def _normalize_readback_obligations(
+    raw_readbacks: Sequence[Mapping[str, Any]],
+    *,
+    layout_need_map: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    layout_need_ids = [str(need.get("layout_need_id") or "") for need in layout_need_map]
+    readbacks: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_readbacks):
+        need_id = str(raw.get("layout_need_id") or "").strip()
+        if not need_id and index < len(layout_need_ids):
+            need_id = layout_need_ids[index]
+        readbacks.append(
+            {
+                **dict(raw),
+                "readback_id": str(raw.get("readback_id") or f"readback:{_slug(need_id)}"),
+                "layout_need_id": need_id,
+                "must_show": _first_non_empty_text(raw, "must_show", "must_render")
+                or "declared layout need",
+                "must_not_claim": _first_non_empty_text(raw, "must_not_claim")
+                or "runtime layout success before rendered readback",
+                "success_signal": _first_non_empty_text(raw, "success_signal")
+                or "rendered compositor readback names the same source/action object",
+                "failure_signal": _first_non_empty_text(raw, "failure_signal")
+                or "missing, stale, mismatched, or fallback-only readback",
+                "timeout_or_ttl": str(raw.get("timeout_or_ttl") or raw.get("ttl_s") or "30s"),
+                "evidence_refs": _entry_refs(raw, "evidence_refs", "evidence_ref"),
+            }
+        )
+    return readbacks
+
+
+def _valid_or_derived_loop_cards(
+    raw_cards: Sequence[Mapping[str, Any]],
+    *,
+    programme_id: str,
+    role: str,
+    layout_need_map: Sequence[Mapping[str, Any]],
+    readback_obligations: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], bool]:
+    if raw_cards:
+        normalized: list[dict[str, Any]] = []
+        for index, raw in enumerate(raw_cards):
+            card = dict(raw)
+            if not _string_list(card.get("evidence_refs")) and index < len(layout_need_map):
+                need = layout_need_map[index]
+                card["evidence_refs"] = _string_list(
+                    need.get("source_packet_refs") or need.get("evidence_refs")
+                )
+            normalized.append(card)
+        if validate_loop_cards(normalized).get("ok") is True:
+            return normalized, False
+    if layout_need_map and readback_obligations:
+        return (
+            _loop_cards_from_contract_parts(
+                programme_id=programme_id,
+                role=role,
+                layout_need_map=layout_need_map,
+                readback_obligations=readback_obligations,
+            ),
+            True,
+        )
+    return [], False
+
+
 def build_segment_prep_contract(
     *,
     programme_id: str,
@@ -771,6 +1138,8 @@ def build_segment_prep_contract(
             model_contract_provided = False
     model_contract = model_contract or {}
     deterministic_backfilled_fields: list[str] = []
+    canonicalized_fields: list[str] = []
+    derived_fields: list[str] = []
     source_packets = list(_mapping_list(model_contract.get("source_packet_refs")))
     if not source_packets:
         deterministic_backfilled_fields.append("source_packet_refs")
@@ -790,7 +1159,17 @@ def build_segment_prep_contract(
                 }
             )
 
-    claim_map = list(_mapping_list(model_contract.get("claim_map")))
+    raw_claim_map = list(_mapping_list(model_contract.get("claim_map")))
+    raw_source_consequence_map = list(_mapping_list(model_contract.get("source_consequence_map")))
+    claim_map = _normalize_claim_map(
+        raw_claim_map,
+        programme_id=programme_id,
+        beat_ids=beat_ids,
+        refs=refs,
+        raw_source_consequences=raw_source_consequence_map,
+    )
+    if raw_claim_map:
+        canonicalized_fields.append("claim_map")
     if not claim_map:
         deterministic_backfilled_fields.append("claim_map")
         for index, text in enumerate(script):
@@ -812,7 +1191,16 @@ def build_segment_prep_contract(
                 }
             )
 
-    actionability_map = list(_mapping_list(model_contract.get("actionability_map")))
+    claims_by_beat = _claim_ids_by_beat(claim_map)
+
+    actionability_map = _normalize_actionability_map(
+        list(_mapping_list(model_contract.get("actionability_map"))),
+        programme_id=programme_id,
+        beat_ids=beat_ids,
+        claims_by_beat=claims_by_beat,
+    )
+    if _mapping_list(model_contract.get("actionability_map")):
+        canonicalized_fields.append("actionability_map")
     if not actionability_map:
         deterministic_backfilled_fields.append("actionability_map")
         for beat in actionability.get("beat_action_intents", []) or []:
@@ -843,7 +1231,15 @@ def build_segment_prep_contract(
                     }
                 )
 
-    source_consequence_map = list(_mapping_list(model_contract.get("source_consequence_map")))
+    claims_by_beat = _claim_ids_by_beat(claim_map)
+
+    source_consequence_map = _normalize_source_consequence_map(
+        raw_source_consequence_map,
+        refs=refs,
+        claim_map=claim_map,
+    )
+    if raw_source_consequence_map:
+        canonicalized_fields.append("source_consequence_map")
     if not source_consequence_map:
         deterministic_backfilled_fields.append("source_consequence_map")
         for claim in claim_map:
@@ -860,7 +1256,16 @@ def build_segment_prep_contract(
                 }
             )
 
-    layout_need_map = list(_mapping_list(model_contract.get("layout_need_map")))
+    layout_need_map = _normalize_layout_need_map(
+        list(_mapping_list(model_contract.get("layout_need_map"))),
+        programme_id=programme_id,
+        beat_ids=beat_ids,
+        refs=refs,
+        claims_by_beat=claims_by_beat,
+        actions=actionability_map,
+    )
+    if _mapping_list(model_contract.get("layout_need_map")):
+        canonicalized_fields.append("layout_need_map")
     if not layout_need_map:
         deterministic_backfilled_fields.append("layout_need_map")
         for beat in layout_responsibility.get("beat_layout_intents", []) or []:
@@ -891,9 +1296,18 @@ def build_segment_prep_contract(
                     }
                 )
 
-    readback_obligations = list(_mapping_list(model_contract.get("readback_obligations")))
+    raw_readback_obligations = list(_mapping_list(model_contract.get("readback_obligations")))
+    readback_obligations = _normalize_readback_obligations(
+        raw_readback_obligations,
+        layout_need_map=layout_need_map,
+    )
+    if raw_readback_obligations:
+        canonicalized_fields.append("readback_obligations")
     if not readback_obligations:
-        deterministic_backfilled_fields.append("readback_obligations")
+        if model_contract_provided and layout_need_map:
+            derived_fields.append("readback_obligations")
+        else:
+            deterministic_backfilled_fields.append("readback_obligations")
         for need in layout_need_map:
             need_id = str(need.get("layout_need_id") or "")
             readback_obligations.append(
@@ -919,7 +1333,18 @@ def build_segment_prep_contract(
             "payoff": "closing beat resolves or reframes the opening pressure",
         },
     )
-    loop_cards = list(_mapping_list(model_contract.get("loop_cards")))
+    raw_loop_cards = list(_mapping_list(model_contract.get("loop_cards")))
+    loop_cards, loop_cards_derived = _valid_or_derived_loop_cards(
+        raw_loop_cards,
+        programme_id=programme_id,
+        role=role,
+        layout_need_map=layout_need_map,
+        readback_obligations=readback_obligations,
+    )
+    if raw_loop_cards:
+        canonicalized_fields.append("loop_cards")
+    if loop_cards_derived and model_contract_provided:
+        derived_fields.append("loop_cards")
     if not loop_cards:
         deterministic_backfilled_fields.append("loop_cards")
         loop_cards = _loop_cards_from_contract_parts(
@@ -964,6 +1389,8 @@ def build_segment_prep_contract(
         "contract_generation": {
             "model_emitted": model_contract_provided,
             "deterministic_backfilled_fields": deterministic_backfilled_fields,
+            "canonicalized_fields": sorted(set(canonicalized_fields)),
+            "derived_fields": sorted(set(derived_fields)),
         },
     }
 

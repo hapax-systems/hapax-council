@@ -474,7 +474,10 @@ def _build_full_segment_prompt(
             else ""
         )
         + "- claim_map, source_consequence_map, actionability_map, layout_need_map\n"
-        "- readback_obligations, loop_cards, role_excellence_plan\n\n"
+        "- readback_obligations, loop_cards, role_excellence_plan\n"
+        "Every contract list must be NON-EMPTY and use the exact canonical field names "
+        "shown below. Do not use aliases like claim/evidence_ref/consequence/action/need "
+        "when a canonical field is shown.\n\n"
         "Example format:\n"
         "{\n"
         '  "prepared_script": [\n'
@@ -495,12 +498,12 @@ def _build_full_segment_prompt(
             if role_value == "top_10"
             else ""
         )
-        + '    "claim_map": [{"claim": "...", "evidence_ref": "vault:..."}],\n'
-        '    "source_consequence_map": [{"source_ref": "vault:...", "consequence": "changes ranking of..."}],\n'
-        '    "actionability_map": [{"beat_index": 0, "action": "tier_chart", "target": "..."}],\n'
-        '    "layout_need_map": [{"beat_index": 0, "need": "tier_visual", "evidence_ref": "vault:..."}],\n'
-        '    "readback_obligations": [],\n'
-        '    "loop_cards": [],\n'
+        + '    "claim_map": [{"claim_id": "claim:segment:1", "beat_id": "beat-1", "claim_text": "the source-backed claim spoken in beat one", "grounds": ["vault:research-notes"], "source_consequence": "vault:research-notes changes the ranking confidence"}],\n'
+        '    "source_consequence_map": [{"source_ref": "vault:research-notes", "claim_ids": ["claim:segment:1"], "changed_field": "ranking confidence", "failure_if_missing": "quarantine before release"}],\n'
+        '    "actionability_map": [{"action_id": "action:segment:1", "beat_id": "beat-1", "claim_ids": ["claim:segment:1"], "kind": "tier_chart", "object": "the ranked item", "operation": "place the item under the stated criterion", "feedback": "the placement changes the public chart", "fallback": "narrow to spoken source argument if readback is unavailable"}],\n'
+        '    "layout_need_map": [{"layout_need_id": "need:segment:1", "beat_id": "beat-1", "claim_ids": ["claim:segment:1"], "action_ids": ["action:segment:1"], "source_packet_refs": ["vault:research-notes"], "need_kind": "tier_visual", "why_visible": "viewer must inspect the placement consequence"}],\n'
+        '    "readback_obligations": [{"readback_id": "readback:segment:1", "layout_need_id": "need:segment:1", "must_show": "the ranked item and cited source", "must_not_claim": "layout success before runtime readback", "success_signal": "rendered readback names the same item and source", "failure_signal": "missing or mismatched readback", "timeout_or_ttl": "30s"}],\n'
+        '    "loop_cards": [{"loop_card_version": 1, "loop_id": "loop:segment:1", "admissibility": "feedforward_plan", "plant_boundary": "future runtime delivery for this segment", "controlled_variable": "layout_need", "reference_signal": "show the source-backed placement", "sensor_ref": "readback:segment:1", "actuator_ref": "runtime_layout_controller", "sample_period_s": 1.0, "latency_budget_s": 30.0, "readback_ref": "readback:segment:1", "fallback_mode": "narrow to spoken argument", "authority_boundary": "prep prior only; runtime must close readback", "privacy_ceiling": "public_archive_candidate", "evidence_refs": ["vault:research-notes"], "disturbance_refs": ["stale_readback"], "failure_mode": "runtime readback missing or mismatched", "limits": ["prepared artifact declares the reference but cannot command layout"]}],\n'
         '    "role_excellence_plan": {"live_event_plan": {"bit_engine": "...", "audience_job": "...", "payoff": "..."}}\n'
         "  }\n"
         "}\n\n"
@@ -908,8 +911,13 @@ def _build_refinement_prompt(script: list[str], programme: Any) -> str:
         "Return a JSON object with `prepared_script` and `segment_prep_contract`. "
         "The contract must be newly authored for the rewritten final script; do "
         "not reuse a draft contract if any claim, action, layout need, or source "
-        "consequence changed. Output ONLY the JSON object. No preamble, no "
-        "markdown fences."
+        "consequence changed. The contract must use canonical keys like "
+        "`claim_id`, `claim_text`, `grounds`, `claim_ids`, `changed_field`, "
+        "`action_id`, `beat_id`, `kind`, `layout_need_id`, `source_packet_refs`, "
+        "and non-empty `readback_obligations` plus `loop_cards`. The final spoken "
+        "beat must explicitly resolve the opening pressure with a payoff phrase "
+        "such as `therefore`, `so the final decision`, `return to`, or `resolve`. "
+        "Output ONLY the JSON object. No preamble, no markdown fences."
     )
 
 
@@ -935,6 +943,15 @@ _PRONOUN_TIER_PLACEMENT_RE = re.compile(
 _QUOTED_TARGET_RE = re.compile(r"['\"](?P<target>[^'\"]{2,80})['\"]")
 _BEAT_EVIDENCE_REF_RE = re.compile(
     r"\b(?P<ref>(?:vault|rag|packet|receipt|profile|media|source):[^\s,;)\]]+)"
+)
+_BEAT_COMPARISON_DIRECTION_RE = re.compile(
+    r"\bcompare\s+(?P<left>[^.?!;]{2,140}?)\s+against\s+(?P<right>[^.?!;]{2,140})",
+    re.IGNORECASE,
+)
+_LIVE_EVENT_PAYOFF_RE = re.compile(
+    r"\b(?:return|callback|closing|ending|resolve|land|therefore|so the|"
+    r"next move|final decision|back to)\b",
+    re.IGNORECASE,
 )
 
 
@@ -1069,6 +1086,23 @@ def _has_responsible_visible_trigger(beat: str) -> bool:
     )
 
 
+def _has_transforming_trigger(beat: str) -> bool:
+    alignment = validate_segment_actionability([beat], ["repair transforming trigger"])
+    transforming = {
+        "argument_posture_shift",
+        "chat_poll",
+        "comparison",
+        "countdown",
+        "iceberg_depth",
+        "tier_chart",
+    }
+    return any(
+        isinstance(intent, dict) and intent.get("kind") in transforming
+        for declaration in alignment.get("beat_action_intents", []) or []
+        for intent in declaration.get("intents", []) or []
+    )
+
+
 def _repair_source_visible_beats(script: list[str], segment_beats: list[str]) -> list[str]:
     """Append a real source-citation trigger when a beat would be spoken-only."""
 
@@ -1087,6 +1121,41 @@ def _repair_source_visible_beats(script: list[str], segment_beats: list[str]) ->
             continue
         label = _source_label_from_ref(source_ref)
         repaired.append(f"{beat} According to {label}, this source changes the visible obligation.")
+    return repaired
+
+
+def _repair_comparison_beats(script: list[str], segment_beats: list[str]) -> list[str]:
+    """Make source-planned comparison beats explicit in the spoken script."""
+
+    repaired: list[str] = []
+    for index, beat in enumerate(script):
+        direction = segment_beats[index] if index < len(segment_beats) else ""
+        match = _BEAT_COMPARISON_DIRECTION_RE.search(direction)
+        if match is None or _has_transforming_trigger(beat):
+            repaired.append(beat)
+            continue
+        left = match.group("left").strip()
+        right = match.group("right").strip()
+        repaired.append(
+            f"{beat} Compare {left} against {right}; this comparison changes the visible "
+            "obligation."
+        )
+    return repaired
+
+
+def _repair_live_event_payoff(script: list[str]) -> list[str]:
+    """Make the final beat's payoff legible to the live-event gate."""
+
+    if not script:
+        return script
+    repaired = list(script)
+    final = repaired[-1]
+    if _LIVE_EVENT_PAYOFF_RE.search(final):
+        return repaired
+    repaired[-1] = (
+        f"{final} Therefore the final decision is whether the cited evidence still supports "
+        "the opening claim."
+    )
     return repaired
 
 
@@ -1464,6 +1533,11 @@ def prep_segment(
         )
         model_contract = None
     script = _scrub_host_posture(script)
+    if role == "tier_list":
+        script = _repair_tier_list_placement_phrases(script)
+    script = _repair_source_visible_beats(script, [str(item) for item in beats])
+    script = _repair_comparison_beats(script, [str(item) for item in beats])
+    script = _repair_live_event_payoff(script)
 
     actionability = validate_segment_actionability(
         script,
@@ -1777,7 +1851,7 @@ def prep_segment(
         "fore_understanding": [
             {k: v for k, v in p.items() if not k.startswith("_")} for p in fore_understanding
         ],
-        "hermeneutic_deltas": [d.model_dump() for d in hermeneutic_deltas],
+        "hermeneutic_deltas": [d.model_dump(mode="json") for d in hermeneutic_deltas],
         "live_event_viability": live_event_viability,
         "readback_obligations": readback_obligations,
         "segment_prep_contract_version": SEGMENT_PREP_CONTRACT_VERSION,

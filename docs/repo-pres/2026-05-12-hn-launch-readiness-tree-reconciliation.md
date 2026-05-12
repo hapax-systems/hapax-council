@@ -17,7 +17,7 @@ uv run python scripts/hn-launch-systems-readiness --json
 
 Result: `fail`; `ready=false`.
 
-Hard failures in the latest 2026-05-12T17:21Z verification sample:
+Hard failures in the latest 2026-05-12T20:08Z verification sample:
 
 - `compositor_visual_surface`: layout mode is `forcefield`, not Sierpinski.
 - `daimonion_voice_segments`: no completed playback is recorded in
@@ -34,12 +34,13 @@ Current passes include thin programme segment freshness, reverie/imagination
 freshness, GitHub README, omg.lol weblog reachability, and systemd
 timer/failed-unit budget. Programme freshness is not enough to close
 `hn-launch-programme-e2e-readiness`. A scratch current-API programme smoke
-receipt now proves the runner/layout command path, but live segment-prep history
-and soak-citable programme evidence remain unresolved.
+receipt proves the runner/layout command path, and a scratch segment-prep proof
+now produces one loadable artifact, but live active-segment/director/layout
+evidence remains not soak-citable.
 The gate has been volatile across samples, and the latest sample is still
 NO-GO.
 
-The 2026-05-12T17:21Z run still reports `ready=false`, `status=fail`; failures:
+The 2026-05-12T20:08Z run still reports `ready=false`, `status=fail`; failures:
 `compositor_visual_surface`, `daimonion_voice_segments`, `youtube_livestream`,
 and `obs_clean_feed`; warning: `logos_api`.
 
@@ -50,7 +51,7 @@ and `obs_clean_feed`; warning: `logos_api`.
 | HN systems readiness is complete | false | `hn-launch-systems-readiness` is active/blocked; latest checker still fails compositor layout mode, voice, YouTube, and OBS. | Blocks soak and HN post. |
 | PR #3149 makes HN ready | false | PR #3149 merged 2026-05-12T14:21:18Z as a warning-budget/support fix. It does not clear hard readiness failures. | Must not auto-close systems readiness. |
 | Compositor visual surface is live | partial/stale | Earlier reconciliation sample reported pass; final pre-PR sample reports `compositor_visual_surface: fail` because layout mode is not Sierpinski. | Requires fresh stable pass before soak. |
-| Programme segments are launch-ready | partial | Latest checker sees a fresh populated active segment. Repaired scratch harness receipt `/tmp/hapax-hn-programme-delivery-smoke-20260512T162123Z/programme-delivery-smoke-receipt.json` proves current runner/layout command acceptance, but live segment-prep receipt/history and soak-citable evidence are still missing. | Requires `hn-launch-programme-e2e-readiness`. |
+| Programme segments are launch-ready | partial | Latest checker sees a fresh populated active segment. Repaired scratch harness receipt `/tmp/hapax-hn-programme-delivery-smoke-20260512T162123Z/programme-delivery-smoke-receipt.json` proves current runner/layout command acceptance. Scratch segment-prep proof `/tmp/hapax-hn-segment-prep-proof-20260512T195716Z/2026-05-12/prep-status.json` produced one strict-loadable artifact, but live active-segment/director/layout receipts are still not soak-citable. | Requires `hn-launch-programme-e2e-readiness`. |
 | Daimonion voice is speaking launch segments | false | Latest checker reports `daimonion_voice_segments: fail`. | Requires operator/hardware route unblock. |
 | Reverie/imagination surface is fresh | partial | Checker pass is freshness evidence, not correlated response proof. | May enter passive observation only after hard failures clear. |
 | Logos API is healthy | partial | Service/SHM evidence can be ready, but API overall status is `failed`. | `hn-launch-logos-health-unblock` must resolve warning semantics. |
@@ -78,8 +79,8 @@ and `obs_clean_feed`; warning: `logos_api`.
 | 21.0 | `hn-launch-pr-and-source-claim-audit` | done/closed | Merged PR/source claims classified against tests and deployment evidence. |
 | 20.0 | `hn-launch-runtime-evidence-audit` | done/closed | Ten-surface runtime table captured. |
 | 19.0 | `hn-launch-public-metrics-proof` | done | Repo receipt exists; live weblog, landing page, and HN first-comment draft corrected/verified. |
-| 19.0 | `hn-launch-programme-e2e-readiness` | blocked | Live segment-prep history reconciled plus programme evidence that the final soak can re-sample and cite. |
-| 18.9 | `hn-launch-segment-prep-live-output-unblock` | in progress | Fresh controlled segment-prep run produces loadable programmes with non-empty layout/action intents. |
+| 19.0 | `hn-launch-programme-e2e-readiness` | blocked | Programme evidence that the final soak can re-sample and cite: live active-segment, director runner, layout receipt, and voice/content coherence. |
+| 18.9 | `hn-launch-segment-prep-live-output-unblock` | scratch proof green; active runtime proof still open | Fresh controlled segment-prep run produced one loadable programme; active-segment/director receipt still needs E2E proof. |
 | 18.8 | `hn-launch-programme-e2e-smoke-harness-repair` | done | Current-API scratch-only E2E harness repaired; receipt generated. |
 | 18.5 | `hn-launch-compositor-sierpinski-proof` | blocked | Fresh Sierpinski layout-mode proof plus nonblank frame evidence. |
 | 18.0 | `hn-launch-agentgov-cli-extraction` | done | Public repo/package/CLI install/README/license/CI acceptance checked. |
@@ -129,7 +130,7 @@ and `obs_clean_feed`; warning: `logos_api`.
   blank padding. Focused verification now passes:
   `uv run pytest tests/programme_manager/test_planner.py tests/hapax_daimonion/test_daily_segment_prep_residency.py tests/hapax_daimonion/test_segment_quality_actionability.py -q`
   -> `134 passed, 1 warning`; ruff and `git diff --check` pass.
-- Fresh controlled segment-prep proofs remain **not loadable**:
+- Earlier controlled segment-prep proofs were **not loadable**:
   `/tmp/hapax-hn-segment-prep-proof-20260512T172026Z/2026-05-12/prep-status.json`
   reached `segmented_count=1`, `saved_count=0` and quarantined on
   `layout_responsibility_failed`;
@@ -149,3 +150,13 @@ and `obs_clean_feed`; warning: `logos_api`.
   `source_consequence_map`, `actionability_map`, `layout_need_map`,
   `readback_obligations`, and evidence-backed loop cards, plus live-event
   temporal/payoff coherence.
+- Segment-prep zero-output was cleared by the 2026-05-12T20:07Z scratch proof:
+  `/tmp/hapax-hn-segment-prep-proof-20260512T195716Z/2026-05-12/prep-status.json`
+  reports `status=completed`, `segmented_count=1`, `saved_count=1`, and
+  `manifest_programmes=["segment-01.json"]`. The saved artifact
+  `/tmp/hapax-hn-segment-prep-proof-20260512T195716Z/2026-05-12/segment-01.json`
+  has `segment_prep_contract_report.ok=true`,
+  `segment_live_event_report.ok=true`, `score=100`, `band=excellent`; strict
+  replay with `load_prepped_programmes(..., strict_release_contract=True)`
+  loads one programme (`segment-01`). This does not close programme E2E because
+  live active-segment/director/layout receipts still need soak-citable proof.

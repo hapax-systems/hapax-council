@@ -112,12 +112,15 @@ _ROLE_CONTRACT_KEYS = frozenset(
     }
 )
 _GENERIC_STAGE_BEAT_RE = re.compile(
-    r"^\s*(?P<phase>hook|opening|intro|motivation|framing|main[_ -]?points?|body|"
-    r"synthesis|questions?|recap|closing|close)\s*:\s*"
-    r"(?:introduce|explain|define|present|connect|invite|recap|summari[sz]e|"
-    r"land|set\s+context|discuss|outline|tease)\b",
+    r"^\s*(?P<phase>hook|opening|intro|motivat(?:e|ion)|fram(?:e|ing)|"
+    r"main(?:[_ -]?points?|[_ -]?point(?:[_ -]*\d*)?)|body|synthesi[sz]e?|"
+    r"questions?|recap|closing|close)\s*:",
     re.IGNORECASE,
 )
+
+
+def _stage_phase_key(phase: str) -> str:
+    return re.sub(r"-?\d+$", "", phase.lower().replace("_", "-").replace(" ", "-"))
 
 
 def _normalized_target_programmes(target_programmes: int | None) -> int | None:
@@ -289,7 +292,7 @@ class ProgrammePlanner:
             "than template/example language, never copy `narrative_beat_template` "
             "or placeholder examples such as `{topic}`, replace generic stage "
             "beats like `hook: Introduce`, `motivation: Explain`, or "
-            "`main_points: Present` with source-bound beats that name the "
+            "`main point 1: ...` with source-bound beats that name the "
             "object/source/consequence, and bind layout intents to content evidence with "
             "`default_static_success_allowed: false`."
         )
@@ -522,13 +525,13 @@ def _repair_generic_stage_segment_beats(programme: dict[str, Any], content: dict
         worked_example = _contract_text(role_contract, "worked_example") or demonstration_object
 
         def replacement(phase: str) -> str:
-            phase_key = phase.lower().replace("_", "-").replace(" ", "-")
-            if phase_key in {"hook", "opening", "intro", "motivation"}:
+            phase_key = _stage_phase_key(phase)
+            if phase_key in {"hook", "opening", "intro", "motivate", "motivation"}:
                 return (
                     f"open {topic} by citing {source_ref} and naming why "
                     f"{demonstration_object} makes {teaching_objective} inspectable"
                 )
-            if phase_key in {"framing", "body", "main-points", "main-point"}:
+            if phase_key in {"frame", "framing", "body", "main-points", "main-point"}:
                 return (
                     f"work through {worked_example} from {source_ref} and compare it "
                     f"against {demonstration_object}"
@@ -555,8 +558,8 @@ def _repair_generic_stage_segment_beats(programme: dict[str, Any], content: dict
         )
 
         def replacement(phase: str) -> str:
-            phase_key = phase.lower().replace("_", "-").replace(" ", "-")
-            if phase_key in {"hook", "opening", "intro", "motivation"}:
+            phase_key = _stage_phase_key(phase)
+            if phase_key in {"hook", "opening", "intro", "motivate", "motivation"}:
                 return (
                     f"open {topic} through {source_ref}; make {role_object} visible as "
                     f"{role_mechanic}"
