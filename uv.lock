@@ -62,7 +62,7 @@ wheels = [
 ]
 
 [[package]]
-name = "agentgov"
+name = "hapax-agentgov"
 version = "0.2.0"
 source = { editable = "packages/agentgov" }
 dependencies = [
@@ -2068,7 +2068,7 @@ name = "hapax-council"
 version = "0.3.7"
 source = { editable = "." }
 dependencies = [
-    { name = "agentgov" },
+    { name = "hapax-agentgov" },
     { name = "atproto" },
     { name = "chat-downloader" },
     { name = "evdev" },
@@ -2239,7 +2239,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agentgov", editable = "packages/agentgov" },
+    { name = "hapax-agentgov", editable = "packages/agentgov" },
     { name = "atproto", specifier = ">=0.0.65" },
     { name = "chat-downloader", specifier = ">=0.2.8" },
     { name = "evdev", specifier = ">=1.9.3" },
