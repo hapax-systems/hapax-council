@@ -8,13 +8,16 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from shared.live_surface_effect_policy import (
+    LIVE_SURFACE_BLOCKED_NODE_TYPES,
+)
+from shared.live_surface_effect_policy import (
+    apply_live_surface_param_bounds as _apply_live_surface_param_bounds,
+)
+
 _TRUTHY = frozenset({"1", "true", "yes", "on", "enabled", "active"})
 _FALSY = frozenset({"0", "false", "no", "off", "disabled", "inactive"})
 _IMPLICIT_CAMERA_LEGIBLE_PRESETS = frozenset({"clean"})
-_FULL_FRAME_NOISE_NODE_TYPES = frozenset({"noise_gen", "noise_overlay"})
-_MAX_CAMERA_LEGIBLE_ANONYMIZE = 0.5
-_MIN_CAMERA_LEGIBLE_POSTERIZE_LEVELS = 8.0
-_MIN_CAMERA_LEGIBLE_MASTER_OPACITY = 0.85
 _MAX_NEUTRAL_CONTENT_SLOT_PARAM = 0.01
 _MAX_CAMERA_LEGIBLE_CONTENT_OPACITY = 0.35
 
@@ -181,19 +184,7 @@ def apply_live_surface_param_bounds(
     if not live_surface_effect_policy_enabled(env=env):
         return out
 
-    if node_type == "posterize" and isinstance(out.get("levels"), (int, float)):
-        out["levels"] = max(float(out["levels"]), _MIN_CAMERA_LEGIBLE_POSTERIZE_LEVELS)
-
-    if node_type == "postprocess":
-        if isinstance(out.get("anonymize"), (int, float)):
-            out["anonymize"] = min(float(out["anonymize"]), _MAX_CAMERA_LEGIBLE_ANONYMIZE)
-        if isinstance(out.get("master_opacity"), (int, float)):
-            out["master_opacity"] = max(
-                float(out["master_opacity"]),
-                _MIN_CAMERA_LEGIBLE_MASTER_OPACITY,
-            )
-
-    return out
+    return _apply_live_surface_param_bounds(node_type, out)
 
 
 def _param_default(registry: Any, node_type: str, param_name: str) -> object | None:
@@ -297,10 +288,10 @@ def evaluate_preset_graph_policy(
 
     for node_id, node in graph.nodes.items():
         node_type = node.type
-        if node_type in _FULL_FRAME_NOISE_NODE_TYPES:
+        if node_type in LIVE_SURFACE_BLOCKED_NODE_TYPES:
             return PresetPolicyDecision(
                 allowed=False,
-                reason="camera_legible_full_frame_noise",
+                reason="camera_legible_blocked_node",
                 preset=primary,
                 matched=(node_id, node_type),
             )
@@ -320,36 +311,6 @@ def evaluate_preset_graph_policy(
                     reason="camera_legible_unbound_content_slots",
                     preset=primary,
                     matched=(node_id, node_type),
-                )
-
-        if node_type == "postprocess":
-            anonymize = _param_float(
-                node,
-                "anonymize",
-                registry=registry,
-                default=0.0,
-            )
-            if anonymize > _MAX_CAMERA_LEGIBLE_ANONYMIZE:
-                return PresetPolicyDecision(
-                    allowed=False,
-                    reason="camera_legible_anonymize",
-                    preset=primary,
-                    matched=(node_id, f"anonymize={anonymize:g}"),
-                )
-
-        if node_type == "posterize":
-            levels = _param_float(
-                node,
-                "levels",
-                registry=registry,
-                default=_MIN_CAMERA_LEGIBLE_POSTERIZE_LEVELS,
-            )
-            if levels < _MIN_CAMERA_LEGIBLE_POSTERIZE_LEVELS:
-                return PresetPolicyDecision(
-                    allowed=False,
-                    reason="camera_legible_posterize_levels",
-                    preset=primary,
-                    matched=(node_id, f"levels={levels:g}"),
                 )
 
     return PresetPolicyDecision(allowed=True, reason="allowed", preset=primary)

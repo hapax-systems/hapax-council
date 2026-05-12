@@ -197,7 +197,7 @@ class TestCompileToWgslPlan:
         u = _main_passes(plan)[0]["uniforms"]
         assert u["feed_rate"] == 0.04
         assert u["kill_rate"] == 0.06
-        assert u["speed"] == 1.5
+        assert u["speed"] == 1.0
 
     # ----- Phase 5a: multi-target shape -----
 

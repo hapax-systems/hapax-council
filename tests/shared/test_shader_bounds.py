@@ -14,21 +14,22 @@ def _write_bounds(path: Path, caps: dict) -> None:
 
 
 def test_load_bounds_returns_node_caps_from_production_file() -> None:
-    """Production bounds file ships with pixel_sort cap — regression pin.
+    """Production bounds file ships with pixsort cap — regression pin.
 
     Tier D of the 2026-04-21 livestream-crispness research tightened
-    pixel_sort from 0.55 → 0.45 max_strength and 0.40 → 0.35 spatial
-    coverage to reduce shader density competing with ward chrome.
-    Updated assertions track the production file; reverting the bounds
-    requires reverting both the JSON and these expectations together.
+    the pixel-sort family to reduce shader density competing with ward
+    chrome. Updated assertions track the production file; reverting the
+    bounds requires reverting both the JSON and these expectations together.
     """
     load_bounds.cache_clear()
     bounds = load_bounds()
-    assert "pixel_sort" in bounds
-    cap = bounds["pixel_sort"]
-    assert cap.max_strength == 0.45
+    assert "pixsort" in bounds
+    cap = bounds["pixsort"]
+    assert cap.max_strength == 0.85
     assert cap.spatial_coverage_max_pct == 0.35
-    assert "strength" in cap.clamp_params
+    assert "threshold_high" in cap.clamp_params
+    assert bounds["noise_gen"].max_strength == 0.25
+    assert bounds["noise_gen"].clamp_params == ("amplitude",)
 
 
 def test_load_bounds_missing_file_returns_empty(tmp_path: Path) -> None:
@@ -46,16 +47,14 @@ def test_load_bounds_malformed_json_returns_empty(tmp_path: Path) -> None:
 
 def test_clamp_params_clamps_over_cap() -> None:
     bounds = {
-        "pixel_sort": NodeCap(
-            node_type="pixel_sort",
+        "pixsort": NodeCap(
+            node_type="pixsort",
             max_strength=0.55,
             spatial_coverage_max_pct=0.40,
             clamp_params=("strength", "intensity"),
         )
     }
-    out, was_clamped = clamp_params(
-        "pixel_sort", {"strength": 0.9, "intensity": 0.3}, bounds=bounds
-    )
+    out, was_clamped = clamp_params("pixsort", {"strength": 0.9, "intensity": 0.3}, bounds=bounds)
     assert was_clamped is True
     assert out["strength"] == 0.55
     assert out["intensity"] == 0.3  # below cap, passes through
@@ -63,15 +62,15 @@ def test_clamp_params_clamps_over_cap() -> None:
 
 def test_clamp_params_no_clamp_when_under_cap() -> None:
     bounds = {
-        "pixel_sort": NodeCap(
-            node_type="pixel_sort",
+        "pixsort": NodeCap(
+            node_type="pixsort",
             max_strength=0.55,
             spatial_coverage_max_pct=0.40,
             clamp_params=("strength",),
         )
     }
     inp = {"strength": 0.3}
-    out, was_clamped = clamp_params("pixel_sort", inp, bounds=bounds)
+    out, was_clamped = clamp_params("pixsort", inp, bounds=bounds)
     assert was_clamped is False
     # Identity preserved to avoid log spam on hot path
     assert out is inp
@@ -79,8 +78,8 @@ def test_clamp_params_no_clamp_when_under_cap() -> None:
 
 def test_clamp_params_unknown_node_type_no_clamp() -> None:
     bounds = {
-        "pixel_sort": NodeCap(
-            node_type="pixel_sort",
+        "pixsort": NodeCap(
+            node_type="pixsort",
             max_strength=0.55,
             spatial_coverage_max_pct=0.40,
             clamp_params=("strength",),
@@ -95,8 +94,8 @@ def test_clamp_params_unknown_node_type_no_clamp() -> None:
 def test_clamp_params_only_affects_declared_params() -> None:
     """A param not in clamp_params must pass through even if > max_strength."""
     bounds = {
-        "pixel_sort": NodeCap(
-            node_type="pixel_sort",
+        "pixsort": NodeCap(
+            node_type="pixsort",
             max_strength=0.55,
             spatial_coverage_max_pct=0.40,
             clamp_params=("strength",),  # NOT "undeclared_knob"
@@ -111,14 +110,18 @@ def test_clamp_params_only_affects_declared_params() -> None:
 
 def test_clamp_params_non_numeric_passes_through() -> None:
     bounds = {
-        "pixel_sort": NodeCap(
-            node_type="pixel_sort",
+        "pixsort": NodeCap(
+            node_type="pixsort",
             max_strength=0.55,
             spatial_coverage_max_pct=0.40,
             clamp_params=("strength",),
         )
     }
-    out, was_clamped = clamp_params("pixel_sort", {"strength": "not_a_number"}, bounds=bounds)  # type: ignore[dict-item]
+    out, was_clamped = clamp_params(
+        "pixsort",
+        {"strength": "not_a_number"},  # type: ignore[dict-item]
+        bounds=bounds,
+    )
     assert was_clamped is False
     assert out["strength"] == "not_a_number"
 

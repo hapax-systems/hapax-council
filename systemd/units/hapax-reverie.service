@@ -6,12 +6,14 @@ PartOf=hapax-visual-stack.target
 
 [Service]
 Type=simple
-ExecStart=/home/hapax/.local/bin/uv run python -m agents.reverie
-WorkingDirectory=/home/hapax/projects/hapax-council
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file agents/reverie/__main__.py --require-file shared/reverie_uniform_policy.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.reverie
 Restart=on-failure
 RestartSec=10
 EnvironmentFile=/run/user/1000/hapax-secrets.env
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 MemoryMax=1G
 
 [Install]

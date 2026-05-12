@@ -6,10 +6,12 @@ from pathlib import Path
 from agents.effect_graph.registry import ShaderRegistry
 from agents.effect_graph.types import EffectGraph, NodeInstance
 from agents.studio_compositor.preset_policy import (
+    apply_live_surface_param_bounds,
     autonomous_fx_mutations_enabled,
     evaluate_preset_graph_policy,
     evaluate_preset_policy,
 )
+from shared.live_surface_effect_policy import live_surface_unclassified_node_types
 
 NODES_DIR = Path(__file__).parent.parent.parent / "agents" / "shaders" / "nodes"
 PRESETS_DIR = Path(__file__).parent.parent.parent / "presets"
@@ -63,7 +65,7 @@ def test_autonomous_fx_mutation_flag_false_values(monkeypatch) -> None:
     assert autonomous_fx_mutations_enabled() is True
 
 
-def test_camera_legible_graph_policy_blocks_postprocess_anonymize() -> None:
+def test_live_surface_bounds_clamp_postprocess_anonymize() -> None:
     graph = _graph(
         {
             "post": NodeInstance(type="postprocess", params={"anonymize": 1.0}),
@@ -78,15 +80,15 @@ def test_camera_legible_graph_policy_blocks_postprocess_anonymize() -> None:
         env=_camera_legible_env(),
     )
 
-    assert decision.allowed is False
-    assert decision.reason == "camera_legible_anonymize"
-    assert decision.matched == ("post", "anonymize=1")
+    assert decision.allowed is True
+    bounded = apply_live_surface_param_bounds("postprocess", {"anonymize": 1.0})
+    assert bounded["anonymize"] == 0.5
 
 
-def test_camera_legible_graph_policy_blocks_full_frame_noise_nodes() -> None:
+def test_camera_legible_graph_policy_allows_bounded_noise_overlay() -> None:
     graph = _graph(
         {
-            "noise": NodeInstance(type="noise_overlay", params={"intensity": 0.02}),
+            "noise": NodeInstance(type="noise_overlay", params={"intensity": 0.5}),
             "out": NodeInstance(type="output"),
         },
         [["@live", "noise"], ["noise", "out"]],
@@ -98,15 +100,18 @@ def test_camera_legible_graph_policy_blocks_full_frame_noise_nodes() -> None:
         env=_camera_legible_env(),
     )
 
-    assert decision.allowed is False
-    assert decision.reason == "camera_legible_full_frame_noise"
-    assert decision.matched == ("noise", "noise_overlay")
+    assert decision.allowed is True
+    bounded = apply_live_surface_param_bounds(
+        "noise_overlay",
+        {"intensity": 0.5, "animated": True},
+    )
+    assert bounded == {"intensity": 0.1, "animated": False}
 
 
 def test_live_surface_graph_policy_is_on_by_default() -> None:
     graph = _graph(
         {
-            "noise": NodeInstance(type="noise_overlay", params={"intensity": 0.02}),
+            "noise": NodeInstance(type="noise_gen", params={"amplitude": 0.02}),
             "out": NodeInstance(type="output"),
         },
         [["@live", "noise"], ["noise", "out"]],
@@ -119,14 +124,14 @@ def test_live_surface_graph_policy_is_on_by_default() -> None:
     )
 
     assert decision.allowed is False
-    assert decision.reason == "camera_legible_full_frame_noise"
+    assert decision.reason == "camera_legible_blocked_node"
 
 
 def test_live_surface_graph_policy_can_be_disabled_for_offline_tools() -> None:
     graph = EffectGraph(
         name="Offline Tool Probe",
         nodes={
-            "noise": NodeInstance(type="noise_overlay", params={"intensity": 0.02}),
+            "noise": NodeInstance(type="noise_gen", params={"amplitude": 0.02}),
             "out": NodeInstance(type="output"),
         },
         edges=[["@live", "noise"], ["noise", "out"]],
@@ -216,7 +221,7 @@ def test_camera_legible_graph_policy_blocks_content_slots_without_contract() -> 
     assert decision.matched == ("content", "sierpinski_content")
 
 
-def test_camera_legible_graph_policy_blocks_low_posterize_defaults() -> None:
+def test_live_surface_bounds_clamp_low_posterize_defaults() -> None:
     graph = _graph(
         {
             "posterize": NodeInstance(type="posterize"),
@@ -231,9 +236,9 @@ def test_camera_legible_graph_policy_blocks_low_posterize_defaults() -> None:
         env=_camera_legible_env(),
     )
 
-    assert decision.allowed is False
-    assert decision.reason == "camera_legible_posterize_levels"
-    assert decision.matched == ("posterize", "levels=4")
+    assert decision.allowed is True
+    bounded = apply_live_surface_param_bounds("posterize", {"levels": 4.0})
+    assert bounded["levels"] == 8.0
 
 
 def test_clean_preset_satisfies_camera_legible_graph_policy() -> None:
@@ -248,3 +253,9 @@ def test_clean_preset_satisfies_camera_legible_graph_policy() -> None:
 
     assert "content_layer" not in {node.type for node in graph.nodes.values()}
     assert decision.allowed is True
+
+
+def test_live_surface_policy_classifies_every_shader_node() -> None:
+    registry = _registry()
+
+    assert live_surface_unclassified_node_types(set(registry.node_types)) == set()

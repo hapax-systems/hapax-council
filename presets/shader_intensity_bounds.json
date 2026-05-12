@@ -7,15 +7,10 @@
     "integration_contract": "HOMAGE umbrella spec §11 governance table (OQ-03-candidate row); nebulous scrim substrate semantics."
   },
   "node_caps": {
-    "pixel_sort": {
-      "max_strength": 0.45,
+    "pixsort": {
+      "max_strength": 0.85,
       "spatial_coverage_max_pct": 0.35,
-      "clamp_params": ["strength", "intensity", "pixel_sort_strength", "threshold"]
-    },
-    "glfeedback": {
-      "max_strength": 0.60,
-      "spatial_coverage_max_pct": 0.50,
-      "clamp_params": ["strength", "intensity", "feedback_amount"]
+      "clamp_params": ["threshold_high"]
     },
     "colorgrade": {
       "max_strength": 1.00,
@@ -28,24 +23,29 @@
       "clamp_params": ["strength", "amplitude"]
     },
     "feedback": {
-      "max_strength": 0.65,
+      "max_strength": 0.25,
       "spatial_coverage_max_pct": 0.70,
-      "clamp_params": ["strength", "feedback_amount", "decay"]
+      "clamp_params": ["trace_strength"]
     },
-    "rd": {
-      "max_strength": 0.85,
+    "reaction_diffusion": {
+      "max_strength": 0.15,
       "spatial_coverage_max_pct": 1.00,
-      "clamp_params": ["feed_rate", "kill_rate", "intensity"]
+      "clamp_params": ["amount"]
     },
-    "noise": {
-      "max_strength": 0.50,
+    "noise_overlay": {
+      "max_strength": 0.10,
       "spatial_coverage_max_pct": 0.60,
-      "clamp_params": ["strength", "amplitude", "intensity"]
+      "clamp_params": ["intensity"]
     },
-    "breath": {
-      "max_strength": 0.90,
+    "noise_gen": {
+      "max_strength": 0.25,
       "spatial_coverage_max_pct": 1.00,
-      "clamp_params": ["strength", "intensity"]
+      "clamp_params": ["amplitude"]
+    },
+    "breathing": {
+      "max_strength": 0.0,
+      "spatial_coverage_max_pct": 1.00,
+      "clamp_params": ["amplitude"]
     }
   }
 }

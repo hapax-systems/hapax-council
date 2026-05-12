@@ -7,13 +7,15 @@ Wants=studio-compositor.service
 
 [Service]
 Type=simple
-WorkingDirectory=%h/projects/hapax-council
-ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.parametric_modulation_heartbeat
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file agents/parametric_modulation_heartbeat/__main__.py --require-file shared/reverie_uniform_policy.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.parametric_modulation_heartbeat
 Restart=always
 RestartSec=5s
 MemoryHigh=64M
 MemoryMax=128M
 Environment=CUDA_VISIBLE_DEVICES=
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=hapax-parametric-modulation-heartbeat

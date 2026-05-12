@@ -172,7 +172,7 @@ _ENVELOPES: Final[tuple[ParameterEnvelope, ...]] = (
     # noise — generative substrate, slowest drift
     ParameterEnvelope("noise", "frequency_x", 0.5, 3.0, 0.05),
     ParameterEnvelope("noise", "frequency_y", 0.5, 3.0, 0.05),
-    ParameterEnvelope("noise", "amplitude", 0.4, 0.9, 0.04),
+    ParameterEnvelope("noise", "amplitude", 0.02, 0.25, 0.02),
     ParameterEnvelope("noise", "speed", 0.02, 0.20, 0.02),
     # rd — reaction-diffusion, joint-constrained (Gray-Scott invariant)
     ParameterEnvelope(
@@ -233,17 +233,17 @@ _ENVELOPES: Final[tuple[ParameterEnvelope, ...]] = (
         "content",
         "intensity",
         0.0,
-        0.85,
+        0.35,
         0.10,
         joint_constraints=(INTENSITY_DEGRADATION_INVARIANT,),
     ),
     # post — postprocess, sediment is joint-constrained
-    ParameterEnvelope("post", "vignette_strength", 0.2, 0.6, 0.03),
+    ParameterEnvelope("post", "vignette_strength", 0.0, 0.25, 0.02),
     ParameterEnvelope(
         "post",
         "sediment_strength",
         0.0,
-        0.30,
+        0.05,
         0.02,
         joint_constraints=(INTENSITY_DEGRADATION_INVARIANT,),
     ),

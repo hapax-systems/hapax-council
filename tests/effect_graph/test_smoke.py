@@ -629,7 +629,7 @@ class TestCompilerExecutionPlan:
         )
         plan = compiler.compile(g)
         c_step = next(s for s in plan.steps if s.node_id == "c")
-        assert c_step.params["saturation"] == 0.3
+        assert c_step.params["saturation"] == 0.35
 
     def test_input_output_edges(self, compiler: GraphCompiler):
         g = EffectGraph(

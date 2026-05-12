@@ -275,7 +275,7 @@ def test_activate_plan_clamps_manifest_param_bounds(pipeline, compiler):
     pipeline.activate_plan(plan)
 
     assert pipeline._slot_preset_params[0]["decay"] == pytest.approx(0.2)
-    assert pipeline._slot_preset_params[0]["blend_mode"] == pytest.approx(2.0)
+    assert pipeline._slot_preset_params[0]["blend_mode"] == pytest.approx(1.0)
 
 
 def test_activate_plan_clamps_live_surface_posterize_floor(pipeline, compiler):
@@ -293,6 +293,35 @@ def test_activate_plan_clamps_live_surface_posterize_floor(pipeline, compiler):
     pipeline.activate_plan(plan)
 
     assert pipeline._slot_preset_params[0]["levels"] == pytest.approx(8.0)
+
+
+def test_compiler_clamps_live_surface_effect_bounds(compiler):
+    g = EffectGraph(
+        name="live-surface-wide-bounds",
+        nodes={
+            "grade": NodeInstance(
+                type="colorgrade",
+                params={"brightness": 2.0, "contrast": 2.0, "saturation": 2.0},
+            ),
+            "noise": NodeInstance(
+                type="noise_overlay", params={"intensity": 0.5, "animated": True}
+            ),
+            "drift": NodeInstance(type="drift", params={"amplitude": 6.0, "speed": 4.0}),
+            "out": NodeInstance(type="output"),
+        },
+        edges=[["@live", "grade"], ["grade", "noise"], ["noise", "drift"], ["drift", "out"]],
+    )
+
+    plan = compiler.compile(g)
+    params_by_type = {step.node_type: step.params for step in plan.steps}
+
+    assert params_by_type["colorgrade"]["brightness"] == pytest.approx(1.10)
+    assert params_by_type["colorgrade"]["contrast"] == pytest.approx(1.35)
+    assert params_by_type["colorgrade"]["saturation"] == pytest.approx(1.35)
+    assert params_by_type["noise_overlay"]["intensity"] == pytest.approx(0.10)
+    assert params_by_type["noise_overlay"]["animated"] is False
+    assert params_by_type["drift"]["amplitude"] == pytest.approx(0.70)
+    assert params_by_type["drift"]["speed"] == pytest.approx(1.0)
 
 
 def test_runtime_modulation_cannot_push_posterize_below_live_surface_floor(
@@ -314,6 +343,27 @@ def test_runtime_modulation_cannot_push_posterize_below_live_surface_floor(
     pipeline.update_node_uniforms("posterize", {"levels": -6.0})
 
     assert pipeline._slot_base_params[0]["levels"] == pytest.approx(8.0)
+
+
+def test_runtime_modulation_respects_high_risk_live_surface_caps(pipeline, compiler):
+    g = EffectGraph(
+        name="high-risk-runtime-caps",
+        nodes={
+            "glitch": NodeInstance(
+                type="glitch_block", params={"intensity": 0.1, "rgb_split": 0.1}
+            ),
+            "out": NodeInstance(type="output"),
+        },
+        edges=[["@live", "glitch"], ["glitch", "out"]],
+    )
+    plan = compiler.compile(g)
+    pipeline._slots = [MagicMock() for _ in range(8)]
+    pipeline.activate_plan(plan)
+
+    pipeline.update_node_uniforms("glitch_block", {"intensity": 0.9, "rgb_split": 0.9})
+
+    assert pipeline._slot_base_params[0]["intensity"] == pytest.approx(0.25)
+    assert pipeline._slot_base_params[0]["rgb_split"] == pytest.approx(0.25)
 
 
 def test_runtime_live_surface_bounds_have_explicit_offline_opt_out(

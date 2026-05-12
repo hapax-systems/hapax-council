@@ -225,6 +225,19 @@ class GraphCompiler:
                 for pname, pdef in d.params.items():
                     merged_params[pname] = pdef.default
             merged_params.update(n.params)
+            if d:
+                try:
+                    from agents.studio_compositor.preset_policy import (
+                        apply_live_surface_param_bounds,
+                    )
+
+                    merged_params = apply_live_surface_param_bounds(n.type, merged_params)
+                except ImportError:
+                    log.debug(
+                        "live-surface param policy unavailable for %s",
+                        n.type,
+                        exc_info=True,
+                    )
             steps.append(
                 ExecutionStep(
                     node_id=nid,
