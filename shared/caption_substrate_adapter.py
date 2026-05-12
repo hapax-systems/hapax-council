@@ -52,6 +52,7 @@ from typing import Literal
 
 from agents.live_captions.reader import CaptionEvent
 from agents.live_captions.routing import RoutingPolicy
+from shared.livestream_role_state import LivestreamRoleState, PublicMode, SpeechPosture
 from shared.research_vehicle_public_event import (
     PublicEventProvenance,
     PublicEventSource,
@@ -82,6 +83,7 @@ RejectionReason = Literal[
     "denied_routing",
     "stale",
     "duplicate",
+    "role_state_blocks_public_caption",
 ]
 
 
@@ -140,6 +142,7 @@ def project_caption_substrate(
     av_offset_s: float | None,
     freshness_ttl_s: float = DEFAULT_FRESHNESS_TTL_S,
     seen_keys: Iterable[str] = (),
+    role_state: LivestreamRoleState | None = None,
 ) -> tuple[list[CaptionSubstrateCandidate], list[CaptionSubstrateRejection]]:
     """Split a caption stream into (substrate-cleared, rejected).
 
@@ -221,6 +224,22 @@ def project_caption_substrate(
             continue
         seen.add(key)
 
+        if role_state is not None and not _role_state_allows_public_caption(role_state):
+            rejections.append(
+                CaptionSubstrateRejection(
+                    caption_ts=event.ts,
+                    text=event.text,
+                    speaker=event.speaker,
+                    reason="role_state_blocks_public_caption",
+                    detail=(
+                        "livestream_role_state="
+                        f"{role_state.role_state_id or role_state.public_mode.value} "
+                        f"posture={role_state.expected_speech_posture.value}"
+                    ),
+                )
+            )
+            continue
+
         candidates.append(
             CaptionSubstrateCandidate(
                 event=_build_caption_segment_event(
@@ -228,6 +247,7 @@ def project_caption_substrate(
                     av_offset_s=av_offset_s,
                     now=now,
                     idempotency_key=key,
+                    role_state=role_state,
                 ),
                 caption_ts=event.ts,
                 av_offset_s=av_offset_s,
@@ -244,6 +264,7 @@ def _build_caption_segment_event(
     av_offset_s: float | None,
     now: float,
     idempotency_key: str,
+    role_state: LivestreamRoleState | None,
 ) -> ResearchVehiclePublicEvent:
     """Construct one `caption.segment` RVPE record from a routed caption.
 
@@ -265,6 +286,11 @@ def _build_caption_segment_event(
 
     av_offset_evidence = (
         f"av_offset_s={av_offset_s:.6f}" if av_offset_s is not None else "av_offset_unavailable"
+    )
+    role_evidence_refs = (
+        (f"livestream_role_state:{role_state.role_state_id}",)
+        if role_state is not None and role_state.role_state_id
+        else ()
     )
 
     surface_policy = PublicEventSurfacePolicy(
@@ -309,7 +335,7 @@ def _build_caption_segment_event(
             token=idempotency_key,
             generated_at=_iso_from_epoch(now),
             producer=PRODUCER,
-            evidence_refs=[evidence_ref, av_offset_evidence],
+            evidence_refs=[evidence_ref, av_offset_evidence, *role_evidence_refs],
             rights_basis="operator generated live caption text",
             citation_refs=[],
         ),
@@ -326,6 +352,14 @@ def _iso_from_epoch(epoch_s: float) -> str:
     from datetime import UTC, datetime
 
     return datetime.fromtimestamp(epoch_s, tz=UTC).isoformat()
+
+
+def _role_state_allows_public_caption(role_state: LivestreamRoleState) -> bool:
+    return (
+        role_state.public_mode is PublicMode.PUBLIC_LIVE
+        and role_state.expected_speech_posture
+        in {SpeechPosture.PUBLIC_CAPTION, SpeechPosture.PUBLIC_NARRATION}
+    )
 
 
 __all__ = [

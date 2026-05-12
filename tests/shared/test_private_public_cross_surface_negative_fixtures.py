@@ -627,9 +627,9 @@ def test_youtube_description_assembler_blocks_private_sentinel() -> None:
     ``PRIVATE_SENTINEL_DO_NOT_PUBLISH_*`` token before composition.
 
     Closed by ``cc-task youtube-description-assembler-private-sentinel-filtering``:
-    ``assemble_description`` runs ``_redact_private_sentinels`` on every
-    text input (and attribution title/url) so the rendered description
-    cannot leak the sentinel to the public YouTube surface.
+    ``assemble_description`` sanitizes every text input (and attribution
+    title/url) so the rendered description cannot leak the sentinel or
+    adjacent private marker text to the public YouTube surface.
     """
     description = assemble_description(
         condition_id=PRIVATE_SENTINEL,
@@ -639,3 +639,4 @@ def test_youtube_description_assembler_blocks_private_sentinel() -> None:
     )
 
     assert PRIVATE_SENTINEL not in description
+    assert "private" not in description.lower()

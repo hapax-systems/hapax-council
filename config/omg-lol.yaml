@@ -1,0 +1,116 @@
+schema_version: 1
+service: omg.lol
+address: hapax
+
+last_audit:
+  checked_at: "2026-05-11T14:25:23Z"
+  checked_by: cx-cobalt
+  task_id: ytb-OMG9
+  docs:
+    - https://api.omg.lol/
+    - https://github.com/neatnik/omg.lol/tree/main/api/docs
+
+configured_settings:
+  address:
+    name: hapax
+    profile_url: https://hapax.omg.lol/
+    email_address: hapax@omg.lol
+  email_forwarding:
+    endpoint: GET /address/{address}/email/
+    status: configured
+    destination_count: 1
+    destination_redacted: true
+  web_profile:
+    endpoint: GET /address/{address}/web
+    pfp: hapax.svg
+    pfp_policy: retain_current_sierpinski_svg
+    has_custom_css: true
+    has_custom_head: true
+    theme: null
+    branding: null
+  dns:
+    endpoint: GET /address/{address}/dns
+    policy: keep_omg_lol_defaults
+    custom_records: []
+    authenticated_dns_records_observed: []
+    public_resolution:
+      hapax.omg.lol:
+        A:
+          - 5.78.24.5
+        AAAA:
+          - "2a01:4ff:1f2:58a2::1"
+      omg.lol:
+        MX:
+          - "10 mail.omg.lol."
+  account_preferences:
+    status: not_mutated
+    reason: account settings require the account email path parameter, and no account email
+      secret/config entry is present in the repo or pass omg-lol tree.
+    intended_if_operator_configures:
+      communication: email_ok
+      web_editor: advanced
+
+acceptance:
+  directory_listing:
+    endpoint: GET /directory
+    desired: listed
+    observed: absent
+    observed_directory_count: 1192
+    evidence: Public API response on 2026-05-11 contained no hapax entry.
+    operator_action_required: true
+  address_verification:
+    endpoint: GET /address/{address}/info
+    desired: verified
+    observed: unverified
+    evidence: Public and authenticated API responses on 2026-05-11 reported verification.verified=false.
+    operator_action_required: true
+  settings_surfaces:
+    audited: true
+    no_undocumented_writes: true
+    surfaces:
+      account_settings:
+        endpoints:
+          - GET /account/{email}/settings
+          - POST /account/{email}/settings
+        status: documented_not_mutated_without_account_email
+      generic_preferences:
+        endpoint: POST /preferences/{owner}
+        status: documented_write_only_no_readback_endpoint
+      web_profile:
+        endpoints:
+          - GET /address/{address}/web
+          - POST /address/{address}/web
+          - POST /address/{address}/pfp
+        status: observed_no_change
+      theme:
+        endpoints:
+          - GET /theme/list
+          - GET /theme/{theme}/info
+          - GET /theme/{theme}/preview
+        status: default_theme_endpoint_available
+  dns:
+    desired: defaults_working
+    observed: defaults_working
+    custom_records: []
+    evidence: Authenticated DNS API returned no custom records; public A, AAAA, and MX
+      resolution succeeded on 2026-05-11.
+  pgp:
+    desired: public_key_distribution
+    status: deferred
+    key_fingerprint_observed: null
+    reason: Current official API docs expose no key upload endpoint; address info returned
+      key_fingerprint=null on 2026-05-11.
+
+blockers:
+  - id: address-verification
+    owner: operator
+    reason: omg.lol address verification is false in live API and no documented API write
+      endpoint exists for completing verification.
+  - id: directory-listing
+    owner: operator
+    reason: hapax is absent from the live directory; directory opt-in is not useful until
+      address verification is repaired.
+  - id: pgp-key-upload
+    owner: operator
+    reason: public-key/PGP storage appears to be a dashboard Keys surface, not a documented
+      API endpoint in the current Postman collections.

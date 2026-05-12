@@ -343,7 +343,13 @@ def write_uniforms(
 
     if stimmung:
         stance = stimmung.get("overall_stance", "nominal")
-        stance_map = {"nominal": 0.0, "cautious": 0.25, "degraded": 0.5, "critical": 1.0}
+        stance_map = {
+            "nominal": 0.0,
+            "seeking": 0.1,
+            "cautious": 0.25,
+            "degraded": 0.5,
+            "critical": 1.0,
+        }
         uniforms["signal.stance"] = stance_map.get(stance, 0.0)
         worst_infra = 0.0
         for dim_key in (

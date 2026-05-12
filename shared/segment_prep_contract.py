@@ -68,13 +68,18 @@ _SCRIPTLIKE_BEAT_RE = re.compile(
     re.IGNORECASE,
 )
 _TEMPLATE_LEAK_RE = re.compile(
-    r"\b(?:"
-    r"source candidates from vault \+ rag|source from vault \+ rag|"
+    r"(?:"
+    r"\b(?:source candidates from vault \+ rag|source from vault \+ rag|"
     r"rank against operator positions|narrate placements|narrate the climb|"
     r"ground in operator positions from profile-facts|resolve via content-resolver|"
     r"surface from rag|descend through vault notes|outline from operator vault notes|"
-    r"warm-then-deep question arc"
-    r")\b",
+    r"warm-then-deep question arc)\b"
+    r"|"
+    r"\bitem_\d+:"
+    r"|"
+    r"\{(?:topic|item|hook|close|body|subject|source|beat|segment|title|name|"
+    r"item_\d+|beat_\d+|criteria|ranking|tier|description|argument|claim)\}"
+    r")",
     re.IGNORECASE,
 )
 _CURRENT_RANKING_RE = re.compile(
@@ -357,18 +362,20 @@ def _missing_role_contract_fields(role: str, role_contract: Mapping[str, Any]) -
         required.extend(["bounded_claim", "receipt_flip"])
     missing: list[str] = []
     for field in required:
-        value = role_contract.get(field)
-        if isinstance(value, str):
-            empty = not value.strip()
-        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-            empty = not any(str(item).strip() for item in value if item is not None)
-        else:
-            empty = not bool(value)
-        if empty:
+        if not _contract_field_has_value(role_contract, field):
             missing.append(field)
     if not _role_contract_source_refs(role_contract):
         missing.append("source_packet_refs:source_evidence_ref")
     return missing
+
+
+def _contract_field_has_value(role_contract: Mapping[str, Any], field: str) -> bool:
+    value = role_contract.get(field)
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return any(str(item).strip() for item in value if item is not None)
+    return bool(value)
 
 
 def _operator_interview(role_contract: Mapping[str, Any]) -> bool:
@@ -532,28 +539,57 @@ def programme_source_readiness(programme: Any) -> dict[str, Any]:
                 "years": _dedupe([str(year) for year in stale_years]),
             }
         )
-    if role == "lecture" and not re.search(
-        r"\b(?:demonstration|worked example|example object|teaching object|case object|"
-        r"definition card|source object|proof object)\b",
-        combined,
+    has_lecture_contract = all(
+        _contract_field_has_value(role_contract, field)
+        for field in ("teaching_objective", "demonstration_object", "worked_example")
+    )
+    if (
+        role == "lecture"
+        and not has_lecture_contract
+        and not re.search(
+            r"\b(?:demonstration|worked example|example object|teaching object|case object|"
+            r"definition card|source object|proof object)\b",
+            combined,
+        )
     ):
         violations.append({"reason": "lecture_requires_demonstration_object"})
-    if role == "interview" and not re.search(
-        r"\b(?:transcript|recorded source|answer source|question ladder|source answer|"
-        r"no-answer flag)\b",
-        combined,
+    has_interview_contract = all(
+        _contract_field_has_value(role_contract, field)
+        for field in ("subject_context", "question_ladder", "answer_source_policy")
+    )
+    if (
+        role == "interview"
+        and not has_interview_contract
+        and not re.search(
+            r"\b(?:transcript|recorded source|answer source|question ladder|source answer|"
+            r"no-answer flag)\b",
+            combined,
+        )
     ):
         violations.append({"reason": "interview_requires_answer_source_policy"})
     if role == "interview":
         violations.extend(_interview_contract_violations(role_contract))
-    if role == "react" and not re.search(
-        r"\b(?:media ref|resolver|timestamp|time-stamped|source media|claim under reaction)\b",
-        combined,
+    has_react_contract = all(
+        _contract_field_has_value(role_contract, field)
+        for field in ("media_ref", "timestamp_or_locator", "claim_under_reaction")
+    )
+    if (
+        role == "react"
+        and not has_react_contract
+        and not re.search(
+            r"\b(?:media ref|resolver|timestamp|time-stamped|source media|claim under reaction)\b",
+            combined,
+        )
     ):
         violations.append({"reason": "react_requires_media_locator"})
-    if role in {"tier_list", "top_10"} and not re.search(
-        r"\b(?:criterion|criteria|ordering rule|ranking rule|tier criteria)\b",
-        combined,
+    ordering_field = {"tier_list": "tier_criteria", "top_10": "ordering_criterion"}.get(role)
+    if (
+        ordering_field
+        and not _contract_field_has_value(role_contract, ordering_field)
+        and not re.search(
+            r"\b(?:criterion|criteria|ordering rule|ranking rule|tier criteria)\b",
+            combined,
+        )
     ):
         violations.append({"reason": f"{role}_requires_ordering_criteria"})
 

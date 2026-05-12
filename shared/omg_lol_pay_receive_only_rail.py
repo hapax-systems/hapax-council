@@ -1,16 +1,8 @@
-"""omg.lol Pay receive-only rail.
+"""Dormant omg.lol Pay receive-only parser.
 
-Closes the last open rail for cc-task
-``publication-bus-monetization-rails-surfaces`` (4 of 5 rails —
-github-sponsors, stripe-payment-link, open-collective, liberapay —
-shipped previously on main; this module + the sibling
-:mod:`agents.publication_bus.omg_lol_pay_publisher` complete the
-keystone).
-
-omg.lol Pay is the operator-owned weblog/profile platform's
-payments feature; the operator already runs the omg.lol weblog
-publisher (:mod:`agents.publication_bus.omg_weblog_publisher`),
-so the Pay rail completes monetization on the same surface.
+omg.lol Pay is not a shipped omg.lol product. This parser remains as a
+receive-only historical scaffold for capability research, but it is not
+registered in the publication bus and has no publisher activation path.
 
 Receive-only invariant. Same posture as
 :mod:`shared.liberapay_receive_only_rail`: this module never
@@ -20,12 +12,10 @@ address (the public ``<name>.omg.lol`` username) the donor already
 selected; emails, billing addresses, and free-text payment notes
 are intentionally not extracted.
 
-omg.lol provides webhook-style event delivery on the operator's
-configured endpoint. This module accepts the canonical payload
-shape and validates HMAC-SHA-256 signatures via the
-``X-OMG-Signature`` header (``OMG_LOL_PAY_WEBHOOK_SECRET`` env).
-USD-cents normalization (omg.lol Pay is USD-native; non-USD
-deliveries are rejected — currency conversion happens upstream).
+This module accepts the historical hypothetical webhook payload
+shape and validates HMAC-SHA-256 signatures via the ``X-OMG-Signature``
+header (``OMG_LOL_PAY_WEBHOOK_SECRET`` env). USD-cents normalization is
+kept for fixture compatibility; non-USD deliveries are rejected.
 
 Accepted event kinds:
 
@@ -85,8 +75,7 @@ class PaymentEventKind(StrEnum):
 
 
 _ACCEPTED_ACTIONS: frozenset[str] = frozenset(k.value for k in PaymentEventKind)
-# Bridge-style aliases — omg.lol Pay's documentation uses dotted forms in
-# webhook event names; the upstream forwarder may pass either form.
+# Bridge-style aliases from the historical hypothetical payload shape.
 _OMG_LOL_PAY_ACTION_ALIASES: dict[str, PaymentEventKind] = {
     "payment.succeeded": PaymentEventKind.PAYMENT_SUCCEEDED,
     "payment.refunded": PaymentEventKind.PAYMENT_REFUNDED,
@@ -104,8 +93,8 @@ class PaymentEvent(_RailModel):
 
     No PII fields exist on this type. ``donor_handle`` is the
     omg.lol address (public ``<name>.omg.lol`` username) the donor
-    selected. ``amount_usd_cents`` is integer USD cents (omg.lol
-    Pay is USD-native). ``raw_payload_sha256`` is included so a
+    selected. ``amount_usd_cents`` is integer USD cents from the
+    historical fixture shape. ``raw_payload_sha256`` is included so a
     downstream consumer can correlate to the original delivery
     without re-storing the raw payload.
     """

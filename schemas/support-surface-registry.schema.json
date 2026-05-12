@@ -52,7 +52,6 @@
     "sponsor_support_copy"
   ],
   "x-required_refusal_conversion_surface_ids": [
-    "github_sponsors",
     "patreon",
     "substack_paid_subscription",
     "discord_community_subscriptions",

@@ -3526,6 +3526,18 @@ class DirectorLoop:
         except Exception:
             log.debug("programme context render failed", exc_info=True)
 
+        try:
+            from agents.studio_compositor.director_segment_runner import (
+                render_director_segment_binding_prompt,
+            )
+
+            segment_binding = render_director_segment_binding_prompt()
+            if segment_binding:
+                parts.append("")
+                parts.extend(segment_binding)
+        except Exception:
+            log.debug("director segment binding prompt block failed", exc_info=True)
+
         # ─── World Surface Read Model (cc-task director-prompt-world-
         # surface-block). Compact block derived from WCS snapshot so
         # the director sees live availability, blockers, and claim

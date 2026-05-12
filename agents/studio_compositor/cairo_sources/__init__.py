@@ -268,6 +268,11 @@ def _register_builtins() -> None:
 
     register("CodingActivityReveal", CodingActivityReveal)
     register("DURFCairoSource", CodingActivityReveal)
+    # durf-foot-coding-session-reveal (2026-05-11) — sibling activity
+    # reveal for the operator's actual foot-terminal tmux coding panes.
+    from agents.studio_compositor.coding_session_reveal import CodingSessionReveal
+
+    register("CodingSessionReveal", CodingSessionReveal)
     # ef7b-165 Phase 9 Part 2 (2026-04-24) — anti-personification egress
     # footer. Static text strip framing the channel as a research
     # instrument. Mounted in default.json; the source fails closed to an

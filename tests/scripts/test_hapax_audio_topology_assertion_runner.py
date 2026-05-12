@@ -184,4 +184,11 @@ def test_assertion_service_requires_and_orders_after_pipewire() -> None:
     assertion_unit = ASSERTION_SERVICE.read_text(encoding="utf-8")
 
     assert "Requires=pipewire.service" in assertion_unit
-    assert "After=pipewire.service wireplumber.service pipewire-pulse.service" in assertion_unit
+    assert (
+        "After=pipewire.service wireplumber.service pipewire-pulse.service "
+        "hapax-l12-mainmix-tap-loopback.service"
+    ) in assertion_unit
+    assert (
+        "Wants=pipewire.service wireplumber.service pipewire-pulse.service "
+        "hapax-l12-mainmix-tap-loopback.service"
+    ) in assertion_unit

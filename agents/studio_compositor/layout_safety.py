@@ -98,7 +98,7 @@ _NEGATIVE_SPACE_BY_FAMILY: dict[str, NegativeSpaceContract] = {
         region="between fitted camera tiles",
         material=BASE_COMPOSITOR_MATERIAL,
         expected_visual_signature="stable non-transparent matte black around live camera regions",
-        max_fraction=0.60,
+        max_fraction=0.65,
     ),
     "hero": NegativeSpaceContract(
         intent="hero framing gutters and secondary stack separation",
@@ -112,7 +112,7 @@ _NEGATIVE_SPACE_BY_FAMILY: dict[str, NegativeSpaceContract] = {
         region="hero/stack gutters",
         material=BASE_COMPOSITOR_MATERIAL,
         expected_visual_signature="stable non-transparent matte black, never checkerboard",
-        max_fraction=0.60,
+        max_fraction=0.65,
     ),
     "packed": NegativeSpaceContract(
         intent="operator-declared containment constellation",

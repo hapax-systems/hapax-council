@@ -1,16 +1,11 @@
-"""CLI entry-point for the LLM-assisted segment-detection layer.
+"""CLI entry-point for the auto-clip Shorts pipeline.
 
 Usage::
 
     uv run python -m agents.auto_clip --dry-run
     uv run python -m agents.auto_clip --dry-run --minutes 10
-    uv run python -m agents.auto_clip --dry-run --transcript /path/to.vtt
-    uv run python -m agents.auto_clip --dry-run --impingements /path/to.jsonl
-    uv run python -m agents.auto_clip --dry-run --chat /path/to-chat.jsonl
-
-The default sources are the live system paths (``impingements.jsonl``,
-no transcript / no chat). ``--dry-run`` is required while the
-predecessor pipeline is in flight — there is no cron yet.
+    uv run python -m agents.auto_clip --run --minutes 30
+    uv run python -m agents.auto_clip --catalog --year 2026 --month 5
 """
 
 from __future__ import annotations
@@ -33,43 +28,25 @@ from shared.transcript_parser import format_as_text, parse_transcript
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="python -m agents.auto_clip",
-        description="LLM-assisted segment detection for the auto-clip Shorts pipeline.",
+        description="Auto-clip Shorts pipeline.",
     )
-    p.add_argument(
-        "--dry-run",
-        action="store_true",
-        required=True,
-        help="Only print proposed candidates as JSON; do not dispatch.",
-    )
-    p.add_argument(
-        "--minutes",
-        type=float,
-        default=10.0,
-        help="Rolling window length in minutes (default 10).",
-    )
-    p.add_argument(
-        "--transcript",
-        type=Path,
-        default=None,
-        help="Path to a transcript file (VTT/SRT/speaker-labeled).",
-    )
+    mode = p.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true", help="Print candidates as JSON.")
+    mode.add_argument("--run", action="store_true", help="Run full pipeline.")
+    mode.add_argument("--catalog", action="store_true", help="Generate monthly catalog.")
+
+    p.add_argument("--minutes", type=float, default=10.0)
+    p.add_argument("--transcript", type=Path, default=None)
     p.add_argument(
         "--impingements",
         type=Path,
         default=Path("/dev/shm/hapax-dmn/impingements.jsonl"),
-        help="Path to impingements.jsonl (default live path).",
     )
-    p.add_argument(
-        "--chat",
-        type=Path,
-        default=None,
-        help="Path to chat-snapshot jsonl (default: no chat).",
-    )
-    p.add_argument(
-        "--model",
-        default="balanced",
-        help="LiteLLM model alias (default 'balanced').",
-    )
+    p.add_argument("--chat", type=Path, default=None)
+    p.add_argument("--model", default="balanced")
+    p.add_argument("--year", type=int, default=None)
+    p.add_argument("--month", type=int, default=None)
+    p.add_argument("--output-dir", type=Path, default=None)
     return p.parse_args(argv)
 
 
@@ -98,11 +75,9 @@ def _load_transcript(path: Path | None) -> str:
     return format_as_text(parse_transcript(path))
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(list(sys.argv[1:] if argv is None else argv))
+def _cmd_detect(args: argparse.Namespace) -> int:
     now = datetime.now(UTC)
     window = timedelta(minutes=args.minutes)
-
     context = RollingContext(
         window_start=now - window,
         window_end=now,
@@ -123,6 +98,42 @@ def main(argv: list[str] | None = None) -> int:
     }
     print(json.dumps(payload, indent=2))
     return 0
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    from agents.auto_clip.pipeline import run_pipeline
+
+    results = run_pipeline(
+        minutes=args.minutes,
+        model_alias=args.model,
+        dry_run=False,
+        output_dir=args.output_dir,
+    )
+    print(json.dumps({"clips_processed": len(results)}, indent=2))
+    return 0
+
+
+def _cmd_catalog(args: argparse.Namespace) -> int:
+    from agents.auto_clip.clip_catalog import write_catalog
+
+    now = datetime.now(UTC)
+    year = args.year or now.year
+    month = args.month or now.month
+    path = write_catalog(year, month)
+    if path:
+        print(f"Catalog written: {path}")
+    else:
+        print(f"No clips found for {year:04d}-{month:02d}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(list(sys.argv[1:] if argv is None else argv))
+    if args.catalog:
+        return _cmd_catalog(args)
+    if args.run:
+        return _cmd_run(args)
+    return _cmd_detect(args)
 
 
 if __name__ == "__main__":

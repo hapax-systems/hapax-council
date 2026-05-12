@@ -6,6 +6,7 @@ framework, subprocess entrypoint, import string, or other dynamic path that
 vulture cannot see. Do not use this as a baseline for ordinary dead code.
 """
 
+from agents.content_programmer.grounding_runner import ProgrammeSequenceGroundingRunner
 from agents.payment_processors.x402.models import Accept, SettlementResponse
 from agents.studio_compositor.final_frame_classifier import (
     classify_final_frame as _classify_final_frame,
@@ -65,6 +66,9 @@ from shared.capability_outcome import (
 )
 from shared.capability_outcome import (
     PublicClaimEvidence as CapabilityPublicClaimEvidence,
+)
+from shared.conative_impingement import (
+    ActionTendencyImpingement as _LivestreamRoleActionTendencyImpingement,
 )
 from shared.content_programme_feedback_ledger import (
     append_feedback_event,
@@ -155,6 +159,13 @@ from shared.live_surface_truth import (
     snapshot_from_prometheus as _snapshot_from_prometheus,
 )
 from shared.livestream_health_group import LivestreamHealthEnvelope, LivestreamHealthGroup
+from shared.livestream_role_state import SpeechAct as _LivestreamRoleSpeechAct
+from shared.multimodal_environmental_evidence_envelope import (
+    MultimodalClaimSupportDecision,
+    MultimodalEnvironmentalEvidenceEnvelope,
+    MultimodalEnvironmentalEvidenceFixtureSet,
+    load_multimodal_environmental_evidence_fixtures,
+)
 from shared.narration_triad import IntendedOutcomeItem, NarrationTriadEnvelope
 from shared.operator_quality_feedback import (
     OperatorQualityRatingEvent,
@@ -176,6 +187,7 @@ from shared.programme_revenue_braid_adapters import (
     ProgrammeFeedbackBraidProjection,
     load_programme_revenue_braid_adapter_fixtures,
 )
+from shared.publication_hardening.review import ReviewClaim, ReviewReport
 from shared.scrim_health_fixtures import (
     ScrimHealthExpectedOutcome,
     ScrimHealthFixture,
@@ -198,6 +210,15 @@ from shared.scrim_wcs_claim_posture import (
     ScrimWCSClaimPostureProjection,
     WCSClaimReference,
 )
+from shared.scrim_wcs_claim_posture import (
+    ScrimWCSClaimPostureInput as _LivestreamRoleScrimWCSClaimPostureInput,
+)
+
+# Livestream role binding: Pydantic invokes these validators dynamically, and
+# downstream impulse consumers use the property as a stable compatibility field.
+_LivestreamRoleActionTendencyImpingement._terminal_impulses_keep_fulfillment_visible
+_LivestreamRoleSpeechAct.resolved_impulse_id
+_LivestreamRoleScrimWCSClaimPostureInput._role_state_must_match_scrim_posture
 
 # Public-API context manager. Called by the five per-outcome smoke tests
 # (vocal / programme_authoring / director_moves / chat_reactivity /
@@ -206,6 +227,10 @@ from shared.scrim_wcs_claim_posture import (
 from shared.segment_observability import SegmentRecorder as _SegmentRecorder
 
 _SegmentRecorder
+
+# Content-programme sequence grounding is wired by scheduler/runner composition
+# through dependency injection; vulture cannot see those dynamic call sites.
+ProgrammeSequenceGroundingRunner.run_sequence
 
 # Deterministic fixture evaluator for segment quality/action/layout contract tests.
 # Test call sites are intentionally outside vulture's production scan.
@@ -293,8 +318,14 @@ _Programme._segmented_content_contract_invariant
 # Test-only reset hook for the in-process rendered-blit readback cache. The
 # production read path is recent_blit_readbacks(); vulture does not scan tests.
 from agents.studio_compositor.fx_chain import clear_blit_readbacks as _clear_blit_readbacks
+from agents.studio_compositor.fx_chain import (
+    clear_layout_composite_cache as _clear_layout_composite_cache,
+)
+from agents.studio_compositor.fx_chain import clear_scaled_blit_cache as _clear_scaled_blit_cache
 
 _clear_blit_readbacks
+_clear_scaled_blit_cache
+_clear_layout_composite_cache
 
 from shared.self_grounding_envelope import (
     SelfPresenceEnvelopeProjection,
@@ -766,6 +797,15 @@ adapt_cross_camera_tracklet
 adapt_ir_presence_observation
 load_camera_salience_fixtures
 
+# Multimodal environmental evidence validators are invoked dynamically by
+# Pydantic while validating the schema/fixture contract. The loader is the
+# public contract for downstream self-grounding, camera/IR, archive, and
+# public-reembed consumers.
+MultimodalEnvironmentalEvidenceEnvelope._validate_envelope_contract
+MultimodalClaimSupportDecision._validate_decision_shape
+MultimodalEnvironmentalEvidenceFixtureSet._validate_fixture_set
+load_multimodal_environmental_evidence_fixtures
+
 # Narration triad validators are invoked dynamically by Pydantic while the
 # autonomous narration ledger validates open/closed semantic-outcome policy.
 IntendedOutcomeItem._open_or_closed_has_policy
@@ -907,6 +947,12 @@ _RuntimeReadbackRef._digest_is_sha256
 # The evaluator is the sole public path from private to public.
 BridgeResult._no_public_without_authorization
 evaluate_bridge
+
+# Publication-hardening review reports use Pydantic field validators for
+# model-loaded LLM JSON. Pydantic invokes them dynamically.
+ReviewClaim._coerce_issues
+ReviewReport._coerce_claims
+ReviewReport._coerce_flagged_issues
 
 # Awareness-digest watcher loop is the public entrypoint wired into
 # `run_loops_aux` by the daemon's voice path in a follow-up; per the
@@ -2657,19 +2703,6 @@ from agents.m8_control.sample_capture import M8SampleCapture as _M8SampleCapture
 
 _M8SampleCapture
 
-# cc-task ``publication-bus-monetization-rails-surfaces`` (2026-05-04).
-# omg.lol Pay publisher methods are dispatched via the FastAPI route
-# at ``logos.api.routes.payment_rails:receive_omg_lol_pay_webhook``
-# — vulture cannot see the FastAPI registration. _emit + _handle_is_address_only
-# are also called via Pydantic field-validator + Publisher ABC dispatch.
-from agents.publication_bus.omg_lol_pay_publisher import OmgLolPayPublisher
-from shared.omg_lol_pay_receive_only_rail import PaymentEvent
-
-OmgLolPayPublisher.requires_legal_name
-OmgLolPayPublisher._emit
-PaymentEvent.model_config
-PaymentEvent._handle_is_address_only
-
 # cc-task ``audio-graph-ssot-p2-daemon-shadow`` (2026-05-05):
 # SafeMuteRail.engage/disengage are the active-mode API promised by the
 # audio graph SSOT spec, but the P2 daemon must not call them because it
@@ -2942,3 +2975,11 @@ is_bridge_enabled
 from shared.publication_hardening.entity_checker import EntityRegistry  # noqa: F401, E402
 
 EntityRegistry.is_company  # hook + external consumer API
+
+from agents.coordination_tui.app import CoordinationApp  # noqa: F401, E402
+
+# Textual framework lifecycle and action methods — called by convention, not direct invocation
+CoordinationApp.on_mount
+CoordinationApp.action_refresh
+CoordinationApp.action_dispatch
+CoordinationApp.action_quit

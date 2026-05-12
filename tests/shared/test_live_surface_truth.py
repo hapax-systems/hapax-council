@@ -49,6 +49,20 @@ def test_containment_flags_prevent_restored_state() -> None:
     assert assessment.reasons == ("containment_flag:force_cpu",)
 
 
+def test_prometheus_parser_preserves_ward_surface_samples() -> None:
+    metrics = parse_prometheus_scalars(
+        """
+studio_compositor_ward_blit_total{ward="programme-context"} 8
+studio_compositor_ward_source_surface_pixels{ward="programme-context"} 9216
+hapax_compositor_layout_active{layout="segment-programme-context"} 1
+"""
+    )
+
+    assert metrics["studio_compositor_ward_blit_total:ward:programme-context"] == 8.0
+    assert metrics["studio_compositor_ward_source_surface_pixels:ward:programme-context"] == 9216.0
+    assert metrics["hapax_compositor_layout_active:layout:segment-programme-context"] == 1.0
+
+
 def test_healthy_requires_active_service_cameras_bridge_and_fresh_v4l2() -> None:
     snapshot = LiveSurfaceSnapshot(
         service_active=True,

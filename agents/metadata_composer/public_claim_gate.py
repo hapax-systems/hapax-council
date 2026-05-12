@@ -9,10 +9,11 @@ were true rather than what is currently witnessed by the world-
 capability surface (WCS) and chronicle public-event log.
 
 This module ships the **gate model** consumers use to validate each
-claim before it lands in metadata output. Phase 0 (this PR) ships the
-gate as a reusable predicate library; Phase 1 follow-on wires it into
-``agents.metadata_composer.composer.compose_metadata`` and the
-``github-public-claim-evidence-gate`` cc-task surface.
+claim before it lands in metadata output. ``compose_metadata`` records
+its scope-level gate result in ``grounding_provenance`` and emits
+refusal/correction copy when a required public claim lacks evidence.
+The same predicate library is reusable by the ``github-public-claim-
+evidence-gate`` cc-task surface.
 
 Design surface
 --------------

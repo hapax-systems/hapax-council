@@ -1,15 +1,9 @@
-"""Pin the repo-pres-funding-yml-disable refusal mechanically.
+"""Pin GitHub Sponsors activation to repo metadata and GraphQL profile setup.
 
-Per ``docs/refusal-briefs/sponsorships-multi-user-pattern.md``: the
-GitHub Sponsorships UI is a multi-user-shape affordance refused by
-the ``single_user`` + ``corporate_boundary`` axioms. The dual-disable
-operation (delete .github/FUNDING.yml + PATCH ``has_sponsorships=false``)
-is permitted; the inverse (re-enabling) is refused.
-
-This test scans agents/ + scripts/ for any call site that would re-
-enable Sponsorships via the gh API: PATCH with ``has_sponsorships=true``
-or any pin attempt. The disable-sponsorships.sh helper is permitted
-because it ONLY sets the flag to ``false``.
+The active Sponsors surface is receive-only org funding metadata plus no-perk
+GitHub Sponsors tiers. Agents and scripts still must not toggle repository
+settings with ``has_sponsorships=true``; profile/tier setup belongs in the
+Sponsors GraphQL/dashboard flow and ``.github/FUNDING.yml``.
 
 Mirrors the existing forbidden-imports + pinItem CI-guard patterns.
 """
@@ -69,10 +63,8 @@ def test_no_sponsorships_enable_calls_in_agents_or_scripts():
     assert not offenders, (
         "Forbidden GitHub has_sponsorships=true call sites detected:\n  "
         + "\n  ".join(offenders)
-        + "\n\nPer docs/refusal-briefs/sponsorships-multi-user-pattern.md, "
-        "GitHub Sponsorships is refused by the single_user + "
-        "corporate_boundary axioms. Use scripts/disable-sponsorships.sh "
-        "(sets the flag to false only)."
+        + "\n\nUse GitHub Sponsors profile/tier GraphQL setup and "
+        ".github/FUNDING.yml; do not add repo Settings enable mutations."
     )
 
 

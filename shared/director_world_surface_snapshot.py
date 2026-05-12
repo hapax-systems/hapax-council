@@ -14,6 +14,13 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from shared.livestream_role_state import (
+    LivestreamRoleState,
+    SpeechAct,
+    SpeechAuthorizationDecision,
+    authorize_speech_act,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DIRECTOR_WORLD_SURFACE_SNAPSHOT_FIXTURES = (
     REPO_ROOT / "config" / "director-world-surface-snapshot-fixtures.json"
@@ -592,6 +599,7 @@ class DirectorWorldSurfaceSnapshot(BaseModel):
     lane_refs: list[str] = Field(default_factory=list)
     claim_refs: list[str] = Field(default_factory=list)
     public_event_refs: list[str] = Field(default_factory=list)
+    role_state: LivestreamRoleState | None = None
     available_moves: list[DirectorWorldSurfaceMoveRow] = Field(default_factory=list)
     blocked_moves: list[DirectorWorldSurfaceMoveRow] = Field(default_factory=list)
     dry_run_moves: list[DirectorWorldSurfaceMoveRow] = Field(default_factory=list)
@@ -662,6 +670,35 @@ class DirectorWorldSurfaceSnapshot(BaseModel):
             and row.public_claim_allowed
             and row.availability.available_to_claim_public_live
         ]
+
+    def authorize_speech_act(
+        self,
+        speech_act: SpeechAct,
+        *,
+        role_state: LivestreamRoleState | None = None,
+    ) -> SpeechAuthorizationDecision:
+        """Authorize a speech act through this director snapshot's WCS route."""
+
+        state = role_state or self.role_state
+        if state is None:
+            raise DirectorWorldSurfaceSnapshotError(
+                "director speech authorization requires a LivestreamRoleState"
+            )
+        public_live_moves = self.public_live_moves()
+        route_ref = speech_act.route_ref
+        route_witness_refs: tuple[str, ...] = ()
+        if public_live_moves:
+            route = public_live_moves[0]
+            route_ref = route_ref or route.surface_id
+            route_witness_refs = tuple(route.required_witness_refs)
+        return authorize_speech_act(
+            state,
+            speech_act,
+            route_ref=route_ref,
+            route_witness_refs=route_witness_refs,
+            director_snapshot_ref=self.snapshot_id,
+            public_event_refs=self.public_event_refs,
+        )
 
     def rows_for_status(self, status: MoveStatus) -> list[DirectorWorldSurfaceMoveRow]:
         return [row for row in self.all_moves() if row.status is status]
@@ -782,6 +819,7 @@ __all__ = [
     "Freshness",
     "FreshnessState",
     "GeneratedFrom",
+    "LivestreamRoleState",
     "MoveStatus",
     "SurfaceFamily",
     "load_director_world_surface_snapshot_fixtures",

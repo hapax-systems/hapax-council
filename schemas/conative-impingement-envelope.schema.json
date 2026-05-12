@@ -81,11 +81,23 @@
       "type": "string",
       "minLength": 1
     },
+    "role_state_ref": {
+      "type": ["string", "null"]
+    },
     "inhibition_policy": {
       "type": "string",
       "minLength": 1
     },
     "wcs_snapshot_ref": {
+      "type": ["string", "null"]
+    },
+    "speech_destination": {
+      "type": ["string", "null"]
+    },
+    "claim_posture": {
+      "type": ["string", "null"]
+    },
+    "selected_fulfillment": {
       "type": ["string", "null"]
     },
     "learning_policy": {

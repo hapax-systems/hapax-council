@@ -556,6 +556,75 @@ def test_active_segment_payload_includes_format_metadata_for_each_segmented_role
         assert payload["asset_requirements"] == list(spec.asset_requirements)
 
 
+def test_active_segment_payload_includes_beat_state_metadata() -> None:
+    from agents.hapax_daimonion.programme_loop import _active_segment_payload
+
+    active = SimpleNamespace(
+        programme_id="prog-beat-test",
+        actual_started_at=100.0,
+        planned_duration_s=1800.0,
+        topic="Beat state test",
+        content=SimpleNamespace(
+            narrative_beat="Testing beat state",
+            declared_topic="Beat state",
+            source_uri=None,
+            subject=None,
+            segment_beats=["hook: open", "body: main content", "close: wrap up"],
+            prepared_artifact_ref=None,
+            artifact_path_diagnostic=None,
+            hosting_context=None,
+            authority=None,
+            source_refs=[],
+            asset_attributions=[],
+            beat_layout_intents=[],
+            layout_decision_contract=None,
+            runtime_layout_validation=None,
+        ),
+    )
+
+    payload = _active_segment_payload(active, "rant", 1)
+
+    assert payload["current_beat_text"] == "body: main content"
+    assert payload["total_beats"] == 3
+    assert payload["beat_progress"] == round(2 / 3, 3)
+    assert isinstance(payload["beat_elapsed_s"], float)
+    assert payload["beat_elapsed_s"] > 0
+    assert "updated_at" in payload
+    assert payload["updated_at"] > 0
+
+
+def test_active_segment_payload_beat_state_empty_beats() -> None:
+    from agents.hapax_daimonion.programme_loop import _active_segment_payload
+
+    active = SimpleNamespace(
+        programme_id="prog-empty",
+        actual_started_at=None,
+        planned_duration_s=3600.0,
+        content=SimpleNamespace(
+            narrative_beat="No beats",
+            declared_topic=None,
+            source_uri=None,
+            subject=None,
+            segment_beats=[],
+            prepared_artifact_ref=None,
+            artifact_path_diagnostic=None,
+            hosting_context=None,
+            authority=None,
+            source_refs=[],
+            asset_attributions=[],
+            beat_layout_intents=[],
+            layout_decision_contract=None,
+            runtime_layout_validation=None,
+        ),
+    )
+
+    payload = _active_segment_payload(active, "rant", 0)
+
+    assert payload["current_beat_text"] == ""
+    assert payload["total_beats"] == 0
+    assert payload["beat_progress"] == 0.0
+
+
 def test_programme_loop_checks_beat_transition_once_per_tick() -> None:
     from pathlib import Path
 

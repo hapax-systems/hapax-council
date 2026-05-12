@@ -6,6 +6,7 @@ import json
 import time
 from pathlib import Path
 
+import agents.studio_compositor.layout_persistence as layout_persistence
 from agents.studio_compositor.layout_persistence import (
     LayoutAutoSaver,
     LayoutFileWatcher,
@@ -20,9 +21,9 @@ from shared.compositor_model import (
 )
 
 
-def _minimal_layout() -> Layout:
+def _minimal_layout(name: str = "default") -> Layout:
     return Layout(
-        name="t",
+        name=name,
         sources=[
             SourceSchema(
                 id="src1",
@@ -98,6 +99,38 @@ def test_autosave_writes_atomically(tmp_path: Path) -> None:
         assert residue == []
     finally:
         saver.stop()
+
+
+def test_autosave_refuses_to_poison_default_with_named_layout(tmp_path: Path, caplog) -> None:
+    layout_file = tmp_path / "default.json"
+    layout_file.write_text(json.dumps(_minimal_layout().model_dump()))
+    state = LayoutState(_minimal_layout(name="segment-detail"))
+    saver = LayoutAutoSaver(state, layout_file, debounce_s=0.05)
+    with caplog.at_level("WARNING"):
+        saver.flush_now()
+
+    on_disk = json.loads(layout_file.read_text())
+    assert on_disk["name"] == "default"
+    assert "refusing to write layout" in caplog.text
+
+
+def test_autosave_temp_file_failure_is_nonfatal(tmp_path: Path, monkeypatch, caplog) -> None:
+    layout_file = tmp_path / "default.json"
+    layout_file.write_text(json.dumps(_minimal_layout().model_dump()))
+    state = LayoutState(_minimal_layout())
+    saver = LayoutAutoSaver(state, layout_file, debounce_s=0.05)
+
+    def fail_mkstemp(*_args, **_kwargs):
+        raise PermissionError("read-only incident containment")
+
+    monkeypatch.setattr(layout_persistence.tempfile, "mkstemp", fail_mkstemp)
+
+    with caplog.at_level("ERROR"):
+        saver.flush_now()
+
+    on_disk = json.loads(layout_file.read_text())
+    assert on_disk["name"] == "default"
+    assert "temp file allocation failed" in caplog.text
 
 
 def test_filewatcher_reloads_on_valid_edit(tmp_path: Path) -> None:

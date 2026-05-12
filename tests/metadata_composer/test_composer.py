@@ -15,6 +15,7 @@ from agents.metadata_composer import (
     state_readers,
 )
 from agents.metadata_composer import composer as composer_mod
+from agents.metadata_composer.public_claim_gate import ClaimEvidence
 
 
 @pytest.fixture(autouse=True)
@@ -36,6 +37,28 @@ def _make_snapshot(**overrides) -> state_readers.StateSnapshot:
     return state_readers.StateSnapshot(**defaults)
 
 
+def _live_evidence(**overrides) -> ClaimEvidence:
+    defaults = {
+        "broadcast_id": "bx",
+        "broadcast_age_s": 1.0,
+        "egress_active": True,
+        "current_activity": "witnessed activity",
+        "programme_role": "research",
+        "programme_role_age_s": 1.0,
+    }
+    defaults.update(overrides)
+    return ClaimEvidence(**defaults)
+
+
+def _vod_evidence(**overrides) -> ClaimEvidence:
+    defaults = {
+        "archive_url": "https://youtu.be/archive",
+        "rights_clear": True,
+    }
+    defaults.update(overrides)
+    return ClaimEvidence(**defaults)
+
+
 # ── scope dispatch ─────────────────────────────────────────────────────────
 
 
@@ -49,6 +72,7 @@ def test_vod_boundary_returns_full_metadata():
             broadcast_id="bx",
             vod_time_range=(0.0, 100.0),
             llm_call=lambda **_: None,
+            claim_evidence=_vod_evidence(),
         )
     assert isinstance(result, ComposedMetadata)
     assert result.title
@@ -65,6 +89,7 @@ def test_live_update_omits_chapters():
             "live_update",
             broadcast_id="bx",
             llm_call=lambda **_: None,
+            claim_evidence=_live_evidence(),
         )
     assert isinstance(result, ComposedMetadata)
     assert result.description_chapters is None
@@ -82,11 +107,100 @@ def test_cross_surface_uses_event_in_provenance():
             "cross_surface",
             triggering_event=event,
             llm_call=lambda **_: None,
+            claim_evidence=_live_evidence(),
         )
     assert isinstance(result, ComposedMetadata)
     assert result.grounding_provenance["triggering_event_kind"] == "transition"
     assert result.grounding_provenance["triggering_event_salience"] == 0.85
     assert "programme.boundary" in result.bluesky_post
+
+
+def test_allowed_metadata_references_public_claim_gate():
+    with patch.object(state_readers, "snapshot", return_value=_make_snapshot()):
+        result = compose_metadata(
+            "live_update",
+            broadcast_id="bx",
+            llm_call=lambda **_: None,
+            claim_evidence=_live_evidence(),
+        )
+    gate = result.grounding_provenance["public_claim_gate"]
+    assert gate["gate"] == "metadata-public-claim-gate"
+    assert gate["allowed"] is True
+    assert gate["decisions"]["live_now"]["decision"] == "allow"
+
+
+def test_live_update_stale_broadcast_id_refuses_public_copy():
+    with patch.object(state_readers, "snapshot", return_value=_make_snapshot()):
+        result = compose_metadata(
+            "live_update",
+            broadcast_id="bx",
+            llm_call=lambda **_: "unsupported live copy",
+            claim_evidence=_live_evidence(broadcast_age_s=120.0),
+        )
+    gate = result.grounding_provenance["public_claim_gate"]
+    assert gate["allowed"] is False
+    assert gate["decisions"]["live_now"]["decision"] == "refuse"
+    assert "stale" in gate["decisions"]["live_now"]["reason"]
+    assert "Public metadata refusal" in result.description
+    assert "unsupported live copy" not in result.description
+
+
+def test_live_update_missing_egress_refuses_public_copy():
+    with patch.object(state_readers, "snapshot", return_value=_make_snapshot()):
+        result = compose_metadata(
+            "live_update",
+            broadcast_id="bx",
+            llm_call=lambda **_: None,
+            claim_evidence=_live_evidence(egress_active=False),
+        )
+    gate = result.grounding_provenance["public_claim_gate"]
+    assert gate["allowed"] is False
+    assert "egress_active" in gate["decisions"]["live_now"]["reason"]
+    assert "not currently broadcasting" in result.description
+
+
+def test_vod_boundary_missing_rights_refuses_archive_copy():
+    with (
+        patch.object(state_readers, "snapshot", return_value=_make_snapshot()),
+        patch.object(state_readers, "read_chronicle", return_value=[]),
+    ):
+        result = compose_metadata(
+            "vod_boundary",
+            broadcast_id="bx",
+            vod_time_range=(0.0, 60.0),
+            llm_call=lambda **_: None,
+            claim_evidence=_vod_evidence(rights_clear=False),
+        )
+    gate = result.grounding_provenance["public_claim_gate"]
+    assert gate["allowed"] is False
+    assert gate["decisions"]["archive"]["decision"] == "refuse"
+    assert gate["decisions"]["replay"]["decision"] == "refuse"
+    assert "rights pending" in result.description
+    assert result.description_chapters is None
+
+
+def test_cross_surface_missing_monetization_readiness_refuses_claim():
+    event = {
+        "event_type": "monetization.review",
+        "ts": 1.0,
+        "payload": {
+            "intent_family": "monetization.review",
+            "salience": 0.9,
+            "public_claims": ["monetization"],
+        },
+    }
+    with patch.object(state_readers, "snapshot", return_value=_make_snapshot()):
+        result = compose_metadata(
+            "cross_surface",
+            triggering_event=event,
+            llm_call=lambda **_: None,
+            claim_evidence=_live_evidence(monetization_active=False),
+        )
+    gate = result.grounding_provenance["public_claim_gate"]
+    assert gate["allowed"] is False
+    assert gate["decisions"]["live_now"]["decision"] == "allow"
+    assert gate["decisions"]["monetization"]["decision"] == "refuse"
+    assert "not currently monetized" in result.description
 
 
 def test_unknown_scope_raises():
@@ -118,6 +232,7 @@ def test_field_limits_enforced():
             broadcast_id="bx",
             vod_time_range=(0.0, 60.0),
             llm_call=lambda **_: None,
+            claim_evidence=_vod_evidence(),
         )
     assert len(result.title) <= composer_mod.TITLE_LIMIT
     assert len(result.description) <= composer_mod.DESCRIPTION_LIMIT
@@ -140,7 +255,12 @@ def test_llm_polish_called_with_seed():
         return f"polished: {seed[:30]}"
 
     with patch.object(state_readers, "snapshot", return_value=_make_snapshot()):
-        compose_metadata("live_update", broadcast_id="bx", llm_call=stub)
+        compose_metadata(
+            "live_update",
+            broadcast_id="bx",
+            llm_call=stub,
+            claim_evidence=_live_evidence(),
+        )
 
     assert len(seen) >= 1
     assert all(s["kind"] in {"title", "description"} for s in seen)
@@ -153,7 +273,12 @@ def test_register_violation_falls_back_to_seed():
         return "Hapax feels excited about today's stream!"
 
     with patch.object(state_readers, "snapshot", return_value=_make_snapshot()):
-        result = compose_metadata("live_update", broadcast_id="bx", llm_call=bad_stub)
+        result = compose_metadata(
+            "live_update",
+            broadcast_id="bx",
+            llm_call=bad_stub,
+            claim_evidence=_live_evidence(),
+        )
 
     assert "feels" not in result.title
     assert "feels" not in result.description
@@ -164,7 +289,12 @@ def test_llm_failure_falls_back_to_seed():
         raise RuntimeError("network gone")
 
     with patch.object(state_readers, "snapshot", return_value=_make_snapshot()):
-        result = compose_metadata("live_update", broadcast_id="bx", llm_call=crashing_stub)
+        result = compose_metadata(
+            "live_update",
+            broadcast_id="bx",
+            llm_call=crashing_stub,
+            claim_evidence=_live_evidence(),
+        )
 
     assert isinstance(result, ComposedMetadata)
     assert result.title
@@ -225,7 +355,12 @@ def test_referent_threaded_into_grounding_when_picker_available():
         ),
         patch.object(state_readers, "snapshot", return_value=_make_snapshot()),
     ):
-        result = compose_metadata("live_update", broadcast_id="bx", llm_call=lambda **_: None)
+        result = compose_metadata(
+            "live_update",
+            broadcast_id="bx",
+            llm_call=lambda **_: None,
+            claim_evidence=_live_evidence(),
+        )
     assert result.grounding_provenance["operator_referent"] == "Oudepode"
 
 
@@ -251,7 +386,12 @@ def test_referent_threaded_into_llm_call():
         ),
         patch.object(state_readers, "snapshot", return_value=_make_snapshot()),
     ):
-        compose_metadata("live_update", broadcast_id="bx", llm_call=stub)
+        compose_metadata(
+            "live_update",
+            broadcast_id="bx",
+            llm_call=stub,
+            claim_evidence=_live_evidence(),
+        )
 
     assert seen and all(s["referent"] == "OTO" for s in seen)
 
@@ -262,7 +402,12 @@ def test_referent_none_when_picker_unavailable():
         patch.dict("sys.modules", {"shared.operator_referent": None}),
         patch.object(state_readers, "snapshot", return_value=_make_snapshot()),
     ):
-        result = compose_metadata("live_update", broadcast_id="bx", llm_call=lambda **_: None)
+        result = compose_metadata(
+            "live_update",
+            broadcast_id="bx",
+            llm_call=lambda **_: None,
+            claim_evidence=_live_evidence(),
+        )
     assert result.grounding_provenance["operator_referent"] is None
 
 
@@ -289,8 +434,18 @@ def test_referent_seeded_per_vod_for_consistency():
         patch.dict("sys.modules", {"shared.operator_referent": fake_picker_module}),
         patch.object(state_readers, "snapshot", return_value=_make_snapshot()),
     ):
-        r1 = compose_metadata("live_update", broadcast_id="vod-7", llm_call=lambda **_: None)
-        r2 = compose_metadata("live_update", broadcast_id="vod-7", llm_call=lambda **_: None)
+        r1 = compose_metadata(
+            "live_update",
+            broadcast_id="vod-7",
+            llm_call=lambda **_: None,
+            claim_evidence=_live_evidence(broadcast_id="vod-7"),
+        )
+        r2 = compose_metadata(
+            "live_update",
+            broadcast_id="vod-7",
+            llm_call=lambda **_: None,
+            claim_evidence=_live_evidence(broadcast_id="vod-7"),
+        )
         captured.append(r1.grounding_provenance["operator_referent"])
         captured.append(r2.grounding_provenance["operator_referent"])
 
@@ -317,10 +472,20 @@ def test_compose_live_update_deterministic_for_state(
 
     state_readers._reset_cache()
     with patch.object(state_readers, "snapshot", return_value=snap):
-        r1 = compose_metadata("live_update", broadcast_id="bx", llm_call=lambda **_: None)
+        r1 = compose_metadata(
+            "live_update",
+            broadcast_id="bx",
+            llm_call=lambda **_: None,
+            claim_evidence=_live_evidence(),
+        )
     state_readers._reset_cache()
     with patch.object(state_readers, "snapshot", return_value=snap):
-        r2 = compose_metadata("live_update", broadcast_id="bx", llm_call=lambda **_: None)
+        r2 = compose_metadata(
+            "live_update",
+            broadcast_id="bx",
+            llm_call=lambda **_: None,
+            claim_evidence=_live_evidence(),
+        )
 
     assert r1.title == r2.title
     assert r1.description == r2.description

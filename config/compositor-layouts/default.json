@@ -294,6 +294,27 @@
       "ward_id": "durf"
     },
     {
+      "id": "coding_session_reveal",
+      "kind": "cairo",
+      "backend": "cairo",
+      "params": {
+        "class_name": "CodingSessionReveal",
+        "natural_w": 960,
+        "natural_h": 720
+      },
+      "update_cadence": "rate",
+      "rate_hz": 6.0,
+      "tags": [
+        "homage",
+        "durf",
+        "coding-session",
+        "operator-foot-terminal"
+      ],
+      "pair_role": "solo",
+      "pair_leg": null,
+      "ward_id": "coding-session-reveal"
+    },
+    {
       "id": "m8-display",
       "kind": "external_rgba",
       "backend": "shm_rgba",
@@ -1133,6 +1154,42 @@
       "update_cadence": "always"
     },
     {
+      "id": "coding-session-fullframe",
+      "geometry": {
+        "kind": "rect",
+        "x": 480,
+        "y": 80,
+        "w": 960,
+        "h": 720,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 10,
+      "update_cadence": "rate"
+    },
+    {
+      "id": "coding-session-peek",
+      "geometry": {
+        "kind": "rect",
+        "x": 1448,
+        "y": 280,
+        "w": 448,
+        "h": 320,
+        "mask": null,
+        "binding_name": null,
+        "target": null,
+        "render_target": null
+      },
+      "effect_chain": [],
+      "blend_mode": "over",
+      "z_order": 10,
+      "update_cadence": "rate"
+    },
+    {
       "id": "research-dashboard-right",
       "geometry": {
         "kind": "rect",
@@ -1575,6 +1632,24 @@
       "surface": "durf-fullframe",
       "transform": {},
       "opacity": 1.0,
+      "per_assignment_effects": [],
+      "non_destructive": false,
+      "render_stage": "pre_fx"
+    },
+    {
+      "source": "coding_session_reveal",
+      "surface": "coding-session-fullframe",
+      "transform": {},
+      "opacity": 0.0,
+      "per_assignment_effects": [],
+      "non_destructive": false,
+      "render_stage": "pre_fx"
+    },
+    {
+      "source": "coding_session_reveal",
+      "surface": "coding-session-peek",
+      "transform": {},
+      "opacity": 0.0,
       "per_assignment_effects": [],
       "non_destructive": false,
       "render_stage": "pre_fx"

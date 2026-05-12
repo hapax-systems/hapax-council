@@ -1,0 +1,12 @@
+[Unit]
+Description=Hapax per-camera Chrome/Meet loopbacks
+Wants=hapax-camera-loopback@brio-operator.service
+Wants=hapax-camera-loopback@c920-desk.service
+Wants=hapax-camera-loopback@c920-room.service
+Wants=hapax-camera-loopback@c920-overhead.service
+Wants=hapax-camera-loopback@brio-room.service
+Wants=hapax-camera-loopback@brio-synths.service
+After=studio-compositor.service
+
+[Install]
+WantedBy=default.target

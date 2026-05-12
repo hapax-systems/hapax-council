@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import re as _re
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,6 +42,10 @@ from shared.resident_command_r import (
     configured_resident_model,
     loaded_tabby_model,
     tabby_chat_url,
+)
+from shared.segment_iteration_review import (
+    SegmentCanaryGateError,
+    assert_next_nine_canary_ready,
 )
 from shared.segment_live_event_quality import (
     LIVE_EVENT_RUBRIC_VERSION,
@@ -309,6 +314,9 @@ def _string_list(value: Any) -> list[str]:
 _ROLE_VISUAL_HOOKS: dict[str, str] = {
     "tier_list": (
         "TIER CHART HOOKS — the stream renders a live tier chart:\n"
+        "  MANDATORY: the OPENING beat must state the ordering criteria explicitly.\n"
+        "  Use language like 'ranked by...', 'evaluated using...', 'the criteria are...'.\n"
+        "  Without ordering criteria, the segment FAILS source readiness validation.\n"
         "  MANDATORY: every ranking/body beat must include at least one exact\n"
         "  tier placement phrase: 'Place [item] in [S/A/B/C/D]-tier'.\n"
         "  Generic history, summary, or analysis without a placement is not a\n"
@@ -415,6 +423,22 @@ def _build_full_segment_prompt(
         "  'What would you change?', 'What's your pick?'\n"
         "  Use at beat endings where audience engagement adds value. Never as filler.\n\n"
         f"{visual_hooks}"
+        "== RESPONSIBLE ACTIONABILITY ==\n"
+        "This is Hapax-hosted responsible live prep: no beat may be spoken-only.\n"
+        "Every beat, including hook, criteria, recap, breathe, and close beats, "
+        "must contain at least one validator-recognized visible/doable trigger:\n"
+        "- a role visual hook such as 'Place [item] in [S/A/B/C/D]-tier';\n"
+        "- a source citation such as 'According to [source]...' or "
+        "'[Source] argues/shows/documents...';\n"
+        "- a chat trigger such as 'Where does chat land?' when audience response "
+        "is the responsible visible surface.\n"
+        "Do not issue camera, layout, surface, panel, clip, or cue commands. "
+        "The script proposes needs through spoken source/action/chat patterns; "
+        "runtime owns layout decisions and readback.\n\n"
+        "== CRITICAL: NO TEMPLATE SYNTAX ==\n"
+        "NEVER emit placeholder patterns like {topic}, {item}, {source}, item_1:, item_2:.\n"
+        "These are REJECTED by validators. Write the actual content, not template variables.\n"
+        "For tier_list/ranking: state the ORDERING CRITERIA explicitly in at least one beat.\n\n"
         "== CRITICAL: SPOKEN PROSE ONLY ==\n"
         "Write ONLY words you would SAY OUT LOUD on a live broadcast.\n"
         "NEVER include stage directions, beat labels, action cues, or meta-instructions.\n"
@@ -431,11 +455,24 @@ def _build_full_segment_prompt(
         "== YOUR TASK ==\n"
         "Compose the COMPLETE narration for this segment — one SUBSTANTIAL block of "
         "broadcast-ready prose per beat. Also emit a model-authored "
-        "segment_prep_contract object for the final script with source_packet_refs, "
-        "claim_map, source_consequence_map, actionability_map, layout_need_map, "
-        "readback_obligations, loop_cards, and role_excellence_plan. The contract "
-        "must name the exact source refs and visible/doable objects the script uses; "
-        "validators may replay it but may not author it for you.\n\n"
+        "segment_prep_contract object for the final script.\n\n"
+        "== REQUIRED CONTRACT FIELDS (validators reject if missing) ==\n"
+        "The segment_prep_contract MUST include ALL of these:\n"
+        "- source_packet_refs: at least one source with evidence_refs pointing to vault/rag\n"
+        "- role_live_bit_mechanic: how this segment works as a live bit\n"
+        "- event_object: the specific thing being ranked/discussed/reacted-to\n"
+        "- audience_job: what the audience does during this segment\n"
+        "- payoff: what the audience gets by the end\n"
+        "- temporality_band: current/historical/timeless\n"
+        + (
+            "- tier_criteria: the EXPLICIT criteria used to rank items (REQUIRED for tier_list)\n"
+            if role_value == "tier_list"
+            else "- ordering_criterion: the EXPLICIT ordering rule (REQUIRED for top_10)\n"
+            if role_value == "top_10"
+            else ""
+        )
+        + "- claim_map, source_consequence_map, actionability_map, layout_need_map\n"
+        "- readback_obligations, loop_cards, role_excellence_plan\n\n"
         "Example format:\n"
         "{\n"
         '  "prepared_script": [\n'
@@ -443,11 +480,23 @@ def _build_full_segment_prompt(
         '    "Second beat — continues with depth and names sources with context..."\n'
         "  ],\n"
         '  "segment_prep_contract": {\n'
-        '    "source_packet_refs": [{"id": "packet:...", "source_ref": "vault:...", "evidence_refs": ["vault:..."]}],\n'
-        '    "claim_map": [],\n'
-        '    "source_consequence_map": [],\n'
-        '    "actionability_map": [],\n'
-        '    "layout_need_map": [],\n'
+        '    "source_packet_refs": [{"id": "packet:topic-sources", "source_ref": "vault:research-notes", "evidence_refs": ["vault:research-notes"]}],\n'
+        '    "role_live_bit_mechanic": "ranked tier placement with source-backed criteria",\n'
+        '    "event_object": "the specific items being ranked",\n'
+        '    "audience_job": "predict placements, challenge via chat",\n'
+        '    "payoff": "final tier chart with source-backed rationale",\n'
+        '    "temporality_band": "current",\n'
+        + (
+            '    "tier_criteria": "ranked by community ecosystem size, framework maturity, and hiring demand",\n'
+            if role_value == "tier_list"
+            else '    "ordering_criterion": "ordered by measurable impact on the field",\n'
+            if role_value == "top_10"
+            else ""
+        )
+        + '    "claim_map": [{"claim": "...", "evidence_ref": "vault:..."}],\n'
+        '    "source_consequence_map": [{"source_ref": "vault:...", "consequence": "changes ranking of..."}],\n'
+        '    "actionability_map": [{"beat_index": 0, "action": "tier_chart", "target": "..."}],\n'
+        '    "layout_need_map": [{"beat_index": 0, "need": "tier_visual", "evidence_ref": "vault:..."}],\n'
         '    "readback_obligations": [],\n'
         '    "loop_cards": [],\n'
         '    "role_excellence_plan": {"live_event_plan": {"bit_engine": "...", "audience_job": "...", "payoff": "..."}}\n'
@@ -457,6 +506,18 @@ def _build_full_segment_prompt(
         "forceful, and intelligible to humans. Use marked analogies when useful. Do "
         "not claim human feeling, empathy, taste, intuition, memory, concern, or a "
         "human host identity.\n\n"
+        "== CRITICAL: HAPAX VOICE — NOT A PODCAST HOST ==\n"
+        "Hapax is a nonhuman cognitive substrate, NOT a human presenter.\n"
+        "BANNED phrases (these FAIL validation):\n"
+        "- Collective we/our/let's: 'We'll', 'Our first', 'Let's dive', 'we have'\n"
+        "- Stock host greetings: 'welcome to', 'hello everyone', 'thanks for joining'\n"
+        "- Stock transitions: 'Moving on', 'without further ado', 'before we go'\n"
+        "- Audience pandering: 'feel free', 'share your thoughts', 'drop it in the chat'\n"
+        "INSTEAD use Hapax voice:\n"
+        "- 'The evidence shifts here' not 'Let's move on'\n"
+        "- 'This source changes the ranking' not 'We'll see why this matters'\n"
+        "- 'The chart requires a response from chat' not 'Feel free to share your thoughts'\n"
+        "- Third person or bare assertions: 'The data shows', 'This collapses', 'Notice the gap'\n\n"
         "RHETORIC — every beat must satisfy ALL of these:\n"
         "1. CLAIM → EVIDENCE → SO-WHAT → IMPLICATION chain per beat.\n"
         "2. Every sentence has at least one TECHNICAL NOUN or PROPER NAME.\n"
@@ -487,6 +548,30 @@ _PREP_LLM_TIMEOUT_S = float(os.environ.get("HAPAX_SEGMENT_PREP_LLM_TIMEOUT_S", "
 # generator so prep artifacts have a coherent model provenance.
 RESIDENT_PREP_MODEL = RESIDENT_COMMAND_R_MODEL
 _ALLOWED_PREP_MODELS = {RESIDENT_PREP_MODEL}
+
+
+def _retrieve_broad_fore_understanding() -> list[dict[str, Any]]:
+    """Retrieve recent source-consequence encounters across all topics.
+
+    Provides the planner with accumulated interpretive context so it can
+
+    select topics informed by prior cycles."""
+    try:
+        from shared.config import get_qdrant
+        from shared.hermeneutic_spiral import COLLECTION_NAME
+
+        client = get_qdrant()
+        results = client.scroll(
+            collection_name=COLLECTION_NAME,
+            limit=20,
+            with_payload=True,
+            order_by="persisted_at",
+        )
+        points, _ = results
+        return [{k: v for k, v in (dict(p.payload) if p.payload else {}).items()} for p in points]
+    except Exception:
+        log.debug("_retrieve_broad_fore_understanding: unavailable", exc_info=True)
+        return []
 
 
 def _prep_model() -> str:
@@ -556,6 +641,31 @@ def _record_llm_call(
     }
     calls.append(record)
     return record
+
+
+_HOST_COLLECTIVE_RE = _re.compile(
+    r"(?i)\b(?:we'(?:ll|re|ve)|we (?:are|have|can|will|need|should|want|must))\b"
+)
+_HOST_STOCK_RE = _re.compile(
+    r"(?i)(?:"
+    r"[Ww]elcome to|[Tt]hanks for (?:joining|tuning|watching|listening)|"
+    r"[Hh]ello everyone|[Mm]oving on|[Ww]ithout further ado|"
+    r"[Ff]eel free to|[Ss]hare your thoughts|[Ss]tay tuned|"
+    r"[Aa]s (?:always|we mentioned))"
+)
+
+
+def _scrub_host_posture(script: list[str]) -> list[str]:
+    """Best-effort rewrite of common host-posture violations."""
+    out: list[str] = []
+    for beat in script:
+        cleaned = _HOST_STOCK_RE.sub("", beat)
+        cleaned = _HOST_COLLECTIVE_RE.sub("The analysis", cleaned)
+        cleaned = _re.sub(r"\b[Oo]ur (first|second|third|next|final)", r"The \1", cleaned)
+        cleaned = _re.sub(r"\b[Ll]et'?s (\w+)", r"The argument \1s", cleaned)
+        cleaned = _re.sub(r"  +", " ", cleaned).strip()
+        out.append(cleaned)
+    return out
 
 
 def _call_llm(
@@ -706,12 +816,23 @@ def _build_seed(programme: Any) -> str:
             NarrativeContext,
         )
 
+        perception_line = ""
+        try:
+            from agents.perception_fusion import format_perception_context, read_fused_perception
+
+            perception_line = format_perception_context(read_fused_perception())
+        except Exception:
+            pass
+
         ctx = NarrativeContext(
             programme=programme,
             stimmung_tone="segment_prep",
             director_activity="segment_prep",
         )
-        return _build_seed(ctx)
+        seed = _build_seed(ctx)
+        if perception_line:
+            seed = f"{seed}\n{perception_line}" if seed else perception_line
+        return seed
     except Exception:
         # Fallback: use narrative_beat as seed
         content = getattr(programme, "content", None)
@@ -752,7 +873,10 @@ def _build_refinement_prompt(script: list[str], programme: Any) -> str:
         "7. STAGE DIRECTIONS: Does the beat contain meta-instructions like 'We pivot',\n"
         "   'We close', 'Recap the chart', 'Invite chat'? These are FATAL — rewrite as\n"
         "   actual spoken prose for the segment.\n"
-        "8. REPETITION: Is the same phrase or paragraph copy-pasted across beats?\n"
+        "8. RESPONSIBLE ACTIONABILITY: Does every beat contain a validator-recognized\n"
+        "   visible/doable trigger: source citation, role visual hook, or chat trigger?\n"
+        "   Spoken-only hook, criteria, recap, breathe, or close beats are FATAL.\n"
+        "9. REPETITION: Is the same phrase or paragraph copy-pasted across beats?\n"
         "   Any repeated text block is a FATAL error — each beat must be unique.\n\n"
         "== THE DRAFT ==\n"
         f"{beat_review}\n\n"
@@ -769,12 +893,12 @@ def _build_refinement_prompt(script: list[str], programme: Any) -> str:
     )
 
 
-_TIER_BODY_DIRECTION_RE = re.compile(
-    r"\b(?:body|item[_ -]?\d+|entry[_ -]?\d+|rank|ranking|place|placing|tier placement)\b",
-    re.IGNORECASE,
-)
 _TIER_SKIP_DIRECTION_RE = re.compile(
     r"\b(?:hook|intro|open|opener|criteria|rubric|close|closing|recap|wrap|chat)\b",
+    re.IGNORECASE,
+)
+_TIER_PLACEMENT_ACTION_DIRECTION_RE = re.compile(
+    r"\b(?:place|placing|assign|slot|promote|demote)\b",
     re.IGNORECASE,
 )
 
@@ -797,9 +921,9 @@ def _tier_list_placement_violations(
             if index < len(segment_beats)
             else str(declaration.get("beat_direction") or "")
         )
-        body_or_rank_direction = bool(_TIER_BODY_DIRECTION_RE.search(direction))
         skip_direction = bool(_TIER_SKIP_DIRECTION_RE.search(direction))
-        if not body_or_rank_direction and skip_direction:
+        placement_action_direction = bool(_TIER_PLACEMENT_ACTION_DIRECTION_RE.search(direction))
+        if skip_direction and not placement_action_direction:
             continue
         intents = declaration.get("intents") or []
         has_placement = any(
@@ -1200,6 +1324,8 @@ def prep_segment(
             prog_id,
         )
         model_contract = None
+    script = _scrub_host_posture(script)
+
     actionability = validate_segment_actionability(
         script,
         [str(item) for item in beats],
@@ -1289,13 +1415,6 @@ def prep_segment(
         programme_id=prog_id,
         role=role,
         topic=topic,
-    )
-    persist_source_consequences(
-        source_consequence_map,
-        programme_id=prog_id,
-        role=role,
-        topic=topic,
-        prep_session_id=prep_session["prep_session_id"],
     )
     live_event_viability = build_live_event_viability(
         script,
@@ -1569,6 +1688,14 @@ def prep_segment(
         final_avg,
     )
 
+    persist_source_consequences(
+        source_consequence_map,
+        programme_id=prog_id,
+        role=role,
+        topic=topic,
+        prep_session_id=prep_session["prep_session_id"],
+    )
+
     # Pass 3: Self-evaluation → emit impingement
     # This is how taste develops. Hapax evaluates its own output and
     # the evaluation flows through the impingement bus into the
@@ -1721,6 +1848,35 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
         authority_mode=authority_state.mode,
         authority_reason=authority_state.reason,
     )
+    if prep_activity == "pool_generation" and max_segments_for_run > 1:
+        _update_prep_status(
+            prep_session,
+            status="in_progress",
+            phase="next_nine_canary_gate_check",
+            authority_activity=prep_activity,
+        )
+        try:
+            canary_gate = assert_next_nine_canary_ready()
+        except SegmentCanaryGateError as exc:
+            _update_prep_status(
+                prep_session,
+                status="blocked",
+                phase="next_nine_canary_gate_blocked",
+                authority_activity=prep_activity,
+                last_error=f"{type(exc).__name__}: {exc}",
+            )
+            return saved
+        prep_session["next_nine_canary_gate"] = canary_gate
+        _update_prep_status(
+            prep_session,
+            status="in_progress",
+            phase="next_nine_canary_gate_passed",
+            authority_activity=prep_activity,
+            canary_review_receipt_path=canary_gate.get("path"),
+            canary_programme_id=(canary_gate.get("receipt") or {}).get("programme_id"),
+            canary_artifact_sha256=(canary_gate.get("receipt") or {}).get("artifact_sha256"),
+            canary_iteration_id=(canary_gate.get("receipt") or {}).get("iteration_id"),
+        )
     _update_prep_status(prep_session, status="in_progress", phase="resident_model_check")
     try:
         _assert_resident_prep_model(prep_session["model_id"])
@@ -1798,9 +1954,11 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
             segmented_count=len(segmented),
         )
         try:
+            recent_fore = _retrieve_broad_fore_understanding()
             plan = planner.plan(
                 show_id=show_id,
                 target_programmes=planner_target_programmes,
+                fore_understanding=recent_fore or None,
             )
         except Exception as exc:
             _update_prep_status(

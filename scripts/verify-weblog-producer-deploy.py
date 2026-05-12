@@ -5,11 +5,12 @@
 2. Waits for the producer to pick it up from RSS
 3. Checks /dev/shm/hapax-public-events/events.jsonl for the omg.weblog event
 4. Checks Mastodon and Bluesky poster idempotency logs for the event
-5. Optionally cleans up the test post
+5. Cleans up the test post by default unless --no-cleanup is set
 
 Usage:
     uv run python scripts/verify-weblog-producer-deploy.py
     uv run python scripts/verify-weblog-producer-deploy.py --cleanup
+    uv run python scripts/verify-weblog-producer-deploy.py --no-cleanup
     uv run python scripts/verify-weblog-producer-deploy.py --check-only
 """
 
@@ -126,7 +127,17 @@ def wait_for_event(after_ts: float) -> dict | None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--cleanup", action="store_true", help="delete test post after verification"
+        "--cleanup",
+        dest="cleanup",
+        action="store_true",
+        default=True,
+        help="delete test post after verification (default)",
+    )
+    parser.add_argument(
+        "--no-cleanup",
+        dest="cleanup",
+        action="store_false",
+        help="leave test post after verification",
     )
     parser.add_argument(
         "--check-only", action="store_true", help="check existing events without publishing"

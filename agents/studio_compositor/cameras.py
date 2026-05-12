@@ -28,6 +28,15 @@ log = logging.getLogger(__name__)
 _JPEG_QUALITY = 75
 
 
+def _is_filesystem_camera(cam: CameraSpec) -> bool:
+    """Return False for URL-backed cameras that have no local device path."""
+    device = str(getattr(cam, "device", "") or "")
+    input_format = str(getattr(cam, "input_format", "") or "")
+    if input_format == "http_jpeg":
+        return False
+    return not device.startswith(("http://", "https://"))
+
+
 def add_camera_snapshot_branch(
     compositor: Any, pipeline: Any, camera_tee: Any, cam: CameraSpec
 ) -> None:
@@ -188,7 +197,7 @@ def add_camera_branch(
     if pipeline_manager is not None:
         pipeline_manager.register_consumer(cam.role, src)
 
-    if not Path(cam.device).exists():
+    if _is_filesystem_camera(cam) and not Path(cam.device).exists():
         log.warning(
             "Camera %s device %s not found — slot will start on fallback",
             cam.role,
