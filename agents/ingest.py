@@ -19,16 +19,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from watchdog.events import FileSystemEventHandler
-from watchdog.observers import Observer
-
 from agents._frontmatter import parse_frontmatter
 
 # Self-contained config (no shared.config import — this module runs in an
 # isolated venv without pydantic-ai due to docling/huggingface-hub conflict).
 _HAPAX_HOME = Path(os.environ.get("HAPAX_HOME", str(Path.home())))
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
-EMBEDDING_MODEL = "nomic-embed-cpu"
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "nomic-embed-cpu")
+DEFAULT_DOCUMENTS_COLLECTION = "documents"
 RAG_SOURCES_DIR = _HAPAX_HOME / "documents" / "rag-sources"
 RAG_INGEST_STATE_DIR = _HAPAX_HOME / ".cache" / "rag-ingest"
 HAPAX_PROJECTS_DIR = _HAPAX_HOME / "projects"
@@ -57,6 +55,16 @@ except ImportError:
 # ── Configuration ────────────────────────────────────────────────────────────
 
 
+def resolve_documents_collection(env: dict[str, str] | None = None) -> str:
+    """Resolve the Qdrant documents collection without changing the default."""
+    source = env if env is not None else os.environ
+    return (
+        source.get("HAPAX_RAG_COLLECTION")
+        or source.get("RAG_DOCUMENTS_COLLECTION")
+        or DEFAULT_DOCUMENTS_COLLECTION
+    )
+
+
 @dataclass
 class Config:
     watch_dirs: list[Path] = field(
@@ -76,7 +84,7 @@ class Config:
         }
     )
     qdrant_url: str = QDRANT_URL
-    collection: str = "documents"
+    collection: str = field(default_factory=resolve_documents_collection)
     embedding_model: str = EMBEDDING_MODEL
     chunk_max_tokens: int = 512
     chunk_tokenizer: str = "Qwen/Qwen2.5-7B-Instruct"
@@ -133,19 +141,58 @@ def get_chunker():
 
 
 _qclient = None
+_qclient_url: str | None = None
 
 
 def get_qdrant():
-    global _qclient
-    if _qclient is None:
+    global _qclient, _qclient_url
+    if _qclient is None or _qclient_url != CFG.qdrant_url:
         from qdrant_client import QdrantClient
 
-        _qclient = QdrantClient(QDRANT_URL)
-        log.info(f"Qdrant connected: {QDRANT_URL}")
+        _qclient = QdrantClient(CFG.qdrant_url)
+        _qclient_url = CFG.qdrant_url
+        log.info(f"Qdrant connected: {CFG.qdrant_url}")
     return _qclient
 
 
 # ── Core functions ───────────────────────────────────────────────────────────
+
+
+def embedding_dimensions() -> int:
+    """Return vector dimensions from the currently selected embedding model."""
+    return len(embed("hapax rag collection schema probe", prefix="search_document"))
+
+
+def _collection_exists(client, collection: str) -> bool:
+    collections = client.get_collections().collections
+    return any(getattr(item, "name", None) == collection for item in collections)
+
+
+def ensure_collection(
+    collection: str | None = None,
+    *,
+    vector_size: int | None = None,
+    client=None,
+) -> bool:
+    """Create a documents-compatible Qdrant collection if it is missing.
+
+    Returns True when the collection was created, False when it already existed.
+    """
+    target = collection or CFG.collection
+    qdrant = client or get_qdrant()
+    if _collection_exists(qdrant, target):
+        return False
+    if vector_size is None:
+        vector_size = embedding_dimensions()
+
+    from qdrant_client.models import Distance, VectorParams
+
+    qdrant.create_collection(
+        collection_name=target,
+        vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+    )
+    log.info("Created Qdrant collection %s (%d-dim, cosine)", target, vector_size)
+    return True
 
 
 def embed(text: str, prefix: str = "search_document") -> list[float]:
@@ -158,7 +205,7 @@ def embed_batch(texts: list[str], prefix: str = "search_document") -> list[list[
     import ollama
 
     prefixed = [f"{prefix}: {t}" if prefix else t for t in texts]
-    result = ollama.embed(model=EMBEDDING_MODEL, input=prefixed)
+    result = ollama.embed(model=CFG.embedding_model, input=prefixed)
     return result["embeddings"]
 
 
@@ -482,9 +529,18 @@ def _file_hash(path: Path) -> str:
     return h.hexdigest()
 
 
-def _should_skip(path: Path, tracker: dict) -> bool:
+def _dedup_key(path: Path, collection: str | None = None) -> str:
+    """Return the dedup key, preserving the legacy key for `documents`."""
+    target = collection or CFG.collection
+    raw_path = str(path)
+    if target == DEFAULT_DOCUMENTS_COLLECTION:
+        return raw_path
+    return f"{target}:{raw_path}"
+
+
+def _should_skip(path: Path, tracker: dict, collection: str | None = None) -> bool:
     """Check if a file has already been ingested (same hash and mtime)."""
-    key = str(path)
+    key = _dedup_key(path, collection)
     if key not in tracker:
         return False
     entry = tracker[key]
@@ -497,9 +553,9 @@ def _should_skip(path: Path, tracker: dict) -> bool:
     return False
 
 
-def _record_ingested(path: Path, tracker: dict) -> None:
+def _record_ingested(path: Path, tracker: dict, collection: str | None = None) -> None:
     """Record a file as successfully ingested."""
-    tracker[str(path)] = {
+    tracker[_dedup_key(path, collection)] = {
         "hash": _file_hash(path),
         "mtime": path.stat().st_mtime,
         "ingested_at": datetime.now().isoformat(),
@@ -570,9 +626,6 @@ def ingest_file(path: Path) -> tuple[bool, str]:
             except Exception:
                 pass  # Frontmatter parsing is best-effort
 
-        # Delete existing points for this file (idempotent re-ingest)
-        delete_file_points(path)
-
         # Embed and upsert
         from qdrant_client import models
 
@@ -613,6 +666,10 @@ def ingest_file(path: Path) -> tuple[bool, str]:
             return (True, "consent_skipped")
 
         if points:
+            ensure_collection(CFG.collection, vector_size=len(points[0].vector))
+            # Delete existing points for this file after embedding succeeds so
+            # transient embedding failures cannot erase the previous index.
+            delete_file_points(path)
             # Batch upsert (Qdrant handles batching internally)
             get_qdrant().upsert(CFG.collection, points, wait=True)
             elapsed = time.monotonic() - start
@@ -630,11 +687,19 @@ def ingest_file(path: Path) -> tuple[bool, str]:
 # ── File watcher ─────────────────────────────────────────────────────────────
 
 
-class IngestHandler(FileSystemEventHandler):
+class IngestHandler:
     """Debounced file system event handler."""
 
     def __init__(self):
         self._pending: dict[str, float] = {}
+
+    def dispatch(self, event):
+        """Minimal watchdog-compatible dispatcher for created/modified files."""
+        event_type = getattr(event, "event_type", "")
+        if event_type == "created":
+            self.on_created(event)
+        elif event_type == "modified":
+            self.on_modified(event)
 
     def _schedule(self, path: str):
         self._pending[path] = time.monotonic()
@@ -662,23 +727,37 @@ class IngestHandler(FileSystemEventHandler):
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
-def bulk_ingest(force: bool = False):
+def bulk_ingest(
+    force: bool = False,
+    *,
+    max_files: int | None = None,
+    dry_run: bool = False,
+):
     """Initial scan of all watched directories."""
     tracker = {} if force else _load_dedup_tracker()
     skipped = 0
     total = 0
     for d in CFG.watch_dirs:
+        if max_files is not None and total >= max_files:
+            break
         if not d.exists():
             log.info(f"Creating watch directory: {d}")
-            d.mkdir(parents=True, exist_ok=True)
+            if not dry_run:
+                d.mkdir(parents=True, exist_ok=True)
             continue
         files = [
             f for f in d.rglob("*") if f.is_file() and f.suffix.lower() in CFG.supported_extensions
         ]
         log.info(f"Bulk ingesting {len(files)} files from {d}")
         for f in sorted(files):
+            if max_files is not None and total >= max_files:
+                break
             if not force and _should_skip(f, tracker):
                 skipped += 1
+                continue
+            if dry_run:
+                log.info("DRY RUN: would ingest %s into %s", f, CFG.collection)
+                total += 1
                 continue
             success, error = ingest_file(f)
             if success:
@@ -686,17 +765,20 @@ def bulk_ingest(force: bool = False):
             else:
                 queue_retry(f, error)
             total += 1
-    if not force:
+    if not force and not dry_run:
         _save_dedup_tracker(tracker)
     if skipped:
         log.info("Skipped %d unchanged files (use --force to re-ingest)", skipped)
     # Process any retries from previous runs
-    process_retries()
+    if not dry_run:
+        process_retries()
     return total
 
 
 def watch():
     """Start file system watcher."""
+    from watchdog.observers import Observer
+
     handler = IngestHandler()
     observer = Observer()
 
@@ -731,9 +813,46 @@ if __name__ == "__main__":
     parser.add_argument("--watch-only", action="store_true", help="Skip bulk ingest, only watch")
     parser.add_argument("--retry-status", action="store_true", help="Show retry queue and exit")
     parser.add_argument(
+        "--collection",
+        default=CFG.collection,
+        help=(
+            "Qdrant collection to write. Defaults to HAPAX_RAG_COLLECTION, "
+            "RAG_DOCUMENTS_COLLECTION, then documents."
+        ),
+    )
+    parser.add_argument("--qdrant-url", default=CFG.qdrant_url)
+    parser.add_argument("--embedding-model", default=CFG.embedding_model)
+    parser.add_argument(
+        "--watch-dir",
+        action="append",
+        type=Path,
+        default=[],
+        help="Override watched/source directory. May be repeated.",
+    )
+    parser.add_argument(
+        "--max-files",
+        type=int,
+        default=None,
+        help="Maximum number of non-skipped files to process in this run.",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="List files that would be ingested.")
+    parser.add_argument(
+        "--create-collection",
+        action="store_true",
+        help="Create the configured collection from the selected embedding model and exit.",
+    )
+    parser.add_argument(
         "--force", action="store_true", help="Bypass dedup tracking, re-ingest all files"
     )
     args = parser.parse_args()
+    if args.dry_run:
+        args.bulk_only = True
+
+    CFG.collection = args.collection
+    CFG.qdrant_url = args.qdrant_url
+    CFG.embedding_model = args.embedding_model
+    if args.watch_dir:
+        CFG.watch_dirs = args.watch_dir
 
     if args.retry_status:
         from datetime import datetime
@@ -760,17 +879,31 @@ if __name__ == "__main__":
                 print()
         raise SystemExit(0)
 
+    if args.create_collection:
+        created = ensure_collection(CFG.collection)
+        status = "created" if created else "already exists"
+        print(f"{CFG.collection}: {status}")
+        raise SystemExit(0)
+
     if not args.watch_only:
         with _tracer.start_as_current_span(
             "ingest.bulk",
-            attributes={"agent.name": "ingest", "agent.repo": "hapax-council"},
+            attributes={
+                "agent.name": "ingest",
+                "agent.repo": "hapax-council",
+                "rag.collection": CFG.collection,
+            },
         ):
-            count = bulk_ingest(force=args.force)
+            count = bulk_ingest(force=args.force, max_files=args.max_files, dry_run=args.dry_run)
             log.info(f"Bulk ingest complete: {count} files processed")
 
     if not args.bulk_only:
         with _tracer.start_as_current_span(
             "ingest.watch",
-            attributes={"agent.name": "ingest", "agent.repo": "hapax-council"},
+            attributes={
+                "agent.name": "ingest",
+                "agent.repo": "hapax-council",
+                "rag.collection": CFG.collection,
+            },
         ):
             watch()

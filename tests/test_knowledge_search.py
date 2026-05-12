@@ -49,6 +49,16 @@ class TestSearchDocuments:
 
     @patch("shared.knowledge_search.get_qdrant")
     @patch("shared.knowledge_search.embed")
+    def test_collection_override_queries_shadow_collection(self, mock_embed, mock_qdrant):
+        mock_embed.return_value = [0.1] * 768
+        mock_qdrant.return_value.query_points.return_value.points = []
+
+        search_documents("test", collection="documents_v2")
+
+        assert mock_qdrant.return_value.query_points.call_args.args[0] == "documents_v2"
+
+    @patch("shared.knowledge_search.get_qdrant")
+    @patch("shared.knowledge_search.embed")
     def test_excludes_retrieval_ineligible_by_default(self, mock_embed, mock_qdrant):
         mock_embed.return_value = [0.1] * 768
         mock_qdrant.return_value.query_points.return_value.points = []

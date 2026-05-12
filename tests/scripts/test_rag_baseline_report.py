@@ -147,3 +147,29 @@ def test_collect_payload_sample_uses_scroll_read_only() -> None:
         {"text": "one"},
         {"text": "two"},
     ]
+
+
+def test_query_smoke_uses_supplied_collection(monkeypatch) -> None:
+    report = _load_script_module()
+    monkeypatch.setattr(report, "_embed_query", lambda *a, **kw: [0.1, 0.2])
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.collection = None
+
+        def query_points(self, collection, **kwargs):
+            self.collection = collection
+            return SimpleNamespace(points=[])
+
+    client = FakeClient()
+    smoke = report.run_query_smoke(
+        client,
+        "documents_v2",
+        ["constitutional memory"],
+        limit=3,
+        model="nomic-embed-cpu",
+        ollama_url="http://ollama",
+    )
+
+    assert client.collection == "documents_v2"
+    assert smoke[0]["query"] == "constitutional memory"
