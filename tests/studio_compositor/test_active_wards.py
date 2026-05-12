@@ -141,8 +141,42 @@ def test_publish_includes_published_t_timestamp(tmp_path):
     assert before <= payload["published_t"] <= after
 
 
+def test_visible_ward_property_ids_filters_hidden_and_bad_entries(tmp_path):
+    target = tmp_path / "ward-properties.json"
+    target.write_text(
+        json.dumps(
+            {
+                "wards": {
+                    "album_overlay": {"visible": True},
+                    "hidden": {"visible": False},
+                    "implicit_visible": {"alpha": 1.0},
+                    "": {"visible": True},
+                    "duplicate": {"visible": True},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert aw.visible_ward_property_ids(path=target) == [
+        "album_overlay",
+        "duplicate",
+        "implicit_visible",
+    ]
+
+
+def test_visible_ward_property_ids_returns_empty_on_missing_or_malformed(tmp_path):
+    assert aw.visible_ward_property_ids(path=tmp_path / "missing.json") == []
+
+    malformed = tmp_path / "ward-properties.json"
+    malformed.write_text("{not json", encoding="utf-8")
+
+    assert aw.visible_ward_property_ids(path=malformed) == []
+
+
 def test_canonical_path_pins_shm_dir():
     """The default file path must live in /dev/shm/hapax-compositor/
     so the publisher and consumer in different processes agree without
     any configuration."""
     assert str(aw.ACTIVE_WARDS_FILE) == "/dev/shm/hapax-compositor/active_wards.json"
+    assert str(aw.WARD_PROPERTIES_FILE) == "/dev/shm/hapax-compositor/ward-properties.json"

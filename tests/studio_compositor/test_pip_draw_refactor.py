@@ -556,6 +556,50 @@ def test_pip_draw_publishes_fresh_active_wards_and_current_layout(monkeypatch, t
     assert current_layout["schema_version"] == 1
 
 
+def test_rendered_layout_empty_readback_falls_back_to_visible_ward_properties(
+    monkeypatch, tmp_path
+) -> None:
+    from agents.studio_compositor import active_wards
+
+    with fx_chain._RENDERED_LAYOUT_STATE_LOCK:
+        fx_chain._RENDERED_LAYOUT_STAGE_WARDS.clear()
+        fx_chain._RENDERED_LAYOUT_STATE_LAST_PUBLISH_MONO = 0.0
+        fx_chain._RENDERED_LAYOUT_STATE_LAST_SIGNATURE = None
+
+    active_wards_path = tmp_path / "active_wards.json"
+    current_layout_path = tmp_path / "current-layout-state.json"
+    ward_properties_path = tmp_path / "ward-properties.json"
+    monkeypatch.setattr(active_wards, "ACTIVE_WARDS_FILE", active_wards_path)
+    monkeypatch.setattr(active_wards, "CURRENT_LAYOUT_STATE_FILE", current_layout_path)
+    monkeypatch.setattr(active_wards, "WARD_PROPERTIES_FILE", ward_properties_path)
+    ward_properties_path.write_text(
+        json.dumps(
+            {
+                "wards": {
+                    "album_overlay": {"visible": True},
+                    "hidden": {"visible": False},
+                    "token_pole": {"alpha": 1.0},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fx_chain._publish_rendered_layout_state(
+        layout_name="segment-detail",
+        active_ward_ids=(),
+        stage="post_fx",
+    )
+
+    assert active_wards.read(path=active_wards_path, stale_s=60.0) == [
+        "album_overlay",
+        "token_pole",
+    ]
+    current_layout = json.loads(current_layout_path.read_text(encoding="utf-8"))
+    assert current_layout["layout_name"] == "segment-detail"
+    assert current_layout["active_ward_ids"] == ["album_overlay", "token_pole"]
+
+
 def test_blit_observability_does_not_break_on_metric_failure(monkeypatch) -> None:
     """If the metric module raises (e.g. uninitialized state, double-init),
     the render path must NOT raise — observability is fail-open per

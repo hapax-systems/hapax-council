@@ -192,10 +192,12 @@ def publish_active_layout_readback(compositor: Any) -> None:
             if source_surface is None:
                 continue
             active_ids.append(source_id)
-        if not active_ids:
-            active_ids = _visible_ward_property_ids()
-
         from . import active_wards
+
+        if not active_ids:
+            active_ids = active_wards.visible_ward_property_ids(
+                path=SNAPSHOT_DIR / "ward-properties.json"
+            )
 
         layout_name = getattr(layout, "name", None)
         layout_mode = getattr(compositor, "_layout_mode", None)
@@ -207,24 +209,6 @@ def publish_active_layout_readback(compositor: Any) -> None:
         )
     except Exception:
         log.debug("active layout readback publish failed", exc_info=True)
-
-
-def _visible_ward_property_ids() -> list[str]:
-    try:
-        payload = json.loads((SNAPSHOT_DIR / "ward-properties.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    wards = payload.get("wards") if isinstance(payload, dict) else None
-    if not isinstance(wards, dict):
-        return []
-    active_ids: list[str] = []
-    for ward_id, props in wards.items():
-        if not isinstance(ward_id, str) or not ward_id:
-            continue
-        if isinstance(props, dict) and props.get("visible") is False:
-            continue
-        active_ids.append(ward_id)
-    return sorted(set(active_ids))
 
 
 def try_reconnect_camera(compositor: Any, role: str) -> bool:
