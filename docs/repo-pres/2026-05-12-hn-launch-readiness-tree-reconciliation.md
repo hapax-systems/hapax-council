@@ -78,6 +78,7 @@ and `obs_clean_feed`; warning: `logos_api`.
 | 20.0 | `hn-launch-runtime-evidence-audit` | done/closed | Ten-surface runtime table captured. |
 | 19.0 | `hn-launch-public-metrics-proof` | done | Repo receipt exists; live weblog, landing page, and HN first-comment draft corrected/verified. |
 | 19.0 | `hn-launch-programme-e2e-readiness` | blocked | Active segment, director receipt, layout/action satisfaction, and soak-survivable proof. |
+| 18.8 | `hn-launch-programme-e2e-smoke-harness-repair` | blocked | Current-API scratch-only E2E harness before any write-producing programme proof run. |
 | 18.5 | `hn-launch-compositor-sierpinski-proof` | blocked | Fresh Sierpinski layout-mode proof plus nonblank frame evidence. |
 | 18.0 | `hn-launch-agentgov-cli-extraction` | done | Public repo/package/CLI install/README/license/CI acceptance checked. |
 | 18.0 | `hn-launch-livestream-evidence-intake` | blocked | Current YouTube id, OBS service, RTMP, MediaMTX HLS, and audio-floor proof. |
@@ -100,3 +101,7 @@ and `obs_clean_feed`; warning: `logos_api`.
 - The current HN launch request is a no-go while compositor layout mode,
   programme end-to-end proof, voice, YouTube, OBS, and social syndication proof
   remain unresolved.
+- Programme E2E proof has a newly exposed implementation dependency:
+  `scripts/programme-delivery-smoke` is API-stale and must not be used as launch
+  evidence until repaired to the current `DirectorSegmentRunner.process_once()`
+  API with scratch-only writes.
