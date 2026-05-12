@@ -20,6 +20,7 @@ import logging
 import threading
 from typing import Any
 
+from .gst_appsrc_limits import configure_live_appsrc_queue
 from .models import CameraSpec
 
 log = logging.getLogger(__name__)
@@ -97,6 +98,7 @@ class FallbackPipeline:
             src.set_property("format", 3)  # TIME
             src.set_property("do-timestamp", True)
             src.set_property("block", False)
+            configure_live_appsrc_queue(src)
             src.set_property(
                 "caps",
                 Gst.Caps.from_string(

@@ -159,6 +159,41 @@ def test_layout_composite_interval_expires_before_signature_change(monkeypatch) 
     assert _pixel(canvas, 10, 10)[:3] == (0x00, 0x00, 0x00)
 
 
+def test_scaled_blit_cache_is_byte_bound(monkeypatch) -> None:
+    fx_chain.clear_scaled_blit_cache()
+    monkeypatch.setenv("HAPAX_SCALE_CACHE_MAX_BYTES", "512")
+    monkeypatch.setenv("HAPAX_SCALE_CACHE_MAX_ENTRIES", "8")
+
+    src = _solid_surface(4, 4, (1.0, 0.0, 0.0))
+    canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, 64, 64)
+    cr = _paint_black(canvas)
+    geom = SurfaceGeometry(kind="rect", x=0, y=0, w=32, h=32)
+
+    blit_scaled(cr, src, geom, opacity=1.0, blend_mode="over", cache_key="too-large")
+
+    assert len(fx_chain._SCALE_CACHE) == 0
+    assert fx_chain._SCALE_CACHE_BYTES == 0
+
+
+def test_scaled_blit_cache_evicts_oldest_over_capacity(monkeypatch) -> None:
+    fx_chain.clear_scaled_blit_cache()
+    monkeypatch.setenv("HAPAX_SCALE_CACHE_MAX_BYTES", "2048")
+    monkeypatch.setenv("HAPAX_SCALE_CACHE_MAX_ENTRIES", "8")
+
+    src = _solid_surface(4, 4, (1.0, 0.0, 0.0))
+    canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, 64, 64)
+    cr = _paint_black(canvas)
+    geom = SurfaceGeometry(kind="rect", x=0, y=0, w=16, h=16)
+
+    blit_scaled(cr, src, geom, opacity=1.0, blend_mode="over", cache_key="first")
+    blit_scaled(cr, src, geom, opacity=1.0, blend_mode="over", cache_key="second")
+    blit_scaled(cr, src, geom, opacity=1.0, blend_mode="over", cache_key="third")
+
+    assert len(fx_chain._SCALE_CACHE) == 2
+    assert fx_chain._SCALE_CACHE_BYTES <= 2048
+    assert all(key[0] != "first" for key in fx_chain._SCALE_CACHE)
+
+
 # ── pip_draw_from_layout ────────────────────────────────────────────
 
 
