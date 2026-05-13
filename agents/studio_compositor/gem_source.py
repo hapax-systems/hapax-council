@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from . import metrics
 from .homage.transitional_source import HomageTransitionalSource
 
 if TYPE_CHECKING:
@@ -434,14 +435,17 @@ class GemCairoSource(HomageTransitionalSource):
             return self._substrate
         self._substrate_init_attempted = True
         if not self._enable_substrate:
+            metrics.set_gem_substrate_active(False)
             return None
         try:
             from .gem_substrate import GemSubstrate
 
             self._substrate = GemSubstrate()
+            metrics.set_gem_substrate_active(True)
         except Exception:
             log.warning("gem: substrate init failed — rendering text-only", exc_info=True)
             self._substrate = None
+            metrics.set_gem_substrate_active(False)
         return self._substrate
 
     def _ensure_room_tree(self, canvas_w: int, canvas_h: int):
@@ -482,6 +486,7 @@ class GemCairoSource(HomageTransitionalSource):
             grid_h, grid_w = bright.shape
         except Exception:
             log.debug("gem: substrate step failed — skipping background", exc_info=True)
+            metrics.record_gem_substrate_step_error()
             return
 
         # Build a Cairo ImageSurface from the brightness grid. Each cell
@@ -492,8 +497,11 @@ class GemCairoSource(HomageTransitionalSource):
         try:
             tint = self._substrate_tint_rgba()
             self._paint_substrate_grid(cr, bright, grid_w, grid_h, canvas_w, canvas_h, tint)
+            max_brightness = float(bright.max()) if hasattr(bright, "max") else None
+            metrics.record_gem_substrate_paint(max_brightness=max_brightness)
         except Exception:
             log.debug("gem: substrate paint failed — skipping", exc_info=True)
+            metrics.record_gem_substrate_step_error()
 
     def _substrate_tint_rgba(self) -> tuple[float, float, float]:
         """Resolve the substrate base RGB from the active HOMAGE palette."""

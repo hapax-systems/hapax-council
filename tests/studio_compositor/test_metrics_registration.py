@@ -118,6 +118,40 @@ class TestAntigravCleanupObservabilityCounters:
         assert "# TYPE studio_compositor_stop_errors_total counter" in text
 
 
+class TestGemSubstrateObservability:
+    """GEM substrate proof must be live evidence, not env assertion."""
+
+    def test_metrics_registered(self) -> None:
+        assert metrics.GEM_SUBSTRATE_ACTIVE is not None
+        assert metrics.GEM_SUBSTRATE_PAINT_TOTAL is not None
+        assert metrics.GEM_SUBSTRATE_STEP_ERRORS_TOTAL is not None
+        assert metrics.GEM_SUBSTRATE_MAX_BRIGHTNESS is not None
+        text = _registry_text()
+        assert "# HELP studio_compositor_gem_substrate_active" in text
+        assert "# TYPE studio_compositor_gem_substrate_active gauge" in text
+        assert "# HELP studio_compositor_gem_substrate_paint_total" in text
+        assert "# TYPE studio_compositor_gem_substrate_paint_total counter" in text
+        assert "# HELP studio_compositor_gem_substrate_step_errors_total" in text
+        assert "# TYPE studio_compositor_gem_substrate_step_errors_total counter" in text
+        assert "# HELP studio_compositor_gem_substrate_max_brightness" in text
+        assert "# TYPE studio_compositor_gem_substrate_max_brightness gauge" in text
+
+    def test_helpers_update_metric_values(self) -> None:
+        metrics.set_gem_substrate_active(False)
+        assert metrics.GEM_SUBSTRATE_ACTIVE._value.get() == 0.0
+        paint_counter = metrics.GEM_SUBSTRATE_PAINT_TOTAL
+        error_counter = metrics.GEM_SUBSTRATE_STEP_ERRORS_TOTAL
+        before_paint = paint_counter._value.get()
+        before_error = error_counter._value.get()
+
+        metrics.record_gem_substrate_paint(max_brightness=0.23)
+        metrics.record_gem_substrate_step_error()
+
+        assert paint_counter._value.get() == before_paint + 1.0
+        assert error_counter._value.get() == before_error + 1.0
+        assert metrics.GEM_SUBSTRATE_MAX_BRIGHTNESS._value.get() == 0.23
+
+
 class TestDirectorRefusalGateCounter:
     """Phase 5 RefusalGate outcome counter must live on the :9482 registry."""
 

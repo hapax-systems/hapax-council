@@ -52,7 +52,6 @@ FULL_SURFACE_ENV = (
     "HAPAX_VISUAL_PUMPING_ENABLED",
     "HAPAX_CAMERA_LEGIBLE_FX_ONLY",
     "HAPAX_CAMERA_LEGIBLE_PRESET_ALLOWLIST",
-    "HAPAX_GEM_SUBSTRATE_ENABLED",
     "HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED",
     "HAPAX_HERO_SMALL_OVERLAY_ENABLED",
     "HAPAX_PRE_FX_LAYOUT_BACKGROUND_COMPOSITE_ENABLED",
@@ -126,7 +125,6 @@ FULL_SURFACE_BLOCKING_ENV = (
         "LSC-PRESET-001",
         "preset_allowlist_clean",
     ),
-    ("HAPAX_GEM_SUBSTRATE_ENABLED", "0", "LSC-SCRIM-001", "gem_substrate_disabled"),
     (
         "HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED",
         "0",
@@ -354,6 +352,11 @@ def _full_surface_metric_failures(metrics: dict[str, float]) -> list[str]:
 
     if metrics.get("hapax_ward_modulator_tick_total", 0) <= 0:
         failures.append(_full_surface_reason("LSC-WARD-002", "ward_modulator_no_ticks"))
+
+    if metrics.get("studio_compositor_gem_substrate_active", 0) <= 0:
+        failures.append(_full_surface_reason("LSC-SCRIM-001", "gem_substrate_not_active"))
+    if metrics.get("studio_compositor_gem_substrate_paint_total", 0) <= 0:
+        failures.append(_full_surface_reason("LSC-SCRIM-001", "gem_substrate_not_painting"))
 
     active_layouts = {
         key.removeprefix("hapax_compositor_layout_active:layout:"): value

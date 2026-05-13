@@ -109,6 +109,10 @@ V4L2SINK_RECOVERY_TOTAL: Any = None
 V4L2SINK_FD_REOPENS_TOTAL: Any = None
 V4L2SINK_WRITE_ERRORS_TOTAL: Any = None
 COMP_RUNTIME_FEATURE_ACTIVE: Any = None
+GEM_SUBSTRATE_ACTIVE: Any = None
+GEM_SUBSTRATE_PAINT_TOTAL: Any = None
+GEM_SUBSTRATE_STEP_ERRORS_TOTAL: Any = None
+GEM_SUBSTRATE_MAX_BRIGHTNESS: Any = None
 COMP_RENDER_STAGE_FRAMES_TOTAL: Any = None
 COMP_RENDER_STAGE_LAST_FRAME_AGE: Any = None
 DIRECTOR_LAST_INTENT_AGE: Any = None
@@ -281,6 +285,10 @@ def _init_metrics() -> None:
     global V4L2SINK_FD_REOPENS_TOTAL
     global V4L2SINK_WRITE_ERRORS_TOTAL
     global COMP_RUNTIME_FEATURE_ACTIVE
+    global GEM_SUBSTRATE_ACTIVE
+    global GEM_SUBSTRATE_PAINT_TOTAL
+    global GEM_SUBSTRATE_STEP_ERRORS_TOTAL
+    global GEM_SUBSTRATE_MAX_BRIGHTNESS
     global COMP_RENDER_STAGE_FRAMES_TOTAL
     global COMP_RENDER_STAGE_LAST_FRAME_AGE
     global DIRECTOR_LAST_INTENT_AGE
@@ -768,6 +776,26 @@ def _init_metrics() -> None:
             "shmsink_bridge."
         ),
         ["feature"],
+        registry=REGISTRY,
+    )
+    GEM_SUBSTRATE_ACTIVE = Gauge(
+        "studio_compositor_gem_substrate_active",
+        "1 when the GEM Gray-Scott substrate is constructed and renderable.",
+        registry=REGISTRY,
+    )
+    GEM_SUBSTRATE_PAINT_TOTAL = Counter(
+        "studio_compositor_gem_substrate_paint_total",
+        "Cumulative successful GEM substrate paints beneath the mural text.",
+        registry=REGISTRY,
+    )
+    GEM_SUBSTRATE_STEP_ERRORS_TOTAL = Counter(
+        "studio_compositor_gem_substrate_step_errors_total",
+        "Cumulative GEM substrate step/paint errors that skipped a substrate frame.",
+        registry=REGISTRY,
+    )
+    GEM_SUBSTRATE_MAX_BRIGHTNESS = Gauge(
+        "studio_compositor_gem_substrate_max_brightness",
+        "Maximum brightness observed on the latest successful GEM substrate paint.",
         registry=REGISTRY,
     )
     COMP_RENDER_STAGE_FRAMES_TOTAL = Counter(
@@ -1431,6 +1459,27 @@ def set_runtime_feature_active(feature: str, active: bool) -> None:
     if COMP_RUNTIME_FEATURE_ACTIVE is None:
         return
     COMP_RUNTIME_FEATURE_ACTIVE.labels(feature=feature).set(1 if active else 0)
+
+
+def set_gem_substrate_active(active: bool) -> None:
+    if GEM_SUBSTRATE_ACTIVE is None:
+        return
+    GEM_SUBSTRATE_ACTIVE.set(1 if active else 0)
+
+
+def record_gem_substrate_paint(max_brightness: float | None = None) -> None:
+    set_gem_substrate_active(True)
+    if GEM_SUBSTRATE_PAINT_TOTAL is not None:
+        GEM_SUBSTRATE_PAINT_TOTAL.inc()
+    if GEM_SUBSTRATE_MAX_BRIGHTNESS is not None and max_brightness is not None:
+        GEM_SUBSTRATE_MAX_BRIGHTNESS.set(max(0.0, float(max_brightness)))
+
+
+def record_gem_substrate_step_error() -> None:
+    set_gem_substrate_active(False)
+    if GEM_SUBSTRATE_STEP_ERRORS_TOTAL is None:
+        return
+    GEM_SUBSTRATE_STEP_ERRORS_TOTAL.inc()
 
 
 def set_scaled_blit_cache_state(*, entries: int, bytes_used: int) -> None:

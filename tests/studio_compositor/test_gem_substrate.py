@@ -123,3 +123,39 @@ def test_substrate_enabled_by_default_in_gem_source() -> None:
 
     src = GemCairoSource()
     assert src._enable_substrate is True
+
+
+def test_gem_source_emits_substrate_paint_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The live proof path must observe substrate construction and paint."""
+    from agents.studio_compositor import metrics
+    from agents.studio_compositor.gem_source import GemCairoSource
+
+    src = GemCairoSource()
+    monkeypatch.setattr(src, "_paint_substrate_grid", lambda *args, **kwargs: None)
+    metrics.set_gem_substrate_active(False)
+    before = metrics.GEM_SUBSTRATE_PAINT_TOTAL._value.get()
+
+    src._render_substrate(object(), 1840, 240)
+
+    assert metrics.GEM_SUBSTRATE_ACTIVE._value.get() == 1.0
+    assert metrics.GEM_SUBSTRATE_PAINT_TOTAL._value.get() == before + 1.0
+    assert 0.0 <= metrics.GEM_SUBSTRATE_MAX_BRIGHTNESS._value.get() <= src._substrate.ceiling
+
+
+def test_gem_source_emits_substrate_error_metric(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Paint failures are scrape-visible instead of silently weakening proof."""
+    from agents.studio_compositor import metrics
+    from agents.studio_compositor.gem_source import GemCairoSource
+
+    src = GemCairoSource()
+
+    def _fail_paint(*args, **kwargs) -> None:
+        raise RuntimeError("forced paint failure")
+
+    monkeypatch.setattr(src, "_paint_substrate_grid", _fail_paint)
+    before = metrics.GEM_SUBSTRATE_STEP_ERRORS_TOTAL._value.get()
+
+    src._render_substrate(object(), 1840, 240)
+
+    assert metrics.GEM_SUBSTRATE_ACTIVE._value.get() == 0.0
+    assert metrics.GEM_SUBSTRATE_STEP_ERRORS_TOTAL._value.get() == before + 1.0
