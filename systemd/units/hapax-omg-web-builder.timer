@@ -1,0 +1,11 @@
+[Unit]
+Description=Timer for Hapax omg.lol Web Builder Automation
+
+[Timer]
+# Run hourly to ensure the landing page links and status stay relatively current
+OnCalendar=hourly
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

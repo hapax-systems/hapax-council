@@ -1,0 +1,12 @@
+[Unit]
+Description=Hapax omg.lol Web Builder Automation
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/hapax-council
+# Execute the publisher headlessly to regenerate the landing page and push to omg.lol
+ExecStart=%h/.local/bin/uv run python -m agents.omg_web_builder.publisher --publish
+
+[Install]
+WantedBy=default.target
