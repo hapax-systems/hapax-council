@@ -437,22 +437,50 @@ def _pearson(a: Sequence[float | int], b: Sequence[float | int]) -> float | None
 def _checkerboard_fraction(gray: Image.Image, *, valid_mask: Sequence[bool] | None = None) -> float:
     width, height = gray.size
     values = list(gray.getdata())
-    toggles = 0
-    edges = 0
-    for y in range(height):
-        for x in range(width):
+    alternating_blocks = 0
+    blocks = 0
+    for y in range(height - 1):
+        for x in range(width - 1):
             idx = y * width + x
-            if valid_mask is not None and not valid_mask[idx]:
-                continue
-            current = values[y * width + x] >= 128
-            if x + 1 < width and (valid_mask is None or valid_mask[idx + 1]):
-                toggles += current != (values[y * width + x + 1] >= 128)
-                edges += 1
             down_idx = (y + 1) * width + x
-            if y + 1 < height and (valid_mask is None or valid_mask[down_idx]):
-                toggles += current != (values[(y + 1) * width + x] >= 128)
-                edges += 1
-    return toggles / edges if edges else 0.0
+            if valid_mask is not None and not (
+                valid_mask[idx]
+                and valid_mask[idx + 1]
+                and valid_mask[down_idx]
+                and valid_mask[down_idx + 1]
+            ):
+                continue
+            top_left = values[idx]
+            top_right = values[idx + 1]
+            bottom_left = values[down_idx]
+            bottom_right = values[down_idx + 1]
+            blocks += 1
+            if _is_checkerboard_block(top_left, top_right, bottom_left, bottom_right):
+                alternating_blocks += 1
+    return alternating_blocks / blocks if blocks else 0.0
+
+
+def _is_checkerboard_block(
+    top_left: int,
+    top_right: int,
+    bottom_left: int,
+    bottom_right: int,
+) -> bool:
+    """Return true for local 2x2 parity, not ordinary content edges."""
+    values = (top_left, top_right, bottom_left, bottom_right)
+    if max(values) - min(values) < 24:
+        return False
+    return (
+        abs(top_left - bottom_right) <= 24
+        and abs(top_right - bottom_left) <= 24
+        and min(
+            abs(top_left - top_right),
+            abs(top_left - bottom_left),
+            abs(bottom_right - top_right),
+            abs(bottom_right - bottom_left),
+        )
+        >= 24
+    )
 
 
 def _content_regions(dark_mask: list[bool], width: int, height: int) -> int:
