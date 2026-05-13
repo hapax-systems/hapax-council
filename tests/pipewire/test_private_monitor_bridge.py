@@ -1,11 +1,4 @@
-"""Static pins for the off-L-12 private monitor bridge.
-
-Option C (2026-05-02 spec amendment): the bridge now targets the S-4 USB IN
-multichannel-output sink, not the Blue Yeti. The S-4 internal scene routes
-Track 1 input → analog OUT 1/2, which is the operator's monitor patch
-(structurally outside the L-12 broadcast path). See
-`docs/superpowers/specs/2026-05-02-hapax-private-monitor-track-fenced-via-s4.md`.
-"""
+"""Static pins for the off-L-12 private monitor bridge."""
 
 from __future__ import annotations
 
@@ -17,7 +10,7 @@ CONF_REPO_PATH = (
     / "pipewire"
     / "hapax-private-monitor-bridge.conf"
 )
-S4_TARGET = "alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output"
+MPC_TARGET = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"
 
 
 def _active(text: str) -> str:
@@ -50,29 +43,31 @@ def test_bridge_conf_exists_and_documents_fail_closed_contract() -> None:
     assert "absent hardware produces silence" in text
 
 
-def test_private_sink_monitor_is_captured_and_played_to_s4_only() -> None:
+def test_private_sink_monitor_is_captured_and_played_to_mpc_only() -> None:
     active = _active(_conf())
     capture = _node_block(active, "hapax-private-monitor-capture")
     playback = _node_block(active, "hapax-private-playback")
 
     assert "stream.capture.sink = true" in capture
     assert 'target.object = "hapax-private"' in capture
-    assert f'target.object = "{S4_TARGET}"' in playback
+    assert f'target.object = "{MPC_TARGET}"' in playback
+    assert "Torso_Electronics_S-4" not in playback
     assert "Blue_Microphones_Yeti" not in playback
 
 
-def test_notification_private_sink_monitor_is_captured_and_played_to_s4_only() -> None:
+def test_notification_private_sink_monitor_is_captured_and_played_to_mpc_only() -> None:
     active = _active(_conf())
     capture = _node_block(active, "hapax-notification-private-monitor-capture")
     playback = _node_block(active, "hapax-notification-private-playback")
 
     assert "stream.capture.sink = true" in capture
     assert 'target.object = "hapax-notification-private"' in capture
-    assert f'target.object = "{S4_TARGET}"' in playback
+    assert f'target.object = "{MPC_TARGET}"' in playback
+    assert "Torso_Electronics_S-4" not in playback
     assert "Blue_Microphones_Yeti" not in playback
 
 
-def test_playback_streams_are_fail_closed_when_s4_is_absent() -> None:
+def test_playback_streams_are_fail_closed_when_mpc_is_absent() -> None:
     active = _active(_conf())
     for node_name in ("hapax-private-playback", "hapax-notification-private-playback"):
         playback = _node_block(active, node_name)

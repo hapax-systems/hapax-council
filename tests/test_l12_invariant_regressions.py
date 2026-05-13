@@ -102,28 +102,28 @@ def test_v3_tts_chain_routes_through_mpc_l12_wet_return() -> None:
     assert "hapax-tts-broadcast-playback:output_FR|hapax-livestream-tap:playback_FR" in forbidden
 
 
-def test_reconciler_map_does_not_own_private_monitor_playback_outputs() -> None:
-    """The continuous reconciler must not turn private monitor into a fallback.
-
-    Private assistant/notification output is owned by the fail-closed S-4
-    private-monitor bridge. If the exact S-4 target is absent, playback must
-    stay silent instead of being recreated to MPC/default/L-12 outputs by the
-    runtime reconciler.
-    """
+def test_reconciler_map_owns_only_mpc_private_monitor_outputs() -> None:
+    """Private monitor playback is explicitly pinned to MPC AUX8/AUX9 only."""
     link_map = _strip_comments(_read_conf(HAPAX_LINK_MAP))
-    for node in PRIVATE_MONITOR_PLAYBACK_NODES:
-        assert f"{node}:output_" not in link_map
+    assert f"hapax-private-playback:output_FL|{MPC_OUTPUT_NODE}:playback_AUX8" in link_map
+    assert f"hapax-private-playback:output_FR|{MPC_OUTPUT_NODE}:playback_AUX9" in link_map
+    assert (
+        f"hapax-notification-private-playback:output_FL|{MPC_OUTPUT_NODE}:playback_AUX8" in link_map
+    )
+    assert (
+        f"hapax-notification-private-playback:output_FR|{MPC_OUTPUT_NODE}:playback_AUX9" in link_map
+    )
 
     forbidden = _strip_comments(_read_conf(HAPAX_FORBIDDEN_LINKS))
-    assert f"hapax-private-playback:output_FL|{MPC_OUTPUT_NODE}:playback_AUX8" in forbidden
-    assert f"hapax-private-playback:output_FR|{MPC_OUTPUT_NODE}:playback_AUX9" in forbidden
+    assert f"hapax-private-playback:output_FL|{MPC_OUTPUT_NODE}:playback_AUX8" not in forbidden
+    assert f"hapax-private-playback:output_FR|{MPC_OUTPUT_NODE}:playback_AUX9" not in forbidden
     assert (
         f"hapax-notification-private-playback:output_FL|{MPC_OUTPUT_NODE}:playback_AUX8"
-        in forbidden
+        not in forbidden
     )
     assert (
         f"hapax-notification-private-playback:output_FR|{MPC_OUTPUT_NODE}:playback_AUX9"
-        in forbidden
+        not in forbidden
     )
 
     assert "hapax-private:monitor_FL|hapax-private-monitor-capture:input_FL" in link_map

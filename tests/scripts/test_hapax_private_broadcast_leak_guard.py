@@ -152,18 +152,13 @@ def test_detect_notification_private_to_broadcast(guard: types.ModuleType) -> No
 def test_detect_covers_all_forbidden_target_families(guard: types.ModuleType) -> None:
     """One edge per forbidden target family — guard must catch every one.
 
-    Option C (2026-05-02 spec amendment): the S-4 USB OUT pair (host-side
-    `alsa_input.*Torso_Electronics_S-4*`, the SOURCE that captures audio
-    leaving the S-4 toward broadcast) is forbidden. The S-4 USB IN sink
-    (`alsa_output.*Torso_Electronics_S-4*`, the SINK that the host writes
-    private TTS into for S-4 Track 1 wet processing → analog OUT 1/2)
-    is ALLOWED — see `test_s4_usb_in_sink_is_not_forbidden_option_c` in
-    the Option C wiring test module.
+    MPC Live III AUX8/AUX9 is the only allowed private-monitor ingress.
+    S-4 USB audio is no longer an approved private target in HN readiness.
     """
     forbidden_targets = [
         "alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40:playback_FL",
-        # S-4 USB OUT pair (the broadcast-bound capture surface).
         "alsa_input.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-input:capture_FL",
+        "alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output:playback_AUX0",
         # S-4 virtual loopback nodes that forward to broadcast.
         "hapax-s4-content:input_FL",
         "hapax-s4-tap:output_FL",
@@ -534,16 +529,11 @@ def test_layer_a_disables_state_restore() -> None:
     assert "2026-05-02" in body
 
 
-def test_layer_b_pins_s4_target_with_fail_closed_props() -> None:
-    """Option C (2026-05-02 spec amendment): Layer B now pins S-4 USB IN.
-
-    The prior Yeti pin is preserved on disk as
-    `56-hapax-private-pin-yeti.conf.disabled-2026-05-02-option-c` for
-    revert capability — see `test_layer_b_yeti_pin_preserved_disabled`.
-    """
+def test_layer_b_pins_mpc_target_with_fail_closed_props() -> None:
     body = (WP_CONF_DIR / "56-hapax-private-pin-s4-track-1.conf").read_text(encoding="utf-8")
     assert "target.object" in body
-    assert "Torso_Electronics_S-4" in body
+    assert "Akai_Professional_MPC_LIVE_III" in body
+    assert "Torso_Electronics_S-4" not in body
     assert "multichannel-output" in body
     assert "node.dont-fallback = true" in body
     assert "node.linger = true" in body
@@ -552,7 +542,7 @@ def test_layer_b_pins_s4_target_with_fail_closed_props() -> None:
 
 
 def test_layer_b_yeti_pin_preserved_disabled() -> None:
-    """Operator can revert to the Yeti pin if Option C wiring breaks."""
+    """Legacy Yeti pin remains disabled on disk, not active."""
     disabled = WP_CONF_DIR / "56-hapax-private-pin-yeti.conf.disabled-2026-05-02-option-c"
     assert disabled.exists(), "Yeti pin must remain on disk for revert capability"
     body = disabled.read_text(encoding="utf-8")
@@ -582,7 +572,6 @@ def test_governance_doc_explains_three_layers() -> None:
         "feedback_l12_equals_livestream_invariant",
         "2026-05-02",
         "55-hapax-private-no-restore.conf",
-        # Option C amendment retargeted Layer B from Yeti to S-4 USB IN.
         "56-hapax-private-pin-s4-track-1.conf",
         "hapax-private-broadcast-leak-guard",
     ]:

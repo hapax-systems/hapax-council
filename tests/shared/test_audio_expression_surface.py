@@ -74,13 +74,13 @@ def _write_private_status(path: Path) -> None:
         "checked_at": "2026-04-30T01:55:00Z",
         "exact_target_present": True,
         "fallback_policy": "no_default_fallback",
-        "operator_visible_reason": "Exact private monitor target is present.",
-        "reason_code": "exact_private_monitor_bound",
-        "route_id": "route:private.s4_track_fenced",
+        "operator_visible_reason": "MPC Live III private monitor target is present.",
+        "reason_code": "mpc_private_monitor_bound",
+        "route_id": "route:private.mpc_live_iii_monitor",
         "sanitized": True,
         "state": "ready",
-        "surface_id": "audio.s4_private_monitor",
-        "target_ref": "audio.s4_private_monitor",
+        "surface_id": "audio.mpc_private_monitor",
+        "target_ref": "audio.mpc_private_monitor",
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -121,7 +121,7 @@ def test_public_voice_with_stale_device_witness_is_held() -> None:
     assert "fx_device_witness_stale" in plan.operator_visible_reason
 
 
-def test_private_diagnostic_voice_may_use_exact_private_monitor_without_fx(
+def test_private_diagnostic_voice_may_use_mpc_private_monitor_without_fx(
     tmp_path: Path,
 ) -> None:
     status_path = tmp_path / "private-monitor-target.json"

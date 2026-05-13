@@ -19,7 +19,7 @@ def _write_private_status(
     path: Path,
     *,
     state: str = "ready",
-    reason_code: str = "exact_private_monitor_bound",
+    reason_code: str = "mpc_private_monitor_bound",
 ) -> None:
     payload = {
         "bridge": {
@@ -33,16 +33,16 @@ def _write_private_status(
         "exact_target_present": state == "ready",
         "fallback_policy": "no_default_fallback",
         "operator_visible_reason": (
-            "Exact private monitor target and fail-closed bridge are present."
+            "MPC Live III private monitor target and fail-closed bridge are present."
             if state == "ready"
-            else "Exact private monitor target is absent; private monitor route remains silent."
+            else "MPC Live III private monitor target is absent; private monitor route remains silent."
         ),
         "reason_code": reason_code,
-        "route_id": "route:private.s4_track_fenced",
+        "route_id": "route:private.mpc_live_iii_monitor",
         "sanitized": True,
         "state": state,
-        "surface_id": "audio.s4_private_monitor",
-        "target_ref": "audio.s4_private_monitor",
+        "surface_id": "audio.mpc_private_monitor",
+        "target_ref": "audio.mpc_private_monitor",
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -77,7 +77,7 @@ def test_private_assistant_route_requires_fresh_exact_monitor_evidence(tmp_path:
     assert result.target_binding is not None
     assert result.target_binding.source_id == "assistant-private"
     assert result.target_binding.target == "hapax-private"
-    assert result.target_binding.target_ref == "audio.s4_private_monitor"
+    assert result.target_binding.target_ref == "audio.mpc_private_monitor"
     assert result.target_binding.media_role == "Assistant"
     assert result.target_binding.fallback_policy == "no_default_fallback"
     assert "hapax-voice-fx-capture" in result.target_binding.prohibited_fallback_refs
@@ -117,12 +117,12 @@ def test_private_missing_status_blocks_without_target_or_fallback(tmp_path: Path
     assert "input.loopback.sink.role.multimedia" in result.target_binding.prohibited_fallback_refs
 
 
-def test_private_blocked_absent_status_carries_exact_reason(tmp_path: Path) -> None:
+def test_private_blocked_absent_status_carries_mpc_reason(tmp_path: Path) -> None:
     status_path = tmp_path / "private-monitor-target.json"
     _write_private_status(
         status_path,
         state="blocked_absent",
-        reason_code="exact_private_monitor_target_absent",
+        reason_code="mpc_private_monitor_target_absent",
     )
 
     result = resolve_voice_output_route(
@@ -131,7 +131,7 @@ def test_private_blocked_absent_status_carries_exact_reason(tmp_path: Path) -> N
     )
 
     assert result.state is VoiceRouteState.BLOCKED
-    assert result.reason_code == "exact_private_monitor_target_absent"
+    assert result.reason_code == "mpc_private_monitor_target_absent"
     assert result.target_binding is not None
     assert result.target_binding.target is None
 

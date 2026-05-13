@@ -410,20 +410,14 @@ def _classify_live_extra_edge(
 ) -> str | None:
     """Classify live edges that are known runtime fallback artifacts.
 
-    Architectural compliance edges (Option C, 2026-05-02 spec amendment):
+    Architectural compliance edges:
 
-    - `private-track-fenced-via-s4-out-1` covers the Option C private
-      monitor route. Edges from a `private_monitor_bridge=true` source
-      to a `private_monitor_endpoint=true` target whose `option_c_route`
-      param is `private-track-fenced-via-s4-out-1` belong to the
-      track-fenced S-4 path. The runtime edge from the bridge to the
-      S-4 USB IN sink is the privacy-preserving path: the S-4 internal
-      scene then routes Track 1 input → analog OUT 1/2 (operator-side
-      monitor patch). This classification keeps the topology audit
-      from flagging the new edge as unclassified `+ edges only in right`.
-    - `private-monitor-runtime-output-binding` is retained for the
-      legacy Yeti pin (only active when the operator has reverted to
-      `56-hapax-private-pin-yeti.conf.disabled-2026-05-02-option-c`).
+    - `private-monitor-mpc-live-iii-binding` covers the HN private monitor
+      route. Edges from a `private_monitor_bridge=true` source to the
+      `private_monitor_endpoint=true` MPC Live III target belong to the
+      fail-closed MPC AUX8/AUX9 path.
+    - `private-monitor-runtime-output-binding` is retained for legacy private
+      endpoint report parsing.
     """
     source = declared_by_name.get(source_name)
     target = declared_by_name.get(target_name)
@@ -434,9 +428,8 @@ def _classify_live_extra_edge(
         and target.params.get("private_monitor_endpoint") is True
         and source.target_object == target_name
     ):
-        # Option C — track-fenced route via S-4 OUT 1.
-        if target.params.get("option_c_route") == "private-track-fenced-via-s4-out-1":
-            return "private-track-fenced-via-s4-out-1"
+        if target.params.get("private_monitor_route") == "private-monitor-via-mpc-live-iii":
+            return "private-monitor-mpc-live-iii-binding"
         return "private-monitor-runtime-output-binding"
 
     if (
@@ -447,13 +440,8 @@ def _classify_live_extra_edge(
     ):
         return "runtime-fallback-m8-source-absent"
 
-    # MPC-centric topology (2026-05-04): PipeWire sometimes resolves
-    # private-monitor playback links to the MPC USB multichannel output
-    # in addition to the declared S-4 target. This occurs when the MPC
-    # is on the same USB bus and PipeWire's link graph exposes both
-    # endpoints. The S-4 WirePlumber pin remains authoritative for the
-    # privacy invariant; the MPC link is a runtime artifact that the
-    # topology audit should classify rather than flag as unclassified drift.
+    # MPC-centric topology: private-monitor playback links to the MPC USB
+    # multichannel output are canonical only when declared by the descriptor.
     if (
         source_name
         in (
@@ -462,7 +450,7 @@ def _classify_live_extra_edge(
         )
         and "Akai_Professional_MPC" in target_name
     ):
-        return "runtime-mpc-private-playback-artifact"
+        return "private-monitor-mpc-live-iii-binding"
 
     # L-12 USB-return capture: edges feeding runtime-classified nodes
     # should inherit a classification so they don't appear as unclassified

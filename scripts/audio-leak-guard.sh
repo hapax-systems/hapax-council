@@ -27,15 +27,10 @@ set -u
 FAIL=0
 WP_CONF_DIR="${HAPAX_WIREPLUMBER_CONF_DIR:-${HOME}/.config/wireplumber/wireplumber.conf.d}"
 PW_CONF_DIR="${HAPAX_PIPEWIRE_CONF_DIR:-${HOME}/.config/pipewire/pipewire.conf.d}"
-FORBIDDEN_PRIVATE_TARGET_RE='alsa_output\.usb-ZOOM_Corporation_L-12|hapax-livestream|hapax-livestream-tap|hapax-voice-fx-capture|hapax-pc-loudnorm|input\.loopback\.sink\.role\.multimedia'
-# Option C (2026-05-02 spec amendment): the private-monitor target was
-# retargeted from the Blue Yeti to the S-4 USB IN sink (the S-4 internal
-# scene routes Track 1 input → analog OUT 1/2 to the operator's monitor
-# patch). Both targets are accepted here so the operator can revert
-# between the Option C wiring and the prior Yeti pin without the static
-# guard reporting a false-positive leak. See
-# `docs/superpowers/specs/2026-05-02-hapax-private-monitor-track-fenced-via-s4.md`.
-PRIVATE_MONITOR_TARGET_RE='alsa_output\.usb-Blue_Microphones_Yeti_.*\.analog-stereo|alsa_output\.usb-Torso_Electronics_S-4_.*\.multichannel-output'
+FORBIDDEN_PRIVATE_TARGET_RE='alsa_output\.usb-ZOOM_Corporation_L-12|alsa_output\.usb-Torso_Electronics_S-4|hapax-livestream|hapax-livestream-tap|hapax-voice-fx-capture|hapax-pc-loudnorm|input\.loopback\.sink\.role\.multimedia'
+# HN private monitor audio routes through MPC Live III. S-4 is downstream/MIDI
+# in this path and is not an approved host-side audio target.
+PRIVATE_MONITOR_TARGET_RE='alsa_output\.usb-Akai_Professional_MPC_LIVE_III_.*\.multichannel-output'
 
 active_conf() {
     sed '/^[[:space:]]*#/d' "$1" 2>/dev/null || true
@@ -214,9 +209,9 @@ else
 fi
 
 # Check 6: an optional explicit private monitor bridge may make private
-# audio audible, but it must target only the Blue Yeti headphone endpoint
-# and fail closed when that endpoint is absent. The null sinks above stay
-# target-free; this separate file owns the guarded hardware edge.
+# audio audible, but it must target only the MPC Live III private monitor
+# ingress and fail closed when that endpoint is absent. The null sinks above
+# stay target-free; this separate file owns the guarded hardware edge.
 PRIVATE_BRIDGE_CONF="$PW_CONF_DIR/hapax-private-monitor-bridge.conf"
 PRIVATE_BRIDGE_ACTIVE=$(active_conf "$PRIVATE_BRIDGE_CONF")
 if [ -z "$PRIVATE_BRIDGE_ACTIVE" ]; then
@@ -256,13 +251,7 @@ else
             echo "FAIL $playback_node static target is broadcast/default path: $playback_target"
             FAIL=1
         elif printf '%s\n' "$playback_target" | grep -Eq "$PRIVATE_MONITOR_TARGET_RE"; then
-            # Distinguish Yeti (legacy / revert path) from S-4 USB IN
-            # (Option C, 2026-05-02 spec amendment).
-            if printf '%s\n' "$playback_target" | grep -q 'Torso_Electronics_S-4'; then
-                echo "OK  $playback_node static target is S-4 USB IN (Option C track-fenced private monitor)"
-            else
-                echo "OK  $playback_node static target is Blue Yeti headphone (pre-Option C revert path)"
-            fi
+            echo "OK  $playback_node static target is MPC Live III private monitor"
         else
             echo "FAIL $playback_node static target is not the approved private monitor: $playback_target"
             FAIL=1
