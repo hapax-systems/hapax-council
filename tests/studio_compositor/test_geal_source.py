@@ -8,6 +8,7 @@ Phase 1 ships S1 (recursive-depth breathing), V2 (vertex halos), G1
 from __future__ import annotations
 
 import os
+import time
 from typing import Final
 
 import cairo
@@ -313,16 +314,31 @@ def test_budget_scale_reduces_alpha_under_video_attention() -> None:
         assert b <= a
 
 
-def test_budget_scale_reads_missing_shm_as_full_activation(tmp_path, monkeypatch) -> None:
+def test_budget_scale_reads_missing_shm_as_peak_attention(tmp_path, monkeypatch) -> None:
     """When /dev/shm/hapax-compositor/video-attention.f32 is absent,
-    GEAL runs at full (budget_scale = 1.0). Missing producer must not
-    accidentally dim the avatar.
+    GEAL backs off to peak-attention intensity. Missing producer must not
+    let the substrate paint at full intensity.
     """
     missing = tmp_path / "does-not-exist.f32"
     monkeypatch.setattr("agents.studio_compositor.geal_source.VIDEO_ATTENTION_PATH", missing)
     source = _fresh_source(enabled=True)
-    assert source._read_video_attention() == 0.0
-    assert source._budget_scale() == pytest.approx(1.0)
+    source._video_attention = source._read_video_attention()
+    assert source._video_attention == 1.0
+    assert source._budget_scale() == pytest.approx(0.30)
+
+
+def test_budget_scale_reads_stale_shm_as_peak_attention(tmp_path, monkeypatch) -> None:
+    stale = tmp_path / "video-attention.f32"
+    stale.write_bytes(b"\x00\x00\x00\x00")
+    old = time.time() - 30.0
+    os.utime(stale, (old, old))
+    monkeypatch.setattr("agents.studio_compositor.geal_source.VIDEO_ATTENTION_PATH", stale)
+    source = _fresh_source(enabled=True)
+
+    source._video_attention = source._read_video_attention()
+
+    assert source._video_attention == 1.0
+    assert source._budget_scale() == pytest.approx(0.30)
 
 
 def test_never_paints_inside_inscribed_video_rect() -> None:

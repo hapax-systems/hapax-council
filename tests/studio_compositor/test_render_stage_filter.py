@@ -203,6 +203,114 @@ def test_sierpinski_assignment_respects_base_overlay_gate(
     assert _pixel(canvas, 20, 20)[:3] == (0, 0, 0)
 
 
+def test_sierpinski_assignment_requires_layout_source_opt_in(
+    monkeypatch,
+) -> None:
+    layout = Layout(
+        name="sierpinski-gated",
+        sources=[
+            SourceSchema(
+                id="sierpinski",
+                kind="cairo",
+                backend="cairo",
+                params={"class_name": "Stub"},
+            ),
+        ],
+        surfaces=[
+            SurfaceSchema(
+                id="full",
+                geometry=SurfaceGeometry(kind="rect", x=0, y=0, w=40, h=40),
+                z_order=1,
+            ),
+        ],
+        assignments=[Assignment(source="sierpinski", surface="full", render_stage="pre_fx")],
+    )
+    state = LayoutState(layout)
+    registry = SourceRegistry()
+    registry.register("sierpinski", _CannedBackend(_solid_surface(10, 10, (1.0, 0.0, 0.0))))
+    canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, 50, 50)
+    cr = _paint_black(canvas)
+    monkeypatch.setenv("HAPAX_SIERPINSKI_BASE_OVERLAY_ENABLED", "1")
+    monkeypatch.delenv("HAPAX_SIERPINSKI_LAYOUT_SOURCE_ENABLED", raising=False)
+
+    pip_draw_from_layout(cr, state, registry, stage="pre_fx")
+    canvas.flush()
+
+    assert _pixel(canvas, 20, 20)[:3] == (0, 0, 0)
+
+
+def test_sierpinski_assignment_layout_source_opt_in_requires_base_overlay_off(
+    monkeypatch,
+) -> None:
+    layout = Layout(
+        name="sierpinski-gated",
+        sources=[
+            SourceSchema(
+                id="sierpinski",
+                kind="cairo",
+                backend="cairo",
+                params={"class_name": "Stub"},
+            ),
+        ],
+        surfaces=[
+            SurfaceSchema(
+                id="full",
+                geometry=SurfaceGeometry(kind="rect", x=0, y=0, w=40, h=40),
+                z_order=1,
+            ),
+        ],
+        assignments=[Assignment(source="sierpinski", surface="full", render_stage="pre_fx")],
+    )
+    state = LayoutState(layout)
+    registry = SourceRegistry()
+    registry.register("sierpinski", _CannedBackend(_solid_surface(10, 10, (1.0, 0.0, 0.0))))
+    canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, 50, 50)
+    cr = _paint_black(canvas)
+    monkeypatch.setenv("HAPAX_SIERPINSKI_BASE_OVERLAY_ENABLED", "0")
+    monkeypatch.setenv("HAPAX_SIERPINSKI_LAYOUT_SOURCE_ENABLED", "1")
+
+    pip_draw_from_layout(cr, state, registry, stage="pre_fx")
+    canvas.flush()
+
+    assert _pixel(canvas, 20, 20)[0] >= 240
+
+
+def test_sierpinski_assignment_does_not_duplicate_base_overlay_when_both_enabled(
+    monkeypatch,
+) -> None:
+    layout = Layout(
+        name="sierpinski-gated",
+        sources=[
+            SourceSchema(
+                id="sierpinski",
+                kind="cairo",
+                backend="cairo",
+                params={"class_name": "Stub"},
+            ),
+        ],
+        surfaces=[
+            SurfaceSchema(
+                id="full",
+                geometry=SurfaceGeometry(kind="rect", x=0, y=0, w=40, h=40),
+                z_order=1,
+            ),
+        ],
+        assignments=[Assignment(source="sierpinski", surface="full", render_stage="pre_fx")],
+    )
+    state = LayoutState(layout)
+    registry = SourceRegistry()
+    registry.register("sierpinski", _CannedBackend(_solid_surface(10, 10, (1.0, 0.0, 0.0))))
+    canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, 50, 50)
+    cr = _paint_black(canvas)
+    monkeypatch.setenv("HAPAX_SIERPINSKI_BASE_OVERLAY_ENABLED", "1")
+    monkeypatch.setenv("HAPAX_SIERPINSKI_LAYOUT_SOURCE_ENABLED", "1")
+
+    pip_draw_from_layout(cr, state, registry, stage="pre_fx")
+    canvas.flush()
+
+    assert _pixel(canvas, 20, 20)[:3] == (0, 0, 0)
+
+
 def test_stage_post_fx_includes_untagged_assignments() -> None:
     """Legacy layouts with no render_stage tag must still render under post_fx.
 

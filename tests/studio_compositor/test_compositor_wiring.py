@@ -22,6 +22,7 @@ import pytest
 
 from agents.studio_compositor.compositor import StudioCompositor
 from agents.studio_compositor.config import _default_config
+from agents.studio_compositor.layout_source_gates import layout_source_enabled
 from tests.studio_compositor.test_default_layout_loading import DEFAULT_JSON
 
 
@@ -141,6 +142,7 @@ class TestStartLayoutOnly:
                     assignment.source
                     for assignment in layout.assignments
                     if assignment.render_stage == "pre_fx"
+                    and layout_source_enabled(assignment.source)
                 } & registered
                 actual = set(start_all.call_args.args[1])
                 assert actual == expected
