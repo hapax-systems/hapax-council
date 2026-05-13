@@ -57,6 +57,10 @@ MPC_OUTPUT_NODE = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichan
 L12_CAPTURE_NODE = (
     "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"
 )
+PRIVATE_MONITOR_PLAYBACK_NODES = (
+    "hapax-private-playback",
+    "hapax-notification-private-playback",
+)
 
 
 def _read_conf(path: Path) -> str:
@@ -96,6 +100,48 @@ def test_v3_tts_chain_routes_through_mpc_l12_wet_return() -> None:
     forbidden = _strip_comments(_read_conf(HAPAX_FORBIDDEN_LINKS))
     assert "hapax-tts-broadcast-playback:output_FL|hapax-livestream-tap:playback_FL" in forbidden
     assert "hapax-tts-broadcast-playback:output_FR|hapax-livestream-tap:playback_FR" in forbidden
+
+
+def test_reconciler_map_does_not_own_private_monitor_playback_outputs() -> None:
+    """The continuous reconciler must not turn private monitor into a fallback.
+
+    Private assistant/notification output is owned by the fail-closed S-4
+    private-monitor bridge. If the exact S-4 target is absent, playback must
+    stay silent instead of being recreated to MPC/default/L-12 outputs by the
+    runtime reconciler.
+    """
+    link_map = _strip_comments(_read_conf(HAPAX_LINK_MAP))
+    for node in PRIVATE_MONITOR_PLAYBACK_NODES:
+        assert f"{node}:output_" not in link_map
+
+    forbidden = _strip_comments(_read_conf(HAPAX_FORBIDDEN_LINKS))
+    assert f"hapax-private-playback:output_FL|{MPC_OUTPUT_NODE}:playback_AUX8" in forbidden
+    assert f"hapax-private-playback:output_FR|{MPC_OUTPUT_NODE}:playback_AUX9" in forbidden
+    assert (
+        f"hapax-notification-private-playback:output_FL|{MPC_OUTPUT_NODE}:playback_AUX8"
+        in forbidden
+    )
+    assert (
+        f"hapax-notification-private-playback:output_FR|{MPC_OUTPUT_NODE}:playback_AUX9"
+        in forbidden
+    )
+
+    assert "hapax-private:monitor_FL|hapax-private-monitor-capture:input_FL" in link_map
+    assert "hapax-private:monitor_FR|hapax-private-monitor-capture:input_FR" in link_map
+    assert (
+        "hapax-notification-private:monitor_FL|hapax-notification-private-monitor-capture:input_FL"
+    ) in link_map
+    assert (
+        "hapax-notification-private:monitor_FR|hapax-notification-private-monitor-capture:input_FR"
+    ) in link_map
+    assert "output.loopback.sink.role.assistant:output_FL|hapax-private:playback_FL" in link_map
+    assert "output.loopback.sink.role.assistant:output_FR|hapax-private:playback_FR" in link_map
+    assert (
+        "output.loopback.sink.role.notification:output_FL|hapax-notification-private:playback_FL"
+    ) in link_map
+    assert (
+        "output.loopback.sink.role.notification:output_FR|hapax-notification-private:playback_FR"
+    ) in link_map
 
 
 def test_v4_broadcast_role_loopback_required_in_voice_duck() -> None:
