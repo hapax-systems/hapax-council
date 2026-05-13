@@ -270,3 +270,59 @@ def test_tick_governance_honors_autonomous_fx_disable(monkeypatch: pytest.Monkey
     monkeypatch.setenv("HAPAX_FX_AUTONOMOUS_MUTATIONS", "0")
 
     fx_tick.tick_governance(fake, 1.0)
+
+
+def test_tick_governance_backs_off_failed_atmospheric_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeSelector:
+        def __init__(self) -> None:
+            self.marked: list[str] = []
+
+        def evaluate(self, **_kwargs):
+            return "bad_preset"
+
+        def mark_load_failed(self, preset: str) -> None:
+            self.marked.append(preset)
+
+    class _FakeOverlay:
+        _data = type(
+            "_Data",
+            (),
+            {
+                "desk_activity": "idle",
+                "music_genre": "",
+            },
+        )()
+
+    fake = type(
+        "_FakeCompositor",
+        (),
+        {
+            "_graph_runtime": object(),
+            "_atmospheric_selector": _FakeSelector(),
+            "_overlay_state": _FakeOverlay(),
+            "_user_preset_hold_until": 0.0,
+            "_current_preset_name": "clean",
+            "_idle_start": None,
+        },
+    )()
+    calls: list[str] = []
+
+    monkeypatch.setattr(fx_tick, "_preset_load_failure_until", {})
+    monkeypatch.setattr(fx_tick, "_degraded_active", lambda: False)
+    monkeypatch.setattr(fx_tick, "_autonomous_fx_mutations_enabled", lambda: True)
+    monkeypatch.setattr(
+        "agents.studio_compositor.effects.get_available_preset_names",
+        lambda: {"bad_preset"},
+    )
+    monkeypatch.setattr(
+        "agents.studio_compositor.effects.try_graph_preset",
+        lambda _compositor, name: calls.append(name) and False,
+    )
+
+    fx_tick.tick_governance(fake, 1.0)
+    fx_tick.tick_governance(fake, 1.0)
+
+    assert calls == ["bad_preset"]
+    assert fake._atmospheric_selector.marked == ["bad_preset"]

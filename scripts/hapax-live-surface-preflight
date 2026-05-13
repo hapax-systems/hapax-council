@@ -23,7 +23,7 @@ from agents.studio_compositor.final_frame_classifier import (
     classify_final_frame,
     classify_final_frame_series,
 )
-from agents.studio_compositor.layout_safety import negative_space_contract_for_mode
+from agents.studio_compositor.layout_safety import mode_family, negative_space_contract_for_mode
 from shared.live_surface_truth import (
     LiveSurfaceState,
     assess_live_surface,
@@ -63,6 +63,9 @@ DEFAULT_MAX_HLS_TARGET_DURATION_SECONDS = 120.0
 FULL_SURFACE_MIN_FX_SLOTS = 8
 FULL_SURFACE_MIN_VISIBLE_WARDS = 3
 FULL_SURFACE_LEGACY_STATIC_LAYOUTS = frozenset({"default", "garage-door"})
+FULL_SURFACE_RESPONSIBLE_DEFAULT_MODE_FAMILIES = frozenset(
+    {"follow", "forcefield", "hero", "packed", "sierpinski"}
+)
 FULL_SURFACE_STAGE_FPS_FLOORS = (
     ("compositor_src", 29.5, "LSC-PERF-001"),
     ("output_tee_sink", 29.0, "LSC-PERF-001"),
@@ -365,7 +368,17 @@ def _full_surface_env_failures(env: dict[str, str]) -> list[str]:
     return failures
 
 
-def _full_surface_metric_failures(metrics: dict[str, float]) -> list[str]:
+def _responsible_default_mode(layout_mode: str | None) -> bool:
+    if layout_mode is None:
+        return False
+    return mode_family(layout_mode) in FULL_SURFACE_RESPONSIBLE_DEFAULT_MODE_FAMILIES
+
+
+def _full_surface_metric_failures(
+    metrics: dict[str, float],
+    *,
+    layout_mode: str | None = None,
+) -> list[str]:
     failures: list[str] = []
     for feature, criterion_id in FULL_SURFACE_REQUIRED_FEATURES:
         key = f"studio_compositor_runtime_feature_active:feature:{feature}"
@@ -410,6 +423,8 @@ def _full_surface_metric_failures(metrics: dict[str, float]) -> list[str]:
         failures.append(_full_surface_reason("LSC-LAYOUT-003", "active_layout_unknown"))
     for layout_name in sorted(active_names):
         if layout_name in FULL_SURFACE_LEGACY_STATIC_LAYOUTS:
+            if _responsible_default_mode(layout_mode):
+                continue
             failures.append(
                 _full_surface_reason(
                     "LSC-LAYOUT-003",
@@ -829,7 +844,6 @@ def main() -> int:
     )
     parser.add_argument(
         "--upstream-frame-image",
-        default=str(DEFAULT_UPSTREAM_FRAME_IMAGE),
         help="pre-FX/upstream snapshot paired with --final-frame-image for final-pixel proof",
     )
     parser.add_argument(
@@ -975,6 +989,7 @@ def main() -> int:
     )
     full_surface_failures: list[str] = []
     full_surface_performance: dict[str, object] = {"sampled": False}
+    layout_mode_for_proof = _layout_mode_from_state(Path(args.layout_state_json))
     if args.require_full_surface:
         performance_failures, full_surface_performance = _full_surface_performance_sample(
             args,
@@ -983,7 +998,7 @@ def main() -> int:
         )
         full_surface_failures = [
             *_full_surface_env_failures(env),
-            *_full_surface_metric_failures(metrics),
+            *_full_surface_metric_failures(metrics, layout_mode=layout_mode_for_proof),
             *performance_failures,
         ]
         state, reasons = _with_extra_degraded_reasons(
@@ -991,19 +1006,25 @@ def main() -> int:
             reasons,
             full_surface_failures,
         )
-    layout_mode_for_proof = _layout_mode_from_state(Path(args.layout_state_json))
     max_final_black_fraction = _final_frame_black_fraction_limit(layout_mode_for_proof)
     final_frame_payload: dict[str, object] | None = None
-    if args.final_frame_image:
+    final_frame_image_arg = args.final_frame_image
+    if final_frame_image_arg is None and args.require_full_surface and args.metrics_file is None:
+        final_frame_image_arg = str(DEFAULT_FINAL_FRAME_IMAGE)
+    if final_frame_image_arg:
         try:
-            upstream_frame_image = (
-                Path(args.upstream_frame_image)
-                if args.upstream_frame_image
-                else Path("/dev/shm/hapax-compositor/snapshot.jpg")
-            )
+            upstream_frame_image = None
+            if args.upstream_frame_image:
+                upstream_frame_image = Path(args.upstream_frame_image)
+            elif args.metrics_file is None:
+                upstream_frame_image = DEFAULT_UPSTREAM_FRAME_IMAGE
             classification = classify_final_frame(
-                Path(args.final_frame_image),
-                upstream_path=upstream_frame_image if upstream_frame_image.exists() else None,
+                Path(final_frame_image_arg),
+                upstream_path=(
+                    upstream_frame_image
+                    if upstream_frame_image is not None and upstream_frame_image.exists()
+                    else None
+                ),
                 max_unclassified_black_fraction=max_final_black_fraction,
             )
         except OSError as exc:
@@ -1028,7 +1049,7 @@ def main() -> int:
     final_pixel_proof_payload: dict[str, object] | None = None
     if args.require_final_pixel_proof:
         final_frame_image = Path(args.final_frame_image or DEFAULT_FINAL_FRAME_IMAGE)
-        upstream_frame_image = Path(args.upstream_frame_image)
+        upstream_frame_image = Path(args.upstream_frame_image or DEFAULT_UPSTREAM_FRAME_IMAGE)
         with tempfile.TemporaryDirectory(prefix="hapax-final-pixel-proof-") as proof_td:
             final_paths, upstream_paths, proof_collection_reasons = _collect_final_pixel_proof(
                 final_frame_image=final_frame_image,

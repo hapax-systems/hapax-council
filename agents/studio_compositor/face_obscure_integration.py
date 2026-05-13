@@ -26,11 +26,13 @@ deferred — the current helper degrades to pass-through if carry-forward
 expires, and Stage 3 will upgrade this to a fail-closed full-frame mask.
 """
 
-from __future__ import annotations
-
+import json
 import logging
+import os
 import threading
+import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agents.studio_compositor.face_obscure import BBox, FaceObscurer
@@ -75,8 +77,11 @@ log = logging.getLogger(__name__)
 _PIPELINES: dict[str, CadencedBboxPipeline] = {}
 _PIPELINES_LOCK = threading.Lock()
 
-# Single shared obscurer — it's stateless and its config is constant.
-_OBSCURER = FaceObscurer()
+# Single shared obscurer — it's stateless and its config is constant. The
+# capture integration is intentionally stricter than the core default: live
+# anti-parasocial egress needs head/face slack for large camera tiles without
+# turning into full-body anonymization.
+_OBSCURER = FaceObscurer(margin=0.35, block_size=24)
 
 # Live bbox cache for the cairooverlay face-obscure painting path.
 # Normalized to [0,1] so consumers only need tile dimensions to transform.
@@ -84,6 +89,140 @@ _OBSCURER = FaceObscurer()
 # overlay.py on_draw() on the GStreamer streaming thread.
 _LIVE_NORM_BBOXES: dict[str, list[tuple[float, float, float, float]]] = {}
 _LIVE_NORM_BBOXES_LOCK = threading.Lock()
+
+PERSON_DETECTION_FILE: Path = Path("/dev/shm/hapax-compositor/person-detection.json")
+CAMERA_CLASSIFICATIONS_FILE: Path = Path("/dev/shm/hapax-compositor/camera-classifications.json")
+
+_PERSON_FALLBACK_TRUE = frozenset({"1", "true", "yes", "on", "enabled"})
+_PERSON_FALLBACK_FALSE = frozenset({"0", "false", "no", "off", "disabled"})
+_PERSON_FALLBACK_DEFAULT_MAX_AGE_S = 5.0
+_PERSON_FALLBACK_MIN_CONFIDENCE = 0.35
+_PERSON_FALLBACK_OPERATOR_ROLES = frozenset({"brio-operator", "c920-room"})
+
+
+def _person_fallback_enabled(env: dict[str, str] | None = None) -> bool:
+    source = env if env is not None else os.environ
+    raw = source.get("HAPAX_FACE_OBSCURE_PERSON_FALLBACK_ACTIVE")
+    if raw is None:
+        return True
+    return raw.strip().lower() not in _PERSON_FALLBACK_FALSE
+
+
+def _person_fallback_max_age_s(env: dict[str, str] | None = None) -> float:
+    source = env if env is not None else os.environ
+    raw = source.get("HAPAX_FACE_OBSCURE_PERSON_FALLBACK_MAX_AGE_S")
+    if not raw:
+        return _PERSON_FALLBACK_DEFAULT_MAX_AGE_S
+    try:
+        return max(0.5, float(raw))
+    except ValueError:
+        return _PERSON_FALLBACK_DEFAULT_MAX_AGE_S
+
+
+def _read_json(path: Path) -> object | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except Exception:
+        log.debug("could not read %s", path, exc_info=True)
+        return None
+
+
+def _camera_role_allows_person_fallback(camera_role: str) -> bool:
+    if camera_role in _PERSON_FALLBACK_OPERATOR_ROLES:
+        return True
+    raw = _read_json(CAMERA_CLASSIFICATIONS_FILE)
+    if not isinstance(raw, dict):
+        return False
+    row = raw.get(camera_role)
+    if not isinstance(row, dict):
+        return False
+    role = str(row.get("semantic_role") or "").lower()
+    ontology = row.get("subject_ontology")
+    subject_tokens = (
+        {str(item).lower() for item in ontology if isinstance(item, str)}
+        if isinstance(ontology, list)
+        else set()
+    )
+    return bool(row.get("operator_visible")) and (
+        "operator-face" in role or "room-wide" in role or "person" in subject_tokens
+    )
+
+
+def _person_box_to_anti_parasocial_bbox(
+    box: dict[str, object],
+    *,
+    frame_w: int,
+    frame_h: int,
+) -> BBox | None:
+    try:
+        x1 = float(box.get("x1", 0.0))
+        y1 = float(box.get("y1", 0.0))
+        x2 = float(box.get("x2", 0.0))
+        y2 = float(box.get("y2", 0.0))
+        confidence = float(box.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        return None
+    if confidence < _PERSON_FALLBACK_MIN_CONFIDENCE:
+        return None
+    w = max(0.0, x2 - x1)
+    h = max(0.0, y2 - y1)
+    if w <= 1.0 or h <= 1.0:
+        return None
+
+    # Anti-parasocial fallback: mask likely head/face and a little neck/upper
+    # chest, not the whole body. This preserves actionability and posture while
+    # breaking at-a-glance ID on large live tiles.
+    fx1 = x1 + (0.10 * w)
+    fx2 = x2 - (0.10 * w)
+    fy1 = y1
+    fy2 = y1 + (0.44 * h)
+    return BBox(
+        x1=max(0.0, min(float(frame_w), fx1)),
+        y1=max(0.0, min(float(frame_h), fy1)),
+        x2=max(0.0, min(float(frame_w), fx2)),
+        y2=max(0.0, min(float(frame_h), fy2)),
+    )
+
+
+def _person_detection_fallback_bboxes(
+    camera_role: str,
+    frame: np.ndarray,
+    *,
+    env: dict[str, str] | None = None,
+) -> list[BBox]:
+    if not _person_fallback_enabled(env):
+        return []
+    if not _camera_role_allows_person_fallback(camera_role):
+        return []
+    raw = _read_json(PERSON_DETECTION_FILE)
+    if not isinstance(raw, dict):
+        return []
+    try:
+        ts = float(raw.get("timestamp", 0.0))
+    except (TypeError, ValueError):
+        return []
+    if ts <= 0.0 or (time.time() - ts) > _person_fallback_max_age_s(env):
+        return []
+    cameras = raw.get("cameras")
+    if not isinstance(cameras, dict):
+        return []
+    row = cameras.get(camera_role)
+    if not isinstance(row, dict):
+        return []
+    boxes = row.get("boxes")
+    if not isinstance(boxes, list):
+        return []
+    frame_h, frame_w = frame.shape[:2]
+    out: list[BBox] = []
+    for item in boxes:
+        if not isinstance(item, dict):
+            continue
+        bbox = _person_box_to_anti_parasocial_bbox(item, frame_w=frame_w, frame_h=frame_h)
+        if bbox is not None:
+            out.append(bbox)
+    return out
 
 
 def _build_default_source(camera_role: str) -> FaceBboxSource:
@@ -177,6 +316,12 @@ def obscure_frame_for_camera(
     try:
         pipeline = _get_pipeline(camera_role, source_factory=source_factory)
         bboxes = pipeline.step(frame)
+        # Merge person fallback even when SCRFD returns a face. In live use a
+        # small/partial face hit can otherwise block the broader
+        # anti-parasocial head mask and leave the person recognizable.
+        fallback_bboxes = _person_detection_fallback_bboxes(camera_role, frame, env=env)
+        if fallback_bboxes:
+            bboxes = [*bboxes, *fallback_bboxes]
         # Publish normalized bboxes for the cairooverlay face-obscure path.
         frame_h, frame_w = frame.shape[:2]
         if frame_w > 0 and frame_h > 0 and bboxes:

@@ -9,6 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agents.studio_compositor.shmsink_output_pipeline import (
     BRIDGE_ENABLED_ENV,
     DEFAULT_SOCKET,
@@ -56,6 +58,7 @@ class TestShmsinkPipelineConstruction:
         gst.Pipeline.new.return_value = MagicMock()
         gst.ElementFactory.make.return_value = MagicMock()
         gst.Caps.from_string.return_value = MagicMock()
+        gst.MapFlags.READ = 1
         gst.PadProbeType.BUFFER = 0x10
         gst.Format.TIME = object()
         gst.State.PLAYING = 4
@@ -194,9 +197,71 @@ class TestShmsinkPipelineConstruction:
 
     def test_is_alive_true_after_probe(self) -> None:
         gst = self._make_gst_mock()
-        pipe = ShmsinkOutputPipeline(gst=gst, width=1280, height=720, fps=30)
+        pipe = ShmsinkOutputPipeline(
+            gst=gst,
+            width=1280,
+            height=720,
+            fps=30,
+            proof_snapshot_interval_s=0.0,
+        )
         pipe._buffer_probe(None, None, None)
         assert pipe.is_alive(threshold_s=2.0)
+
+    def test_bridge_writes_final_egress_proof_jpeg(self, tmp_path: Path) -> None:
+        pytest.importorskip("cv2")
+        pytest.importorskip("numpy")
+
+        target = tmp_path / "fx-snapshot.jpg"
+        pipe = ShmsinkOutputPipeline(
+            gst=self._make_gst_mock(),
+            width=2,
+            height=2,
+            fps=30,
+            proof_snapshot_path=target,
+            proof_snapshot_interval_s=1.0,
+        )
+
+        # 2x2 NV12 = 4 Y bytes + 2 interleaved UV bytes.
+        pipe._write_proof_snapshot_jpeg(bytes([82, 82, 82, 82, 128, 128]))
+
+        assert target.exists()
+        assert target.read_bytes().startswith(b"\xff\xd8")
+
+    def test_bridge_proof_snapshot_disabled_when_interval_zero(self, tmp_path: Path) -> None:
+        pipe = ShmsinkOutputPipeline(
+            gst=self._make_gst_mock(),
+            width=2,
+            height=2,
+            fps=30,
+            proof_snapshot_path=tmp_path / "fx-snapshot.jpg",
+            proof_snapshot_interval_s=0.0,
+        )
+        with patch.object(pipe, "_write_proof_snapshot_jpeg") as writer:
+            pipe._maybe_write_proof_snapshot(b"\x00" * 6)
+        writer.assert_not_called()
+
+    def test_bridge_probe_schedules_final_egress_proof(self, tmp_path: Path) -> None:
+        pipe = ShmsinkOutputPipeline(
+            gst=self._make_gst_mock(),
+            width=2,
+            height=2,
+            fps=30,
+            proof_snapshot_path=tmp_path / "fx-snapshot.jpg",
+            proof_snapshot_interval_s=1.0,
+        )
+        mock_info = MagicMock()
+        mock_buf = MagicMock()
+        mock_map_info = MagicMock()
+        mock_map_info.data = b"\x00" * 6
+        mock_info.get_buffer.return_value = mock_buf
+        mock_buf.map.return_value = (True, mock_map_info)
+
+        with patch.object(pipe, "_maybe_write_proof_snapshot") as proof:
+            pipe._buffer_probe(None, mock_info, None)
+
+        proof.assert_called_once()
+        assert bytes(proof.call_args.args[0]) == b"\x00" * 6
+        mock_buf.unmap.assert_called_once_with(mock_map_info)
 
 
 class TestPipelineSelection:

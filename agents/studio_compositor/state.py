@@ -166,6 +166,7 @@ def apply_layout_mode(compositor: Any, mode: str) -> None:
         except Exception:
             log.debug("Failed to update pad for camera %s", role, exc_info=True)
 
+    compositor._tile_layout = new_layout
     compositor._layout_mode = mode
     try:
         from .active_wards import publish_current_layout_state

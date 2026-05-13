@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -70,6 +71,52 @@ def test_stale_dims_skipped(enabled: None, current_path: Path) -> None:
         mod.maybe_tick()
     setter.assert_not_called()
     stale_emit.assert_called_once()
+
+
+def test_fresh_uniforms_fallback_when_current_fragment_stale(
+    enabled: None, current_path: Path, tmp_path: Path
+) -> None:
+    """The live renderer may refresh uniforms while narrative current.json is stale."""
+    uniforms_path = tmp_path / "uniforms.json"
+    _write_current(
+        current_path, {"depth": 1.0, "coherence": 0.0}, ts_offset=-(_wsm.STALENESS_S + 5.0)
+    )
+    uniforms_path.write_text(
+        json.dumps({"drift.coherence": 0.8, "breath.coherence": 0.6}),
+        encoding="utf-8",
+    )
+    mod = WardStimmungModulator(
+        current_path=current_path,
+        uniforms_path=uniforms_path,
+        tick_every_n=1,
+    )
+
+    dims = mod._read_dims()
+
+    assert dims == {"depth": 0.5, "coherence": pytest.approx(0.7)}
+
+
+def test_stale_uniforms_fallback_is_not_accepted(
+    enabled: None, current_path: Path, tmp_path: Path
+) -> None:
+    """Uniform fallback is a freshness bridge, not a stale-data bypass."""
+    uniforms_path = tmp_path / "uniforms.json"
+    _write_current(
+        current_path, {"depth": 1.0, "coherence": 0.0}, ts_offset=-(_wsm.STALENESS_S + 5.0)
+    )
+    uniforms_path.write_text(
+        json.dumps({"drift.coherence": 0.8, "breath.coherence": 0.6}),
+        encoding="utf-8",
+    )
+    stale = time.time() - (_wsm.STALENESS_S + 5.0)
+    os.utime(uniforms_path, (stale, stale))
+    mod = WardStimmungModulator(
+        current_path=current_path,
+        uniforms_path=uniforms_path,
+        tick_every_n=1,
+    )
+
+    assert mod._read_dims() is None
 
 
 def test_staleness_env_override_extends_cutoff(

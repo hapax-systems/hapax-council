@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -77,6 +78,7 @@ _V2_ZETA = 0.8
 # G1 wavefront parameters (spec §6.3 / §7.5).
 _G1_SIGMA_MS = 120.0
 _G1_TRAVEL_MS = 600.0
+_VIDEO_ATTENTION_STALE_S = 3.0
 
 # G2 latch-and-fade parameters (spec §6.3 / §7.5): three_phase 100/80/1200
 # commit band + 450 ms log-decay settle.
@@ -385,17 +387,20 @@ class GealCairoSource(CairoSource):
     def _read_video_attention(self) -> float:
         """Read the scalar the Sierpinski source writes each tick.
 
-        Returns 0.0 on any error (missing file, truncated, permission
-        denied) — GEAL then runs at full activation. Safe in the hot
-        path: one stat + one 4-byte read.
+        Missing, stale, truncated, or unreadable attention is interpreted
+        as peak attention so GEAL fails quiet instead of painting a full
+        intensity substrate when the Sierpinski publisher is absent.
         """
         try:
+            stat = os.stat(VIDEO_ATTENTION_PATH)
+            if time.time() - stat.st_mtime > _VIDEO_ATTENTION_STALE_S:
+                return 1.0
             with open(VIDEO_ATTENTION_PATH, "rb") as fh:
                 data = fh.read(4)
         except OSError:
-            return 0.0
+            return 1.0
         if len(data) != 4:
-            return 0.0
+            return 1.0
         import struct as _struct
 
         return max(0.0, min(1.0, _struct.unpack("<f", data)[0]))

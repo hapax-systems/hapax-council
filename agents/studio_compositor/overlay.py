@@ -94,11 +94,6 @@ def on_draw(compositor: Any, overlay: Any, cr: Any, timestamp: int, duration: in
 
     canvas_w, canvas_h = compositor._overlay_canvas_size
 
-    # Face obscure: paint Gruvbox-dark rects over detected faces FIRST,
-    # before any visual content, so the privacy floor is guaranteed even
-    # if downstream ward rendering or shaders fail.
-    _paint_face_obscure_rects(compositor, cr)
-
     if sierpinski_base_overlay_enabled():
         # Sierpinski triangle with video content (drawn BEFORE GL effects apply)
         sierpinski = getattr(compositor, "_sierpinski_renderer", None)
@@ -140,3 +135,8 @@ def on_draw(compositor: Any, overlay: Any, cr: Any, timestamp: int, duration: in
         from agents.studio_compositor.fx_chain import pre_fx_draw_from_layout
 
         pre_fx_draw_from_layout(compositor, cr)
+
+    # Face obscure: paint Gruvbox-dark rects LAST in the base overlay so no
+    # base-layer renderer can reintroduce recognizable camera pixels over the
+    # anti-parasocial mask.
+    _paint_face_obscure_rects(compositor, cr)

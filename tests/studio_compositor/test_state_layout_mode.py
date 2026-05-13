@@ -60,4 +60,5 @@ def test_apply_layout_mode_updates_camera_scale_caps(
     assert scale_caps.props["caps"] == (
         "video/x-raw(memory:CUDAMemory),format=NV12,width=333,height=222,framerate=30/1"
     )
+    assert compositor._tile_layout == {"operator": TileRect(x=11, y=22, w=333, h=222)}
     assert compositor._layout_mode == "forcefield"

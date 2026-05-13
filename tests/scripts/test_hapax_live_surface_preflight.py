@@ -183,6 +183,55 @@ studio_compositor_gem_substrate_paint_total 8
     assert payload["full_surface_failures"] == []
 
 
+def test_preflight_accepts_default_template_only_with_responsible_layout_mode(
+    tmp_path: Path,
+) -> None:
+    layout_state = tmp_path / "current-layout-state.json"
+    layout_state.write_text(
+        json.dumps({"layout_name": "default", "layout_mode": "follow/c920-room"}),
+        encoding="utf-8",
+    )
+
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 10
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.1
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 4
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.2
+studio_compositor_runtime_feature_active{feature="shader_fx"} 1
+studio_compositor_runtime_feature_active{feature="inline_fx"} 1
+studio_compositor_runtime_feature_active{feature="hero_effect"} 1
+studio_compositor_runtime_feature_active{feature="follow_mode"} 1
+studio_compositor_runtime_feature_active{feature="ward_modulator"} 1
+studio_compositor_runtime_feature_active{feature="flash_overlay"} 0
+studio_compositor_ward_blit_total{ward="programme-context"} 10
+studio_compositor_ward_blit_total{ward="gem"} 10
+studio_compositor_ward_blit_total{ward="egress-footer"} 10
+hapax_compositor_layout_active{layout="default"} 1
+hapax_ward_modulator_tick_total 5
+studio_compositor_gem_substrate_active 1
+studio_compositor_gem_substrate_paint_total 8
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "true",
+        "--require-full-surface",
+        "--layout-state-json",
+        str(layout_state),
+        "--env",
+        "HAPAX_COMPOSITOR_FX_SLOTS=8",
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "healthy"
+    assert payload["full_surface_failures"] == []
+
+
 def test_preflight_gem_substrate_requires_live_runtime_proof(tmp_path: Path) -> None:
     result = _run(
         """

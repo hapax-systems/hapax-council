@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,9 @@ _STIMMUNG_STATE_PATH = Path("/dev/shm/hapax-stimmung/state.json")
 _STANCE_CACHE_TTL_S = 30.0
 _VALID_MATRIX_STANCES: frozenset[str] = frozenset({"nominal", "cautious", "degraded", "critical"})
 _stance_cache: tuple[float, str] = (0.0, "nominal")
+_PRESET_LOAD_FAILURE_BACKOFF_S = 30.0
+_PRESET_LOAD_FAILURE_BACKOFF_ENV = "HAPAX_ATMOSPHERIC_PRESET_FAILURE_BACKOFF_S"
+_preset_load_failure_until: dict[str, float] = {}
 
 
 def _read_stimmung_stance() -> str:
@@ -83,6 +87,40 @@ def _autonomous_fx_mutations_enabled() -> bool:
     from .preset_policy import autonomous_fx_mutations_enabled
 
     return autonomous_fx_mutations_enabled()
+
+
+def _read_preset_load_failure_backoff_s() -> float:
+    raw = os.environ.get(_PRESET_LOAD_FAILURE_BACKOFF_ENV)
+    if raw is None or raw.strip() == "":
+        return _PRESET_LOAD_FAILURE_BACKOFF_S
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return _PRESET_LOAD_FAILURE_BACKOFF_S
+
+
+def _preset_load_backoff_active(preset: str, now: float | None = None) -> bool:
+    until = _preset_load_failure_until.get(preset)
+    if until is None:
+        return False
+    now_f = time.monotonic() if now is None else now
+    if now_f < until:
+        return True
+    _preset_load_failure_until.pop(preset, None)
+    return False
+
+
+def _record_atmospheric_preset_load_failed(compositor: Any, preset: str) -> None:
+    backoff_s = _read_preset_load_failure_backoff_s()
+    if backoff_s > 0.0:
+        _preset_load_failure_until[preset] = time.monotonic() + backoff_s
+    selector = getattr(compositor, "_atmospheric_selector", None)
+    marker = getattr(selector, "mark_load_failed", None)
+    if callable(marker):
+        try:
+            marker(preset)
+        except Exception:
+            log.debug("atmospheric selector load-failure marker failed", exc_info=True)
 
 
 def _pin_slots_to_passthrough(compositor: Any) -> None:
@@ -164,7 +202,12 @@ def tick_governance(compositor: Any, t: float) -> None:
     gov_data = compositor._overlay_state._data
     energy_level = energy_level_from_activity(gov_data.desk_activity)
     stance = _read_stimmung_stance()
-    available = get_available_preset_names()
+    now = time.monotonic()
+    available = {
+        preset
+        for preset in get_available_preset_names()
+        if not _preset_load_backoff_active(preset, now)
+    }
     target = compositor._atmospheric_selector.evaluate(
         stance=stance,
         energy_level=energy_level,
@@ -172,8 +215,12 @@ def tick_governance(compositor: Any, t: float) -> None:
         genre=gov_data.music_genre,
     )
     if target and target != getattr(compositor, "_current_preset_name", None):
+        if _preset_load_backoff_active(target):
+            return
         if try_graph_preset(compositor, target):
             compositor._current_preset_name = target
+        else:
+            _record_atmospheric_preset_load_failed(compositor, target)
 
     offsets = compute_gestural_offsets(
         desk_activity=gov_data.desk_activity,
