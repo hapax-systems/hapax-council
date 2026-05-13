@@ -46,9 +46,13 @@ _LAYOUT_COMPOSITE_CACHE: dict[str, dict[str, object]] = {}
 RENDERED_LAYOUT_STATE_PUBLISH_INTERVAL_S: float = 1.0
 RENDERED_LAYOUT_STAGE_TTL_S: float = 2.0
 _RENDERED_LAYOUT_STATE_LOCK = threading.Lock()
-_RENDERED_LAYOUT_STAGE_WARDS: dict[str, tuple[float, tuple[str, ...]]] = {}
+_RENDERED_LAYOUT_STAGE_WARDS: dict[
+    str, tuple[float, tuple[str, ...], tuple[dict[str, object], ...]]
+] = {}
 _RENDERED_LAYOUT_STATE_LAST_PUBLISH_MONO: float = 0.0
-_RENDERED_LAYOUT_STATE_LAST_SIGNATURE: tuple[str | None, tuple[str, ...]] | None = None
+_RENDERED_LAYOUT_STATE_LAST_SIGNATURE: (
+    tuple[str | None, tuple[str, ...], tuple[tuple[object, ...], ...]] | None
+) = None
 
 
 def clear_blit_readbacks() -> None:
@@ -570,6 +574,7 @@ def pip_draw_from_layout(
     _publish_rendered_layout_state(
         layout_name=getattr(layout, "name", None),
         active_ward_ids=[assignment.source for assignment, *_rest in pairs],
+        assignments=_rendered_assignment_readbacks(pairs),
         stage=stage,
     )
 
@@ -608,6 +613,7 @@ def _publish_rendered_layout_state(
     *,
     layout_name: object,
     active_ward_ids: list[str],
+    assignments: list[dict[str, object]] | None = None,
     stage: Literal["pre_fx", "post_fx"] | None,
 ) -> None:
     global _RENDERED_LAYOUT_STATE_LAST_PUBLISH_MONO, _RENDERED_LAYOUT_STATE_LAST_SIGNATURE
@@ -615,20 +621,43 @@ def _publish_rendered_layout_state(
     now_mono = time.monotonic()
     stage_key = stage or "all"
     ward_ids = tuple(sorted(set(active_ward_ids)))
+    assignment_readbacks = tuple(assignments or ())
     layout_name_text = layout_name if isinstance(layout_name, str) else None
     with _RENDERED_LAYOUT_STATE_LOCK:
-        _RENDERED_LAYOUT_STAGE_WARDS[stage_key] = (now_mono, ward_ids)
+        _RENDERED_LAYOUT_STAGE_WARDS[stage_key] = (
+            now_mono,
+            ward_ids,
+            assignment_readbacks,
+        )
         active_union = tuple(
             sorted(
                 {
                     ward
-                    for observed_mono, observed_wards in _RENDERED_LAYOUT_STAGE_WARDS.values()
+                    for observed_mono, observed_wards, _observed_assignments in (
+                        _RENDERED_LAYOUT_STAGE_WARDS.values()
+                    )
                     if now_mono - observed_mono <= RENDERED_LAYOUT_STAGE_TTL_S
                     for ward in observed_wards
                 }
             )
         )
-        signature = (layout_name_text, active_union)
+        active_assignment_map = {
+            (
+                str(item.get("ward") or item.get("source") or ""),
+                str(item.get("surface") or ""),
+            ): item
+            for observed_mono, _observed_wards, observed_assignments in (
+                _RENDERED_LAYOUT_STAGE_WARDS.values()
+            )
+            if now_mono - observed_mono <= RENDERED_LAYOUT_STAGE_TTL_S
+            for item in observed_assignments
+            if isinstance(item, dict)
+        }
+        active_assignments = tuple(
+            active_assignment_map[key] for key in sorted(active_assignment_map)
+        )
+        assignment_signature = tuple(_assignment_signature(item) for item in active_assignments)
+        signature = (layout_name_text, active_union, assignment_signature)
         if (
             signature == _RENDERED_LAYOUT_STATE_LAST_SIGNATURE
             and now_mono - _RENDERED_LAYOUT_STATE_LAST_PUBLISH_MONO
@@ -651,9 +680,66 @@ def _publish_rendered_layout_state(
         active_wards.publish_current_layout_state(
             layout_name=layout_name_text,
             active_ward_ids=published_active_union,
+            assignments=active_assignments,
         )
     except Exception:
         log.debug("rendered layout state publish failed", exc_info=True)
+
+
+def _rendered_assignment_readbacks(
+    pairs: list[tuple[Any, Any, Any, int]],
+) -> list[dict[str, object]]:
+    readbacks: list[dict[str, object]] = []
+    for assignment, surface_schema, _src, _src_id in pairs:
+        geom = getattr(surface_schema, "geometry", None)
+        if getattr(geom, "kind", None) != "rect":
+            continue
+        source = getattr(assignment, "source", None)
+        surface = getattr(assignment, "surface", None)
+        if not isinstance(source, str) or not source:
+            continue
+        if not isinstance(surface, str) or not surface:
+            continue
+        try:
+            x = int(geom.x)
+            y = int(geom.y)
+            w = int(geom.w)
+            h = int(geom.h)
+        except (TypeError, ValueError):
+            continue
+        if w <= 0 or h <= 0:
+            continue
+        readbacks.append(
+            {
+                "ward": source,
+                "source": source,
+                "surface": surface,
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+                "opacity": float(getattr(assignment, "opacity", 1.0)),
+                "non_destructive": bool(getattr(assignment, "non_destructive", False)),
+                "render_stage": getattr(assignment, "render_stage", None),
+                "z_order": int(getattr(surface_schema, "z_order", 0) or 0),
+            }
+        )
+    return readbacks
+
+
+def _assignment_signature(item: dict[str, object]) -> tuple[object, ...]:
+    return (
+        item.get("ward") or item.get("source"),
+        item.get("surface"),
+        item.get("x"),
+        item.get("y"),
+        item.get("w"),
+        item.get("h"),
+        item.get("opacity"),
+        item.get("non_destructive"),
+        item.get("render_stage"),
+        item.get("z_order"),
+    )
 
 
 def _draw_layout_pairs(

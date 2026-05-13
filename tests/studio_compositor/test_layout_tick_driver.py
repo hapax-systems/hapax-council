@@ -708,6 +708,48 @@ def test_adapter_mutate_drives_set_active() -> None:
     assert store.set_active_calls == ["default"]
 
 
+def test_rendered_adapter_prepares_layout_before_rendered_mutation() -> None:
+    """Segment tick activation must register new sources before the render swap."""
+
+    store = _FakeStore(
+        layouts={
+            "default": _FakeLayout("default"),
+            "segment-chat": _FakeLayout("segment-chat"),
+        },
+        _active="default",
+    )
+
+    class _FakeRenderedState:
+        def __init__(self, layout: _FakeLayout) -> None:
+            self.layout = layout
+
+        def get(self) -> _FakeLayout:
+            return self.layout
+
+        def mutate(self, fn: Any) -> None:
+            self.layout = fn(self.layout)
+
+    rendered_state = _FakeRenderedState(store.layouts["default"])
+    events: list[tuple[str, str]] = []
+
+    def _prepare(name: str, layout: _FakeLayout) -> None:
+        events.append(("prepare", name))
+        assert rendered_state.get().name == "default"
+        assert layout.name == "segment-chat"
+
+    adapter = _RenderedLayoutStateAdapter(
+        store,
+        rendered_state,
+        layout_activation_callback=_prepare,
+    )
+
+    adapter.mutate(lambda _previous: store.layouts["segment-chat"])
+
+    assert events == [("prepare", "segment-chat")]
+    assert rendered_state.get().name == "segment-chat"
+    assert store.set_active_calls[-1] == "segment-chat"
+
+
 # ── periodic loop semantics ────────────────────────────────────────
 
 
