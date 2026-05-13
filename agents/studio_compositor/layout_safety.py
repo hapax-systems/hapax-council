@@ -161,7 +161,11 @@ def is_known_layout_mode(mode: str) -> bool:
     if family == "unknown":
         return False
     if family in {"hero", "packed", "follow"}:
-        return bool(mode.split("/", 1)[1].strip())
+        parts = mode.split("/", 1)
+        if len(parts) < 2:
+            # bare "packed" is valid (uses default hero); bare "hero"/"follow" are not
+            return family == "packed"
+        return bool(parts[1].strip())
     return True
 
 
