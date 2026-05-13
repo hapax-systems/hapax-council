@@ -173,6 +173,94 @@ def test_link_chain_single_slot_has_no_queues(registry):
     fake_pipeline.add.assert_not_called()
 
 
+def test_zero_shader_plan_enables_physical_bypass(pipeline, compiler):
+    """A zero-node plan must keep logical slots but bypass physical GL passes."""
+
+    g = EffectGraph(
+        name="clean",
+        nodes={"o": NodeInstance(type="output")},
+        edges=[["@live", "o"]],
+    )
+    plan = compiler.compile(g)
+    pipeline._slots = [MagicMock() for _ in range(8)]
+    pipeline._slot_is_temporal = [True] * 8
+    bypass_pad = object()
+    chain_pad = object()
+    pipeline._zero_shader_bypass_selector = MagicMock()
+    pipeline._zero_shader_bypass_valve = MagicMock()
+    pipeline._zero_shader_chain_valve = MagicMock()
+    pipeline._zero_shader_bypass_pad = bypass_pad
+    pipeline._zero_shader_chain_pad = chain_pad
+    pipeline._zero_shader_bypass_active = False
+
+    pipeline.activate_plan(plan)
+
+    assert pipeline.slot_assignments == [None] * 8
+    pipeline._zero_shader_chain_valve.set_property.assert_called_with("drop", True)
+    pipeline._zero_shader_bypass_valve.set_property.assert_called_with("drop", False)
+    pipeline._zero_shader_bypass_selector.set_property.assert_called_with("active-pad", bypass_pad)
+
+
+def test_clean_plan_enables_physical_bypass_with_policy_nodes(pipeline, compiler):
+    """Clean keeps obscuring metadata but bypasses static GL work at runtime."""
+
+    g = EffectGraph(
+        name="Clean",
+        nodes={
+            "color": NodeInstance(type="colorgrade"),
+            "posterize": NodeInstance(type="posterize", params={"levels": 12}),
+            "o": NodeInstance(type="output"),
+        },
+        edges=[["@live", "color"], ["color", "posterize"], ["posterize", "o"]],
+    )
+    plan = compiler.compile(g)
+    pipeline._slots = [MagicMock() for _ in range(8)]
+    pipeline._slot_is_temporal = [True] * 8
+    bypass_pad = object()
+    chain_pad = object()
+    pipeline._zero_shader_bypass_selector = MagicMock()
+    pipeline._zero_shader_bypass_valve = MagicMock()
+    pipeline._zero_shader_chain_valve = MagicMock()
+    pipeline._zero_shader_bypass_pad = bypass_pad
+    pipeline._zero_shader_chain_pad = chain_pad
+    pipeline._zero_shader_bypass_active = False
+
+    pipeline.activate_plan(plan)
+
+    assert pipeline.slot_assignments[:2] == ["colorgrade", "posterize"]
+    pipeline._zero_shader_chain_valve.set_property.assert_called_with("drop", True)
+    pipeline._zero_shader_bypass_valve.set_property.assert_called_with("drop", False)
+    pipeline._zero_shader_bypass_selector.set_property.assert_called_with("active-pad", bypass_pad)
+
+
+def test_non_empty_plan_disables_physical_bypass(pipeline, compiler):
+    """Recruiting any shader node switches the already-linked chain back in."""
+
+    g = EffectGraph(
+        name="t",
+        nodes={"c": NodeInstance(type="colorgrade"), "o": NodeInstance(type="output")},
+        edges=[["@live", "c"], ["c", "o"]],
+    )
+    plan = compiler.compile(g)
+    pipeline._slots = [MagicMock() for _ in range(8)]
+    pipeline._slot_is_temporal = [True] * 8
+    bypass_pad = object()
+    chain_pad = object()
+    pipeline._zero_shader_bypass_selector = MagicMock()
+    pipeline._zero_shader_bypass_valve = MagicMock()
+    pipeline._zero_shader_chain_valve = MagicMock()
+    pipeline._zero_shader_bypass_pad = bypass_pad
+    pipeline._zero_shader_chain_pad = chain_pad
+    pipeline._zero_shader_bypass_active = True
+
+    pipeline.activate_plan(plan)
+
+    assert pipeline.slot_assignments[0] == "colorgrade"
+    pipeline._zero_shader_chain_valve.set_property.assert_called_with("drop", False)
+    pipeline._zero_shader_bypass_valve.set_property.assert_called_with("drop", True)
+    pipeline._zero_shader_bypass_selector.set_property.assert_called_with("active-pad", chain_pad)
+
+
 def test_initial_state(pipeline):
     assert pipeline.num_slots == 8
     assert all(s is None for s in pipeline.slot_assignments)

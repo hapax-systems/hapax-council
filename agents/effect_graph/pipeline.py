@@ -40,6 +40,12 @@ class SlotPipeline:
         self._slot_pending_frag: list[str | None] = [None] * num_slots
         self._slot_last_frag: list[str | None] = [None] * num_slots
         self._slot_is_temporal: list[bool] = [False] * num_slots
+        self._zero_shader_bypass_selector: Any | None = None
+        self._zero_shader_bypass_valve: Any | None = None
+        self._zero_shader_chain_valve: Any | None = None
+        self._zero_shader_bypass_pad: Any | None = None
+        self._zero_shader_chain_pad: Any | None = None
+        self._zero_shader_bypass_active: bool | None = None
 
     def _bounded_params(self, node_type: str, params: dict[str, Any]) -> dict[str, Any]:
         """Clamp params to manifest bounds plus live-surface safety bounds."""
@@ -143,7 +149,15 @@ class SlotPipeline:
             log.exception("Failed to compile shader for slot %d", slot_idx)
             return None
 
-    def link_chain(self, pipeline: Any, Gst: Any, upstream: Any, downstream: Any) -> None:
+    def link_chain(
+        self,
+        pipeline: Any,
+        Gst: Any,
+        upstream: Any,
+        downstream: Any,
+        *,
+        downstream_pad_name: str | None = None,
+    ) -> None:
         """Link slots with per-slot leaky queues between them.
 
         Defense-in-depth for the GL chain stall scenario: a single glfeedback
@@ -183,13 +197,133 @@ class SlotPipeline:
                     log.error("Failed to link %s → %s", prev.get_name(), queue.get_name())
                 prev = queue
                 self._inter_slot_queues.append(queue)
-        if not prev.link(downstream):
+        if downstream_pad_name is not None:
+            linked = prev.link_pads("src", downstream, downstream_pad_name)
+        else:
+            linked = prev.link(downstream)
+        if not linked:
             log.error("Failed to link %s → %s", prev.get_name(), downstream.get_name())
         log.info(
             "Built %d-slot shader pipeline with %d inter-slot leaky queues",
             self._num_slots,
             len(self._inter_slot_queues),
         )
+
+    def _make_bypass_queue(self, Gst: Any, name: str) -> Any:
+        queue = Gst.ElementFactory.make("queue", name)
+        queue.set_property("leaky", 2)
+        queue.set_property("max-size-buffers", 1)
+        queue.set_property("max-size-bytes", 0)
+        queue.set_property("max-size-time", 0)
+        return queue
+
+    def _link_tee_to_queue(self, Gst: Any, tee: Any, queue: Any, *, label: str) -> bool:
+        template = tee.get_pad_template("src_%u")
+        if template is None:
+            log.error("Zero-shader bypass: %s tee src pad template missing", label)
+            return False
+        tee_pad = tee.request_pad(template, None, None)
+        queue_sink = queue.get_static_pad("sink")
+        if tee_pad is None or queue_sink is None:
+            log.error("Zero-shader bypass: %s pad allocation failed", label)
+            return False
+        result = tee_pad.link(queue_sink)
+        ok = getattr(getattr(Gst, "PadLinkReturn", object()), "OK", None)
+        if ok is not None and result != ok:
+            log.error("Zero-shader bypass: %s tee link failed: %s", label, result)
+            return False
+        return True
+
+    def link_chain_with_zero_shader_bypass(
+        self, pipeline: Any, Gst: Any, upstream: Any, downstream: Any
+    ) -> None:
+        """Link the physical shader chain behind a bypass for zero-node plans.
+
+        The logical slot surface remains fixed at ``num_slots`` so non-empty
+        plans can be recruited later, but the Clean baseline does not pay for
+        serial full-frame glfeedback passthrough passes.
+        """
+
+        tee = Gst.ElementFactory.make("tee", "effect-slot-bypass-tee")
+        bypass_queue = self._make_bypass_queue(Gst, "effect-slot-bypass-queue")
+        chain_queue = self._make_bypass_queue(Gst, "effect-slot-chain-queue")
+        bypass_valve = Gst.ElementFactory.make("valve", "effect-slot-bypass-valve")
+        chain_valve = Gst.ElementFactory.make("valve", "effect-slot-chain-valve")
+        selector = Gst.ElementFactory.make("input-selector", "effect-slot-bypass-selector")
+        for element in (tee, bypass_queue, chain_queue, bypass_valve, chain_valve, selector):
+            if element is None:
+                log.error("Zero-shader bypass: failed to create required GStreamer element")
+                self.link_chain(pipeline, Gst, upstream, downstream)
+                return
+            pipeline.add(element)
+
+        try:
+            selector.set_property("sync-streams", False)
+        except Exception:
+            log.debug("Zero-shader bypass selector sync-streams unsupported", exc_info=True)
+        bypass_valve.set_property("drop", False)
+        chain_valve.set_property("drop", True)
+
+        if not upstream.link(tee):
+            log.error("Zero-shader bypass: failed to link upstream -> tee")
+            return
+        if not self._link_tee_to_queue(Gst, tee, bypass_queue, label="bypass"):
+            return
+        if not self._link_tee_to_queue(Gst, tee, chain_queue, label="chain"):
+            return
+        if not bypass_queue.link(bypass_valve):
+            log.error("Zero-shader bypass: failed to link bypass queue -> valve")
+            return
+        if not chain_queue.link(chain_valve):
+            log.error("Zero-shader bypass: failed to link chain queue -> valve")
+            return
+
+        template = selector.get_pad_template("sink_%u")
+        if template is None:
+            log.error("Zero-shader bypass: selector sink pad template missing")
+            return
+        bypass_pad = selector.request_pad(template, None, None)
+        chain_pad = selector.request_pad(template, None, None)
+        if bypass_pad is None or chain_pad is None:
+            log.error("Zero-shader bypass: selector pad allocation failed")
+            return
+        if not bypass_valve.link_pads("src", selector, bypass_pad.get_name()):
+            log.error("Zero-shader bypass: failed to link bypass valve -> selector")
+            return
+        self.link_chain(
+            pipeline,
+            Gst,
+            chain_valve,
+            selector,
+            downstream_pad_name=chain_pad.get_name(),
+        )
+        selector.set_property("active-pad", bypass_pad)
+        if not selector.link(downstream):
+            log.error("Zero-shader bypass: failed to link selector -> downstream")
+            return
+
+        self._zero_shader_bypass_selector = selector
+        self._zero_shader_bypass_valve = bypass_valve
+        self._zero_shader_chain_valve = chain_valve
+        self._zero_shader_bypass_pad = bypass_pad
+        self._zero_shader_chain_pad = chain_pad
+        self._zero_shader_bypass_active = True
+        log.info("Built zero-shader bypass around %d-slot shader pipeline", self._num_slots)
+
+    def _set_zero_shader_bypass(self, enabled: bool) -> None:
+        if self._zero_shader_bypass_selector is None:
+            return
+        if self._zero_shader_bypass_active is enabled:
+            return
+        try:
+            self._zero_shader_chain_valve.set_property("drop", enabled)
+            self._zero_shader_bypass_valve.set_property("drop", not enabled)
+            active_pad = self._zero_shader_bypass_pad if enabled else self._zero_shader_chain_pad
+            self._zero_shader_bypass_selector.set_property("active-pad", active_pad)
+            self._zero_shader_bypass_active = enabled
+            log.info("Zero-shader bypass %s", "enabled" if enabled else "disabled")
+        except Exception:
+            log.debug("Zero-shader bypass toggle failed", exc_info=True)
 
     def build_chain(
         self,
@@ -198,12 +332,17 @@ class SlotPipeline:
         upstream: Any,
         downstream: Any,
         plan: ExecutionPlan | None = None,
+        *,
+        enable_zero_shader_bypass: bool = True,
     ) -> None:
         """Create slot elements, link them between upstream and downstream."""
         slots = self.create_slots(Gst, plan=plan)
         for slot in slots:
             pipeline.add(slot)
-        self.link_chain(pipeline, Gst, upstream, downstream)
+        if enable_zero_shader_bypass:
+            self.link_chain_with_zero_shader_bypass(pipeline, Gst, upstream, downstream)
+        else:
+            self.link_chain(pipeline, Gst, upstream, downstream)
 
     def activate_plan(self, plan: ExecutionPlan) -> None:
         """Assign graph nodes to slots in topological order."""
@@ -238,6 +377,7 @@ class SlotPipeline:
         # Apply changes to each slot. Diff against last-set fragment so
         # byte-identical re-sets (typical for passthrough slots across
         # plan activations) do not trigger a GL recompile + accum clear.
+        self._set_zero_shader_bypass(self._plan_requests_physical_bypass(plan, slot_idx))
         fragment_set_count = 0
         for i in range(self._num_slots):
             if self._slot_is_temporal[i]:
@@ -292,6 +432,22 @@ class SlotPipeline:
             self._num_slots,
             fragment_set_count,
         )
+
+    @staticmethod
+    def _plan_requests_physical_bypass(plan: ExecutionPlan, shader_slot_count: int) -> bool:
+        """Return true when a plan should keep logical effects but skip physical GL passes.
+
+        The Clean preset remains a real broadcast preset with an obscuring
+        transform in its graph so the anonymization invariant stays visible in
+        tests and metadata. During camera-legible incident baseline operation,
+        rendering that static policy chain costs serial full-frame GL work
+        without adding useful motion or layout fidelity. Treat Clean as a
+        physically bypassed baseline while keeping every non-Clean shader plan
+        on the real chain.
+        """
+        if shader_slot_count == 0:
+            return True
+        return plan.name.strip().lower() == "clean"
 
     def find_slot_for_node(self, node_type: str) -> int | None:
         """Find which slot a node type is assigned to.
