@@ -1,0 +1,197 @@
+{
+  "allowed_claim_ids": [
+    "nomic_embedding_availability",
+    "documents_v2_repair",
+    "retrieval_improvement",
+    "public_source_of_truth"
+  ],
+  "authority_case": "REQ-20260513-token-capital-public-surface-regate-v2",
+  "claim_ceiling": {
+    "allowed_summary": "Nomic availability, documents_v2 repair-case retrieval improvement, denominator measurement infrastructure, and public source-of-truth receipts may be described with their limits.",
+    "denied_summary": "Token Capital existence proof, token appreciation, compounding value, publication-grade answer faithfulness, and downstream contribution claims remain unsupported.",
+    "status": "hypothesis_and_repair_case_only"
+  },
+  "claim_classes": {
+    "answer_faithfulness": {
+      "evidence": [
+        "answer-faithfulness"
+      ],
+      "public_ceiling": "Answer-level evaluation is instrumented, but current generated answers are not publication-grade and do not support answer-faithfulness claims.",
+      "status": "not_upgraded"
+    },
+    "compounding_value": {
+      "evidence": [
+        "answer-faithfulness",
+        "corpus-utilization-denominator"
+      ],
+      "public_ceiling": "Denied. Retrieval and answer-context exposure do not prove compounding value.",
+      "status": "denied"
+    },
+    "corpus_utilization_denominator": {
+      "evidence": [
+        "corpus-utilization-denominator"
+      ],
+      "public_ceiling": "The generated/persisted corpus denominator is explicit; indexing, retrieval, answer context, and downstream contribution remain separate numerators.",
+      "status": "measurement_infrastructure_only"
+    },
+    "documents_v2_repair": {
+      "evidence": [
+        "documents-v2-full-backfill"
+      ],
+      "public_ceiling": "documents_v2 is a non-destructive approved-corpus repair case with explicit parser coverage accounting.",
+      "status": "bounded_supported"
+    },
+    "downstream_contribution": {
+      "evidence": [
+        "answer-faithfulness",
+        "corpus-utilization-denominator"
+      ],
+      "public_ceiling": "Downstream contribution has not been measured; no value or economic contribution claim is supported.",
+      "status": "not_measured"
+    },
+    "nomic_embedding_availability": {
+      "evidence": [
+        "nomic-runtime-repair"
+      ],
+      "public_ceiling": "Nomic embedding availability is repaired: the configured stable alias is available and dimensionality validation passes.",
+      "status": "supported"
+    },
+    "public_source_of_truth": {
+      "evidence": [
+        "public-surface-source-of-truth"
+      ],
+      "public_ceiling": "Live public weblog/OMG entries have source-of-truth disposition rows; this is a source receipt, not a Token Capital claim upgrade.",
+      "status": "supported"
+    },
+    "retrieval_improvement": {
+      "evidence": [
+        "documents-v2-full-backfill"
+      ],
+      "public_ceiling": "Full documents_v2 materially improves golden-query retrieval over legacy documents, while remaining weaker than the focused seed.",
+      "status": "bounded_supported"
+    },
+    "token_appreciation": {
+      "evidence": [
+        "corpus-utilization-denominator"
+      ],
+      "public_ceiling": "Denied. There is no measurement showing generated tokens appreciate as assets.",
+      "status": "denied"
+    },
+    "token_capital_existence_proof": {
+      "evidence": [
+        "documents-v2-full-backfill",
+        "answer-faithfulness",
+        "corpus-utilization-denominator"
+      ],
+      "public_ceiling": "Denied. The current evidence supports only a hypothesis and repair-case narrative, not an existence proof.",
+      "status": "denied"
+    }
+  },
+  "denied_claim_ids": [
+    "token_capital_existence_proof",
+    "token_appreciation",
+    "compounding_value"
+  ],
+  "evidence_artifacts": [
+    {
+      "artifact_id": "nomic-runtime-repair",
+      "bytes": 3238,
+      "exists": true,
+      "path": "docs/research/evidence/2026-05-12-nomic-rag-embedding-smoke-and-golden-receipt.md",
+      "pr": 3163,
+      "role": "embedding availability evidence",
+      "sha256": "25881e75a281c25cf83d10400dbc1be0287604bdd2891c5a1668dbce829c2abb",
+      "title": "Nomic embedding runtime repair"
+    },
+    {
+      "artifact_id": "documents-v2-full-backfill",
+      "bytes": 6591,
+      "exists": true,
+      "path": "docs/research/2026-05-13-rag-documents-v2-full-backfill-and-parser-coverage.md",
+      "pr": 3211,
+      "role": "retrieval substrate evidence",
+      "sha256": "247774b030f46a999e60183d7fe20fc6796c934675797ec0763297e941ed4bb5",
+      "title": "RAG documents_v2 full backfill and parser coverage"
+    },
+    {
+      "artifact_id": "answer-faithfulness",
+      "bytes": 5430,
+      "exists": true,
+      "path": "docs/research/2026-05-13-rag-answer-faithfulness-and-downstream-contribution-eval.md",
+      "pr": 3212,
+      "role": "answer-level evidence",
+      "sha256": "75b438537c5ef5f5f471ebde7b1033d66aaafa50c12f6c46437768deaf087a88",
+      "title": "RAG answer faithfulness and downstream contribution evaluation"
+    },
+    {
+      "artifact_id": "corpus-utilization-denominator",
+      "bytes": 4619,
+      "exists": true,
+      "path": "docs/research/2026-05-13-token-capital-corpus-utilization-denominator.md",
+      "pr": 3213,
+      "role": "corpus denominator evidence",
+      "sha256": "b55ec5b2afe8a4c7b75b32db632bc9a7a28639d4ec1b3f8adef37e1557c8d703",
+      "title": "Token Capital corpus utilization denominator"
+    },
+    {
+      "artifact_id": "public-surface-source-of-truth",
+      "bytes": 18773,
+      "exists": true,
+      "path": "docs/research/evidence/2026-05-13-public-surface-source-of-truth-reconciliation.md",
+      "pr": 3214,
+      "role": "public surface evidence",
+      "sha256": "08f09baf6d3d9077fa021350c58d521f1b26b19ce76f07ad92981e33b2390bcf",
+      "title": "Public surface source-of-truth reconciliation"
+    }
+  ],
+  "forbidden_public_claims": [
+    {
+      "claim_id": "token_capital_existence_proof",
+      "pattern": "\\bexistence[-\\s]+proof\\b",
+      "reason": "Current post-RAG evidence denies existence-proof language."
+    },
+    {
+      "claim_id": "token_appreciation",
+      "pattern": "\\bappreciat(?:e|ing|ion)\\b.*\\btoken",
+      "reason": "No appreciation metric or asset-value run exists."
+    },
+    {
+      "claim_id": "compounding_value",
+      "pattern": "\\b(token\\s+)?compounding\\b|\\bcompounding\\s+value\\b",
+      "reason": "Downstream contribution is not measured."
+    },
+    {
+      "claim_id": "answer_faithfulness",
+      "pattern": "\\banswer[-\\s]+faithfulness\\s+(?:is\\s+)?(?:solved|proven|repaired)\\b",
+      "reason": "Generated answers are currently weak on the answer suite."
+    },
+    {
+      "claim_id": "downstream_contribution",
+      "pattern": "\\bdownstream\\s+(?:value|contribution)\\s+(?:is\\s+)?(?:proven|demonstrated|measured)\\b",
+      "reason": "No downstream contribution ledger has been consumed."
+    }
+  ],
+  "gate_predicates": {
+    "all_dependency_receipts_present": true,
+    "answer_faithfulness_upgrade_allowed": false,
+    "claim_upgrade_allowed": false,
+    "compounding_value_upgrade_allowed": false,
+    "downstream_contribution_upgrade_allowed": false,
+    "token_capital_exists_proof_allowed": false
+  },
+  "generated_at": "2026-05-13T00:00:00Z",
+  "generated_by": "scripts/token_capital_claim_regate.py",
+  "missing_evidence_artifacts": [],
+  "not_upgraded_claim_ids": [
+    "corpus_utilization_denominator",
+    "answer_faithfulness",
+    "downstream_contribution"
+  ],
+  "overall_decision": "claim_upgrade_denied",
+  "required_next_evidence": [
+    "durable downstream contribution ledger",
+    "materially improved generated-answer support and faithfulness",
+    "ranking/source-prior diagnosis for full documents_v2",
+    "future public claim gate receipt that explicitly permits stronger language"
+  ]
+}
