@@ -1,0 +1,412 @@
+{
+  "attribution_windows": [
+    {
+      "duration": "from task claim to task closure, or from request update to next closure",
+      "requirements": [
+        "same authority_case",
+        "explicit source reference"
+      ],
+      "strength": "strong",
+      "window_id": "same_task_or_request"
+    },
+    {
+      "duration": "7 days after source token availability",
+      "requirements": [
+        "explicit source reference",
+        "no incompatible intervening source"
+      ],
+      "strength": "moderate",
+      "window_id": "default_short_window"
+    },
+    {
+      "duration": "30 days maximum",
+      "requirements": [
+        "explicit bridge record",
+        "unchanged claim target",
+        "reviewer or operator acceptance"
+      ],
+      "strength": "weak_without_bridge",
+      "window_id": "extended_bridge_window"
+    }
+  ],
+  "authority_case": "REQ-20260513-token-capital-public-surface-regate-v2",
+  "candidate_source_requirements": [
+    "Persisted text or code artifact in the approved denominator or evidence corpus.",
+    "Stable path and SHA-256 hash at measurement time.",
+    "Known authority class and claim ceiling.",
+    "Consent/privacy label sufficient for the intended ledger visibility.",
+    "Availability timestamp or merge/publication timestamp."
+  ],
+  "contribution_event_classes": [
+    {
+      "counterfactual": "Replay the production step without the source token, or compare against a matched baseline artifact that had no access to the source token.",
+      "definition": "A later durable artifact explicitly derives from a source token through citation, path reference, commit reference, or provenance edge.",
+      "eligible_artifacts": [
+        "merged pull request",
+        "source-controlled research receipt",
+        "vault research mirror",
+        "closed cc-task with closure evidence"
+      ],
+      "event_class_id": "artifact_derivation",
+      "minimum_evidence": [
+        "source_token_path_or_hash",
+        "downstream_artifact_path_or_hash",
+        "explicit derivation edge or citation",
+        "operator or reviewer acceptance if the artifact is public-facing"
+      ],
+      "negative_results": [
+        "explicit citation absent",
+        "artifact not durable",
+        "artifact exists but counterfactual delta is zero or unfavorable"
+      ]
+    },
+    {
+      "counterfactual": "Compare with the documented pre-decision state, or run a blinded proposal generation pass without the source token and score the chosen difference.",
+      "definition": "An operator-approved decision record cites a source token and changes a choice, priority, acceptance, rejection, or scope boundary.",
+      "eligible_artifacts": [
+        "operator-authored request update",
+        "accepted PR review decision",
+        "cc-task reprioritization record",
+        "documented public-claim ceiling decision"
+      ],
+      "event_class_id": "operator_decision_support",
+      "minimum_evidence": [
+        "decision_record_path",
+        "source_token_path_or_hash",
+        "decision_before_or_available_alternative",
+        "operator-visible acceptance or override state"
+      ],
+      "negative_results": [
+        "operator motive inferred without a decision record",
+        "decision only temporally follows the source token",
+        "decision lacks a documented alternative"
+      ]
+    },
+    {
+      "counterfactual": "Run the same gate with the source token or receipt removed, masked, or replaced by the previous baseline receipt.",
+      "definition": "A prior source token enables a deterministic gate, validator, or claim ceiling to pass or fail correctly on a later artifact.",
+      "eligible_artifacts": [
+        "public-surface gate receipt",
+        "claim re-gate receipt",
+        "validation harness receipt",
+        "CI or local deterministic gate output"
+      ],
+      "event_class_id": "quality_gate_unblock",
+      "minimum_evidence": [
+        "gate_command",
+        "gate_input_receipt",
+        "source_token_path_or_hash",
+        "observed_gate_outcome",
+        "leave_one_out_gate_outcome"
+      ],
+      "negative_results": [
+        "gate outcome unchanged under leave-one-out",
+        "gate is nondeterministic or has hidden dependencies",
+        "gate pass relies on unsupported claim language"
+      ]
+    },
+    {
+      "counterfactual": "Compare against the pre-revision copy and the gate result that would have occurred without the source token's bound or citation.",
+      "definition": "A source token causes public copy to become more accurate, bounded, or source-reconciled without upgrading unsupported Token Capital claims.",
+      "eligible_artifacts": [
+        "weblog post source",
+        "hapax.omg.lol landing page source",
+        "publication draft",
+        "source-of-truth reconciliation receipt"
+      ],
+      "event_class_id": "public_surface_revision",
+      "minimum_evidence": [
+        "before_copy_hash",
+        "after_copy_hash",
+        "source_token_path_or_hash",
+        "public_surface_gate_result"
+      ],
+      "negative_results": [
+        "copy is unpublished and unreviewed",
+        "copy passes only because denied claims were removed manually without provenance",
+        "revision creates new unsupported claims"
+      ]
+    },
+    {
+      "counterfactual": "Compare against the previous claim state and require the revision rationale to identify why the source token changed the state.",
+      "definition": "A source token changes the status of a theory claim by strengthening, weakening, bounding, or falsifying it in a durable research artifact.",
+      "eligible_artifacts": [
+        "research basis repair receipt",
+        "audit follow-up",
+        "claim class registry",
+        "methodology note"
+      ],
+      "event_class_id": "research_hypothesis_revision",
+      "minimum_evidence": [
+        "prior_claim_state",
+        "new_claim_state",
+        "source_token_path_or_hash",
+        "reviewed rationale"
+      ],
+      "negative_results": [
+        "claim state changes without a cited evidence path",
+        "revision imports Shapley-value or appreciation math without a measured utility",
+        "revision conflates Carrier Dynamics or provenance with economic value"
+      ]
+    }
+  ],
+  "current_claim_ceiling": {
+    "allowed_summary": "The project may say it has a design for measuring downstream contribution and a candidate artifact stream.",
+    "denied_summary": "The project may not say downstream contribution, token appreciation, economic value, or compounding value has been demonstrated.",
+    "status": "downstream_contribution_not_measured"
+  },
+  "eligible_downstream_artifacts": [
+    "merged PRs and merge commits",
+    "source-controlled research/evidence receipts",
+    "vault mirrors with source-controlled canonical counterparts",
+    "closed cc-tasks with closure evidence",
+    "operator-authored request state changes",
+    "public copy sources that pass the public-surface gate"
+  ],
+  "evidence_artifacts": [
+    {
+      "artifact_id": "answer-faithfulness-ablation",
+      "bytes": 5430,
+      "exists": true,
+      "path": "docs/research/2026-05-13-rag-answer-faithfulness-and-downstream-contribution-eval.md",
+      "pr": 3212,
+      "role": "shows existing downstream field is answer-metric ablation only",
+      "sha256": "75b438537c5ef5f5f471ebde7b1033d66aaafa50c12f6c46437768deaf087a88",
+      "title": "RAG answer faithfulness and answer-metric ablation receipt"
+    },
+    {
+      "artifact_id": "corpus-utilization-denominator",
+      "bytes": 4619,
+      "exists": true,
+      "path": "docs/research/2026-05-13-token-capital-corpus-utilization-denominator.md",
+      "pr": 3213,
+      "role": "separates denominator, indexing, retrieval, answer context, and downstream use",
+      "sha256": "b55ec5b2afe8a4c7b75b32db632bc9a7a28639d4ec1b3f8adef37e1557c8d703",
+      "title": "Token Capital corpus utilization denominator"
+    },
+    {
+      "artifact_id": "claim-regate-v2",
+      "bytes": 4571,
+      "exists": true,
+      "path": "docs/research/evidence/2026-05-13-token-capital-claim-regate-v2.md",
+      "pr": 3215,
+      "role": "denies downstream contribution and economic claim upgrades",
+      "sha256": "5f0705689d9dca10d6e23c274f12075ef3253fd8750e881b1e21646eb8d48fbe",
+      "title": "Token Capital claim re-gate v2"
+    },
+    {
+      "artifact_id": "public-surface-scrutiny-gate-v2",
+      "bytes": 1117,
+      "exists": true,
+      "path": "docs/runbooks/public-surface-scrutiny-gate-v2.md",
+      "pr": 3216,
+      "role": "prevents unsupported public claim language",
+      "sha256": "cf2fef0494d84454076717ce25fa973dd0966492aec77fd50fec968fb07bb4bd",
+      "title": "Public surface scrutiny gate v2"
+    },
+    {
+      "artifact_id": "carrier-dynamics-separation",
+      "bytes": 8199,
+      "exists": true,
+      "path": "docs/research/2026-05-12-carrier-dynamics-formalization-track.md",
+      "pr": 3158,
+      "role": "keeps provenance and consent synergies separate from Token Capital proof",
+      "sha256": "70aafbfe33d75d6f9ef30f2268831a08c68f34c88b57a4246223d3f602492109",
+      "title": "Carrier Dynamics formalization track"
+    }
+  ],
+  "excluded_signals": [
+    "raw retrieval hit",
+    "answer-context exposure without a later artifact",
+    "unpersisted chat output",
+    "model-drafted text with no operator or reviewer acceptance",
+    "temporal proximity without a derivation edge",
+    "engagement, attention, or aesthetic preference without a measured artifact outcome",
+    "private or consent-sensitive content that cannot be logged with approved labels"
+  ],
+  "first_followup_task": {
+    "acceptance": [
+      "Ledger schema implements the measurement record fields and fail-closed defaults.",
+      "Validator rejects records without artifact hashes, attribution edge, privacy label, counterfactual method, or negative-result status.",
+      "Read-only ingest covers source receipts, closed cc-tasks, and public-surface gate receipts without scraping private content or inferring operator motive.",
+      "A fixture run records at least one positive, one negative, and one privacy-blocked example using synthetic or existing public-safe fixtures.",
+      "The ledger receipt states that no Token Capital claim upgrade is allowed until a future public claim gate explicitly permits it."
+    ],
+    "branch": "codex/downstream-contribution-ledger-v0",
+    "depends_on": [
+      "downstream-contribution-measurement-design",
+      "public-surface-scrutiny-gate-v2"
+    ],
+    "priority": "p1",
+    "status": "offered",
+    "task_id": "downstream-contribution-ledger-v0-instrumentation",
+    "title": "Implement downstream contribution ledger v0 instrumentation",
+    "wsjf": 16.0,
+    "wsjf_formula": "BV 8, TC 6, RR/OE 8, size 1.4 -> WSJF 15.7, rounded to 16.0"
+  },
+  "gate_predicates": {
+    "all_design_evidence_present": true,
+    "answer_support_passed_when_generation_is_in_path": false,
+    "claim_upgrade_allowed_now": false,
+    "eligible_positive_events_above_threshold": false,
+    "future_ledger_run_receipt_consumed": false,
+    "future_public_claim_gate_permits_downstream_language": false,
+    "instrumentable_event_stream_identified": true,
+    "privacy_and_operator_agency_passed": false
+  },
+  "generated_at": "2026-05-13T00:00:00Z",
+  "generated_by": "scripts/downstream_contribution_measurement_design.py",
+  "instrumentable_event_stream": {
+    "description": "A first ledger can be built from existing source-controlled receipts, PR metadata, closed cc-task closure evidence, public-surface gate outputs, and explicit path/hash references. This is an artifact stream, not operator activity surveillance.",
+    "inputs": [
+      "docs/research/evidence/*.json",
+      "docs/research/evidence/*.md",
+      "docs/runbooks/public-surface-scrutiny-gate-v2.md",
+      "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/closed/*.md",
+      "$HOME/Documents/Personal/20-projects/hapax-requests/active/*.md",
+      "GitHub PR numbers and merge commits recorded in task closure evidence"
+    ],
+    "limits": [
+      "Cannot infer downstream contribution from retrieval logs alone.",
+      "Cannot infer operator motive without an explicit operator-visible decision record.",
+      "Cannot upgrade public claims until a future ledger run and public gate permit it."
+    ],
+    "status": "identified",
+    "stream_id": "artifact_provenance_and_gate_receipts_v0"
+  },
+  "measurement_record_schema": {
+    "fail_closed_defaults": {
+      "claim_upgrade_allowed": false,
+      "negative_result_status": "no_attribution_edge",
+      "privacy_label": "unknown"
+    },
+    "required_fields": [
+      "event_id",
+      "event_class_id",
+      "source_token_path",
+      "source_token_sha256",
+      "downstream_artifact_path",
+      "downstream_artifact_sha256",
+      "authority_case",
+      "attribution_window_id",
+      "provenance_edges",
+      "counterfactual_method",
+      "observed_outcome",
+      "counterfactual_outcome",
+      "delta",
+      "negative_result_status",
+      "privacy_label",
+      "operator_acceptance_state",
+      "claim_upgrade_allowed"
+    ]
+  },
+  "methodology_references": [
+    {
+      "reference_id": "w3c-prov-dm",
+      "role": "Use entities, activities, agents, derivations, attribution, and primary source relations as the minimum provenance vocabulary.",
+      "title": "W3C PROV-DM",
+      "url": "https://www.w3.org/TR/prov-dm/"
+    },
+    {
+      "reference_id": "rubin-1974-potential-outcomes",
+      "role": "Treat contribution as a potential-outcome question: compare observed artifact outcome with a specified no-source-token counterfactual.",
+      "title": "Rubin 1974 causal effects of treatments",
+      "url": "https://www.ets.org/research/policy_research_reports/publications/article/1974/hrbx.html"
+    },
+    {
+      "reference_id": "pearl-2009-causal-inference-overview",
+      "role": "Keep causal assumptions explicit instead of inferring contribution from association, retrieval, or temporal proximity.",
+      "title": "Pearl 2009 causal inference overview",
+      "url": "https://projecteuclid.org/journals/statistics-surveys/volume-3/issue-none/Causal-inference-in-statistics-An-overview/10.1214/09-SS057.full"
+    },
+    {
+      "reference_id": "mackinlay-1997-event-studies",
+      "role": "Use predeclared event and estimation windows for any event-study-style diagnostic; do not treat a window alone as causal proof.",
+      "title": "MacKinlay 1997 event studies in economics and finance",
+      "url": "https://econpapers.repec.org/RePEc:aea:jeclit:v:35:y:1997:i:1:p:13-39"
+    },
+    {
+      "reference_id": "koh-liang-2017-influence-functions",
+      "role": "Reserve influence-style attribution for future model-training influence questions; current RAG evidence should use replay/ablation first.",
+      "title": "Koh and Liang 2017 influence functions",
+      "url": "https://proceedings.mlr.press/v70/koh17a.html"
+    }
+  ],
+  "metric_layers": [
+    {
+      "claim_status": "substrate_only_not_value",
+      "current_metrics": [
+        "denominator_file_count",
+        "indexed_file_count",
+        "retrieved_file_count",
+        "answer_context_file_count",
+        "precision_at_k",
+        "recall_at_k",
+        "ndcg_at_k"
+      ],
+      "layer_id": "retrieval_substrate",
+      "question": "Can an approved source be indexed, retrieved, and placed in answer context?"
+    },
+    {
+      "claim_status": "answer_quality_not_downstream_value",
+      "current_metrics": [
+        "required_claim_recall",
+        "supported_claim_rate",
+        "faithfulness",
+        "refusal_hit_rate",
+        "forbidden_claim_hits"
+      ],
+      "layer_id": "answer_support",
+      "question": "Does a generated or extractive answer faithfully support required claims?"
+    },
+    {
+      "claim_status": "not_measured_until_ledger_run",
+      "current_metrics": [
+        "eligible_contribution_event_count",
+        "counterfactual_delta",
+        "artifact_quality_delta",
+        "gate_outcome_delta",
+        "negative_event_count",
+        "privacy_block_count"
+      ],
+      "layer_id": "downstream_contribution",
+      "question": "Did a source token change a later durable artifact or operator decision?"
+    }
+  ],
+  "missing_evidence_artifacts": [],
+  "negative_result_statuses": [
+    {
+      "meaning": "The source token was retrieved or read, but no durable later artifact exists.",
+      "status": "no_downstream_artifact"
+    },
+    {
+      "meaning": "The later artifact has no explicit citation, derivation, or decision record.",
+      "status": "no_attribution_edge"
+    },
+    {
+      "meaning": "Leave-one-out or matched baseline comparison shows no useful delta.",
+      "status": "counterfactual_no_effect"
+    },
+    {
+      "meaning": "The source token worsened claim accuracy, gate behavior, or artifact quality.",
+      "status": "negative_or_harmful_effect"
+    },
+    {
+      "meaning": "The event cannot be logged without violating consent or disclosure limits.",
+      "status": "privacy_or_consent_blocked"
+    },
+    {
+      "meaning": "The downstream artifact relied on an answer that failed support or faithfulness checks.",
+      "status": "answer_unfaithful"
+    }
+  ],
+  "overall_decision": "measurement_design_only_no_claim_upgrade",
+  "privacy_operator_agency_constraints": [
+    "No hidden operator surveillance: count explicit artifact and decision records, not inferred motive.",
+    "No non-operator person data unless consent labels and redaction policy allow the record.",
+    "Log hashes, paths, claim classes, and short bounded excerpts only when public-safe.",
+    "Operator veto or override can block event logging without being treated as a negative motive.",
+    "Consent revocation or missing labels produces a fail-closed privacy_or_consent_blocked event."
+  ],
+  "task_id": "downstream-contribution-measurement-design"
+}
