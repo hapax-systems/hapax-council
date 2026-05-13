@@ -21,6 +21,8 @@ def _run(
     bridge_metrics: str,
     state: str | None = None,
     apply: bool = True,
+    systemctl_body: str | None = None,
+    extra_args: list[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     metrics_file = tmp_path / "metrics.prom"
     metrics_file.write_text(textwrap.dedent(metrics).strip() + "\n", encoding="utf-8")
@@ -33,7 +35,8 @@ def _run(
     bin_dir.mkdir()
     _write_stub(
         bin_dir / "systemctl",
-        f"""
+        systemctl_body
+        or f"""
         printf '%s\\n' "$*" >> {calls}
         exit 0
         """,
@@ -57,6 +60,8 @@ def _run(
     ]
     if apply:
         args.append("--apply")
+    if extra_args:
+        args.extend(extra_args)
     return subprocess.run(args, text=True, capture_output=True, check=False, env=env)
 
 
@@ -145,3 +150,30 @@ def test_bridge_watchdog_dry_run_does_not_restart(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert not (tmp_path / "systemctl-calls.txt").exists()
     assert "outcome=dry_run" in result.stdout
+
+
+def test_bridge_watchdog_records_timeout_without_crashing(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        metrics="""
+        studio_compositor_runtime_feature_active{feature="shmsink_bridge"} 1
+        studio_compositor_shmsink_frames_total 100
+        studio_compositor_shmsink_last_frame_seconds_ago 30
+        """,
+        bridge_metrics="""
+        hapax_v4l2_bridge_write_frames_total 100
+        hapax_v4l2_bridge_heartbeat_seconds_ago 30
+        """,
+        state='{"shmsink_frames": 100, "bridge_write_frames": 100, "stale_ticks": 1}',
+        systemctl_body="""
+        sleep 1
+        """,
+        extra_args=["--command-timeout", "0.01"],
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "outcome=timeout_submitted" in result.stdout
+    state = (tmp_path / "state.json").read_text(encoding="utf-8")
+    assert '"stale_ticks": 0' in state
+    textfile = (tmp_path / "watchdog.prom").read_text(encoding="utf-8")
+    assert 'hapax_v4l2_bridge_watchdog_outcome{outcome="timeout_submitted"} 1' in textfile

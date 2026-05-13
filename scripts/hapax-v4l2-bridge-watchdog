@@ -90,13 +90,21 @@ def _save_state(path: Path, state: dict[str, float]) -> None:
 
 
 def _run_systemctl(args: argparse.Namespace, *cmd: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [args.systemctl, "--user", *cmd],
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=args.command_timeout,
-    )
+    try:
+        return subprocess.run(
+            [args.systemctl, "--user", *cmd],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=args.command_timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return subprocess.CompletedProcess(
+            [args.systemctl, "--user", *cmd],
+            returncode=124,
+            stdout=exc.stdout or "",
+            stderr=exc.stderr or "systemctl command timed out",
+        )
 
 
 def _metric(metrics: dict[str, float], name: str) -> float | None:
@@ -228,6 +236,10 @@ def _apply_decision(args: argparse.Namespace, state: dict[str, float], decision:
         state["stale_ticks"] = 0
         state["last_restart_monotonic"] = time.monotonic()
         return "ok"
+    if result.returncode == 124:
+        state["stale_ticks"] = 0
+        state["last_restart_monotonic"] = time.monotonic()
+        return "timeout_submitted"
     return f"failed:{result.returncode}"
 
 
@@ -285,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--restart-cooldown-seconds", type=float, default=60.0)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--systemctl", default="systemctl")
-    parser.add_argument("--command-timeout", type=float, default=30.0)
+    parser.add_argument("--command-timeout", type=float, default=120.0)
     parser.add_argument("--compositor-unit", default="studio-compositor.service")
     parser.add_argument("--bridge-unit", default="hapax-v4l2-bridge.service")
     parser.add_argument("--state-file", type=Path, default=DEFAULT_STATE)
