@@ -22,9 +22,10 @@ def test_private_monitor_recover_units_are_install_visible() -> None:
 def test_private_monitor_recover_service_publishes_blocked_absent_as_success() -> None:
     service = SERVICE.read_text(encoding="utf-8")
 
-    assert "WorkingDirectory=" in service
+    assert "WorkingDirectory=%h/.cache/hapax/source-activation/worktree" in service
     assert "hapax-private-monitor-recover" in service
-    assert "--repo-root" in service
+    assert "--repo-root %h/.cache/hapax/source-activation/worktree" in service
+    assert "%h/projects/hapax-council" not in service
     assert "--install" in service
     assert "--dump-file" not in service
     assert "SuccessExitStatus=2" in service

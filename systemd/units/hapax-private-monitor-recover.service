@@ -7,12 +7,12 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/hapax/projects/hapax-council
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=PYTHONUNBUFFERED=1
-ExecStart=%h/.local/bin/hapax-private-monitor-recover --repo-root %h/projects/hapax-council --install --auto-reload
+ExecStart=%h/.local/bin/hapax-private-monitor-recover --repo-root %h/.cache/hapax/source-activation/worktree --install --auto-reload
 SuccessExitStatus=2
 TimeoutStartSec=20s
 MemoryMax=128M
