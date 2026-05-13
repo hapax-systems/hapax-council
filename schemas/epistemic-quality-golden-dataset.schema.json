@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.local/schemas/epistemic-quality-golden-dataset.schema.json",
+  "title": "Epistemic Quality Golden Dataset Record",
+  "type": "object",
+  "required": [
+    "id",
+    "tier",
+    "tier_description",
+    "source_kind",
+    "source_ref",
+    "privacy_class",
+    "authority_ceiling",
+    "domain_partition",
+    "text_status",
+    "excerpt",
+    "excerpt_hash",
+    "label_status",
+    "labels",
+    "relabel_required"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^eqi-v0-[ABCD]-[0-9]{3}$"
+    },
+    "tier": {
+      "enum": ["A", "B", "C", "D"]
+    },
+    "tier_description": {
+      "enum": [
+        "operator_written_analysis",
+        "published_or_peer_reviewed_reference",
+        "agent_output_or_system_claim",
+        "known_bad_or_adversarial"
+      ]
+    },
+    "source_kind": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "privacy_class": {
+      "enum": ["public", "internal", "public_synthetic"]
+    },
+    "authority_ceiling": {
+      "type": "string",
+      "minLength": 1
+    },
+    "domain_partition": {
+      "enum": ["scientific", "technical", "narrative", "mixed"]
+    },
+    "text_status": {
+      "enum": [
+        "ready",
+        "operator_source_required",
+        "external_source_required",
+        "agent_source_review_required"
+      ]
+    },
+    "excerpt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "excerpt_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "label_status": {
+      "enum": ["unlabeled", "blocked_source_required", "complete"]
+    },
+    "labels": {
+      "type": "object",
+      "properties": {
+        "claim_evidence_alignment": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "hedge_calibration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "quantifier_precision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "source_grounding": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        }
+      },
+      "additionalProperties": false
+    },
+    "relabel_required": {
+      "type": "boolean"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "label_status": {
+            "const": "complete"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "labels": {
+            "required": [
+              "claim_evidence_alignment",
+              "hedge_calibration",
+              "quantifier_precision",
+              "source_grounding"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
+}
