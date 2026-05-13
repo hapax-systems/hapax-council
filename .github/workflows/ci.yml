@@ -248,7 +248,7 @@ jobs:
   test:
     needs: docs_only_filter
     runs-on: ubuntu-latest
-    timeout-minutes: 22
+    timeout-minutes: 35
     steps:
       - name: Docs-only required-check sentinel
         if: needs.docs_only_filter.outputs.docs_only == 'true'

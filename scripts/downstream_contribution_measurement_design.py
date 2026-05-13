@@ -514,6 +514,8 @@ def claim_upgrade_allowed(report: Mapping[str, Any]) -> bool:
     if not isinstance(predicates, Mapping):
         return False
     required = (
+        "all_design_evidence_present",
+        "instrumentable_event_stream_identified",
         "future_ledger_run_receipt_consumed",
         "future_public_claim_gate_permits_downstream_language",
         "eligible_positive_events_above_threshold",
