@@ -34,6 +34,11 @@ REQUIRED_BRIDGE_NODES = (
     "hapax-notification-private-monitor-capture",
     "hapax-notification-private-playback",
 )
+STALE_GENERATED_BRIDGE_CONFS = (
+    "private-monitor-output.conf",
+    "notification-private-monitor-output.conf",
+)
+DISABLED_BY_RECOVER_SUFFIX = ".disabled-by-hapax-private-monitor-recover"
 SANITIZED_TARGET_REF = "audio.mpc_private_monitor"
 ROUTE_REF = "route:private.mpc_live_iii_monitor"
 
@@ -45,6 +50,7 @@ class BridgeStatus(TypedDict):
     installed: bool
     matches_repo: bool
     repaired: bool
+    stale_generated_disabled: list[str]
     requires_pipewire_reload: bool
     pipewire_reloaded: bool
     pipewire_reload_error: str
@@ -59,6 +65,7 @@ class PrivateMonitorStatus(TypedDict):
     operator_visible_reason: str
     exact_target_present: bool
     bridge_nodes_present: bool
+    bridge_nodes_fail_closed: bool
     bridge: BridgeStatus
     fallback_policy: str
     target_ref: str
@@ -83,8 +90,8 @@ def _load_dump(path: Path | None) -> list[dict[str, Any]]:
     return [item for item in data if isinstance(item, dict)]
 
 
-def _node_names(dump: list[dict[str, Any]]) -> set[str]:
-    names: set[str] = set()
+def _node_props_by_name(dump: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    nodes: dict[str, dict[str, Any]] = {}
     for item in dump:
         if item.get("type") != "PipeWire:Interface:Node":
             continue
@@ -93,8 +100,50 @@ def _node_names(dump: list[dict[str, Any]]) -> set[str]:
             continue
         name = props.get("node.name")
         if isinstance(name, str):
-            names.add(name)
-    return names
+            nodes[name] = props
+    return nodes
+
+
+def _prop_is_true(props: dict[str, Any], key: str) -> bool:
+    value = props.get(key)
+    return value is True or value == "true"
+
+
+def _prop_is_false(props: dict[str, Any], key: str) -> bool:
+    value = props.get(key)
+    return value is False or value == "false"
+
+
+def _capture_node_is_pinned(
+    props_by_name: dict[str, dict[str, Any]], node_name: str, target: str
+) -> bool:
+    props = props_by_name.get(node_name, {})
+    return props.get("target.object") == target and _prop_is_true(props, "stream.capture.sink")
+
+
+def _playback_node_is_fail_closed(props_by_name: dict[str, dict[str, Any]], node_name: str) -> bool:
+    props = props_by_name.get(node_name, {})
+    return (
+        props.get("target.object") == EXACT_PRIVATE_MONITOR_TARGET
+        and _prop_is_true(props, "node.dont-fallback")
+        and _prop_is_true(props, "node.dont-reconnect")
+        and _prop_is_true(props, "node.dont-move")
+        and _prop_is_true(props, "node.linger")
+        and _prop_is_false(props, "state.restore")
+    )
+
+
+def _bridge_nodes_fail_closed(props_by_name: dict[str, dict[str, Any]]) -> bool:
+    return (
+        _capture_node_is_pinned(props_by_name, "hapax-private-monitor-capture", "hapax-private")
+        and _capture_node_is_pinned(
+            props_by_name,
+            "hapax-notification-private-monitor-capture",
+            "hapax-notification-private",
+        )
+        and _playback_node_is_fail_closed(props_by_name, "hapax-private-playback")
+        and _playback_node_is_fail_closed(props_by_name, "hapax-notification-private-playback")
+    )
 
 
 def _bridge_matches_repo(repo_bridge: Path, install_path: Path) -> bool:
@@ -118,6 +167,31 @@ def _validate_repo_bridge(repo_bridge: Path) -> None:
     missing = [needle for needle in required if needle not in text]
     if missing:
         raise ValueError(f"repo bridge is missing required fail-closed pin(s): {missing}")
+
+
+def _disable_stale_generated_bridge_confs(install_dir: Path, *, install: bool) -> list[str]:
+    """Disable stale generated private-monitor fragments superseded by the bridge.
+
+    `hapax-private-monitor-bridge.conf` is the authoritative bridge because it
+    captures the private null-sink monitors and pins playback to the MPC Live
+    III. Older generated per-node fragments can sit beside it and fail static
+    safety checks, so the recover install path quarantines them.
+    """
+    if not install:
+        return []
+    disabled: list[str] = []
+    for filename in STALE_GENERATED_BRIDGE_CONFS:
+        path = install_dir / filename
+        if not path.exists():
+            continue
+        target = install_dir / f"{filename}{DISABLED_BY_RECOVER_SUFFIX}"
+        counter = 1
+        while target.exists():
+            target = install_dir / f"{filename}{DISABLED_BY_RECOVER_SUFFIX}.{counter}"
+            counter += 1
+        path.replace(target)
+        disabled.append(filename)
+    return disabled
 
 
 def _restart_pipewire_stack() -> tuple[bool, str]:
@@ -159,9 +233,13 @@ def _install_bridge(
     install: bool,
     auto_reload: bool = False,
 ) -> BridgeStatus:
-    installed_before = install_path.exists()
     matches_before = _bridge_matches_repo(repo_bridge, install_path)
+    installed_before = install_path.exists()
     repaired = False
+    stale_generated_disabled = _disable_stale_generated_bridge_confs(
+        install_path.parent,
+        install=install,
+    )
     if install and not matches_before:
         install_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = install_path.with_suffix(install_path.suffix + ".tmp")
@@ -169,7 +247,7 @@ def _install_bridge(
         tmp.replace(install_path)
         repaired = True
     matches_after = _bridge_matches_repo(repo_bridge, install_path)
-    requires_reload = repaired and installed_before
+    requires_reload = (repaired and installed_before) or bool(stale_generated_disabled)
     pipewire_reloaded = False
     pipewire_reload_error = ""
     if requires_reload and auto_reload:
@@ -183,6 +261,7 @@ def _install_bridge(
         "installed": install_path.exists(),
         "matches_repo": matches_after,
         "repaired": repaired,
+        "stale_generated_disabled": stale_generated_disabled,
         "requires_pipewire_reload": requires_reload,
         "pipewire_reloaded": pipewire_reloaded,
         "pipewire_reload_error": pipewire_reload_error,
@@ -191,12 +270,14 @@ def _install_bridge(
 
 def _status(
     *,
-    node_names: set[str],
+    props_by_name: dict[str, dict[str, Any]],
     bridge: BridgeStatus,
 ) -> PrivateMonitorStatus:
     checked_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    node_names = set(props_by_name)
     target_present = EXACT_PRIVATE_MONITOR_TARGET in node_names
     bridge_nodes_present = all(name in node_names for name in REQUIRED_BRIDGE_NODES)
+    bridge_fail_closed = bridge_nodes_present and _bridge_nodes_fail_closed(props_by_name)
     state: Literal["ready", "blocked_absent"]
     reason_code: str
     reason: str
@@ -218,6 +299,10 @@ def _status(
         state = "blocked_absent"
         reason_code = "private_monitor_bridge_not_loaded"
         reason = "Private monitor bridge config is installed but its PipeWire nodes are not loaded."
+    elif not bridge_fail_closed:
+        state = "blocked_absent"
+        reason_code = "private_monitor_bridge_property_drift"
+        reason = "Private monitor bridge nodes are loaded but missing fail-closed MPC properties."
     else:
         state = "ready"
         reason_code = "mpc_private_monitor_bound"
@@ -231,6 +316,7 @@ def _status(
         "operator_visible_reason": reason,
         "exact_target_present": target_present,
         "bridge_nodes_present": bridge_nodes_present,
+        "bridge_nodes_fail_closed": bridge_fail_closed,
         "bridge": bridge,
         "fallback_policy": "no_default_fallback",
         "target_ref": SANITIZED_TARGET_REF,
@@ -301,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
             install=args.install,
             auto_reload=args.auto_reload,
         )
-        status = _status(node_names=_node_names(dump), bridge=bridge)
+        status = _status(props_by_name=_node_props_by_name(dump), bridge=bridge)
         _write_status(args.status_path, status)
     except Exception as exc:
         print(f"private_monitor_state=error reason={type(exc).__name__}: {exc}", file=sys.stderr)

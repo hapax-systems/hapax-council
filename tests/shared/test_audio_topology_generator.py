@@ -190,6 +190,45 @@ class TestLoopbackFragment:
         assert "libpipewire-module-loopback" in text
         assert 'target.object = "alsa_output.pci-0000_73_00.6.analog-stereo"' in text
 
+    def test_loopback_emits_fail_closed_private_monitor_params(self) -> None:
+        d = TopologyDescriptor(
+            nodes=[
+                Node(
+                    id="private-monitor-output",
+                    kind=NodeKind.LOOPBACK,
+                    pipewire_name="hapax-private-playback",
+                    target_object="alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output",
+                    params={
+                        "capture_source": "hapax-private",
+                        "stream.capture.sink": True,
+                        "node.autoconnect": False,
+                        "node.dont-fallback": True,
+                        "node.dont-reconnect": True,
+                        "node.dont-move": True,
+                        "node.linger": True,
+                        "state.restore": False,
+                        "stream.dont-remix": True,
+                    },
+                ),
+            ],
+        )
+
+        text = node_to_conf_fragment(d.nodes[0], d)
+
+        assert 'target.object = "hapax-private"' in text
+        assert "stream.capture.sink = true" in text
+        assert (
+            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"'
+            in text
+        )
+        assert "node.autoconnect = false" in text
+        assert "node.dont-fallback = true" in text
+        assert "node.dont-reconnect = true" in text
+        assert "node.dont-move = true" in text
+        assert "node.linger = true" in text
+        assert "state.restore = false" in text
+        assert "stream.dont-remix = true" in text
+
 
 class TestGenerateConfs:
     def test_one_file_per_node(self) -> None:
