@@ -328,6 +328,19 @@ class AtmosphericSelector:
         key = (stance, energy_level)
         return _STATE_MATRIX.get(key, _DEFAULT_FAMILY)
 
+    def mark_load_failed(self, preset: str) -> None:
+        """Forget a selected preset when the compositor refuses to load it.
+
+        ``evaluate`` records its target before the GL graph load happens.
+        If that load fails, holding the refused target through dwell makes
+        the 30 fps governance tick retry the same invalid preset every
+        frame. Clearing the optimistic selection lets the next tick choose
+        a different eligible preset.
+        """
+        if preset == self._current_preset:
+            self._current_preset = None
+            self._last_transition = 0.0
+
     def _pick_with_anti_recency(
         self, candidates: tuple[str, ...], available_presets: set[str]
     ) -> str | None:

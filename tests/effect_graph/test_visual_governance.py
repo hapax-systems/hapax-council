@@ -125,6 +125,25 @@ class TestAtmosphericSelector:
         )
         assert second == "silhouette"  # stance change bypasses dwell
 
+    def test_load_failure_clears_optimistic_dwell_hold(self):
+        from agents.effect_graph.visual_governance import AtmosphericSelector
+
+        sel = AtmosphericSelector(dwell_min_s=120.0)
+        first = sel.evaluate(
+            stance="nominal",
+            energy_level="low",
+            available_presets={"ghost"},
+        )
+        assert first == "ghost"
+
+        sel.mark_load_failed("ghost")
+        second = sel.evaluate(
+            stance="nominal",
+            energy_level="low",
+            available_presets={"ambient"},
+        )
+        assert second == "ambient"
+
     def test_energy_level_from_desk_activity(self):
         from agents.effect_graph.visual_governance import energy_level_from_activity
 
