@@ -74,13 +74,19 @@ class TestMediaRoleOnPersistentSubprocess:
             mock_proc.stdin = MagicMock()
             mock_popen.return_value = mock_proc
 
-            out.write(b"\x00" * 100, target="hapax-voice-fx-capture", media_role="Broadcast")
+            result = out.write(
+                b"\x00" * 100,
+                target="hapax-voice-fx-capture",
+                media_role="Broadcast",
+            )
 
         cmd = mock_popen.call_args[0][0]
         idx = cmd.index("--media-role")
         assert cmd[idx + 1] == "Broadcast"
-        target_idx = cmd.index("--target")
-        assert cmd[target_idx + 1] == "hapax-voice-fx-capture"
+        assert "--target" not in cmd
+        assert result.completed is True
+        assert result.target == "hapax-voice-fx-capture"
+        assert result.media_role == "Broadcast"
 
     def test_per_role_subprocesses_cached_independently(self) -> None:
         """Two writes with different media_role values spawn TWO pw-cat

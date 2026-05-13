@@ -316,6 +316,91 @@ class TestCpalRunnerLifecycle:
         runner._pipeline.generate_spontaneous_speech.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_accepted_private_route_records_drop_when_speech_lock_held(self):
+        runner = self._make_runner()
+        runner._pipeline = AsyncMock()
+        runner._impingement_adapter.adapt = MagicMock(
+            return_value=SimpleNamespace(
+                gain_update=None,
+                should_surface=True,
+                narrative="Private spontaneous response.",
+                error_boost=0.5,
+            )
+        )
+        imp = MagicMock()
+        imp.source = "exploration.apperception"
+        imp.content = {"narrative": "Private spontaneous response."}
+        decision = SimpleNamespace(
+            allowed=True,
+            destination=DestinationChannel.PRIVATE,
+            reason_code="private_assistant_monitor_bound",
+            safety_gate={"context_default": "private_or_drop"},
+            target="hapax-private",
+            media_role="Assistant",
+        )
+
+        await runner._speech_lock.acquire()
+        try:
+            with (
+                patch(
+                    "agents.hapax_daimonion.cpal.runner.resolve_playback_decision",
+                    return_value=decision,
+                ),
+                patch("agents.hapax_daimonion.cpal.runner.record_destination_decision"),
+                patch("agents.hapax_daimonion.cpal.runner.record_drop") as record_drop,
+            ):
+                await runner.process_impingement(imp)
+        finally:
+            runner._speech_lock.release()
+
+        record_drop.assert_called_once()
+        assert record_drop.call_args.kwargs["reason"] == "speech_lock_held"
+        assert record_drop.call_args.kwargs["destination"] == "private"
+        assert record_drop.call_args.kwargs["target"] == "hapax-private"
+        runner._pipeline.generate_spontaneous_speech.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_accepted_private_route_records_drop_when_conversation_active(self):
+        runner = self._make_runner()
+        runner._pipeline = AsyncMock()
+        runner._processing_utterance = True
+        runner._impingement_adapter.adapt = MagicMock(
+            return_value=SimpleNamespace(
+                gain_update=None,
+                should_surface=True,
+                narrative="Private spontaneous response.",
+                error_boost=0.5,
+            )
+        )
+        imp = MagicMock()
+        imp.source = "reverie_prediction"
+        imp.content = {"narrative": "Private spontaneous response."}
+        decision = SimpleNamespace(
+            allowed=True,
+            destination=DestinationChannel.PRIVATE,
+            reason_code="private_assistant_monitor_bound",
+            safety_gate={"context_default": "private_or_drop"},
+            target="hapax-private",
+            media_role="Assistant",
+        )
+
+        with (
+            patch(
+                "agents.hapax_daimonion.cpal.runner.resolve_playback_decision",
+                return_value=decision,
+            ),
+            patch("agents.hapax_daimonion.cpal.runner.record_destination_decision"),
+            patch("agents.hapax_daimonion.cpal.runner.record_drop") as record_drop,
+        ):
+            await runner.process_impingement(imp)
+
+        record_drop.assert_called_once()
+        assert record_drop.call_args.kwargs["reason"] == "conversation_active"
+        assert record_drop.call_args.kwargs["destination"] == "private"
+        assert record_drop.call_args.kwargs["target"] == "hapax-private"
+        runner._pipeline.generate_spontaneous_speech.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_autonomous_narrative_timeout_not_marked_spoken(self, caplog):
         runner = self._make_runner()
         daemon = MagicMock()

@@ -1292,10 +1292,28 @@ class CpalRunner:
                 )
                 if self._speech_lock.locked():
                     log.debug("CPAL: exploration surfacing deferred: speech lock held")
+                    record_drop(
+                        reason="speech_lock_held",
+                        source=source,
+                        destination=destination.value,
+                        target=destination_target,
+                        media_role=destination_role,
+                        text=effect.narrative,
+                        terminal_state="failed",
+                    )
                     return
                 if self._processing_utterance:
                     log.debug(
                         "CPAL: exploration surfacing deferred: conversational response active"
+                    )
+                    record_drop(
+                        reason="conversation_active",
+                        source=source,
+                        destination=destination.value,
+                        target=destination_target,
+                        media_role=destination_role,
+                        text=effect.narrative,
+                        terminal_state="failed",
                     )
                     return
                 async with self._speech_lock:
@@ -1310,6 +1328,7 @@ class CpalRunner:
                             register_hint=register_hint,
                             destination_target=destination_target,
                             destination_role=destination_role,
+                            destination=destination.value,
                         )
                     except TypeError:
                         # Older pipelines without one of the new kwargs — fall
