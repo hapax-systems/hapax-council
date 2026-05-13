@@ -80,6 +80,7 @@ def _env_enabled(name: str, *, default: bool) -> bool:
 
 def _layout_source_ids_for_enabled_stages(layout: Layout) -> list[str]:
     """Return assigned source IDs whose render stage is enabled this boot."""
+    from agents.studio_compositor.layout_source_gates import layout_source_enabled
 
     enabled_stages: set[str] = set()
     if _env_enabled("HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED", default=True):
@@ -91,7 +92,11 @@ def _layout_source_ids_for_enabled_stages(layout: Layout) -> list[str]:
     seen: set[str] = set()
     for assignment in layout.assignments:
         stage = getattr(assignment, "render_stage", "post_fx")
-        if stage not in enabled_stages or assignment.source in seen:
+        if (
+            stage not in enabled_stages
+            or assignment.source in seen
+            or not layout_source_enabled(assignment.source)
+        ):
             continue
         active.append(assignment.source)
         seen.add(assignment.source)
@@ -1330,6 +1335,7 @@ class StudioCompositor:
         registry = self.source_registry
         if registry is None:
             return
+        startable_source_ids = set(_layout_source_ids_for_enabled_stages(layout))
         existing = set(registry.ids())
         for source in layout.sources:
             if source.id in existing:
@@ -1338,7 +1344,7 @@ class StudioCompositor:
                 backend = registry.construct_backend(source, budget_tracker=self._budget_tracker)
                 registry.register(source.id, backend)
                 start = getattr(backend, "start", None)
-                if start is not None:
+                if start is not None and source.id in startable_source_ids:
                     start()
                 existing.add(source.id)
                 log.info("runtime layout source registered: %s", source.id)

@@ -549,10 +549,15 @@ def pip_draw_from_layout(
     ``stage="pre_fx"`` on the BASE callback so chrome stays crisp on
     top of shaders and substrate gets decorated by them.
     """
+    from agents.studio_compositor.layout_source_gates import layout_source_enabled
+
     layout = layout_state.get()
     pairs: list[tuple[Any, Any, cairo.ImageSurface, object]] = []
     for assignment in layout.assignments:
         if stage is not None and getattr(assignment, "render_stage", "post_fx") != stage:
+            continue
+        if not layout_source_enabled(assignment.source):
+            _emit_blit_skip(assignment.source, "source_family_disabled")
             continue
         surface_schema = layout.surface_by_id(assignment.surface)
         if surface_schema is None:

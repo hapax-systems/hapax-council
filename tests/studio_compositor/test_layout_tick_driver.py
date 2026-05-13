@@ -220,6 +220,72 @@ def test_active_segment_pressure_derives_bounded_runtime_intents(tmp_path: Path)
     assert intent.spoken_text_ref is None
 
 
+def test_state_provider_ignores_active_segment_when_segment_runner_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_file = tmp_path / "active-segment.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "programme_id": "programme:seg-1",
+                "current_beat_index": 4,
+                "prepared_artifact_ref": "sha256:abc123",
+                "current_beat_layout_intents": {
+                    "needs": [
+                        {
+                            "kind": "source_comparison",
+                            "evidence_ref": "beat:4:intent:compare",
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(layout_tick_driver, "SEGMENT_STATE_FILE", state_file)
+    monkeypatch.setenv("HAPAX_DIRECTOR_SEGMENT_RUNNER_DISABLED", "1")
+
+    state = build_state_provider()()
+
+    assert state["segment_layout_intents"] == ()
+    assert state["segment_layout_refusals"] == ()
+    assert state["segment_layout_pressure_seen"] is False
+
+
+def test_state_provider_ignores_active_segment_when_layout_tick_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_file = tmp_path / "active-segment.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "programme_id": "programme:seg-1",
+                "current_beat_index": 4,
+                "prepared_artifact_ref": "sha256:abc123",
+                "current_beat_layout_intents": {
+                    "needs": [
+                        {
+                            "kind": "source_comparison",
+                            "evidence_ref": "beat:4:intent:compare",
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(layout_tick_driver, "SEGMENT_STATE_FILE", state_file)
+    monkeypatch.setenv("HAPAX_SEGMENT_LAYOUT_TICK_DISABLED", "1")
+
+    state = build_state_provider()()
+
+    assert state["segment_layout_intents"] == ()
+    assert state["segment_layout_refusals"] == ()
+    assert state["segment_layout_pressure_seen"] is False
+
+
 def test_active_segment_pressure_refuses_supported_need_with_forbidden_fields(
     tmp_path: Path,
 ) -> None:
