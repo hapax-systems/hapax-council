@@ -52,7 +52,7 @@ from pathlib import Path
 
 from shared.co_author_model import CoAuthor
 from shared.co_author_model import get as get_co_author
-from shared.frontmatter import parse_frontmatter
+from shared.frontmatter import parse_frontmatter_with_diagnostics
 from shared.preprint_artifact import ApprovalState, PreprintArtifact
 
 log = logging.getLogger(__name__)
@@ -129,6 +129,48 @@ def _resolve_one_co_author(entry) -> CoAuthor | None:  # type: ignore[no-untyped
         return None
 
 
+def _parse_publication_markdown(path: Path) -> tuple[dict, str]:
+    result = parse_frontmatter_with_diagnostics(path)
+    if result.ok:
+        return result.frontmatter or {}, result.body
+
+    if result.error_kind != "yaml_error":
+        return {}, result.body
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}, result.body
+
+    if not text.startswith("---"):
+        return {}, text
+    end = text.find("\n---", 3)
+    if end == -1:
+        return {}, text
+
+    frontmatter = _parse_lenient_frontmatter_mapping(text[3:end].strip())
+    body = text[end + 4 :].lstrip("\n")
+    log.warning(
+        "YAML frontmatter in %s is invalid; using lenient publication-field parser",
+        path,
+    )
+    return frontmatter, body
+
+
+def _parse_lenient_frontmatter_mapping(raw_frontmatter: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for line in raw_frontmatter.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if key:
+            parsed[key] = value
+    return parsed
+
+
 def _build_artifact(
     *,
     body_md: str,
@@ -137,15 +179,16 @@ def _build_artifact(
     approver: str,
     source_path: Path | None = None,
 ) -> PreprintArtifact:
-    title = frontmatter.get("title") or _extract_first_heading(body_md) or "Untitled"
-    slug = frontmatter.get("slug") or _slugify(title)
-    abstract = frontmatter.get("abstract") or _summarize(body_md, max_chars=500)
-    attribution = frontmatter.get("attribution_block") or ""
-    doi = frontmatter.get("doi") or None
+    title = _optional_string(_frontmatter_value(frontmatter, "title"))
+    title = title or _extract_first_heading(body_md) or "Untitled"
+    slug = _optional_string(_frontmatter_value(frontmatter, "slug")) or _slugify(title)
+    abstract = _optional_string(_frontmatter_value(frontmatter, "abstract")) or _summarize(
+        body_md, max_chars=500
+    )
+    attribution = _optional_string(_frontmatter_value(frontmatter, "attribution_block")) or ""
+    doi = _optional_string(_frontmatter_value(frontmatter, "doi"))
     author_model = _optional_string(
-        frontmatter.get("author_model")
-        or frontmatter.get("draft_author_model")
-        or frontmatter.get("llm_model")
+        _frontmatter_value(frontmatter, "author_model", "draft_author_model", "llm_model")
     )
 
     co_authors = _resolve_co_authors(frontmatter)
@@ -207,6 +250,19 @@ def _parse_surfaces(raw: str | None) -> list[str]:
     return [s.strip() for s in raw.split(",") if s.strip()]
 
 
+def _frontmatter_value(frontmatter: dict, *keys: str) -> object | None:
+    for key in keys:
+        if key in frontmatter:
+            return frontmatter[key]
+
+    lowered = {str(raw_key).lower(): value for raw_key, value in frontmatter.items()}
+    for key in keys:
+        value = lowered.get(key.lower())
+        if value is not None:
+            return value
+    return None
+
+
 def _optional_string(value: object) -> str | None:
     if isinstance(value, str):
         stripped = value.strip()
@@ -252,7 +308,7 @@ def main(argv: list[str] | None = None) -> int:
         log.error("vault file not found: %s", args.path)
         return 2
 
-    frontmatter, body = parse_frontmatter(args.path)
+    frontmatter, body = _parse_publication_markdown(args.path)
     if not body.strip():
         log.error("empty body in %s", args.path)
         return 2

@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
-"""Publish the Show HN blog post to hapax.weblog.lol via the publication bus.
+"""Enqueue the Show HN blog post through the publication bus.
 
 Usage:
-    uv run python scripts/publish-hn-blog-post.py [--dry-run]
-
-Reads the draft from docs/publication-drafts/2026-05-10-show-hn-governance-that-ships.md,
-and publishes the full weblog source through OmgLolWeblogPublisher. Optionally
-triggers Bridgy POSSE fanout to Mastodon + Bluesky.
+    uv run python scripts/publish-hn-blog-post.py [--dry-run] [--surfaces omg-weblog]
 """
 
 from __future__ import annotations
@@ -15,82 +11,61 @@ import argparse
 import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts import publish_vault_artifact
+
 DRAFT_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "docs"
-    / "publication-drafts"
-    / "2026-05-10-show-hn-governance-that-ships.md"
+    REPO_ROOT / "docs" / "publication-drafts" / "2026-05-10-show-hn-governance-that-ships.md"
 )
 
-ENTRY_SLUG = "show-hn-governance-that-ships"
-PUBLIC_LOCATION = f"/2026/05/{ENTRY_SLUG}"
-PUBLIC_URL = f"https://hapax.weblog.lol{PUBLIC_LOCATION}"
+DEFAULT_SURFACES = "omg-weblog"
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Publish Show HN blog post")
-    parser.add_argument("--dry-run", action="store_true", help="Print content without publishing")
-    parser.add_argument("--no-posse", action="store_true", help="Skip Bridgy POSSE fanout")
-    args = parser.parse_args()
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Enqueue Show HN blog post")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print artifact JSON without writing to the publication inbox",
+    )
+    parser.add_argument(
+        "--no-posse",
+        action="store_true",
+        help="Compatibility no-op; downstream fanout is controlled by the publication bus",
+    )
+    parser.add_argument(
+        "--surfaces",
+        default=DEFAULT_SURFACES,
+        help=f"Comma-separated publication-bus surfaces (default: {DEFAULT_SURFACES})",
+    )
+    parser.add_argument(
+        "--state-root",
+        type=Path,
+        default=None,
+        help="Override $HAPAX_STATE for testing",
+    )
+    parser.add_argument(
+        "--approver",
+        default="Oudepode",
+        help="Operator referent to record on approval",
+    )
+    args = parser.parse_args(argv)
 
-    if not DRAFT_PATH.exists():
-        print(f"Draft not found: {DRAFT_PATH}", file=sys.stderr)
-        return 1
-
-    body = DRAFT_PATH.read_text()
-
+    bus_args = [
+        str(DRAFT_PATH),
+        "--surfaces",
+        args.surfaces,
+        "--approver",
+        args.approver,
+    ]
+    if args.state_root is not None:
+        bus_args.extend(["--state-root", str(args.state_root)])
     if args.dry_run:
-        print(f"=== DRY RUN: would publish to {PUBLIC_URL} ===")
-        print(f"=== Body length: {len(body)} chars ===")
-        print(body[:500])
-        print("...")
-        return 0
-
-    from agents.publication_bus.omg_weblog_publisher import OmgLolWeblogPublisher
-    from agents.publication_bus.publisher_kit import PublisherPayload
-    from agents.publication_bus.publisher_kit.allowlist import load_allowlist
-    from shared.omg_lol_client import OmgLolClient
-
-    client = OmgLolClient()
-    if not client.enabled:
-        print("OmgLolClient disabled (no API key). Run: pass show omg-lol/api-key", file=sys.stderr)
-        return 1
-
-    OmgLolWeblogPublisher.allowlist = load_allowlist(
-        OmgLolWeblogPublisher.surface_name, [ENTRY_SLUG]
-    )
-    publisher = OmgLolWeblogPublisher(client=client, address="hapax")
-    payload = PublisherPayload(
-        target=ENTRY_SLUG,
-        text=body,
-        metadata={
-            "location": PUBLIC_LOCATION,
-            "slug": ENTRY_SLUG,
-        },
-    )
-
-    print(f"Publishing to {PUBLIC_URL}...")
-    result = publisher.publish(payload)
-
-    if result.ok:
-        print(f"Published: {result.detail}")
-    elif result.refused:
-        print(f"Refused: {result.detail}", file=sys.stderr)
-        return 1
-    else:
-        print(f"Error: {result.detail}", file=sys.stderr)
-        return 1
-
-    if not args.no_posse:
-        from agents.publication_bus.bridgy_posse_fanout import posse_after_weblog_publish
-
-        print(f"POSSE fanout to Mastodon + Bluesky for {PUBLIC_URL}...")
-        outcomes = posse_after_weblog_publish(entry_url=PUBLIC_URL)
-        for target, res in outcomes.items():
-            status = "ok" if res.ok else ("refused" if res.refused else "error")
-            print(f"  {target}: {status} ({res.detail})")
-
-    return 0
+        bus_args.append("--dry-run")
+    return publish_vault_artifact.main(bus_args)
 
 
 if __name__ == "__main__":
