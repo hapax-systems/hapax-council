@@ -20,6 +20,7 @@ UNITS_DIR = REPO_ROOT / "systemd" / "units"
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 
 CANONICAL_SCRIPT_PATTERN = str(Path.home() / "projects" / "hapax-council" / "scripts") + "/"
+ACTIVATION_WORKTREE = "%h/.cache/hapax/source-activation/worktree"
 
 
 def _script_based_units() -> list[Path]:
@@ -29,6 +30,7 @@ def _script_based_units() -> list[Path]:
         "disk-space-check.service",
         "hapax-audio-routing-check.service",
         "hapax-audio-stage-check.service",
+        "hapax-audio-optional-device-state.service",
         "hapax-daimonion-quarantine-watchdog.service",
         "hapax-egress-audit-rotate.service",
         "hapax-evil-pet-scene.service",
@@ -152,3 +154,29 @@ class TestCcPrMergeWatcherSourceResolution:
         assert all("%h/projects/hapax-council" not in line for line in execution_lines)
         assert any("%h/.cache/hapax/source-activation/worktree" in line for line in execution_lines)
         assert any("scripts/cc-pr-merge-watcher.py" in line for line in execution_lines)
+
+
+class TestOptionalAudioDeviceStateSourceResolution:
+    def test_optional_audio_unit_uses_activation_worktree(self) -> None:
+        text = (UNITS_DIR / "hapax-audio-optional-device-state.service").read_text()
+        execution_lines = [
+            line
+            for line in text.splitlines()
+            if line.startswith(
+                (
+                    "ConditionPathExists=",
+                    "ExecStart=",
+                    "WorkingDirectory=",
+                    "Environment=PYTHONPATH=",
+                )
+            )
+        ]
+        assert execution_lines
+        assert all("%h/projects/hapax-council" not in line for line in execution_lines)
+        assert any(ACTIVATION_WORKTREE in line for line in execution_lines)
+        assert any("scripts/hapax-audio-optional-device-state" in line for line in execution_lines)
+
+    def test_optional_audio_script_exists_and_is_executable(self) -> None:
+        path = SCRIPTS_DIR / "hapax-audio-optional-device-state"
+        assert path.exists()
+        assert os.stat(path).st_mode & stat.S_IXUSR

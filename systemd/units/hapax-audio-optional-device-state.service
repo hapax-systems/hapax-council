@@ -2,7 +2,10 @@
 Description=Hapax optional audio device state witness
 After=pipewire.service wireplumber.service
 Requires=pipewire.service
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-audio-optional-device-state
 
 [Service]
 Type=oneshot
-ExecStart=%h/projects/hapax-council/scripts/hapax-audio-optional-device-state
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-audio-optional-device-state
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree

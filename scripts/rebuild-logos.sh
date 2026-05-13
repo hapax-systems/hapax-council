@@ -48,6 +48,34 @@ ntfy() {
         "$NTFY_URL" 2>/dev/null || true
 }
 
+quarantine_build_worktree() {
+    local reason="$1"
+    local tombstone
+    tombstone="$STATE_DIR/worktree.quarantine.$(date -u +%Y%m%dT%H%M%SZ).$$"
+
+    git worktree prune 2>/dev/null || true
+    if [ ! -e "$BUILD_WORKTREE" ] && [ ! -L "$BUILD_WORKTREE" ]; then
+        return 0
+    fi
+
+    if mv "$BUILD_WORKTREE" "$tombstone" 2>/dev/null; then
+        logger -t "$LOG_TAG" "quarantined build worktree after $reason: $tombstone"
+        rm -rf "$tombstone" 2>/dev/null || \
+            logger -t "$LOG_TAG" "quarantined worktree remains for manual cleanup: $tombstone"
+        git worktree prune 2>/dev/null || true
+        return 0
+    fi
+
+    if rm -rf "$BUILD_WORKTREE" 2>/dev/null; then
+        git worktree prune 2>/dev/null || true
+        return 0
+    fi
+
+    logger -t "$LOG_TAG" "could not clear build worktree after $reason — skipping rebuild"
+    ntfy "Logos rebuild FAILED" "could not clear stale build worktree" "high" "x"
+    return 1
+}
+
 # Fetch latest main into the shared refs store. `git fetch` in any worktree
 # updates origin refs for all worktrees that share the same repo.
 cd "$REPO"
@@ -71,8 +99,7 @@ ntfy "Imagination rebuild starting" "${LAST_SHA:0:8} -> ${CURRENT_SHA:0:8}" "low
 # so pnpm install --frozen-lockfile stays fast.
 if [ ! -e "$BUILD_WORKTREE/.git" ]; then
     logger -t "$LOG_TAG" "creating build worktree at $BUILD_WORKTREE"
-    git worktree prune 2>/dev/null || true
-    rm -rf "$BUILD_WORKTREE"
+    quarantine_build_worktree "initial create" || exit 0
     git worktree add --detach "$BUILD_WORKTREE" "$CURRENT_SHA" --quiet 2>/dev/null || {
         logger -t "$LOG_TAG" "worktree add failed — skipping rebuild"
         ntfy "Logos rebuild FAILED" "worktree add failed" "high" "x"
@@ -83,8 +110,7 @@ else
     if ! git reset --hard "$CURRENT_SHA" --quiet 2>/dev/null; then
         logger -t "$LOG_TAG" "build worktree reset failed — recreating"
         cd "$REPO"
-        rm -rf "$BUILD_WORKTREE"
-        git worktree prune 2>/dev/null || true
+        quarantine_build_worktree "reset failure" || exit 0
         git worktree add --detach "$BUILD_WORKTREE" "$CURRENT_SHA" --quiet 2>/dev/null || {
             logger -t "$LOG_TAG" "worktree recreate failed — skipping rebuild"
             ntfy "Logos rebuild FAILED" "worktree recreate failed" "high" "x"
