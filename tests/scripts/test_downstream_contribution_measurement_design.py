@@ -102,8 +102,8 @@ def test_claim_upgrade_fails_closed_until_future_ledger_and_public_gate() -> Non
     synthetic_future_report = module.build_design(generated_at="2026-05-13T00:00:00Z")
     synthetic_future_report["gate_predicates"].update(
         {
-            "all_design_evidence_present": False,
-            "instrumentable_event_stream_identified": True,
+            "all_design_evidence_present": True,
+            "instrumentable_event_stream_identified": False,
             "future_ledger_run_receipt_consumed": True,
             "future_public_claim_gate_permits_downstream_language": True,
             "eligible_positive_events_above_threshold": True,
