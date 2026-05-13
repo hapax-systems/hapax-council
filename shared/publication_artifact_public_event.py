@@ -18,7 +18,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from shared.governance.publication_allowlist import check as allowlist_check
-from shared.preprint_artifact import PreprintArtifact
+from shared.preprint_artifact import OMG_WEBLOG_DIRECT_FANOUT_SURFACES, PreprintArtifact
 from shared.research_vehicle_public_event import (
     PublicEventProvenance,
     PublicEventSource,
@@ -92,6 +92,10 @@ _TERMINAL_FAILURE = {
     "dropped",
     "surface_unwired",
 }
+DIRECT_DISPATCH_SECONDARY_FANOUT_HOLD_REASON = (
+    "direct_dispatch_surface_result:secondary_public_event_fanout_not_claimed"
+)
+_DIRECT_DISPATCH_PUBLIC_EVENT_HOLD_SURFACES = frozenset(OMG_WEBLOG_DIRECT_FANOUT_SURFACES)
 
 
 class PublicationArtifactPublicEventModel(BaseModel):
@@ -479,6 +483,9 @@ def _dry_run_reason(
         and "bridgy-webmention-publish" in target_surfaces
     ):
         reasons.append("refusal_annex_bridgy_fanout_not_claimed:dry_run_scaffold")
+    if stage in {"surface_log", "published"} and (result is None or result in _TERMINAL_SUCCESS):
+        if target_surfaces & _DIRECT_DISPATCH_PUBLIC_EVENT_HOLD_SURFACES:
+            reasons.append(DIRECT_DISPATCH_SECONDARY_FANOUT_HOLD_REASON)
     for check in policy_checks[1:]:
         if check.decision == "deny":
             reasons.append(f"surface_policy_denied:{check.surface}")
@@ -649,6 +656,7 @@ __all__ = [
     "PublicationArtifactEventStage",
     "PublicationArtifactPolicyCheck",
     "PublicationArtifactPublicEventDecision",
+    "DIRECT_DISPATCH_SECONDARY_FANOUT_HOLD_REASON",
     "build_publication_artifact_public_event",
     "github_public_material_surfaces",
     "publication_artifact_public_event_id",

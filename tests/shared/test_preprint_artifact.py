@@ -10,6 +10,9 @@ from pydantic import ValidationError
 
 from shared.co_author_model import CLAUDE_CODE, HAPAX, OUDEPODE
 from shared.preprint_artifact import (
+    DEFAULT_OMG_WEBLOG_SURFACES,
+    OMG_WEBLOG_DIRECT_FANOUT_OPT_IN_SURFACES,
+    OMG_WEBLOG_DIRECT_FANOUT_SURFACES,
     ApprovalState,
     PreprintArtifact,
     from_omg_weblog_draft,
@@ -166,23 +169,23 @@ class TestFromOmgWeblogDraft:
             body_md="Body.",
         )
         assert artifact.slug == "post-1"
-        assert "omg-weblog" in artifact.surfaces_targeted
-        assert "bluesky-post" in artifact.surfaces_targeted
-        assert "bridgy-webmention-publish" in artifact.surfaces_targeted
+        assert artifact.surfaces_targeted == list(DEFAULT_OMG_WEBLOG_SURFACES)
 
-    def test_default_surfaces_resolve_through_publication_registry(self):
-        from agents.publication_bus.surface_registry import SURFACE_REGISTRY, is_engageable
-
-        artifact = from_omg_weblog_draft(
-            slug="post-1",
-            title="A post",
-            abstract="Brief.",
-            body_md="Body.",
+    def test_direct_fanout_surfaces_resolve_through_publication_registry(self):
+        from agents.publication_bus.surface_registry import (
+            SURFACE_REGISTRY,
+            dispatch_registry,
+            is_engageable,
         )
 
-        for surface in artifact.surfaces_targeted:
+        assert (
+            *DEFAULT_OMG_WEBLOG_SURFACES,
+            *OMG_WEBLOG_DIRECT_FANOUT_OPT_IN_SURFACES,
+        ) == OMG_WEBLOG_DIRECT_FANOUT_SURFACES
+        for surface in OMG_WEBLOG_DIRECT_FANOUT_SURFACES:
             assert surface in SURFACE_REGISTRY
             assert is_engageable(surface)
+            assert surface in dispatch_registry()
 
     def test_override_surfaces(self):
         artifact = from_omg_weblog_draft(
