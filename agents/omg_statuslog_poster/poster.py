@@ -6,7 +6,7 @@ import argparse
 import json
 import logging
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -14,6 +14,11 @@ from typing import Any
 from agents.publication_bus.publisher_kit import PublisherPayload
 from shared.governance.omg_referent import OperatorNameLeak, safe_render
 from shared.governance.publication_allowlist import check as allowlist_check
+from shared.omg_statuslog_public_event_adapter import (
+    StatuslogCandidate,
+    select_statuslog_postable_events,
+)
+from shared.research_vehicle_public_event import ResearchVehiclePublicEvent
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +73,43 @@ def _compose_status_text(event: dict, *, llm_call: Any | None = None) -> str:
     if not isinstance(out, str):
         return ""
     return out.strip()
+
+
+def _read_rvpe_jsonl(path: Path) -> list[ResearchVehiclePublicEvent]:
+    """Read RVPE JSONL rows, skipping malformed lines."""
+    events: list[ResearchVehiclePublicEvent] = []
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return events
+    for line_no, line in enumerate(raw.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            events.append(ResearchVehiclePublicEvent.model_validate_json(stripped))
+        except ValueError:
+            log.warning("omg-statuslog: skipping invalid RVPE row %s:%d", path, line_no)
+    return events
+
+
+def _summary_from_candidate(candidate: StatuslogCandidate) -> str:
+    event = candidate.event
+    if event.chapter_ref is not None and event.chapter_ref.label:
+        return event.chapter_ref.label
+    if event.public_url:
+        return f"{event.event_type}: {event.public_url}"
+    return f"{event.event_type} from {event.source.producer}"
+
+
+def _rvpe_cli_success(outcome: str) -> bool:
+    return outcome.startswith("rejected:") or outcome in {
+        "posted",
+        "duplicate-event",
+        "low-salience",
+        "cap-exceeded",
+        "debounced",
+    }
 
 
 class StatuslogPoster:
@@ -130,6 +172,15 @@ class StatuslogPoster:
 
     # ── gates ────────────────────────────────────────────────────────
 
+    def _event_already_posted(self, event_id: str) -> bool:
+        if not event_id:
+            return False
+        state = self._read_state()
+        if state.get("last_event_id") == event_id:
+            return True
+        posted_event_ids = state.get("posted_event_ids")
+        return isinstance(posted_event_ids, list) and event_id in posted_event_ids
+
     def can_post_now(self) -> bool:
         """Compose + post gates without the actual call — useful for
         tests that want to probe rate-limit state."""
@@ -147,13 +198,18 @@ class StatuslogPoster:
     def post(self, event: dict) -> str:
         """Consider + post one chronicle event. Returns one of:
         ``"posted"`` | ``"low-salience"`` | ``"cap-exceeded"`` |
-        ``"debounced"`` | ``"compose-empty"`` | ``"allowlist-denied"`` |
-        ``"client-disabled"`` | ``"failed"``.
+        ``"debounced"`` | ``"duplicate-event"`` | ``"compose-empty"`` |
+        ``"allowlist-denied"`` | ``"client-disabled"`` | ``"failed"``.
         """
         salience = event.get("salience", 0.0)
         if not isinstance(salience, (int, float)) or salience < self.min_salience:
             _record("low-salience")
             return "low-salience"
+
+        event_id = str(event.get("event_id") or "")
+        if self._event_already_posted(event_id):
+            _record("duplicate-event")
+            return "duplicate-event"
 
         now = self._now_fn()
         state = self._read_state()
@@ -171,7 +227,7 @@ class StatuslogPoster:
         # Allowlist before any composition — deny short-circuits LLM cost.
         allow = allowlist_check(
             SURFACE,
-            "chronicle.high_salience",
+            str(event.get("event_type") or "chronicle.high_salience"),
             {
                 "summary": event.get("summary", ""),
                 "source": event.get("source", ""),
@@ -223,16 +279,40 @@ class StatuslogPoster:
         state["last_post_ts"] = now
         state["day_key"] = today
         state["day_count"] = day_count + 1
-        state.setdefault("last_event_id", event.get("event_id", ""))
+        if event_id:
+            posted_event_ids = state.get("posted_event_ids")
+            if not isinstance(posted_event_ids, list):
+                posted_event_ids = []
+            if event_id not in posted_event_ids:
+                posted_event_ids.append(event_id)
+            state["posted_event_ids"] = posted_event_ids[-256:]
+            state["last_event_id"] = event_id
         self._write_state(state)
         _record("posted")
         log.info("omg-statuslog: posted (day %s, %d/%d)", today, day_count + 1, self.daily_cap)
         return "posted"
 
+    def post_candidate(self, candidate: StatuslogCandidate) -> str:
+        event = candidate.event.model_dump(mode="json")
+        event.setdefault("summary", _summary_from_candidate(candidate))
+        event["gate_move"] = candidate.move.model_dump(mode="json")
+        return self.post(event)
+
+    def post_rvpe_events(self, events: Iterable[ResearchVehiclePublicEvent]) -> dict[str, str]:
+        candidates, rejections = select_statuslog_postable_events(events)
+        outcomes: dict[str, str] = {
+            rejection.event_id: f"rejected:{rejection.state}" for rejection in rejections
+        }
+        for candidate in candidates:
+            outcomes[candidate.event.event_id] = self.post_candidate(candidate)
+        return outcomes
+
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--event-json", required=True, help="path to JSON file with one chronicle event")
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument("--event-json", help="path to JSON file with one manual chronicle event")
+    source.add_argument("--rvpe-jsonl", help="path to ResearchVehiclePublicEvent JSONL rows")
     p.add_argument("--address", default=DEFAULT_ADDRESS)
     p.add_argument("--dry-run", action="store_true", help="run gates + compose; skip post")
     p.add_argument("--verbose", action="store_true")
@@ -242,8 +322,6 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
-
-    event = json.loads(Path(args.event_json).read_text(encoding="utf-8"))
 
     import time
 
@@ -268,15 +346,31 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.dry_run:
-        # Probe gates without posting.
-        can = poster.can_post_now()
-        text = _compose(event)
-        print(f"can-post: {can}; compose-length: {len(text)}")
+        if args.event_json:
+            event = json.loads(Path(args.event_json).read_text(encoding="utf-8"))
+            can = poster.can_post_now()
+            text = _compose(event)
+            print(f"can-post: {can}; compose-length: {len(text)}")
+        else:
+            events = _read_rvpe_jsonl(Path(args.rvpe_jsonl))
+            candidates, rejections = select_statuslog_postable_events(events)
+            print(json.dumps({"candidates": len(candidates), "rejections": len(rejections)}))
         return 0
 
-    outcome = poster.post(event)
-    print(outcome)
-    return 0 if outcome in ("posted", "low-salience", "cap-exceeded", "debounced") else 1
+    if args.event_json:
+        event = json.loads(Path(args.event_json).read_text(encoding="utf-8"))
+        outcome = poster.post(event)
+        print(outcome)
+        return (
+            0
+            if outcome in ("posted", "low-salience", "cap-exceeded", "debounced", "duplicate-event")
+            else 1
+        )
+
+    events = _read_rvpe_jsonl(Path(args.rvpe_jsonl))
+    outcomes = poster.post_rvpe_events(events)
+    print(json.dumps(outcomes, sort_keys=True))
+    return 0 if all(_rvpe_cli_success(outcome) for outcome in outcomes.values()) else 1
 
 
 if __name__ == "__main__":

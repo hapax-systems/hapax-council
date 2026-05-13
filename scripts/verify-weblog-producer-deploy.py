@@ -4,13 +4,13 @@
 1. Checks /dev/shm/hapax-public-events/events.jsonl for an omg.weblog event
 2. Checks Mastodon and Bluesky poster idempotency logs for the event
 3. Only with --live-egress: publishes a test post through the publication bus
-4. Only with --cleanup-live: deletes the test post after live verification
+4. With --live-egress: deletes the test post after verification by default
 
 Usage:
     uv run python scripts/verify-weblog-producer-deploy.py
     uv run python scripts/verify-weblog-producer-deploy.py --check-only
     uv run python scripts/verify-weblog-producer-deploy.py --live-egress
-    uv run python scripts/verify-weblog-producer-deploy.py --live-egress --cleanup-live
+    uv run python scripts/verify-weblog-producer-deploy.py --live-egress --leave-live-post
 """
 
 from __future__ import annotations
@@ -208,26 +208,38 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--cleanup-live",
-        dest="cleanup_live",
-        action="store_true",
-        help="delete the live test post after --live-egress verification",
+        dest="leave_live_post",
+        action="store_false",
+        help="deprecated compatibility flag; live cleanup is now the default",
     )
     parser.add_argument(
         "--cleanup",
-        dest="cleanup_live",
+        dest="leave_live_post",
+        action="store_false",
+        help="deprecated alias for --cleanup-live; live cleanup is now the default",
+    )
+    parser.add_argument(
+        "--leave-live-post",
+        dest="leave_live_post",
         action="store_true",
-        help="deprecated alias for --cleanup-live; only honored with --live-egress",
+        help="leave the live verification post in place for manual debugging",
     )
     parser.add_argument(
         "--no-cleanup",
-        dest="cleanup_live",
-        action="store_false",
-        help="deprecated compatibility flag; live cleanup is opt-in",
+        dest="leave_live_post",
+        action="store_true",
+        help="deprecated alias for --leave-live-post",
+    )
+    parser.add_argument(
+        "--require-service",
+        action="store_true",
+        help="require the systemd producer service to be active during check-only verification",
     )
     parser.add_argument(
         "--check-only", action="store_true", help="check existing events without publishing"
     )
     parser.add_argument("--verbose", action="store_true")
+    parser.set_defaults(leave_live_post=False)
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -235,10 +247,11 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
 
-    if not check_service_running():
-        log.error("weblog producer service is not running")
-        return 1
-    log.info("weblog producer service: active")
+    if args.require_service or args.live_egress:
+        if not check_service_running():
+            log.error("weblog producer service is not running")
+            return 1
+        log.info("weblog producer service: active")
 
     if args.check_only or not args.live_egress:
         event = find_weblog_event(0)
@@ -263,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if event is None:
         log.error("timed out waiting for weblog event after %ds", MAX_WAIT_S)
-        if args.cleanup_live:
+        if not args.leave_live_post:
             delete_test_post()
         return 1
 
@@ -279,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
     fanout = check_social_fanout(event_id)
     log.info("social fanout results: %s", fanout)
 
-    if args.cleanup_live:
+    if not args.leave_live_post:
         delete_test_post()
 
     all_ok = event is not None and _required_social_fanout_ok(fanout)
