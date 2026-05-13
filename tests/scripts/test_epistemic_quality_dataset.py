@@ -276,3 +276,98 @@ def test_secret_like_blocks_are_not_selected(tmp_path: Path) -> None:
 
     assert len(blocks) == 1
     assert "second block" in blocks[0][1]
+
+
+def test_curate_builds_ready_manifest_and_source_notes(tmp_path: Path) -> None:
+    research_root = tmp_path / "research"
+    _write_blocks(
+        research_root / "weblog" / "2026-05-07-grounded-agent-communication-lab-journal.md",
+        30,
+        "operator-public-a",
+    )
+    _write_blocks(
+        research_root
+        / "weblog"
+        / "2026-05-08-formal-method-value-braid-operator-surfaces-lab-journal-part-1.md",
+        30,
+        "operator-public-b",
+    )
+    _write_blocks(
+        research_root / "audit" / "2026-05-12-full-corpus-hardening-audit.md",
+        80,
+        "agent-audit",
+    )
+
+    manifest = tmp_path / "curated.jsonl"
+    source_notes = tmp_path / "source-notes.jsonl"
+    labeling_pack = tmp_path / "labeling.md"
+    report = tmp_path / "report.md"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "curate",
+            "--research-root",
+            str(research_root),
+            "--output",
+            str(manifest),
+            "--source-notes",
+            str(source_notes),
+            "--labeling-pack",
+            str(labeling_pack),
+            "--curation-report",
+            str(report),
+            "--curated-at",
+            "2026-05-13T03:52:50Z",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    records = [json.loads(line) for line in manifest.read_text(encoding="utf-8").splitlines()]
+    notes = [json.loads(line) for line in source_notes.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 200
+    assert len(notes) == 200
+    assert sum(1 for record in records if record["tier"] == "A") == 50
+    assert sum(1 for record in records if record["tier"] == "B") == 30
+    assert sum(1 for record in records if record["tier"] == "C") == 70
+    assert sum(1 for record in records if record["tier"] == "D") == 50
+    assert all(record["text_status"] == "ready" for record in records)
+    assert sum(1 for record in records if record["relabel_required"]) == 40
+    assert {record["tier"] for record in records if record["relabel_required"]} == {
+        "A",
+        "B",
+        "C",
+        "D",
+    }
+    assert all(note["curation_status"] == "ready" for note in notes)
+    assert "does not pass the Phase 0 hard gate" in report.read_text(encoding="utf-8")
+
+
+def test_source_note_validation_rejects_local_path() -> None:
+    records = eqd.synthetic_bad_records(1)
+    notes = [
+        {
+            "manifest_id": records[0]["id"],
+            "tier": records[0]["tier"],
+            "source_ref": records[0]["source_ref"],
+            "excerpt_or_note_hash": records[0]["excerpt_hash"],
+            "privacy_class": records[0]["privacy_class"],
+            "authorship_status": "synthetic_fixture",
+            "rights_status": "synthetic_owned",
+            "curation_status": "ready",
+            "curator": "codex",
+            "curated_at": "2026-05-13T03:52:50Z",
+            "blocker_reason": None,
+            "manual_privacy_note": "leaks /home/hapax/private/path",
+            "source_role": "known_bad_or_adversarial_fixture",
+            "authority_ceiling": records[0]["authority_ceiling"],
+        }
+    ]
+
+    errors = eqd.validate_source_notes(records, notes)
+
+    assert any("local_path" in error for error in errors)
