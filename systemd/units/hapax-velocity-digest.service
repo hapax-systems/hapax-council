@@ -8,6 +8,7 @@ Type=oneshot
 WorkingDirectory=%h/.cache/hapax/rebuild/worktree
 EnvironmentFile=/run/user/1000/hapax-secrets.env
 Environment=LOG_LEVEL=INFO
+Environment=HAPAX_RESEARCH_VEHICLE_PUBLIC_EVENT_PATH=/dev/shm/hapax-public-events/events.jsonl
 ExecStart=%h/.local/bin/uv run python -m agents.velocity_digest_public_event_producer
 TimeoutStartSec=120
 MemoryMax=256M

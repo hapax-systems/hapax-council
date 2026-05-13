@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import agents.weblog_publish_public_event_producer as weblog_producer
 from agents.weblog_publish_public_event_producer import (
     WeblogPublishPublicEventProducer,
     WeblogRssItem,
@@ -71,6 +72,61 @@ def test_posse_callback_fires_on_new_event(tmp_path: Path) -> None:
     assert isinstance(item_arg, WeblogRssItem)
     assert item_arg.link == "https://hapax.weblog.lol/2026/05/test-post"
     assert event_arg.event_type == "omg.weblog"
+
+
+def test_cli_defaults_to_bus_only_without_posse(tmp_path: Path, monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeProducer:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def run_once(self) -> int:
+            return 0
+
+    monkeypatch.setattr(weblog_producer, "WeblogPublishPublicEventProducer", FakeProducer)
+
+    assert (
+        weblog_producer.main(
+            [
+                "--once",
+                "--public-event-path",
+                str(tmp_path / "public.jsonl"),
+                "--state-path",
+                str(tmp_path / "state.json"),
+            ]
+        )
+        == 0
+    )
+    assert captured["posse_callback"] is None
+
+
+def test_cli_posse_flag_is_explicit_opt_in(tmp_path: Path, monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeProducer:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def run_once(self) -> int:
+            return 0
+
+    monkeypatch.setattr(weblog_producer, "WeblogPublishPublicEventProducer", FakeProducer)
+
+    assert (
+        weblog_producer.main(
+            [
+                "--once",
+                "--posse",
+                "--public-event-path",
+                str(tmp_path / "public.jsonl"),
+                "--state-path",
+                str(tmp_path / "state.json"),
+            ]
+        )
+        == 0
+    )
+    assert captured["posse_callback"] is weblog_producer.bridgy_posse_callback
 
 
 def test_posse_callback_not_fired_for_existing_items(tmp_path: Path) -> None:
