@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Publish the constitutional governance blog post to hapax.weblog.lol.
+"""Enqueue the constitutional governance blog post through the publication bus.
 
 Usage:
-    uv run python scripts/publish-constitutional-blog-post.py [--dry-run]
+    uv run python scripts/publish-constitutional-blog-post.py [--dry-run] [--surfaces omg-weblog]
 """
 
 from __future__ import annotations
@@ -11,75 +11,59 @@ import argparse
 import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts import publish_vault_artifact
+
 DRAFT_PATH = (
-    Path(__file__).resolve().parents[1]
+    REPO_ROOT
     / "docs"
     / "publication-drafts"
     / "2026-05-11-constitutional-governance-beyond-prompt-engineering.md"
 )
 
-ENTRY_SLUG = "constitutional-governance-beyond-prompt-engineering"
-PUBLIC_LOCATION = f"/2026/05/{ENTRY_SLUG}"
-PUBLIC_URL = f"https://hapax.weblog.lol{PUBLIC_LOCATION}"
+DEFAULT_SURFACES = "omg-weblog"
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Publish constitutional governance blog post")
-    parser.add_argument("--dry-run", action="store_true", help="Print content without publishing")
-    args = parser.parse_args()
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Enqueue constitutional governance blog post")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print artifact JSON without writing to the publication inbox",
+    )
+    parser.add_argument(
+        "--surfaces",
+        default=DEFAULT_SURFACES,
+        help=f"Comma-separated publication-bus surfaces (default: {DEFAULT_SURFACES})",
+    )
+    parser.add_argument(
+        "--state-root",
+        type=Path,
+        default=None,
+        help="Override $HAPAX_STATE for testing",
+    )
+    parser.add_argument(
+        "--approver",
+        default="Oudepode",
+        help="Operator referent to record on approval",
+    )
+    args = parser.parse_args(argv)
 
-    if not DRAFT_PATH.exists():
-        print(f"Draft not found: {DRAFT_PATH}", file=sys.stderr)
-        return 1
-
-    body = DRAFT_PATH.read_text()
-
+    bus_args = [
+        str(DRAFT_PATH),
+        "--surfaces",
+        args.surfaces,
+        "--approver",
+        args.approver,
+    ]
+    if args.state_root is not None:
+        bus_args.extend(["--state-root", str(args.state_root)])
     if args.dry_run:
-        print(f"=== DRY RUN: would publish to {PUBLIC_URL} ===")
-        print(f"=== Body length: {len(body)} chars ===")
-        print(body[:500])
-        print("...")
-        return 0
-
-    from agents.publication_bus.omg_weblog_publisher import OmgLolWeblogPublisher
-    from agents.publication_bus.publisher_kit import PublisherPayload
-    from agents.publication_bus.publisher_kit.allowlist import load_allowlist
-    from shared.omg_lol_client import OmgLolClient
-
-    client = OmgLolClient()
-    if not client.enabled:
-        print(
-            "OmgLolClient disabled (no API key). Run: pass show omg-lol/api-key",
-            file=sys.stderr,
-        )
-        return 1
-
-    OmgLolWeblogPublisher.allowlist = load_allowlist(
-        OmgLolWeblogPublisher.surface_name, [ENTRY_SLUG]
-    )
-    publisher = OmgLolWeblogPublisher(client=client, address="hapax")
-    payload = PublisherPayload(
-        target=ENTRY_SLUG,
-        text=body,
-        metadata={
-            "location": PUBLIC_LOCATION,
-            "slug": ENTRY_SLUG,
-        },
-    )
-
-    print(f"Publishing to {PUBLIC_URL}...")
-    result = publisher.publish(payload)
-
-    if result.ok:
-        print(f"Published: {result.detail}")
-    elif result.refused:
-        print(f"Refused: {result.detail}", file=sys.stderr)
-        return 1
-    else:
-        print(f"Error: {result.detail}", file=sys.stderr)
-        return 1
-
-    return 0
+        bus_args.append("--dry-run")
+    return publish_vault_artifact.main(bus_args)
 
 
 if __name__ == "__main__":
