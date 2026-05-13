@@ -1,0 +1,1488 @@
+{
+  "authority_case": "REQ-20260512-public-weblog-and-omg-claim-hardening",
+  "claim_ceiling": "source-of-truth receipt only; no Token Capital claim upgrade, no RAG repair claim, no downstream value claim",
+  "generated_at": "2026-05-13T10:15:37Z",
+  "generated_by": "scripts/omg_public_surface_source_reconcile.py",
+  "rows": [
+    {
+      "claim_ceiling": "dated public archive/source witness only; no stronger current-state claim",
+      "claim_gate_findings": [],
+      "disposition": "committed_or_local_source_exact_match",
+      "item_id": "landing-page",
+      "kind": "landing_page",
+      "live_source_len": 7649,
+      "live_source_sha256": "5216d27769f65402c3105e7b73c4ec84938a963d5138499c767b76f0ab98a460",
+      "location": "/",
+      "modified": "1778613904",
+      "public_url": "https://hapax.omg.lol/",
+      "source_candidates": [
+        {
+          "exact_live_match": true,
+          "kind": "repo_landing_source",
+          "ref": "agents/omg_web_builder/static/index.html",
+          "status": "committed_source",
+          "text_len": 7649,
+          "text_sha256": "5216d27769f65402c3105e7b73c4ec84938a963d5138499c767b76f0ab98a460"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.omg.lol",
+      "title": "hapax.omg.lol landing page",
+      "token_capital_rag_hits": []
+    },
+    {
+      "claim_ceiling": "dated public archive/source witness only; no stronger current-state claim",
+      "claim_gate_findings": [],
+      "disposition": "publish_state_source_candidate_live_may_drift",
+      "item_id": "cohort-disparity-disclosure",
+      "kind": "post",
+      "live_source_len": 6796,
+      "live_source_sha256": "a6101811b51eafd8f608299bc00137fdd4fd6bfbba259e6de5260e11bd41a58c",
+      "location": "/2026/04/cohort-disparity-disclosure-soundcloud-first-hours-distribution",
+      "modified": "1777145580",
+      "public_url": "https://hapax.weblog.lol/2026/04/cohort-disparity-disclosure-soundcloud-first-hours-distribution",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "publish_state_published",
+          "ref": "~/hapax-state/publish/published/cohort-disparity-disclosure.json",
+          "status": "published",
+          "text_len": 6387,
+          "text_sha256": "c52fafa5736bf8d47e20dddfc3ceb018d193dcdf965d7e0532ae797e829f6bd7"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_log",
+          "ref": "~/hapax-state/publish/log/cohort-disparity-disclosure.omg-weblog.json",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "Cohort Disparity Disclosure \u2014 SoundCloud First-Hours Distribution",
+      "token_capital_rag_hits": []
+    },
+    {
+      "claim_ceiling": "dated public archive/source witness only; no stronger current-state claim",
+      "claim_gate_findings": [],
+      "disposition": "publish_state_source_candidate_live_may_drift",
+      "item_id": "velocity-report-2026-04-25",
+      "kind": "post",
+      "live_source_len": 10296,
+      "live_source_sha256": "ecd01cb1fe8036bcd4107fc68db53a8e452b931d164367296be969f6c6e87dbe",
+      "location": "/2026/04/hapax-velocity-report-2026-04-25",
+      "modified": "1777388400",
+      "public_url": "https://hapax.weblog.lol/2026/04/hapax-velocity-report-2026-04-25",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "publish_state_published",
+          "ref": "~/hapax-state/publish/published/velocity-report-2026-04-25.json",
+          "status": "published",
+          "text_len": 10003,
+          "text_sha256": "f66bfad102568f5d28531dc865edd2a594f4aa08d0cdb4186976ae837346b079"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_log",
+          "ref": "~/hapax-state/publish/log/velocity-report-2026-04-25.omg-weblog.json",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "Hapax Velocity Report \u2014 2026-04-25",
+      "token_capital_rag_hits": []
+    },
+    {
+      "claim_ceiling": "dated public archive/source witness only; no stronger current-state claim",
+      "claim_gate_findings": [],
+      "disposition": "publish_state_source_candidate_live_may_drift",
+      "item_id": "refusal-brief",
+      "kind": "post",
+      "live_source_len": 13094,
+      "live_source_sha256": "c900a5bc3e9c620f46d96831b2bce44b5b9fdfd5b747ff1e04b6ed5b2dd9be10",
+      "location": "/2026/04/refusal-brief-an-automation-tractability-disclosure",
+      "modified": "1777138680",
+      "public_url": "https://hapax.weblog.lol/2026/04/refusal-brief-an-automation-tractability-disclosure",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "publish_state_published",
+          "ref": "~/hapax-state/publish/published/refusal-brief.json",
+          "status": "published",
+          "text_len": 12372,
+          "text_sha256": "903d1682a6caf46075d7cee31a3de7a5ad7dbc9b37920a5a2ea9d9d3f6422507"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_log",
+          "ref": "~/hapax-state/publish/log/refusal-brief.omg-weblog.json",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "Refusal Brief \u2014 An Automation-Tractability Disclosure",
+      "token_capital_rag_hits": []
+    },
+    {
+      "claim_ceiling": "Token Capital/RAG language must remain audit-ceiling or hypothesis only; no existence-proof, compounding, answer-faithfulness, or downstream-value claim",
+      "claim_gate_findings": [],
+      "disposition": "publish_state_source_candidate_live_may_drift",
+      "item_id": "command-r-planning-exceeds-prep-timeout",
+      "kind": "post",
+      "live_source_len": 10042,
+      "live_source_sha256": "612aee0e1d42c2f62958e63c58a5fdd6cbfce7f71266f9062dcbd8032fcea31a",
+      "location": "/2026/05/command-r-35b-planning-calls-exceed-segment-prep-timeout-ceiling",
+      "modified": "1778551680",
+      "public_url": "https://hapax.weblog.lol/2026/05/command-r-35b-planning-calls-exceed-segment-prep-timeout-ceiling",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "publish_state_draft",
+          "ref": "~/hapax-state/publish/draft/command-r-planning-exceeds-prep-timeout.json",
+          "status": "withheld",
+          "text_len": 8934,
+          "text_sha256": "d1dc246702ff4888422533525db553ece98b5643794827a4d8047a2b805443c0"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/weblog/2026-05-12-command-r-planning-exceeds-prep-timeout.md",
+          "status": "local_research_source",
+          "text_len": 11140,
+          "text_sha256": "0832e5d04e21d384d239b8b2feb2369f85d7419b984493c2ec0809b79342f4cf"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/projects/hapax-research/weblog/2026-05-12-command-r-planning-exceeds-prep-timeout.md",
+          "status": "local_research_source",
+          "text_len": 11140,
+          "text_sha256": "0832e5d04e21d384d239b8b2feb2369f85d7419b984493c2ec0809b79342f4cf"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_log",
+          "ref": "~/hapax-state/publish/log/command-r-planning-exceeds-prep-timeout.cross-provider-review.json",
+          "status": "operator_hold",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "Command-R 35B planning calls exceed segment prep timeout ceiling",
+      "token_capital_rag_hits": [
+        "rag"
+      ]
+    },
+    {
+      "claim_ceiling": "withdrawn public archive notice until repaired source is republished",
+      "claim_gate_findings": [],
+      "disposition": "superseded_with_receipt",
+      "item_id": "entry-006-may-10-11",
+      "kind": "post",
+      "live_source_len": 655,
+      "live_source_sha256": "89d2c6bdf89ec6b09f7faca2576082b8d25342f1e585b9d70d03fc25a32400dd",
+      "location": "/2026/05/entry-006-may-10-11-2026",
+      "modified": "1778543580",
+      "public_url": "https://hapax.weblog.lol/2026/05/entry-006-may-10-11-2026",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "publish_state_draft",
+          "ref": "~/hapax-state/publish/draft/entry-006-may-10-11.json",
+          "status": "withheld",
+          "text_len": 27577,
+          "text_sha256": "c070937257a5d98c51266c06aa58c379aa4dd126cc1e2a44bb503ea2bf5392c8"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/lab-journals/entry-006-may-10-11.md",
+          "status": "local_research_source",
+          "text_len": 28900,
+          "text_sha256": "652e0f026a460a6aadedc57aed13bdfc8e9c4d1789b4cff8a876a60fa397274e"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/projects/hapax-research/lab-journals/entry-006-may-10-11.md",
+          "status": "local_research_source",
+          "text_len": 28900,
+          "text_sha256": "652e0f026a460a6aadedc57aed13bdfc8e9c4d1789b4cff8a876a60fa397274e"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_log",
+          "ref": "~/hapax-state/publish/log/entry-006-may-10-11.cross-provider-review.json",
+          "status": "operator_hold",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "Entry 006 \u2014 May 10-11, 2026",
+      "token_capital_rag_hits": [
+        "token capital"
+      ]
+    },
+    {
+      "claim_ceiling": "dated public archive/source witness only; no stronger current-state claim",
+      "claim_gate_findings": [],
+      "disposition": "publish_state_source_candidate_live_may_drift",
+      "item_id": "filesystem-as-message-bus",
+      "kind": "lab-journal",
+      "live_source_len": 10322,
+      "live_source_sha256": "a2e90986fbe67f3b7ea22513ff8118e456ac1dda319b0c11fb0940d8e3891874",
+      "location": "/2026/05/filesystem-as-message-bus",
+      "modified": "1778457600",
+      "public_url": "https://hapax.weblog.lol/2026/05/filesystem-as-message-bus",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "publish_state_failed",
+          "ref": "~/hapax-state/publish/failed/filesystem-as-message-bus.json",
+          "status": "failed",
+          "text_len": 8653,
+          "text_sha256": "1e02e524d92a00222fd092e511973f19e6f66773fcd90b06d04ec44b1485dcc0"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/weblog/2026-05-11-filesystem-as-message-bus.md",
+          "status": "local_research_source",
+          "text_len": 10254,
+          "text_sha256": "52768265b8b9513bdcd0a9338942b6abaaa6f6accd451bfe5b49568612c72497"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/weblog/filesystem-as-message-bus.md",
+          "status": "local_research_source",
+          "text_len": 10252,
+          "text_sha256": "ada5cc3030362ae6f03e8889236dade457756fb09f682fc6a1c787d488e8bedd"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/projects/hapax-research/weblog/2026-05-11-filesystem-as-message-bus.md",
+          "status": "local_research_source",
+          "text_len": 10254,
+          "text_sha256": "52768265b8b9513bdcd0a9338942b6abaaa6f6accd451bfe5b49568612c72497"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/projects/hapax-research/weblog/filesystem-as-message-bus.md",
+          "status": "local_research_source",
+          "text_len": 10252,
+          "text_sha256": "ada5cc3030362ae6f03e8889236dade457756fb09f682fc6a1c787d488e8bedd"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_log",
+          "ref": "~/hapax-state/publish/log/filesystem-as-message-bus.omg-weblog.json",
+          "status": "denied",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "\"Filesystem as Message Bus: Why We Ditched Queues for inotify\"",
+      "token_capital_rag_hits": []
+    },
+    {
+      "claim_ceiling": "Token Capital/RAG language must remain audit-ceiling or hypothesis only; no existence-proof, compounding, answer-faithfulness, or downstream-value claim",
+      "claim_gate_findings": [],
+      "disposition": "publish_state_source_candidate_live_may_drift",
+      "item_id": "formal-method-value-braid-operator-surfaces-may-8-lab-journal-part-1",
+      "kind": "post",
+      "live_source_len": 24765,
+      "live_source_sha256": "7e5e793947ef5d6eaf6153bc2838f3cf92fe21844605051d4f914e99637cb4e5",
+      "location": "/2026/05/formal-method-value-braid-and-operator-surfaces-may-8-lab-journal-part-1",
+      "modified": "1778261040",
+      "public_url": "https://hapax.weblog.lol/2026/05/formal-method-value-braid-and-operator-surfaces-may-8-lab-journal-part-1",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "publish_state_published",
+          "ref": "~/hapax-state/publish/published/formal-method-value-braid-operator-surfaces-may-8-lab-journal-part-1.json",
+          "status": "published",
+          "text_len": 24047,
+          "text_sha256": "aaea8bfeba0a4ddeac10bc7b17000459ffbb9ee1e7674e3236d8e0ccf358ebe0"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/weblog/2026-05-08-formal-method-value-braid-operator-surfaces-lab-journal-part-1.md",
+          "status": "local_research_source",
+          "text_len": 27974,
+          "text_sha256": "b9b311a321fe6e72d43b9a80cbf1d32fb616b9518802f807ee3640b0fd537942"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/projects/hapax-research/weblog/2026-05-08-formal-method-value-braid-operator-surfaces-lab-journal-part-1.md",
+          "status": "local_research_source",
+          "text_len": 27974,
+          "text_sha256": "b9b311a321fe6e72d43b9a80cbf1d32fb616b9518802f807ee3640b0fd537942"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_log",
+          "ref": "~/hapax-state/publish/log/formal-method-value-braid-operator-surfaces-may-8-lab-journal-part-1.omg-weblog.json",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "Formal Method, Value Braid, And Operator Surfaces, May 8 Lab Journal Part 1",
+      "token_capital_rag_hits": [
+        "rag"
+      ]
+    },
+    {
+      "claim_ceiling": "dated public archive/source witness only; no stronger current-state claim",
+      "claim_gate_findings": [],
+      "disposition": "publish_state_source_candidate_live_may_drift",
+      "item_id": "forms-generated-authority-gated",
+      "kind": "post",
+      "live_source_len": 5166,
+      "live_source_sha256": "c52159f8ae6f1617fc3790f5a22d2863be8b5898ca72e94803392979015a10d7",
+      "location": "/2026/05/forms-are-generated-authority-is-gated",
+      "modified": "1778118420",
+      "public_url": "https://hapax.weblog.lol/2026/05/forms-are-generated-authority-is-gated",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "publish_state_published",
+          "ref": "~/hapax-state/publish/published/forms-generated-authority-gated.json",
+          "status": "published",
+          "text_len": 4965,
+          "text_sha256": "784cbf2ec5e4979374beed49741ebb88929ca59abd55a9809d6fade9d5bc72cd"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/weblog/2026-05-07-forms-generated-authority-gated.md",
+          "status": "local_research_source",
+          "text_len": 8000,
+          "text_sha256": "ab4e89728d18ff98b008da6052bc456c798aa5d53945af118adf3ca04b7a5f2a"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/projects/hapax-research/weblog/2026-05-07-forms-generated-authority-gated.md",
+          "status": "local_research_source",
+          "text_len": 8000,
+          "text_sha256": "ab4e89728d18ff98b008da6052bc456c798aa5d53945af118adf3ca04b7a5f2a"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_log",
+          "ref": "~/hapax-state/publish/log/forms-generated-authority-gated.omg-weblog.json",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "Forms Are Generated; Authority Is Gated",
+      "token_capital_rag_hits": []
+    },
+    {
+      "claim_ceiling": "withdrawn; Token Capital remains below existence-proof, compounding, and Shapley-value language",
+      "claim_gate_findings": [],
+      "disposition": "superseded_with_receipt",
+      "item_id": "gaps-in-token-economic-theory-toward-a-theory-of-token-capital",
+      "kind": "post",
+      "live_source_len": 625,
+      "live_source_sha256": "4e4a7d2d001bc71ce3da34002454c7707daa7a7e4d4f259b12ff034e79ef86f3",
+      "location": "/2026/05/gaps-in-token-economic-theory-toward-a-theory-of-token-capital",
+      "modified": "1778539620",
+      "public_url": "https://hapax.weblog.lol/2026/05/gaps-in-token-economic-theory-toward-a-theory-of-token-capital",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "publish_state_failed",
+          "ref": "~/hapax-state/publish/failed/gaps-in-token-economic-theory-toward-a-theory-of-token-capital.json",
+          "status": "failed",
+          "text_len": 39408,
+          "text_sha256": "ed25e39212d0a1c69b9620c0bef3548a2c90e9a47d87734146608ee9997cb0f4"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/foundations/token-economic-theory-gaps-2026-05-11.md",
+          "status": "local_research_source",
+          "text_len": 42852,
+          "text_sha256": "8796f3caa6d3ed5bbe9f38d2f0e4f37294b8452bc342ef3d800d2408b28b9607"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/projects/hapax-research/foundations/token-economic-theory-gaps-2026-05-11.md",
+          "status": "local_research_source",
+          "text_len": 42852,
+          "text_sha256": "8796f3caa6d3ed5bbe9f38d2f0e4f37294b8452bc342ef3d800d2408b28b9607"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_log",
+          "ref": "~/hapax-state/publish/log/gaps-in-token-economic-theory-toward-a-theory-of-token-capital.omg-weblog.json",
+          "status": "denied",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "Gaps in Token Economic Theory: Toward a Theory of Token Capital",
+      "token_capital_rag_hits": [
+        "rag",
+        "token capital"
+      ]
+    },
+    {
+      "claim_ceiling": "dated public archive/source witness only; no stronger current-state claim",
+      "claim_gate_findings": [],
+      "disposition": "publish_state_source_candidate_live_may_drift",
+      "item_id": "grounded-agent-communication-may-7-lab-journal",
+      "kind": "post",
+      "live_source_len": 18578,
+      "live_source_sha256": "6d51f39b121726636df56608cd29c631620074cdf844cadba9db5c47c273762d",
+      "location": "/2026/05/grounded-agent-communication-may-7-lab-journal",
+      "modified": "1778187000",
+      "public_url": "https://hapax.weblog.lol/2026/05/grounded-agent-communication-may-7-lab-journal",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "publish_state_published",
+          "ref": "~/hapax-state/publish/published/grounded-agent-communication-may-7-lab-journal.json",
+          "status": "published",
+          "text_len": 18399,
+          "text_sha256": "67a262aba320614d873af19dba40671e58d5fa46fee4386bf6725eaa8b5369e4"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/weblog/2026-05-07-grounded-agent-communication-lab-journal.md",
+          "status": "local_research_source",
+          "text_len": 21792,
+          "text_sha256": "d905c76927fa63d6bbebc2cf41712e6d85bd82e9bb2367d1d2b6b489702d06d6"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/projects/hapax-research/weblog/2026-05-07-grounded-agent-communication-lab-journal.md",
+          "status": "local_research_source",
+          "text_len": 21792,
+          "text_sha256": "d905c76927fa63d6bbebc2cf41712e6d85bd82e9bb2367d1d2b6b489702d06d6"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_log",
+          "ref": "~/hapax-state/publish/log/grounded-agent-communication-may-7-lab-journal.omg-weblog.json",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "Grounded Agent Communication, May 7 Lab Journal",
+      "token_capital_rag_hits": []
+    },
+    {
+      "claim_ceiling": "dated public archive/source witness only; no stronger current-state claim",
+      "claim_gate_findings": [],
+      "disposition": "research_source_candidate_live_may_drift",
+      "item_id": "2026-05-03-velocity-report-followup",
+      "kind": "post",
+      "live_source_len": 13534,
+      "live_source_sha256": "4d8dfeb8a035e680c43429af1c4a6e2808272cf9c600f7527d9cdb417981a2ad",
+      "location": "/2026/05/hapax-velocity-report-follow-up-2026-05-03",
+      "modified": "1778612987",
+      "public_url": "https://hapax.weblog.lol/2026/05/hapax-velocity-report-follow-up-2026-05-03",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/weblog/2026-05-03-velocity-report-followup.md",
+          "status": "local_research_source",
+          "text_len": 15530,
+          "text_sha256": "778ba9dda29bb617fc9e269379c1ae10ff7f3248f528355b010b93ac812c9913"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/projects/hapax-research/weblog/2026-05-03-velocity-report-followup.md",
+          "status": "local_research_source",
+          "text_len": 15530,
+          "text_sha256": "778ba9dda29bb617fc9e269379c1ae10ff7f3248f528355b010b93ac812c9913"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_log",
+          "ref": "~/hapax-state/publish/log/velocity-report-2026-05-03-followup.omg-weblog.json",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "Hapax Velocity Report Follow-up \u2014 2026-05-03",
+      "token_capital_rag_hits": []
+    },
+    {
+      "claim_ceiling": "withdrawn pending public-safe legal, grant, payment-rail, tax, and privacy receipts",
+      "claim_gate_findings": [],
+      "disposition": "superseded_with_receipt",
+      "item_id": "may-10-lab-journal-llc-grants-visibility",
+      "kind": "post",
+      "live_source_len": 699,
+      "live_source_sha256": "63c96f70931a70574dcf360e0cc7e5b1d7958e5fe9e72e9f265a1a2bd359e351",
+      "location": "/2026/05/may-10-lab-journal-llc-grants-visibility",
+      "modified": "1778394600",
+      "public_url": "https://hapax.weblog.lol/2026/05/may-10-lab-journal-llc-grants-visibility",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "May 10 Lab Journal - Public Claim Review Pending",
+      "token_capital_rag_hits": []
+    },
+    {
+      "claim_ceiling": "dated public archive/source witness only; no stronger current-state claim",
+      "claim_gate_findings": [],
+      "disposition": "publish_state_source_candidate_live_may_drift",
+      "item_id": "non-anthropomorphic-segment-prep-lab-journal",
+      "kind": "post",
+      "live_source_len": 3798,
+      "live_source_sha256": "63e07342046ccc74d72a317d94d79e7ca32aaf1c32783dfbcbf2ff1257aca44b",
+      "location": "/2026/05/non-anthropomorphic-segment-prep-is-not-sterility",
+      "modified": "1778103720",
+      "public_url": "https://hapax.weblog.lol/2026/05/non-anthropomorphic-segment-prep-is-not-sterility",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "publish_state_published",
+          "ref": "~/hapax-state/publish/published/non-anthropomorphic-segment-prep-lab-journal.json",
+          "status": "published",
+          "text_len": 3126,
+          "text_sha256": "ffa237abd5a74204225fac9fc94583233953d93d9a5735437f2341b4de770041"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_state_failed",
+          "ref": "~/hapax-state/publish/failed/non-anthropomorphic-segment-prep-is-not-sterility.json",
+          "status": "failed",
+          "text_len": 4314,
+          "text_sha256": "247b8039ed6379610b00ad410b444a842008912d06ab697a61e6771bca6922f6"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_state_failed",
+          "ref": "~/hapax-state/publish/failed/non-anthropomorphic-segment-prep-lab-journal.json",
+          "status": "failed",
+          "text_len": 3126,
+          "text_sha256": "ffa237abd5a74204225fac9fc94583233953d93d9a5735437f2341b4de770041"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/weblog/2026-05-06-non-anthropomorphic-segment-prep-lab-journal.md",
+          "status": "local_research_source",
+          "text_len": 4736,
+          "text_sha256": "1dbee7738edf35ecbc326664bddff6f28d796304020abf1de3a0a3dbce477c64"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/projects/hapax-research/weblog/2026-05-06-non-anthropomorphic-segment-prep-lab-journal.md",
+          "status": "local_research_source",
+          "text_len": 4736,
+          "text_sha256": "1dbee7738edf35ecbc326664bddff6f28d796304020abf1de3a0a3dbce477c64"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_log",
+          "ref": "~/hapax-state/publish/log/non-anthropomorphic-segment-prep-is-not-sterility.omg-weblog.json",
+          "status": "denied",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_log",
+          "ref": "~/hapax-state/publish/log/non-anthropomorphic-segment-prep-lab-journal.omg-weblog.json",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "Non-Anthropomorphic Segment Prep Is Not Sterility",
+      "token_capital_rag_hits": []
+    },
+    {
+      "claim_ceiling": "publication-hygiene artifact only; not a public claim page",
+      "claim_gate_findings": [],
+      "disposition": "publication_hygiene_cleanup",
+      "item_id": "page_template",
+      "kind": "Template",
+      "live_source_len": 2823,
+      "live_source_sha256": "db8791c46d552f93d16fc6d4595b5f92a37496f5d3a593ba1f850d945b71e96a",
+      "location": "/2026/05/page-template",
+      "modified": "1778612987",
+      "public_url": "https://hapax.weblog.lol/2026/05/page-template",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "Page Template",
+      "token_capital_rag_hits": []
+    },
+    {
+      "claim_ceiling": "Token Capital/RAG language must remain audit-ceiling or hypothesis only; no existence-proof, compounding, answer-faithfulness, or downstream-value claim",
+      "claim_gate_findings": [],
+      "disposition": "publish_state_source_candidate_live_may_drift",
+      "item_id": "segment-prep-control-loops-closed",
+      "kind": "post",
+      "live_source_len": 2884,
+      "live_source_sha256": "a674a28de8458fda622780247f98ed67721a16e8f1757695fee409f3139fb7bf",
+      "location": "/2026/05/segment-prep-control-loops-are-getting-realer",
+      "modified": "1778112540",
+      "public_url": "https://hapax.weblog.lol/2026/05/segment-prep-control-loops-are-getting-realer",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "publish_state_published",
+          "ref": "~/hapax-state/publish/published/segment-prep-control-loops-closed.json",
+          "status": "published",
+          "text_len": 2187,
+          "text_sha256": "aabc2f361737f1767415a031b5df3dc1edabf7e701272269a8ccd4133c2fbc3f"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/weblog/2026-05-06-segment-prep-control-loops-closed.md",
+          "status": "local_research_source",
+          "text_len": 3898,
+          "text_sha256": "ad7c0b6a3bfa7d69d9eaaffb263d3fec8ef7d620b7c50ee2a94ee2d7d3638e7f"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/projects/hapax-research/weblog/2026-05-06-segment-prep-control-loops-closed.md",
+          "status": "local_research_source",
+          "text_len": 3898,
+          "text_sha256": "ad7c0b6a3bfa7d69d9eaaffb263d3fec8ef7d620b7c50ee2a94ee2d7d3638e7f"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_log",
+          "ref": "~/hapax-state/publish/log/segment-prep-control-loops-closed.omg-weblog.json",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "Segment Prep Control Loops Are Getting Realer",
+      "token_capital_rag_hits": [
+        "rag"
+      ]
+    },
+    {
+      "claim_ceiling": "Token Capital/RAG language must remain audit-ceiling or hypothesis only; no existence-proof, compounding, answer-faithfulness, or downstream-value claim",
+      "claim_gate_findings": [],
+      "disposition": "publish_state_source_candidate_live_may_drift",
+      "item_id": "segment-prep-framework-prediction-ledger",
+      "kind": "post",
+      "live_source_len": 61383,
+      "live_source_sha256": "c2bea366d7c32589c9b0a4e1351bb88aed7137a7d70a1edf7f41b9483eb70806",
+      "location": "/2026/05/segment-prep-framework-prediction-ledger",
+      "modified": "1778118840",
+      "public_url": "https://hapax.weblog.lol/2026/05/segment-prep-framework-prediction-ledger",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "publish_state_published",
+          "ref": "~/hapax-state/publish/published/segment-prep-framework-prediction-ledger.json",
+          "status": "published",
+          "text_len": 61238,
+          "text_sha256": "c1f704d583e24ed2db26edb33ef36a83f6bde55fbff185cb5071a7c28b374b92"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_state_failed",
+          "ref": "~/hapax-state/publish/failed/segment-prep-framework-prediction-ledger.json",
+          "status": "failed",
+          "text_len": 77198,
+          "text_sha256": "01ffc4b8bfd2724c93287e924500cf1d1d438a65dea53e3044da677c98c16ca3"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/ledgers/segment-prep-framework-prediction-ledger.md",
+          "status": "local_research_source",
+          "text_len": 81654,
+          "text_sha256": "4e69c646e6362fbee2fc76aa341e733605bf53ee518a45ad68c5d862dc9e69b6"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/projects/hapax-research/ledgers/segment-prep-framework-prediction-ledger.md",
+          "status": "local_research_source",
+          "text_len": 81654,
+          "text_sha256": "4e69c646e6362fbee2fc76aa341e733605bf53ee518a45ad68c5d862dc9e69b6"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_log",
+          "ref": "~/hapax-state/publish/log/segment-prep-framework-prediction-ledger.omg-weblog.json",
+          "status": "denied",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_log",
+          "ref": "~/hapax-state/publish/log/segment-prep-framework-prediction-ledger.zenodo-doi.json",
+          "status": "error",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "Segment Prep Framework Prediction Ledger",
+      "token_capital_rag_hits": [
+        "rag"
+      ]
+    },
+    {
+      "claim_ceiling": "dated public archive/source witness only; no stronger current-state claim",
+      "claim_gate_findings": [],
+      "disposition": "publish_state_source_candidate_live_may_drift",
+      "item_id": "systems-control-theory-reorientation",
+      "kind": "post",
+      "live_source_len": 2561,
+      "live_source_sha256": "ce73cdf4052a307d14867213c65e080fbcd55627ff8ad4176fc8819d943c4723",
+      "location": "/2026/05/segment-prep-is-being-re-read-as-a-control-problem",
+      "modified": "1778109540",
+      "public_url": "https://hapax.weblog.lol/2026/05/segment-prep-is-being-re-read-as-a-control-problem",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "publish_state_published",
+          "ref": "~/hapax-state/publish/published/systems-control-theory-reorientation.json",
+          "status": "published",
+          "text_len": 1879,
+          "text_sha256": "502ceb269736799c7cb20122c07bf7bc8e810a6faba644aaa7145322a57aa673"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/weblog/2026-05-06-systems-control-theory-reorientation.md",
+          "status": "local_research_source",
+          "text_len": 3442,
+          "text_sha256": "8ddd71759f7c4206a613b002f4f917dd623533dbafffb46ca85bdeccb498f0d4"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/projects/hapax-research/weblog/2026-05-06-systems-control-theory-reorientation.md",
+          "status": "local_research_source",
+          "text_len": 3442,
+          "text_sha256": "8ddd71759f7c4206a613b002f4f917dd623533dbafffb46ca85bdeccb498f0d4"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_log",
+          "ref": "~/hapax-state/publish/log/systems-control-theory-reorientation.omg-weblog.json",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "Segment Prep Is Being Re-read as a Control Problem",
+      "token_capital_rag_hits": []
+    },
+    {
+      "claim_ceiling": "dated public archive/source witness only; no stronger current-state claim",
+      "claim_gate_findings": [],
+      "disposition": "committed_or_local_source_exact_match",
+      "item_id": "show-hn-governance-that-ships",
+      "kind": "post",
+      "live_source_len": 8415,
+      "live_source_sha256": "e84bbf86ebc5cc6e898b15699c41a2ffa2e9cf8f99864274883b3dbc55ef8926",
+      "location": "/2026/05/show-hn-governance-that-ships",
+      "modified": "1778371200",
+      "public_url": "https://hapax.weblog.lol/2026/05/show-hn-governance-that-ships",
+      "source_candidates": [
+        {
+          "exact_live_match": true,
+          "kind": "repo_file",
+          "ref": "docs/publication-drafts/2026-05-10-show-hn-governance-that-ships.md",
+          "status": "committed_source",
+          "text_len": 8415,
+          "text_sha256": "e84bbf86ebc5cc6e898b15699c41a2ffa2e9cf8f99864274883b3dbc55ef8926"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publication_log",
+          "ref": "~/hapax-state/publication/publication-log.jsonl:164",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publication_log",
+          "ref": "~/hapax-state/publication/publication-log.jsonl:165",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publication_log",
+          "ref": "~/hapax-state/publication/publication-log.jsonl:168",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publication_log",
+          "ref": "~/hapax-state/publication/publication-log.jsonl:169",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publication_log",
+          "ref": "~/hapax-state/publication/publication-log.jsonl:170",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publication_log",
+          "ref": "~/hapax-state/publication/publication-log.jsonl:171",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publication_log",
+          "ref": "~/hapax-state/publication/publication-log.jsonl:173",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publication_log",
+          "ref": "~/hapax-state/publication/publication-log.jsonl:174",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publication_log",
+          "ref": "~/hapax-state/publication/publication-log.jsonl:176",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publication_log",
+          "ref": "~/hapax-state/publication/publication-log.jsonl:180",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publication_log",
+          "ref": "~/hapax-state/publication/publication-log.jsonl:184",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "Show HN: Mechanical Governance for AI Coding Agents at 3,000+ PRs",
+      "token_capital_rag_hits": []
+    },
+    {
+      "claim_ceiling": "dated public archive/source witness only; no stronger current-state claim",
+      "claim_gate_findings": [],
+      "disposition": "publish_state_source_candidate_live_may_drift",
+      "item_id": "start-here-hapax-ai-safety-research-artifact",
+      "kind": "post",
+      "live_source_len": 2482,
+      "live_source_sha256": "70cf24c8f9fdbd6b6c8077489f95706c2aad6517f2e087424dac0759a3bf5948",
+      "location": "/2026/05/start-here-hapax-as-an-ai-safety-research-artifact",
+      "modified": "1778268840",
+      "public_url": "https://hapax.weblog.lol/2026/05/start-here-hapax-as-an-ai-safety-research-artifact",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "publish_state_published",
+          "ref": "~/hapax-state/publish/published/start-here-hapax-ai-safety-research-artifact.json",
+          "status": "published",
+          "text_len": 2325,
+          "text_sha256": "17206549863317ba96fef4928ef0ca0bf8587626aa15ca7d2b0a0e3e6bc2af08"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_log",
+          "ref": "~/hapax-state/publish/log/start-here-hapax-ai-safety-research-artifact.omg-weblog.json",
+          "status": "ok",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "Start Here: Hapax as an AI Safety Research Artifact",
+      "token_capital_rag_hits": []
+    },
+    {
+      "claim_ceiling": "dated public archive/source witness only; no stronger current-state claim",
+      "claim_gate_findings": [],
+      "disposition": "publish_state_source_candidate_live_may_drift",
+      "item_id": "the-refusal-brief-why-our-ai-documents-what-it-wont-do",
+      "kind": "post",
+      "live_source_len": 8504,
+      "live_source_sha256": "3be8ee8df07a69fcb4a59950261fccac7c43db9db0c743dbdb16fbe21760d4a0",
+      "location": "/2026/05/the-refusal-brief-why-our-ai-documents-what-it-wont-do",
+      "modified": "1778615515",
+      "public_url": "https://hapax.weblog.lol/2026/05/the-refusal-brief-why-our-ai-documents-what-it-wont-do",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "publish_state_draft",
+          "ref": "~/hapax-state/publish/draft/refusal-brief-why-our-ai-documents-what-it-wont-do.json",
+          "status": "withheld",
+          "text_len": 8169,
+          "text_sha256": "efab8278d8fb2b16a5f0e425b95ef38028d48ad7f21fa2f143a763f4e26410e4"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/weblog/2026-05-11-refusal-brief-why-our-ai-documents-what-it-wont-do.md",
+          "status": "local_research_source",
+          "text_len": 10176,
+          "text_sha256": "3ebf0ad1f06a397a23f703f45bc12d4273dc59b5fa1b2768e96f05250b89cfe9"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/weblog/refusal-brief-why-our-ai-documents-what-it-wont-do.md",
+          "status": "local_research_source",
+          "text_len": 11105,
+          "text_sha256": "d4df447b9e828ff826c9e28188a99624433f320d34926dae2b54191c45d2a75c"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/projects/hapax-research/weblog/2026-05-11-refusal-brief-why-our-ai-documents-what-it-wont-do.md",
+          "status": "local_research_source",
+          "text_len": 10176,
+          "text_sha256": "3ebf0ad1f06a397a23f703f45bc12d4273dc59b5fa1b2768e96f05250b89cfe9"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "research_file",
+          "ref": "~/projects/hapax-research/weblog/refusal-brief-why-our-ai-documents-what-it-wont-do.md",
+          "status": "local_research_source",
+          "text_len": 11105,
+          "text_sha256": "d4df447b9e828ff826c9e28188a99624433f320d34926dae2b54191c45d2a75c"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "publish_log",
+          "ref": "~/hapax-state/publish/log/refusal-brief-why-our-ai-documents-what-it-wont-do.cross-provider-review.json",
+          "status": "operator_hold",
+          "text_len": null,
+          "text_sha256": null
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "The Refusal Brief: Why Our AI Documents What It Won't Do",
+      "token_capital_rag_hits": []
+    },
+    {
+      "claim_ceiling": "dated public archive/source witness only; no stronger current-state claim",
+      "claim_gate_findings": [],
+      "disposition": "api_only_with_committed_receipt",
+      "item_id": "may-8-9-lab-journal",
+      "kind": "Post",
+      "live_source_len": 12302,
+      "live_source_sha256": "6afb8857ec10c0c52b47f077936c6635e090d073ad4cec268ab0f14324c74402",
+      "location": "/may-8-9-lab-journal",
+      "modified": "1778355000",
+      "public_url": "https://hapax.weblog.lol/may-8-9-lab-journal",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "May 8-9 Lab Journal - Studio Registry And Assertion Audit",
+      "token_capital_rag_hits": []
+    },
+    {
+      "claim_ceiling": "dated public archive/source witness only; no stronger current-state claim",
+      "claim_gate_findings": [],
+      "disposition": "api_only_with_committed_receipt",
+      "item_id": "sdlc-for-ai-agents-2026-05-09",
+      "kind": "Post",
+      "live_source_len": 7873,
+      "live_source_sha256": "589480efa149139fe379a15a94dcbe8aa4d8cd492817cf9890755da7175e521a",
+      "location": "/sdlc-for-ai-agents-2026-05-09",
+      "modified": "1778353200",
+      "public_url": "https://hapax.weblog.lol/sdlc-for-ai-agents-2026-05-09",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "How We Built an SDLC for Governed AI Agent Work",
+      "token_capital_rag_hits": []
+    },
+    {
+      "claim_ceiling": "receive-only support framing; activity metrics only, no failure-free governance claim",
+      "claim_gate_findings": [],
+      "disposition": "api_only_with_committed_receipt",
+      "item_id": "support",
+      "kind": "Page",
+      "live_source_len": 1537,
+      "live_source_sha256": "ed30494dde46c86f1f3b9580de2b524729258bd9ff2e430f4aeb82c46ab72246",
+      "location": "/support",
+      "modified": "1778383800",
+      "public_url": "https://hapax.weblog.lol/support",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "Support",
+      "token_capital_rag_hits": []
+    },
+    {
+      "claim_ceiling": "dated public archive/source witness only; no stronger current-state claim",
+      "claim_gate_findings": [],
+      "disposition": "api_only_with_committed_receipt",
+      "item_id": "velocity-report-2026-05-09",
+      "kind": "Post",
+      "live_source_len": 4077,
+      "live_source_sha256": "5ebff952b5a27c6c1895e6305e5d91887fbc8ae54f9364e6988036e25d4d179c",
+      "location": "/velocity-report-2026-05-09",
+      "modified": "1778352300",
+      "public_url": "https://hapax.weblog.lol/velocity-report-2026-05-09",
+      "source_candidates": [
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 17264,
+          "text_sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d"
+        },
+        {
+          "exact_live_match": false,
+          "kind": "committed_receipt",
+          "ref": "~/Documents/Personal/20-projects/hapax-research/audit/2026-05-12-weblog-archive-public-claim-hardening-receipt.md",
+          "status": "source_of_truth_disposition_receipt",
+          "text_len": 7871,
+          "text_sha256": "9790fb6d02949792acc29224d306d5648bf5f1a22c1da16bdda43ce6c9499a0d"
+        }
+      ],
+      "surface": "hapax.weblog.lol",
+      "title": "Hapax Velocity Report \u2014 2026-05-09",
+      "token_capital_rag_hits": []
+    }
+  ],
+  "schema_version": 1,
+  "source_refs": [
+    "shared.omg_lol_client.OmgLolClient.get_web('hapax')",
+    "shared.omg_lol_client.OmgLolClient.list_entries('hapax')",
+    "agents/omg_web_builder/static/index.html",
+    "docs/publication-drafts/*.md",
+    "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+    "~/hapax-state/publish",
+    "~/hapax-state/publication/publication-log.jsonl"
+  ],
+  "summary": {
+    "claim_gate_findings": 0,
+    "committed_source_candidates": 2,
+    "exact_source_matches": 2,
+    "live_items": 25,
+    "receipted_live_only_items": 7,
+    "unreconciled_items": []
+  }
+}
