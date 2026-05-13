@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agents.studio_compositor.director_segment_runner import (
     DirectorSegmentCommand,
     DirectorSegmentRunner,
     render_director_segment_binding_prompt,
+)
+from agents.studio_compositor.layout_fragment_guard import (
+    compose_segment_fragment_over_layout,
+    segment_fragment_layout_error,
+    segment_min_source_count,
 )
 from agents.studio_compositor.layout_state import LayoutState
 from shared.compositor_model import (
@@ -19,6 +24,9 @@ from shared.compositor_model import (
     SurfaceGeometry,
     SurfaceSchema,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _layout(name: str, source_id: str) -> Layout:
@@ -41,6 +49,31 @@ def _layout(name: str, source_id: str) -> Layout:
         ],
         assignments=[Assignment(source=source_id, surface=f"{source_id}-surface")],
     )
+
+
+def _full_surface_layout(name: str = "default", source_count: int = 6) -> Layout:
+    sources = [
+        SourceSchema(
+            id=f"src-{index}",
+            kind="cairo",
+            backend="cairo",
+            params={"class_name": "Stub"},
+        )
+        for index in range(source_count)
+    ]
+    surfaces = [
+        SurfaceSchema(
+            id=f"surface-{index}",
+            geometry=SurfaceGeometry(kind="rect", x=index * 10, y=0, w=100, h=100),
+            z_order=index,
+        )
+        for index in range(source_count)
+    ]
+    assignments = [
+        Assignment(source=f"src-{index}", surface=f"surface-{index}")
+        for index in range(source_count)
+    ]
+    return Layout(name=name, sources=sources, surfaces=surfaces, assignments=assignments)
 
 
 def _active_segment_payload(
@@ -119,6 +152,69 @@ def test_runner_emits_layout_activate_command_for_manual_segment(tmp_path: Path)
     prompt_lines = render_director_segment_binding_prompt(path=binding_path, now=1001.0)
     assert "## Segment director binding" in prompt_lines
     assert any("segment-tier" in line for line in prompt_lines)
+
+
+def test_runner_command_composes_segment_fragment_without_escape_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("HAPAX_DIRECTOR_SEGMENT_FRAGMENT_LAYOUTS_ENABLED", raising=False)
+    default = _full_surface_layout(source_count=segment_min_source_count())
+    tier = _layout("segment-tier", "tier-panel")
+    layouts = {"default": default, "segment-tier": tier}
+    state = LayoutState(default)
+    segment_path = tmp_path / "active-segment.json"
+    receipt_path = tmp_path / "receipt.json"
+    _write_json(segment_path, _active_segment_payload())
+    commands: list[DirectorSegmentCommand] = []
+
+    def _guarded_sink(command: DirectorSegmentCommand) -> dict[str, Any]:
+        commands.append(command)
+        layout_name = command.args["layout_name"]
+        fragment = layouts[layout_name]
+        resolved = (
+            compose_segment_fragment_over_layout(
+                layout_name=layout_name,
+                fragment_layout=fragment,
+                base_layout=state.get(),
+            )
+            or fragment
+        )
+        fragment_error = segment_fragment_layout_error(
+            layout_name=layout_name,
+            layout=resolved,
+            source=command.args.get("source"),
+        )
+        if fragment_error is not None:
+            return {"status": "error", **fragment_error}
+        state.mutate(lambda _previous: resolved)
+        return {
+            "status": "ok",
+            "layout_name": layout_name,
+            "source_count": len(resolved.sources),
+        }
+
+    runner = DirectorSegmentRunner(
+        layout_state=state,
+        available_layouts=lambda: layouts.keys(),
+        command_sink=_guarded_sink,
+        segment_state_path=segment_path,
+        receipt_path=receipt_path,
+        prompt_binding_path=tmp_path / "binding.json",
+        command_jsonl_path=tmp_path / "commands.jsonl",
+    )
+
+    receipt = runner.process_once(now=1000.0)
+
+    assert receipt is not None
+    assert receipt["programme_id"] == "prog-manual"
+    assert receipt["selected_layout"] == "segment-tier"
+    assert receipt["command_result"]["status"] == "ok"
+    assert receipt["command_result"]["source_count"] >= segment_min_source_count()
+    assert [command.args["layout_name"] for command in commands] == ["segment-tier"]
+    assert state.get().name == "segment-tier"
+    assert len(state.get().sources) >= segment_min_source_count()
+    assert any(source.id == "tier-panel" for source in state.get().sources)
 
 
 def test_runner_refuses_layout_authority_fields_without_command(tmp_path: Path) -> None:
