@@ -63,6 +63,19 @@ def test_omg_weblog_is_wired():
     assert entry.status == "WIRED"
 
 
+def test_legacy_omg_publishers_are_guarded_not_broad_visibility():
+    expected = {
+        "agents.publication_bus.omg_statuslog_publisher": "guarded awareness telemetry",
+        "agents.publication_bus.omg_now_publisher": "guarded legacy /now",
+        "agents.publication_bus.omg_pastebin_publisher": "not high-volume visibility fanout",
+        "agents.publication_bus.omg_weblog_delete_publisher": "cleanup is on by default",
+    }
+    for module, phrase in expected.items():
+        entry = PUBLISHER_WIRE_REGISTRY[module]
+        assert entry.status == "WIRED"
+        assert phrase in entry.rationale.lower()
+
+
 def test_omg_lol_pay_publisher_is_not_catalogued():
     assert "agents.publication_bus.omg_lol_pay_publisher" not in PUBLISHER_WIRE_REGISTRY
 

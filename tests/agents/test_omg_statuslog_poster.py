@@ -22,6 +22,16 @@ from agents.omg_statuslog_poster.poster import (
     _compose_status_text,
 )
 from agents.publication_bus.publisher_kit import PublisherResult
+from shared.research_vehicle_public_event import (
+    FallbackAction,
+    PrivacyClass,
+    PublicEventProvenance,
+    PublicEventSource,
+    PublicEventSurfacePolicy,
+    ResearchVehiclePublicEvent,
+    RightsClass,
+    Surface,
+)
 
 
 def _chronicle_event(
@@ -29,6 +39,7 @@ def _chronicle_event(
 ) -> dict:
     return {
         "event_id": event_id,
+        "event_type": "chronicle.high_salience",
         "source": "director_observability",
         "ts": "2026-04-24T16:00:00Z",
         "salience": salience,
@@ -322,6 +333,78 @@ class TestPostFailure:
         assert outcome == "failed"
 
 
+class TestEventIdIdempotency:
+    def test_duplicate_event_id_does_not_publish_twice(self, tmp_path: Path) -> None:
+        publisher = _make_publisher()
+        poster = StatuslogPoster(
+            client=_make_client(),
+            publisher=publisher,
+            state_file=tmp_path / "state.json",
+            min_interval_s=0,
+            daily_cap=3,
+            now_fn=lambda: 1_000_000.0,
+            compose_fn=lambda event: "ok",
+        )
+
+        first = poster.post(_chronicle_event(event_id="rvpe-1"))
+        second = poster.post(_chronicle_event(event_id="rvpe-1"))
+
+        assert first == "posted"
+        assert second == "duplicate-event"
+        publisher.publish.assert_called_once()
+
+
+class TestRvpeConsumption:
+    def test_allowed_rvpe_candidate_posts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _allow_statuslog(monkeypatch)
+        publisher = _make_publisher()
+        poster = StatuslogPoster(
+            client=_make_client(),
+            publisher=publisher,
+            state_file=tmp_path / "state.json",
+            min_interval_s=0,
+            daily_cap=3,
+            min_salience=0.6,
+            now_fn=lambda: 1_000_000.0,
+            compose_fn=lambda event: event["summary"],
+        )
+
+        outcomes = poster.post_rvpe_events([_rvpe_event(event_id="rvpe-allowed")])
+
+        assert outcomes == {"rvpe-allowed": "posted"}
+        payload = publisher.publish.call_args.args[0]
+        assert payload.text == "chronicle.high_salience from test"
+
+    def test_denied_rvpe_event_is_rejected_without_publish(self, tmp_path: Path) -> None:
+        publisher = _make_publisher()
+        poster = StatuslogPoster(
+            client=_make_client(),
+            publisher=publisher,
+            state_file=tmp_path / "state.json",
+            min_interval_s=0,
+            daily_cap=3,
+            now_fn=lambda: 1_000_000.0,
+            compose_fn=lambda event: "should not publish",
+        )
+
+        outcomes = poster.post_rvpe_events(
+            [
+                _rvpe_event(
+                    event_id="rvpe-denied",
+                    surface_policy=_surface_policy(
+                        allowed=["omg_statuslog"],
+                        denied=["omg_statuslog"],
+                    ),
+                )
+            ]
+        )
+
+        assert outcomes == {"rvpe-denied": "rejected:deny"}
+        publisher.publish.assert_not_called()
+
+
 def _make_client() -> MagicMock:
     client = MagicMock()
     client.enabled = True
@@ -332,6 +415,17 @@ def _make_publisher(result: PublisherResult | None = None) -> MagicMock:
     publisher = MagicMock()
     publisher.publish.return_value = result or PublisherResult(ok=True, detail="ok")
     return publisher
+
+
+def _allow_statuslog(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agents.omg_statuslog_poster import poster as poster_mod
+
+    def _allow(*args, **kwargs):
+        from shared.governance.publication_allowlist import AllowlistResult
+
+        return AllowlistResult(decision="allow", payload={}, reason="stub allow")
+
+    monkeypatch.setattr(poster_mod, "allowlist_check", _allow)
 
 
 class TestComposeStatusText:
@@ -350,3 +444,71 @@ class TestComposeStatusText:
 
         result = _compose_status_text(_chronicle_event(), llm_call=_raise)
         assert result == ""
+
+
+def _provenance() -> PublicEventProvenance:
+    return PublicEventProvenance(
+        token="tok-abc",
+        generated_at="2026-05-02T14:00:00Z",
+        producer="test",
+        evidence_refs=["evidence://x"],
+        rights_basis="operator-original",
+        citation_refs=[],
+    )
+
+
+def _surface_policy(
+    *,
+    allowed: list[Surface],
+    denied: list[Surface] | None = None,
+    fallback_action: FallbackAction = "dry_run",
+) -> PublicEventSurfacePolicy:
+    return PublicEventSurfacePolicy(
+        allowed_surfaces=allowed,
+        denied_surfaces=denied or [],
+        claim_live=True,
+        claim_archive=True,
+        claim_monetizable=False,
+        requires_egress_public_claim=False,
+        requires_audio_safe=False,
+        requires_provenance=True,
+        requires_human_review=False,
+        rate_limit_key=None,
+        redaction_policy="none",
+        fallback_action=fallback_action,
+        dry_run_reason=None,
+    )
+
+
+def _rvpe_event(
+    *,
+    event_id: str,
+    rights_class: RightsClass = "operator_original",
+    privacy_class: PrivacyClass = "public_safe",
+    surface_policy: PublicEventSurfacePolicy | None = None,
+) -> ResearchVehiclePublicEvent:
+    return ResearchVehiclePublicEvent(
+        event_id=event_id,
+        event_type="chronicle.high_salience",
+        occurred_at="2026-05-02T14:00:00Z",
+        broadcast_id=None,
+        programme_id=None,
+        condition_id=None,
+        source=PublicEventSource(
+            producer="test",
+            substrate_id="sub-1",
+            task_anchor=None,
+            evidence_ref="evidence://src",
+            freshness_ref=None,
+        ),
+        salience=0.7,
+        state_kind="research_observation",
+        rights_class=rights_class,
+        privacy_class=privacy_class,
+        provenance=_provenance(),
+        public_url=None,
+        frame_ref=None,
+        chapter_ref=None,
+        attribution_refs=[],
+        surface_policy=surface_policy or _surface_policy(allowed=["omg_statuslog"]),
+    )

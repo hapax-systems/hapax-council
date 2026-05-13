@@ -60,6 +60,7 @@ def test_default_is_check_only_and_does_not_mutate(
 ) -> None:
     published = False
     deleted = False
+    checked_service = False
 
     def _publish_test_post() -> bool:
         nonlocal published
@@ -71,15 +72,22 @@ def test_default_is_check_only_and_does_not_mutate(
         deleted = True
         return True
 
+    def _check_service_running() -> bool:
+        nonlocal checked_service
+        checked_service = True
+        return True
+
     monkeypatch.setattr(deploy_module, "publish_test_post", _publish_test_post)
     monkeypatch.setattr(deploy_module, "delete_test_post", _delete_test_post)
+    monkeypatch.setattr(deploy_module, "check_service_running", _check_service_running)
 
     assert deploy_module.main([]) == 0
     assert published is False
     assert deleted is False
+    assert checked_service is False
 
 
-def test_live_egress_cleanup_runs_only_when_requested(
+def test_live_egress_cleanup_runs_by_default(
     deploy_module: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     deleted = False
@@ -91,7 +99,7 @@ def test_live_egress_cleanup_runs_only_when_requested(
 
     monkeypatch.setattr(deploy_module, "delete_test_post", _delete_test_post)
 
-    assert deploy_module.main(["--live-egress", "--cleanup-live"]) == 0
+    assert deploy_module.main(["--live-egress"]) == 0
     assert deleted is True
 
 
@@ -111,7 +119,7 @@ def test_no_cleanup_opt_out_leaves_test_post(
     assert deleted is False
 
 
-def test_live_egress_default_leaves_test_post(
+def test_leave_live_post_override_leaves_test_post(
     deploy_module: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     deleted = False
@@ -123,7 +131,7 @@ def test_live_egress_default_leaves_test_post(
 
     monkeypatch.setattr(deploy_module, "delete_test_post", _delete_test_post)
 
-    assert deploy_module.main(["--live-egress"]) == 0
+    assert deploy_module.main(["--live-egress", "--leave-live-post"]) == 0
     assert deleted is False
 
 
@@ -255,5 +263,5 @@ def test_live_egress_fails_when_social_fanout_missing_and_cleans_up(
     monkeypatch.setattr(deploy_module, "check_social_fanout", lambda event_id: {})
     monkeypatch.setattr(deploy_module, "delete_test_post", _delete_test_post)
 
-    assert deploy_module.main(["--live-egress", "--cleanup-live"]) == 1
+    assert deploy_module.main(["--live-egress"]) == 1
     assert deleted is True

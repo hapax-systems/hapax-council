@@ -136,7 +136,8 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "public-filtered awareness summary, dedupes by hash, then publishes "
             "through OmgLolStatuslogPublisher so the live statuslog egress path "
             "uses the publication-bus allowlist/legal-name/counter/witness "
-            "invariants."
+            "invariants. This is guarded awareness telemetry, not the canonical "
+            "visibility-engine RVPE statuslog path."
         ),
     ),
     "agents.publication_bus.omg_web_publisher": WireEntry(
@@ -159,7 +160,8 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
         rationale=(
             "Wired via agents.omg_now_sync for the /now daemon path. The daemon "
             "still owns state rendering and dedupe; OmgLolNowPublisher owns "
-            "the irreversible set_now egress."
+            "the irreversible set_now egress. Guarded legacy /now state page "
+            "utility; not rolling visibility fanout."
         ),
     ),
     "agents.publication_bus.omg_pastebin_publisher": WireEntry(
@@ -171,7 +173,8 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "Wired via agents.omg_pastebin_publisher and "
             "agents.omg_credits_publisher. These callers keep their rendering, "
             "category allowlist, and hash-dedupe responsibilities, while the "
-            "set_paste transport is owned by OmgLolPastebinPublisher."
+            "set_paste transport is owned by OmgLolPastebinPublisher. Guarded "
+            "legacy digest/artifact utility; not high-volume visibility fanout."
         ),
     ),
     "agents.publication_bus.omg_purl_publisher": WireEntry(
@@ -203,8 +206,9 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
         pass_key_required="omg-lol/api-key",
         rationale=(
             "Wired only through scripts/verify-weblog-producer-deploy.py "
-            "`--cleanup-live` for the tightly allowlisted deploy verification "
-            "entry. The cleanup delete_entry call remains inside publication_bus."
+            "`--live-egress` cleanup for the tightly allowlisted deploy "
+            "verification entry. The cleanup delete_entry call remains inside "
+            "publication_bus and live verifier cleanup is on by default."
         ),
     ),
     "agents.publication_bus.osf_prereg_publisher": WireEntry(
