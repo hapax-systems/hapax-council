@@ -437,6 +437,10 @@ def _build_full_segment_prompt(
         "Do not issue camera, layout, surface, panel, clip, or cue commands. "
         "The script proposes needs through spoken source/action/chat patterns; "
         "runtime owns layout decisions and readback.\n\n"
+        "== CRITICAL: NO TEMPLATE SYNTAX ==\n"
+        "NEVER emit placeholder patterns like {topic}, {item}, {source}, item_1:, item_2:.\n"
+        "These are REJECTED by validators. Write the actual content, not template variables.\n"
+        "For tier_list/ranking: state the ORDERING CRITERIA explicitly in at least one beat.\n\n"
         "== CRITICAL: SPOKEN PROSE ONLY ==\n"
         "Write ONLY words you would SAY OUT LOUD on a live broadcast.\n"
         "NEVER include stage directions, beat labels, action cues, or meta-instructions.\n"
@@ -507,6 +511,18 @@ def _build_full_segment_prompt(
         "forceful, and intelligible to humans. Use marked analogies when useful. Do "
         "not claim human feeling, empathy, taste, intuition, memory, concern, or a "
         "human host identity.\n\n"
+        "== CRITICAL: HAPAX VOICE — NOT A PODCAST HOST ==\n"
+        "Hapax is a nonhuman cognitive substrate, NOT a human presenter.\n"
+        "BANNED phrases (these FAIL validation):\n"
+        "- Collective we/our/let's: 'We'll', 'Our first', 'Let's dive', 'we have'\n"
+        "- Stock host greetings: 'welcome to', 'hello everyone', 'thanks for joining'\n"
+        "- Stock transitions: 'Moving on', 'without further ado', 'before we go'\n"
+        "- Audience pandering: 'feel free', 'share your thoughts', 'drop it in the chat'\n"
+        "INSTEAD use Hapax voice:\n"
+        "- 'The evidence shifts here' not 'Let's move on'\n"
+        "- 'This source changes the ranking' not 'We'll see why this matters'\n"
+        "- 'The chart requires a response from chat' not 'Feel free to share your thoughts'\n"
+        "- Third person or bare assertions: 'The data shows', 'This collapses', 'Notice the gap'\n\n"
         "RHETORIC — every beat must satisfy ALL of these:\n"
         "1. CLAIM → EVIDENCE → SO-WHAT → IMPLICATION chain per beat.\n"
         "2. Every sentence has at least one TECHNICAL NOUN or PROPER NAME.\n"
@@ -540,8 +556,11 @@ _ALLOWED_PREP_MODELS = {RESIDENT_PREP_MODEL}
 
 
 def _retrieve_broad_fore_understanding() -> list[dict[str, Any]]:
-    """Retrieve recent source-consequence encounters across all topics."""
+    """Retrieve recent source-consequence encounters across all topics.
 
+    Provides the planner with accumulated interpretive context so it can
+
+    select topics informed by prior cycles."""
     try:
         from shared.config import get_qdrant
         from shared.hermeneutic_spiral import COLLECTION_NAME
@@ -643,7 +662,6 @@ _HOST_STOCK_RE = _re.compile(
 
 def _scrub_host_posture(script: list[str]) -> list[str]:
     """Best-effort rewrite of common host-posture violations."""
-
     out: list[str] = []
     for beat in script:
         cleaned = _HOST_STOCK_RE.sub("", beat)
@@ -821,12 +839,23 @@ def _build_seed(programme: Any) -> str:
             NarrativeContext,
         )
 
+        perception_line = ""
+        try:
+            from agents.perception_fusion import format_perception_context, read_fused_perception
+
+            perception_line = format_perception_context(read_fused_perception())
+        except Exception:
+            pass
+
         ctx = NarrativeContext(
             programme=programme,
             stimmung_tone="segment_prep",
             director_activity="segment_prep",
         )
-        return _build_seed(ctx)
+        seed = _build_seed(ctx)
+        if perception_line:
+            seed = f"{seed}\n{perception_line}" if seed else perception_line
+        return seed
     except Exception:
         # Fallback: use narrative_beat as seed
         content = getattr(programme, "content", None)
@@ -1871,6 +1900,7 @@ def prep_segment(
         len(script),
         final_avg,
     )
+
     persist_source_consequences(
         source_consequence_map,
         programme_id=prog_id,
