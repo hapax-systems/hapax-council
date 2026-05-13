@@ -374,6 +374,109 @@ class TestCpalRunnerLifecycle:
         assert "voice_output_destination" not in imp.content
         assert "broadcast_intent" not in imp.content
 
+    @pytest.mark.asyncio
+    async def test_autonomous_narrative_live_prior_prepared_script_still_speaks(self, monkeypatch):
+        runner = self._make_runner()
+        daemon = MagicMock()
+        daemon.tts.synthesize.return_value = b"\x00" * 100
+        runner._daemon = daemon
+        runner._impingement_adapter.adapt = MagicMock(
+            return_value=SimpleNamespace(
+                gain_update=None,
+                should_surface=False,
+                narrative="Composed private narration.",
+                error_boost=0.0,
+            )
+        )
+        imp = MagicMock()
+        imp.source = "autonomous_narrative"
+        imp.content = {
+            "narrative": "Composed private narration.",
+            "impulse_id": "impulse-live-prior-1",
+        }
+        active = SimpleNamespace(
+            content=SimpleNamespace(
+                delivery_mode="live_prior",
+                prepared_script=["Prepared words are prior context only."],
+            )
+        )
+        playback_result = SimpleNamespace(
+            status="completed",
+            completed=True,
+            returncode=0,
+            duration_s=0.2,
+            timeout_s=5.0,
+            error=None,
+        )
+        decision = SimpleNamespace(
+            allowed=True,
+            destination=DestinationChannel.PRIVATE,
+            reason_code="private_assistant_monitor_bound",
+            safety_gate={"context_default": "private_or_drop"},
+            target="hapax-private",
+            media_role="Assistant",
+        )
+
+        monkeypatch.setenv("HAPAX_PREP_VERBATIM_LEGACY", "1")
+        with (
+            patch("shared.programme_store.default_store") as default_store,
+            patch(
+                "agents.hapax_daimonion.cpal.runner.resolve_playback_decision",
+                return_value=decision,
+            ),
+            patch("agents.hapax_daimonion.pw_audio_output.play_pcm", return_value=playback_result),
+            patch("agents.hapax_daimonion.cpal.runner.record_destination_decision"),
+            patch("agents.hapax_daimonion.cpal.runner.record_tts_synthesis") as record_tts,
+            patch("agents.hapax_daimonion.cpal.runner.record_playback_result") as record_playback,
+            patch("agents.hapax_daimonion.cpal.runner.asyncio.sleep", new=AsyncMock()),
+        ):
+            default_store.return_value.active_programme.return_value = active
+            await runner.process_impingement(imp)
+
+        record_tts.assert_called_once()
+        record_playback.assert_called_once()
+        assert record_playback.call_args.kwargs["impulse_id"] == "impulse-live-prior-1"
+
+    @pytest.mark.asyncio
+    async def test_autonomous_narrative_legacy_verbatim_prepared_script_skips(self, monkeypatch):
+        runner = self._make_runner()
+        daemon = MagicMock()
+        runner._daemon = daemon
+        runner._impingement_adapter.adapt = MagicMock(
+            return_value=SimpleNamespace(
+                gain_update=None,
+                should_surface=False,
+                narrative="Legacy direct playback.",
+                error_boost=0.0,
+            )
+        )
+        imp = MagicMock()
+        imp.source = "autonomous_narrative"
+        imp.content = {"narrative": "Legacy direct playback."}
+        active = SimpleNamespace(
+            content=SimpleNamespace(
+                delivery_mode="verbatim_legacy",
+                prepared_script=["Legacy direct playback."],
+            )
+        )
+
+        monkeypatch.setenv("HAPAX_PREP_VERBATIM_LEGACY", "1")
+        with (
+            patch("shared.programme_store.default_store") as default_store,
+            patch(
+                "agents.hapax_daimonion.cpal.runner.resolve_playback_decision"
+            ) as resolve_decision,
+            patch(
+                "agents.hapax_daimonion.cpal.runner.record_destination_decision"
+            ) as record_decision,
+        ):
+            default_store.return_value.active_programme.return_value = active
+            await runner.process_impingement(imp)
+
+        resolve_decision.assert_not_called()
+        record_decision.assert_not_called()
+        daemon.tts.synthesize.assert_not_called()
+
     def test_presynthesize_signals(self):
         runner = self._make_runner()
         tts = MagicMock()

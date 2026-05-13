@@ -84,6 +84,22 @@ class SpeechEvent:
     text_preview: str = ""  # first 40 chars for debug/context
 
 
+def _prepared_playback_loop_owns_tts(programme: object | None) -> bool:
+    """Return True only when the legacy prepared playback loop can speak."""
+
+    content = getattr(programme, "content", None) if programme is not None else None
+    if content is None or not getattr(content, "prepared_script", None):
+        return False
+    try:
+        from agents.hapax_daimonion.run_loops_aux import (
+            _prepared_verbatim_legacy_allowed,
+        )
+
+        return bool(_prepared_verbatim_legacy_allowed(content))
+    except Exception:
+        return False
+
+
 _STIMMUNG_PATH = Path("/dev/shm/hapax-stimmung/state.json")
 _TPN_PATH = Path("/dev/shm/hapax-dmn/tpn_active")
 
@@ -979,17 +995,17 @@ class CpalRunner:
         # the resolved destination decision accepts the route.
         source = getattr(impingement, "source", "")
         if source == "autonomous_narrative" and self._daemon is not None:
-            # When the dedicated prepared_playback_loop is driving TTS for a
-            # prepped programme, skip CPAL's autonomous narrative path entirely.
-            # The dedicated loop uses resolve_playback_decision for correct routing.
+            # The dedicated prepared_playback_loop owns TTS only for explicit
+            # legacy verbatim playback. Live-prior prepared scripts are source
+            # context for composition and must not suppress autonomous narration.
             try:
                 from shared.programme_store import default_store as _ds
 
                 _ap = _ds().active_programme()
-                if _ap is not None and getattr(
-                    getattr(_ap, "content", None), "prepared_script", None
-                ):
-                    log.debug("Autonomous narrative skipped: prepared_playback_loop owns TTS")
+                if _prepared_playback_loop_owns_tts(_ap):
+                    log.debug(
+                        "Autonomous narrative skipped: prepared_playback_loop owns legacy TTS"
+                    )
                     return
             except Exception:
                 pass  # fail-open: let it through if store is unavailable
