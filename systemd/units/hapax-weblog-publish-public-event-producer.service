@@ -7,16 +7,17 @@ PartOf=hapax.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/projects/hapax-council
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 EnvironmentFile=-/run/user/1000/hapax-secrets.env
-Environment=PATH=%h/projects/hapax-council/.venv/bin:/usr/bin
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 Environment=HAPAX_WEBLOG_PUBLISH_RSS_URL=https://hapax.weblog.lol/rss.xml
 Environment=HAPAX_WEBLOG_PUBLISH_EVENT_TICK_S=60
 Environment=HAPAX_RESEARCH_VEHICLE_PUBLIC_EVENT_PATH=/dev/shm/hapax-public-events/events.jsonl
 Environment=HAPAX_LOG_LEVEL=INFO
 # First successful run seeds the current RSS items without fanout. Set
 # --emit-existing manually for intentional backfill.
-ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.weblog_publish_public_event_producer
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.weblog_publish_public_event_producer
 Restart=on-failure
 RestartSec=15
 MemoryMax=128M
