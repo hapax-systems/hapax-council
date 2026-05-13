@@ -1,0 +1,174 @@
+{
+  "suite_id": "epistemic-rag-answer-faithfulness-v1",
+  "version": 1,
+  "created_at": "2026-05-13",
+  "description": "Answer-level companion suite for audit-critical RAG claims. Retrieval labels remain separate from answer faithfulness and downstream contribution metrics.",
+  "queries": [
+    {
+      "id": "rag_compounding_failure",
+      "topic": "rag",
+      "query": "What did the May 2026 audit find about the RAG compounding failure and metadata contamination?",
+      "reference_answer": "The audit found that the RAG pipeline was surfacing metadata-heavy or truncated evidence, which meant Token Capital could not use retrieval behavior as proof of compounding value.",
+      "expected_sources": [
+        {"source_contains": "2026-05-12-full-corpus-hardening-audit", "grade": 3},
+        {"source_contains": "2026-05-12-epistemic-audit-handoff", "grade": 3}
+      ],
+      "required_claims": [
+        {
+          "id": "metadata_contamination",
+          "terms": ["metadata", "contamination"],
+          "source_contains": ["2026-05-12-full-corpus-hardening-audit", "2026-05-12-epistemic-audit-handoff"]
+        },
+        {
+          "id": "rag_claim_blocker",
+          "answer_terms": ["RAG", "proof"],
+          "support_terms": ["RAG", "proof"],
+          "source_contains": ["2026-05-12-full-corpus-hardening-audit", "2026-05-12-epistemic-audit-handoff"]
+        }
+      ],
+      "forbidden_claims": [
+        {"id": "rag_fully_repaired", "terms": ["fully repaired", "publication-grade answer quality"]}
+      ],
+      "expected_refusal_when_no_evidence": true,
+      "insufficient_evidence_terms": ["insufficient evidence", "cannot determine", "not enough evidence"]
+    },
+    {
+      "id": "token_capital_not_existence_proof",
+      "topic": "token-capital",
+      "query": "Why is Token Capital not currently an existence proof while retrieval is still under evaluation?",
+      "reference_answer": "Token Capital remains a hypothesis because retrieval repair has not yet shown generated-token utilization, answer faithfulness, or downstream contribution evidence.",
+      "expected_sources": [
+        {"source_contains": "2026-05-11-token-capital-hardening-audit", "grade": 3},
+        {"source_contains": "token-capital-hardening-remediation", "grade": 2}
+      ],
+      "required_claims": [
+        {
+          "id": "hypothesis_not_proof",
+          "terms": ["hypothesis", "proof"],
+          "source_contains": ["2026-05-11-token-capital-hardening-audit", "token-capital-hardening-remediation"]
+        },
+        {
+          "id": "answer_faithfulness_needed",
+          "answer_terms": ["faithfulness", "downstream"],
+          "support_terms": ["faithfulness", "downstream"],
+          "source_contains": ["token-capital-hardening-remediation"]
+        }
+      ],
+      "forbidden_claims": [
+        {"id": "existence_proof", "terms": ["existence proof", "proves token compounding", "proves appreciating assets"]}
+      ],
+      "expected_refusal_when_no_evidence": true,
+      "insufficient_evidence_terms": ["insufficient evidence", "cannot determine", "not enough evidence"]
+    },
+    {
+      "id": "shapley_repair",
+      "topic": "token-capital",
+      "query": "What should happen to Shapley Value language in the Token Capital drafts?",
+      "reference_answer": "Shapley language should be removed or quarantined unless a cooperative game, players, coalitions, and characteristic function are formally defined; near-term measurement should use marginal contribution or leave-one-out language.",
+      "expected_sources": [
+        {"source_contains": "2026-05-11-token-capital-hardening-audit", "grade": 3},
+        {"source_contains": "fix-plan-token-capital-hardening", "grade": 2}
+      ],
+      "required_claims": [
+        {
+          "id": "formal_game_missing",
+          "terms": ["Shapley", "cooperative"],
+          "source_contains": ["2026-05-11-token-capital-hardening-audit", "fix-plan-token-capital-hardening"]
+        },
+        {
+          "id": "leave_one_out_replacement",
+          "answer_terms": ["marginal", "leave-one-out"],
+          "support_terms": ["marginal", "leave-one-out"],
+          "source_contains": ["fix-plan-token-capital-hardening", "token-capital-hardening-remediation"]
+        }
+      ],
+      "forbidden_claims": [
+        {"id": "valid_shapley_claim", "terms": ["Shapley framework is valid", "formal Shapley proof"]}
+      ],
+      "expected_refusal_when_no_evidence": true,
+      "insufficient_evidence_terms": ["insufficient evidence", "cannot determine", "not enough evidence"]
+    },
+    {
+      "id": "retrieval_faithfulness_separation",
+      "topic": "rag",
+      "query": "Why must retrieval metrics be separated from answer faithfulness metrics?",
+      "reference_answer": "Retrieval metrics show whether evidence was surfaced; faithfulness metrics show whether the generated answer stays supported by that evidence. A system can retrieve relevant context and still produce unsupported claims.",
+      "expected_sources": [
+        {"source_contains": "epistemic-rag-golden-query-suite", "grade": 3},
+        {"text_contains": "faithfulness", "grade": 2}
+      ],
+      "required_claims": [
+        {
+          "id": "retrieval_not_answer_quality",
+          "terms": ["retrieval", "faithfulness"],
+          "source_contains": ["epistemic-rag-golden-query-suite"]
+        },
+        {
+          "id": "unsupported_answer_risk",
+          "answer_terms": ["answer", "unsupported"],
+          "support_terms": ["answer", "faithfulness"]
+        }
+      ],
+      "forbidden_claims": [
+        {"id": "retrieval_equals_truth", "terms": ["retrieval proves truth", "retrieval alone proves"]}
+      ],
+      "expected_refusal_when_no_evidence": true,
+      "insufficient_evidence_terms": ["insufficient evidence", "cannot determine", "not enough evidence"]
+    },
+    {
+      "id": "consent_gated_reader",
+      "topic": "privacy",
+      "query": "How does ConsentGatedReader enforce privacy before LLM access?",
+      "reference_answer": "ConsentGatedReader is the pre-LLM privacy boundary; it uses consent and information-flow style labels so private material is gated before model access.",
+      "expected_sources": [
+        {"text_contains": "ConsentGatedReader", "grade": 3},
+        {"text_contains": "IFC", "grade": 2},
+        {"text_contains": "LIO", "grade": 2}
+      ],
+      "required_claims": [
+        {
+          "id": "pre_llm_boundary",
+          "terms": ["ConsentGatedReader", "LLM"],
+          "support_terms": ["ConsentGatedReader", "LLM"]
+        },
+        {
+          "id": "label_based_privacy",
+          "answer_terms": ["consent", "label"],
+          "support_terms": ["consent", "label"]
+        }
+      ],
+      "forbidden_claims": [
+        {"id": "privacy_absolute", "terms": ["guarantees all privacy", "impossible to leak"]}
+      ],
+      "expected_refusal_when_no_evidence": true,
+      "insufficient_evidence_terms": ["insufficient evidence", "cannot determine", "not enough evidence"]
+    },
+    {
+      "id": "agentgov_vetochain_value",
+      "topic": "agentgov",
+      "query": "What is the validated value path for AgentGov and VetoChains?",
+      "reference_answer": "The validated AgentGov path is deployment-time governance: VetoChains, least privilege, provenance, revocation, and auditable tool controls packaged as a reusable library.",
+      "expected_sources": [
+        {"source_contains": "epistemic-agentgov-value-extraction-pack", "grade": 3},
+        {"text_contains": "VetoChain", "grade": 2}
+      ],
+      "required_claims": [
+        {
+          "id": "governance_value_path",
+          "terms": ["governance", "VetoChain"],
+          "source_contains": ["epistemic-agentgov-value-extraction-pack"]
+        },
+        {
+          "id": "least_privilege_provenance",
+          "answer_terms": ["least privilege", "provenance"],
+          "support_terms": ["least privilege", "provenance"]
+        }
+      ],
+      "forbidden_claims": [
+        {"id": "operator_replaced", "terms": ["replaces operator moral agency", "fully autonomous governance"]}
+      ],
+      "expected_refusal_when_no_evidence": true,
+      "insufficient_evidence_terms": ["insufficient evidence", "cannot determine", "not enough evidence"]
+    }
+  ]
+}
