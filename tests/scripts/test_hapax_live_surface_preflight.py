@@ -651,6 +651,98 @@ hapax_video42_decoded_last_frame_seconds_ago 0.4
     assert payload["v4l2_egress_mode"] == "bridge_v4l2"
 
 
+def test_preflight_full_surface_samples_bridge_cadence_without_direct_appsink(
+    tmp_path: Path,
+) -> None:
+    before = """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_runtime_feature_active{feature="v4l2_output"} 1
+studio_compositor_runtime_feature_active{feature="shmsink_bridge"} 1
+studio_compositor_runtime_feature_active{feature="shader_fx"} 1
+studio_compositor_runtime_feature_active{feature="inline_fx"} 1
+studio_compositor_runtime_feature_active{feature="hero_effect"} 1
+studio_compositor_runtime_feature_active{feature="follow_mode"} 1
+studio_compositor_runtime_feature_active{feature="ward_modulator"} 1
+studio_compositor_runtime_feature_active{feature="flash_overlay"} 0
+studio_compositor_render_stage_frames_total{stage="compositor_src"} 100
+studio_compositor_render_stage_frames_total{stage="output_tee_sink"} 100
+studio_compositor_render_stage_frames_total{stage="hls_parser_src"} 100
+studio_compositor_shmsink_frames_total 100
+studio_compositor_shmsink_last_frame_seconds_ago 0.03
+hapax_v4l2_bridge_write_frames_total 100
+hapax_v4l2_bridge_write_bytes_total 100000
+hapax_v4l2_bridge_write_errors_total 0
+hapax_v4l2_bridge_heartbeat_seconds_ago 0.2
+hapax_obs_decoder_source_active 1
+hapax_obs_decoder_frame_hash_changed 1
+hapax_obs_decoder_frame_flat 0
+hapax_obs_decoder_screenshot_seconds_ago 0.2
+studio_compositor_ward_blit_total{ward="programme-context"} 10
+studio_compositor_ward_blit_total{ward="gem"} 10
+studio_compositor_ward_blit_total{ward="egress-footer"} 10
+hapax_ward_modulator_tick_total 20
+studio_compositor_gem_substrate_active 1
+studio_compositor_gem_substrate_paint_total 10
+hapax_compositor_layout_active{layout="forcefield"} 1
+"""
+    after = """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_runtime_feature_active{feature="v4l2_output"} 1
+studio_compositor_runtime_feature_active{feature="shmsink_bridge"} 1
+studio_compositor_runtime_feature_active{feature="shader_fx"} 1
+studio_compositor_runtime_feature_active{feature="inline_fx"} 1
+studio_compositor_runtime_feature_active{feature="hero_effect"} 1
+studio_compositor_runtime_feature_active{feature="follow_mode"} 1
+studio_compositor_runtime_feature_active{feature="ward_modulator"} 1
+studio_compositor_runtime_feature_active{feature="flash_overlay"} 0
+studio_compositor_render_stage_frames_total{stage="compositor_src"} 131
+studio_compositor_render_stage_frames_total{stage="output_tee_sink"} 130
+studio_compositor_render_stage_frames_total{stage="hls_parser_src"} 130
+studio_compositor_shmsink_frames_total 131
+studio_compositor_shmsink_last_frame_seconds_ago 0.03
+hapax_v4l2_bridge_write_frames_total 131
+hapax_v4l2_bridge_write_bytes_total 131000
+hapax_v4l2_bridge_write_errors_total 0
+hapax_v4l2_bridge_heartbeat_seconds_ago 0.2
+hapax_obs_decoder_source_active 1
+hapax_obs_decoder_frame_hash_changed 1
+hapax_obs_decoder_frame_flat 0
+hapax_obs_decoder_screenshot_seconds_ago 0.2
+studio_compositor_ward_blit_total{ward="programme-context"} 11
+studio_compositor_ward_blit_total{ward="gem"} 11
+studio_compositor_ward_blit_total{ward="egress-footer"} 11
+hapax_ward_modulator_tick_total 21
+studio_compositor_gem_substrate_active 1
+studio_compositor_gem_substrate_paint_total 11
+hapax_compositor_layout_active{layout="forcefield"} 1
+"""
+
+    result = _run(
+        before,
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "true",
+        "--require-full-surface",
+        "--require-obs-decoder",
+        "--full-surface-sample-seconds",
+        "1",
+        tmp_path=tmp_path,
+        after_metrics=after,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "healthy"
+    stage_fps = payload["full_surface_performance"]["stage_fps"]
+    assert stage_fps["v4l2_bridge_writer"] >= 29.5
+    assert stage_fps["shmsink_bridge"] >= 29.5
+    assert "v4l2_appsink" not in stage_fps
+    assert "final_egress_snapshot" not in stage_fps
+
+
 def test_preflight_requires_obs_decoder_motion_when_requested(tmp_path: Path) -> None:
     result = _run(
         """
