@@ -136,9 +136,52 @@ hapax_ward_modulator_tick_total 0
     assert "full_surface:LSC-FX-001:fx_slots_below_min:2<8" in payload["reasons"]
     assert "full_surface:LSC-WARD-001:visible_ward_count_below_min:1<3" in payload["reasons"]
     assert "full_surface:LSC-LAYOUT-003:legacy_static_layout_active:default" in payload["reasons"]
+    assert "full_surface:LSC-SCRIM-001:gem_substrate_not_active" in payload["reasons"]
+    assert "full_surface:LSC-SCRIM-001:gem_substrate_not_painting" in payload["reasons"]
+    assert "full_surface:LSC-SCRIM-001:gem_substrate_disabled" not in payload["reasons"]
 
 
 def test_preflight_full_surface_can_pass_with_complete_surface_evidence(tmp_path: Path) -> None:
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 10
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.1
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 4
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.2
+studio_compositor_runtime_feature_active{feature="shader_fx"} 1
+studio_compositor_runtime_feature_active{feature="inline_fx"} 1
+studio_compositor_runtime_feature_active{feature="hero_effect"} 1
+studio_compositor_runtime_feature_active{feature="follow_mode"} 1
+studio_compositor_runtime_feature_active{feature="ward_modulator"} 1
+studio_compositor_runtime_feature_active{feature="flash_overlay"} 0
+studio_compositor_ward_blit_total{ward="programme-context"} 10
+studio_compositor_ward_blit_total{ward="tier-panel"} 10
+studio_compositor_ward_blit_total{ward="artifact-detail-panel"} 10
+hapax_compositor_layout_active{layout="segment-programme-context"} 1
+hapax_ward_modulator_tick_total 5
+studio_compositor_gem_substrate_active 1
+studio_compositor_gem_substrate_paint_total 8
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "true",
+        "--require-full-surface",
+        "--env",
+        "HAPAX_COMPOSITOR_FX_SLOTS=8",
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "healthy"
+    assert payload["full_surface_required"] is True
+    assert payload["full_surface_failures"] == []
+
+
+def test_preflight_gem_substrate_requires_live_runtime_proof(tmp_path: Path) -> None:
     result = _run(
         """
 studio_compositor_cameras_total 6
@@ -166,13 +209,58 @@ hapax_ward_modulator_tick_total 5
         "--require-full-surface",
         "--env",
         "HAPAX_COMPOSITOR_FX_SLOTS=8",
+        "--env",
+        "HAPAX_GEM_SUBSTRATE_ENABLED=1",
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 10
+    payload = json.loads(result.stdout)
+    assert "full_surface:LSC-SCRIM-001:gem_substrate_not_active" in payload["reasons"]
+    assert "full_surface:LSC-SCRIM-001:gem_substrate_not_painting" in payload["reasons"]
+    assert "full_surface:LSC-SCRIM-001:gem_substrate_disabled" not in payload["reasons"]
+
+
+def test_preflight_ignores_stale_gem_substrate_env_when_runtime_proves_it(
+    tmp_path: Path,
+) -> None:
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 10
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.1
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 4
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.2
+studio_compositor_runtime_feature_active{feature="shader_fx"} 1
+studio_compositor_runtime_feature_active{feature="inline_fx"} 1
+studio_compositor_runtime_feature_active{feature="hero_effect"} 1
+studio_compositor_runtime_feature_active{feature="follow_mode"} 1
+studio_compositor_runtime_feature_active{feature="ward_modulator"} 1
+studio_compositor_runtime_feature_active{feature="flash_overlay"} 0
+studio_compositor_ward_blit_total{ward="programme-context"} 10
+studio_compositor_ward_blit_total{ward="tier-panel"} 10
+studio_compositor_ward_blit_total{ward="artifact-detail-panel"} 10
+hapax_compositor_layout_active{layout="segment-programme-context"} 1
+hapax_ward_modulator_tick_total 5
+studio_compositor_gem_substrate_active 1
+studio_compositor_gem_substrate_paint_total 8
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "true",
+        "--require-full-surface",
+        "--env",
+        "HAPAX_COMPOSITOR_FX_SLOTS=8",
+        "--env",
+        "HAPAX_GEM_SUBSTRATE_ENABLED=0",
         tmp_path=tmp_path,
     )
 
     assert result.returncode == 0
     payload = json.loads(result.stdout)
     assert payload["state"] == "healthy"
-    assert payload["full_surface_required"] is True
     assert payload["full_surface_failures"] == []
 
 
@@ -199,6 +287,8 @@ studio_compositor_ward_blit_total{ward="tier-panel"} 10
 studio_compositor_ward_blit_total{ward="artifact-detail-panel"} 10
 hapax_compositor_layout_active{layout="segment-programme-context"} 1
 hapax_ward_modulator_tick_total 5
+studio_compositor_gem_substrate_active 1
+studio_compositor_gem_substrate_paint_total 8
 """
     after = before.replace(
         'studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 10',
@@ -257,6 +347,8 @@ studio_compositor_ward_blit_total{ward="tier-panel"} 10
 studio_compositor_ward_blit_total{ward="artifact-detail-panel"} 10
 hapax_compositor_layout_active{layout="segment-programme-context"} 1
 hapax_ward_modulator_tick_total 5
+studio_compositor_gem_substrate_active 1
+studio_compositor_gem_substrate_paint_total 8
 """
     after = before.replace(
         'studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 10',
@@ -314,6 +406,8 @@ studio_compositor_ward_blit_total{ward="tier-panel"} 10
 studio_compositor_ward_blit_total{ward="artifact-detail-panel"} 10
 hapax_compositor_layout_active{layout="segment-programme-context"} 1
 hapax_ward_modulator_tick_total 5
+studio_compositor_gem_substrate_active 1
+studio_compositor_gem_substrate_paint_total 8
 """
     after = before
     for stage in ("compositor_src", "output_tee_sink", "v4l2_appsink", "hls_parser_src"):
@@ -368,6 +462,8 @@ studio_compositor_ward_blit_total{ward="tier-panel"} 10
 studio_compositor_ward_blit_total{ward="artifact-detail-panel"} 10
 hapax_compositor_layout_active{layout="segment-programme-context"} 1
 hapax_ward_modulator_tick_total 5
+studio_compositor_gem_substrate_active 1
+studio_compositor_gem_substrate_paint_total 8
 """
     after = before
     replacements = {
@@ -432,6 +528,8 @@ studio_compositor_ward_blit_total{ward="tier-panel"} 10
 studio_compositor_ward_blit_total{ward="artifact-detail-panel"} 10
 hapax_compositor_layout_active{layout="segment-programme-context"} 1
 hapax_ward_modulator_tick_total 5
+studio_compositor_gem_substrate_active 1
+studio_compositor_gem_substrate_paint_total 8
 """,
         "--service-active",
         "true",
