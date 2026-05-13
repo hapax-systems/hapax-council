@@ -168,6 +168,10 @@ def _l12_contract_fixture() -> TopologyDescriptor:
             hw: hw:MPCB,0
             channels:
               count: 24
+            params:
+              private_monitor_endpoint: true
+              private_monitor_positions: AUX8 AUX9
+              private_monitor_route: private-monitor-via-mpc-live-iii
           - id: private-sink
             kind: tap
             pipewire_name: hapax-private
@@ -183,7 +187,7 @@ def _l12_contract_fixture() -> TopologyDescriptor:
             pipewire_name: alsa_output.usb-Blue_Microphones_Yeti-00.analog-stereo
             hw: front:Yeti
             params:
-              private_monitor_endpoint: true
+              legacy_private_monitor_endpoint: true
           - id: private-monitor-capture
             kind: filter_chain
             pipewire_name: hapax-private-monitor-capture
@@ -193,7 +197,7 @@ def _l12_contract_fixture() -> TopologyDescriptor:
           - id: private-monitor-output
             kind: loopback
             pipewire_name: hapax-private-playback
-            target_object: alsa_output.usb-Blue_Microphones_Yeti-00.analog-stereo
+            target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
             params:
               node.dont-fallback: true
               node.dont-reconnect: true
@@ -202,6 +206,7 @@ def _l12_contract_fixture() -> TopologyDescriptor:
               state.restore: false
               fail_closed_on_target_absent: true
               private_monitor_bridge: true
+              mpc_usb_input_pair: AUX8 AUX9
           - id: notification-private-monitor-capture
             kind: filter_chain
             pipewire_name: hapax-notification-private-monitor-capture
@@ -211,7 +216,7 @@ def _l12_contract_fixture() -> TopologyDescriptor:
           - id: notification-private-monitor-output
             kind: loopback
             pipewire_name: hapax-notification-private-playback
-            target_object: alsa_output.usb-Blue_Microphones_Yeti-00.analog-stereo
+            target_object: alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output
             params:
               node.dont-fallback: true
               node.dont-reconnect: true
@@ -220,6 +225,7 @@ def _l12_contract_fixture() -> TopologyDescriptor:
               state.restore: false
               fail_closed_on_target_absent: true
               private_monitor_bridge: true
+              mpc_usb_input_pair: AUX8 AUX9
           - id: role-multimedia
             kind: loopback
             pipewire_name: input.loopback.sink.role.multimedia

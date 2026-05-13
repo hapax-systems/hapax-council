@@ -73,7 +73,7 @@ def test_route_fixture_families_cover_public_private_no_leak_stale_and_blocked()
     private = fixtures.require_surface("audio.private_assistant_monitor")
     no_leak = fixtures.require_surface("audio.no_private_leak")
     stale = fixtures.require_surface("audio.broadcast_health")
-    blocked = fixtures.require_surface("audio.s4_private_monitor")
+    blocked = fixtures.require_surface("audio.mpc_private_monitor")
 
     assert public.route_result.privacy_posture is AudioPrivacyPosture.PUBLIC_CANDIDATE
     assert public.route_result.witness_class is AudioWitnessClassId.PUBLIC

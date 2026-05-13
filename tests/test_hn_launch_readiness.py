@@ -125,7 +125,7 @@ def test_hn_launch_readiness_flags_private_voice_obs_youtube_and_failed_units(
             "last_successful_playback": None,
             "last_destination_decision": {
                 "destination": "private",
-                "reason": "exact_private_monitor_target_absent",
+                "reason": "mpc_private_monitor_target_absent",
             },
         },
         NOW,
@@ -152,7 +152,7 @@ def test_hn_launch_readiness_flags_private_voice_obs_youtube_and_failed_units(
     assert checks["youtube_livestream"].status.value == "fail"
     assert checks["obs_clean_feed"].status.value == "fail"
     assert checks["systemd_timer_failed_unit_budget"].status.value == "fail"
-    assert "exact_private_monitor_target_absent" in json.dumps(
+    assert "mpc_private_monitor_target_absent" in json.dumps(
         checks["daimonion_voice_segments"].to_dict()
     )
 

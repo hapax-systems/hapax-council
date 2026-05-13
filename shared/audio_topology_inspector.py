@@ -95,12 +95,13 @@ _PIPEWIRE_LINK = "PipeWire:Interface:Link"
 # Adding a new classification here is necessary but not sufficient — the
 # classifier function in the script must also produce the new label.
 ALLOWED_RUNTIME_EDGE_CLASSIFICATIONS: tuple[str, ...] = (
-    # Pre-Option C: legacy Yeti pin private-monitor binding.
+    # Current HN readiness: private monitor binds to MPC Live III AUX8/AUX9.
+    "private-monitor-mpc-live-iii-binding",
+    # Legacy Yeti pin private-monitor binding.
     "private-monitor-runtime-output-binding",
-    # Option C (2026-05-02 spec amendment): track-fenced private monitor
-    # via S-4. Architectural compliance edge for the Option C resolution
-    # of the NO-DRY-HAPAX vs PRIVATE-NEVER-BROADCASTS contradiction.
-    # See `docs/superpowers/specs/2026-05-02-hapax-private-monitor-track-fenced-via-s4.md`.
+    # Legacy Option C S-4 track-fenced classification retained only for
+    # historical report parsing; S-4 USB audio is no longer an HN readiness
+    # private-monitor endpoint.
     "private-track-fenced-via-s4-out-1",
     # Runtime fallback when the M8 hardware source is absent.
     "runtime-fallback-m8-source-absent",
@@ -230,26 +231,18 @@ _PRIVATE_FORBIDDEN_REACHABILITY = {
     "tts-loudnorm",
 }
 _PRIVATE_MONITOR_BRIDGES = {
-    # Option C (2026-05-02 spec amendment): private-monitor bridges target
-    # the S-4 USB IN sink (`s4-output` carries the `option_c_route =
-    # private-track-fenced-via-s4-out-1` annotation). The Yeti endpoint is
-    # preserved as a valid alternative target for backward compatibility
-    # (operator can revert via the disabled
-    # `56-hapax-private-pin-yeti.conf.disabled-*` WirePlumber conf). See
-    # `docs/superpowers/specs/2026-05-02-hapax-private-monitor-track-fenced-via-s4.md`.
-    #
-    # The third element of each tuple is the SET of allowed endpoint IDs.
-    # `check_l12_forward_invariant` accepts any one of them; the WirePlumber
-    # pin determines which is live.
+    # HN readiness private-monitor bridges target the MPC Live III endpoint;
+    # the port-level reconciler pins AUX8/AUX9. The third element of each
+    # tuple is the SET of allowed endpoint IDs.
     "private-monitor-output": (
         "private-monitor-capture",
         "private-sink",
-        ("s4-output", "yeti-headphone-output"),
+        ("mpc-usb-output",),
     ),
     "notification-private-monitor-output": (
         "notification-private-monitor-capture",
         "notification-private-sink",
-        ("s4-output", "yeti-headphone-output"),
+        ("mpc-usb-output",),
     ),
 }
 _PRIVATE_MONITOR_CAPTURE_NODES = {
@@ -1056,8 +1049,16 @@ def check_l12_forward_invariant(descriptor: TopologyDescriptor) -> L12ForwardInv
                 )
             )
 
+    private_terminal_nodes = {
+        endpoint_id
+        for _bridge_id, (_capture_id, _source_id, endpoint_ids) in _PRIVATE_MONITOR_BRIDGES.items()
+        for endpoint_id in ((endpoint_ids,) if isinstance(endpoint_ids, str) else endpoint_ids)
+    }
     for root in sorted(_PRIVATE_ONLY_ROOTS & by_id.keys()):
-        reachable_forbidden = sorted(_reachable_from(graph, root) & _PRIVATE_FORBIDDEN_REACHABILITY)
+        reachable_forbidden = sorted(
+            _reachable_from(graph, root, stop_nodes=private_terminal_nodes)
+            & _PRIVATE_FORBIDDEN_REACHABILITY
+        )
         if reachable_forbidden:
             violations.append(
                 L12ForwardInvariantViolation(
@@ -1138,7 +1139,12 @@ def _reference_to_node_id(descriptor: TopologyDescriptor) -> dict[str, str]:
     return refs
 
 
-def _reachable_from(graph: dict[str, set[str]], start: str) -> set[str]:
+def _reachable_from(
+    graph: dict[str, set[str]],
+    start: str,
+    *,
+    stop_nodes: set[str] | frozenset[str] = frozenset(),
+) -> set[str]:
     seen: set[str] = set()
     frontier = list(graph.get(start, ()))
     while frontier:
@@ -1146,6 +1152,8 @@ def _reachable_from(graph: dict[str, set[str]], start: str) -> set[str]:
         if current in seen:
             continue
         seen.add(current)
+        if current in stop_nodes:
+            continue
         next_nodes = graph.get(current)
         if next_nodes:
             frontier.extend(next_nodes - seen)

@@ -55,7 +55,7 @@ PRIVATE_MONITOR_STATUS_MAX_AGE_S = 300.0
 
 NO_DEFAULT_FALLBACK_POLICY = "no_default_fallback"
 
-PRIVATE_MONITOR_TARGET_REF = "audio.s4_private_monitor"
+PRIVATE_MONITOR_TARGET_REF = "audio.mpc_private_monitor"
 
 PUBLIC_BROADCAST_SOURCE_ID = "broadcast-tts"
 PRIVATE_ASSISTANT_SOURCE_ID = "assistant-private"
@@ -497,10 +497,10 @@ def _private_monitor_gate(
 
     if status.state != "ready":
         return _PrivateMonitorGate(
-            reason_code=status.reason_code or "exact_private_monitor_target_absent",
+            reason_code=status.reason_code or "mpc_private_monitor_target_absent",
             operator_visible_reason=(
                 status.operator_visible_reason
-                or "Exact private monitor target is absent; private voice route remains silent."
+                or "MPC Live III private monitor target is absent; private voice route remains silent."
             ),
         )
 
@@ -514,7 +514,7 @@ def _private_monitor_gate(
         return _PrivateMonitorGate(
             reason_code="private_monitor_status_invalid",
             operator_visible_reason=(
-                "Private monitor evidence does not prove the fail-closed exact target."
+                "Private monitor evidence does not prove the fail-closed MPC Live III target."
             ),
         )
 

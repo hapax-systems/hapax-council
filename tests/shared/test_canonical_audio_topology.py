@@ -201,7 +201,7 @@ def test_private_and_notification_sinks_are_fail_closed() -> None:
     private_output = d.node_by_id("private-monitor-output")
     notify_capture = d.node_by_id("notification-private-monitor-capture")
     notify_output = d.node_by_id("notification-private-monitor-output")
-    yeti = d.node_by_id("yeti-headphone-output")
+    mpc = d.node_by_id("mpc-usb-output")
     s4 = d.node_by_id("s4-output")
     role_assistant = d.node_by_id("role-assistant")
     role_notification = d.node_by_id("role-notification")
@@ -216,14 +216,17 @@ def test_private_and_notification_sinks_are_fail_closed() -> None:
     assert notify.params["fail_closed"] is True
     assert role_notification.target_object == "hapax-notification-private"
 
-    assert yeti.params["private_monitor_endpoint"] is True
-    assert s4.params["private_monitor_endpoint"] is True
+    assert mpc.params["private_monitor_endpoint"] is True
+    assert mpc.params["private_monitor_positions"] == "AUX8 AUX9"
+    assert s4.params.get("private_monitor_endpoint") is not True
     assert private_capture.target_object == "hapax-private"
     assert private_capture.params["stream.capture.sink"] is True
-    assert private_output.target_object == s4.pipewire_name
+    assert private_output.target_object == mpc.pipewire_name
+    assert private_output.params["mpc_usb_input_pair"] == "AUX8 AUX9"
     assert notify_capture.target_object == "hapax-notification-private"
     assert notify_capture.params["stream.capture.sink"] is True
-    assert notify_output.target_object == s4.pipewire_name
+    assert notify_output.target_object == mpc.pipewire_name
+    assert notify_output.params["mpc_usb_input_pair"] == "AUX8 AUX9"
 
     for bridge in (private_output, notify_output):
         assert bridge.params["node.dont-fallback"] is True

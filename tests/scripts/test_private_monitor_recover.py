@@ -10,7 +10,7 @@ from textwrap import dedent
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-private-monitor-recover"
-S4_TARGET = "alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output"
+MPC_TARGET = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"
 BRIDGE_NODES = (
     "hapax-private-monitor-capture",
     "hapax-private-playback",
@@ -30,7 +30,7 @@ def _node(name: str) -> dict[str, object]:
 def _write_dump(path: Path, *, include_target: bool = True, include_bridge: bool = True) -> Path:
     nodes = []
     if include_target:
-        nodes.append(_node(S4_TARGET))
+        nodes.append(_node(MPC_TARGET))
     if include_bridge:
         nodes.extend(_node(name) for name in BRIDGE_NODES)
     dump = path / "pw-dump.json"
@@ -55,7 +55,7 @@ def _repo_root(tmp_path: Path) -> Path:
                   }}
                   playback.props = {{
                     node.name = "hapax-private-playback"
-                    target.object = "{S4_TARGET}"
+                    target.object = "{MPC_TARGET}"
                     node.dont-fallback = true
                     node.dont-reconnect = true
                     node.dont-move = true
@@ -73,7 +73,7 @@ def _repo_root(tmp_path: Path) -> Path:
                   }}
                   playback.props = {{
                     node.name = "hapax-notification-private-playback"
-                    target.object = "{S4_TARGET}"
+                    target.object = "{MPC_TARGET}"
                     node.dont-fallback = true
                     node.dont-reconnect = true
                     node.dont-move = true
@@ -133,11 +133,11 @@ def test_ready_installs_bridge_and_writes_sanitized_status(tmp_path: Path) -> No
     assert result.returncode == 0, result.stdout + result.stderr
     status = _status(tmp_path)
     assert status["state"] == "ready"
-    assert status["route_id"] == "route:private.s4_track_fenced"
-    assert status["target_ref"] == "audio.s4_private_monitor"
+    assert status["route_id"] == "route:private.mpc_live_iii_monitor"
+    assert status["target_ref"] == "audio.mpc_private_monitor"
     assert status["fallback_policy"] == "no_default_fallback"
     serialized = json.dumps(status) + result.stdout
-    assert S4_TARGET not in serialized
+    assert MPC_TARGET not in serialized
     assert "alsa_output.usb-" not in serialized
 
 
@@ -147,7 +147,7 @@ def test_missing_exact_target_is_blocked_absent_without_fallback(tmp_path: Path)
     assert result.returncode == 2
     status = _status(tmp_path)
     assert status["state"] == "blocked_absent"
-    assert status["reason_code"] == "exact_private_monitor_target_absent"
+    assert status["reason_code"] == "mpc_private_monitor_target_absent"
     assert status["fallback_policy"] == "no_default_fallback"
 
 

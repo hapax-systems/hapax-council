@@ -69,8 +69,8 @@ def _private_ready() -> AudioSurfaceObservation:
     return AudioSurfaceObservation(
         health_state=AudioHealthState.SAFE,
         evidence_refs=("evidence:private-monitor-target",),
-        witness_refs=("witness:audio.private_monitor:exact-s4",),
-        route_refs=("route:private.s4_track_fenced",),
+        witness_refs=("witness:audio.private_monitor:mpc-live-iii",),
+        route_refs=("route:private.mpc_live_iii_monitor",),
         confidence=0.86,
         private_only=True,
     )
@@ -240,8 +240,8 @@ def test_private_monitor_blocked_absent_surfaces_without_broadcast_fallback() ->
     blocked = AudioSurfaceObservation(
         health_state=AudioHealthState.BLOCKED_ABSENT,
         evidence_refs=("evidence:private-monitor-target",),
-        route_refs=("route:private.s4_track_fenced",),
-        blocking_reasons=("exact_private_monitor_target_absent",),
+        route_refs=("route:private.mpc_live_iii_monitor",),
+        blocking_reasons=("mpc_private_monitor_target_absent",),
         confidence=0.8,
     )
     _envelope, records = _records(_health(), audio__private_assistant_monitor=blocked)
@@ -250,7 +250,7 @@ def test_private_monitor_blocked_absent_surfaces_without_broadcast_fallback() ->
     assert private.status is HealthStatus.BLOCKED
     assert private.public_claim_allowed is False
     assert private.public_private_posture.value == "blocked"
-    assert "exact_private_monitor_target_absent" in private.blocking_reasons
+    assert "mpc_private_monitor_target_absent" in private.blocking_reasons
     assert "route:private.assistant_monitor" in private.route_refs
     assert private.fallback.safe_state == "silent_no_fallback"
 

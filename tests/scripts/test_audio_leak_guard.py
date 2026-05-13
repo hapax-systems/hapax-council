@@ -1,11 +1,4 @@
-"""Regression tests for the private/broadcast voice leak guard.
-
-Option C (2026-05-02): the canonical private monitor target is now the S-4
-USB IN sink (`alsa_output.usb-Torso_Electronics_S-4_*.multichannel-output`).
-The Yeti pin is preserved as a `.disabled-*` revert path. The shell guard
-accepts BOTH as approved private targets and emits distinct OK messages
-for each — the tests pin both shapes.
-"""
+"""Regression tests for the private/broadcast voice leak guard."""
 
 from __future__ import annotations
 
@@ -15,6 +8,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "audio-leak-guard.sh"
+MPC_TARGET = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"
 S4_TARGET = "alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output"
 YETI_TARGET = "alsa_output.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo"
 
@@ -128,7 +122,7 @@ context.objects = [
 def _write_private_monitor_bridge(
     conf_dir: Path,
     *,
-    target: str = S4_TARGET,
+    target: str = MPC_TARGET,
     include_dont_fallback: bool = True,
 ) -> None:
     dont_fallback = "node.dont-fallback = true" if include_dont_fallback else ""
@@ -265,7 +259,7 @@ def test_fails_when_notification_sink_targets_default_broadcast_path(tmp_path: P
     assert "LEAK RISK DETECTED" in result.stdout
 
 
-def test_allows_explicit_s4_private_monitor_bridge(tmp_path: Path) -> None:
+def test_allows_explicit_mpc_private_monitor_bridge(tmp_path: Path) -> None:
     conf_dir = _write_wireplumber_config(tmp_path)
     pipewire_conf_dir = _write_pipewire_config(tmp_path)
     _write_private_monitor_bridge(pipewire_conf_dir)
@@ -274,28 +268,34 @@ def test_allows_explicit_s4_private_monitor_bridge(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert (
-        "OK  hapax-private-playback static target is S-4 USB IN "
-        "(Option C track-fenced private monitor)" in result.stdout
+        "OK  hapax-private-playback static target is MPC Live III private monitor" in result.stdout
     )
     assert (
-        "OK  hapax-notification-private-playback static target is S-4 USB IN "
-        "(Option C track-fenced private monitor)" in result.stdout
+        "OK  hapax-notification-private-playback static target is MPC Live III private monitor"
+        in result.stdout
     )
 
 
-def test_allows_explicit_yeti_private_monitor_bridge_revert_path(tmp_path: Path) -> None:
-    """Yeti pin remains supported as the pre-Option C revert target."""
+def test_fails_when_explicit_private_monitor_bridge_targets_yeti(tmp_path: Path) -> None:
     conf_dir = _write_wireplumber_config(tmp_path)
     pipewire_conf_dir = _write_pipewire_config(tmp_path)
     _write_private_monitor_bridge(pipewire_conf_dir, target=YETI_TARGET)
 
     result = _run_guard(conf_dir, tmp_path, pipewire_conf_dir=pipewire_conf_dir)
 
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert (
-        "OK  hapax-private-playback static target is Blue Yeti headphone "
-        "(pre-Option C revert path)" in result.stdout
-    )
+    assert result.returncode == 1
+    assert "static target is not the approved private monitor" in result.stdout
+
+
+def test_fails_when_explicit_private_monitor_bridge_targets_s4(tmp_path: Path) -> None:
+    conf_dir = _write_wireplumber_config(tmp_path)
+    pipewire_conf_dir = _write_pipewire_config(tmp_path)
+    _write_private_monitor_bridge(pipewire_conf_dir, target=S4_TARGET)
+
+    result = _run_guard(conf_dir, tmp_path, pipewire_conf_dir=pipewire_conf_dir)
+
+    assert result.returncode == 1
+    assert "static target is broadcast/default path" in result.stdout
 
 
 def test_fails_when_explicit_private_monitor_bridge_targets_l12(tmp_path: Path) -> None:

@@ -2,13 +2,11 @@
 """Recover or report the exact private monitor target.
 
 The private monitor contract is intentionally narrower than "play this on
-whatever sink is available."  This command resolves the explicit private S-4
-USB IN monitor target (Option C, 2026-05-02 spec amendment), installs the
-repo-managed fail-closed bridge when requested, and writes sanitized status
-evidence.  If the target or bridge is absent, the state is ``blocked_absent``;
-there is never a default-sink fallback.
-
-Spec: docs/superpowers/specs/2026-05-02-hapax-private-monitor-track-fenced-via-s4.md
+whatever sink is available."  This command resolves the explicit MPC Live III
+private-monitor ingress target, installs the repo-managed fail-closed bridge
+when requested, and writes sanitized status evidence.  If the target or bridge
+is absent, the state is ``blocked_absent``; there is never a default-sink
+fallback.
 """
 
 from __future__ import annotations
@@ -23,7 +21,7 @@ from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 EXACT_PRIVATE_MONITOR_TARGET = (
-    "alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output"
+    "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"
 )
 BRIDGE_REPO_PATH = Path("config/pipewire/hapax-private-monitor-bridge.conf")
 DEFAULT_INSTALL_PATH = (
@@ -36,8 +34,8 @@ REQUIRED_BRIDGE_NODES = (
     "hapax-notification-private-monitor-capture",
     "hapax-notification-private-playback",
 )
-SANITIZED_TARGET_REF = "audio.s4_private_monitor"
-ROUTE_REF = "route:private.s4_track_fenced"
+SANITIZED_TARGET_REF = "audio.mpc_private_monitor"
+ROUTE_REF = "route:private.mpc_live_iii_monitor"
 
 
 PIPEWIRE_RELOAD_UNITS = ("pipewire.service", "pipewire-pulse.service", "wireplumber.service")
@@ -204,12 +202,14 @@ def _status(
     reason: str
     if not target_present:
         state = "blocked_absent"
-        reason_code = "exact_private_monitor_target_absent"
-        reason = "Exact private monitor target is absent; private monitor route remains silent."
+        reason_code = "mpc_private_monitor_target_absent"
+        reason = (
+            "MPC Live III private monitor target is absent; private monitor route remains silent."
+        )
     elif not bridge["installed"]:
         state = "blocked_absent"
         reason_code = "private_monitor_bridge_not_installed"
-        reason = "Exact private monitor target is present, but the private bridge is not installed."
+        reason = "MPC Live III private monitor target is present, but the bridge is not installed."
     elif not bridge["matches_repo"]:
         state = "blocked_absent"
         reason_code = "private_monitor_bridge_drift"
@@ -220,11 +220,11 @@ def _status(
         reason = "Private monitor bridge config is installed but its PipeWire nodes are not loaded."
     else:
         state = "ready"
-        reason_code = "exact_private_monitor_bound"
-        reason = "Exact private monitor target and fail-closed bridge are present."
+        reason_code = "mpc_private_monitor_bound"
+        reason = "MPC Live III private monitor target and fail-closed bridge are present."
     return {
         "checked_at": checked_at,
-        "surface_id": "audio.s4_private_monitor",
+        "surface_id": "audio.mpc_private_monitor",
         "route_id": ROUTE_REF,
         "state": state,
         "reason_code": reason_code,

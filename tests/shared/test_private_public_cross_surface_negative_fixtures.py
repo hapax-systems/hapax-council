@@ -170,12 +170,12 @@ def _write_private_monitor_ready(path: Path) -> None:
                 "exact_target_present": True,
                 "fallback_policy": "no_default_fallback",
                 "operator_visible_reason": (
-                    "Exact private monitor target and fail-closed bridge are present."
+                    "MPC Live III private monitor target and fail-closed bridge are present."
                 ),
-                "reason_code": "exact_private_monitor_bound",
+                "reason_code": "mpc_private_monitor_bound",
                 "sanitized": True,
                 "state": "ready",
-                "target_ref": "audio.s4_private_monitor",
+                "target_ref": "audio.mpc_private_monitor",
             }
         ),
         encoding="utf-8",
