@@ -310,6 +310,42 @@ def test_dynamic_router_tick_caches_intent_for_idempotence(
     assert recall_mock.call_count == first_call_count
 
 
+def test_dynamic_router_throttles_s4_reachability_probe(
+    isolated_router_files: Path,
+) -> None:
+    probe = MagicMock(return_value=False)
+    router = DynamicRouter(
+        evilpet_midi=None,
+        s4_midi_port=None,
+        s4_reachable_fn=probe,
+        s4_reachable_probe_interval_s=30.0,
+    )
+
+    router.tick(now=0.0)
+    router.tick(now=0.2)
+    router.tick(now=0.4)
+
+    probe.assert_called_once()
+
+
+def test_dynamic_router_rechecks_s4_reachability_after_probe_interval(
+    isolated_router_files: Path,
+) -> None:
+    probe = MagicMock(return_value=False)
+    router = DynamicRouter(
+        evilpet_midi=None,
+        s4_midi_port=None,
+        s4_reachable_fn=probe,
+        s4_reachable_probe_interval_s=30.0,
+    )
+
+    router.tick(now=0.0)
+    router.tick(now=29.9)
+    router.tick(now=30.0)
+
+    assert probe.call_count == 2
+
+
 def test_dynamic_router_tick_re_emits_when_stimmung_changes(
     isolated_router_files: Path,
 ) -> None:
