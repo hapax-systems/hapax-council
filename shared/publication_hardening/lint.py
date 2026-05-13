@@ -73,11 +73,19 @@ OVERCLAIM_PATTERNS: tuple[tuple[re.Pattern[str], str, str], ...] = (
 
 def check_heading_hierarchy(path: Path) -> list[LintFinding]:
     """Flag heading level skips (e.g., h2 directly to h4)."""
+    return check_heading_hierarchy_text(
+        path.read_text(encoding="utf-8"),
+        file_label=str(path),
+    )
+
+
+def check_heading_hierarchy_text(text: str, *, file_label: str = "<artifact>") -> list[LintFinding]:
+    """Flag heading level skips in raw Markdown text."""
     findings: list[LintFinding] = []
     heading_re = re.compile(r"^(#{1,6})\s")
     prev_level = 0
 
-    for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+    for lineno, line in enumerate(text.splitlines(), start=1):
         m = heading_re.match(line)
         if not m:
             continue
@@ -85,7 +93,7 @@ def check_heading_hierarchy(path: Path) -> list[LintFinding]:
         if prev_level > 0 and level > prev_level + 1:
             findings.append(
                 LintFinding(
-                    file=str(path),
+                    file=file_label,
                     line=lineno,
                     level="error",
                     rule="Hapax.HeadingHierarchy",
@@ -99,14 +107,26 @@ def check_heading_hierarchy(path: Path) -> list[LintFinding]:
 
 def check_public_claim_overreach(path: Path) -> list[LintFinding]:
     """Flag public-claim phrases that exceeded audit-supported scope."""
+    return check_public_claim_overreach_text(
+        path.read_text(encoding="utf-8"),
+        file_label=str(path),
+    )
+
+
+def check_public_claim_overreach_text(
+    text: str,
+    *,
+    file_label: str = "<artifact>",
+) -> list[LintFinding]:
+    """Flag public-claim phrases in raw text that exceeded audit-supported scope."""
     findings: list[LintFinding] = []
-    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for lineno, line in enumerate(text.splitlines(), start=1):
         for pattern, level, message in OVERCLAIM_PATTERNS:
             if not pattern.search(line):
                 continue
             findings.append(
                 LintFinding(
-                    file=str(path),
+                    file=file_label,
                     line=lineno,
                     level=level,
                     rule="Hapax.PublicClaimOverreach",
@@ -161,4 +181,12 @@ def lint_file(path: Path, config: Path | None = None) -> list[LintFinding]:
     findings.extend(check_heading_hierarchy(path))
     findings.extend(check_public_claim_overreach(path))
     findings.extend(run_vale(path, config=config))
+    return findings
+
+
+def lint_text(text: str, *, file_label: str = "<artifact>") -> list[LintFinding]:
+    """Run publication lint checks that do not require a file path."""
+    findings: list[LintFinding] = []
+    findings.extend(check_heading_hierarchy_text(text, file_label=file_label))
+    findings.extend(check_public_claim_overreach_text(text, file_label=file_label))
     return findings

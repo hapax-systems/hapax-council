@@ -27,6 +27,11 @@ from prometheus_client import CollectorRegistry
 from agents.publication_bus.publisher_kit import PublisherResult
 from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY, Orchestrator
 from shared.preprint_artifact import PreprintArtifact
+from shared.publication_hardening.gate import (
+    PublicationGateChildResult,
+    PublicationGateDecision,
+    PublicationGateResult,
+)
 from shared.publication_hardening.review import ReviewReport
 
 
@@ -74,6 +79,36 @@ class _ApprovingReviewPass:
             author_model=author_model,
             overall_confidence=0.99,
         )
+
+
+class _PassingHardeningGate:
+    def evaluate(self, artifact: PreprintArtifact) -> PublicationGateResult:
+        del artifact
+        report = ReviewReport(
+            reviewer_model="test-reviewer",
+            overall_confidence=0.99,
+        )
+        return PublicationGateResult(
+            decision=PublicationGateDecision.PASS,
+            generated_at="2026-05-13T00:00:00+00:00",
+            child_results=(
+                PublicationGateChildResult(
+                    name="review",
+                    decision=PublicationGateDecision.PASS,
+                ),
+            ),
+            review_report=report.to_frontmatter(),
+        )
+
+
+def _make_orchestrator(state_root) -> Orchestrator:  # type: ignore[no-untyped-def]
+    return Orchestrator(
+        state_root=state_root,
+        public_event_path=state_root / "public-events.jsonl",
+        review_pass=_ApprovingReviewPass(),
+        hardening_gate=_PassingHardeningGate(),
+        registry=CollectorRegistry(),
+    )
 
 
 # ── Phase 1 publishers: real SURFACE_REGISTRY, mocked transports ────
@@ -127,12 +162,7 @@ class TestPhase1PublishBusEndToEnd:
                 "arena-post",
             ],
         )
-        orch = Orchestrator(
-            state_root=tmp_path,
-            public_event_path=tmp_path / "public-events.jsonl",
-            review_pass=_ApprovingReviewPass(),
-            registry=CollectorRegistry(),
-        )
+        orch = _make_orchestrator(tmp_path)
 
         handled = orch.run_once()
         assert handled == 1
@@ -155,12 +185,7 @@ class TestPhase1PublishBusEndToEnd:
 
         _drop_approved_artifact(tmp_path, slug="e2e-bsky-ok", surfaces=["bluesky-post"])
 
-        orch = Orchestrator(
-            state_root=tmp_path,
-            public_event_path=tmp_path / "public-events.jsonl",
-            review_pass=_ApprovingReviewPass(),
-            registry=CollectorRegistry(),
-        )
+        orch = _make_orchestrator(tmp_path)
 
         from agents.cross_surface import bluesky_post
 
@@ -194,12 +219,7 @@ class TestPhase1PublishBusEndToEnd:
 
         _drop_approved_artifact(tmp_path, slug="e2e-discord-refused", surfaces=["discord-webhook"])
 
-        orch = Orchestrator(
-            state_root=tmp_path,
-            public_event_path=tmp_path / "public-events.jsonl",
-            review_pass=_ApprovingReviewPass(),
-            registry=CollectorRegistry(),
-        )
+        orch = _make_orchestrator(tmp_path)
 
         handled = orch.run_once()
         assert handled == 1
@@ -215,12 +235,7 @@ class TestPhase1PublishBusEndToEnd:
 
         _drop_approved_artifact(tmp_path, slug="e2e-arena-ok", surfaces=["arena-post"])
 
-        orch = Orchestrator(
-            state_root=tmp_path,
-            public_event_path=tmp_path / "public-events.jsonl",
-            review_pass=_ApprovingReviewPass(),
-            registry=CollectorRegistry(),
-        )
+        orch = _make_orchestrator(tmp_path)
 
         from agents.publication_bus import arena_publisher
 
@@ -264,12 +279,7 @@ class TestPhase1PublishBusEndToEnd:
             ],
         )
 
-        orch = Orchestrator(
-            state_root=tmp_path,
-            public_event_path=tmp_path / "public-events.jsonl",
-            review_pass=_ApprovingReviewPass(),
-            registry=CollectorRegistry(),
-        )
+        orch = _make_orchestrator(tmp_path)
 
         from agents.cross_surface import bluesky_post
 
@@ -296,12 +306,7 @@ class TestPhase1PublishBusEndToEnd:
             surfaces=["bluesky-pst"],  # typo: should be bluesky-post
         )
 
-        orch = Orchestrator(
-            state_root=tmp_path,
-            public_event_path=tmp_path / "public-events.jsonl",
-            review_pass=_ApprovingReviewPass(),
-            registry=CollectorRegistry(),
-        )
+        orch = _make_orchestrator(tmp_path)
         handled = orch.run_once()
 
         assert handled == 1

@@ -133,6 +133,15 @@ class PreprintArtifact(BaseModel):
     publication_review: dict[str, object] | None = None
     """Latest cross-provider publication review report attached before fan-out."""
 
+    publication_gate_context: dict[str, object] | None = None
+    """Optional operator-supplied verifier context for the publication hardening gate."""
+
+    publication_gate_override: dict[str, object] | None = None
+    """Optional operator-supplied hold override; rejects remain non-overridable."""
+
+    publication_gate_result: dict[str, object] | None = None
+    """Latest aggregate publication-hardening gate receipt attached before fan-out."""
+
     grounding_gate_result: dict[str, object] | None = None
 
     # ── Inbox helpers ──────────────────────────────────────────────

@@ -56,6 +56,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import ClassVar
 
+import yaml
 from prometheus_client import REGISTRY, CollectorRegistry, Counter
 
 from agents.publication_bus.surface_registry import dispatch_registry
@@ -68,11 +69,13 @@ from shared.publication_artifact_public_event import (
     PublicationArtifactEventStage,
     build_publication_artifact_public_event,
 )
-from shared.publication_hardening.review import (
-    ReviewPass,
-    ReviewReport,
-    attach_review_report_to_frontmatter,
+from shared.publication_hardening.gate import (
+    PublicationGateDecision,
+    PublicationGateResult,
+    PublicationHardeningGate,
+    publication_gate_fingerprint,
 )
+from shared.publication_hardening.review import ReviewPass
 from shared.research_vehicle_public_event import ResearchVehiclePublicEvent
 
 log = logging.getLogger(__name__)
@@ -162,6 +165,8 @@ class SurfaceResult:
     result: str
     timestamp: str
     artifact_fingerprint: str | None = None
+    publication_gate_decision: str | None = None
+    publication_gate_fingerprint: str | None = None
 
     def is_terminal(self) -> bool:
         return self.result in _TERMINAL_RESULTS
@@ -175,6 +180,10 @@ class SurfaceResult:
         }
         if self.artifact_fingerprint is not None:
             payload["artifact_fingerprint"] = self.artifact_fingerprint
+        if self.publication_gate_decision is not None:
+            payload["publication_gate_decision"] = self.publication_gate_decision
+        if self.publication_gate_fingerprint is not None:
+            payload["publication_gate_fingerprint"] = self.publication_gate_fingerprint
         return payload
 
 
@@ -208,6 +217,7 @@ class Orchestrator:
         surface_registry: dict[str, str] | None = None,
         public_event_path: Path | None = PUBLIC_EVENT_PATH,
         review_pass: ReviewPass | None = None,
+        hardening_gate: PublicationHardeningGate | None = None,
         registry: CollectorRegistry = REGISTRY,
         tick_s: float = DEFAULT_TICK_S,
         max_workers: int = 8,
@@ -218,6 +228,11 @@ class Orchestrator:
         )
         self._public_event_path = public_event_path
         self._review_pass = review_pass if review_pass is not None else ReviewPass()
+        self._hardening_gate = (
+            hardening_gate
+            if hardening_gate is not None
+            else PublicationHardeningGate(review_pass=self._review_pass)
+        )
         self._tick_s = max(1.0, tick_s)
         self._max_workers = max(1, max_workers)
         self._stop_evt = threading.Event()
@@ -281,13 +296,25 @@ class Orchestrator:
             log.warning("artifact %s has no surfaces_targeted; skipping", artifact.slug)
             return
 
-        review = self._review_artifact(artifact)
-        artifact.publication_review = review.to_frontmatter()
-        self._attach_review_frontmatter(artifact, review)
-        if not review.passes():
-            self._withhold_for_review(artifact, review)
+        gate_result = self._hardening_gate.evaluate(artifact)
+        artifact.publication_gate_result = gate_result.to_frontmatter()
+        artifact.publication_review = gate_result.review_report
+        self._attach_gate_frontmatter(artifact)
+        if gate_result.decision == PublicationGateDecision.HOLD:
+            self._withhold_for_gate(artifact, gate_result)
+            return
+        if gate_result.decision == PublicationGateDecision.REJECT:
+            self._reject_for_gate(artifact, gate_result)
             return
 
+        gate_fingerprint = publication_gate_fingerprint(gate_result)
+        self._record_gate_result(
+            artifact,
+            gate_result,
+            result="operator_overridden_hold"
+            if gate_result.decision == PublicationGateDecision.OPERATOR_OVERRIDDEN_HOLD
+            else "ok",
+        )
         artifact_fingerprint = _artifact_fingerprint(artifact)
         self._record_public_event(
             artifact,
@@ -338,6 +365,8 @@ class Orchestrator:
                 surface,
                 result,
                 artifact_fingerprint=artifact_fingerprint,
+                publication_gate_decision=gate_result.decision.value,
+                publication_gate_fingerprint=gate_fingerprint,
             )
 
         # Final state check: did all surfaces reach terminal? If yes,
@@ -384,22 +413,13 @@ class Orchestrator:
             log.exception("publisher %s raised for artifact %s", surface, artifact.slug)
             return "error"
 
-    def _review_artifact(self, artifact: PreprintArtifact) -> ReviewReport:
-        text = _artifact_review_text(artifact)
-        return self._review_pass.review_text(
-            text,
-            author_model=_artifact_author_model(artifact),
-            metadata={
-                "slug": artifact.slug,
-                "title": artifact.title,
-                "source_path": artifact.source_path,
-                "surfaces_targeted": artifact.surfaces_targeted,
-            },
-        )
-
-    def _withhold_for_review(self, artifact: PreprintArtifact, review: ReviewReport) -> None:
+    def _withhold_for_gate(
+        self,
+        artifact: PreprintArtifact,
+        gate_result: PublicationGateResult,
+    ) -> None:
         artifact.approval = ApprovalState.WITHHELD
-        artifact.publication_review = review.to_frontmatter()
+        artifact.publication_gate_result = gate_result.to_frontmatter()
         draft = artifact.draft_path(state_root=self._state_root)
         inbox = artifact.inbox_path(state_root=self._state_root)
         draft.parent.mkdir(parents=True, exist_ok=True)
@@ -408,48 +428,71 @@ class Orchestrator:
             inbox.unlink()
         except FileNotFoundError:
             pass
-        review_log = (
-            self._state_root / "publish" / "log" / f"{artifact.slug}.cross-provider-review.json"
-        )
-        review_log.parent.mkdir(parents=True, exist_ok=True)
-        review_log.write_text(
-            json.dumps(
-                {
-                    "slug": artifact.slug,
-                    "surface": "cross-provider-review",
-                    "result": "operator_hold",
-                    "timestamp": datetime.now(UTC).isoformat(),
-                    "overall_confidence": review.overall_confidence,
-                    "flagged_issues": list(review.flagged_issues),
-                },
-                sort_keys=True,
-            )
-        )
-        self.dispatches_total.labels(surface="cross-provider-review", result="operator_hold").inc()
+        self._record_gate_result(artifact, gate_result, result="operator_hold")
+        self.dispatches_total.labels(
+            surface="publication-hardening-gate", result="operator_hold"
+        ).inc()
         log.warning(
-            "publication review held %s at %.2f: %s",
+            "publication hardening gate held %s: %s",
             artifact.slug,
-            review.overall_confidence,
-            "; ".join(review.flagged_issues),
+            "; ".join(gate_result.flagged_issues),
         )
 
-    def _attach_review_frontmatter(self, artifact: PreprintArtifact, review: ReviewReport) -> None:
+    def _reject_for_gate(
+        self,
+        artifact: PreprintArtifact,
+        gate_result: PublicationGateResult,
+    ) -> None:
+        artifact.mark_failed()
+        artifact.publication_gate_result = gate_result.to_frontmatter()
+        failed = artifact.failed_path(state_root=self._state_root)
+        inbox = artifact.inbox_path(state_root=self._state_root)
+        failed.parent.mkdir(parents=True, exist_ok=True)
+        failed.write_text(artifact.model_dump_json(indent=2))
+        try:
+            inbox.unlink()
+        except FileNotFoundError:
+            pass
+        self._record_gate_result(artifact, gate_result, result="rejected")
+        self.dispatches_total.labels(surface="publication-hardening-gate", result="rejected").inc()
+        log.warning(
+            "publication hardening gate rejected %s: %s",
+            artifact.slug,
+            "; ".join(gate_result.flagged_issues),
+        )
+
+    def _attach_gate_frontmatter(self, artifact: PreprintArtifact) -> None:
         if not artifact.source_path:
             return
         source_path = Path(artifact.source_path).expanduser()
         if source_path.suffix.lower() not in {".md", ".markdown"}:
             return
         try:
-            attached = attach_review_report_to_frontmatter(source_path, review)
-        except Exception:  # noqa: BLE001 - frontmatter writeback must not block dispatch
+            text = source_path.read_text(encoding="utf-8")
+            if not text.startswith("---\n"):
+                return
+            end = text.find("\n---", 4)
+            if end == -1:
+                return
+            frontmatter_text = text[4:end]
+            body = text[end + 4 :]
+            frontmatter = yaml.safe_load(frontmatter_text) or {}
+            if not isinstance(frontmatter, dict):
+                return
+            if artifact.publication_review is not None:
+                frontmatter["publication_review"] = artifact.publication_review
+            if artifact.publication_gate_result is not None:
+                frontmatter["publication_gate_result"] = artifact.publication_gate_result
+            rendered = "---\n" + yaml.safe_dump(frontmatter, sort_keys=False) + "---" + body
+            tmp = source_path.with_suffix(source_path.suffix + ".tmp")
+            tmp.write_text(rendered, encoding="utf-8")
+            tmp.replace(source_path)
+        except Exception:  # noqa: BLE001
             log.warning(
-                "publication review frontmatter write failed for %s",
+                "publication gate frontmatter write failed for %s",
                 source_path,
                 exc_info=True,
             )
-            return
-        if not attached:
-            log.warning("publication review frontmatter missing or malformed for %s", source_path)
 
     def _resolve_entry_point(self, surface: str) -> Callable[[PreprintArtifact], str] | None:
         """Cache imports per surface."""
@@ -478,6 +521,8 @@ class Orchestrator:
         result: str,
         *,
         artifact_fingerprint: str,
+        publication_gate_decision: str | None = None,
+        publication_gate_fingerprint: str | None = None,
     ) -> None:
         log_path = artifact.log_path(surface, state_root=self._state_root)
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -487,6 +532,8 @@ class Orchestrator:
             result=result,
             timestamp=datetime.now(UTC).isoformat(),
             artifact_fingerprint=artifact_fingerprint,
+            publication_gate_decision=publication_gate_decision,
+            publication_gate_fingerprint=publication_gate_fingerprint,
         )
         log_path.write_text(json.dumps(record.to_dict()))
         self.dispatches_total.labels(surface=surface, result=result).inc()
@@ -499,6 +546,32 @@ class Orchestrator:
             source_path=log_path,
             result_timestamp=record.timestamp,
         )
+
+    def _record_gate_result(
+        self,
+        artifact: PreprintArtifact,
+        gate_result: PublicationGateResult,
+        *,
+        result: str,
+    ) -> None:
+        log_path = (
+            self._state_root
+            / "publish"
+            / "log"
+            / f"{artifact.slug}.publication-hardening-gate.json"
+        )
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "slug": artifact.slug,
+            "surface": "publication-hardening-gate",
+            "result": result,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "publication_gate_decision": gate_result.decision.value,
+            "publication_gate_fingerprint": publication_gate_fingerprint(gate_result),
+            "flagged_issues": list(gate_result.flagged_issues),
+            "child_results": [child.model_dump(mode="json") for child in gate_result.child_results],
+        }
+        log_path.write_text(json.dumps(record, sort_keys=True))
 
     def _load_artifact(self, path: Path) -> PreprintArtifact:
         return PreprintArtifact.model_validate_json(path.read_text())
@@ -651,30 +724,6 @@ def _artifact_fingerprint(artifact: PreprintArtifact) -> str:
     return sha256(encoded).hexdigest()
 
 
-def _artifact_review_text(artifact: PreprintArtifact) -> str:
-    return "\n\n".join(
-        part
-        for part in (
-            f"# {artifact.title}",
-            artifact.abstract,
-            artifact.attribution_block,
-            artifact.body_md,
-            artifact.body_html,
-        )
-        if part
-    )
-
-
-def _artifact_author_model(artifact: PreprintArtifact) -> str | None:
-    if artifact.author_model:
-        return artifact.author_model
-    names = {author.name.lower() for author in artifact.co_authors}
-    aliases = {author.alias.lower() for author in artifact.co_authors if author.alias}
-    if "claude code" in names or "claude-code" in aliases:
-        return "claude-code"
-    return None
-
-
 def _load_public_event_ids(path: Path) -> set[str]:
     ids: set[str] = set()
     try:
@@ -703,5 +752,4 @@ __all__ = [
     "SURFACE_REGISTRY",
     "SurfaceResult",
     "_artifact_fingerprint",
-    "_artifact_review_text",
 ]

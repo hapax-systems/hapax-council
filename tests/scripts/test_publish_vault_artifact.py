@@ -46,6 +46,34 @@ class TestBuildArtifact:
         assert artifact.slug == "canonical-draft"
         assert artifact.surfaces_targeted == ["omg-weblog"]
 
+    def test_carries_publication_gate_context_and_override(self) -> None:
+        artifact = publish_vault_artifact._build_artifact(
+            body_md="Body",
+            frontmatter={
+                "title": "Draft",
+                "slug": "draft",
+                "publication_gate_context": {
+                    "numeric_expectations": {"42 hooks": 42},
+                    "currentness_evidence_refs": ["receipt:hn-readiness"],
+                },
+                "publication_gate_override": {
+                    "by_referent": "Oudepode",
+                    "reason": "Reviewed receipts",
+                },
+            },
+            surfaces=["omg-weblog"],
+            approver="Oudepode",
+        )
+
+        assert artifact.publication_gate_context == {
+            "numeric_expectations": {"42 hooks": 42},
+            "currentness_evidence_refs": ["receipt:hn-readiness"],
+        }
+        assert artifact.publication_gate_override == {
+            "by_referent": "Oudepode",
+            "reason": "Reviewed receipts",
+        }
+
 
 def test_show_hn_draft_dry_run_uses_existing_frontmatter_casing(tmp_path, capsys) -> None:
     rc = publish_vault_artifact.main(

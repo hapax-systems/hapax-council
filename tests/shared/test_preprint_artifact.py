@@ -244,3 +244,29 @@ def test_grounding_gate_result_survives_round_trip() -> None:
 def test_grounding_gate_result_defaults_to_none() -> None:
     artifact = PreprintArtifact(slug="no-gate", title="No grounding gate")
     assert artifact.grounding_gate_result is None
+
+
+def test_publication_gate_fields_survive_round_trip() -> None:
+    context = {
+        "numeric_expectations": {"42 hooks": 42},
+        "currentness_evidence_refs": ["receipt:hn-readiness"],
+    }
+    override = {"by_referent": "Oudepode", "reason": "Reviewed local receipts"}
+    result = {
+        "schema_version": 1,
+        "decision": "operator_overridden_hold",
+        "child_results": [],
+    }
+    artifact = PreprintArtifact(
+        slug="gate-round-trip",
+        title="Gate round trip",
+        publication_gate_context=context,
+        publication_gate_override=override,
+        publication_gate_result=result,
+    )
+
+    restored = PreprintArtifact.model_validate_json(artifact.model_dump_json())
+
+    assert restored.publication_gate_context == context
+    assert restored.publication_gate_override == override
+    assert restored.publication_gate_result == result
