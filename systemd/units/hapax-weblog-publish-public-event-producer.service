@@ -16,8 +16,9 @@ Environment=HAPAX_WEBLOG_PUBLISH_EVENT_TICK_S=60
 Environment=HAPAX_RESEARCH_VEHICLE_PUBLIC_EVENT_PATH=/dev/shm/hapax-public-events/events.jsonl
 Environment=HAPAX_LOG_LEVEL=INFO
 # First successful run seeds the current RSS items without fanout. Set
-# --emit-existing manually for intentional backfill.
-ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.weblog_publish_public_event_producer
+# --emit-existing manually for intentional backfill. Direct Bridgy POSSE is
+# intentionally disabled here; public fanout must go through bus consumers.
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.weblog_publish_public_event_producer --no-posse
 Restart=on-failure
 RestartSec=15
 MemoryMax=128M

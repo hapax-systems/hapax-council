@@ -3,7 +3,8 @@
 The producer polls the public weblog RSS feed and emits one
 ``ResearchVehiclePublicEvent`` per newly observed post. It keeps its own
 seen-item state so a fresh daemon start does not repost the whole feed by
-default; pass ``--emit-existing`` for an explicit backfill.
+default; pass ``--emit-existing`` for an explicit backfill. Direct Bridgy
+POSSE is opt-in with ``--posse``; the default runtime path writes the bus only.
 """
 
 from __future__ import annotations
@@ -563,17 +564,26 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="emit current feed items on first run instead of seeding a baseline",
     )
-    parser.add_argument(
-        "--no-posse",
+    posse_group = parser.add_mutually_exclusive_group()
+    posse_group.add_argument(
+        "--posse",
+        dest="posse",
         action="store_true",
-        help="disable Bridgy POSSE fanout to Mastodon/Bluesky",
+        help="enable direct Bridgy POSSE fanout to Mastodon/Bluesky",
     )
+    posse_group.add_argument(
+        "--no-posse",
+        dest="posse",
+        action="store_false",
+        help="keep default RVPE-only behavior without direct Bridgy POSSE",
+    )
+    parser.set_defaults(posse=False)
     args = parser.parse_args(argv)
 
     logging.basicConfig(
         level=os.environ.get("LOG_LEVEL", os.environ.get("HAPAX_LOG_LEVEL", "INFO"))
     )
-    posse_cb = None if args.no_posse else bridgy_posse_callback
+    posse_cb = bridgy_posse_callback if args.posse else None
     producer = WeblogPublishPublicEventProducer(
         rss_url=args.rss_url,
         public_event_path=args.public_event_path,
