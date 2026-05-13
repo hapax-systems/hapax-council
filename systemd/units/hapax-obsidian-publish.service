@@ -1,0 +1,15 @@
+[Unit]
+Description=Hapax Obsidian Publish Automation
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Ensure the node global bin directory is in the PATH
+Environment=PATH=%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:%h/.local/bin
+# Run obsidian-headless in non-interactive mode. The --yes flag is crucial 
+# to bypass the confirmation prompt.
+ExecStart=/usr/bin/env ob publish --yes
+WorkingDirectory=%h/Documents/Personal
+
+[Install]
+WantedBy=default.target

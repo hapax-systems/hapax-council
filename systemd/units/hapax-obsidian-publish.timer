@@ -1,0 +1,11 @@
+[Unit]
+Description=Timer for Hapax Obsidian Publish Automation
+
+[Timer]
+# Run hourly to keep the POSSE spoke updated
+OnCalendar=hourly
+RandomizedDelaySec=5m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
