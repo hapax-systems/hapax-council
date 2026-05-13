@@ -148,6 +148,22 @@ DEFAULT_THRESHOLDS: list[ResourceThreshold] = [
         direction="lower_is_better",
     ),
     ResourceThreshold(
+        resource_type=ResourceType.RAM,
+        signal="swap_used_pct",
+        unit="%",
+        green_above=70.0,
+        yellow_above=85.0,
+        direction="lower_is_better",
+    ),
+    ResourceThreshold(
+        resource_type=ResourceType.RAM,
+        signal="zram_used_pct",
+        unit="%",
+        green_above=70.0,
+        yellow_above=85.0,
+        direction="lower_is_better",
+    ),
+    ResourceThreshold(
         resource_type=ResourceType.GPU_VRAM,
         signal="vram_free_gb",
         unit="GB",

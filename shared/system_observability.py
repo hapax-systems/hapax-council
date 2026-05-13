@@ -21,6 +21,19 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from shared.memory_pressure import (
+    DEFAULT_EXPECTED_SWAPPINESS,
+    MemoryPressureClass,
+    MemoryPressureSignal,
+    SwapDevice,
+    classify_global_ram_pressure,
+    classify_swap_zram_saturation,
+    classify_swappiness_drift,
+    parse_meminfo,
+    parse_proc_swaps,
+)
+from shared.resource_model import ResourceState
+
 
 class ObservationState(StrEnum):
     PASS = "pass"
@@ -290,26 +303,34 @@ def collect_rte_state(
 
 
 def _read_meminfo(path: Path = Path("/proc/meminfo")) -> dict[str, int]:
-    values: dict[str, int] = {}
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
-        return values
-    for line in text.splitlines():
-        key, _, rest = line.partition(":")
-        if not rest:
-            continue
-        token = rest.strip().split()[0]
-        try:
-            values[key] = int(token) * 1024
-        except ValueError:
-            continue
-    return values
+        return {}
+    return parse_meminfo(text)
+
+
+def _read_proc_swaps(path: Path = Path("/proc/swaps")) -> list[SwapDevice]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return parse_proc_swaps(text)
+
+
+def _read_swappiness(path: Path = Path("/proc/sys/vm/swappiness")) -> int | None:
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
 
 
 def collect_resource_pressure(
     *,
     meminfo: dict[str, int] | None = None,
+    swaps: list[SwapDevice] | None = None,
+    swappiness_value: int | None = None,
+    expected_swappiness: int = DEFAULT_EXPECTED_SWAPPINESS,
     observed_at: str | None = None,
 ) -> tuple[list[ObservedEntity], list[HealthObservation]]:
     observed_at = observed_at or utc_now()
@@ -333,42 +354,85 @@ def collect_resource_pressure(
             ],
         )
 
-    mem_total = meminfo.get("MemTotal", 0)
-    mem_available = meminfo.get("MemAvailable", 0)
-    swap_total = meminfo.get("SwapTotal", 0)
-    swap_free = meminfo.get("SwapFree", 0)
-    mem_available_pct = (mem_available / mem_total * 100.0) if mem_total else 0.0
-    swap_used_pct = ((swap_total - swap_free) / swap_total * 100.0) if swap_total else 0.0
+    swaps = swaps if swaps is not None else _read_proc_swaps()
+    if swappiness_value is None:
+        swappiness_value = _read_swappiness()
 
-    state = ObservationState.PASS
-    severity = Severity.INFO
-    if mem_available_pct < 5.0 or swap_used_pct >= 85.0:
-        state = ObservationState.FAIL
-        severity = Severity.HIGH
-    elif mem_available_pct < 10.0 or swap_used_pct >= 70.0:
-        state = ObservationState.WARN
-        severity = Severity.MEDIUM
-
-    return (
-        [entity],
-        [
-            HealthObservation(
-                entity_id=entity.entity_id,
-                predicate=PredicateKind.RESOURCE_SAFETY,
-                state=state,
-                source="/proc/meminfo",
-                observed_at=observed_at,
-                severity=severity,
-                message=(
-                    f"memory available {mem_available_pct:.1f}%, swap used {swap_used_pct:.1f}%"
-                ),
-                raw={
-                    "mem_available_pct": round(mem_available_pct, 3),
-                    "swap_used_pct": round(swap_used_pct, 3),
-                },
+    signals = [
+        classify_global_ram_pressure(meminfo),
+        classify_swap_zram_saturation(swaps),
+    ]
+    if swappiness_value is not None:
+        signals.append(
+            classify_swappiness_drift(
+                swappiness_value,
+                expected_value=expected_swappiness,
             )
-        ],
+        )
+
+    entities = [
+        entity,
+        ObservedEntity(entity_id="host.memory", entity_type="host_memory", protected=True),
+        ObservedEntity(entity_id="host.swap", entity_type="host_swap", protected=True),
+        ObservedEntity(
+            entity_id="host.sysctl.vm.swappiness", entity_type="host_sysctl", protected=True
+        ),
+    ]
+    observations = [
+        _memory_signal_observation(signal, observed_at=observed_at) for signal in signals
+    ]
+    return (entities, observations)
+
+
+def _memory_signal_observation(
+    signal: MemoryPressureSignal,
+    *,
+    observed_at: str,
+) -> HealthObservation:
+    entity_id, source = _memory_signal_entity_and_source(signal.pressure_class)
+    return HealthObservation(
+        entity_id=entity_id,
+        predicate=PredicateKind.RESOURCE_SAFETY,
+        state=_observation_state_from_resource_state(signal.state),
+        source=source,
+        observed_at=observed_at,
+        severity=_severity_from_resource_state(signal.state),
+        message=signal.message,
+        raw={
+            "pressure_class": signal.pressure_class.value,
+            "resource_type": signal.resource_type.value,
+            "current_value": signal.current_value,
+            "unit": signal.unit,
+            "threshold_signal": signal.threshold_signal,
+            **signal.raw,
+        },
     )
+
+
+def _memory_signal_entity_and_source(pressure_class: MemoryPressureClass) -> tuple[str, str]:
+    if pressure_class == MemoryPressureClass.GLOBAL_RAM_PRESSURE:
+        return ("host.memory", "/proc/meminfo")
+    if pressure_class == MemoryPressureClass.ZRAM_SATURATION:
+        return ("host.swap", "/proc/swaps")
+    if pressure_class == MemoryPressureClass.SYSCTL_DRIFT:
+        return ("host.sysctl.vm.swappiness", "/proc/sys/vm/swappiness")
+    return ("host.resources", "shared.memory_pressure")
+
+
+def _observation_state_from_resource_state(state: ResourceState) -> ObservationState:
+    if state == ResourceState.GREEN:
+        return ObservationState.PASS
+    if state == ResourceState.YELLOW:
+        return ObservationState.WARN
+    return ObservationState.FAIL
+
+
+def _severity_from_resource_state(state: ResourceState) -> Severity:
+    if state == ResourceState.GREEN:
+        return Severity.INFO
+    if state == ResourceState.YELLOW:
+        return Severity.MEDIUM
+    return Severity.HIGH
 
 
 def health_report_to_observations(
@@ -522,6 +586,10 @@ def _recommended_next(observation: HealthObservation) -> str:
         return "Restore or reassign RTE loop; do not treat stale RTE state as dispatch authority."
     if observation.source == "/proc/meminfo":
         return "Pause discretionary work and reduce pressure before launching repair sessions."
+    if observation.source == "/proc/swaps":
+        return "Classify zram/swap saturation separately from global RAM before changing limits."
+    if observation.source == "/proc/sys/vm/swappiness":
+        return "Reconcile live sysctl drift against source-controlled host policy."
     return "Create bounded diagnosis task with evidence bundle."
 
 

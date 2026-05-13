@@ -56,6 +56,7 @@ from .checks.gpu import check_gpu_temperature as check_gpu_temperature  # noqa: 
 from .checks.gpu import check_gpu_vram as check_gpu_vram  # noqa: F401
 from .checks.latency import check_postgres_latency as check_postgres_latency  # noqa: F401
 from .checks.latency import check_service_latency as check_service_latency  # noqa: F401
+from .checks.memory import check_memory_pressure as check_memory_pressure  # noqa: F401
 from .checks.models_ollama import check_ollama_models as check_ollama_models  # noqa: F401
 from .checks.profiles import check_profile_files as check_profile_files  # noqa: F401
 from .checks.profiles import check_profile_staleness as check_profile_staleness  # noqa: F401

@@ -18,6 +18,7 @@ def test_group_default_fallback():
     """Unknown check names fall back to their group default."""
     assert tier_for_check("docker.unknown-container", "docker") == ServiceTier.IMPORTANT
     assert tier_for_check("connectivity.unknown", "connectivity") == ServiceTier.OPTIONAL
+    assert tier_for_check("memory.global_ram_pressure", "memory") == ServiceTier.IMPORTANT
 
 
 def test_inferred_group_from_name():

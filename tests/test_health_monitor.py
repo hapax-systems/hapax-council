@@ -605,6 +605,48 @@ class TestDiskChecks:
         assert results[0].status == Status.DEGRADED
 
 
+class TestMemoryChecks:
+    @pytest.mark.asyncio
+    async def test_memory_pressure_splits_host_swap_and_sysctl(self):
+        from agents.health_monitor import check_memory_pressure
+
+        def fake_read(path):
+            if str(path) == "/proc/meminfo":
+                return "MemTotal: 134217728 kB\nMemAvailable: 70254592 kB\n"
+            if str(path) == "/proc/swaps":
+                return "\n".join(
+                    [
+                        "Filename Type Size Used Priority",
+                        "/dev/zram0 partition 33554432 33554432 100",
+                    ]
+                )
+            if str(path) == "/proc/sys/vm/swappiness":
+                return "150\n"
+            return None
+
+        with (
+            patch("agents.health_monitor.checks.memory._read_text", side_effect=fake_read),
+            patch.dict("os.environ", {"HAPAX_EXPECTED_SWAPPINESS": "10"}, clear=False),
+        ):
+            results = await check_memory_pressure()
+
+        by_name = {result.name: result for result in results}
+        assert by_name["memory.global_ram_pressure"].status == Status.HEALTHY
+        assert by_name["memory.zram_saturation"].status == Status.FAILED
+        assert by_name["memory.sysctl_drift"].status == Status.FAILED
+        assert "zram" in by_name["memory.zram_saturation"].message
+
+    @pytest.mark.asyncio
+    async def test_memory_pressure_degrades_when_meminfo_unreadable(self):
+        from agents.health_monitor import check_memory_pressure
+
+        with patch("agents.health_monitor.checks.memory._read_text", return_value=None):
+            results = await check_memory_pressure()
+
+        assert results[0].name == "memory.global_ram_pressure"
+        assert results[0].status == Status.DEGRADED
+
+
 # ── Runner tests ─────────────────────────────────────────────────────────────
 
 
@@ -874,6 +916,7 @@ class TestRegistry:
             "auth",
             "connectivity",
             "latency",
+            "memory",
             "secrets",
             "queues",
             "budget",
