@@ -125,6 +125,22 @@ def _surface_bytes(surface: cairo.ImageSurface) -> int:
         return max(0, int(surface.get_width())) * max(0, int(surface.get_height())) * 4
 
 
+def _surface_matches(surface: object, width: int, height: int) -> bool:
+    return (
+        isinstance(surface, cairo.ImageSurface)
+        and int(surface.get_width()) == int(width)
+        and int(surface.get_height()) == int(height)
+    )
+
+
+def _clear_surface(surface: cairo.ImageSurface) -> cairo.Context:
+    cr = cairo.Context(surface)
+    cr.set_operator(cairo.OPERATOR_CLEAR)
+    cr.paint()
+    cr.set_operator(cairo.OPERATOR_OVER)
+    return cr
+
+
 def _publish_scale_cache_state() -> None:
     try:
         from . import metrics as _metrics
@@ -573,8 +589,11 @@ def pip_draw_from_layout(
         ):
             return
 
-        composite = cairo.ImageSurface(cairo.FORMAT_ARGB32, target_size[0], target_size[1])
-        composite_cr = cairo.Context(composite)
+        composite, composite_cr = _prepare_layout_composite_surface(
+            stage,
+            target_size[0],
+            target_size[1],
+        )
         _draw_layout_pairs(composite_cr, pairs, stage=stage)
         composite.flush()
         _store_layout_composite(stage, signature, composite)
@@ -766,16 +785,58 @@ def _paint_cached_layout_composite(
     return True
 
 
+def _prepare_layout_composite_surface(
+    stage: Literal["pre_fx", "post_fx"],
+    width: int,
+    height: int,
+) -> tuple[cairo.ImageSurface, cairo.Context]:
+    """Return a cleared reusable full-stage composite surface.
+
+    The cached composite path is rate-limited, but allocating a fresh
+    full-frame ARGB surface on every redraw still drives allocator/Cairo RSS
+    growth. Keep one work surface per stage and swap it with the current front
+    surface when a redraw is stored.
+    """
+
+    width = max(1, int(width))
+    height = max(1, int(height))
+    surface: cairo.ImageSurface | None = None
+    with _LAYOUT_COMPOSITE_CACHE_LOCK:
+        entry = _LAYOUT_COMPOSITE_CACHE.get(stage)
+        if entry is not None:
+            candidate = entry.get("work_surface")
+            if _surface_matches(candidate, width, height):
+                surface = candidate
+                entry["work_surface"] = None
+
+    if surface is None:
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+    return surface, _clear_surface(surface)
+
+
 def _store_layout_composite(
     stage: Literal["pre_fx", "post_fx"],
     signature: tuple[object, ...],
     surface: cairo.ImageSurface,
 ) -> None:
+    width = int(surface.get_width())
+    height = int(surface.get_height())
     with _LAYOUT_COMPOSITE_CACHE_LOCK:
+        old_entry = _LAYOUT_COMPOSITE_CACHE.get(stage)
+        reusable: cairo.ImageSurface | None = None
+        if old_entry is not None:
+            old_surface = old_entry.get("surface")
+            if old_surface is not surface and _surface_matches(old_surface, width, height):
+                reusable = old_surface
+            else:
+                old_work = old_entry.get("work_surface")
+                if old_work is not surface and _surface_matches(old_work, width, height):
+                    reusable = old_work
         _LAYOUT_COMPOSITE_CACHE[stage] = {
             "signature": signature,
             "surface": surface,
             "rendered_at": time.monotonic(),
+            "work_surface": reusable,
         }
 
 

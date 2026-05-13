@@ -159,6 +159,37 @@ def test_layout_composite_interval_expires_before_signature_change(monkeypatch) 
     assert _pixel(canvas, 10, 10)[:3] == (0x00, 0x00, 0x00)
 
 
+def test_layout_composite_redraw_reuses_prior_front_surface() -> None:
+    fx_chain.clear_layout_composite_cache()
+    first = _solid_surface(20, 20, (1.0, 0.0, 0.0))
+    fx_chain._store_layout_composite("post_fx", ("first",), first)
+
+    second, second_cr = fx_chain._prepare_layout_composite_surface("post_fx", 20, 20)
+    assert second is not first
+    second_cr.set_source_rgba(0.0, 1.0, 0.0, 1.0)
+    second_cr.paint()
+    second.flush()
+    fx_chain._store_layout_composite("post_fx", ("second",), second)
+
+    third, _third_cr = fx_chain._prepare_layout_composite_surface("post_fx", 20, 20)
+    assert third is first
+
+
+def test_layout_composite_redraw_drops_reusable_surface_on_size_change() -> None:
+    fx_chain.clear_layout_composite_cache()
+    first = _solid_surface(20, 20, (1.0, 0.0, 0.0))
+    fx_chain._store_layout_composite("post_fx", ("first",), first)
+    second, _second_cr = fx_chain._prepare_layout_composite_surface("post_fx", 20, 20)
+    fx_chain._store_layout_composite("post_fx", ("second",), second)
+
+    third, _third_cr = fx_chain._prepare_layout_composite_surface("post_fx", 30, 20)
+
+    assert third is not first
+    assert third is not second
+    assert third.get_width() == 30
+    assert third.get_height() == 20
+
+
 def test_scaled_blit_cache_is_byte_bound(monkeypatch) -> None:
     fx_chain.clear_scaled_blit_cache()
     monkeypatch.setenv("HAPAX_SCALE_CACHE_MAX_BYTES", "512")
