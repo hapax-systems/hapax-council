@@ -110,11 +110,12 @@ def evaluate_camera_profile(compositor: Any) -> None:
 
 
 def apply_layout_mode(compositor: Any, mode: str) -> None:
-    """Recompute the tile layout and update compositor sink pad properties.
+    """Recompute the tile layout and update compositor branch geometry.
 
-    Runtime layout switch: no pipeline rebuild, no caps renegotiation.
-    GStreamer compositor scales each camera input to fit its pad's
-    width/height automatically.
+    Runtime layout switch must update both the compositor sink pad and the
+    upstream scale caps. Modes such as ``sierpinski`` intentionally assign
+    camera branches a 1x1 tile; leaving those caps pinned while the pad moves
+    back to a visible layout creates a "live but visually hidden" camera grid.
 
     When the initial layout mode is ``"packed"``, hero-override and
     follow-mode switches are suppressed — packed mode manages camera
@@ -143,6 +144,7 @@ def apply_layout_mode(compositor: Any, mode: str) -> None:
     for role, tile in new_layout.items():
         elements = compositor._camera_elements.get(role, {})
         pad = elements.get("comp_pad")
+        scale_caps = elements.get("scale_caps")
         if pad is None:
             continue
         try:
@@ -150,12 +152,75 @@ def apply_layout_mode(compositor: Any, mode: str) -> None:
             pad.set_property("ypos", int(tile.y))
             pad.set_property("width", int(tile.w))
             pad.set_property("height", int(tile.h))
+            if scale_caps is not None:
+                use_cuda = bool(elements.get("use_cuda", getattr(compositor, "_use_cuda", False)))
+                fps = int(elements.get("fps", 30) or 30)
+                if use_cuda:
+                    from .cuda_caps import cuda_input_caps_string
+
+                    caps_text = cuda_input_caps_string(int(tile.w), int(tile.h), fps)
+                else:
+                    caps_text = f"video/x-raw,format=I420,width={int(tile.w)},height={int(tile.h)}"
+                scale_caps.set_property("caps", compositor._Gst.Caps.from_string(caps_text))
             applied += 1
         except Exception:
             log.debug("Failed to update pad for camera %s", role, exc_info=True)
 
     compositor._layout_mode = mode
+    try:
+        from .active_wards import publish_current_layout_state
+
+        publish_current_layout_state(layout_mode=mode)
+    except Exception:
+        log.debug("layout mode state publish failed", exc_info=True)
     log.info("Layout mode: %s (applied to %d cameras)", mode, applied)
+
+
+def publish_active_layout_readback(compositor: Any) -> None:
+    """Publish active ward/layout readback independent of visual blit paths."""
+    layout_state = getattr(compositor, "layout_state", None)
+    source_registry = getattr(compositor, "source_registry", None)
+    if layout_state is None or source_registry is None:
+        return
+    try:
+        layout = layout_state.get()
+        surface_by_id = getattr(layout, "surface_by_id", None)
+        active_ids: list[str] = []
+        for assignment in getattr(layout, "assignments", ()):
+            source_id = getattr(assignment, "source", None)
+            if not isinstance(source_id, str) or not source_id:
+                continue
+            surface_id = getattr(assignment, "surface", None)
+            if callable(surface_by_id) and surface_id is not None:
+                try:
+                    if surface_by_id(surface_id) is None:
+                        continue
+                except Exception:
+                    continue
+            try:
+                source_surface = source_registry.get_current_surface(source_id)
+            except KeyError:
+                continue
+            if source_surface is None:
+                continue
+            active_ids.append(source_id)
+        from . import active_wards
+
+        if not active_ids:
+            active_ids = active_wards.visible_ward_property_ids(
+                path=SNAPSHOT_DIR / "ward-properties.json"
+            )
+
+        layout_name = getattr(layout, "name", None)
+        layout_mode = getattr(compositor, "_layout_mode", None)
+        active_wards.publish(active_ids)
+        active_wards.publish_current_layout_state(
+            layout_name=layout_name if isinstance(layout_name, str) else None,
+            layout_mode=layout_mode if isinstance(layout_mode, str) else None,
+            active_ward_ids=active_ids,
+        )
+    except Exception:
+        log.debug("active layout readback publish failed", exc_info=True)
 
 
 def try_reconnect_camera(compositor: Any, role: str) -> bool:
@@ -334,6 +399,7 @@ def state_reader_loop(compositor: Any) -> None:
                         log.info("Layouts reloaded: %s", changed)
             except Exception as exc:
                 log.debug("Layout reload failed: %s", exc)
+            publish_active_layout_readback(compositor)
 
         # Camera profiles every ~10s
         profile_check_counter += 1
@@ -388,6 +454,23 @@ def state_reader_loop(compositor: Any) -> None:
                     # so pop before construction.
                     source_tag = parsed.pop("_source", None)
                     graph = EffectGraph(**parsed)
+                    from .preset_policy import evaluate_preset_policy
+
+                    policy = evaluate_preset_policy(
+                        graph.name,
+                        aliases=(preset_hint,),
+                    )
+                    if not policy.allowed:
+                        log.warning(
+                            "preset load blocked by policy: %s — %s",
+                            graph.name,
+                            policy.reason,
+                        )
+                        _metrics.record_preset_load_failed(
+                            preset=graph.name,
+                            reason=policy.reason,
+                        )
+                        continue
                     graph = merge_default_modulations(graph)
                     compositor._graph_runtime.load_graph(graph)
                     compositor._current_preset_name = graph.name
@@ -436,18 +519,18 @@ def state_reader_loop(compositor: Any) -> None:
                     and preset_name != "unknown"
                     and compositor._graph_runtime is not None
                 ):
-                    try_graph_preset(compositor, preset_name)
-                    compositor._current_preset_name = preset_name
-                    # 2026-05-04 hot-fix: 600.0 s → 25.0 s. The 10-min hold blocked
-                    # recruitment-driven mutations (which use the same bus) from
-                    # advancing for 10 min after each director cycle. Operator
-                    # manual changes still get a brief 25 s lock — sufficient to
-                    # avoid director thrash without freezing the chain.
-                    compositor._user_preset_hold_until = time.monotonic() + 25.0
-                    try:
-                        (SNAPSHOT_DIR / "fx-current.txt").write_text(preset_name)
-                    except OSError:
-                        pass
+                    if try_graph_preset(compositor, preset_name):
+                        compositor._current_preset_name = preset_name
+                        # 2026-05-04 hot-fix: 600.0 s → 25.0 s. The 10-min hold blocked
+                        # recruitment-driven mutations (which use the same bus) from
+                        # advancing for 10 min after each director cycle. Operator
+                        # manual changes still get a brief 25 s lock — sufficient to
+                        # avoid director thrash without freezing the chain.
+                        compositor._user_preset_hold_until = time.monotonic() + 25.0
+                        try:
+                            (SNAPSHOT_DIR / "fx-current.txt").write_text(preset_name)
+                        except OSError:
+                            pass
             except Exception as exc:
                 # Researcher audit 2026-05-03: parallel to the
                 # graph-mutation path, was DEBUG-swallowed; promoted to

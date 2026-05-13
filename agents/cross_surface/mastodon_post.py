@@ -57,12 +57,15 @@ import sys
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from prometheus_client import REGISTRY, CollectorRegistry, Counter, start_http_server
 from pydantic import ValidationError
 
+from agents.publication_bus.mastodon_publisher import MastodonPublisher
+from agents.publication_bus.publisher_kit import PublisherPayload, PublisherResult
 from shared.cross_surface_event_contract import decide_cross_surface_fanout
 from shared.governance.publication_allowlist import check as allowlist_check
 from shared.research_vehicle_public_event import ResearchVehiclePublicEvent
@@ -90,6 +93,7 @@ DEFAULT_IDEMPOTENCY_PATH = Path(
 METRICS_PORT: int = int(os.environ.get("HAPAX_MASTODON_METRICS_PORT", "9502"))
 DEFAULT_TICK_S: float = float(os.environ.get("HAPAX_MASTODON_TICK_S", "30"))
 MASTODON_TEXT_LIMIT: int = int(os.environ.get("HAPAX_MASTODON_TEXT_LIMIT", "500"))
+DEFAULT_PUBLICATION_TARGET = os.environ.get("HAPAX_MASTODON_PUBLICATION_TARGET", "hapax")
 
 ALLOWLIST_SURFACE = "mastodon-post"
 ALLOWED_PUBLIC_EVENT_TYPES = frozenset(
@@ -112,6 +116,13 @@ class _TailRecord:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class _StatusResult:
+    result: str
+    uri: str | None = None
+    public_url: str | None = None
+
+
 class MastodonPoster:
     """Tail canonical public events; post to Mastodon when policy permits."""
 
@@ -121,7 +132,8 @@ class MastodonPoster:
         instance_url: str | None = None,
         access_token: str | None = None,
         compose_fn=None,
-        client_factory=None,
+        publisher_factory=None,
+        publication_target: str = DEFAULT_PUBLICATION_TARGET,
         event_path: Path = EVENT_PATH,
         cursor_path: Path = DEFAULT_CURSOR_PATH,
         idempotency_path: Path = DEFAULT_IDEMPOTENCY_PATH,
@@ -133,7 +145,8 @@ class MastodonPoster:
         self._instance_url = instance_url
         self._access_token = access_token
         self._compose_fn = compose_fn
-        self._client_factory = client_factory
+        self._publisher_factory = publisher_factory
+        self._publication_target = publication_target
         self._event_path = event_path
         self._cursor_path = cursor_path
         self._idempotency_path = idempotency_path
@@ -141,8 +154,8 @@ class MastodonPoster:
         self._text_limit = max(1, text_limit)
         self._dry_run = dry_run
         self._stop_evt = threading.Event()
-        self._client = None  # built on first non-dry-run apply
         self._processed_event_ids: set[str] | None = None
+        self._post_receipts: dict[str, dict[str, Any]] | None = None
 
         self.posts_total = Counter(
             "hapax_broadcast_mastodon_posts_total",
@@ -172,8 +185,8 @@ class MastodonPoster:
             if self._event_already_processed(event.event_id):
                 self._write_cursor(record.byte_after)
                 continue
-            self._apply(event)
-            self._mark_event_processed(event.event_id)
+            receipt = self._apply(event)
+            self._mark_event_processed(event.event_id, receipt=receipt)
             self._write_cursor(record.byte_after)
             handled += 1
         return handled
@@ -303,16 +316,26 @@ class MastodonPoster:
             return set()
         return {item for item in ids if isinstance(item, str) and item}
 
-    def _mark_event_processed(self, event_id: str) -> None:
+    def _mark_event_processed(
+        self,
+        event_id: str,
+        *,
+        receipt: dict[str, Any] | None = None,
+    ) -> None:
         if self._processed_event_ids is None:
             self._processed_event_ids = self._read_processed_event_ids()
         self._processed_event_ids.add(event_id)
         try:
             self._idempotency_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._idempotency_path.with_suffix(".tmp")
+            if self._post_receipts is None:
+                self._post_receipts = self._read_post_receipts()
+            if receipt is not None:
+                self._post_receipts[event_id] = receipt
             payload = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "event_ids": sorted(self._processed_event_ids),
+                "posts": [self._post_receipts[key] for key in sorted(self._post_receipts)],
             }
             tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
             tmp.replace(self._idempotency_path)
@@ -323,9 +346,29 @@ class MastodonPoster:
                 exc_info=True,
             )
 
+    def _read_post_receipts(self) -> dict[str, dict[str, Any]]:
+        try:
+            raw = json.loads(self._idempotency_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        posts = raw.get("posts")
+        if not isinstance(posts, list):
+            return {}
+
+        receipts: dict[str, dict[str, Any]] = {}
+        for item in posts:
+            if not isinstance(item, dict):
+                continue
+            event_id = item.get("event_id")
+            if isinstance(event_id, str) and event_id:
+                receipts[event_id] = item
+        return receipts
+
     # ── Per-event apply ───────────────────────────────────────────────
 
-    def _apply(self, event: ResearchVehiclePublicEvent) -> None:
+    def _apply(self, event: ResearchVehiclePublicEvent) -> dict[str, Any] | None:
         fanout = decide_cross_surface_fanout(event, "mastodon", "publish")
         if fanout.decision != "allow":
             log.warning(
@@ -334,7 +377,7 @@ class MastodonPoster:
                 ",".join(fanout.reasons),
             )
             self.posts_total.labels(result="denied").inc()
-            return
+            return _post_receipt(event, result="denied")
 
         verdict = allowlist_check(
             ALLOWLIST_SURFACE,
@@ -344,57 +387,83 @@ class MastodonPoster:
         if verdict.decision == "deny":
             log.warning("allowlist DENY for mastodon post: %s", verdict.reason)
             self.posts_total.labels(result="denied").inc()
-            return
+            return _post_receipt(event, result="denied")
 
         try:
             text = self._compose(event)
         except Exception:  # noqa: BLE001
             log.exception("composer failed for event")
             self.posts_total.labels(result="compose_error").inc()
-            return
+            return _post_receipt(event, result="compose_error")
 
         text = text[: self._text_limit]
 
         if self._dry_run:
             log.info("DRY RUN — would post to mastodon: text=%r", text)
             self.posts_total.labels(result="dry_run").inc()
-            return
+            return _post_receipt(event, result="dry_run", text=text)
 
-        result = self._status_post(text)
-        self.posts_total.labels(result=result).inc()
+        status = self._status_post(text)
+        self.posts_total.labels(result=status.result).inc()
+        return _post_receipt(
+            event,
+            result=status.result,
+            text=text,
+            uri=status.uri,
+            public_url=status.public_url,
+        )
 
     def _compose(self, event: ResearchVehiclePublicEvent) -> str:
         if self._compose_fn is not None:
             return self._compose_fn(event)
         return _default_compose(event)
 
-    def _status_post(self, text: str) -> str:
-        if not (self._instance_url and self._access_token):
-            log.warning(
-                "HAPAX_MASTODON_INSTANCE_URL / HAPAX_MASTODON_ACCESS_TOKEN not set; "
-                "skipping live post"
-            )
-            return "no_credentials"
+    def _status_post(self, text: str) -> _StatusResult:
+        try:
+            publisher = self._build_publisher()
+        except Exception:  # noqa: BLE001
+            log.exception("mastodon publication-bus publisher init failed")
+            return _StatusResult("auth_error")
 
         try:
-            client = self._ensure_client()
+            result = publisher.publish(PublisherPayload(target=self._publication_target, text=text))
         except Exception:  # noqa: BLE001
-            log.exception("mastodon client init failed")
-            return "auth_error"
+            log.exception("mastodon publication-bus publish raised")
+            return _StatusResult("error")
 
-        try:
-            client.status_post(text)
-        except Exception:  # noqa: BLE001
-            log.exception("mastodon status_post raised")
-            return "error"
-        return "ok"
+        if result.ok:
+            uri, public_url = _extract_publisher_receipt(result)
+            return _StatusResult("ok", uri=uri, public_url=public_url)
+        if result.refused:
+            if "credential" in result.detail.lower() or "creds" in result.detail.lower():
+                return _StatusResult("no_credentials")
+            return _StatusResult("denied")
+        if result.error:
+            return _StatusResult("error")
+        return _StatusResult("error")
 
-    def _ensure_client(self):
-        if self._client is not None:
-            return self._client
-        factory = self._client_factory or _default_client_factory
-        self._client = factory(self._instance_url, self._access_token)
-        return self._client
+    def _build_publisher(self):
+        factory = self._publisher_factory or _default_publisher_factory
+        return factory(self._instance_url, self._access_token)
+
+
+def _default_publisher_factory(instance_url: str | None, access_token: str | None):
+    return MastodonPublisher(instance_url=instance_url, access_token=access_token)
+
+
+def _extract_publisher_receipt(result: PublisherResult) -> tuple[str | None, str | None]:
+    try:
+        raw = json.loads(result.detail)
+    except json.JSONDecodeError:
+        return None, None
+    if not isinstance(raw, dict):
+        return None, None
+    uri = raw.get("uri")
+    public_url = raw.get("public_url")
+    return (
+        uri if isinstance(uri, str) and uri else None,
+        public_url if isinstance(public_url, str) and public_url else None,
+    )
 
 
 # ── Default helpers (composer + Mastodon client) ─────────────────────
@@ -402,6 +471,9 @@ class MastodonPoster:
 
 def _default_compose(event: ResearchVehiclePublicEvent) -> str:
     """Build post text by deferring to metadata_composer."""
+    if event.event_type == "omg.weblog" and event.public_url:
+        return _fallback_public_event_text(event)
+
     from agents.metadata_composer.composer import compose_metadata
 
     composed = compose_metadata(
@@ -457,6 +529,29 @@ def _fallback_public_event_text(event: ResearchVehiclePublicEvent) -> str:
     if event.event_type in {"governance.enforcement", "velocity.digest"}:
         return f"Hapax {_event_intent(event)}."
     return f"Hapax livestream: {_event_intent(event)}."
+
+
+def _post_receipt(
+    event: ResearchVehiclePublicEvent,
+    *,
+    result: str,
+    text: str | None = None,
+    uri: str | None = None,
+    public_url: str | None = None,
+) -> dict[str, Any]:
+    receipt: dict[str, Any] = {
+        "event_id": event.event_id,
+        "result": result,
+        "event_public_url": event.public_url,
+        "recorded_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    }
+    if text:
+        receipt["text"] = text
+    if uri:
+        receipt["uri"] = uri
+    if public_url:
+        receipt["public_url"] = public_url
+    return receipt
 
 
 def _allowlist_payload(event: ResearchVehiclePublicEvent) -> dict[str, Any]:
@@ -533,13 +628,6 @@ def _dedupe(values: list[str | None]) -> list[str]:
     return result
 
 
-def _default_client_factory(instance_url: str, access_token: str):
-    """Lazy-build a Mastodon client."""
-    from mastodon import Mastodon
-
-    return Mastodon(access_token=access_token, api_base_url=instance_url)
-
-
 def _credentials_from_env() -> tuple[str | None, str | None]:
     instance = os.environ.get("HAPAX_MASTODON_INSTANCE_URL", "").strip() or None
     token = os.environ.get("HAPAX_MASTODON_ACCESS_TOKEN", "").strip() or None
@@ -562,26 +650,40 @@ def publish_artifact(artifact) -> str:  # type: ignore[no-untyped-def]
     entry-point lands in a follow-up ticket.
     """
     instance_url, access_token = _credentials_from_env()
-    if not (instance_url and access_token):
-        return "no_credentials"
 
     text = _compose_artifact_text(artifact)
     if not text:
         return "error"
 
     try:
-        client = _default_client_factory(instance_url, access_token)
+        publisher = _default_publisher_factory(instance_url, access_token)
     except Exception:  # noqa: BLE001
-        log.exception("mastodon login failed for artifact %s", getattr(artifact, "slug", "?"))
+        log.exception(
+            "mastodon publisher init failed for artifact %s", getattr(artifact, "slug", "?")
+        )
         return "auth_error"
 
     try:
-        client.status_post(text)
+        result = publisher.publish(
+            PublisherPayload(
+                target=DEFAULT_PUBLICATION_TARGET,
+                text=text,
+                metadata={"artifact_slug": getattr(artifact, "slug", "")},
+            )
+        )
     except Exception:  # noqa: BLE001
         log.exception(
-            "mastodon status_post raised for artifact %s",
+            "mastodon publication-bus publish raised for artifact %s",
             getattr(artifact, "slug", "?"),
         )
+        return "error"
+    if result.ok:
+        return "ok"
+    if result.refused:
+        if "credential" in result.detail.lower() or "creds" in result.detail.lower():
+            return "no_credentials"
+        return "denied"
+    if result.error:
         return "error"
     return "ok"
 

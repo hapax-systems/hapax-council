@@ -1,33 +1,30 @@
 # hapax-council
 
-Single-operator cognitive infrastructure: 180+ agent modules, 330+ systemd unit files, constitutional governance with algebraic proofs, multi-lane AI coordination, multimodal perception, and a studio compositor/livestream research instrument - running on one workstation for one person.
-
 [![CI](https://github.com/hapax-systems/hapax-council/actions/workflows/ci.yml/badge.svg)](https://github.com/hapax-systems/hapax-council/actions/workflows/ci.yml)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20113515.svg)](https://doi.org/10.5281/zenodo.20113515)
-[![Sponsor Hapax research](https://img.shields.io/badge/Sponsor-Hapax%20research-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/hapax-systems)
-
-> **Reviewer / AI-safety orientation:** start with
-> [`START_HERE.md`](START_HERE.md) — the short dossier for this repository
-> as an empirical grounding, refusal, agentic-oversight, and public-egress
-> safety artifact.
+[![Support Hapax research](https://img.shields.io/badge/Support-Hapax%20research-b8bb26)](https://hapax.weblog.lol/support)
+[![License: PolyForm Strict](https://img.shields.io/badge/license-PolyForm%20Strict%201.0.0-blue)](LICENSE)
+[![Built with Claude Code](https://img.shields.io/badge/built%20with-Claude%20Code-blueviolet)](https://claude.ai/claude-code)
 
 ## Project spine
 
 Single-operator operating environment, externalized executive function, semantic recruitment across perception/expression/recall/action, temporal and perceptual grounding discipline, studio/livestream research instrument, refusal-as-data substrate, and value-braid loop from runtime truth to artifacts, support, grants, and posteriors.
 
-## What this is
+**What happens when 200+ total AI agents run 24/7 and can't lie to you -- by design.**
 
-An operating environment that externalizes executive function for a neurodivergent solo operator. Not a product, not a service, not seeking contributors — research infrastructure published as artifact.
+Hapax is a single-operator autonomous system: 200+ total agents, including 180+ runtime agent modules, plus a voice daemon, a GPU visual surface, a studio compositor, and a 24/7 livestream -- all governed by a formal constitution that makes sycophancy, slop, and dishonesty structurally impossible.
 
-The system perceives (cameras, microphones, biometrics, IR fleet), reasons (180+ agent modules via LLM and deterministic pipelines), acts (voice, visuals, compositor, publication), and governs itself (5 constitutional axioms with algebraic enforcement). Everything runs locally on a single workstation.
+This is not a framework. This is not a demo. This is the production system one neurodivergent operator uses to externalize executive function, and the research artifact that proves what happens when you take agent governance seriously.
 
-### Core commitments
+> [hapax.omg.lol](https://hapax.omg.lol) &#183; [YouTube @LegomenaLive](https://youtube.com/@LegomenaLive) &#183; [START_HERE.md](START_HERE.md) &#183; [Manifesto](https://hapax.weblog.lol/hapax-manifesto-v0) &#183; [Refusal Brief](https://hapax.weblog.lol/refusal-brief)
 
-- **Single-operator.** No auth, no roles, no multi-user code. Constitutional axiom, weight 100.
-- **Externalized executive function.** ADHD + autism accommodation is the design constraint. Agents track open loops, maintain context, surface what needs attention, automate routine work.
-- **Constitutional governance.** 5 axioms produce ~90 implications via 4 interpretive canons. Consent contracts govern non-operator person data. The governance algebra is verified by Hypothesis: join-semilattice, non-amplification, provenance semirings, deny-wins composition. Extracted as the standalone [`agentgov`](packages/agentgov/) package.
-- **Semantic recruitment.** One `AffordancePipeline` gates everything across 6 domains (perception, expression, recall, action, communication, regulation). Thompson sampling, cosine similarity against a Qdrant affordance collection, governance veto.
-- **Refusal as data.** Declined surfaces are first-class artifacts. The publication bus enforces a 3-tier allowlist (`FULL_AUTO` / `CONDITIONAL_ENGAGE` / `REFUSED`).
+---
+
+## The problem
+
+Most AI agent systems have no governance. The model might be aligned, but the system around it offers zero structural guarantees about what the agents will say, claim, publish, or refuse. Prompt engineering is behavioral nudging, not governance. Fine-tuning is statistical tendency, not constraint. When the only thing between an agent and a hallucinated claim is a system prompt, you don't have safety -- you have hope.
+
+Hapax takes a different position: **governance is architecture, not policy.** Five constitutional axioms, enforced at commit time, at CI, and at runtime, produce ~90 implications via four interpretive canons. Agents don't choose to be honest. They are structurally incapable of the alternative.
 
 ## Architecture
 
@@ -68,6 +65,10 @@ The system perceives (cameras, microphones, biometrics, IR fleet), reasons (180+
 | LLM agents | pydantic-ai via LiteLLM | Triage officer, voice daemon, publication bus, content resolver |
 | Deterministic | systemd timers | Sync agents, health monitor, drift detector, audio routing checks |
 
+### Filesystem-as-bus
+
+Agents read and write Markdown + YAML on disk. An inotify-driven reactive engine cascades work across the system. No message broker. No queue. The filesystem is the bus, and `git log` is the audit trail.
+
 ### Multi-lane coordination
 
 Up to 10 concurrent AI sessions (Claude Code, Codex, Gemini CLI) coordinate through a relay protocol at `~/.cache/hapax/relay/`. Each session operates in its own git worktree. A triage officer daemon annotates incoming tasks with priority, effort class, and platform suitability. Dispatch policies enforce permission tiers, quota partitioning, and capability matching.
@@ -80,19 +81,33 @@ Up to 10 concurrent AI sessions (Claude Code, Codex, Gemini CLI) coordinate thro
 - **Biometrics:** Wear OS watch (heart rate, HRV, skin temperature, sleep) + Android phone (daily health summaries, 60s context updates)
 - **Visual expression:** `hapax-imagination` — Rust/wgpu shader graphs with 60 WGSL nodes, 30 presets, 9 expressive dimensions in GPU uniform buffer
 
-### Constitutional governance
+## Constitutional governance
 
-5 axioms, algebraically verified:
+Five axioms govern everything. They are not guidelines. They are enforced at four tiers: T0 blocks at commit, T1 at review, T2 warns, T3 lints.
 
 | Axiom | Weight | Constraint |
 |-------|--------|-----------|
-| `single_user` | 100 | One operator. No auth, no roles. |
-| `executive_function` | 95 | Zero-config, errors include next actions, routine automated. |
-| `corporate_boundary` | 90 | Work data stays in employer systems. |
-| `interpersonal_transparency` | 88 | No persistent state about non-operator persons without consent contract. |
-| `management_governance` | 85 | LLMs prepare context; humans deliver words. |
+| `single_user` | 100 | One operator. No auth, no roles, no multi-user code. Ever. |
+| `executive_function` | 95 | Agents track open loops and surface what needs attention. Zero-config. |
+| `corporate_boundary` | 90 | Work data stays in employer systems. Hard boundary. |
+| `interpersonal_transparency` | 88 | No persistent state about non-operator persons without active consent. |
+| `management_governance` | 85 | LLMs prepare context. Humans deliver words. No exceptions. |
 
-Enforcement at 4 tiers: T0 (block at commit), T1 (review), T2 (warn), T3 (lint). Face-obscure runs fail-CLOSED per camera before any egress. The governance core is extracted as [`agentgov`](packages/agentgov/) — a standalone MIT-licensed package with ConsentLabel (DLM join-semilattice), Labeled[T] (LIO-style functor), ProvenanceExpr (PosBool(X) semiring), VetoChain (deny-wins composition), and Says (DCC attribution monad).
+### What "constitutionally incapable" means
+
+- **Sycophancy** is structurally impossible because `management_governance` requires that LLMs prepare context for human decisions, never deliver conclusions. An agent that tells the operator what they want to hear has violated a constitutional axiom -- the system rejects this at the architectural level.
+- **Slop** is structurally impossible because the publication bus enforces source provenance on every claim that reaches a public surface. Agents cannot publish ungrounded assertions. The refusal system treats declined claims as first-class artifacts, preserved and auditable.
+- **Dishonesty about persons** is structurally impossible because `interpersonal_transparency` requires active consent contracts before the system stores anything about a non-operator person. The face privacy system runs fail-closed -- if the detector crashes, all faces are obscured by default.
+
+The governance core is extracted as [`agentgov`](packages/agentgov/) — a standalone MIT-licensed package with ConsentLabel (DLM join-semilattice), Labeled[T] (LIO-style functor), ProvenanceExpr (PosBool(X) semiring), VetoChain (deny-wins composition), and Says (DCC attribution monad). Algebraic properties verified by Hypothesis.
+
+### Refusal as data
+
+When the system declines to publish, claim, or act, that refusal is not discarded. It is preserved as a first-class artifact in the publication bus. The [Refusal Brief](https://hapax.weblog.lol/refusal-brief) explains why this matters.
+
+### Semantic recruitment
+
+One `AffordancePipeline` gates everything across 6 domains (perception, expression, recall, action, communication, regulation). Thompson sampling, cosine similarity against a Qdrant affordance collection, governance veto.
 
 ## Project posture
 
@@ -103,7 +118,7 @@ Enforcement at 4 tiers: T0 (block at commit), T1 (review), T2 (warn), T3 (lint).
 | Governance | 5 constitutional axioms enforced via [hapax-constitution](https://github.com/ryanklee/hapax-constitution) and [`axioms/`](axioms/). |
 | License | PolyForm Strict 1.0.0. See [`NOTICE.md`](NOTICE.md), [`CITATION.cff`](CITATION.cff), and [`license-reconciliation-status`](docs/governance/license-reconciliation-status.md). |
 | Authorship | Indeterminate by design: co-produced by Hapax (the system), Claude Code, and the operator. See [Hapax Manifesto v0](https://hapax.weblog.lol/hapax-manifesto-v0). |
-| Support / sponsorship | Public support page: [hapax.omg.lol/support](https://hapax.omg.lol/support). GitHub Sponsors approval is pending; no monetization-ready claim is made until publication-bus evidence clears. |
+| Support / sponsorship | Public support page: [hapax.weblog.lol/support](https://hapax.weblog.lol/support). The org GitHub Sponsors surface is pending; launch copy routes through the verified no-perk support page and does not claim perks, access, requests, priority, deliverables, or control. |
 
 ## Ecosystem
 
@@ -152,4 +167,4 @@ Cite via [`CITATION.cff`](CITATION.cff). Zenodo DOI: [10.5281/zenodo.20113515](h
 
 ---
 
-This README is the public entry point. Public claims about live system health, monetization readiness, or empirical validation flow through [`agents/publication_bus/`](agents/publication_bus/) per the world-capability surface registry.
+*Not a product. Not a service. Not seeking contributors. [Why not?](https://hapax.weblog.lol/refusal-brief)*

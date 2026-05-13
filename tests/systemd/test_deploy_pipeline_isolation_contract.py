@@ -58,6 +58,22 @@ def test_rebuild_services_timeout_budget_matches_restart_hardening() -> None:
     )
 
 
+def test_visual_uniform_writers_are_rebuilt_from_main() -> None:
+    """Reverie and its parameter walker must both pick up shared effect bounds."""
+    text = REBUILD_UNIT.read_text(encoding="utf-8")
+    for service, watch in (
+        ("hapax-reverie.service", "agents/reverie/ shared/"),
+        (
+            "hapax-parametric-modulation-heartbeat.service",
+            "agents/parametric_modulation_heartbeat/ shared/",
+        ),
+    ):
+        matching = [line for line in _active_execstarts() if service in line]
+        assert matching, f"missing rebuild-services entry for {service}"
+        assert all(f"--repo {DEDICATED_REPO}" in line for line in matching)
+        assert watch in text
+
+
 def test_audio_touching_rebuild_entries_are_present_but_operator_gated() -> None:
     """The two audit-identified audio services are documented but not auto-enabled."""
     text = REBUILD_UNIT.read_text(encoding="utf-8")

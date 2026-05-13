@@ -161,6 +161,9 @@ def _element_named(elements: list[_Element], name: str) -> _Element:
 
 
 def _patch_build_pipeline_edges(monkeypatch: object) -> None:
+    from agents.studio_compositor import active_wards
+
+    monkeypatch.setattr(active_wards, "publish_current_layout_state", lambda **_kwargs: None)
     monkeypatch.setattr(pipeline_module, "PipelineManager", _PipelineManager)
     monkeypatch.setattr(pipeline_module, "add_snapshot_branch", lambda *_args: None)
     monkeypatch.setattr(pipeline_module, "add_llm_frame_snapshot_branch", lambda *_args: None)
@@ -283,6 +286,9 @@ def test_cuda_camera_branch_pins_cuda_memory_caps(monkeypatch: object) -> None:
         "width": 640,
         "height": 360,
     }
+    assert compositor._camera_elements["operator"]["scale_caps"] is scale_caps
+    assert compositor._camera_elements["operator"]["fps"] == 30
+    assert compositor._camera_elements["operator"]["use_cuda"] is True
 
 
 def test_build_pipeline_caps_cuda_output_before_cudadownload(monkeypatch: object) -> None:

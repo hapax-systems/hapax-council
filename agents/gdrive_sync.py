@@ -344,6 +344,9 @@ service: drive
 content_type: {ctype}
 source_service: gdrive
 source_platform: google
+is_metadata_only: true
+content_tier: metadata_only
+retrieval_eligible: false
 record_id: {f.drive_id}
 timestamp: {ts_frontmatter}
 modality_tags: {tags_str}

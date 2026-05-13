@@ -495,7 +495,8 @@ def test_clean():
 # --- Integration ---
 
 
-def test_preset_compile_roundtrip(real_registry):
+def test_preset_compile_roundtrip(real_registry, monkeypatch):
+    monkeypatch.setenv("HAPAX_LIVE_SURFACE_EFFECT_POLICY", "0")
     compiler = GraphCompiler(real_registry)
     modulator = UniformModulator()
     runtime = GraphRuntime(registry=real_registry, compiler=compiler, modulator=modulator)

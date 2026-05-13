@@ -6,8 +6,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -17,7 +19,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from agents.studio_compositor.final_frame_classifier import classify_final_frame
+from agents.studio_compositor.final_frame_classifier import (
+    classify_final_frame,
+    classify_final_frame_series,
+)
 from shared.live_surface_truth import (
     LiveSurfaceState,
     assess_live_surface,
@@ -69,6 +74,15 @@ FULL_SURFACE_STAGE_FPS_FLOORS = (
     ("final_egress_snapshot", 0.8, "LSC-VIEWER-001"),
 )
 FULL_SURFACE_CPU_TARGET_CORES = 2.0
+FULL_SURFACE_MAX_RSS_GROWTH_BYTES = 128 * 1024 * 1024
+FULL_SURFACE_MAX_VRAM_GROWTH_BYTES = 256 * 1024 * 1024
+FULL_SURFACE_MAX_FD_GROWTH = 16
+FULL_SURFACE_MAX_V4L2_WRITE_ERROR_DELTA = 0
+FULL_SURFACE_MAX_V4L2_FD_REOPEN_DELTA = 0
+FULL_SURFACE_MAX_GLFEEDBACK_RECOMPILE_DELTA = 8
+DEFAULT_FINAL_FRAME_IMAGE = Path("/dev/shm/hapax-compositor/fx-snapshot.jpg")
+DEFAULT_UPSTREAM_FRAME_IMAGE = Path("/dev/shm/hapax-compositor/snapshot.jpg")
+FINAL_PIXEL_PROOF_MIN_FRAMES = 6
 
 FULL_SURFACE_BLOCKING_ENV = (
     (
@@ -364,6 +378,112 @@ def _render_stage_count(metrics: dict[str, float], stage: str) -> float | None:
     return metrics.get(f"studio_compositor_render_stage_frames_total:stage:{stage}")
 
 
+def _metric_delta(
+    before_metrics: dict[str, float],
+    after_metrics: dict[str, float],
+    name: str,
+) -> float | None:
+    before = before_metrics.get(name)
+    after = after_metrics.get(name)
+    if before is None or after is None:
+        return None
+    return after - before
+
+
+def _full_surface_resource_delta_failures(
+    before_metrics: dict[str, float],
+    after_metrics: dict[str, float],
+) -> tuple[list[str], dict[str, float | None]]:
+    deltas = {
+        "rss_growth_bytes": _metric_delta(
+            before_metrics,
+            after_metrics,
+            "studio_compositor_memory_footprint_bytes",
+        ),
+        "vram_growth_bytes": _metric_delta(
+            before_metrics,
+            after_metrics,
+            "studio_compositor_gpu_vram_bytes",
+        ),
+        "fd_growth": _metric_delta(
+            before_metrics,
+            after_metrics,
+            "studio_compositor_process_fd_count",
+        ),
+        "v4l2_write_error_delta": _metric_delta(
+            before_metrics,
+            after_metrics,
+            "hapax_compositor_v4l2_write_errors_total",
+        ),
+        "v4l2_fd_reopen_delta": _metric_delta(
+            before_metrics,
+            after_metrics,
+            "hapax_compositor_v4l2_fd_reopens_total",
+        ),
+        "glfeedback_recompile_delta": _metric_delta(
+            before_metrics,
+            after_metrics,
+            "compositor_glfeedback_recompile_total",
+        ),
+    }
+
+    failures: list[str] = []
+    rss_growth = deltas["rss_growth_bytes"]
+    if rss_growth is not None and rss_growth > FULL_SURFACE_MAX_RSS_GROWTH_BYTES:
+        failures.append(
+            _full_surface_reason(
+                "LSC-PERF-003",
+                f"rss_growth_above_limit:{int(rss_growth)}>{FULL_SURFACE_MAX_RSS_GROWTH_BYTES}",
+            )
+        )
+    vram_growth = deltas["vram_growth_bytes"]
+    if vram_growth is not None and vram_growth > FULL_SURFACE_MAX_VRAM_GROWTH_BYTES:
+        failures.append(
+            _full_surface_reason(
+                "LSC-PERF-003",
+                f"vram_growth_above_limit:{int(vram_growth)}>{FULL_SURFACE_MAX_VRAM_GROWTH_BYTES}",
+            )
+        )
+    fd_growth = deltas["fd_growth"]
+    if fd_growth is not None and fd_growth > FULL_SURFACE_MAX_FD_GROWTH:
+        failures.append(
+            _full_surface_reason(
+                "LSC-PERF-003",
+                f"fd_growth_above_limit:{int(fd_growth)}>{FULL_SURFACE_MAX_FD_GROWTH}",
+            )
+        )
+    write_delta = deltas["v4l2_write_error_delta"]
+    if write_delta is not None and write_delta > FULL_SURFACE_MAX_V4L2_WRITE_ERROR_DELTA:
+        failures.append(
+            _full_surface_reason(
+                "LSC-EGRESS-001",
+                f"v4l2_write_errors_delta:{int(write_delta)}>0",
+            )
+        )
+    reopen_delta = deltas["v4l2_fd_reopen_delta"]
+    if reopen_delta is not None and reopen_delta > FULL_SURFACE_MAX_V4L2_FD_REOPEN_DELTA:
+        failures.append(
+            _full_surface_reason(
+                "LSC-EGRESS-001",
+                f"v4l2_fd_reopens_delta:{int(reopen_delta)}>0",
+            )
+        )
+    recompile_delta = deltas["glfeedback_recompile_delta"]
+    if (
+        recompile_delta is not None
+        and recompile_delta > FULL_SURFACE_MAX_GLFEEDBACK_RECOMPILE_DELTA
+    ):
+        failures.append(
+            _full_surface_reason(
+                "LSC-FX-002",
+                "glfeedback_recompile_delta_above_limit:"
+                f"{int(recompile_delta)}>{FULL_SURFACE_MAX_GLFEEDBACK_RECOMPILE_DELTA}",
+            )
+        )
+
+    return failures, deltas
+
+
 def _full_surface_performance_sample(
     args: argparse.Namespace,
     before_metrics: dict[str, float],
@@ -412,6 +532,12 @@ def _full_surface_performance_sample(
                 )
             )
 
+    resource_failures, resource_deltas = _full_surface_resource_delta_failures(
+        before_metrics,
+        after_metrics,
+    )
+    failures.extend(resource_failures)
+
     cpu_cores: float | None = None
     if cpu_before is not None and cpu_after is not None:
         cpu_cores = max(0.0, (cpu_after - cpu_before) / elapsed)
@@ -429,7 +555,103 @@ def _full_surface_performance_sample(
         "stage_fps": rates,
         "cpu_cores": cpu_cores,
         "cpu_target_cores": FULL_SURFACE_CPU_TARGET_CORES,
+        "resource_deltas": resource_deltas,
+        "resource_limits": {
+            "max_rss_growth_bytes": FULL_SURFACE_MAX_RSS_GROWTH_BYTES,
+            "max_vram_growth_bytes": FULL_SURFACE_MAX_VRAM_GROWTH_BYTES,
+            "max_fd_growth": FULL_SURFACE_MAX_FD_GROWTH,
+            "max_v4l2_write_error_delta": FULL_SURFACE_MAX_V4L2_WRITE_ERROR_DELTA,
+            "max_v4l2_fd_reopen_delta": FULL_SURFACE_MAX_V4L2_FD_REOPEN_DELTA,
+            "max_glfeedback_recompile_delta": FULL_SURFACE_MAX_GLFEEDBACK_RECOMPILE_DELTA,
+        },
     }
+
+
+def _proof_sample_count(window_seconds: float, interval_ms: int) -> int:
+    interval_seconds = max(0.0, interval_ms / 1000.0)
+    if interval_seconds <= 0:
+        return FINAL_PIXEL_PROOF_MIN_FRAMES
+    return max(FINAL_PIXEL_PROOF_MIN_FRAMES, int(window_seconds / interval_seconds) + 1)
+
+
+def _copy_proof_frame(source: Path, target: Path) -> bool:
+    try:
+        if not source.is_file() or source.stat().st_size <= 0:
+            return False
+        shutil.copy2(source, target)
+    except OSError:
+        return False
+    return True
+
+
+def _collect_final_pixel_proof(
+    *,
+    final_frame_image: Path,
+    upstream_frame_image: Path,
+    proof_dir: Path,
+    window_seconds: float,
+    interval_ms: int,
+) -> tuple[list[Path], list[Path], list[str]]:
+    sample_count = _proof_sample_count(window_seconds, interval_ms)
+    interval_seconds = max(0.0, interval_ms / 1000.0)
+    final_paths: list[Path] = []
+    upstream_paths: list[Path] = []
+    reasons: list[str] = []
+    upstream_missing = False
+
+    for index in range(sample_count):
+        final_target = proof_dir / f"final-{index:03d}.jpg"
+        upstream_target = proof_dir / f"upstream-{index:03d}.jpg"
+        if _copy_proof_frame(final_frame_image, final_target):
+            final_paths.append(final_target)
+            if _copy_proof_frame(upstream_frame_image, upstream_target):
+                upstream_paths.append(upstream_target)
+            else:
+                upstream_missing = True
+        if index + 1 < sample_count and interval_seconds > 0:
+            time.sleep(interval_seconds)
+
+    if not final_paths:
+        reasons.append(f"final_pixel_proof:final_frame_unavailable:{final_frame_image}")
+    if upstream_missing:
+        upstream_paths = []
+    if not upstream_paths:
+        reasons.append(f"final_pixel_proof:upstream_frame_unavailable:{upstream_frame_image}")
+    return final_paths, upstream_paths, reasons
+
+
+def _ward_visibility_failures(path: Path) -> tuple[list[str], dict[str, object] | None]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return [f"ward_visibility_json_unavailable:{type(exc).__name__}"], None
+    if not isinstance(payload, dict):
+        return ["ward_visibility_json_invalid"], None
+    if payload.get("ok") is True:
+        return [], payload
+    raw_reasons = payload.get("reasons")
+    if isinstance(raw_reasons, list):
+        reasons = [str(reason) for reason in raw_reasons if str(reason)]
+    else:
+        reasons = ["ward_visibility_failed"]
+    return [f"ward_visibility:{reason}" for reason in reasons], payload
+
+
+def _effect_surface_failures(path: Path) -> tuple[list[str], dict[str, object] | None]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return [f"effect_surface_json_unavailable:{type(exc).__name__}"], None
+    if not isinstance(payload, dict):
+        return ["effect_surface_json_invalid"], None
+    if payload.get("ok") is True:
+        return [], payload
+    raw_reasons = payload.get("reasons")
+    if isinstance(raw_reasons, list):
+        reasons = [str(reason) for reason in raw_reasons if str(reason)]
+    else:
+        reasons = ["effect_surface_failed"]
+    return [f"effect_surface:{reason}" for reason in reasons], payload
 
 
 def main() -> int:
@@ -475,7 +697,40 @@ def main() -> int:
     parser.add_argument("--max-director-silence-seconds", type=float, default=180.0)
     parser.add_argument(
         "--final-frame-image",
-        help="final egress proof image to classify for black/checkerboard fallthrough",
+        help=(
+            "final egress proof image to classify; also used as the proof-window "
+            "source when --require-final-pixel-proof is active"
+        ),
+    )
+    parser.add_argument(
+        "--upstream-frame-image",
+        default=str(DEFAULT_UPSTREAM_FRAME_IMAGE),
+        help="pre-FX/upstream snapshot paired with --final-frame-image for final-pixel proof",
+    )
+    parser.add_argument(
+        "--require-final-pixel-proof",
+        action="store_true",
+        help="sample final/upstream snapshots and fail closed on final-pixel proof failures",
+    )
+    parser.add_argument(
+        "--final-frame-window-seconds",
+        type=float,
+        default=8.0,
+        help="proof sample window for --require-final-pixel-proof (default 8)",
+    )
+    parser.add_argument(
+        "--final-frame-interval-ms",
+        type=int,
+        default=1000,
+        help="milliseconds between final-pixel proof samples (default 1000)",
+    )
+    parser.add_argument(
+        "--ward-visibility-json",
+        help="JSON output from scripts/audit-ward-visibility.py to consume as a gate",
+    )
+    parser.add_argument(
+        "--effect-surface-json",
+        help="JSON output from scripts/audit-live-effect-surface.py to consume as a gate",
     )
     parser.add_argument(
         "--hls-playlist",
@@ -606,7 +861,15 @@ def main() -> int:
     final_frame_payload: dict[str, object] | None = None
     if args.final_frame_image:
         try:
-            classification = classify_final_frame(Path(args.final_frame_image))
+            upstream_frame_image = (
+                Path(args.upstream_frame_image)
+                if args.upstream_frame_image
+                else Path("/dev/shm/hapax-compositor/snapshot.jpg")
+            )
+            classification = classify_final_frame(
+                Path(args.final_frame_image),
+                upstream_path=upstream_frame_image if upstream_frame_image.exists() else None,
+            )
         except OSError as exc:
             state, reasons = _with_extra_degraded_reasons(
                 state,
@@ -620,6 +883,63 @@ def main() -> int:
                 reasons,
                 list(classification.reasons),
             )
+
+    final_pixel_proof_payload: dict[str, object] | None = None
+    if args.require_final_pixel_proof:
+        final_frame_image = Path(args.final_frame_image or DEFAULT_FINAL_FRAME_IMAGE)
+        upstream_frame_image = Path(args.upstream_frame_image)
+        with tempfile.TemporaryDirectory(prefix="hapax-final-pixel-proof-") as proof_td:
+            final_paths, upstream_paths, proof_collection_reasons = _collect_final_pixel_proof(
+                final_frame_image=final_frame_image,
+                upstream_frame_image=upstream_frame_image,
+                proof_dir=Path(proof_td),
+                window_seconds=max(0.0, args.final_frame_window_seconds),
+                interval_ms=max(0, args.final_frame_interval_ms),
+            )
+            try:
+                proof = classify_final_frame_series(
+                    final_paths,
+                    upstream_paths=upstream_paths,
+                    require_upstream=True,
+                )
+            except OSError as exc:
+                proof_collection_reasons.append(
+                    f"final_pixel_proof:classification_failed:{type(exc).__name__}"
+                )
+                proof = None
+            if proof is not None:
+                final_pixel_proof_payload = proof.as_dict()
+                proof_reasons = [*proof_collection_reasons, *proof.reasons]
+            else:
+                final_pixel_proof_payload = {
+                    "frame_count": len(final_paths),
+                    "paired_frame_count": min(len(final_paths), len(upstream_paths)),
+                    "reasons": proof_collection_reasons,
+                }
+                proof_reasons = proof_collection_reasons
+        state, reasons = _with_extra_degraded_reasons(
+            state,
+            reasons,
+            list(dict.fromkeys(proof_reasons)),
+        )
+
+    ward_visibility_payload: dict[str, object] | None = None
+    if args.ward_visibility_json:
+        ward_failures, ward_visibility_payload = _ward_visibility_failures(
+            Path(args.ward_visibility_json)
+        )
+        state, reasons = _with_extra_degraded_reasons(state, reasons, ward_failures)
+
+    effect_surface_payload: dict[str, object] | None = None
+    if args.effect_surface_json:
+        effect_surface_failures, effect_surface_payload = _effect_surface_failures(
+            Path(args.effect_surface_json)
+        )
+        state, reasons = _with_extra_degraded_reasons(
+            state,
+            reasons,
+            effect_surface_failures,
+        )
 
     print(
         json.dumps(
@@ -650,6 +970,10 @@ def main() -> int:
                 "watchdog_last_fed_age_seconds": snapshot.watchdog_last_fed_age_seconds,
                 "director_last_intent_age_seconds": snapshot.director_last_intent_age_seconds,
                 "final_frame_classification": final_frame_payload,
+                "final_pixel_proof_required": args.require_final_pixel_proof,
+                "final_pixel_proof": final_pixel_proof_payload,
+                "ward_visibility": ward_visibility_payload,
+                "effect_surface": effect_surface_payload,
                 "full_surface_required": args.require_full_surface,
                 "full_surface_failures": full_surface_failures,
                 "full_surface_performance": full_surface_performance,

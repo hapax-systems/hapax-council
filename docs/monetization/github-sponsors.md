@@ -1,14 +1,39 @@
 # GitHub Sponsors Activation
 
-Status: repo-side activation ready; live org profile publication requires a GitHub token
-with `admin:org` or `user` scope.
+Status: repo-side activation ready, but HN-launch public copy is downgraded as
+of 2026-05-12. The personal `ryanklee` Sponsors listing is public; the
+`hapax-systems` org Sponsors listing is not public yet. Launch copy must route
+through `https://hapax.omg.lol/support` until the org listing is verified public
+with no-perk tiers.
+
+Live org profile publication requires a GitHub token with `admin:org` or `user`
+scope.
 
 ## Repo Surface
 
-- Sponsor URL: `https://github.com/sponsors/hapax-systems`
+- Planned org Sponsor URL: `https://github.com/sponsors/hapax-systems`
+- HN-launch support URL: `https://hapax.omg.lol/support`
 - Funding file: `.github/FUNDING.yml`
-- Funding targets: `hapax-systems`, with `ryanklee` retained as the existing personal fallback.
-- Public entry points: root `README.md` sponsor badge and `hapax.omg.lol` elsewhere link.
+- Current funding target: `ryanklee` only, because the org listing is not public.
+- Public entry points: root `README.md` support badge and `hapax.omg.lol` support link.
+
+## 2026-05-12 Verification Receipt
+
+- `curl -I -L https://hapax.omg.lol/support` returned HTTP 200.
+- The live support page says support is receive-only and buys no access,
+  requests, priority, deliverables, or control.
+- `gh api graphql` for `organization(login: "hapax-systems")` returned
+  `hasSponsorsListing=false`, `sponsorsListing.isPublic=false`, and no tiers.
+- `https://github.com/sponsors/hapax-systems` redirected to the org profile,
+  not a public Sponsors page.
+- `gh api graphql` for `user(login: "ryanklee")` returned
+  `hasSponsorsListing=true`, `sponsorsListing.isPublic=true`, and
+  `https://github.com/sponsors/ryanklee`.
+- `systemctl --user status hapax-money-rails.service` reported the service active since
+  2026-05-11 07:33:42 CDT. Logs showed Lightning/Alby polling HTTP 200, plus
+  Nostr relay warnings and a Liberapay public-payins HTTP 404; launch copy may
+  claim the money-rails service is running, but not that every external rail is
+  end-to-end green.
 
 ## Profile Copy
 
@@ -72,5 +97,6 @@ gh api graphql \
   -F login=hapax-systems
 ```
 
-The repository Sponsor button becomes durable after this branch merges to
-`main` and the `hapax-systems` Sponsors profile is public.
+After the `hapax-systems` Sponsors profile is public, restore `hapax-systems`
+to `.github/FUNDING.yml` and route the README/support-page public entry points
+to the org listing.

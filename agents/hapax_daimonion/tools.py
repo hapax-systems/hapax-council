@@ -26,7 +26,7 @@ except ImportError:  # telemetry optional
     llm_call_span = None  # type: ignore[assignment]
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
-from qdrant_client.models import FieldCondition, Filter, MatchValue
+from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchValue
 
 from agents._config import embed, get_qdrant_grpc
 from agents._google_auth import build_service
@@ -38,6 +38,7 @@ from agents.hapax_daimonion.desktop_tools import (
     handle_open_app,
     handle_switch_workspace,
 )
+from shared.rag_inventory import is_inventory_payload
 
 if TYPE_CHECKING:
     from pipecat.services.openai.llm import OpenAILLMService
@@ -437,12 +438,39 @@ _DOCUMENTS_COLLECTION = "documents"
 _DEFAULT_MAX_RESULTS = 5
 _MAX_MAX_RESULTS = 20
 _SCORE_THRESHOLD = 0.3
+_INVENTORY_OVERFETCH_FACTOR = 10
 
 # Legacy source_service values that should be included when filtering.
 # The ingest pipeline changed tag names over time; OR-match covers both.
 _SOURCE_ALIASES: dict[str, list[str]] = {
     "gdrive": ["gdrive", "drive"],
 }
+
+
+def _retrieval_eligible_filter(
+    *,
+    must: list[FieldCondition] | None = None,
+    should: list[FieldCondition] | None = None,
+) -> Filter:
+    return Filter(
+        must=must,
+        should=should,
+        must_not=[
+            FieldCondition(key="retrieval_eligible", match=MatchValue(value=False)),
+            FieldCondition(key="is_metadata_only", match=MatchValue(value=True)),
+            FieldCondition(
+                key="content_tier",
+                match=MatchAny(any=["metadata_only", "metadata-only", "stub", "inventory"]),
+            ),
+        ],
+    )
+
+
+def _retrieval_points(points: list, max_results: int) -> list:
+    """Drop legacy metadata stubs that predate retrieval_eligible payloads."""
+    return [point for point in points if not is_inventory_payload(point.payload or {})][
+        :max_results
+    ]
 
 
 async def handle_search_documents(params) -> None:
@@ -459,31 +487,34 @@ async def handle_search_documents(params) -> None:
         if source:
             aliases = _SOURCE_ALIASES.get(source, [source])
             if len(aliases) == 1:
-                query_filter = Filter(
+                query_filter = _retrieval_eligible_filter(
                     must=[FieldCondition(key="source_service", match=MatchValue(value=aliases[0]))]
                 )
             else:
-                query_filter = Filter(
+                query_filter = _retrieval_eligible_filter(
                     should=[
                         FieldCondition(key="source_service", match=MatchValue(value=v))
                         for v in aliases
                     ]
                 )
+        else:
+            query_filter = _retrieval_eligible_filter()
 
         results = client.query_points(
             _DOCUMENTS_COLLECTION,
             query=vector,
             query_filter=query_filter,
-            limit=max_results,
+            limit=max_results * _INVENTORY_OVERFETCH_FACTOR,
             score_threshold=_SCORE_THRESHOLD,
         )
+        points = _retrieval_points(list(results.points), max_results)
 
-        if not results.points:
+        if not points:
             await params.result_callback("No relevant documents found.")
             return
 
         chunks = []
-        for p in results.points:
+        for p in points:
             filename = p.payload.get("filename", "unknown")
             text = p.payload.get("text", "")
             source_svc = p.payload.get("source_service", "")
@@ -976,7 +1007,7 @@ async def handle_search_drive(params) -> None:
         vector = embed(query, prefix="search_query")
         client = get_qdrant_grpc()
 
-        query_filter = Filter(
+        query_filter = _retrieval_eligible_filter(
             should=[
                 FieldCondition(key="source_service", match=MatchValue(value="gdrive")),
                 FieldCondition(key="source_service", match=MatchValue(value="drive")),
@@ -987,16 +1018,17 @@ async def handle_search_drive(params) -> None:
             _DOCUMENTS_COLLECTION,
             query=vector,
             query_filter=query_filter,
-            limit=max_results,
+            limit=max_results * _INVENTORY_OVERFETCH_FACTOR,
             score_threshold=_SCORE_THRESHOLD,
         )
+        points = _retrieval_points(list(results.points), max_results)
 
-        if not results.points:
+        if not points:
             await params.result_callback("No Drive documents found.")
             return
 
         chunks = []
-        for p in results.points:
+        for p in points:
             filename = p.payload.get("filename", "unknown")
             text = p.payload.get("text", "")
             source_svc = p.payload.get("source_service", "")

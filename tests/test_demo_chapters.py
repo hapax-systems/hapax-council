@@ -190,9 +190,14 @@ class TestInjectChapters:
         result = inject_chapters(video, chapters, output_path=output)
 
         assert result == output
-        mock_run.assert_called_once()
+        ffmpeg_calls = [
+            call
+            for call in mock_run.call_args_list
+            if call.args and call.args[0] and call.args[0][0] == "/usr/bin/ffmpeg"
+        ]
+        assert len(ffmpeg_calls) == 1
 
-        cmd = mock_run.call_args[0][0]
+        cmd = ffmpeg_calls[0].args[0]
         assert cmd[0] == "/usr/bin/ffmpeg"
         assert "-y" in cmd
         assert "-i" in cmd

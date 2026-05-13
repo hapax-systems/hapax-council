@@ -5,7 +5,7 @@ Verifies the autonomous statuslog poster:
   - allowlist integration (state_kind + redactions)
   - composer mock returning a short, literary status body
   - referent picker seeded per-status (stable across retries)
-  - OmgLolClient.post_status called with correct args
+  - publication-bus publisher called with correct payload
   - disabled client / denied allowlist / failed post all silent-skip
     with metric and no crash
 """
@@ -21,6 +21,7 @@ from agents.omg_statuslog_poster.poster import (
     StatuslogPoster,
     _compose_status_text,
 )
+from agents.publication_bus.publisher_kit import PublisherResult
 
 
 def _chronicle_event(
@@ -68,6 +69,7 @@ class TestDebounce:
     def test_first_post_allowed(self, tmp_path: Path) -> None:
         poster = StatuslogPoster(
             client=_make_client(),
+            publisher=_make_publisher(),
             state_file=tmp_path / "state.json",
             min_interval_s=14400,
             daily_cap=3,
@@ -80,6 +82,7 @@ class TestDebounce:
         state_file = tmp_path / "state.json"
         poster = StatuslogPoster(
             client=_make_client(),
+            publisher=_make_publisher(),
             state_file=state_file,
             min_interval_s=14400,
             daily_cap=3,
@@ -94,6 +97,7 @@ class TestDebounce:
     def test_after_interval_allowed_again(self, tmp_path: Path) -> None:
         poster = StatuslogPoster(
             client=_make_client(),
+            publisher=_make_publisher(),
             state_file=tmp_path / "state.json",
             min_interval_s=10,
             daily_cap=3,
@@ -107,6 +111,7 @@ class TestDebounce:
     def test_daily_cap_enforced(self, tmp_path: Path) -> None:
         poster = StatuslogPoster(
             client=_make_client(),
+            publisher=_make_publisher(),
             state_file=tmp_path / "state.json",
             min_interval_s=0,  # no interval gate
             daily_cap=2,
@@ -126,6 +131,7 @@ class TestSalienceGate:
     def test_below_threshold_skipped(self, tmp_path: Path) -> None:
         poster = StatuslogPoster(
             client=_make_client(),
+            publisher=_make_publisher(),
             state_file=tmp_path / "state.json",
             min_interval_s=0,
             daily_cap=3,
@@ -139,6 +145,7 @@ class TestSalienceGate:
     def test_at_threshold_posted(self, tmp_path: Path) -> None:
         poster = StatuslogPoster(
             client=_make_client(),
+            publisher=_make_publisher(),
             state_file=tmp_path / "state.json",
             min_interval_s=0,
             daily_cap=3,
@@ -166,6 +173,7 @@ class TestAllowlistIntegration:
 
         poster = StatuslogPoster(
             client=_make_client(),
+            publisher=_make_publisher(),
             state_file=tmp_path / "state.json",
             min_interval_s=0,
             daily_cap=3,
@@ -190,8 +198,10 @@ class TestAllowlistIntegration:
         monkeypatch.setattr(poster_mod, "allowlist_check", _redact)
 
         client = _make_client()
+        publisher = _make_publisher()
         poster = StatuslogPoster(
             client=client,
+            publisher=publisher,
             state_file=tmp_path / "state.json",
             min_interval_s=0,
             daily_cap=3,
@@ -212,6 +222,7 @@ class TestComposerIntegration:
 
         poster = StatuslogPoster(
             client=_make_client(),
+            publisher=_make_publisher(),
             state_file=tmp_path / "state.json",
             min_interval_s=0,
             daily_cap=3,
@@ -225,6 +236,7 @@ class TestComposerIntegration:
     def test_composer_returning_empty_skips_post(self, tmp_path: Path) -> None:
         poster = StatuslogPoster(
             client=_make_client(),
+            publisher=_make_publisher(),
             state_file=tmp_path / "state.json",
             min_interval_s=0,
             daily_cap=3,
@@ -236,10 +248,12 @@ class TestComposerIntegration:
 
 
 class TestPostShape:
-    def test_post_status_called_with_content_and_address(self, tmp_path: Path) -> None:
+    def test_publisher_called_with_content_and_address(self, tmp_path: Path) -> None:
         client = _make_client()
+        publisher = _make_publisher()
         poster = StatuslogPoster(
             client=client,
+            publisher=publisher,
             state_file=tmp_path / "state.json",
             min_interval_s=0,
             daily_cap=3,
@@ -248,17 +262,19 @@ class TestPostShape:
             address="hapax",
         )
         poster.post(_chronicle_event())
-        client.post_status.assert_called_once()
-        call = client.post_status.call_args
-        # Positional or kwarg — accept either shape.
-        assert call.args[0] == "hapax" or call.kwargs.get("address") == "hapax"
-        assert call.kwargs["content"] == "a status"
+        publisher.publish.assert_called_once()
+        payload = publisher.publish.call_args.args[0]
+        assert payload.target == "hapax"
+        assert payload.text == "a status"
+        assert payload.metadata["skip_mastodon_post"] is True
 
     def test_post_truncates_long_content_to_280(self, tmp_path: Path) -> None:
         client = _make_client()
+        publisher = _make_publisher()
         long_content = "x" * 400
         poster = StatuslogPoster(
             client=client,
+            publisher=publisher,
             state_file=tmp_path / "state.json",
             min_interval_s=0,
             daily_cap=3,
@@ -266,16 +282,18 @@ class TestPostShape:
             compose_fn=lambda event: long_content,
         )
         poster.post(_chronicle_event())
-        call = client.post_status.call_args
-        assert len(call.kwargs["content"]) <= 280
+        payload = publisher.publish.call_args.args[0]
+        assert len(payload.text) <= 280
 
 
 class TestDisabledClient:
     def test_disabled_client_short_circuits(self, tmp_path: Path) -> None:
         client = MagicMock()
         client.enabled = False
+        publisher = _make_publisher()
         poster = StatuslogPoster(
             client=client,
+            publisher=publisher,
             state_file=tmp_path / "state.json",
             min_interval_s=0,
             daily_cap=3,
@@ -284,15 +302,16 @@ class TestDisabledClient:
         )
         outcome = poster.post(_chronicle_event())
         assert outcome == "client-disabled"
-        client.post_status.assert_not_called()
+        publisher.publish.assert_not_called()
 
 
 class TestPostFailure:
     def test_failed_post_reports_failed(self, tmp_path: Path) -> None:
         client = _make_client()
-        client.post_status.return_value = None
+        publisher = _make_publisher(PublisherResult(error=True, detail="network_error"))
         poster = StatuslogPoster(
             client=client,
+            publisher=publisher,
             state_file=tmp_path / "state.json",
             min_interval_s=0,
             daily_cap=3,
@@ -306,11 +325,13 @@ class TestPostFailure:
 def _make_client() -> MagicMock:
     client = MagicMock()
     client.enabled = True
-    client.post_status.return_value = {
-        "request": {"statusCode": 200},
-        "response": {"id": "stub"},
-    }
     return client
+
+
+def _make_publisher(result: PublisherResult | None = None) -> MagicMock:
+    publisher = MagicMock()
+    publisher.publish.return_value = result or PublisherResult(ok=True, detail="ok")
+    return publisher
 
 
 class TestComposeStatusText:

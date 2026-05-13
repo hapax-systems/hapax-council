@@ -47,16 +47,48 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-# Allow running as a script without installing the package.
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+# Allow running both from the repo and from the hardened system install.
+_TABLE_RELATIVE_PATH = Path("shared/usb_bandwidth_table.py")
+_INSTALLED_TABLE_ROOT = Path("/usr/local/share/hapax-council")
+
+
+def _candidate_table_roots() -> list[Path]:
+    candidates: list[Path] = []
+    for env_name in ("HAPAX_USB_BANDWIDTH_TABLE_ROOT", "HAPAX_COUNCIL_ROOT"):
+        raw = os.environ.get(env_name)
+        if raw:
+            candidates.append(Path(raw).expanduser())
+    candidates.extend(
+        [
+            Path(__file__).resolve().parents[1],
+            _INSTALLED_TABLE_ROOT,
+            Path.home() / ".cache/hapax/source-activation/worktree",
+        ]
+    )
+    return candidates
+
+
+def _install_import_root() -> Path:
+    for candidate in _candidate_table_roots():
+        if (candidate / _TABLE_RELATIVE_PATH).is_file():
+            if str(candidate) not in sys.path:
+                sys.path.insert(0, str(candidate))
+            return candidate
+    searched = ", ".join(str(path) for path in _candidate_table_roots())
+    raise SystemExit(
+        "hapax-usb-bandwidth-preflight: could not locate "
+        f"{_TABLE_RELATIVE_PATH}; searched {searched}"
+    )
+
+
+_REPO_ROOT = _install_import_root()
 
 from shared.usb_bandwidth_table import (  # noqa: E402  (sys.path manipulation above)
     USB_2_0_HIGH_SPEED_MBPS,

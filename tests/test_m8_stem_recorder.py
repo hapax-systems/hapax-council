@@ -159,3 +159,7 @@ def test_systemd_units_present_and_well_formed():
     assert "[Timer]" in timer_body
     assert "OnCalendar=daily" in timer_body
     assert "Persistent=true" in timer_body
+
+    retention_body = retention_svc.read_text()
+    assert "Environment=HAPAX_M8_STEM_DIR=/var/lib/hapax/m8-stems" in retention_body
+    assert "${HAPAX_M8_STEM_DIR:-" not in retention_body

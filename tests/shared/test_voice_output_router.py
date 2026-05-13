@@ -38,11 +38,11 @@ def _write_private_status(
             else "Exact private monitor target is absent; private monitor route remains silent."
         ),
         "reason_code": reason_code,
-        "route_id": "route:private.yeti_monitor",
+        "route_id": "route:private.s4_track_fenced",
         "sanitized": True,
         "state": state,
-        "surface_id": "audio.yeti_monitor",
-        "target_ref": "audio.yeti_monitor",
+        "surface_id": "audio.s4_private_monitor",
+        "target_ref": "audio.s4_private_monitor",
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -77,7 +77,7 @@ def test_private_assistant_route_requires_fresh_exact_monitor_evidence(tmp_path:
     assert result.target_binding is not None
     assert result.target_binding.source_id == "assistant-private"
     assert result.target_binding.target == "hapax-private"
-    assert result.target_binding.target_ref == "audio.yeti_monitor"
+    assert result.target_binding.target_ref == "audio.s4_private_monitor"
     assert result.target_binding.media_role == "Assistant"
     assert result.target_binding.fallback_policy == "no_default_fallback"
     assert "hapax-voice-fx-capture" in result.target_binding.prohibited_fallback_refs

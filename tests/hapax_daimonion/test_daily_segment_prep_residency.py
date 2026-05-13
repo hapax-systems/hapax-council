@@ -90,6 +90,207 @@ def test_parse_script_extracts_spoken_text_from_object_array() -> None:
     ]
 
 
+def test_parse_segment_generation_extracts_embedded_json_object() -> None:
+    raw = "Here is the segment JSON:\n" + json.dumps(
+        {
+            "prepared_script": ["First spoken beat.", "Second spoken beat."],
+            "segment_prep_contract": {
+                "claim_map": [{"claim_id": "claim:first", "claim_text": "First"}]
+            },
+        }
+    )
+
+    script, contract = prep._parse_segment_generation(raw)
+
+    assert script == ["First spoken beat.", "Second spoken beat."]
+    assert contract == {"claim_map": [{"claim_id": "claim:first", "claim_text": "First"}]}
+
+
+def test_tier_list_placement_repair_names_quoted_target() -> None:
+    repaired = prep._repair_tier_list_placement_phrases(
+        [
+            "The 'Rollback Failure' case lacks a recovery path. "
+            "This failure is placed in S-tier by the audit criteria.",
+            "The 'Consensus Gap' packet has fragmented evidence. "
+            "We place this failure in B-tier after the provenance check.",
+        ]
+    )
+
+    assert repaired[0].endswith(
+        "Place Rollback Failure in S-tier under the stated source criteria."
+    )
+    assert repaired[1].endswith("Place Consensus Gap in B-tier under the stated source criteria.")
+
+
+def test_tier_list_placement_repair_reuses_prior_named_placements() -> None:
+    repaired = prep._repair_tier_list_placement_phrases(
+        [
+            "Waterfall is rigid under the source criteria. Place Waterfall in C-tier.",
+            "Agile adapts better under the source criteria. Place Agile in S-tier.",
+            "The comparison between Agile and Waterfall is the point of the segment.",
+        ]
+    )
+
+    assert "Place Waterfall in C-tier under the stated source criteria." in repaired[2]
+    assert "Place Agile in S-tier under the stated source criteria." in repaired[2]
+
+
+def test_source_visible_repair_uses_beat_evidence_ref_for_spoken_only_beat() -> None:
+    repaired = prep._repair_source_visible_beats(
+        ["The launch decision needs a mechanical receipt before the public claim."],
+        ["explain the launch gate using vault:hn-readiness-tree.md"],
+    )
+
+    assert repaired == [
+        "The launch decision needs a mechanical receipt before the public claim. "
+        "According to HN Readiness Tree, this source changes the visible obligation."
+    ]
+    actionability = prep.validate_segment_actionability(repaired, ["repair"])
+    layout = prep.validate_layout_responsibility(actionability["beat_action_intents"])
+    assert layout["ok"] is True
+
+
+def test_source_visible_repair_does_not_duplicate_existing_trigger() -> None:
+    script = ["According to the HN readiness tree, the receipt blocks launch."]
+
+    assert (
+        prep._repair_source_visible_beats(
+            script,
+            ["explain the launch gate using vault:hn-readiness-tree.md"],
+        )
+        == script
+    )
+
+
+def test_live_event_payoff_repair_makes_final_resolution_explicit() -> None:
+    repaired = prep._repair_live_event_payoff(
+        ["The source comparison changes the public claim but stops without a payoff."]
+    )
+
+    assert "Therefore the final decision" in repaired[0]
+
+
+def test_comparison_repair_uses_source_planned_comparison_direction() -> None:
+    repaired = prep._repair_comparison_beats(
+        ["The source changes the lecture object."],
+        [
+            "work through agent_governance_model_application from "
+            "vault:agent-governance-principles.md and compare it against "
+            "agent_governance_model_example"
+        ],
+    )
+
+    assert "Compare it against agent_governance_model_example" in repaired[0]
+    actionability = prep.validate_segment_actionability(repaired, ["repair"])
+    assert {
+        intent["kind"]
+        for declaration in actionability["beat_action_intents"]
+        for intent in declaration["intents"]
+    } >= {"comparison"}
+
+
+def test_segment_prep_contract_canonicalizes_model_alias_fields() -> None:
+    beats = [
+        "open the proof using vault:test-segment-source",
+        "compare the claim against vault:test-segment-source",
+    ]
+    script = [
+        "According to the test source, now compare the launch claim against the visible "
+        "receipt because the source changes confidence.",
+        "Then compare the narrowed claim with the original claim, according to the test "
+        "source. Therefore the final decision returns to the opening receipt.",
+    ]
+    actionability = prep.validate_segment_actionability(script, beats)
+    layout = prep.validate_layout_responsibility(actionability["beat_action_intents"])
+    model_contract = {
+        "source_packet_refs": [
+            {
+                "id": "packet:test-source",
+                "source_ref": SOURCE_REF,
+                "evidence_refs": [SOURCE_REF],
+            }
+        ],
+        "claim_map": [
+            {"claim": "the receipt changes launch confidence", "evidence_ref": SOURCE_REF},
+            {
+                "claim": "the narrowed claim must resolve the opening receipt",
+                "evidence_ref": SOURCE_REF,
+            },
+        ],
+        "source_consequence_map": [
+            {"source_ref": SOURCE_REF, "consequence": "launch confidence changes"},
+            {"source_ref": SOURCE_REF, "consequence": "the final scope narrows"},
+        ],
+        "actionability_map": [
+            {"beat_index": 0, "action": "comparison", "target": "launch receipt"},
+            {"beat_index": 1, "action": "comparison", "target": "narrowed claim"},
+        ],
+        "layout_need_map": [
+            {"beat_index": 0, "need": "source_visible", "evidence_ref": SOURCE_REF},
+            {"beat_index": 1, "need": "source_visible", "evidence_ref": SOURCE_REF},
+        ],
+        "readback_obligations": [],
+        "loop_cards": [],
+        "role_excellence_plan": {
+            "live_event_plan": {
+                "bit_engine": "source-backed comparison",
+                "audience_job": "inspect the receipt",
+                "payoff": "resolve whether the receipt supports launch",
+            }
+        },
+    }
+
+    contract = prep.build_segment_prep_contract(
+        programme_id="prog-contract-alias",
+        role="lecture",
+        topic="Contract aliases",
+        segment_beats=beats,
+        script=script,
+        actionability=actionability,
+        layout_responsibility=layout,
+        source_refs=[SOURCE_REF],
+        model_contract=model_contract,
+    )
+    report = prep.validate_segment_prep_contract(
+        contract,
+        prepared_script=script,
+        segment_beats=beats,
+    )
+
+    assert report == {"ok": True, "violations": []}
+    assert contract["contract_generation"]["model_emitted"] is True
+    assert contract["contract_generation"]["deterministic_backfilled_fields"] == []
+    assert "claim_map" in contract["contract_generation"]["canonicalized_fields"]
+    assert "readback_obligations" in contract["contract_generation"]["derived_fields"]
+    assert "loop_cards" in contract["contract_generation"]["derived_fields"]
+    assert contract["claim_map"][0]["claim_id"].startswith("claim:prog-contract-alias:")
+    assert contract["claim_map"][0]["grounds"] == [SOURCE_REF]
+    assert contract["layout_need_map"][0]["source_packet_refs"] == [SOURCE_REF]
+    assert contract["loop_cards"][0]["evidence_refs"] == [SOURCE_REF]
+
+
+def test_hermeneutic_deltas_are_json_mode_before_artifact_hashing() -> None:
+    from datetime import UTC, datetime
+
+    from shared.hermeneutic_spiral import HermeneuticDelta
+
+    delta = HermeneuticDelta(
+        delta_id="delta:test",
+        programme_id="prog-json",
+        role="lecture",
+        topic="JSON mode",
+        cycle_timestamp=datetime.now(tz=UTC),
+        delta_kind="new_consequence",
+        source_ref=SOURCE_REF,
+        consequence_kind="claim_shape_changed",
+        summary="source changes the claim shape",
+    )
+
+    payload = {"hermeneutic_deltas": [delta.model_dump(mode="json")]}
+
+    assert prep._artifact_hash(payload)
+
+
 def test_refine_script_returns_final_model_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     refined = ["Place the final claim in A-tier because the cited source changes the consequence."]
     contract = {"claim_map": [{"claim_id": "claim:final", "claim_text": refined[0]}]}
@@ -1070,8 +1271,8 @@ def test_prep_segment_rejects_tier_list_without_exact_placements(
             narrative_beat="Tier list on programming languages",
             segment_beats=[
                 "hook with a tier rubric",
-                "item_1: rank the early language",
-                "item_2: rank the modern language",
+                "rank FORTRAN as the early language",
+                "rank Java as the modern language",
             ],
             role="tier_list",
         ),

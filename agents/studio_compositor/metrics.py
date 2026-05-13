@@ -118,6 +118,11 @@ COMP_CAMERAS_TOTAL: Any = None
 COMP_CAMERAS_HEALTHY: Any = None
 COMP_PIPELINE_RESTARTS_TOTAL: Any = None
 COMP_GPU_VRAM_BYTES: Any = None
+COMP_SCALED_BLIT_CACHE_ENTRIES: Any = None
+COMP_SCALED_BLIT_CACHE_BYTES: Any = None
+COMP_SCALED_BLIT_CACHE_EVICTIONS_TOTAL: Any = None
+COMP_V4L2_APPSINK_COPIED_BYTES_TOTAL: Any = None
+COMP_V4L2_APPSINK_COPIED_FRAMES_TOTAL: Any = None
 RTMP_BYTES_TOTAL: Any = None
 RTMP_CONNECTED: Any = None
 RTMP_ENCODER_ERRORS_TOTAL: Any = None
@@ -924,6 +929,38 @@ def _init_metrics() -> None:
         registry=REGISTRY,
     )
 
+    global COMP_SCALED_BLIT_CACHE_ENTRIES
+    COMP_SCALED_BLIT_CACHE_ENTRIES = Gauge(
+        "studio_compositor_scaled_blit_cache_entries",
+        "Current number of retained Cairo scaled-blit surfaces.",
+        registry=REGISTRY,
+    )
+    global COMP_SCALED_BLIT_CACHE_BYTES
+    COMP_SCALED_BLIT_CACHE_BYTES = Gauge(
+        "studio_compositor_scaled_blit_cache_bytes",
+        "Estimated retained bytes in the Cairo scaled-blit surface cache.",
+        registry=REGISTRY,
+    )
+    global COMP_SCALED_BLIT_CACHE_EVICTIONS_TOTAL
+    COMP_SCALED_BLIT_CACHE_EVICTIONS_TOTAL = Counter(
+        "studio_compositor_scaled_blit_cache_evictions_total",
+        "Scaled-blit cache evictions by reason.",
+        ["reason"],
+        registry=REGISTRY,
+    )
+    global COMP_V4L2_APPSINK_COPIED_BYTES_TOTAL
+    COMP_V4L2_APPSINK_COPIED_BYTES_TOTAL = Counter(
+        "studio_compositor_v4l2_appsink_copied_bytes_total",
+        "Bytes copied from the final v4l2 appsink buffer into Python before os.write.",
+        registry=REGISTRY,
+    )
+    global COMP_V4L2_APPSINK_COPIED_FRAMES_TOTAL
+    COMP_V4L2_APPSINK_COPIED_FRAMES_TOTAL = Counter(
+        "studio_compositor_v4l2_appsink_copied_frames_total",
+        "Final v4l2 appsink frames copied into Python before os.write.",
+        registry=REGISTRY,
+    )
+
     # Reserved for Phase 5 RTMP output
     RTMP_BYTES_TOTAL = Counter(
         "studio_rtmp_bytes_total",
@@ -1394,6 +1431,28 @@ def set_runtime_feature_active(feature: str, active: bool) -> None:
     if COMP_RUNTIME_FEATURE_ACTIVE is None:
         return
     COMP_RUNTIME_FEATURE_ACTIVE.labels(feature=feature).set(1 if active else 0)
+
+
+def set_scaled_blit_cache_state(*, entries: int, bytes_used: int) -> None:
+    if COMP_SCALED_BLIT_CACHE_ENTRIES is not None:
+        COMP_SCALED_BLIT_CACHE_ENTRIES.set(max(0, entries))
+    if COMP_SCALED_BLIT_CACHE_BYTES is not None:
+        COMP_SCALED_BLIT_CACHE_BYTES.set(max(0, bytes_used))
+
+
+def record_scaled_blit_cache_eviction(*, reason: str, count: int = 1) -> None:
+    if COMP_SCALED_BLIT_CACHE_EVICTIONS_TOTAL is None or count <= 0:
+        return
+    COMP_SCALED_BLIT_CACHE_EVICTIONS_TOTAL.labels(reason=reason).inc(count)
+
+
+def record_v4l2_appsink_copy(size_bytes: int) -> None:
+    if size_bytes < 0:
+        size_bytes = 0
+    if COMP_V4L2_APPSINK_COPIED_BYTES_TOTAL is not None:
+        COMP_V4L2_APPSINK_COPIED_BYTES_TOTAL.inc(size_bytes)
+    if COMP_V4L2_APPSINK_COPIED_FRAMES_TOTAL is not None:
+        COMP_V4L2_APPSINK_COPIED_FRAMES_TOTAL.inc()
 
 
 def record_render_stage_frame(stage: str) -> None:

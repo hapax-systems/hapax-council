@@ -1,0 +1,210 @@
+{
+  "suite_id": "epistemic-rag-audit-golden-v1",
+  "version": 1,
+  "created_at": "2026-05-12",
+  "description": "Audit-critical Hapax retrieval suite for measuring RAG repair progress without cloud services.",
+  "queries": [
+    {
+      "id": "rag_compounding_failure",
+      "topic": "rag",
+      "query": "What did the May 2026 audit find about the RAG compounding failure and metadata contamination?",
+      "expected_sources": [
+        {"source_contains": "2026-05-12-full-corpus-hardening-audit", "grade": 3},
+        {"source_contains": "2026-05-12-epistemic-audit-handoff", "grade": 3}
+      ],
+      "expected_answer_terms": ["metadata", "contamination", "RAG"]
+    },
+    {
+      "id": "token_capital_falsifier",
+      "topic": "token-capital",
+      "query": "Why is Token Capital not currently an existence proof while retrieval is broken?",
+      "expected_sources": [
+        {"source_contains": "2026-05-11-token-capital-hardening-audit", "grade": 3},
+        {"source_contains": "2026-05-12-full-corpus-hardening-audit", "grade": 2}
+      ],
+      "expected_answer_terms": ["hypothesis", "retrieval", "proof"]
+    },
+    {
+      "id": "shapley_repair",
+      "topic": "token-capital",
+      "query": "What should happen to Shapley Value language in the Token Capital drafts?",
+      "expected_sources": [
+        {"source_contains": "2026-05-11-token-capital-hardening-audit", "grade": 3},
+        {"source_contains": "fix-plan-token-capital-hardening", "grade": 2}
+      ],
+      "expected_answer_terms": ["Shapley", "cooperative", "formal"]
+    },
+    {
+      "id": "claim_maturity_markers",
+      "topic": "research-basis",
+      "query": "What claim maturity markers should audit-affected research documents use?",
+      "expected_sources": [
+        {"source_contains": "epistemic-audit-realignment", "grade": 3},
+        {"source_contains": "2026-05-12-epistemic-audit-handoff", "grade": 2}
+      ],
+      "expected_answer_terms": ["hypothesis", "instrumented", "publishable"]
+    },
+    {
+      "id": "citation_novelty_scope",
+      "topic": "research-basis",
+      "query": "Which related work should scope novelty claims for Token Capital and RAG evaluation?",
+      "expected_sources": [
+        {"source_contains": "2026-05-11-token-capital-hardening-audit", "grade": 3},
+        {"source_contains": "epistemic-citation-and-novelty-ledger", "grade": 2}
+      ],
+      "expected_answer_terms": ["RAGAS", "ARES", "Data Shapley"]
+    },
+    {
+      "id": "living_present_envelope",
+      "topic": "architecture",
+      "query": "What is the role of the LivingPresentEnvelope in preventing hallucination or context drift?",
+      "expected_sources": [
+        {"text_contains": "LivingPresentEnvelope", "grade": 3},
+        {"text_contains": "Husserlian", "grade": 2}
+      ],
+      "expected_answer_terms": ["retention", "protention", "Husserl"]
+    },
+    {
+      "id": "consent_gated_reader",
+      "topic": "privacy",
+      "query": "How does ConsentGatedReader enforce privacy before LLM access?",
+      "expected_sources": [
+        {"text_contains": "ConsentGatedReader", "grade": 3},
+        {"text_contains": "IFC", "grade": 2},
+        {"text_contains": "LIO", "grade": 2}
+      ],
+      "expected_answer_terms": ["consent", "label", "reader"]
+    },
+    {
+      "id": "vetochain_agentgov",
+      "topic": "agentgov",
+      "query": "What is the validated value path for AgentGov and VetoChains?",
+      "expected_sources": [
+        {"source_contains": "epistemic-agentgov-value-extraction-pack", "grade": 3},
+        {"text_contains": "VetoChain", "grade": 2}
+      ],
+      "expected_answer_terms": ["governance", "VetoChain", "least privilege"]
+    },
+    {
+      "id": "dev_shm_bridge",
+      "topic": "physical-world",
+      "query": "Why did the audit treat /dev/shm polling as a validated physical-world bridge?",
+      "expected_sources": [
+        {"source_contains": "2026-05-12-epistemic-audit-handoff", "grade": 3},
+        {"text_contains": "/dev/shm", "grade": 2}
+      ],
+      "expected_answer_terms": ["/dev/shm", "polling", "physical"]
+    },
+    {
+      "id": "carrier_dynamics",
+      "topic": "carrier-dynamics",
+      "query": "How should Carrier Dynamics use factor graphs or LDPC-style checks for cross-agent consistency?",
+      "expected_sources": [
+        {"source_contains": "epistemic-carrier-dynamics-formalization-track", "grade": 3},
+        {"source_contains": "2026-05-12-full-corpus-hardening-audit", "grade": 2}
+      ],
+      "expected_answer_terms": ["carrier", "factor graph", "LDPC"]
+    },
+    {
+      "id": "sovereign_edge",
+      "topic": "sovereign-edge",
+      "query": "What is the sovereign edge value claim around local-first inference, speech, and privacy?",
+      "expected_sources": [
+        {"source_contains": "epistemic-sovereign-edge-case-study-pack", "grade": 3},
+        {"source_contains": "2026-05-12-epistemic-audit-handoff", "grade": 2}
+      ],
+      "expected_answer_terms": ["local", "privacy", "latency"]
+    },
+    {
+      "id": "metadata_quality_gates",
+      "topic": "rag",
+      "query": "How should Google Drive metadata stubs be marked and excluded from default semantic retrieval?",
+      "expected_sources": [
+        {"source_contains": "epistemic-rag-metadata-quality-gates", "grade": 3},
+        {"source_contains": "gdrive_sync.py", "grade": 2},
+        {"source_contains": "knowledge_search.py", "grade": 2}
+      ],
+      "expected_answer_terms": ["is_metadata_only", "content_tier", "retrieval_eligible"]
+    },
+    {
+      "id": "baseline_before_reindex",
+      "topic": "rag",
+      "query": "What baseline measurements must be captured before any RAG reindex?",
+      "expected_sources": [
+        {"source_contains": "epistemic-rag-baseline-harness", "grade": 3},
+        {"source_contains": "rag-baseline-report", "grade": 2}
+      ],
+      "expected_answer_terms": ["baseline", "sample", "Qdrant"]
+    },
+    {
+      "id": "documents_v2_shadow",
+      "topic": "rag",
+      "query": "Why should RAG repairs use a documents_v2 shadow collection instead of destructive reindexing?",
+      "expected_sources": [
+        {"source_contains": "epistemic-rag-documents-v2-shadow-path", "grade": 3},
+        {"source_contains": "epistemic-audit-realignment", "grade": 2}
+      ],
+      "expected_answer_terms": ["documents_v2", "shadow", "reindex"]
+    },
+    {
+      "id": "retrieval_metrics",
+      "topic": "rag",
+      "query": "Which retrieval metrics should determine whether RAG repair worked?",
+      "expected_sources": [
+        {"source_contains": "epistemic-rag-golden-query-suite", "grade": 3},
+        {"source_contains": "epistemic-audit-realignment", "grade": 2}
+      ],
+      "expected_answer_terms": ["Precision@5", "Recall", "MRR"]
+    },
+    {
+      "id": "faithfulness_separation",
+      "topic": "rag",
+      "query": "Why must retrieval metrics be separated from answer faithfulness metrics?",
+      "expected_sources": [
+        {"source_contains": "epistemic-rag-golden-query-suite", "grade": 3},
+        {"text_contains": "faithfulness", "grade": 2}
+      ],
+      "expected_answer_terms": ["retrieval", "faithfulness", "answer"]
+    },
+    {
+      "id": "why_provenance",
+      "topic": "provenance",
+      "query": "What is why-provenance supposed to preserve in Hapax research and agent outputs?",
+      "expected_sources": [
+        {"text_contains": "why-provenance", "grade": 3},
+        {"source_contains": "provenance", "grade": 2}
+      ],
+      "expected_answer_terms": ["provenance", "why", "claim"]
+    },
+    {
+      "id": "domain_enforcement_matrix",
+      "topic": "governance",
+      "query": "How should the Domain-Specific Enforcement Matrix treat engineering versus governance claims?",
+      "expected_sources": [
+        {"source_contains": "domain-enforcement-matrix", "grade": 3},
+        {"source_contains": "2026-05-12-epistemic-audit-handoff", "grade": 2}
+      ],
+      "expected_answer_terms": ["engineering", "governance", "operator"]
+    },
+    {
+      "id": "publication_guardrails",
+      "topic": "publication",
+      "query": "What publication guardrails follow from the audit before CHI 2027 or other submissions?",
+      "expected_sources": [
+        {"source_contains": "2026-05-12-full-corpus-hardening-audit", "grade": 3},
+        {"source_contains": "2026-05-11-token-capital-hardening-audit", "grade": 3}
+      ],
+      "expected_answer_terms": ["publication", "claim", "audit"]
+    },
+    {
+      "id": "broken_rag_as_research_finding",
+      "topic": "research-basis",
+      "query": "How should the broken RAG result be preserved as a research finding instead of hidden?",
+      "expected_sources": [
+        {"source_contains": "epistemic-audit-realignment", "grade": 3},
+        {"source_contains": "2026-05-12-full-corpus-hardening-audit", "grade": 2}
+      ],
+      "expected_answer_terms": ["design-science", "falsifier", "baseline"]
+    }
+  ]
+}

@@ -21,6 +21,7 @@ from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from .gst_appsrc_limits import configure_live_appsrc_queue
 from .models import CameraSpec
 
 log = logging.getLogger(__name__)
@@ -64,7 +65,7 @@ class CameraPipeline:
     Graph:
         v4l2src device=/dev/v4l/by-id/...
           ! capsfilter (image/jpeg or raw, native dimensions)
-          ! watchdog timeout=2000
+          ! watchdog timeout=<CameraSpec.watchdog_timeout_ms>
           ! jpegdec              (if mjpeg)
           ! videoconvert
           ! capsfilter (video/x-raw, format=NV12, native dimensions)
@@ -170,7 +171,7 @@ class CameraPipeline:
             watchdog = Gst.ElementFactory.make("watchdog", f"watchdog_{self._role_safe}")
             if watchdog is None:
                 raise RuntimeError(f"{self._spec.role}: watchdog element missing")
-            watchdog.set_property("timeout", 2000)  # ms
+            watchdog.set_property("timeout", self._watchdog_timeout_ms())
 
             decoder: Any = None
             # Delta 2026-04-14-camera-pipeline-systematic-walk finding F1:
@@ -381,6 +382,12 @@ class CameraPipeline:
             ("http://", "https://")
         )
 
+    def _watchdog_timeout_ms(self) -> int:
+        raw = getattr(self._spec, "watchdog_timeout_ms", 2000)
+        if not isinstance(raw, (int, float)):
+            return 2000
+        return max(1000, int(raw))
+
     def _is_v4l2loopback_source(self) -> bool:
         device = str(getattr(self._spec, "device", "") or "")
         if not device.startswith("/dev/video"):
@@ -471,6 +478,7 @@ class CameraPipeline:
         src.set_property("format", Gst.Format.TIME)
         src.set_property("do-timestamp", True)
         src.set_property("block", False)
+        configure_live_appsrc_queue(src)
         # Advertise the compositor cadence even though the fetch loop may
         # push repeated/stale frames more slowly. Some downstream elements
         # treat the source caps as the branch contract; using the reduced

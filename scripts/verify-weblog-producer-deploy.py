@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """Verify end-to-end weblog event producer deployment.
 
-1. Publishes a test weblog post to omg.lol
-2. Waits for the producer to pick it up from RSS
-3. Checks /dev/shm/hapax-public-events/events.jsonl for the omg.weblog event
-4. Checks Mastodon and Bluesky poster idempotency logs for the event
-5. Cleans up the test post by default unless --no-cleanup is set
+1. Checks /dev/shm/hapax-public-events/events.jsonl for an omg.weblog event
+2. Checks Mastodon and Bluesky poster idempotency logs for the event
+3. Only with --live-egress: publishes a test post through the publication bus
+4. Only with --cleanup-live: deletes the test post after live verification
 
 Usage:
     uv run python scripts/verify-weblog-producer-deploy.py
-    uv run python scripts/verify-weblog-producer-deploy.py --cleanup
-    uv run python scripts/verify-weblog-producer-deploy.py --no-cleanup
     uv run python scripts/verify-weblog-producer-deploy.py --check-only
+    uv run python scripts/verify-weblog-producer-deploy.py --live-egress
+    uv run python scripts/verify-weblog-producer-deploy.py --live-egress --cleanup-live
 """
 
 from __future__ import annotations
@@ -46,6 +45,9 @@ def check_service_running() -> bool:
 
 
 def publish_test_post() -> bool:
+    from agents.publication_bus.omg_weblog_publisher import OmgLolWeblogPublisher
+    from agents.publication_bus.publisher_kit import PublisherPayload
+    from agents.publication_bus.publisher_kit.allowlist import load_allowlist
     from shared.omg_lol_client import OmgLolClient
 
     client = OmgLolClient()
@@ -54,26 +56,45 @@ def publish_test_post() -> bool:
         f"Date: {timestamp}\n\n"
         f"# Deployment verification\n\n"
         f"Automated test post from weblog event producer deployment verification. "
-        f"This post will be deleted after verification completes.\n\n"
+        f"This live test post exists only for deployment verification.\n\n"
         f"Timestamp: {timestamp}"
     )
-    result = client.set_entry(ADDRESS, TEST_ENTRY_ID, content=content)
-    if result is not None:
-        log.info("test post published: %s", TEST_ENTRY_ID)
+    OmgLolWeblogPublisher.allowlist = load_allowlist(
+        OmgLolWeblogPublisher.surface_name,
+        [TEST_ENTRY_ID],
+    )
+    publisher = OmgLolWeblogPublisher(client=client, address=ADDRESS)
+    result = publisher.publish(PublisherPayload(target=TEST_ENTRY_ID, text=content))
+    if result.ok:
+        log.info("test post published through publication bus: %s", TEST_ENTRY_ID)
         return True
-    log.error("failed to publish test post")
+    log.error("failed to publish test post through publication bus: %s", result.detail)
     return False
 
 
 def delete_test_post() -> bool:
+    from agents.publication_bus.omg_weblog_delete_publisher import OmgLolWeblogDeletePublisher
+    from agents.publication_bus.publisher_kit import PublisherPayload
+    from agents.publication_bus.publisher_kit.allowlist import load_allowlist
     from shared.omg_lol_client import OmgLolClient
 
     client = OmgLolClient()
-    result = client.delete_entry(ADDRESS, TEST_ENTRY_ID)
-    if result is not None:
+    OmgLolWeblogDeletePublisher.allowlist = load_allowlist(
+        OmgLolWeblogDeletePublisher.surface_name,
+        [TEST_ENTRY_ID],
+    )
+    publisher = OmgLolWeblogDeletePublisher(client=client, address=ADDRESS)
+    result = publisher.publish(
+        PublisherPayload(
+            target=TEST_ENTRY_ID,
+            text=f"delete weblog verification entry {TEST_ENTRY_ID}",
+            metadata={"address": ADDRESS},
+        )
+    )
+    if result.ok:
         log.info("test post deleted: %s", TEST_ENTRY_ID)
         return True
-    log.warning("failed to delete test post")
+    log.warning("failed to delete test post through publication bus: %s", result.detail)
     return False
 
 
@@ -87,6 +108,8 @@ def find_weblog_event(after_ts: float) -> dict | None:
             continue
         if event.get("event_type") != "omg.weblog":
             continue
+        if not _event_generated_after(event, after_ts):
+            continue
         if TEST_ENTRY_ID in event.get("event_id", ""):
             return event
         if TEST_ENTRY_ID in (event.get("source", {}).get("evidence_ref") or ""):
@@ -95,6 +118,22 @@ def find_weblog_event(after_ts: float) -> dict | None:
         if "deployment verification" in title.lower():
             return event
     return None
+
+
+def _event_generated_after(event: dict, after_ts: float) -> bool:
+    if after_ts <= 0:
+        return True
+    provenance = event.get("provenance")
+    generated_at = provenance.get("generated_at") if isinstance(provenance, dict) else None
+    if not isinstance(generated_at, str) or not generated_at.strip():
+        return False
+    try:
+        parsed = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.timestamp() > after_ts
 
 
 def check_social_fanout(event_id: str) -> dict[str, bool]:
@@ -108,8 +147,44 @@ def check_social_fanout(event_id: str) -> dict[str, bool]:
         except (json.JSONDecodeError, OSError):
             results[name] = False
             continue
-        results[name] = event_id in (ids if isinstance(ids, list) else ids.keys())
+        if isinstance(ids, dict):
+            event_ids = ids.get("event_ids")
+            posts = ids.get("posts")
+            if ids.get("schema_version") == 2 or isinstance(posts, list):
+                results[name] = isinstance(posts, list) and any(
+                    _post_receipt_proves_public_fanout(post, event_id) for post in posts
+                )
+                continue
+            results[name] = isinstance(event_ids, list) and event_id in event_ids
+        elif isinstance(ids, list):
+            results[name] = event_id in ids
+        else:
+            results[name] = False
     return results
+
+
+def _post_receipt_proves_public_fanout(post: object, event_id: str) -> bool:
+    if not isinstance(post, dict):
+        return False
+    if post.get("event_id") != event_id or post.get("result") != "ok":
+        return False
+    event_public_url = post.get("event_public_url")
+    text = post.get("text")
+    if not isinstance(event_public_url, str) or not event_public_url:
+        return False
+    if not isinstance(text, str) or event_public_url not in text:
+        return False
+    return bool(post.get("public_url") or post.get("uri"))
+
+
+def _required_social_fanout_ok(fanout: dict[str, bool]) -> bool:
+    return all(
+        fanout.get(surface, False)
+        for surface in (
+            "mastodon",
+            "bluesky",
+        )
+    )
 
 
 def wait_for_event(after_ts: float) -> dict | None:
@@ -127,17 +202,27 @@ def wait_for_event(after_ts: float) -> dict | None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--cleanup",
-        dest="cleanup",
+        "--live-egress",
         action="store_true",
-        default=True,
-        help="delete test post after verification (default)",
+        help="publish a live test weblog entry through the publication bus",
+    )
+    parser.add_argument(
+        "--cleanup-live",
+        dest="cleanup_live",
+        action="store_true",
+        help="delete the live test post after --live-egress verification",
+    )
+    parser.add_argument(
+        "--cleanup",
+        dest="cleanup_live",
+        action="store_true",
+        help="deprecated alias for --cleanup-live; only honored with --live-egress",
     )
     parser.add_argument(
         "--no-cleanup",
-        dest="cleanup",
+        dest="cleanup_live",
         action="store_false",
-        help="leave test post after verification",
+        help="deprecated compatibility flag; live cleanup is opt-in",
     )
     parser.add_argument(
         "--check-only", action="store_true", help="check existing events without publishing"
@@ -155,13 +240,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     log.info("weblog producer service: active")
 
-    if args.check_only:
+    if args.check_only or not args.live_egress:
         event = find_weblog_event(0)
         if event:
             log.info("found weblog event: %s", event.get("event_id"))
             fanout = check_social_fanout(event["event_id"])
             log.info("social fanout: %s", fanout)
-            return 0
+            if _required_social_fanout_ok(fanout):
+                return 0
+            log.error("missing required social fanout proof for %s", event.get("event_id"))
+            return 1
         log.warning("no weblog events found in events.jsonl")
         return 1
 
@@ -175,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if event is None:
         log.error("timed out waiting for weblog event after %ds", MAX_WAIT_S)
-        if args.cleanup:
+        if args.cleanup_live:
             delete_test_post()
         return 1
 
@@ -191,10 +279,10 @@ def main(argv: list[str] | None = None) -> int:
     fanout = check_social_fanout(event_id)
     log.info("social fanout results: %s", fanout)
 
-    if args.cleanup:
+    if args.cleanup_live:
         delete_test_post()
 
-    all_ok = event is not None
+    all_ok = event is not None and _required_social_fanout_ok(fanout)
     if all_ok:
         log.info("PASS: weblog event producer deployment verified")
     else:

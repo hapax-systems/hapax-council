@@ -47,6 +47,76 @@ class TestSearchDocuments:
         query_filter = call_kwargs.kwargs.get("query_filter") or call_kwargs[1].get("query_filter")
         assert query_filter is not None
 
+    @patch("shared.knowledge_search.get_qdrant")
+    @patch("shared.knowledge_search.embed")
+    def test_collection_override_queries_shadow_collection(self, mock_embed, mock_qdrant):
+        mock_embed.return_value = [0.1] * 768
+        mock_qdrant.return_value.query_points.return_value.points = []
+
+        search_documents("test", collection="documents_v2")
+
+        assert mock_qdrant.return_value.query_points.call_args.args[0] == "documents_v2"
+
+    @patch("shared.knowledge_search.get_qdrant")
+    @patch("shared.knowledge_search.embed")
+    def test_excludes_retrieval_ineligible_by_default(self, mock_embed, mock_qdrant):
+        mock_embed.return_value = [0.1] * 768
+        mock_qdrant.return_value.query_points.return_value.points = []
+
+        search_documents("test")
+        call_kwargs = mock_qdrant.return_value.query_points.call_args
+        query_filter = call_kwargs.kwargs.get("query_filter") or call_kwargs[1].get("query_filter")
+
+        assert query_filter is not None
+        assert query_filter.must_not
+        exclusion = query_filter.must_not[0]
+        assert exclusion.key == "retrieval_eligible"
+        assert exclusion.match.value is False
+        excluded_keys = {condition.key for condition in query_filter.must_not}
+        assert {"retrieval_eligible", "is_metadata_only", "content_tier"} <= excluded_keys
+
+    @patch("shared.knowledge_search.get_qdrant")
+    @patch("shared.knowledge_search.embed")
+    def test_inventory_search_can_include_retrieval_ineligible(self, mock_embed, mock_qdrant):
+        mock_embed.return_value = [0.1] * 768
+        mock_qdrant.return_value.query_points.return_value.points = []
+
+        search_documents("test", include_inventory=True)
+        call_kwargs = mock_qdrant.return_value.query_points.call_args
+        query_filter = call_kwargs.kwargs.get("query_filter") or call_kwargs[1].get("query_filter")
+
+        assert query_filter is None
+
+    @patch("shared.knowledge_search.get_qdrant")
+    @patch("shared.knowledge_search.embed")
+    def test_excludes_legacy_metadata_stubs_after_overfetch(self, mock_embed, mock_qdrant):
+        mock_embed.return_value = [0.1] * 768
+        metadata_point = MagicMock()
+        metadata_point.payload = {
+            "text": "**Drive link:** https://drive.google.com/file/d/abc",
+            "source": "/home/hapax/documents/rag-sources/gdrive/.meta/kick.wav.md",
+            "source_service": "drive",
+        }
+        metadata_point.score = 0.99
+        evidence_point = MagicMock()
+        evidence_point.payload = {
+            "text": "substantive evidence about RAG repair",
+            "source": "/home/hapax/projects/hapax-council/docs/rag.md",
+            "source_service": "git",
+        }
+        evidence_point.score = 0.88
+        mock_qdrant.return_value.query_points.return_value.points = [
+            metadata_point,
+            evidence_point,
+        ]
+
+        result = search_documents("rag repair", limit=1)
+        call_kwargs = mock_qdrant.return_value.query_points.call_args
+
+        assert call_kwargs.kwargs["limit"] == 10
+        assert "substantive evidence" in result
+        assert "kick.wav" not in result
+
     @patch("shared.knowledge_search.get_qdrant", side_effect=Exception("Connection refused"))
     @patch("shared.knowledge_search.embed", return_value=[0.1] * 768)
     def test_unavailable_returns_message(self, mock_embed, mock_qdrant):

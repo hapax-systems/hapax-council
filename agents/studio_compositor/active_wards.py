@@ -47,7 +47,20 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 ACTIVE_WARDS_FILE: Path = Path("/dev/shm/hapax-compositor/active_wards.json")
+CURRENT_LAYOUT_STATE_FILE: Path = Path("/dev/shm/hapax-compositor/current-layout-state.json")
+WARD_PROPERTIES_FILE: Path = Path("/dev/shm/hapax-compositor/ward-properties.json")
 ACTIVE_WARDS_STALE_S: float = 5.0
+
+
+def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+    try:
+        os.write(fd, json.dumps(payload).encode())
+    finally:
+        os.close(fd)
+    os.rename(str(tmp), str(path))
 
 
 def publish(ward_ids: Iterable[str], *, path: Path | None = None) -> None:
@@ -68,18 +81,74 @@ def publish(ward_ids: Iterable[str], *, path: Path | None = None) -> None:
     if path is None:
         path = ACTIVE_WARDS_FILE
     deduped = sorted(set(ward_ids))
-    payload = json.dumps({"ward_ids": deduped, "published_t": time.time()})
+    payload = {"ward_ids": deduped, "published_t": time.time()}
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
-        try:
-            os.write(fd, payload.encode())
-        finally:
-            os.close(fd)
-        os.rename(str(tmp), str(path))
+        _write_json_atomic(path, payload)
     except OSError:
         log.debug("active_wards publish failed", exc_info=True)
+
+
+def publish_current_layout_state(
+    *,
+    layout_name: str | None = None,
+    layout_mode: str | None = None,
+    active_ward_ids: Iterable[str] | None = None,
+    path: Path | None = None,
+) -> None:
+    """Publish durable readback of the compositor's current rendered layout.
+
+    This is a state readback, not the ``layout-mode.txt`` command mailbox.
+    Callers may update one field at a time; existing fields are preserved.
+    """
+    if path is None:
+        path = CURRENT_LAYOUT_STATE_FILE
+    payload: dict[str, object] = {}
+    try:
+        if path.exists():
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                payload.update(existing)
+    except (OSError, ValueError):
+        log.debug("current layout state merge failed", exc_info=True)
+
+    if layout_name is not None:
+        payload["layout_name"] = layout_name
+    if layout_mode is not None:
+        payload["layout_mode"] = layout_mode
+    if active_ward_ids is not None:
+        payload["active_ward_ids"] = sorted(set(active_ward_ids))
+    payload["published_t"] = time.time()
+    payload["schema_version"] = 1
+
+    try:
+        _write_json_atomic(path, payload)
+    except OSError:
+        log.debug("current layout state publish failed", exc_info=True)
+
+
+def visible_ward_property_ids(*, path: Path | None = None) -> list[str]:
+    """Return ward IDs marked visible in the ward-properties snapshot.
+
+    This is an observability fallback for layouts whose render readbacks are
+    suppressed or not wired through a SourceRegistry surface yet.
+    """
+    if path is None:
+        path = WARD_PROPERTIES_FILE
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    wards = payload.get("wards") if isinstance(payload, dict) else None
+    if not isinstance(wards, dict):
+        return []
+    active_ids: list[str] = []
+    for ward_id, props in wards.items():
+        if not isinstance(ward_id, str) or not ward_id:
+            continue
+        if isinstance(props, dict) and props.get("visible") is False:
+            continue
+        active_ids.append(ward_id)
+    return sorted(set(active_ids))
 
 
 def read(*, path: Path | None = None, stale_s: float = ACTIVE_WARDS_STALE_S) -> list[str]:
@@ -113,6 +182,10 @@ def read(*, path: Path | None = None, stale_s: float = ACTIVE_WARDS_STALE_S) -> 
 __all__ = [
     "ACTIVE_WARDS_FILE",
     "ACTIVE_WARDS_STALE_S",
+    "CURRENT_LAYOUT_STATE_FILE",
+    "WARD_PROPERTIES_FILE",
+    "publish_current_layout_state",
     "publish",
     "read",
+    "visible_ward_property_ids",
 ]

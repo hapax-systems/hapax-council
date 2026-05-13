@@ -240,3 +240,33 @@ def test_record_preset_load_failed_safe_when_metric_unset(
     monkeypatch.setattr(compositor_metrics, "HAPAX_COMPOSITOR_PRESET_LOAD_FAILED_TOTAL", None)
     # Should not raise.
     compositor_metrics.record_preset_load_failed(preset="x", reason="y")
+
+
+def test_tick_governance_honors_autonomous_fx_disable(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeSelector:
+        def evaluate(self, **_kwargs):
+            raise AssertionError("governance selector must not run when autonomous FX is disabled")
+
+    class _FakeOverlay:
+        _data = type(
+            "_Data",
+            (),
+            {
+                "desk_activity": "active",
+                "music_genre": "",
+            },
+        )()
+
+    fake = type(
+        "_FakeCompositor",
+        (),
+        {
+            "_graph_runtime": object(),
+            "_atmospheric_selector": _FakeSelector(),
+            "_overlay_state": _FakeOverlay(),
+            "_user_preset_hold_until": 0.0,
+        },
+    )()
+    monkeypatch.setenv("HAPAX_FX_AUTONOMOUS_MUTATIONS", "0")
+
+    fx_tick.tick_governance(fake, 1.0)

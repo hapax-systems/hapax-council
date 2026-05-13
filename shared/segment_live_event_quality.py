@@ -30,6 +30,7 @@ _CONCRETE_ACTION_KINDS = {
     "comparison",
     "countdown",
     "iceberg_depth",
+    "source_citation",
     "tier_chart",
 }
 _TRANSFORMING_ACTION_KINDS = {
@@ -40,7 +41,7 @@ _TRANSFORMING_ACTION_KINDS = {
     "tier_chart",
 }
 _TEMPORAL_TERMS_RE = re.compile(
-    r"\b(?:now|first|next|then|later|return|back to|pivot|turn|opening|closing|"
+    r"\b(?:now|first|next|then|later|when|return|back to|pivot|turn|opening|closing|"
     r"callback|before|after|because|therefore|so)\b",
     re.IGNORECASE,
 )
@@ -185,6 +186,7 @@ def evaluate_segment_live_event_quality(
     concrete_action_kinds = sorted(
         set(kind for kind in action_kinds if kind in _CONCRETE_ACTION_KINDS)
     )
+    concrete_action_count = sum(1 for kind in action_kinds if kind in _CONCRETE_ACTION_KINDS)
     transforming_action_kinds = sorted(
         set(kind for kind in action_kinds if kind in _TRANSFORMING_ACTION_KINDS)
     )
@@ -207,7 +209,7 @@ def evaluate_segment_live_event_quality(
     temporal_coupling = (
         len(script_list) >= 2
         and bool(_TEMPORAL_TERMS_RE.search(text))
-        and len(concrete_action_kinds) >= 2
+        and concrete_action_count >= 2
     )
     visible_transformation = bool(transforming_action_kinds) and bool(layout_needs)
     audience_job = "chat_poll" in action_kinds or bool(_AUDIENCE_JOB_RE.search(text))
@@ -236,6 +238,7 @@ def evaluate_segment_live_event_quality(
             12,
             "beats move in sequence rather than independent essays",
             concrete_action_kinds=concrete_action_kinds,
+            concrete_action_count=concrete_action_count,
         ),
         _dimension(
             "visible_transformation",
@@ -338,6 +341,7 @@ def evaluate_segment_live_event_quality(
         "observed": {
             "action_kinds": sorted(set(action_kinds)),
             "concrete_action_kinds": concrete_action_kinds,
+            "concrete_action_count": concrete_action_count,
             "transforming_action_kinds": transforming_action_kinds,
             "source_ref_count": len(source_refs),
             "script_beat_count": len(script_list),

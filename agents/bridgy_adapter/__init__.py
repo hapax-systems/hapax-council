@@ -45,7 +45,7 @@ def _source_url_for_artifact(artifact: PreprintArtifact) -> str:
     omg-weblog publishes ``PreprintArtifact`` instances under their
     canonical slug at ``{address}.omg.lol/weblog/{slug}`` (per
     ``agents/omg_weblog_publisher/publisher.py::publish_artifact``,
-    which calls ``OmgLolClient.set_entry(address, artifact.slug, ...)``).
+    which now routes the weblog write through ``OmgLolWeblogPublisher``).
     Bridgy reads the h-entry microformats at that URL and forwards.
     """
     return f"{WEBLOG_TARGET_URL}/{artifact.slug}"

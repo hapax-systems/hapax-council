@@ -16,6 +16,8 @@ that is Phase 9 cleanup territory.
 
 from __future__ import annotations
 
+import json
+
 import cairo
 
 from agents.studio_compositor import fx_chain
@@ -155,6 +157,41 @@ def test_layout_composite_interval_expires_before_signature_change(monkeypatch) 
     )
     canvas.flush()
     assert _pixel(canvas, 10, 10)[:3] == (0x00, 0x00, 0x00)
+
+
+def test_scaled_blit_cache_is_byte_bound(monkeypatch) -> None:
+    fx_chain.clear_scaled_blit_cache()
+    monkeypatch.setenv("HAPAX_SCALE_CACHE_MAX_BYTES", "512")
+    monkeypatch.setenv("HAPAX_SCALE_CACHE_MAX_ENTRIES", "8")
+
+    src = _solid_surface(4, 4, (1.0, 0.0, 0.0))
+    canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, 64, 64)
+    cr = _paint_black(canvas)
+    geom = SurfaceGeometry(kind="rect", x=0, y=0, w=32, h=32)
+
+    blit_scaled(cr, src, geom, opacity=1.0, blend_mode="over", cache_key="too-large")
+
+    assert len(fx_chain._SCALE_CACHE) == 0
+    assert fx_chain._SCALE_CACHE_BYTES == 0
+
+
+def test_scaled_blit_cache_evicts_oldest_over_capacity(monkeypatch) -> None:
+    fx_chain.clear_scaled_blit_cache()
+    monkeypatch.setenv("HAPAX_SCALE_CACHE_MAX_BYTES", "2048")
+    monkeypatch.setenv("HAPAX_SCALE_CACHE_MAX_ENTRIES", "8")
+
+    src = _solid_surface(4, 4, (1.0, 0.0, 0.0))
+    canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, 64, 64)
+    cr = _paint_black(canvas)
+    geom = SurfaceGeometry(kind="rect", x=0, y=0, w=16, h=16)
+
+    blit_scaled(cr, src, geom, opacity=1.0, blend_mode="over", cache_key="first")
+    blit_scaled(cr, src, geom, opacity=1.0, blend_mode="over", cache_key="second")
+    blit_scaled(cr, src, geom, opacity=1.0, blend_mode="over", cache_key="third")
+
+    assert len(fx_chain._SCALE_CACHE) == 2
+    assert fx_chain._SCALE_CACHE_BYTES <= 2048
+    assert all(key[0] != "first" for key in fx_chain._SCALE_CACHE)
 
 
 # ── pip_draw_from_layout ────────────────────────────────────────────
@@ -524,6 +561,78 @@ def test_blit_records_recent_readback_for_responsible_layout() -> None:
         assert recent_blit_readbacks(("red",), now=observed_at + 3.0, ttl_s=1.0) == {}
     finally:
         clear_blit_readbacks()
+
+
+def test_pip_draw_publishes_fresh_active_wards_and_current_layout(monkeypatch, tmp_path) -> None:
+    from agents.studio_compositor import active_wards
+
+    with fx_chain._RENDERED_LAYOUT_STATE_LOCK:
+        fx_chain._RENDERED_LAYOUT_STAGE_WARDS.clear()
+        fx_chain._RENDERED_LAYOUT_STATE_LAST_PUBLISH_MONO = 0.0
+        fx_chain._RENDERED_LAYOUT_STATE_LAST_SIGNATURE = None
+    active_wards_path = tmp_path / "active_wards.json"
+    current_layout_path = tmp_path / "current-layout-state.json"
+    monkeypatch.setattr(active_wards, "ACTIVE_WARDS_FILE", active_wards_path)
+    monkeypatch.setattr(active_wards, "CURRENT_LAYOUT_STATE_FILE", current_layout_path)
+
+    state = LayoutState(_layout_with_two_rect_surfaces())
+    registry = SourceRegistry()
+    registry.register("red", _CannedBackend(_solid_surface(20, 30, (1.0, 0.0, 0.0))))
+    registry.register("green", _CannedBackend(_solid_surface(40, 50, (0.0, 1.0, 0.0))))
+
+    canvas = cairo.ImageSurface(cairo.FORMAT_ARGB32, 200, 200)
+    cr = _paint_black(canvas)
+    pip_draw_from_layout(cr, state, registry)
+
+    assert active_wards.read(path=active_wards_path, stale_s=60.0) == ["green", "red"]
+    current_layout = json.loads(current_layout_path.read_text(encoding="utf-8"))
+    assert current_layout["layout_name"] == "t"
+    assert current_layout["active_ward_ids"] == ["green", "red"]
+    assert current_layout["schema_version"] == 1
+
+
+def test_rendered_layout_empty_readback_falls_back_to_visible_ward_properties(
+    monkeypatch, tmp_path
+) -> None:
+    from agents.studio_compositor import active_wards
+
+    with fx_chain._RENDERED_LAYOUT_STATE_LOCK:
+        fx_chain._RENDERED_LAYOUT_STAGE_WARDS.clear()
+        fx_chain._RENDERED_LAYOUT_STATE_LAST_PUBLISH_MONO = 0.0
+        fx_chain._RENDERED_LAYOUT_STATE_LAST_SIGNATURE = None
+
+    active_wards_path = tmp_path / "active_wards.json"
+    current_layout_path = tmp_path / "current-layout-state.json"
+    ward_properties_path = tmp_path / "ward-properties.json"
+    monkeypatch.setattr(active_wards, "ACTIVE_WARDS_FILE", active_wards_path)
+    monkeypatch.setattr(active_wards, "CURRENT_LAYOUT_STATE_FILE", current_layout_path)
+    monkeypatch.setattr(active_wards, "WARD_PROPERTIES_FILE", ward_properties_path)
+    ward_properties_path.write_text(
+        json.dumps(
+            {
+                "wards": {
+                    "album_overlay": {"visible": True},
+                    "hidden": {"visible": False},
+                    "token_pole": {"alpha": 1.0},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fx_chain._publish_rendered_layout_state(
+        layout_name="segment-detail",
+        active_ward_ids=(),
+        stage="post_fx",
+    )
+
+    assert active_wards.read(path=active_wards_path, stale_s=60.0) == [
+        "album_overlay",
+        "token_pole",
+    ]
+    current_layout = json.loads(current_layout_path.read_text(encoding="utf-8"))
+    assert current_layout["layout_name"] == "segment-detail"
+    assert current_layout["active_ward_ids"] == ["album_overlay", "token_pole"]
 
 
 def test_blit_observability_does_not_break_on_metric_failure(monkeypatch) -> None:

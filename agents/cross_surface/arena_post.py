@@ -98,12 +98,15 @@ import sys
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from prometheus_client import REGISTRY, CollectorRegistry, Counter, start_http_server
 from pydantic import ValidationError
 
+from agents.publication_bus.arena_publisher import ArenaPublisher
+from agents.publication_bus.publisher_kit import PublisherPayload, PublisherResult
 from shared.cross_surface_event_contract import decide_cross_surface_fanout
 from shared.governance.publication_allowlist import check as allowlist_check
 from shared.research_vehicle_public_event import ResearchVehiclePublicEvent
@@ -131,6 +134,7 @@ DEFAULT_IDEMPOTENCY_PATH = Path(
 METRICS_PORT: int = int(os.environ.get("HAPAX_ARENA_METRICS_PORT", "9504"))
 DEFAULT_TICK_S: float = float(os.environ.get("HAPAX_ARENA_TICK_S", "30"))
 ARENA_BLOCK_TEXT_LIMIT = 4096
+DEFAULT_PUBLICATION_TARGET = os.environ.get("HAPAX_ARENA_PUBLICATION_TARGET", "hapax")
 
 ALLOWLIST_SURFACE = "arena-post"
 ALLOWED_PUBLIC_EVENT_TYPES = frozenset(
@@ -154,6 +158,12 @@ class _TailRecord:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class _BlockResult:
+    result: str
+    detail: str | None = None
+
+
 class ArenaPoster:
     """Tail canonical public events; post to a Hapax-owned Are.na channel when policy permits."""
 
@@ -163,7 +173,8 @@ class ArenaPoster:
         token: str | None = None,
         channel_slug: str | None = None,
         compose_fn=None,
-        client_factory=None,
+        publisher_factory=None,
+        publication_target: str = DEFAULT_PUBLICATION_TARGET,
         event_path: Path = EVENT_PATH,
         cursor_path: Path = DEFAULT_CURSOR_PATH,
         idempotency_path: Path = DEFAULT_IDEMPOTENCY_PATH,
@@ -175,7 +186,8 @@ class ArenaPoster:
         self._token = token
         self._channel_slug = channel_slug
         self._compose_fn = compose_fn
-        self._client_factory = client_factory
+        self._publisher_factory = publisher_factory
+        self._publication_target = publication_target
         self._event_path = event_path
         self._cursor_path = cursor_path
         self._idempotency_path = idempotency_path
@@ -183,8 +195,8 @@ class ArenaPoster:
         self._text_limit = max(1, text_limit)
         self._dry_run = dry_run
         self._stop_evt = threading.Event()
-        self._client = None  # built on first non-dry-run apply
         self._processed_event_ids: set[str] | None = None
+        self._post_receipts: dict[str, dict[str, Any]] | None = None
 
         self.posts_total = Counter(
             "hapax_broadcast_arena_posts_total",
@@ -214,8 +226,8 @@ class ArenaPoster:
             if self._event_already_processed(event.event_id):
                 self._write_cursor(record.byte_after)
                 continue
-            self._apply(event)
-            self._mark_event_processed(event.event_id)
+            receipt = self._apply(event)
+            self._mark_event_processed(event.event_id, receipt=receipt)
             self._write_cursor(record.byte_after)
             handled += 1
         return handled
@@ -345,16 +357,26 @@ class ArenaPoster:
             return set()
         return {item for item in ids if isinstance(item, str) and item}
 
-    def _mark_event_processed(self, event_id: str) -> None:
+    def _mark_event_processed(
+        self,
+        event_id: str,
+        *,
+        receipt: dict[str, Any] | None = None,
+    ) -> None:
         if self._processed_event_ids is None:
             self._processed_event_ids = self._read_processed_event_ids()
         self._processed_event_ids.add(event_id)
         try:
             self._idempotency_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._idempotency_path.with_suffix(".tmp")
+            if self._post_receipts is None:
+                self._post_receipts = self._read_post_receipts()
+            if receipt is not None:
+                self._post_receipts[event_id] = receipt
             payload = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "event_ids": sorted(self._processed_event_ids),
+                "posts": [self._post_receipts[key] for key in sorted(self._post_receipts)],
             }
             tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
             tmp.replace(self._idempotency_path)
@@ -365,9 +387,29 @@ class ArenaPoster:
                 exc_info=True,
             )
 
+    def _read_post_receipts(self) -> dict[str, dict[str, Any]]:
+        try:
+            raw = json.loads(self._idempotency_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        posts = raw.get("posts")
+        if not isinstance(posts, list):
+            return {}
+
+        receipts: dict[str, dict[str, Any]] = {}
+        for item in posts:
+            if not isinstance(item, dict):
+                continue
+            event_id = item.get("event_id")
+            if isinstance(event_id, str) and event_id:
+                receipts[event_id] = item
+        return receipts
+
     # ── Per-event apply ───────────────────────────────────────────────
 
-    def _apply(self, event: ResearchVehiclePublicEvent) -> None:
+    def _apply(self, event: ResearchVehiclePublicEvent) -> dict[str, Any] | None:
         fanout = decide_cross_surface_fanout(event, "arena", "publish")
         if fanout.decision != "allow":
             log.warning(
@@ -376,7 +418,7 @@ class ArenaPoster:
                 ",".join(fanout.reasons),
             )
             self.posts_total.labels(result="denied").inc()
-            return
+            return _post_receipt(event, result="denied")
 
         verdict = allowlist_check(
             ALLOWLIST_SURFACE,
@@ -386,14 +428,14 @@ class ArenaPoster:
         if verdict.decision == "deny":
             log.warning("allowlist DENY for arena post: %s", verdict.reason)
             self.posts_total.labels(result="denied").inc()
-            return
+            return _post_receipt(event, result="denied")
 
         try:
             content, source_url = self._compose(event)
         except Exception:  # noqa: BLE001
             log.exception("composer failed for event")
             self.posts_total.labels(result="compose_error").inc()
-            return
+            return _post_receipt(event, result="compose_error")
 
         content = content[: self._text_limit]
 
@@ -405,43 +447,74 @@ class ArenaPoster:
                 content,
             )
             self.posts_total.labels(result="dry_run").inc()
-            return
+            return _post_receipt(event, result="dry_run", content=content, source_url=source_url)
 
         result = self._send_block(content, source_url)
-        self.posts_total.labels(result=result).inc()
+        self.posts_total.labels(result=result.result).inc()
+        return _post_receipt(
+            event,
+            result=result.result,
+            content=content,
+            source_url=source_url,
+            detail=result.detail,
+        )
 
     def _compose(self, event: ResearchVehiclePublicEvent) -> tuple[str, str | None]:
         if self._compose_fn is not None:
             return self._compose_fn(event)
         return _default_compose(event)
 
-    def _send_block(self, content: str, source_url: str | None) -> str:
-        if not (self._token and self._channel_slug):
-            log.warning("HAPAX_ARENA_TOKEN / HAPAX_ARENA_CHANNEL_SLUG not set; skipping live post")
-            return "no_credentials"
+    def _send_block(self, content: str, source_url: str | None) -> _BlockResult:
+        try:
+            publisher = self._build_publisher()
+        except Exception:  # noqa: BLE001
+            log.exception("arena publication-bus publisher init failed")
+            return _BlockResult("auth_error")
 
         try:
-            client = self._ensure_client()
+            result = publisher.publish(
+                PublisherPayload(
+                    target=self._publication_target,
+                    text=content,
+                    metadata={"source_url": source_url},
+                )
+            )
         except Exception:  # noqa: BLE001
-            log.exception("arena client init failed")
-            return "auth_error"
+            log.exception("arena publication-bus publish raised")
+            return _BlockResult("error")
 
-        try:
-            client.add_block(self._channel_slug, content=content, source=source_url)
-        except Exception:  # noqa: BLE001
-            log.exception("arena add_block raised")
-            return "error"
+        if result.ok:
+            return _BlockResult("ok", detail=result.detail)
+        if result.refused:
+            if "credential" in result.detail.lower() or "creds" in result.detail.lower():
+                return _BlockResult("no_credentials", detail=result.detail)
+            return _BlockResult("denied", detail=result.detail)
+        if result.error:
+            return _BlockResult("error", detail=result.detail)
+        return _BlockResult("error", detail=result.detail)
+
+    def _build_publisher(self):
+        factory = self._publisher_factory or _default_publisher_factory
+        return factory(self._token, self._channel_slug)
+
+
+def _default_publisher_factory(token: str | None, channel_slug: str | None):
+    return ArenaPublisher(token=token, channel_slug=channel_slug)
+
+
+def _publisher_result_to_status(result: PublisherResult) -> str:
+    if result.ok:
         return "ok"
+    if result.refused:
+        if "credential" in result.detail.lower() or "creds" in result.detail.lower():
+            return "no_credentials"
+        return "denied"
+    if result.error:
+        return "error"
+    return "error"
 
-    def _ensure_client(self):
-        if self._client is not None:
-            return self._client
-        factory = self._client_factory or _default_client_factory
-        self._client = factory(self._token)
-        return self._client
 
-
-# ── Default helpers (composer + arena client) ────────────────────────
+# ── Default helpers (composer) ───────────────────────────────────────
 
 
 def _default_compose(event: ResearchVehiclePublicEvent) -> tuple[str, str | None]:
@@ -605,37 +678,27 @@ def _dedupe(values: list[str | None]) -> list[str]:
     return result
 
 
-class _ArenaAdapter:
-    """Minimal Are.na adapter wrapping ``arena`` Python client.
-
-    Exposes the single ``add_block(slug, content, source)`` method
-    used by ``ArenaPoster._send_block``. Picks ``content`` for text
-    blocks, ``source`` for link/image blocks. Falls back to text when
-    only content is provided.
-    """
-
-    def __init__(self, token: str) -> None:
-        from arena import Arena
-
-        self._arena = Arena(access_token=token)
-
-    def add_block(
-        self,
-        channel_slug: str,
-        *,
-        content: str,
-        source: str | None = None,
-    ) -> None:
-        channel = self._arena.channels.channel(channel_slug)
-        if source:
-            channel.add_block(source=source, content=content)
-        else:
-            channel.add_block(content=content)
-
-
-def _default_client_factory(token: str) -> _ArenaAdapter:
-    """Lazy-build an Are.na adapter."""
-    return _ArenaAdapter(token)
+def _post_receipt(
+    event: ResearchVehiclePublicEvent,
+    *,
+    result: str,
+    content: str | None = None,
+    source_url: str | None = None,
+    detail: str | None = None,
+) -> dict[str, Any]:
+    receipt: dict[str, Any] = {
+        "event_id": event.event_id,
+        "result": result,
+        "event_public_url": event.public_url,
+        "recorded_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    }
+    if content:
+        receipt["content"] = content
+    if source_url:
+        receipt["source_url"] = source_url
+    if detail:
+        receipt["detail"] = detail
+    return receipt
 
 
 def _credentials_from_env() -> tuple[str | None, str | None]:
@@ -674,17 +737,25 @@ def publish_artifact(artifact) -> str:  # type: ignore[no-untyped-def]
     source_url = _artifact_source_url(artifact)
 
     try:
-        client = _default_client_factory(token)
+        publisher = _default_publisher_factory(token, slug)
     except Exception:  # noqa: BLE001
-        log.exception("arena client init failed for artifact %s", getattr(artifact, "slug", "?"))
+        log.exception("arena publisher init failed for artifact %s", getattr(artifact, "slug", "?"))
         return "auth_error"
 
     try:
-        client.add_block(slug, content=content, source=source_url)
+        result = publisher.publish(
+            PublisherPayload(
+                target=DEFAULT_PUBLICATION_TARGET,
+                text=content,
+                metadata={"source_url": source_url},
+            )
+        )
     except Exception:  # noqa: BLE001
-        log.exception("arena add_block raised for artifact %s", getattr(artifact, "slug", "?"))
+        log.exception(
+            "arena publication-bus publish raised for artifact %s", getattr(artifact, "slug", "?")
+        )
         return "error"
-    return "ok"
+    return _publisher_result_to_status(result)
 
 
 def _compose_artifact_content(artifact) -> str:  # type: ignore[no-untyped-def]

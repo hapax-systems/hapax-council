@@ -53,6 +53,10 @@ class TestSearchDocumentsHandler:
 
         mock_embed.assert_called_once_with("meeting notes", prefix="search_query")
         mock_qdrant.query_points.assert_called_once()
+        query_filter = mock_qdrant.query_points.call_args.kwargs.get("query_filter")
+        assert query_filter is not None
+        assert query_filter.must_not
+        assert any(item.key == "retrieval_eligible" for item in query_filter.must_not)
         mock_fn_params.result_callback.assert_awaited_once()
         result = mock_fn_params.result_callback.call_args[0][0]
         assert "test.md" in result
@@ -71,7 +75,10 @@ class TestSearchDocumentsHandler:
             await handle_search_documents(mock_fn_params)
 
         call_kwargs = mock_qdrant.query_points.call_args
-        assert call_kwargs.kwargs.get("query_filter") is not None
+        query_filter = call_kwargs.kwargs.get("query_filter")
+        assert query_filter is not None
+        assert query_filter.must_not
+        assert any(item.key == "retrieval_eligible" for item in query_filter.must_not)
 
     @pytest.mark.asyncio
     async def test_no_results(self, mock_fn_params, mock_embed):

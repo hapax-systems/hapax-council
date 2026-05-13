@@ -14,6 +14,7 @@ from pathlib import Path
 
 from agents.reverie.programme_context import ProgrammeProvider
 from agents.reverie.substrate_palette import compute_substrate_saturation
+from shared.reverie_uniform_policy import clamp_reverie_live_uniforms
 from shared.visual_mode_bias import VisualModeBias, get_visual_mode_bias
 
 log = logging.getLogger("reverie.uniforms")
@@ -389,6 +390,13 @@ def write_uniforms(
         if composed is not None:
             uniforms["color.saturation"] = composed
 
+    # Live-surface bounds apply after all producers have had their say
+    # (plan defaults, visual chain, content salience, trace, mode tint,
+    # homage, programme). This is the single point where Reverie remains an
+    # expressive generated source without becoming a full-frame replacement or
+    # global dimmer on the livestream.
+    bounded_uniforms = clamp_reverie_live_uniforms(uniforms)
+
     # Write all scalar overrides to uniforms.json. The Rust pipeline parses this
     # as HashMap<String, f64> — non-scalar values (arrays) must be excluded or
     # the entire parse fails silently. Per-node overrides (node.param) and signal
@@ -406,7 +414,7 @@ def write_uniforms(
     # corruption rather than legitimate modulation.
     scalar_uniforms = {
         k: _sanitize_uniform_value(v)
-        for k, v in uniforms.items()
+        for k, v in bounded_uniforms.items()
         if isinstance(v, (int, float, bool))
     }
 

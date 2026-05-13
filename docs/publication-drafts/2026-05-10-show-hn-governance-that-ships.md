@@ -1,15 +1,15 @@
 ---
 Date: 2026-05-10
-Title: Show HN: 3,000 PRs in 60 Days with Zero Governance Failures
+Title: Show HN: Mechanical Governance for AI Coding Agents at 3,000+ PRs
 Type: post
-Location: /weblog
+Location: /2026/05/show-hn-governance-that-ships
 Tags: ai-governance, claude-code, autonomous-agents, show-hn
 Slug: show-hn-governance-that-ships
 ---
 
-# Show HN: 3,000 PRs in 60 Days with Zero Governance Failures
+# Show HN: Mechanical Governance for AI Coding Agents at 3,000+ PRs
 
-I run a fleet of autonomous AI agents — Claude Code, Codex, Gemini CLI — building a system 24 hours a day. They've merged over 3,000 pull requests in 60 days. The revert rate is 0.16%.
+I run a fleet of autonomous AI agents — Claude Code, Codex, Gemini CLI — building a system 24 hours a day. In a sampled 60-day launch window, the repo saw 3,041 pull requests opened and 2,871 merged. A title-search audit finds five revert-titled PRs, about 0.16% of opened PRs.
 
 That number should make you suspicious. It makes me suspicious too. So here's how it works.
 
@@ -29,15 +29,15 @@ Prompt-based governance has three fatal flaws:
 
 We built mechanical enforcement. Not guidelines — gates.
 
-The system has five constitutional axioms, weighted 85–100, that constrain every action an agent takes. These aren't prompt decorations. They're enforced by 44 hook scripts that intercept tool calls before execution and block violations at the shell level.
+The system has five constitutional axioms, weighted 85-100, that constrain governed council actions. These aren't prompt decorations. In the production council repo, 42 tracked shell hook scripts intercept covered tool calls before execution and block violations at the shell level. The standalone `hapax-agentgov` package extracts five portable checks for other agent deployments.
 
 Here's what that means concretely:
 
-**Before an agent creates a git branch**, a hook checks whether unmerged branches exist. If they do, the branch creation is blocked — not warned, blocked. The agent physically cannot create a new branch until prior work is resolved.
+**Before a governed agent creates a git branch**, a hook checks whether unmerged branches exist. If they do, the governed branch-creation path is blocked until prior work is resolved.
 
-**Before an agent pushes code**, a hook verifies that tests were run. No test results, no push.
+**Before a governed agent pushes code**, a hook verifies that tests were run. Missing test evidence blocks the governed push path.
 
-**Before an agent writes to any file**, a hook scans for PII patterns. Social security numbers, email addresses, API keys — if the content matches, the write is refused.
+**Before governed agent file writes**, a hook scans for PII patterns. Social security numbers, email addresses, API keys — if the content matches, the write is refused.
 
 **Before an agent edits code on a feature branch**, a hook checks whether there's already an open PR for that branch. If there is, the edit is blocked until the PR is resolved. This prevents the "infinite WIP" failure mode where agents pile changes onto branches that are already under review.
 
@@ -45,45 +45,43 @@ These hooks run outside the model. The model doesn't get to evaluate whether the
 
 ## The Data
 
-Here's what 60 days of mechanically enforced governance produces:
+Here's what the sampled 60-day launch window produced:
 
 | Metric | Value |
 |--------|-------|
-| Total pull requests | 3,034 |
-| Merged | 2,869 |
-| Reverts | 5 |
-| Revert rate | 0.16% |
-| Days | 60 |
-| PRs per day | ~48 |
+| Window | 2026-03-12 through 2026-05-10 |
+| Pull requests opened | 3,041 |
+| Pull requests merged | 2,871 |
+| Revert-titled PRs | 5 |
+| Revert-title rate | 0.16% of opened PRs |
+| Opened PRs per day | ~51 |
 | Human operators | 1 |
-| Concurrent agent sessions | up to 12 |
-| Hook scripts | 44 |
+| Council shell hook scripts | 42 |
+| Portable agentgov checks | 5 |
 | Constitutional axioms | 5 |
-| Test files | 2,158 |
-| Refused publication surfaces | 12 |
-| Refusal briefs (documented) | 48 |
+| Refusal briefs (markdown) | 47 |
 
-The revert rate deserves scrutiny. Five reverts in 3,034 PRs. All five were audio routing changes where the live system behaved differently from the test environment. None were governance failures — they were domain-specific integration surprises that couldn't be caught by pre-merge testing alone.
+The revert metric deserves scrutiny. This is a title-search audit, not a root-cause audit. The five titles include audio routing, Logos overlay, and Reverie/service-dependency follow-ups, so I am making the narrower claim: five revert-titled PRs in 3,041 opened PRs during the sampled window.
 
-Zero reverts were caused by: agents merging broken code, agents pushing to the wrong branch, agents committing secrets, agents bypassing review, or agents doing something they were told not to do.
+The point is not that the system never changes course. It changes course constantly. The point is that the governance failures people fear most — agents pushing to the wrong branch, committing secrets, bypassing review, or continuing after a mechanical block — are handled below the model's preferences.
 
 The hook system didn't just prevent failures — it shaped agent behavior. When an agent hits a `no-stale-branches` block, it doesn't retry the same command. It reads the error, identifies the blocking branches, and cleans them up. The constraint becomes a workflow. After 3,000 PRs, the agents have internalized the governance patterns so thoroughly that hooks fire less frequently now than they did in week one.
 
 ## The Trust Angle
 
-This is a system that is constitutionally incapable of certain failures. Not unlikely to fail — incapable.
+This is a system designed to make certain failure modes mechanically unreachable on governed paths. The scope matters: when the hook is on the path, model preference cannot override it.
 
-An agent in this system cannot push code without running tests. Not "shouldn't" — cannot. The hook intercepts the git push and returns an error. There is no prompt that overrides this. There is no system message that bypasses it. The enforcement layer sits below the model's decision-making entirely.
+An agent on the governed push path cannot push code without test evidence. The hook intercepts the git push and returns an error. There is no prompt that overrides this hook on that path. The enforcement layer sits below the model's decision-making entirely.
 
 This is a fundamentally different trust model than "we prompted the AI to be careful." It's closer to how we trust bridges: not because the engineer promised to be careful, but because the physics of steel and concrete enforce load limits whether the engineer is paying attention or not.
 
-The system also documents what it refuses to do. We maintain 48 refusal briefs — formal records of platforms and actions the system has evaluated and declined. Reddit, Discord, LinkedIn, Twitter/X, Wikipedia — each has a documented refusal with the specific axiom violation that prevents engagement. The system doesn't silently ignore these platforms. It records *why* it refuses, so the refusal is auditable.
+The system also documents what it refuses to do. We maintain 47 markdown refusal briefs — formal records of platforms and actions the system has evaluated and declined. Reddit, Discord, LinkedIn, Twitter/X, Wikipedia — each has a documented refusal with the specific axiom violation that prevents engagement. The system doesn't silently ignore these platforms. It records *why* it refuses, so the refusal is auditable.
 
 The refused surfaces list is arguably more interesting than the capabilities list. A system that can explain what it won't do, and why, is a system you can reason about.
 
 ## The Tool
 
-We're extracting the hook-based governance system into a standalone open-source package: **agentgov**. It will be a `pip install` away from adding mechanical enforcement to any Claude Code, Codex, or similar agent deployment.
+We're publishing the hook-based governance system as a standalone open-source package: **hapax-agentgov**. It is a `pip install hapax-agentgov` away from adding mechanical enforcement to any Claude Code, Codex, or similar agent deployment. The import and CLI command remain `agentgov`.
 
 The core idea is simple: hooks intercept tool calls. You write shell scripts that check preconditions. If the precondition fails, the tool call is blocked. The agent receives the error and adapts.
 
@@ -91,18 +89,24 @@ No prompt engineering required. No model-specific tuning. The enforcement layer 
 
 Repository: [github.com/hapax-systems/agentgov](https://github.com/hapax-systems/agentgov)
 
-## The Livestream
+Full system: [github.com/hapax-systems/hapax-council](https://github.com/hapax-systems/hapax-council)
 
-The entire system runs 24/7 on a livestream: [Legomena Live](https://youtube.com/@legomenalive). You can watch autonomous agents write code, hit governance hooks, adapt their behavior, and merge pull requests in real time. The compositor, camera pipeline, audio routing, and overlay system are all built and operated by the same governed agent fleet.
+Public landing page: [hapax.omg.lol](https://hapax.omg.lol/)
 
-This isn't a demo. It's the actual production environment. When an agent's PR fails CI at 3am, you can watch it read the error, fix the code, and re-push — all within the governance constraints.
+Support page: [hapax.weblog.lol/support](https://hapax.weblog.lol/support)
+
+## Live Evidence
+
+The production system is built to publish live evidence, but public live egress is readiness-gated. Right now the YouTube/OBS gate is red, so this post does not claim an active livestream as evidence.
+
+The same governed fleet builds the production compositor, camera pipeline, audio routing, overlay system, publication bus, and GitHub workflow. When the public egress gate is green, [Legomena Live](https://www.youtube.com/@LegomenaLive) becomes current evidence again; until then, the repository, PyPI package, weblog, and CI history are the public record.
 
 ## What's Next
 
-We're writing this up for CHI 2027 as a case study in constitutional AI governance for autonomous development agents. The core claim: mechanical enforcement produces qualitatively different trust properties than prompt-based governance, and the empirical evidence from 3,000+ PRs supports this.
+We're writing this up for CHI 2027 as a case study in constitutional AI governance for autonomous development agents. The core claim: mechanical enforcement produces qualitatively different trust properties than prompt-based governance, and the 3,000+ PR launch-window record is candidate evidence for that claim pending broader root-cause and coverage analysis.
 
 The practical question isn't whether AI agents should have governance. It's whether governance should be advisory (prompts) or mechanical (hooks). After 60 days, we have a strong opinion: if you can enforce it mechanically, you should. Prompts are for preferences. Hooks are for invariants.
 
 ---
 
-*Built by one person and a fleet of governed agents. All code, infrastructure, and governance mechanisms described here are running in production.*
+*Built by one person and a fleet of governed agents. Claims above are scoped to the sampled window and governed council paths; live evidence remains readiness-gated.*

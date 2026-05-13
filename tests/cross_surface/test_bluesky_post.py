@@ -13,6 +13,7 @@ from agents.cross_surface.bluesky_post import (
     BlueskyPoster,
     _credentials_from_env,
 )
+from agents.publication_bus.publisher_kit import PublisherResult
 from shared.research_vehicle_public_event import (
     PublicEventChapterRef,
     PublicEventProvenance,
@@ -121,15 +122,16 @@ def _make_poster(
 ) -> tuple[BlueskyPoster, mock.Mock]:
     if client_factory is None:
         client = mock.Mock()
-        client.send_post.return_value = mock.Mock(uri="at://example/post/1")
+        client.send_post.return_value = mock.Mock(uri="at://did:plc:example/app.bsky.feed.post/1")
         client_factory = mock.Mock(return_value=client)
     if compose_fn is None:
         compose_fn = mock.Mock(return_value="default test post")
+    publisher_factory = _publisher_factory_from_legacy_client_factory(client_factory)
     poster = BlueskyPoster(
         handle=handle,
         app_password=app_password,
         compose_fn=compose_fn,
-        client_factory=client_factory,
+        publisher_factory=publisher_factory,
         event_path=event_path,
         cursor_path=cursor_path,
         idempotency_path=cursor_path.with_name("posted-event-ids.json"),
@@ -137,6 +139,32 @@ def _make_poster(
         dry_run=dry_run,
     )
     return poster, client_factory
+
+
+def _publisher_factory_from_legacy_client_factory(client_factory):
+    def _factory(handle: str | None, app_password: str | None):
+        publisher = mock.Mock()
+        if not (handle and app_password):
+            publisher.publish.return_value = PublisherResult(
+                refused=True,
+                detail="missing Bluesky credentials",
+            )
+            return publisher
+        client = client_factory(handle, app_password)
+
+        def _publish(payload):
+            raw_result = client.send_post(text=payload.text)
+            uri = (
+                raw_result.get("uri")
+                if isinstance(raw_result, dict)
+                else getattr(raw_result, "uri", "")
+            )
+            return PublisherResult(ok=True, detail=uri if isinstance(uri, str) else "")
+
+        publisher.publish.side_effect = _publish
+        return publisher
+
+    return _factory
 
 
 # ── Cursor + tail ────────────────────────────────────────────────────
@@ -185,6 +213,40 @@ class TestCursor:
         cursor.write_text("0", encoding="utf-8")
         assert poster.run_once() == 0
         factory.return_value.send_post.assert_called_once()
+
+    def test_persists_post_uri_receipt_for_public_proof(self, tmp_path):
+        bus = tmp_path / "events.jsonl"
+        cursor = tmp_path / "cursor.txt"
+        event = _public_event(event_id="rvpe:broadcast_boundary:proof")
+        _write_events(bus, [event])
+
+        client = mock.Mock()
+        client.send_post.return_value = mock.Mock(
+            uri="at://did:plc:example/app.bsky.feed.post/3proof"
+        )
+        poster, _ = _make_poster(
+            event_path=bus,
+            cursor_path=cursor,
+            client_factory=mock.Mock(return_value=client),
+            compose_fn=mock.Mock(return_value="proof post"),
+            handle="hapax.bsky.social",
+        )
+
+        assert poster.run_once() == 1
+        state = json.loads(cursor.with_name("posted-event-ids.json").read_text())
+        assert state["schema_version"] == 2
+        assert "rvpe:broadcast_boundary:proof" in state["event_ids"]
+        assert state["posts"] == [
+            {
+                "event_id": "rvpe:broadcast_boundary:proof",
+                "event_public_url": "https://www.youtube.com/watch?v=broadcast-123",
+                "public_url": "https://bsky.app/profile/did:plc:example/post/3proof",
+                "recorded_at": state["posts"][0]["recorded_at"],
+                "result": "ok",
+                "text": "proof post",
+                "uri": "at://did:plc:example/app.bsky.feed.post/3proof",
+            }
+        ]
 
 
 # ── Event filtering ──────────────────────────────────────────────────
@@ -344,6 +406,37 @@ class TestEventFiltering:
 
         assert poster.run_once() == 1
         client.send_post.assert_called_once()
+
+    def test_default_compose_weblog_uses_public_url_directly(self):
+        from agents.cross_surface import bluesky_post as mod
+
+        event = _public_event(
+            event_id="rvpe:omg_weblog:bsky",
+            event_type="omg.weblog",
+            state_kind="public_post",
+            public_url="https://hapax.weblog.lol/2026/05/show-hn-governance-that-ships",
+            chapter_ref=PublicEventChapterRef(
+                kind="chapter",
+                label="Show HN: Mechanical Governance for AI Coding Agents at 3,000+ PRs",
+                timecode="00:00",
+                source_event_id="rvpe:omg_weblog:bsky",
+            ),
+            surface_policy=_surface_policy(
+                claim_live=False,
+                claim_archive=True,
+                requires_egress_public_claim=False,
+                requires_audio_safe=False,
+                rate_limit_key="omg.weblog:public_post",
+            ),
+        )
+
+        with mock.patch("agents.metadata_composer.composer.compose_metadata") as compose:
+            text = mod._default_compose(event)
+
+        compose.assert_not_called()
+        assert "Show HN: Mechanical Governance" in text
+        assert "https://hapax.weblog.lol/2026/05/show-hn-governance-that-ships" in text
+        assert "metadata-public-claim-gate" not in text
 
     def test_non_broadcast_events_post_without_live_egress_claim(self, tmp_path):
         for event_type, state_kind in (
@@ -638,13 +731,17 @@ class TestPublishArtifact:
         monkeypatch.setenv("HAPAX_BLUESKY_HANDLE", "h.bsky.social")
         monkeypatch.setenv("HAPAX_BLUESKY_APP_PASSWORD", "abcd-1234")
 
-        fake_client = mock.Mock()
-        fake_client.send_post.return_value = mock.Mock(uri="at://post/1")
-        monkeypatch.setattr(bluesky_post, "_default_client_factory", lambda h, p: fake_client)
+        fake_publisher = mock.Mock()
+        fake_publisher.publish.return_value = PublisherResult(ok=True, detail="at://post/1")
+        monkeypatch.setattr(
+            bluesky_post,
+            "_default_publisher_factory",
+            lambda h, p: fake_publisher,
+        )
 
         artifact = PreprintArtifact(slug="x", title="T", abstract="A")
         assert bluesky_post.publish_artifact(artifact) == "ok"
-        fake_client.send_post.assert_called_once()
+        fake_publisher.publish.assert_called_once()
 
     def test_publish_artifact_auth_error(self, monkeypatch):
         from agents.cross_surface import bluesky_post
@@ -656,7 +753,7 @@ class TestPublishArtifact:
         def _raise(h, p):
             raise RuntimeError("login failed")
 
-        monkeypatch.setattr(bluesky_post, "_default_client_factory", _raise)
+        monkeypatch.setattr(bluesky_post, "_default_publisher_factory", _raise)
 
         artifact = PreprintArtifact(slug="x", title="T", abstract="A")
         assert bluesky_post.publish_artifact(artifact) == "auth_error"
@@ -668,9 +765,13 @@ class TestPublishArtifact:
         monkeypatch.setenv("HAPAX_BLUESKY_HANDLE", "h.bsky.social")
         monkeypatch.setenv("HAPAX_BLUESKY_APP_PASSWORD", "abcd-1234")
 
-        fake_client = mock.Mock()
-        fake_client.send_post.side_effect = RuntimeError("send failed")
-        monkeypatch.setattr(bluesky_post, "_default_client_factory", lambda h, p: fake_client)
+        fake_publisher = mock.Mock()
+        fake_publisher.publish.side_effect = RuntimeError("send failed")
+        monkeypatch.setattr(
+            bluesky_post,
+            "_default_publisher_factory",
+            lambda h, p: fake_publisher,
+        )
 
         artifact = PreprintArtifact(slug="x", title="T", abstract="A")
         assert bluesky_post.publish_artifact(artifact) == "error"

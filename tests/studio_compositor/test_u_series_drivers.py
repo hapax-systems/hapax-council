@@ -32,8 +32,11 @@ from agents.studio_compositor.semantic_verb_consumer import (
 )
 from agents.studio_compositor.u_series_drivers import (
     ACTIVITY_TO_VERB,
+    DEFAULT_U4_TICK_S,
+    DEFAULT_U5_INITIAL_DELAY_S,
     _u4_tick_loop,
     _u5_tick_loop,
+    _u_series_tick_loop,
     start_u4_driver,
     start_u5_driver,
 )
@@ -188,6 +191,95 @@ def test_u5_activity_to_verb_table_complete() -> None:
 
     for activity, verb in ACTIVITY_TO_VERB.items():
         assert verb in SEMANTIC_VERBS, f"activity {activity!r} maps to unknown verb {verb!r}"
+
+
+# ── combined phased driver ─────────────────────────────────────────
+
+
+def test_combined_u_series_loop_does_not_fire_immediately() -> None:
+    """The production combined loop phases work off compositor startup."""
+
+    class _U4:
+        def __init__(self) -> None:
+            self.count = 0
+
+        def advance(self) -> None:
+            self.count += 1
+
+    class _U5:
+        def __init__(self) -> None:
+            self.verbs: list[str] = []
+
+        def consume(self, verb: str) -> None:
+            self.verbs.append(verb)
+
+    u4 = _U4()
+    u5 = _U5()
+    sleeps: list[float] = []
+    iterations = _u_series_tick_loop(
+        u4,
+        u5,
+        u4_enabled=True,
+        u5_enabled=True,
+        iterations=1,
+        sleep_fn=sleeps.append,
+        clock=lambda: 0.0,
+        activity_provider=lambda: "music",
+    )
+    assert iterations == 1
+    assert u4.count == 0
+    assert u5.verbs == []
+    assert DEFAULT_U5_INITIAL_DELAY_S > DEFAULT_U4_TICK_S
+
+
+def test_combined_u_series_loop_phases_u4_and_u5() -> None:
+    """U4 and U5 fire from one scheduler but at different deadlines."""
+
+    class _Clock:
+        def __init__(self) -> None:
+            self.now = 0.0
+
+        def __call__(self) -> float:
+            return self.now
+
+        def sleep(self, seconds: float) -> None:
+            self.now += seconds
+
+    class _U4:
+        def __init__(self) -> None:
+            self.fired_at: list[float] = []
+
+        def advance(self) -> None:
+            self.fired_at.append(clock.now)
+
+    class _U5:
+        def __init__(self) -> None:
+            self.fired_at: list[tuple[float, str]] = []
+
+        def consume(self, verb: str) -> None:
+            self.fired_at.append((clock.now, verb))
+
+    clock = _Clock()
+    u4 = _U4()
+    u5 = _U5()
+    iterations = _u_series_tick_loop(
+        u4,
+        u5,
+        u4_enabled=True,
+        u5_enabled=True,
+        u4_interval_s=0.10,
+        u5_interval_s=0.20,
+        u5_initial_delay_s=0.15,
+        activity_provider=lambda: "music",
+        sleep_fn=clock.sleep,
+        clock=clock,
+        iterations=5,
+    )
+    assert iterations == 5
+    assert u4.fired_at == pytest.approx([0.10, 0.20, 0.30])
+    assert len(u5.fired_at) == 1
+    assert u5.fired_at[0][0] == pytest.approx(0.15)
+    assert u5.fired_at[0][1] == ACTIVITY_TO_VERB["music"]
 
 
 # ── stop event semantics ───────────────────────────────────────────

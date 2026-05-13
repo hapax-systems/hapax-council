@@ -27,6 +27,8 @@ from typing import Any
 
 import yaml
 
+from agents.publication_bus.omg_pastebin_publisher import OmgLolPastebinPublisher
+from agents.publication_bus.publisher_kit import PublisherPayload
 from shared.governance.omg_referent import OperatorNameLeak, safe_render
 from shared.governance.publication_allowlist import check as allowlist_check
 
@@ -59,6 +61,18 @@ DEFAULT_ADDRESS = "hapax"
 DEFAULT_CHRONICLE_FILE = Path("/dev/shm/hapax-chronicle/events.jsonl")
 DEFAULT_PROGRAMMES_DIR = Path.home() / "hapax-state" / "programmes"
 DEFAULT_STATE_FILE = Path.home() / ".cache" / "hapax" / "hapax-omg-pastebin" / "state.json"
+
+
+def _publish_pastebin(client: Any, *, address: str, slug: str, content: str) -> bool:
+    result = OmgLolPastebinPublisher(client=client).publish(
+        PublisherPayload(
+            target=address,
+            text=content,
+            metadata={"title": slug, "listed": True},
+        )
+    )
+    return result.ok
+
 
 try:
     from prometheus_client import Counter
@@ -526,8 +540,7 @@ class PastebinArtifactPublisher:
         redacted = self._safe_render_or_drop(content, slug, self.CATEGORY_CHRONICLE)
         if redacted is None:
             return "legal-name-leak"
-        resp = self.client.set_paste(self.address, content=redacted, title=slug, listed=True)
-        if resp is None:
+        if not _publish_pastebin(self.client, address=self.address, slug=slug, content=redacted):
             log.warning("omg-pastebin: set_paste returned None (%s)", slug)
             _record(self.CATEGORY_CHRONICLE, "failed")
             return "failed"
@@ -605,8 +618,7 @@ class PastebinArtifactPublisher:
         redacted = self._safe_render_or_drop(content, slug, self.CATEGORY_PROGRAMME)
         if redacted is None:
             return "legal-name-leak"
-        resp = self.client.set_paste(self.address, content=redacted, title=slug, listed=True)
-        if resp is None:
+        if not _publish_pastebin(self.client, address=self.address, slug=slug, content=redacted):
             log.warning("omg-pastebin: set_paste returned None (%s)", slug)
             _record(self.CATEGORY_PROGRAMME, "failed")
             return "failed"
@@ -673,8 +685,7 @@ class PastebinArtifactPublisher:
         redacted = self._safe_render_or_drop(content, slug, self.CATEGORY_PRECEDENT)
         if redacted is None:
             return "legal-name-leak"
-        resp = self.client.set_paste(self.address, content=redacted, title=slug, listed=True)
-        if resp is None:
+        if not _publish_pastebin(self.client, address=self.address, slug=slug, content=redacted):
             log.warning("omg-pastebin: set_paste returned None (%s)", slug)
             _record(self.CATEGORY_PRECEDENT, "failed")
             return "failed"
@@ -742,8 +753,7 @@ class PastebinArtifactPublisher:
         redacted = self._safe_render_or_drop(content, slug, self.CATEGORY_RESEARCH)
         if redacted is None:
             return "legal-name-leak"
-        resp = self.client.set_paste(self.address, content=redacted, title=slug, listed=True)
-        if resp is None:
+        if not _publish_pastebin(self.client, address=self.address, slug=slug, content=redacted):
             log.warning("omg-pastebin: set_paste returned None (%s)", slug)
             _record(self.CATEGORY_RESEARCH, "failed")
             return "failed"

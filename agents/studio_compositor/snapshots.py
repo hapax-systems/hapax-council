@@ -17,9 +17,39 @@ from .diagnostic_branch import (
 log = logging.getLogger(__name__)
 
 
+def _bounded_snapshot_fps(
+    env_name: str, *, default: int, min_value: int = 1, max_value: int = 30
+) -> int:
+    """Read an integer snapshot cadence from the environment.
+
+    Snapshot branches are proof and perception surfaces, so malformed or
+    too-low values must not disable them. Clamp instead of failing open.
+    """
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return default
+    try:
+        fps = int(raw)
+    except (TypeError, ValueError):
+        log.warning("%s=%r is invalid; using default %dfps", env_name, raw, default)
+        return default
+    return max(min_value, min(max_value, fps))
+
+
+def _set_drop_only_rate_limit(rate: Any, fps: int) -> None:
+    if rate is None:
+        return
+    try:
+        rate.set_property("drop-only", True)
+        rate.set_property("max-rate", fps)
+    except Exception:  # noqa: BLE001 - GStreamer property availability varies by build.
+        log.debug("videorate drop-only/max-rate properties unavailable", exc_info=True)
+
+
 def add_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
     """Add composited frame snapshot branch: tee -> queue -> jpeg -> appsink."""
     Gst = compositor._Gst
+    fps = _bounded_snapshot_fps("HAPAX_PRE_FX_SNAPSHOT_FPS", default=10)
 
     queue = Gst.ElementFactory.make("queue", "queue-snapshot")
     queue.set_property("leaky", 2)
@@ -30,8 +60,9 @@ def add_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
     scale_caps = Gst.ElementFactory.make("capsfilter", "snapshot-scale-caps")
     scale_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,width=1280,height=720"))
     rate = Gst.ElementFactory.make("videorate", "snapshot-rate")
+    _set_drop_only_rate_limit(rate, fps)
     rate_caps = Gst.ElementFactory.make("capsfilter", "snapshot-rate-caps")
-    rate_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,framerate=10/1"))
+    rate_caps.set_property("caps", Gst.Caps.from_string(f"video/x-raw,framerate={fps}/1"))
     encoder = Gst.ElementFactory.make("jpegenc", "snapshot-jpeg")
     encoder.set_property("quality", 85)
     appsink = Gst.ElementFactory.make("appsink", "snapshot-sink")
@@ -85,6 +116,7 @@ def add_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
     )
     link_chain_or_raise(elements, branch=branch)
     attach_tee_branch_or_raise(Gst, tee, queue, branch=branch)
+    log.info("Pre-FX snapshot branch: snapshot.jpg @ %dfps", fps)
 
 
 def add_llm_frame_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
@@ -110,6 +142,7 @@ def add_llm_frame_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> N
     into the LLM input where appropriate.
     """
     Gst = compositor._Gst
+    fps = _bounded_snapshot_fps("HAPAX_LLM_FRAME_SNAPSHOT_FPS", default=3)
 
     queue = Gst.ElementFactory.make("queue", "queue-llm-frame")
     queue.set_property("leaky", 2)
@@ -120,10 +153,11 @@ def add_llm_frame_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> N
     scale_caps = Gst.ElementFactory.make("capsfilter", "llm-frame-scale-caps")
     scale_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,width=1280,height=720"))
     rate = Gst.ElementFactory.make("videorate", "llm-frame-rate")
+    _set_drop_only_rate_limit(rate, fps)
     rate_caps = Gst.ElementFactory.make("capsfilter", "llm-frame-rate-caps")
     # Director loop ticks at ~3-5s; 3fps cadence is more than enough and
     # cuts the JPEG-encode + atomic-write cost vs. snapshot.jpg's 10fps.
-    rate_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,framerate=3/1"))
+    rate_caps.set_property("caps", Gst.Caps.from_string(f"video/x-raw,framerate={fps}/1"))
     encoder = Gst.ElementFactory.make("jpegenc", "llm-frame-jpeg")
     encoder.set_property("quality", 85)
     appsink = Gst.ElementFactory.make("appsink", "llm-frame-sink")
@@ -177,7 +211,7 @@ def add_llm_frame_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> N
     )
     link_chain_or_raise(elements, branch=branch)
     attach_tee_branch_or_raise(Gst, tee, queue, branch=branch)
-    log.info("LLM-bound frame snapshot branch: pre_fx_tee → frame_for_llm.jpg @ 3fps")
+    log.info("LLM-bound frame snapshot branch: pre_fx_tee → frame_for_llm.jpg @ %dfps", fps)
 
 
 def add_fx_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
@@ -188,6 +222,7 @@ def add_fx_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
     production inspection via /dev/shm/hapax-compositor/fx-snapshot.jpg.
     """
     Gst = compositor._Gst
+    fps = _bounded_snapshot_fps("HAPAX_FX_SNAPSHOT_FPS", default=3)
 
     queue = Gst.ElementFactory.make("queue", "queue-fx-snap")
     queue.set_property("leaky", 2)
@@ -206,14 +241,12 @@ def add_fx_snapshot_branch(compositor: Any, pipeline: Any, tee: Any) -> None:
     # snapshot inspected through logos-api/studio tooling, so rate-limit to
     # 3fps and avoid the retired Tauri TCP frame relay entirely.
     rate = Gst.ElementFactory.make("videorate", "fx-snap-rate")
-    if rate is not None:
-        rate.set_property("drop-only", True)
-        rate.set_property("max-rate", 3)
+    _set_drop_only_rate_limit(rate, fps)
     rate_caps = Gst.ElementFactory.make("capsfilter", "fx-snap-rate-caps")
-    rate_caps.set_property("caps", Gst.Caps.from_string("video/x-raw,framerate=3/1"))
+    rate_caps.set_property("caps", Gst.Caps.from_string(f"video/x-raw,framerate={fps}/1"))
     jpeg = Gst.ElementFactory.make("jpegenc", "fx-snap-jpeg")
     jpeg.set_property("quality", 85)
-    log.info("FX snapshot: CPU jpegenc at 1280x720, rate-limited to 3fps")
+    log.info("FX snapshot: CPU jpegenc at 1280x720, rate-limited to %dfps", fps)
 
     appsink = Gst.ElementFactory.make("appsink", "fx-snapshot-sink")
     appsink.set_property("sync", False)

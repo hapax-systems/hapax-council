@@ -629,7 +629,7 @@ class TestCompilerExecutionPlan:
         )
         plan = compiler.compile(g)
         c_step = next(s for s in plan.steps if s.node_id == "c")
-        assert c_step.params["saturation"] == 0.3
+        assert c_step.params["saturation"] == 0.35
 
     def test_input_output_edges(self, compiler: GraphCompiler):
         g = EffectGraph(
@@ -1029,7 +1029,8 @@ class TestPresetCompilation:
 class TestPresetRuntime:
     """Presets load correctly into the runtime."""
 
-    def test_all_presets_load(self, runtime: GraphRuntime):
+    def test_all_presets_load(self, runtime: GraphRuntime, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("HAPAX_LIVE_SURFACE_EFFECT_POLICY", "0")
         for p in sorted(p for p in PRESETS_DIR.glob("*.json") if _is_graph_preset(p)):
             raw = json.loads(p.read_text())
             g = EffectGraph(**raw)
@@ -1037,8 +1038,11 @@ class TestPresetRuntime:
             assert runtime.current_graph.name == g.name, f"{p.stem} name mismatch"
             assert runtime.current_plan is not None, f"{p.stem} has no plan"
 
-    def test_preset_modulations_applied(self, runtime: GraphRuntime):
+    def test_preset_modulations_applied(
+        self, runtime: GraphRuntime, monkeypatch: pytest.MonkeyPatch
+    ):
         """Presets with modulations should have them loaded into the modulator."""
+        monkeypatch.setenv("HAPAX_LIVE_SURFACE_EFFECT_POLICY", "0")
         for p in sorted(p for p in PRESETS_DIR.glob("*.json") if _is_graph_preset(p)):
             raw = json.loads(p.read_text())
             g = EffectGraph(**raw)
@@ -1104,8 +1108,11 @@ class TestEndToEnd:
         # value = 0.8 * 0.5 + 0.5 = 0.9
         assert updates[("c", "saturation")] == pytest.approx(0.9)
 
-    def test_preset_roundtrip(self, runtime: GraphRuntime, compiler: GraphCompiler):
+    def test_preset_roundtrip(
+        self, runtime: GraphRuntime, compiler: GraphCompiler, monkeypatch: pytest.MonkeyPatch
+    ):
         """Load preset, export, reimport, compare."""
+        monkeypatch.setenv("HAPAX_LIVE_SURFACE_EFFECT_POLICY", "0")
         raw = json.loads((PRESETS_DIR / "ghost.json").read_text())
         g = EffectGraph(**raw)
         runtime.load_graph(g)

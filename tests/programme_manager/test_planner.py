@@ -100,7 +100,11 @@ def _well_formed_plan_payload(
                 "demonstration_object": "demonstration source object",
                 "worked_example": "worked source example",
             },
-            "segment_beats": ["hook: open topic", "body: show source", "close: land"],
+            "segment_beats": [
+                "open with the source-backed test topic and cite vault:test-source.md consequence",
+                "compare the source-backed segment object against media:test-source evidence",
+                "resolve the source-backed consequence and ask What's your pick?",
+            ],
             "beat_layout_intents": [
                 {
                     "beat_id": "hook",
@@ -360,6 +364,42 @@ class TestRetryPath:
         assert "programme_narrative_beat_template_leak" in captured_prompts[1]
         assert "tier_criteria" in captured_prompts[1]
 
+    def test_lecture_source_readiness_failure_triggers_specific_retry_guidance(self) -> None:
+        bad = _well_formed_plan_payload(role=ProgrammeRole.LECTURE)
+        role_contract = bad["programmes"][0]["content"]["role_contract"]
+        role_contract.pop("demonstration_object")
+        role_contract.pop("worked_example")
+        bad["programmes"][0]["content"]["narrative_beat"] = (
+            "lecture segment on '{topic}'. Outline from operator vault notes; "
+            "cite sources inline; motivation -> framing -> main points -> synthesis -> questions"
+        )
+        bad["programmes"][0]["content"]["segment_beats"] = [
+            "hook: Introduce the topic and why it matters.",
+            "main point: Explain the concept in general terms.",
+            "close: Summarize and invite questions.",
+        ]
+        good = _well_formed_plan_payload(role=ProgrammeRole.LECTURE)
+        captured_prompts: list[str] = []
+
+        def capture_llm(prompt: str) -> str:
+            captured_prompts.append(prompt)
+            if len(captured_prompts) == 1:
+                return json.dumps(bad)
+            return json.dumps(good)
+
+        planner = ProgrammePlanner(llm_fn=capture_llm)
+        plan = planner.plan(show_id="show-test-001", target_programmes=1)
+
+        assert plan is not None
+        assert len(captured_prompts) == 2
+        assert "segment source readiness failed" in captured_prompts[1]
+        assert "demonstration_object" in captured_prompts[1]
+        assert "worked_example" in captured_prompts[1]
+        assert "lecture_requires_demonstration_object" in captured_prompts[1]
+        assert "programme_narrative_beat_template_leak" in captured_prompts[1]
+        assert "never copy `narrative_beat_template`" in captured_prompts[1]
+        assert "generic stage beats" in captured_prompts[1]
+
     def test_segment_source_readiness_failure_returns_none_without_retry(self) -> None:
         bad = _well_formed_plan_payload(role=ProgrammeRole.TIER_LIST)
         bad["programmes"][0]["content"]["role_contract"].pop("tier_criteria")
@@ -378,6 +418,73 @@ class TestRetryPath:
 
         assert plan is None
 
+    def test_parser_moves_misnested_role_contract_into_content(self) -> None:
+        payload = _well_formed_plan_payload(role=ProgrammeRole.TIER_LIST)
+        programme = payload["programmes"][0]
+        role_contract = programme["content"].pop("role_contract")
+        programme["role_contract"] = role_contract
+
+        planner = ProgrammePlanner(llm_fn=_stub_llm(payload), max_retries=0)
+        plan = planner.plan(show_id="show-test-001", target_programmes=1)
+
+        assert plan is not None
+        assert plan.programmes[0].content.role_contract["tier_criteria"] == (
+            "source-backed ranking criterion"
+        )
+
+    def test_parser_mirrors_content_level_role_contract_fields(self) -> None:
+        payload = _well_formed_plan_payload(role=ProgrammeRole.TIER_LIST)
+        content = payload["programmes"][0]["content"]
+        role_contract = content.pop("role_contract")
+        content.update(role_contract)
+
+        planner = ProgrammePlanner(llm_fn=_stub_llm(payload), max_retries=0)
+        plan = planner.plan(show_id="show-test-001", target_programmes=1)
+
+        assert plan is not None
+        assert plan.programmes[0].content.role_contract["source_packet_refs"] == [
+            "vault:test-source.md"
+        ]
+        assert plan.programmes[0].content.role_contract["tier_criteria"] == (
+            "source-backed ranking criterion"
+        )
+
+    def test_parser_mirrors_content_evidence_refs_into_layout_intents(self) -> None:
+        payload = _well_formed_plan_payload(role=ProgrammeRole.TIER_LIST)
+        intent = payload["programmes"][0]["content"]["beat_layout_intents"][0]
+        intent.pop("evidence_refs")
+
+        planner = ProgrammePlanner(llm_fn=_stub_llm(payload), max_retries=0)
+        plan = planner.plan(show_id="show-test-001", target_programmes=1)
+
+        assert plan is not None
+        evidence_refs = plan.programmes[0].content.beat_layout_intents[0]["evidence_refs"]
+        assert evidence_refs[0] == "vault:test-source.md"
+        assert "media:test-source" in evidence_refs
+
+    def test_parser_repairs_generic_stage_beats_from_role_contract(self) -> None:
+        payload = _well_formed_plan_payload(role=ProgrammeRole.LECTURE)
+        payload["programmes"][0]["content"]["segment_beats"] = [
+            "Motivate: Why does mechanical governance matter for public launches?",
+            "Frame: Define the key concepts: source receipts, live checks, soak gates",
+            "Main point 1: Source receipts: what they are and why they're essential",
+            "Synthesize: How these concepts work together",
+            "questions: Invite chat questions.",
+        ]
+
+        planner = ProgrammePlanner(llm_fn=_stub_llm(payload), max_retries=0)
+        plan = planner.plan(show_id="show-test-001", target_programmes=1)
+
+        assert plan is not None
+        beats = plan.programmes[0].content.segment_beats
+        assert all("vault:test-source.md" in beat for beat in beats)
+        assert all(
+            not beat.lower().startswith(
+                ("motivate:", "frame:", "main point", "synthesize:", "questions:")
+            )
+            for beat in beats
+        )
+
     def test_segment_source_readiness_accepts_structured_tier_criteria_field(self) -> None:
         payload = _well_formed_plan_payload(role=ProgrammeRole.TIER_LIST)
         payload["programmes"][0]["content"]["role_contract"]["tier_criteria"] = (
@@ -390,6 +497,22 @@ class TestRetryPath:
         assert readiness["ok"] is True
         assert "tier_list_requires_ordering_criteria" not in {
             item["reason"] for item in readiness["violations"]
+        }
+
+    def test_segment_source_readiness_rejects_generic_stage_beats(self) -> None:
+        payload = _well_formed_plan_payload(role=ProgrammeRole.LECTURE)
+        payload["programmes"][0]["content"]["segment_beats"] = [
+            "Motivate: Why does mechanical governance matter for public launches?",
+            "Frame: Define the key concepts: source receipts, live checks, soak gates",
+            "Main point 1: Source receipts: what they are and why they're essential",
+        ]
+        plan = ProgrammePlan.model_validate(payload)
+
+        readiness = programme_source_readiness(plan.programmes[0])
+
+        assert readiness["ok"] is False
+        assert {item["reason"] for item in readiness["violations"]} >= {
+            "segment_beats_are_generic_stage_directions"
         }
 
     @pytest.mark.parametrize(

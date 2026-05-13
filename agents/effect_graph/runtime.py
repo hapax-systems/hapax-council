@@ -39,6 +39,24 @@ class GraphRuntime:
         return self._modulator
 
     def load_graph(self, graph: EffectGraph) -> None:
+        try:
+            from agents.studio_compositor.preset_policy import (
+                PresetPolicyError,
+                evaluate_preset_graph_policy,
+                evaluate_preset_policy,
+            )
+
+            policy = evaluate_preset_policy(graph.name)
+            if not policy.allowed:
+                raise PresetPolicyError(policy)
+            graph_policy = evaluate_preset_graph_policy(graph, registry=self._registry)
+            if not graph_policy.allowed:
+                raise PresetPolicyError(graph_policy)
+        except PresetPolicyError:
+            raise
+        except ImportError:
+            log.debug("preset policy module unavailable for graph %s", graph.name, exc_info=True)
+
         old = self._current_plan
         plan = self._compiler.compile(graph)
         self._current_graph = copy.deepcopy(graph)

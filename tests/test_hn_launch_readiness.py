@@ -84,6 +84,35 @@ def test_hn_launch_readiness_passes_when_all_truth_surfaces_are_green(tmp_path: 
     assert [check.status.value for check in report.checks] == ["pass"] * 10
 
 
+def test_hn_launch_readiness_warnings_do_not_block_ready(tmp_path: Path) -> None:
+    config = _ready_fixture(tmp_path)
+
+    def degraded_logos_getter(url: str, *, timeout: float = 5.0) -> dict[str, Any]:
+        if url.endswith("/api/health"):
+            return {"overall_status": "failed", "failed_checks": ["connectivity.phone"]}
+        return _json_getter_ready(url, timeout=timeout)
+
+    report = collect_hn_launch_readiness(
+        config,
+        runner=FakeRunner(active_units=_all_active_units()),
+        json_getter=degraded_logos_getter,
+        text_getter=_text_getter_ready,
+        now_epoch=NOW,
+    )
+
+    checks = {check.id: check for check in report.checks}
+    assert report.status.value == "warn"
+    assert report.ready is True
+    assert checks["logos_api"].status.value == "warn"
+    assert checks["logos_api"].evidence["api_failed_checks"] == ["connectivity.phone"]
+    assert (
+        checks["logos_api"].evidence["warning_classification"] == "non_blocking_hn_launch_warning"
+    )
+    assert "connectivity.phone" in checks["logos_api"].summary
+    assert report.to_dict()["failures"] == []
+    assert report.to_dict()["warnings"] == ["logos_api"]
+
+
 def test_hn_launch_readiness_flags_private_voice_obs_youtube_and_failed_units(
     tmp_path: Path,
 ) -> None:
@@ -126,6 +155,26 @@ def test_hn_launch_readiness_flags_private_voice_obs_youtube_and_failed_units(
     assert "exact_private_monitor_target_absent" in json.dumps(
         checks["daimonion_voice_segments"].to_dict()
     )
+
+
+def test_compositor_visual_surface_ignores_consumed_layout_mode_mailbox(tmp_path: Path) -> None:
+    config = _ready_fixture(tmp_path)
+    (config.compositor_root / "current-layout-state.json").unlink()
+    _write_text(config.compositor_root / "layout-mode.txt", "sierpinski\n", NOW)
+
+    report = collect_hn_launch_readiness(
+        config,
+        runner=FakeRunner(active_units=_all_active_units()),
+        json_getter=_json_getter_ready,
+        text_getter=_text_getter_ready,
+        now_epoch=NOW,
+    )
+
+    checks = {check.id: check for check in report.checks}
+    compositor = checks["compositor_visual_surface"]
+    assert compositor.status.value == "fail"
+    assert "layout mode is not sierpinski" in compositor.summary
+    assert "current_layout_state" in compositor.evidence["files"]
 
 
 def test_hn_launch_soak_fails_if_any_sample_fails(tmp_path: Path) -> None:
@@ -185,7 +234,16 @@ def _ready_fixture(tmp_path: Path) -> ReadinessConfig:
         NOW,
     )
     _write_json(config.compositor_root / "ward-properties.json", {"wards": {}}, NOW)
-    _write_text(config.compositor_root / "layout-mode.txt", "sierpinski\n", NOW)
+    _write_json(
+        config.compositor_root / "current-layout-state.json",
+        {
+            "layout_name": "default",
+            "layout_mode": "sierpinski",
+            "active_ward_ids": ["programme_banner", "reverie"],
+            "published_t": NOW,
+        },
+        NOW,
+    )
     _write_json(
         config.compositor_root / "active-segment.json",
         {

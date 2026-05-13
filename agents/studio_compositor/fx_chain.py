@@ -34,12 +34,21 @@ NONDESTRUCTIVE_ALPHA_CEILING: float = 0.6
 DEFAULT_BLIT_READBACK_TTL_S: float = 2.0
 DEFAULT_FX_SLOT_COUNT: int = 12
 MAX_FX_SLOT_COUNT: int = 24
+DEFAULT_SCALE_CACHE_MAX_BYTES: int = 64 * 1024 * 1024
+DEFAULT_SCALE_CACHE_MAX_ENTRIES: int = 128
 _BLIT_READBACK_LOCK = threading.Lock()
 _BLIT_READBACKS: dict[str, dict[str, object]] = {}
 _SCALE_CACHE_LOCK = threading.Lock()
 _SCALE_CACHE: dict[tuple[object, ...], cairo.ImageSurface] = {}
+_SCALE_CACHE_BYTES: int = 0
 _LAYOUT_COMPOSITE_CACHE_LOCK = threading.Lock()
 _LAYOUT_COMPOSITE_CACHE: dict[str, dict[str, object]] = {}
+RENDERED_LAYOUT_STATE_PUBLISH_INTERVAL_S: float = 1.0
+RENDERED_LAYOUT_STAGE_TTL_S: float = 2.0
+_RENDERED_LAYOUT_STATE_LOCK = threading.Lock()
+_RENDERED_LAYOUT_STAGE_WARDS: dict[str, tuple[float, tuple[str, ...]]] = {}
+_RENDERED_LAYOUT_STATE_LAST_PUBLISH_MONO: float = 0.0
+_RENDERED_LAYOUT_STATE_LAST_SIGNATURE: tuple[str | None, tuple[str, ...]] | None = None
 
 
 def clear_blit_readbacks() -> None:
@@ -50,8 +59,11 @@ def clear_blit_readbacks() -> None:
 
 def clear_scaled_blit_cache() -> None:
     """Clear scaled ward surface cache. Used by tests and incident rollback."""
+    global _SCALE_CACHE_BYTES
     with _SCALE_CACHE_LOCK:
         _SCALE_CACHE.clear()
+        _SCALE_CACHE_BYTES = 0
+    _publish_scale_cache_state()
 
 
 def clear_layout_composite_cache() -> None:
@@ -84,6 +96,86 @@ def _fx_slot_count_from_env() -> int:
             MAX_FX_SLOT_COUNT,
         )
     return clamped
+
+
+def _int_from_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning("Invalid %s=%r; using %d", name, raw, default)
+        return default
+    return max(0, value)
+
+
+def _scale_cache_max_bytes() -> int:
+    return _int_from_env("HAPAX_SCALE_CACHE_MAX_BYTES", DEFAULT_SCALE_CACHE_MAX_BYTES)
+
+
+def _scale_cache_max_entries() -> int:
+    return _int_from_env("HAPAX_SCALE_CACHE_MAX_ENTRIES", DEFAULT_SCALE_CACHE_MAX_ENTRIES)
+
+
+def _surface_bytes(surface: cairo.ImageSurface) -> int:
+    try:
+        return int(surface.get_stride()) * max(0, int(surface.get_height()))
+    except Exception:
+        return max(0, int(surface.get_width())) * max(0, int(surface.get_height())) * 4
+
+
+def _publish_scale_cache_state() -> None:
+    try:
+        from . import metrics as _metrics
+
+        _metrics.set_scaled_blit_cache_state(
+            entries=len(_SCALE_CACHE),
+            bytes_used=_SCALE_CACHE_BYTES,
+        )
+    except Exception:
+        log.debug("scaled blit cache metric publish failed", exc_info=True)
+
+
+def _record_scale_cache_eviction(reason: str, count: int = 1) -> None:
+    if count <= 0:
+        return
+    try:
+        from . import metrics as _metrics
+
+        _metrics.record_scaled_blit_cache_eviction(reason=reason, count=count)
+    except Exception:
+        log.debug("scaled blit cache eviction metric failed", exc_info=True)
+
+
+def _cache_scaled_surface(key: tuple[object, ...], scaled: cairo.ImageSurface) -> None:
+    global _SCALE_CACHE_BYTES
+
+    surface_bytes = _surface_bytes(scaled)
+    max_bytes = _scale_cache_max_bytes()
+    max_entries = _scale_cache_max_entries()
+    if max_bytes <= 0 or max_entries <= 0 or surface_bytes > max_bytes:
+        _record_scale_cache_eviction("too_large", 1)
+        with _SCALE_CACHE_LOCK:
+            _publish_scale_cache_state()
+        return
+
+    evicted = 0
+    with _SCALE_CACHE_LOCK:
+        old = _SCALE_CACHE.pop(key, None)
+        if old is not None:
+            _SCALE_CACHE_BYTES -= _surface_bytes(old)
+        _SCALE_CACHE[key] = scaled
+        _SCALE_CACHE_BYTES += surface_bytes
+        while _SCALE_CACHE and (len(_SCALE_CACHE) > max_entries or max_bytes < _SCALE_CACHE_BYTES):
+            victim_key = next(iter(_SCALE_CACHE))
+            victim = _SCALE_CACHE.pop(victim_key)
+            _SCALE_CACHE_BYTES -= _surface_bytes(victim)
+            evicted += 1
+        if _SCALE_CACHE_BYTES < 0:
+            _SCALE_CACHE_BYTES = 0
+        _publish_scale_cache_state()
+    _record_scale_cache_eviction("capacity", evicted)
 
 
 def _shader_fx_disabled() -> bool:
@@ -349,10 +441,7 @@ def _scaled_surface_for_blit(
             log.debug("scaled blit cache filter selection failed", exc_info=True)
     s_cr.paint()
     scaled.flush()
-    with _SCALE_CACHE_LOCK:
-        if len(_SCALE_CACHE) > 256:
-            _SCALE_CACHE.clear()
-        _SCALE_CACHE[key] = scaled
+    _cache_scaled_surface(key, scaled)
     return scaled
 
 
@@ -452,6 +541,11 @@ def pip_draw_from_layout(
             continue
         pairs.append((assignment, surface_schema, src, id(src)))
     pairs.sort(key=lambda p: p[1].z_order)
+    _publish_rendered_layout_state(
+        layout_name=getattr(layout, "name", None),
+        active_ward_ids=[assignment.source for assignment, *_rest in pairs],
+        stage=stage,
+    )
 
     target_size = _target_size_from_context(cr)
     if (
@@ -479,6 +573,58 @@ def pip_draw_from_layout(
         return
 
     _draw_layout_pairs(cr, pairs, stage=stage)
+
+
+def _publish_rendered_layout_state(
+    *,
+    layout_name: object,
+    active_ward_ids: list[str],
+    stage: Literal["pre_fx", "post_fx"] | None,
+) -> None:
+    global _RENDERED_LAYOUT_STATE_LAST_PUBLISH_MONO, _RENDERED_LAYOUT_STATE_LAST_SIGNATURE
+
+    now_mono = time.monotonic()
+    stage_key = stage or "all"
+    ward_ids = tuple(sorted(set(active_ward_ids)))
+    layout_name_text = layout_name if isinstance(layout_name, str) else None
+    with _RENDERED_LAYOUT_STATE_LOCK:
+        _RENDERED_LAYOUT_STAGE_WARDS[stage_key] = (now_mono, ward_ids)
+        active_union = tuple(
+            sorted(
+                {
+                    ward
+                    for observed_mono, observed_wards in _RENDERED_LAYOUT_STAGE_WARDS.values()
+                    if now_mono - observed_mono <= RENDERED_LAYOUT_STAGE_TTL_S
+                    for ward in observed_wards
+                }
+            )
+        )
+        signature = (layout_name_text, active_union)
+        if (
+            signature == _RENDERED_LAYOUT_STATE_LAST_SIGNATURE
+            and now_mono - _RENDERED_LAYOUT_STATE_LAST_PUBLISH_MONO
+            < RENDERED_LAYOUT_STATE_PUBLISH_INTERVAL_S
+        ):
+            return
+        _RENDERED_LAYOUT_STATE_LAST_SIGNATURE = signature
+        _RENDERED_LAYOUT_STATE_LAST_PUBLISH_MONO = now_mono
+
+    try:
+        from agents.studio_compositor import active_wards
+
+        published_active_union = active_union
+        if not published_active_union:
+            fallback_ids = active_wards.visible_ward_property_ids()
+            if fallback_ids:
+                published_active_union = tuple(fallback_ids)
+
+        active_wards.publish(published_active_union)
+        active_wards.publish_current_layout_state(
+            layout_name=layout_name_text,
+            active_ward_ids=published_active_union,
+        )
+    except Exception:
+        log.debug("rendered layout state publish failed", exc_info=True)
 
 
 def _draw_layout_pairs(
@@ -939,6 +1085,22 @@ class FlashScheduler:
 
 def _ensure_base_cairo_sources(compositor: Any) -> None:
     """Create renderer state expected by the base cairooverlay draw path."""
+    from .overlay import sierpinski_base_overlay_enabled
+
+    if not sierpinski_base_overlay_enabled():
+        for attr in ("_sierpinski_loader", "_sierpinski_renderer"):
+            source = getattr(compositor, attr, None)
+            if source is not None and hasattr(source, "stop"):
+                try:
+                    source.stop()
+                except Exception:
+                    log.debug("Failed to stop %s after Sierpinski base overlay disable", attr)
+            setattr(compositor, attr, None)
+        compositor._geal_source = None
+        _publish_fx_runtime_feature("sierpinski_base_overlay", False)
+        log.info("Sierpinski/GEAL base overlay disabled by HAPAX_SIERPINSKI_BASE_OVERLAY_ENABLED")
+        return
+
     if getattr(compositor, "_sierpinski_loader", None) is None:
         from .sierpinski_loader import SierpinskiLoader
 
@@ -957,6 +1119,7 @@ def _ensure_base_cairo_sources(compositor: Any) -> None:
         compositor._geal_source = GealCairoSource(
             _sierpinski_geom_provider=compositor._sierpinski_renderer._source,
         )
+    _publish_fx_runtime_feature("sierpinski_base_overlay", True)
 
 
 def _build_overlay_only_chain(

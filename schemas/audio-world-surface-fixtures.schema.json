@@ -84,7 +84,7 @@
     "audio.programme_audio",
     "audio.stt_captions",
     "audio.l12_capture",
-    "audio.yeti_monitor",
+    "audio.s4_private_monitor",
     "audio.broadcast_egress",
     "audio.broadcast_health",
     "audio.no_private_leak"
@@ -197,7 +197,7 @@
             "programme_audio",
             "caption_source",
             "l12_capture",
-            "yeti_monitor",
+            "s4_private_monitor",
             "broadcast_egress",
             "broadcast_health",
             "no_private_leak"
@@ -240,7 +240,7 @@
             "programme_audio",
             "caption_source",
             "l12_capture",
-            "yeti_monitor",
+            "s4_private_monitor",
             "broadcast_egress",
             "broadcast_health",
             "no_private_leak"

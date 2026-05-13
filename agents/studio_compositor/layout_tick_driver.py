@@ -1023,7 +1023,7 @@ def _maybe_apply_responsible_segment_layout(
             state=decision_state,
             now=now,
         )
-        return replace(
+        refused_receipt = replace(
             receipt,
             refusal_metadata={
                 **dict(receipt.refusal_metadata),
@@ -1034,6 +1034,11 @@ def _maybe_apply_responsible_segment_layout(
                 ),
             },
         )
+        return _restore_default_surface_if_current_layout_is_fragment(
+            receipt=refused_receipt,
+            layout_state=layout_state,
+            loader=loader,
+        )
     receipt = LayoutResponsibilityController(
         available_layouts=_available_layout_names(loader),
     ).decide(
@@ -1042,6 +1047,14 @@ def _maybe_apply_responsible_segment_layout(
         state=decision_state,
         now=now,
     )
+
+    fragment_block_receipt, selected_layout = _segment_fragment_block_receipt(
+        receipt=receipt,
+        layout_state=layout_state,
+        loader=loader,
+    )
+    if fragment_block_receipt is not None:
+        return fragment_block_receipt
 
     if receipt.status is LayoutDecisionStatus.ACCEPTED:
         responsible_state.update(
@@ -1070,7 +1083,7 @@ def _maybe_apply_responsible_segment_layout(
     previous_rendered_layout = _active_rendered_layout(layout_state)
     before_hash = _layout_state_hash(previous_rendered_layout)
     try:
-        new_layout = loader.load(receipt.selected_layout)
+        new_layout = selected_layout or loader.load(receipt.selected_layout)
         layout_state.mutate(lambda _previous: new_layout)
     except KeyError:
         return replace(
@@ -1108,6 +1121,142 @@ def _maybe_apply_responsible_segment_layout(
             "accepted_requires_future_readback": True,
             "layout_state_before_hash": before_hash,
             "layout_state_after_hash": after_hash,
+        },
+    )
+
+
+def _segment_fragment_block_receipt(
+    *,
+    receipt: Any,
+    layout_state: Any,
+    loader: Any,
+) -> tuple[Any | None, Any | None]:
+    selected_layout_name = getattr(receipt, "selected_layout", None)
+    if not isinstance(selected_layout_name, str) or not selected_layout_name:
+        return None, None
+    try:
+        layout = loader.load(selected_layout_name)
+    except KeyError:
+        return None, None
+
+    from agents.studio_compositor.layout_fragment_guard import (
+        compose_segment_fragment_over_layout,
+        segment_fragment_layout_error,
+    )
+    from agents.studio_compositor.segment_layout_control import (
+        LayoutDecisionReason,
+        LayoutDecisionStatus,
+    )
+
+    composed_layout = compose_segment_fragment_over_layout(
+        layout_name=selected_layout_name,
+        fragment_layout=layout,
+        base_layout=_active_rendered_layout(layout_state),
+    )
+    if composed_layout is not None:
+        return None, composed_layout
+
+    fragment_error = segment_fragment_layout_error(
+        layout_name=selected_layout_name,
+        layout=layout,
+    )
+    if fragment_error is None:
+        return None, layout
+
+    blocked = replace(
+        receipt,
+        status=LayoutDecisionStatus.HELD,
+        reason=LayoutDecisionReason.UNSUPPORTED_LAYOUT,
+        applied_layout_changes=(),
+        unsatisfied_effects=tuple(
+            dict.fromkeys(
+                (
+                    *getattr(receipt, "unsatisfied_effects", ()),
+                    f"layout:{selected_layout_name}:whole_surface_required",
+                )
+            )
+        ),
+        refusal_metadata={
+            **dict(getattr(receipt, "refusal_metadata", {}) or {}),
+            **fragment_error,
+            "message": (
+                "selected segment layout is a fragment panel and cannot replace "
+                "the whole livestream surface"
+            ),
+        },
+    )
+    return (
+        _restore_default_surface_if_current_layout_is_fragment(
+            receipt=blocked,
+            layout_state=layout_state,
+            loader=loader,
+        ),
+        None,
+    )
+
+
+def _restore_default_surface_if_current_layout_is_fragment(
+    *,
+    receipt: Any,
+    layout_state: Any,
+    loader: Any,
+) -> Any:
+    current_layout = _active_rendered_layout(layout_state)
+    current_name = getattr(current_layout, "name", None)
+    if not isinstance(current_name, str):
+        return receipt
+
+    from agents.studio_compositor.layout_fragment_guard import segment_fragment_layout_error
+
+    current_fragment_error = segment_fragment_layout_error(
+        layout_name=current_name,
+        layout=current_layout,
+    )
+    if current_fragment_error is None:
+        return receipt
+
+    try:
+        default_layout = loader.load("default")
+    except KeyError:
+        return replace(
+            receipt,
+            refusal_metadata={
+                **dict(getattr(receipt, "refusal_metadata", {}) or {}),
+                "fragment_restore_failed": "default_layout_missing",
+                "current_layout": current_name,
+            },
+        )
+
+    before_hash = _layout_state_hash(current_layout)
+    try:
+        layout_state.mutate(lambda _previous: default_layout)
+    except Exception as exc:
+        return replace(
+            receipt,
+            refusal_metadata={
+                **dict(getattr(receipt, "refusal_metadata", {}) or {}),
+                "fragment_restore_failed": type(exc).__name__,
+                "current_layout": current_name,
+            },
+        )
+
+    applied_layout_changes = tuple(
+        dict.fromkeys((*getattr(receipt, "applied_layout_changes", ()), "default"))
+    )
+    return replace(
+        receipt,
+        applied_layout_changes=applied_layout_changes,
+        receipt_metadata={
+            **dict(getattr(receipt, "receipt_metadata", {}) or {}),
+            "runtime_mutation": "restored_full_surface_from_segment_fragment",
+            "restored_from_layout": current_name,
+            "restored_to_layout": "default",
+            "layout_state_before_hash": before_hash,
+            "layout_state_after_hash": _layout_state_hash(_active_rendered_layout(layout_state)),
+        },
+        refusal_metadata={
+            **dict(getattr(receipt, "refusal_metadata", {}) or {}),
+            "current_fragment_layout": current_fragment_error,
         },
     )
 

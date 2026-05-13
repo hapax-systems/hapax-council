@@ -73,6 +73,61 @@ def test_grounded_visible_reveal_passes_good_band() -> None:
     assert report["band"] in {"good", "excellent"}
 
 
+def test_lecture_source_citation_counts_as_concrete_temporal_action() -> None:
+    script = [
+        "According to the source receipt, now compare the opening claim against the visible "
+        "evidence because the receipt changes confidence.",
+        "Then compare the narrowed claim with the prior claim, according to the source "
+        "receipt, so the source consequence remains inspectable.",
+        "Therefore the final decision returns to the opening claim, and chat can inspect "
+        "whether the source-backed comparison still carries the public object.",
+    ]
+    beats = ["source opening", "comparison body", "payoff close"]
+    actionability = prep.validate_segment_actionability(script, beats)
+    layout = prep.validate_layout_responsibility(actionability["beat_action_intents"])
+    seed_contract = prep.build_segment_prep_contract(
+        programme_id="lecture-live-event-test",
+        role="lecture",
+        topic="Lecture live event",
+        segment_beats=beats,
+        script=script,
+        actionability=actionability,
+        layout_responsibility=layout,
+        source_refs=["source:lecture-live-event-test:receipt"],
+    )
+    actionability = prep.validate_segment_actionability(
+        script,
+        beats,
+        prep_contract=seed_contract,
+    )
+    layout = prep.validate_layout_responsibility(actionability["beat_action_intents"])
+    model_contract = dict(seed_contract)
+    model_contract.pop("contract_generation", None)
+    contract = prep.build_segment_prep_contract(
+        programme_id="lecture-live-event-test",
+        role="lecture",
+        topic="Lecture live event",
+        segment_beats=beats,
+        script=script,
+        actionability=actionability,
+        layout_responsibility=layout,
+        source_refs=["source:lecture-live-event-test:receipt"],
+        model_contract=model_contract,
+    )
+
+    report = evaluate_segment_live_event_quality(
+        script,
+        beats,
+        actionability["beat_action_intents"],
+        layout["beat_layout_intents"],
+        role="lecture",
+        segment_prep_contract=contract,
+    )
+
+    assert report["ok"] is True
+    assert report["observed"]["concrete_action_count"] >= 2
+
+
 def test_pairwise_prefers_grounded_live_event_over_generic() -> None:
     generic = _report(
         [

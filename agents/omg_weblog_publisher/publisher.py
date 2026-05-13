@@ -198,9 +198,22 @@ class WeblogPublisher:
             _record("client-disabled")
             return "client-disabled"
 
-        resp = self.client.set_entry(self.address, draft.slug, content=content)
-        if resp is None:
-            log.warning("omg-weblog: set_entry returned None")
+        result = _publish_weblog_entry_through_bus(
+            client=self.client,
+            address=self.address,
+            slug=draft.slug,
+            content=content,
+        )
+        if result.refused:
+            log.warning(
+                "omg-weblog: publication bus refused draft %s: %s", draft.slug, result.detail
+            )
+            _record("allowlist-denied")
+            return "allowlist-denied"
+        if result.error:
+            log.warning(
+                "omg-weblog: publication bus failed draft %s: %s", draft.slug, result.detail
+            )
             _record("failed")
             return "failed"
 
@@ -284,16 +297,27 @@ def publish_artifact(  # type: ignore[no-untyped-def]
         _record("denied")
         return "denied"
 
-    try:
-        resp = client.set_entry(address, artifact.slug, content=guarded)
-    except Exception:  # noqa: BLE001
-        log.exception("omg-weblog[%s]: set_entry raised for artifact %s", address, artifact.slug)
-        _record("error")
-        return "error"
-
-    if resp is None:
+    result = _publish_weblog_entry_through_bus(
+        client=client,
+        address=address,
+        slug=artifact.slug,
+        content=guarded,
+    )
+    if result.refused:
         log.warning(
-            "omg-weblog[%s]: set_entry returned None for artifact %s", address, artifact.slug
+            "omg-weblog[%s]: publication bus refused artifact %s: %s",
+            address,
+            artifact.slug,
+            result.detail,
+        )
+        _record("denied")
+        return "denied"
+    if result.error:
+        log.warning(
+            "omg-weblog[%s]: publication bus failed artifact %s: %s",
+            address,
+            artifact.slug,
+            result.detail,
         )
         _record("error")
         return "error"
@@ -426,6 +450,25 @@ def _abstract_duplicates_body(abstract: str, body_md: str) -> bool:
 
 def _normalize_for_duplicate_check(text: str) -> str:
     return " ".join(text.split()).strip()
+
+
+def _publish_weblog_entry_through_bus(
+    *,
+    client: Any,
+    address: str,
+    slug: str,
+    content: str,
+):
+    from agents.publication_bus.omg_weblog_publisher import OmgLolWeblogPublisher
+    from agents.publication_bus.publisher_kit import PublisherPayload
+    from agents.publication_bus.publisher_kit.allowlist import load_allowlist
+
+    OmgLolWeblogPublisher.allowlist = load_allowlist(
+        OmgLolWeblogPublisher.surface_name,
+        [slug],
+    )
+    publisher = OmgLolWeblogPublisher(client=client, address=address)
+    return publisher.publish(PublisherPayload(target=slug, text=content))
 
 
 def main(argv: list[str] | None = None) -> int:

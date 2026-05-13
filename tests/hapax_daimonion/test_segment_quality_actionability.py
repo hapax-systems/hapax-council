@@ -166,6 +166,9 @@ def test_full_segment_prompt_rejects_spoken_only_responsible_beats() -> None:
     assert "Every beat, including hook, criteria, recap, breathe, and close beats" in prompt
     assert "According to [source]" in prompt
     assert "Place [item] in [S/A/B/C/D]-tier" in prompt
+    assert "Do not write 'Place this'" in prompt
+    assert "Output ONLY the JSON object" in prompt
+    assert "Output ONLY the JSON array" not in prompt
 
 
 def test_actionability_declares_expected_visible_or_doable_effects() -> None:
@@ -456,6 +459,18 @@ def test_tier_action_contract_is_object_bound_without_layout_authority() -> None
         "item_ref": "tier_item:FORTRAN:S",
     }
     assert forbidden_layout_authority_fields(layout["beat_layout_intents"]) == []
+
+
+def test_tier_action_detects_placement_inside_sentence() -> None:
+    alignment = validate_segment_actionability(
+        ["Waterfall is too rigid for the stated criteria. Place Waterfall in the C-tier."],
+        ["rank Waterfall with visible tier placement"],
+    )
+
+    intent = alignment["beat_action_intents"][0]["intents"][0]
+    assert intent["kind"] == "tier_chart"
+    assert intent["target"] == "Waterfall"
+    assert intent["expected_effect"] == "tier_chart.place:Waterfall:C"
 
 
 def test_responsible_layout_rejects_spoken_only_beats() -> None:

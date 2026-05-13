@@ -6,7 +6,9 @@ from unittest.mock import MagicMock, patch
 
 from agents.publication_bus.bluesky_publisher import (
     BLUESKY_ATPROTO_ENDPOINT,
+    BLUESKY_POST_SURFACE,
     BLUESKY_SURFACE,
+    BlueskyPostPublisher,
     BlueskyPublisher,
 )
 from agents.publication_bus.publisher_kit import PublisherPayload
@@ -38,8 +40,13 @@ class TestSurfaceMetadata:
         assert BlueskyPublisher.surface_name == BLUESKY_SURFACE
         assert BLUESKY_SURFACE == "bluesky-atproto-multi-identity"
 
+    def test_public_event_surface_uses_bluesky_post_slug(self) -> None:
+        assert BlueskyPostPublisher.surface_name == BLUESKY_POST_SURFACE
+        assert BLUESKY_POST_SURFACE == "bluesky-post"
+
     def test_does_not_require_legal_name(self) -> None:
         assert BlueskyPublisher.requires_legal_name is False
+        assert BlueskyPostPublisher.requires_legal_name is False
 
 
 class TestPublisher:

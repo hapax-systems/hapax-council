@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from agents.publication_bus.publisher_kit import PublisherPayload
 from shared.governance.omg_referent import OperatorNameLeak, safe_render
 from shared.governance.publication_allowlist import check as allowlist_check
 
@@ -76,7 +77,8 @@ class StatuslogPoster:
     the poster deterministically without an LLM or wall-clock dependency.
 
     Parameters:
-        client:          an :class:`OmgLolClient` (may be disabled)
+        client:          credential/enabled-state carrier (may be disabled)
+        publisher:       publication-bus publisher that owns public egress
         state_file:      persistence for last-post timestamp + daily count
         min_interval_s:  min seconds between posts (default 14400 = 4h)
         daily_cap:       max posts per UTC day (default 3)
@@ -90,6 +92,7 @@ class StatuslogPoster:
         self,
         *,
         client: Any,
+        publisher: Any,
         state_file: Path,
         min_interval_s: int = 14400,
         daily_cap: int = 3,
@@ -99,6 +102,7 @@ class StatuslogPoster:
         address: str = DEFAULT_ADDRESS,
     ) -> None:
         self.client = client
+        self.publisher = publisher
         self.state_file = state_file
         self.min_interval_s = min_interval_s
         self.daily_cap = daily_cap
@@ -202,8 +206,17 @@ class StatuslogPoster:
             _record("client-disabled")
             return "client-disabled"
 
-        resp = self.client.post_status(self.address, content=text, emoji=None)
-        if resp is None:
+        result = self.publisher.publish(
+            PublisherPayload(
+                target=self.address,
+                text=text,
+                metadata={"skip_mastodon_post": True},
+            )
+        )
+        if result.refused:
+            _record("allowlist-denied")
+            return "allowlist-denied"
+        if not result.ok:
             _record("failed")
             return "failed"
 
@@ -234,9 +247,11 @@ def main(argv: list[str] | None = None) -> int:
 
     import time
 
+    from agents.publication_bus.omg_statuslog_publisher import OmgLolStatuslogPublisher
     from shared.omg_lol_client import OmgLolClient
 
     client = OmgLolClient(address=args.address)
+    publisher = OmgLolStatuslogPublisher(token=client.api_key)
 
     def _compose(event: dict) -> str:
         # Production default: use the event summary as-is (truncated).
@@ -245,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
 
     poster = StatuslogPoster(
         client=client,
+        publisher=publisher,
         state_file=DEFAULT_STATE_FILE,
         now_fn=time.time,
         compose_fn=_compose,

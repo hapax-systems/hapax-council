@@ -19,17 +19,18 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from watchdog.events import FileSystemEventHandler
-from watchdog.observers import Observer
+from agents._frontmatter import parse_frontmatter
 
 # Self-contained config (no shared.config import — this module runs in an
 # isolated venv without pydantic-ai due to docling/huggingface-hub conflict).
 _HAPAX_HOME = Path(os.environ.get("HAPAX_HOME", str(Path.home())))
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
-EMBEDDING_MODEL = "nomic-embed-cpu"
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "nomic-embed-cpu")
+DEFAULT_DOCUMENTS_COLLECTION = "documents"
 RAG_SOURCES_DIR = _HAPAX_HOME / "documents" / "rag-sources"
 RAG_INGEST_STATE_DIR = _HAPAX_HOME / ".cache" / "rag-ingest"
 HAPAX_PROJECTS_DIR = _HAPAX_HOME / "projects"
+PLAIN_TEXT_SOURCE_EXTENSIONS = {".html", ".md", ".py", ".txt"}
 
 from agents._log_setup import configure_logging
 
@@ -55,6 +56,16 @@ except ImportError:
 # ── Configuration ────────────────────────────────────────────────────────────
 
 
+def resolve_documents_collection(env: dict[str, str] | None = None) -> str:
+    """Resolve the Qdrant documents collection without changing the default."""
+    source = env if env is not None else os.environ
+    return (
+        source.get("HAPAX_RAG_COLLECTION")
+        or source.get("RAG_DOCUMENTS_COLLECTION")
+        or DEFAULT_DOCUMENTS_COLLECTION
+    )
+
+
 @dataclass
 class Config:
     watch_dirs: list[Path] = field(
@@ -70,13 +81,14 @@ class Config:
             ".pptx",
             ".html",
             ".md",
+            ".py",
             ".txt",
         }
     )
     qdrant_url: str = QDRANT_URL
-    collection: str = "documents"
+    collection: str = field(default_factory=resolve_documents_collection)
     embedding_model: str = EMBEDDING_MODEL
-    chunk_max_tokens: int = 512
+    chunk_max_tokens: int = 1024
     chunk_tokenizer: str = "Qwen/Qwen2.5-7B-Instruct"
     debounce_seconds: float = 2.0  # Wait before processing (avoid partial writes)
 
@@ -99,6 +111,11 @@ class RetryEntry:
     attempts: int
     next_retry: float  # unix timestamp
     first_failed: float  # unix timestamp
+
+
+@dataclass(frozen=True)
+class TextChunk:
+    text: str
 
 
 # ── Lazy imports (heavy deps loaded only when needed) ────────────────────────
@@ -130,20 +147,94 @@ def get_chunker():
     return _chunker
 
 
+def plain_text_chunks(text: str, *, max_chars: int = 4096) -> list[TextChunk]:
+    """Chunk source-like text without Docling so common RAG paths stay lightweight."""
+    chunks: list[str] = []
+    current: list[str] = []
+    current_size = 0
+    for line in text.splitlines(keepends=True):
+        line_size = len(line)
+        if current and current_size + line_size > max_chars:
+            chunks.append("".join(current).strip())
+            current = []
+            current_size = 0
+        if line_size > max_chars:
+            chunks.extend(
+                line[index : index + max_chars].strip()
+                for index in range(0, line_size, max_chars)
+                if line[index : index + max_chars].strip()
+            )
+            continue
+        current.append(line)
+        current_size += line_size
+    if current:
+        chunks.append("".join(current).strip())
+    return [TextChunk(text=chunk) for chunk in chunks if chunk]
+
+
+def extract_chunks(path: Path) -> list[TextChunk]:
+    if path.suffix.lower() in PLAIN_TEXT_SOURCE_EXTENSIONS:
+        return plain_text_chunks(
+            path.read_text(encoding="utf-8", errors="replace"),
+            max_chars=CFG.chunk_max_tokens * 4,
+        )
+    result = get_converter().convert(str(path))
+    return [TextChunk(text=chunk.text) for chunk in get_chunker().chunk(result.document)]
+
+
 _qclient = None
+_qclient_url: str | None = None
 
 
 def get_qdrant():
-    global _qclient
-    if _qclient is None:
+    global _qclient, _qclient_url
+    if _qclient is None or _qclient_url != CFG.qdrant_url:
         from qdrant_client import QdrantClient
 
-        _qclient = QdrantClient(QDRANT_URL)
-        log.info(f"Qdrant connected: {QDRANT_URL}")
+        _qclient = QdrantClient(CFG.qdrant_url)
+        _qclient_url = CFG.qdrant_url
+        log.info(f"Qdrant connected: {CFG.qdrant_url}")
     return _qclient
 
 
 # ── Core functions ───────────────────────────────────────────────────────────
+
+
+def embedding_dimensions() -> int:
+    """Return vector dimensions from the currently selected embedding model."""
+    return len(embed("hapax rag collection schema probe", prefix="search_document"))
+
+
+def _collection_exists(client, collection: str) -> bool:
+    collections = client.get_collections().collections
+    return any(getattr(item, "name", None) == collection for item in collections)
+
+
+def ensure_collection(
+    collection: str | None = None,
+    *,
+    vector_size: int | None = None,
+    client=None,
+) -> bool:
+    """Create a documents-compatible Qdrant collection if it is missing.
+
+    Returns True when the collection was created, False when it already existed.
+    """
+    target = collection or CFG.collection
+    qdrant = client or get_qdrant()
+    if _collection_exists(qdrant, target):
+        return False
+    if vector_size is None:
+        vector_size = embedding_dimensions()
+
+    from qdrant_client.models import Distance, VectorParams
+
+    qdrant.create_collection(
+        collection_name=target,
+        vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+    )
+    log.info("Created Qdrant collection %s (%d-dim, cosine)", target, vector_size)
+    return True
 
 
 def embed(text: str, prefix: str = "search_document") -> list[float]:
@@ -156,7 +247,7 @@ def embed_batch(texts: list[str], prefix: str = "search_document") -> list[list[
     import ollama
 
     prefixed = [f"{prefix}: {t}" if prefix else t for t in texts]
-    result = ollama.embed(model=EMBEDDING_MODEL, input=prefixed)
+    result = ollama.embed(model=CFG.embedding_model, input=prefixed)
     return result["embeddings"]
 
 
@@ -348,45 +439,6 @@ def process_retries():
     _write_queue(remaining)
 
 
-def parse_frontmatter(text: str) -> tuple[dict, str]:
-    """Parse YAML frontmatter from markdown text.
-
-    Returns (metadata_dict, remaining_text). If no frontmatter found,
-    returns ({}, original_text).
-    """
-    if not text.startswith("---"):
-        return {}, text
-
-    # Find closing ---
-    end = text.find("\n---", 3)
-    if end == -1:
-        return {}, text
-
-    front = text[3:end].strip()
-    body = text[end + 4 :].strip()
-
-    metadata: dict = {}
-    for line in front.splitlines():
-        line = line.strip()
-        if not line or ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        key = key.strip()
-        value = value.strip()
-
-        # Parse list values: [a, b, c]
-        if value.startswith("[") and value.endswith("]"):
-            items = [v.strip() for v in value[1:-1].split(",") if v.strip()]
-            metadata[key] = items
-        # Strip quotes
-        elif value.startswith('"') and value.endswith('"'):
-            metadata[key] = value[1:-1]
-        else:
-            metadata[key] = value
-
-    return metadata, body
-
-
 def enrich_payload(base_payload: dict, frontmatter: dict) -> dict:
     """Add frontmatter fields to the Qdrant payload if present.
 
@@ -404,9 +456,12 @@ def enrich_payload(base_payload: dict, frontmatter: dict) -> dict:
         "service",  # takeout frontmatter uses these names
         "record_id",
         "categories",
+        "content_tier",
+        "is_metadata_only",
         "location",
         "gdrive_folder",
         "provenance",  # DD-20: why-provenance contract IDs
+        "retrieval_eligible",
     }
 
     # DD-11: Extract consent label from frontmatter if present
@@ -429,9 +484,9 @@ def enrich_payload(base_payload: dict, frontmatter: dict) -> dict:
             value = frontmatter[key]
             # Normalize key names for consistency in Qdrant
             if key == "platform":
-                base_payload["source_platform"] = value
+                base_payload.setdefault("source_platform", value)
             elif key == "service":
-                base_payload["source_service"] = value
+                base_payload.setdefault("source_service", value)
             else:
                 base_payload[key] = value
 
@@ -516,9 +571,18 @@ def _file_hash(path: Path) -> str:
     return h.hexdigest()
 
 
-def _should_skip(path: Path, tracker: dict) -> bool:
+def _dedup_key(path: Path, collection: str | None = None) -> str:
+    """Return the dedup key, preserving the legacy key for `documents`."""
+    target = collection or CFG.collection
+    raw_path = str(path)
+    if target == DEFAULT_DOCUMENTS_COLLECTION:
+        return raw_path
+    return f"{target}:{raw_path}"
+
+
+def _should_skip(path: Path, tracker: dict, collection: str | None = None) -> bool:
     """Check if a file has already been ingested (same hash and mtime)."""
-    key = str(path)
+    key = _dedup_key(path, collection)
     if key not in tracker:
         return False
     entry = tracker[key]
@@ -531,9 +595,9 @@ def _should_skip(path: Path, tracker: dict) -> bool:
     return False
 
 
-def _record_ingested(path: Path, tracker: dict) -> None:
+def _record_ingested(path: Path, tracker: dict, collection: str | None = None) -> None:
     """Record a file as successfully ingested."""
-    tracker[str(path)] = {
+    tracker[_dedup_key(path, collection)] = {
         "hash": _file_hash(path),
         "mtime": path.stat().st_mtime,
         "ingested_at": datetime.now().isoformat(),
@@ -587,9 +651,8 @@ def ingest_file(path: Path) -> tuple[bool, str]:
     start = time.monotonic()
 
     try:
-        # Parse document
-        result = get_converter().convert(str(path))
-        chunks = list(get_chunker().chunk(result.document))
+        # Parse document or source-like text.
+        chunks = extract_chunks(path)
 
         if not chunks:
             log.warning(f"  No chunks extracted from {path.name}")
@@ -603,9 +666,6 @@ def ingest_file(path: Path) -> tuple[bool, str]:
                 frontmatter, _ = parse_frontmatter(raw_text)
             except Exception:
                 pass  # Frontmatter parsing is best-effort
-
-        # Delete existing points for this file (idempotent re-ingest)
-        delete_file_points(path)
 
         # Embed and upsert
         from qdrant_client import models
@@ -647,6 +707,10 @@ def ingest_file(path: Path) -> tuple[bool, str]:
             return (True, "consent_skipped")
 
         if points:
+            ensure_collection(CFG.collection, vector_size=len(points[0].vector))
+            # Delete existing points for this file after embedding succeeds so
+            # transient embedding failures cannot erase the previous index.
+            delete_file_points(path)
             # Batch upsert (Qdrant handles batching internally)
             get_qdrant().upsert(CFG.collection, points, wait=True)
             elapsed = time.monotonic() - start
@@ -664,11 +728,19 @@ def ingest_file(path: Path) -> tuple[bool, str]:
 # ── File watcher ─────────────────────────────────────────────────────────────
 
 
-class IngestHandler(FileSystemEventHandler):
+class IngestHandler:
     """Debounced file system event handler."""
 
     def __init__(self):
         self._pending: dict[str, float] = {}
+
+    def dispatch(self, event):
+        """Minimal watchdog-compatible dispatcher for created/modified files."""
+        event_type = getattr(event, "event_type", "")
+        if event_type == "created":
+            self.on_created(event)
+        elif event_type == "modified":
+            self.on_modified(event)
 
     def _schedule(self, path: str):
         self._pending[path] = time.monotonic()
@@ -696,41 +768,91 @@ class IngestHandler(FileSystemEventHandler):
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
-def bulk_ingest(force: bool = False):
+def bulk_ingest(
+    force: bool = False,
+    *,
+    max_files: int | None = None,
+    dry_run: bool = False,
+    source_files: list[Path] | None = None,
+    process_retry_queue: bool = True,
+):
     """Initial scan of all watched directories."""
     tracker = {} if force else _load_dedup_tracker()
     skipped = 0
     total = 0
+    if source_files is not None:
+        files = sorted(
+            {
+                f
+                for f in source_files
+                if f.is_file() and f.suffix.lower() in CFG.supported_extensions
+            }
+        )
+        log.info("Bulk ingesting %d explicit source files", len(files))
+        for f in files:
+            if max_files is not None and total >= max_files:
+                break
+            if not force and _should_skip(f, tracker, collection=CFG.collection):
+                skipped += 1
+                continue
+            if dry_run:
+                log.info("DRY RUN: would ingest %s into %s", f, CFG.collection)
+                total += 1
+                continue
+            success, error = ingest_file(f)
+            if success:
+                _record_ingested(f, tracker, collection=CFG.collection)
+            else:
+                queue_retry(f, error)
+            total += 1
+        if not force and not dry_run:
+            _save_dedup_tracker(tracker)
+        if skipped:
+            log.info("Skipped %d unchanged files (use --force to re-ingest)", skipped)
+        return total
+
     for d in CFG.watch_dirs:
+        if max_files is not None and total >= max_files:
+            break
         if not d.exists():
             log.info(f"Creating watch directory: {d}")
-            d.mkdir(parents=True, exist_ok=True)
+            if not dry_run:
+                d.mkdir(parents=True, exist_ok=True)
             continue
         files = [
             f for f in d.rglob("*") if f.is_file() and f.suffix.lower() in CFG.supported_extensions
         ]
         log.info(f"Bulk ingesting {len(files)} files from {d}")
         for f in sorted(files):
-            if not force and _should_skip(f, tracker):
+            if max_files is not None and total >= max_files:
+                break
+            if not force and _should_skip(f, tracker, collection=CFG.collection):
                 skipped += 1
+                continue
+            if dry_run:
+                log.info("DRY RUN: would ingest %s into %s", f, CFG.collection)
+                total += 1
                 continue
             success, error = ingest_file(f)
             if success:
-                _record_ingested(f, tracker)
+                _record_ingested(f, tracker, collection=CFG.collection)
             else:
                 queue_retry(f, error)
             total += 1
-    if not force:
+    if not force and not dry_run:
         _save_dedup_tracker(tracker)
     if skipped:
         log.info("Skipped %d unchanged files (use --force to re-ingest)", skipped)
     # Process any retries from previous runs
-    process_retries()
+    if not dry_run and process_retry_queue:
+        process_retries()
     return total
 
 
 def watch():
     """Start file system watcher."""
+    from watchdog.observers import Observer
+
     handler = IngestHandler()
     observer = Observer()
 
@@ -765,9 +887,73 @@ if __name__ == "__main__":
     parser.add_argument("--watch-only", action="store_true", help="Skip bulk ingest, only watch")
     parser.add_argument("--retry-status", action="store_true", help="Show retry queue and exit")
     parser.add_argument(
+        "--collection",
+        default=CFG.collection,
+        help=(
+            "Qdrant collection to write. Defaults to HAPAX_RAG_COLLECTION, "
+            "RAG_DOCUMENTS_COLLECTION, then documents."
+        ),
+    )
+    parser.add_argument("--qdrant-url", default=CFG.qdrant_url)
+    parser.add_argument("--embedding-model", default=CFG.embedding_model)
+    parser.add_argument(
+        "--watch-dir",
+        action="append",
+        type=Path,
+        default=[],
+        help="Override watched/source directory. May be repeated.",
+    )
+    parser.add_argument(
+        "--source-file",
+        action="append",
+        type=Path,
+        default=[],
+        help="Explicit file to ingest instead of scanning watch directories. May be repeated.",
+    )
+    parser.add_argument(
+        "--source-file-list",
+        action="append",
+        type=Path,
+        default=[],
+        help="Text file containing one source path per line. Blank lines and # comments ignored.",
+    )
+    parser.add_argument(
+        "--max-files",
+        type=int,
+        default=None,
+        help="Maximum number of non-skipped files to process in this run.",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="List files that would be ingested.")
+    parser.add_argument(
+        "--create-collection",
+        action="store_true",
+        help="Create the configured collection from the selected embedding model and exit.",
+    )
+    parser.add_argument(
         "--force", action="store_true", help="Bypass dedup tracking, re-ingest all files"
     )
+    parser.add_argument(
+        "--skip-retries",
+        action="store_true",
+        help="Do not process the global retry queue after this bulk run.",
+    )
     args = parser.parse_args()
+    if args.dry_run:
+        args.bulk_only = True
+    if args.source_file or args.source_file_list:
+        args.bulk_only = True
+
+    CFG.collection = args.collection
+    CFG.qdrant_url = args.qdrant_url
+    CFG.embedding_model = args.embedding_model
+    if args.watch_dir:
+        CFG.watch_dirs = args.watch_dir
+    source_files = list(args.source_file)
+    for list_path in args.source_file_list:
+        for line in list_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                source_files.append(Path(stripped))
 
     if args.retry_status:
         from datetime import datetime
@@ -794,17 +980,37 @@ if __name__ == "__main__":
                 print()
         raise SystemExit(0)
 
+    if args.create_collection:
+        created = ensure_collection(CFG.collection)
+        status = "created" if created else "already exists"
+        print(f"{CFG.collection}: {status}")
+        raise SystemExit(0)
+
     if not args.watch_only:
         with _tracer.start_as_current_span(
             "ingest.bulk",
-            attributes={"agent.name": "ingest", "agent.repo": "hapax-council"},
+            attributes={
+                "agent.name": "ingest",
+                "agent.repo": "hapax-council",
+                "rag.collection": CFG.collection,
+            },
         ):
-            count = bulk_ingest(force=args.force)
+            count = bulk_ingest(
+                force=args.force,
+                max_files=args.max_files,
+                dry_run=args.dry_run,
+                source_files=source_files or None,
+                process_retry_queue=not args.skip_retries and not source_files,
+            )
             log.info(f"Bulk ingest complete: {count} files processed")
 
     if not args.bulk_only:
         with _tracer.start_as_current_span(
             "ingest.watch",
-            attributes={"agent.name": "ingest", "agent.repo": "hapax-council"},
+            attributes={
+                "agent.name": "ingest",
+                "agent.repo": "hapax-council",
+                "rag.collection": CFG.collection,
+            },
         ):
             watch()

@@ -613,11 +613,6 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
                     from agents.hapax_daimonion.daily_segment_prep import (
                         load_prepped_programmes,
                     )
-                    from shared.programme import (
-                        Programme,
-                        ProgrammeContent,
-                        ProgrammeRole,
-                    )
 
                     prepped = load_prepped_programmes()
                     loaded_any = False
@@ -627,49 +622,16 @@ async def programme_manager_loop(daemon: VoiceDaemon) -> None:
                         if not pid or not script:
                             continue
                         try:
-                            # Build a Programme from the prep file
-                            role_str = p.get("role", "rant")
-                            try:
-                                role = ProgrammeRole(role_str)
-                            except ValueError:
-                                role = ProgrammeRole.RANT
-
-                            content = ProgrammeContent(
-                                declared_topic=p.get("declared_topic") or p.get("topic"),
-                                source_uri=p.get("source_uri"),
-                                subject=p.get("subject"),
-                                narrative_beat=p.get("topic", "")[:500],
-                                segment_beats=p.get("segment_beats", []),
-                                prepared_script=list(script),
-                                delivery_mode=p.get("delivery_mode") or "live_prior",
-                                beat_cards=_prepped_beat_cards(p),
-                                live_priors=_prepped_live_priors(p),
-                                hosting_context=p.get("hosting_context"),
-                                authority=p.get("authority") or p.get("artifact_authority"),
-                                source_refs=p.get("source_refs", []),
-                                evidence_refs=p.get("evidence_refs", []),
-                                source_packet_refs=p.get("source_packet_refs", []),
-                                role_contract=p.get("role_contract", {}),
-                                asset_attributions=p.get("asset_attributions", []),
-                                beat_action_intents=p.get("beat_action_intents", []),
-                                beat_layout_intents=p.get("beat_layout_intents", []),
-                                layout_decision_contract=p.get("layout_decision_contract", {}),
-                                runtime_layout_validation=p.get("runtime_layout_validation", {}),
-                                prepared_artifact_ref=p.get("prepared_artifact_ref"),
-                                artifact_path_diagnostic=p.get("artifact_path_diagnostic"),
-                            )
-                            prog = Programme(
-                                programme_id=pid,
-                                role=role,
+                            prog = programme_from_prepped_artifact(
+                                p,
                                 planned_duration_s=3600.0,
-                                content=content,
                                 parent_show_id=f"show-{_dt.datetime.now(tz=_dt.UTC).strftime('%Y%m%d')}",
                             )
                             manager.store.add(prog)
                             log.info(
                                 "prep-to-store: added %s (%s, %d beats, live priors ready)",
                                 pid,
-                                role_str,
+                                prog.role.value,
                                 len(script),
                             )
                             loaded_any = True
@@ -973,6 +935,190 @@ def _prepped_live_priors(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return priors
 
 
+def programme_from_prepped_artifact(
+    payload: dict[str, Any],
+    *,
+    parent_show_id: str | None = None,
+    planned_duration_s: float = 3600.0,
+) -> Any:
+    """Build a runtime Programme from an accepted prep artifact.
+
+    Segment-prep artifacts are prior-only release records. The runtime
+    Programme model still requires a role contract and source refs so the
+    active segment cannot silently lose its format/source boundary.
+    """
+
+    from shared.programme import Programme, ProgrammeContent
+
+    programme_id = _prepped_required_text(payload, "programme_id")
+    role = _prepped_role(payload)
+    content = ProgrammeContent(
+        declared_topic=_prepped_optional_text(payload, "declared_topic")
+        or _prepped_optional_text(payload, "topic"),
+        source_uri=_prepped_optional_text(payload, "source_uri"),
+        subject=_prepped_optional_text(payload, "subject"),
+        narrative_beat=(_prepped_optional_text(payload, "topic") or "")[:500],
+        segment_beats=_prepped_string_list(payload.get("segment_beats"), dedupe=False),
+        prepared_script=_prepped_string_list(payload.get("prepared_script"), dedupe=False),
+        delivery_mode=payload.get("delivery_mode") or "live_prior",
+        beat_cards=_prepped_beat_cards(payload),
+        live_priors=_prepped_live_priors(payload),
+        hosting_context=payload.get("hosting_context"),
+        authority=payload.get("authority") or payload.get("artifact_authority"),
+        source_refs=_prepped_source_refs(payload),
+        evidence_refs=_prepped_evidence_refs(payload),
+        source_packet_refs=_prepped_source_packet_refs(payload),
+        role_contract=_prepped_role_contract(payload, role=role),
+        asset_attributions=payload.get("asset_attributions") or [],
+        beat_action_intents=payload.get("beat_action_intents") or [],
+        beat_layout_intents=payload.get("beat_layout_intents") or [],
+        layout_decision_contract=payload.get("layout_decision_contract") or {},
+        runtime_layout_validation=payload.get("runtime_layout_validation") or {},
+        prepared_artifact_ref=payload.get("prepared_artifact_ref"),
+        artifact_path_diagnostic=payload.get("artifact_path_diagnostic"),
+    )
+    return Programme(
+        programme_id=programme_id,
+        role=role,
+        planned_duration_s=planned_duration_s,
+        content=content,
+        parent_show_id=parent_show_id or f"show-{_dt.datetime.now(tz=_dt.UTC).strftime('%Y%m%d')}",
+    )
+
+
+def _prepped_role(payload: dict[str, Any]) -> Any:
+    from shared.programme import ProgrammeRole
+
+    role_text = _prepped_optional_text(payload, "role") or ProgrammeRole.RANT.value
+    try:
+        return ProgrammeRole(role_text)
+    except ValueError:
+        return ProgrammeRole.RANT
+
+
+def _prepped_role_contract(payload: dict[str, Any], *, role: Any) -> dict[str, Any]:
+    from shared.programme import segmented_content_format_spec
+
+    raw = payload.get("role_contract")
+    contract = dict(raw) if isinstance(raw, dict) else {}
+    spec = segmented_content_format_spec(role)
+    if spec is None:
+        return contract
+    source_refs = _prepped_source_refs(payload)
+    topic = _prepped_optional_text(payload, "topic") or _prepped_optional_text(
+        payload, "declared_topic"
+    )
+    segment_beats = _prepped_string_list(payload.get("segment_beats"))
+    contract.setdefault("role", spec.role.value)
+    contract.setdefault("asset_requirements", list(spec.asset_requirements))
+    contract.setdefault("ward_profile", spec.ward_profile)
+    contract.setdefault("source_affordance_kinds", list(spec.source_affordance_kinds))
+    if spec.role.value == "lecture":
+        contract.setdefault("teaching_objective", topic or "source-backed launch segment")
+        contract.setdefault(
+            "demonstration_object",
+            source_refs[0] if source_refs else (topic or "prepared segment source packet"),
+        )
+        contract.setdefault(
+            "worked_example",
+            segment_beats[0] if segment_beats else (topic or "prepared segment beat"),
+        )
+    return contract
+
+
+def _prepped_source_packet_refs(payload: dict[str, Any]) -> list[str | dict[str, Any]]:
+    raw = payload.get("source_packet_refs")
+    if isinstance(raw, list) and raw:
+        return [dict(item) if isinstance(item, dict) else str(item) for item in raw if item]
+
+    contract = payload.get("segment_prep_contract")
+    packets = contract.get("source_packet_refs") if isinstance(contract, dict) else None
+    if isinstance(packets, list) and packets:
+        return [dict(item) if isinstance(item, dict) else str(item) for item in packets if item]
+    return []
+
+
+def _prepped_source_refs(payload: dict[str, Any]) -> list[str]:
+    explicit = _prepped_string_list(payload.get("source_refs"))
+    if explicit:
+        return explicit
+    refs: list[str] = []
+    source_uri = _prepped_optional_text(payload, "source_uri")
+    if source_uri:
+        refs.append(source_uri)
+    for packet in _prepped_source_packet_refs(payload):
+        if isinstance(packet, str):
+            refs.append(packet)
+        elif isinstance(packet, dict):
+            refs.extend(_prepped_string_list(packet.get("source_ref")))
+            refs.extend(_prepped_string_list(packet.get("evidence_refs")))
+
+    contract = payload.get("segment_prep_contract")
+    if isinstance(contract, dict):
+        for row in contract.get("claim_map") or []:
+            if isinstance(row, dict):
+                refs.extend(_prepped_string_list(row.get("grounds")))
+        for row in contract.get("source_consequence_map") or []:
+            if isinstance(row, dict):
+                refs.extend(_prepped_string_list(row.get("source_ref")))
+                refs.extend(_prepped_string_list(row.get("source_packet_refs")))
+
+    for row in payload.get("beat_layout_intents") or []:
+        if isinstance(row, dict):
+            refs.extend(_prepped_string_list(row.get("evidence_refs")))
+    return _unique_strings(refs)
+
+
+def _prepped_evidence_refs(payload: dict[str, Any]) -> list[str]:
+    explicit = _prepped_string_list(payload.get("evidence_refs"))
+    if explicit:
+        return explicit
+    refs: list[str] = []
+    refs.extend(_prepped_source_refs(payload))
+    for row in payload.get("beat_action_intents") or []:
+        if not isinstance(row, dict):
+            continue
+        for intent in row.get("intents") or []:
+            if isinstance(intent, dict):
+                refs.extend(_prepped_string_list(intent.get("evidence_refs")))
+    for row in payload.get("beat_layout_intents") or []:
+        if isinstance(row, dict):
+            refs.extend(_prepped_string_list(row.get("evidence_refs")))
+    return _unique_strings(refs)
+
+
+def _prepped_required_text(payload: dict[str, Any], key: str) -> str:
+    text = _prepped_optional_text(payload, key)
+    if text is None:
+        raise ValueError(f"prepped artifact missing {key}")
+    return text
+
+
+def _prepped_optional_text(payload: dict[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _prepped_string_list(value: Any, *, dedupe: bool = True) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, dict):
+        out: list[str] = []
+        for item in value.values():
+            out.extend(_prepped_string_list(item, dedupe=dedupe))
+        return _unique_strings(out) if dedupe else out
+    if not isinstance(value, list | tuple | set):
+        return []
+    out: list[str] = []
+    for item in value:
+        out.extend(_prepped_string_list(item, dedupe=dedupe))
+    return _unique_strings(out) if dedupe else out
+
+
 def _current_beat_action_intents(content: Any, beat_index: int) -> list[dict[str, Any]]:
     intents = getattr(content, "beat_action_intents", None)
     if not isinstance(intents, list):
@@ -1172,5 +1318,6 @@ __all__ = [
     "_active_segment_payload",
     "_execute_segment_cue_if_allowed",
     "is_auto_plan_enabled",
+    "programme_from_prepped_artifact",
     "programme_manager_loop",
 ]

@@ -131,6 +131,8 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_w": 300,
                 "natural_h": 300,
             },
+            update_cadence="rate",
+            rate_hz=2.0,
         ),
         SourceSchema(
             id="album",
@@ -141,6 +143,8 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_w": 400,
                 "natural_h": 520,
             },
+            update_cadence="rate",
+            rate_hz=2.0,
         ),
         SourceSchema(
             id="stream_overlay",
@@ -163,6 +167,8 @@ _FALLBACK_LAYOUT = Layout(
                 "natural_w": 840,
                 "natural_h": 840,
             },
+            update_cadence="rate",
+            rate_hz=2.0,
         ),
         SourceSchema(
             id="reverie",
@@ -1274,7 +1280,29 @@ class StudioCompositor:
             return None
         try:
             store.reload_changed()
-            return store.get(layout_name)
+            layout = store.get(layout_name)
+            if layout is None:
+                return None
+            try:
+                from agents.studio_compositor.layout_fragment_guard import (
+                    compose_segment_fragment_over_layout,
+                )
+
+                if self.layout_state is not None:
+                    composed = compose_segment_fragment_over_layout(
+                        layout_name=layout_name,
+                        fragment_layout=layout,
+                        base_layout=self.layout_state.get(),
+                    )
+                    if composed is not None:
+                        return composed
+            except Exception:
+                log.debug(
+                    "layout control-plane segment composition failed for %s",
+                    layout_name,
+                    exc_info=True,
+                )
+            return layout
         except Exception:
             log.debug("layout control-plane resolver failed for %s", layout_name, exc_info=True)
             return None

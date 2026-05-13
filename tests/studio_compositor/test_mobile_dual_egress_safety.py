@@ -85,6 +85,25 @@ def test_capture_path_masks_before_jpeg_and_fails_closed() -> None:
     assert "frame[:, :, :] = (40, 40, 40)" in source
 
 
+def test_camera_snapshot_branch_rate_limits_before_conversion() -> None:
+    from agents.studio_compositor import cameras
+
+    source = inspect.getsource(cameras.add_camera_snapshot_branch)
+    chain_idx = source.index("chain = [queue, rate, rate_caps, convert")
+    convert_idx = source.index('Gst.ElementFactory.make("videoconvert"')
+
+    assert chain_idx > convert_idx
+
+
+def test_camera_snapshot_framerate_env_accepts_fraction(monkeypatch: object) -> None:
+    from agents.studio_compositor import cameras
+
+    monkeypatch.setenv("HAPAX_CAMERA_SNAPSHOT_FRAMERATE", "1/2")
+
+    assert cameras._camera_snapshot_framerate().numerator == 1
+    assert cameras._camera_snapshot_framerate().denominator == 2
+
+
 def test_mobile_bin_does_not_repeat_capture_protection_stage() -> None:
     from agents.studio_compositor import rtmp_output
 

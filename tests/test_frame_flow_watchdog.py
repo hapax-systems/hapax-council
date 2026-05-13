@@ -155,6 +155,22 @@ class TestSwapToFallbackSwapCompletedDispatch:
         pm.swap_to_fallback("brio-operator")
         assert pm._state_machines["brio-operator"].state == CameraState.HEALTHY
 
+    def test_swap_to_primary_stops_recovered_fallback_producer(self) -> None:
+        pm = _make_pm(["brio-operator"])
+        src = MagicMock()
+        cam = MagicMock()
+        cam.sink_name = "cam_brio_operator"
+        fb = MagicMock()
+        fb.sink_name = "fb_brio_operator"
+        pm._interpipe_srcs["brio-operator"] = src
+        pm._cameras["brio-operator"] = cam
+        pm._fallbacks["brio-operator"] = fb
+
+        pm.swap_to_primary("brio-operator")
+
+        src.set_property.assert_called_once_with("listen-to", "cam_brio_operator")
+        fb.stop.assert_called_once()
+
 
 class TestEndToEndStaleRecoveryLoop:
     def test_stale_dispatch_swap_completes_offline_progression(self) -> None:

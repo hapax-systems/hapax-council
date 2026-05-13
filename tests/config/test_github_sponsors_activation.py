@@ -10,21 +10,36 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_funding_yml_targets_hapax_systems_org() -> None:
+def test_funding_yml_targets_verified_public_sponsors_listing() -> None:
     funding = yaml.safe_load((REPO_ROOT / ".github" / "FUNDING.yml").read_text())
 
-    assert funding["github"] == ["hapax-systems", "ryanklee"]
+    assert funding["github"] == ["ryanklee"]
 
 
-def test_readme_and_omg_landing_link_to_org_sponsors_profile() -> None:
+def test_readme_and_omg_landing_route_through_no_perk_support_page() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     landing = (REPO_ROOT / "agents" / "omg_web_builder" / "static" / "index.html").read_text(
         encoding="utf-8"
     )
 
-    assert "https://github.com/sponsors/hapax-systems" in readme
-    assert "Sponsor Hapax research" in readme
-    assert "https://github.com/sponsors/hapax-systems" in landing
+    assert "https://hapax.weblog.lol/support" in readme
+    assert "Support Hapax research" in readme
+    assert "github.com/sponsors/hapax-systems" not in readme
+    assert "hapax.weblog.lol/support" in landing
+    assert "github.com/sponsors/hapax-systems" not in landing
+
+
+def test_launch_proof_downgrades_all_payment_rails_claim() -> None:
+    proof = (
+        REPO_ROOT / "docs" / "monetization" / "hn-launch-support-money-rails-proof.md"
+    ).read_text(encoding="utf-8")
+    matrix = (REPO_ROOT / "docs" / "monetization" / "rails-capability-matrix.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "all external rails as green" in proof
+    assert "implementation capability" in matrix
+    assert "every external account" in matrix
 
 
 def test_sponsors_tier_example_is_no_perk_org_support() -> None:

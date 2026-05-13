@@ -55,7 +55,7 @@ PRIVATE_MONITOR_STATUS_MAX_AGE_S = 300.0
 
 NO_DEFAULT_FALLBACK_POLICY = "no_default_fallback"
 
-PRIVATE_MONITOR_TARGET_REF = "audio.yeti_monitor"
+PRIVATE_MONITOR_TARGET_REF = "audio.s4_private_monitor"
 
 PUBLIC_BROADCAST_SOURCE_ID = "broadcast-tts"
 PRIVATE_ASSISTANT_SOURCE_ID = "assistant-private"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from unittest import mock
 
@@ -13,6 +14,7 @@ from agents.cross_surface.arena_post import (
     ArenaPoster,
     _credentials_from_env,
 )
+from agents.publication_bus.publisher_kit import PublisherResult
 from shared.research_vehicle_public_event import (
     PublicEventChapterRef,
     PublicEventFrameRef,
@@ -121,6 +123,10 @@ def _write_events(path, events: list[ResearchVehiclePublicEvent | dict]) -> None
                 fh.write(json.dumps(event) + "\n")
 
 
+def _published_payload(publisher: mock.Mock):
+    return publisher.publish.call_args.args[0]
+
+
 def _make_poster(
     *,
     event_path,
@@ -128,27 +134,27 @@ def _make_poster(
     token: str | None = "test-token",
     channel_slug: str | None = "hapax-visual-surface",
     compose_fn=None,
-    client_factory=None,
+    publisher_factory=None,
     dry_run: bool = False,
 ) -> tuple[ArenaPoster, mock.Mock]:
-    if client_factory is None:
-        client = mock.Mock()
-        client.add_block.return_value = None
-        client_factory = mock.Mock(return_value=client)
+    if publisher_factory is None:
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(ok=True, detail="channel:hapax")
+        publisher_factory = mock.Mock(return_value=publisher)
     if compose_fn is None:
         compose_fn = mock.Mock(return_value=("default test block", None))
     poster = ArenaPoster(
         token=token,
         channel_slug=channel_slug,
         compose_fn=compose_fn,
-        client_factory=client_factory,
+        publisher_factory=publisher_factory,
         event_path=event_path,
         cursor_path=cursor_path,
         idempotency_path=cursor_path.with_name("posted-event-ids.json"),
         registry=CollectorRegistry(),
         dry_run=dry_run,
     )
-    return poster, client_factory
+    return poster, publisher_factory
 
 
 # ── Cursor + tail ────────────────────────────────────────────────────
@@ -177,14 +183,14 @@ class TestCursor:
         poster, factory = _make_poster(event_path=bus, cursor_path=cursor)
         poster.run_once()
 
-        client = factory.return_value
-        client.add_block.reset_mock()
+        publisher = factory.return_value
+        publisher.publish.reset_mock()
         _write_events(bus, [_public_event(event_id="rvpe:arena:short")])
         cursor.write_text(str(bus.stat().st_size + 100), encoding="utf-8")
 
         assert poster.run_once() == 1
         assert int(cursor.read_text(encoding="utf-8")) == bus.stat().st_size
-        client.add_block.assert_called_once()
+        publisher.publish.assert_called_once()
 
     def test_processed_event_id_prevents_repost_after_cursor_loss(self, tmp_path):
         bus = tmp_path / "events.jsonl"
@@ -196,7 +202,7 @@ class TestCursor:
 
         cursor.write_text("0", encoding="utf-8")
         assert poster.run_once() == 0
-        factory.return_value.add_block.assert_called_once()
+        factory.return_value.publish.assert_called_once()
 
 
 # ── Event filtering ──────────────────────────────────────────────────
@@ -227,32 +233,32 @@ class TestEventFiltering:
                 _public_event(event_id="rvpe:arena_block_candidate:posted"),
             ],
         )
-        client = mock.Mock()
-        client.add_block.return_value = None
-        factory = mock.Mock(return_value=client)
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(ok=True, detail="channel:hapax")
+        factory = mock.Mock(return_value=publisher)
         poster, _ = _make_poster(
             event_path=bus,
             cursor_path=tmp_path / "cursor.txt",
-            client_factory=factory,
+            publisher_factory=factory,
         )
         poster.run_once()
-        assert client.add_block.call_count == 1
+        assert publisher.publish.call_count == 1
 
     def test_legacy_broadcast_rotated_record_is_not_consumed(self, tmp_path):
         bus = tmp_path / "events.jsonl"
         _write_events(bus, [{"event_type": "broadcast_rotated", "incoming_broadcast_id": "vid-A"}])
         cursor = tmp_path / "cursor.txt"
-        client = mock.Mock()
-        factory = mock.Mock(return_value=client)
+        publisher = mock.Mock()
+        factory = mock.Mock(return_value=publisher)
         poster, _ = _make_poster(
             event_path=bus,
             cursor_path=cursor,
-            client_factory=factory,
+            publisher_factory=factory,
         )
 
         assert poster.run_once() == 0
         assert int(cursor.read_text(encoding="utf-8")) == bus.stat().st_size
-        client.add_block.assert_not_called()
+        publisher.publish.assert_not_called()
 
     def test_rejects_event_without_arena_surface_policy(self, tmp_path):
         bus = tmp_path / "events.jsonl"
@@ -267,15 +273,15 @@ class TestEventFiltering:
                 )
             ],
         )
-        client = mock.Mock()
-        factory = mock.Mock(return_value=client)
+        publisher = mock.Mock()
+        factory = mock.Mock(return_value=publisher)
         poster, _ = _make_poster(
             event_path=bus,
             cursor_path=tmp_path / "cursor.txt",
-            client_factory=factory,
+            publisher_factory=factory,
         )
         assert poster.run_once() == 1
-        client.add_block.assert_not_called()
+        publisher.publish.assert_not_called()
 
     def test_aesthetic_frame_capture_event_passes_grounding(self, tmp_path):
         bus = tmp_path / "events.jsonl"
@@ -291,17 +297,17 @@ class TestEventFiltering:
                 )
             ],
         )
-        client = mock.Mock()
-        client.add_block.return_value = None
-        factory = mock.Mock(return_value=client)
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(ok=True, detail="channel:hapax")
+        factory = mock.Mock(return_value=publisher)
         poster, _ = _make_poster(
             event_path=bus,
             cursor_path=tmp_path / "cursor.txt",
-            client_factory=factory,
+            publisher_factory=factory,
         )
 
         assert poster.run_once() == 1
-        client.add_block.assert_called_once()
+        publisher.publish.assert_called_once()
 
     def test_chronicle_high_salience_event_passes_grounding(self, tmp_path):
         bus = tmp_path / "events.jsonl"
@@ -321,17 +327,17 @@ class TestEventFiltering:
                 )
             ],
         )
-        client = mock.Mock()
-        client.add_block.return_value = None
-        factory = mock.Mock(return_value=client)
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(ok=True, detail="channel:hapax")
+        factory = mock.Mock(return_value=publisher)
         poster, _ = _make_poster(
             event_path=bus,
             cursor_path=tmp_path / "cursor.txt",
-            client_factory=factory,
+            publisher_factory=factory,
         )
 
         assert poster.run_once() == 1
-        client.add_block.assert_called_once()
+        publisher.publish.assert_called_once()
 
     def test_publication_artifact_event_passes_grounding(self, tmp_path):
         bus = tmp_path / "events.jsonl"
@@ -350,17 +356,17 @@ class TestEventFiltering:
                 )
             ],
         )
-        client = mock.Mock()
-        client.add_block.return_value = None
-        factory = mock.Mock(return_value=client)
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(ok=True, detail="channel:hapax")
+        factory = mock.Mock(return_value=publisher)
         poster, _ = _make_poster(
             event_path=bus,
             cursor_path=tmp_path / "cursor.txt",
-            client_factory=factory,
+            publisher_factory=factory,
         )
 
         assert poster.run_once() == 1
-        client.add_block.assert_called_once()
+        publisher.publish.assert_called_once()
 
     def test_weblog_event_passes_grounding(self, tmp_path):
         bus = tmp_path / "events.jsonl"
@@ -388,17 +394,17 @@ class TestEventFiltering:
                 )
             ],
         )
-        client = mock.Mock()
-        client.add_block.return_value = None
-        factory = mock.Mock(return_value=client)
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(ok=True, detail="channel:hapax")
+        factory = mock.Mock(return_value=publisher)
         poster, _ = _make_poster(
             event_path=bus,
             cursor_path=tmp_path / "cursor.txt",
-            client_factory=factory,
+            publisher_factory=factory,
         )
 
         assert poster.run_once() == 1
-        client.add_block.assert_called_once()
+        publisher.publish.assert_called_once()
 
     def test_non_broadcast_events_post_without_live_egress_claim(self, tmp_path):
         for event_type, state_kind in (
@@ -426,17 +432,17 @@ class TestEventFiltering:
                     )
                 ],
             )
-            client = mock.Mock()
-            client.add_block.return_value = None
-            factory = mock.Mock(return_value=client)
+            publisher = mock.Mock()
+            publisher.publish.return_value = PublisherResult(ok=True, detail="channel:hapax")
+            factory = mock.Mock(return_value=publisher)
             poster, _ = _make_poster(
                 event_path=bus,
                 cursor_path=tmp_path / f"{event_type.replace('.', '_')}.cursor",
-                client_factory=factory,
+                publisher_factory=factory,
             )
 
             assert poster.run_once() == 1
-            client.add_block.assert_called_once()
+            publisher.publish.assert_called_once()
 
 
 # ── Block source URL by event type ───────────────────────────────────
@@ -457,14 +463,14 @@ class TestBlockSourceUrl:
                 )
             ],
         )
-        client = mock.Mock()
-        client.add_block.return_value = None
-        factory = mock.Mock(return_value=client)
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(ok=True, detail="channel:hapax")
+        factory = mock.Mock(return_value=publisher)
         # Use default composer (no compose_fn) so source URL selection runs.
         poster = ArenaPoster(
             token="test-token",
             channel_slug="hapax-visual-surface",
-            client_factory=factory,
+            publisher_factory=factory,
             event_path=bus,
             cursor_path=tmp_path / "cursor.txt",
             idempotency_path=tmp_path / "ids.json",
@@ -473,7 +479,7 @@ class TestBlockSourceUrl:
         with mock.patch("agents.metadata_composer.composer.compose_metadata") as compose:
             compose.return_value = mock.Mock(arena_block="frame body", bluesky_post=None)
             poster.run_once()
-        assert client.add_block.call_args.kwargs["source"] == "https://hapax.cdn/frame.jpg"
+        assert _published_payload(publisher).metadata["source_url"] == "https://hapax.cdn/frame.jpg"
 
     def test_chronicle_uses_public_url(self, tmp_path):
         bus = tmp_path / "events.jsonl"
@@ -489,13 +495,13 @@ class TestBlockSourceUrl:
                 )
             ],
         )
-        client = mock.Mock()
-        client.add_block.return_value = None
-        factory = mock.Mock(return_value=client)
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(ok=True, detail="channel:hapax")
+        factory = mock.Mock(return_value=publisher)
         poster = ArenaPoster(
             token="test-token",
             channel_slug="hapax-visual-surface",
-            client_factory=factory,
+            publisher_factory=factory,
             event_path=bus,
             cursor_path=tmp_path / "cursor.txt",
             idempotency_path=tmp_path / "ids.json",
@@ -504,7 +510,10 @@ class TestBlockSourceUrl:
         with mock.patch("agents.metadata_composer.composer.compose_metadata") as compose:
             compose.return_value = mock.Mock(arena_block="chronicle body", bluesky_post=None)
             poster.run_once()
-        assert client.add_block.call_args.kwargs["source"] == "https://hapax.weblog.lol/observation"
+        assert (
+            _published_payload(publisher).metadata["source_url"]
+            == "https://hapax.weblog.lol/observation"
+        )
 
 
 # ── Dry run ──────────────────────────────────────────────────────────
@@ -514,15 +523,21 @@ class TestDryRun:
     def test_dry_run_does_not_call_factory(self, tmp_path):
         bus = tmp_path / "events.jsonl"
         _write_events(bus, [_public_event()])
-        factory = mock.Mock()
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(
+            refused=True,
+            detail="missing Are.na credentials",
+        )
+        factory = mock.Mock(return_value=publisher)
         poster, _ = _make_poster(
             event_path=bus,
             cursor_path=tmp_path / "cursor.txt",
-            client_factory=factory,
+            publisher_factory=factory,
             dry_run=True,
         )
         poster.run_once()
         factory.assert_not_called()
+        publisher.publish.assert_not_called()
 
     def test_dry_run_advances_cursor(self, tmp_path):
         bus = tmp_path / "events.jsonl"
@@ -537,80 +552,91 @@ class TestDryRun:
 
 
 class TestSendBlock:
+    def test_send_block_uses_publication_bus_not_direct_client_add_block(self):
+        from agents.cross_surface import arena_post
+
+        source = inspect.getsource(arena_post.ArenaPoster._send_block)
+        assert ".publish(" in source
+        assert ".add_block" not in source
+
     def test_text_only_block_uses_content(self, tmp_path):
         bus = tmp_path / "events.jsonl"
         # Event has public_url (fanout requires one reference), but the
         # composer chooses to emit the block as text-only by returning source=None.
         _write_events(bus, [_public_event()])
-        client = mock.Mock()
-        client.add_block.return_value = None
-        factory = mock.Mock(return_value=client)
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(ok=True, detail="channel:hapax")
+        factory = mock.Mock(return_value=publisher)
         compose_fn = mock.Mock(return_value=("Reverie pass 7 — RD step 0.18", None))
         poster, _ = _make_poster(
             event_path=bus,
             cursor_path=tmp_path / "cursor.txt",
-            client_factory=factory,
+            publisher_factory=factory,
             compose_fn=compose_fn,
         )
         poster.run_once()
-        client.add_block.assert_called_once_with(
-            "hapax-visual-surface",
-            content="Reverie pass 7 — RD step 0.18",
-            source=None,
-        )
+        payload = _published_payload(publisher)
+        assert payload.target == "hapax"
+        assert payload.text == "Reverie pass 7 — RD step 0.18"
+        assert payload.metadata["source_url"] is None
 
     def test_link_block_uses_source(self, tmp_path):
         bus = tmp_path / "events.jsonl"
         _write_events(bus, [_public_event()])
-        client = mock.Mock()
-        client.add_block.return_value = None
-        factory = mock.Mock(return_value=client)
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(ok=True, detail="channel:hapax")
+        factory = mock.Mock(return_value=publisher)
         compose_fn = mock.Mock(
             return_value=("livestream chronicle moment", "https://hapax.omg.lol/clips/x")
         )
         poster, _ = _make_poster(
             event_path=bus,
             cursor_path=tmp_path / "cursor.txt",
-            client_factory=factory,
+            publisher_factory=factory,
             compose_fn=compose_fn,
         )
         poster.run_once()
-        client.add_block.assert_called_once_with(
-            "hapax-visual-surface",
-            content="livestream chronicle moment",
-            source="https://hapax.omg.lol/clips/x",
-        )
+        payload = _published_payload(publisher)
+        assert payload.target == "hapax"
+        assert payload.text == "livestream chronicle moment"
+        assert payload.metadata["source_url"] == "https://hapax.omg.lol/clips/x"
 
-    def test_no_credentials_skips_send(self, tmp_path):
+    def test_no_credentials_maps_publisher_refusal(self, tmp_path):
         bus = tmp_path / "events.jsonl"
         _write_events(bus, [_public_event()])
-        factory = mock.Mock()
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(
+            refused=True,
+            detail="missing Are.na credentials",
+        )
+        factory = mock.Mock(return_value=publisher)
         poster, _ = _make_poster(
             event_path=bus,
             cursor_path=tmp_path / "cursor.txt",
             token=None,
             channel_slug=None,
-            client_factory=factory,
+            publisher_factory=factory,
         )
         poster.run_once()
-        factory.assert_not_called()
+        factory.assert_called_once()
+        publisher.publish.assert_called_once()
 
     def test_content_truncated_to_limit(self, tmp_path):
         bus = tmp_path / "events.jsonl"
         _write_events(bus, [_public_event()])
-        client = mock.Mock()
-        client.add_block.return_value = None
-        factory = mock.Mock(return_value=client)
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(ok=True, detail="channel:hapax")
+        factory = mock.Mock(return_value=publisher)
         oversized = "x" * (ARENA_BLOCK_TEXT_LIMIT + 100)
         compose_fn = mock.Mock(return_value=(oversized, None))
         poster, _ = _make_poster(
             event_path=bus,
             cursor_path=tmp_path / "cursor.txt",
-            client_factory=factory,
+            publisher_factory=factory,
             compose_fn=compose_fn,
         )
         poster.run_once()
-        sent_content = client.add_block.call_args.kwargs["content"]
+        sent_content = _published_payload(publisher).text
         assert len(sent_content) == ARENA_BLOCK_TEXT_LIMIT
 
 
@@ -621,12 +647,12 @@ class TestAllowlist:
     def test_deny_short_circuits(self, tmp_path):
         bus = tmp_path / "events.jsonl"
         _write_events(bus, [_public_event()])
-        client = mock.Mock()
-        factory = mock.Mock(return_value=client)
+        publisher = mock.Mock()
+        factory = mock.Mock(return_value=publisher)
         poster, _ = _make_poster(
             event_path=bus,
             cursor_path=tmp_path / "cursor.txt",
-            client_factory=factory,
+            publisher_factory=factory,
         )
 
         from agents.cross_surface import arena_post as mod
@@ -636,7 +662,7 @@ class TestAllowlist:
         denied.reason = "test override"
         with mock.patch.object(mod, "allowlist_check", return_value=denied):
             poster.run_once()
-        client.add_block.assert_not_called()
+        publisher.publish.assert_not_called()
 
 
 # ── Credentials helper ──────────────────────────────────────────────
@@ -707,22 +733,21 @@ class TestPublishArtifact:
 
         monkeypatch.setenv("HAPAX_ARENA_TOKEN", "tok")
         monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "ch")
-        client = mock.Mock()
-        client.add_block.return_value = None
-        with mock.patch.object(arena_post, "_default_client_factory", return_value=client):
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(ok=True, detail="channel:hapax")
+        with mock.patch.object(arena_post, "_default_publisher_factory", return_value=publisher):
             artifact = _FakeArtifact(
                 title="Title",
                 abstract="Abstract.",
                 attribution_block="Attribution Block",
             )
             assert arena_post.publish_artifact(artifact) == "ok"
-        kwargs = client.add_block.call_args.kwargs
-        args = client.add_block.call_args.args
-        assert args == ("ch",)
+        payload = _published_payload(publisher)
+        assert payload.target == "hapax"
         # Attribution body present + Refusal Brief LONG clause appended.
-        assert kwargs["content"].startswith("Attribution Block")
-        assert NON_ENGAGEMENT_CLAUSE_LONG in kwargs["content"]
-        assert kwargs["source"] is None
+        assert payload.text.startswith("Attribution Block")
+        assert NON_ENGAGEMENT_CLAUSE_LONG in payload.text
+        assert payload.metadata["source_url"] is None
 
     def test_title_abstract_fallback(self, monkeypatch):
         from agents.cross_surface import arena_post
@@ -730,12 +755,12 @@ class TestPublishArtifact:
 
         monkeypatch.setenv("HAPAX_ARENA_TOKEN", "tok")
         monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "ch")
-        client = mock.Mock()
-        client.add_block.return_value = None
-        with mock.patch.object(arena_post, "_default_client_factory", return_value=client):
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(ok=True, detail="channel:hapax")
+        with mock.patch.object(arena_post, "_default_publisher_factory", return_value=publisher):
             artifact = _FakeArtifact(title="Title", abstract="Abstract.")
             assert arena_post.publish_artifact(artifact) == "ok"
-        content = client.add_block.call_args.kwargs["content"]
+        content = _published_payload(publisher).text
         assert content.startswith("Title — Abstract.")
         assert NON_ENGAGEMENT_CLAUSE_LONG in content
 
@@ -744,40 +769,43 @@ class TestPublishArtifact:
 
         monkeypatch.setenv("HAPAX_ARENA_TOKEN", "tok")
         monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "ch")
-        client = mock.Mock()
-        client.add_block.return_value = None
-        with mock.patch.object(arena_post, "_default_client_factory", return_value=client):
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(ok=True, detail="channel:hapax")
+        with mock.patch.object(arena_post, "_default_publisher_factory", return_value=publisher):
             artifact = _FakeArtifact(title="T", abstract="A", doi="10.5281/zenodo.1234")
             assert arena_post.publish_artifact(artifact) == "ok"
-        assert client.add_block.call_args.kwargs["source"] == "https://doi.org/10.5281/zenodo.1234"
+        assert (
+            _published_payload(publisher).metadata["source_url"]
+            == "https://doi.org/10.5281/zenodo.1234"
+        )
 
     def test_embed_image_used_when_no_doi(self, monkeypatch):
         from agents.cross_surface import arena_post
 
         monkeypatch.setenv("HAPAX_ARENA_TOKEN", "tok")
         monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "ch")
-        client = mock.Mock()
-        client.add_block.return_value = None
-        with mock.patch.object(arena_post, "_default_client_factory", return_value=client):
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(ok=True, detail="channel:hapax")
+        with mock.patch.object(arena_post, "_default_publisher_factory", return_value=publisher):
             artifact = _FakeArtifact(
                 title="T",
                 abstract="A",
                 embed_image_url="https://cdn.example/img.png",
             )
             assert arena_post.publish_artifact(artifact) == "ok"
-        assert client.add_block.call_args.kwargs["source"] == "https://cdn.example/img.png"
+        assert _published_payload(publisher).metadata["source_url"] == "https://cdn.example/img.png"
 
     def test_content_truncated_to_limit(self, monkeypatch):
         from agents.cross_surface import arena_post
 
         monkeypatch.setenv("HAPAX_ARENA_TOKEN", "tok")
         monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "ch")
-        client = mock.Mock()
-        client.add_block.return_value = None
-        with mock.patch.object(arena_post, "_default_client_factory", return_value=client):
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(ok=True, detail="channel:hapax")
+        with mock.patch.object(arena_post, "_default_publisher_factory", return_value=publisher):
             artifact = _FakeArtifact(attribution_block="x" * (ARENA_BLOCK_TEXT_LIMIT + 50))
             assert arena_post.publish_artifact(artifact) == "ok"
-        assert len(client.add_block.call_args.kwargs["content"]) == ARENA_BLOCK_TEXT_LIMIT
+        assert len(_published_payload(publisher).text) == ARENA_BLOCK_TEXT_LIMIT
 
     def test_factory_failure_yields_auth_error(self, monkeypatch):
         from agents.cross_surface import arena_post
@@ -786,20 +814,20 @@ class TestPublishArtifact:
         monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "ch")
         with mock.patch.object(
             arena_post,
-            "_default_client_factory",
+            "_default_publisher_factory",
             side_effect=RuntimeError("boom"),
         ):
             artifact = _FakeArtifact(title="t", abstract="a")
             assert arena_post.publish_artifact(artifact) == "auth_error"
 
-    def test_add_block_failure_yields_error(self, monkeypatch):
+    def test_publish_failure_yields_error(self, monkeypatch):
         from agents.cross_surface import arena_post
 
         monkeypatch.setenv("HAPAX_ARENA_TOKEN", "tok")
         monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "ch")
-        client = mock.Mock()
-        client.add_block.side_effect = RuntimeError("api down")
-        with mock.patch.object(arena_post, "_default_client_factory", return_value=client):
+        publisher = mock.Mock()
+        publisher.publish.side_effect = RuntimeError("api down")
+        with mock.patch.object(arena_post, "_default_publisher_factory", return_value=publisher):
             artifact = _FakeArtifact(title="t", abstract="a")
             assert arena_post.publish_artifact(artifact) == "error"
 
@@ -808,14 +836,14 @@ class TestPublishArtifact:
 
         monkeypatch.setenv("HAPAX_ARENA_TOKEN", "tok")
         monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "ch")
-        client = mock.Mock()
-        client.add_block.return_value = None
-        with mock.patch.object(arena_post, "_default_client_factory", return_value=client):
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(ok=True, detail="channel:hapax")
+        with mock.patch.object(arena_post, "_default_publisher_factory", return_value=publisher):
             # Bare artifact still gets a placeholder, so this is "ok".
             artifact = _FakeArtifact()
             assert arena_post.publish_artifact(artifact) == "ok"
         # Bare placeholder + appended Refusal Brief LONG clause.
-        content = client.add_block.call_args.kwargs["content"]
+        content = _published_payload(publisher).text
         assert content.startswith("hapax — publication artifact")
 
     def test_refusal_brief_self_referential_skips_clause(self, monkeypatch):
@@ -827,15 +855,15 @@ class TestPublishArtifact:
 
         monkeypatch.setenv("HAPAX_ARENA_TOKEN", "tok")
         monkeypatch.setenv("HAPAX_ARENA_CHANNEL_SLUG", "ch")
-        client = mock.Mock()
-        client.add_block.return_value = None
-        with mock.patch.object(arena_post, "_default_client_factory", return_value=client):
+        publisher = mock.Mock()
+        publisher.publish.return_value = PublisherResult(ok=True, detail="channel:hapax")
+        with mock.patch.object(arena_post, "_default_publisher_factory", return_value=publisher):
             artifact = _FakeArtifact(
                 slug="refusal-brief",
                 title="Refusal Brief",
                 attribution_block="Hapax + Claude Code.",
             )
             assert arena_post.publish_artifact(artifact) == "ok"
-        content = client.add_block.call_args.kwargs["content"]
+        content = _published_payload(publisher).text
         assert NON_ENGAGEMENT_CLAUSE_LONG not in content
         assert NON_ENGAGEMENT_CLAUSE_SHORT not in content

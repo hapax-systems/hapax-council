@@ -105,6 +105,32 @@ def test_hero_small_stage_can_move_to_pre_fx(monkeypatch) -> None:
     assert fx_chain._hero_small_overlay_stage() == "pre_fx"
 
 
+def test_ensure_base_cairo_sources_can_disable_sierpinski_stack(monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_SIERPINSKI_BASE_OVERLAY_ENABLED", "0")
+    features: list[tuple[str, bool]] = []
+    monkeypatch.setattr(
+        fx_chain,
+        "_publish_fx_runtime_feature",
+        lambda feature, active: features.append((feature, active)),
+    )
+    loader = SimpleNamespace(stop=MagicMock())
+    renderer = SimpleNamespace(stop=MagicMock())
+    compositor = SimpleNamespace(
+        _sierpinski_loader=loader,
+        _sierpinski_renderer=renderer,
+        _geal_source=object(),
+    )
+
+    fx_chain._ensure_base_cairo_sources(compositor)
+
+    loader.stop.assert_called_once_with()
+    renderer.stop.assert_called_once_with()
+    assert compositor._sierpinski_loader is None
+    assert compositor._sierpinski_renderer is None
+    assert compositor._geal_source is None
+    assert features == [("sierpinski_base_overlay", False)]
+
+
 def test_post_fx_overlay_not_required_without_work_when_hero_small_is_pre_fx(monkeypatch) -> None:
     monkeypatch.setenv("HAPAX_HERO_SMALL_RENDER_STAGE", "pre_fx")
     compositor = SimpleNamespace(

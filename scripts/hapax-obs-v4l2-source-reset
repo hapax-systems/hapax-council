@@ -138,18 +138,88 @@ def _atomic_write_text(path: Path, text: str) -> None:
 def _connect(host: str, port: int) -> Any:
     import obsws_python
 
-    return obsws_python.ReqClient(host=host, port=port, timeout=5)
+    return obsws_python.ReqClient(
+        host=host,
+        port=port,
+        password=_default_obs_password(),
+        timeout=5,
+    )
 
 
-def _get_screenshot_hash(client: Any, source_name: str) -> str | None:
-    """Take a tiny screenshot and return its SHA-256 hex digest."""
+def _read_obs_websocket_password(config_path: Path) -> str:
     try:
-        resp = client.get_source_screenshot(
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if data.get("server_enabled") is False:
+        return ""
+    if data.get("auth_required") is False:
+        return ""
+    password = data.get("server_password")
+    return password if isinstance(password, str) else ""
+
+
+def _default_obs_password() -> str:
+    return (
+        os.environ.get("HAPAX_OBS_WEBSOCKET_PASSWORD")
+        or os.environ.get("OBS_WEBSOCKET_PASSWORD")
+        or _read_obs_websocket_password(
+            Path.home()
+            / ".config"
+            / "obs-studio"
+            / "plugin_config"
+            / "obs-websocket"
+            / "config.json"
+        )
+    )
+
+
+def _get_source_active_response(client: Any, source_name: str) -> Any:
+    try:
+        return client.get_source_active(source_name=source_name)
+    except TypeError:
+        return client.get_source_active(source_name)
+
+
+def _get_source_screenshot_response(client: Any, source_name: str) -> Any:
+    try:
+        return client.get_source_screenshot(
             source_name=source_name,
             image_format="png",
             image_width=8,
             image_height=8,
         )
+    except TypeError:
+        return client.get_source_screenshot(source_name, "png", 8, 8, 50)
+
+
+def _get_scene_item_list_response(client: Any, scene_name: str) -> Any:
+    try:
+        return client.get_scene_item_list(scene_name=scene_name)
+    except TypeError:
+        return client.get_scene_item_list(scene_name)
+
+
+def _set_scene_item_enabled(
+    client: Any,
+    scene_name: str,
+    item_id: int,
+    enabled: bool,
+) -> Any:
+    try:
+        return client.set_scene_item_enabled(
+            scene_name=scene_name,
+            scene_item_id=item_id,
+            scene_item_enabled=enabled,
+        )
+    except TypeError:
+        return client.set_scene_item_enabled(scene_name, item_id, enabled)
+
+
+def _get_screenshot_hash(client: Any, source_name: str) -> str | None:
+    """Take a tiny screenshot and return its SHA-256 hex digest."""
+    try:
+        resp = _get_source_screenshot_response(client, source_name)
         return hashlib.sha256(resp.image_data.encode()).hexdigest()
     except Exception as exc:
         logger.debug("screenshot failed: %s", exc)
@@ -165,7 +235,7 @@ def _source_error_state(exc: Exception) -> SourceState:
 
 def _is_source_active(client: Any, source_name: str) -> bool:
     try:
-        resp = client.get_source_active(source_name=source_name)
+        resp = _get_source_active_response(client, source_name)
         return bool(resp.video_active)
     except Exception:
         return False
@@ -180,7 +250,7 @@ def _probe_source(
     now: float,
 ) -> ProbeResult:
     try:
-        resp = client.get_source_active(source_name=source_name)
+        resp = _get_source_active_response(client, source_name)
         source_active = bool(resp.video_active)
     except Exception as exc:
         return ProbeResult(
@@ -203,12 +273,7 @@ def _probe_source(
         )
 
     try:
-        resp = client.get_source_screenshot(
-            source_name=source_name,
-            image_format="png",
-            image_width=8,
-            image_height=8,
-        )
+        resp = _get_source_screenshot_response(client, source_name)
         current_hash = hashlib.sha256(resp.image_data.encode()).hexdigest()
     except Exception as exc:
         state = _source_error_state(exc)
@@ -249,7 +314,7 @@ def _find_scene_item(client: Any, source_name: str) -> tuple[str, int] | None:
         return None
 
     try:
-        items = client.get_scene_item_list(scene_name=scene_name)
+        items = _get_scene_item_list_response(client, scene_name)
         for item in items.scene_items:
             if item.get("sourceName") == source_name:
                 return scene_name, item["sceneItemId"]
@@ -261,17 +326,9 @@ def _find_scene_item(client: Any, source_name: str) -> tuple[str, int] | None:
 def _toggle_visibility(client: Any, scene_name: str, item_id: int) -> bool:
     """Set visibility off, wait 1s, set on. Returns True on success."""
     try:
-        client.set_scene_item_enabled(
-            scene_name=scene_name,
-            scene_item_id=item_id,
-            scene_item_enabled=False,
-        )
+        _set_scene_item_enabled(client, scene_name, item_id, False)
         time.sleep(1.0)
-        client.set_scene_item_enabled(
-            scene_name=scene_name,
-            scene_item_id=item_id,
-            scene_item_enabled=True,
-        )
+        _set_scene_item_enabled(client, scene_name, item_id, True)
         return True
     except Exception as exc:
         logger.warning("toggle failed: %s", exc)

@@ -35,10 +35,15 @@ import requests
 
 from agents.operator_awareness.public_filter import public_filter
 from agents.operator_awareness.state import AwarenessState
+from agents.publication_bus.omg_statuslog_publisher import (
+    OMG_STATUSLOG_API_URL,
+    OmgLolStatuslogPublisher,
+)
+from agents.publication_bus.publisher_kit import PublisherPayload
 
 log = logging.getLogger(__name__)
 
-OMG_LOL_API_URL = "https://api.omg.lol/address/{address}/statuses"
+OMG_LOL_API_URL = OMG_STATUSLOG_API_URL
 
 # Statuslog character budget. omg.lol's hard cap is ~500; we render
 # under 280 (Mastodon-compatible) so cross-fanout (Bridgy etc.) is
@@ -160,27 +165,33 @@ def fanout(
         _record("skipped")
         return "skipped"
 
-    sess = session or requests
-    url = OMG_LOL_API_URL.format(address=address)
-    try:
-        resp = sess.post(
-            url,
-            headers={"Authorization": f"Bearer {token}"},
-            json={"content": text, "skip_mastodon_post": skip_mastodon},
-            timeout=timeout_s,
+    publisher = OmgLolStatuslogPublisher(session=session or requests)
+    result = publisher.publish(
+        PublisherPayload(
+            target=address,
+            text=text,
+            metadata={
+                "token": token,
+                "skip_mastodon_post": skip_mastodon,
+                "timeout_s": timeout_s,
+            },
         )
-    except requests.exceptions.RequestException:
-        log.warning("omg.lol fanout network error", exc_info=True)
-        _record("network_error")
-        return "network_error"
-
-    if 200 <= resp.status_code < 300:
+    )
+    if result.ok:
         _write_last_hash(last_hash_path, h)
         _record("ok")
         return "ok"
-    log.warning("omg.lol fanout HTTP %s", resp.status_code)
-    _record("http_error")
-    return "http_error"
+    if result.refused:
+        _record("refused")
+        return "refused"
+    if result.detail.startswith("network_error"):
+        _record("network_error")
+        return "network_error"
+    if result.detail.startswith("http_error"):
+        _record("http_error")
+        return "http_error"
+    _record("error")
+    return "error"
 
 
 def fanout_once(

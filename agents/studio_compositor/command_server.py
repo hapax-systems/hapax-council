@@ -29,22 +29,19 @@ import difflib
 import json
 import logging
 import math
-import os
 import socket
 import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from agents.studio_compositor.layout_fragment_guard import (
+    segment_fragment_layout_error,
+)
 from agents.studio_compositor.layout_state import LayoutState
 from shared.compositor_model import Layout
 
 log = logging.getLogger(__name__)
-
-_DIRECTOR_SEGMENT_SOURCE = "director_segment_runner"
-_DIRECTOR_SEGMENT_FRAGMENT_ENV = "HAPAX_DIRECTOR_SEGMENT_FRAGMENT_LAYOUTS_ENABLED"
-_DIRECTOR_SEGMENT_MIN_SOURCES_ENV = "HAPAX_DIRECTOR_SEGMENT_MIN_LAYOUT_SOURCES"
-_DEFAULT_DIRECTOR_SEGMENT_MIN_SOURCES = 6
 
 
 class _CommandError(Exception):
@@ -328,55 +325,18 @@ def _layout_name_hint(server: CommandServer, name: str) -> str:
         return ""
 
 
-def _env_truthy(name: str, *, default: bool = False) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_int(name: str, *, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return default
-
-
 def _director_segment_fragment_error(
     args: dict[str, Any],
     *,
     layout_name: str,
     layout: Layout,
 ) -> dict[str, Any] | None:
-    if args.get("source") != _DIRECTOR_SEGMENT_SOURCE:
-        return None
-    if not layout_name.startswith("segment-"):
-        return None
-    if _env_truthy(_DIRECTOR_SEGMENT_FRAGMENT_ENV):
-        return None
-    min_sources = max(
-        1,
-        _env_int(
-            _DIRECTOR_SEGMENT_MIN_SOURCES_ENV,
-            default=_DEFAULT_DIRECTOR_SEGMENT_MIN_SOURCES,
-        ),
+    source = args.get("source")
+    return segment_fragment_layout_error(
+        layout_name=layout_name,
+        layout=layout,
+        source=source if isinstance(source, str) else None,
     )
-    source_count = len(getattr(layout, "sources", ()) or ())
-    if source_count >= min_sources:
-        return None
-    return {
-        "error": "segment_fragment_layout_not_full_surface",
-        "layout_name": layout_name,
-        "source_count": source_count,
-        "min_source_count": min_sources,
-        "hint": (
-            "director segment layouts are whole-surface activations; "
-            "fragment panels must not replace the livestream surface"
-        ),
-    }
 
 
 def _handle_activate_layout(server: CommandServer, args: dict[str, Any]) -> dict[str, Any]:

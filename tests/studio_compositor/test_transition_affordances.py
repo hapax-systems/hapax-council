@@ -32,6 +32,7 @@ from agents.studio_compositor import random_mode
 from agents.studio_compositor.transition_primitives import (
     DITHER_FLIPS,
     FADE_STEPS,
+    MIN_TRANSITION_BRIGHTNESS,
     NETSPLIT_IN_STEPS,
     NETSPLIT_OUT_STEPS,
     PRIMITIVES,
@@ -80,7 +81,7 @@ def test_fade_smooth_brightness_descends_then_ascends() -> None:
     in_phase = [g["nodes"]["cg"]["params"]["brightness"] for g in captured[FADE_STEPS:]]
     assert out_phase == sorted(out_phase, reverse=True)
     assert in_phase == sorted(in_phase)
-    assert out_phase[-1] == pytest.approx(0.0)
+    assert out_phase[-1] == pytest.approx(MIN_TRANSITION_BRIGHTNESS)
     assert in_phase[-1] == pytest.approx(1.0)
 
 
@@ -97,13 +98,15 @@ def test_cut_hard_works_without_outgoing_graph() -> None:
     assert len(captured) == 1
 
 
-def test_netsplit_burst_emits_dark_hold() -> None:
+def test_netsplit_burst_emits_bounded_floor_hold() -> None:
     captured, writer = _capture()
     netsplit_burst(_graph_with_brightness(1.0), _graph_with_brightness(1.0), writer, _no_sleep)
-    expected = NETSPLIT_OUT_STEPS + 1 + NETSPLIT_IN_STEPS  # out + dark hold + in
+    expected = NETSPLIT_OUT_STEPS + 1 + NETSPLIT_IN_STEPS
     assert len(captured) == expected
-    # The middle write is the held-dark frame at brightness 0
-    assert captured[NETSPLIT_OUT_STEPS]["nodes"]["cg"]["params"]["brightness"] == pytest.approx(0.0)
+    # The middle write is a bounded floor pulse, never a black frame.
+    assert captured[NETSPLIT_OUT_STEPS]["nodes"]["cg"]["params"]["brightness"] == pytest.approx(
+        MIN_TRANSITION_BRIGHTNESS
+    )
 
 
 def test_ticker_scroll_uses_sigmoid_curve() -> None:
@@ -159,6 +162,16 @@ def test_primitive_outputs_are_pairwise_distinct() -> None:
         sig = tuple(stream)
         assert sig not in seen, f"{name} produced an aliased mutation stream"
         seen.add(sig)
+
+
+def test_transition_primitives_do_not_blank_colorgrade_brightness() -> None:
+    out_g = _graph_with_brightness(1.0)
+    in_g = _graph_with_brightness(1.0)
+    for fn in PRIMITIVES.values():
+        captured, writer = _capture()
+        fn(out_g, in_g, writer, _no_sleep)
+        brightnesses = [g["nodes"]["cg"]["params"]["brightness"] for g in captured]
+        assert min(brightnesses) >= MIN_TRANSITION_BRIGHTNESS
 
 
 # ── compositional_affordances catalog ──────────────────────────────────────

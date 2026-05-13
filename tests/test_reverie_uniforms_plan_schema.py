@@ -398,7 +398,7 @@ def test_write_uniforms_end_to_end_produces_expected_keys(tmp_path: Path):
     result = json.loads(uniforms_file.read_text())
 
     # Every plan-default key is present with base + delta applied.
-    assert result["noise.amplitude"] == pytest.approx(0.7 + 0.1)
+    assert result["noise.amplitude"] == pytest.approx(0.25)
     assert result["noise.frequency_x"] == pytest.approx(1.5)  # no delta
     assert result["rd.feed_rate"] == pytest.approx(0.055 + -0.005)
     assert result["color.saturation"] == pytest.approx(1.0 + 0.2)
@@ -407,11 +407,11 @@ def test_write_uniforms_end_to_end_produces_expected_keys(tmp_path: Path):
     assert result["content.material"] == pytest.approx(1.0)
     # content.salience was overwritten by salience × silence (silence=1.0
     # for fresh imagination).
-    assert result["content.salience"] == pytest.approx(0.4)
+    assert result["content.salience"] == pytest.approx(0.35)
     # content.intensity — F8 restored the passthrough now that Rust routes
     # content.* into UniformData.custom[0][0..2]. With fresh imagination
     # (silence=1.0), intensity mirrors salience × silence.
-    assert result["content.intensity"] == pytest.approx(0.4)
+    assert result["content.intensity"] == pytest.approx(0.35)
 
     # Signal keys present.
     assert result["signal.stance"] == pytest.approx(0.25)  # cautious
@@ -469,8 +469,7 @@ def test_write_uniforms_silence_attenuation_when_imagination_stale(tmp_path: Pat
 
     result = json.loads(uniforms_file.read_text())
     # silence = max(0.15, 0.0) = 0.15
-    # noise.amplitude = 0.7 + 0.5 * 1.0 * 0.15 = 0.775
-    assert result["noise.amplitude"] == pytest.approx(0.7 + 0.5 * 0.15)
+    assert result["noise.amplitude"] == pytest.approx(0.25)
 
 
 def test_write_uniforms_silence_floor_when_imagination_missing(tmp_path: Path):
@@ -501,7 +500,7 @@ def test_write_uniforms_silence_floor_when_imagination_missing(tmp_path: Path):
 
     result = json.loads(uniforms_file.read_text())
     # silence = 0.15 (SILENCE_FLOOR, imagination is None)
-    assert result["noise.amplitude"] == pytest.approx(0.7 + 0.5 * 0.15)
+    assert result["noise.amplitude"] == pytest.approx(0.25)
     # imagination is None, so content.* keys should NOT be written by the
     # imagination branch. The minimal fixture has no content node in plan,
     # so no content.* keys should be in the result.
@@ -674,7 +673,7 @@ def test_write_uniforms_passes_normal_values_through(tmp_path: Path):
         )
 
     result = json.loads(uniforms_file.read_text())
-    assert result["noise.amplitude"] == pytest.approx(0.7 + 0.1)
+    assert result["noise.amplitude"] == pytest.approx(0.25)
     # color.hue_rotate is now derived from PALETTE_HINT[mode][0] by U8
     # imagination-tint (#2378) — the chain delta is overwritten by the
     # mode-bias derivation. Just check the key is present.

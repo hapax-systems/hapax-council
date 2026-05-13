@@ -262,9 +262,16 @@ class PipelineManager:
                 return
             src = self._interpipe_srcs.get(role)
             cam = self._cameras.get(role)
+            fb = self._fallbacks.get(role)
         if src is None or cam is None:
             return
         src.set_property("listen-to", cam.sink_name)
+        stop_fallback = getattr(fb, "stop", None)
+        if callable(stop_fallback):
+            try:
+                stop_fallback()
+            except Exception:
+                log.exception("swap_to_primary: failed to stop fallback pipeline for %s", role)
         metrics.on_swap(role, to_fallback=False)
         log.info("swap_to_primary: role=%s → %s", role, cam.sink_name)
 

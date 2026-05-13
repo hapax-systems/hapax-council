@@ -54,7 +54,7 @@ dependencies = [
     "atproto>=0.0.65",
     "mastodon-py>=2.2.1",
     "mcp>=1.26",
-    "agentgov",
+    "hapax-agentgov",
 ]
 
 [project.optional-dependencies]
@@ -193,4 +193,4 @@ markers = [
 ]
 
 [tool.uv.sources]
-agentgov = { path = "packages/agentgov", editable = true }
+hapax-agentgov = { path = "packages/agentgov", editable = true }

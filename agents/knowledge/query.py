@@ -120,6 +120,7 @@ def create_agent() -> Agent:
         content_type: str = "",
         days_back: int = 0,
         limit: int = 10,
+        include_inventory: bool = False,
     ) -> str:
         """Search the documents collection via semantic similarity."""
         from agents._knowledge_search import search_documents
@@ -130,6 +131,7 @@ def create_agent() -> Agent:
             content_type=content_type or None,
             days_back=days_back or None,
             limit=limit,
+            include_inventory=include_inventory,
         )
 
     @agent.tool

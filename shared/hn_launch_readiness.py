@@ -28,6 +28,13 @@ class ReadinessStatus(StrEnum):
     FAIL = "fail"
 
 
+LOGOS_API_WARNING_CLASSIFICATION = "non_blocking_hn_launch_warning"
+LOGOS_API_WARNING_RATIONALE = (
+    "HN launch requires logos-api liveness plus ready/ok SHM health; failed aggregate "
+    "/api/health sub-checks are recorded as non-launch-critical platform posture debt."
+)
+
+
 @dataclass(frozen=True)
 class CheckResult:
     id: str
@@ -54,7 +61,7 @@ class ReadinessReport:
 
     @property
     def ready(self) -> bool:
-        return all(check.status is ReadinessStatus.PASS for check in self.checks)
+        return not any(check.status is ReadinessStatus.FAIL for check in self.checks)
 
     @property
     def status(self) -> ReadinessStatus:
@@ -216,7 +223,7 @@ def soak_hn_launch_readiness(
     failed_samples = [
         {"sample_index": index, "failures": sample.to_dict()["failures"]}
         for index, sample in enumerate(samples)
-        if not sample.ready
+        if sample.status is ReadinessStatus.FAIL
     ]
     soak_check = CheckResult(
         id="thirty_minute_soak",
@@ -261,6 +268,11 @@ def _check_compositor_visual_surface(context: _CheckContext) -> CheckResult:
             context.now_epoch,
             config.runtime_json_max_age_s,
         ),
+        "current_layout_state": _probe_json_file(
+            config.compositor_root / "current-layout-state.json",
+            context.now_epoch,
+            config.runtime_json_max_age_s,
+        ),
         "ward_properties": _probe_json_file(
             config.compositor_root / "ward-properties.json",
             context.now_epoch,
@@ -275,8 +287,12 @@ def _check_compositor_visual_surface(context: _CheckContext) -> CheckResult:
 
     active_wards = _json_payload(file_results["active_wards"])
     ward_ids = active_wards.get("ward_ids") if isinstance(active_wards, Mapping) else None
-    has_wards = isinstance(ward_ids, Sequence) and bool(ward_ids)
-    layout_mode = _read_text_file(config.compositor_root / "layout-mode.txt").strip()
+    has_wards = isinstance(ward_ids, Sequence) and not isinstance(ward_ids, str) and bool(ward_ids)
+    layout_state = _json_payload(file_results["current_layout_state"])
+    layout_mode_value = (
+        layout_state.get("layout_mode") if isinstance(layout_state, Mapping) else None
+    )
+    layout_mode = layout_mode_value if isinstance(layout_mode_value, str) else ""
     has_sierpinski = layout_mode == "sierpinski"
 
     failed_reasons: list[str] = []
@@ -304,6 +320,7 @@ def _check_compositor_visual_surface(context: _CheckContext) -> CheckResult:
             "files": file_results,
             "active_cameras": active_cameras,
             "layout_mode": layout_mode or None,
+            "current_layout_state": layout_state if isinstance(layout_state, Mapping) else None,
             "ward_count": len(ward_ids) if isinstance(ward_ids, Sequence) else 0,
             "egress_compositor": compositor_evidence,
             "egress_error": egress.get("error"),
@@ -455,6 +472,8 @@ def _check_logos_api(context: _CheckContext) -> CheckResult:
     shm_payload = _json_payload(shm_health)
     api_health = _get_json_safe(context.json_getter, f"{context.config.logos_base_url}/api/health")
     api_payload = api_health.get("data")
+    api_overall_status = None
+    api_failed_checks: list[str] = []
 
     failed_reasons: list[str] = []
     warning_reasons: list[str] = []
@@ -469,9 +488,19 @@ def _check_logos_api(context: _CheckContext) -> CheckResult:
     if api_health.get("error"):
         failed_reasons.append("logos API health endpoint is unreachable")
     elif isinstance(api_payload, Mapping):
-        overall = api_payload.get("overall_status") or api_payload.get("status")
-        if overall not in {"healthy", "ok"}:
-            warning_reasons.append(f"logos API overall status is {overall!r}")
+        api_overall_status = api_payload.get("overall_status") or api_payload.get("status")
+        api_failed_checks = _string_list(api_payload.get("failed_checks"))
+        if api_overall_status not in {"healthy", "ok"}:
+            failed_checks_summary = (
+                f"; failed health checks: {', '.join(api_failed_checks)}"
+                if api_failed_checks
+                else ""
+            )
+            warning_reasons.append(
+                f"logos API overall status is {api_overall_status!r}"
+                f"; classified as {LOGOS_API_WARNING_CLASSIFICATION}"
+                f"{failed_checks_summary}"
+            )
 
     if failed_reasons:
         status = ReadinessStatus.FAIL
@@ -495,7 +524,11 @@ def _check_logos_api(context: _CheckContext) -> CheckResult:
             "shm_ready": shm_payload.get("ready") if isinstance(shm_payload, Mapping) else None,
             "shm_status": shm_payload.get("status") if isinstance(shm_payload, Mapping) else None,
             "api_health": api_payload,
+            "api_overall_status": api_overall_status,
+            "api_failed_checks": api_failed_checks,
             "api_error": api_health.get("error"),
+            "warning_classification": LOGOS_API_WARNING_CLASSIFICATION if warning_reasons else None,
+            "warning_rationale": LOGOS_API_WARNING_RATIONALE if warning_reasons else None,
         },
     )
 
@@ -900,6 +933,12 @@ def _probe_json_file(
 
 def _json_payload(probe: Mapping[str, Any]) -> Any:
     return probe.get("json")
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes | bytearray):
+        return []
+    return [item for item in value if isinstance(item, str)]
 
 
 def _read_text_file(path: Path) -> str:

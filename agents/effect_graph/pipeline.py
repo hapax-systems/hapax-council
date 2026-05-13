@@ -41,6 +41,34 @@ class SlotPipeline:
         self._slot_last_frag: list[str | None] = [None] * num_slots
         self._slot_is_temporal: list[bool] = [False] * num_slots
 
+    def _bounded_params(self, node_type: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Clamp params to manifest bounds plus live-surface safety bounds."""
+        out = dict(params)
+        defn = self._registry.get(node_type)
+        if defn:
+            for key, value in list(out.items()):
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    continue
+                pdef = defn.params.get(key)
+                if pdef is None:
+                    continue
+                bounded = float(value)
+                if pdef.min is not None:
+                    bounded = max(bounded, float(pdef.min))
+                if pdef.max is not None:
+                    bounded = min(bounded, float(pdef.max))
+                out[key] = bounded
+
+        try:
+            from agents.studio_compositor.preset_policy import (
+                apply_live_surface_param_bounds,
+            )
+
+            out = apply_live_surface_param_bounds(node_type, out)
+        except ImportError:
+            log.debug("live-surface param policy unavailable for %s", node_type, exc_info=True)
+        return out
+
     def create_slots(self, Gst: Any, plan: ExecutionPlan | None = None) -> list[Any]:
         """Create N glfeedback slot elements.
 
@@ -200,10 +228,11 @@ class SlotPipeline:
                 log.warning("More nodes than slots (%d) — truncating", self._num_slots)
                 break
             if step.shader_source:
+                params = self._bounded_params(step.node_type, step.params)
                 self._slot_pending_frag[slot_idx] = step.shader_source
                 self._slot_assignments[slot_idx] = step.node_type
-                self._slot_base_params[slot_idx] = dict(step.params)
-                self._slot_preset_params[slot_idx] = dict(step.params)
+                self._slot_base_params[slot_idx] = params
+                self._slot_preset_params[slot_idx] = dict(params)
                 slot_idx += 1
 
         # Apply changes to each slot. Diff against last-set fragment so
@@ -309,6 +338,10 @@ class SlotPipeline:
                     self._slot_base_params[slot_idx][key] = combined
                 else:
                     self._slot_base_params[slot_idx][key] = val
+            self._slot_base_params[slot_idx] = self._bounded_params(
+                assigned,
+                self._slot_base_params[slot_idx],
+            )
             if self._slot_is_temporal[slot_idx]:
                 self._apply_glfeedback_uniforms(slot_idx)
             else:

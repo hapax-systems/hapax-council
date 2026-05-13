@@ -17,6 +17,8 @@ from agents.studio_compositor.ward_stimmung_modulator import WardStimmungModulat
 @pytest.fixture
 def enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(_wsm.ENABLE_ENV, "1")
+    monkeypatch.setenv(_wsm.VISUAL_PUMPING_ENV, "1")
+    monkeypatch.delenv(_wsm.ALPHA_MODULATION_ENV, raising=False)
     monkeypatch.delenv(_wsm.MAX_ALPHA_STEP_ENV, raising=False)
     monkeypatch.delenv(_wsm.MAX_Z_INDEX_STEP_ENV, raising=False)
     monkeypatch.delenv(_wsm.DEPTH_CONTRAST_ENV, raising=False)
@@ -259,6 +261,29 @@ def test_default_z_index_step_recovers_spatial_variance_without_alpha_flash(
     # Codified at 0.4 per operator's variance-recovery env-knock
     # (`HAPAX_WARD_MODULATOR_MAX_Z_INDEX_STEP=0.4`); previously 0.18.
     assert pytest.approx(0.4) == _wsm.MAX_Z_INDEX_STEP
+
+
+def test_no_pumping_freezes_alpha_but_keeps_z_index_motion(
+    enabled: None, current_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No-pumping mode restores the modulator without opacity/luma pulsing."""
+    monkeypatch.setenv(_wsm.VISUAL_PUMPING_ENV, "0")
+    _write_current(current_path, {"depth": 1.0, "coherence": 1.0})
+    mod = WardStimmungModulator(current_path=current_path, tick_every_n=1)
+    base = WardProperties(z_plane="beyond-scrim", alpha=0.82, z_index_float=0.8)
+    captured: dict[str, WardProperties] = {}
+
+    def _capture(ward_id: str, props: WardProperties, ttl_s: float) -> None:
+        captured[ward_id] = props
+
+    with (
+        patch.object(_wsm, "get_specific_ward_properties", return_value=base),
+        patch.object(_wsm, "set_ward_properties", side_effect=_capture),
+    ):
+        mod.maybe_tick()
+    sample = next(iter(captured.values()))
+    assert sample.alpha == pytest.approx(base.alpha)
+    assert sample.z_index_float < base.z_index_float
 
 
 def test_does_not_override_z_plane(enabled: None, current_path: Path) -> None:

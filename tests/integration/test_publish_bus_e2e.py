@@ -24,6 +24,7 @@ from unittest import mock
 
 from prometheus_client import CollectorRegistry
 
+from agents.publication_bus.publisher_kit import PublisherResult
 from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY, Orchestrator
 from shared.preprint_artifact import PreprintArtifact
 from shared.publication_hardening.review import ReviewReport
@@ -163,9 +164,11 @@ class TestPhase1PublishBusEndToEnd:
 
         from agents.cross_surface import bluesky_post
 
-        client_mock = mock.Mock()
-        client_mock.send_post = mock.Mock(return_value=None)
-        with mock.patch.object(bluesky_post, "_default_client_factory", return_value=client_mock):
+        publisher_mock = mock.Mock()
+        publisher_mock.publish = mock.Mock(return_value=PublisherResult(ok=True, detail="at://ok"))
+        with mock.patch.object(
+            bluesky_post, "_default_publisher_factory", return_value=publisher_mock
+        ):
             handled = orch.run_once()
 
         assert handled == 1
@@ -174,7 +177,7 @@ class TestPhase1PublishBusEndToEnd:
 
         # The publisher was called with the artifact's attribution_block as the
         # body, since attribution_block takes precedence over title/abstract.
-        called_text = client_mock.send_post.call_args.kwargs["text"]
+        called_text = publisher_mock.publish.call_args.args[0].text
         assert "Hapax + Claude Code" in called_text
         assert "unsettled contribution as feature" in called_text
 
@@ -219,11 +222,13 @@ class TestPhase1PublishBusEndToEnd:
             registry=CollectorRegistry(),
         )
 
-        from agents.cross_surface import arena_post
+        from agents.publication_bus import arena_publisher
 
         adapter_mock = mock.Mock()
         adapter_mock.add_block = mock.Mock(return_value=None)
-        with mock.patch.object(arena_post, "_default_client_factory", return_value=adapter_mock):
+        with mock.patch.object(
+            arena_publisher, "_default_client_factory", return_value=adapter_mock
+        ):
             handled = orch.run_once()
 
         assert handled == 1
@@ -268,9 +273,11 @@ class TestPhase1PublishBusEndToEnd:
 
         from agents.cross_surface import bluesky_post
 
-        client_mock = mock.Mock()
-        client_mock.send_post = mock.Mock(return_value=None)
-        with mock.patch.object(bluesky_post, "_default_client_factory", return_value=client_mock):
+        publisher_mock = mock.Mock()
+        publisher_mock.publish = mock.Mock(return_value=PublisherResult(ok=True, detail="at://ok"))
+        with mock.patch.object(
+            bluesky_post, "_default_publisher_factory", return_value=publisher_mock
+        ):
             handled = orch.run_once()
 
         assert handled == 1

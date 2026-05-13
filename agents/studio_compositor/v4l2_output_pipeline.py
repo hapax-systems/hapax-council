@@ -366,6 +366,12 @@ class V4l2OutputPipeline:
 
         try:
             data = bytes(map_info.data)
+            try:
+                from . import metrics as _m
+
+                _m.record_v4l2_appsink_copy(len(data))
+            except Exception:
+                pass
             written = self._write_frame(data)
         finally:
             buf.unmap(map_info)

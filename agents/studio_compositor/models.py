@@ -49,6 +49,10 @@ class CameraSpec(BaseModel):
     orientation: str = "identity"
     input_format: str = "mjpeg"
     pixel_format: str | None = None
+    # GStreamer watchdog timeout for this camera producer. Physical USB
+    # cameras should stay tight; RTSP/v4l2loopback bridge sources need more
+    # tolerance for network/bridge jitter without thrashing the compositor.
+    watchdog_timeout_ms: int = 2000
     hero: bool = False
     # ── Task #135 camera classification metadata ────────────────────────
     # All optional with sensible defaults so legacy config keeps working.

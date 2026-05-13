@@ -201,6 +201,9 @@ def test_generate_metadata_stub():
     assert "platform: google" in stub
     assert "service: drive" in stub
     assert "source_service: gdrive" in stub
+    assert "is_metadata_only: true" in stub
+    assert "content_tier: metadata_only" in stub
+    assert "retrieval_eligible: false" in stub
     assert "drum-break.wav" in stub
     assert "audio/wav" in stub
     assert "Drum Breaks" in stub
