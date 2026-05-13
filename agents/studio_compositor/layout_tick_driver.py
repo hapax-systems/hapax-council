@@ -869,9 +869,16 @@ class _LayoutStoreAdapter:
 class _RenderedLayoutStateAdapter(_LayoutStoreAdapter):
     """Bridge LayoutStore templates into rendered LayoutState authority."""
 
-    def __init__(self, store: Any, rendered_layout_state: Any) -> None:
+    def __init__(
+        self,
+        store: Any,
+        rendered_layout_state: Any,
+        *,
+        layout_activation_callback: Any | None = None,
+    ) -> None:
         super().__init__(store)
         self._rendered_layout_state = rendered_layout_state
+        self._layout_activation_callback = layout_activation_callback
 
     def get_active(self) -> Any:
         return self._rendered_layout_state.get()
@@ -887,6 +894,8 @@ class _RenderedLayoutStateAdapter(_LayoutStoreAdapter):
         name = getattr(new_layout, "name", None)
         if not isinstance(name, str) or not name:
             raise ValueError("layout returned from mutate() lacks a 'name' attribute")
+        if self._layout_activation_callback is not None:
+            self._layout_activation_callback(name, new_layout)
         self._rendered_layout_state.mutate(lambda _previous: new_layout)
         if not self._store.set_active(name):
             raise KeyError(f"layout {name!r} not loaded in LayoutStore")
@@ -1843,7 +1852,15 @@ def start_layout_tick_driver(compositor: Any) -> threading.Thread | None:
     switcher._responsible_segment_state = {}  # type: ignore[attr-defined]
     rendered_layout_state = getattr(compositor, "layout_state", None)
     adapter = (
-        _RenderedLayoutStateAdapter(store, rendered_layout_state)
+        _RenderedLayoutStateAdapter(
+            store,
+            rendered_layout_state,
+            layout_activation_callback=getattr(
+                compositor,
+                "_prepare_control_plane_layout_activation",
+                None,
+            ),
+        )
         if rendered_layout_state is not None
         else _LayoutStoreAdapter(store)
     )
