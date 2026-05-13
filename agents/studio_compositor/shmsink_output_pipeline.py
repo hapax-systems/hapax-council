@@ -112,6 +112,22 @@ class ShmsinkOutputPipeline:
             queue.set_property("max-size-bytes", 0)
             queue.set_property("max-size-time", 0)
 
+            rate = Gst.ElementFactory.make("videorate", "shm_out_videorate")
+            if rate is None:
+                raise RuntimeError("videorate factory failed")
+            rate.set_property("skip-to-first", True)
+            _set_optional_property(rate, "max-closing-segment-duplication-duration", 0)
+
+            rate_caps = Gst.ElementFactory.make("capsfilter", "shm_out_rate_caps")
+            if rate_caps is None:
+                raise RuntimeError("capsfilter factory failed")
+            rate_caps.set_property(
+                "caps",
+                Gst.Caps.from_string(
+                    f"video/x-raw,width={self._width},height={self._height},framerate={self._fps}/1"
+                ),
+            )
+
             convert = Gst.ElementFactory.make("videoconvert", "shm_out_convert")
             convert.set_property("dither", 0)
 
@@ -136,10 +152,12 @@ class ShmsinkOutputPipeline:
             sink.set_property("wait-for-connection", False)
             sink.set_property("sync", False)
 
-            for el in (src, queue, convert, caps, sink):
+            for el in (src, queue, rate, rate_caps, convert, caps, sink):
                 pipeline.add(el)
             src.link(queue)
-            queue.link(convert)
+            queue.link(rate)
+            rate.link(rate_caps)
+            rate_caps.link(convert)
             convert.link(caps)
             caps.link(sink)
 
