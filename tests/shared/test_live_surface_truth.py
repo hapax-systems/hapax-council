@@ -168,6 +168,32 @@ def test_bridge_mode_can_be_healthy_with_bridge_write_and_decoded_frame_proof() 
     assert assessment.state is LiveSurfaceState.HEALTHY
 
 
+def test_bridge_mode_accepts_obs_decoder_motion_when_video42_has_exclusive_reader() -> None:
+    snapshot = LiveSurfaceSnapshot(
+        service_active=True,
+        bridge_active=True,
+        cameras_total=6,
+        cameras_healthy=6,
+        v4l2_egress_mode=V4l2EgressMode.BRIDGE,
+        shmsink_frames_total=100,
+        shmsink_last_frame_age_seconds=0.1,
+        bridge_write_frames_total=10,
+        bridge_write_bytes_total=1024,
+        bridge_write_errors_total=0,
+        bridge_heartbeat_age_seconds=0.5,
+        obs_source_active=True,
+        obs_playing=False,
+        obs_screenshot_changed=True,
+        obs_screenshot_flat=False,
+        obs_screenshot_age_seconds=0.2,
+    )
+
+    assessment = assess_live_surface(snapshot, require_obs_decoder=True)
+
+    assert assessment.state is LiveSurfaceState.HEALTHY
+    assert "decoded_video42_no_frames" not in assessment.reasons
+
+
 def test_obs_playing_without_decoder_motion_is_not_restored() -> None:
     snapshot = LiveSurfaceSnapshot(
         service_active=True,

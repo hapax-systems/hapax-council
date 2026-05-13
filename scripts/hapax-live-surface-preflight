@@ -66,12 +66,18 @@ FULL_SURFACE_LEGACY_STATIC_LAYOUTS = frozenset({"default", "garage-door"})
 FULL_SURFACE_STAGE_FPS_FLOORS = (
     ("compositor_src", 29.5, "LSC-PERF-001"),
     ("output_tee_sink", 29.0, "LSC-PERF-001"),
-    ("v4l2_appsink", 29.5, "LSC-EGRESS-001"),
     ("hls_parser_src", 29.0, "LSC-EGRESS-002"),
+)
+FULL_SURFACE_DIRECT_STAGE_FPS_FLOORS = (
+    ("v4l2_appsink", 29.5, "LSC-EGRESS-001"),
     # Final-egress proof snapshots are diagnostic consumer-boundary samples,
     # not the frame-rate path itself. V4l2OutputPipeline defaults to one proof
     # JPEG per second; frame cadence is enforced on v4l2_appsink/HLS above.
     ("final_egress_snapshot", 0.8, "LSC-VIEWER-001"),
+)
+FULL_SURFACE_BRIDGE_COUNTER_FPS_FLOORS = (
+    ("shmsink_bridge", "studio_compositor_shmsink_frames_total", 29.5, "LSC-EGRESS-001"),
+    ("v4l2_bridge_writer", "hapax_v4l2_bridge_write_frames_total", 29.5, "LSC-EGRESS-001"),
 )
 FULL_SURFACE_CPU_TARGET_CORES = 2.0
 FULL_SURFACE_MAX_RSS_GROWTH_BYTES = 128 * 1024 * 1024
@@ -83,6 +89,10 @@ FULL_SURFACE_MAX_GLFEEDBACK_RECOMPILE_DELTA = 8
 DEFAULT_FINAL_FRAME_IMAGE = Path("/dev/shm/hapax-compositor/fx-snapshot.jpg")
 DEFAULT_UPSTREAM_FRAME_IMAGE = Path("/dev/shm/hapax-compositor/snapshot.jpg")
 DEFAULT_LAYOUT_STATE_JSON = Path("/dev/shm/hapax-compositor/current-layout-state.json")
+DEFAULT_EXTRA_METRICS_FILES = (
+    Path.home() / ".local/share/node_exporter/textfile_collector/hapax-live-surface-guard.prom",
+    Path("/dev/shm/hapax-compositor/v4l2-bridge.prom"),
+)
 FINAL_PIXEL_PROOF_MIN_FRAMES = 6
 DEFAULT_MAX_UNCLASSIFIED_BLACK_FRACTION = 0.08
 
@@ -215,11 +225,40 @@ def _selected_proc_env(pid: int | None) -> dict[str, str]:
 def _load_metrics(args: argparse.Namespace) -> str:
     metrics_file_after = getattr(args, "metrics_file_after", None)
     if metrics_file_after and getattr(args, "_loading_after_sample", False):
-        return Path(metrics_file_after).read_text(encoding="utf-8")
-    if args.metrics_file:
-        return Path(args.metrics_file).read_text(encoding="utf-8")
-    with urllib.request.urlopen(args.metrics_url, timeout=2.0) as response:
-        return response.read().decode("utf-8", "replace")
+        text = Path(metrics_file_after).read_text(encoding="utf-8")
+    elif args.metrics_file:
+        text = Path(args.metrics_file).read_text(encoding="utf-8")
+    else:
+        with urllib.request.urlopen(args.metrics_url, timeout=2.0) as response:
+            text = response.read().decode("utf-8", "replace")
+    extra_files = args.extra_metrics_file
+    if extra_files is None:
+        extra_files = [] if args.metrics_file else list(DEFAULT_EXTRA_METRICS_FILES)
+    for path in extra_files:
+        text = _append_metrics_file(text, path)
+    return text
+
+
+def _append_metrics_file(text: str, path: Path) -> str:
+    try:
+        extra_text = path.read_text(encoding="utf-8")
+        age_seconds = max(0.0, time.time() - path.stat().st_mtime)
+    except OSError:
+        return text
+    extra_metrics = parse_prometheus_scalars(extra_text)
+    heartbeat = extra_metrics.get("hapax_v4l2_bridge_heartbeat_seconds_ago")
+    if heartbeat is not None:
+        extra_text = (
+            f"{extra_text.rstrip()}\n"
+            f"hapax_v4l2_bridge_heartbeat_seconds_ago {max(heartbeat, age_seconds)}\n"
+        )
+    obs_age = extra_metrics.get("hapax_obs_decoder_screenshot_seconds_ago")
+    if obs_age is not None:
+        extra_text = (
+            f"{extra_text.rstrip()}\n"
+            f"hapax_obs_decoder_screenshot_seconds_ago {max(obs_age, age_seconds)}\n"
+        )
+    return f"{text.rstrip()}\n{extra_text}"
 
 
 def _proc_cpu_seconds(pid: int | None) -> float | None:
@@ -384,6 +423,25 @@ def _render_stage_count(metrics: dict[str, float], stage: str) -> float | None:
     return metrics.get(f"studio_compositor_render_stage_frames_total:stage:{stage}")
 
 
+def _bridge_mode_active(metrics: dict[str, float]) -> bool:
+    if metrics.get("studio_compositor_runtime_feature_active:feature:shmsink_bridge", 0) > 0:
+        return True
+    return "hapax_v4l2_bridge_write_frames_total" in metrics
+
+
+def _counter_rate(
+    before_metrics: dict[str, float],
+    after_metrics: dict[str, float],
+    name: str,
+    elapsed: float,
+) -> float | None:
+    before = before_metrics.get(name)
+    after = after_metrics.get(name)
+    if before is None or after is None:
+        return None
+    return max(0.0, (after - before) / elapsed)
+
+
 def _metric_delta(
     before_metrics: dict[str, float],
     after_metrics: dict[str, float],
@@ -538,6 +596,38 @@ def _full_surface_performance_sample(
                 )
             )
 
+    if _bridge_mode_active(before_metrics) or _bridge_mode_active(after_metrics):
+        for label, metric_name, floor_fps, criterion_id in FULL_SURFACE_BRIDGE_COUNTER_FPS_FLOORS:
+            fps = _counter_rate(before_metrics, after_metrics, metric_name, elapsed)
+            rates[label] = fps
+            if fps is None:
+                failures.append(_full_surface_reason(criterion_id, f"stage_fps_unknown:{label}"))
+                continue
+            if fps < floor_fps:
+                failures.append(
+                    _full_surface_reason(
+                        criterion_id,
+                        f"stage_fps_below_floor:{label}:{fps:.2f}<{floor_fps:.2f}",
+                    )
+                )
+    else:
+        for stage, floor_fps, criterion_id in FULL_SURFACE_DIRECT_STAGE_FPS_FLOORS:
+            before = _render_stage_count(before_metrics, stage)
+            after = _render_stage_count(after_metrics, stage)
+            if before is None or after is None:
+                rates[stage] = None
+                failures.append(_full_surface_reason(criterion_id, f"stage_fps_unknown:{stage}"))
+                continue
+            fps = max(0.0, (after - before) / elapsed)
+            rates[stage] = fps
+            if fps < floor_fps:
+                failures.append(
+                    _full_surface_reason(
+                        criterion_id,
+                        f"stage_fps_below_floor:{stage}:{fps:.2f}<{floor_fps:.2f}",
+                    )
+                )
+
     resource_failures, resource_deltas = _full_surface_resource_delta_failures(
         before_metrics,
         after_metrics,
@@ -686,6 +776,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--metrics-url", default="http://127.0.0.1:9482/metrics")
     parser.add_argument("--metrics-file")
+    parser.add_argument(
+        "--extra-metrics-file",
+        action="append",
+        type=Path,
+        default=None,
+        help="additional Prometheus textfile to merge into the readiness snapshot",
+    )
     parser.add_argument(
         "--metrics-file-after",
         help=(

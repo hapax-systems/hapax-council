@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# hapax-v4l2-bridge — shmsrc→v4l2sink sidecar process.
+# hapax-v4l2-bridge - shmsrc to appsink to os.write sidecar process.
 #
 # Reads frames from shared memory (written by studio-compositor via shmsink)
-# and pushes them to /dev/video42 via v4l2sink. This process owns the
+# and pushes them to /dev/video42 via os.write(). This process owns the
 # v4l2loopback fd so compositor crashes/restarts never touch the kernel
 # device state.
 #
@@ -122,12 +122,12 @@ while { [[ ! -S "$SOCKET" ]] || ! socket_listening "$SOCKET"; } && [[ $waited -l
 done
 
 if [[ ! -S "$SOCKET" ]]; then
-    echo "error: socket $SOCKET not found after ${WAIT_SECONDS}s — compositor not running?" >&2
+    echo "error: socket $SOCKET not found after ${WAIT_SECONDS}s - compositor not running?" >&2
     exit 1
 fi
 
 if ! socket_listening "$SOCKET"; then
-    echo "error: socket $SOCKET exists but is not listening after ${WAIT_SECONDS}s — stale shmsink residue or wrong socket path" >&2
+    echo "error: socket $SOCKET exists but is not listening after ${WAIT_SECONDS}s - stale shmsink residue or wrong socket path" >&2
     exit 1
 fi
 
@@ -145,10 +145,14 @@ else
     exit 1
 fi
 
-# GStreamer pipeline: shmsrc → queue → videoconvert → capsfilter → v4l2sink
-exec gst-launch-1.0 -e \
-    shmsrc socket-path="$SOCKET" do-timestamp=true is-live=true \
-    ! queue leaky=downstream max-size-buffers=5 max-size-bytes=0 max-size-time=0 \
-    ! videoconvert dither=0 \
-    ! "video/x-raw,format=NV12,width=${WIDTH},height=${HEIGHT},framerate=${FPS}/1" \
-    ! v4l2sink device="$DEVICE" sync=false qos=false
+# Runtime canaries showed shmsink/shmsrc itself is stable, but the sidecar's
+# GStreamer v4l2sink leg can fail in the v4l2 buffer pool on /dev/video42. The
+# compositor's direct path already proved appsink + os.write() against the same
+# device, so keep the writer in this sidecar and make SHM the process boundary.
+exec python -m agents.studio_compositor.v4l2_shm_bridge \
+    --device "$DEVICE" \
+    --socket "$SOCKET" \
+    --width "$WIDTH" \
+    --height "$HEIGHT" \
+    --fps "$FPS" \
+    --wait-seconds "$WAIT_SECONDS"

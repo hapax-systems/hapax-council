@@ -28,6 +28,8 @@ from .model import (
     surface_evidence,
 )
 
+DEFAULT_EXTRA_METRICS_FILES = (Path("/dev/shm/hapax-compositor/v4l2-bridge.prom"),)
+
 
 @dataclass
 class RuntimeState:
@@ -113,7 +115,26 @@ def _load_metrics(args: argparse.Namespace) -> dict[str, float]:
     else:
         with urllib.request.urlopen(args.metrics_url, timeout=2.0) as response:
             text = response.read().decode("utf-8", "replace")
-    return parse_prometheus_scalars(text)
+    metrics = parse_prometheus_scalars(text)
+    extra_files = args.extra_metrics_file
+    if extra_files is None:
+        extra_files = [] if args.metrics_file else list(DEFAULT_EXTRA_METRICS_FILES)
+    for path in extra_files:
+        _merge_metrics_file(metrics, path)
+    return metrics
+
+
+def _merge_metrics_file(metrics: dict[str, float], path: Path) -> None:
+    try:
+        text = path.read_text(encoding="utf-8")
+        age_seconds = max(0.0, time.time() - path.stat().st_mtime)
+    except OSError:
+        return
+    extra = parse_prometheus_scalars(text)
+    heartbeat = extra.get("hapax_v4l2_bridge_heartbeat_seconds_ago")
+    if heartbeat is not None:
+        extra["hapax_v4l2_bridge_heartbeat_seconds_ago"] = max(heartbeat, age_seconds)
+    metrics.update(extra)
 
 
 def _load_obs_state(path: Path | None) -> dict[str, object]:
@@ -258,6 +279,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--metrics-url", default="http://127.0.0.1:9482/metrics")
     parser.add_argument("--metrics-file")
+    parser.add_argument(
+        "--extra-metrics-file",
+        action="append",
+        type=Path,
+        default=None,
+        help="additional Prometheus textfile to merge into the live-surface snapshot",
+    )
     parser.add_argument("--obs-state-file", type=Path)
     parser.add_argument("--obs-source-name", default="StudioCompositor")
     parser.add_argument("--obs-host", default="localhost")

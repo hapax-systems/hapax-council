@@ -38,6 +38,13 @@ BRIDGE_ENABLED_ENV = "HAPAX_V4L2_BRIDGE_ENABLED"
 V4L2_OUTPUT_DISABLED_ENV = "HAPAX_COMPOSITOR_DISABLE_V4L2_OUTPUT"
 
 
+def _set_optional_property(element: Any, name: str, value: Any) -> None:
+    try:
+        element.set_property(name, value)
+    except Exception:
+        log.debug("shmsink interpipesrc property not supported: %s", name, exc_info=True)
+
+
 def is_bridge_enabled() -> bool:
     return os.environ.get(BRIDGE_ENABLED_ENV, "") == "1"
 
@@ -93,12 +100,33 @@ class ShmsinkOutputPipeline:
             src.set_property("listen-to", INTERPIPE_CHANNEL)
             src.set_property("do-timestamp", True)
             src.set_property("allow-renegotiation", True)
+            _set_optional_property(src, "stream-sync", "restart-ts")
+            _set_optional_property(src, "is-live", True)
+            _set_optional_property(src, "format", Gst.Format.TIME)
+            _set_optional_property(src, "automatic-eos", False)
+            _set_optional_property(src, "accept-eos-event", False)
 
             queue = Gst.ElementFactory.make("queue", "shm_out_queue")
             queue.set_property("leaky", 2)
             queue.set_property("max-size-buffers", 5)
             queue.set_property("max-size-bytes", 0)
             queue.set_property("max-size-time", 0)
+
+            rate = Gst.ElementFactory.make("videorate", "shm_out_videorate")
+            if rate is None:
+                raise RuntimeError("videorate factory failed")
+            rate.set_property("skip-to-first", True)
+            _set_optional_property(rate, "max-closing-segment-duplication-duration", 0)
+
+            rate_caps = Gst.ElementFactory.make("capsfilter", "shm_out_rate_caps")
+            if rate_caps is None:
+                raise RuntimeError("capsfilter factory failed")
+            rate_caps.set_property(
+                "caps",
+                Gst.Caps.from_string(
+                    f"video/x-raw,width={self._width},height={self._height},framerate={self._fps}/1"
+                ),
+            )
 
             convert = Gst.ElementFactory.make("videoconvert", "shm_out_convert")
             convert.set_property("dither", 0)
@@ -124,10 +152,12 @@ class ShmsinkOutputPipeline:
             sink.set_property("wait-for-connection", False)
             sink.set_property("sync", False)
 
-            for el in (src, queue, convert, caps, sink):
+            for el in (src, queue, rate, rate_caps, convert, caps, sink):
                 pipeline.add(el)
             src.link(queue)
-            queue.link(convert)
+            queue.link(rate)
+            rate.link(rate_caps)
+            rate_caps.link(convert)
             convert.link(caps)
             caps.link(sink)
 

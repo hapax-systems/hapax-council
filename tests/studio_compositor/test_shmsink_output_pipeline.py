@@ -57,6 +57,7 @@ class TestShmsinkPipelineConstruction:
         gst.ElementFactory.make.return_value = MagicMock()
         gst.Caps.from_string.return_value = MagicMock()
         gst.PadProbeType.BUFFER = 0x10
+        gst.Format.TIME = object()
         gst.State.PLAYING = 4
         gst.State.NULL = 1
         gst.StateChangeReturn.FAILURE = 0
@@ -90,6 +91,52 @@ class TestShmsinkPipelineConstruction:
         shmsink.set_property.assert_any_call("socket-path", "/tmp/test.sock")
         shmsink.set_property.assert_any_call("wait-for-connection", False)
         shmsink.set_property.assert_any_call("sync", False)
+
+    def test_build_sets_interpipe_live_restart_properties(self) -> None:
+        gst = self._make_gst_mock()
+        elements = {}
+
+        def make_element(factory: str, name: str) -> MagicMock:
+            el = MagicMock()
+            elements[factory] = el
+            return el
+
+        gst.ElementFactory.make.side_effect = make_element
+        pipe = ShmsinkOutputPipeline(gst=gst, width=1280, height=720, fps=30)
+        pipe.build()
+
+        src = elements.get("interpipesrc")
+        assert src is not None
+        src.set_property.assert_any_call("stream-sync", "restart-ts")
+        src.set_property.assert_any_call("is-live", True)
+        src.set_property.assert_any_call("format", gst.Format.TIME)
+        src.set_property.assert_any_call("automatic-eos", False)
+        src.set_property.assert_any_call("accept-eos-event", False)
+
+    def test_build_retimestamps_bridge_output_to_target_framerate(self) -> None:
+        gst = self._make_gst_mock()
+        elements = {}
+
+        def make_element(factory: str, name: str) -> MagicMock:
+            el = MagicMock()
+            elements[name] = el
+            return el
+
+        gst.ElementFactory.make.side_effect = make_element
+        pipe = ShmsinkOutputPipeline(gst=gst, width=1280, height=720, fps=30)
+        pipe.build()
+
+        rate = elements.get("shm_out_videorate")
+        rate_caps = elements.get("shm_out_rate_caps")
+        convert = elements.get("shm_out_convert")
+        assert rate is not None
+        assert rate_caps is not None
+        assert convert is not None
+        rate.set_property.assert_any_call("skip-to-first", True)
+        rate.set_property.assert_any_call("max-closing-segment-duplication-duration", 0)
+        gst.Caps.from_string.assert_any_call("video/x-raw,width=1280,height=720,framerate=30/1")
+        rate.link.assert_called_with(rate_caps)
+        rate_caps.link.assert_called_with(convert)
 
     def test_default_socket_path(self) -> None:
         assert DEFAULT_SOCKET == "/dev/shm/hapax-compositor/v4l2-bridge.sock"
