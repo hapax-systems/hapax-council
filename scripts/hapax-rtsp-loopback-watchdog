@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+"""Recover RTSP-backed v4l2loopback producers that are alive but not writing.
+
+The compositor can only report that a loopback camera stopped producing
+frames. This watchdog checks the producer side before acting: it restarts a
+mapped RTSP->v4l2 service only when the relevant camera is stale/degraded and
+the service's ffmpeg process shows no write progress across a short sample.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.live_surface_truth import parse_prometheus_scalars
+
+DEFAULT_PRODUCERS = (
+    "brio-operator:/dev/video60:hapax-rtsp-pi4-brio.service",
+    "c920-overhead:/dev/video61:hapax-rtsp-pi5-c920.service",
+)
+DEFAULT_TEXTFILE = (
+    Path.home()
+    / ".local"
+    / "share"
+    / "node_exporter"
+    / "textfile_collector"
+    / "hapax-rtsp-loopback-watchdog.prom"
+)
+DEFAULT_LEDGER = Path("/dev/shm/hapax-rtsp-loopback-watchdog/events.jsonl")
+DEFAULT_STATE = Path("/run/user") / str(os.getuid()) / "hapax-rtsp-loopback-watchdog.json"
+
+_CAMERA_STATE_RE = re.compile(
+    r"^studio_camera_state\{(?P<labels>[^}]*)\}\s+(?P<value>[-+0-9.eE]+)$"
+)
+
+
+@dataclass(frozen=True)
+class Producer:
+    role: str
+    device: str
+    unit: str
+
+
+@dataclass(frozen=True)
+class Observation:
+    producer: Producer
+    camera_stale: bool
+    camera_age_seconds: float | None
+    camera_healthy: bool | None
+    writer_pid: int | None
+    writer_stale: bool | None
+    action: str
+    reason: str
+
+
+def _parse_producer(raw: str) -> Producer:
+    parts = raw.split(":", 2)
+    if len(parts) != 3 or not all(parts):
+        raise argparse.ArgumentTypeError("producer must be role:/dev/videoN:systemd-unit.service")
+    return Producer(role=parts[0], device=parts[1], unit=parts[2])
+
+
+def _label_value(labels: str, name: str) -> str | None:
+    match = re.search(rf'(?:^|,)\s*{re.escape(name)}="(?P<value>[^"]+)"', labels)
+    return match.group("value") if match is not None else None
+
+
+def _parse_camera_healthy(text: str) -> dict[str, bool]:
+    states: dict[str, bool] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        match = _CAMERA_STATE_RE.match(line)
+        if match is None:
+            continue
+        labels = match.group("labels")
+        state = _label_value(labels, "state")
+        if state != "healthy":
+            continue
+        role = _label_value(labels, "role") or _label_value(labels, "camera_role")
+        if role is None:
+            continue
+        try:
+            states[role] = float(match.group("value")) > 0
+        except ValueError:
+            continue
+    return states
+
+
+def _load_metrics(args: argparse.Namespace) -> tuple[str, dict[str, float], dict[str, bool]]:
+    if args.metrics_file:
+        text = Path(args.metrics_file).read_text(encoding="utf-8")
+    else:
+        with urllib.request.urlopen(args.metrics_url, timeout=args.metrics_timeout) as response:
+            text = response.read().decode("utf-8", "replace")
+    return text, parse_prometheus_scalars(text), _parse_camera_healthy(text)
+
+
+def _run_systemctl(args: argparse.Namespace, *cmd: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [args.systemctl, "--user", *cmd],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=args.command_timeout,
+    )
+
+
+def _unit_pid(args: argparse.Namespace, unit: str) -> int | None:
+    result = _run_systemctl(args, "show", "-p", "MainPID", "--value", unit)
+    if result.returncode != 0:
+        return None
+    try:
+        pid = int(result.stdout.strip())
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def _read_io(proc_root: Path, pid: int) -> dict[str, int] | None:
+    path = proc_root / str(pid) / "io"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    values: dict[str, int] = {}
+    for raw_line in text.splitlines():
+        if ":" not in raw_line:
+            continue
+        key, raw_value = raw_line.split(":", 1)
+        try:
+            values[key.strip()] = int(raw_value.strip())
+        except ValueError:
+            continue
+    return values
+
+
+def _writer_advanced(before: dict[str, int] | None, after: dict[str, int] | None) -> bool | None:
+    if before is None or after is None:
+        return None
+    return any(after.get(key, 0) > before.get(key, 0) for key in ("wchar", "syscw"))
+
+
+def _load_state(path: Path) -> dict[str, float]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for key, value in raw.items():
+        try:
+            out[str(key)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _save_state(path: Path, state: dict[str, float]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _append_ledger(path: Path, observation: Observation) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "role": observation.producer.role,
+        "device": observation.producer.device,
+        "unit": observation.producer.unit,
+        "camera_stale": observation.camera_stale,
+        "camera_age_seconds": observation.camera_age_seconds,
+        "camera_healthy": observation.camera_healthy,
+        "writer_pid": observation.writer_pid,
+        "writer_stale": observation.writer_stale,
+        "action": observation.action,
+        "reason": observation.reason,
+    }
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, sort_keys=True) + "\n")
+
+
+def _emit_textfile(path: Path, observations: list[Observation]) -> None:
+    lines = [
+        "# HELP hapax_rtsp_loopback_watchdog_camera_stale RTSP loopback camera stale flag",
+        "# TYPE hapax_rtsp_loopback_watchdog_camera_stale gauge",
+    ]
+    for obs in observations:
+        role = _label(obs.producer.role)
+        unit = _label(obs.producer.unit)
+        lines.append(
+            f'hapax_rtsp_loopback_watchdog_camera_stale{{role="{role}",unit="{unit}"}} '
+            f"{1 if obs.camera_stale else 0}"
+        )
+    lines.extend(
+        [
+            "# HELP hapax_rtsp_loopback_watchdog_writer_stale RTSP loopback writer stale flag",
+            "# TYPE hapax_rtsp_loopback_watchdog_writer_stale gauge",
+        ]
+    )
+    for obs in observations:
+        if obs.writer_stale is None:
+            continue
+        role = _label(obs.producer.role)
+        unit = _label(obs.producer.unit)
+        lines.append(
+            f'hapax_rtsp_loopback_watchdog_writer_stale{{role="{role}",unit="{unit}"}} '
+            f"{1 if obs.writer_stale else 0}"
+        )
+    lines.extend(
+        [
+            "# HELP hapax_rtsp_loopback_watchdog_restart_attempted Restart attempted on this tick",
+            "# TYPE hapax_rtsp_loopback_watchdog_restart_attempted gauge",
+        ]
+    )
+    for obs in observations:
+        role = _label(obs.producer.role)
+        unit = _label(obs.producer.unit)
+        lines.append(
+            f'hapax_rtsp_loopback_watchdog_restart_attempted{{role="{role}",unit="{unit}"}} '
+            f"{1 if obs.action in {'restart', 'dry_run_restart'} else 0}"
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _label(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def _observe_producer(
+    args: argparse.Namespace,
+    producer: Producer,
+    *,
+    metrics: dict[str, float],
+    camera_healthy_by_role: dict[str, bool],
+    state: dict[str, float],
+    now: float,
+) -> Observation:
+    camera_age = metrics.get(f"studio_camera_last_frame_age_seconds:camera_role:{producer.role}")
+    camera_healthy = camera_healthy_by_role.get(producer.role)
+    global_unhealthy = metrics.get("studio_compositor_cameras_healthy", 0) < metrics.get(
+        "studio_compositor_cameras_total", 0
+    )
+    role_stale = camera_age is not None and camera_age > args.max_camera_age_seconds
+    role_unhealthy = camera_healthy is False
+    camera_stale = role_stale or role_unhealthy or (global_unhealthy and camera_age is None)
+    if not camera_stale:
+        return Observation(
+            producer=producer,
+            camera_stale=False,
+            camera_age_seconds=camera_age,
+            camera_healthy=camera_healthy,
+            writer_pid=None,
+            writer_stale=None,
+            action="none",
+            reason="camera_fresh",
+        )
+
+    pid = _unit_pid(args, producer.unit)
+    if pid is None:
+        return _restart_or_skip(
+            args,
+            producer,
+            camera_age=camera_age,
+            camera_healthy=camera_healthy,
+            writer_pid=None,
+            writer_stale=None,
+            state=state,
+            now=now,
+            reason="unit_pid_missing",
+        )
+
+    before = _read_io(args.proc_root, pid)
+    if args.sample_seconds > 0:
+        time.sleep(args.sample_seconds)
+    after = _read_io(args.proc_root, pid)
+    advanced = _writer_advanced(before, after)
+    if advanced is True:
+        return Observation(
+            producer=producer,
+            camera_stale=True,
+            camera_age_seconds=camera_age,
+            camera_healthy=camera_healthy,
+            writer_pid=pid,
+            writer_stale=False,
+            action="none",
+            reason="writer_advancing",
+        )
+    return _restart_or_skip(
+        args,
+        producer,
+        camera_age=camera_age,
+        camera_healthy=camera_healthy,
+        writer_pid=pid,
+        writer_stale=True if advanced is False else None,
+        state=state,
+        now=now,
+        reason="writer_not_advancing" if advanced is False else "writer_io_unavailable",
+    )
+
+
+def _restart_or_skip(
+    args: argparse.Namespace,
+    producer: Producer,
+    *,
+    camera_age: float | None,
+    camera_healthy: bool | None,
+    writer_pid: int | None,
+    writer_stale: bool | None,
+    state: dict[str, float],
+    now: float,
+    reason: str,
+) -> Observation:
+    last_restart = state.get(producer.unit)
+    if last_restart is not None and now - last_restart < args.restart_cooldown_seconds:
+        return Observation(
+            producer=producer,
+            camera_stale=True,
+            camera_age_seconds=camera_age,
+            camera_healthy=camera_healthy,
+            writer_pid=writer_pid,
+            writer_stale=writer_stale,
+            action="cooldown_skip",
+            reason=reason,
+        )
+    if not args.apply:
+        return Observation(
+            producer=producer,
+            camera_stale=True,
+            camera_age_seconds=camera_age,
+            camera_healthy=camera_healthy,
+            writer_pid=writer_pid,
+            writer_stale=writer_stale,
+            action="dry_run_restart",
+            reason=reason,
+        )
+    result = _run_systemctl(args, "restart", producer.unit)
+    action = "restart" if result.returncode == 0 else f"restart_failed:{result.returncode}"
+    if result.returncode == 0:
+        state[producer.unit] = now
+    return Observation(
+        producer=producer,
+        camera_stale=True,
+        camera_age_seconds=camera_age,
+        camera_healthy=camera_healthy,
+        writer_pid=writer_pid,
+        writer_stale=writer_stale,
+        action=action,
+        reason=reason,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--metrics-url", default="http://127.0.0.1:9482/metrics")
+    parser.add_argument("--metrics-file")
+    parser.add_argument("--metrics-timeout", type=float, default=3.0)
+    parser.add_argument(
+        "--producer",
+        action="append",
+        type=_parse_producer,
+        default=None,
+        help="role:/dev/videoN:systemd-unit.service mapping",
+    )
+    parser.add_argument("--max-camera-age-seconds", type=float, default=5.0)
+    parser.add_argument("--sample-seconds", type=float, default=3.0)
+    parser.add_argument("--restart-cooldown-seconds", type=float, default=60.0)
+    parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--systemctl", default="systemctl")
+    parser.add_argument("--command-timeout", type=float, default=15.0)
+    parser.add_argument("--proc-root", type=Path, default=Path("/proc"))
+    parser.add_argument("--state-file", type=Path, default=DEFAULT_STATE)
+    parser.add_argument("--textfile-path", type=Path, default=DEFAULT_TEXTFILE)
+    parser.add_argument("--ledger-path", type=Path, default=DEFAULT_LEDGER)
+    args = parser.parse_args(argv)
+
+    producers = args.producer or [_parse_producer(raw) for raw in DEFAULT_PRODUCERS]
+    try:
+        _text, metrics, camera_healthy = _load_metrics(args)
+    except Exception as exc:
+        print(f"rtsp-loopback-watchdog: metrics unavailable: {type(exc).__name__}", file=sys.stderr)
+        return 0
+
+    state = _load_state(args.state_file)
+    now = time.monotonic()
+    observations = [
+        _observe_producer(
+            args,
+            producer,
+            metrics=metrics,
+            camera_healthy_by_role=camera_healthy,
+            state=state,
+            now=now,
+        )
+        for producer in producers
+    ]
+    _save_state(args.state_file, state)
+    _emit_textfile(args.textfile_path, observations)
+    for observation in observations:
+        if observation.action != "none":
+            _append_ledger(args.ledger_path, observation)
+    for observation in observations:
+        print(
+            "rtsp-loopback-watchdog: "
+            f"role={observation.producer.role} action={observation.action} "
+            f"reason={observation.reason}"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -326,7 +326,7 @@ _RTMP_SAMPLE = re.compile(
     r"\s+(?P<value>[-+0-9.eE]+)$"
 )
 _CAMERA_SAMPLE = re.compile(
-    r'^(?P<name>studio_camera_last_frame_age_seconds)\{camera_role="(?P<camera_role>[^"]+)"\}'
+    r"^(?P<name>studio_camera_last_frame_age_seconds)\{(?P<labels>[^}]*)\}"
     r"\s+(?P<value>[-+0-9.eE]+)$"
 )
 _WARD_SAMPLE = re.compile(
@@ -340,11 +340,24 @@ _LAYOUT_ACTIVE_SAMPLE = re.compile(
 
 
 def _parse_labeled_scalar(line: str) -> tuple[str, float] | None:
+    camera_match = _CAMERA_SAMPLE.match(line)
+    if camera_match is not None:
+        try:
+            value = float(camera_match.group("value"))
+        except ValueError:
+            return None
+        labels = camera_match.group("labels")
+        role = _label_value_from_text(labels, "camera_role") or _label_value_from_text(
+            labels, "role"
+        )
+        if role is None:
+            return None
+        return f"{camera_match.group('name')}:camera_role:{role}", value
+
     for pattern, label_name in (
         (_RENDER_STAGE_SAMPLE, "stage"),
         (_FEATURE_SAMPLE, "feature"),
         (_RTMP_SAMPLE, "endpoint"),
-        (_CAMERA_SAMPLE, "camera_role"),
         (_WARD_SAMPLE, "ward"),
         (_LAYOUT_ACTIVE_SAMPLE, "layout"),
     ):
@@ -357,6 +370,11 @@ def _parse_labeled_scalar(line: str) -> tuple[str, float] | None:
             return None
         return f"{match.group('name')}:{label_name}:{match.group(label_name)}", value
     return None
+
+
+def _label_value_from_text(labels: str, name: str) -> str | None:
+    match = re.search(rf'(?:^|,)\s*{re.escape(name)}="(?P<value>[^"]+)"', labels)
+    return match.group("value") if match is not None else None
 
 
 def _egress_mode_from_metrics(

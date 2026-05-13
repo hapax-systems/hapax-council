@@ -7,10 +7,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 UNITS_DIR = REPO_ROOT / "systemd" / "units"
 STUDIO = UNITS_DIR / "studio-compositor.service"
 BRIDGE = UNITS_DIR / "hapax-v4l2-bridge.service"
+BRIDGE_WATCHDOG = UNITS_DIR / "hapax-v4l2-bridge-watchdog.service"
+BRIDGE_WATCHDOG_TIMER = UNITS_DIR / "hapax-v4l2-bridge-watchdog.timer"
 VIDEO42_GUARD = UNITS_DIR / "hapax-video42-format-guard.service"
 OBS = UNITS_DIR / "hapax-obs-livestream.service"
 OBS_SOURCE_RESET = UNITS_DIR / "hapax-obs-v4l2-source-reset.service"
 LIVE_SURFACE_GUARD = UNITS_DIR / "hapax-live-surface-guard.service"
+RTSP_LOOPBACK_WATCHDOG = UNITS_DIR / "hapax-rtsp-loopback-watchdog.service"
+RTSP_LOOPBACK_WATCHDOG_TIMER = UNITS_DIR / "hapax-rtsp-loopback-watchdog.timer"
 HLS_NO_CACHE = UNITS_DIR / "hapax-hls-no-cache.service"
 REVERIE = UNITS_DIR / "hapax-reverie.service"
 PARAMETRIC_HEARTBEAT = UNITS_DIR / "hapax-parametric-modulation-heartbeat.service"
@@ -137,6 +141,33 @@ def test_v4l2_bridge_runs_from_activation_worktree_and_is_supervised_by_studio()
     assert any("HAPAX_V4L2_BRIDGE_ENABLED=1" in line for line in lines)
 
 
+def test_v4l2_bridge_watchdog_runs_from_activation_worktree() -> None:
+    parser = _load_unit(BRIDGE_WATCHDOG)
+    assert parser.get("Service", "Type") == "oneshot"
+    assert parser.get("Service", "WorkingDirectory") == SOURCE_ROOT
+    assert parser.get("Unit", "ConditionPathExists") == (
+        f"{SOURCE_ROOT}/scripts/hapax-v4l2-bridge-watchdog"
+    )
+    assert parser.get("Service", "ExecStart").startswith(
+        f"{SOURCE_ROOT}/scripts/hapax-v4l2-bridge-watchdog --apply"
+    )
+    assert (
+        "--textfile-path %h/.local/share/node_exporter/textfile_collector/"
+        "hapax-v4l2-bridge-watchdog.prom"
+    ) in parser.get("Service", "ExecStart")
+    assert f"PYTHONPATH={SOURCE_ROOT}" in "\n".join(_active_unit_lines(BRIDGE_WATCHDOG))
+    assert "hapax-compositor-runtime-source-check" in parser.get("Service", "ExecStartPre")
+    assert "studio-compositor.service" in parser.get("Unit", "After")
+    assert "hapax-v4l2-bridge.service" in parser.get("Unit", "After")
+
+
+def test_v4l2_bridge_watchdog_timer_polls_at_incident_cadence() -> None:
+    parser = _load_unit(BRIDGE_WATCHDOG_TIMER)
+    assert parser.get("Timer", "OnUnitActiveSec") == "10"
+    assert parser.get("Timer", "AccuracySec") == "1s"
+    assert parser.get("Install", "WantedBy") == "timers.target"
+
+
 def test_simple_bridge_unit_does_not_claim_systemd_watchdog_without_sd_notify() -> None:
     parser = _load_unit(BRIDGE)
     assert parser.get("Service", "Type") == "simple"
@@ -171,6 +202,7 @@ def test_live_surface_guard_runs_from_activation_worktree() -> None:
     assert parser.get("Service", "ExecStart").startswith(f"{SOURCE_ROOT}/.venv/bin/python")
     assert "agents.live_surface_guard" in parser.get("Service", "ExecStart")
     assert "--require-obs-decoder" in parser.get("Service", "ExecStart")
+    assert "--poll-interval 5" in parser.get("Service", "ExecStart")
     assert (
         "--textfile-path %h/.local/share/node_exporter/textfile_collector/"
         "hapax-live-surface-guard.prom"
@@ -179,6 +211,33 @@ def test_live_surface_guard_runs_from_activation_worktree() -> None:
     assert "hapax-compositor-runtime-source-check" in parser.get("Service", "ExecStartPre")
     lines = _active_unit_lines(LIVE_SURFACE_GUARD)
     assert all("%h/projects/hapax-council" not in line for line in lines)
+
+
+def test_rtsp_loopback_watchdog_runs_from_activation_worktree() -> None:
+    parser = _load_unit(RTSP_LOOPBACK_WATCHDOG)
+    assert parser.get("Service", "Type") == "oneshot"
+    assert parser.get("Service", "WorkingDirectory") == SOURCE_ROOT
+    assert parser.get("Unit", "ConditionPathExists") == (
+        f"{SOURCE_ROOT}/scripts/hapax-rtsp-loopback-watchdog"
+    )
+    assert parser.get("Service", "ExecStart").startswith(
+        f"{SOURCE_ROOT}/scripts/hapax-rtsp-loopback-watchdog --apply"
+    )
+    assert (
+        "--textfile-path %h/.local/share/node_exporter/textfile_collector/"
+        "hapax-rtsp-loopback-watchdog.prom"
+    ) in parser.get("Service", "ExecStart")
+    assert f"PYTHONPATH={SOURCE_ROOT}" in "\n".join(_active_unit_lines(RTSP_LOOPBACK_WATCHDOG))
+    assert "hapax-compositor-runtime-source-check" in parser.get("Service", "ExecStartPre")
+    assert "hapax-rtsp-pi4-brio.service" in parser.get("Unit", "After")
+    assert "hapax-rtsp-pi5-c920.service" in parser.get("Unit", "After")
+
+
+def test_rtsp_loopback_watchdog_timer_polls_at_incident_cadence() -> None:
+    parser = _load_unit(RTSP_LOOPBACK_WATCHDOG_TIMER)
+    assert parser.get("Timer", "OnUnitActiveSec") == "10"
+    assert parser.get("Timer", "AccuracySec") == "1s"
+    assert parser.get("Install", "WantedBy") == "timers.target"
 
 
 def test_hls_no_cache_service_runs_from_activation_worktree() -> None:

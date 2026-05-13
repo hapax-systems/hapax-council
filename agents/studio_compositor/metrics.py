@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -43,6 +44,24 @@ _POOL_METRICS_SHM_PATH = Path("/dev/shm/hapax-imagination/pool_metrics.json")
 # counter. Spike doc:
 # ``docs/superpowers/specs/2026-04-14-lrr-phase-0-finding-q-spike-notes.md``
 _SHADER_HEALTH_SHM_PATH = Path("/dev/shm/hapax-imagination/shader_health.json")
+
+_PROC_STATUS_MEMORY_FIELDS: frozenset[str] = frozenset(
+    {
+        "VmHWM",
+        "VmRSS",
+        "RssAnon",
+        "RssFile",
+        "RssShmem",
+        "VmSwap",
+    }
+)
+_CGROUP_MEMORY_FILES: dict[str, str] = {
+    "current": "memory.current",
+    "peak": "memory.peak",
+    "high": "memory.high",
+    "max": "memory.max",
+    "swap_current": "memory.swap.current",
+}
 
 
 _PROMETHEUS_AVAILABLE = False
@@ -144,6 +163,11 @@ REVERIE_POOL_TOTAL_ALLOCATIONS: Any = None
 REVERIE_POOL_REUSE_RATIO: Any = None
 REVERIE_POOL_SLOT_COUNT: Any = None
 COMP_MEMORY_FOOTPRINT: Any = None
+COMP_PROCESS_PID: Any = None
+COMP_PROCESS_START_TIME: Any = None
+COMP_PROCESS_MEMORY_BYTES: Any = None
+COMP_CGROUP_MEMORY_BYTES: Any = None
+COMP_CGROUP_MEMORY_EVENTS: Any = None
 COMP_TTS_CLIENT_TIMEOUT_TOTAL: Any = None
 CAM_FRAME_FLOW_STALE_TOTAL: Any = None
 COMP_VOICE_ACTIVE: Any = None
@@ -315,6 +339,11 @@ def _init_metrics() -> None:
     global REVERIE_POOL_REUSE_RATIO
     global REVERIE_POOL_SLOT_COUNT
     global COMP_MEMORY_FOOTPRINT
+    global COMP_PROCESS_PID
+    global COMP_PROCESS_START_TIME
+    global COMP_PROCESS_MEMORY_BYTES
+    global COMP_CGROUP_MEMORY_BYTES
+    global COMP_CGROUP_MEMORY_EVENTS
     global COMP_TTS_CLIENT_TIMEOUT_TOTAL
     global CAM_FRAME_FLOW_STALE_TOTAL
     global COMP_VOICE_ACTIVE
@@ -1095,6 +1124,47 @@ def _init_metrics() -> None:
         "Resident set size of the compositor process (bytes). Updated by the metrics poll loop.",
         registry=REGISTRY,
     )
+    COMP_PROCESS_PID = Gauge(
+        "studio_compositor_process_pid",
+        "Operating-system PID of this compositor process.",
+        registry=REGISTRY,
+    )
+    COMP_PROCESS_START_TIME = Gauge(
+        "studio_compositor_process_start_time_seconds",
+        (
+            "Unix timestamp recorded when the compositor metrics server started. "
+            "Pairs with process_pid so preflight/resource deltas can reject samples "
+            "that span a process restart."
+        ),
+        registry=REGISTRY,
+    )
+    COMP_PROCESS_MEMORY_BYTES = Gauge(
+        "studio_compositor_process_memory_bytes",
+        (
+            "Selected /proc/self/status memory fields in bytes. Fields include "
+            "VmHWM, VmRSS, RssAnon, RssFile, RssShmem, and VmSwap."
+        ),
+        ["field"],
+        registry=REGISTRY,
+    )
+    COMP_CGROUP_MEMORY_BYTES = Gauge(
+        "studio_compositor_cgroup_memory_bytes",
+        (
+            "Selected cgroup v2 memory controller values for the compositor service "
+            "in bytes. Unlimited memory.high/memory.max values are exported as -1."
+        ),
+        ["field"],
+        registry=REGISTRY,
+    )
+    COMP_CGROUP_MEMORY_EVENTS = Gauge(
+        "studio_compositor_cgroup_memory_events",
+        (
+            "Raw cgroup v2 memory.events counters for the compositor service. "
+            "Values reset when systemd recreates the service cgroup."
+        ),
+        ["event"],
+        registry=REGISTRY,
+    )
     # Queue 023 item #32: surface the 90s TtsClient timeout so
     # repeated compositor→daimonion UDS failures become visible without
     # greping the journal. Incremented from
@@ -1250,6 +1320,10 @@ def start_metrics_server(port: int = 9482, addr: str = "0.0.0.0") -> bool:
     _boot_monotonic = time.monotonic()
     if COMP_BOOT_TIMESTAMP is not None:
         COMP_BOOT_TIMESTAMP.set(time.time())
+    if COMP_PROCESS_PID is not None:
+        COMP_PROCESS_PID.set(os.getpid())
+    if COMP_PROCESS_START_TIME is not None:
+        COMP_PROCESS_START_TIME.set(time.time())
 
     try:
         start_http_server(port, addr=addr, registry=REGISTRY)
@@ -1589,25 +1663,103 @@ def _poll_loop() -> None:
         _mirror_imagination_shader_health()
 
 
-def _update_memory_footprint() -> None:
-    """Publish the compositor process RSS onto studio_compositor_memory_footprint_bytes.
+def _parse_proc_status_memory_bytes(text: str) -> dict[str, int]:
+    """Parse selected ``/proc/self/status`` memory fields into bytes."""
 
-    Reads ``/proc/self/status`` to avoid pulling psutil into the
-    compositor's dependency set. VmRSS is reported in kB with an
-    ``kB`` suffix; we convert to bytes. Swallows IO errors because the
-    metrics poll loop must not crash on a transient /proc glitch.
+    parsed: dict[str, int] = {}
+    for line in text.splitlines():
+        key, sep, rest = line.partition(":")
+        if sep != ":" or key not in _PROC_STATUS_MEMORY_FIELDS:
+            continue
+        parts = rest.split()
+        if len(parts) < 2 or parts[1] != "kB":
+            continue
+        try:
+            parsed[key] = int(parts[0]) * 1024
+        except ValueError:
+            continue
+    return parsed
+
+
+def _parse_cgroup_scalar_bytes(text: str) -> float:
+    """Parse a cgroup memory scalar.
+
+    cgroup v2 reports unlimited controls as the literal ``max``. Export
+    those as ``-1`` rather than ``+Inf`` so JSON/preflight consumers do
+    not have to special-case non-finite values.
     """
-    if COMP_MEMORY_FOOTPRINT is None:
-        return
+
+    stripped = text.strip()
+    if stripped == "max":
+        return -1.0
+    return float(int(stripped))
+
+
+def _parse_cgroup_events(text: str) -> dict[str, float]:
+    """Parse cgroup v2 ``memory.events`` contents."""
+
+    events: dict[str, float] = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            events[parts[0]] = float(int(parts[1]))
+        except ValueError:
+            continue
+    return events
+
+
+def _self_cgroup_path() -> Path | None:
+    """Return this process's cgroup v2 path under ``/sys/fs/cgroup``."""
+
+    try:
+        with open("/proc/self/cgroup", encoding="ascii") as fh:
+            for line in fh:
+                parts = line.strip().split(":", 2)
+                if len(parts) == 3 and parts[0] == "0":
+                    return Path("/sys/fs/cgroup") / parts[2].lstrip("/")
+    except OSError:
+        return None
+    return None
+
+
+def _update_memory_footprint() -> None:
+    """Publish process and cgroup memory gauges for this compositor.
+
+    Reads procfs/cgroupfs directly to avoid pulling psutil into the
+    compositor. Swallows IO errors because the metrics poll loop must not
+    crash on a transient filesystem race.
+    """
     try:
         with open("/proc/self/status", encoding="ascii") as fh:
-            for line in fh:
-                if line.startswith("VmRSS:"):
-                    kb_str = line.split()[1]
-                    COMP_MEMORY_FOOTPRINT.set(int(kb_str) * 1024)
-                    return
+            memory_fields = _parse_proc_status_memory_bytes(fh.read())
     except (OSError, ValueError, IndexError):
-        pass
+        memory_fields = {}
+
+    if COMP_MEMORY_FOOTPRINT is not None and "VmRSS" in memory_fields:
+        COMP_MEMORY_FOOTPRINT.set(memory_fields["VmRSS"])
+    if COMP_PROCESS_MEMORY_BYTES is not None:
+        for field, value in memory_fields.items():
+            COMP_PROCESS_MEMORY_BYTES.labels(field=field).set(value)
+
+    cgroup_path = _self_cgroup_path()
+    if cgroup_path is None:
+        return
+    if COMP_CGROUP_MEMORY_BYTES is not None:
+        for field, filename in _CGROUP_MEMORY_FILES.items():
+            try:
+                value = _parse_cgroup_scalar_bytes((cgroup_path / filename).read_text())
+            except (OSError, ValueError):
+                continue
+            COMP_CGROUP_MEMORY_BYTES.labels(field=field).set(value)
+    if COMP_CGROUP_MEMORY_EVENTS is not None:
+        try:
+            events = _parse_cgroup_events((cgroup_path / "memory.events").read_text())
+        except OSError:
+            events = {}
+        for event, value in events.items():
+            COMP_CGROUP_MEMORY_EVENTS.labels(event=event).set(value)
 
 
 def record_tts_client_timeout() -> None:

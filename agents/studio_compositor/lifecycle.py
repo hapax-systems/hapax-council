@@ -491,6 +491,7 @@ def start_compositor(compositor: Any) -> None:
             v4l2_pipe = getattr(compositor, "_v4l2_output_pipeline", None)
             if (
                 not v4l2_output_disabled
+                and not bridge_enabled
                 and v4l2_pipe is not None
                 and v4l2_pipe.last_frame_age_seconds >= 45.0
             ):
@@ -527,6 +528,13 @@ def start_compositor(compositor: Any) -> None:
                     import os
 
                     os._exit(1)
+
+                if bridge_enabled:
+                    log.error(
+                        "shmsink bridge stalled — withholding watchdog ping for compositor restart"
+                    )
+                    sd_notify_status("FATAL — shmsink bridge stalled, withholding watchdog ping")
+                    return compositor._running
 
                 # v4l2sink stall recovery. Ping the watchdog while recovery
                 # still has a bounded chance; once the recovery state declares

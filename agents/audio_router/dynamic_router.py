@@ -336,11 +336,17 @@ class DynamicRouter:
         evilpet_midi: Any | None = None,
         s4_midi_port: Any | None = None,
         s4_program_for_scene_fn: Any | None = None,
+        s4_reachable_fn: Any = s4_midi.is_s4_reachable,
+        s4_reachable_probe_interval_s: float = 30.0,
         tick_period_s: float = TICK_PERIOD_S,
     ) -> None:
         self._evilpet_midi = evilpet_midi
         self._s4_midi_port = s4_midi_port
         self._s4_program_for_scene_fn = s4_program_for_scene_fn
+        self._s4_reachable_fn = s4_reachable_fn
+        self._s4_reachable_probe_interval_s = max(0.0, s4_reachable_probe_interval_s)
+        self._last_s4_reachable_probe_monotonic: float | None = None
+        self._last_s4_reachable: bool = s4_midi_port is not None
         self._tick_period_s = tick_period_s
         self._sticky = StickyTracker()
         self._last_intent: RoutingIntent | None = None
@@ -350,6 +356,37 @@ class DynamicRouter:
     def stop(self) -> None:
         """Signal the run loop to exit on the next tick boundary."""
         self._stop = True
+
+    def _s4_reachable(self, now: float) -> bool:
+        """Return S-4 reachability without probing ALSA on every tick.
+
+        ``mido.get_output_names()`` opens ALSA sequencer state under the
+        hood on Linux. Calling it at the router's 5 Hz cadence can leave a
+        trail of RtMidi clients and eventually make ``snd_seq_open`` fail.
+        The router only needs a coarse hardware-presence signal for safety
+        clamps, so the live daemon uses a slow cached probe while still
+        allowing hot-plug detection after the interval elapses.
+        """
+
+        if self._s4_midi_port is not None:
+            self._last_s4_reachable = True
+            return True
+
+        last = self._last_s4_reachable_probe_monotonic
+        if (
+            last is not None
+            and self._s4_reachable_probe_interval_s > 0
+            and now - last < self._s4_reachable_probe_interval_s
+        ):
+            return self._last_s4_reachable
+
+        self._last_s4_reachable_probe_monotonic = now
+        try:
+            self._last_s4_reachable = bool(self._s4_reachable_fn())
+        except Exception:
+            log.debug("S-4 reachability probe failed", exc_info=True)
+            self._last_s4_reachable = False
+        return self._last_s4_reachable
 
     def tick(self, *, now: float | None = None) -> RoutingIntent:
         """One arbiter cycle. Returns the (possibly emitted) intent.
@@ -362,7 +399,7 @@ class DynamicRouter:
 
         state = assemble_state(
             evilpet_send_cc=self._evilpet_midi,
-            s4_reachable_fn=s4_midi.is_s4_reachable,
+            s4_reachable_fn=lambda: self._s4_reachable(now),
         )
         intent = arbitrate(state)
 
@@ -477,8 +514,14 @@ def main() -> int:
         s4_midi_port=s4_port,
         s4_program_for_scene_fn=_s4_program_lookup,
     )
-    router.run()
-    s4_midi.close_output(s4_port)
+    try:
+        router.run()
+    finally:
+        if evilpet is not None:
+            close = getattr(evilpet, "close", None)
+            if callable(close):
+                close()
+        s4_midi.close_output(s4_port)
     return 0
 
 

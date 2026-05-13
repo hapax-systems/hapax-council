@@ -1,0 +1,12 @@
+[Unit]
+Description=Hapax V4L2 bridge egress watchdog
+After=studio-compositor.service hapax-v4l2-bridge.service
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-v4l2-bridge-watchdog
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/hapax-v4l2-bridge-watchdog --require-file shared/live_surface_truth.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-v4l2-bridge-watchdog --apply --textfile-path %h/.local/share/node_exporter/textfile_collector/hapax-v4l2-bridge-watchdog.prom
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+TimeoutSec=150

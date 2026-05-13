@@ -1,0 +1,12 @@
+[Unit]
+Description=Hapax RTSP loopback producer watchdog
+After=studio-compositor.service hapax-rtsp-pi4-brio.service hapax-rtsp-pi5-c920.service
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-rtsp-loopback-watchdog
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/hapax-rtsp-loopback-watchdog --require-file shared/live_surface_truth.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-rtsp-loopback-watchdog --apply --textfile-path %h/.local/share/node_exporter/textfile_collector/hapax-rtsp-loopback-watchdog.prom
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+TimeoutSec=20

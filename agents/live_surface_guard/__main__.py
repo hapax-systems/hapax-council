@@ -8,11 +8,14 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from shared.live_surface_truth import (
+    LiveSurfaceAssessment,
+    LiveSurfaceState,
     assess_live_surface,
     parse_prometheus_scalars,
     snapshot_from_prometheus,
@@ -230,7 +233,29 @@ def _run_once(
     controller: RemediationController,
     runtime_state: RuntimeState,
 ) -> int:
-    metrics = _load_metrics(args)
+    try:
+        metrics = _load_metrics(args)
+    except (OSError, TimeoutError, urllib.error.URLError, ValueError) as exc:
+        snapshot = snapshot_from_prometheus(
+            {},
+            service_active=False,
+            bridge_active=not args.bridge_inactive,
+        )
+        assessment = LiveSurfaceAssessment(
+            state=LiveSurfaceState.FAILED,
+            reasons=(f"metrics_unavailable:{type(exc).__name__}",),
+        )
+        emit_contract_textfile(
+            args.textfile_path,
+            snapshot=snapshot,
+            assessment=assessment,
+            receipts_total=0,
+        )
+        IncidentLedger(args.ledger_path).append(
+            "observation",
+            surface_evidence(snapshot, assessment),
+        )
+        return 2
     hls_playlist_age_seconds = _file_age_seconds(args.hls_playlist) if args.require_hls else None
     snapshot = snapshot_from_prometheus(
         metrics,
@@ -337,9 +362,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     runtime_state = RuntimeState()
     while True:
-        _run_once(args, controller=controller, runtime_state=runtime_state)
+        rc = _run_once(args, controller=controller, runtime_state=runtime_state)
         if args.once:
-            return 0
+            return rc
         time.sleep(max(1.0, args.poll_interval))
 
 

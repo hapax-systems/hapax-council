@@ -152,6 +152,63 @@ class TestGemSubstrateObservability:
         assert metrics.GEM_SUBSTRATE_MAX_BRIGHTNESS._value.get() == 0.23
 
 
+class TestCompositorMemoryObservability:
+    """Process/cgroup memory signals must distinguish RSS, swap, and cgroup OOMs."""
+
+    def test_memory_identity_and_split_gauges_registered(self) -> None:
+        assert metrics.COMP_MEMORY_FOOTPRINT is not None
+        assert metrics.COMP_PROCESS_PID is not None
+        assert metrics.COMP_PROCESS_START_TIME is not None
+        assert metrics.COMP_PROCESS_MEMORY_BYTES is not None
+        assert metrics.COMP_CGROUP_MEMORY_BYTES is not None
+        assert metrics.COMP_CGROUP_MEMORY_EVENTS is not None
+        text = _registry_text()
+        assert "# HELP studio_compositor_memory_footprint_bytes" in text
+        assert "# HELP studio_compositor_process_pid" in text
+        assert "# HELP studio_compositor_process_start_time_seconds" in text
+        assert "# HELP studio_compositor_process_memory_bytes" in text
+        assert "# HELP studio_compositor_cgroup_memory_bytes" in text
+        assert "# HELP studio_compositor_cgroup_memory_events" in text
+
+    def test_proc_status_memory_parser_splits_fields(self) -> None:
+        parsed = metrics._parse_proc_status_memory_bytes(
+            "\n".join(
+                [
+                    "Name:\tpython",
+                    "VmHWM:\t  2048 kB",
+                    "VmRSS:\t  1024 kB",
+                    "RssAnon:\t   512 kB",
+                    "RssFile:\t   256 kB",
+                    "RssShmem:\t   128 kB",
+                    "VmSwap:\t    64 kB",
+                    "VmSize:\t  9999 kB",
+                ]
+            )
+        )
+        assert parsed == {
+            "VmHWM": 2048 * 1024,
+            "VmRSS": 1024 * 1024,
+            "RssAnon": 512 * 1024,
+            "RssFile": 256 * 1024,
+            "RssShmem": 128 * 1024,
+            "VmSwap": 64 * 1024,
+        }
+
+    def test_cgroup_parsers_handle_max_and_events(self) -> None:
+        assert metrics._parse_cgroup_scalar_bytes("4096\n") == 4096.0
+        assert metrics._parse_cgroup_scalar_bytes("max\n") == -1.0
+        assert metrics._parse_cgroup_events(
+            "low 0\nhigh 2\nmax 3\noom 4\noom_kill 5\noom_group_kill 0\n"
+        ) == {
+            "low": 0.0,
+            "high": 2.0,
+            "max": 3.0,
+            "oom": 4.0,
+            "oom_kill": 5.0,
+            "oom_group_kill": 0.0,
+        }
+
+
 class TestDirectorRefusalGateCounter:
     """Phase 5 RefusalGate outcome counter must live on the :9482 registry."""
 

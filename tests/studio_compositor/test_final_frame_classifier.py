@@ -38,6 +38,27 @@ def test_classifier_flags_checkerboard_fallthrough(tmp_path: Path) -> None:
     assert "checkerboard_fallthrough_detected" in classification.reasons
 
 
+def test_classifier_does_not_call_sparse_camera_edges_checkerboard(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "camera-layout.png"
+    image = _sparse_layout_image()
+    pixels = image.load()
+    for y in range(10, 36):
+        for x in range(8, 58):
+            if (x + y) % 13 == 0:
+                pixels[x, y] = (250, 180, 80)
+    image.save(image_path)
+
+    classification = classify_final_frame(
+        image_path,
+        max_unclassified_black_fraction=0.65,
+    )
+
+    assert classification.checkerboard_fraction < 0.01
+    assert "checkerboard_fallthrough_detected" not in classification.reasons
+
+
 def test_classifier_reports_quadrant_weights_for_content(tmp_path: Path) -> None:
     image_path = tmp_path / "content.png"
     image = Image.new("RGB", (64, 36), (0, 0, 0))

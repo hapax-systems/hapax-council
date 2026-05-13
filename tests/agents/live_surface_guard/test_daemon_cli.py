@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from pathlib import Path
 
 from agents.live_surface_guard.__main__ import (
@@ -161,3 +162,40 @@ def test_guard_prefers_obs_password_env_over_local_config(tmp_path: Path, monkey
     monkeypatch.delenv("OBS_WEBSOCKET_PASSWORD", raising=False)
 
     assert _default_obs_password() == "env-pass"
+
+
+def test_guard_once_emits_failed_observation_when_metrics_url_unavailable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    textfile = tmp_path / "live_surface.prom"
+    ledger = tmp_path / "ledger.jsonl"
+
+    def _raise_url_error(*_args: object, **_kwargs: object) -> object:
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(
+        "agents.live_surface_guard.__main__.urllib.request.urlopen", _raise_url_error
+    )
+
+    rc = main(
+        [
+            "--once",
+            "--metrics-url",
+            "http://127.0.0.1:9482/metrics",
+            "--textfile-path",
+            str(textfile),
+            "--ledger-path",
+            str(ledger),
+        ]
+    )
+
+    assert rc == 2
+    text = textfile.read_text(encoding="utf-8")
+    assert 'hapax_live_surface_state{state="failed"} 1' in text
+    assert 'hapax_live_surface_reason{reason="metrics_unavailable:URLError"} 1' in text
+
+    row = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+    assert row["event_type"] == "observation"
+    assert row["payload"]["state"] == "failed"
+    assert row["payload"]["reasons"] == ["metrics_unavailable:URLError"]
