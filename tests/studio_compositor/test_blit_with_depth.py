@@ -103,6 +103,16 @@ def test_depth_opacity_can_be_explicitly_restored(monkeypatch) -> None:
     assert opacity < 1.0
 
 
+def test_depth_opacity_override_requires_explicit_truthy_value(monkeypatch) -> None:
+    """FX blits use the same conservative truth table as the ward modulator."""
+    monkeypatch.setenv("HAPAX_VISUAL_PUMPING_ENABLED", "0")
+    monkeypatch.setenv("HAPAX_WARD_MODULATOR_DEPTH_OPACITY_ENABLED", "enabled")
+
+    opacity = _capture_blit_opacity("beyond-scrim", 0.0)
+
+    assert opacity == 1.0
+
+
 def test_ward_properties_defaults_match_constants() -> None:
     """Schema additions match the constant defaults so no other code path desyncs."""
     props = WardProperties()

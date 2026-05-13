@@ -206,7 +206,7 @@ def _visual_pumping_enabled() -> bool:
 def _ward_depth_opacity_enabled() -> bool:
     raw = os.environ.get("HAPAX_WARD_MODULATOR_DEPTH_OPACITY_ENABLED")
     if raw is not None:
-        return raw.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
     return _visual_pumping_enabled()
 
 
