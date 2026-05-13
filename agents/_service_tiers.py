@@ -58,6 +58,7 @@ GROUP_DEFAULTS: dict[str, ServiceTier] = {
     "auth": ServiceTier.IMPORTANT,
     "connectivity": ServiceTier.OPTIONAL,
     "latency": ServiceTier.IMPORTANT,
+    "memory": ServiceTier.IMPORTANT,
     "secrets": ServiceTier.IMPORTANT,
     "queues": ServiceTier.OBSERVABILITY,
     "budget": ServiceTier.OBSERVABILITY,

@@ -166,6 +166,20 @@ from shared.live_surface_truth import (
 )
 from shared.livestream_health_group import LivestreamHealthEnvelope, LivestreamHealthGroup
 from shared.livestream_role_state import SpeechAct as _LivestreamRoleSpeechAct
+from shared.memory_pressure import (
+    classify_cgroup_memory_events as _classify_cgroup_memory_events,
+)
+from shared.memory_pressure import (
+    classify_critical_floor_risk as _classify_critical_floor_risk,
+)
+from shared.memory_pressure import classify_live_swappiness as _classify_live_swappiness
+from shared.memory_pressure import (
+    parse_cgroup_memory_events as _parse_cgroup_memory_events,
+)
+from shared.memory_pressure import (
+    parse_systemd_memory_properties as _parse_systemd_memory_properties,
+)
+from shared.memory_pressure import parse_zram_mm_stat as _parse_zram_mm_stat
 from shared.multimodal_environmental_evidence_envelope import (
     MultimodalClaimSupportDecision,
     MultimodalEnvironmentalEvidenceEnvelope,
@@ -758,6 +772,17 @@ CapabilityClassificationInventory.wcs_projection_payloads
 capability_classification_rows_by_id
 validate_daimonion_tool_affordance_parity
 build_seed_inventory
+
+# Infrastructure memory-pressure v0 publishes pure, injected parsers and
+# classifiers before the source-policy reconciliation task wires every
+# cgroup/zram/systemd consumer. Focused tests cover the contract, but the
+# production vulture pass does not count test callsites.
+_parse_zram_mm_stat
+_parse_cgroup_memory_events
+_parse_systemd_memory_properties
+_classify_live_swappiness
+_classify_cgroup_memory_events
+_classify_critical_floor_risk
 
 # Browser/MCP/file source-read helpers are the public contract for downstream
 # private dry-run loops and source-evidence WCS gates. Pydantic invokes

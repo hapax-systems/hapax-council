@@ -19,6 +19,7 @@ from . import (  # noqa: F401
     gpu,
     latency,
     m8_firmware,
+    memory,
     models_ollama,
     profiles,
     qdrant,

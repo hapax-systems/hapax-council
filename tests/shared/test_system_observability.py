@@ -8,6 +8,7 @@ from shared.system_observability import (
     ObservationState,
     RemediationMode,
     build_report,
+    collect_resource_pressure,
     parse_failed_systemd_units,
 )
 
@@ -155,3 +156,51 @@ def test_unknown_rte_state_is_not_treated_as_passing(monkeypatch) -> None:
     assert report.overall_state == ObservationState.WARN
     assert report.incident_candidates[0].entity_id == "coordination.rte"
     assert "exit 3" in report.incident_candidates[0].reason
+
+
+def test_resource_pressure_splits_ram_zram_and_swappiness_classes() -> None:
+    _, observations = collect_resource_pressure(
+        meminfo={
+            "MemTotal": 128 * 1024**3,
+            "MemAvailable": 67 * 1024**3,
+        },
+        swaps=[],
+        swappiness_value=150,
+        expected_swappiness=10,
+        observed_at="2026-05-13T18:55:00Z",
+    )
+
+    by_class = {obs.raw["pressure_class"]: obs for obs in observations}
+
+    assert by_class["global_ram_pressure"].state == ObservationState.PASS
+    assert by_class["zram_saturation"].state == ObservationState.PASS
+    assert by_class["sysctl_drift"].state == ObservationState.FAIL
+    assert by_class["sysctl_drift"].source == "/proc/sys/vm/swappiness"
+
+
+def test_resource_pressure_zram_saturation_does_not_claim_global_ram_exhaustion() -> None:
+    from shared.memory_pressure import parse_proc_swaps
+
+    swaps = parse_proc_swaps(
+        "\n".join(
+            [
+                "Filename Type Size Used Priority",
+                "/dev/zram0 partition 33554432 33554432 100",
+            ]
+        )
+    )
+    _, observations = collect_resource_pressure(
+        meminfo={
+            "MemTotal": 128 * 1024**3,
+            "MemAvailable": 67 * 1024**3,
+        },
+        swaps=swaps,
+        swappiness_value=10,
+        observed_at="2026-05-13T18:55:00Z",
+    )
+
+    by_class = {obs.raw["pressure_class"]: obs for obs in observations}
+
+    assert by_class["global_ram_pressure"].state == ObservationState.PASS
+    assert by_class["zram_saturation"].state == ObservationState.FAIL
+    assert by_class["zram_saturation"].entity_id == "host.swap"
