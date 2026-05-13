@@ -203,6 +203,13 @@ def _visual_pumping_enabled() -> bool:
     return _env_enabled("HAPAX_VISUAL_PUMPING_ENABLED", default=True)
 
 
+def _ward_depth_opacity_enabled() -> bool:
+    raw = os.environ.get("HAPAX_WARD_MODULATOR_DEPTH_OPACITY_ENABLED")
+    if raw is not None:
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return _visual_pumping_enabled()
+
+
 def _pre_fx_background_composite_enabled() -> bool:
     return _env_enabled("HAPAX_PRE_FX_LAYOUT_BACKGROUND_COMPOSITE_ENABLED", default=True)
 
@@ -468,9 +475,12 @@ def blit_with_depth(
     in the hot path; differential blur + tint are routed through the Reverie
     colorgrade GPU node in Phase 3.
     """
-    z_base = _Z_INDEX_BASE.get(z_plane, _Z_INDEX_BASE[DEFAULT_Z_PLANE])
-    effective_z = max(0.0, min(1.0, z_base + (z_index_float - 0.5) * 0.2))
-    depth_opacity = 0.6 + 0.4 * effective_z
+    if _ward_depth_opacity_enabled():
+        z_base = _Z_INDEX_BASE.get(z_plane, _Z_INDEX_BASE[DEFAULT_Z_PLANE])
+        effective_z = max(0.0, min(1.0, z_base + (z_index_float - 0.5) * 0.2))
+        depth_opacity = 0.6 + 0.4 * effective_z
+    else:
+        depth_opacity = 1.0
     blit_scaled(
         cr,
         src,

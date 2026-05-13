@@ -88,6 +88,7 @@ DEPTH_CONTRAST_MAX: float = 1.6
 DEPTH_CONTRAST_ENV: str = "HAPAX_WARD_MODULATOR_DEPTH_CONTRAST"
 VISUAL_PUMPING_ENV: str = "HAPAX_VISUAL_PUMPING_ENABLED"
 ALPHA_MODULATION_ENV: str = "HAPAX_WARD_MODULATOR_ALPHA_ENABLED"
+DEPTH_OPACITY_MODULATION_ENV: str = "HAPAX_WARD_MODULATOR_DEPTH_OPACITY_ENABLED"
 
 
 @dataclass
@@ -131,12 +132,12 @@ class WardStimmungModulator:
             # ``placement_bias`` and recruitment metadata still take
             # precedence — both write z_plane explicitly to non-default,
             # which we honor below.
-            if base.z_plane == "on-scrim":
+            if _depth_opacity_modulation_enabled() and base.z_plane == "on-scrim":
                 default_plane = WARD_Z_PLANE_DEFAULTS.get(ward_id)
                 if default_plane is not None:
                     base = replace(base, z_plane=default_plane)
             updated = self._apply_dims(base, dims)
-            if updated is base and existing is not None:
+            if updated is base:
                 continue
             set_ward_properties(ward_id, updated, ttl_s=self.ward_properties_ttl_s)
             _emit_depth_attenuation(updated.z_plane, updated.z_index_float)
@@ -189,10 +190,10 @@ class WardStimmungModulator:
         # (convergence) and pushes them back at low coherence (divergence).
         convergence = (coherence_val - 0.5) * 0.2
         # Depth dim attenuates beyond/mid-scrim alpha continuously when
-        # alpha movement is explicitly allowed. Under the live no-pumping
-        # regime the modulator still advances z/depth state but leaves
-        # alpha untouched so restoring the ward modulator cannot reintroduce
-        # whole-frame luma/opacity pulsing.
+        # alpha movement is explicitly allowed. Depth/z movement is gated
+        # separately because ``blit_with_depth`` converts z into effective
+        # opacity; under the live no-pumping regime both alpha and depth
+        # opacity must remain inert.
         if z_plane == "beyond-scrim":
             target_alpha = _clip01(0.5 + 0.5 * (1.0 - depth_val))
         elif z_plane == "mid-scrim":
@@ -202,11 +203,16 @@ class WardStimmungModulator:
         target_z_idx = _clip01(z_base - convergence)
         current_alpha = _clip01(base.alpha)
         current_z_idx = _clip01(base.z_index_float)
-        if _alpha_modulation_enabled():
+        alpha_enabled = _alpha_modulation_enabled()
+        depth_opacity_enabled = _depth_opacity_modulation_enabled()
+        if alpha_enabled:
             new_alpha = _bounded_step(current_alpha, target_alpha, _max_alpha_step())
         else:
             new_alpha = base.alpha
-        new_z_idx = _bounded_step(current_z_idx, target_z_idx, _max_z_index_step())
+        if depth_opacity_enabled:
+            new_z_idx = _bounded_step(current_z_idx, target_z_idx, _max_z_index_step())
+        else:
+            new_z_idx = base.z_index_float
         # 2026-04-23 blink-kill: epsilon-gate. Only write if the new
         # alpha / z_index has moved by at least MIN_DELTA (0.02 of the
         # [0,1] range) since the last resolved value. The previous
@@ -253,6 +259,13 @@ def _max_z_index_step() -> float:
 
 def _alpha_modulation_enabled() -> bool:
     explicit = os.environ.get(ALPHA_MODULATION_ENV)
+    if explicit is not None:
+        return _env_truthy(explicit)
+    return _env_enabled(VISUAL_PUMPING_ENV, default=True)
+
+
+def _depth_opacity_modulation_enabled() -> bool:
+    explicit = os.environ.get(DEPTH_OPACITY_MODULATION_ENV)
     if explicit is not None:
         return _env_truthy(explicit)
     return _env_enabled(VISUAL_PUMPING_ENV, default=True)
@@ -373,6 +386,7 @@ __all__ = [
     "CURRENT_PATH",
     "ENABLE_ENV",
     "ALPHA_MODULATION_ENV",
+    "DEPTH_OPACITY_MODULATION_ENV",
     "STALENESS_ENV",
     "STALENESS_S",
     "TICK_EVERY_N",
