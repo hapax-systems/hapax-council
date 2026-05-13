@@ -495,6 +495,20 @@ def _has_pending_queued(store: ProgrammePlanStore) -> bool:
     return any(p.status == ProgrammeStatus.PENDING for p in store.all())
 
 
+def _has_active_prepared_programme(store: ProgrammePlanStore) -> bool:
+    """True when an active prepared programme is already keeping the show alive."""
+    from shared.programme import ProgrammeStatus
+
+    for programme in store.all():
+        if programme.status != ProgrammeStatus.ACTIVE:
+            continue
+        content = getattr(programme, "content", None)
+        prepared_script = getattr(content, "prepared_script", None)
+        if prepared_script:
+            return True
+    return False
+
+
 def _maybe_author_plan(
     manager: ProgrammeManager,
     planner: ProgrammePlanner | None,
@@ -510,6 +524,9 @@ def _maybe_author_plan(
 
     now = time.monotonic()
     if last_attempt_ts != 0.0 and (now - last_attempt_ts) < PROGRAMME_PLAN_COOLDOWN_S:
+        return planner, last_attempt_ts
+
+    if _has_active_prepared_programme(manager.store):
         return planner, last_attempt_ts
 
     if _has_pending_queued(manager.store):

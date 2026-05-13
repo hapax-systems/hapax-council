@@ -202,9 +202,10 @@ def test_maybe_author_plan_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -
     manager.store.add.assert_not_called()
 
 
-def test_maybe_author_plan_runs_while_active_present(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An ACTIVE programme does NOT block planning — segments pre-assemble
-    while the current one runs so content flows continuously."""
+def test_maybe_author_plan_runs_while_active_non_prepped_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live-prior active programme does not block planning."""
     from agents.hapax_daimonion.programme_loop import (
         PROGRAMME_AUTO_PLAN_ENV,
         _maybe_author_plan,
@@ -215,6 +216,7 @@ def test_maybe_author_plan_runs_while_active_present(monkeypatch: pytest.MonkeyP
     manager = MagicMock()
     active = MagicMock()
     active.status = ProgrammeStatus.ACTIVE
+    active.content.prepared_script = None
     manager.store.all.return_value = [active]
 
     fake_plan = MagicMock()
@@ -226,6 +228,31 @@ def test_maybe_author_plan_runs_while_active_present(monkeypatch: pytest.MonkeyP
     planner, ts = _maybe_author_plan(manager, fake_planner, 0.0)
     assert ts > 0.0  # attempt was made
     fake_planner.plan.assert_called_once()
+
+
+def test_maybe_author_plan_noop_when_active_prepped_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prepared active programme must keep its heartbeat ahead of planning."""
+    from agents.hapax_daimonion.programme_loop import (
+        PROGRAMME_AUTO_PLAN_ENV,
+        _maybe_author_plan,
+    )
+    from shared.programme import ProgrammeStatus
+
+    monkeypatch.setenv(PROGRAMME_AUTO_PLAN_ENV, "1")
+    manager = MagicMock()
+    active = MagicMock()
+    active.status = ProgrammeStatus.ACTIVE
+    active.content.prepared_script = ["beat one", "beat two"]
+    manager.store.all.return_value = [active]
+    fake_planner = MagicMock()
+
+    planner, ts = _maybe_author_plan(manager, fake_planner, 0.0)
+    assert planner is fake_planner
+    assert ts == 0.0
+    fake_planner.plan.assert_not_called()
+    manager.store.add.assert_not_called()
 
 
 def test_maybe_author_plan_noop_when_pending_present(monkeypatch: pytest.MonkeyPatch) -> None:
