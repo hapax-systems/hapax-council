@@ -641,6 +641,7 @@ nodes:
       audit_classification: external-hardware-optional
 
   - id: s4-output
+    optional: true
     kind: alsa_sink
     pipewire_name: alsa_output.usb-Torso_Electronics_S-4_fedcba9876543220-03.multichannel-output
     industrial_name: interface.s4.usb-out.multichannel

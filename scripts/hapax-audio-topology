@@ -396,6 +396,8 @@ def _classify_live_extra_node(node: Node) -> str | None:
 
 def _classify_declared_missing_node(node: Node) -> str | None:
     """Classify descriptor nodes that are legitimately absent at runtime."""
+    if getattr(node, "optional", False):
+        return "optional-hardware-absent"
     explicit = node.params.get("audit_classification")
     if isinstance(explicit, str) and explicit:
         return explicit

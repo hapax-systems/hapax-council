@@ -169,6 +169,7 @@ class Node(BaseModel, frozen=True):
     bias_db: float | None = None
     release_s: float | None = None
     remap_to_rear: bool | None = None
+    optional: bool = False
 
     @field_validator("id")
     @classmethod
