@@ -178,6 +178,36 @@ def test_filewatcher_ignores_invalid_json(tmp_path: Path) -> None:
         watcher.stop()
 
 
+def test_filewatcher_retries_transient_empty_write(tmp_path: Path) -> None:
+    layout_file = tmp_path / "default.json"
+    layout_file.write_text(json.dumps(_minimal_layout().model_dump()))
+    state = LayoutState(_minimal_layout())
+    watcher = LayoutFileWatcher(state, layout_file)
+    watcher.start()
+    try:
+        layout_file.write_text("")
+        time.sleep(0.3)
+        assert state.get().surfaces[0].geometry.x == 0
+
+        new_layout = _minimal_layout().model_copy(
+            update={
+                "surfaces": [
+                    s.model_copy(update={"geometry": s.geometry.model_copy(update={"x": 321})})
+                    for s in _minimal_layout().surfaces
+                ]
+            }
+        )
+        layout_file.write_text(json.dumps(new_layout.model_dump()))
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if state.get().surfaces[0].geometry.x == 321:
+                break
+            time.sleep(0.05)
+        assert state.get().surfaces[0].geometry.x == 321
+    finally:
+        watcher.stop()
+
+
 def test_filewatcher_skips_self_write(tmp_path: Path) -> None:
     layout_file = tmp_path / "default.json"
     layout_file.write_text(json.dumps(_minimal_layout().model_dump()))
