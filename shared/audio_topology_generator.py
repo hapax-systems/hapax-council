@@ -94,6 +94,14 @@ def _channels_line(node: Node) -> str:
     return "\n".join(lines)
 
 
+def _conf_literal(value: str | int | float | bool) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return f'"{value}"'
+
+
 def _params_lines(node: Node, indent: int = 12) -> str:
     """Format extra ``params`` as ``key = value`` conf lines.
 
@@ -151,14 +159,16 @@ def _params_lines(node: Node, indent: int = 12) -> str:
     for k, v in node.params.items():
         if k in reserved:
             continue
-        if isinstance(v, bool):
-            literal = "true" if v else "false"
-        elif isinstance(v, (int, float)):
-            literal = str(v)
-        else:
-            # Strings get quoted — matches PipeWire's accepting syntax.
-            literal = f'"{v}"'
-        out.append(f"{pad}{k} = {literal}")
+        out.append(f"{pad}{k} = {_conf_literal(v)}")
+    return "\n".join(out)
+
+
+def _selected_params_lines(node: Node, keys: tuple[str, ...], indent: int = 16) -> str:
+    pad = " " * indent
+    out = []
+    for key in keys:
+        if key in node.params:
+            out.append(f"{pad}{key} = {_conf_literal(node.params[key])}")
     return "\n".join(out)
 
 
@@ -489,8 +499,36 @@ def _loopback_fragment(node: Node) -> str:
     positions_str = " ".join(cm.positions) if cm.positions else ""
     position_block = f"\n            audio.position = [ {positions_str} ]" if positions_str else ""
     target_line = (
-        f'            target.object = "{node.target_object}"' if node.target_object else ""
+        f'                target.object = "{node.target_object}"' if node.target_object else ""
     )
+    capture_target = node.params.get("capture_source")
+    capture_target_line = (
+        f'                target.object = "{capture_target}"'
+        if isinstance(capture_target, str) and capture_target
+        else ""
+    )
+    capture_param_block = _selected_params_lines(
+        node,
+        ("stream.capture.sink", "state.restore", "stream.dont-remix"),
+    )
+    playback_param_block = _selected_params_lines(
+        node,
+        (
+            "node.autoconnect",
+            "node.dont-fallback",
+            "node.dont-reconnect",
+            "node.dont-move",
+            "node.linger",
+            "state.restore",
+            "stream.dont-remix",
+        ),
+    )
+    capture_extra = f"\n{capture_target_line}" if capture_target_line else ""
+    if capture_param_block:
+        capture_extra += f"\n{capture_param_block}"
+    playback_extra = f"\n{target_line}" if target_line else ""
+    if playback_param_block:
+        playback_extra += f"\n{playback_param_block}"
     return f"""# {node.description or node.pipewire_name}
 context.modules = [
     {{  name = libpipewire-module-loopback
@@ -501,10 +539,11 @@ context.modules = [
             capture.props = {{
                 node.name = "{node.pipewire_name}"
                 media.class = Audio/Sink
+{capture_extra}
             }}
             playback.props = {{
                 node.name = "{node.pipewire_name}-output"
-{target_line}
+{playback_extra}
             }}
         }}
     }}
