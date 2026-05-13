@@ -113,6 +113,20 @@ def test_claim_upgrade_fails_closed_until_future_ledger_and_public_gate() -> Non
     )
     assert module.claim_upgrade_allowed(synthetic_future_report) is False
 
+    missing_design_evidence_report = module.build_design(generated_at="2026-05-13T00:00:00Z")
+    missing_design_evidence_report["gate_predicates"].update(
+        {
+            "all_design_evidence_present": False,
+            "instrumentable_event_stream_identified": True,
+            "future_ledger_run_receipt_consumed": True,
+            "future_public_claim_gate_permits_downstream_language": True,
+            "eligible_positive_events_above_threshold": True,
+            "privacy_and_operator_agency_passed": True,
+            "answer_support_passed_when_generation_is_in_path": True,
+        }
+    )
+    assert module.claim_upgrade_allowed(missing_design_evidence_report) is False
+
 
 def test_followup_task_is_filed_only_because_event_stream_is_identified() -> None:
     module = _load_module()
