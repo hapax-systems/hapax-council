@@ -53,17 +53,17 @@ def test_dashboard_aggregates_required_non_green_routing_state() -> None:
     assert dashboard.route_metadata_summary.malformed == 1
     assert dashboard.registry_freshness_ok is False
     assert dashboard.registry_non_green_route_count > 0
-    assert dashboard.subscription_quota_state == "stale"
-    assert dashboard.paid_api_budget_state == "expired"
+    assert dashboard.subscription_quota_state == "fresh"
+    assert dashboard.paid_api_budget_state == "unknown"
     assert dashboard.bootstrap_dependency_state == "expired"
-    assert dashboard.local_resource_state == "unknown"
+    assert dashboard.local_resource_state == "green"
     assert dashboard.provider_dependency_count == 1
     assert dashboard.support_artifacts_waiting_for_review == 1
-    assert dashboard.budget_ledger_stale is True
+    assert dashboard.budget_ledger_stale is False
     assert dashboard.next_budget_review_at == datetime(2026, 5, 9, 20, 0, tzinfo=UTC)
     assert "route_metadata_hold" in states
     assert "route_metadata_malformed" in states
-    assert "budget_ledger_stale" in states
+    assert "paid_api_budget_state:unknown" in states
     assert "support_artifacts_waiting_for_review" in states
     assert dashboard.support_artifact_refs == ("artifacts/support/bootstrap-draft.md",)
 

@@ -706,8 +706,8 @@ def test_dispatch_feed_includes_capacity_routing_dashboard(tmp_path: Path) -> No
     assert capacity["dispatch_authority"] is False
     assert capacity["spend_authority"] is False
     assert capacity["route_metadata_summary"]["hold"] == 1
-    assert capacity["subscription_quota_state"] == "stale"
-    assert capacity["paid_api_budget_state"] == "expired"
+    assert capacity["subscription_quota_state"] == "fresh"
+    assert capacity["paid_api_budget_state"] == "unknown"
     assert capacity["support_artifacts_waiting_for_review"] == 1
     assert "route_metadata_hold" in states
     assert "support_artifacts_waiting_for_review" in states

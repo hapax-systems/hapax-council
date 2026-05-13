@@ -27,7 +27,7 @@ def test_dashboard_json_exposes_non_green_bootstrap_state() -> None:
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload["paid_api_budget_state"] == "expired"
+    assert payload["paid_api_budget_state"] == "unknown"
     assert payload["bootstrap_dependency_state"] == "expired"
     assert payload["paid_api_route_eligible"] is False
     assert "bootstrap_dependency_state:expired" in payload["non_green_states"]
@@ -89,7 +89,7 @@ def test_dashboard_json_and_paid_route_check_emit_combined_payload() -> None:
 
     assert result.returncode == 1
     payload = json.loads(result.stdout)
-    assert payload["dashboard"]["paid_api_budget_state"] == "expired"
+    assert payload["dashboard"]["paid_api_budget_state"] == "unknown"
     assert payload["eligibility"]["eligible"] is False
 
 

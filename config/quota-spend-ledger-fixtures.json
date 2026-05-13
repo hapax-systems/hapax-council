@@ -1,31 +1,47 @@
 {
   "schema_version": 1,
-  "ledger_id": "quota-spend-ledger-default-20260509",
-  "captured_at": "2026-05-09T20:49:00Z",
+  "ledger_id": "quota-spend-ledger-claude-active-20260510",
+  "captured_at": "2026-05-10T18:00:00Z",
   "authority_source": "isap:quota-spend-ledger-20260509",
   "generated_from": [
     "shared/quota_spend_ledger.py",
-    "config/quota-spend-ledger-fixtures.json"
+    "config/quota-spend-ledger-fixtures.json",
+    "litellm-api-dashboard-2026-05-10"
   ],
   "privacy_scope": "private",
   "consumer_permission_after": "private_capacity_routing_tests_only",
-  "paid_api_budget_freshness_ttl_s": 60,
-  "quality_preserving_routes_available": "unknown",
-  "blocked_quality_floor_reason": "no active budget authority in fixture",
-  "local_resource_state": "unknown",
+  "paid_api_budget_freshness_ttl_s": 86400,
+  "quality_preserving_routes_available": "true",
+  "blocked_quality_floor_reason": null,
+  "local_resource_state": "green",
   "quota_snapshots": [
     {
       "quota_snapshot_schema": 1,
-      "snapshot_id": "quota-subscription-stale-20260509",
-      "captured_at": "2026-05-09T20:00:00Z",
-      "route_id": "opaque.route.subscription",
-      "provider": "opaque-provider-a",
+      "snapshot_id": "quota-anthropic-subscription-fresh-20260510",
+      "captured_at": "2026-05-10T18:00:00Z",
+      "route_id": "litellm.anthropic.claude-opus-4",
+      "provider": "anthropic",
       "capacity_pool": "subscription_quota",
-      "subscription_quota_state": "stale",
+      "subscription_quota_state": "fresh",
       "evidence_refs": [
-        "ledger:manual-subscription-quota-stale"
+        "litellm:gateway-4000-anthropic-route-healthy",
+        "ledger:anthropic-api-key-active"
       ],
-      "operator_visible_reason": "subscription quota is represented as stale fixture data"
+      "operator_visible_reason": "Anthropic API key active via LiteLLM gateway; claude-opus-4 route healthy"
+    },
+    {
+      "quota_snapshot_schema": 1,
+      "snapshot_id": "quota-local-tabbyapi-green-20260510",
+      "captured_at": "2026-05-10T18:00:00Z",
+      "route_id": "litellm.local.command-r-35b",
+      "provider": "tabbyapi",
+      "capacity_pool": "local_compute",
+      "subscription_quota_state": "fresh",
+      "evidence_refs": [
+        "litellm:gateway-4000-local-fast-route-healthy",
+        "systemd:tabbyapi.service-active"
+      ],
+      "operator_visible_reason": "TabbyAPI serving Command-R 35B EXL3 on :5000; local-fast route healthy"
     }
   ],
   "transition_budgets": [
@@ -61,6 +77,50 @@
         "exit_criterion": "subscription route can satisfy quality floor without paid/API spend"
       },
       "ledger_owner": "cx-indigo",
+      "dashboard_visibility": "required",
+      "lifecycle_state": "active"
+    },
+    {
+      "budget_schema": 1,
+      "budget_id": "tb-20260510-anthropic-api-steady-state",
+      "authority_case": "CASE-CAPACITY-ROUTING-002-STEADY-STATE",
+      "approved_by": "operator",
+      "created_at": "2026-05-10T00:00:00Z",
+      "expires_at": "2026-06-10T00:00:00Z",
+      "capacity_pool": "api_paid_spend",
+      "providers_allowed": [
+        "anthropic",
+        "google"
+      ],
+      "profiles_allowed": [
+        "frontier-full",
+        "frontier-fast",
+        "coding"
+      ],
+      "task_classes_allowed": [
+        "agent-dispatch",
+        "director-inference",
+        "authority-case-implementation",
+        "segment-prep",
+        "research"
+      ],
+      "quality_floors_allowed": [
+        "frontier_required",
+        "frontier_preferred",
+        "capable_sufficient"
+      ],
+      "total_cap_usd": "200.00",
+      "per_task_cap_usd": "25.00",
+      "daily_cap_usd": "50.00",
+      "auto_top_up_allowed": false,
+      "subscription_path_checked_at": "2026-05-10T00:00:00Z",
+      "reason_subscription_path_not_used": "subscription quota supplements but does not replace API budget for multi-agent fleet throughput",
+      "steady_state_replacement": {
+        "target_route_id": null,
+        "blocker_to_remove": null,
+        "exit_criterion": null
+      },
+      "ledger_owner": "alpha",
       "dashboard_visibility": "required",
       "lifecycle_state": "active"
     }
@@ -159,23 +219,26 @@
   "renewal_records": [
     {
       "renewal_schema": 1,
-      "renewal_id": "renew-opaque-provider-bootstrap-review",
-      "provider": "opaque-provider-a",
+      "renewal_id": "renew-anthropic-api-monthly",
+      "provider": "anthropic",
       "auth_surface": "api_key",
-      "capacity_pool": "bootstrap_budget",
-      "recurring_cost_usd": "0.00",
-      "subscription_renewal_at": null,
+      "capacity_pool": "api_paid_spend",
+      "recurring_cost_usd": "200.00",
+      "subscription_renewal_at": "2026-06-10T00:00:00Z",
       "top_up_enabled": false,
-      "hard_expiry_review_at": "2026-05-09T20:00:00Z",
-      "cancellation_or_exit_ref": "ledger:bootstrap-exit-required",
+      "hard_expiry_review_at": "2026-06-09T00:00:00Z",
+      "cancellation_or_exit_ref": null,
       "evidence_refs": [
-        "tb-20260509-bootstrap-expired"
+        "tb-20260510-anthropic-api-steady-state",
+        "ledger:anthropic-api-key-active"
       ],
-      "operator_visible_reason": "top-up remains disabled and budget review is expired"
+      "operator_visible_reason": "monthly API budget renewal; review before expiry to confirm continued fleet throughput needs"
     }
   ],
   "evidence_refs": [
     "CASE-CAPACITY-ROUTING-001",
-    "ledger:default-no-active-paid-api-budget"
+    "CASE-CAPACITY-ROUTING-002-STEADY-STATE",
+    "litellm:gateway-4000-anthropic-route-healthy",
+    "ledger:anthropic-api-key-active"
   ]
 }

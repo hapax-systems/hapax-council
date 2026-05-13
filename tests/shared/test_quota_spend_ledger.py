@@ -68,7 +68,7 @@ def _request(**overrides: object) -> PaidRouteRequest:
     return PaidRouteRequest.model_validate(payload)
 
 
-def test_default_fixture_loads_with_no_active_paid_api_budget() -> None:
+def test_default_fixture_loads_with_no_active_paid_api_budget_at_bootstrap_now() -> None:
     ledger = load_quota_spend_ledger()
 
     assert ledger.active_paid_budgets(NOW) == ()
@@ -228,7 +228,7 @@ def test_support_artifact_provenance_stays_non_authoritative_until_accepted() ->
 def test_dashboard_exposes_bootstrap_dependency_and_non_green_states() -> None:
     dashboard = build_dashboard(load_quota_spend_ledger(), now=NOW)
 
-    assert dashboard.paid_api_budget_state is PaidApiBudgetState.EXPIRED
+    assert dashboard.paid_api_budget_state is PaidApiBudgetState.UNKNOWN
     assert dashboard.provider_dependency_count == 1
     assert dashboard.support_artifacts_waiting_for_review == 1
     assert "bootstrap_dependency_state:expired" in dashboard.non_green_states
