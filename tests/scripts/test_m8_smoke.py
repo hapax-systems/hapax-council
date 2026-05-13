@@ -149,8 +149,9 @@ class TestLayoutWardId:
 
 class TestPipewireRouting:
     def test_live_conf_passes(self, smoke):
-        # The live config/pipewire/hapax-m8-loudnorm.conf routes via
-        # L-12 per re-splay-homage-ward-m8 PR.
+        # The live config/pipewire/hapax-m8-loudnorm.conf routes through
+        # the bounded MPC AUX10/AUX11 handoff; the reconciler owns the
+        # downstream L-12 wet return.
         result = smoke._check_pipewire_routing()
         assert result.passed is True
 
@@ -160,11 +161,12 @@ class TestPipewireRouting:
         assert "missing" in result.detail.lower()
 
     def test_livestream_tap_bypass_fails(self, smoke, tmp_path: Path):
-        # Include an L-12 target so the no-L-12 short-circuit doesn't
-        # fire — this case probes the bypass-detection branch.
+        # Include the expected MPC handoff so this probes bypass detection.
         bad_conf = (
-            "# both an L-12 target AND a livestream-tap bypass\n"
-            'target.object = "alsa_input.usb-ZOOM_Corporation_L-12-00.multitrack"\n'
+            "# both the governed handoff AND a livestream-tap bypass\n"
+            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"\n'
+            "audio.position = [ AUX10 AUX11 ]\n"
+            "node.autoconnect = false\n"
             'target.object = "hapax-livestream-tap"\n'
         )
         path = tmp_path / "bad.conf"
@@ -174,13 +176,35 @@ class TestPipewireRouting:
         assert "livestream-tap" in result.detail
         assert "remove" in result.remediation.lower()
 
-    def test_no_l12_target_fails(self, smoke, tmp_path: Path):
-        bad_conf = "# no target.object pointing at L-12\nname = silly\n"
+    def test_no_mpc_handoff_target_fails(self, smoke, tmp_path: Path):
+        bad_conf = "# no target.object pointing at the MPC handoff\nname = silly\n"
         path = tmp_path / "bad.conf"
         path.write_text(bad_conf, encoding="utf-8")
         result = smoke._check_pipewire_routing(conf_path=path)
         assert result.passed is False
-        assert "L-12" in result.detail
+        assert "MPC" in result.detail
+
+    def test_missing_aux_handoff_fails(self, smoke, tmp_path: Path):
+        bad_conf = (
+            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"\n'
+            "node.autoconnect = false\n"
+        )
+        path = tmp_path / "bad.conf"
+        path.write_text(bad_conf, encoding="utf-8")
+        result = smoke._check_pipewire_routing(conf_path=path)
+        assert result.passed is False
+        assert "AUX10 AUX11" in result.detail
+
+    def test_autoconnect_enabled_fails(self, smoke, tmp_path: Path):
+        bad_conf = (
+            'target.object = "alsa_output.usb-Akai_Professional_MPC_LIVE_III_B-00.multichannel-output"\n'
+            "audio.position = [ AUX10 AUX11 ]\n"
+        )
+        path = tmp_path / "bad.conf"
+        path.write_text(bad_conf, encoding="utf-8")
+        result = smoke._check_pipewire_routing(conf_path=path)
+        assert result.passed is False
+        assert "autoconnect" in result.detail
 
 
 # ── 5. Activity-reveal lifecycle check ──────────────────────────────

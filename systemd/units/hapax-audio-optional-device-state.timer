@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Hapax optional audio device state
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=hapax-audio-optional-device-state.service
+
+[Install]
+WantedBy=timers.target

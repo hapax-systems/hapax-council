@@ -12,7 +12,9 @@ replug witness:
   `pci-0000:71:00.0-usb-0:1.5` and
   `pci-0000:71:00.0-usb-0:1.1.1.3`.
 - L-12 serial `8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF` on USB device `3-1.1.2.2`.
-- L-12 default PipeWire sink/source intact.
+- L-12 PipeWire sink/source present. The default sink is intentionally not
+  L-12/MPC; unrouted desktop audio must stay on the local Ryzen monitor path
+  unless an explicit governed filter-chain targets the broadcast path.
 - Six Logitech cameras are off the CalDigit audio controller path
   `pci-0000:71:00.0`.
 - `usbcore.usbfs_memory_mb=128` and `uvcvideo.quirks=0x100` are live.
@@ -133,10 +135,14 @@ pactl get-default-source
 scripts/hapax-usb-topology-witness --repair
 ```
 
-Expected default sink/source:
+Expected policy:
 
-- `alsa_output.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.analog-surround-40`
-- `alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input`
+- L-12 sink/source are present in `pactl list short sinks` and
+  `pactl list short sources`.
+- The default sink is the Ryzen/local-monitor sink governed by
+  `config/wireplumber/10-default-sink-ryzen.conf`, not the L-12 or MPC.
+- The default source may remain L-12 while explicit operator-capture policy is
+  unchanged.
 
 ## Camera Placement
 
@@ -168,7 +174,8 @@ Load-bearing fields:
 - `s4.stable_id` / `l12.stable_id`: stable USB serial/vendor/product identity.
 - `s4.path` / `l12.path`: current bus path for diagnostics only.
 - `s4.net`: NetworkManager unmanaged and ModemManager suppression evidence.
-- `l12.default_sink` / `l12.default_source`: PipeWire role evidence.
+- `l12.default_sink` / `l12.default_source`: PipeWire role evidence; default
+  sink drift is advisory because L-12/MPC must not be promoted by omission.
 - `cameras[]`: Logitech serial/path placement evidence.
 
 ## Bluetooth Pressure Relief

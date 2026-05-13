@@ -130,21 +130,46 @@ def test_v5_evilpet_playback_node_is_active_not_passive() -> None:
 
 def test_m8_loudnorm_routes_through_l12_not_direct_to_stream() -> None:
     """M8 forward-invariant (operator directive 2026-05-02): hapax-m8-loudnorm.conf
-    MUST write to the L-12 USB output and MUST NOT terminate at
-    hapax-livestream-tap directly. The prior bypass design was inverted —
-    nothing goes straight to stream, everything passes through L-12 first."""
+    MUST expose reconciler-owned AUX10/AUX11 ports and MUST NOT terminate at
+    hapax-livestream-tap directly. The link map then carries the branch through
+    the L-12 return; nothing goes straight to stream."""
     conf_path = PIPEWIRE_DIR / "hapax-m8-loudnorm.conf"
     if not conf_path.exists():
         return  # M8 conf may not be deployed yet on all branches
     code = _strip_comments(_read_conf(conf_path))
-    assert L12_OUTPUT_NODE in code, (
-        "M8 audio must route through L-12; hapax-m8-loudnorm.conf "
-        "must target the L-12 USB analog-surround output (operator directive 2026-05-02)"
-    )
+    assert MPC_OUTPUT_NODE in code
+    assert "audio.position = [ AUX10 AUX11 ]" in code
+    assert "node.autoconnect = false" in code
     assert 'target.object = "hapax-livestream-tap"' not in code, (
         "M8 loudnorm must NOT terminate at hapax-livestream-tap directly; "
         "nothing goes straight to stream (operator directive 2026-05-02)"
     )
+
+
+def test_m8_link_map_uses_live_aux_ports_not_stale_fl_fr() -> None:
+    """The M8 loudnorm playback stream exposes AUX10/AUX11 in the live graph.
+
+    Stale FL/FR source ports make the reconciler retry absent ports on every
+    tick even when the M8 branch is intentionally inactive.
+    """
+    link_map = _strip_comments(_read_conf(HAPAX_LINK_MAP))
+    assert f"hapax-m8-loudnorm-playback:output_AUX10|{L12_OUTPUT_NODE}:playback_FL" in link_map
+    assert f"hapax-m8-loudnorm-playback:output_AUX11|{L12_OUTPUT_NODE}:playback_FR" in link_map
+    assert "hapax-m8-loudnorm-playback:output_FL|" not in link_map
+    assert "hapax-m8-loudnorm-playback:output_FR|" not in link_map
+
+
+def test_m8_optional_capture_is_fail_closed_when_hardware_absent() -> None:
+    """The optional M8 source must not fall back to L-12/default capture."""
+    conf = _strip_comments(_read_conf(PIPEWIRE_DIR / "hapax-m8-loudnorm.conf"))
+    start = conf.index('node.name = "hapax-m8-instrument-capture"')
+    end = conf.index('node.name = "hapax-m8-instrument-playback"')
+    capture_block = conf[start:end]
+    assert "node.autoconnect = false" in capture_block
+    assert "node.dont-fallback = true" in capture_block
+    assert "node.dont-reconnect = true" in capture_block
+    assert "node.dont-move = true" in capture_block
+    assert "state.restore = false" in capture_block
 
 
 def test_evilpet_capture_has_stream_dont_remix() -> None:

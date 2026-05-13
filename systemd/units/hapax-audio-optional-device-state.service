@@ -1,0 +1,8 @@
+[Unit]
+Description=Hapax optional audio device state witness
+After=pipewire.service wireplumber.service
+Requires=pipewire.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/hapax-council/scripts/hapax-audio-optional-device-state

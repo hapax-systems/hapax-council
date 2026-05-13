@@ -21,8 +21,8 @@ PR #2492 (cc-task ``activity-reveal-ward-p2-m8-migration``):
   ``config/compositor-layouts/default.json`` — same file the
   compositor loads.
 * PipeWire ``54-hapax-m8-instrument.conf`` (or
-  ``hapax-m8-loudnorm.conf``) is checked for "routes via L-12, never
-  bypasses to livestream-tap" — same invariant
+  ``hapax-m8-loudnorm.conf``) is checked for "routes through the governed
+  MPC AUX10/AUX11 handoff, never bypasses to livestream-tap" — same invariant
   ``test_re_splay_m8_layout_and_affordance.py`` enforces statically.
 
 Usage:
@@ -210,7 +210,7 @@ def _check_pipewire_routing(
     *,
     conf_path: Path | None = None,
 ) -> CheckResult:
-    """Pipewire conf routes via L-12, never bypasses to livestream-tap."""
+    """Pipewire conf uses the governed MPC handoff, never livestream-tap."""
 
     target = (
         conf_path
@@ -232,17 +232,6 @@ def _check_pipewire_routing(
         line for line in text.splitlines() if line.strip() and not line.strip().startswith("#")
     ]
     target_lines = [line for line in code_lines if "target.object" in line]
-    has_l12_target = any("ZOOM_Corporation_L-12" in line for line in target_lines)
-    if not has_l12_target:
-        return CheckResult(
-            name="pipewire_routing",
-            passed=False,
-            detail="conf has no target.object pointing at the L-12 USB return",
-            remediation=(
-                "M8 loudnorm output must terminate at the Zoom L-12 USB return per the"
-                " operator directive 2026-05-02 (everything wet routes via L-12)"
-            ),
-        )
     for line in target_lines:
         if 'target.object = "hapax-livestream-tap"' in line:
             return CheckResult(
@@ -259,12 +248,39 @@ def _check_pipewire_routing(
                 name="pipewire_routing",
                 passed=False,
                 detail=f"conf references evilpet (deprecated): {line.strip()}",
-                remediation="strip evilpet references; route via Zoom L-12 USB return",
+                remediation="strip evilpet references; route through the governed MPC/L-12 handoff",
             )
+    has_mpc_handoff = any("Akai_Professional_MPC_LIVE_III" in line for line in target_lines)
+    has_aux_handoff = any("audio.position = [ AUX10 AUX11 ]" in line for line in code_lines)
+    has_disabled_autoconnect = any("node.autoconnect = false" in line for line in code_lines)
+    if not has_mpc_handoff:
+        return CheckResult(
+            name="pipewire_routing",
+            passed=False,
+            detail="conf has no target.object pointing at the governed MPC AUX10/AUX11 handoff",
+            remediation=(
+                "M8 loudnorm output must target the MPC Live III multichannel output; "
+                "the reconciler then owns AUX10/AUX11 into the L-12 wet return"
+            ),
+        )
+    if not has_aux_handoff:
+        return CheckResult(
+            name="pipewire_routing",
+            passed=False,
+            detail="conf does not declare audio.position = [ AUX10 AUX11 ] for the M8 handoff",
+            remediation="pin the M8 loudnorm playback ports to AUX10/AUX11 for the MPC/L-12 return path",
+        )
+    if not has_disabled_autoconnect:
+        return CheckResult(
+            name="pipewire_routing",
+            passed=False,
+            detail="conf leaves autoconnect enabled for the optional M8 handoff",
+            remediation="set node.autoconnect = false so the reconciler owns the bounded handoff",
+        )
     return CheckResult(
         name="pipewire_routing",
         passed=True,
-        detail="conf targets L-12 USB return; no livestream-tap bypass; no evilpet",
+        detail="conf targets MPC AUX10/AUX11 handoff with autoconnect disabled; no livestream-tap bypass; no evilpet",
     )
 
 

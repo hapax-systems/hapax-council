@@ -291,7 +291,7 @@ def test_s4_loopback_targets_livestream_tap() -> None:
     assert s4.params["audio.rate"] == 48000
 
 
-def test_m8_loudnorm_bypasses_l12_and_missing_hardware_is_classified() -> None:
+def test_m8_loudnorm_is_reconciler_owned_and_missing_hardware_is_classified() -> None:
     d = _descriptor()
     m8_source = d.node_by_id("m8-usb-source")
     m8_capture = d.node_by_id("m8-instrument-capture")
@@ -299,16 +299,19 @@ def test_m8_loudnorm_bypasses_l12_and_missing_hardware_is_classified() -> None:
 
     assert m8_source.params["audit_classification"] == "external-hardware-optional"
     assert m8_capture.target_object == m8_source.pipewire_name
-    assert m8_loudnorm.target_object == "hapax-livestream-tap"
-    assert m8_loudnorm.params["bypasses_l12"] is True
+    assert m8_capture.params["node.autoconnect"] is False
+    assert m8_capture.params["fail_closed_on_target_absent"] is True
+    assert m8_loudnorm.target_object == MPC_OUTPUT_NAME
+    assert m8_loudnorm.channels.positions == ["AUX10", "AUX11"]
+    assert m8_loudnorm.params["node.autoconnect"] is False
+    assert m8_loudnorm.params["no_direct_livestream_tap"] is True
+    assert m8_loudnorm.params["playback_positions"] == "AUX10 AUX11"
 
-    forbidden_edges = [
-        edge
-        for edge in d.edges
-        if {edge.source, edge.target} & {"l12-capture", "l12-usb-return"}
-        and {edge.source, edge.target} & {"m8-instrument-capture", "m8-loudnorm"}
-    ]
-    assert forbidden_edges == [], "M8 descriptor path must not touch L-12 hardware"
+    edge_pairs = {(edge.source, edge.target) for edge in d.edges}
+    assert ("m8-usb-source", "m8-instrument-capture") in edge_pairs
+    assert ("m8-instrument-capture", "m8-loudnorm") in edge_pairs
+    assert ("m8-loudnorm", "l12-usb-return") in edge_pairs
+    assert ("m8-loudnorm", "livestream-tap") not in edge_pairs
 
 
 def test_respeaker_xvf3800_is_optional_sidechat_capture_not_rode_replacement() -> None:

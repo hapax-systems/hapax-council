@@ -54,6 +54,7 @@ L12_SINK = (
 L12_SOURCE = (
     "alsa_input.usb-ZOOM_Corporation_L-12_8253FFFFFFFFFFFF9B5FFFFFFFFFFFFF-00.multichannel-input"
 )
+LOCAL_DEFAULT_SINK = "alsa_output.pci-0000_73_00.6.analog-stereo"
 
 CALDIGIT_CONTROLLER = "pci-0000:71:00.0"
 STATUS_PATH = Path("/dev/shm/hapax-usb/topology-status.json")
@@ -412,12 +413,14 @@ def validate(
     default_source = l12.get("default_source", "")
     if L12_SINK not in sinks:
         issues.append("l12_sink_missing")
-    elif default_sink != L12_SINK:
-        if repair and set_default("sink", L12_SINK):
-            repairs.append("l12_default_sink_restored")
-            l12["default_sink"] = L12_SINK
+    if LOCAL_DEFAULT_SINK not in sinks:
+        issues.append("local_default_sink_missing")
+    elif default_sink != LOCAL_DEFAULT_SINK:
+        if repair and set_default("sink", LOCAL_DEFAULT_SINK):
+            repairs.append("local_default_sink_restored")
+            l12["default_sink"] = LOCAL_DEFAULT_SINK
         else:
-            issues.append(f"l12_default_sink_drift:{default_sink}")
+            issues.append(f"local_default_sink_drift:{default_sink}")
 
     if L12_SOURCE not in sources:
         issues.append("l12_source_missing")
