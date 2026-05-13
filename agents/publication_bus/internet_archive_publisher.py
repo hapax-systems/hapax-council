@@ -108,10 +108,15 @@ class InternetArchiveS3Publisher(Publisher):
             "Authorization": f"LOW {self.access_key}:{self.secret_key}",
             "Content-Type": "application/octet-stream",
         }
+
+        data = getattr(payload, "binary", None)
+        if data is None:
+            data = payload.text.encode("utf-8") if payload.text else b""
+
         try:
             response = requests.put(
                 url,
-                data=payload.text,
+                data=data,
                 headers=headers,
                 timeout=IA_S3_REQUEST_TIMEOUT_S,
             )

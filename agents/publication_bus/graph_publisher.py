@@ -192,7 +192,15 @@ def _build_deposit_metadata(
     if "related_identifiers" in base:
         block["related_identifiers"] = base["related_identifiers"]
     if "creators" in base:
-        block["creators"] = base["creators"]
+        creators = []
+        for c in base["creators"]:
+            if isinstance(c, dict) and "name" in c:
+                creators.append(c)
+            else:
+                creators.append({"name": str(c)})
+        block["creators"] = creators
+    else:
+        block["creators"] = [{"name": "Hapax System"}]
     return block
 
 
