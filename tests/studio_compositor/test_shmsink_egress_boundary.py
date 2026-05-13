@@ -34,3 +34,18 @@ def test_bridge_pipeline_uses_shmsink_callback_not_v4l2_callback() -> None:
     bridge_block = source.split("if is_bridge_enabled():", 1)[1].split("else:", 1)[0]
     assert "on_frame=compositor._on_shmsink_frame_pushed" in bridge_block
     assert "on_frame=compositor._on_v4l2_frame_pushed" not in bridge_block
+
+
+def test_bridge_watchdog_does_not_invoke_direct_v4l2sink_recovery() -> None:
+    source = (Path(__file__).parents[2] / "agents/studio_compositor/lifecycle.py").read_text(
+        encoding="utf-8"
+    )
+
+    bridge_branch = source.split("if bridge_enabled:", 1)[1].split("# v4l2sink stall recovery", 1)[
+        0
+    ]
+    assert "withholding watchdog ping" in bridge_branch
+    assert "attempt_recovery" not in bridge_branch
+
+    direct_pipe_age_gate = source.split("v4l2_pipe.last_frame_age_seconds", 1)[0]
+    assert "and not bridge_enabled" in direct_pipe_age_gate
