@@ -120,6 +120,51 @@ def _hero_layout(
     return layout
 
 
+def _follow_layout(
+    cameras: list[CameraSpec], hero_role: str, canvas_w: int, canvas_h: int
+) -> dict[str, TileRect]:
+    """Bounded follow-mode salience layout.
+
+    Follow mode is a live director move, not permission to expose every
+    camera branch. The earlier implementation repinned the balanced layout,
+    which made all cameras visible and repeatedly pushed egress below the
+    frame floor. This layout keeps the selected role large, preserves a
+    small two-camera context stack, and hides the rest.
+    """
+    if not cameras:
+        return {}
+    hero = next((c for c in cameras if c.role == hero_role), None)
+    if hero is None:
+        hero = next((c for c in cameras if c.hero), cameras[0])
+    context = [c for c in cameras if c.role != hero.role][:2]
+
+    layout = {cam.role: _hidden_tile() for cam in cameras}
+    hero_slot_w = int(canvas_w * 0.62)
+    hx, hy, hw, hh = _fit_16x9(hero_slot_w, canvas_h)
+    layout[hero.role] = TileRect(x=hx, y=hy, w=hw, h=hh)
+
+    if context:
+        right_x = hero_slot_w
+        right_w = canvas_w - hero_slot_w
+        gap = max(8, canvas_w // 160)
+        slot_h = (canvas_h - gap * (len(context) + 1)) // len(context)
+        for i, cam in enumerate(context):
+            sx, sy, sw, sh = _fit_16x9(right_w, slot_h)
+            y = gap + i * (slot_h + gap) + sy
+            layout[cam.role] = TileRect(x=right_x + sx, y=y, w=sw, h=sh)
+
+    small_w = hw // 4
+    small_h = int(small_w * 9 / 16)
+    margin = max(8, hw // 80)
+    layout["_hero_small"] = TileRect(
+        x=hx + hw - small_w - margin,
+        y=hy + hh - small_h - margin,
+        w=small_w,
+        h=small_h,
+    )
+    return layout
+
+
 def _sierpinski_layout(
     cameras: list[CameraSpec], canvas_w: int, canvas_h: int
 ) -> dict[str, TileRect]:
@@ -363,8 +408,7 @@ def compute_tile_layout(
         return _packed_layout(repinned, canvas_w, canvas_h)
     if mode.startswith("follow/"):
         hero_role = mode[len("follow/") :]
-        repinned = [c.model_copy(update={"hero": (c.role == hero_role)}) for c in cameras]
-        return _balanced_layout(repinned, canvas_w, canvas_h)
+        return _follow_layout(cameras, hero_role, canvas_w, canvas_h)
     if mode == "sierpinski":
         return _sierpinski_layout(cameras, canvas_w, canvas_h)
     if mode.startswith("hero/"):

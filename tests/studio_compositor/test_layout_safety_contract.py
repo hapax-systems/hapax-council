@@ -50,7 +50,7 @@ def test_packed_mode_is_only_valid_as_declared_containment_constellation() -> No
     assert "containment" in report.negative_space.intent
 
 
-def test_follow_mode_uses_balanced_salience_not_packed_repin() -> None:
+def test_follow_mode_uses_bounded_salience_not_packed_repin() -> None:
     follow_tiles = compute_tile_layout(
         CAMERAS, OUTPUT_WIDTH, OUTPUT_HEIGHT, mode="follow/c920-room"
     )
@@ -69,6 +69,13 @@ def test_follow_mode_uses_balanced_salience_not_packed_repin() -> None:
     assert report.family == "follow"
     assert follow_tiles["c920-room"].w > packed_tiles["c920-room"].w
     assert follow_tiles["c920-room"].h > packed_tiles["c920-room"].h
+    visible_roles = [
+        role
+        for role, tile in follow_tiles.items()
+        if role and not role.startswith("_") and tile.w > 1 and tile.h > 1
+    ]
+    assert len(visible_roles) <= 3
+    assert "c920-room" in visible_roles
 
 
 def test_low_resolution_hero_promotion_requires_waiver() -> None:
