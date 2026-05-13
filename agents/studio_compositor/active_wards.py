@@ -93,6 +93,7 @@ def publish_current_layout_state(
     layout_name: str | None = None,
     layout_mode: str | None = None,
     active_ward_ids: Iterable[str] | None = None,
+    assignments: Iterable[dict[str, object]] | None = None,
     path: Path | None = None,
 ) -> None:
     """Publish durable readback of the compositor's current rendered layout.
@@ -117,6 +118,8 @@ def publish_current_layout_state(
         payload["layout_mode"] = layout_mode
     if active_ward_ids is not None:
         payload["active_ward_ids"] = sorted(set(active_ward_ids))
+    if assignments is not None:
+        payload["assignments"] = list(assignments)
     payload["published_t"] = time.time()
     payload["schema_version"] = 1
 

@@ -619,6 +619,9 @@ def test_pip_draw_publishes_fresh_active_wards_and_current_layout(monkeypatch, t
     current_layout = json.loads(current_layout_path.read_text(encoding="utf-8"))
     assert current_layout["layout_name"] == "t"
     assert current_layout["active_ward_ids"] == ["green", "red"]
+    assert [item["ward"] for item in current_layout["assignments"]] == ["green", "red"]
+    assert current_layout["assignments"][0]["surface"] == "high"
+    assert current_layout["assignments"][1]["surface"] == "low"
     assert current_layout["schema_version"] == 1
 
 

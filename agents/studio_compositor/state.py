@@ -186,14 +186,17 @@ def publish_active_layout_readback(compositor: Any) -> None:
         layout = layout_state.get()
         surface_by_id = getattr(layout, "surface_by_id", None)
         active_ids: list[str] = []
+        active_assignments: list[dict[str, object]] = []
         for assignment in getattr(layout, "assignments", ()):
             source_id = getattr(assignment, "source", None)
             if not isinstance(source_id, str) or not source_id:
                 continue
             surface_id = getattr(assignment, "surface", None)
+            surface_schema = None
             if callable(surface_by_id) and surface_id is not None:
                 try:
-                    if surface_by_id(surface_id) is None:
+                    surface_schema = surface_by_id(surface_id)
+                    if surface_schema is None:
                         continue
                 except Exception:
                     continue
@@ -204,6 +207,31 @@ def publish_active_layout_readback(compositor: Any) -> None:
             if source_surface is None:
                 continue
             active_ids.append(source_id)
+            geometry = getattr(surface_schema, "geometry", None)
+            if getattr(geometry, "kind", None) == "rect":
+                try:
+                    x = int(geometry.x)
+                    y = int(geometry.y)
+                    w = int(geometry.w)
+                    h = int(geometry.h)
+                except (TypeError, ValueError):
+                    continue
+                if w > 0 and h > 0:
+                    active_assignments.append(
+                        {
+                            "ward": source_id,
+                            "source": source_id,
+                            "surface": surface_id,
+                            "x": x,
+                            "y": y,
+                            "w": w,
+                            "h": h,
+                            "opacity": float(getattr(assignment, "opacity", 1.0)),
+                            "non_destructive": bool(getattr(assignment, "non_destructive", False)),
+                            "render_stage": getattr(assignment, "render_stage", None),
+                            "z_order": int(getattr(surface_schema, "z_order", 0) or 0),
+                        }
+                    )
         from . import active_wards
 
         if not active_ids:
@@ -218,6 +246,7 @@ def publish_active_layout_readback(compositor: Any) -> None:
             layout_name=layout_name if isinstance(layout_name, str) else None,
             layout_mode=layout_mode if isinstance(layout_mode, str) else None,
             active_ward_ids=active_ids,
+            assignments=active_assignments if active_assignments else None,
         )
     except Exception:
         log.debug("active layout readback publish failed", exc_info=True)

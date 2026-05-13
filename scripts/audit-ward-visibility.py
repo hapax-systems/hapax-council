@@ -228,6 +228,61 @@ def _load_active_wards(path: Path) -> tuple[set[str] | None, str | None]:
     return wards, None
 
 
+def _load_active_assignment_rects(path: Path) -> tuple[list[dict[str, object]], str | None]:
+    """Read rendered assignment geometry from current-layout-state, if present."""
+    if not path.exists():
+        return [], None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return [], "active_assignments_unreadable"
+    if not isinstance(payload, dict):
+        return [], "active_assignments_unreadable"
+    raw_assignments = payload.get("assignments")
+    if raw_assignments is None:
+        return [], None
+    if not isinstance(raw_assignments, list):
+        return [], "active_assignments_unreadable"
+
+    assignments: list[dict[str, object]] = []
+    for item in raw_assignments:
+        if not isinstance(item, dict):
+            continue
+        ward = item.get("ward") or item.get("source") or item.get("ward_id")
+        surface = item.get("surface") or item.get("surface_id")
+        geometry = item.get("geometry") if isinstance(item.get("geometry"), dict) else item
+        if not isinstance(ward, str) or not ward.strip():
+            continue
+        if not isinstance(surface, str) or not surface.strip():
+            surface = ward
+        try:
+            x = int(geometry.get("x", 0))  # type: ignore[union-attr]
+            y = int(geometry.get("y", 0))  # type: ignore[union-attr]
+            w = int(geometry.get("w", geometry.get("width", 0)))  # type: ignore[union-attr]
+            h = int(geometry.get("h", geometry.get("height", 0)))  # type: ignore[union-attr]
+        except (TypeError, ValueError):
+            continue
+        if w <= 0 or h <= 0:
+            continue
+        try:
+            opacity = float(item.get("opacity", 1.0))
+        except (TypeError, ValueError):
+            opacity = 1.0
+        assignments.append(
+            {
+                "ward": ward,
+                "surface": surface,
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+                "opacity": opacity,
+                "non_destructive": bool(item.get("non_destructive", False)),
+            }
+        )
+    return assignments, None
+
+
 def _visibility_failures(
     *,
     visible_count: int,
@@ -312,30 +367,52 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    layout = json.loads(Path(args.layout).read_text())
     active_wards, active_wards_error = _load_active_wards(Path(args.active_wards_file))
-    surfaces_by_id = {s["id"]: s for s in layout.get("surfaces", [])}
+    active_assignment_rects, active_assignments_error = _load_active_assignment_rects(
+        Path(args.active_wards_file)
+    )
     rect_assignments = []
-    for assignment in layout.get("assignments", []):
-        surf = surfaces_by_id.get(assignment["surface"])
-        if surf is None or surf.get("geometry", {}).get("kind") != "rect":
-            continue
-        ward_id = assignment["source"]
+    for assignment in active_assignment_rects:
+        ward_id = str(assignment["ward"])
         if active_wards is not None and ward_id not in active_wards:
             continue
-        geom = surf["geometry"]
         rect_assignments.append(
             {
                 "ward": ward_id,
                 "surface": assignment["surface"],
-                "x": int(geom.get("x", 0)),
-                "y": int(geom.get("y", 0)),
-                "w": int(geom.get("w", 0)),
-                "h": int(geom.get("h", 0)),
+                "x": int(assignment["x"]),
+                "y": int(assignment["y"]),
+                "w": int(assignment["w"]),
+                "h": int(assignment["h"]),
                 "opacity": float(assignment.get("opacity", 1.0)),
                 "non_destructive": bool(assignment.get("non_destructive", False)),
             }
         )
+    if not rect_assignments:
+        layout = json.loads(Path(args.layout).read_text())
+        surfaces_by_id = {s["id"]: s for s in layout.get("surfaces", [])}
+        for assignment in layout.get("assignments", []):
+            surf = surfaces_by_id.get(assignment["surface"])
+            if surf is None or surf.get("geometry", {}).get("kind") != "rect":
+                continue
+            ward_id = assignment["source"]
+            if active_wards is not None and ward_id not in active_wards:
+                continue
+            geom = surf["geometry"]
+            rect_assignments.append(
+                {
+                    "ward": ward_id,
+                    "surface": assignment["surface"],
+                    "x": int(geom.get("x", 0)),
+                    "y": int(geom.get("y", 0)),
+                    "w": int(geom.get("w", 0)),
+                    "h": int(geom.get("h", 0)),
+                    "opacity": float(assignment.get("opacity", 1.0)),
+                    "non_destructive": bool(assignment.get("non_destructive", False)),
+                }
+            )
+    if active_assignments_error is not None and active_wards_error is None:
+        active_wards_error = active_assignments_error
 
     with tempfile.TemporaryDirectory() as td:
         if args.snapshot:
@@ -469,6 +546,9 @@ def main() -> int:
             "frame_width": frame_w,
             "frame_height": frame_h,
             "active_wards_file": str(args.active_wards_file),
+            "assignment_source": "current-layout-state"
+            if active_assignment_rects
+            else "layout-json",
             "active_ward_ids": sorted(active_wards) if active_wards is not None else None,
             "considered_wards": considered_count,
             "visible_wards": visible_count,
