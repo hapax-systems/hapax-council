@@ -83,6 +83,7 @@ FULL_SURFACE_MAX_GLFEEDBACK_RECOMPILE_DELTA = 8
 DEFAULT_FINAL_FRAME_IMAGE = Path("/dev/shm/hapax-compositor/fx-snapshot.jpg")
 DEFAULT_UPSTREAM_FRAME_IMAGE = Path("/dev/shm/hapax-compositor/snapshot.jpg")
 DEFAULT_LAYOUT_STATE_JSON = Path("/dev/shm/hapax-compositor/current-layout-state.json")
+DEFAULT_EXTRA_METRICS_FILES = (Path("/dev/shm/hapax-compositor/v4l2-bridge.prom"),)
 FINAL_PIXEL_PROOF_MIN_FRAMES = 6
 DEFAULT_MAX_UNCLASSIFIED_BLACK_FRACTION = 0.08
 
@@ -215,11 +216,34 @@ def _selected_proc_env(pid: int | None) -> dict[str, str]:
 def _load_metrics(args: argparse.Namespace) -> str:
     metrics_file_after = getattr(args, "metrics_file_after", None)
     if metrics_file_after and getattr(args, "_loading_after_sample", False):
-        return Path(metrics_file_after).read_text(encoding="utf-8")
-    if args.metrics_file:
-        return Path(args.metrics_file).read_text(encoding="utf-8")
-    with urllib.request.urlopen(args.metrics_url, timeout=2.0) as response:
-        return response.read().decode("utf-8", "replace")
+        text = Path(metrics_file_after).read_text(encoding="utf-8")
+    elif args.metrics_file:
+        text = Path(args.metrics_file).read_text(encoding="utf-8")
+    else:
+        with urllib.request.urlopen(args.metrics_url, timeout=2.0) as response:
+            text = response.read().decode("utf-8", "replace")
+    extra_files = args.extra_metrics_file
+    if extra_files is None:
+        extra_files = [] if args.metrics_file else list(DEFAULT_EXTRA_METRICS_FILES)
+    for path in extra_files:
+        text = _append_metrics_file(text, path)
+    return text
+
+
+def _append_metrics_file(text: str, path: Path) -> str:
+    try:
+        extra_text = path.read_text(encoding="utf-8")
+        age_seconds = max(0.0, time.time() - path.stat().st_mtime)
+    except OSError:
+        return text
+    extra_metrics = parse_prometheus_scalars(extra_text)
+    heartbeat = extra_metrics.get("hapax_v4l2_bridge_heartbeat_seconds_ago")
+    if heartbeat is not None:
+        extra_text = (
+            f"{extra_text.rstrip()}\n"
+            f"hapax_v4l2_bridge_heartbeat_seconds_ago {max(heartbeat, age_seconds)}\n"
+        )
+    return f"{text.rstrip()}\n{extra_text}"
 
 
 def _proc_cpu_seconds(pid: int | None) -> float | None:
@@ -686,6 +710,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--metrics-url", default="http://127.0.0.1:9482/metrics")
     parser.add_argument("--metrics-file")
+    parser.add_argument(
+        "--extra-metrics-file",
+        action="append",
+        type=Path,
+        default=None,
+        help="additional Prometheus textfile to merge into the readiness snapshot",
+    )
     parser.add_argument(
         "--metrics-file-after",
         help=(

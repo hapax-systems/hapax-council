@@ -233,6 +233,9 @@ def _assess_bridge_v4l2(
     ):
         degraded.append("bridge_heartbeat_stale")
 
+    if _obs_decoder_is_fresh(snapshot, max_egress_age_seconds=max_egress_age_seconds):
+        return
+
     if not _metric_positive(snapshot.decoded_video42_frames_total):
         degraded.append("decoded_video42_no_frames")
     elif not _metric_fresh(
@@ -240,6 +243,22 @@ def _assess_bridge_v4l2(
         max_age_seconds=max_egress_age_seconds,
     ):
         degraded.append("decoded_video42_stale")
+
+
+def _obs_decoder_is_fresh(
+    snapshot: LiveSurfaceSnapshot,
+    *,
+    max_egress_age_seconds: float,
+) -> bool:
+    return (
+        snapshot.obs_source_active is True
+        and snapshot.obs_screenshot_changed is True
+        and snapshot.obs_screenshot_flat is False
+        and _metric_fresh(
+            snapshot.obs_screenshot_age_seconds,
+            max_age_seconds=max_egress_age_seconds,
+        )
+    )
 
 
 def _assess_obs_decoder(
