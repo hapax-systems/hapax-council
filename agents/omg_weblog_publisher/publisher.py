@@ -392,26 +392,61 @@ def _compose_artifact_content(artifact) -> str:  # type: ignore[no-untyped-def]
     parts: list[str] = []
     if leading_title:
         parts.append(leading_title)
-    if attribution:
-        parts.append(attribution)
-    if abstract and not _abstract_duplicates_body(abstract, body_after_title):
-        parts.append(abstract)
-    if body_after_title:
-        parts.append(body_after_title)
 
-    body = "\n\n".join(parts)
-    if not body:
-        return ""
+    content_parts: list[str] = []
+    if attribution:
+        content_parts.append(attribution)
+    if abstract and not _abstract_duplicates_body(abstract, body_after_title):
+        content_parts.append(abstract)
+    if body_after_title:
+        content_parts.append(body_after_title)
+
+    body_inner = "\n\n".join(content_parts)
 
     # Per the 2026-04-25 full-automation directive, append the Refusal
     # Brief LONG clause unless the artifact IS the Refusal Brief or
     # already cites it. omg.lol weblog has no enforced ceiling so the
     # LONG form always fits.
     slug = (getattr(artifact, "slug", "") or "").strip()
-    if slug != "refusal-brief" and "refusal" not in body.lower():
+    if slug != "refusal-brief" and "refusal" not in body_inner.lower():
         from shared.attribution_block import NON_ENGAGEMENT_CLAUSE_LONG
 
-        body = f"{body}\n\n{NON_ENGAGEMENT_CLAUSE_LONG}"
+        if body_inner:
+            body_inner = f"{body_inner}\n\n{NON_ENGAGEMENT_CLAUSE_LONG}"
+        else:
+            body_inner = NON_ENGAGEMENT_CLAUSE_LONG
+
+    if not body_inner and not leading_title:
+        return ""
+
+    # Build IndieWeb markup
+    indieweb_blocks = []
+    indieweb_blocks.append('<div class="h-entry">')
+    indieweb_blocks.append(
+        '<a class="p-author h-card" href="https://hapax.omg.lol" style="display:none">hapax</a>'
+    )
+
+    surfaces = getattr(artifact, "surfaces_targeted", []) or []
+    if "bluesky-atproto-multi-identity" in surfaces:
+        indieweb_blocks.append(
+            '<a class="u-syndication" href="https://bsky.app/profile/oudepode.bsky.social" style="display:none">Bluesky</a>'
+        )
+    if "mastodon-rest-publisher" in surfaces:
+        indieweb_blocks.append(
+            '<a class="u-syndication" href="https://mastodon.social/@oudepode" style="display:none">Mastodon</a>'
+        )
+    if "github-readme-profile-current-project-refresh" in surfaces:
+        indieweb_blocks.append(
+            '<a class="u-syndication" href="https://github.com/hapax-systems" style="display:none">GitHub</a>'
+        )
+
+    indieweb_blocks.append('<div class="e-content">')
+    indieweb_blocks.append(body_inner)
+    indieweb_blocks.append("</div>")
+    indieweb_blocks.append("</div>")
+
+    parts.append("\n\n".join(indieweb_blocks))
+    body = "\n\n".join(parts)
 
     # omg.lol weblog entry format: a single ``Date:`` line followed by
     # a blank line, then the markdown body. NOT YAML frontmatter (no
