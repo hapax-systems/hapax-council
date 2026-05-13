@@ -7,9 +7,10 @@ PartOf=hapax.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/projects/hapax-council
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 EnvironmentFile=-/run/user/1000/hapax-secrets.env
-Environment=PATH=%h/projects/hapax-council/.venv/bin:/usr/bin
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 Environment=HAPAX_MASTODON_METRICS_PORT=9502
 Environment=HAPAX_MASTODON_TICK_S=30
 Environment=HAPAX_LOG_LEVEL=INFO
@@ -25,7 +26,7 @@ Environment=HAPAX_LOG_LEVEL=INFO
 #   HAPAX_MASTODON_INSTANCE_URL    (e.g. https://mastodon.social)
 #   HAPAX_MASTODON_ACCESS_TOKEN    (from <instance>/settings/applications, scope write:statuses)
 # Without either, daemon idles + logs "no_credentials" per event.
-ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.cross_surface.mastodon_post
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.cross_surface.mastodon_post
 Restart=on-failure
 RestartSec=15
 MemoryMax=128M
