@@ -13,6 +13,7 @@ from shared.hn_launch_readiness import (
 )
 
 NOW = 1_778_512_400.0
+CURRENT_SHA = "a" * 40
 
 
 class FakeRunner:
@@ -23,11 +24,13 @@ class FakeRunner:
         timer_count: int = 87,
         failed_units: tuple[str, ...] = (),
         readme_status: str = "",
+        current_sha: str | None = None,
     ) -> None:
         self.active_units = active_units or set()
         self.timer_count = timer_count
         self.failed_units = failed_units
         self.readme_status = readme_status
+        self.current_sha = current_sha
 
     def __call__(
         self, args: list[str] | tuple[str, ...], *, timeout: float = 5.0
@@ -48,6 +51,10 @@ class FakeRunner:
                 f"{unit} loaded failed failed fixture failure" for unit in self.failed_units
             )
             return subprocess.CompletedProcess(args, 0, stdout, "")
+        if args[0] == "git" and "rev-parse" in args:
+            if self.current_sha:
+                return subprocess.CompletedProcess(args, 0, f"{self.current_sha}\n", "")
+            return subprocess.CompletedProcess(args, 1, "", "missing origin/main")
         if args[0] == "git" and "status" in args:
             return subprocess.CompletedProcess(args, 0, self.readme_status, "")
         return subprocess.CompletedProcess(args, 127, "", "unexpected command")
@@ -157,6 +164,120 @@ def test_hn_launch_readiness_flags_private_voice_obs_youtube_and_failed_units(
     )
 
 
+def test_hn_launch_readiness_clears_fresh_current_rebuild_late_active_false_red(
+    tmp_path: Path,
+) -> None:
+    config = _ready_fixture(tmp_path)
+    _write_rebuild_outcome(
+        config,
+        sha_key="imagination",
+        current_sha=CURRENT_SHA,
+        outcome="restart_timeout_late_active",
+        timestamp="2026-05-11T15:13:20Z",
+    )
+
+    report = collect_hn_launch_readiness(
+        config,
+        runner=FakeRunner(
+            active_units=_all_active_units(),
+            failed_units=(
+                "hapax-rebuild-services.service",
+                "hapax-request-intake-consumer.service",
+                "hapax-wiring-audit.service",
+            ),
+            current_sha=CURRENT_SHA,
+        ),
+        json_getter=_json_getter_ready,
+        text_getter=_text_getter_ready,
+        now_epoch=NOW,
+    )
+
+    checks = {check.id: check for check in report.checks}
+    budget = checks["systemd_timer_failed_unit_budget"]
+    assert budget.status.value == "pass"
+    assert budget.evidence["failed_unit_count"] == 3
+    assert budget.evidence["effective_failed_unit_count"] == 2
+    assert budget.evidence["cleared_failed_units"] == ["hapax-rebuild-services.service"]
+
+
+def test_hn_launch_readiness_keeps_stale_or_sha_mismatched_rebuild_evidence_in_budget(
+    tmp_path: Path,
+) -> None:
+    cases = (
+        ("stale", CURRENT_SHA, "2026-05-11T14:00:00Z", "outcome timestamp is stale"),
+        (
+            "sha-mismatch",
+            "b" * 40,
+            "2026-05-11T15:13:20Z",
+            "outcome current_sha does not match origin/main",
+        ),
+    )
+    for case_name, outcome_sha, timestamp, reason in cases:
+        config = _ready_fixture(tmp_path / case_name)
+        _write_rebuild_outcome(
+            config,
+            sha_key="imagination",
+            current_sha=outcome_sha,
+            outcome="restart_timeout_late_active",
+            timestamp=timestamp,
+        )
+
+        report = collect_hn_launch_readiness(
+            config,
+            runner=FakeRunner(
+                active_units=_all_active_units(),
+                failed_units=(
+                    "hapax-rebuild-services.service",
+                    "hapax-request-intake-consumer.service",
+                    "hapax-wiring-audit.service",
+                ),
+                current_sha=CURRENT_SHA,
+            ),
+            json_getter=_json_getter_ready,
+            text_getter=_text_getter_ready,
+            now_epoch=NOW,
+        )
+
+        checks = {check.id: check for check in report.checks}
+        budget = checks["systemd_timer_failed_unit_budget"]
+        assert budget.status.value == "fail"
+        assert budget.evidence["effective_failed_unit_count"] == 3
+        assert budget.evidence["cleared_failed_units"] == []
+        stale_records = budget.evidence["rebuild_outcome_ledger"]["stale_or_unknown_records"]
+        assert stale_records[0]["reason"] == reason
+
+
+def test_hn_launch_readiness_blocks_on_missing_and_unhealthy_rebuild_outcomes(
+    tmp_path: Path,
+) -> None:
+    for outcome in ("missing_unit", "restart_failed_unhealthy"):
+        config = _ready_fixture(tmp_path / outcome)
+        _write_rebuild_outcome(
+            config,
+            sha_key="compositor",
+            current_sha=CURRENT_SHA,
+            outcome=outcome,
+            timestamp="2026-05-11T15:13:20Z",
+        )
+
+        report = collect_hn_launch_readiness(
+            config,
+            runner=FakeRunner(
+                active_units=_all_active_units(),
+                failed_units=("hapax-rebuild-services.service",),
+                current_sha=CURRENT_SHA,
+            ),
+            json_getter=_json_getter_ready,
+            text_getter=_text_getter_ready,
+            now_epoch=NOW,
+        )
+
+        checks = {check.id: check for check in report.checks}
+        budget = checks["systemd_timer_failed_unit_budget"]
+        assert budget.status.value == "fail"
+        assert outcome in budget.summary
+
+
 def test_compositor_visual_surface_ignores_consumed_layout_mode_mailbox(tmp_path: Path) -> None:
     config = _ready_fixture(tmp_path)
     (config.compositor_root / "current-layout-state.json").unlink()
@@ -246,6 +367,7 @@ def _ready_fixture(tmp_path: Path) -> ReadinessConfig:
     config = ReadinessConfig(
         repo_root=repo_root,
         shm_root=shm_root,
+        rebuild_state_dir=tmp_path / "rebuild-state",
         logos_base_url="http://logos.local",
         weblog_rss_url="http://weblog.local/rss.xml",
         obs_loopback_device=tmp_path / "dev-video42",
@@ -376,3 +498,27 @@ def _write_bytes(path: Path, value: bytes, mtime: float) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(value)
     os.utime(path, (mtime, mtime))
+
+
+def _write_rebuild_outcome(
+    config: ReadinessConfig,
+    *,
+    sha_key: str,
+    current_sha: str,
+    outcome: str,
+    timestamp: str,
+) -> None:
+    payload = {
+        "schema_version": 1,
+        "timestamp": timestamp,
+        "sha_key": sha_key,
+        "service": f"hapax-{sha_key}.service",
+        "current_sha": current_sha,
+        "last_sha": "none",
+        "outcome": outcome,
+    }
+    _write_text(
+        config.rebuild_state_dir / f"last-{sha_key}-outcome.json",
+        json.dumps(payload),
+        NOW,
+    )
