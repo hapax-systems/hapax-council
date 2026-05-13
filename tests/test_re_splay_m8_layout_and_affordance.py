@@ -80,10 +80,8 @@ def test_studio_m8_lcd_reveal_affordance_registered() -> None:
 
 def test_m8_wireplumber_routes_through_l12_not_direct_to_stream() -> None:
     """Static check: M8 audio routing config's ``target.object``
-    declarations terminate at the L-12 USB return surface (operator
-    directive 2026-05-02 — nothing goes straight to stream). The prior
-    bypass design (M8 → livestream-tap directly) was inverted; M8 now
-    feeds L-12, and L-12's broadcast-bus path carries it onward."""
+    declarations use the governed MPC AUX10/AUX11 handoff. The reconciler owns
+    the downstream L-12 wet return, and nothing goes straight to stream."""
     conf_path = REPO_ROOT / "config" / "pipewire" / "hapax-m8-loudnorm.conf"
     assert conf_path.exists(), "M8 pipewire loudnorm config missing"
     text = conf_path.read_text()
@@ -91,11 +89,16 @@ def test_m8_wireplumber_routes_through_l12_not_direct_to_stream() -> None:
         line for line in text.splitlines() if line.strip() and not line.strip().startswith("#")
     ]
     target_lines = [line for line in code_lines if "target.object" in line]
-    # Forward invariant: M8 loudnorm output targets the L-12 USB return.
-    has_l12_target = any("ZOOM_Corporation_L-12" in line for line in target_lines)
-    assert has_l12_target, (
-        "M8 loudnorm must terminate at the L-12 USB return surface "
-        "(operator directive 2026-05-02 — everything wet routes via L-12)"
+    has_mpc_handoff = any("Akai_Professional_MPC_LIVE_III" in line for line in target_lines)
+    assert has_mpc_handoff, (
+        "M8 loudnorm must target the governed MPC AUX10/AUX11 handoff; "
+        "the reconciler owns the downstream L-12 wet return"
+    )
+    assert any("audio.position = [ AUX10 AUX11 ]" in line for line in code_lines), (
+        "M8 loudnorm playback must pin AUX10/AUX11 for the MPC/L-12 return path"
+    )
+    assert any("node.autoconnect = false" in line for line in code_lines), (
+        "optional M8 handoff must keep autoconnect disabled so the reconciler owns it"
     )
     # Inverse invariant: must NOT bypass L-12 by going straight to broadcast.
     for line in target_lines:
