@@ -15,6 +15,7 @@ HLS_NO_CACHE = UNITS_DIR / "hapax-hls-no-cache.service"
 REVERIE = UNITS_DIR / "hapax-reverie.service"
 PARAMETRIC_HEARTBEAT = UNITS_DIR / "hapax-parametric-modulation-heartbeat.service"
 LAYOUT_MODE_DROPIN = UNITS_DIR / "studio-compositor.service.d" / "layout-mode-persist.conf"
+MALLOC_ARENA_DROPIN = UNITS_DIR / "studio-compositor.service.d" / "malloc-arena.conf"
 SOURCE_ROOT = "%h/.cache/hapax/source-activation/worktree"
 
 
@@ -247,3 +248,8 @@ def test_layout_mode_persistence_scripts_exist_and_are_executable() -> None:
         script = REPO_ROOT / "scripts" / name
         assert script.exists()
         assert script.stat().st_mode & 0o100
+
+
+def test_studio_compositor_constrains_glibc_arenas() -> None:
+    parser = _load_unit(MALLOC_ARENA_DROPIN)
+    assert parser.get("Service", "Environment") == "MALLOC_ARENA_MAX=2"
