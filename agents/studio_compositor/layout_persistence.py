@@ -187,7 +187,14 @@ class LayoutFileWatcher:
                 self._last_mtime = mtime
                 continue
             try:
-                raw = json.loads(self._path.read_text(encoding="utf-8"))
+                text = self._path.read_text(encoding="utf-8")
+                if not text.strip():
+                    log.warning(
+                        "LayoutFileWatcher saw empty/in-flight reload of %s; retrying",
+                        self._path,
+                    )
+                    continue
+                raw = json.loads(text)
                 new_layout = Layout.model_validate(raw)
             except (json.JSONDecodeError, ValueError) as e:
                 log.warning("LayoutFileWatcher rejected reload of %s: %s", self._path, e)

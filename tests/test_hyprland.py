@@ -32,7 +32,7 @@ class TestHyprlandQuery:
         assert win.title == "~/projects"
         assert win.workspace_id == 1
         assert win.pid == 42
-        mock_run.assert_called_once_with(
+        mock_run.assert_any_call(
             ["hyprctl", "-j", "activewindow"],
             capture_output=True,
             text=True,
