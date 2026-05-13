@@ -130,6 +130,8 @@ class LayoutAutoSaver:
             log.exception("LayoutAutoSaver write failed")
             return
         try:
+            tmp_mtime = Path(tmp_name).stat().st_mtime
+            self._state.mark_self_write(tmp_mtime)
             os.replace(tmp_name, self._path)
         except OSError:
             log.exception("LayoutAutoSaver atomic rename failed")
@@ -198,7 +200,6 @@ class LayoutFileWatcher:
                 new_layout = Layout.model_validate(raw)
             except OSError as e:
                 log.warning("LayoutFileWatcher read failed for %s: %s", self._path, e)
-                self._last_mtime = mtime
                 continue
             except (json.JSONDecodeError, ValueError) as e:
                 log.warning("LayoutFileWatcher rejected reload of %s: %s", self._path, e)

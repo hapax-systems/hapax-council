@@ -1,0 +1,362 @@
+{
+  "authority_case": "REQ-20260513-token-capital-public-surface-regate-v2",
+  "claim_upgrade_note": "No Token Capital claim upgrade is allowed until a future public claim gate explicitly permits downstream-contribution language after non-fixture ledger evidence exceeds its threshold.",
+  "current_claim_ceiling": {
+    "allowed_summary": "The project may say a downstream contribution ledger schema and fixture run exist for durable artifact influence records.",
+    "denied_summary": "The project may not present this fixture ledger as evidence for Token Capital downstream contribution, appreciation, recursive economic effects, or economic value.",
+    "status": "fixture_ledger_only_no_downstream_claim_upgrade"
+  },
+  "design_receipt": {
+    "claim_upgrade_allowed_now": false,
+    "overall_decision": "measurement_design_only_no_claim_upgrade",
+    "path": "docs/research/evidence/2026-05-13-downstream-contribution-measurement-design.json",
+    "sha256": "e7ef98409d1bfb6d9f122add42994c51ee83e07dc9620f67f11a8c6b7dbd8359"
+  },
+  "gate_predicates": {
+    "all_records_valid": true,
+    "answer_support_passed_when_generation_is_in_path": false,
+    "claim_upgrade_allowed_now": false,
+    "eligible_positive_events_above_threshold": false,
+    "fixture_run_contains_required_valences": true,
+    "future_ledger_run_receipt_consumed": true,
+    "future_public_claim_gate_permits_downstream_language": false,
+    "privacy_and_operator_agency_passed": true,
+    "read_only_ingest_completed": true
+  },
+  "generated_at": "2026-05-13T00:00:00Z",
+  "generated_by": "scripts/downstream_contribution_ledger_v0.py",
+  "input_inventory": {
+    "closed_cc_tasks": {
+      "aggregate_sha256": "ea3ec97f2c83952e049e553e870008f2f72eee1c631fe6a239d96c2712cb152a",
+      "count": 1501,
+      "emitted_metadata": [
+        "count",
+        "status_counts",
+        "tasks_with_pr",
+        "aggregate_sha256"
+      ],
+      "privacy_note": "Closed cc-task paths, titles, bodies, and task identifiers are not emitted in the source-controlled ledger receipt.",
+      "status_counts": {
+        "blocked": 2,
+        "claimed": 23,
+        "closed": 6,
+        "closed_poisoned": 1,
+        "closed_superseded": 1,
+        "completed": 38,
+        "deferred": 1,
+        "done": 1389,
+        "resolved": 1,
+        "superseded": 27,
+        "withdrawn": 12
+      },
+      "tasks_with_pr": 878
+    },
+    "counts": {
+      "closed_cc_tasks": 1501,
+      "public_surface_gate_receipts": 4,
+      "source_receipts": 10
+    },
+    "privacy_note": "Source and public-gate receipts emit path/hash metadata. Closed cc-tasks emit aggregate counts and an aggregate digest only. No inventory path emits private excerpts or infers operator motive.",
+    "public_surface_gate_receipts": [
+      {
+        "artifact_id": "public-surface-scrutiny-gate-v2",
+        "bytes": 1117,
+        "exists": true,
+        "kind": "public_surface_gate_receipt",
+        "path": "docs/runbooks/public-surface-scrutiny-gate-v2.md",
+        "pr": null,
+        "sha256": "cf2fef0494d84454076717ce25fa973dd0966492aec77fd50fec968fb07bb4bd",
+        "status": null
+      },
+      {
+        "artifact_id": "2026-05-13-public-surface-source-of-truth-reconciliation",
+        "bytes": 65810,
+        "exists": true,
+        "kind": "public_surface_gate_receipt",
+        "path": "docs/research/evidence/2026-05-13-public-surface-source-of-truth-reconciliation.json",
+        "pr": null,
+        "sha256": "833f260f321fa92ccc63b97ead99a3402c3e79d026c90f547e446538d1c28744",
+        "status": null
+      },
+      {
+        "artifact_id": "2026-05-13-public-surface-source-of-truth-reconciliation",
+        "bytes": 18773,
+        "exists": true,
+        "kind": "public_surface_gate_receipt",
+        "path": "docs/research/evidence/2026-05-13-public-surface-source-of-truth-reconciliation.md",
+        "pr": null,
+        "sha256": "08f09baf6d3d9077fa021350c58d521f1b26b19ce76f07ad92981e33b2390bcf",
+        "status": null
+      },
+      {
+        "artifact_id": "2026-05-13-token-capital-claim-regate-v2",
+        "bytes": 7832,
+        "exists": true,
+        "kind": "public_surface_gate_receipt",
+        "path": "docs/research/evidence/2026-05-13-token-capital-claim-regate-v2.json",
+        "pr": null,
+        "sha256": "550717448c52ecd87e6f909933e7c7367613dfd880bb3ce266fa71da7dca1acf",
+        "status": null
+      }
+    ],
+    "source_receipts": [
+      {
+        "artifact_id": "2026-04-28-velocity-report-evidence-snapshot",
+        "bytes": 44002,
+        "exists": true,
+        "kind": "source_receipt",
+        "path": "docs/research/evidence/2026-04-28-velocity-report-evidence-snapshot.json",
+        "pr": null,
+        "sha256": "ddfa4aab7597a5a9b97b43b19d2d01507da9b303bdc77cc4c54756baa8f22981",
+        "status": null
+      },
+      {
+        "artifact_id": "2026-05-13-downstream-contribution-measurement-design",
+        "bytes": 17911,
+        "exists": true,
+        "kind": "source_receipt",
+        "path": "docs/research/evidence/2026-05-13-downstream-contribution-measurement-design.json",
+        "pr": null,
+        "sha256": "e7ef98409d1bfb6d9f122add42994c51ee83e07dc9620f67f11a8c6b7dbd8359",
+        "status": null
+      },
+      {
+        "artifact_id": "2026-05-13-public-surface-source-of-truth-reconciliation",
+        "bytes": 65810,
+        "exists": true,
+        "kind": "source_receipt",
+        "path": "docs/research/evidence/2026-05-13-public-surface-source-of-truth-reconciliation.json",
+        "pr": null,
+        "sha256": "833f260f321fa92ccc63b97ead99a3402c3e79d026c90f547e446538d1c28744",
+        "status": null
+      },
+      {
+        "artifact_id": "2026-05-13-token-capital-claim-regate-v2",
+        "bytes": 7832,
+        "exists": true,
+        "kind": "source_receipt",
+        "path": "docs/research/evidence/2026-05-13-token-capital-claim-regate-v2.json",
+        "pr": null,
+        "sha256": "550717448c52ecd87e6f909933e7c7367613dfd880bb3ce266fa71da7dca1acf",
+        "status": null
+      },
+      {
+        "artifact_id": "2026-05-12-nomic-rag-embedding-smoke-and-golden-receipt",
+        "bytes": 3238,
+        "exists": true,
+        "kind": "source_receipt",
+        "path": "docs/research/evidence/2026-05-12-nomic-rag-embedding-smoke-and-golden-receipt.md",
+        "pr": null,
+        "sha256": "25881e75a281c25cf83d10400dbc1be0287604bdd2891c5a1668dbce829c2abb",
+        "status": null
+      },
+      {
+        "artifact_id": "2026-05-12-public-surface-claim-inventory",
+        "bytes": 17264,
+        "exists": true,
+        "kind": "source_receipt",
+        "path": "docs/research/evidence/2026-05-12-public-surface-claim-inventory.md",
+        "pr": null,
+        "sha256": "29b681915db79f7ca3f2a75b4d9169746c564bcc6abd8c6ee5457246b66a185d",
+        "status": null
+      },
+      {
+        "artifact_id": "2026-05-12-token-capital-research-basis-repair-receipt",
+        "bytes": 3022,
+        "exists": true,
+        "kind": "source_receipt",
+        "path": "docs/research/evidence/2026-05-12-token-capital-research-basis-repair-receipt.md",
+        "pr": null,
+        "sha256": "f368eefac306d039301ac0932821dca226dfac4270545ad067b2bbd09e28c1e5",
+        "status": null
+      },
+      {
+        "artifact_id": "2026-05-13-downstream-contribution-measurement-design",
+        "bytes": 12296,
+        "exists": true,
+        "kind": "source_receipt",
+        "path": "docs/research/evidence/2026-05-13-downstream-contribution-measurement-design.md",
+        "pr": null,
+        "sha256": "15ef238bbf2d25be14d9b1b4414271f2340b8cc5c28dfbe0a53d748cee3f7e2d",
+        "status": null
+      },
+      {
+        "artifact_id": "2026-05-13-public-surface-source-of-truth-reconciliation",
+        "bytes": 18773,
+        "exists": true,
+        "kind": "source_receipt",
+        "path": "docs/research/evidence/2026-05-13-public-surface-source-of-truth-reconciliation.md",
+        "pr": null,
+        "sha256": "08f09baf6d3d9077fa021350c58d521f1b26b19ce76f07ad92981e33b2390bcf",
+        "status": null
+      },
+      {
+        "artifact_id": "2026-05-13-token-capital-claim-regate-v2",
+        "bytes": 4571,
+        "exists": true,
+        "kind": "source_receipt",
+        "path": "docs/research/evidence/2026-05-13-token-capital-claim-regate-v2.md",
+        "pr": null,
+        "sha256": "5f0705689d9dca10d6e23c274f12075ef3253fd8750e881b1e21646eb8d48fbe",
+        "status": null
+      }
+    ]
+  },
+  "measurement_record_schema": {
+    "fail_closed_defaults": {
+      "claim_upgrade_allowed": false,
+      "negative_result_status": "no_attribution_edge",
+      "privacy_label": "unknown"
+    },
+    "required_fields": [
+      "event_id",
+      "event_class_id",
+      "source_token_path",
+      "source_token_sha256",
+      "downstream_artifact_path",
+      "downstream_artifact_sha256",
+      "authority_case",
+      "attribution_window_id",
+      "provenance_edges",
+      "counterfactual_method",
+      "observed_outcome",
+      "counterfactual_outcome",
+      "delta",
+      "negative_result_status",
+      "privacy_label",
+      "operator_acceptance_state",
+      "claim_upgrade_allowed"
+    ]
+  },
+  "overall_decision": "ledger_v0_instrumented_no_claim_upgrade",
+  "records": [
+    {
+      "attribution_window_id": "same_task_or_request",
+      "authority_case": "REQ-20260513-token-capital-public-surface-regate-v2",
+      "claim_upgrade_allowed": false,
+      "counterfactual_method": "leave-one-out: remove the claim-regate receipt and the public gate has no machine-readable denied Token Capital claim classes to consume",
+      "counterfactual_outcome": "Gate remains fail-closed without a consumed claim ceiling.",
+      "delta": {
+        "counterfactual": "no consumable denied-pattern receipt",
+        "direction": "positive",
+        "metric": "public_claim_gate_enforcement",
+        "observed": "denied claim patterns available"
+      },
+      "downstream_artifact_path": "docs/runbooks/public-surface-scrutiny-gate-v2.md",
+      "downstream_artifact_sha256": "cf2fef0494d84454076717ce25fa973dd0966492aec77fd50fec968fb07bb4bd",
+      "event_class_id": "quality_gate_unblock",
+      "event_id": "fixture-positive-quality-gate-unblock-claim-regate-to-public-gate",
+      "fixture_record": true,
+      "negative_result_status": "not_negative",
+      "observed_outcome": "Public-surface gate v2 can fail denied Token Capital overclaim language.",
+      "operator_acceptance_state": "merged_pr_and_source_receipt",
+      "privacy_label": "public",
+      "provenance_edges": [
+        {
+          "evidence": "public-surface gate consumes the claim ceiling and denied patterns",
+          "source": "docs/research/evidence/2026-05-13-token-capital-claim-regate-v2.json",
+          "target": "docs/runbooks/public-surface-scrutiny-gate-v2.md",
+          "type": "used"
+        }
+      ],
+      "result_valence": "positive",
+      "source_token_path": "docs/research/evidence/2026-05-13-token-capital-claim-regate-v2.json",
+      "source_token_sha256": "550717448c52ecd87e6f909933e7c7367613dfd880bb3ce266fa71da7dca1acf"
+    },
+    {
+      "attribution_window_id": "same_task_or_request",
+      "authority_case": "REQ-20260513-token-capital-public-surface-regate-v2",
+      "claim_upgrade_allowed": false,
+      "counterfactual_method": "compare claim ceiling before and after the answer-faithfulness receipt; the observed local generator path does not support downstream-value language",
+      "counterfactual_outcome": "Without the receipt, the claim gate would lack answer-level evidence.",
+      "delta": {
+        "counterfactual": "unmeasured",
+        "direction": "negative",
+        "metric": "claim_upgrade_support",
+        "observed": "answer_unfaithful"
+      },
+      "downstream_artifact_path": "docs/research/evidence/2026-05-13-token-capital-claim-regate-v2.json",
+      "downstream_artifact_sha256": "550717448c52ecd87e6f909933e7c7367613dfd880bb3ce266fa71da7dca1acf",
+      "event_class_id": "research_hypothesis_revision",
+      "event_id": "fixture-negative-answer-faithfulness-blocks-downstream-claim",
+      "fixture_record": true,
+      "negative_result_status": "answer_unfaithful",
+      "observed_outcome": "Answer-faithfulness and downstream-contribution claims remain denied.",
+      "operator_acceptance_state": "merged_pr_and_source_receipt",
+      "privacy_label": "public",
+      "provenance_edges": [
+        {
+          "evidence": "claim re-gate denies answer-faithfulness and downstream contribution upgrades",
+          "source": "docs/research/2026-05-13-rag-answer-faithfulness-and-downstream-contribution-eval.md",
+          "target": "docs/research/evidence/2026-05-13-token-capital-claim-regate-v2.json",
+          "type": "wasInformedBy"
+        }
+      ],
+      "result_valence": "negative",
+      "source_token_path": "docs/research/2026-05-13-rag-answer-faithfulness-and-downstream-contribution-eval.md",
+      "source_token_sha256": "75b438537c5ef5f5f471ebde7b1033d66aaafa50c12f6c46437768deaf087a88"
+    },
+    {
+      "attribution_window_id": "same_task_or_request",
+      "authority_case": "REQ-20260513-token-capital-public-surface-regate-v2",
+      "claim_upgrade_allowed": false,
+      "counterfactual_method": "privacy fail-closed: do not inspect or infer motive from private operator state",
+      "counterfactual_outcome": "Logging private content would violate the measurement-design boundary.",
+      "delta": {
+        "counterfactual": "unsafe_private_logging",
+        "direction": "blocked",
+        "metric": "privacy_and_operator_agency",
+        "observed": "privacy_or_consent_blocked"
+      },
+      "downstream_artifact_path": "docs/research/evidence/2026-05-13-downstream-contribution-measurement-design.json",
+      "downstream_artifact_sha256": "e7ef98409d1bfb6d9f122add42994c51ee83e07dc9620f67f11a8c6b7dbd8359",
+      "event_class_id": "operator_decision_support",
+      "event_id": "fixture-privacy-blocked-operator-decision-record",
+      "fixture_record": true,
+      "negative_result_status": "privacy_or_consent_blocked",
+      "observed_outcome": "Event is retained only as a privacy-blocked count.",
+      "operator_acceptance_state": "veto_or_missing_public_label_respected",
+      "privacy_label": "privacy_or_consent_blocked",
+      "provenance_edges": [
+        {
+          "evidence": "operator-private decision content is not logged by the ledger",
+          "source": "redacted://operator-private-decision-record",
+          "target": "docs/research/evidence/2026-05-13-downstream-contribution-measurement-design.json",
+          "type": "privacyBlocked"
+        }
+      ],
+      "result_valence": "privacy_blocked",
+      "source_token_path": "redacted://operator-private-decision-record",
+      "source_token_sha256": "bf7a0781985ff6c83e3fd2ee9d50695bf926b7e828fc8dd352e9658b39eec7e0"
+    }
+  ],
+  "summary": {
+    "fixture_valence_counts": {
+      "negative": 1,
+      "positive": 1,
+      "privacy_blocked": 1
+    },
+    "invalid_record_count": 0,
+    "record_count": 3,
+    "records_are_fixture_or_synthetic": true,
+    "valid_record_count": 3
+  },
+  "task_id": "downstream-contribution-ledger-v0-instrumentation",
+  "validations": [
+    {
+      "errors": [],
+      "event_id": "fixture-positive-quality-gate-unblock-claim-regate-to-public-gate",
+      "ok": true
+    },
+    {
+      "errors": [],
+      "event_id": "fixture-negative-answer-faithfulness-blocks-downstream-claim",
+      "ok": true
+    },
+    {
+      "errors": [],
+      "event_id": "fixture-privacy-blocked-operator-decision-record",
+      "ok": true
+    }
+  ]
+}
