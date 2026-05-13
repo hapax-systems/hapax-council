@@ -39,6 +39,7 @@ from agents.studio_compositor.z_plane_constants import (
 log = logging.getLogger(__name__)
 
 CURRENT_PATH: Path = Path("/dev/shm/hapax-imagination/current.json")
+UNIFORMS_PATH: Path = Path("/dev/shm/hapax-imagination/uniforms.json")
 # Imagination loop writes ``current.json`` at LLM cadence — empirically
 # 30s–15min between fragments depending on TabbyAPI completion + reverberation.
 # The 10s default that shipped with Phase 2 left the modulator in stale-fallback
@@ -96,6 +97,7 @@ class WardStimmungModulator:
     """Per-fx-tick callable that runs the modulator at ~5 Hz."""
 
     current_path: Path = CURRENT_PATH
+    uniforms_path: Path | None = None
     ward_properties_ttl_s: float = WARD_PROPERTIES_TTL_S
     tick_every_n: int = TICK_EVERY_N
     _tick_counter: int = 0
@@ -145,6 +147,14 @@ class WardStimmungModulator:
         _emit_z_plane_counts()
 
     def _read_dims(self) -> dict[str, Any] | None:
+        raw = self._read_current_mapping()
+        if raw is not None and not _payload_stale(raw, self.current_path):
+            dims = raw.get("dimensions")
+            if isinstance(dims, dict):
+                return dims
+        return self._read_uniform_fallback_dims()
+
+    def _read_current_mapping(self) -> dict[str, Any] | None:
         try:
             raw = json.loads(self.current_path.read_text(encoding="utf-8"))
         except Exception:
@@ -156,13 +166,33 @@ class WardStimmungModulator:
                 type(raw).__name__,
             )
             return None
-        ts = raw.get("timestamp")
-        if isinstance(ts, (int, float)) and (time.time() - float(ts)) > _staleness_cutoff():
+        return raw
+
+    def _read_uniform_fallback_dims(self) -> dict[str, Any] | None:
+        """Return neutral dims from the fresh renderer-uniform surface.
+
+        The wgpu imagination renderer can keep rendering and updating
+        uniforms while the older narrative ``current.json`` fragment is
+        stale. The ward modulator only needs a fresh, bounded signal to
+        remain alive; it must not invent full expressive dimensions from
+        renderer internals. Use neutral depth and only reuse explicit
+        coherence uniforms when present.
+        """
+        if self.uniforms_path is None:
             return None
-        dims = raw.get("dimensions")
-        if not isinstance(dims, dict):
+        try:
+            raw = json.loads(self.uniforms_path.read_text(encoding="utf-8"))
+        except Exception:
+            log.debug("modulator: uniforms.json read failed", exc_info=True)
             return None
-        return dims
+        if not isinstance(raw, dict) or _file_stale(self.uniforms_path):
+            return None
+        coherence_values = [
+            _safe_float(raw.get("drift.coherence"), 0.5),
+            _safe_float(raw.get("breath.coherence"), 0.5),
+        ]
+        coherence = sum(coherence_values) / len(coherence_values)
+        return {"depth": 0.5, "coherence": _clip01(coherence)}
 
     def _apply_dims(
         self,
@@ -240,6 +270,21 @@ def _staleness_cutoff() -> float:
     except ValueError:
         return STALENESS_S
     return value if value > 0.0 else STALENESS_S
+
+
+def _payload_stale(raw: dict[str, Any], path: Path) -> bool:
+    ts = raw.get("timestamp")
+    if isinstance(ts, (int, float)):
+        return (time.time() - float(ts)) > _staleness_cutoff()
+    return _file_stale(path)
+
+
+def _file_stale(path: Path) -> bool:
+    try:
+        age_s = time.time() - path.stat().st_mtime
+    except OSError:
+        return True
+    return age_s > _staleness_cutoff()
 
 
 def _safe_float(value: Any, default: float) -> float:

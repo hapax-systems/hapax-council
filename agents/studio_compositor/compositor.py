@@ -1157,9 +1157,12 @@ class StudioCompositor:
         # unconditionally; the ``maybe_tick`` early-returns when
         # ``HAPAX_WARD_MODULATOR_ACTIVE`` is unset so existing deploys
         # see no behavior change. Wired into ``fx_tick_callback``.
-        from agents.studio_compositor.ward_stimmung_modulator import WardStimmungModulator
+        from agents.studio_compositor.ward_stimmung_modulator import (
+            UNIFORMS_PATH,
+            WardStimmungModulator,
+        )
 
-        self._ward_stimmung_modulator = WardStimmungModulator()
+        self._ward_stimmung_modulator = WardStimmungModulator(uniforms_path=UNIFORMS_PATH)
 
         self._graph_runtime = init_graph_runtime(self)
 
