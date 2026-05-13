@@ -167,6 +167,7 @@ class SurfaceResult:
     artifact_fingerprint: str | None = None
     publication_gate_decision: str | None = None
     publication_gate_fingerprint: str | None = None
+    permalink: str | None = None
 
     def is_terminal(self) -> bool:
         return self.result in _TERMINAL_RESULTS
@@ -184,6 +185,8 @@ class SurfaceResult:
             payload["publication_gate_decision"] = self.publication_gate_decision
         if self.publication_gate_fingerprint is not None:
             payload["publication_gate_fingerprint"] = self.publication_gate_fingerprint
+        if self.permalink is not None:
+            payload["permalink"] = self.permalink
         return payload
 
 
@@ -597,6 +600,29 @@ class Orchestrator:
             stage="published",
             source_path=published,
         )
+
+        # Trigger u-syndication injection post-fanout
+        syndication_urls = []
+        for surface in artifact.surfaces_targeted:
+            log_path = artifact.log_path(surface, state_root=self._state_root)
+            if log_path.exists():
+                try:
+                    record = json.loads(log_path.read_text())
+                    if record.get("permalink"):
+                        syndication_urls.append(record["permalink"])
+                except Exception:
+                    pass
+
+        if syndication_urls and "omg-weblog" in artifact.surfaces_targeted:
+            try:
+                from agents.omg_weblog_publisher.publisher import update_syndication_links
+
+                log.info(
+                    "injecting u-syndication links for %s: %s", artifact.slug, syndication_urls
+                )
+                update_syndication_links(artifact.slug, syndication_urls)
+            except Exception:
+                log.exception("failed to inject u-syndication links for %s", artifact.slug)
 
     def _move_to_failed(
         self,

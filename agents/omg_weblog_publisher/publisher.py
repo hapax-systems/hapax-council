@@ -551,5 +551,66 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if outcome in ("published", "dry-run") else 1
 
 
+def update_syndication_links(slug: str, urls: list[str], *, address: str = DEFAULT_ADDRESS) -> None:
+    """Append u-syndication links to an existing omg.lol post via the API.
+
+    This is an idempotent post-fanout step in the POSSE architecture.
+    """
+    if not urls:
+        return
+
+    from shared.omg_lol_client import OmgLolClient
+
+    client = OmgLolClient(address=address)
+    if not client.enabled:
+        log.warning("omg-weblog: client disabled, skipping u-syndication update")
+        return
+
+    try:
+        # Fetch the existing post
+        resp = client._session.get(f"https://api.omg.lol/address/{address}/weblog/post/{slug}")
+        resp.raise_for_status()
+        data = resp.json()
+        content = data.get("response", {}).get("post", {}).get("content", "")
+        if not content:
+            log.warning("omg-weblog: no content found for %s, skipping update", slug)
+            return
+
+        # Check if already present to avoid duplication
+        links_to_add = []
+        for url in urls:
+            if url not in content:
+                links_to_add.append(
+                    f'<a class="u-syndication" href="{url}" style="display:none">Syndicated</a>'
+                )
+
+        if not links_to_add:
+            log.debug("omg-weblog: all u-syndication links already present in %s", slug)
+            return
+
+        # Append before the closing </div> of e-content or h-entry, or simply at the bottom.
+        # Since we just added </div>\n</div> for e-content and h-entry, let's insert it before the last </div>
+        if "</div>\n</div>" in content:
+            updated_content = content.replace(
+                "</div>\n</div>", "\n".join(links_to_add) + "\n</div>\n</div>"
+            )
+        else:
+            updated_content = content + "\n\n" + "\n".join(links_to_add)
+
+        # Submit the patch
+        patch_payload = {"content": updated_content}
+        patch_resp = client._session.patch(
+            f"https://api.omg.lol/address/{address}/weblog/post/{slug}", json=patch_payload
+        )
+        patch_resp.raise_for_status()
+        log.info(
+            "omg-weblog: successfully patched %s with %d u-syndication links",
+            slug,
+            len(links_to_add),
+        )
+    except Exception:
+        log.exception("omg-weblog: failed to update u-syndication links for %s", slug)
+
+
 if __name__ == "__main__":
     sys.exit(main())
