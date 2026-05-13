@@ -39,6 +39,25 @@ def _hidden_tile() -> TileRect:
     return TileRect(x=-10, y=-10, w=1, h=1)
 
 
+def _native_bounded_16x9(camera: CameraSpec, slot_w: int, slot_h: int) -> tuple[int, int, int, int]:
+    """Fit a 16:9 tile into a slot without upscaling the source camera."""
+
+    sx, sy, sw, sh = _fit_16x9(slot_w, slot_h)
+    max_w = max(1, min(sw, camera.width, int(camera.height * 16 / 9)))
+    max_h = max(1, min(sh, camera.height, int(camera.width * 9 / 16)))
+    if max_w / max_h > 16 / 9:
+        fit_h = max_h
+        fit_w = int(fit_h * 16 / 9)
+    else:
+        fit_w = max_w
+        fit_h = int(fit_w * 9 / 16)
+    fit_w = max(1, min(fit_w, sw))
+    fit_h = max(1, min(fit_h, sh))
+    x = sx + (sw - fit_w) // 2
+    y = sy + (sh - fit_h) // 2
+    return x, y, fit_w, fit_h
+
+
 def _balanced_layout(
     cameras: list[CameraSpec], canvas_w: int, canvas_h: int
 ) -> dict[str, TileRect]:
@@ -140,7 +159,7 @@ def _follow_layout(
 
     layout = {cam.role: _hidden_tile() for cam in cameras}
     hero_slot_w = int(canvas_w * 0.62)
-    hx, hy, hw, hh = _fit_16x9(hero_slot_w, canvas_h)
+    hx, hy, hw, hh = _native_bounded_16x9(hero, hero_slot_w, canvas_h)
     layout[hero.role] = TileRect(x=hx, y=hy, w=hw, h=hh)
 
     if context:

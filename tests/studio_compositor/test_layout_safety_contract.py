@@ -78,6 +78,39 @@ def test_follow_mode_uses_bounded_salience_not_packed_repin() -> None:
     assert "c920-room" in visible_roles
 
 
+def test_follow_mode_caps_low_resolution_hero_without_waiver() -> None:
+    cameras = [
+        camera.model_copy(update={"width": 640, "height": 360})
+        if camera.role == "c920-room"
+        else camera
+        for camera in CAMERAS
+    ]
+    follow_tiles = compute_tile_layout(
+        cameras, OUTPUT_WIDTH, OUTPUT_HEIGHT, mode="follow/c920-room"
+    )
+    report = validate_tile_layout(
+        cameras,
+        follow_tiles,
+        mode="follow/c920-room",
+        canvas_w=OUTPUT_WIDTH,
+        canvas_h=OUTPUT_HEIGHT,
+    )
+    hero = next(camera for camera in cameras if camera.role == "c920-room")
+    hero_tile = follow_tiles["c920-room"]
+    context_tiles = [
+        tile
+        for role, tile in follow_tiles.items()
+        if role != "c920-room" and role and not role.startswith("_") and tile.w > 1 and tile.h > 1
+    ]
+
+    assert report.ok, report.violations
+    assert hero_tile.w <= hero.width
+    assert hero_tile.h <= hero.height
+    assert max(hero_tile.w / hero.width, hero_tile.h / hero.height) <= 1.0
+    assert context_tiles
+    assert hero_tile.w * hero_tile.h > max(tile.w * tile.h for tile in context_tiles)
+
+
 def test_low_resolution_hero_promotion_requires_waiver() -> None:
     tiles = compute_tile_layout(CAMERAS, 1920, 1080, mode="hero/brio-synths")
     report = validate_tile_layout(
