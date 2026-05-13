@@ -1795,11 +1795,11 @@ class StudioCompositor:
             return True
         previous = self._broadcast_mode
         StudioCompositor._set_broadcast_mode(self, mode)
-        StudioCompositor._sync_mobile_support_threads(self)
         if self.pipeline is not None and StudioCompositor._any_livestream_attached(self):
             ok, detail = StudioCompositor._apply_livestream_mode(self, activate=True, mode=mode)
             if not ok:
                 log.error("broadcast mode apply failed (%s -> %s): %s", previous, mode, detail)
+        StudioCompositor._sync_mobile_support_threads(self)
         self._write_status("running")
         return True
 
@@ -1813,7 +1813,8 @@ class StudioCompositor:
 
     def _sync_mobile_support_threads(self) -> None:
         mobile_bin = self.__dict__.get("_mobile_rtmp_bin")
-        if mobile_bin is not None and self.__dict__.get("_broadcast_mode") in ("mobile", "dual"):
+        mobile_attached = bool(mobile_bin.is_attached()) if mobile_bin is not None else False
+        if mobile_attached and self.__dict__.get("_broadcast_mode") in ("mobile", "dual"):
             StudioCompositor._ensure_mobile_support_threads(self)
         else:
             StudioCompositor._stop_mobile_support_threads(self)
@@ -2184,10 +2185,10 @@ class StudioCompositor:
 
         mode = StudioCompositor._resolve_broadcast_mode(self)
         StudioCompositor._set_broadcast_mode(self, mode)
-        StudioCompositor._sync_mobile_support_threads(self)
 
         if activate:
             if StudioCompositor._livestream_matches_mode(self, mode):
+                StudioCompositor._sync_mobile_support_threads(self)
                 return True, "already live"
             ok, detail = StudioCompositor._apply_livestream_mode(
                 self,
@@ -2195,7 +2196,9 @@ class StudioCompositor:
                 mode=mode,
             )
             if not ok:
+                StudioCompositor._sync_mobile_support_threads(self)
                 return False, detail
+            StudioCompositor._sync_mobile_support_threads(self)
             try:
                 from shared.notify import send_notification
 
@@ -2214,12 +2217,14 @@ class StudioCompositor:
             return True, f"livestream egress attached ({mode})"
         else:
             if not StudioCompositor._any_livestream_attached(self):
+                StudioCompositor._sync_mobile_support_threads(self)
                 return True, "already off"
             ok, detail = StudioCompositor._apply_livestream_mode(
                 self,
                 activate=False,
                 mode=mode,
             )
+            StudioCompositor._sync_mobile_support_threads(self)
             try:
                 from shared.notify import send_notification
 
