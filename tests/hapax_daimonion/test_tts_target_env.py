@@ -7,6 +7,7 @@ between the daimonion conversation loop and the voice FX filter-chain
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,6 +15,7 @@ import pytest
 
 from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline
 from agents.hapax_daimonion.cpal.destination_channel import DestinationChannel
+from agents.hapax_daimonion.pw_audio_output import PlaybackResult
 
 
 def _make_pipeline_stub() -> ConversationPipeline:
@@ -194,3 +196,47 @@ class TestConversationPipelineRoutedAudio:
 
         pipeline._audio_output.write.assert_not_called()  # type: ignore[attr-defined]
         assert record_drop.call_args.kwargs["source"] == "conversation_tool_bridge"
+
+    @pytest.mark.asyncio
+    async def test_routed_spontaneous_sentence_records_tts_and_playback_witness(self):
+        pipeline = object.__new__(ConversationPipeline)
+        pipeline._running = True  # type: ignore[attr-defined]
+        pipeline._current_envelope = None  # type: ignore[attr-defined]
+        pipeline._recent_tts_texts = []  # type: ignore[attr-defined]
+        pipeline._max_tts_history = 5  # type: ignore[attr-defined]
+        pipeline.tts = SimpleNamespace(synthesize=MagicMock(return_value=b"\x00\x01" * 120))  # type: ignore[attr-defined]
+        pipeline._echo_canceller = None  # type: ignore[attr-defined]
+        pipeline._audio_output = MagicMock()  # type: ignore[attr-defined]
+        pipeline._audio_output.write.return_value = PlaybackResult(  # type: ignore[attr-defined]
+            status="completed",
+            returncode=0,
+            duration_s=0.005,
+            timeout_s=0.005,
+            target="hapax-private",
+            media_role="Assistant",
+        )
+
+        with (
+            patch("agents.hapax_daimonion.voice_output_witness.record_tts_synthesis") as record_tts,
+            patch(
+                "agents.hapax_daimonion.voice_output_witness.record_playback_result"
+            ) as record_playback,
+        ):
+            spoken = await pipeline._speak_sentence(
+                "Private routed sentence.",
+                destination_target="hapax-private",
+                destination_role="Assistant",
+                destination="private",
+            )
+            for _ in range(20):
+                if record_playback.called:
+                    break
+                await asyncio.sleep(0.01)
+
+        assert spoken == "Private routed sentence."
+        record_tts.assert_called_once()
+        assert record_tts.call_args.kwargs["status"] == "completed"
+        record_playback.assert_called_once()
+        assert record_playback.call_args.kwargs["destination"] == "private"
+        assert record_playback.call_args.kwargs["target"] == "hapax-private"
+        assert record_playback.call_args.kwargs["media_role"] == "Assistant"

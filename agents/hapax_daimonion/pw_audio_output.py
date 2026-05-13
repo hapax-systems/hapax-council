@@ -215,7 +215,7 @@ class PwAudioOutput:
         *,
         target: str | None = None,
         media_role: str | None = None,
-    ) -> None:
+    ) -> PlaybackResult:
         """Write PCM data to the playback stream. Thread-safe, blocking.
 
         Sleeps for the audio duration after writing so callers experience
@@ -240,7 +240,15 @@ class PwAudioOutput:
         with self._lock:
             proc = self._ensure_process(resolved_target, resolved_role)
             if proc is None or proc.stdin is None:
-                return
+                return PlaybackResult(
+                    status="spawn_failed",
+                    returncode=None,
+                    duration_s=duration_s,
+                    timeout_s=duration_s,
+                    target=resolved_target,
+                    media_role=resolved_role,
+                    error="pw-cat playback process unavailable",
+                )
             try:
                 proc.stdin.write(pcm)
                 proc.stdin.flush()
@@ -253,22 +261,63 @@ class PwAudioOutput:
                 )
                 self._processes.pop(key, None)
                 proc = self._ensure_process(resolved_target, resolved_role)
-                if proc is not None and proc.stdin is not None:
-                    try:
-                        proc.stdin.write(pcm)
-                        proc.stdin.flush()
-                        self._last_write_times[key] = time.monotonic()
-                    except Exception:
-                        log.warning(
-                            "pw-cat retry failed (target=%s, role=%s)",
-                            resolved_target,
-                            resolved_role,
-                        )
-                        return
+                if proc is None or proc.stdin is None:
+                    return PlaybackResult(
+                        status="spawn_failed",
+                        returncode=None,
+                        duration_s=duration_s,
+                        timeout_s=duration_s,
+                        target=resolved_target,
+                        media_role=resolved_role,
+                        error="pw-cat playback process unavailable after retry",
+                    )
+                try:
+                    proc.stdin.write(pcm)
+                    proc.stdin.flush()
+                    self._last_write_times[key] = time.monotonic()
+                except Exception:
+                    log.warning(
+                        "pw-cat retry failed (target=%s, role=%s)",
+                        resolved_target,
+                        resolved_role,
+                    )
+                    return PlaybackResult(
+                        status="failed",
+                        returncode=None,
+                        duration_s=duration_s,
+                        timeout_s=duration_s,
+                        target=resolved_target,
+                        media_role=resolved_role,
+                        error="pw-cat retry failed",
+                    )
+            except Exception as exc:
+                log.warning(
+                    "pw-cat playback write failed (target=%s, role=%s): %s",
+                    resolved_target,
+                    resolved_role,
+                    exc,
+                )
+                return PlaybackResult(
+                    status="failed",
+                    returncode=None,
+                    duration_s=duration_s,
+                    timeout_s=duration_s,
+                    target=resolved_target,
+                    media_role=resolved_role,
+                    error=str(exc),
+                )
 
         # Block for audio duration — paces sentence delivery
         if duration_s > 0:
             time.sleep(duration_s)
+        return PlaybackResult(
+            status="completed",
+            returncode=0,
+            duration_s=duration_s,
+            timeout_s=duration_s,
+            target=resolved_target,
+            media_role=resolved_role,
+        )
 
     def stop_stream(self) -> None:
         """No-op for API compatibility with PyAudio streams."""

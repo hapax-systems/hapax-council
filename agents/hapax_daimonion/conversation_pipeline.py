@@ -55,6 +55,18 @@ _audio_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audio-ou
 
 _CAPTION_AUDIO_SAMPLE_RATE_HZ = 16000
 _CAPTION_AUDIO_BYTES_PER_SAMPLE = 2
+_VOICE_OUTPUT_SAMPLE_RATE_HZ = 24000
+_VOICE_OUTPUT_BYTES_PER_SAMPLE = 2
+
+
+def _destination_value_for_route(
+    *, destination_target: str | None, destination_role: str | None
+) -> str:
+    if destination_role == "Broadcast":
+        return "livestream"
+    if destination_target is not None or destination_role is not None:
+        return "private"
+    return "unknown"
 
 
 def _emit_caption_bridge_for_transcript(
@@ -246,6 +258,7 @@ class ConversationPipeline:
         register_hint: str | None = None,
         destination_target: str | None = None,
         destination_role: str | None = None,
+        destination: str | None = None,
     ) -> None:
         """Generate and speak a spontaneous utterance from an impingement.
 
@@ -266,12 +279,43 @@ class ConversationPipeline:
         the audio output's constructor target. ``None`` means this method must
         resolve private-or-drop before playback.
         """
-        if not self._running or self.state == ConvState.SPEAKING:
-            return
-
         content = getattr(impingement, "content", {})
         source = getattr(impingement, "source", "")
         strength = getattr(impingement, "strength", 0.5)
+        text_for_witness = ""
+        if isinstance(content, dict):
+            text_for_witness = str(content.get("narrative") or content.get("metric") or "")
+        destination = destination or _destination_value_for_route(
+            destination_target=destination_target,
+            destination_role=destination_role,
+        )
+
+        if not self._running:
+            from agents.hapax_daimonion.voice_output_witness import record_drop
+
+            record_drop(
+                reason="spontaneous_speech_pipeline_not_running",
+                source=source,
+                destination=destination,
+                target=destination_target,
+                media_role=destination_role,
+                text=text_for_witness,
+                terminal_state="failed",
+            )
+            return
+        if self.state == ConvState.SPEAKING:
+            from agents.hapax_daimonion.voice_output_witness import record_drop
+
+            record_drop(
+                reason="spontaneous_speech_pipeline_speaking",
+                source=source,
+                destination=destination,
+                target=destination_target,
+                media_role=destination_role,
+                text=text_for_witness,
+                terminal_state="failed",
+            )
+            return
 
         # Build source-appropriate prompt
         if source == "imagination":
@@ -366,10 +410,33 @@ class ConversationPipeline:
                     text,
                     destination_target=destination_target,
                     destination_role=destination_role,
+                    destination=destination,
                 )
             else:
+                from agents.hapax_daimonion.voice_output_witness import record_drop
+
+                record_drop(
+                    reason="spontaneous_speech_llm_silence",
+                    source=source,
+                    destination=destination,
+                    target=destination_target,
+                    media_role=destination_role,
+                    text=text_for_witness,
+                    terminal_state="failed",
+                )
                 log.debug("Cascade recruited speech but LLM chose silence")
         except Exception:
+            from agents.hapax_daimonion.voice_output_witness import record_drop
+
+            record_drop(
+                reason="spontaneous_speech_generation_failed",
+                source=source,
+                destination=destination,
+                target=destination_target,
+                media_role=destination_role,
+                text=text_for_witness,
+                terminal_state="failed",
+            )
             log.debug("Spontaneous speech generation failed (non-fatal)", exc_info=True)
 
     async def start(self) -> None:
@@ -1949,6 +2016,7 @@ class ConversationPipeline:
         *,
         destination_target: str | None = None,
         destination_role: str | None = None,
+        destination: str | None = None,
     ) -> str:
         """Synthesize and play a single sentence/clause.
 
@@ -1977,6 +2045,10 @@ class ConversationPipeline:
             )
             if not allowed:
                 return ""
+        destination = destination or _destination_value_for_route(
+            destination_target=destination_target,
+            destination_role=destination_role,
+        )
 
         # Apply grounding context clause gate
         if hasattr(self, "_current_envelope") and self._current_envelope is not None:
@@ -1999,18 +2071,71 @@ class ConversationPipeline:
             # or silence. Keep original in echo detection history.
             tts_text = _strip_emoji(text)
             if not tts_text.strip():
+                from agents.hapax_daimonion.voice_output_witness import (
+                    record_drop,
+                    record_tts_synthesis,
+                )
+
+                record_tts_synthesis(status="empty", text=text, pcm=b"")
+                record_drop(
+                    reason="tts_empty_text",
+                    source="conversation_pipeline",
+                    destination=destination,
+                    target=destination_target,
+                    media_role=destination_role,
+                    text=text,
+                    terminal_state="failed",
+                )
                 return ""  # text was only emoji
 
             loop = asyncio.get_running_loop()
-            pcm = await loop.run_in_executor(
-                _tts_executor,
-                self.tts.synthesize,
-                tts_text,
-                "conversation",
-            )
+            try:
+                pcm = await loop.run_in_executor(
+                    _tts_executor,
+                    self.tts.synthesize,
+                    tts_text,
+                    "conversation",
+                )
+            except Exception as exc:
+                from agents.hapax_daimonion.voice_output_witness import (
+                    record_drop,
+                    record_tts_synthesis,
+                )
+
+                record_tts_synthesis(status="failed", text=tts_text, error=str(exc))
+                record_drop(
+                    reason="tts_synthesis_failed",
+                    source="conversation_pipeline",
+                    destination=destination,
+                    target=destination_target,
+                    media_role=destination_role,
+                    text=tts_text,
+                    terminal_state="failed",
+                )
+                raise
             _t_synth = time.monotonic()
             _tts_ms = (_t_synth - _t0) * 1000
-            if pcm and self._audio_output:
+            from agents.hapax_daimonion.voice_output_witness import (
+                record_drop,
+                record_playback_result,
+                record_tts_synthesis,
+            )
+
+            if pcm:
+                record_tts_synthesis(status="completed", text=tts_text, pcm=pcm)
+            else:
+                record_tts_synthesis(status="empty", text=tts_text, pcm=b"")
+                record_drop(
+                    reason="tts_empty_pcm",
+                    source="conversation_pipeline",
+                    destination=destination,
+                    target=destination_target,
+                    media_role=destination_role,
+                    text=tts_text,
+                    terminal_state="failed",
+                )
+                return ""
+            if self._audio_output:
                 log.info(
                     "TIMING tts_synth=%.0fms play=%db text=%r",
                     _tts_ms,
@@ -2041,6 +2166,28 @@ class ConversationPipeline:
                     pcm,
                     destination_target,
                     destination_role,
+                    text,
+                    destination,
+                )
+            else:
+                from agents.hapax_daimonion.pw_audio_output import PlaybackResult
+
+                playback_result = PlaybackResult(
+                    status="failed",
+                    returncode=None,
+                    duration_s=len(pcm)
+                    / (_VOICE_OUTPUT_SAMPLE_RATE_HZ * _VOICE_OUTPUT_BYTES_PER_SAMPLE),
+                    timeout_s=0.0,
+                    target=destination_target,
+                    media_role=destination_role or "Assistant",
+                    error="audio output unavailable",
+                )
+                record_playback_result(
+                    text=text,
+                    playback_result=playback_result,
+                    destination=destination,
+                    target=destination_target,
+                    media_role=destination_role or "Assistant",
                 )
             return text
         except Exception:
@@ -2054,6 +2201,8 @@ class ConversationPipeline:
         pcm: bytes,
         destination_target: str | None = None,
         destination_role: str | None = None,
+        text: str | None = None,
+        destination: str | None = None,
     ) -> None:
         """Write PCM to audio output and feed AEC reference. Runs in _audio_executor.
 
@@ -2071,6 +2220,18 @@ class ConversationPipeline:
         try:
             if destination_target is None or destination_role is None:
                 log.warning("refusing PCM playback without a complete semantic route")
+                if text is not None:
+                    from agents.hapax_daimonion.voice_output_witness import record_drop
+
+                    record_drop(
+                        reason="semantic_route_incomplete",
+                        source="conversation_pipeline",
+                        destination=destination or "unknown",
+                        target=destination_target,
+                        media_role=destination_role,
+                        text=text,
+                        terminal_state="inhibited",
+                    )
                 return
             if echo_canceller:
                 echo_canceller.feed_reference(pcm)
@@ -2080,13 +2241,55 @@ class ConversationPipeline:
             kwargs["target"] = destination_target
             kwargs["media_role"] = destination_role
             try:
-                audio_output.write(pcm, **kwargs)
+                playback_result = audio_output.write(pcm, **kwargs)
             except TypeError:
                 # A semantic route was explicitly requested. If the output
                 # shim cannot honor it, dropping is safer than default audio.
                 log.warning(
                     "audio output lacks target=/media_role= kwargs; dropping routed audio",
                     exc_info=True,
+                )
+                from agents.hapax_daimonion.pw_audio_output import PlaybackResult
+
+                playback_result = PlaybackResult(
+                    status="failed",
+                    returncode=None,
+                    duration_s=len(pcm)
+                    / (_VOICE_OUTPUT_SAMPLE_RATE_HZ * _VOICE_OUTPUT_BYTES_PER_SAMPLE),
+                    timeout_s=0.0,
+                    target=destination_target,
+                    media_role=destination_role,
+                    error="audio output route kwargs unsupported",
+                )
+            if text is not None:
+                from agents.hapax_daimonion.pw_audio_output import PlaybackResult
+                from agents.hapax_daimonion.voice_output_witness import record_playback_result
+
+                if getattr(playback_result, "status", None) not in {
+                    "completed",
+                    "failed",
+                    "timeout",
+                    "spawn_failed",
+                }:
+                    playback_result = PlaybackResult(
+                        status="completed",
+                        returncode=0,
+                        duration_s=len(pcm)
+                        / (_VOICE_OUTPUT_SAMPLE_RATE_HZ * _VOICE_OUTPUT_BYTES_PER_SAMPLE),
+                        timeout_s=0.0,
+                        target=destination_target,
+                        media_role=destination_role,
+                    )
+                record_playback_result(
+                    text=text,
+                    playback_result=playback_result,
+                    destination=destination
+                    or _destination_value_for_route(
+                        destination_target=destination_target,
+                        destination_role=destination_role,
+                    ),
+                    target=destination_target,
+                    media_role=destination_role,
                 )
         except Exception:
             pass
