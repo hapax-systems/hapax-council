@@ -1,0 +1,13 @@
+[Unit]
+Description=Hapax Bridgy Fed Registration Automation
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Hit the Bridgy Fed endpoint for the omg.lol weblog to ensure the domain is
+# actively registered and parsed as an ActivityPub actor.
+# This is an idempotent operation.
+ExecStart=/usr/bin/curl -sS https://fed.brid.gy/web/hapax.omg.lol
+
+[Install]
+WantedBy=default.target

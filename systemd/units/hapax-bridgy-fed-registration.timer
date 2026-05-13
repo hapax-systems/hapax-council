@@ -1,0 +1,11 @@
+[Unit]
+Description=Timer for Hapax Bridgy Fed Registration Automation
+
+[Timer]
+# Run weekly to maintain registration idempotently without spamming the Bridgy API.
+OnCalendar=weekly
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
