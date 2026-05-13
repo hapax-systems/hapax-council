@@ -844,7 +844,6 @@ def main() -> int:
     )
     parser.add_argument(
         "--upstream-frame-image",
-        default=str(DEFAULT_UPSTREAM_FRAME_IMAGE),
         help="pre-FX/upstream snapshot paired with --final-frame-image for final-pixel proof",
     )
     parser.add_argument(
@@ -1009,16 +1008,23 @@ def main() -> int:
         )
     max_final_black_fraction = _final_frame_black_fraction_limit(layout_mode_for_proof)
     final_frame_payload: dict[str, object] | None = None
-    if args.final_frame_image:
+    final_frame_image_arg = args.final_frame_image
+    if final_frame_image_arg is None and args.require_full_surface and args.metrics_file is None:
+        final_frame_image_arg = str(DEFAULT_FINAL_FRAME_IMAGE)
+    if final_frame_image_arg:
         try:
-            upstream_frame_image = (
-                Path(args.upstream_frame_image)
-                if args.upstream_frame_image
-                else Path("/dev/shm/hapax-compositor/snapshot.jpg")
-            )
+            upstream_frame_image = None
+            if args.upstream_frame_image:
+                upstream_frame_image = Path(args.upstream_frame_image)
+            elif args.metrics_file is None:
+                upstream_frame_image = DEFAULT_UPSTREAM_FRAME_IMAGE
             classification = classify_final_frame(
-                Path(args.final_frame_image),
-                upstream_path=upstream_frame_image if upstream_frame_image.exists() else None,
+                Path(final_frame_image_arg),
+                upstream_path=(
+                    upstream_frame_image
+                    if upstream_frame_image is not None and upstream_frame_image.exists()
+                    else None
+                ),
                 max_unclassified_black_fraction=max_final_black_fraction,
             )
         except OSError as exc:
@@ -1043,7 +1049,7 @@ def main() -> int:
     final_pixel_proof_payload: dict[str, object] | None = None
     if args.require_final_pixel_proof:
         final_frame_image = Path(args.final_frame_image or DEFAULT_FINAL_FRAME_IMAGE)
-        upstream_frame_image = Path(args.upstream_frame_image)
+        upstream_frame_image = Path(args.upstream_frame_image or DEFAULT_UPSTREAM_FRAME_IMAGE)
         with tempfile.TemporaryDirectory(prefix="hapax-final-pixel-proof-") as proof_td:
             final_paths, upstream_paths, proof_collection_reasons = _collect_final_pixel_proof(
                 final_frame_image=final_frame_image,
