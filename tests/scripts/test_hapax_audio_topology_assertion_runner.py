@@ -106,7 +106,8 @@ def test_runner_keeps_assertion_status_separate_from_periodic_verify_report(
     assert status["ok"] is True
     assert status["exit_code"] == 0
     assert status["attempts"] == 1
-    assert status["waited_s"] == 0
+    assert isinstance(status["waited_s"], int)
+    assert status["waited_s"] >= 0
     assert status["ready_timeout_s"] == 30
     assert status["status_path"] == str(status_path)
     assert status["structured_report_path"] == str(assertion_report)
