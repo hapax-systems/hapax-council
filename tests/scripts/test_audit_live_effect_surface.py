@@ -57,6 +57,7 @@ def test_audit_live_effect_surface_covers_non_preset_surfaces() -> None:
     assert "layouts" in payload["surfaces"]
     assert "preset_family_selector" in payload["surfaces"]
     assert "live_surface_policy" in payload["surfaces"]
+    assert "runtime_path_references" in payload["surfaces"]
     assert payload["summary"]["effect_orchestrator_file_count"] > 0
     assert payload["summary"]["studio_compositor_package_file_count"] > 0
     assert payload["summary"]["visual_sidecar_agent_file_count"] > 0
@@ -70,6 +71,16 @@ def test_audit_live_effect_surface_covers_non_preset_surfaces() -> None:
     assert payload["summary"]["logos_visual_ui_file_count"] > 0
     assert payload["summary"]["homage_visual_file_count"] > 0
     assert payload["summary"]["cairo_ward_implementation_file_count"] > 0
+    assert payload["summary"]["runtime_visual_reference_path_count"] > 0
+    assert payload["summary"]["runtime_visual_reference_uncurated_literal_path_count"] > 0
+    assert (
+        "/dev/shm/hapax-compositor/fx-current.txt"
+        in payload["surfaces"]["runtime_path_references"]["literal_paths"]
+    )
+    assert (
+        "/run/user/1000/hapax-compositor-commands.sock"
+        in payload["surfaces"]["runtime_path_references"]["literal_paths"]
+    )
     assert payload["surfaces"]["palette_chains"]["chain_count"] >= 1
     assert not payload["surfaces"]["palette_chains"]["missing_palette_refs"]
     assert not payload["surfaces"]["cairo_source_registry"]["layout_class_names_missing_registry"]
@@ -103,6 +114,7 @@ def test_audit_live_effect_surface_covers_non_preset_surfaces() -> None:
         "palette_scrim_chains_are_preset_like_visual_chains_and_need_live_policy_mapping"
         in payload["coverage_gaps"]
     )
+    assert "runtime_visual_path_references_need_curated_policy_mapping" in payload["coverage_gaps"]
 
 
 def test_audit_live_effect_surface_blocks_missing_governance_preset(tmp_path: Path) -> None:
@@ -150,6 +162,32 @@ def test_audit_live_effect_surface_reads_all_imagination_plan_schemas() -> None:
         "target-main.wgsl",
         "target-hud.wgsl",
     ]
+
+
+def test_audit_live_effect_surface_discovers_uncurated_runtime_paths(tmp_path: Path) -> None:
+    module = runpy.run_path(str(SCRIPT))
+    scan_runtime_path_references = module["_scan_runtime_path_references"]
+
+    script_dir = tmp_path / "scripts"
+    script_dir.mkdir()
+    (script_dir / "writer.py").write_text(
+        "\n".join(
+            [
+                "KNOWN = '/dev/shm/hapax-compositor/fx-current.txt'",
+                "UNCURATED = '/dev/shm/hapax-compositor/custom-visual-control.json'",
+                "TEMPLATE = '/dev/shm/hapax-compositor/{role}.jpg'",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    payload = scan_runtime_path_references(tmp_path)
+
+    assert "/dev/shm/hapax-compositor/fx-current.txt" in payload["literal_paths"]
+    assert (
+        "/dev/shm/hapax-compositor/custom-visual-control.json" in payload["uncurated_literal_paths"]
+    )
+    assert "/dev/shm/hapax-compositor/{role}.jpg" in payload["templated_paths"]
 
 
 def _write_minimal_repo(root: Path) -> None:

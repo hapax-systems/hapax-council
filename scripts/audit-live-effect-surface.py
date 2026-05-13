@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -91,6 +92,59 @@ RUNTIME_FILES = (
     "/dev/shm/hapax-imagination/uniforms.json",
     "/dev/shm/hapax-imagination/shader_health.json",
     "/dev/shm/hapax-imagination/pipeline/plan.json",
+    "/run/user/1000/hapax-compositor-commands.sock",
+)
+VISUAL_RUNTIME_PATH_RE = re.compile(r"(/dev/shm|/run/user/\d+)/[A-Za-z0-9_./@{}%=-]+")
+VISUAL_RUNTIME_ROOT_PREFIXES = (
+    "/dev/shm/hapax-compositor",
+    "/dev/shm/hapax-sources",
+    "/dev/shm/hapax-imagination",
+    "/dev/shm/hapax-visual",
+    "/dev/shm/hapax-gem",
+    "/dev/shm/hapax-reverie",
+    "/run/user/1000/hapax-compositor-commands",
+)
+VISUAL_RUNTIME_REFERENCE_ROOTS = (
+    "agents/studio_compositor",
+    "agents/effect_graph",
+    "agents/reverie",
+    "agents/imagination.py",
+    "agents/imagination_daemon",
+    "agents/imagination_loop.py",
+    "agents/imagination_resolver.py",
+    "agents/imagination_source_protocol.py",
+    "agents/visual_chain.py",
+    "agents/visual_chain",
+    "agents/visual_layer_aggregator",
+    "agents/visual_layer_state.py",
+    "agents/visual_pool",
+    "agents/overlay_producer",
+    "shared",
+    "logos/api/routes/studio.py",
+    "logos/api/routes/studio_effects.py",
+    "logos/api/routes/studio_compositor.py",
+    "hapax-logos/src-imagination",
+    "hapax-logos/crates/hapax-visual",
+    "scripts",
+    "systemd",
+    "plugins",
+)
+RUNTIME_REFERENCE_TEXT_SUFFIXES = (
+    ".c",
+    ".conf",
+    ".h",
+    ".json",
+    ".md",
+    ".py",
+    ".rs",
+    ".service",
+    ".sh",
+    ".timer",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".yaml",
+    ".yml",
 )
 
 BANNED_GLOBAL_LUMA_PARAMS = frozenset(
@@ -1167,6 +1221,56 @@ def _scan_runtime(
     return payload, failures
 
 
+def _scan_runtime_path_references(repo_root: Path) -> dict[str, Any]:
+    references: dict[str, set[str]] = {}
+    files_scanned = 0
+    for raw_root in VISUAL_RUNTIME_REFERENCE_ROOTS:
+        root = repo_root / raw_root
+        if root.is_file():
+            candidates = [root]
+        elif root.is_dir():
+            candidates = sorted(path for path in root.rglob("*") if path.is_file())
+        else:
+            continue
+        for path in candidates:
+            if path.suffix and path.suffix not in RUNTIME_REFERENCE_TEXT_SUFFIXES:
+                continue
+            if not _surface_file_included(path):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            files_scanned += 1
+            for match in VISUAL_RUNTIME_PATH_RE.finditer(text):
+                runtime_path = match.group(0).rstrip(".,;:)]}'\"")
+                if not any(
+                    runtime_path.startswith(prefix) for prefix in VISUAL_RUNTIME_ROOT_PREFIXES
+                ):
+                    continue
+                references.setdefault(runtime_path, set()).add(_rel(path, repo_root))
+
+    curated = set(RUNTIME_FILES)
+    literal_paths = sorted(path for path in references if "{" not in path and "}" not in path)
+    templated_paths = sorted(set(references) - set(literal_paths))
+    uncurated_literal_paths = sorted(path for path in literal_paths if path not in curated)
+    return {
+        "roots": list(VISUAL_RUNTIME_REFERENCE_ROOTS),
+        "files_scanned": files_scanned,
+        "path_count": len(references),
+        "literal_path_count": len(literal_paths),
+        "templated_path_count": len(templated_paths),
+        "curated_path_count": len(curated),
+        "uncurated_literal_path_count": len(uncurated_literal_paths),
+        "paths": [
+            {"path": path, "references": sorted(references[path])} for path in sorted(references)
+        ],
+        "literal_paths": literal_paths,
+        "templated_paths": templated_paths,
+        "uncurated_literal_paths": uncurated_literal_paths,
+    }
+
+
 def _scan_file_surface(repo_root: Path, label: str, roots: tuple[str, ...]) -> dict[str, Any]:
     files: list[str] = []
     root_rows: list[dict[str, Any]] = []
@@ -1231,6 +1335,9 @@ def _coverage_gaps(payload: dict[str, Any]) -> list[str]:
         plan = payload["surfaces"]["runtime"].get("imagination_plan") or {}
         if plan.get("blocked_pending_repair_shaders"):
             gaps.append("runtime_imagination_plan_contains_blocked_effect_shaders")
+    runtime_references = payload["surfaces"].get("runtime_path_references") or {}
+    if runtime_references.get("uncurated_literal_path_count", 0) > 0:
+        gaps.append("runtime_visual_path_references_need_curated_policy_mapping")
     gaps.extend(
         [
             "transition_primitives_need_live_exercise_proof_per_primitive",
@@ -1369,6 +1476,7 @@ def build_audit(
         shader_node_types=shader_node_types,
     )
     failures.extend(runtime_failures)
+    runtime_path_references = _scan_runtime_path_references(repo_root)
 
     payload: dict[str, Any] = {
         "ok": False,
@@ -1721,6 +1829,7 @@ def build_audit(
                 repo_root, "legacy_studio_fx", ("agents/studio_fx",)
             ),
             "legacy_studio_fx_registry": legacy_studio_fx_registry,
+            "runtime_path_references": runtime_path_references,
             "runtime": runtime,
         },
     }
@@ -1784,6 +1893,10 @@ def build_audit(
         "visual_script_file_count": _surface_file_count(payload, "visual_scripts"),
         "legacy_studio_fx_file_count": _surface_file_count(payload, "legacy_studio_fx"),
         "legacy_studio_fx_effect_count": legacy_studio_fx_registry["registered_effect_count"],
+        "runtime_visual_reference_path_count": runtime_path_references["path_count"],
+        "runtime_visual_reference_uncurated_literal_path_count": runtime_path_references[
+            "uncurated_literal_path_count"
+        ],
         "high_risk_node_type_count": len(presets["high_risk_node_usage"]),
         "live_surface_bounded_node_type_count": live_surface_policy["bounded_count"],
         "live_surface_blocked_pending_repair_node_type_count": live_surface_policy[
