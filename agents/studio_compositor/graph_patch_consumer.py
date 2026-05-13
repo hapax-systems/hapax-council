@@ -511,7 +511,7 @@ def process_graph_patch_recruitment() -> bool:
     from .preset_policy import autonomous_fx_mutations_enabled
 
     if not autonomous_fx_mutations_enabled():
-        log.info("graph-patch consumer suppressed by HAPAX_FX_AUTONOMOUS_MUTATIONS=0")
+        log.debug("graph-patch consumer suppressed by HAPAX_FX_AUTONOMOUS_MUTATIONS=0")
         return False
 
     global _last_activation_t
