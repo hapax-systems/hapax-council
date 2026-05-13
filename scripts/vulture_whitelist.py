@@ -2987,3 +2987,24 @@ CoordinationApp.on_mount
 CoordinationApp.action_refresh
 CoordinationApp.action_dispatch
 CoordinationApp.action_quit
+
+# Relay MQ S1 library API - consumed by the operator CLI and follow-on runtime
+# wiring. The production vulture diff gate does not count the focused tests or
+# script-level dynamic entrypoint surface as stable call paths.
+from shared.relay_mq import (  # noqa: F401, E402
+    ack_message,
+    consume_messages,
+    dead_letters,
+    inspect_message,
+    list_messages,
+    purge_expired,
+)
+from shared.relay_mq_envelope import Envelope as RelayMQEnvelope  # noqa: F401, E402
+
+ack_message
+consume_messages
+dead_letters
+inspect_message
+list_messages
+purge_expired
+RelayMQEnvelope._validate_envelope

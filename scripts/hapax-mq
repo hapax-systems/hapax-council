@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+"""hapax-mq — CLI for the relay message queue."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from shared.relay_mq import (
+    DEFAULT_DB_PATH,
+    MessageFilters,
+    ack_message,
+    dead_letters,
+    ensure_schema,
+    inspect_message,
+    list_messages,
+    purge_expired,
+    send_message,
+)
+from shared.relay_mq_envelope import DiskPressureError, Envelope, TransitionError
+
+
+def _parse_datetime(s: str) -> datetime:
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt
+
+
+def _age_str(dt_str: str) -> str:
+    dt = datetime.fromisoformat(dt_str)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    delta = datetime.now(UTC) - dt
+    seconds = int(delta.total_seconds())
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
+def cmd_send(args: argparse.Namespace) -> int:
+    db_path = Path(args.db) if args.db else DEFAULT_DB_PATH
+
+    payload = args.payload
+    payload_path = None
+    payload_hash = None
+
+    if args.payload_file:
+        p = Path(args.payload_file)
+        if not p.exists():
+            print(f"Error: payload file not found: {p}", file=sys.stderr)
+            return 1
+        payload_path = str(p)
+        payload = None
+
+    kwargs: dict = {
+        "sender": args.sender,
+        "message_type": args.type,
+        "priority": args.priority,
+        "subject": args.subject,
+        "recipients_spec": args.to,
+        "payload": payload,
+        "payload_path": payload_path,
+        "payload_hash": payload_hash,
+    }
+    if args.authority_case:
+        kwargs["authority_case"] = args.authority_case
+    if args.authority_item:
+        kwargs["authority_item"] = args.authority_item
+    if args.parent:
+        kwargs["parent_message_id"] = args.parent
+    if args.tags:
+        kwargs["tags"] = [t.strip() for t in args.tags.split(",")]
+    if args.expires_at:
+        kwargs["expires_at"] = _parse_datetime(args.expires_at)
+    if args.stale_after:
+        kwargs["stale_after"] = _parse_datetime(args.stale_after)
+
+    try:
+        envelope = Envelope(**kwargs)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        mid = send_message(db_path, envelope)
+    except (ValueError, DiskPressureError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    recipients = args.to
+    if args.json:
+        print(json.dumps({"message_id": mid, "recipients": recipients}))
+    else:
+        print(f"Queued: {mid} -> {recipients}")
+    return 0
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    db_path = Path(args.db) if args.db else DEFAULT_DB_PATH
+    if not db_path.exists():
+        if args.json:
+            print("[]")
+        else:
+            print("No messages.")
+        return 0
+
+    filters = MessageFilters(
+        recipient=args.recipient,
+        state=args.state,
+        priority=args.priority,
+        message_type=args.type,
+        sender=args.sender,
+        authority_case=args.authority_case,
+        since=_parse_datetime(args.since) if args.since else None,
+        limit=args.limit,
+    )
+
+    try:
+        rows = list_messages(db_path, filters)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(rows, default=str))
+        return 0
+
+    if not rows:
+        print("No messages.")
+        return 0
+
+    for row in rows:
+        mtype = row.get("message_type", "?").upper()
+        priority = row.get("priority", "?")
+        subject = row.get("subject", "")
+        sender = row.get("sender", "?")
+        created = row.get("created_at", "")
+        age = _age_str(created) if created else "?"
+        print(f"[{mtype}/P{priority}] {subject} (from {sender}, {age})")
+    return 0
+
+
+def cmd_ack(args: argparse.Namespace) -> int:
+    db_path = Path(args.db) if args.db else DEFAULT_DB_PATH
+    if not db_path.exists():
+        print("Error: database not found", file=sys.stderr)
+        return 2
+
+    try:
+        ok = ack_message(db_path, args.message_id, args.role, args.state, args.reason)
+    except (ValueError, TransitionError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    if not ok:
+        print(f"Rejected: message {args.message_id} not found or invalid state", file=sys.stderr)
+        return 2
+    print(f"Acked: {args.message_id} -> {args.state}")
+    return 0
+
+
+def cmd_inspect(args: argparse.Namespace) -> int:
+    db_path = Path(args.db) if args.db else DEFAULT_DB_PATH
+    if not db_path.exists():
+        print("Error: database not found", file=sys.stderr)
+        return 2
+
+    result = inspect_message(db_path, args.message_id)
+    if result is None:
+        print(f"Not found: {args.message_id}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        out = {
+            "envelope": result.envelope.model_dump(mode="json"),
+            "recipients": result.recipients,
+            "dead_letters": result.dead_letters,
+        }
+        print(json.dumps(out, default=str))
+        return 0
+
+    env = result.envelope
+    print(f"Message:    {env.message_id}")
+    print(f"Type:       {env.message_type} / P{env.priority}")
+    print(f"From:       {env.sender}")
+    print(f"Subject:    {env.subject}")
+    print(f"Created:    {env.created_at}")
+    print(f"Expires:    {env.expires_at}")
+    print(f"Stale:      {env.stale_after}")
+    if env.authority_case:
+        print(f"Authority:  {env.authority_case} / {env.authority_item}")
+    if env.parent_message_id:
+        print(f"Parent:     {env.parent_message_id}")
+    if env.tags:
+        print(f"Tags:       {', '.join(env.tags)}")
+    print(f"Payload:    {'(inline)' if env.payload else env.payload_path}")
+    print()
+
+    if result.recipients:
+        print("Recipients:")
+        for r in result.recipients:
+            reason = f" reason={r.get('reason')}" if r.get("reason") else ""
+            print(f"  {r['recipient']:12s} state={r['state']}{reason}")
+    if result.dead_letters:
+        print("Dead letters:")
+        for dl in result.dead_letters:
+            print(f"  {dl['recipient']:12s} reason={dl['reason']} ({dl['moved_at']})")
+    return 0
+
+
+def cmd_dead_letters(args: argparse.Namespace) -> int:
+    db_path = Path(args.db) if args.db else DEFAULT_DB_PATH
+    if not db_path.exists():
+        if args.json:
+            print("[]")
+        else:
+            print("No dead letters.")
+        return 0
+
+    since = _parse_datetime(args.since) if args.since else None
+    rows = dead_letters(db_path, since=since, limit=args.limit)
+
+    if args.json:
+        print(json.dumps(rows, default=str))
+        return 0
+
+    if not rows:
+        print("No dead letters.")
+        return 0
+
+    for row in rows:
+        mid = str(row.get("message_id", ""))[:8]
+        recip = row.get("recipient", "?")
+        reason = row.get("reason", "?")
+        moved = row.get("moved_at", "")
+        age = _age_str(moved) if moved else "?"
+        print(f"[DEAD] {mid} {recip} reason={reason} ({age})")
+    return 0
+
+
+def cmd_purge(args: argparse.Namespace) -> int:
+    if not args.expired:
+        print("Error: --expired flag is required (safety gate)", file=sys.stderr)
+        return 1
+
+    db_path = Path(args.db) if args.db else DEFAULT_DB_PATH
+    if not db_path.exists():
+        print("Nothing to purge.")
+        return 0
+
+    result = purge_expired(db_path)
+    print(
+        f"Purged: {result.expired_dead_lettered} expired recipients dead-lettered, "
+        f"{result.blobs_deleted} blobs deleted"
+    )
+    return 0
+
+
+def cmd_stats(args: argparse.Namespace) -> int:
+    db_path = Path(args.db) if args.db else DEFAULT_DB_PATH
+    if not db_path.exists():
+        if args.json:
+            print(json.dumps({"total": 0, "pending": 0, "dead": 0}))
+        else:
+            print("No database found.")
+        return 0
+
+    with __import__("sqlite3").connect(str(db_path)) as conn:
+        conn.row_factory = __import__("sqlite3").Row
+        ensure_schema(db_path)
+
+        total = conn.execute("SELECT COUNT(*) AS c FROM messages").fetchone()["c"]
+        pending = conn.execute(
+            "SELECT COUNT(DISTINCT message_id) AS c FROM recipients "
+            "WHERE state IN ('offered', 'read')"
+        ).fetchone()["c"]
+        dead_count = conn.execute("SELECT COUNT(*) AS c FROM dead_letters").fetchone()["c"]
+
+        type_counts = {}
+        for row in conn.execute(
+            "SELECT message_type, COUNT(*) AS c FROM messages GROUP BY message_type"
+        ):
+            type_counts[row["message_type"]] = row["c"]
+
+        priority_counts = {}
+        for row in conn.execute("SELECT priority, COUNT(*) AS c FROM messages GROUP BY priority"):
+            priority_counts[row["priority"]] = row["c"]
+
+        state_counts = {}
+        for row in conn.execute("SELECT state, COUNT(*) AS c FROM recipients GROUP BY state"):
+            state_counts[row["state"]] = row["c"]
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "total": total,
+                    "pending": pending,
+                    "dead": dead_count,
+                    "by_type": type_counts,
+                    "by_priority": priority_counts,
+                    "by_state": state_counts,
+                }
+            )
+        )
+        return 0
+
+    print(f"Messages: {total} total, {pending} pending, {dead_count} dead-lettered")
+    print(
+        f"By type: "
+        f"dispatch={type_counts.get('dispatch', 0)} "
+        f"advisory={type_counts.get('advisory', 0)} "
+        f"escalation={type_counts.get('escalation', 0)} "
+        f"query={type_counts.get('query', 0)}"
+    )
+    print(
+        f"By priority: "
+        f"P0={priority_counts.get(0, 0)} "
+        f"P1={priority_counts.get(1, 0)} "
+        f"P2={priority_counts.get(2, 0)} "
+        f"P3={priority_counts.get(3, 0)}"
+    )
+    print(
+        f"By state: "
+        f"offered={state_counts.get('offered', 0)} "
+        f"read={state_counts.get('read', 0)} "
+        f"accepted={state_counts.get('accepted', 0)} "
+        f"processed={state_counts.get('processed', 0)} "
+        f"deferred={state_counts.get('deferred', 0)} "
+        f"escalated={state_counts.get('escalated', 0)}"
+    )
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="hapax-mq", description="Relay message queue CLI")
+    sub = parser.add_subparsers(dest="command")
+
+    p_send = sub.add_parser("send", help="Queue a message")
+    p_send.add_argument("--to", required=True, help="Recipients spec")
+    p_send.add_argument(
+        "--type", required=True, choices=["dispatch", "advisory", "escalation", "query"]
+    )
+    p_send.add_argument("--priority", type=int, default=2, choices=[0, 1, 2, 3])
+    p_send.add_argument("--sender", default="operator")
+    p_send.add_argument("--authority-case")
+    p_send.add_argument("--authority-item")
+    p_send.add_argument("--parent")
+    p_send.add_argument("--subject", required=True)
+    p_send.add_argument("--payload")
+    p_send.add_argument("--payload-file")
+    p_send.add_argument("--tags")
+    p_send.add_argument("--expires-at")
+    p_send.add_argument("--stale-after")
+    p_send.add_argument("--db")
+    p_send.add_argument("--json", action="store_true")
+
+    p_list = sub.add_parser("list", help="List messages with filters")
+    p_list.add_argument("--recipient")
+    p_list.add_argument("--state")
+    p_list.add_argument("--priority", type=int)
+    p_list.add_argument("--type")
+    p_list.add_argument("--sender")
+    p_list.add_argument("--authority-case")
+    p_list.add_argument("--since")
+    p_list.add_argument("--limit", type=int, default=50)
+    p_list.add_argument("--db")
+    p_list.add_argument("--json", action="store_true")
+
+    p_ack = sub.add_parser("ack", help="Transition consumption state")
+    p_ack.add_argument("message_id")
+    p_ack.add_argument("--role", required=True)
+    p_ack.add_argument(
+        "--state",
+        required=True,
+        choices=["read", "accepted", "processed", "deferred", "escalated"],
+    )
+    p_ack.add_argument("--reason")
+    p_ack.add_argument("--db")
+
+    p_inspect = sub.add_parser("inspect", help="Show full message with all recipient states")
+    p_inspect.add_argument("message_id")
+    p_inspect.add_argument("--db")
+    p_inspect.add_argument("--json", action="store_true")
+
+    p_dead = sub.add_parser("dead-letters", help="List dead-lettered messages")
+    p_dead.add_argument("--since")
+    p_dead.add_argument("--limit", type=int, default=50)
+    p_dead.add_argument("--db")
+    p_dead.add_argument("--json", action="store_true")
+
+    p_purge = sub.add_parser("purge", help="Clean up expired messages and blobs")
+    p_purge.add_argument("--expired", action="store_true", help="Required safety gate")
+    p_purge.add_argument("--db")
+
+    p_stats = sub.add_parser("stats", help="Queue health summary")
+    p_stats.add_argument("--db")
+    p_stats.add_argument("--json", action="store_true")
+
+    args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        return 1
+
+    handlers = {
+        "send": cmd_send,
+        "list": cmd_list,
+        "ack": cmd_ack,
+        "inspect": cmd_inspect,
+        "dead-letters": cmd_dead_letters,
+        "purge": cmd_purge,
+        "stats": cmd_stats,
+    }
+
+    try:
+        return handlers[args.command](args)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
