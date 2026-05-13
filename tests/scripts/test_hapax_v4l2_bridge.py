@@ -132,7 +132,7 @@ def test_check_rejects_stale_socket_file_that_is_not_listening(tmp_path: Path) -
     assert "not listening" in result.stdout
 
 
-def test_bridge_declares_shmsrc_caps_before_queue(tmp_path: Path) -> None:
+def test_bridge_execs_python_appsink_writer(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     args_file = tmp_path / "gst-args.txt"
@@ -146,9 +146,9 @@ def test_bridge_declares_shmsrc_caps_before_queue(tmp_path: Path) -> None:
         "exit 1\n"
     )
     systemctl.chmod(0o755)
-    gst_launch = bin_dir / "gst-launch-1.0"
-    gst_launch.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {args_file}\nexit 0\n")
-    gst_launch.chmod(0o755)
+    python = bin_dir / "python"
+    python.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {args_file}\nexit 0\n")
+    python.chmod(0o755)
     guard = bin_dir / "format-guard"
     guard.write_text("#!/usr/bin/env bash\nexit 0\n")
     guard.chmod(0o755)
@@ -184,8 +184,8 @@ def test_bridge_declares_shmsrc_caps_before_queue(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     args = args_file.read_text(encoding="utf-8").splitlines()
-    caps = "video/x-raw,format=NV12,width=1280,height=720,framerate=30/1"
-    shmsrc_index = args.index(f"socket-path={socket_path}") - 1
-    queue_index = args.index("queue")
-    assert args[shmsrc_index] == "shmsrc"
-    assert caps in args[shmsrc_index + 1 : queue_index]
+    assert args[:3] == ["-m", "agents.studio_compositor.v4l2_shm_bridge", "--device"]
+    assert str(tmp_path / "video42") in args
+    assert "--socket" in args
+    assert str(socket_path) in args
+    assert "--wait-seconds" in args
