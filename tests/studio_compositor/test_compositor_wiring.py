@@ -16,15 +16,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
 from unittest import mock
+
+import pytest
 
 from agents.studio_compositor.compositor import StudioCompositor
 from agents.studio_compositor.config import _default_config
 from tests.studio_compositor.test_default_layout_loading import DEFAULT_JSON
-
-if TYPE_CHECKING:
-    import pytest
 
 
 class _FakeCounter:
@@ -37,6 +35,11 @@ class _FakeCounter:
 
     def inc(self) -> None:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _disable_live_director_segment_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAPAX_DIRECTOR_SEGMENT_RUNNER_DISABLED", "1")
 
 
 def _make_compositor(layout_path: Path | None = None) -> StudioCompositor:
@@ -349,6 +352,26 @@ class TestStartLayoutOnly:
         assert compositor._director_segment_runner is runner
         assert calls
         assert calls[0].name == "hapax-compositor-commands.sock"
+
+    def test_control_plane_resolves_segment_fragment_over_current_layout(
+        self, tmp_path: Path
+    ) -> None:
+        layout_file = tmp_path / "default.json"
+        layout_file.write_text(DEFAULT_JSON.read_text())
+
+        compositor = _make_compositor(layout_path=layout_file)
+        compositor.start_layout_only()
+
+        assert compositor._layout_store is not None
+        fragment = compositor._layout_store.get("segment-detail")
+        resolved = compositor._resolve_control_plane_layout("segment-detail")
+
+        assert fragment is not None
+        assert resolved is not None
+        assert resolved.name == "segment-detail"
+        assert len(resolved.sources) > len(fragment.sources)
+        assert any(source.id == "artifact-detail-panel" for source in resolved.sources)
+        assert any(source.id == "token_pole" for source in resolved.sources)
 
     def test_start_layout_only_wires_autosaver_and_file_watcher(self, tmp_path: Path) -> None:
         """Post-epic audit finding #1 regression pin.

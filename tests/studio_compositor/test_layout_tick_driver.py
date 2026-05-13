@@ -793,7 +793,7 @@ def test_responsible_segment_tick_escapes_static_then_accepts_rendered_readback(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("HAPAX_DIRECTOR_SEGMENT_FRAGMENT_LAYOUTS_ENABLED", "1")
+    monkeypatch.delenv("HAPAX_DIRECTOR_SEGMENT_FRAGMENT_LAYOUTS_ENABLED", raising=False)
     garage = _load_layout("config/layouts/garage-door.json")
     segment_list = _load_layout("config/compositor-layouts/segment-list.json")
     store = _FakeStore(
@@ -866,6 +866,8 @@ def test_responsible_segment_tick_escapes_static_then_accepts_rendered_readback(
     assert first.selected_layout == "segment-list"
     assert first.applied_layout_changes == ("segment-list",)
     assert rendered_state.get().name == "segment-list"
+    assert len(rendered_state.get().sources) > len(segment_list.sources)
+    assert any(source.id == "ranked-list-panel" for source in rendered_state.get().sources)
     assert store.active_name() == "segment-list"
     assert first.receipt_metadata["layout_state_before_hash"]
     assert first.receipt_metadata["layout_state_after_hash"]
@@ -895,18 +897,18 @@ def test_responsible_segment_tick_blocks_fragment_panel_as_whole_surface(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("HAPAX_DIRECTOR_SEGMENT_FRAGMENT_LAYOUTS_ENABLED", raising=False)
-    default = _load_layout("config/compositor-layouts/default.json")
+    segment_detail = _load_layout("config/compositor-layouts/segment-detail.json")
     segment_list = _load_layout("config/compositor-layouts/segment-list.json")
     store = _FakeStore(
         layouts={
-            "default": default,
+            "segment-detail": segment_detail,
             "segment-list": segment_list,
         },
-        _active="default",
+        _active="segment-detail",
     )
-    rendered_state = LayoutState(default)
+    rendered_state = LayoutState(segment_detail)
     adapter = _RenderedLayoutStateAdapter(store, rendered_state)
-    switcher = LayoutSwitcher(initial_layout="default")
+    switcher = LayoutSwitcher(initial_layout="segment-detail")
     switcher._responsible_segment_state = {}
     intent = SegmentActionIntent(
         intent_id="programme:seg-1:4:layout-need-0-0",
@@ -944,8 +946,8 @@ def test_responsible_segment_tick_blocks_fragment_panel_as_whole_surface(
     assert receipt.reason is LayoutDecisionReason.UNSUPPORTED_LAYOUT
     assert receipt.selected_layout == "segment-list"
     assert receipt.applied_layout_changes == ()
-    assert rendered_state.get().name == "default"
-    assert store.active_name() == "default"
+    assert rendered_state.get().name == "segment-detail"
+    assert store.active_name() == "segment-detail"
     assert receipt.refusal_metadata["error"] == "segment_fragment_layout_not_full_surface"
 
 

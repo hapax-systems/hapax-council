@@ -1139,11 +1139,22 @@ def _segment_fragment_block_receipt(
     except KeyError:
         return None, None
 
-    from agents.studio_compositor.layout_fragment_guard import segment_fragment_layout_error
+    from agents.studio_compositor.layout_fragment_guard import (
+        compose_segment_fragment_over_layout,
+        segment_fragment_layout_error,
+    )
     from agents.studio_compositor.segment_layout_control import (
         LayoutDecisionReason,
         LayoutDecisionStatus,
     )
+
+    composed_layout = compose_segment_fragment_over_layout(
+        layout_name=selected_layout_name,
+        fragment_layout=layout,
+        base_layout=_active_rendered_layout(layout_state),
+    )
+    if composed_layout is not None:
+        return None, composed_layout
 
     fragment_error = segment_fragment_layout_error(
         layout_name=selected_layout_name,
