@@ -21,6 +21,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
 
+from shared.rebuild_service_outcomes import assess_rebuild_outcome_ledger
+
 
 class ReadinessStatus(StrEnum):
     PASS = "pass"
@@ -102,6 +104,8 @@ class ReadinessConfig:
     expected_timer_count: int = 87
     max_failed_user_units: int = 2
     obs_loopback_device: Path = Path("/dev/video42")
+    rebuild_state_dir: Path = field(default_factory=lambda: Path.home() / ".cache/hapax/rebuild")
+    rebuild_outcome_max_age_s: float = 900.0
 
     @property
     def compositor_root(self) -> Path:
@@ -789,8 +793,32 @@ def _check_timer_and_failure_budget(context: _CheckContext) -> CheckResult:
     timer_lines = [line for line in timers["stdout"].splitlines() if line.strip()]
     failed_lines = [line for line in failed_units["stdout"].splitlines() if line.strip()]
     failed_unit_names = [line.split()[0] for line in failed_lines if line.split()]
+    origin_main_sha = _current_origin_main_sha(context)
+    rebuild_outcomes = assess_rebuild_outcome_ledger(
+        context.config.rebuild_state_dir,
+        current_sha=origin_main_sha["sha"],
+        now_epoch=context.now_epoch,
+        max_age_s=context.config.rebuild_outcome_max_age_s,
+    )
+    effective_failed_unit_names = list(failed_unit_names)
+    cleared_failed_units: list[str] = []
+    rebuild_unit_failed = "hapax-rebuild-services.service" in failed_unit_names
+    if (
+        rebuild_unit_failed
+        and rebuild_outcomes.clearable_records
+        and not rebuild_outcomes.blocker_records
+        and not rebuild_outcomes.warning_records
+        and not rebuild_outcomes.stale_or_unknown_records
+        and len(failed_unit_names) > context.config.max_failed_user_units
+        and len(failed_unit_names) - 1 <= context.config.max_failed_user_units
+    ):
+        effective_failed_unit_names = [
+            unit for unit in failed_unit_names if unit != "hapax-rebuild-services.service"
+        ]
+        cleared_failed_units.append("hapax-rebuild-services.service")
 
     failed_reasons: list[str] = []
+    warning_reasons: list[str] = []
     if timers["returncode"] != 0:
         failed_reasons.append("could not list user timers")
     if failed_units["returncode"] != 0:
@@ -800,29 +828,66 @@ def _check_timer_and_failure_budget(context: _CheckContext) -> CheckResult:
             f"only {len(timer_lines)} timers found; expected at least "
             f"{context.config.expected_timer_count}"
         )
-    if len(failed_unit_names) > context.config.max_failed_user_units:
+    if rebuild_outcomes.blocker_records:
         failed_reasons.append(
-            f"{len(failed_unit_names)} failed user units exceeds budget "
+            "rebuild outcome ledger has blocker outcomes: "
+            + ", ".join(
+                f"{record.sha_key or 'unknown'}={record.outcome or 'unknown'}"
+                for record in rebuild_outcomes.blocker_records
+            )
+        )
+    if rebuild_outcomes.warning_records:
+        warning_reasons.append(
+            "rebuild outcome ledger has warning outcomes: "
+            + ", ".join(
+                f"{record.sha_key or 'unknown'}={record.outcome or 'unknown'}"
+                for record in rebuild_outcomes.warning_records
+            )
+        )
+    if len(effective_failed_unit_names) > context.config.max_failed_user_units:
+        failed_reasons.append(
+            f"{len(effective_failed_unit_names)} effective failed user units exceeds budget "
             f"{context.config.max_failed_user_units}"
         )
+
+    status = ReadinessStatus.FAIL if failed_reasons else ReadinessStatus.PASS
+    if status is ReadinessStatus.PASS and warning_reasons:
+        status = ReadinessStatus.WARN
 
     return CheckResult(
         id="systemd_timer_failed_unit_budget",
         label="87 timers running, <=2 failed units",
-        status=ReadinessStatus.FAIL if failed_reasons else ReadinessStatus.PASS,
+        status=status,
         summary="; ".join(failed_reasons)
         if failed_reasons
+        else "; ".join(warning_reasons)
+        if warning_reasons
         else "timer and failed-unit budget is met",
         evidence={
             "timer_count": len(timer_lines),
             "expected_timer_count": context.config.expected_timer_count,
             "failed_unit_count": len(failed_unit_names),
+            "effective_failed_unit_count": len(effective_failed_unit_names),
             "max_failed_user_units": context.config.max_failed_user_units,
             "failed_units": failed_unit_names,
+            "effective_failed_units": effective_failed_unit_names,
+            "cleared_failed_units": cleared_failed_units,
+            "origin_main_sha_command": origin_main_sha["command"],
+            "rebuild_outcome_ledger": rebuild_outcomes.to_evidence(),
             "timer_command": timers,
             "failed_units_command": failed_units,
         },
     )
+
+
+def _current_origin_main_sha(context: _CheckContext) -> dict[str, Any]:
+    result = _run_safe(
+        context.runner,
+        ["git", "-C", str(context.config.repo_root), "rev-parse", "origin/main"],
+        timeout=5.0,
+    )
+    sha = result["stdout"].strip() if result["returncode"] == 0 else ""
+    return {"sha": sha or None, "command": result}
 
 
 def _service_is_active(unit: str, runner: CommandRunner) -> dict[str, Any]:
