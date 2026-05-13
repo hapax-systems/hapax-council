@@ -180,3 +180,17 @@ class TestOptionalAudioDeviceStateSourceResolution:
         path = SCRIPTS_DIR / "hapax-audio-optional-device-state"
         assert path.exists()
         assert os.stat(path).st_mode & stat.S_IXUSR
+
+
+class TestPrivateMonitorRecoverSourceResolution:
+    def test_private_monitor_recover_unit_uses_activation_worktree_repo_root(self) -> None:
+        text = (UNITS_DIR / "hapax-private-monitor-recover.service").read_text()
+        execution_lines = [
+            line
+            for line in text.splitlines()
+            if line.startswith(("ExecStart=", "WorkingDirectory="))
+        ]
+        assert execution_lines
+        assert all("%h/projects/hapax-council" not in line for line in execution_lines)
+        assert any(ACTIVATION_WORKTREE in line for line in execution_lines)
+        assert any(f"--repo-root {ACTIVATION_WORKTREE}" in line for line in execution_lines)
