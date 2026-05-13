@@ -91,6 +91,38 @@ compact_value() {
   tr -d '[:space:]'
 }
 
+request_key_for_ref() {
+  local ref="$1"
+  [[ -z "$ref" || "$ref" == "null" || "$ref" == "None" || "$ref" == "unassigned" ]] && return 0
+
+  local expanded="${ref/#\~/$HOME}"
+  if [[ -f "$expanded" ]]; then
+    if [[ "$(frontmatter_value type "$expanded" | compact_value)" == "hapax-request" ]]; then
+      basename "$expanded"
+    fi
+    return 0
+  fi
+
+  local base="${ref##*/}"
+  if [[ -f "$ACTIVE_DIR/$base" ]]; then
+    if [[ "$(frontmatter_value type "$ACTIVE_DIR/$base" | compact_value)" == "hapax-request" ]]; then
+      printf '%s\n' "$base"
+    fi
+    return 0
+  fi
+
+  if [[ "$base" == REQ-* ]]; then
+    local match
+    for match in "$ACTIVE_DIR"/"$base"*.md; do
+      [[ -f "$match" ]] || continue
+      if [[ "$(frontmatter_value type "$match" | compact_value)" == "hapax-request" ]]; then
+        basename "$match"
+        return 0
+      fi
+    done
+  fi
+}
+
 build_task_index() {
   declare -gA _ti_offered _ti_claimed _ti_done _ti_last_activity
   for td in "$TASKS_DIR/active" "$TASKS_DIR/closed"; do
@@ -99,33 +131,40 @@ build_task_index() {
     [[ "$td" == *"/closed" ]] && is_closed=1
     for tn in "$td"/*.md; do
       [[ -f "$tn" ]] || continue
-      local tp
-      tp="$(frontmatter_value parent_request "$tn")"
-      [[ -z "$tp" ]] && continue
-      local req_key ts tu
-      req_key="${tp##*/}"
+      local ts tu
       ts="$(frontmatter_value status "$tn" | compact_value)"
       tu="$(frontmatter_value updated_at "$tn" | compact_value)"
-      case "$ts" in
-        claimed|in_progress)
-          _ti_claimed["$req_key"]=$(( ${_ti_claimed["$req_key"]:-0} + 1 )) ;;
-        offered)
-          _ti_offered["$req_key"]=$(( ${_ti_offered["$req_key"]:-0} + 1 )) ;;
-        done|closed|complete)
-          _ti_done["$req_key"]=$(( ${_ti_done["$req_key"]:-0} + 1 )) ;;
-        *)
-          if [[ $is_closed -eq 1 ]]; then
-            _ti_done["$req_key"]=$(( ${_ti_done["$req_key"]:-0} + 1 ))
-          else
-            _ti_offered["$req_key"]=$(( ${_ti_offered["$req_key"]:-0} + 1 ))
-          fi ;;
-      esac
-      if [[ -n "$tu" ]]; then
-        local prev="${_ti_last_activity["$req_key"]:-}"
-        if [[ -z "$prev" || "$tu" > "$prev" ]]; then
-          _ti_last_activity["$req_key"]="$tu"
+
+      local -A seen_refs=()
+      local field tp req_key
+      for field in parent_request parent_plan parent_spec; do
+        tp="$(frontmatter_value "$field" "$tn")"
+        req_key="$(request_key_for_ref "$tp")"
+        [[ -n "$req_key" ]] || continue
+        [[ -z "${seen_refs["$req_key"]:-}" ]] || continue
+        seen_refs["$req_key"]=1
+
+        case "$ts" in
+          claimed|in_progress)
+            _ti_claimed["$req_key"]=$(( ${_ti_claimed["$req_key"]:-0} + 1 )) ;;
+          offered)
+            _ti_offered["$req_key"]=$(( ${_ti_offered["$req_key"]:-0} + 1 )) ;;
+          done|closed|complete)
+            _ti_done["$req_key"]=$(( ${_ti_done["$req_key"]:-0} + 1 )) ;;
+          *)
+            if [[ $is_closed -eq 1 ]]; then
+              _ti_done["$req_key"]=$(( ${_ti_done["$req_key"]:-0} + 1 ))
+            else
+              _ti_offered["$req_key"]=$(( ${_ti_offered["$req_key"]:-0} + 1 ))
+            fi ;;
+        esac
+        if [[ -n "$tu" ]]; then
+          local prev="${_ti_last_activity["$req_key"]:-}"
+          if [[ -z "$prev" || "$tu" > "$prev" ]]; then
+            _ti_last_activity["$req_key"]="$tu"
+          fi
         fi
-      fi
+      done
     done
   done
 }
@@ -238,6 +277,37 @@ def resolve_ref_exists(value: str) -> bool:
     return False
 
 
+def request_key_for_ref(value: str) -> str | None:
+    if not value:
+        return None
+    expanded = Path(os.path.expanduser(value))
+    if expanded.is_file():
+        data = parse_frontmatter(expanded)
+        return expanded.name if scalar(data, "type") == "hapax-request" else None
+    name = Path(value).name
+    direct = requests_dir / name
+    if direct.is_file():
+        data = parse_frontmatter(direct)
+        return direct.name if scalar(data, "type") == "hapax-request" else None
+    if name.startswith("REQ-"):
+        for candidate in sorted(requests_dir.glob(f"{name}*.md")):
+            data = parse_frontmatter(candidate)
+            if scalar(data, "type") == "hapax-request":
+                return candidate.name
+    return None
+
+
+def request_keys_for_task(data: dict[str, object]) -> list[str]:
+    keys: list[str] = []
+    seen: set[str] = set()
+    for field in ("parent_request", "parent_plan", "parent_spec"):
+        key = request_key_for_ref(scalar(data, field))
+        if key and key not in seen:
+            keys.append(key)
+            seen.add(key)
+    return keys
+
+
 def task_id_for(path: Path, data: dict[str, object]) -> str:
     return scalar(data, "task_id") or scalar(data, "id") or path.stem
 
@@ -261,20 +331,17 @@ task_index: dict[str, dict[str, int]] = {}
 for task_dir in (tasks_dir / "active", tasks_dir / "closed"):
     for task_path in sorted(task_dir.glob("*.md")):
         data = parse_frontmatter(task_path)
-        parent_request = scalar(data, "parent_request")
-        if not parent_request:
-            continue
-        key = Path(parent_request).name
-        value = task_index.setdefault(key, {"offered": 0, "claimed": 0, "done": 0})
-        status = scalar(data, "status")
-        if status in {"claimed", "in_progress"}:
-            value["claimed"] += 1
-        elif status == "offered":
-            value["offered"] += 1
-        elif status in {"done", "closed", "complete"} or task_dir.name == "closed":
-            value["done"] += 1
-        else:
-            value["offered"] += 1
+        for key in request_keys_for_task(data):
+            value = task_index.setdefault(key, {"offered": 0, "claimed": 0, "done": 0})
+            status = scalar(data, "status")
+            if status in {"claimed", "in_progress"}:
+                value["claimed"] += 1
+            elif status == "offered":
+                value["offered"] += 1
+            elif status in {"done", "closed", "complete"} or task_dir.name == "closed":
+                value["done"] += 1
+            else:
+                value["offered"] += 1
 
 dispatchable: list[dict[str, object]] = []
 planning_queue: list[dict[str, object]] = []
@@ -356,6 +423,7 @@ for task_path in sorted((tasks_dir / "active").glob("*.md")):
     title = scalar(data, "title")
     authority_case = scalar(data, "authority_case")
     parent_spec = scalar(data, "parent_spec")
+    parent_plan = scalar(data, "parent_plan")
     parent_request = scalar(data, "parent_request")
     depends_on = list_value(data, "depends_on")
 
@@ -382,8 +450,12 @@ for task_path in sorted((tasks_dir / "active").glob("*.md")):
     if not re.match(r"^CASE-[A-Z0-9-]+$", authority_case):
         queue_task("needs authority case", 2)
         continue
-    if not (resolve_ref_exists(parent_spec) or resolve_ref_exists(parent_request)):
-        queue_task("needs parent spec or request", 2)
+    if not (
+        resolve_ref_exists(parent_spec)
+        or resolve_ref_exists(parent_plan)
+        or resolve_ref_exists(parent_request)
+    ):
+        queue_task("needs parent spec, plan, or request", 2)
         continue
     if any(dep not in closed_ids for dep in depends_on):
         continue
@@ -423,6 +495,7 @@ for task_path in sorted((tasks_dir / "active").glob("*.md")):
             "authority_case": authority_case,
             "parent_request": parent_request,
             "parent_spec": parent_spec,
+            "parent_plan": parent_plan,
             "offered_at": scalar(data, "created_at") or scalar(data, "updated_at"),
             "offered_hours": age_hours(scalar(data, "created_at") or scalar(data, "updated_at")),
             "train": scalar(data, "train"),

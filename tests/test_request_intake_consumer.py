@@ -46,6 +46,7 @@ def _write_task(
     task_id: str,
     status: str = "offered",
     parent_request: str = "",
+    parent_plan: str = "",
     parent_spec: str = "",
     authority_case: str = "",
     depends_on: list[str] | None = None,
@@ -89,6 +90,7 @@ def _write_task(
         [
             f"authority_case: {authority_case}",
             f"parent_request: {parent_request}",
+            f"parent_plan: {parent_plan}",
             f"parent_spec: {parent_spec}",
             f"created_at: {created_at}",
             f"updated_at: {updated_at}",
@@ -585,6 +587,81 @@ def test_planning_feed_shared_task_index(tmp_path: Path) -> None:
     assert by_id["REQ-C"]["total_tasks"] == 0
 
 
+def test_planning_feed_counts_request_backlinks_from_parent_plan_and_spec(
+    tmp_path: Path,
+) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    tasks_active = tmp_path / "tasks" / "active"
+    tasks_active.mkdir(parents=True)
+    tasks_closed = tmp_path / "tasks" / "closed"
+    tasks_closed.mkdir(parents=True)
+    unrelated_spec = tmp_path / "unrelated-spec.md"
+    unrelated_spec.write_text("spec", encoding="utf-8")
+
+    request_path = active / "REQ-HN.md"
+    _write_request(request_path, "REQ-HN", status="accepted_for_planning")
+    _write_request(active / "REQ-NOISE.md", "REQ-NOISE", status="accepted_for_planning")
+
+    _write_task(
+        tasks_active / "T-plan.md",
+        "T-plan",
+        status="in_progress",
+        parent_plan=str(request_path),
+    )
+    _write_task(
+        tasks_active / "T-spec.md",
+        "T-spec",
+        status="offered",
+        parent_spec=str(request_path),
+        authority_case="CASE-TEST-001",
+    )
+    _write_task(
+        tasks_active / "T-dup.md",
+        "T-dup",
+        status="offered",
+        parent_request=str(request_path),
+        parent_plan=str(request_path),
+        parent_spec=str(request_path),
+        authority_case="CASE-TEST-001",
+    )
+    _write_task(
+        tasks_closed / "T-closed.md",
+        "T-closed",
+        status="done",
+        parent_plan="REQ-HN",
+    )
+    _write_task(
+        tasks_active / "T-unrelated-spec.md",
+        "T-unrelated-spec",
+        parent_spec=str(unrelated_spec),
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    by_id = {r["request_id"]: r for r in data["requests"]}
+
+    assert by_id["REQ-HN"]["coverage"] == "task_active"
+    assert by_id["REQ-HN"]["active_tasks"] == 3
+    assert by_id["REQ-HN"]["closed_tasks"] == 1
+    assert by_id["REQ-HN"]["total_tasks"] == 4
+    assert by_id["REQ-HN"]["last_task_activity"] == "2026-05-08T15:00:00Z"
+
+    assert by_id["REQ-NOISE"]["coverage"] == "untracked"
+    assert by_id["REQ-NOISE"]["total_tasks"] == 0
+
+    request_queue_ids = {
+        item["request_id"]
+        for item in data["dispatch"]["planning_queue"]
+        if item.get("item_type") == "request"
+    }
+    assert "REQ-HN" not in request_queue_ids
+    assert "REQ-NOISE" in request_queue_ids
+
+
 def test_dispatch_feed_includes_valid_offered_task(tmp_path: Path) -> None:
     active = tmp_path / "requests" / "active"
     active.mkdir(parents=True)
@@ -616,6 +693,36 @@ def test_dispatch_feed_includes_valid_offered_task(tmp_path: Path) -> None:
     assert dispatchable[0]["wsjf"] == 7.5
     assert dispatchable[0]["route_metadata"]["status"] == "explicit"
     assert dispatchable[0]["route_metadata"]["quality_floor"] == "deterministic_ok"
+
+
+def test_dispatch_feed_accepts_parent_plan_only_offered_task(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    tasks_active = tmp_path / "tasks" / "active"
+    tasks_active.mkdir(parents=True)
+
+    request_path = active / "REQ-PLAN.md"
+    _write_request(request_path, "REQ-PLAN", status="accepted_for_planning")
+    _write_task(
+        tasks_active / "T-PLAN.md",
+        "T-PLAN",
+        parent_plan=str(request_path),
+        authority_case="CASE-TEST-001",
+        wsjf="6.0",
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    dispatchable = data["dispatch"]["dispatchable_tasks"]
+
+    assert data["dispatch"]["dispatchable_count"] == 1
+    assert dispatchable[0]["task_id"] == "T-PLAN"
+    assert dispatchable[0]["parent_plan"] == str(request_path)
+    assert dispatchable[0]["parent_request"] == ""
+    assert dispatchable[0]["parent_spec"] == ""
 
 
 def test_dispatch_feed_holds_missing_quality_floor(tmp_path: Path) -> None:
