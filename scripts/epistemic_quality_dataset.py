@@ -6,9 +6,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
+import statistics
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +42,11 @@ AXES = (
     "quantifier_precision",
     "source_grounding",
 )
+HUMAN_LABEL_ORIGINS = {"human", "operator", "human_operator", "human_reviewer"}
+MODEL_LABEL_ORIGINS = {"model", "llm", "ai", "agent", "codex", "claude", "gemini", "synthetic"}
+ROUND_ONE_LABEL_ROUND = "round1"
+RELABEL_LABEL_ROUND = "relabel"
+PHASE0_PASS_STATUS = "labels_present_gate_passed"
 
 _SECRET_PATTERNS = (
     re.compile(
@@ -1088,6 +1095,589 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def parse_utc_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _is_int_1_to_5(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 5
+
+
+def validate_label_rows(
+    records: list[dict[str, Any]],
+    label_rows: list[dict[str, Any]],
+    *,
+    manifest_hash: str,
+    expected_ids: set[str],
+    expected_round: str,
+) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    errors: list[str] = []
+    record_by_id = {str(record["id"]): record for record in records}
+    labels_by_id: dict[str, dict[str, Any]] = {}
+    duplicate_ids: set[str] = set()
+
+    for index, row in enumerate(label_rows, start=1):
+        manifest_id = str(row.get("manifest_id", ""))
+        row_label = manifest_id or f"label row {index}"
+        if not manifest_id:
+            errors.append(f"{row_label}: missing manifest_id")
+            continue
+        if manifest_id in labels_by_id:
+            duplicate_ids.add(manifest_id)
+            errors.append(f"{manifest_id}: duplicate {expected_round} label row")
+            continue
+        labels_by_id[manifest_id] = row
+
+        record = record_by_id.get(manifest_id)
+        if record is None:
+            errors.append(f"{manifest_id}: label row has no manifest record")
+            continue
+        if manifest_id not in expected_ids:
+            errors.append(f"{manifest_id}: label row is not in expected {expected_round} set")
+        if row.get("manifest_hash") != manifest_hash:
+            errors.append(f"{manifest_id}: stale or missing manifest_hash")
+        if row.get("source_ref") != record.get("source_ref"):
+            errors.append(f"{manifest_id}: source_ref does not match manifest")
+        if row.get("source_text_hash") not in (None, record.get("excerpt_hash")):
+            errors.append(f"{manifest_id}: source_text_hash does not match manifest")
+        if row.get("label_round") != expected_round:
+            errors.append(f"{manifest_id}: label_round must be {expected_round!r}")
+        if not row.get("labeler"):
+            errors.append(f"{manifest_id}: missing labeler")
+        if not row.get("provenance"):
+            errors.append(f"{manifest_id}: missing provenance")
+
+        origin = str(row.get("label_origin", "")).lower()
+        if origin in MODEL_LABEL_ORIGINS:
+            errors.append(f"{manifest_id}: model-generated labels are not ground truth")
+        if origin not in HUMAN_LABEL_ORIGINS:
+            errors.append(f"{manifest_id}: label_origin must be human/operator, got {origin!r}")
+
+        if parse_utc_timestamp(row.get("labeled_at")) is None:
+            errors.append(f"{manifest_id}: labeled_at is missing or not an ISO timestamp")
+
+        labels = row.get("labels")
+        if not isinstance(labels, dict):
+            errors.append(f"{manifest_id}: labels must be an object")
+            continue
+        if set(labels) != set(AXES):
+            errors.append(f"{manifest_id}: labels must contain exactly {', '.join(AXES)}")
+            continue
+        for axis in AXES:
+            if not _is_int_1_to_5(labels.get(axis)):
+                errors.append(f"{manifest_id}: {axis} label must be an integer 1-5")
+
+    missing = sorted(expected_ids - set(labels_by_id) - duplicate_ids)
+    if missing:
+        errors.append(f"missing {expected_round} label rows: {', '.join(missing[:10])}")
+    extras = sorted(set(labels_by_id) - expected_ids)
+    if extras:
+        errors.append(f"unexpected {expected_round} label rows: {', '.join(extras[:10])}")
+
+    valid_by_id = {
+        manifest_id: row
+        for manifest_id, row in labels_by_id.items()
+        if manifest_id in expected_ids
+        and not any(error.startswith(f"{manifest_id}:") for error in errors)
+    }
+    return errors, valid_by_id
+
+
+def validate_score_rows(
+    records: list[dict[str, Any]], score_rows: list[dict[str, Any]], *, manifest_hash: str
+) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    errors: list[str] = []
+    record_by_id = {str(record["id"]): record for record in records}
+    scores_by_id: dict[str, dict[str, Any]] = {}
+    expected_ids = set(record_by_id)
+    for index, row in enumerate(score_rows, start=1):
+        manifest_id = str(row.get("manifest_id", ""))
+        row_label = manifest_id or f"score row {index}"
+        if not manifest_id:
+            errors.append(f"{row_label}: missing manifest_id")
+            continue
+        if manifest_id in scores_by_id:
+            errors.append(f"{manifest_id}: duplicate scorer output row")
+            continue
+        scores_by_id[manifest_id] = row
+        record = record_by_id.get(manifest_id)
+        if record is None:
+            errors.append(f"{manifest_id}: scorer output has no manifest record")
+            continue
+        if row.get("manifest_hash") != manifest_hash:
+            errors.append(f"{manifest_id}: stale or missing scorer manifest_hash")
+        if row.get("source_text_hash") != record.get("excerpt_hash"):
+            errors.append(f"{manifest_id}: scorer source_text_hash does not match manifest")
+        if not row.get("scorer"):
+            errors.append(f"{manifest_id}: missing scorer")
+        if parse_utc_timestamp(row.get("scored_at")) is None:
+            errors.append(f"{manifest_id}: scored_at is missing or not an ISO timestamp")
+        axis_scores = row.get("axis_scores")
+        if not isinstance(axis_scores, dict):
+            errors.append(f"{manifest_id}: axis_scores must be an object")
+            continue
+        if set(axis_scores) != set(AXES):
+            errors.append(f"{manifest_id}: axis_scores must contain exactly {', '.join(AXES)}")
+            continue
+        for axis in AXES:
+            value = axis_scores.get(axis)
+            if not isinstance(value, int | float) or isinstance(value, bool):
+                errors.append(f"{manifest_id}: {axis} score must be numeric")
+            elif not math.isfinite(float(value)):
+                errors.append(f"{manifest_id}: {axis} score must be finite")
+
+    missing = sorted(expected_ids - set(scores_by_id))
+    if missing:
+        errors.append(f"missing scorer output rows: {', '.join(missing[:10])}")
+
+    valid_by_id = {
+        manifest_id: row
+        for manifest_id, row in scores_by_id.items()
+        if manifest_id in expected_ids
+        and not any(error.startswith(f"{manifest_id}:") for error in errors)
+    }
+    return errors, valid_by_id
+
+
+def _nan_safe(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: _nan_safe(nested) for key, nested in value.items()}
+    if isinstance(value, list):
+        return [_nan_safe(nested) for nested in value]
+    return value
+
+
+def average_ranks(values: list[float]) -> list[float]:
+    indexed = sorted(enumerate(values), key=lambda item: item[1])
+    ranks = [0.0] * len(values)
+    position = 0
+    while position < len(indexed):
+        end = position + 1
+        while end < len(indexed) and indexed[end][1] == indexed[position][1]:
+            end += 1
+        average_rank = (position + 1 + end) / 2.0
+        for original_index, _ in indexed[position:end]:
+            ranks[original_index] = average_rank
+        position = end
+    return ranks
+
+
+def pearson_correlation(left: list[float], right: list[float]) -> float | None:
+    if len(left) != len(right) or len(left) < 2:
+        return None
+    left_mean = statistics.fmean(left)
+    right_mean = statistics.fmean(right)
+    left_delta = [value - left_mean for value in left]
+    right_delta = [value - right_mean for value in right]
+    numerator = sum(a * b for a, b in zip(left_delta, right_delta, strict=True))
+    left_ss = sum(value * value for value in left_delta)
+    right_ss = sum(value * value for value in right_delta)
+    denominator = math.sqrt(left_ss * right_ss)
+    if denominator == 0:
+        return None
+    return numerator / denominator
+
+
+def approximate_correlation_p_value(rho: float, n: int) -> float | None:
+    if n < 4:
+        return None
+    if abs(rho) >= 1:
+        return 0.0
+    denominator = max(1e-12, 1.0 - (rho * rho))
+    statistic = abs(rho) * math.sqrt((n - 2) / denominator)
+    # Normal approximation to the two-sided t tail. This is intentionally
+    # conservative enough for the gate's p < 0.001 high-signal threshold.
+    return math.erfc(statistic / math.sqrt(2.0))
+
+
+def spearman_metric(labels: list[float], scores: list[float]) -> dict[str, Any]:
+    if len(labels) < 3 or len(set(labels)) < 2 or len(set(scores)) < 2:
+        return {"n": len(labels), "spearman": None, "p_value": None, "computable": False}
+    statistic = pearson_correlation(average_ranks(labels), average_ranks(scores))
+    if statistic is None:
+        return {"n": len(labels), "spearman": None, "p_value": None, "computable": False}
+    statistic = max(-1.0, min(1.0, statistic))
+    p_value = approximate_correlation_p_value(statistic, len(labels))
+    return {
+        "n": len(labels),
+        "spearman": statistic,
+        "p_value": p_value,
+        "p_value_method": "normal_approximation_from_rank_correlation",
+        "computable": True,
+    }
+
+
+def composite_score(row: dict[str, Any]) -> float:
+    scores = row["axis_scores"]
+    return statistics.fmean(float(scores[axis]) for axis in AXES)
+
+
+def cohen_kappa(left: list[int], right: list[int]) -> dict[str, Any]:
+    if len(left) != len(right) or not left:
+        return {"n": min(len(left), len(right)), "kappa": None, "computable": False}
+    categories = range(1, 6)
+    n = len(left)
+    observed = sum(1 for a, b in zip(left, right, strict=True) if a == b) / n
+    expected = sum((left.count(cat) / n) * (right.count(cat) / n) for cat in categories)
+    if math.isclose(expected, 1.0):
+        kappa = 1.0 if math.isclose(observed, 1.0) else 0.0
+    else:
+        kappa = (observed - expected) / (1.0 - expected)
+    return {"n": n, "kappa": kappa, "computable": True}
+
+
+def axis_label(row: dict[str, Any], axis: str) -> int:
+    return int(row["labels"][axis])
+
+
+def validate_relabel_timing(
+    round1_by_id: dict[str, dict[str, Any]], relabel_by_id: dict[str, dict[str, Any]]
+) -> list[str]:
+    errors: list[str] = []
+    for manifest_id, relabel in relabel_by_id.items():
+        round1 = round1_by_id.get(manifest_id)
+        if round1 is None:
+            continue
+        round1_at = parse_utc_timestamp(round1.get("labeled_at"))
+        relabel_at = parse_utc_timestamp(relabel.get("labeled_at"))
+        if round1_at is None or relabel_at is None:
+            continue
+        if relabel_at < round1_at + timedelta(days=7):
+            errors.append(f"{manifest_id}: relabel is less than 7 days after round one")
+    return errors
+
+
+def compute_gate_report(
+    records: list[dict[str, Any]],
+    *,
+    manifest_path: Path,
+    manifest_hash: str,
+    label_rows: list[dict[str, Any]],
+    score_rows: list[dict[str, Any]],
+    relabel_rows: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    record_by_id = {str(record["id"]): record for record in records}
+    ready_ids = {str(record["id"]) for record in records if record.get("text_status") == "ready"}
+    label_errors, labels_by_id = validate_label_rows(
+        records,
+        label_rows,
+        manifest_hash=manifest_hash,
+        expected_ids=ready_ids,
+        expected_round=ROUND_ONE_LABEL_ROUND,
+    )
+    score_errors, scores_by_id = validate_score_rows(
+        records, score_rows, manifest_hash=manifest_hash
+    )
+
+    axis_metrics: dict[str, dict[str, Any]] = {}
+    for axis in AXES:
+        ids = sorted(ready_ids & set(labels_by_id) & set(scores_by_id))
+        axis_metrics[axis] = spearman_metric(
+            [float(axis_label(labels_by_id[manifest_id], axis)) for manifest_id in ids],
+            [float(scores_by_id[manifest_id]["axis_scores"][axis]) for manifest_id in ids],
+        )
+
+    domain_metrics: dict[str, dict[str, Any]] = {}
+    for domain in sorted({str(record.get("domain_partition", "unknown")) for record in records}):
+        ids = [
+            str(record["id"])
+            for record in records
+            if str(record.get("domain_partition", "unknown")) == domain
+            and str(record["id"]) in labels_by_id
+            and str(record["id"]) in scores_by_id
+        ]
+        domain_axis_metrics = {
+            axis: spearman_metric(
+                [float(axis_label(labels_by_id[manifest_id], axis)) for manifest_id in ids],
+                [float(scores_by_id[manifest_id]["axis_scores"][axis]) for manifest_id in ids],
+            )
+            for axis in AXES
+        }
+        domain_metrics[domain] = {
+            "n": len(ids),
+            "axes": domain_axis_metrics,
+            "passes": all(
+                metric["spearman"] is not None and metric["spearman"] >= 0.60
+                for metric in domain_axis_metrics.values()
+            ),
+        }
+
+    a_scores = [
+        composite_score(scores_by_id[str(record["id"])])
+        for record in records
+        if record.get("tier") == "A" and str(record["id"]) in scores_by_id
+    ]
+    b_scores = [
+        composite_score(scores_by_id[str(record["id"])])
+        for record in records
+        if record.get("tier") == "B" and str(record["id"]) in scores_by_id
+    ]
+    pooled = a_scores + b_scores
+    tier_a_mean = statistics.fmean(a_scores) if a_scores else None
+    tier_b_mean = statistics.fmean(b_scores) if b_scores else None
+    pooled_sd = statistics.pstdev(pooled) if len(pooled) > 1 else 0.0
+    if tier_a_mean is None or tier_b_mean is None:
+        tier_bias_passes = False
+        tier_bias_threshold = None
+    else:
+        tier_bias_threshold = tier_a_mean - (0.5 * pooled_sd)
+        tier_bias_passes = tier_b_mean >= tier_bias_threshold
+
+    vacuous_records = [
+        record
+        for record in records
+        if str(record.get("source_ref", "")).startswith("synthetic:eqi-known-bad:")
+        and 36 <= int(str(record["source_ref"]).rsplit(":", 1)[-1]) <= 45
+    ]
+    tier_a_composites = [
+        composite_score(scores_by_id[str(record["id"])])
+        for record in records
+        if record.get("tier") == "A" and str(record["id"]) in scores_by_id
+    ]
+    vacuous_scores = [
+        composite_score(scores_by_id[str(record["id"])])
+        for record in vacuous_records
+        if str(record["id"]) in scores_by_id
+    ]
+    tier_a_median = statistics.median(tier_a_composites) if tier_a_composites else None
+    vacuous_max = max(vacuous_scores) if vacuous_scores else None
+    vacuous_passes = (
+        len(vacuous_scores) == 10
+        and tier_a_median is not None
+        and vacuous_max is not None
+        and vacuous_max <= tier_a_median
+    )
+
+    relabel_required_ids = {
+        str(record["id"]) for record in records if record.get("relabel_required") is True
+    }
+    relabel_errors: list[str] = []
+    relabel_metrics: dict[str, Any] = {
+        "present": relabel_rows is not None,
+        "required_count": len(relabel_required_ids),
+        "status": "relabel_pending",
+    }
+    if relabel_rows is not None:
+        relabel_errors, relabel_by_id = validate_label_rows(
+            records,
+            relabel_rows,
+            manifest_hash=manifest_hash,
+            expected_ids=relabel_required_ids,
+            expected_round=RELABEL_LABEL_ROUND,
+        )
+        relabel_errors.extend(validate_relabel_timing(labels_by_id, relabel_by_id))
+        kappa_by_axis = {
+            axis: cohen_kappa(
+                [
+                    axis_label(labels_by_id[manifest_id], axis)
+                    for manifest_id in sorted(
+                        relabel_required_ids & set(labels_by_id) & set(relabel_by_id)
+                    )
+                ],
+                [
+                    axis_label(relabel_by_id[manifest_id], axis)
+                    for manifest_id in sorted(
+                        relabel_required_ids & set(labels_by_id) & set(relabel_by_id)
+                    )
+                ],
+            )
+            for axis in AXES
+        }
+        overall_left: list[int] = []
+        overall_right: list[int] = []
+        for manifest_id in sorted(relabel_required_ids & set(labels_by_id) & set(relabel_by_id)):
+            for axis in AXES:
+                overall_left.append(axis_label(labels_by_id[manifest_id], axis))
+                overall_right.append(axis_label(relabel_by_id[manifest_id], axis))
+        overall = cohen_kappa(overall_left, overall_right)
+        reliability_passes = (
+            not relabel_errors
+            and all(
+                metric["kappa"] is not None and metric["kappa"] >= 0.75
+                for metric in kappa_by_axis.values()
+            )
+            and overall["kappa"] is not None
+            and overall["kappa"] >= 0.75
+        )
+        relabel_metrics = {
+            "present": True,
+            "required_count": len(relabel_required_ids),
+            "errors": relabel_errors,
+            "kappa_by_axis": kappa_by_axis,
+            "overall": overall,
+            "passes": reliability_passes,
+            "status": "passed" if reliability_passes else "failed",
+        }
+
+    primary_axis_passes = all(
+        metric["spearman"] is not None
+        and metric["spearman"] >= 0.70
+        and metric["p_value"] is not None
+        and metric["p_value"] < 0.001
+        for metric in axis_metrics.values()
+    )
+    ablation_axis_passes = all(
+        metric["spearman"] is not None and metric["spearman"] >= 0.40
+        for metric in axis_metrics.values()
+    )
+    domain_passes = sum(1 for metric in domain_metrics.values() if metric["n"] >= 3) >= 3 and all(
+        metric["passes"] for metric in domain_metrics.values() if metric["n"] >= 3
+    )
+    labels_complete = len(labels_by_id) == len(ready_ids) == len(records) and not label_errors
+    scores_complete = len(scores_by_id) == len(records) and not score_errors
+    metrics_pass = (
+        labels_complete
+        and scores_complete
+        and primary_axis_passes
+        and ablation_axis_passes
+        and domain_passes
+        and tier_bias_passes
+        and vacuous_passes
+    )
+
+    if not labels_complete or not scores_complete:
+        status = "not_enough_labels"
+    elif not metrics_pass:
+        status = "labels_present_gate_failed"
+    elif relabel_rows is None:
+        status = "relabel_pending"
+    elif relabel_metrics.get("passes") is not True:
+        status = "relabel_reliability_failed"
+    else:
+        status = PHASE0_PASS_STATUS
+
+    report = {
+        "status": status,
+        "passed": status == PHASE0_PASS_STATUS,
+        "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "manifest": {
+            "path": str(manifest_path),
+            "sha256": manifest_hash,
+            "record_count": len(records),
+            "ready_count": len(ready_ids),
+        },
+        "label_validation": {
+            "round1_count": len(label_rows),
+            "valid_round1_count": len(labels_by_id),
+            "errors": label_errors,
+        },
+        "score_validation": {
+            "score_count": len(score_rows),
+            "valid_score_count": len(scores_by_id),
+            "errors": score_errors,
+        },
+        "metrics": {
+            "axes": axis_metrics,
+            "domains": domain_metrics,
+            "tier_a_tier_b_bias": {
+                "tier_a_mean": tier_a_mean,
+                "tier_b_mean": tier_b_mean,
+                "pooled_sd": pooled_sd,
+                "threshold": tier_bias_threshold,
+                "passes": tier_bias_passes,
+            },
+            "vacuous_hedging_adversary": {
+                "count": len(vacuous_scores),
+                "max_score": vacuous_max,
+                "tier_a_median": tier_a_median,
+                "passes": vacuous_passes,
+            },
+            "relabel_reliability": relabel_metrics,
+        },
+        "predicates": {
+            "labels_complete": labels_complete,
+            "scores_complete": scores_complete,
+            "primary_axis_spearman_ge_0_70_p_lt_0_001": primary_axis_passes,
+            "axis_ablation_spearman_ge_0_40": ablation_axis_passes,
+            "domain_spearman_ge_0_60": domain_passes,
+            "tier_b_not_more_than_half_sd_below_tier_a": tier_bias_passes,
+            "vacuous_hedging_not_above_tier_a_median": vacuous_passes,
+            "relabel_present": relabel_rows is not None,
+            "relabel_kappa_ge_0_75": relabel_metrics.get("passes") is True,
+            "phase0_hard_gate_passed": status == PHASE0_PASS_STATUS,
+        },
+        "claim_ceiling": (
+            "support_non_authoritative; this report is not publication authority unless "
+            "phase0_hard_gate_passed is true and independent claim gates also pass"
+        ),
+    }
+    _ = record_by_id
+    return _nan_safe(report)
+
+
+def write_gate_markdown(path: Path, report: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    predicates = report["predicates"]
+    axis_lines = []
+    for axis, metric in report["metrics"]["axes"].items():
+        axis_lines.append(
+            f"- `{axis}`: n={metric['n']}, spearman={metric['spearman']}, p={metric['p_value']}"
+        )
+    predicate_lines = [f"- `{name}`: {value}" for name, value in sorted(predicates.items())]
+    path.write_text(
+        "\n".join(
+            [
+                "---",
+                'title: "Epistemic Quality Phase 0 Validation Gate Report"',
+                f"date: {report['generated_at'][:10]}",
+                "request: REQ-20260512-epistemic-quality-infrastructure",
+                "cc_task: epistemic-quality-phase0-validation-harness",
+                "authority_level: support_non_authoritative",
+                f"status: {report['status']}",
+                "---",
+                "",
+                "# Epistemic Quality Phase 0 Validation Gate Report",
+                "",
+                f"Status: `{report['status']}`",
+                f"Passed: `{report['passed']}`",
+                "",
+                "## Manifest",
+                "",
+                f"- Path: `{report['manifest']['path']}`",
+                f"- SHA-256: `{report['manifest']['sha256']}`",
+                f"- Records: {report['manifest']['record_count']}",
+                f"- Ready: {report['manifest']['ready_count']}",
+                "",
+                "## Axis Metrics",
+                "",
+                *axis_lines,
+                "",
+                "## Predicates",
+                "",
+                *predicate_lines,
+                "",
+                "## Claim Ceiling",
+                "",
+                report["claim_ceiling"],
+                "",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def write_labeling_pack(path: Path, manifest_path: Path, records: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     manifest_display = manifest_path.name if manifest_path.is_absolute() else str(manifest_path)
@@ -1186,6 +1776,16 @@ def main(argv: list[str] | None = None) -> int:
     validate.add_argument("manifest", type=Path)
     validate.add_argument("--tier-count", action="append", default=[])
 
+    validate_gate = sub.add_parser(
+        "validate-gate", help="run the fail-closed Phase 0 validation gate"
+    )
+    validate_gate.add_argument("--manifest", type=Path, required=True)
+    validate_gate.add_argument("--labels", type=Path, required=True)
+    validate_gate.add_argument("--scores", type=Path, required=True)
+    validate_gate.add_argument("--relabel-labels", type=Path)
+    validate_gate.add_argument("--report-json", type=Path, required=True)
+    validate_gate.add_argument("--report-md", type=Path, required=True)
+
     curate = sub.add_parser("curate", help="build source-curated manifest and source notes")
     curate.add_argument("--research-root", type=Path, default=DEFAULT_RESEARCH_ROOT)
     curate.add_argument("--output", type=Path, required=True)
@@ -1227,6 +1827,34 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(f"validated {len(records)} records")
         return 0
+
+    if args.command == "validate-gate":
+        records = read_jsonl(args.manifest)
+        manifest_errors = validate_records(records, TIER_COUNTS)
+        manifest_hash = file_sha256(args.manifest)
+        report = compute_gate_report(
+            records,
+            manifest_path=args.manifest,
+            manifest_hash=manifest_hash,
+            label_rows=read_jsonl(args.labels),
+            score_rows=read_jsonl(args.scores),
+            relabel_rows=read_jsonl(args.relabel_labels) if args.relabel_labels else None,
+        )
+        if manifest_errors:
+            report["status"] = "not_enough_labels"
+            report["passed"] = False
+            report["manifest_validation_errors"] = manifest_errors
+            report["predicates"]["phase0_hard_gate_passed"] = False
+        args.report_json.parent.mkdir(parents=True, exist_ok=True)
+        args.report_json.write_text(
+            json.dumps(report, indent=2, sort_keys=True, ensure_ascii=True) + "\n",
+            encoding="utf-8",
+        )
+        write_gate_markdown(args.report_md, report)
+        print(f"wrote gate JSON report to {args.report_json}")
+        print(f"wrote gate Markdown report to {args.report_md}")
+        print(f"status={report['status']}")
+        return 0 if report["passed"] else 1
 
     if args.command == "curate":
         records, source_notes = build_curated_records(
