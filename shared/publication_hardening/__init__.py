@@ -1,3 +1,13 @@
+from shared.publication_hardening.codebase import (
+    CodebaseConsistencyVerifier,
+    CodebaseDecision,
+    CodebaseFinding,
+    CodebaseVerificationReport,
+    CurrentnessClaim,
+    NumericClaim,
+    ShellSyntaxChecker,
+    verify_publication_codebase,
+)
 from shared.publication_hardening.entity_checker import (
     AttributionFinding,
     EntityRegistry,
@@ -24,13 +34,20 @@ from shared.publication_hardening.review import (
 
 __all__ = [
     "AttributionFinding",
+    "CodebaseConsistencyVerifier",
+    "CodebaseDecision",
+    "CodebaseFinding",
+    "CodebaseVerificationReport",
+    "CurrentnessClaim",
     "DEFAULT_REVIEW_MODEL",
     "DEFAULT_REVIEW_THRESHOLD",
     "EntityRegistry",
     "LintFinding",
+    "NumericClaim",
     "ReviewClaim",
     "ReviewPass",
     "ReviewReport",
+    "ShellSyntaxChecker",
     "attach_review_report_to_frontmatter",
     "axiom_review_constraints",
     "build_review_messages",
@@ -40,4 +57,5 @@ __all__ = [
     "load_registry",
     "parse_review_response",
     "run_vale",
+    "verify_publication_codebase",
 ]
