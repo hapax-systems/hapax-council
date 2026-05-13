@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll V4L2 bridge egress health
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=10
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

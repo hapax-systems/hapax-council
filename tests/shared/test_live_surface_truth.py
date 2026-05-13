@@ -341,3 +341,25 @@ def test_parse_prometheus_and_build_snapshot() -> None:
     assert snapshot.obs_source_active is True
     assert snapshot.obs_screenshot_flat is False
     assert snapshot.public_output_live is True
+
+
+def test_parse_prometheus_accepts_current_camera_role_label_shape() -> None:
+    metrics = parse_prometheus_scalars(
+        """
+        studio_compositor_cameras_total 2
+        studio_compositor_cameras_healthy 1
+        studio_camera_last_frame_age_seconds{model="unknown",role="brio-operator"} 7.5
+        studio_camera_last_frame_age_seconds{role="c920-overhead",model="unknown"} 0.2
+        """
+    )
+
+    snapshot = snapshot_from_prometheus(
+        metrics,
+        service_active=True,
+        bridge_active=True,
+    )
+
+    assert snapshot.camera_last_frame_age_seconds == {
+        "brio-operator": 7.5,
+        "c920-overhead": 0.2,
+    }

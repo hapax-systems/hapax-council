@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+"""Fast watchdog for bridge-mode v4l2 egress stalls.
+
+This is narrower than the compositor process watchdog. In bridge mode,
+the compositor can keep rendering/HLS alive while the shmsink branch or the
+sidecar writer stops advancing. That state is live-surface failure, so this
+script restarts the bridge only when the sidecar is stale and restarts the
+compositor plus bridge when the compositor-side shmsink branch is stale.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.live_surface_truth import parse_prometheus_scalars
+
+DEFAULT_BRIDGE_PROM = Path("/dev/shm/hapax-compositor/v4l2-bridge.prom")
+DEFAULT_TEXTFILE = (
+    Path.home()
+    / ".local"
+    / "share"
+    / "node_exporter"
+    / "textfile_collector"
+    / "hapax-v4l2-bridge-watchdog.prom"
+)
+DEFAULT_LEDGER = Path("/dev/shm/hapax-v4l2-bridge-watchdog/events.jsonl")
+DEFAULT_STATE = Path("/run/user") / str(os.getuid()) / "hapax-v4l2-bridge-watchdog.json"
+
+
+@dataclass(frozen=True)
+class Decision:
+    stale: bool
+    action: str
+    reason: str
+    stale_ticks: int
+    shmsink_frames: float | None
+    bridge_write_frames: float | None
+    shmsink_age_seconds: float | None
+    bridge_heartbeat_seconds: float | None
+
+
+def _load_metrics(args: argparse.Namespace) -> dict[str, float]:
+    if args.metrics_file:
+        text = Path(args.metrics_file).read_text(encoding="utf-8")
+    else:
+        with urllib.request.urlopen(args.metrics_url, timeout=args.metrics_timeout) as response:
+            text = response.read().decode("utf-8", "replace")
+    metrics = parse_prometheus_scalars(text)
+    try:
+        bridge_text = args.bridge_metrics_file.read_text(encoding="utf-8")
+    except OSError:
+        bridge_text = ""
+    metrics.update(parse_prometheus_scalars(bridge_text))
+    return metrics
+
+
+def _load_state(path: Path) -> dict[str, float]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for key, value in raw.items():
+        try:
+            out[str(key)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _save_state(path: Path, state: dict[str, float]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _run_systemctl(args: argparse.Namespace, *cmd: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [args.systemctl, "--user", *cmd],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=args.command_timeout,
+    )
+
+
+def _metric(metrics: dict[str, float], name: str) -> float | None:
+    return metrics.get(name)
+
+
+def _bridge_mode_active(metrics: dict[str, float]) -> bool:
+    return metrics.get("studio_compositor_runtime_feature_active:feature:shmsink_bridge", 0) > 0
+
+
+def _decide(
+    args: argparse.Namespace,
+    *,
+    metrics: dict[str, float],
+    state: dict[str, float],
+    now: float,
+) -> Decision:
+    shmsink_frames = _metric(metrics, "studio_compositor_shmsink_frames_total")
+    bridge_write_frames = _metric(metrics, "hapax_v4l2_bridge_write_frames_total")
+    shmsink_age = _metric(metrics, "studio_compositor_shmsink_last_frame_seconds_ago")
+    bridge_heartbeat = _metric(metrics, "hapax_v4l2_bridge_heartbeat_seconds_ago")
+
+    if not _bridge_mode_active(metrics):
+        state["stale_ticks"] = 0
+        return Decision(
+            stale=False,
+            action="none",
+            reason="bridge_mode_inactive",
+            stale_ticks=0,
+            shmsink_frames=shmsink_frames,
+            bridge_write_frames=bridge_write_frames,
+            shmsink_age_seconds=shmsink_age,
+            bridge_heartbeat_seconds=bridge_heartbeat,
+        )
+
+    previous_shmsink = state.get("shmsink_frames")
+    previous_bridge = state.get("bridge_write_frames")
+    shmsink_stale = (
+        shmsink_age is not None
+        and shmsink_age > args.max_age_seconds
+        and previous_shmsink == shmsink_frames
+    )
+    bridge_stale = (
+        bridge_heartbeat is not None
+        and bridge_heartbeat > args.max_age_seconds
+        and previous_bridge == bridge_write_frames
+    )
+    stale = shmsink_stale or bridge_stale
+    stale_ticks = int(state.get("stale_ticks", 0))
+    if stale:
+        stale_ticks += 1
+    else:
+        stale_ticks = 0
+    state["stale_ticks"] = stale_ticks
+    if shmsink_frames is not None:
+        state["shmsink_frames"] = shmsink_frames
+    if bridge_write_frames is not None:
+        state["bridge_write_frames"] = bridge_write_frames
+
+    if not stale:
+        return Decision(
+            stale=False,
+            action="none",
+            reason="bridge_fresh",
+            stale_ticks=stale_ticks,
+            shmsink_frames=shmsink_frames,
+            bridge_write_frames=bridge_write_frames,
+            shmsink_age_seconds=shmsink_age,
+            bridge_heartbeat_seconds=bridge_heartbeat,
+        )
+    if stale_ticks < args.restart_after_stale_ticks:
+        return Decision(
+            stale=True,
+            action="observe",
+            reason="bridge_stale_first_tick",
+            stale_ticks=stale_ticks,
+            shmsink_frames=shmsink_frames,
+            bridge_write_frames=bridge_write_frames,
+            shmsink_age_seconds=shmsink_age,
+            bridge_heartbeat_seconds=bridge_heartbeat,
+        )
+
+    last_restart = state.get("last_restart_monotonic")
+    if last_restart is not None and now - last_restart < args.restart_cooldown_seconds:
+        return Decision(
+            stale=True,
+            action="cooldown_skip",
+            reason="bridge_stale_cooldown",
+            stale_ticks=stale_ticks,
+            shmsink_frames=shmsink_frames,
+            bridge_write_frames=bridge_write_frames,
+            shmsink_age_seconds=shmsink_age,
+            bridge_heartbeat_seconds=bridge_heartbeat,
+        )
+
+    if shmsink_stale:
+        return Decision(
+            stale=True,
+            action="restart_compositor_bridge",
+            reason="shmsink_branch_stale",
+            stale_ticks=stale_ticks,
+            shmsink_frames=shmsink_frames,
+            bridge_write_frames=bridge_write_frames,
+            shmsink_age_seconds=shmsink_age,
+            bridge_heartbeat_seconds=bridge_heartbeat,
+        )
+    return Decision(
+        stale=True,
+        action="restart_bridge",
+        reason="bridge_writer_stale",
+        stale_ticks=stale_ticks,
+        shmsink_frames=shmsink_frames,
+        bridge_write_frames=bridge_write_frames,
+        shmsink_age_seconds=shmsink_age,
+        bridge_heartbeat_seconds=bridge_heartbeat,
+    )
+
+
+def _apply_decision(args: argparse.Namespace, state: dict[str, float], decision: Decision) -> str:
+    if decision.action not in {"restart_bridge", "restart_compositor_bridge"}:
+        return "not_needed"
+    if not args.apply:
+        return "dry_run"
+    units = [args.bridge_unit]
+    if decision.action == "restart_compositor_bridge":
+        units = [args.compositor_unit, args.bridge_unit]
+    result = _run_systemctl(args, "restart", *units)
+    if result.returncode == 0:
+        state["stale_ticks"] = 0
+        state["last_restart_monotonic"] = time.monotonic()
+        return "ok"
+    return f"failed:{result.returncode}"
+
+
+def _append_ledger(path: Path, decision: Decision, outcome: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "stale": decision.stale,
+        "action": decision.action,
+        "reason": decision.reason,
+        "outcome": outcome,
+        "stale_ticks": decision.stale_ticks,
+        "shmsink_frames": decision.shmsink_frames,
+        "bridge_write_frames": decision.bridge_write_frames,
+        "shmsink_age_seconds": decision.shmsink_age_seconds,
+        "bridge_heartbeat_seconds": decision.bridge_heartbeat_seconds,
+    }
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, sort_keys=True) + "\n")
+
+
+def _emit_textfile(path: Path, decision: Decision, outcome: str) -> None:
+    lines = [
+        "# HELP hapax_v4l2_bridge_watchdog_stale Bridge egress stale flag",
+        "# TYPE hapax_v4l2_bridge_watchdog_stale gauge",
+        f"hapax_v4l2_bridge_watchdog_stale {1 if decision.stale else 0}",
+        "# HELP hapax_v4l2_bridge_watchdog_stale_ticks Consecutive stale ticks",
+        "# TYPE hapax_v4l2_bridge_watchdog_stale_ticks gauge",
+        f"hapax_v4l2_bridge_watchdog_stale_ticks {decision.stale_ticks}",
+        "# HELP hapax_v4l2_bridge_watchdog_restart_attempted Restart attempted this tick",
+        "# TYPE hapax_v4l2_bridge_watchdog_restart_attempted gauge",
+        f"hapax_v4l2_bridge_watchdog_restart_attempted "
+        f"{1 if decision.action.startswith('restart_') else 0}",
+        f'hapax_v4l2_bridge_watchdog_action{{action="{_label(decision.action)}"}} 1',
+        f'hapax_v4l2_bridge_watchdog_outcome{{outcome="{_label(outcome)}"}} 1',
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _label(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--metrics-url", default="http://127.0.0.1:9482/metrics")
+    parser.add_argument("--metrics-file")
+    parser.add_argument("--metrics-timeout", type=float, default=3.0)
+    parser.add_argument("--bridge-metrics-file", type=Path, default=DEFAULT_BRIDGE_PROM)
+    parser.add_argument("--max-age-seconds", type=float, default=15.0)
+    parser.add_argument("--restart-after-stale-ticks", type=int, default=2)
+    parser.add_argument("--restart-cooldown-seconds", type=float, default=60.0)
+    parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--systemctl", default="systemctl")
+    parser.add_argument("--command-timeout", type=float, default=30.0)
+    parser.add_argument("--compositor-unit", default="studio-compositor.service")
+    parser.add_argument("--bridge-unit", default="hapax-v4l2-bridge.service")
+    parser.add_argument("--state-file", type=Path, default=DEFAULT_STATE)
+    parser.add_argument("--textfile-path", type=Path, default=DEFAULT_TEXTFILE)
+    parser.add_argument("--ledger-path", type=Path, default=DEFAULT_LEDGER)
+    args = parser.parse_args(argv)
+
+    try:
+        metrics = _load_metrics(args)
+    except Exception as exc:
+        print(f"v4l2-bridge-watchdog: metrics unavailable: {type(exc).__name__}", file=sys.stderr)
+        return 0
+    state = _load_state(args.state_file)
+    decision = _decide(args, metrics=metrics, state=state, now=time.monotonic())
+    outcome = _apply_decision(args, state, decision)
+    _save_state(args.state_file, state)
+    _emit_textfile(args.textfile_path, decision, outcome)
+    if decision.action != "none":
+        _append_ledger(args.ledger_path, decision, outcome)
+    print(
+        f"v4l2-bridge-watchdog: action={decision.action} reason={decision.reason} outcome={outcome}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
