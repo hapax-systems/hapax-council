@@ -28,6 +28,7 @@ import logging
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -36,6 +37,8 @@ INTERPIPE_CHANNEL = "compositor_v4l2_out"
 DEFAULT_SOCKET = "/dev/shm/hapax-compositor/v4l2-bridge.sock"
 BRIDGE_ENABLED_ENV = "HAPAX_V4L2_BRIDGE_ENABLED"
 V4L2_OUTPUT_DISABLED_ENV = "HAPAX_COMPOSITOR_DISABLE_V4L2_OUTPUT"
+SNAPSHOT_DIR = Path("/dev/shm/hapax-compositor")
+_DEFAULT_PROOF_SNAPSHOT_INTERVAL_S = 1.0
 
 
 def _set_optional_property(element: Any, name: str, value: Any) -> None:
@@ -63,6 +66,8 @@ class ShmsinkOutputPipeline:
         fps: int,
         socket_path: str | None = None,
         on_frame: Any | None = None,
+        proof_snapshot_path: str | os.PathLike[str] | None = None,
+        proof_snapshot_interval_s: float | None = None,
     ) -> None:
         self._Gst = gst
         self._width = width
@@ -72,6 +77,18 @@ class ShmsinkOutputPipeline:
             "HAPAX_V4L2_BRIDGE_SOCKET", DEFAULT_SOCKET
         )
         self._on_frame = on_frame
+        self._proof_snapshot_path = (
+            Path(proof_snapshot_path) if proof_snapshot_path else (SNAPSHOT_DIR / "fx-snapshot.jpg")
+        )
+        self._proof_snapshot_interval_s = (
+            _DEFAULT_PROOF_SNAPSHOT_INTERVAL_S
+            if proof_snapshot_interval_s is None
+            else max(0.0, float(proof_snapshot_interval_s))
+        )
+        self._proof_snapshot_last_monotonic: float = 0.0
+        self._proof_snapshot_inflight = False
+        self._proof_snapshot_lock = threading.Lock()
+        self._proof_snapshot_failure_logged = False
 
         self._pipeline: Any = None
         self._bus: Any = None
@@ -182,8 +199,95 @@ class ShmsinkOutputPipeline:
                 self._socket_path,
             )
 
+    def _maybe_write_proof_snapshot(self, data: bytes | bytearray | memoryview) -> None:
+        if self._proof_snapshot_interval_s <= 0.0:
+            return
+        now = time.monotonic()
+        with self._proof_snapshot_lock:
+            if now - self._proof_snapshot_last_monotonic < self._proof_snapshot_interval_s:
+                return
+            if self._proof_snapshot_inflight:
+                return
+            self._proof_snapshot_last_monotonic = now
+            self._proof_snapshot_inflight = True
+
+        snapshot_data = bytes(data)
+        thread = threading.Thread(
+            target=self._write_proof_snapshot_jpeg,
+            args=(snapshot_data,),
+            daemon=True,
+            name="shmsink-proof-snapshot",
+        )
+        thread.start()
+
+    def _write_proof_snapshot_jpeg(self, data: bytes) -> None:
+        """Write final-egress proof JPEG from the exact NV12 frame sent to shmsink."""
+        try:
+            import cv2
+            import numpy as np
+
+            expected = self._width * self._height * 3 // 2
+            if len(data) < expected:
+                raise ValueError(
+                    f"NV12 frame too small for proof snapshot: got {len(data)}, expected {expected}"
+                )
+            nv12 = np.frombuffer(data[:expected], dtype=np.uint8).reshape(
+                (self._height * 3 // 2, self._width)
+            )
+            bgr = cv2.cvtColor(nv12, cv2.COLOR_YUV2BGR_NV12)
+            ok, encoded = cv2.imencode(
+                ".jpg",
+                bgr,
+                [int(cv2.IMWRITE_JPEG_QUALITY), 85],
+            )
+            if not ok:
+                raise RuntimeError("cv2.imencode returned false for proof snapshot")
+
+            self._proof_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._proof_snapshot_path.with_name(self._proof_snapshot_path.name + ".tmp")
+            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+            try:
+                os.write(fd, encoded.tobytes())
+            finally:
+                os.close(fd)
+            tmp.replace(self._proof_snapshot_path)
+            try:
+                from . import metrics as _m
+
+                _m.record_render_stage_frame("final_egress_snapshot")
+            except Exception:
+                pass
+        except Exception as exc:
+            if not self._proof_snapshot_failure_logged:
+                log.warning("bridge final-egress proof snapshot unavailable: %s", exc)
+                self._proof_snapshot_failure_logged = True
+            else:
+                log.debug("bridge final-egress proof snapshot failed", exc_info=True)
+        finally:
+            with self._proof_snapshot_lock:
+                self._proof_snapshot_inflight = False
+
+    def _maybe_prove_frame_from_probe(self, info: Any) -> None:
+        if info is None:
+            return
+        get_buffer = getattr(info, "get_buffer", None)
+        if get_buffer is None:
+            return
+        buf = get_buffer()
+        if buf is None:
+            return
+        ok, map_info = buf.map(self._Gst.MapFlags.READ)
+        if not ok:
+            return
+        try:
+            self._maybe_write_proof_snapshot(memoryview(map_info.data))
+        finally:
+            buf.unmap(map_info)
+
     def _buffer_probe(self, pad: Any, info: Any, _user_data: Any) -> Any:
+        del pad
         self._last_frame_monotonic = time.monotonic()
+        self._maybe_prove_frame_from_probe(info)
         if self._on_frame is not None:
             try:
                 self._on_frame()
