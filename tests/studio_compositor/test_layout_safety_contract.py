@@ -9,6 +9,7 @@ from agents.studio_compositor.layout import compute_tile_layout
 from agents.studio_compositor.layout_safety import (
     BASE_COMPOSITOR_MATERIAL,
     LayoutSafetyError,
+    negative_space_contract_for_mode,
     resolve_startup_layout_mode,
     validate_tile_layout,
 )
@@ -76,6 +77,12 @@ def test_follow_mode_uses_bounded_salience_not_packed_repin() -> None:
     ]
     assert len(visible_roles) <= 3
     assert "c920-room" in visible_roles
+
+
+def test_negative_space_contract_lookup_uses_mode_family() -> None:
+    assert negative_space_contract_for_mode("forcefield").max_fraction == 0.90
+    assert negative_space_contract_for_mode("follow/c920-room").max_fraction == 0.65
+    assert negative_space_contract_for_mode("segment-compare") is None
 
 
 def test_follow_mode_caps_low_resolution_hero_without_waiver() -> None:

@@ -151,6 +151,11 @@ def mode_family(mode: str) -> str:
     return "unknown"
 
 
+def negative_space_contract_for_mode(mode: str) -> NegativeSpaceContract | None:
+    """Return the declared negative-space contract for a layout mode."""
+    return _NEGATIVE_SPACE_BY_FAMILY.get(mode_family(mode))
+
+
 def is_known_layout_mode(mode: str) -> bool:
     family = mode_family(mode)
     if family == "unknown":

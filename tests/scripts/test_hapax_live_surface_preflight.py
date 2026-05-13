@@ -31,6 +31,8 @@ def _run(
             "--no-systemd",
             "--metrics-file",
             str(metrics_file),
+            "--layout-state-json",
+            str(tmp_path / "missing-layout-state.json"),
             *after_args,
             *args,
         ],
@@ -652,6 +654,57 @@ studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapsh
     assert payload["state"] == "degraded_containment"
     assert "unclassified_black_exceeds_threshold" in payload["reasons"]
     assert payload["final_frame_classification"]["black_fraction"] == 1.0
+    assert payload["final_frame_classification"]["max_unclassified_black_fraction"] == 0.08
+
+
+def test_preflight_accepts_forcefield_declared_negative_space(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "forcefield-sparse.png"
+    image = Image.new("RGB", (128, 72), (0, 0, 0))
+    pixels = image.load()
+    for y in range(8, 30):
+        for x in range(8, 44):
+            pixels[x, y] = (220, 120, 40)
+    for y in range(42, 64):
+        for x in range(82, 120):
+            pixels[x, y] = (60, 170, 220)
+    image.save(image_path)
+    layout_state = tmp_path / "current-layout-state.json"
+    layout_state.write_text(
+        json.dumps({"layout_mode": "forcefield", "layout_name": "segment-compare"}),
+        encoding="utf-8",
+    )
+
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 140
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.03
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 11
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.4
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "false",
+        "--final-frame-image",
+        str(image_path),
+        "--layout-state-json",
+        str(layout_state),
+        tmp_path=tmp_path,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    classification = payload["final_frame_classification"]
+    assert payload["state"] == "healthy"
+    assert classification["black_fraction"] > 0.08
+    assert classification["black_fraction"] <= 0.90
+    assert classification["layout_mode"] == "forcefield"
+    assert classification["max_unclassified_black_fraction"] == 0.9
+    assert "unclassified_black_exceeds_threshold" not in payload["reasons"]
 
 
 def test_preflight_degrades_on_uniform_grey_final_frame_with_live_upstream(
