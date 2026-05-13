@@ -254,7 +254,7 @@ class V4l2OutputPipeline:
             log.info("Reopened v4l2 fd (total reopens: %d)", self._fd_reopen_count)
         return opened
 
-    def _write_frame(self, data: bytes) -> bool:
+    def _write_frame(self, data: bytes | bytearray | memoryview) -> bool:
         with self._fd_lock:
             if self._fd < 0:
                 return False
@@ -277,7 +277,7 @@ class V4l2OutputPipeline:
                     log.error("v4l2 write error (unexpected errno=%d): %s", exc.errno, exc)
                 return False
 
-    def _maybe_write_proof_snapshot(self, data: bytes) -> None:
+    def _maybe_write_proof_snapshot(self, data: bytes | bytearray | memoryview) -> None:
         if self._proof_snapshot_interval_s <= 0.0:
             return
         now = time.monotonic()
@@ -289,9 +289,10 @@ class V4l2OutputPipeline:
             self._proof_snapshot_last_monotonic = now
             self._proof_snapshot_inflight = True
 
+        snapshot_data = bytes(data)
         thread = threading.Thread(
             target=self._write_proof_snapshot_jpeg,
-            args=(data,),
+            args=(snapshot_data,),
             daemon=True,
             name="v4l2-proof-snapshot",
         )
@@ -365,7 +366,7 @@ class V4l2OutputPipeline:
             return Gst.FlowReturn.OK
 
         try:
-            data = bytes(map_info.data)
+            data = memoryview(map_info.data)
             try:
                 from . import metrics as _m
 
@@ -373,12 +374,13 @@ class V4l2OutputPipeline:
             except Exception:
                 pass
             written = self._write_frame(data)
+            if written:
+                self._last_frame_monotonic = time.monotonic()
+                self._maybe_write_proof_snapshot(data)
         finally:
             buf.unmap(map_info)
 
         if written:
-            self._last_frame_monotonic = time.monotonic()
-            self._maybe_write_proof_snapshot(data)
             try:
                 from . import metrics as _m
 

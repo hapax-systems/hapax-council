@@ -74,6 +74,33 @@ def test_desktop_mode_detaches_mobile_bin() -> None:
     assert compositor._mobile_rtmp_bin.detach_calls == 1
 
 
+def test_mobile_support_threads_wait_for_attached_mobile_bin(monkeypatch) -> None:
+    compositor = object.__new__(StudioCompositor)
+    compositor._broadcast_mode = "dual"
+    compositor._mobile_rtmp_bin = _FakeBin()
+    starts: list[object] = []
+    stops: list[object] = []
+
+    monkeypatch.setattr(
+        StudioCompositor,
+        "_ensure_mobile_support_threads",
+        lambda self: starts.append(self),
+    )
+    monkeypatch.setattr(
+        StudioCompositor,
+        "_stop_mobile_support_threads",
+        lambda self: stops.append(self),
+    )
+
+    StudioCompositor._sync_mobile_support_threads(compositor)
+    assert starts == []
+    assert stops == [compositor]
+
+    compositor._mobile_rtmp_bin.attached = True
+    StudioCompositor._sync_mobile_support_threads(compositor)
+    assert starts == [compositor]
+
+
 def test_capture_path_masks_before_jpeg_and_fails_closed() -> None:
     from agents.studio_compositor import cameras
 

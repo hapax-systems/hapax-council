@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -286,6 +287,7 @@ class MobileCairoRunner:
             "token_pole": MobileTokenPoleCairoSource(),
             "captions": MobileCaptionsCairoSource(),
         }
+        self._surface: cairo.ImageSurface | None = None
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -315,7 +317,7 @@ class MobileCairoRunner:
         salience = self._read_json(self.salience_path)
         selection = select_mobile_sources(self.layout, salience)
 
-        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, MOBILE_WIDTH, MOBILE_HEIGHT)
+        surface = self._render_surface()
         cr = cairo.Context(surface)
         cr.set_source_rgba(0.0, 0.0, 0.0, 0.0)
         cr.set_operator(cairo.OPERATOR_SOURCE)
@@ -334,9 +336,7 @@ class MobileCairoRunner:
 
         surface.flush()
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.output_path.with_suffix(self.output_path.suffix + ".tmp")
-        tmp.write_bytes(bytes(surface.get_data()))
-        tmp.rename(self.output_path)
+        self._write_surface_atomic(surface)
 
         try:
             from agents.studio_compositor import metrics
@@ -349,6 +349,30 @@ class MobileCairoRunner:
             log.debug("mobile cairo metric update failed", exc_info=True)
 
         return self.output_path
+
+    def _render_surface(self) -> cairo.ImageSurface:
+        if (
+            self._surface is None
+            or self._surface.get_width() != MOBILE_WIDTH
+            or self._surface.get_height() != MOBILE_HEIGHT
+        ):
+            self._surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, MOBILE_WIDTH, MOBILE_HEIGHT)
+        return self._surface
+
+    def _write_surface_atomic(self, surface: cairo.ImageSurface) -> None:
+        tmp = self.output_path.with_suffix(self.output_path.suffix + ".tmp")
+        data = memoryview(surface.get_data())
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            written_total = 0
+            while written_total < len(data):
+                written = os.write(fd, data[written_total:])
+                if written <= 0:
+                    raise OSError("short write while publishing mobile overlay")
+                written_total += written
+        finally:
+            os.close(fd)
+        tmp.rename(self.output_path)
 
     def _draw_hero_bounds(self, cr: cairo.Context) -> None:
         cr.save()

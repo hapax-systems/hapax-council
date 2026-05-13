@@ -158,6 +158,15 @@ class TestWriteFrame:
         assert p._write_frame(b"\x00" * 100)
         p._close_fd()
 
+    def test_write_accepts_memoryview_without_copy(self) -> None:
+        p = _make_pipeline()
+        p._fd = 999
+        payload = memoryview(bytearray(b"\x01" * 100))
+        with patch("os.write", return_value=100) as write:
+            assert p._write_frame(payload)
+        write.assert_called_once()
+        assert write.call_args.args[1] is payload
+
     def test_write_fails_without_fd(self) -> None:
         p = _make_pipeline()
         assert not p._write_frame(b"\x00" * 100)
@@ -243,7 +252,10 @@ class TestFinalEgressProofSnapshot:
         with patch.object(p, "_maybe_write_proof_snapshot") as proof:
             p._on_new_sample(mock_appsink)
 
-        proof.assert_called_once_with(b"\x00" * 100)
+        proof.assert_called_once()
+        proof_payload = proof.call_args.args[0]
+        assert isinstance(proof_payload, memoryview)
+        assert bytes(proof_payload) == b"\x00" * 100
         p._close_fd()
 
     def test_failed_v4l2_write_does_not_publish_proof_snapshot(self) -> None:
