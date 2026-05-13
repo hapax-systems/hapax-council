@@ -29,6 +29,7 @@ PATH-prepended fakes so the tests don't require systemd or network.
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import subprocess
@@ -116,7 +117,28 @@ def harness(tmp_path: Path) -> dict[str, Path]:
     # ------------------------------------------------------------------
     # Shims: systemctl, curl, logger
     # ------------------------------------------------------------------
-    for name in ("systemctl", "curl", "logger"):
+    systemctl_shim = shimbin / "systemctl"
+    systemctl_shim.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s' "systemctl" >> {log_file}
+for a in "$@"; do printf ' %s' "$a" >> {log_file}; done
+printf '\\n' >> {log_file}
+if [ "${{1:-}}" = "--user" ] && [ "${{2:-}}" = "show" ]; then
+  printf 'LoadState=%s\\n' "${{HAPAX_TEST_LOAD_STATE:-loaded}}"
+  printf 'UnitFileState=%s\\n' "${{HAPAX_TEST_UNIT_FILE_STATE:-enabled}}"
+  printf 'ActiveState=%s\\n' "${{HAPAX_TEST_ACTIVE_STATE:-active}}"
+  printf 'SubState=%s\\n' "${{HAPAX_TEST_SUB_STATE:-running}}"
+  printf 'Result=%s\\n' "${{HAPAX_TEST_RESULT:-success}}"
+  printf 'ExecMainStatus=%s\\n' "${{HAPAX_TEST_EXEC_MAIN_STATUS:-0}}"
+  printf 'ActiveEnterTimestampMonotonic=%s\\n' "${{HAPAX_TEST_ACTIVE_ENTER_MONO:-999999999999999999}}"
+  exit 0
+fi
+exit 0
+"""
+    )
+    systemctl_shim.chmod(systemctl_shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    for name in ("curl", "logger"):
         shim = shimbin / name
         # Quote literally — log to the file, succeed cleanly. Use printf to
         # keep argv reproducible across shells.
@@ -249,6 +271,7 @@ def _run(
             "HAPAX_REBUILD_WORKTREE": str(harness["rebuild_worktree"]),
             # Defang the pressure guard — load can spike on CI.
             "HAPAX_REBUILD_SKIP_GUARD": "1",
+            "HAPAX_REBUILD_RESTART_OBSERVATION_SEC": "0",
             # Don't actually try to hit ntfy.
             "NTFY_BASE_URL": "http://127.0.0.1:0",
         }
@@ -256,6 +279,10 @@ def _run(
     if extra_env:
         env.update(extra_env)
     return subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
+
+
+def _last_outcome(harness: dict[str, Path], sha_key: str = "voice") -> dict:
+    return json.loads((harness["state_dir"] / f"last-{sha_key}-outcome.json").read_text())
 
 
 # ----------------------------------------------------------------------
@@ -387,7 +414,9 @@ def test_canonical_on_feature_branch_does_not_block_deploy(
 
 def test_service_restart_is_wrapped_with_timeout(harness: dict[str, Path]) -> None:
     """A single service restart must not be able to hang the whole chain."""
-    _add_remote_commit(harness, "agents/voice/voice.py", "# restart-timeout\n", "restart timeout")
+    new_sha = _add_remote_commit(
+        harness, "agents/voice/voice.py", "# restart-timeout\n", "restart timeout"
+    )
 
     result = _run(harness, service="hapax-daimonion.service")
     assert result.returncode == 0, result.stdout + result.stderr
@@ -396,10 +425,16 @@ def test_service_restart_is_wrapped_with_timeout(harness: dict[str, Path]) -> No
     assert "timeout --kill-after=10s 60s systemctl --user restart hapax-daimonion.service" in log, (
         f"restart must be wrapped by the timeout guard; log:\n{log}"
     )
+    outcome = _last_outcome(harness)
+    assert outcome["outcome"] == "restart_success"
+    assert outcome["current_sha"] == new_sha
+    assert outcome["sha_file_written"] is True
 
 
-def test_timed_out_restart_writes_sha_and_exits_nonzero(harness: dict[str, Path]) -> None:
-    """Timeout failures preserve failed-restart behavior and advance SHA state."""
+def test_timed_out_restart_unknown_writes_sha_and_exits_nonzero(
+    harness: dict[str, Path],
+) -> None:
+    """Unknown timeout failures preserve failed-restart behavior and advance SHA state."""
     new_sha = _add_remote_commit(
         harness,
         "agents/voice/voice.py",
@@ -410,7 +445,7 @@ def test_timed_out_restart_writes_sha_and_exits_nonzero(harness: dict[str, Path]
     result = _run(
         harness,
         service="hapax-daimonion.service",
-        extra_env={"HAPAX_TEST_TIMEOUT_RC": "124"},
+        extra_env={"HAPAX_TEST_TIMEOUT_RC": "124", "HAPAX_TEST_ACTIVE_ENTER_MONO": "1"},
     )
     assert result.returncode == 1, result.stdout + result.stderr
 
@@ -423,6 +458,61 @@ def test_timed_out_restart_writes_sha_and_exits_nonzero(harness: dict[str, Path]
     sha_file = harness["state_dir"] / "last-voice-sha"
     assert sha_file.exists(), "failed restart path should still record the attempted SHA"
     assert sha_file.read_text().strip() == new_sha
+    outcome = _last_outcome(harness)
+    assert outcome["outcome"] == "restart_timeout_unknown"
+    assert outcome["exit_code"] == 1
+    assert outcome["sha_file_written"] is True
+
+
+def test_timed_out_restart_late_active_is_not_false_red(harness: dict[str, Path]) -> None:
+    """A timed-out restart can clear only with fresh active evidence."""
+    new_sha = _add_remote_commit(
+        harness,
+        "agents/voice/voice.py",
+        "# restart-timeout-late-active\n",
+        "restart timeout late active",
+    )
+
+    result = _run(
+        harness,
+        service="hapax-daimonion.service",
+        extra_env={
+            "HAPAX_TEST_TIMEOUT_RC": "124",
+            "HAPAX_TEST_ACTIVE_ENTER_MONO": "999999999999999999",
+        },
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    sha_file = harness["state_dir"] / "last-voice-sha"
+    assert sha_file.read_text().strip() == new_sha
+    outcome = _last_outcome(harness)
+    assert outcome["outcome"] == "restart_timeout_late_active"
+    assert outcome["exit_code"] == 0
+    assert outcome["sha_file_written"] is True
+
+
+def test_missing_unit_is_fail_closed_and_does_not_write_sha(harness: dict[str, Path]) -> None:
+    """A not-found target unit must not be treated as a successful activation."""
+    _add_remote_commit(
+        harness,
+        "agents/voice/voice.py",
+        "# restart-missing-unit\n",
+        "restart missing unit",
+    )
+
+    result = _run(
+        harness,
+        service="hapax-daimonion.service",
+        extra_env={"HAPAX_TEST_LOAD_STATE": "not-found"},
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+
+    log = harness["log_file"].read_text() if harness["log_file"].exists() else ""
+    assert "systemctl --user restart hapax-daimonion.service" not in log
+    assert not (harness["state_dir"] / "last-voice-sha").exists()
+    outcome = _last_outcome(harness)
+    assert outcome["outcome"] == "missing_unit"
+    assert outcome["sha_file_written"] is False
 
 
 def test_restart_timeout_accepts_coreutils_duration_override(harness: dict[str, Path]) -> None:
