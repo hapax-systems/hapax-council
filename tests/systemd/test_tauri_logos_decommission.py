@@ -65,6 +65,16 @@ def test_rebuild_and_reload_scripts_do_not_build_or_restart_tauri() -> None:
     assert "for svc in hapax-imagination hapax-logos" not in freshness
 
 
+def test_rebuild_logos_quarantines_corrupted_scratch_worktree() -> None:
+    rebuild = _read("scripts/rebuild-logos.sh")
+    assert "quarantine_build_worktree()" in rebuild
+    assert 'mv "$BUILD_WORKTREE" "$tombstone"' in rebuild
+    assert 'rm -rf "$BUILD_WORKTREE" 2>/dev/null' in rebuild
+    assert "could not clear build worktree" in rebuild
+    assert 'quarantine_build_worktree "initial create" || exit 0' in rebuild
+    assert 'quarantine_build_worktree "reset failure" || exit 0' in rebuild
+
+
 def test_hapax_logos_justfile_installs_imagination_only_by_default() -> None:
     body = _read("hapax-logos/justfile")
     assert "build: imagination" in body
