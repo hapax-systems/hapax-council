@@ -19,6 +19,7 @@ def enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(_wsm.ENABLE_ENV, "1")
     monkeypatch.setenv(_wsm.VISUAL_PUMPING_ENV, "1")
     monkeypatch.delenv(_wsm.ALPHA_MODULATION_ENV, raising=False)
+    monkeypatch.delenv(_wsm.DEPTH_OPACITY_MODULATION_ENV, raising=False)
     monkeypatch.delenv(_wsm.MAX_ALPHA_STEP_ENV, raising=False)
     monkeypatch.delenv(_wsm.MAX_Z_INDEX_STEP_ENV, raising=False)
     monkeypatch.delenv(_wsm.DEPTH_CONTRAST_ENV, raising=False)
@@ -263,11 +264,32 @@ def test_default_z_index_step_recovers_spatial_variance_without_alpha_flash(
     assert pytest.approx(0.4) == _wsm.MAX_Z_INDEX_STEP
 
 
-def test_no_pumping_freezes_alpha_but_keeps_z_index_motion(
+def test_no_pumping_freezes_alpha_and_depth_but_still_ticks(
     enabled: None, current_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No-pumping mode restores the modulator without opacity/luma pulsing."""
     monkeypatch.setenv(_wsm.VISUAL_PUMPING_ENV, "0")
+    _write_current(current_path, {"depth": 1.0, "coherence": 1.0})
+    mod = WardStimmungModulator(current_path=current_path, tick_every_n=1)
+    base = WardProperties(z_plane="beyond-scrim", alpha=0.82, z_index_float=0.8)
+
+    with (
+        patch.object(_wsm, "get_specific_ward_properties", return_value=base),
+        patch.object(_wsm, "set_ward_properties") as setter,
+        patch.object(_wsm, "_emit_modulator_tick") as tick_emit,
+    ):
+        mod.maybe_tick()
+
+    setter.assert_not_called()
+    tick_emit.assert_called_once_with()
+
+
+def test_depth_opacity_gate_can_be_explicitly_enabled_without_alpha(
+    enabled: None, current_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The depth gate is separate so a future canary can restore z without alpha."""
+    monkeypatch.setenv(_wsm.VISUAL_PUMPING_ENV, "0")
+    monkeypatch.setenv(_wsm.DEPTH_OPACITY_MODULATION_ENV, "1")
     _write_current(current_path, {"depth": 1.0, "coherence": 1.0})
     mod = WardStimmungModulator(current_path=current_path, tick_every_n=1)
     base = WardProperties(z_plane="beyond-scrim", alpha=0.82, z_index_float=0.8)
@@ -281,6 +303,7 @@ def test_no_pumping_freezes_alpha_but_keeps_z_index_motion(
         patch.object(_wsm, "set_ward_properties", side_effect=_capture),
     ):
         mod.maybe_tick()
+
     sample = next(iter(captured.values()))
     assert sample.alpha == pytest.approx(base.alpha)
     assert sample.z_index_float < base.z_index_float

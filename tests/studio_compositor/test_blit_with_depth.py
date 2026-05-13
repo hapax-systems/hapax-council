@@ -83,6 +83,26 @@ def test_z_index_float_modulates_within_plane() -> None:
     assert near > far
 
 
+def test_no_pumping_disables_depth_opacity(monkeypatch) -> None:
+    """No-pumping mode makes stale z-plane fields visually inert."""
+    monkeypatch.setenv("HAPAX_VISUAL_PUMPING_ENABLED", "0")
+    monkeypatch.delenv("HAPAX_WARD_MODULATOR_DEPTH_OPACITY_ENABLED", raising=False)
+
+    opacity = _capture_blit_opacity("beyond-scrim", 0.0)
+
+    assert opacity == 1.0
+
+
+def test_depth_opacity_can_be_explicitly_restored(monkeypatch) -> None:
+    """Depth opacity stays available for a later dedicated restoration canary."""
+    monkeypatch.setenv("HAPAX_VISUAL_PUMPING_ENABLED", "0")
+    monkeypatch.setenv("HAPAX_WARD_MODULATOR_DEPTH_OPACITY_ENABLED", "1")
+
+    opacity = _capture_blit_opacity("beyond-scrim", 0.0)
+
+    assert opacity < 1.0
+
+
 def test_ward_properties_defaults_match_constants() -> None:
     """Schema additions match the constant defaults so no other code path desyncs."""
     props = WardProperties()
