@@ -105,7 +105,7 @@ def test_hero_small_stage_can_move_to_pre_fx(monkeypatch) -> None:
     assert fx_chain._hero_small_overlay_stage() == "pre_fx"
 
 
-def test_ensure_base_cairo_sources_can_disable_sierpinski_stack(monkeypatch) -> None:
+def test_ensure_base_cairo_sources_can_disable_sierpinski_renderers(monkeypatch) -> None:
     monkeypatch.setenv("HAPAX_SIERPINSKI_BASE_OVERLAY_ENABLED", "0")
     features: list[tuple[str, bool]] = []
     monkeypatch.setattr(
@@ -123,12 +123,41 @@ def test_ensure_base_cairo_sources_can_disable_sierpinski_stack(monkeypatch) -> 
 
     fx_chain._ensure_base_cairo_sources(compositor)
 
-    loader.stop.assert_called_once_with()
+    loader.stop.assert_not_called()
     renderer.stop.assert_called_once_with()
-    assert compositor._sierpinski_loader is None
+    assert compositor._sierpinski_loader is loader
     assert compositor._sierpinski_renderer is None
     assert compositor._geal_source is None
     assert features == [("sierpinski_base_overlay", False)]
+
+
+def test_ensure_base_cairo_sources_starts_loader_when_base_overlay_disabled(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("HAPAX_SIERPINSKI_BASE_OVERLAY_ENABLED", "0")
+    monkeypatch.setattr(fx_chain, "_publish_fx_runtime_feature", lambda *_: None)
+    started: list[bool] = []
+
+    class FakeLoader:
+        def start(self) -> None:
+            started.append(True)
+
+    monkeypatch.setattr(
+        "agents.studio_compositor.sierpinski_loader.SierpinskiLoader",
+        FakeLoader,
+    )
+    compositor = SimpleNamespace(
+        _sierpinski_loader=None,
+        _sierpinski_renderer=None,
+        _geal_source=object(),
+    )
+
+    fx_chain._ensure_base_cairo_sources(compositor)
+
+    assert isinstance(compositor._sierpinski_loader, FakeLoader)
+    assert started == [True]
+    assert compositor._sierpinski_renderer is None
+    assert compositor._geal_source is None
 
 
 def test_post_fx_overlay_not_required_without_work_when_hero_small_is_pre_fx(monkeypatch) -> None:
