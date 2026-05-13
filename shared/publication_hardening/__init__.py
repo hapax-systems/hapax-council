@@ -14,10 +14,22 @@ from shared.publication_hardening.entity_checker import (
     check_attributions,
     load_registry,
 )
+from shared.publication_hardening.gate import (
+    PublicationGateChildResult,
+    PublicationGateContext,
+    PublicationGateDecision,
+    PublicationGateOverride,
+    PublicationGateResult,
+    PublicationHardeningGate,
+    publication_gate_fingerprint,
+)
 from shared.publication_hardening.lint import (
     LintFinding,
     check_heading_hierarchy,
+    check_heading_hierarchy_text,
+    check_public_claim_overreach_text,
     lint_file,
+    lint_text,
     run_vale,
 )
 from shared.publication_hardening.review import (
@@ -44,6 +56,12 @@ __all__ = [
     "EntityRegistry",
     "LintFinding",
     "NumericClaim",
+    "PublicationGateChildResult",
+    "PublicationGateContext",
+    "PublicationGateDecision",
+    "PublicationGateOverride",
+    "PublicationGateResult",
+    "PublicationHardeningGate",
     "ReviewClaim",
     "ReviewPass",
     "ReviewReport",
@@ -53,9 +71,13 @@ __all__ = [
     "build_review_messages",
     "check_attributions",
     "check_heading_hierarchy",
+    "check_heading_hierarchy_text",
+    "check_public_claim_overreach_text",
     "lint_file",
+    "lint_text",
     "load_registry",
     "parse_review_response",
+    "publication_gate_fingerprint",
     "run_vale",
     "verify_publication_codebase",
 ]

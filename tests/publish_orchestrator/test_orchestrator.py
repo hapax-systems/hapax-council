@@ -11,6 +11,11 @@ from prometheus_client import CollectorRegistry
 
 from agents.publish_orchestrator.orchestrator import Orchestrator
 from shared.preprint_artifact import PreprintArtifact
+from shared.publication_hardening.gate import (
+    PublicationGateChildResult,
+    PublicationGateDecision,
+    PublicationGateResult,
+)
 from shared.publication_hardening.review import ReviewReport
 
 
@@ -72,6 +77,38 @@ class _HoldingReviewPass:
             author_model=author_model,
             overall_confidence=0.2,
             flagged_issues=("tone too promotional",),
+        )
+
+
+class _StaticGate:
+    def __init__(self, decision: PublicationGateDecision) -> None:
+        self.decision = decision
+
+    def evaluate(self, _artifact: PreprintArtifact) -> PublicationGateResult:
+        return PublicationGateResult(
+            decision=self.decision,
+            generated_at="2026-05-13T00:00:00+00:00",
+            child_results=(
+                PublicationGateChildResult(
+                    name="codebase",
+                    decision=PublicationGateDecision.HOLD
+                    if self.decision == PublicationGateDecision.OPERATOR_OVERRIDDEN_HOLD
+                    else self.decision,
+                    findings=("static gate",),
+                ),
+            ),
+            flagged_issues=("static gate",)
+            if self.decision in {PublicationGateDecision.HOLD, PublicationGateDecision.REJECT}
+            else (),
+            override={"by_referent": "Oudepode", "reason": "test"}
+            if self.decision == PublicationGateDecision.OPERATOR_OVERRIDDEN_HOLD
+            else None,
+            review_report={
+                "schema_version": 1,
+                "reviewer_model": "test-reviewer",
+                "overall_confidence": 0.99,
+                "flagged_issues": [],
+            },
         )
 
 
@@ -182,16 +219,66 @@ class TestSingleSurface:
         assert draft["approval"] == "withheld"
         assert draft["publication_review"]["overall_confidence"] == 0.2
         assert draft["publication_review"]["author_model"] == "codex"
+        assert draft["publication_gate_result"]["decision"] == "hold"
 
         frontmatter = source.read_text(encoding="utf-8").split("---", 2)[1]
         assert "publication_review:" in frontmatter
+        assert "publication_gate_result:" in frontmatter
         assert "overall_confidence: 0.2" in frontmatter
 
         review_log = json.loads(
-            (tmp_path / "publish/log/held-for-review.cross-provider-review.json").read_text()
+            (tmp_path / "publish/log/held-for-review.publication-hardening-gate.json").read_text()
         )
         assert review_log["result"] == "operator_hold"
-        assert review_log["flagged_issues"] == ["tone too promotional"]
+        assert review_log["publication_gate_decision"] == "hold"
+        assert review_log["flagged_issues"] == ["review: tone too promotional"]
+
+    def test_publication_gate_reject_suppresses_surface_dispatch(self, tmp_path, monkeypatch):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        _drop_artifact(tmp_path, slug="rejected-by-gate", surfaces=["fake"])
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            hardening_gate=_StaticGate(PublicationGateDecision.REJECT),
+            registry=CollectorRegistry(),
+        )
+
+        assert orch.run_once() == 1
+        fake_module.publish_artifact.assert_not_called()
+
+        assert not (tmp_path / "publish/inbox/rejected-by-gate.json").exists()
+        assert (tmp_path / "publish/failed/rejected-by-gate.json").exists()
+        gate_log = json.loads(
+            (tmp_path / "publish/log/rejected-by-gate.publication-hardening-gate.json").read_text()
+        )
+        assert gate_log["result"] == "rejected"
+        assert gate_log["publication_gate_decision"] == "reject"
+
+    def test_publication_gate_override_dispatches_with_surface_receipt(self, tmp_path, monkeypatch):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        _drop_artifact(tmp_path, slug="override-by-gate", surfaces=["fake"])
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            hardening_gate=_StaticGate(PublicationGateDecision.OPERATOR_OVERRIDDEN_HOLD),
+            registry=CollectorRegistry(),
+        )
+
+        assert orch.run_once() == 1
+        fake_module.publish_artifact.assert_called_once()
+
+        surface_log = json.loads((tmp_path / "publish/log/override-by-gate.fake.json").read_text())
+        assert surface_log["result"] == "ok"
+        assert surface_log["publication_gate_decision"] == "operator_overridden_hold"
+        assert surface_log["publication_gate_fingerprint"]
 
     def test_publisher_raises_logs_error(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()

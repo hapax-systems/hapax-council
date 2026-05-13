@@ -190,6 +190,12 @@ def _build_artifact(
     author_model = _optional_string(
         _frontmatter_value(frontmatter, "author_model", "draft_author_model", "llm_model")
     )
+    publication_gate_context = _optional_mapping(
+        _frontmatter_value(frontmatter, "publication_gate_context")
+    )
+    publication_gate_override = _optional_mapping(
+        _frontmatter_value(frontmatter, "publication_gate_override")
+    )
 
     co_authors = _resolve_co_authors(frontmatter)
     kwargs: dict = {
@@ -207,6 +213,10 @@ def _build_artifact(
         kwargs["source_path"] = str(source_path)
     if author_model:
         kwargs["author_model"] = author_model
+    if publication_gate_context is not None:
+        kwargs["publication_gate_context"] = publication_gate_context
+    if publication_gate_override is not None:
+        kwargs["publication_gate_override"] = publication_gate_override
 
     artifact = PreprintArtifact(**kwargs)
     artifact.mark_approved(by_referent=approver)
@@ -267,6 +277,12 @@ def _optional_string(value: object) -> str | None:
     if isinstance(value, str):
         stripped = value.strip()
         return stripped or None
+    return None
+
+
+def _optional_mapping(value: object) -> dict[str, object] | None:
+    if isinstance(value, dict):
+        return {str(key): item for key, item in value.items()}
     return None
 
 
