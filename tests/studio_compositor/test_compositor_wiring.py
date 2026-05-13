@@ -155,6 +155,30 @@ class TestStartLayoutOnly:
                 except Exception:
                     pass
 
+    def test_start_layout_only_does_not_start_layout_sierpinski_when_base_gate_disabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        layout_file = tmp_path / "default.json"
+        layout_file.write_text(DEFAULT_JSON.read_text())
+        monkeypatch.setenv("HAPAX_SIERPINSKI_BASE_OVERLAY_ENABLED", "0")
+
+        compositor = _make_compositor(layout_path=layout_file)
+        with mock.patch(
+            "agents.studio_compositor.source_registry.SourceRegistry.start_all",
+            autospec=True,
+        ) as start_all:
+            try:
+                compositor.start_layout_only()
+
+                assert compositor.source_registry is not None
+                assert "sierpinski" in set(compositor.source_registry.ids())
+                assert "sierpinski" not in set(start_all.call_args.args[1])
+            finally:
+                try:
+                    compositor.stop()
+                except Exception:
+                    pass
+
     def test_start_layout_only_starts_no_layout_sources_when_both_stages_disabled(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

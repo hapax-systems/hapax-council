@@ -59,6 +59,8 @@ log = logging.getLogger(__name__)
 # truthy value. Defaults to ENABLED — feature-forward per operator
 # directive ``feedback_features_on_by_default``.
 ENV_DISABLE: str = "HAPAX_LAYOUT_TICK_DISABLED"
+SEGMENT_LAYOUT_TICK_DISABLE_ENV: str = "HAPAX_SEGMENT_LAYOUT_TICK_DISABLED"
+DIRECTOR_SEGMENT_RUNNER_DISABLE_ENV: str = "HAPAX_DIRECTOR_SEGMENT_RUNNER_DISABLED"
 
 # Tick cadence — 30s matches the LayoutSwitcher.DEFAULT_COOLDOWN_S so
 # we tick once per cooldown window. Faster ticks would just hit the
@@ -230,6 +232,19 @@ def _is_disabled() -> bool:
     return val in {"1", "true", "yes", "on", "enabled"}
 
 
+def _env_truthy(name: str) -> bool:
+    val = os.environ.get(name, "").strip().lower()
+    return val in {"1", "true", "yes", "on", "enabled"}
+
+
+def _segment_layout_pressure_enabled() -> bool:
+    """Return whether active-segment layout pressure may influence layout ticks."""
+
+    if _env_truthy(SEGMENT_LAYOUT_TICK_DISABLE_ENV):
+        return False
+    return not _env_truthy(DIRECTOR_SEGMENT_RUNNER_DISABLE_ENV)
+
+
 def _read_stream_mode() -> str | None:
     """Read the current stream mode as the string the switcher expects.
 
@@ -322,7 +337,15 @@ def build_state_provider() -> Any:
     """
 
     def _provider() -> dict[str, object]:
-        segment_pressure = _read_segment_layout_pressure()
+        segment_pressure = (
+            _read_segment_layout_pressure()
+            if _segment_layout_pressure_enabled()
+            else {
+                "segment_layout_intents": (),
+                "segment_layout_refusals": (),
+                "segment_layout_pressure_seen": False,
+            }
+        )
         return {
             "consent_safe_active": _read_consent_safe_active(),
             "vinyl_playing": _read_vinyl_playing(),
