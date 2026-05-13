@@ -23,6 +23,7 @@ from agents.studio_compositor.final_frame_classifier import (
     classify_final_frame,
     classify_final_frame_series,
 )
+from agents.studio_compositor.layout_safety import negative_space_contract_for_mode
 from shared.live_surface_truth import (
     LiveSurfaceState,
     assess_live_surface,
@@ -81,7 +82,9 @@ FULL_SURFACE_MAX_V4L2_FD_REOPEN_DELTA = 0
 FULL_SURFACE_MAX_GLFEEDBACK_RECOMPILE_DELTA = 8
 DEFAULT_FINAL_FRAME_IMAGE = Path("/dev/shm/hapax-compositor/fx-snapshot.jpg")
 DEFAULT_UPSTREAM_FRAME_IMAGE = Path("/dev/shm/hapax-compositor/snapshot.jpg")
+DEFAULT_LAYOUT_STATE_JSON = Path("/dev/shm/hapax-compositor/current-layout-state.json")
 FINAL_PIXEL_PROOF_MIN_FRAMES = 6
+DEFAULT_MAX_UNCLASSIFIED_BLACK_FRACTION = 0.08
 
 FULL_SURFACE_BLOCKING_ENV = (
     (
@@ -657,6 +660,28 @@ def _effect_surface_failures(path: Path) -> tuple[list[str], dict[str, object] |
     return [f"effect_surface:{reason}" for reason in reasons], payload
 
 
+def _layout_mode_from_state(path: Path) -> str | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    raw = payload.get("layout_mode")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
+def _final_frame_black_fraction_limit(layout_mode: str | None) -> float:
+    if not layout_mode:
+        return DEFAULT_MAX_UNCLASSIFIED_BLACK_FRACTION
+    contract = negative_space_contract_for_mode(layout_mode)
+    if contract is None:
+        return DEFAULT_MAX_UNCLASSIFIED_BLACK_FRACTION
+    return max(DEFAULT_MAX_UNCLASSIFIED_BLACK_FRACTION, contract.max_fraction)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--metrics-url", default="http://127.0.0.1:9482/metrics")
@@ -714,6 +739,14 @@ def main() -> int:
         "--require-final-pixel-proof",
         action="store_true",
         help="sample final/upstream snapshots and fail closed on final-pixel proof failures",
+    )
+    parser.add_argument(
+        "--layout-state-json",
+        default=str(DEFAULT_LAYOUT_STATE_JSON),
+        help=(
+            "current layout-state JSON used to apply the declared negative-space "
+            "contract to final-frame proof"
+        ),
     )
     parser.add_argument(
         "--final-frame-window-seconds",
@@ -861,6 +894,8 @@ def main() -> int:
             reasons,
             full_surface_failures,
         )
+    layout_mode_for_proof = _layout_mode_from_state(Path(args.layout_state_json))
+    max_final_black_fraction = _final_frame_black_fraction_limit(layout_mode_for_proof)
     final_frame_payload: dict[str, object] | None = None
     if args.final_frame_image:
         try:
@@ -872,6 +907,7 @@ def main() -> int:
             classification = classify_final_frame(
                 Path(args.final_frame_image),
                 upstream_path=upstream_frame_image if upstream_frame_image.exists() else None,
+                max_unclassified_black_fraction=max_final_black_fraction,
             )
         except OSError as exc:
             state, reasons = _with_extra_degraded_reasons(
@@ -881,6 +917,11 @@ def main() -> int:
             )
         else:
             final_frame_payload = classification.as_dict()
+            final_frame_payload["layout_mode"] = layout_mode_for_proof
+            final_frame_payload["max_unclassified_black_fraction"] = round(
+                max_final_black_fraction,
+                6,
+            )
             state, reasons = _with_extra_degraded_reasons(
                 state,
                 reasons,
@@ -904,6 +945,7 @@ def main() -> int:
                     final_paths,
                     upstream_paths=upstream_paths,
                     require_upstream=True,
+                    max_unclassified_black_fraction=max_final_black_fraction,
                 )
             except OSError as exc:
                 proof_collection_reasons.append(
