@@ -44,6 +44,8 @@ DEFAULT_U4_TICK_S: float = 15.0
 # u5 cadence — 30s; the director itself ticks at 70-110s so 30s catches
 # every fresh intent without re-firing on stale tails.
 DEFAULT_U5_TICK_S: float = 30.0
+DEFAULT_U5_INITIAL_DELAY_S: float = DEFAULT_U4_TICK_S * 1.5
+"""Phase U5 between U4 ticks when both drivers are live in one process."""
 
 # Env-flag gates for reversibility.
 ENV_DISABLE_U4 = "HAPAX_U4_MICROMOVE_DISABLED"
@@ -185,6 +187,82 @@ def _u5_tick_loop(
     return iter_count
 
 
+def _advance_deadline(previous: float, interval_s: float, now: float) -> float:
+    if interval_s <= 0:
+        return now
+    next_deadline = previous + interval_s
+    while next_deadline <= now:
+        next_deadline += interval_s
+    return next_deadline
+
+
+def _u_series_tick_loop(
+    u4_consumer: Any | None,
+    u5_consumer: Any | None,
+    *,
+    u4_enabled: bool,
+    u5_enabled: bool,
+    u4_interval_s: float = DEFAULT_U4_TICK_S,
+    u5_interval_s: float = DEFAULT_U5_TICK_S,
+    u5_initial_delay_s: float = DEFAULT_U5_INITIAL_DELAY_S,
+    activity_provider: Any = None,
+    stop_event: threading.Event | None = None,
+    iterations: int | None = None,
+    sleep_fn: Any = time.sleep,
+    clock: Any = time.monotonic,
+) -> int:
+    """Run U4 and U5 from one phased scheduler thread.
+
+    The first U4/U5 emissions are delayed and staggered. The previous
+    production wiring started two independent daemon loops that both fired
+    immediately at compositor startup; live canaries showed the combined
+    state alone could pull v4l2 egress below the frame floor even though
+    each driver was fine in isolation. One scheduler thread keeps the
+    substrates active without adding simultaneous GIL wakeups on the
+    compositor process.
+    """
+    if activity_provider is None:
+        activity_provider = _read_last_director_activity
+    now = float(clock())
+    next_u4 = now + max(u4_interval_s, 0.0)
+    next_u5 = now + max(u5_initial_delay_s, 0.0)
+    last_consumed_activity: str | None = None
+    iter_count = 0
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            break
+        if iterations is not None and iter_count >= iterations:
+            break
+        now = float(clock())
+        if u4_enabled and u4_consumer is not None and now >= next_u4:
+            try:
+                u4_consumer.advance()
+            except Exception:
+                log.warning("u4 advance() raised; loop continues", exc_info=True)
+            next_u4 = _advance_deadline(next_u4, u4_interval_s, now)
+        if u5_enabled and u5_consumer is not None and now >= next_u5:
+            try:
+                activity = activity_provider()
+                if activity is not None and activity != last_consumed_activity:
+                    verb = ACTIVITY_TO_VERB.get(activity)
+                    if verb is not None:
+                        u5_consumer.consume(verb)
+                        last_consumed_activity = activity
+            except Exception:
+                log.warning("u5 verb consume tick raised; loop continues", exc_info=True)
+            next_u5 = _advance_deadline(next_u5, u5_interval_s, now)
+        iter_count += 1
+        if iterations is not None and iter_count >= iterations:
+            continue
+        next_due = min(
+            next_u4 if u4_enabled else float("inf"),
+            next_u5 if u5_enabled else float("inf"),
+        )
+        delay_s = max(0.0, min(1.0, next_due - float(clock())))
+        sleep_fn(delay_s)
+    return iter_count
+
+
 def start_u4_driver(compositor: Any) -> threading.Thread | None:
     """Start the U4 micromove-advance daemon thread."""
     if _is_u4_disabled():
@@ -230,24 +308,63 @@ def start_u5_driver(compositor: Any) -> threading.Thread | None:
 
 
 def start_u_series_drivers(compositor: Any) -> None:
-    """Start both U4 + U5 daemon drivers; non-fatal on each failure."""
-    try:
-        start_u4_driver(compositor)
-    except Exception:
-        log.exception("u4 driver startup failed (non-fatal)")
-    try:
-        start_u5_driver(compositor)
-    except Exception:
-        log.exception("u5 driver startup failed (non-fatal)")
+    """Start U4 + U5 from one phased daemon driver; non-fatal on failure."""
+    u4_enabled = not _is_u4_disabled()
+    u5_enabled = not _is_u5_disabled()
+    if not u4_enabled and not u5_enabled:
+        log.info("u4/u5 drivers disabled via env")
+        return
+
+    u4_consumer = None
+    u5_consumer = None
+    if u4_enabled:
+        from agents.studio_compositor.micromove_consumer import (
+            MicromoveAdvanceConsumer,
+        )
+
+        u4_consumer = MicromoveAdvanceConsumer()
+        compositor._u4_micromove_consumer = u4_consumer  # type: ignore[attr-defined]
+    if u5_enabled:
+        from agents.studio_compositor.semantic_verb_consumer import (
+            SemanticVerbConsumer,
+        )
+
+        u5_consumer = SemanticVerbConsumer()
+        compositor._u5_verb_consumer = u5_consumer  # type: ignore[attr-defined]
+
+    def _target() -> None:
+        log.info(
+            "u-series driver started (u4=%s interval=%.1fs; u5=%s interval=%.1fs phase=%.1fs)",
+            u4_enabled,
+            DEFAULT_U4_TICK_S,
+            u5_enabled,
+            DEFAULT_U5_TICK_S,
+            DEFAULT_U5_INITIAL_DELAY_S,
+        )
+        _u_series_tick_loop(
+            u4_consumer,
+            u5_consumer,
+            u4_enabled=u4_enabled,
+            u5_enabled=u5_enabled,
+            u4_interval_s=DEFAULT_U4_TICK_S,
+            u5_interval_s=DEFAULT_U5_TICK_S,
+            u5_initial_delay_s=DEFAULT_U5_INITIAL_DELAY_S,
+        )
+
+    thread = threading.Thread(target=_target, daemon=True, name="u-series-driver")
+    thread.start()
+    compositor._u_series_thread = thread  # type: ignore[attr-defined]
 
 
 __all__ = [
     "ACTIVITY_TO_VERB",
     "DEFAULT_U4_TICK_S",
+    "DEFAULT_U5_INITIAL_DELAY_S",
     "DEFAULT_U5_TICK_S",
     "DIRECTOR_INTENT_JSONL",
     "ENV_DISABLE_U4",
     "ENV_DISABLE_U5",
+    "_u_series_tick_loop",
     "_u4_tick_loop",
     "_u5_tick_loop",
     "start_u4_driver",
