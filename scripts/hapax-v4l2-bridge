@@ -145,9 +145,14 @@ else
     exit 1
 fi
 
-# GStreamer pipeline: shmsrc → queue → videoconvert → capsfilter → v4l2sink
+# GStreamer pipeline: shmsrc → source caps → queue → videoconvert → output caps → v4l2sink.
+#
+# shmsrc does not reliably recover caps from the socket strongly enough for
+# downstream negotiation. Put the expected raw-video caps immediately after
+# shmsrc, then reassert them after videoconvert before v4l2sink.
 exec gst-launch-1.0 -e \
     shmsrc socket-path="$SOCKET" do-timestamp=true is-live=true \
+    ! "video/x-raw,format=NV12,width=${WIDTH},height=${HEIGHT},framerate=${FPS}/1" \
     ! queue leaky=downstream max-size-buffers=5 max-size-bytes=0 max-size-time=0 \
     ! videoconvert dither=0 \
     ! "video/x-raw,format=NV12,width=${WIDTH},height=${HEIGHT},framerate=${FPS}/1" \

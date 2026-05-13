@@ -130,3 +130,62 @@ def test_check_rejects_stale_socket_file_that_is_not_listening(tmp_path: Path) -
 
     assert result.returncode == 1
     assert "not listening" in result.stdout
+
+
+def test_bridge_declares_shmsrc_caps_before_queue(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    args_file = tmp_path / "gst-args.txt"
+    systemctl = bin_dir / "systemctl"
+    systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$2" = "show" ] && [ "$3" = "studio-compositor.service" ]; then\n'
+        "  echo 'HAPAX_V4L2_BRIDGE_ENABLED=1 HAPAX_COMPOSITOR_DISABLE_V4L2_OUTPUT=0'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 1\n"
+    )
+    systemctl.chmod(0o755)
+    gst_launch = bin_dir / "gst-launch-1.0"
+    gst_launch.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {args_file}\nexit 0\n")
+    gst_launch.chmod(0o755)
+    guard = bin_dir / "format-guard"
+    guard.write_text("#!/usr/bin/env bash\nexit 0\n")
+    guard.chmod(0o755)
+
+    socket_path = tmp_path / "bridge.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(socket_path))
+    listener.listen(1)
+    try:
+        env = os.environ.copy()
+        env.update(
+            {
+                "HAPAX_V4L2_BRIDGE_ENABLED": "1",
+                "HAPAX_V4L2_FORMAT_GUARD_SCRIPT": str(guard),
+                "PATH": f"{bin_dir}:{env['PATH']}",
+            }
+        )
+        result = subprocess.run(
+            [
+                str(SCRIPT),
+                "--device",
+                str(tmp_path / "video42"),
+                "--socket",
+                str(socket_path),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+        )
+    finally:
+        listener.close()
+
+    assert result.returncode == 0
+    args = args_file.read_text(encoding="utf-8").splitlines()
+    caps = "video/x-raw,format=NV12,width=1280,height=720,framerate=30/1"
+    shmsrc_index = args.index(f"socket-path={socket_path}") - 1
+    queue_index = args.index("queue")
+    assert args[shmsrc_index] == "shmsrc"
+    assert caps in args[shmsrc_index + 1 : queue_index]
