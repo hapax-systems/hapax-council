@@ -173,8 +173,38 @@ def test_compositor_visual_surface_ignores_consumed_layout_mode_mailbox(tmp_path
     checks = {check.id: check for check in report.checks}
     compositor = checks["compositor_visual_surface"]
     assert compositor.status.value == "fail"
-    assert "layout mode is not sierpinski" in compositor.summary
+    assert "layout mode is not sierpinski" not in compositor.summary
     assert "current_layout_state" in compositor.evidence["files"]
+
+
+def test_compositor_visual_surface_accepts_forcefield_when_sierpinski_ward_active(
+    tmp_path: Path,
+) -> None:
+    config = _ready_fixture(tmp_path)
+    _write_json(
+        config.compositor_root / "current-layout-state.json",
+        {
+            "layout_name": "default",
+            "layout_mode": "forcefield",
+            "active_ward_ids": ["programme_banner", "reverie", "sierpinski"],
+            "published_t": NOW,
+        },
+        NOW,
+    )
+
+    report = collect_hn_launch_readiness(
+        config,
+        runner=FakeRunner(active_units=_all_active_units()),
+        json_getter=_json_getter_ready,
+        text_getter=_text_getter_ready,
+        now_epoch=NOW,
+    )
+
+    checks = {check.id: check for check in report.checks}
+    compositor = checks["compositor_visual_surface"]
+    assert compositor.status.value == "pass"
+    assert compositor.evidence["layout_mode"] == "forcefield"
+    assert compositor.evidence["sierpinski_ward_active"] is True
 
 
 def test_hn_launch_soak_fails_if_any_sample_fails(tmp_path: Path) -> None:
@@ -230,7 +260,7 @@ def _ready_fixture(tmp_path: Path) -> ReadinessConfig:
     _write_bytes(config.compositor_root / "fx-snapshot.jpg", b"jpg", NOW)
     _write_json(
         config.compositor_root / "active_wards.json",
-        {"ward_ids": ["programme_banner", "reverie"], "published_t": NOW},
+        {"ward_ids": ["programme_banner", "reverie", "sierpinski"], "published_t": NOW},
         NOW,
     )
     _write_json(config.compositor_root / "ward-properties.json", {"wards": {}}, NOW)
@@ -239,7 +269,7 @@ def _ready_fixture(tmp_path: Path) -> ReadinessConfig:
         {
             "layout_name": "default",
             "layout_mode": "sierpinski",
-            "active_ward_ids": ["programme_banner", "reverie"],
+            "active_ward_ids": ["programme_banner", "reverie", "sierpinski"],
             "published_t": NOW,
         },
         NOW,
