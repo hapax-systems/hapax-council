@@ -490,6 +490,8 @@ def test_trails():
 def test_clean():
     g = EffectGraph(**json.loads((PRESETS_DIR / "clean.json").read_text()))
     assert g.name == "Clean" and g.transition_ms == 300
+    assert "posterize" in {node.type for node in g.nodes.values()}
+    assert g.modulations == []
 
 
 # --- Integration ---

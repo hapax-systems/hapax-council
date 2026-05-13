@@ -1,34 +1,14 @@
 {
   "name": "Clean",
-  "description": "Minimal geometry-preserving processing with subtle color and posterization.",
+  "description": "Camera-legible static baseline with policy-visible obscuring nodes.",
   "transition_ms": 300,
   "nodes": {
     "color": {
       "type": "colorgrade",
       "params": {
-        "saturation": 1.05,
-        "brightness": 1.02,
-        "contrast": 1.05
-      }
-    },
-    "vig": {
-      "type": "vignette",
-      "params": {
-        "strength": 0.15,
-        "radius": 0.8,
-        "softness": 0.3
-      }
-    },
-    "out": {
-      "type": "output",
-      "params": {}
-    },
-    "postprocess": {
-      "type": "postprocess",
-      "params": {
-        "vignette_strength": 0.0,
-        "sediment_strength": 0.0,
-        "anonymize": 0.0
+        "saturation": 1.02,
+        "brightness": 1.0,
+        "contrast": 1.02
       }
     },
     "posterize": {
@@ -36,6 +16,10 @@
       "params": {
         "levels": 12
       }
+    },
+    "out": {
+      "type": "output",
+      "params": {}
     }
   },
   "edges": [
@@ -45,48 +29,12 @@
     ],
     [
       "color",
-      "vig"
-    ],
-    [
-      "vig",
       "posterize"
     ],
     [
       "posterize",
-      "postprocess"
-    ],
-    [
-      "postprocess",
       "out"
     ]
   ],
-  "modulations": [
-    {
-      "source": "audio_rms",
-      "param": "slice_amplitude",
-      "scale": 0.4,
-      "offset": 0.0,
-      "attack": 0.08,
-      "decay": 0.65,
-      "node": "color"
-    },
-    {
-      "source": "audio_energy",
-      "param": "displacement",
-      "scale": 0.35,
-      "offset": 0.0,
-      "attack": 0.1,
-      "decay": 0.7,
-      "node": "color"
-    },
-    {
-      "source": "audio_energy",
-      "param": "saturation",
-      "scale": 0.4,
-      "offset": 0.0,
-      "attack": 0.08,
-      "decay": 0.75,
-      "node": "color"
-    }
-  ]
+  "modulations": []
 }
