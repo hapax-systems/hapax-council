@@ -16,7 +16,7 @@ Hapax is a single-operator autonomous system: 200+ total agents, including 180+ 
 
 This is not a framework. This is not a demo. This is the production system one neurodivergent operator uses to externalize executive function, and the research artifact that proves what happens when you take agent governance seriously.
 
-> [hapax.omg.lol](https://hapax.omg.lol) &#183; [YouTube @LegomenaLive](https://youtube.com/@LegomenaLive) &#183; [START_HERE.md](START_HERE.md) &#183; [Manifesto](https://hapax.weblog.lol/hapax-manifesto-v0) &#183; [Refusal Brief](https://hapax.weblog.lol/refusal-brief)
+> <a rel="me" href="https://hapax.omg.lol">hapax.omg.lol</a> &#183; [YouTube @LegomenaLive](https://youtube.com/@LegomenaLive) &#183; [START_HERE.md](START_HERE.md) &#183; [Manifesto](https://hapax.weblog.lol/hapax-manifesto-v0) &#183; [Refusal Brief](https://hapax.weblog.lol/refusal-brief)
 
 ---
 

@@ -390,6 +390,25 @@ def _compose_artifact_content(artifact) -> str:  # type: ignore[no-untyped-def]
             leading_title = h1_marker
 
     parts: list[str] = []
+
+    # Inject Open Graph Metadata
+    og_tags = [
+        '<meta property="og:type" content="article" />',
+    ]
+    if title:
+        # Simple escape for quotes in meta content
+        escaped_title = title.replace('"', "&quot;")
+        og_tags.append(f'<meta property="og:title" content="{escaped_title}" />')
+    if abstract:
+        escaped_abstract = abstract.replace('"', "&quot;")
+        og_tags.append(f'<meta property="og:description" content="{escaped_abstract}" />')
+    if getattr(artifact, "slug", ""):
+        og_tags.append(
+            f'<meta property="og:url" content="https://hapax.weblog.lol/{artifact.slug}" />'
+        )
+
+    parts.append("\n".join(og_tags))
+
     if leading_title:
         parts.append(leading_title)
 
