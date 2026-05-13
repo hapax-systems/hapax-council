@@ -305,6 +305,66 @@ class TestIntegrationHelper:
         assert tuple(out[310, 215]) == (200, 200, 200)
         assert "brio-operator" in foi.get_live_bboxes()
 
+    def test_person_fallback_merges_with_partial_face_detection(self, tmp_path, monkeypatch):
+        """A small SCRFD hit must not suppress the broader anti-parasocial mask."""
+
+        def factory(_role: str) -> FaceBboxSource:
+            return _StubSource(responses=[[BBox(170, 40, 210, 85)]])
+
+        person_path = tmp_path / "person-detection.json"
+        class_path = tmp_path / "camera-classifications.json"
+        person_path.write_text(
+            json.dumps(
+                {
+                    "timestamp": time.time(),
+                    "cameras": {
+                        "brio-operator": {
+                            "person_count": 1,
+                            "boxes": [
+                                {
+                                    "x1": 52,
+                                    "y1": 2,
+                                    "x2": 374,
+                                    "y2": 356,
+                                    "confidence": 0.904,
+                                }
+                            ],
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        class_path.write_text(
+            json.dumps(
+                {
+                    "brio-operator": {
+                        "semantic_role": "operator-face",
+                        "subject_ontology": ["person"],
+                        "operator_visible": True,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(foi, "PERSON_DETECTION_FILE", person_path)
+        monkeypatch.setattr(foi, "CAMERA_CLASSIFICATIONS_FILE", class_path)
+
+        frame = np.full((360, 640, 3), 200, dtype=np.uint8)
+        out = obscure_frame_for_camera(
+            frame,
+            camera_role="brio-operator",
+            env={"HAPAX_FACE_OBSCURE_ACTIVE": "1"},
+            source_factory=factory,
+        )
+
+        assert out is not frame
+        # This sample is outside the tiny SCRFD bbox but inside the person
+        # fallback head region; it would leak if fallback did not merge.
+        assert tuple(out[130, 95]) != (200, 200, 200)
+        # Lower body/posture remains available for actionability.
+        assert tuple(out[330, 215]) == (200, 200, 200)
+
     def test_person_fallback_ignores_stale_detection(self, tmp_path, monkeypatch):
         def factory(_role: str) -> FaceBboxSource:
             return _StubSource(responses=[[]])

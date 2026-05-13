@@ -77,8 +77,11 @@ log = logging.getLogger(__name__)
 _PIPELINES: dict[str, CadencedBboxPipeline] = {}
 _PIPELINES_LOCK = threading.Lock()
 
-# Single shared obscurer — it's stateless and its config is constant.
-_OBSCURER = FaceObscurer()
+# Single shared obscurer — it's stateless and its config is constant. The
+# capture integration is intentionally stricter than the core default: live
+# anti-parasocial egress needs head/face slack for large camera tiles without
+# turning into full-body anonymization.
+_OBSCURER = FaceObscurer(margin=0.35, block_size=24)
 
 # Live bbox cache for the cairooverlay face-obscure painting path.
 # Normalized to [0,1] so consumers only need tile dimensions to transform.
@@ -168,12 +171,13 @@ def _person_box_to_anti_parasocial_bbox(
     if w <= 1.0 or h <= 1.0:
         return None
 
-    # Anti-parasocial fallback: mask likely head/face, not the whole body.
-    # This preserves actionability and posture while breaking at-a-glance ID.
-    fx1 = x1 + (0.18 * w)
-    fx2 = x2 - (0.18 * w)
+    # Anti-parasocial fallback: mask likely head/face and a little neck/upper
+    # chest, not the whole body. This preserves actionability and posture while
+    # breaking at-a-glance ID on large live tiles.
+    fx1 = x1 + (0.10 * w)
+    fx2 = x2 - (0.10 * w)
     fy1 = y1
-    fy2 = y1 + (0.36 * h)
+    fy2 = y1 + (0.44 * h)
     return BBox(
         x1=max(0.0, min(float(frame_w), fx1)),
         y1=max(0.0, min(float(frame_h), fy1)),
@@ -312,8 +316,12 @@ def obscure_frame_for_camera(
     try:
         pipeline = _get_pipeline(camera_role, source_factory=source_factory)
         bboxes = pipeline.step(frame)
-        if not bboxes:
-            bboxes = _person_detection_fallback_bboxes(camera_role, frame, env=env)
+        # Merge person fallback even when SCRFD returns a face. In live use a
+        # small/partial face hit can otherwise block the broader
+        # anti-parasocial head mask and leave the person recognizable.
+        fallback_bboxes = _person_detection_fallback_bboxes(camera_role, frame, env=env)
+        if fallback_bboxes:
+            bboxes = [*bboxes, *fallback_bboxes]
         # Publish normalized bboxes for the cairooverlay face-obscure path.
         frame_h, frame_w = frame.shape[:2]
         if frame_w > 0 and frame_h > 0 and bboxes:

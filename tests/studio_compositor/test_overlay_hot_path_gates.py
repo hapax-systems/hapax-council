@@ -86,3 +86,39 @@ def test_on_draw_runs_sierpinski_and_geal_when_base_overlay_enabled(monkeypatch)
     renderer.set_active_slot.assert_called_once_with(2)
     renderer.draw.assert_called_once()
     geal.render.assert_called_once()
+
+
+def test_on_draw_paints_face_obscure_after_base_renderers(monkeypatch) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setenv("HAPAX_SIERPINSKI_BASE_OVERLAY_ENABLED", "1")
+    monkeypatch.setenv("HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED", "1")
+    monkeypatch.setenv("HAPAX_OVERLAY_ZONE_MANAGER_DRAW_ENABLED", "1")
+    monkeypatch.setattr(overlay, "_paint_face_obscure_rects", lambda *_args: calls.append("face"))
+
+    renderer = MagicMock()
+    renderer.draw.side_effect = lambda *_args: calls.append("sierpinski")
+    geal = MagicMock()
+    geal.render.side_effect = lambda *_args: calls.append("geal")
+    zone_manager = MagicMock()
+    zone_manager.render.side_effect = lambda *_args: calls.append("zones")
+
+    def fake_pre_fx(*_args) -> None:
+        calls.append("pre_fx")
+
+    import agents.studio_compositor.fx_chain as fx_chain
+
+    monkeypatch.setattr(fx_chain, "pre_fx_draw_from_layout", fake_pre_fx)
+    compositor = SimpleNamespace(
+        config=SimpleNamespace(overlay_enabled=True),
+        _overlay_canvas_size=(640, 360),
+        _sierpinski_renderer=renderer,
+        _sierpinski_loader=SimpleNamespace(_active_slot=2),
+        _geal_source=geal,
+        _cached_audio={"mixer_energy": 0.75, "tts_active": True},
+        _overlay_zone_manager=zone_manager,
+    )
+
+    overlay.on_draw(compositor, None, MagicMock(), 0, 0)
+
+    assert calls == ["sierpinski", "geal", "zones", "pre_fx", "face"]

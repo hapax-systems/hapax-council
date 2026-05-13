@@ -45,7 +45,10 @@ class TestLiveBboxCache:
     def test_populated_after_obscure_frame(self) -> None:
         frame = np.full((360, 640, 3), 200, dtype=np.uint8)
         bbox = BBox(100, 80, 200, 180)
-        env = {"HAPAX_FACE_OBSCURE_ACTIVE": "1"}
+        env = {
+            "HAPAX_FACE_OBSCURE_ACTIVE": "1",
+            "HAPAX_FACE_OBSCURE_PERSON_FALLBACK_ACTIVE": "0",
+        }
         obscure_frame_for_camera(
             frame,
             "brio-operator",
@@ -64,7 +67,10 @@ class TestLiveBboxCache:
 
     def test_empty_when_no_faces(self) -> None:
         frame = np.full((360, 640, 3), 200, dtype=np.uint8)
-        env = {"HAPAX_FACE_OBSCURE_ACTIVE": "1"}
+        env = {
+            "HAPAX_FACE_OBSCURE_ACTIVE": "1",
+            "HAPAX_FACE_OBSCURE_PERSON_FALLBACK_ACTIVE": "0",
+        }
         obscure_frame_for_camera(
             frame,
             "c920-desk",
@@ -77,7 +83,10 @@ class TestLiveBboxCache:
     def test_cleared_on_reset(self) -> None:
         frame = np.full((360, 640, 3), 200, dtype=np.uint8)
         bbox = BBox(10, 10, 50, 50)
-        env = {"HAPAX_FACE_OBSCURE_ACTIVE": "1"}
+        env = {
+            "HAPAX_FACE_OBSCURE_ACTIVE": "1",
+            "HAPAX_FACE_OBSCURE_PERSON_FALLBACK_ACTIVE": "0",
+        }
         obscure_frame_for_camera(
             frame,
             "brio-operator",
@@ -114,7 +123,10 @@ class TestPaintFaceObscureRects:
 
         frame = np.full((360, 640, 3), 200, dtype=np.uint8)
         bbox = BBox(100, 80, 200, 180)
-        env = {"HAPAX_FACE_OBSCURE_ACTIVE": "1"}
+        env = {
+            "HAPAX_FACE_OBSCURE_ACTIVE": "1",
+            "HAPAX_FACE_OBSCURE_PERSON_FALLBACK_ACTIVE": "0",
+        }
         obscure_frame_for_camera(
             frame,
             "brio-operator",
