@@ -87,14 +87,14 @@
       "surface": "world-receipt-panel-surface",
       "opacity": 1.0,
       "non_destructive": true,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "assertion-receipt-panel",
       "surface": "assertion-receipt-surface",
       "opacity": 1.0,
       "non_destructive": true,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     }
   ]
 }

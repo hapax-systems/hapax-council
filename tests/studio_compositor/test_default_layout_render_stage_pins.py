@@ -46,6 +46,16 @@ from shared.compositor_model import Layout
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LAYOUTS_DIR = REPO_ROOT / "config" / "compositor-layouts"
+SEGMENT_LAYOUTS = (
+    "segment-chat.json",
+    "segment-compare.json",
+    "segment-detail.json",
+    "segment-list.json",
+    "segment-poll.json",
+    "segment-programme-context.json",
+    "segment-receipt.json",
+    "segment-tier.json",
+)
 
 
 def _load(name: str) -> Layout:
@@ -129,6 +139,23 @@ def test_default_packed_cameras_is_pre_fx() -> None:
 def test_consent_safe_stream_overlay_is_post_fx() -> None:
     stages = _stage_by_source(_load("consent-safe.json"))
     assert stages["stream_overlay"] == "post_fx"
+
+
+# ── responsible segment layouts follow the live HN pre-FX path ─────────
+
+
+@pytest.mark.parametrize("layout_name", SEGMENT_LAYOUTS)
+def test_responsible_segment_layout_assignments_are_pre_fx(layout_name: str) -> None:
+    """Responsible segment panels must render where live HN actually draws layouts."""
+
+    layout = _load(layout_name)
+    stages = _stage_by_source(layout)
+    assert stages, f"{layout_name}: expected at least one assignment"
+    assert set(stages.values()) == {"pre_fx"}, (
+        f"{layout_name}: responsible segment layout assignments must be pre-FX so "
+        "rendered-readback receipts can observe final-frame ward blits when the "
+        "post-FX overlay branch is disabled."
+    )
 
 
 # ── reverie pre/post-fx by layout ──────────────────────────────────────
