@@ -6,7 +6,7 @@ after each successful publish. Subsequent calls skip the upstream
 write if the content hash is unchanged — keeps the omg.lol paste
 version history tidy and avoids burning API calls on no-op republishes.
 
-v1 publishes via `set_paste(slug="credits", ...)` at
+v1 publishes through the publication bus to the pastebin slug `credits` at
 `hapax.omg.lol/pastebin/credits`. A future PURL (ytb-OMG7) can alias
 `/credits` → this paste URL without any publisher change.
 """
@@ -25,6 +25,8 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from agents.omg_credits_publisher.data import CreditsModel, build_credits_model
+from agents.publication_bus.omg_pastebin_publisher import OmgLolPastebinPublisher
+from agents.publication_bus.publisher_kit import PublisherPayload
 from shared.governance.omg_referent import OperatorNameLeak, safe_render
 
 log = logging.getLogger(__name__)
@@ -128,14 +130,15 @@ class OmgCreditsPublisher:
             log.warning("omg-credits: legal-name leak detected — DROPPING publish")
             return "legal-name-leak"
 
-        resp = self.client.set_paste(
-            self.address,
-            content=html,
-            title=CREDITS_SLUG,
-            listed=True,
+        result = OmgLolPastebinPublisher(client=self.client).publish(
+            PublisherPayload(
+                target=self.address,
+                text=html,
+                metadata={"title": CREDITS_SLUG, "listed": True},
+            )
         )
-        if resp is None:
-            log.warning("omg-credits: set_paste returned None — publish failed")
+        if not result.ok:
+            log.warning("omg-credits: publication-bus publish failed: %s", result.detail)
             return "failed"
 
         state["last_content_sha256"] = content_sha

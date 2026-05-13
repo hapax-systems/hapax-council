@@ -10,6 +10,9 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from agents.publication_bus.omg_purl_publisher import OmgLolPurlPublisher
+from agents.publication_bus.publisher_kit import PublisherPayload
+
 log = logging.getLogger(__name__)
 
 
@@ -149,8 +152,14 @@ class PurlRegistrar:
             _record_reg("drift-skipped")
             return "drift-skipped"
 
-        resp = self.client.create_purl(self.address, name=spec.slug, url=spec.target)
-        if resp is None:
+        result = OmgLolPurlPublisher(client=self.client).publish(
+            PublisherPayload(
+                target=self.address,
+                text=spec.target,
+                metadata={"name": spec.slug},
+            )
+        )
+        if not result.ok:
             _record_reg("failed")
             return "failed"
         outcome = "drift-overwritten" if current is not None else "created"

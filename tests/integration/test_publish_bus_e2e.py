@@ -222,11 +222,13 @@ class TestPhase1PublishBusEndToEnd:
             registry=CollectorRegistry(),
         )
 
-        from agents.cross_surface import arena_post
+        from agents.publication_bus import arena_publisher
 
         adapter_mock = mock.Mock()
         adapter_mock.add_block = mock.Mock(return_value=None)
-        with mock.patch.object(arena_post, "_default_client_factory", return_value=adapter_mock):
+        with mock.patch.object(
+            arena_publisher, "_default_client_factory", return_value=adapter_mock
+        ):
             handled = orch.run_once()
 
         assert handled == 1

@@ -27,6 +27,8 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from agents.omg_now_sync.data import NowState
+from agents.publication_bus.omg_now_publisher import OmgLolNowPublisher
+from agents.publication_bus.publisher_kit import PublisherPayload
 from shared.governance.omg_referent import OperatorNameLeak, safe_render
 
 log = logging.getLogger(__name__)
@@ -171,9 +173,11 @@ class OmgNowSync:
             _record("legal-name-leak")
             return "legal-name-leak"
 
-        resp = self.client.set_now(self.address, content=markdown, listed=True)
-        if resp is None:
-            log.warning("omg-now: set_now returned None — publish failed")
+        result = OmgLolNowPublisher(client=self.client).publish(
+            PublisherPayload(target=self.address, text=markdown, metadata={"listed": True})
+        )
+        if not result.ok:
+            log.warning("omg-now: publication-bus publish failed: %s", result.detail)
             _record("failed")
             return "failed"
 

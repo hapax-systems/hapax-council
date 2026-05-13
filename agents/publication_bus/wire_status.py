@@ -57,6 +57,20 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "public-event daemon path."
         ),
     ),
+    "agents.publication_bus.arena_publisher": WireEntry(
+        module="agents.publication_bus.arena_publisher",
+        surface_slug="arena-post",
+        status="WIRED",
+        pass_key_required=None,
+        rationale=(
+            "Wired via agents.cross_surface.arena_post for the hapax-arena-post "
+            "public-event daemon path and the publish_orchestrator.SURFACE_REGISTRY "
+            "compatibility entry `arena-post`. Token from HAPAX_ARENA_TOKEN; channel "
+            "slug from HAPAX_ARENA_CHANNEL_SLUG. The publisher owns the irreversible "
+            "Are.na add_block transport so public egress runs through publication-bus "
+            "allowlist/legal-name/counter/witness invariants."
+        ),
+    ),
     "agents.publication_bus.mastodon_publisher": WireEntry(
         module="agents.publication_bus.mastodon_publisher",
         surface_slug="mastodon-post",
@@ -123,6 +137,74 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "through OmgLolStatuslogPublisher so the live statuslog egress path "
             "uses the publication-bus allowlist/legal-name/counter/witness "
             "invariants."
+        ),
+    ),
+    "agents.publication_bus.omg_web_publisher": WireEntry(
+        module="agents.publication_bus.omg_web_publisher",
+        surface_slug="omg-lol-web",
+        status="WIRED",
+        pass_key_required="omg-lol/api-key",
+        rationale=(
+            "Wired via agents.omg_web_builder.publisher for the explicit "
+            "`--publish` landing-page path. The live set_web call is owned by "
+            "OmgLolWebPublisher so landing-page publication passes through the "
+            "publication-bus allowlist/legal-name/counter/witness invariants."
+        ),
+    ),
+    "agents.publication_bus.omg_now_publisher": WireEntry(
+        module="agents.publication_bus.omg_now_publisher",
+        surface_slug="omg-lol-now",
+        status="WIRED",
+        pass_key_required="omg-lol/api-key",
+        rationale=(
+            "Wired via agents.omg_now_sync for the /now daemon path. The daemon "
+            "still owns state rendering and dedupe; OmgLolNowPublisher owns "
+            "the irreversible set_now egress."
+        ),
+    ),
+    "agents.publication_bus.omg_pastebin_publisher": WireEntry(
+        module="agents.publication_bus.omg_pastebin_publisher",
+        surface_slug="omg-lol-pastebin",
+        status="WIRED",
+        pass_key_required="omg-lol/api-key",
+        rationale=(
+            "Wired via agents.omg_pastebin_publisher and "
+            "agents.omg_credits_publisher. These callers keep their rendering, "
+            "category allowlist, and hash-dedupe responsibilities, while the "
+            "set_paste transport is owned by OmgLolPastebinPublisher."
+        ),
+    ),
+    "agents.publication_bus.omg_purl_publisher": WireEntry(
+        module="agents.publication_bus.omg_purl_publisher",
+        surface_slug="omg-lol-purl",
+        status="WIRED",
+        pass_key_required="omg-lol/api-key",
+        rationale=(
+            "Wired via agents.omg_purl_registrar for seed/add PURL writes. "
+            "The registrar keeps drift detection; OmgLolPurlPublisher owns the "
+            "create_purl egress."
+        ),
+    ),
+    "agents.publication_bus.omg_email_publisher": WireEntry(
+        module="agents.publication_bus.omg_email_publisher",
+        surface_slug="omg-lol-email-forward",
+        status="WIRED",
+        pass_key_required="omg-lol/api-key",
+        rationale=(
+            "Wired via agents.omg_email_setup for email forwarding writes. The "
+            "setup command keeps current-state idempotency; OmgLolEmailPublisher "
+            "owns the set_email egress."
+        ),
+    ),
+    "agents.publication_bus.omg_weblog_delete_publisher": WireEntry(
+        module="agents.publication_bus.omg_weblog_delete_publisher",
+        surface_slug="omg-lol-weblog-delete",
+        status="WIRED",
+        pass_key_required="omg-lol/api-key",
+        rationale=(
+            "Wired only through scripts/verify-weblog-producer-deploy.py "
+            "`--cleanup-live` for the tightly allowlisted deploy verification "
+            "entry. The cleanup delete_entry call remains inside publication_bus."
         ),
     ),
     "agents.publication_bus.osf_prereg_publisher": WireEntry(

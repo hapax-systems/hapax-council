@@ -136,6 +136,11 @@ class OmgLolClient:
     def enabled(self) -> bool:
         return self._api_key is not None and self._session is not None
 
+    @property
+    def api_key(self) -> str | None:
+        """Bearer token loaded from pass, for publication-bus adapters."""
+        return self._api_key
+
     def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self._api_key}",
