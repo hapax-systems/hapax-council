@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,8 @@ DEFAULT_EMBEDDING_MODEL = "nomic-embed-cpu"
 DEFAULT_GOLDEN_SUITE = Path("evals/rag/golden_queries.json")
 SUPPORTED_EXTENSIONS = (".pdf", ".docx", ".pptx", ".html", ".md", ".txt", ".py")
 TEXT_COVERAGE_EXTENSIONS = {".html", ".md", ".py", ".txt"}
+DOCLING_EXTENSIONS = {".pdf", ".docx", ".pptx"}
+SOURCE_PROFILES = ("all", "audit-publication")
 
 
 def _hapax_home() -> Path:
@@ -51,32 +54,39 @@ def _dedupe_paths(paths: list[Path]) -> list[Path]:
     return deduped
 
 
-def default_source_dirs() -> list[Path]:
+def default_source_dirs(source_profile: str = "all") -> list[Path]:
     home = _hapax_home()
     repo = _repo_root()
     personal = _personal_root()
     research = personal / "20-projects" / "hapax-research"
     cc_tasks = personal / "20-projects" / "hapax-cc-tasks"
     requests = personal / "20-projects" / "hapax-requests"
+    dirs = [
+        research / "audit",
+        research / "codex-handoffs",
+        research / "foundations",
+        research / "lab-journals",
+        research / "ledgers",
+        research / "exposition",
+        requests / "active",
+        requests / "closed",
+        cc_tasks / "active",
+        cc_tasks / "closed",
+        repo / "README.md",
+        repo / "docs",
+        repo / "scripts",
+        repo / "agents",
+        repo / "shared",
+        repo / "packages" / "agentgov",
+    ]
+    if source_profile == "audit-publication":
+        return _dedupe_paths(dirs)
+    if source_profile != "all":
+        raise ValueError(f"unknown source profile: {source_profile}")
     return _dedupe_paths(
         [
             home / "documents" / "rag-sources",
-            research / "audit",
-            research / "codex-handoffs",
-            research / "foundations",
-            research / "lab-journals",
-            research / "ledgers",
-            research / "exposition",
-            requests / "active",
-            requests / "closed",
-            cc_tasks / "active",
-            cc_tasks / "closed",
-            repo / "README.md",
-            repo / "docs",
-            repo / "scripts",
-            repo / "agents",
-            repo / "shared",
-            repo / "packages" / "agentgov",
+            *dirs,
         ]
     )
 
@@ -117,6 +127,69 @@ def source_category_counts(files: list[Path]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def extension_counts(files: list[Path]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for file in files:
+        ext = file.suffix.lower() or "<none>"
+        counts[ext] = counts.get(ext, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _docling_status() -> dict[str, Any]:
+    try:
+        from docling.chunking import HybridChunker  # noqa: F401
+        from docling.document_converter import DocumentConverter  # noqa: F401
+    except Exception as exc:
+        return {
+            "available": False,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "imports": {
+                "docling.document_converter.DocumentConverter": False,
+                "docling.chunking.HybridChunker": False,
+            },
+        }
+    return {
+        "available": True,
+        "imports": {
+            "docling.document_converter.DocumentConverter": True,
+            "docling.chunking.HybridChunker": True,
+        },
+    }
+
+
+def parser_coverage(files: list[Path]) -> dict[str, Any]:
+    docling = _docling_status()
+    by_extension = extension_counts(files)
+    plain_text_count = sum(by_extension.get(ext, 0) for ext in sorted(TEXT_COVERAGE_EXTENSIONS))
+    docling_file_count = sum(by_extension.get(ext, 0) for ext in sorted(DOCLING_EXTENSIONS))
+    unsupported_extensions = []
+    unsupported_file_count = 0
+    if not docling["available"]:
+        unsupported_extensions = [
+            ext for ext in sorted(DOCLING_EXTENSIONS) if by_extension.get(ext, 0) > 0
+        ]
+        unsupported_file_count = sum(by_extension[ext] for ext in unsupported_extensions)
+    return {
+        "by_extension": by_extension,
+        "parser_modes": {
+            "plain_text_fast_path": {
+                "extensions": sorted(TEXT_COVERAGE_EXTENSIONS),
+                "file_count": plain_text_count,
+                "available": True,
+            },
+            "docling": {
+                "extensions": sorted(DOCLING_EXTENSIONS),
+                "file_count": docling_file_count,
+                **docling,
+            },
+        },
+        "unsupported_extensions": unsupported_extensions,
+        "unsupported_file_count": unsupported_file_count,
+        "fail_closed_required": unsupported_file_count > 0,
+    }
+
+
 def discover_source_files(
     source_dirs: list[Path],
     *,
@@ -137,6 +210,12 @@ def discover_source_files(
             if path.is_file() and path.suffix.lower() in supported
         )
     return sorted(files)
+
+
+def apply_max_files(files: list[Path], max_files: int | None) -> list[Path]:
+    if max_files is None:
+        return files
+    return files[:max_files]
 
 
 def _load_golden_suite(path: Path) -> dict[str, Any]:
@@ -269,15 +348,19 @@ def build_reindex_report(
     force: bool,
     qdrant_url: str,
     embedding_model: str,
+    source_profile: str,
+    include_selected_files: bool = True,
     suite_path: Path | None = None,
+    discovered_files: list[Path] | None = None,
 ) -> dict[str, Any]:
-    files = discover_source_files(source_dirs)
-    selected = files[:max_files] if max_files is not None else files
+    files = discovered_files if discovered_files is not None else discover_source_files(source_dirs)
+    selected = apply_max_files(files, max_files)
     report = {
         "generated_at": datetime.now(UTC).isoformat(),
         "operation": "rag_documents_v2_reindex",
         "source_collection": source_collection,
         "target_collection": target_collection,
+        "source_profile": source_profile,
         "source_dirs": [str(path) for path in source_dirs],
         "qdrant_url": qdrant_url,
         "embedding_model": embedding_model,
@@ -288,10 +371,16 @@ def build_reindex_report(
         "files_discovered": len(files),
         "max_files": max_files,
         "files_selected": len(selected),
-        "selected_files": [str(path) for path in selected],
         "discovered_source_categories": source_category_counts(files),
         "selected_source_categories": source_category_counts(selected),
+        "discovered_parser_coverage": parser_coverage(files),
+        "selected_parser_coverage": parser_coverage(selected),
     }
+    if include_selected_files:
+        report["selected_files"] = [str(path) for path in selected]
+    else:
+        report["selected_files_sample"] = [str(path) for path in selected[:50]]
+        report["selected_files_omitted"] = max(0, len(selected) - 50)
     if suite_path is not None:
         report["golden_label_coverage"] = golden_label_coverage(selected, suite_path)
     return report
@@ -388,7 +477,7 @@ def attach_collection_reports(report: dict[str, Any], qdrant_url: str) -> None:
 
 def _run_ingest_command(
     *,
-    source_dirs: list[Path],
+    selected_files: list[Path],
     target_collection: str,
     qdrant_url: str,
     embedding_model: str,
@@ -396,6 +485,7 @@ def _run_ingest_command(
     force: bool,
     runner=subprocess.run,
 ) -> subprocess.CompletedProcess:
+    source_file_list = _write_source_file_list(selected_files)
     cmd = [
         sys.executable,
         "-m",
@@ -407,18 +497,70 @@ def _run_ingest_command(
         qdrant_url,
         "--embedding-model",
         embedding_model,
+        "--source-file-list",
+        str(source_file_list),
     ]
-    for source_dir in source_dirs:
-        cmd.extend(["--watch-dir", str(source_dir)])
     if max_files is not None:
         cmd.extend(["--max-files", str(max_files)])
     if force:
         cmd.append("--force")
-    return runner(cmd, check=False)
+    try:
+        return runner(cmd, check=False)
+    finally:
+        source_file_list.unlink(missing_ok=True)
 
 
 def _print_json(data: dict[str, Any]) -> None:
     print(json.dumps(data, indent=2, sort_keys=True))
+
+
+def _write_source_file_list(files: list[Path]) -> Path:
+    fd, temp_path = tempfile.mkstemp(prefix="rag-documents-v2-source-files-", suffix=".txt")
+    path = Path(temp_path)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        if not files:
+            handle.write("/nonexistent/rag-documents-v2-empty-source\n")
+            return path
+        for file in files:
+            handle.write(str(file.resolve()))
+            handle.write("\n")
+    return path
+
+
+def _write_json(data: dict[str, Any], output: Path) -> Path:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return output
+
+
+def _emit_report(report: dict[str, Any], output: Path | None) -> None:
+    if output is None:
+        _print_json(report)
+        return
+    path = _write_json(report, output)
+    _print_json(
+        {
+            "generated_at": report.get("generated_at"),
+            "report_path": str(path),
+            "files_selected": report.get("files_selected"),
+            "selected_source_categories": report.get("selected_source_categories"),
+            "selected_parser_coverage": report.get("selected_parser_coverage"),
+            "golden_label_coverage": {
+                key: value
+                for key, value in (report.get("golden_label_coverage") or {}).items()
+                if key
+                in {
+                    "available",
+                    "expected_label_count",
+                    "covered_label_count",
+                    "coverage_rate",
+                    "source_contains_label_count",
+                    "covered_source_contains_label_count",
+                    "source_contains_coverage_rate",
+                }
+            },
+        }
+    )
 
 
 def run_ensure_schema(args: argparse.Namespace) -> int:
@@ -441,7 +583,9 @@ def run_ensure_schema(args: argparse.Namespace) -> int:
 
 
 def run_reindex(args: argparse.Namespace) -> int:
-    source_dirs = args.source_dir or default_source_dirs()
+    source_dirs = args.source_dir or default_source_dirs(args.source_profile)
+    discovered_files = discover_source_files(source_dirs)
+    selected_files = apply_max_files(discovered_files, args.max_files)
     report = build_reindex_report(
         source_dirs=source_dirs,
         source_collection=args.source_collection,
@@ -452,13 +596,32 @@ def run_reindex(args: argparse.Namespace) -> int:
         force=args.force,
         qdrant_url=args.qdrant_url,
         embedding_model=args.embedding_model,
+        source_profile=args.source_profile,
+        include_selected_files=not args.omit_selected_files,
         suite_path=args.suite,
+        discovered_files=discovered_files,
     )
 
     if args.dry_run or args.report_only:
         attach_collection_reports(report, args.qdrant_url)
-        _print_json(report)
+        _emit_report(report, args.output)
         return 0
+
+    if (
+        not args.allow_parser_gaps
+        and report["selected_parser_coverage"]["unsupported_file_count"] > 0
+    ):
+        report["returncode"] = 3
+        report["error"] = "parser_coverage_gap"
+        report["error_detail"] = (
+            "Docling-backed files are selected but the active Python runtime "
+            "cannot import Docling. Rerun with the isolated .venv-ingest "
+            "interpreter, reduce the source profile, or pass --allow-parser-gaps "
+            "to intentionally skip this fail-closed guard."
+        )
+        attach_collection_reports(report, args.qdrant_url)
+        _emit_report(report, args.output)
+        return 3
 
     vector_size = args.vector_size
     if vector_size is None:
@@ -469,7 +632,7 @@ def run_reindex(args: argparse.Namespace) -> int:
         "vector_size": vector_size,
     }
     result = _run_ingest_command(
-        source_dirs=source_dirs,
+        selected_files=selected_files,
         target_collection=args.target_collection,
         qdrant_url=args.qdrant_url,
         embedding_model=args.embedding_model,
@@ -477,7 +640,7 @@ def run_reindex(args: argparse.Namespace) -> int:
         force=args.force,
     )
     report["returncode"] = result.returncode
-    _print_json(report)
+    _emit_report(report, args.output)
     return result.returncode
 
 
@@ -595,12 +758,20 @@ def build_parser() -> argparse.ArgumentParser:
     reindex = subparsers.add_parser("reindex", help="Plan or run shadow reindexing.")
     reindex.add_argument("--source-collection", default=DEFAULT_SOURCE_COLLECTION)
     reindex.add_argument("--target-collection", default=DEFAULT_SHADOW_COLLECTION)
+    reindex.add_argument("--source-profile", choices=SOURCE_PROFILES, default="all")
     reindex.add_argument("--source-dir", action="append", type=Path, default=[])
     reindex.add_argument("--max-files", type=int, default=None)
     reindex.add_argument("--suite", type=Path, default=DEFAULT_GOLDEN_SUITE)
+    reindex.add_argument("--output", type=Path, default=None)
+    reindex.add_argument("--omit-selected-files", action="store_true")
     reindex.add_argument("--dry-run", action="store_true")
     reindex.add_argument("--report-only", action="store_true")
     reindex.add_argument("--force", action="store_true")
+    reindex.add_argument(
+        "--allow-parser-gaps",
+        action="store_true",
+        help="Permit writes even when selected binary formats require unavailable parsers.",
+    )
     reindex.add_argument("--vector-size", type=int, default=None)
     reindex.set_defaults(func=run_reindex)
 
