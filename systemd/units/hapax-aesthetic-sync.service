@@ -1,0 +1,11 @@
+[Unit]
+Description=Hapax Aesthetic Sync Automation
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/hapax-council
+ExecStart=%h/.local/bin/uv run python -m agents.aesthetic_generator.generator
+
+[Install]
+WantedBy=default.target
