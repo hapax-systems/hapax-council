@@ -1,0 +1,12 @@
+[Unit]
+Description=Hapax CPU-only Perception Grounding Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/uv run python -m agents.perception.cpu_grounding
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
