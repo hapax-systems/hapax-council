@@ -998,6 +998,162 @@ def test_responsible_segment_tick_restores_default_from_expired_fragment(
     )
 
 
+def test_expired_segment_intent_restores_default_from_current_fragment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HAPAX_DIRECTOR_SEGMENT_FRAGMENT_LAYOUTS_ENABLED", raising=False)
+    default = _load_layout("config/compositor-layouts/default.json")
+    segment_detail = _load_layout("config/compositor-layouts/segment-detail.json")
+    store = _FakeStore(
+        layouts={
+            "default": default,
+            "segment-detail": segment_detail,
+        },
+        _active="segment-detail",
+    )
+    rendered_state = LayoutState(segment_detail)
+    adapter = _RenderedLayoutStateAdapter(store, rendered_state)
+    switcher = LayoutSwitcher(initial_layout="segment-detail")
+    switcher._responsible_segment_state = {}
+    expired_intent = SegmentActionIntent(
+        intent_id="programme:seg-1:2:expired-layout-need",
+        kind=LayoutNeedKind.ARTIFACT_DETAIL.value,
+        requested_at=NOW - 100.0,
+        priority=70,
+        ttl_s=30.0,
+        evidence_refs=("prepared_artifact:sha256:abc123",),
+        programme_id="programme:seg-1",
+        beat_index=2,
+        target_ref="artifact:detail",
+        authority_ref="prepared_artifact:sha256:abc123",
+        expected_effects=("ward:artifact-detail-panel",),
+    )
+    state_provider = lambda: {  # noqa: E731
+        "consent_safe_active": False,
+        "vinyl_playing": False,
+        "director_activity": None,
+        "stream_mode": None,
+        "segment_layout_intents": (expired_intent,),
+        "segment_action_intents_ref": "active-segment:sha256:abc123",
+        "segment_playback_ref": "segment-playback:beat-2",
+        "rendered_object_refs": ("artifact:detail",),
+    }
+
+    monkeypatch.setattr(layout_tick_driver.time, "time", lambda: NOW)
+    receipt = _driver_tick(
+        state_provider=state_provider,
+        layout_state=adapter,
+        loader=adapter,
+        switcher=switcher,
+    )
+
+    assert receipt.status is LayoutDecisionStatus.REFUSED
+    assert receipt.reason is LayoutDecisionReason.EXPIRED_NEED
+    assert receipt.selected_layout is None
+    assert receipt.applied_layout_changes == ("default",)
+    assert rendered_state.get().name == "default"
+    assert store.active_name() == "default"
+    assert receipt.receipt_metadata["runtime_mutation"] == (
+        "restored_full_surface_from_segment_fragment"
+    )
+
+
+def test_segment_layout_readback_mismatch_restores_and_holds_proven_full_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HAPAX_DIRECTOR_SEGMENT_FRAGMENT_LAYOUTS_ENABLED", raising=False)
+    default = _load_layout("config/compositor-layouts/default.json")
+    segment_compare = _load_layout("config/compositor-layouts/segment-compare.json")
+    store = _FakeStore(
+        layouts={
+            "default": default,
+            "segment-compare": segment_compare,
+        },
+        _active="default",
+    )
+    rendered_state = LayoutState(default)
+    adapter = _RenderedLayoutStateAdapter(store, rendered_state)
+    switcher = LayoutSwitcher(initial_layout="default")
+    switcher._responsible_segment_state = {}
+    intent = SegmentActionIntent(
+        intent_id="programme:seg-1:4:layout-need-compare",
+        kind=LayoutNeedKind.SOURCE_COMPARISON.value,
+        requested_at=NOW - 1.0,
+        priority=90,
+        ttl_s=30.0,
+        evidence_refs=("prior:comparison", "prepared_artifact:sha256:abc123"),
+        programme_id="programme:seg-1",
+        beat_index=4,
+        target_ref="artifact:comparison",
+        authority_ref="prepared_artifact:sha256:abc123",
+        expected_effects=("ward:compare-panel",),
+    )
+    state_provider = lambda: {  # noqa: E731
+        "consent_safe_active": False,
+        "vinyl_playing": False,
+        "director_activity": None,
+        "stream_mode": None,
+        "segment_layout_intents": (intent,),
+        "segment_action_intents_ref": "active-segment:sha256:abc123",
+        "segment_playback_ref": "segment-playback:beat-4",
+        "rendered_object_refs": ("artifact:comparison",),
+    }
+    monkeypatch.setattr(layout_tick_driver, "_recent_blit_readbacks", lambda _wards, *, now: {})
+
+    monkeypatch.setattr(layout_tick_driver.time, "time", lambda: NOW)
+    first = _driver_tick(
+        state_provider=state_provider,
+        layout_state=adapter,
+        loader=adapter,
+        switcher=switcher,
+    )
+
+    assert first.status is LayoutDecisionStatus.HELD
+    assert first.reason is LayoutDecisionReason.DEFAULT_STATIC_LAYOUT_IN_RESPONSIBLE_HOSTING
+    assert first.selected_layout == "segment-compare"
+    assert first.applied_layout_changes == ("segment-compare",)
+    assert rendered_state.get().name == "segment-compare"
+    assert any(source.id == "compare-panel" for source in rendered_state.get().sources)
+
+    monkeypatch.setattr(layout_tick_driver.time, "time", lambda: NOW + 1.0)
+    second = _driver_tick(
+        state_provider=state_provider,
+        layout_state=adapter,
+        loader=adapter,
+        switcher=switcher,
+    )
+
+    assert second.status is LayoutDecisionStatus.HELD
+    assert second.reason is LayoutDecisionReason.RENDERED_READBACK_MISMATCH
+    assert second.selected_layout == "segment-compare"
+    assert second.applied_layout_changes == ("default",)
+    assert "ward:compare-panel" in second.unsatisfied_effects
+    assert second.receipt_metadata["runtime_mutation"] == "restored_last_proven_full_surface"
+    assert second.receipt_metadata["restore_reason"] == (
+        "selected_segment_failed_rendered_readback"
+    )
+    assert second.refusal_metadata["selected_layout_mutation_suppressed"] is True
+    assert rendered_state.get().name == "default"
+    assert store.active_name() == "default"
+
+    monkeypatch.setattr(layout_tick_driver.time, "time", lambda: NOW + 2.0)
+    third = _driver_tick(
+        state_provider=state_provider,
+        layout_state=adapter,
+        loader=adapter,
+        switcher=switcher,
+    )
+
+    assert third.status is LayoutDecisionStatus.HELD
+    assert third.reason is LayoutDecisionReason.DEFAULT_STATIC_LAYOUT_IN_RESPONSIBLE_HOSTING
+    assert third.selected_layout == "segment-compare"
+    assert third.applied_layout_changes == ()
+    assert third.receipt_metadata["runtime_mutation"] == "held_after_failed_segment_readback"
+    assert third.receipt_metadata["selected_layout_mutation_suppressed"] is True
+    assert rendered_state.get().name == "default"
+    assert store.active_name() == "default"
+
+
 def test_runtime_readback_requires_fresh_blit_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

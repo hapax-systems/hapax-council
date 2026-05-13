@@ -1057,6 +1057,12 @@ def _maybe_apply_responsible_segment_layout(
         return fragment_block_receipt
 
     if receipt.status is LayoutDecisionStatus.ACCEPTED:
+        _remember_proven_full_surface(
+            responsible_state,
+            _active_rendered_layout(layout_state),
+            source="accepted_readback",
+        )
+        responsible_state.pop("blocked_segment_layout_attempt", None)
         responsible_state.update(
             {
                 "current_posture": receipt.selected_posture,
@@ -1066,6 +1072,16 @@ def _maybe_apply_responsible_segment_layout(
             }
         )
         return receipt
+
+    if (
+        receipt.status is LayoutDecisionStatus.REFUSED
+        and receipt.reason is LayoutDecisionReason.EXPIRED_NEED
+    ):
+        return _restore_default_surface_if_current_layout_is_fragment(
+            receipt=receipt,
+            layout_state=layout_state,
+            loader=loader,
+        )
 
     mutation_reasons = {
         LayoutDecisionReason.DEFAULT_STATIC_LAYOUT_IN_RESPONSIBLE_HOSTING,
@@ -1080,7 +1096,58 @@ def _maybe_apply_responsible_segment_layout(
     ):
         return receipt
 
+    active_layout_readback = receipt.receipt_metadata.get("active_layout_readback")
+    if (
+        receipt.reason is LayoutDecisionReason.RENDERED_READBACK_MISMATCH
+        and active_layout_readback == receipt.selected_layout
+    ):
+        responsible_state["blocked_segment_layout_attempt"] = {
+            "need_id": receipt.need_id,
+            "selected_layout": receipt.selected_layout,
+            "reason": receipt.reason.value,
+            "evidence_refs": tuple(receipt.evidence_refs),
+            "unsatisfied_effects": tuple(receipt.unsatisfied_effects),
+            "blocked_at": now,
+        }
+        return _restore_last_proven_full_surface(
+            receipt=receipt,
+            layout_state=layout_state,
+            loader=loader,
+            responsible_state=responsible_state,
+            restore_reason="selected_segment_failed_rendered_readback",
+        )
+
+    blocked_attempt = _matching_blocked_segment_attempt(
+        responsible_state,
+        need_id=receipt.need_id,
+        selected_layout=receipt.selected_layout,
+        evidence_refs=tuple(receipt.evidence_refs),
+    )
+    if blocked_attempt is not None:
+        return replace(
+            receipt,
+            applied_layout_changes=(),
+            receipt_metadata={
+                **dict(receipt.receipt_metadata),
+                "runtime_mutation": "held_after_failed_segment_readback",
+                "selected_layout_mutation_suppressed": True,
+            },
+            refusal_metadata={
+                **dict(receipt.refusal_metadata),
+                "blocked_segment_layout_attempt": dict(blocked_attempt),
+                "message": (
+                    "selected segment layout previously failed rendered readback; "
+                    "holding proven full-surface layout until new evidence or a new need arrives"
+                ),
+            },
+        )
+
     previous_rendered_layout = _active_rendered_layout(layout_state)
+    _remember_proven_full_surface(
+        responsible_state,
+        previous_rendered_layout,
+        source="pre_segment_attempt",
+    )
     before_hash = _layout_state_hash(previous_rendered_layout)
     try:
         new_layout = selected_layout or loader.load(receipt.selected_layout)
@@ -1123,6 +1190,153 @@ def _maybe_apply_responsible_segment_layout(
             "layout_state_after_hash": after_hash,
         },
     )
+
+
+def _matching_blocked_segment_attempt(
+    responsible_state: dict[str, object],
+    *,
+    need_id: str | None,
+    selected_layout: str | None,
+    evidence_refs: tuple[str, ...],
+) -> dict[str, object] | None:
+    if need_id is None or selected_layout is None:
+        return None
+    blocked = responsible_state.get("blocked_segment_layout_attempt")
+    if not isinstance(blocked, dict):
+        return None
+    if blocked.get("need_id") != need_id or blocked.get("selected_layout") != selected_layout:
+        return None
+    blocked_evidence = blocked.get("evidence_refs")
+    if isinstance(blocked_evidence, tuple) and blocked_evidence != evidence_refs:
+        return None
+    return {str(key): value for key, value in blocked.items()}
+
+
+def _remember_proven_full_surface(
+    responsible_state: dict[str, object],
+    layout: Any,
+    *,
+    source: str,
+) -> None:
+    name = getattr(layout, "name", None)
+    if not isinstance(name, str) or not name:
+        return
+    if not _is_full_surface_layout(layout):
+        return
+    responsible_state["last_proven_full_surface_layout"] = layout
+    responsible_state["last_proven_full_surface_name"] = name
+    responsible_state["last_proven_full_surface_hash"] = _layout_state_hash(layout)
+    responsible_state["last_proven_full_surface_source"] = source
+
+
+def _restore_last_proven_full_surface(
+    *,
+    receipt: Any,
+    layout_state: Any,
+    loader: Any,
+    responsible_state: dict[str, object],
+    restore_reason: str,
+) -> Any:
+    restore_layout = _last_proven_full_surface(responsible_state, loader)
+    if restore_layout is None:
+        return replace(
+            receipt,
+            applied_layout_changes=(),
+            refusal_metadata={
+                **dict(getattr(receipt, "refusal_metadata", {}) or {}),
+                "full_surface_restore_failed": "last_proven_full_surface_missing",
+            },
+        )
+
+    current_layout = _active_rendered_layout(layout_state)
+    current_hash = _layout_state_hash(current_layout)
+    restore_hash = _layout_state_hash(restore_layout)
+    restore_name = getattr(restore_layout, "name", None)
+    if current_hash != restore_hash:
+        try:
+            layout_state.mutate(lambda _previous: restore_layout)
+        except Exception as exc:
+            return replace(
+                receipt,
+                applied_layout_changes=(),
+                refusal_metadata={
+                    **dict(getattr(receipt, "refusal_metadata", {}) or {}),
+                    "full_surface_restore_failed": type(exc).__name__,
+                    "restore_layout": restore_name,
+                },
+            )
+    responsible_state.update(
+        {
+            "current_posture": _posture_for_layout(restore_name),
+            "active_need_id": None,
+            "active_priority": 0,
+            "switched_at": None,
+        }
+    )
+    applied_layout_changes = tuple(
+        dict.fromkeys(
+            (
+                *getattr(receipt, "applied_layout_changes", ()),
+                *((restore_name,) if isinstance(restore_name, str) else ()),
+            )
+        )
+    )
+    return replace(
+        receipt,
+        applied_layout_changes=applied_layout_changes,
+        receipt_metadata={
+            **dict(getattr(receipt, "receipt_metadata", {}) or {}),
+            "runtime_mutation": "restored_last_proven_full_surface",
+            "restore_reason": restore_reason,
+            "restored_to_layout": restore_name,
+            "layout_state_before_hash": current_hash,
+            "layout_state_after_hash": _layout_state_hash(_active_rendered_layout(layout_state)),
+        },
+        refusal_metadata={
+            **dict(getattr(receipt, "refusal_metadata", {}) or {}),
+            "selected_layout_mutation_suppressed": True,
+        },
+    )
+
+
+def _last_proven_full_surface(
+    responsible_state: dict[str, object],
+    loader: Any,
+) -> Any | None:
+    layout = responsible_state.get("last_proven_full_surface_layout")
+    if _is_full_surface_layout(layout):
+        return layout
+    name = responsible_state.get("last_proven_full_surface_name")
+    if isinstance(name, str) and name:
+        try:
+            candidate = loader.load(name)
+        except KeyError:
+            candidate = None
+        if _is_full_surface_layout(candidate):
+            return candidate
+    for fallback_name in ("default", "garage-door"):
+        try:
+            candidate = loader.load(fallback_name)
+        except KeyError:
+            continue
+        if _is_full_surface_layout(candidate):
+            return candidate
+    return None
+
+
+def _is_full_surface_layout(layout: Any) -> bool:
+    if layout is None:
+        return False
+    try:
+        from agents.studio_compositor.layout_fragment_guard import (
+            segment_min_source_count,
+            source_count,
+        )
+
+        return source_count(layout) >= segment_min_source_count()
+    except Exception:
+        log.debug("layout-tick: full-surface check failed", exc_info=True)
+        return False
 
 
 def _segment_fragment_block_receipt(
