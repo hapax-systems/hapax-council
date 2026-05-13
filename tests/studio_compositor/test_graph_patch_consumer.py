@@ -11,6 +11,7 @@ without leaning on a live SHM surface or a real GraphRuntime.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from pathlib import Path
@@ -677,6 +678,7 @@ def test_process_recruitment_non_dict_root_returns_false(
 
 def test_process_graph_patch_recruitment_honors_autonomous_disable(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     gpc.RECRUITMENT_FILE.write_text(
         json.dumps(
@@ -704,5 +706,12 @@ def test_process_graph_patch_recruitment_honors_autonomous_disable(
         "_apply_patch_async",
         lambda *_args, **_kwargs: pytest.fail("disabled graph patch must not apply"),
     )
+    caplog.set_level(logging.INFO)
 
     assert gpc.process_graph_patch_recruitment() is False
+    assert not [
+        record
+        for record in caplog.records
+        if "graph-patch consumer suppressed by HAPAX_FX_AUTONOMOUS_MUTATIONS=0"
+        in record.getMessage()
+    ]
