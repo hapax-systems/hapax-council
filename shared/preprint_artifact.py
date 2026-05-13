@@ -47,6 +47,18 @@ from pydantic import BaseModel, Field
 
 from shared.co_author_model import ALL_CO_AUTHORS, CoAuthor
 
+DEFAULT_OMG_WEBLOG_SURFACES: tuple[str, ...] = ("omg-weblog",)
+OMG_WEBLOG_DIRECT_FANOUT_OPT_IN_SURFACES: tuple[str, ...] = (
+    "bluesky-post",
+    "mastodon-post",
+    "arena-post",
+    "bridgy-webmention-publish",
+)
+OMG_WEBLOG_DIRECT_FANOUT_SURFACES: tuple[str, ...] = (
+    *DEFAULT_OMG_WEBLOG_SURFACES,
+    *OMG_WEBLOG_DIRECT_FANOUT_OPT_IN_SURFACES,
+)
+
 # Inbox layout — relative to ``$HAPAX_STATE`` (default ``~/hapax-state``)
 DRAFT_DIR_NAME = "publish/draft"
 INBOX_DIR_NAME = "publish/inbox"
@@ -207,23 +219,17 @@ def from_omg_weblog_draft(
     artifacts. Does NOT consume ``WeblogDraft`` directly (would create
     a circular import); callers extract fields and pass them in.
 
-    Default ``surfaces_targeted`` includes the full multi-surface
-    cluster: omg.lol weblog (already shipped via the omg_weblog publisher),
-    bluesky, mastodon, arena, webmention.
+    Default ``surfaces_targeted`` is the canonical omg.lol weblog only.
+    Direct Bluesky, Mastodon, Are.na, and Bridgy dispatch remain opt-in
+    because the weblog public-event producer already fans out published
+    weblog entries after the source URL exists.
     """
     return PreprintArtifact(
         slug=slug,
         title=title,
         abstract=abstract,
         body_md=body_md,
-        surfaces_targeted=surfaces_targeted
-        or [
-            "omg-weblog",
-            "bluesky-post",
-            "mastodon-post",
-            "arena-post",
-            "bridgy-webmention-publish",
-        ],
+        surfaces_targeted=list(surfaces_targeted or DEFAULT_OMG_WEBLOG_SURFACES),
         co_authors=co_authors or list(ALL_CO_AUTHORS),
     )
 
@@ -231,9 +237,12 @@ def from_omg_weblog_draft(
 __all__ = [
     "ApprovalState",
     "DRAFT_DIR_NAME",
+    "DEFAULT_OMG_WEBLOG_SURFACES",
     "FAILED_DIR_NAME",
     "INBOX_DIR_NAME",
     "LOG_DIR_NAME",
+    "OMG_WEBLOG_DIRECT_FANOUT_OPT_IN_SURFACES",
+    "OMG_WEBLOG_DIRECT_FANOUT_SURFACES",
     "PUBLISHED_DIR_NAME",
     "PreprintArtifact",
     "from_omg_weblog_draft",

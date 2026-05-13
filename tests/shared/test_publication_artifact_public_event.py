@@ -9,8 +9,14 @@ from pathlib import Path
 import jsonschema
 
 from agents.publish_orchestrator.orchestrator import _artifact_fingerprint
-from shared.preprint_artifact import PreprintArtifact
+from shared.preprint_artifact import (
+    DEFAULT_OMG_WEBLOG_SURFACES,
+    OMG_WEBLOG_DIRECT_FANOUT_SURFACES,
+    PreprintArtifact,
+    from_omg_weblog_draft,
+)
 from shared.publication_artifact_public_event import (
+    DIRECT_DISPATCH_SECONDARY_FANOUT_HOLD_REASON,
     build_publication_artifact_public_event,
     github_public_material_surfaces,
     publication_artifact_public_event_id,
@@ -141,6 +147,65 @@ def test_refusal_annex_bridgy_target_is_held_as_dry_run_scaffold(tmp_path: Path)
     assert "refusal_annex_bridgy_fanout_not_claimed" in policy.dry_run_reason
     assert "mastodon" in policy.denied_surfaces
     assert "bluesky" in policy.denied_surfaces
+
+
+def test_default_weblog_surface_projection_matrix_is_held_after_direct_dispatch(
+    tmp_path: Path,
+) -> None:
+    artifact = from_omg_weblog_draft(
+        slug="default-surface-matrix",
+        title="Default surface matrix",
+        abstract="Audit default publication-bus surfaces.",
+        body_md="Body.",
+        surfaces_targeted=list(OMG_WEBLOG_DIRECT_FANOUT_SURFACES),
+    )
+    artifact.mark_approved(by_referent="Oudepode")
+    fingerprint = _artifact_fingerprint(artifact)
+
+    expected_reasons = {
+        "omg-weblog": [
+            DIRECT_DISPATCH_SECONDARY_FANOUT_HOLD_REASON,
+            "surface_policy_denied:omg-lol-weblog",
+        ],
+        "bluesky-post": [
+            DIRECT_DISPATCH_SECONDARY_FANOUT_HOLD_REASON,
+            "surface_policy_denied:bluesky-post",
+        ],
+        "mastodon-post": [
+            DIRECT_DISPATCH_SECONDARY_FANOUT_HOLD_REASON,
+            "surface_policy_denied:mastodon-post",
+        ],
+        "arena-post": [DIRECT_DISPATCH_SECONDARY_FANOUT_HOLD_REASON],
+        "bridgy-webmention-publish": [
+            DIRECT_DISPATCH_SECONDARY_FANOUT_HOLD_REASON,
+            "surface_policy_denied:bridgy-webmention-publish",
+        ],
+    }
+
+    assert DEFAULT_OMG_WEBLOG_SURFACES == ("omg-weblog",)
+    assert artifact.surfaces_targeted == list(OMG_WEBLOG_DIRECT_FANOUT_SURFACES)
+    for surface in OMG_WEBLOG_DIRECT_FANOUT_SURFACES:
+        log_path = _write_log(tmp_path, artifact, surface, "ok", fingerprint)
+        decision = build_publication_artifact_public_event(
+            artifact,
+            artifact_fingerprint=fingerprint,
+            state_root=tmp_path,
+            stage="surface_log",
+            surface=surface,
+            result="ok",
+            result_timestamp="2026-04-30T12:49:00Z",
+            source_path=log_path,
+            generated_at=GENERATED_AT,
+        )
+
+        assert decision.status == "held", surface
+        assert decision.public_event is not None
+        policy = decision.public_event.surface_policy
+        assert policy.allowed_surfaces == ["health"]
+        assert policy.claim_archive is False
+        assert policy.fallback_action == "hold"
+        assert policy.dry_run_reason is not None
+        assert policy.dry_run_reason.split(";") == expected_reasons[surface]
 
 
 def test_publication_artifact_event_id_is_stable_and_schema_safe() -> None:

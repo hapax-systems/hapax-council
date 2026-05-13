@@ -482,6 +482,21 @@ class TestSurfaceRegistry:
     the suite.
     """
 
+    def test_omg_weblog_direct_fanout_surfaces_are_runtime_wired_and_resolve(self):
+        import importlib
+
+        from agents.publication_bus.surface_registry import dispatch_registry
+        from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY
+        from shared.preprint_artifact import OMG_WEBLOG_DIRECT_FANOUT_SURFACES
+
+        canonical_dispatch = dispatch_registry()
+        for surface in OMG_WEBLOG_DIRECT_FANOUT_SURFACES:
+            assert surface in SURFACE_REGISTRY
+            assert SURFACE_REGISTRY[surface] == canonical_dispatch[surface]
+            module_path, attr = SURFACE_REGISTRY[surface].split(":")
+            module = importlib.import_module(module_path)
+            assert callable(getattr(module, attr))
+
     def test_bluesky_post_wired(self):
         from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY
 
