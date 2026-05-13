@@ -1,0 +1,16 @@
+[Unit]
+Description=Hapax Camera Sidecar Loopback (%i)
+After=studio-compositor.service
+
+[Service]
+Type=simple
+# Wait for the compositor to create the shared memory socket
+ExecStartPre=/usr/bin/bash -c 'while [ ! -S /tmp/cam-loopback-%i.sock ]; do sleep 1; done'
+# Read from shmsrc, output to corresponding v4l2loopback device
+# Note: Device path uses a deterministic name mapped by the operator (e.g. /dev/video-%i)
+ExecStart=/usr/bin/gst-launch-1.0 shmsrc socket-path=/tmp/cam-loopback-%i.sock do-timestamp=true ! video/x-raw,format=I420 ! v4l2sink device=/dev/video-%i sync=false
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

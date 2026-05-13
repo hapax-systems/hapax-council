@@ -263,6 +263,7 @@ def add_camera_branch(
         add_recording_branch(compositor, pipeline, camera_tee, cam, fps)
 
     add_camera_snapshot_branch(compositor, pipeline, camera_tee, cam)
+    add_camera_loopback_branch(compositor, pipeline, camera_tee, cam)
 
     if not hasattr(compositor, "_camera_elements"):
         compositor._camera_elements = {}
