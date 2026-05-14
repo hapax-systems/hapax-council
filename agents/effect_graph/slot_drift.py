@@ -393,17 +393,22 @@ class SlotDriftEngine:
 
         if state.phase == Phase.RISING:
             progress = min(1.0, elapsed / state.phase_duration) if state.phase_duration > 0 else 1.0
-            # Smooth ease-in (cubic)
-            state.intensity = progress * progress * (3.0 - 2.0 * progress)
+            # Smooth ease-in (cubic), targeting randomized peak
+            peak = getattr(state, '_peak_intensity', 0.6)
+            smooth = progress * progress * (3.0 - 2.0 * progress)
+            state.intensity = smooth * peak
             if progress >= 1.0:
                 state.phase = Phase.PEAK
                 state.phase_start = now
                 state.phase_duration = PEAK_HOLD_S * (0.6 + 0.8 * self._rng.random())
-                log.debug("SlotDrift: slot %d (%s) → PEAK (%.0fs)",
-                          state.slot_idx, state.node_type, state.phase_duration)
+                # Randomized peak: effects tint the image rather than replacing it
+                state._peak_intensity = 0.25 + 0.45 * self._rng.random()  # 0.25-0.70
+                log.debug("SlotDrift: slot %d (%s) → PEAK (%.0fs, intensity=%.2f)",
+                          state.slot_idx, state.node_type, state.phase_duration,
+                          state._peak_intensity)
 
         elif state.phase == Phase.PEAK:
-            state.intensity = 1.0
+            state.intensity = getattr(state, '_peak_intensity', 0.6)
             if elapsed >= state.phase_duration:
                 state.phase = Phase.FALLING
                 state.phase_start = now
@@ -413,9 +418,10 @@ class SlotDriftEngine:
 
         elif state.phase == Phase.FALLING:
             progress = min(1.0, elapsed / state.phase_duration) if state.phase_duration > 0 else 1.0
-            # Smooth ease-out (cubic)
+            # Smooth ease-out (cubic) from actual peak
+            peak = getattr(state, '_peak_intensity', 0.6)
             inv = 1.0 - progress
-            state.intensity = inv * inv * (3.0 - 2.0 * inv)
+            state.intensity = peak * inv * inv * (3.0 - 2.0 * inv)
             if progress >= 1.0:
                 state.intensity = 0.0
                 state.phase = Phase.IDLE
