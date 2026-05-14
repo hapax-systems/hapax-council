@@ -412,6 +412,9 @@ pub struct DynamicPipeline {
     width: u32,
     height: u32,
     frame_count: u64,
+    /// Phase 3 3D: true when an external texture was injected as @live
+    /// this frame; suppresses the procedural noise fallback.
+    live_texture_overridden: bool,
     /// LRR Phase 0 item 4 / FINDING-Q step 4 — counter for shader hot-reload
     /// rollback events. Incremented every time the validation gate rejects
     /// a hot-reload attempt or a runtime panic forces a rollback to the
@@ -589,6 +592,7 @@ impl DynamicPipeline {
             width,
             height,
             frame_count: 0,
+            live_texture_overridden: false,
             shader_rollback_total: Arc::new(AtomicU64::new(0)),
         };
 
@@ -1081,8 +1085,10 @@ impl DynamicPipeline {
         // fill it with a procedural gradient so shaders have visible input.
         // Without this, @live resolves to a black texture and the entire
         // pipeline produces near-black output.
+        // Phase 3 3D: skip noise if set_live_texture_override() was called
+        // this frame — the 3D scene output is already in @live.
         let needs_live = self.passes.iter().any(|p| p.inputs.iter().any(|i| i == "@live"));
-        if needs_live {
+        if needs_live && !self.live_texture_overridden {
             self.ensure_texture(device, "@live");
             if let Some(live_tex) = self.intermediate("@live") {
                 let w = self.width as usize;
@@ -1365,6 +1371,7 @@ impl DynamicPipeline {
         }
 
         self.frame_count += 1;
+        self.live_texture_overridden = false;
     }
 
     /// Return the texture view for a given target's final output, if any.
@@ -1409,6 +1416,42 @@ impl DynamicPipeline {
             total_allocations: self.intermediate_pool.total_allocations(),
             reuse_ratio: self.intermediate_pool.reuse_ratio(),
             slot_count: self.intermediate_slots.len(),
+        }
+    }
+
+    /// Phase 3 3D compositor: inject an external texture as the `@live`
+    /// pseudo-texture. When set, the noise-generator fallback in
+    /// `render()` is skipped and the provided texture view is used
+    /// directly as shader input. The 3D SceneRenderer output feeds
+    /// through the full shader vocabulary chain this way.
+    ///
+    /// Call with `None` to revert to the default noise `@live`.
+    pub fn set_live_texture_override(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        source_texture: &wgpu::Texture,
+    ) {
+        self.ensure_texture(device, "@live");
+        if let Some(live_tex) = self.intermediate("@live") {
+            let size = wgpu::Extent3d {
+                width: self.width.min(source_texture.width()),
+                height: self.height.min(source_texture.height()),
+                depth_or_array_layers: 1,
+            };
+            // GPU-side copy from the 3D scene output into @live
+            let mut encoder = device.create_command_encoder(
+                &wgpu::CommandEncoderDescriptor {
+                    label: Some("inject @live from 3D scene"),
+                },
+            );
+            encoder.copy_texture_to_texture(
+                source_texture.as_image_copy(),
+                live_tex.texture.as_image_copy(),
+                size,
+            );
+            queue.submit(std::iter::once(encoder.finish()));
+            self.live_texture_overridden = true;
         }
     }
 
