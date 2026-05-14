@@ -90,6 +90,8 @@ def wrap_glsl_with_mix(glsl: str) -> str:
 
 # Types excluded from drift pool
 EXCLUDED_TYPES = frozenset({
+    # Temporally discontinuous — produce flashing by design
+    "stutter", "glitch_block", "diff", "echo",
     "output", "content_layer", "solid", "strobe", "chroma_key",
     "luma_key", "circular_mask", "syrup", "waveform_render",
     "fluid_sim", "reaction_diffusion", "particle_system",
