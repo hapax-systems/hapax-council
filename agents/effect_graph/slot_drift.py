@@ -509,7 +509,8 @@ class SlotDriftEngine:
                 state.intensity = 0.0
                 state.phase = Phase.IDLE
                 state.idle_since = now
-                log.info("SlotDrift: slot %d (%s) → IDLE",
+                state._needs_recycle = True
+                log.info("SlotDrift: slot %d (%s) → IDLE (recycle queued)",
                          state.slot_idx, state.node_type)
 
     def _maybe_activate_next(self, now: float) -> None:
