@@ -149,56 +149,58 @@ PASSTHROUGH_MAP: dict[str, dict[str, float]] = {
     "displacement_map":     {"strength_x": 0.0, "strength_y": 0.0},
 }
 
-# Per-shader "active" target values for visible aesthetic effect
-ACTIVE_MAP: dict[str, dict[str, float]] = {
-    "colorgrade":           {"saturation": 0.6, "brightness": 1.3, "contrast": 1.2,
-                             "sepia": 0.3, "hue_rotate": 0.15},
-    "edge_detect":          {"threshold": 0.15},
-    "bloom":                {"alpha": 0.25},
-    "emboss":               {"strength": 0.8},
-    "sharpen":              {"amount": 0.4},
-    "invert":               {"strength": 0.7},
-    "vignette":             {"strength": 0.4},
-    "noise_overlay":        {"intensity": 0.05},
-    "scanlines":            {"opacity": 0.15},
-    "chromatic_aberration":  {"intensity": 0.8},
-    "posterize":            {"levels": 4.0},
-    "glitch_block":         {"intensity": 0.3},
-    "thermal":              {"intensity": 0.6},
-    "halftone":             {"dot_size": 6.0},
-    "dither":               {"color_levels": 4.0},
-    "feedback":             {"decay": 0.10},
-    "vhs":                  {"chroma_shift": 3.0},
-    "fisheye":              {"strength": 0.4},
-    "ascii":                {"cell_size": 8.0},
-    "pixsort":              {"sort_length": 80.0},
-    "nightvision_tint":     {"green_intensity": 0.7, "brightness": 1.8, "contrast": 1.3},
-    "threshold":            {"level": 0.5},
-    "sierpinski_lines":     {"opacity": 0.5},
-    "breathing":            {"amplitude": 0.04},
-    "echo":                 {"frame_count": 6.0},
-    "stutter":              {"freeze_chance": 0.12},
-    "voronoi_overlay":      {"edge_width": 0.04},
-    "palette":              {"saturation": 0.5, "brightness": 1.3, "contrast": 1.4},
-    "postprocess":          {"master_opacity": 0.8},
-    "kuwahara":             {"radius": 3.0},
-    "diff":                 {"threshold": 0.06},
-    "color_map":            {"blend": 0.8},
-    "drift":                {"amplitude": 0.8},
-    "mirror":               {"position": 0.25},
-    "kaleidoscope":         {"segments": 6.0},
-    "tile":                 {"count_x": 2.0, "count_y": 2.0},
-    "trail":                {"opacity": 0.3},
-    "transform":            {"scale_x": 1.05, "scale_y": 1.05, "rotation": 0.02},
-    "palette_remap":        {"blend": 0.8},
-    "palette_extract":      {"strip_opacity": 0.8},
-    "sierpinski_content":   {"intensity": 0.6},
-    "droste":               {"zoom_speed": 0.3, "spiral": 0.2},
-    "slitscan":             {"speed": 0.15},
-    "tunnel":               {"speed": 0.3, "distortion": 0.4},
-    "rutt_etra":            {"displacement": 0.5},
-    "warp":                 {"breath": 0.3, "slice_amplitude": 0.2, "rotate": 0.05, "zoom": 1.1},
-    "displacement_map":     {"strength_x": 0.15, "strength_y": 0.15},
+# Per-shader "active" target ranges — min/max for randomized activation.
+# Each activation picks a random point in these ranges, so the same shader
+# type never looks the same twice. Keys not listed use registry defaults.
+ACTIVE_RANGES: dict[str, dict[str, tuple[float, float]]] = {
+    "colorgrade":           {"saturation": (0.3, 1.8), "brightness": (0.7, 1.6), "contrast": (0.8, 1.6),
+                             "sepia": (0.0, 0.7), "hue_rotate": (0.0, 1.0)},
+    "edge_detect":          {"threshold": (0.05, 0.5)},
+    "bloom":                {"alpha": (0.1, 0.5)},
+    "emboss":               {"strength": (0.3, 1.0)},
+    "sharpen":              {"amount": (0.2, 0.8)},
+    "invert":               {"strength": (0.3, 1.0)},
+    "vignette":             {"strength": (0.2, 0.7)},
+    "noise_overlay":        {"intensity": (0.02, 0.12)},
+    "scanlines":            {"opacity": (0.05, 0.35)},
+    "chromatic_aberration":  {"intensity": (0.3, 1.5)},
+    "posterize":            {"levels": (2.0, 12.0)},
+    "glitch_block":         {"intensity": (0.1, 0.5)},
+    "thermal":              {"intensity": (0.3, 0.9)},
+    "halftone":             {"dot_size": (3.0, 12.0)},
+    "dither":               {"color_levels": (2.0, 12.0)},
+    "feedback":             {"decay": (0.04, 0.2)},
+    "vhs":                  {"chroma_shift": (1.0, 6.0)},
+    "fisheye":              {"strength": (0.15, 0.7)},
+    "ascii":                {"cell_size": (4.0, 14.0)},
+    "pixsort":              {"sort_length": (30.0, 150.0)},
+    "nightvision_tint":     {"green_intensity": (0.4, 1.0), "brightness": (1.2, 2.2), "contrast": (1.0, 1.6)},
+    "threshold":            {"level": (0.2, 0.8)},
+    "sierpinski_lines":     {"opacity": (0.2, 0.8)},
+    "breathing":            {"amplitude": (0.02, 0.08)},
+    "echo":                 {"frame_count": (2.0, 10.0)},
+    "stutter":              {"freeze_chance": (0.04, 0.25)},
+    "voronoi_overlay":      {"edge_width": (0.02, 0.08)},
+    "palette":              {"saturation": (0.2, 1.5), "brightness": (0.8, 1.6), "contrast": (0.8, 1.8)},
+    "postprocess":          {"master_opacity": (0.4, 1.0)},
+    "kuwahara":             {"radius": (1.0, 6.0)},
+    "diff":                 {"threshold": (0.03, 0.12)},
+    "color_map":            {"blend": (0.4, 1.0)},
+    "drift":                {"amplitude": (0.3, 1.2)},
+    "mirror":               {"position": (0.15, 0.45)},
+    "kaleidoscope":         {"segments": (3.0, 12.0)},
+    "tile":                 {"count_x": (2.0, 5.0), "count_y": (2.0, 5.0)},
+    "trail":                {"opacity": (0.1, 0.5)},
+    "transform":            {"scale_x": (0.95, 1.15), "scale_y": (0.95, 1.15), "rotation": (0.0, 0.08)},
+    "palette_remap":        {"blend": (0.4, 1.0)},
+    "palette_extract":      {"strip_opacity": (0.4, 1.0)},
+    "sierpinski_content":   {"intensity": (0.3, 0.9)},
+    "droste":               {"zoom_speed": (0.1, 0.5), "spiral": (0.05, 0.4)},
+    "slitscan":             {"speed": (0.05, 0.3)},
+    "tunnel":               {"speed": (0.1, 0.5), "distortion": (0.15, 0.7)},
+    "rutt_etra":            {"displacement": (0.2, 0.8)},
+    "warp":                 {"breath": (0.1, 0.5), "slice_amplitude": (0.05, 0.4), "rotate": (0.01, 0.1), "zoom": (0.95, 1.2)},
+    "displacement_map":     {"strength_x": (0.05, 0.3), "strength_y": (0.05, 0.3)},
 }
 
 # Curated initial pool: diverse visual character across the spectrum
@@ -339,6 +341,7 @@ class SlotDriftEngine:
             state.phase_start = now + delay
             state.phase_duration = FADE_IN_S * (0.8 + 0.4 * self._rng.random())
             state.idle_since = 0
+            state._active_target = self._random_active_target(state.node_type)
 
         self._last_activation = now
         self._next_stagger = STAGGER_S * (0.7 + 0.6 * self._rng.random())
@@ -442,12 +445,27 @@ class SlotDriftEngine:
         chosen.phase_start = now
         chosen.phase_duration = FADE_IN_S * (0.8 + 0.4 * self._rng.random())
         chosen.idle_since = 0
+        # Fresh randomized target — same shader type, different visual every time
+        chosen._active_target = self._random_active_target(chosen.node_type)
 
         self._last_activation = now
         self._next_stagger = STAGGER_S * (0.7 + 0.6 * self._rng.random())
 
         log.info("SlotDrift: activating slot %d (%s), %d now active",
                  chosen.slot_idx, chosen.node_type, active_count + 1)
+
+    def _random_active_target(self, node_type: str) -> dict[str, float]:
+        """Generate a randomized active target for this shader type.
+
+        Each activation picks a unique point within the shader's aesthetic
+        range. This is the systemic fix for "same effect" repetition — the
+        same shader type never produces the identical visual twice.
+        """
+        ranges = ACTIVE_RANGES.get(node_type, {})
+        target: dict[str, float] = {}
+        for key, (lo, hi) in ranges.items():
+            target[key] = self._rng.uniform(lo, hi)
+        return target
 
     def _interpolate_slot(self, state: SlotState, sp: SlotPipeline,
                           now: float) -> None:
@@ -459,9 +477,12 @@ class SlotDriftEngine:
         # u_mix controls passthrough blend
         sp._slot_base_params[idx]["mix"] = state.intensity
 
-        # Interpolate per-shader params
+        # Interpolate per-shader params toward this slot's randomized target
         passthrough = PASSTHROUGH_MAP.get(state.node_type, {})
-        active = ACTIVE_MAP.get(state.node_type, {})
+        active = getattr(state, '_active_target', None)
+        if active is None:
+            active = self._random_active_target(state.node_type)
+            state._active_target = active
 
         # Subtle wander for organic feel
         wander = 0.0
