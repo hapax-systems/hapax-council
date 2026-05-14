@@ -17,7 +17,16 @@ void main() {
     float t = u_time*0.015;
     float dx = u_drift_x*sin(t)*0.15/u_width;
     float dy = u_drift_y*cos(t*0.7)*0.15/u_height;
-    vec4 acc = texture2D(tex_accum, v_texcoord+vec2(dx,dy));
+    vec2 shifted = v_texcoord+vec2(dx,dy);
+    // Attenuate accumulation near frame edges to prevent corner ghost
+    // artifact from drifting temporal echoes.  The smoothstep window
+    // (~2.5 % of frame) is wide enough to suppress visible residue but
+    // narrow enough to leave the interior trail aesthetic untouched.
+    float edge_fade = smoothstep(0.0, 0.025, shifted.x)
+                    * smoothstep(0.0, 0.025, shifted.y)
+                    * smoothstep(0.0, 0.025, 1.0 - shifted.x)
+                    * smoothstep(0.0, 0.025, 1.0 - shifted.y);
+    vec4 acc = texture2D(tex_accum, shifted) * edge_fade;
     acc.rgb *= (1.0-u_fade);
     vec4 cur = texture2D(tex, v_texcoord);
     vec3 r;
