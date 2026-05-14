@@ -443,8 +443,11 @@ class SlotDriftEngine:
             self._interpolate_slot(state, sp, now)
 
         # Phase 4: Recycle idle shader fragments
-        if self._tick_count % 180 == 0:  # ~every 30s — one recycle per pass
-            self._maybe_recycle(sp, now)
+        # Timer-based recycle DISABLED — inline recycle on FALLING→IDLE
+        # handles all shader rotation. The timer caused double-recycling
+        # and churn that made slots swap fragments while still invisible.
+        # if self._tick_count % 180 == 0:
+        #     self._maybe_recycle(sp, now)
 
     def _advance_lifecycle(self, state: SlotState, now: float) -> None:
         """Advance a slot through its lifecycle phases."""
