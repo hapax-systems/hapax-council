@@ -10,6 +10,7 @@ uniform float u_brightness;    // multiplier
 uniform float u_contrast;      // multiplier
 uniform float u_sepia;         // 0-1 mix
 uniform float u_hue_rotate;    // degrees
+uniform float u_displacement;  // 0-1 luma-driven UV warp strength
 
 vec3 rgb2hsv(vec3 c) {
     vec4 K = vec4(0.0, -1.0/3.0, 2.0/3.0, -1.0);
@@ -27,7 +28,23 @@ vec3 hsv2rgb(vec3 c) {
 }
 
 void main() {
-    vec4 color = texture2D(tex, v_texcoord);
+    vec2 uv = v_texcoord;
+
+    // Displacement: warp UV based on luminance gradient of surrounding
+    // pixels.  At u_displacement=0 the shader behaves identically to the
+    // pre-displacement version.  At u_displacement=1 the warp is a
+    // subtle luma-driven ripple (max ~1% of frame width).
+    if (u_displacement > 0.001) {
+        float texel = 1.0 / 1280.0;  // approximate; works for 720-1920
+        float lR = dot(texture2D(tex, uv + vec2(texel, 0.0)).rgb, vec3(0.299, 0.587, 0.114));
+        float lL = dot(texture2D(tex, uv - vec2(texel, 0.0)).rgb, vec3(0.299, 0.587, 0.114));
+        float lU = dot(texture2D(tex, uv + vec2(0.0, texel)).rgb, vec3(0.299, 0.587, 0.114));
+        float lD = dot(texture2D(tex, uv - vec2(0.0, texel)).rgb, vec3(0.299, 0.587, 0.114));
+        vec2 grad = vec2(lR - lL, lU - lD);
+        uv += grad * u_displacement * 0.01;
+    }
+
+    vec4 color = texture2D(tex, uv);
 
     // Contrast
     color.rgb = (color.rgb - 0.5) * u_contrast + 0.5;
