@@ -36,6 +36,11 @@ def wrap_glsl_with_mix(glsl: str) -> str:
     At u_mix=0.0 the output is the unmodified input texture (passthrough),
     at u_mix=1.0 the output is the full effect. This gives EVERY shader a
     guaranteed passthrough path.
+
+    Strategy: save the original texture at the top of main(), let the shader
+    run its full logic (including any if/else branches that set gl_FragColor),
+    then AFTER all shader logic, mix the final gl_FragColor with the original.
+    This handles shaders with multiple gl_FragColor assignments correctly.
     """
     if "u_mix" in glsl:
         return glsl
@@ -57,6 +62,7 @@ def wrap_glsl_with_mix(glsl: str) -> str:
 
     result = "\n".join(lines)
 
+    # Find main() opening brace
     main_idx = result.find("void main")
     if main_idx == -1:
         return glsl
@@ -65,24 +71,20 @@ def wrap_glsl_with_mix(glsl: str) -> str:
     if brace_idx == -1:
         return glsl
 
+    # Insert original capture right after opening brace
     preamble = "\n    vec4 _drift_original = texture2D(tex, v_texcoord);\n"
     result = result[:brace_idx + 1] + preamble + result[brace_idx + 1:]
 
-    last_frag_idx = result.rfind("gl_FragColor")
-    if last_frag_idx == -1:
+    # Find the LAST closing brace of main() — this is where we append the mix
+    # Walk backwards from end of string to find it
+    last_brace = result.rfind("}")
+    if last_brace == -1:
         return glsl
 
-    semi_idx = result.find(";", last_frag_idx)
-    if semi_idx == -1:
-        return glsl
-
-    eq_idx = result.find("=", last_frag_idx)
-    if eq_idx == -1 or eq_idx > semi_idx:
-        return glsl
-
-    original_value = result[eq_idx + 1:semi_idx].strip()
-    mix_assignment = f" mix(_drift_original, {original_value}, u_mix)"
-    result = result[:eq_idx + 1] + mix_assignment + result[semi_idx:]
+    # Insert the final mix BEFORE the closing brace
+    # This runs AFTER all shader logic, regardless of which branch set gl_FragColor
+    postamble = "\n    gl_FragColor = mix(_drift_original, gl_FragColor, u_mix);\n"
+    result = result[:last_brace] + postamble + result[last_brace:]
 
     return result
 
