@@ -91,7 +91,7 @@ def _layout_source_ids_for_enabled_stages(layout: Layout) -> list[str]:
     active: list[str] = []
     seen: set[str] = set()
     for assignment in layout.assignments:
-        stage = getattr(assignment, "render_stage", "post_fx")
+        stage = getattr(assignment, "render_stage", "pre_fx")
         if (
             stage not in enabled_stages
             or assignment.source in seen
