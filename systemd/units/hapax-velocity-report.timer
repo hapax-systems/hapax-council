@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily velocity and quality metrics report
+
+[Timer]
+OnCalendar=*-*-* 23:55:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
