@@ -55,6 +55,8 @@ _STATE_MATRIX: dict[tuple[str, str], PresetFamily] = {
             "vinyl_dust",
             "chamber_feedback_breathing",
             "chrome_mirror_brushed",
+            "ascii_preset",
+            "heartbeat",
         )
     ),
     ("nominal", "medium"): PresetFamily(
@@ -74,6 +76,7 @@ _STATE_MATRIX: dict[tuple[str, str], PresetFamily] = {
             "broadcast_vhs_decay",
             "tape_wow_flutter",
             "circular_porthole_view",
+            "chamber_feedback_dense",
         )
     ),
     ("nominal", "high"): PresetFamily(
@@ -91,6 +94,7 @@ _STATE_MATRIX: dict[tuple[str, str], PresetFamily] = {
             "kaleido_fractal_dense",
             "bloom_solar_flare",
             "glitch_y2k_chroma",
+            "arcade_8bit_pixel",
         )
     ),
     # SEEKING — exploration / curiosity
@@ -111,6 +115,8 @@ _STATE_MATRIX: dict[tuple[str, str], PresetFamily] = {
             "cellular_reaction",
             "chrome_mirror_polished",
             "sculpture",
+            "ascii_preset",
+            "arcade_palette_remap",
         )
     ),
     ("seeking", "medium"): PresetFamily(
@@ -129,6 +135,9 @@ _STATE_MATRIX: dict[tuple[str, str], PresetFamily] = {
             "diff_motion_trail",
             "kaleido_fractal_mirror",
             "liquid_flow_fluid",
+            "arcade_8bit_pixel",
+            "mirror_rorschach",
+            "granular_tile_grid",
         )
     ),
     ("seeking", "high"): PresetFamily(
@@ -144,6 +153,7 @@ _STATE_MATRIX: dict[tuple[str, str], PresetFamily] = {
             "antivapor_thresh",
             "fisheye_pulse",
             "bloom_solar_flare",
+            "mirror_rorschach",
         )
     ),
     # CAUTIOUS — reserved / careful
@@ -159,6 +169,8 @@ _STATE_MATRIX: dict[tuple[str, str], PresetFamily] = {
             "water_ripple_surface",
             "paper_fold_origami",
             "circular_lens_focus",
+            "heartbeat",
+            "thermal_preset",
         )
     ),
     ("cautious", "medium"): PresetFamily(
@@ -172,6 +184,7 @@ _STATE_MATRIX: dict[tuple[str, str], PresetFamily] = {
             "diff_motion_thermal",
             "cellular_kuwahara_paint",
             "chrome_mirror_brushed",
+            "chamber_feedback_dense",
         )
     ),
     ("cautious", "high"): PresetFamily(
@@ -196,6 +209,8 @@ _STATE_MATRIX: dict[tuple[str, str], PresetFamily] = {
             "vinyl_pop_static",
             "antivapor_grit",
             "mono_print_woodcut",
+            "thermal_preset",
+            "granular_tile_grid",
         )
     ),
     ("degraded", "medium"): PresetFamily(
@@ -208,6 +223,7 @@ _STATE_MATRIX: dict[tuple[str, str], PresetFamily] = {
             "xerox_smudge_streak",
             "diff_preset",
             "antivapor_thresh",
+            "arcade_palette_remap",
         )
     ),
     ("degraded", "high"): PresetFamily(
