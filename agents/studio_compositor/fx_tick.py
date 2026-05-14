@@ -11,6 +11,10 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+# ── Drift engine state ────────────────────────────────────────────────
+_drift_state = None
+_drift_last_t = 0.0
+
 # ── Stimmung stance reader ────────────────────────────────────────────────────
 #
 # Halftone-monoculture root cause (researcher audit, 2026-05-03): the
@@ -169,217 +173,9 @@ def _pin_slots_to_passthrough(compositor: Any) -> None:
             log.debug("degraded hold record failed", exc_info=True)
 
 
-# ── Continuous parameter drift (LSC-TRANSITION-001) ─────────────────────────
-#
-# Architecture: activate_plan owns shader compilation and initial param
-# setup.  The drift engine owns post-activation param convergence.
-#
-# Flow:
-# 1. Before try_graph_preset: capture current slot params + assignments
-# 2. try_graph_preset loads the new preset normally (shaders recompile)
-# 3. After load: on shared-type slots, restore old params
-# 4. Drift engine converges old → new over τ seconds
-#
-# This eliminates the race condition: activate_plan and drift never
-# write to the same slot simultaneously.
-
-from agents.effect_graph.parameter_drift import (
-    ParameterDriftState,
-    drift_tick,
-    init_drift_state,
-    set_drift_target,
-    snapshot_current_state,
-)
-
-_drift_state: ParameterDriftState | None = None
-_drift_last_tick_t: float = 0.0
-
-# Pending drift transition state (keyed by node_type, not slot index)
-_pending_drift_old_params: dict[str, dict[str, float]] = {}
-_pending_drift_targets: dict[str, dict[str, float]] = {}
-_pending_drift_preset: str = ""
-
-
-def _ensure_drift_state(compositor: Any) -> ParameterDriftState | None:
-    """Lazily initialize drift state from current pipeline.
-
-    Only initializes AFTER at least one slot has been assigned (i.e.,
-    after the first activate_plan has run).  Before that, there's
-    nothing to drift.
-    """
-    global _drift_state
-    if _drift_state is not None and _drift_state.initialized:
-        return _drift_state
-
-    sp = getattr(compositor, "_slot_pipeline", None)
-    if sp is None:
-        return None
-
-    # Don't initialize until at least one slot is assigned
-    if not any(a is not None for a in sp._slot_assignments):
-        return None
-
-    _drift_state = init_drift_state(sp.num_slots)
-    snapshot_current_state(
-        _drift_state,
-        sp._slot_assignments,
-        sp._slot_base_params,
-        registry=sp._registry,
-    )
-    return _drift_state
-
-
-def _dispatch_atmospheric_transition(compositor: Any, preset_name: str) -> None:
-    """Save old params and prepare drift targets for the incoming preset.
-
-    Called AFTER try_graph_preset returns True, BEFORE activate_plan
-    runs (deferred via GLib.idle_add).
-    """
-    global _pending_drift_old_params, _pending_drift_targets, _pending_drift_preset
-
-    from .effects import extract_preset_slot_params
-
-    state = _ensure_drift_state(compositor)
-    if state is None:
-        return
-
-    target_nodes = extract_preset_slot_params(preset_name)
-    if target_nodes is None:
-        log.debug("drift: could not extract params for preset %s", preset_name)
-        return
-
-    # Build target lookup by node type
-    target_by_type: dict[str, dict[str, float]] = {}
-    for node_type, params in target_nodes:
-        if node_type:
-            target_by_type[node_type] = params
-
-    # Store by NODE TYPE (not slot index) so we can match after
-    # activate_plan potentially reassigns slots to different indices
-    old_by_type: dict[str, dict[str, float]] = {}
-    target_by_type_filtered: dict[str, dict[str, float]] = {}
-
-    for i, slot in enumerate(state.slots):
-        if slot.node_type is None:
-            continue
-        if slot.node_type in target_by_type:
-            old_by_type[slot.node_type] = dict(slot.current)
-            target_by_type_filtered[slot.node_type] = {
-                k: v for k, v in target_by_type[slot.node_type].items()
-                if isinstance(v, (int, float)) and k not in ("time", "width", "height")
-            }
-
-    _pending_drift_old_params = old_by_type      # keyed by node_type
-    _pending_drift_targets = target_by_type_filtered  # keyed by node_type
-    _pending_drift_preset = preset_name
-
-    log.info(
-        "drift pending: preset=%s driftable=%d types=%s",
-        preset_name, len(target_by_type_filtered),
-        ",".join(sorted(target_by_type_filtered.keys())),
-    )
-
-
-def tick_atmospheric_fade(compositor: Any) -> None:
-    """Advance parameter drift — converge shared-slot params toward targets.
-
-    Called from fx_tick_callback at render rate (~30fps).
-
-    On detecting activate_plan has run (slot assignments changed):
-    1. Re-snapshot to learn new slot types
-    2. Restore OLD params as 'current' on shared-type non-temporal slots
-    3. Set NEW params as 'target'
-    4. drift_tick interpolates old → new on subsequent ticks
-    """
-    global _drift_last_tick_t
-    global _pending_drift_old_params, _pending_drift_targets, _pending_drift_preset
-
-    state = _ensure_drift_state(compositor)
-    if state is None:
-        return
-
-    sp = getattr(compositor, "_slot_pipeline", None)
-    if sp is None:
-        return
-
-    # Detect if activate_plan has run since our last snapshot
-    assignments_changed = False
-    for i, slot in enumerate(state.slots):
-        if i >= sp.num_slots:
-            break
-        current_type = sp._slot_assignments[i]
-        if slot.node_type != current_type and current_type is not None:
-            assignments_changed = True
-            break
-
-    if assignments_changed and not _pending_drift_targets:
-        # Slots changed but no pending drift — just re-snapshot
-        # (happens on first rotation or recruitment-driven loads)
-        snapshot_current_state(
-            state,
-            sp._slot_assignments,
-            sp._slot_base_params,
-            registry=sp._registry,
-        )
-
-    if assignments_changed and _pending_drift_targets:
-        # activate_plan has run — re-snapshot for new slot types
-        snapshot_current_state(
-            state,
-            sp._slot_assignments,
-            sp._slot_base_params,
-            registry=sp._registry,
-        )
-
-        # Set drift targets. Do NOT restore old params — glfeedback
-        # slots black-screen if we reset uniforms backward. 'current'
-        # is already set by snapshot_current_state (= new preset values).
-        # drift_tick random-walks from there.
-        applied = 0
-        applied_types = []
-        for i, slot in enumerate(state.slots):
-            ntype = slot.node_type
-            if ntype is None:
-                continue
-            if ntype not in _pending_drift_targets:
-                continue
-            slot.target = dict(_pending_drift_targets[ntype])
-            applied += 1
-            applied_types.append(ntype)
-
-        log.info(
-            "drift activated: preset=%s applied=%d slots types=%s",
-            _pending_drift_preset, applied, ",".join(applied_types),
-        )
-        _pending_drift_old_params = {}
-        _pending_drift_targets = {}
-        _pending_drift_preset = ""
-
-    now = time.monotonic()
-    if _drift_last_tick_t == 0.0:
-        _drift_last_tick_t = now
-        return
-
-    dt = now - _drift_last_tick_t
-    _drift_last_tick_t = now
-
-    if dt <= 0 or dt > 5.0:
-        return
-
-    stance = _read_stimmung_stance()
-    updates = drift_tick(state, dt, stance=stance)
-
-    if not updates:
-        return
-
-    for slot_idx, params in updates.items():
-        sp.update_slot_base_params(slot_idx, params)
-
-
 def tick_governance(compositor: Any, t: float) -> None:
-    """Perception-visual governance tick."""
-    if compositor._graph_runtime is None or not hasattr(compositor, "_atmospheric_selector"):
-        return
+    """Perception-visual governance tick — DISABLED for continuous drift."""
+    return  # Continuous drift mode: no preset rotation
 
     # Task #122: skip preset-family rotation while degraded. Governance
     # would otherwise keep swapping presets during a service restart
@@ -425,9 +221,6 @@ def tick_governance(compositor: Any, t: float) -> None:
         if _preset_load_backoff_active(target):
             return
         if try_graph_preset(compositor, target):
-            # Set drift targets — the drift engine will interpolate
-            # from current params toward the new preset's params
-            _dispatch_atmospheric_transition(compositor, target)
             compositor._current_preset_name = target
         else:
             _record_atmospheric_preset_load_failed(compositor, target)
@@ -575,6 +368,7 @@ def tick_slot_pipeline(compositor: Any, t: float) -> None:
             else None
         )
         if defn and defn.glsl_source:
+
             # Drop #43 FXT-1: cache the set of implicit time-uniform
             # keys this shader references on defn itself. Without the
             # cache, every tick does 3 string-contains scans × 24 slots
@@ -589,9 +383,53 @@ def tick_slot_pipeline(compositor: Any, t: float) -> None:
             if implicit_keys:
                 implicit = {k: time_uniforms[k] for k in implicit_keys}
                 compositor._slot_pipeline._slot_base_params[i].update(implicit)
+            if implicit_keys:
                 if compositor._slot_pipeline._slot_is_temporal[i]:
                     compositor._slot_pipeline._apply_glfeedback_uniforms(i)
                 else:
                     compositor._slot_pipeline._set_uniforms(
                         i, compositor._slot_pipeline._slot_base_params[i]
                     )
+
+    # ── Continuous slot-pool intensity drift ────────────────────
+    _run_slot_drift(compositor, t)
+
+
+# ── Slot-pool drift (replaces graph-topology + parameter drift) ──
+_slot_drift_engine = None
+
+
+def _run_slot_drift(compositor: Any, t: float) -> None:
+    """Walk intensity parameters across the pre-loaded slot pool.
+
+    Architecture per ``feedback_no_presets_use_parametric_modulation``:
+    all slots are pre-loaded at boot with diverse shaders at passthrough
+    intensity. The LFO + perturbation walker gradually brings 2-4 effects
+    into visible range, creating continuous, indeterminate visual evolution
+    without hard cuts or shader-recompile blinks.
+    """
+    global _slot_drift_engine
+
+    sp = compositor._slot_pipeline
+    if sp is None:
+        return
+
+    rt = compositor._graph_runtime
+    if rt is None:
+        return
+
+    if _slot_drift_engine is None:
+        from agents.effect_graph.slot_drift import SlotDriftEngine
+
+        _slot_drift_engine = SlotDriftEngine(
+            registry=rt._registry,
+            seed=int(time.time()) % 100000,
+        )
+        _slot_drift_engine.boot(sp)
+        return
+
+    if not _slot_drift_engine._booted:
+        _slot_drift_engine.boot(sp)
+        return
+
+    _slot_drift_engine.tick(sp, t)

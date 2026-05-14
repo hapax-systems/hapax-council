@@ -503,36 +503,6 @@ class SlotPipeline:
             else:
                 self._set_uniforms(slot_idx, self._slot_base_params[slot_idx])
 
-    def update_slot_base_params(self, slot_idx: int, params: dict[str, Any]) -> None:
-        """Replace the drifting baseline params for a slot.
-
-        Unlike ``update_node_uniforms`` (which adds reactive deltas on top
-        of the preset base), this replaces the base values themselves.
-        Used by the parameter drift engine to evolve the baseline
-        continuously.  Values are clamped to manifest + live-surface
-        safety bounds.
-        """
-        if slot_idx >= self._num_slots or slot_idx >= len(self._slots):
-            return
-        assigned = self._slot_assignments[slot_idx]
-        if assigned is None:
-            return
-        for key, val in params.items():
-            if isinstance(val, (int, float)):
-                self._slot_base_params[slot_idx][key] = val
-                # Also update preset params so the modulator's additive
-                # base stays in sync with the drifting baseline
-                if hasattr(self, "_slot_preset_params"):
-                    self._slot_preset_params[slot_idx][key] = val
-        self._slot_base_params[slot_idx] = self._bounded_params(
-            assigned,
-            self._slot_base_params[slot_idx],
-        )
-        if self._slot_is_temporal[slot_idx]:
-            self._apply_glfeedback_uniforms(slot_idx)
-        else:
-            self._set_uniforms(slot_idx, self._slot_base_params[slot_idx])
-
     def _set_uniforms(self, slot_idx: int, params: dict[str, Any]) -> None:
         """Build uniform string from params and set on slot element."""
         parts = []
