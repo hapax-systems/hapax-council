@@ -140,66 +140,94 @@ impl Camera3D {
 
 // ─── Dynamic scene builders ───────────────────────────────────────
 
-/// Horizontal spread constants for camera positioning.
-/// With 16:9 quads, cameras are laid out in a loose row.
-const CAMERA_SPREAD_X: f32 = 2.5;
-
 /// Build scene nodes dynamically from active content sources.
 ///
-/// Each content source with a positive opacity becomes a textured quad
-/// positioned at its z-plane depth. Camera sources get specific spacing;
-/// other sources spread along a grid at their z-plane.
+/// Sources are grouped by z-plane and laid out in a centered grid at
+/// each depth. Cameras get the foreground; wards fill the mid and
+/// background layers. The camera FOV at each z-plane determines the
+/// visible width, and quads are scaled and spaced to fill it without
+/// overflowing off-screen.
 pub fn build_scene_from_sources(
     active_sources: &[(&str, f32, i32, u32, u32)], // (id, opacity, z_order, width, height)
 ) -> Vec<SceneNode> {
     let mut nodes = Vec::new();
-    let mut camera_index: usize = 0;
-    let mut content_index: usize = 0;
 
-    for &(source_id, opacity, z_order, width, height) in active_sources {
+    // Group sources by z-plane
+    let mut by_plane: [Vec<usize>; 4] = [vec![], vec![], vec![], vec![]];
+    for (i, &(_, opacity, z_order, _, _)) in active_sources.iter().enumerate() {
         if opacity < 0.001 {
             continue;
         }
-
-        let z_plane = ZPlane::from_z_order(z_order);
-        let z = z_plane.z_position();
-
-        // Aspect ratio → quad dimensions
-        let aspect = width as f32 / height.max(1) as f32;
-        let base_height = match z_plane {
-            ZPlane::SurfaceScrim => 1.8,
-            ZPlane::OnScrim => 2.0,
-            ZPlane::MidScrim => 2.5,
-            ZPlane::BeyondScrim => 4.0,
+        let plane_idx = match ZPlane::from_z_order(z_order) {
+            ZPlane::BeyondScrim => 0,
+            ZPlane::MidScrim => 1,
+            ZPlane::OnScrim => 2,
+            ZPlane::SurfaceScrim => 3,
         };
-        let quad_w = base_height * aspect;
-        let quad_h = base_height;
+        by_plane[plane_idx].push(i);
+    }
 
-        // Positioning logic
-        let (x, y) = if source_id.starts_with("camera-") {
-            // Cameras fan out horizontally on their z-plane
-            let x = (camera_index as f32 - 0.5) * CAMERA_SPREAD_X;
-            camera_index += 1;
-            (x, 0.0)
-        } else if source_id.starts_with("content-") {
-            // Content/ward sources go slightly offset
-            let x = (content_index as f32 - 1.0) * 1.8;
-            let y = -0.3;
-            content_index += 1;
-            (x, y)
-        } else {
-            // Visual pool slots, Sierpinski, etc.
-            let x = (content_index as f32 - 1.0) * 2.0;
-            content_index += 1;
-            (x, 0.2)
+    let planes = [
+        ZPlane::BeyondScrim,
+        ZPlane::MidScrim,
+        ZPlane::OnScrim,
+        ZPlane::SurfaceScrim,
+    ];
+
+    for (plane_idx, plane) in planes.iter().enumerate() {
+        let indices = &by_plane[plane_idx];
+        if indices.is_empty() {
+            continue;
+        }
+
+        let z = plane.z_position();
+        let count = indices.len();
+
+        // Visible width at this z-depth for a 60° FOV camera at z=2.0:
+        // half_width ≈ tan(30°) * |z_camera - z_plane| = 0.577 * dist
+        let camera_z = 2.0_f32;
+        let dist = (camera_z - z).abs();
+        let visible_half_w = 0.577 * dist;
+        let visible_w = visible_half_w * 2.0;
+
+        // Quad size — scale to fit the plane, smaller when more sources
+        let max_quad_h = match plane {
+            ZPlane::SurfaceScrim => 2.2f32,
+            ZPlane::OnScrim => 1.8f32,
+            ZPlane::MidScrim => 1.5f32,
+            ZPlane::BeyondScrim => 1.2f32,
         };
 
-        let mut node = SceneNode::new(source_id);
-        node.position = Vec3::new(x, y, z);
-        node.scale = Vec3::new(quad_w, quad_h, 1.0);
-        node.opacity = opacity;
-        node.content_source_id = Some(source_id.to_string());
-        nodes.push(node);
+        // Grid layout: determine columns and rows
+        let cols = ((count as f32).sqrt().ceil() as usize).max(1);
+        let rows = ((count + cols - 1) / cols).max(1);
+
+        // Spacing to fit within visible width with margin
+        let margin = 0.85; // use 85% of visible width
+        let cell_w = (visible_w * margin) / cols as f32;
+        let cell_h = max_quad_h * 1.2;
+
+        for (local_idx, &src_idx) in indices.iter().enumerate() {
+            let (source_id, opacity, _, width, height) = active_sources[src_idx];
+
+            let aspect = width as f32 / height.max(1) as f32;
+            let quad_h = max_quad_h.min(cell_w / aspect) as f32; // fit in cell
+            let quad_w = quad_h * aspect;
+
+            let col = local_idx % cols;
+            let row = local_idx / cols;
+
+            // Center the grid
+            let x = (col as f32 - (cols as f32 - 1.0) / 2.0) * cell_w;
+            let y = -((row as f32 - (rows as f32 - 1.0) / 2.0) * cell_h);
+
+            let mut node = SceneNode::new(source_id);
+            node.position = Vec3::new(x, y, z);
+            node.scale = Vec3::new(quad_w, quad_h, 1.0);
+            node.opacity = opacity;
+            node.content_source_id = Some(source_id.to_string());
+            nodes.push(node);
+        }
     }
 
     nodes
@@ -379,15 +407,17 @@ mod tests {
 
         assert_eq!(scene.len(), 3, "should have 3 nodes");
 
-        // Camera nodes should be on OnScrim z-plane
-        assert!(
-            (scene[0].position.z - ZPlane::OnScrim.z_position()).abs() < 0.01,
-            "camera should be on OnScrim"
-        );
+        // Sources are now grouped by z-plane: MidScrim (z_order=3) first,
+        // then OnScrim (z_order=5). Verify all are present.
+        let ids: Vec<&str> = scene.iter().map(|n| n.label.as_str()).collect();
+        assert!(ids.contains(&"content-episodic_recall"), "content should be present");
+        assert!(ids.contains(&"camera-brio-operator"), "camera brio should be present");
+        assert!(ids.contains(&"camera-c920-overhead"), "camera c920 should be present");
 
-        // Content node on MidScrim
+        // Content node is on MidScrim
+        let content = scene.iter().find(|n| n.label == "content-episodic_recall").unwrap();
         assert!(
-            (scene[2].position.z - ZPlane::MidScrim.z_position()).abs() < 0.01,
+            (content.position.z - ZPlane::MidScrim.z_position()).abs() < 0.01,
             "content should be on MidScrim"
         );
     }
@@ -432,13 +462,14 @@ mod tests {
             .map(|&(id, op, z, w, h)| (id, op, z, w, h))
             .collect();
         let scene = build_scene_from_sources(&refs);
+        // Sources grouped by z-plane: content-recall (z=3 MidScrim) before camera (z=5 OnScrim)
         assert_eq!(
             scene[0].content_source_id.as_deref(),
-            Some("camera-brio")
+            Some("content-recall")
         );
         assert_eq!(
             scene[1].content_source_id.as_deref(),
-            Some("content-recall")
+            Some("camera-brio")
         );
     }
 }

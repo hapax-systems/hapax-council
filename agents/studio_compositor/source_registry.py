@@ -219,6 +219,7 @@ class SourceRegistry:
                 natural_w=natural_w,
                 natural_h=natural_h,
                 budget_tracker=budget_tracker,
+                publish_to_source_protocol=True,
             )
         if source.backend == "shm_rgba":
             from agents.studio_compositor.homage.substrate_source import (
