@@ -169,6 +169,16 @@ systemctl --user daemon-reload
   `agents/publication_bus/surface_registry.py` so the orchestrator
   cannot reach it at runtime. The unit had been linked but never
   active (operator never bootstrapped `HAPAX_DISCORD_WEBHOOK_URL`).
+- `hapax-environmental-emphasis.service`, `hapax-environmental-emphasis.timer`
+    — continuous-loop emphasis timer driver and its companion timer.
+    Unit files and the `scripts/environmental_emphasis_tick.py` script were
+    removed from the repo; stale symlinks discovered 2026-05-14 pointing to
+    the deleted paths.
+- `hapax-visual-pool-snapshot-harvester.service`,
+    `hapax-visual-pool-snapshot-harvester.timer` — visual pool snapshot
+    harvester for compositor frame capture. Unit files and the
+    `scripts/visual-pool-snapshot-harvester.py` script were removed from
+    the repo; stale symlinks discovered 2026-05-14.
 
 **Newly installed timers are auto-enabled.** As of the audit-followups-e1 PR, `install-units.sh` runs `systemctl --user enable --now <name>.timer` for every timer file it sees for the first time. Existing timers are left alone (re-running is idempotent). To suppress this for a one-off install, set `SKIP_TIMER_ENABLE=1` before running the script (intentionally not a flag — disabling auto-enable is the rare case).
 

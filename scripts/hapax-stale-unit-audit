@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Audit systemd user unit symlinks for staleness.
+
+Scans ~/.config/systemd/user/ for symlinks whose targets no longer exist.
+These indicate units that were removed from the repo but not properly
+decommissioned via install-units.sh.
+
+Exit codes:
+  0 — no stale symlinks found
+  1 — stale symlinks detected
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+
+def find_stale_symlinks(
+    unit_dir: Path | None = None,
+) -> list[dict[str, str]]:
+    """Find symlinks in the systemd user unit directory that point to missing targets."""
+    if unit_dir is None:
+        unit_dir = Path.home() / ".config" / "systemd" / "user"
+
+    stale: list[dict[str, str]] = []
+    if not unit_dir.is_dir():
+        return stale
+
+    for entry in sorted(unit_dir.iterdir()):
+        if not entry.is_symlink():
+            continue
+        target = entry.resolve()
+        # Only check symlinks that point to a hapax-council repo path
+        target_str = str(entry.readlink())
+        if "hapax-council" not in target_str and "hapax-" not in entry.name:
+            continue
+        if not target.exists():
+            stale.append({
+                "name": entry.name,
+                "symlink": str(entry),
+                "target": target_str,
+                "status": "stale",
+            })
+
+    return stale
+
+
+def main() -> int:
+    use_json = "--json" in sys.argv
+    custom_dir = None
+    for i, arg in enumerate(sys.argv[1:], 1):
+        if arg == "--dir" and i + 1 < len(sys.argv):
+            custom_dir = Path(sys.argv[i + 1])
+
+    stale = find_stale_symlinks(custom_dir)
+
+    if use_json:
+        print(json.dumps({"stale_units": stale, "count": len(stale)}, indent=2))
+    else:
+        if stale:
+            for s in stale:
+                print(f"  ✗ {s['name']} → {s['target']} (MISSING)")
+            print(f"\nSTALE: {len(stale)} unit symlink(s) point to missing targets")
+            print("Fix: add to DECOMMISSIONED_UNITS in systemd/scripts/install-units.sh")
+        else:
+            print("OK: no stale unit symlinks found")
+
+    return 1 if stale else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
