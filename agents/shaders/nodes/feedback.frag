@@ -22,7 +22,13 @@ void main() {
     uv = mat2(cs, -sn, sn, cs) * uv;
     uv /= u_zoom;
     uv += center;
-    vec4 acc = texture2D(tex_accum, uv);
+    // Attenuate accumulation near frame edges to prevent corner ghost
+    // artifact from zoom/rotate pushing content beyond frame boundaries.
+    float edge_fade = smoothstep(0.0, 0.025, uv.x)
+                    * smoothstep(0.0, 0.025, uv.y)
+                    * smoothstep(0.0, 0.025, 1.0 - uv.x)
+                    * smoothstep(0.0, 0.025, 1.0 - uv.y);
+    vec4 acc = texture2D(tex_accum, uv) * edge_fade;
     // Trace-aware decay: ghostly afterimage where content dwelt
     vec2 trace_center = vec2(u_trace_center_x, u_trace_center_y);
     float dist_to_trace = distance(v_texcoord, trace_center);
