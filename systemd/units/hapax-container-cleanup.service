@@ -1,0 +1,12 @@
+[Unit]
+Description=Hapax Container Cleanup — remove orphaned MCP containers
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-container-cleanup
+WorkingDirectory=/home/hapax
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+MemoryMax=128M
+SyslogIdentifier=hapax-container-cleanup
