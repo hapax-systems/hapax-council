@@ -356,6 +356,20 @@ class LocalMusicPlayer:
         # (chat / Hapax cue / operator command) when recording plays.
         self._auto_written_mtime: float = 0.0
         self._egress_gate = EgressManifestGate(producer_id="local_music_player")
+        # Consecutive-failure backoff: prevents death spiral when
+        # every track fails (e.g. yt-dlp SoundCloud 403). After
+        # N consecutive failures, sleep min(2^N, 60) seconds before
+        # auto-recruiting next track. Reset on successful playback
+        # (process runs > _MIN_SUCCESSFUL_PLAY_S seconds).
+        self._consecutive_failures: int = 0
+        self._playback_start_time: float = 0.0
+        # Deferred play recording: don't record_play or mark_played
+        # until the playback pipeline has run long enough to confirm
+        # it's actually playing audio, not failing immediately.
+        self._pending_play_record: dict | None = None
+        self._play_verified: bool = False
+        self._pending_play_by: str = "programmer"
+        self._pending_play_selection: dict | None = None
 
     def stop(self) -> None:
         """Stop any in-flight playback and exit the loop."""
@@ -478,18 +492,18 @@ class LocalMusicPlayer:
                     track_path,
                 )
                 self._current_yt = _spawn_process(
-                    yt_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+                    yt_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
                 )
                 self._current_ffmpeg = _spawn_process(
                     ffmpeg_cmd,
                     stdin=self._current_yt.stdout,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
                 )
                 self._current_proc = _spawn_process(
                     pw_cmd,
                     stdin=self._current_ffmpeg.stdout,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
                 )
                 # Allow upstream stages to receive SIGPIPE if a downstream stage exits.
                 if self._current_yt.stdout is not None:
@@ -499,17 +513,23 @@ class LocalMusicPlayer:
             else:
                 cmd = _build_local_pwcat(track_path, sink=sink)
                 log.info("playing local file via pw-cat (sink=%s): %s", sink, track_path)
-                self._current_proc = _spawn_process(cmd, stderr=subprocess.DEVNULL)
+                self._current_proc = _spawn_process(cmd, stderr=subprocess.PIPE)
         except FileNotFoundError as exc:
             log.warning("playback tool missing (%s); skipping", exc)
             self._kill_current()
             return
 
-        # Mark-played in the repo (best-effort; doesn't block playback).
-        try:
-            self._mark_played(track_path, source=source)
-        except Exception:
-            log.debug("mark_played failed for %s", track_path, exc_info=True)
+        # Record the playback start time for verification and stash
+        # the pending play record. mark_played and record_play are
+        # deferred until _maybe_verify_playback confirms the pipeline
+        # has been running long enough (prevents history pollution
+        # from instant yt-dlp failures).
+        self._playback_start_time = time.time()
+        self._play_verified = False
+        self._pending_play_record = {
+            "track_path": track_path,
+            "source": source,
+        }
 
     def _mark_played(self, track_path: str, *, source: str | None = None) -> None:
         # Local repo for filesystem paths, SC repo for URLs.
@@ -612,6 +632,12 @@ class LocalMusicPlayer:
             log.debug("attribution clear failed", exc_info=True)
         return True
 
+    # Minimum seconds a playback process must run before we consider
+    # it a "successful" play (for deferred recording and backoff reset).
+    _MIN_SUCCESSFUL_PLAY_S = 10.0
+    # Maximum backoff seconds on consecutive failures.
+    _MAX_BACKOFF_S = 60.0
+
     def _current_proc_alive(self) -> bool:
         """True when the current playback chain is still producing audio.
 
@@ -626,14 +652,111 @@ class LocalMusicPlayer:
         except OSError:
             return False
 
+    def _drain_subprocess_stderr(self) -> None:
+        """Read and log stderr from finished subprocesses.
+
+        Called when a playback pipeline exits so yt-dlp 403 errors,
+        ffmpeg decode failures, and pw-cat connection errors are
+        visible in the journal instead of silently discarded.
+        """
+        for name, proc in [
+            ("yt-dlp", self._current_yt),
+            ("ffmpeg", self._current_ffmpeg),
+            ("pw-cat", self._current_proc),
+        ]:
+            if proc is None:
+                continue
+            if proc.stderr is None:
+                continue
+            try:
+                stderr_bytes = proc.stderr.read(4096)  # cap to avoid OOM
+                if stderr_bytes:
+                    stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+                    if stderr_text:
+                        log.warning("subprocess %s stderr: %s", name, stderr_text)
+            except (OSError, ValueError):
+                pass
+
+    def _maybe_verify_playback(self) -> None:
+        """Check if current playback has run long enough to be considered
+        successful. If so, execute the deferred mark_played and record_play.
+
+        Called on every tick while a track is playing.
+        """
+        if self._play_verified:
+            return
+        if self._pending_play_record is None:
+            return
+        if not self._current_proc_alive():
+            return
+        elapsed = time.time() - self._playback_start_time
+        if elapsed < self._MIN_SUCCESSFUL_PLAY_S:
+            return
+        # Playback confirmed — reset failure counter and commit the play.
+        self._play_verified = True
+        self._consecutive_failures = 0
+        track_path = self._pending_play_record["track_path"]
+        source = self._pending_play_record["source"]
+        try:
+            self._mark_played(track_path, source=source)
+        except Exception:
+            log.debug("mark_played failed for %s", track_path, exc_info=True)
+        # Now call record_play on the programmer (deferred from tick).
+        if self._programmer is not None and self._pending_play_selection is not None:
+            record = getattr(self._programmer, "record_play", None)
+            if record is not None:
+                sel = self._pending_play_selection
+                try:
+                    record(
+                        path=str(sel.get("path", "")),
+                        title=sel.get("title"),
+                        artist=sel.get("artist"),
+                        source=str(sel.get("source") or "local"),
+                        by=self._pending_play_by,
+                    )
+                except Exception:
+                    log.warning("programmer.record_play() raised", exc_info=True)
+        log.debug("playback verified after %.1fs: %s", elapsed, track_path)
+
+    def _handle_playback_exit(self) -> None:
+        """Called when the current playback pipeline has exited.
+
+        Drains subprocess stderr for logging, detects rapid failures
+        for backoff, and cleans up pending play records.
+        """
+        self._drain_subprocess_stderr()
+        elapsed = time.time() - self._playback_start_time if self._playback_start_time else 0.0
+        if self._playback_start_time and elapsed < self._MIN_SUCCESSFUL_PLAY_S:
+            self._consecutive_failures += 1
+            if self._consecutive_failures == 1:
+                log.warning(
+                    "playback failed after %.1fs (will backoff on consecutive failures)",
+                    elapsed,
+                )
+            elif self._consecutive_failures % 10 == 0:
+                log.warning(
+                    "consecutive playback failures: %d (backoff %.0fs)",
+                    self._consecutive_failures,
+                    min(2**self._consecutive_failures, self._MAX_BACKOFF_S),
+                )
+        else:
+            # Normal track end (played to completion)
+            self._consecutive_failures = 0
+        # Discard unverified pending play record — the track didn't
+        # play long enough to count.
+        if not self._play_verified:
+            self._pending_play_record = None
+        self._playback_start_time = 0.0
+
     def _maybe_auto_recruit(self) -> None:
         """When the current track has ended and we're not silenced,
         ask the programmer for the next track and write it.
 
         No-op when:
         - No programmer configured (Phase 4a behavior preserved).
-        - Operator/Hapax wrote `{"stop": true}` and we're silenced.
+        - Operator/Hapax wrote ``{"stop": true}`` and we're silenced.
         - A track is still playing.
+        - Consecutive failure backoff is active.
         """
         if self._programmer is None:
             return
@@ -641,6 +764,17 @@ class LocalMusicPlayer:
             return
         if self._current_proc_alive():
             return
+        # Exponential backoff on consecutive failures: prevents the
+        # death spiral where every yt-dlp call fails immediately and
+        # the player cycles through all tracks at ~1 track/second.
+        if self._consecutive_failures > 0:
+            backoff_s = min(2**self._consecutive_failures, self._MAX_BACKOFF_S)
+            # Use playback_start_time as the reference for when the last
+            # attempt was made. If not enough time has elapsed, skip.
+            if self._playback_start_time:
+                since_last = time.time() - self._playback_start_time
+                if since_last < backoff_s:
+                    return
         select = getattr(self._programmer, "select_next", None)
         if select is None:
             return
@@ -693,8 +827,15 @@ class LocalMusicPlayer:
         is detected, the programmer writes selection.json; the SAME tick
         below sees the new mtime and dispatches playback.
         """
-        if self._current_proc_alive() and self._enforce_egress_gate():
-            return
+        if self._current_proc_alive():
+            self._maybe_verify_playback()
+            if self._enforce_egress_gate():
+                return
+        else:
+            # Playback pipeline has exited — handle cleanup, stderr
+            # drain, and failure tracking before considering next track.
+            if self._playback_start_time:
+                self._handle_playback_exit()
         path = self.config.selection_path
         try:
             current_mtime = path.stat().st_mtime if path.exists() else 0.0
@@ -745,21 +886,11 @@ class LocalMusicPlayer:
         # and we record by="programmer". Otherwise (chat / Hapax cue /
         # operator), record by="external" so the rotation budget honors it.
         by = "programmer" if mtime == self._auto_written_mtime else "external"
-        # Programmer.record_play observes the upcoming play so cap math
-        # advances even for external overrides.
-        if self._programmer is not None:
-            record = getattr(self._programmer, "record_play", None)
-            if record is not None:
-                try:
-                    record(
-                        path=str(selection.get("path", "")),
-                        title=selection.get("title"),
-                        artist=selection.get("artist"),
-                        source=str(selection.get("source") or "local"),
-                        by=by,
-                    )
-                except Exception:
-                    log.warning("programmer.record_play() raised", exc_info=True)
+        # Stash the play record for deferred recording — the actual
+        # record_play call happens in _maybe_verify_playback after
+        # the pipeline has been running long enough to confirm success.
+        self._pending_play_by = by
+        self._pending_play_selection = dict(selection)
         self._kill_current()
         self._start_playback(selection)
 

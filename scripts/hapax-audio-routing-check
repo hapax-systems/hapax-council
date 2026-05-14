@@ -327,6 +327,50 @@ if [ "$L12_COMPLETENESS_OK" = true ]; then
     echo "  L-12 completeness: ALL L-12 sources reach broadcast ✓"
 fi
 
+# ── Signal-Flow Advisory Check (Invariant 11) ──────────────────────────────
+# PipeWire links can exist but carry zero audio data. Use pw-top to detect
+# nodes that are "Running" but have quantum=0 / rate=0, indicating no data
+# is flowing despite the topology being connected. This is advisory (WARN)
+# because some nodes legitimately idle (e.g. music player paused).
+echo ""
+echo "=== Signal-Flow Advisory ==="
+FLOW_WARNINGS=0
+
+check_signal_flow() {
+    local node_name="$1"
+    local label="$2"
+    # pw-top -b -n 1 outputs one snapshot; grep for the node and check
+    # quantum (field 3) and rate (field 4). Both 0 means no data flows.
+    local row
+    row=$(pw-top -b -n 1 2>/dev/null | grep "$node_name" | head -1)
+    if [ -z "$row" ]; then
+        echo -e "  ${YELLOW}[WARN]${NC} $label: node not found in pw-top"
+        FLOW_WARNINGS=$((FLOW_WARNINGS + 1))
+        return
+    fi
+    # Fields: State ID Quantum Rate Wait Busy W/Q B/Q ERR Format CH Rate Name
+    local quantum rate
+    quantum=$(echo "$row" | awk '{print $3}')
+    rate=$(echo "$row" | awk '{print $4}')
+    if [ "$quantum" = "0" ] && [ "$rate" = "0" ]; then
+        echo -e "  ${YELLOW}[WARN]${NC} $label: quantum=0 rate=0 — NO DATA FLOWING"
+        FLOW_WARNINGS=$((FLOW_WARNINGS + 1))
+    else
+        echo -e "  ${GREEN}[OK]${NC}   $label: quantum=$quantum rate=$rate — data flowing"
+    fi
+}
+
+check_signal_flow "hapax-music-loudnorm" "Music loudnorm filter chain"
+check_signal_flow "hapax-livestream-tap" "Livestream tap null-sink"
+check_signal_flow "hapax-broadcast-master" "Broadcast master"
+
+if [ "$FLOW_WARNINGS" -gt 0 ]; then
+    echo -e "  ${YELLOW}Signal flow: $FLOW_WARNINGS node(s) idle — check music player / source status${NC}"
+else
+    echo "  Signal flow: ALL critical nodes have active data ✓"
+fi
+
+
 echo ""
 echo "=== Result ==="
 if [ "$FAILURES" -eq 0 ]; then
