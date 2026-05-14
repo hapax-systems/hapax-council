@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily RAM allocation audit
+
+[Timer]
+OnCalendar=*-*-* 06:00:00
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

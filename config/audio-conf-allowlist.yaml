@@ -24,6 +24,7 @@ orphans:
   # Global / source-split PipeWire modules — not LADSPA chain-modeled.
   - hapax-contact-mic.conf
   - hapax-quantum.conf
+  - hapax-quantum-128gb.conf  # source-controlled 128GB RAM quantum tuning (config/pipewire/)
 
   # Stream-routing wraps that the yaml represents as filter_chain
   # nodes with chain_kind=None (no LADSPA conf needed). The conf

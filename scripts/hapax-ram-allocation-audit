@@ -1,0 +1,306 @@
+#!/usr/bin/env python3
+"""Hapax 128GB RAM allocation audit.
+
+Validates live system state against the declarative policy in
+config/infrastructure/128gb-ram-policy.yaml. Reports gaps between
+current and target state for sysctl and Docker container memory limits.
+
+Exit codes:
+  0 — all checks pass
+  1 — one or more gaps detected
+  2 — script error (missing policy, docker not available, etc.)
+
+Usage:
+  hapax-ram-allocation-audit              # human-readable report
+  hapax-ram-allocation-audit --json       # machine-readable JSON
+  hapax-ram-allocation-audit --prometheus # Prometheus textformat
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError:
+    yaml = None  # type: ignore[assignment]
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+POLICY_PATH = REPO_ROOT / "config" / "infrastructure" / "128gb-ram-policy.yaml"
+
+
+@dataclass
+class AuditResult:
+    check: str
+    target: str
+    actual: str
+    status: str  # "pass", "gap", "warn", "error"
+    detail: str = ""
+
+
+def _read_sysctl(key: str) -> str | None:
+    """Read a sysctl value."""
+    try:
+        result = subprocess.run(
+            ["sysctl", "-n", key],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return None
+
+
+def _docker_inspect_memory(container: str) -> int | None:
+    """Get container memory limit in bytes. Returns None if container not found."""
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.HostConfig.Memory}}", container],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            val = result.stdout.strip()
+            return int(val) if val and val != "0" else None
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        pass
+    return None
+
+
+def _docker_running(container: str) -> bool:
+    """Check if a container is running."""
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Running}}", container],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.returncode == 0 and result.stdout.strip().lower() == "true"
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+
+def audit_sysctl(policy: dict) -> list[AuditResult]:
+    """Audit sysctl values against policy."""
+    results = []
+    for key, spec in policy.get("sysctl", {}).items():
+        target = str(spec.get("target", ""))
+        actual = _read_sysctl(key)
+        if actual is None:
+            results.append(
+                AuditResult(
+                    f"sysctl.{key}",
+                    target,
+                    "N/A",
+                    "error",
+                    "Could not read sysctl value",
+                )
+            )
+        elif actual == target:
+            results.append(AuditResult(f"sysctl.{key}", target, actual, "pass"))
+        else:
+            results.append(
+                AuditResult(
+                    f"sysctl.{key}",
+                    target,
+                    actual,
+                    "gap",
+                    spec.get("rationale", ""),
+                )
+            )
+    return results
+
+
+def audit_containers(policy: dict) -> list[AuditResult]:
+    """Audit Docker container memory limits against policy."""
+    results = []
+    for name, spec in policy.get("containers", {}).items():
+        # Determine target in bytes
+        if "mem_limit_gb" in spec:
+            target_bytes = int(spec["mem_limit_gb"] * 1024**3)
+            target_human = f"{spec['mem_limit_gb']}G"
+        elif "mem_limit_mb" in spec:
+            target_bytes = int(spec["mem_limit_mb"] * 1024**2)
+            target_human = f"{spec['mem_limit_mb']}M"
+        else:
+            continue
+
+        if not _docker_running(name):
+            results.append(
+                AuditResult(
+                    f"container.{name}.mem_limit",
+                    target_human,
+                    "not running",
+                    "warn",
+                    "Container not running — cannot verify memory limit",
+                )
+            )
+            continue
+
+        actual_bytes = _docker_inspect_memory(name)
+        if actual_bytes is None:
+            results.append(
+                AuditResult(
+                    f"container.{name}.mem_limit",
+                    target_human,
+                    "unlimited",
+                    "gap",
+                    "No memory limit set",
+                )
+            )
+        else:
+            actual_gb = actual_bytes / (1024**3)
+            actual_human = (
+                f"{actual_gb:.1f}G" if actual_gb >= 1 else f"{actual_bytes / (1024**2):.0f}M"
+            )
+            if actual_bytes == target_bytes:
+                results.append(
+                    AuditResult(
+                        f"container.{name}.mem_limit",
+                        target_human,
+                        actual_human,
+                        "pass",
+                    )
+                )
+            elif actual_bytes < target_bytes:
+                results.append(
+                    AuditResult(
+                        f"container.{name}.mem_limit",
+                        target_human,
+                        actual_human,
+                        "gap",
+                        f"Under-provisioned — {spec.get('rationale', '')}",
+                    )
+                )
+            else:
+                results.append(
+                    AuditResult(
+                        f"container.{name}.mem_limit",
+                        target_human,
+                        actual_human,
+                        "warn",
+                        "Over-provisioned — may be intentional",
+                    )
+                )
+    return results
+
+
+def format_human(results: list[AuditResult]) -> str:
+    """Format results as human-readable report."""
+    lines = ["128GB RAM Allocation Audit", "=" * 40, ""]
+    gaps = [r for r in results if r.status == "gap"]
+    passes = [r for r in results if r.status == "pass"]
+    warns = [r for r in results if r.status == "warn"]
+    errors = [r for r in results if r.status == "error"]
+
+    if gaps:
+        lines.append(f"GAPS ({len(gaps)}):")
+        for r in gaps:
+            lines.append(f"  ✗ {r.check}: target={r.target}, actual={r.actual}")
+            if r.detail:
+                lines.append(f"    → {r.detail}")
+        lines.append("")
+
+    if warns:
+        lines.append(f"WARNINGS ({len(warns)}):")
+        for r in warns:
+            lines.append(f"  ⚠ {r.check}: target={r.target}, actual={r.actual}")
+            if r.detail:
+                lines.append(f"    → {r.detail}")
+        lines.append("")
+
+    if errors:
+        lines.append(f"ERRORS ({len(errors)}):")
+        for r in errors:
+            lines.append(f"  ✗ {r.check}: {r.detail}")
+        lines.append("")
+
+    lines.append(
+        f"SUMMARY: {len(passes)} pass, {len(gaps)} gap, {len(warns)} warn, {len(errors)} error"
+    )
+    return "\n".join(lines)
+
+
+def format_json(results: list[AuditResult]) -> str:
+    """Format results as JSON."""
+    return json.dumps(
+        [
+            {
+                "check": r.check,
+                "target": r.target,
+                "actual": r.actual,
+                "status": r.status,
+                "detail": r.detail,
+            }
+            for r in results
+        ],
+        indent=2,
+    )
+
+
+def format_prometheus(results: list[AuditResult]) -> str:
+    """Format results as Prometheus textformat."""
+    lines = [
+        "# HELP hapax_ram_audit_check RAM allocation audit result (1=pass, 0=gap/error)",
+        "# TYPE hapax_ram_audit_check gauge",
+    ]
+    for r in results:
+        label_check = r.check.replace(".", "_")
+        val = 1 if r.status == "pass" else 0
+        lines.append(f'hapax_ram_audit_check{{check="{label_check}",status="{r.status}"}} {val}')
+
+    gaps = sum(1 for r in results if r.status == "gap")
+    lines.extend(
+        [
+            "# HELP hapax_ram_audit_gaps_total Number of RAM allocation gaps",
+            "# TYPE hapax_ram_audit_gaps_total gauge",
+            f"hapax_ram_audit_gaps_total {gaps}",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="128GB RAM allocation audit")
+    parser.add_argument("--json", action="store_true", help="JSON output")
+    parser.add_argument("--prometheus", action="store_true", help="Prometheus textformat")
+    parser.add_argument("--policy", type=Path, default=POLICY_PATH, help="Policy file path")
+    args = parser.parse_args()
+
+    if not args.policy.is_file():
+        print(f"Policy file not found: {args.policy}", file=sys.stderr)
+        return 2
+
+    if yaml is None:
+        # Fallback: basic YAML-like parsing for the simple policy format
+        print("PyYAML not available — install with: pip install pyyaml", file=sys.stderr)
+        return 2
+
+    with open(args.policy) as f:
+        policy = yaml.safe_load(f)
+
+    results = audit_sysctl(policy) + audit_containers(policy)
+
+    if args.json:
+        print(format_json(results))
+    elif args.prometheus:
+        print(format_prometheus(results))
+    else:
+        print(format_human(results))
+
+    has_gaps = any(r.status in ("gap", "error") for r in results)
+    return 1 if has_gaps else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

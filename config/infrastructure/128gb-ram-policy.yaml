@@ -1,0 +1,153 @@
+# 128GB RAM Allocation Policy
+#
+# Declarative target state for system memory allocation.
+# Based on research completed 2026-05-08:
+#   - 128gb-ram-allocation-research.md
+#   - 128gb-infra-databases-research.md
+#   - 128gb-compositor-streaming-research.md
+#
+# This file is consumed by scripts/hapax-ram-allocation-audit
+# to validate live system state and surface gaps.
+#
+# Applied: 2026-05-14
+# System: AMD Ryzen 7 7700X, 128GB DDR5-6000 (2x64GB), CachyOS
+
+sysctl:
+  vm.swappiness:
+    target: 5
+    rationale: "128GB RAM — swap only under genuine pressure"
+    applied: true
+  vm.dirty_ratio:
+    target: 20
+    rationale: "Allow larger write buffers before forced writeback"
+    applied: true
+  vm.dirty_background_ratio:
+    target: 5
+    rationale: "Start background writeback early"
+    applied: true
+  vm.vfs_cache_pressure:
+    target: 75
+    rationale: "Prevent page cache hoarding at the expense of process pages"
+    applied: true
+
+containers:
+  postgres:
+    mem_limit_gb: 6
+    shm_size: "2g"
+    parameters:
+      shared_buffers: "1536MB"
+      work_mem: "32MB"
+      maintenance_work_mem: "256MB"
+      effective_cache_size: "4GB"
+      wal_buffers: "64MB"
+      random_page_cost: "1.1"
+      max_connections: "50"
+      checkpoint_completion_target: "0.9"
+      huge_pages: "try"
+    rationale: "25% of container limit for shared_buffers. shm_size prevents POSIX shm errors."
+
+  clickhouse:
+    mem_limit_gb: 8
+    parameters:
+      max_server_memory_usage: "6442450944"  # 6GB
+      uncompressed_cache_size: "1073741824"  # 1GB (was 8GB DEFAULT — exceeded container!)
+      mark_cache_size: "1073741824"          # 1GB (was 5GB DEFAULT)
+      max_memory_usage: "4294967296"         # 4GB per-query (in users.d)
+      max_memory_usage_for_user: "6442450944" # 6GB per-user (in users.d)
+    rationale: "Analytics engine benefits from RAM. Old 4GB limit with 8GB cache config was broken."
+
+  redis:
+    mem_limit_gb: 2
+    parameters:
+      maxmemory: "1536mb"
+      maxmemory-policy: "allkeys-lfu"
+    rationale: "LFU eviction is superior for LLM response caching. 75% of container for headroom."
+
+  qdrant:
+    mem_limit_gb: 6
+    rationale: "Vector DB — current usage <100MB but collection growth is unpredictable."
+
+  litellm:
+    mem_limit_gb: 2
+    rationale: "LLM proxy — memory stable."
+
+  langfuse:
+    mem_limit_gb: 2
+    rationale: "Observability platform — memory stable."
+
+  langfuse-worker:
+    mem_limit_gb: 2
+    rationale: "Background worker — memory stable."
+
+  minio:
+    mem_limit_gb: 6
+    rationale: "Was at 94% of 4G limit. Object store needs headroom for bucket operations."
+
+  grafana:
+    mem_limit_gb: 1
+    rationale: "Dashboard — lightweight."
+
+  open-webui:
+    mem_limit_gb: 2
+    rationale: "Chat UI — memory stable."
+
+  n8n:
+    mem_limit_gb: 1
+    rationale: "Automation — lightweight."
+
+  ntfy:
+    mem_limit_mb: 256
+    rationale: "Push notifications — minimal."
+
+  # Council containers (in repo docker-compose.yml)
+  hapax-agents-api:
+    mem_limit_mb: 512
+    rationale: "Logos API — lightweight."
+
+  hapax-sync-pipeline:
+    mem_limit_gb: 1
+    rationale: "Sync pipeline — moderate."
+
+# ──────────────────────────────────────────────
+# Non-container items from REQ-20260508-128gb-ram-hardening
+# ──────────────────────────────────────────────
+
+pipewire:
+  quantum: 1024
+  min_quantum: 512
+  max_quantum: 4096
+  link_max_buffers: 32
+  mem_mlock_all: true
+  rationale: >
+    quantum=1024 was empirically determined — 512 caused YT crackling.
+    max_quantum raised from 2048→4096 for wider CPU spike absorption.
+    mlock-all enabled since zero swap pressure at 128GB.
+
+tabbyapi:
+  action: "no change"
+  rationale: >
+    ExLlamaV3 does not support CPU offload. 5.0bpw quant is the sweet spot.
+    128GB RAM cannot help GPU-bound inference. Dual-GPU [13,13] split is optimal.
+
+compositor_1080p:
+  action: "deferred — gated on VRAM headroom test"
+  rationale: >
+    System RAM is ready (21GB delta is trivial). GPU VRAM is marginal —
+    needs TabbyAPI cache size constraint + 30-minute soak test.
+    Layout system already normalizes to 1920-wide.
+
+obs_replay_buffer:
+  action: "pending — OBS must be restarted to apply"
+  target:
+    RecRB: true
+    RecRBTime: 300
+    RecRBSize: 8192
+  rationale: "5-minute replay buffer at ~1GB. Trivial against 128GB."
+
+# Summary:
+# Total container memory budget: ~40GB (31% of 128GB)
+# Sysctl: all 4 values persisted in /etc/sysctl.d/99-hapax-128gb.conf
+# PipeWire: safe tuning applied (no quantum change)
+# TabbyAPI: no change (GPU-bound)
+# Compositor 1080p: deferred (VRAM test required)
+# OBS replay: pending manual activation

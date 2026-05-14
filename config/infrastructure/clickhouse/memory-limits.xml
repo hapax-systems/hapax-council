@@ -1,0 +1,11 @@
+<!-- ClickHouse per-query memory limits — 128GB RAM policy
+     Deploy to: ~/llm-stack/clickhouse/users.d/memory-limits.xml
+     Applied: 2026-05-14 -->
+<clickhouse>
+    <profiles>
+        <default>
+            <max_memory_usage>4294967296</max_memory_usage>
+            <max_memory_usage_for_user>6442450944</max_memory_usage_for_user>
+        </default>
+    </profiles>
+</clickhouse>
