@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# hapax-backup-watchdog — Verify backup health for Tier 1 (NAS) and Tier 2 (B2)
+#
+# Checks:
+#   1. Tier 1 (local/NAS): last restic snapshot < 36 hours old
+#   2. Tier 2 (remote/B2): last restic snapshot < 10 days old
+#   3. Qdrant snapshot dir on NAS: non-empty, collections present
+#   4. Restic repo integrity: restic check (Tier 1 only, daily)
+#
+# Notifications via ntfy (localhost:8090) and desktop notify-send.
+# Exit code: 0 = all healthy, 1 = at least one check failed.
+
+NTFY_URL="${HAPAX_NTFY_URL:-http://localhost:8090/hapax-backup}"
+TIER1_REPO="/mnt/nas/backups/restic"
+TIER2_REPO="rclone:b2:hapax-backups/restic"
+QDRANT_SNAP_DIR="/mnt/nas/backups/qdrant-snapshots"
+TIER1_MAX_AGE_HOURS=36
+TIER2_MAX_AGE_HOURS=$((10 * 24))  # 10 days
+
+export RESTIC_PASSWORD
+RESTIC_PASSWORD="$(pass show backblaze/restic-password 2>/dev/null)" || {
+    echo "FATAL: cannot read restic password from pass"
+    curl -sf -d "🔴 Backup watchdog: cannot read restic password" "$NTFY_URL" >/dev/null 2>&1 || true
+    exit 1
+}
+
+FAILURES=()
+
+log() { echo "[$(date -Iseconds)] $1"; }
+
+check_snapshot_age() {
+    local repo="$1" label="$2" max_hours="$3"
+    log "Checking $label snapshot age (max ${max_hours}h)..."
+
+    local latest_time
+    latest_time=$(RESTIC_REPOSITORY="$repo" restic snapshots --latest 1 --json 2>/dev/null \
+        | jq -r '.[0].time // empty' 2>/dev/null) || {
+        FAILURES+=("$label: cannot read snapshots")
+        return
+    }
+
+    if [[ -z "$latest_time" ]]; then
+        FAILURES+=("$label: no snapshots found")
+        return
+    fi
+
+    local latest_epoch now_epoch age_hours
+    latest_epoch=$(date -d "$latest_time" +%s 2>/dev/null) || {
+        FAILURES+=("$label: cannot parse snapshot time '$latest_time'")
+        return
+    }
+    now_epoch=$(date +%s)
+    age_hours=$(( (now_epoch - latest_epoch) / 3600 ))
+
+    if (( age_hours > max_hours )); then
+        FAILURES+=("$label: latest snapshot is ${age_hours}h old (max ${max_hours}h)")
+    else
+        log "  $label: OK — latest snapshot ${age_hours}h old"
+    fi
+}
+
+check_qdrant_snapshots() {
+    log "Checking Qdrant snapshot directory..."
+    if [[ ! -d "$QDRANT_SNAP_DIR" ]]; then
+        FAILURES+=("Qdrant: snapshot dir $QDRANT_SNAP_DIR does not exist")
+        return
+    fi
+
+    local collection_count
+    collection_count=$(find "$QDRANT_SNAP_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+    if (( collection_count < 5 )); then
+        FAILURES+=("Qdrant: only $collection_count collections in snapshot dir (expected >=5)")
+    else
+        log "  Qdrant: OK — $collection_count collections present"
+    fi
+}
+
+check_restic_integrity() {
+    local repo="$1" label="$2"
+    log "Checking $label restic integrity..."
+
+    if ! RESTIC_REPOSITORY="$repo" restic check 2>/dev/null; then
+        FAILURES+=("$label: restic check failed — possible repo corruption")
+    else
+        log "  $label: OK — restic check passed"
+    fi
+}
+
+# Run checks
+check_snapshot_age "$TIER1_REPO" "Tier1-NAS" "$TIER1_MAX_AGE_HOURS"
+check_snapshot_age "$TIER2_REPO" "Tier2-B2" "$TIER2_MAX_AGE_HOURS"
+check_qdrant_snapshots
+check_restic_integrity "$TIER1_REPO" "Tier1-NAS"
+
+# Report
+if (( ${#FAILURES[@]} > 0 )); then
+    log "BACKUP HEALTH: ${#FAILURES[@]} FAILURE(S)"
+    msg="Backup watchdog failures:"$'\n'
+    for f in "${FAILURES[@]}"; do
+        log "  x $f"
+        msg+="- $f"$'\n'
+    done
+
+    curl -sf \
+        -H "Title: Backup Watchdog ALERT" \
+        -H "Priority: high" \
+        -H "Tags: warning,floppy_disk" \
+        -d "$msg" \
+        "$NTFY_URL" >/dev/null 2>&1 || log "WARN: ntfy notification failed"
+
+    notify-send --urgency=critical --app-name="Backup Watchdog" \
+        "Backup Health FAIL" "$msg" 2>/dev/null || true
+
+    exit 1
+else
+    log "BACKUP HEALTH: ALL CHECKS PASSED"
+    notify-send --urgency=low --app-name="Backup Watchdog" \
+        "Backup Health OK" "All backup checks passed" 2>/dev/null || true
+    exit 0
+fi
