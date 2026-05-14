@@ -397,9 +397,9 @@ class SlotDriftEngine:
             state.idle_since = 0
             state._active_target = self._random_active_target(state.node_type)
             if state.node_type in SPATIAL_TYPES:
-                state._peak_intensity = 0.12 + 0.13 * self._rng.random()
+                state._peak_intensity = 0.25 + 0.20 * self._rng.random()
             else:
-                state._peak_intensity = 0.30 + 0.35 * self._rng.random()
+                state._peak_intensity = 0.55 + 0.35 * self._rng.random()
 
         self._last_activation = now
         self._next_stagger = STAGGER_S * (0.7 + 0.6 * self._rng.random())
@@ -460,9 +460,9 @@ class SlotDriftEngine:
                 state.phase_duration = FADE_IN_S * (0.8 + 0.4 * self._rng.random())
                 state._active_target = self._random_active_target(state.node_type)
                 if state.node_type in SPATIAL_TYPES:
-                    state._peak_intensity = 0.12 + 0.13 * self._rng.random()
+                    state._peak_intensity = 0.25 + 0.20 * self._rng.random()
                 else:
-                    state._peak_intensity = 0.25 + 0.40 * self._rng.random()
+                    state._peak_intensity = 0.55 + 0.35 * self._rng.random()
                 state._rerise_after = 0.0
                 state.idle_since = 0
                 log.debug("SlotDrift: slot %d (%s) → RISING (post-buffer)",
@@ -483,9 +483,9 @@ class SlotDriftEngine:
                 state.phase_duration = PEAK_HOLD_S * (0.6 + 0.8 * self._rng.random())
                 # Randomized peak: effects tint the image rather than replacing it
                 if state.node_type in SPATIAL_TYPES:
-                    state._peak_intensity = 0.12 + 0.13 * self._rng.random()  # 0.12-0.25 spatial
+                    state._peak_intensity = 0.25 + 0.20 * self._rng.random()  # 0.25-0.45 spatial
                 else:
-                    state._peak_intensity = 0.25 + 0.40 * self._rng.random()  # 0.25-0.65 tonal
+                    state._peak_intensity = 0.55 + 0.35 * self._rng.random()  # 0.55-0.90 tonal
                 log.debug("SlotDrift: slot %d (%s) → PEAK (%.0fs, intensity=%.2f)",
                           state.slot_idx, state.node_type, state.phase_duration,
                           state._peak_intensity)
