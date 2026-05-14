@@ -25,7 +25,6 @@ if TYPE_CHECKING:
     from agents.effect_graph.runtime import GraphRuntime
 
 from agents.effect_graph.types import (
-    EdgeDef,
     EffectGraph,
     GraphPatch,
     NodeInstance,

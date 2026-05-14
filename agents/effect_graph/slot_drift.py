@@ -16,7 +16,6 @@ GL recompile blinks.
 from __future__ import annotations
 
 import logging
-import math
 import random
 import time
 from dataclasses import dataclass, field
@@ -264,7 +263,7 @@ class SlotDriftEngine:
     is always evolving.
     """
 
-    def __init__(self, registry: "ShaderRegistry", seed: int = 42) -> None:
+    def __init__(self, registry: ShaderRegistry, seed: int = 42) -> None:
         self.registry = registry
         self._rng = random.Random(seed)
         self._slots: list[SlotState] = []
@@ -283,7 +282,7 @@ class SlotDriftEngine:
         ]
         log.info("SlotDrift: %d eligible shader types", len(self._available_types))
 
-    def boot(self, sp: "SlotPipeline") -> None:
+    def boot(self, sp: SlotPipeline) -> None:
         """Populate slot pool with diverse shaders, start staggered rotation."""
         if self._booted:
             return
@@ -353,7 +352,7 @@ class SlotDriftEngine:
             [s.node_type for s in self._slots[:3]],
         )
 
-    def tick(self, sp: "SlotPipeline", t: float) -> None:
+    def tick(self, sp: SlotPipeline, t: float) -> None:
         """Advance one frame. Called at ~30fps."""
         if not self._booted:
             return
@@ -450,7 +449,7 @@ class SlotDriftEngine:
         log.info("SlotDrift: activating slot %d (%s), %d now active",
                  chosen.slot_idx, chosen.node_type, active_count + 1)
 
-    def _interpolate_slot(self, state: SlotState, sp: "SlotPipeline",
+    def _interpolate_slot(self, state: SlotState, sp: SlotPipeline,
                           now: float) -> None:
         """Set params and flush to GPU for one slot."""
         idx = state.slot_idx
@@ -483,7 +482,7 @@ class SlotDriftEngine:
 
         sp._apply_glfeedback_uniforms(idx)
 
-    def _maybe_recycle(self, sp: "SlotPipeline", now: float) -> None:
+    def _maybe_recycle(self, sp: SlotPipeline, now: float) -> None:
         """Swap shader fragment on slots that have been IDLE long enough."""
         for state in self._slots:
             if state.phase != Phase.IDLE:
