@@ -15,6 +15,7 @@ Usage:
   hapax-ram-allocation-audit --json       # machine-readable JSON
   hapax-ram-allocation-audit --prometheus # Prometheus textformat
 """
+
 from __future__ import annotations
 
 import argparse
@@ -47,7 +48,9 @@ def _read_sysctl(key: str) -> str | None:
     try:
         result = subprocess.run(
             ["sysctl", "-n", key],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0:
             return result.stdout.strip()
@@ -61,7 +64,9 @@ def _docker_inspect_memory(container: str) -> int | None:
     try:
         result = subprocess.run(
             ["docker", "inspect", "--format", "{{.HostConfig.Memory}}", container],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if result.returncode == 0:
             val = result.stdout.strip()
@@ -76,7 +81,9 @@ def _docker_running(container: str) -> bool:
     try:
         result = subprocess.run(
             ["docker", "inspect", "--format", "{{.State.Running}}", container],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         return result.returncode == 0 and result.stdout.strip().lower() == "true"
     except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -90,17 +97,27 @@ def audit_sysctl(policy: dict) -> list[AuditResult]:
         target = str(spec.get("target", ""))
         actual = _read_sysctl(key)
         if actual is None:
-            results.append(AuditResult(
-                f"sysctl.{key}", target, "N/A", "error",
-                "Could not read sysctl value",
-            ))
+            results.append(
+                AuditResult(
+                    f"sysctl.{key}",
+                    target,
+                    "N/A",
+                    "error",
+                    "Could not read sysctl value",
+                )
+            )
         elif actual == target:
             results.append(AuditResult(f"sysctl.{key}", target, actual, "pass"))
         else:
-            results.append(AuditResult(
-                f"sysctl.{key}", target, actual, "gap",
-                spec.get("rationale", ""),
-            ))
+            results.append(
+                AuditResult(
+                    f"sysctl.{key}",
+                    target,
+                    actual,
+                    "gap",
+                    spec.get("rationale", ""),
+                )
+            )
     return results
 
 
@@ -119,35 +136,62 @@ def audit_containers(policy: dict) -> list[AuditResult]:
             continue
 
         if not _docker_running(name):
-            results.append(AuditResult(
-                f"container.{name}.mem_limit", target_human, "not running", "warn",
-                "Container not running — cannot verify memory limit",
-            ))
+            results.append(
+                AuditResult(
+                    f"container.{name}.mem_limit",
+                    target_human,
+                    "not running",
+                    "warn",
+                    "Container not running — cannot verify memory limit",
+                )
+            )
             continue
 
         actual_bytes = _docker_inspect_memory(name)
         if actual_bytes is None:
-            results.append(AuditResult(
-                f"container.{name}.mem_limit", target_human, "unlimited", "gap",
-                "No memory limit set",
-            ))
+            results.append(
+                AuditResult(
+                    f"container.{name}.mem_limit",
+                    target_human,
+                    "unlimited",
+                    "gap",
+                    "No memory limit set",
+                )
+            )
         else:
             actual_gb = actual_bytes / (1024**3)
-            actual_human = f"{actual_gb:.1f}G" if actual_gb >= 1 else f"{actual_bytes / (1024**2):.0f}M"
+            actual_human = (
+                f"{actual_gb:.1f}G" if actual_gb >= 1 else f"{actual_bytes / (1024**2):.0f}M"
+            )
             if actual_bytes == target_bytes:
-                results.append(AuditResult(
-                    f"container.{name}.mem_limit", target_human, actual_human, "pass",
-                ))
+                results.append(
+                    AuditResult(
+                        f"container.{name}.mem_limit",
+                        target_human,
+                        actual_human,
+                        "pass",
+                    )
+                )
             elif actual_bytes < target_bytes:
-                results.append(AuditResult(
-                    f"container.{name}.mem_limit", target_human, actual_human, "gap",
-                    f"Under-provisioned — {spec.get('rationale', '')}",
-                ))
+                results.append(
+                    AuditResult(
+                        f"container.{name}.mem_limit",
+                        target_human,
+                        actual_human,
+                        "gap",
+                        f"Under-provisioned — {spec.get('rationale', '')}",
+                    )
+                )
             else:
-                results.append(AuditResult(
-                    f"container.{name}.mem_limit", target_human, actual_human, "warn",
-                    "Over-provisioned — may be intentional",
-                ))
+                results.append(
+                    AuditResult(
+                        f"container.{name}.mem_limit",
+                        target_human,
+                        actual_human,
+                        "warn",
+                        "Over-provisioned — may be intentional",
+                    )
+                )
     return results
 
 
@@ -181,15 +225,25 @@ def format_human(results: list[AuditResult]) -> str:
             lines.append(f"  ✗ {r.check}: {r.detail}")
         lines.append("")
 
-    lines.append(f"SUMMARY: {len(passes)} pass, {len(gaps)} gap, {len(warns)} warn, {len(errors)} error")
+    lines.append(
+        f"SUMMARY: {len(passes)} pass, {len(gaps)} gap, {len(warns)} warn, {len(errors)} error"
+    )
     return "\n".join(lines)
 
 
 def format_json(results: list[AuditResult]) -> str:
     """Format results as JSON."""
     return json.dumps(
-        [{"check": r.check, "target": r.target, "actual": r.actual,
-          "status": r.status, "detail": r.detail} for r in results],
+        [
+            {
+                "check": r.check,
+                "target": r.target,
+                "actual": r.actual,
+                "status": r.status,
+                "detail": r.detail,
+            }
+            for r in results
+        ],
         indent=2,
     )
 
@@ -206,11 +260,13 @@ def format_prometheus(results: list[AuditResult]) -> str:
         lines.append(f'hapax_ram_audit_check{{check="{label_check}",status="{r.status}"}} {val}')
 
     gaps = sum(1 for r in results if r.status == "gap")
-    lines.extend([
-        "# HELP hapax_ram_audit_gaps_total Number of RAM allocation gaps",
-        "# TYPE hapax_ram_audit_gaps_total gauge",
-        f"hapax_ram_audit_gaps_total {gaps}",
-    ])
+    lines.extend(
+        [
+            "# HELP hapax_ram_audit_gaps_total Number of RAM allocation gaps",
+            "# TYPE hapax_ram_audit_gaps_total gauge",
+            f"hapax_ram_audit_gaps_total {gaps}",
+        ]
+    )
     return "\n".join(lines)
 
 

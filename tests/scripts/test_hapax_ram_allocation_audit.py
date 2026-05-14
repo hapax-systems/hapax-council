@@ -1,4 +1,5 @@
 """Tests for hapax-ram-allocation-audit script."""
+
 from __future__ import annotations
 
 import json
@@ -19,12 +20,14 @@ class TestPolicyFile:
 
     def test_policy_is_valid_yaml(self):
         import yaml
+
         with open(POLICY) as f:
             data = yaml.safe_load(f)
         assert isinstance(data, dict)
 
     def test_policy_has_sysctl_section(self):
         import yaml
+
         with open(POLICY) as f:
             data = yaml.safe_load(f)
         assert "sysctl" in data
@@ -32,6 +35,7 @@ class TestPolicyFile:
 
     def test_policy_has_containers_section(self):
         import yaml
+
         with open(POLICY) as f:
             data = yaml.safe_load(f)
         assert "containers" in data
@@ -39,6 +43,7 @@ class TestPolicyFile:
 
     def test_policy_containers_have_limits(self):
         import yaml
+
         with open(POLICY) as f:
             data = yaml.safe_load(f)
         for name, spec in data["containers"].items():
@@ -48,6 +53,7 @@ class TestPolicyFile:
 
     def test_policy_containers_have_rationale(self):
         import yaml
+
         with open(POLICY) as f:
             data = yaml.safe_load(f)
         for name, spec in data["containers"].items():
@@ -56,6 +62,7 @@ class TestPolicyFile:
     def test_total_container_budget_reasonable(self):
         """Total container memory should be < 50% of 128GB."""
         import yaml
+
         with open(POLICY) as f:
             data = yaml.safe_load(f)
         total_gb = 0
@@ -77,7 +84,9 @@ class TestAuditScript:
     def test_runs_default_mode(self):
         result = subprocess.run(
             [sys.executable, str(SCRIPT)],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         assert result.returncode in (0, 1), f"Unexpected exit: {result.returncode}\n{result.stderr}"
         assert "128GB RAM Allocation Audit" in result.stdout
@@ -85,7 +94,9 @@ class TestAuditScript:
     def test_json_output(self):
         result = subprocess.run(
             [sys.executable, str(SCRIPT), "--json"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         assert result.returncode in (0, 1)
         data = json.loads(result.stdout)
@@ -99,7 +110,9 @@ class TestAuditScript:
     def test_prometheus_output(self):
         result = subprocess.run(
             [sys.executable, str(SCRIPT), "--prometheus"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         assert result.returncode in (0, 1)
         assert "hapax_ram_audit_check" in result.stdout
@@ -108,7 +121,9 @@ class TestAuditScript:
     def test_sysctl_checks_present(self):
         result = subprocess.run(
             [sys.executable, str(SCRIPT), "--json"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         data = json.loads(result.stdout)
         sysctl_checks = [d for d in data if d["check"].startswith("sysctl.")]
@@ -117,7 +132,9 @@ class TestAuditScript:
     def test_container_checks_present(self):
         result = subprocess.run(
             [sys.executable, str(SCRIPT), "--json"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         data = json.loads(result.stdout)
         container_checks = [d for d in data if d["check"].startswith("container.")]

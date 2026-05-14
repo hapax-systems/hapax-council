@@ -1,0 +1,9 @@
+<!-- ClickHouse memory tuning — 128GB RAM policy
+     Deploy to: ~/llm-stack/clickhouse/config.d/memory.xml
+     Container limit: 8G (was 4G)
+     Applied: 2026-05-14 -->
+<clickhouse>
+    <max_server_memory_usage>6442450944</max_server_memory_usage>
+    <uncompressed_cache_size>1073741824</uncompressed_cache_size>
+    <mark_cache_size>1073741824</mark_cache_size>
+</clickhouse>
