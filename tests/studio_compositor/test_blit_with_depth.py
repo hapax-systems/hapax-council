@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agents.studio_compositor import fx_chain
 from agents.studio_compositor.ward_properties import WardProperties
 from agents.studio_compositor.z_plane_constants import (
@@ -44,6 +46,18 @@ def _capture_blit_opacity(z_plane: str, z_index_float: float = 0.5) -> float:
         )
 
 
+@pytest.fixture()
+def _enable_depth_opacity(monkeypatch):
+    """Enable depth opacity for tests that verify attenuation curves.
+
+    Since visual pumping defaults to OFF (LSC-AUDIOREACT-001), depth opacity
+    is also off by default. Tests that verify the attenuation math must
+    explicitly enable the feature.
+    """
+    monkeypatch.setenv("HAPAX_WARD_MODULATOR_DEPTH_OPACITY_ENABLED", "1")
+
+
+@pytest.mark.usefixtures("_enable_depth_opacity")
 def test_default_plane_is_behavior_neutral() -> None:
     """Default ``on-scrim`` + sub-plane 0.5 yields ~0.96 opacity multiplier.
 
@@ -54,6 +68,7 @@ def test_default_plane_is_behavior_neutral() -> None:
     assert 0.95 <= opacity <= 0.97
 
 
+@pytest.mark.usefixtures("_enable_depth_opacity")
 def test_beyond_scrim_attenuates() -> None:
     """``beyond-scrim`` significantly reduces opacity (~0.68 at sub-plane 0.5)."""
     opacity = _capture_blit_opacity("beyond-scrim", 0.5)
@@ -63,12 +78,14 @@ def test_beyond_scrim_attenuates() -> None:
     assert opacity < default_opacity
 
 
+@pytest.mark.usefixtures("_enable_depth_opacity")
 def test_surface_scrim_passes_through() -> None:
     """``surface-scrim`` is the foreground plane — opacity ≈ 1.0 input × ~1.0 multiplier."""
     opacity = _capture_blit_opacity("surface-scrim", 0.5)
     assert 0.99 <= opacity <= 1.001
 
 
+@pytest.mark.usefixtures("_enable_depth_opacity")
 def test_unknown_plane_falls_back_to_default() -> None:
     """An unrecognized ``z_plane`` falls back to default so a typo doesn't blank a ward."""
     unknown = _capture_blit_opacity("totally-not-a-plane", 0.5)
@@ -76,6 +93,7 @@ def test_unknown_plane_falls_back_to_default() -> None:
     assert abs(unknown - default) < 1e-6
 
 
+@pytest.mark.usefixtures("_enable_depth_opacity")
 def test_z_index_float_modulates_within_plane() -> None:
     """Higher ``z_index_float`` brings a ward forward (more opaque) within its plane."""
     far = _capture_blit_opacity("mid-scrim", 0.0)

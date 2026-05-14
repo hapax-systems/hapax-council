@@ -4,11 +4,8 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
-import os
 import types
 from pathlib import Path
-
-import pytest
 
 _SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "hapax-stale-unit-audit"
 
