@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# hapax-container-cleanup — Remove orphaned MCP server containers
+#
+# Gemini/Codex sessions spawn github-mcp containers that persist after
+# session termination. This script removes containers matching known
+# orphan patterns that are older than STALE_HOURS.
+
+STALE_HOURS="${HAPAX_CONTAINER_STALE_HOURS:-6}"
+PATTERNS=("hapax-github-mcp" "hapax-context7")
+
+log() { echo "[$(date -Iseconds)] $1"; }
+
+removed=0
+for pattern in "${PATTERNS[@]}"; do
+    for cid in $(docker ps -q --filter "name=$pattern" 2>/dev/null); do
+        started=$(docker inspect --format '{{.State.StartedAt}}' "$cid" 2>/dev/null)
+        if [[ -z "$started" ]]; then continue; fi
+
+        started_epoch=$(date -d "$started" +%s 2>/dev/null) || continue
+        now_epoch=$(date +%s)
+        age_hours=$(( (now_epoch - started_epoch) / 3600 ))
+
+        if (( age_hours >= STALE_HOURS )); then
+            name=$(docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+            docker rm -f "$cid" >/dev/null 2>&1 && {
+                log "Removed: $name (${age_hours}h old)"
+                ((removed++))
+            }
+        fi
+    done
+done
+
+if (( removed > 0 )); then
+    log "Cleaned $removed orphaned container(s)"
+else
+    log "No orphaned containers found"
+fi
