@@ -208,7 +208,6 @@ ACTIVE_RANGES: dict[str, dict[str, tuple[float, float]]] = {
 # Curated initial pool: diverse visual character across the spectrum
 DEFAULT_POOL: list[str] = [
     "colorgrade",
-    "edge_detect",
     "bloom",
     "scanlines",
     "chromatic_aberration",
@@ -219,6 +218,7 @@ DEFAULT_POOL: list[str] = [
     "halftone",
     "kaleidoscope",
     "emboss",
+    "kuwahara",
 ]
 
 POOL_SIZE = 12
