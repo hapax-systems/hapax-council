@@ -1832,7 +1832,7 @@ def fx_tick_callback(compositor: Any) -> bool:
     if not hasattr(compositor, "_slot_pipeline") or compositor._slot_pipeline is None:
         return False
 
-    from .fx_tick import tick_governance, tick_modulator, tick_slot_pipeline
+    from .fx_tick import tick_atmospheric_fade, tick_governance, tick_modulator, tick_slot_pipeline
 
     if not hasattr(compositor, "_fx_monotonic_start"):
         compositor._fx_monotonic_start = time.monotonic()
@@ -1875,6 +1875,7 @@ def fx_tick_callback(compositor: Any) -> bool:
         log.debug("unified-reactivity tick failed", exc_info=True)
 
     tick_governance(compositor, t)
+    tick_atmospheric_fade(compositor)
     tick_modulator(compositor, t, energy, b)
     # Ward stimmung modulator (z-axis spec Phase 2). Default-off behind
     # ``HAPAX_WARD_MODULATOR_ACTIVE``; ``maybe_tick`` early-returns and

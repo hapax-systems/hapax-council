@@ -169,6 +169,166 @@ def _pin_slots_to_passthrough(compositor: Any) -> None:
             log.debug("degraded hold record failed", exc_info=True)
 
 
+# ── Continuous preset morphing (LSC-TRANSITION-001) ──────────────────────────
+#
+# Instead of hard-cutting between presets, interpolate shader uniform
+# parameters over N governance ticks.  When the outgoing and incoming
+# presets share a shader in the same slot, every numeric param lerps
+# smoothly.  Slots that change shader type get a hard swap at the
+# midpoint of the morph.  The result: effects blend into each other
+# rather than switching discretely.
+#
+# The morph state lives in module globals so it persists across ticks
+# without attaching to the compositor object.
+
+_MORPH_DURATION_TICKS: int = 45
+"""Number of governance ticks for a full morph (~30fps → ~1.5s).
+
+Long enough for the blend to be clearly visible; short enough to feel
+responsive.  The ease curve is sinusoidal (slow start, fast middle,
+slow end) for perceptual smoothness."""
+
+_morph_active: bool = False
+_morph_tick: int = 0
+_morph_from_params: list[dict[str, float]] = []
+_morph_to_params: list[dict[str, float]] = []
+_morph_from_assignments: list[str | None] = []
+_morph_to_assignments: list[str | None] = []
+_morph_shader_swapped: list[bool] = []
+
+
+def _dispatch_atmospheric_transition(compositor: Any, preset_name: str) -> None:
+    """Begin a continuous morph toward the newly loaded preset.
+
+    Captures the current slot params as the "from" state, then records
+    the new preset's compiled params as the "to" state.  Subsequent
+    calls to ``tick_atmospheric_fade`` interpolate between them.
+
+    The preset is already loaded by ``try_graph_preset`` before this
+    function is called, so the graph runtime has the new topology.
+    We snapshot the new params and then temporarily restore the old
+    params so the visual morph starts from the previous look.
+    """
+    import math
+
+    global _morph_active, _morph_tick
+    global _morph_from_params, _morph_to_params
+    global _morph_from_assignments, _morph_to_assignments
+    global _morph_shader_swapped
+
+    sp = getattr(compositor, "_slot_pipeline", None)
+    if sp is None:
+        return
+
+    num = sp.num_slots
+    # "To" state = what the slot pipeline just loaded
+    to_params = [dict(sp._slot_base_params[i]) for i in range(num)]
+    to_assignments = list(sp._slot_assignments)
+
+    # "From" state = what we had before (captured from previous morph target
+    # or from the current base params if no morph was active)
+    if _morph_active:
+        # Mid-morph: use wherever we currently are as the starting point
+        from_params = [dict(sp._slot_base_params[i]) for i in range(num)]
+    elif _morph_to_params:
+        # Previous morph completed: start from that endpoint
+        from_params = [dict(p) for p in _morph_to_params]
+    else:
+        # First ever morph: start from current
+        from_params = [dict(sp._slot_base_params[i]) for i in range(num)]
+
+    from_assignments = list(_morph_to_assignments) if _morph_to_assignments else to_assignments
+
+    _morph_from_params = from_params
+    _morph_to_params = to_params
+    _morph_from_assignments = from_assignments
+    _morph_to_assignments = to_assignments
+    _morph_shader_swapped = [False] * num
+    _morph_tick = 0
+    _morph_active = True
+
+    # Restore "from" params on shared-shader slots so the morph starts
+    # from the previous visual state
+    for i in range(num):
+        if from_assignments[i] == to_assignments[i] and from_assignments[i] is not None:
+            # Same shader — restore old params, morph will interpolate
+            numeric_from = {k: v for k, v in from_params[i].items()
+                          if isinstance(v, (int, float)) and k not in ("time", "width", "height")}
+            if numeric_from:
+                sp._slot_base_params[i].update(numeric_from)
+                if sp._slot_is_temporal[i]:
+                    sp._apply_glfeedback_uniforms(i)
+
+    log.info(
+        "atmospheric morph: preset=%s duration=%d ticks (%.1fs)",
+        preset_name, _MORPH_DURATION_TICKS, _MORPH_DURATION_TICKS / 30.0,
+    )
+
+
+def tick_atmospheric_fade(compositor: Any) -> None:
+    """Advance the continuous preset morph by one tick.
+
+    Interpolates all numeric shader uniforms from the "from" to "to"
+    state using a sinusoidal ease curve.  Zero cost when no morph is
+    active.
+    """
+    import math
+
+    global _morph_active, _morph_tick
+
+    if not _morph_active:
+        return
+
+    _morph_tick += 1
+    if _morph_tick > _MORPH_DURATION_TICKS:
+        _morph_active = False
+        return
+
+    sp = getattr(compositor, "_slot_pipeline", None)
+    if sp is None:
+        _morph_active = False
+        return
+
+    # Sinusoidal ease: slow start, fast middle, slow end
+    t = _morph_tick / _MORPH_DURATION_TICKS
+    alpha = 0.5 - 0.5 * math.cos(math.pi * t)
+
+    num = min(sp.num_slots, len(_morph_from_params), len(_morph_to_params))
+    for i in range(num):
+        from_a = _morph_from_assignments[i] if i < len(_morph_from_assignments) else None
+        to_a = _morph_to_assignments[i] if i < len(_morph_to_assignments) else None
+
+        if from_a == to_a and to_a is not None:
+            # Same shader type — interpolate numeric params
+            from_p = _morph_from_params[i]
+            to_p = _morph_to_params[i]
+            blended = {}
+            for key in set(from_p) | set(to_p):
+                if key in ("time", "width", "height"):
+                    continue
+                fv = from_p.get(key)
+                tv = to_p.get(key)
+                if isinstance(fv, (int, float)) and isinstance(tv, (int, float)):
+                    blended[key] = fv + (tv - fv) * alpha
+                elif tv is not None:
+                    blended[key] = tv
+
+            if blended:
+                sp._slot_base_params[i].update(blended)
+                if sp._slot_is_temporal[i]:
+                    sp._apply_glfeedback_uniforms(i)
+
+    # Final tick — ensure we land exactly at the target
+    if _morph_tick >= _MORPH_DURATION_TICKS:
+        for i in range(num):
+            to_a = _morph_to_assignments[i] if i < len(_morph_to_assignments) else None
+            if to_a is not None:
+                sp._slot_base_params[i].update(_morph_to_params[i])
+                if sp._slot_is_temporal[i]:
+                    sp._apply_glfeedback_uniforms(i)
+        _morph_active = False
+
+
 def tick_governance(compositor: Any, t: float) -> None:
     """Perception-visual governance tick."""
     if compositor._graph_runtime is None or not hasattr(compositor, "_atmospheric_selector"):
@@ -218,6 +378,12 @@ def tick_governance(compositor: Any, t: float) -> None:
         if _preset_load_backoff_active(target):
             return
         if try_graph_preset(compositor, target):
+            # LSC-TRANSITION-001: dispatch a transition primitive so
+            # atmospheric preset changes produce bounded crossfades
+            # instead of hard cuts.  The transition runs on a background
+            # thread (single-flight lock prevents interleaving) so this
+            # tick returns immediately.
+            _dispatch_atmospheric_transition(compositor, target)
             compositor._current_preset_name = target
         else:
             _record_atmospheric_preset_load_failed(compositor, target)
