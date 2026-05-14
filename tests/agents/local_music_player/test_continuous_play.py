@@ -137,6 +137,8 @@ def test_player_recruits_again_when_track_ends(tmp_path: Path) -> None:
     repo.upsert(_track("/found/b.flac", source=SOURCE_FOUND_SOUND, artist="B"))
     prog = MusicProgrammer(_prog_cfg(tmp_path), local_repo=repo)
     player = LocalMusicPlayer(cfg, programmer=prog)
+    # Disable deferred verification threshold for test speed.
+    player._MIN_SUCCESSFUL_PLAY_S = 0.0
 
     # Tick 1: pick + start. Use a proc that "exits" after one poll.
     first_proc = MagicMock()
@@ -144,15 +146,23 @@ def test_player_recruits_again_when_track_ends(tmp_path: Path) -> None:
     with patch("agents.local_music_player.player._spawn_process", return_value=first_proc):
         player.tick()
 
+    # Tick 2 (verify): proc still alive → deferred play recording fires.
+    with patch("agents.local_music_player.player._spawn_process", return_value=first_proc):
+        player.tick()
+    assert len(prog.history) == 1
+
     # Simulate track ending: poll() now returns 0.
     first_proc.poll.return_value = 0
-    # Need fresh mtime on selection — tick 2's auto-recruit will write a new one.
+    # Need fresh mtime on selection — tick 3's auto-recruit will write a new one.
     second_proc = MagicMock()
     second_proc.poll.return_value = None
     time.sleep(0.02)  # ensure mtime granularity ticks forward
     with patch("agents.local_music_player.player._spawn_process", return_value=second_proc):
         player.tick()
-    # Two plays recorded; second one is different track from first.
+
+    # Tick 4 (verify): second proc alive → second play recorded.
+    with patch("agents.local_music_player.player._spawn_process", return_value=second_proc):
+        player.tick()
     assert len(prog.history) == 2
     assert prog.history[0].path != prog.history[1].path
 
@@ -257,8 +267,14 @@ def test_external_oudepode_cue_advances_cap_window(tmp_path: Path) -> None:
             token="music:soundcloud-licensed:test",
         ),
     )
+    player._MIN_SUCCESSFUL_PLAY_S = 0.0  # disable deferred threshold for test
+
     proc = MagicMock()
     proc.poll.return_value = None  # playing
+    with patch("agents.local_music_player.player._spawn_process", return_value=proc):
+        player.tick()
+
+    # Verify tick: proc still alive → deferred play recording fires.
     with patch("agents.local_music_player.player._spawn_process", return_value=proc):
         player.tick()
     # External play recorded
@@ -270,6 +286,10 @@ def test_external_oudepode_cue_advances_cap_window(tmp_path: Path) -> None:
     proc.poll.return_value = 0
     new_proc = MagicMock()
     new_proc.poll.return_value = None
+    with patch("agents.local_music_player.player._spawn_process", return_value=new_proc):
+        player.tick()
+
+    # Verify tick for second proc → second play recorded.
     with patch("agents.local_music_player.player._spawn_process", return_value=new_proc):
         player.tick()
     # Second play happened, and it is NOT oudepode (cap holds)
@@ -284,8 +304,14 @@ def test_programmer_authored_play_recorded_as_programmer(tmp_path: Path) -> None
     prog = MusicProgrammer(_prog_cfg(tmp_path), local_repo=repo)
     player = LocalMusicPlayer(cfg, programmer=prog)
 
+    player._MIN_SUCCESSFUL_PLAY_S = 0.0  # disable deferred threshold for test
+
     proc = MagicMock()
     proc.poll.return_value = None
+    with patch("agents.local_music_player.player._spawn_process", return_value=proc):
+        player.tick()
+
+    # Verify tick: proc alive → deferred play recording fires.
     with patch("agents.local_music_player.player._spawn_process", return_value=proc):
         player.tick()
     assert len(prog.history) == 1

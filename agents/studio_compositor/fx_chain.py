@@ -1134,6 +1134,22 @@ def draw_hero_small_overlay(
         log.debug("hero_small.draw raised", exc_info=True)
 
 
+def draw_hero_prefx_effect(compositor: Any, cr: Any) -> None:
+    """Draw the hero pre-FX effect on the BASE cairooverlay.
+
+    This applies a software-based hero effect (edge detect, scanlines, etc.)
+    to the hero camera tile on the pre_fx layer, so it goes through the
+    GL shader chain like everything else.
+    """
+    hero_prefx = getattr(compositor, "_hero_prefx_effect", None)
+    if hero_prefx is None:
+        return
+    try:
+        hero_prefx.draw(cr)
+    except Exception:
+        log.debug("hero_prefx_effect.draw raised", exc_info=True)
+
+
 def _has_post_fx_layout_assignments(compositor: Any) -> bool:
     layout_state = getattr(compositor, "layout_state", None)
     if layout_state is None:
@@ -1175,6 +1191,7 @@ def draw_pre_fx_layout_from_composite(
         use_composite_cache=_pre_fx_background_composite_enabled(),
     )
     draw_hero_small_overlay(compositor, cr, stage="pre_fx")
+    draw_hero_prefx_effect(compositor, cr)
 
 
 def draw_post_fx_layout_from_composite(
@@ -1219,6 +1236,7 @@ def pre_fx_draw_from_layout(compositor: Any, cr: Any) -> None:
         else:
             pip_draw_from_layout(cr, layout_state, source_registry, stage="pre_fx")
             draw_hero_small_overlay(compositor, cr, stage="pre_fx")
+            draw_hero_prefx_effect(compositor, cr)
 
 
 class FlashScheduler:
