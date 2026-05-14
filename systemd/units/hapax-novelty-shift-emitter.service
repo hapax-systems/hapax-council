@@ -2,6 +2,7 @@
 Description=Hapax novelty-shift impingement emitter (cc-task u3)
 Documentation=https://github.com/ryanklee/hapax-council/blob/main/agents/novelty_emitter/_emitter.py
 After=hapax-daimonion.service hapax-secrets.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
