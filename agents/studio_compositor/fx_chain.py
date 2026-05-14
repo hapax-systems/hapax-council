@@ -220,7 +220,15 @@ def _hero_small_overlay_stage() -> Literal["pre_fx", "post_fx"]:
 
 
 def _visual_pumping_enabled() -> bool:
-    return _env_enabled("HAPAX_VISUAL_PUMPING_ENABLED", default=True)
+    """Whether the glvideomixer flash overlay follows audio kicks.
+
+    Default OFF.  The flash pad applies a whole-frame brightness
+    overlay (alpha 0→0.5) on beat onsets — this is global brightness
+    pumping prohibited by LSC-AUDIOREACT-001.  Audio reactivity SHOULD
+    use bounded texture/color/depth/drift modulation instead of
+    whole-frame alpha overlays.
+    """
+    return _env_enabled("HAPAX_VISUAL_PUMPING_ENABLED", default=False)
 
 
 def _ward_depth_opacity_enabled() -> bool:
