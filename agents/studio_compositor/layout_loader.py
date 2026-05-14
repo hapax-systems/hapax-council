@@ -87,6 +87,41 @@ def _rescale_layout(layout: Layout) -> Layout:
     return layout.model_copy(update={"surfaces": new_surfaces})
 
 
+def inverse_rescale_layout(layout: "Layout") -> "Layout":
+    """Scale runtime coordinates back to 1920×1080 authoring space.
+
+    The inverse of ``_rescale_layout()``.  The LayoutAutoSaver must call
+    this before writing to disk so the persisted file always stores
+    coordinates in the canonical 1920×1080 authoring space.  Without this
+    step, each compositor restart applies ``_rescale_layout`` to
+    already-scaled coordinates, causing cascading shrinkage.
+
+    Returns a new Layout via Pydantic model_copy; never mutates the input.
+    """
+    from .config import LAYOUT_COORD_SCALE
+
+    if abs(LAYOUT_COORD_SCALE - 1.0) < 1e-6:
+        return layout  # no-op at native resolution
+    inv = 1.0 / LAYOUT_COORD_SCALE
+    new_surfaces = []
+    for surface in layout.surfaces:
+        geom = surface.geometry
+        new_geom = geom
+        if geom.kind == "rect" and all(
+            isinstance(getattr(geom, f, None), (int, float)) for f in ("x", "y", "w", "h")
+        ):
+            new_geom = geom.model_copy(
+                update={
+                    "x": int(round(geom.x * inv)),
+                    "y": int(round(geom.y * inv)),
+                    "w": int(round(geom.w * inv)),
+                    "h": int(round(geom.h * inv)),
+                }
+            )
+        new_surfaces.append(surface.model_copy(update={"geometry": new_geom}))
+    return layout.model_copy(update={"surfaces": new_surfaces})
+
+
 def _default_layout_dir() -> Path:
     """Resolve the default layout directory.
 

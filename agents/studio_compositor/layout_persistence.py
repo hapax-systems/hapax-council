@@ -109,6 +109,15 @@ class LayoutAutoSaver:
                 expected_name,
             )
             return
+        # Inverse-scale: the runtime model stores coordinates at the
+        # canvas size (e.g. 1280×720) but the file must always use the
+        # canonical 1920×1080 authoring space.  Without this, each
+        # restart applies _rescale_layout to already-scaled coordinates,
+        # causing cascading shrinkage until the layout becomes a
+        # miniature ghost.
+        from agents.studio_compositor.layout_loader import inverse_rescale_layout
+
+        layout = inverse_rescale_layout(layout)
         dump = json.dumps(layout.model_dump(), indent=2)
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
