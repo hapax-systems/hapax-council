@@ -122,6 +122,23 @@ def _record_watchdog_ping_metrics(compositor: Any) -> None:
         pass
 
 
+def _hero_effect_target_for_prefx(compositor: Any) -> tuple[str, Any] | None:
+    """Return the hero camera role and tile rect for the pre-FX effect."""
+    try:
+        from .layout import compute_tile_layout
+
+        layout = compute_tile_layout(compositor.config.cameras)
+        cameras = compositor.config.cameras
+        for cam in cameras:
+            if getattr(cam, "hero", False) and cam.role in layout:
+                tile = layout[cam.role]
+                if tile.w > 0 and tile.h > 0:
+                    return cam.role, tile
+    except Exception:
+        log.debug("_hero_effect_target_for_prefx failed", exc_info=True)
+    return None
+
+
 def start_compositor(compositor: Any) -> None:
     """Build and start the pipeline."""
     from .fx_chain import fx_tick_callback
@@ -198,6 +215,18 @@ def start_compositor(compositor: Any) -> None:
             compositor._hero_effect_rotator.update_hero_tile(small_rect)
     except Exception:
         log.exception("HeroEffectRotator init failed (non-fatal)")
+
+    # Hero pre-FX effect: software-based hero effect applied on the pre_fx
+    # Cairo layer so it goes through the shader chain. Replaces the GL-pipeline
+    # hero-effect-slot when HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT=1.
+    # Resolves hero tile position dynamically at draw time.
+    compositor._hero_prefx_effect = None
+    try:
+        from .hero_prefx_effect import HeroPreFxEffect
+
+        compositor._hero_prefx_effect = HeroPreFxEffect()
+    except Exception:
+        log.exception("HeroPreFxEffect init failed (non-fatal)")
 
     # Read initial consent state
     try:
@@ -311,7 +340,13 @@ def start_compositor(compositor: Any) -> None:
 
     compositor._write_status("running")
 
-    apply_startup_preset(compositor)
+    # Startup preset disabled: SlotDriftEngine owns all shader slots
+    # exclusively. Preset plan activation (sierpinski_line_overlay) was
+    # loading edge_detect/sierpinski_lines into slots 0-2 then getting
+    # immediately overwritten by drift boot — creating a visible flash
+    # and competing fragment set_property calls.
+    # apply_startup_preset(compositor)
+    log.info("Startup preset skipped — SlotDriftEngine is sole shader owner")
     log_consent_event(compositor, "pipeline_start", allowed=compositor._consent_recording_allowed)
 
     with compositor._camera_status_lock:

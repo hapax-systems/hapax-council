@@ -554,7 +554,7 @@ def pip_draw_from_layout(
     layout = layout_state.get()
     pairs: list[tuple[Any, Any, cairo.ImageSurface, object]] = []
     for assignment in layout.assignments:
-        if stage is not None and getattr(assignment, "render_stage", "pre_fx") != stage:
+        if stage is not None and getattr(assignment, "render_stage", "post_fx") != stage:
             continue
         if not layout_source_enabled(assignment.source):
             _emit_blit_skip(assignment.source, "source_family_disabled")
@@ -826,7 +826,7 @@ def _layout_composite_signature(
             (
                 assignment.source,
                 assignment.surface,
-                getattr(assignment, "render_stage", "pre_fx"),
+                getattr(assignment, "render_stage", "post_fx"),
                 round(float(assignment.opacity), 4),
                 bool(getattr(assignment, "non_destructive", False)),
                 surface_schema.blend_mode,
@@ -1095,7 +1095,7 @@ def _has_post_fx_layout_assignments(compositor: Any) -> bool:
         log.debug("post-FX overlay requirement check failed", exc_info=True)
         return True
     for assignment in getattr(layout, "assignments", ()):
-        if getattr(assignment, "render_stage", "pre_fx") == "post_fx":
+        if getattr(assignment, "render_stage", "post_fx") == "post_fx":
             return True
     return False
 
@@ -1388,12 +1388,7 @@ def build_inline_fx_chain(
         log.warning("HAPAX_COMPOSITOR_DISABLE_SHADER_FX=1 — using overlay-only FX chain")
         return _build_overlay_only_chain(compositor, pipeline, pre_fx_tee, output_tee)
 
-    # --- Input selector for camera source switching ---
-    input_sel = Gst.ElementFactory.make("input-selector", "fx-input-selector")
-    input_sel.set_property("sync-streams", False)
-    pipeline.add(input_sel)
-
-    # --- Base path: input-selector → queue → cairooverlay → glupload → glcolorconvert ---
+    # --- Base path: pre_fx_tee → queue → cairooverlay → glupload → glcolorconvert ---
     queue_base = Gst.ElementFactory.make("queue", "queue-fx-base")
     queue_base.set_property("leaky", 2)
     queue_base.set_property("max-size-buffers", 2)
@@ -1461,7 +1456,6 @@ def build_inline_fx_chain(
     fx_convert.set_property("dither", 0)  # none — Bayer default creates sawtooth columns
 
     all_elements = [
-        input_sel,
         queue_base,
         overlay,
         convert_base,
@@ -1483,7 +1477,6 @@ def build_inline_fx_chain(
         pipeline.add(el)
 
     # --- Link base path ---
-    input_sel.link(queue_base)
     queue_base.link(overlay)
     overlay.link(convert_base)
     convert_base.link(glupload_base)
@@ -1512,7 +1505,7 @@ def build_inline_fx_chain(
 
     # --- Shader chain after mixer ---
     shader_downstream = hero_effect_slot if hero_effect_slot is not None else glcolorconvert_out
-    compositor._slot_pipeline.build_chain(pipeline, Gst, glmixer, shader_downstream)
+    compositor._slot_pipeline.build_chain(pipeline, Gst, glmixer, shader_downstream, enable_zero_shader_bypass=False)
 
     if hero_effect_slot is not None:
         if not hero_effect_slot.link(glcolorconvert_out):
@@ -1539,20 +1532,18 @@ def build_inline_fx_chain(
         _publish_fx_runtime_feature("post_fx_overlay", False)
         _publish_fx_runtime_feature("post_fx_folded_base", False)
 
-    # --- Input-selector: default to live (tiled composite) ---
-    live_pad = input_sel.request_pad(input_sel.get_pad_template("sink_%u"), None, None)
+    # --- Link pre_fx_tee to base path queue ---
     tee_pad_live = pre_fx_tee.request_pad(pre_fx_tee.get_pad_template("src_%u"), None, None)
-    tee_pad_live.link(live_pad)
-    input_sel.set_property("active-pad", live_pad)
+    tee_pad_live.link(queue_base.get_static_pad("sink"))
 
     # --- Store everything ---
-    compositor._fx_input_selector = input_sel
-    compositor._fx_input_pads = {"live": live_pad}
+    compositor._fx_input_selector = None
+    compositor._fx_input_pads = {}
     compositor._fx_active_source = "live"
     compositor._fx_camera_branch = []  # list[Any] — camera branch elements for teardown
     compositor._fx_switching = False
     compositor._fx_flash_pad = flash_pad
-    compositor._fx_flash_scheduler = FlashScheduler()
+    compositor._fx_flash_scheduler = FlashScheduler() if _visual_pumping_enabled() else None
 
     # PiP cairo sources (token_pole, album, stream_overlay) are now
     # instantiated by the SourceRegistry from default.json — Phase 9 Task 29
@@ -1645,7 +1636,8 @@ def switch_fx_source(compositor: Any, source: str) -> bool:
     publish ``FXEvent(kind="chain_swap")`` so token_pole + activity_variety_log
     get a brief scale bump synced to the visible source change.
     """
-    if not hasattr(compositor, "_fx_input_selector"):
+    if not hasattr(compositor, "_fx_input_selector") or compositor._fx_input_selector is None:
+        log.debug("switch_fx_source: input-selector removed — source switching disabled")
         return False
     if source == getattr(compositor, "_fx_active_source", "live"):
         return True  # already active
@@ -1832,7 +1824,7 @@ def fx_tick_callback(compositor: Any) -> bool:
     if not hasattr(compositor, "_slot_pipeline") or compositor._slot_pipeline is None:
         return False
 
-    from .fx_tick import tick_atmospheric_fade, tick_governance, tick_modulator, tick_slot_pipeline
+    from .fx_tick import tick_governance, tick_modulator, tick_slot_pipeline
 
     if not hasattr(compositor, "_fx_monotonic_start"):
         compositor._fx_monotonic_start = time.monotonic()
@@ -1875,7 +1867,6 @@ def fx_tick_callback(compositor: Any) -> bool:
         log.debug("unified-reactivity tick failed", exc_info=True)
 
     tick_governance(compositor, t)
-    tick_atmospheric_fade(compositor)
     tick_modulator(compositor, t, energy, b)
     # Ward stimmung modulator (z-axis spec Phase 2). Default-off behind
     # ``HAPAX_WARD_MODULATOR_ACTIVE``; ``maybe_tick`` early-returns and

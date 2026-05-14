@@ -14,10 +14,11 @@ uniform float u_time;
 uniform float u_width;
 uniform float u_height;
 void main() {
-    float t = u_time*0.015;
-    float dx = u_drift_x*sin(t)*0.15/u_width;
-    float dy = u_drift_y*cos(t*0.7)*0.15/u_height;
-    vec2 shifted = v_texcoord+vec2(dx,dy);
+    // Spatial drift disabled: offset sampling of tex_accum created
+    // persistent "detached ghost" of the full layout.  The temporal
+    // fade (u_fade) still provides the motion-trail aesthetic without
+    // the spatial displacement that duplicated camera + ward content.
+    vec2 shifted = v_texcoord;
     // Attenuate accumulation near frame edges to prevent corner ghost
     // artifact from drifting temporal echoes.  The smoothstep window
     // (~2.5 % of frame) is wide enough to suppress visible residue but
