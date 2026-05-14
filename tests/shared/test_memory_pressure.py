@@ -54,11 +54,11 @@ def test_zram_saturation_is_separate_from_global_ram_pressure() -> None:
 
 
 def test_live_swappiness_drift_uses_injected_reader() -> None:
-    signal = classify_live_swappiness(lambda: "150\n", expected_value=10)
+    signal = classify_live_swappiness(lambda: "150\n", expected_value=5)
 
     assert signal.pressure_class == MemoryPressureClass.SYSCTL_DRIFT
     assert signal.state == ResourceState.RED
-    assert signal.raw == {"live_value": 150, "expected_value": 10, "drift": 140}
+    assert signal.raw == {"live_value": 150, "expected_value": 5, "drift": 145}
 
 
 def test_service_cgroup_oom_events_are_representable_without_journal() -> None:
