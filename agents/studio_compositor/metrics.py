@@ -256,6 +256,11 @@ COMP_FX_PASSTHROUGH_SLOTS: Any = None
 # was set. Increments from ``fx_chain.pip_draw_from_layout`` whenever the
 # effective clamp ceiling (0.6) would lower the requested opacity.
 COMP_NONDESTRUCTIVE_CLAMPS_TOTAL: Any = None
+# LSC-LAYOUT-002 / REQ-20260511154600: Assignment.transform fail-fast.
+# Incremented when a non-empty Assignment.transform is silently ignored by
+# the Cairo blit path (which does not implement transforms). A nonzero rate
+# signals layout JSON carrying transforms that have no visual effect.
+COMP_TRANSFORM_IGNORED_TOTAL: Any = None
 # HOMAGE Phase 6 Layer 5 — ward↔FX bidirectional coupling counters.
 # Incremented by ``shared.ward_fx_bus`` on every publish (ward-side or
 # fx-side) so Grafana can plot the rate of bidirectional traffic,
@@ -1187,6 +1192,16 @@ def _init_metrics() -> None:
         "hapax_compositor_nondestructive_clamps_total",
         "Frames where a non_destructive assignment had its alpha clamped "
         "below the requested value, per source.",
+        ["source"],
+        registry=REGISTRY,
+    )
+
+    global COMP_TRANSFORM_IGNORED_TOTAL
+    COMP_TRANSFORM_IGNORED_TOTAL = Counter(
+        "hapax_compositor_transform_ignored_total",
+        "Frames where an assignment carried a non-empty transform dict that "
+        "the Cairo blit path silently ignored (LSC-LAYOUT-002 fail-fast). "
+        "A nonzero rate signals dead layout JSON.",
         ["source"],
         registry=REGISTRY,
     )
