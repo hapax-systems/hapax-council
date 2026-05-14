@@ -1,0 +1,103 @@
+# 128GB RAM Allocation Policy
+#
+# Declarative target state for system memory allocation.
+# Based on research completed 2026-05-08:
+#   - 128gb-ram-allocation-research.md
+#   - 128gb-infra-databases-research.md
+#   - 128gb-compositor-streaming-research.md
+#
+# This file is consumed by scripts/hapax-ram-allocation-audit
+# to validate live system state and surface gaps.
+#
+# Last reviewed: 2026-05-14
+# System: AMD Ryzen 7 7700X, 128GB DDR5-6000 (2x64GB), CachyOS
+
+sysctl:
+  vm.swappiness:
+    target: 5
+    rationale: "128GB RAM — swap only under genuine pressure"
+  vm.dirty_ratio:
+    target: 20
+    rationale: "Allow larger write buffers before forced writeback"
+  vm.dirty_background_ratio:
+    target: 5
+    rationale: "Start background writeback early"
+  vm.vfs_cache_pressure:
+    target: 75
+    rationale: "Prevent page cache hoarding at the expense of process pages"
+
+containers:
+  postgres:
+    mem_limit_gb: 6
+    parameters:
+      shared_buffers: "1536MB"
+      work_mem: "16MB"
+      maintenance_work_mem: "256MB"
+      effective_cache_size: "4GB"
+    shm_size: "2g"
+    rationale: "25% of container limit for shared_buffers. shm_size prevents POSIX shm errors."
+
+  clickhouse:
+    mem_limit_gb: 8
+    parameters:
+      max_server_memory_usage: "6442450944"  # 6GB
+      uncompressed_cache_size: "1073741824"  # 1GB (was 8GB — exceeded container)
+      mark_cache_size: "1073741824"  # 1GB
+    rationale: "Analytics engine benefits from RAM. Old 4GB limit with 8GB cache config was broken."
+
+  redis:
+    mem_limit_gb: 2
+    parameters:
+      maxmemory: "1536mb"
+      maxmemory-policy: "allkeys-lfu"
+    rationale: "LFU eviction is superior for LLM response caching."
+
+  qdrant:
+    mem_limit_gb: 6
+    rationale: "Vector DB — current usage <100MB but collection growth is unpredictable."
+
+  litellm:
+    mem_limit_gb: 2
+    rationale: "LLM proxy — memory stable."
+
+  langfuse:
+    mem_limit_gb: 2
+    rationale: "Observability platform — memory stable."
+
+  langfuse-worker:
+    mem_limit_gb: 2
+    rationale: "Background worker — memory stable."
+
+  minio:
+    mem_limit_gb: 6
+    rationale: "Currently at 94% of 4G limit. Object store needs headroom for bucket operations."
+
+  grafana:
+    mem_limit_gb: 1
+    rationale: "Dashboard — lightweight."
+
+  open-webui:
+    mem_limit_gb: 2
+    rationale: "Chat UI — memory stable."
+
+  n8n:
+    mem_limit_gb: 1
+    rationale: "Automation — lightweight."
+
+  ntfy:
+    mem_limit_mb: 256
+    rationale: "Push notifications — minimal."
+
+  # Council containers (in repo docker-compose.yml)
+  hapax-agents-api:
+    mem_limit_mb: 512
+    rationale: "Logos API — lightweight."
+
+  hapax-sync-pipeline:
+    mem_limit_gb: 1
+    rationale: "Sync pipeline — moderate."
+
+# Summary:
+# Total container memory budget: ~40GB
+# System RAM available for host processes: ~88GB
+# Host processes: TabbyAPI (~24GB GPU + overhead), compositor, OBS, agents, systemd units

@@ -1,0 +1,15 @@
+[Unit]
+Description=Hapax 128GB RAM allocation audit
+Documentation=file:///home/hapax/projects/hapax-council/config/infrastructure/128gb-ram-policy.yaml
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/hapax-council
+ExecStart=%h/projects/hapax-council/scripts/hapax-ram-allocation-audit --prometheus
+StandardOutput=truncate:/var/lib/node-exporter/textfile/hapax-ram-audit.prom
+ReadWritePaths=/var/lib/node-exporter/textfile
+MemoryMax=128M
+
+[Install]
+WantedBy=default.target
