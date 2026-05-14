@@ -194,19 +194,29 @@ from agents.effect_graph.parameter_drift import (
 _drift_state: ParameterDriftState | None = None
 _drift_last_tick_t: float = 0.0
 
-# Pre-transition snapshot: captured BEFORE try_graph_preset
-_pre_transition_params: list[dict[str, float]] = []
-_pre_transition_assignments: list[str | None] = []
+# Pending drift transition state (keyed by node_type, not slot index)
+_pending_drift_old_params: dict[str, dict[str, float]] = {}
+_pending_drift_targets: dict[str, dict[str, float]] = {}
+_pending_drift_preset: str = ""
 
 
 def _ensure_drift_state(compositor: Any) -> ParameterDriftState | None:
-    """Lazily initialize drift state from current pipeline."""
+    """Lazily initialize drift state from current pipeline.
+
+    Only initializes AFTER at least one slot has been assigned (i.e.,
+    after the first activate_plan has run).  Before that, there's
+    nothing to drift.
+    """
     global _drift_state
     if _drift_state is not None and _drift_state.initialized:
         return _drift_state
 
     sp = getattr(compositor, "_slot_pipeline", None)
     if sp is None:
+        return None
+
+    # Don't initialize until at least one slot is assigned
+    if not any(a is not None for a in sp._slot_assignments):
         return None
 
     _drift_state = init_drift_state(sp.num_slots)
@@ -219,47 +229,20 @@ def _ensure_drift_state(compositor: Any) -> ParameterDriftState | None:
     return _drift_state
 
 
-def _capture_pre_transition(compositor: Any) -> None:
-    """Snapshot current slot state BEFORE a preset load.
-
-    Called from tick_governance before try_graph_preset.
-    """
-    global _pre_transition_params, _pre_transition_assignments
-
-    sp = getattr(compositor, "_slot_pipeline", None)
-    if sp is None:
-        return
-
-    num = sp.num_slots
-    _pre_transition_params = [
-        {k: v for k, v in sp._slot_base_params[i].items()
-         if isinstance(v, (int, float)) and k not in ("time", "width", "height")}
-        for i in range(num)
-    ]
-    _pre_transition_assignments = list(sp._slot_assignments)
-
-
 def _dispatch_atmospheric_transition(compositor: Any, preset_name: str) -> None:
-    """Record drift targets from the pre-transition snapshot.
+    """Save old params and prepare drift targets for the incoming preset.
 
-    Called AFTER try_graph_preset returns True, but BEFORE activate_plan
-    has actually run (it's deferred via GLib.idle_add).  We don't touch
-    the slot pipeline here — instead we store the old state in the drift
-    engine's slots so that when activate_plan fires and tick_atmospheric_fade
-    runs on the next render tick, the drift engine can interpolate from
-    old params toward the new ones.
-
-    The actual param restoration + convergence happens in
-    ``tick_atmospheric_fade``, which reads the drift state and writes
-    interpolated values to the slot pipeline each tick.
+    Called AFTER try_graph_preset returns True, BEFORE activate_plan
+    runs (deferred via GLib.idle_add).
     """
+    global _pending_drift_old_params, _pending_drift_targets, _pending_drift_preset
+
     from .effects import extract_preset_slot_params
 
     state = _ensure_drift_state(compositor)
     if state is None:
         return
 
-    # Extract the target preset's params (from JSON, no compilation needed)
     target_nodes = extract_preset_slot_params(preset_name)
     if target_nodes is None:
         log.debug("drift: could not extract params for preset %s", preset_name)
@@ -271,25 +254,29 @@ def _dispatch_atmospheric_transition(compositor: Any, preset_name: str) -> None:
         if node_type:
             target_by_type[node_type] = params
 
-    # For each slot that was tracked before the transition:
-    # - If the new preset has the same node type → set drift target
-    # - The drift engine's "current" stays at the old values
-    # - tick_atmospheric_fade will interpolate current → target
-    driftable = 0
+    # Store by NODE TYPE (not slot index) so we can match after
+    # activate_plan potentially reassigns slots to different indices
+    old_by_type: dict[str, dict[str, float]] = {}
+    target_by_type_filtered: dict[str, dict[str, float]] = {}
+
     for i, slot in enumerate(state.slots):
         if slot.node_type is None:
             continue
         if slot.node_type in target_by_type:
-            slot.target = {
+            old_by_type[slot.node_type] = dict(slot.current)
+            target_by_type_filtered[slot.node_type] = {
                 k: v for k, v in target_by_type[slot.node_type].items()
                 if isinstance(v, (int, float)) and k not in ("time", "width", "height")
             }
-            driftable += 1
+
+    _pending_drift_old_params = old_by_type      # keyed by node_type
+    _pending_drift_targets = target_by_type_filtered  # keyed by node_type
+    _pending_drift_preset = preset_name
 
     log.info(
-        "drift target: preset=%s driftable=%d (of %d tracked slots)",
-        preset_name, driftable,
-        sum(1 for s in state.slots if s.node_type is not None),
+        "drift pending: preset=%s driftable=%d types=%s",
+        preset_name, len(target_by_type_filtered),
+        ",".join(sorted(target_by_type_filtered.keys())),
     )
 
 
@@ -297,15 +284,15 @@ def tick_atmospheric_fade(compositor: Any) -> None:
     """Advance parameter drift — converge shared-slot params toward targets.
 
     Called from fx_tick_callback at render rate (~30fps).
-    After activate_plan runs (deferred via GLib.idle_add), the slot
-    pipeline has new assignments and params.  We detect this by
-    comparing slot assignments against the drift state, and re-snapshot
-    when they've changed.
 
-    Then we run drift_tick to interpolate current→target, writing
-    the blended values to the pipeline.
+    On detecting activate_plan has run (slot assignments changed):
+    1. Re-snapshot to learn new slot types
+    2. Restore OLD params as 'current' on shared-type non-temporal slots
+    3. Set NEW params as 'target'
+    4. drift_tick interpolates old → new on subsequent ticks
     """
     global _drift_last_tick_t
+    global _pending_drift_old_params, _pending_drift_targets, _pending_drift_preset
 
     state = _ensure_drift_state(compositor)
     if state is None:
@@ -316,7 +303,6 @@ def tick_atmospheric_fade(compositor: Any) -> None:
         return
 
     # Detect if activate_plan has run since our last snapshot
-    # by comparing slot assignments
     assignments_changed = False
     for i, slot in enumerate(state.slots):
         if i >= sp.num_slots:
@@ -326,21 +312,48 @@ def tick_atmospheric_fade(compositor: Any) -> None:
             assignments_changed = True
             break
 
-    if assignments_changed:
-        # activate_plan has run — re-snapshot to pick up new slot types
-        # but preserve drift targets that were set by _dispatch
-        old_targets = {i: dict(s.target) for i, s in enumerate(state.slots) if s.target}
+    if assignments_changed and not _pending_drift_targets:
+        # Slots changed but no pending drift — just re-snapshot
+        # (happens on first rotation or recruitment-driven loads)
         snapshot_current_state(
             state,
             sp._slot_assignments,
             sp._slot_base_params,
             registry=sp._registry,
         )
-        # Restore drift targets for slots that kept the same type
+
+    if assignments_changed and _pending_drift_targets:
+        # activate_plan has run — re-snapshot for new slot types
+        snapshot_current_state(
+            state,
+            sp._slot_assignments,
+            sp._slot_base_params,
+            registry=sp._registry,
+        )
+
+        # Set drift targets. Do NOT restore old params — glfeedback
+        # slots black-screen if we reset uniforms backward. 'current'
+        # is already set by snapshot_current_state (= new preset values).
+        # drift_tick random-walks from there.
+        applied = 0
+        applied_types = []
         for i, slot in enumerate(state.slots):
-            if i in old_targets and slot.node_type is not None:
-                # Only restore if we had a target for this type
-                slot.target = old_targets[i]
+            ntype = slot.node_type
+            if ntype is None:
+                continue
+            if ntype not in _pending_drift_targets:
+                continue
+            slot.target = dict(_pending_drift_targets[ntype])
+            applied += 1
+            applied_types.append(ntype)
+
+        log.info(
+            "drift activated: preset=%s applied=%d slots types=%s",
+            _pending_drift_preset, applied, ",".join(applied_types),
+        )
+        _pending_drift_old_params = {}
+        _pending_drift_targets = {}
+        _pending_drift_preset = ""
 
     now = time.monotonic()
     if _drift_last_tick_t == 0.0:
@@ -361,52 +374,6 @@ def tick_atmospheric_fade(compositor: Any) -> None:
 
     for slot_idx, params in updates.items():
         sp.update_slot_base_params(slot_idx, params)
-
-        return
-
-    sp = getattr(compositor, "_slot_pipeline", None)
-    if sp is None:
-        _morph_active = False
-        return
-
-    # Sinusoidal ease: slow start, fast middle, slow end
-    t = _morph_tick / _MORPH_DURATION_TICKS
-    alpha = 0.5 - 0.5 * math.cos(math.pi * t)
-
-    num = min(sp.num_slots, len(_morph_from_params), len(_morph_to_params))
-    for i in range(num):
-        from_a = _morph_from_assignments[i] if i < len(_morph_from_assignments) else None
-        to_a = _morph_to_assignments[i] if i < len(_morph_to_assignments) else None
-
-        if from_a == to_a and to_a is not None:
-            # Same shader type — interpolate numeric params
-            from_p = _morph_from_params[i]
-            to_p = _morph_to_params[i]
-            blended = {}
-            for key in set(from_p) | set(to_p):
-                if key in ("time", "width", "height"):
-                    continue
-                fv = from_p.get(key)
-                tv = to_p.get(key)
-                if isinstance(fv, (int, float)) and isinstance(tv, (int, float)):
-                    blended[key] = fv + (tv - fv) * alpha
-                elif tv is not None:
-                    blended[key] = tv
-
-            if blended:
-                sp._slot_base_params[i].update(blended)
-                if sp._slot_is_temporal[i]:
-                    sp._apply_glfeedback_uniforms(i)
-
-    # Final tick — ensure we land exactly at the target
-    if _morph_tick >= _MORPH_DURATION_TICKS:
-        for i in range(num):
-            to_a = _morph_to_assignments[i] if i < len(_morph_to_assignments) else None
-            if to_a is not None:
-                sp._slot_base_params[i].update(_morph_to_params[i])
-                if sp._slot_is_temporal[i]:
-                    sp._apply_glfeedback_uniforms(i)
-        _morph_active = False
 
 
 def tick_governance(compositor: Any, t: float) -> None:
