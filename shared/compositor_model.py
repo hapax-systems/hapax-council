@@ -273,14 +273,13 @@ class Assignment(BaseModel):
         ),
     )
     render_stage: RenderStage = Field(
-        default="post_fx",
+        default="pre_fx",
         description=(
-            "FINDING-W (ef7b-179): which cairooverlay callback this "
-            "assignment renders on. ``post_fx`` (default, back-compat) "
-            "renders after the shader chain so chrome stays crisp. "
-            "``pre_fx`` renders before the shader chain so substrate "
-            "surfaces (camera PiPs, iconic Vitruvian figure, album art) "
-            "are decorated by the shaders."
+            "Which cairooverlay callback this assignment renders on. "
+            "``pre_fx`` (default) renders before the shader chain so ALL "
+            "content goes through the drift engine effects uniformly. "
+            "``post_fx`` renders after the shader chain (use sparingly — "
+            "creates visible layering disconnect)."
         ),
     )
 
