@@ -173,6 +173,11 @@ def _pin_slots_to_passthrough(compositor: Any) -> None:
             log.debug("degraded hold record failed", exc_info=True)
 
 
+def tick_atmospheric_fade(compositor: Any) -> None:
+    """Legacy atmospheric preset fade — now handled by SlotDriftEngine."""
+    pass
+
+
 def tick_governance(compositor: Any, t: float) -> None:
     """Perception-visual governance tick — DISABLED for continuous drift."""
     return  # Continuous drift mode: no preset rotation
