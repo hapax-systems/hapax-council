@@ -27,7 +27,7 @@ from shared.resource_model import (
 
 BYTES_PER_KIB = 1024
 BYTES_PER_GIB = 1024**3
-DEFAULT_EXPECTED_SWAPPINESS = 10
+DEFAULT_EXPECTED_SWAPPINESS = 5
 
 
 class MemoryPressureClass(StrEnum):

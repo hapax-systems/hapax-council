@@ -11,5 +11,5 @@ Environment=HOME=/home/hapax
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=stimmung-sync
-MemoryMax=128M
+MemoryMax=256M
 CPUQuota=20%

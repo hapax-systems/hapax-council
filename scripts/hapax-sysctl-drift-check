@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Detect drift between source-controlled sysctl policy and live kernel values.
+
+Reads all /etc/sysctl.d/99-hapax-*.conf files, compares each declared
+key=value to the live kernel value from /proc/sys/, and reports mismatches.
+
+Exit codes:
+  0 — no drift detected
+  1 — drift detected (at least one live value differs from declared)
+  2 — error reading policy or procfs
+
+Usage:
+  hapax-sysctl-drift-check           # human-readable output
+  hapax-sysctl-drift-check --json    # machine-readable JSON output
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+
+def parse_sysctl_conf(path: Path) -> dict[str, str]:
+    """Parse a sysctl.d conf file into {key: value} pairs."""
+    entries: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith(";"):
+            continue
+        # Accept both 'key = value' and 'key=value'
+        if "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        entries[key.strip()] = value.strip()
+    return entries
+
+
+def sysctl_to_procfs_path(key: str) -> Path:
+    """Convert sysctl key like vm.swappiness to /proc/sys/vm/swappiness."""
+    return Path("/proc/sys") / key.replace(".", "/")
+
+
+def read_live_value(key: str) -> str | None:
+    """Read the live kernel value for a sysctl key."""
+    proc_path = sysctl_to_procfs_path(key)
+    try:
+        return proc_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def check_drift(
+    conf_dir: Path = Path("/etc/sysctl.d"),
+    pattern: str = "99-hapax-*.conf",
+) -> list[dict[str, str]]:
+    """Check all hapax sysctl conf files for drift against live kernel."""
+    results: list[dict[str, str]] = []
+    conf_files = sorted(conf_dir.glob(pattern))
+    if not conf_files:
+        return results
+
+    for conf_file in conf_files:
+        entries = parse_sysctl_conf(conf_file)
+        for key, declared in entries.items():
+            live = read_live_value(key)
+            status = "unknown"
+            if live is None:
+                status = "unreadable"
+            elif live == declared:
+                status = "ok"
+            else:
+                status = "drift"
+            results.append(
+                {
+                    "source_file": str(conf_file),
+                    "key": key,
+                    "declared": declared,
+                    "live": live if live is not None else "<unreadable>",
+                    "status": status,
+                }
+            )
+    return results
+
+
+def main() -> int:
+    use_json = "--json" in sys.argv
+
+    try:
+        results = check_drift()
+    except OSError as exc:
+        if use_json:
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+    if not results:
+        if use_json:
+            print(json.dumps({"results": [], "drift_count": 0}))
+        else:
+            print("No hapax sysctl policy files found in /etc/sysctl.d/")
+        return 0
+
+    drift_entries = [r for r in results if r["status"] == "drift"]
+    unreadable = [r for r in results if r["status"] == "unreadable"]
+
+    if use_json:
+        print(
+            json.dumps(
+                {
+                    "results": results,
+                    "drift_count": len(drift_entries),
+                    "unreadable_count": len(unreadable),
+                },
+                indent=2,
+            )
+        )
+    else:
+        for r in results:
+            marker = "✓" if r["status"] == "ok" else "✗" if r["status"] == "drift" else "?"
+            print(
+                f"  {marker} {r['key']}: declared={r['declared']} live={r['live']} [{r['source_file']}]"
+            )
+        if drift_entries:
+            print(f"\nDRIFT DETECTED: {len(drift_entries)} key(s) differ from policy")
+        elif unreadable:
+            print(f"\nWARNING: {len(unreadable)} key(s) could not be read from procfs")
+        else:
+            print(f"\nOK: all {len(results)} sysctl values match policy")
+
+    return 1 if drift_entries else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

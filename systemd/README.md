@@ -111,7 +111,7 @@ write `/dev/shm/hapax-compositor/broadcast-mode.json` through
 - **Kernel reclaim tuning** (`/etc/sysctl.d/99-hapax-memory.conf`):
   - `vm.min_free_kbytes=524288` — 512MB allocation buffer (raised from default 66MB) to prevent cascade OOM under transient spikes
   - `vm.watermark_scale_factor=100` — kswapd reclaims at 1% pressure (default 10 is too late under zram+heavy-IO)
-  - `vm.swappiness=150` — tuned for zram zstd compression
+  - `vm.swappiness=5` — tuned for 128GB RAM with audio/livestream workload (low swap preference)
 - **earlyoom** (`/etc/default/earlyoom`): fires SIGTERM @ 5% avail / 5% swap-free, SIGKILL @ 2.5%.
   - `--prefer`: `cargo|rustc|ld.lld|chrome|electron|node|claude|next-server|ffmpeg|bwrap` (expendable targets for OOM)
   - `--avoid`: `Hyprland|pipewire|wireplumber|dockerd|containerd|bluetoothd|systemd|foot|waybar|hapax-imagination|hapax-daimonion|studio-compositor|logos-api|officium-api` (stack protection)
