@@ -23,11 +23,89 @@ use std::time::{Duration, Instant};
 use hapax_visual::content_sources::ContentSourceManager;
 use hapax_visual::dynamic_pipeline::{DynamicPipeline, PoolMetrics};
 use hapax_visual::state::StateReader;
+use hapax_visual::scene_renderer::SceneRenderer;
 
 /// Path the Python compositor's ``metrics._poll_loop`` reads to
 /// populate the ``reverie_pool_*`` Prometheus gauges. JSON shape is
 /// stable — the Python side hard-codes the key names in its poll loop.
+/// 3D proof output directory. Only active when HAPAX_IMAGINATION_3D_PROOF=1.
+const PROOF_3D_OUTPUT_DIR: &str = "/dev/shm/hapax-imagination/3d-proof";
+const PROOF_3D_FRAME_PATH: &str = "/dev/shm/hapax-imagination/3d-proof/frame.jpg";
+
 const POOL_METRICS_SHM_PATH: &str = "/dev/shm/hapax-imagination/pool_metrics.json";
+
+impl Renderer {
+    /// Write 3D proof frame to shm as JPEG for visual comparison.
+    fn write_proof_frame(&mut self, scene: &SceneRenderer) {
+        let width = scene.width();
+        let height = scene.height();
+        let padded_bpr = ((width * 4 + 255) / 256) * 256;
+
+        // GPU readback via staging buffer
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("proof staging"),
+            size: (padded_bpr * height) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = self.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor { label: Some("proof readback") },
+        );
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: scene.output_texture(),
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &staging,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bpr),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = staging.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        self.device.poll(wgpu::Maintain::Wait);
+
+        let data = slice.get_mapped_range();
+        // Unpad rows
+        let bpr = (width * 4) as usize;
+        let mut pixels = Vec::with_capacity(bpr * height as usize);
+        for row in 0..height as usize {
+            let start = row * padded_bpr as usize;
+            pixels.extend_from_slice(&data[start..start + bpr]);
+        }
+        drop(data);
+        staging.unmap();
+
+        // JPEG compress and write
+        if let Some(ref mut compressor) = self.proof_jpeg {
+            let image = turbojpeg::Image {
+                pixels: pixels.as_slice(),
+                width: width as usize,
+                pitch: bpr,
+                height: height as usize,
+                format: turbojpeg::PixelFormat::RGBA,
+            };
+            if let Ok(jpeg_data) = compressor.compress_to_vec(image) {
+                if let Err(e) = write_atomic(
+                    Path::new(PROOF_3D_FRAME_PATH),
+                    &jpeg_data,
+                ) {
+                    log::warn!("3D proof frame write failed: {e}");
+                }
+            }
+        }
+    }
+}
 
 /// LRR Phase 0 item 4 / FINDING-Q step 4 — sibling JSON for shader
 /// health (rollback counter). Separate from `pool_metrics.json` because
@@ -69,6 +147,11 @@ pub struct Renderer {
     start_time: Instant,
     last_frame: Instant,
     frame_count: u64,
+    /// 3D scene renderer for Phase 0 proof. Only instantiated when
+    /// `HAPAX_IMAGINATION_3D_PROOF=1`. When None, zero runtime cost.
+    scene_renderer: Option<SceneRenderer>,
+    /// Separate JPEG compressor for 3D proof output.
+    proof_jpeg: Option<turbojpeg::Compressor>,
 }
 
 impl Renderer {
@@ -109,6 +192,25 @@ impl Renderer {
             height
         );
 
+        // 3D proof of concept — gated behind env var
+        let scene_renderer = if std::env::var("HAPAX_IMAGINATION_3D_PROOF").as_deref() == Ok("1") {
+            log::info!("3D proof mode ENABLED — rendering to {}", PROOF_3D_OUTPUT_DIR);
+            std::fs::create_dir_all(PROOF_3D_OUTPUT_DIR).ok();
+            Some(SceneRenderer::new(&device, &queue, width, height))
+        } else {
+            None
+        };
+
+        let proof_jpeg = if scene_renderer.is_some() {
+            turbojpeg::Compressor::new().ok().map(|mut c| {
+                c.set_quality(80).ok();
+                c.set_subsamp(turbojpeg::Subsamp::Sub2x2).ok();
+                c
+            })
+        } else {
+            None
+        };
+
         let now = Instant::now();
         Self {
             device,
@@ -123,6 +225,8 @@ impl Renderer {
             start_time: now,
             last_frame: now,
             frame_count: 0,
+            scene_renderer,
+            proof_jpeg,
         }
     }
 
@@ -180,6 +284,22 @@ impl Renderer {
             opacities,
             Some(&self.content_source_mgr),
         );
+
+        // 3D proof render (parallel output — does not affect 2D pipeline)
+        if let Some(mut scene) = self.scene_renderer.take() {
+            scene.render(
+                &self.device,
+                &self.queue,
+                time,
+                Some(&self.content_source_mgr),
+            );
+
+            // Write 3D proof frame to shm every 30 frames (~1 Hz)
+            if self.frame_count.is_multiple_of(30) {
+                self.write_proof_frame(&scene);
+            }
+            self.scene_renderer = Some(scene);
+        }
 
         self.frame_count = self.frame_count.wrapping_add(1);
         if self.frame_count.is_multiple_of(600) {
