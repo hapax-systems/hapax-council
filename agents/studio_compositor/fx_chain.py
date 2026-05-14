@@ -554,7 +554,7 @@ def pip_draw_from_layout(
     layout = layout_state.get()
     pairs: list[tuple[Any, Any, cairo.ImageSurface, object]] = []
     for assignment in layout.assignments:
-        if stage is not None and getattr(assignment, "render_stage", "post_fx") != stage:
+        if stage is not None and getattr(assignment, "render_stage", "pre_fx") != stage:
             continue
         if not layout_source_enabled(assignment.source):
             _emit_blit_skip(assignment.source, "source_family_disabled")
@@ -826,7 +826,7 @@ def _layout_composite_signature(
             (
                 assignment.source,
                 assignment.surface,
-                getattr(assignment, "render_stage", "post_fx"),
+                getattr(assignment, "render_stage", "pre_fx"),
                 round(float(assignment.opacity), 4),
                 bool(getattr(assignment, "non_destructive", False)),
                 surface_schema.blend_mode,
@@ -1095,7 +1095,7 @@ def _has_post_fx_layout_assignments(compositor: Any) -> bool:
         log.debug("post-FX overlay requirement check failed", exc_info=True)
         return True
     for assignment in getattr(layout, "assignments", ()):
-        if getattr(assignment, "render_stage", "post_fx") == "post_fx":
+        if getattr(assignment, "render_stage", "pre_fx") == "post_fx":
             return True
     return False
 
