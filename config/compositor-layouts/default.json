@@ -1,6 +1,6 @@
 {
   "name": "default",
-  "description": "Merged layout — default sources (working cairo backends) + garage-door surface positions + post_fx ward rendering. Reference: 20260505_164317.png.",
+  "description": "Merged layout \u2014 default sources (working cairo backends) + garage-door surface positions + post_fx ward rendering. Reference: 20260505_164317.png.",
   "sources": [
     {
       "id": "token_pole",
@@ -1454,7 +1454,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": false,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "album",
@@ -1481,7 +1481,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": false,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "recruitment_candidate_panel",
@@ -1490,7 +1490,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": false,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "thinking_indicator",
@@ -1499,7 +1499,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": false,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "pressure_gauge",
@@ -1508,7 +1508,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": false,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "activity_variety_log",
@@ -1517,7 +1517,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": false,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "whos_here",
@@ -1526,7 +1526,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": false,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "reverie",
@@ -1535,7 +1535,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": false,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "stance_indicator",
@@ -1544,7 +1544,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": false,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "grounding_provenance_ticker",
@@ -1553,7 +1553,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": false,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "activity_header",
@@ -1562,7 +1562,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": false,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "m8-display",
@@ -1571,7 +1571,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": false,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "programme_history",
@@ -1580,7 +1580,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": false,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "precedent_ticker",
@@ -1589,7 +1589,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": false,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "sierpinski",
@@ -1607,7 +1607,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": false,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "egress_footer",
@@ -1616,7 +1616,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": false,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "programme_banner",
@@ -1625,7 +1625,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": false,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "durf",
@@ -1661,18 +1661,18 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": false,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "steamdeck-display",
       "surface": "steamdeck-display-pip",
-      "render_stage": "post_fx",
+      "render_stage": "pre_fx",
       "opacity": 1.0
     },
     {
       "source": "steamdeck-display",
       "surface": "steamdeck-display-fullscreen",
-      "render_stage": "post_fx",
+      "render_stage": "pre_fx",
       "opacity": 0.0
     },
     {
@@ -1682,7 +1682,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "chat_ambient",
@@ -1691,7 +1691,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "chronicle_ticker",
@@ -1700,7 +1700,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "programme_state",
@@ -1709,7 +1709,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "polyend_instrument_reveal",
@@ -1718,7 +1718,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "interactive_lore_query",
@@ -1727,7 +1727,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "constructivist_research_poster",
@@ -1736,7 +1736,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "tufte_density",
@@ -1745,7 +1745,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "ascii_schematic",
@@ -1754,7 +1754,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "segment_content",
@@ -1763,7 +1763,7 @@
       "opacity": 0.0,
       "per_assignment_effects": [],
       "non_destructive": true,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "m8_oscilloscope",
@@ -1772,7 +1772,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     },
     {
       "source": "cbip_dual_ir_displacement",
@@ -1781,7 +1781,7 @@
       "opacity": 1.0,
       "per_assignment_effects": [],
       "non_destructive": true,
-      "render_stage": "post_fx"
+      "render_stage": "pre_fx"
     }
   ]
 }

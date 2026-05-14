@@ -115,7 +115,7 @@ def test_default_chrome_wards_are_pre_fx(chrome_source: str) -> None:
     targeted tests below) for the rollback path.
     """
     stages = _stage_by_source(_load("default.json"))
-    assert stages[chrome_source] == "post_fx", (
+    assert stages[chrome_source] == "pre_fx", (
         f"default.json: {chrome_source} should now render pre-FX as part of "
         "the unified nebulous scrim. Per operator directive 2026-04-24."
     )
@@ -170,7 +170,7 @@ def test_reverie_in_default_is_pre_fx() -> None:
     pulling all wards into the unified scrim.
     """
     stages = _stage_by_source(_load("default.json"))
-    assert stages["reverie"] == "post_fx"
+    assert stages["reverie"] == "pre_fx"
 
 
 def test_reverie_in_consent_safe_is_post_fx() -> None:

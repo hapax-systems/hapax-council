@@ -371,6 +371,41 @@ def _paint_contrast_floor(cr: cairo.Context, geom: SurfaceGeometry, alpha: float
     cr.restore()
 
 
+# Module-level counter for non-empty transforms silently ignored by the
+# Cairo blit path (LSC-LAYOUT-002, REQ-20260511154600).  Incremented at
+# most once per ward_id per 10 seconds to avoid counter churn.
+_TRANSFORM_IGNORED_LAST: dict[str, float] = {}
+_TRANSFORM_IGNORED_COOLDOWN = 10.0
+
+
+def _check_transform_ignored(assignment: Any) -> None:
+    """Emit a warning metric when an assignment has a non-empty transform
+    that the Cairo blit path silently ignores."""
+    transform = getattr(assignment, "transform", None)
+    if not transform:
+        return
+    source = getattr(assignment, "source", "unknown")
+    now = time.monotonic()
+    last = _TRANSFORM_IGNORED_LAST.get(source, 0.0)
+    if now - last < _TRANSFORM_IGNORED_COOLDOWN:
+        return
+    _TRANSFORM_IGNORED_LAST[source] = now
+    log.warning(
+        "Assignment.transform ignored by Cairo blit path "
+        "(LSC-LAYOUT-002 fail-fast): source=%s transform=%s",
+        source,
+        transform,
+    )
+    try:
+        from . import metrics as _metrics
+
+        counter = getattr(_metrics, "COMP_TRANSFORM_IGNORED_TOTAL", None)
+        if counter is not None:
+            counter.labels(source=source).inc()
+    except Exception:
+        log.debug("transform-ignored metric emit failed", exc_info=True)
+
+
 def blit_scaled(
     cr: cairo.Context,
     src: cairo.ImageSurface,
@@ -762,6 +797,12 @@ def _draw_layout_pairs(
     stage: Literal["pre_fx", "post_fx"] | None,
 ) -> None:
     for assignment, surface_schema, src, content_token in pairs:
+        # LSC-LAYOUT-002 / REQ-20260511154600: Assignment.transform fail-fast.
+        # The Cairo blit path does not implement transforms (rotation, crop,
+        # scale override, etc.).  If an assignment carries a non-empty
+        # transform dict, emit a metric so the preflight/dashboards can
+        # detect silently ignored transforms.
+        _check_transform_ignored(assignment)
         # Task #157: clamp alpha to the non-destructive ceiling when the
         # assignment opts in, so informational wards cannot visually
         # destroy the camera content underneath them.
