@@ -6,14 +6,22 @@ After=systemd-udevd.service
 
 [Service]
 Type=oneshot
+# HAPAX_COUNCIL_ROOT lets the import resolver find shared.usb_bandwidth_table
+# without relying on local drop-in overrides. ProtectHome=read-only allows
+# reading ~/projects/hapax-council while preventing writes to home.
+# Reconciliation: REQ-20260508193745 finding #1/#2.
+Environment=HAPAX_COUNCIL_ROOT=%h/projects/hapax-council
 ExecStart=/usr/local/bin/hapax-usb-bandwidth-preflight --prometheus
 StandardOutput=append:/var/lib/node-exporter/textfile/hapax-usb-bandwidth.prom.tmp
 ExecStartPost=/bin/sh -c 'mv /var/lib/node-exporter/textfile/hapax-usb-bandwidth.prom.tmp /var/lib/node-exporter/textfile/hapax-usb-bandwidth.prom'
 ProtectSystem=strict
-ProtectHome=true
+ProtectHome=read-only
 PrivateTmp=true
 ReadWritePaths=/var/lib/node-exporter/textfile
 MemoryMax=64M
+# Exit codes: 0=ok, 1=warning (bandwidth pressure), 2=saturated.
+# Import/runtime failures use different codes but --prometheus writes to
+# .prom.tmp first; ExecStartPost only promotes on success exit status.
 SuccessExitStatus=0 1 2
 
 [Install]

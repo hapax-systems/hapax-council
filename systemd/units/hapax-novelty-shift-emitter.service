@@ -2,6 +2,11 @@
 Description=Hapax novelty-shift impingement emitter (cc-task u3)
 Documentation=https://github.com/ryanklee/hapax-council/blob/main/agents/novelty_emitter/_emitter.py
 After=hapax-daimonion.service hapax-secrets.service
+# 1-second timer cadence requires disabling start-limit accounting.
+# Without this, systemd's default (5 starts in 10s) trips after 5s
+# and the unit enters failed state until reset.
+# Reconciliation: REQ-20260508193745 finding #4.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
