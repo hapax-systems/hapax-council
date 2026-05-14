@@ -280,7 +280,7 @@ class SlotDriftEngine:
             nt for nt in registry.node_types
             if nt not in EXCLUDED_TYPES
             and nt in PASSTHROUGH_MAP
-            and nt in ACTIVE_MAP
+            and nt in ACTIVE_RANGES
             and registry.get(nt) is not None
             and registry.get(nt).glsl_source is not None
         ]
