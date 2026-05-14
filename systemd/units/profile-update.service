@@ -1,20 +1,18 @@
 [Unit]
 Description=User Profile Auto-Update (profiler agent)
-After=network.target
+After=network.target hapax-secrets.service
 OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
 WorkingDirectory=/home/hapax/projects/hapax-council
+EnvironmentFile=/run/user/1000/hapax-secrets.env
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=GNUPGHOME=/home/hapax/.gnupg
 Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
 
-# Load secrets from pass via shell eval — requires GPG agent in user session
-ExecStart=/bin/bash -c '\
-  set -a && source .envrc && set +a && \
-  exec /home/hapax/.local/bin/uv run python -m agents.profiler --auto'
+ExecStart=/home/hapax/.local/bin/uv run python -m agents.profiler --auto
 
 StandardOutput=journal
 StandardError=journal
