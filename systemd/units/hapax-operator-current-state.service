@@ -1,0 +1,16 @@
+[Unit]
+Description=Hapax Operator Current State Renderer
+After=network-online.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/hapax/projects/hapax-council/scripts/operator-current-state-render --once
+WorkingDirectory=/home/hapax/projects/hapax-council
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/hapax
+Environment=GNUPGHOME=/home/hapax/.gnupg
+Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
+MemoryMax=512M
+CPUQuota=25%
+SyslogIdentifier=hapax-operator-current-state

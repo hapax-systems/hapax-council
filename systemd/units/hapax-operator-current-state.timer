@@ -1,0 +1,10 @@
+[Unit]
+Description=Operator current state refresh (5min freshness)
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
