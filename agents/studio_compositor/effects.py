@@ -225,3 +225,45 @@ def get_available_preset_names() -> set[str]:
                 if not f.name.startswith("_"):
                     names.add(f.stem)
     return names
+
+def extract_preset_slot_params(preset_name: str) -> list[tuple[str, dict[str, float]]] | None:
+    """Load a preset and return its node params without loading into the runtime.
+
+    Returns a list of (node_type, {param: value}) tuples, one per non-output
+    node in the preset.  Used by the parameter drift engine to get target
+    params for drift interpolation without triggering a full plan activation.
+    """
+    from pathlib import Path as _Path
+
+    candidates = [preset_name]
+    alias = GRAPH_PRESET_ALIASES.get(preset_name)
+    if alias:
+        candidates.append(alias)
+
+    for dir_ in (
+        _Path.home() / ".config" / "hapax" / "effect-presets",
+        _Path(__file__).parent.parent.parent / "presets",
+    ):
+        for candidate in candidates:
+            preset_path = dir_ / f"{candidate}.json"
+            if preset_path.is_file():
+                try:
+                    raw = json.loads(preset_path.read_text())
+                    nodes = raw.get("nodes", {})
+                    result = []
+                    for node_id, node in nodes.items():
+                        node_type = node.get("type", "")
+                        if node_type in ("output", ""):
+                            continue
+                        params = node.get("params", {})
+                        numeric_params = {
+                            k: v for k, v in params.items()
+                            if isinstance(v, (int, float))
+                        }
+                        result.append((node_type, numeric_params))
+                    return result
+                except Exception:
+                    log.debug("extract_preset_slot_params: %s", candidate, exc_info=True)
+                    return None
+    return None
+
