@@ -290,6 +290,42 @@ def _frontmatter_status(note_text: str) -> str:
 
 
 vault_root = path.parent.parent
+
+
+def _parse_pr_number(note_text: str) -> str | None:
+    """Extract PR number from frontmatter pr: field."""
+    match = re.search(r"^pr:\s*(\S+)$", note_text, flags=re.MULTILINE)
+    if not match:
+        return None
+    val = match.group(1).strip().strip("\x27\x22")
+    if val.lower() in ("null", "none", "~", ""):
+        return None
+    # Strip leading # if present
+    return val.lstrip("#")
+
+
+def _check_pr_merged(pr_number: str) -> str:
+    """Check PR merge status via gh CLI. Returns merged|open|closed|unknown."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", pr_number, "--json", "state,merged",
+             "--jq", ".state + \",\" + (.merged | tostring)"],
+            capture_output=True, text=True, timeout=15,
+            cwd=str(Path.home() / "projects" / "hapax-council"),
+        )
+        if result.returncode != 0:
+            return "unknown"
+        parts = result.stdout.strip().split(",")
+        if len(parts) == 2 and parts[1] == "true":
+            return "merged"
+        if parts[0] == "OPEN":
+            return "open"
+        if parts[0] == "CLOSED":
+            return "closed_unmerged"
+        return "unknown"
+    except Exception:
+        return "unknown"
 unmet: list[str] = []
 for dep_id in _parse_depends_on(text):
     dep_path = _locate_task(vault_root, dep_id)
@@ -299,6 +335,19 @@ for dep_id in _parse_depends_on(text):
     dep_status = _frontmatter_status(dep_path.read_text(encoding="utf-8"))
     if dep_status not in ("completed", "closed", "done"):
         unmet.append(f"{dep_id} (status: {dep_status})")
+        continue
+    # Dependency is closed — check if it has a PR that must be merged
+    dep_text = dep_path.read_text(encoding="utf-8")
+    pr_num = _parse_pr_number(dep_text)
+    if pr_num:
+        pr_state = _check_pr_merged(pr_num)
+        if pr_state == "open":
+            unmet.append(f"{dep_id} (PR #{pr_num} still open — source not on main)")
+        elif pr_state == "closed_unmerged":
+            unmet.append(f"{dep_id} (PR #{pr_num} closed without merge — source lost)")
+        elif pr_state == "unknown":
+            # Fail closed: unknown PR state blocks dispatch
+            unmet.append(f"{dep_id} (PR #{pr_num} state unknown — cannot verify merge)")
 
 if unmet:
     print(f"cc-claim: BLOCKED — task '{task_id}' has unmet dependencies:", file=sys.stderr)
