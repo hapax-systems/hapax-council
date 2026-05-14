@@ -1,18 +1,16 @@
-"""Slot-pool constellation drift — indeterminate presets flowing into one another.
+"""Slot-pool continuous rotation — indeterminate presets flowing into one another.
 
 Architecture per ``feedback_no_presets_use_parametric_modulation``:
 variance emerges from per-parameter walks within constraint envelopes,
 NOT from preset selection or topology mutation.
 
-Key design: a **constellation** is a coherent group of 2-3 active effects
-that together produce a recognizable "look" (like a preset). The engine
-holds a constellation for 30-90 seconds, then transitions by fading ONE
-effect out and ONE new effect in. This creates the visual impression of
-presets flowing into one another — not random visual noise.
+Key design: effects have individual lifecycles (fade-in → peak → fade-out)
+staggered across time. At any moment, 2-4 effects are at various stages
+of their lifecycle. The overlap creates continuous visual flow — there is
+never a static "hold" where the look doesn't evolve.
 
-Transitions are smooth parameter interpolation (15-30s per crossfade).
-Shader fragment swaps ONLY happen when a slot is at passthrough intensity,
-eliminating GL recompile blinks entirely.
+Shader fragment swaps ONLY happen at u_mix=0 (passthrough), eliminating
+GL recompile blinks.
 """
 
 from __future__ import annotations
@@ -22,6 +20,7 @@ import math
 import random
 import time
 from dataclasses import dataclass, field
+from enum import Enum, auto
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -34,20 +33,13 @@ log = logging.getLogger(__name__)
 def wrap_glsl_with_mix(glsl: str) -> str:
     """Inject a u_mix uniform that blends between original input and effect output.
 
-    This gives EVERY shader a true passthrough path: at u_mix=0.0 the output
-    is the unmodified input texture, at u_mix=1.0 the output is the full effect.
-    Intermediate values produce smooth blends.
-
-    The wrapper works by:
-    1. Adding a u_mix uniform declaration
-    2. Capturing the original texture sample
-    3. Replacing the final gl_FragColor assignment with a mix()
+    At u_mix=0.0 the output is the unmodified input texture (passthrough),
+    at u_mix=1.0 the output is the full effect. This gives EVERY shader a
+    guaranteed passthrough path.
     """
     if "u_mix" in glsl:
-        return glsl  # already has it
+        return glsl
 
-    # Add uniform declaration after other uniforms
-    # Find the last 'uniform' line and insert after it
     lines = glsl.split("\n")
     last_uniform_idx = -1
     for i, line in enumerate(lines):
@@ -55,64 +47,47 @@ def wrap_glsl_with_mix(glsl: str) -> str:
             last_uniform_idx = i
 
     if last_uniform_idx == -1:
-        # No uniforms found, insert before void main
         for i, line in enumerate(lines):
             if "void main" in line:
                 last_uniform_idx = i - 1
                 break
 
-    # Insert mix uniform and original-capture variable
-    lines.insert(last_uniform_idx + 1, "uniform float u_mix;  // drift mix: 0=passthrough, 1=full effect")
+    lines.insert(last_uniform_idx + 1,
+                 "uniform float u_mix;  // drift: 0=passthrough, 1=full effect")
 
-    # Now wrap the main() function to capture original and mix
-    # Strategy: rename main() to _effect_main(), add a new main() that mixes
     result = "\n".join(lines)
 
-    # Simpler approach: just add a preamble inside main() and postamble
-    # Find "void main" and the opening brace
     main_idx = result.find("void main")
     if main_idx == -1:
-        return glsl  # can't wrap, return original
+        return glsl
 
     brace_idx = result.find("{", main_idx)
     if brace_idx == -1:
         return glsl
 
-    # Insert original capture right after opening brace
     preamble = "\n    vec4 _drift_original = texture2D(tex, v_texcoord);\n"
     result = result[:brace_idx + 1] + preamble + result[brace_idx + 1:]
 
-    # Find the LAST gl_FragColor assignment and wrap it with mix
-    # We need to find the last "gl_FragColor =" and replace with mix
     last_frag_idx = result.rfind("gl_FragColor")
     if last_frag_idx == -1:
         return glsl
 
-    # Find the semicolon ending this statement
     semi_idx = result.find(";", last_frag_idx)
     if semi_idx == -1:
         return glsl
 
-    # Extract the value being assigned
     eq_idx = result.find("=", last_frag_idx)
     if eq_idx == -1 or eq_idx > semi_idx:
         return glsl
 
     original_value = result[eq_idx + 1:semi_idx].strip()
-
-    # Replace with mix
     mix_assignment = f" mix(_drift_original, {original_value}, u_mix)"
     result = result[:eq_idx + 1] + mix_assignment + result[semi_idx:]
 
     return result
 
-# Excluded from the drift pool
-# Types excluded from drift pool:
-# - structural: output, blend, crossfade, noise_gen (not serial chain effects)
-# - masking: chroma_key, luma_key, circular_mask (would mask out content)
-# - overlay: solid, strobe, syrup, waveform_render (replace content, not process it)
-# - GPU-heavy: fluid_sim, reaction_diffusion, particle_system (performance)
-# - content_layer: special pipeline role
+
+# Types excluded from drift pool
 EXCLUDED_TYPES = frozenset({
     "output", "content_layer", "solid", "strobe", "chroma_key",
     "luma_key", "circular_mask", "syrup", "waveform_render",
@@ -173,8 +148,7 @@ PASSTHROUGH_MAP: dict[str, dict[str, float]] = {
     "displacement_map":     {"strength_x": 0.0, "strength_y": 0.0},
 }
 
-
-# Per-shader "active" target values that produce a visible, aesthetic effect
+# Per-shader "active" target values for visible aesthetic effect
 ACTIVE_MAP: dict[str, dict[str, float]] = {
     "colorgrade":           {"saturation": 0.6, "brightness": 1.3, "contrast": 1.2,
                              "sepia": 0.3, "hue_rotate": 0.15},
@@ -226,51 +200,66 @@ ACTIVE_MAP: dict[str, dict[str, float]] = {
     "displacement_map":     {"strength_x": 0.15, "strength_y": 0.15},
 }
 
-
-# Default curated pool: shaders loaded into slots at boot
 # Curated initial pool: diverse visual character across the spectrum
 DEFAULT_POOL: list[str] = [
-    "colorgrade",       # color manipulation
-    "edge_detect",      # structural
-    "bloom",            # glow/light
-    "scanlines",        # overlay texture
-    "chromatic_aberration",  # distortion
-    "vignette",         # framing
-    "feedback",         # temporal
-    "trail",            # motion history
-    "thermal",          # false color
-    "halftone",         # halftone dots
-    "kaleidoscope",     # geometric
-    "emboss",           # relief/texture
+    "colorgrade",
+    "edge_detect",
+    "bloom",
+    "scanlines",
+    "chromatic_aberration",
+    "vignette",
+    "feedback",
+    "trail",
+    "thermal",
+    "halftone",
+    "kaleidoscope",
+    "emboss",
 ]
 
 POOL_SIZE = 12
-CONSTELLATION_SIZE = 3          # How many effects are active at once
-CONSTELLATION_HOLD_S = 60.0     # How long to hold a constellation before transition
-TRANSITION_DURATION_S = 20.0    # How long a single-slot crossfade takes
-PARAM_DRIFT_RATE = 0.003        # Subtle per-tick param wander within active slots
-RECYCLE_IDLE_S = 90.0           # Seconds at passthrough before shader recycling
+PARAM_DRIFT_RATE = 0.003  # Subtle per-tick param wander within active slots
+
+# ── Lifecycle timing ──────────────────────────────────────────────
+# Each slot cycles through: IDLE → RISING → PEAK → FALLING → IDLE
+# Staggered starts ensure continuous flow.
+FADE_IN_S = 15.0        # seconds to rise from 0 → 1
+PEAK_HOLD_S = 25.0       # seconds at full intensity (randomized ±40%)
+FADE_OUT_S = 15.0        # seconds to fall from 1 → 0
+# Stagger: time between successive slot activations
+STAGGER_S = 18.0         # new slot activates every ~18s (randomized ±30%)
+RECYCLE_IDLE_S = 30.0    # seconds at IDLE before shader recycling
+
+
+class Phase(Enum):
+    IDLE = auto()     # u_mix = 0, at passthrough
+    RISING = auto()   # fading in
+    PEAK = auto()     # at full intensity
+    FALLING = auto()  # fading out
 
 
 @dataclass
 class SlotState:
-    """Per-slot state."""
+    """Per-slot lifecycle state."""
     node_type: str
     slot_idx: int
-    # 0.0 = passthrough, 1.0 = fully active
+    phase: Phase = Phase.IDLE
     intensity: float = 0.0
-    target_intensity: float = 0.0
-    passthrough_since: float = 0.0
+    # When current phase started (monotonic)
+    phase_start: float = 0.0
+    # Duration of current phase (randomized)
+    phase_duration: float = 0.0
+    # When slot entered IDLE (for recycle eligibility)
+    idle_since: float = 0.0
+    # Per-param state
     current_params: dict[str, float] = field(default_factory=dict)
 
 
 class SlotDriftEngine:
-    """Constellation-based drift: coherent groups of effects that morph over time.
+    """Continuous rotation: effects flow in and out on staggered lifecycles.
 
-    At any moment, CONSTELLATION_SIZE slots are "active" (intensity > 0),
-    producing a coherent visual look. Every CONSTELLATION_HOLD_S seconds,
-    the engine picks one active slot to fade out and one idle slot to fade in.
-    This creates the impression of presets flowing into one another.
+    At any moment, 2-4 effects are at various stages of their lifecycle
+    (rising, peak, or falling). There is no static "hold" — the visual
+    is always evolving.
     """
 
     def __init__(self, registry: "ShaderRegistry", seed: int = 42) -> None:
@@ -279,14 +268,8 @@ class SlotDriftEngine:
         self._slots: list[SlotState] = []
         self._booted = False
         self._tick_count = 0
-
-        # Constellation state
-        self._active_set: set[int] = set()       # slot indices currently active
-        self._fading_out: int | None = None       # slot currently fading out
-        self._fading_in: int | None = None        # slot currently fading in
-        self._transition_start: float = 0.0       # monotonic time transition started
-        self._last_constellation_change: float = 0.0
-        self._constellation_hold: float = CONSTELLATION_HOLD_S
+        self._last_activation: float = 0.0
+        self._next_stagger: float = STAGGER_S
 
         self._available_types = [
             nt for nt in registry.node_types
@@ -299,7 +282,7 @@ class SlotDriftEngine:
         log.info("SlotDrift: %d eligible shader types", len(self._available_types))
 
     def boot(self, sp: "SlotPipeline") -> None:
-        """Populate slot pool with diverse shaders, activate initial constellation."""
+        """Populate slot pool with diverse shaders, start staggered rotation."""
         if self._booted:
             return
 
@@ -319,13 +302,12 @@ class SlotDriftEngine:
             if defn is None or defn.glsl_source is None:
                 continue
 
-            # Load shader fragment with u_mix wrapper for passthrough control
+            # Load shader fragment with u_mix wrapper
             sp._slot_assignments[i] = node_type
             frag = wrap_glsl_with_mix(defn.glsl_source)
             if frag != sp._slot_last_frag[i]:
                 sp._slots[i].set_property("fragment", frag)
                 sp._slot_last_frag[i] = frag
-                log.info("SlotDrift boot: slot %d ← %s (%d chars)", i, node_type, len(frag))
 
             # Set passthrough params
             passthrough = PASSTHROUGH_MAP.get(node_type, {})
@@ -334,6 +316,7 @@ class SlotDriftEngine:
                 if p.default is not None:
                     base_params[k] = p.default
             base_params.update(passthrough)
+            base_params["mix"] = 0.0
             sp._slot_base_params[i] = base_params
             sp._slot_preset_params[i] = dict(base_params)
             sp._apply_glfeedback_uniforms(i)
@@ -341,28 +324,31 @@ class SlotDriftEngine:
             state = SlotState(
                 node_type=node_type,
                 slot_idx=i,
+                phase=Phase.IDLE,
                 intensity=0.0,
-                target_intensity=0.0,
-                passthrough_since=now,
+                idle_since=now,
                 current_params=dict(passthrough),
             )
             self._slots.append(state)
 
-        # Activate initial constellation: first CONSTELLATION_SIZE slots
-        initial = list(range(min(CONSTELLATION_SIZE, len(self._slots))))
-        for idx in initial:
-            self._slots[idx].target_intensity = 1.0
-            self._active_set.add(idx)
-        self._last_constellation_change = now
-        # Randomize next hold duration
-        self._constellation_hold = CONSTELLATION_HOLD_S * (0.7 + 0.6 * self._rng.random())
+        # Kick off initial rotation: activate first 3 slots staggered
+        for i, state in enumerate(self._slots[:3]):
+            delay = i * STAGGER_S * 0.5  # first 3 ramp up quickly
+            state.phase = Phase.RISING
+            state.phase_start = now + delay
+            state.phase_duration = FADE_IN_S * (0.8 + 0.4 * self._rng.random())
+            state.idle_since = 0
+
+        self._last_activation = now
+        self._next_stagger = STAGGER_S * (0.7 + 0.6 * self._rng.random())
 
         self._booted = True
         log.warning(
-            "SlotDrift booted: %d slots, constellation=%s (%s)",
+            "SlotDrift booted: %d slots loaded from %d eligible types. "
+            "Initial: %s",
             len(self._slots),
-            list(self._active_set),
-            [self._slots[i].node_type for i in self._active_set],
+            len(self._available_types),
+            [s.node_type for s in self._slots[:3]],
         )
 
     def tick(self, sp: "SlotPipeline", t: float) -> None:
@@ -377,127 +363,106 @@ class SlotDriftEngine:
 
         now = time.monotonic()
 
-        # Phase 1: Advance any active transition
-        self._advance_transition(now)
-
-        # Phase 2: Check if it's time for a new transition
-        if self._fading_out is None and self._fading_in is None:
-            elapsed = now - self._last_constellation_change
-            if elapsed >= self._constellation_hold:
-                self._begin_transition(now)
-
-        # Phase 3: Interpolate all slot intensities toward targets + flush
+        # Phase 1: Advance each slot's lifecycle
         for state in self._slots:
-            self._interpolate_slot(state, sp, t, now)
+            self._advance_lifecycle(state, now)
+
+        # Phase 2: Maybe activate a new slot (continuous rotation)
+        self._maybe_activate_next(now)
+
+        # Phase 3: Interpolate all slots and flush to GPU
+        for state in self._slots:
+            self._interpolate_slot(state, sp, now)
 
         # Phase 4: Recycle idle shader fragments
-        if self._tick_count % 150 == 0:
+        if self._tick_count % 90 == 0:  # ~every 15s
             self._maybe_recycle(sp, now)
 
-    def _begin_transition(self, now: float) -> None:
-        """Start a constellation transition: fade one out, fade one in."""
-        if not self._active_set:
+    def _advance_lifecycle(self, state: SlotState, now: float) -> None:
+        """Advance a slot through its lifecycle phases."""
+        if state.phase == Phase.IDLE:
             return
 
-        # Pick a random active slot to fade out
-        active_list = sorted(self._active_set)
-        fade_out_idx = self._rng.choice(active_list)
+        elapsed = now - state.phase_start
 
-        # Pick a random inactive slot to fade in
-        inactive = [i for i in range(len(self._slots)) if i not in self._active_set]
-        if not inactive:
+        if state.phase == Phase.RISING:
+            progress = min(1.0, elapsed / state.phase_duration) if state.phase_duration > 0 else 1.0
+            # Smooth ease-in (cubic)
+            state.intensity = progress * progress * (3.0 - 2.0 * progress)
+            if progress >= 1.0:
+                state.phase = Phase.PEAK
+                state.phase_start = now
+                state.phase_duration = PEAK_HOLD_S * (0.6 + 0.8 * self._rng.random())
+                log.debug("SlotDrift: slot %d (%s) → PEAK (%.0fs)",
+                          state.slot_idx, state.node_type, state.phase_duration)
+
+        elif state.phase == Phase.PEAK:
+            state.intensity = 1.0
+            if elapsed >= state.phase_duration:
+                state.phase = Phase.FALLING
+                state.phase_start = now
+                state.phase_duration = FADE_OUT_S * (0.8 + 0.4 * self._rng.random())
+                log.info("SlotDrift: slot %d (%s) → FALLING (%.0fs)",
+                         state.slot_idx, state.node_type, state.phase_duration)
+
+        elif state.phase == Phase.FALLING:
+            progress = min(1.0, elapsed / state.phase_duration) if state.phase_duration > 0 else 1.0
+            # Smooth ease-out (cubic)
+            inv = 1.0 - progress
+            state.intensity = inv * inv * (3.0 - 2.0 * inv)
+            if progress >= 1.0:
+                state.intensity = 0.0
+                state.phase = Phase.IDLE
+                state.idle_since = now
+                log.info("SlotDrift: slot %d (%s) → IDLE",
+                         state.slot_idx, state.node_type)
+
+    def _maybe_activate_next(self, now: float) -> None:
+        """Activate the next idle slot to keep rotation flowing."""
+        elapsed = now - self._last_activation
+        if elapsed < self._next_stagger:
             return
 
-        fade_in_idx = self._rng.choice(inactive)
+        # Count currently active (non-IDLE) slots
+        active_count = sum(1 for s in self._slots if s.phase != Phase.IDLE)
 
-        self._fading_out = fade_out_idx
-        self._fading_in = fade_in_idx
-        self._transition_start = now
-
-        # Set targets
-        self._slots[fade_out_idx].target_intensity = 0.0
-        self._slots[fade_in_idx].target_intensity = 1.0
-
-        log.info(
-            "SlotDrift transition: fade-out slot %d (%s), fade-in slot %d (%s)",
-            fade_out_idx, self._slots[fade_out_idx].node_type,
-            fade_in_idx, self._slots[fade_in_idx].node_type,
-        )
-
-    def _advance_transition(self, now: float) -> None:
-        """Check if the current transition is complete."""
-        if self._fading_out is None:
+        # Keep 2-4 active at a time
+        if active_count >= 4:
             return
 
-        elapsed = now - self._transition_start
-        if elapsed < TRANSITION_DURATION_S:
-            return  # still transitioning
+        # Find idle slots
+        idle_slots = [s for s in self._slots if s.phase == Phase.IDLE]
+        if not idle_slots:
+            return
 
-        # Transition complete
-        out_idx = self._fading_out
-        in_idx = self._fading_in
+        # Pick one to activate
+        chosen = self._rng.choice(idle_slots)
+        chosen.phase = Phase.RISING
+        chosen.phase_start = now
+        chosen.phase_duration = FADE_IN_S * (0.8 + 0.4 * self._rng.random())
+        chosen.idle_since = 0
 
-        # Snap to targets
-        self._slots[out_idx].intensity = 0.0
-        self._slots[out_idx].target_intensity = 0.0
-        self._slots[out_idx].passthrough_since = now
+        self._last_activation = now
+        self._next_stagger = STAGGER_S * (0.7 + 0.6 * self._rng.random())
 
-        if in_idx is not None:
-            self._slots[in_idx].intensity = 1.0
-            self._slots[in_idx].target_intensity = 1.0
-            self._slots[in_idx].passthrough_since = 0
-
-        # Update constellation membership
-        self._active_set.discard(out_idx)
-        if in_idx is not None:
-            self._active_set.add(in_idx)
-
-        self._fading_out = None
-        self._fading_in = None
-        self._last_constellation_change = now
-        # Randomize next hold
-        self._constellation_hold = CONSTELLATION_HOLD_S * (0.7 + 0.6 * self._rng.random())
-
-        log.warning(
-            "SlotDrift constellation now: %s (%s)",
-            list(self._active_set),
-            [self._slots[i].node_type for i in sorted(self._active_set)],
-        )
+        log.info("SlotDrift: activating slot %d (%s), %d now active",
+                 chosen.slot_idx, chosen.node_type, active_count + 1)
 
     def _interpolate_slot(self, state: SlotState, sp: "SlotPipeline",
-                          t: float, now: float) -> None:
-        """Smoothly interpolate a slot's intensity toward its target, flush to GPU."""
-        # Smooth interpolation toward target (exponential ease)
-        diff = state.target_intensity - state.intensity
-        # Rate: reach ~95% of target in TRANSITION_DURATION_S
-        # At 6Hz tick rate, that's ~120 ticks over 20s
-        rate = 3.0 / (TRANSITION_DURATION_S * 6.0)  # per-tick step fraction
-        state.intensity += diff * rate
-
-        # Snap to target if very close
-        if abs(diff) < 0.005:
-            state.intensity = state.target_intensity
-
-        # Track passthrough time
-        if state.intensity < 0.01:
-            if state.passthrough_since == 0:
-                state.passthrough_since = now
-        else:
-            state.passthrough_since = 0
-
+                          now: float) -> None:
+        """Set params and flush to GPU for one slot."""
         idx = state.slot_idx
         if idx >= sp.num_slots or sp._slot_assignments[idx] is None:
             return
 
-        # u_mix is the UNIVERSAL passthrough control (injected into all shaders)
-        # At 0.0 the shader outputs unmodified input; at 1.0 full effect
+        # u_mix controls passthrough blend
         sp._slot_base_params[idx]["mix"] = state.intensity
 
-        # ALSO interpolate per-shader params for additional variety
+        # Interpolate per-shader params
         passthrough = PASSTHROUGH_MAP.get(state.node_type, {})
         active = ACTIVE_MAP.get(state.node_type, {})
 
-        # Add subtle per-tick param wander for active slots (breaks monotony)
+        # Subtle wander for organic feel
         wander = 0.0
         if state.intensity > 0.1:
             wander = self._rng.gauss(0.0, PARAM_DRIFT_RATE)
@@ -505,33 +470,26 @@ class SlotDriftEngine:
         for key in passthrough:
             pt_val = passthrough[key]
             act_val = active.get(key, pt_val)
-            # Base interpolation
             interpolated = pt_val + (act_val - pt_val) * state.intensity
-            # Add wander (scaled by param range)
             if wander != 0 and act_val != pt_val:
                 span = abs(act_val - pt_val)
                 interpolated += wander * span
-                # Clamp within passthrough ↔ active range
                 lo, hi = min(pt_val, act_val), max(pt_val, act_val)
                 interpolated = max(lo, min(hi, interpolated))
             sp._slot_base_params[idx][key] = interpolated
             state.current_params[key] = interpolated
 
-        # Flush to GPU
         sp._apply_glfeedback_uniforms(idx)
 
     def _maybe_recycle(self, sp: "SlotPipeline", now: float) -> None:
-        """Swap shader fragment on slots idle at passthrough long enough."""
+        """Swap shader fragment on slots that have been IDLE long enough."""
         for state in self._slots:
-            if state.passthrough_since == 0:
+            if state.phase != Phase.IDLE:
                 continue
-            if state.slot_idx in self._active_set:
-                continue
-            # Don't recycle during transitions
-            if state.slot_idx == self._fading_out or state.slot_idx == self._fading_in:
+            if state.idle_since == 0:
                 continue
 
-            idle_time = now - state.passthrough_since
+            idle_time = now - state.idle_since
             if idle_time < RECYCLE_IDLE_S:
                 continue
 
@@ -548,7 +506,7 @@ class SlotDriftEngine:
             idx = state.slot_idx
             old_type = state.node_type
 
-            # Swap fragment (invisible — at passthrough, u_mix=0)
+            # Swap fragment (invisible — at passthrough)
             sp._slot_assignments[idx] = new_type
             frag = wrap_glsl_with_mix(defn.glsl_source)
             if frag != sp._slot_last_frag[idx]:
@@ -562,13 +520,14 @@ class SlotDriftEngine:
                 if p.default is not None:
                     base_params[k] = p.default
             base_params.update(passthrough)
+            base_params["mix"] = 0.0
             sp._slot_base_params[idx] = base_params
             sp._slot_preset_params[idx] = dict(base_params)
             sp._apply_glfeedback_uniforms(idx)
 
             state.node_type = new_type
             state.current_params = dict(passthrough)
-            state.passthrough_since = now
+            state.idle_since = now
 
             log.info("SlotDrift recycle: slot %d %s → %s (idle %.0fs)",
                      idx, old_type, new_type, idle_time)
