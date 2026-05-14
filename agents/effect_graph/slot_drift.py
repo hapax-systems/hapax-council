@@ -692,8 +692,12 @@ class SlotDriftEngine:
 
         state.node_type = new_type
         state.current_params = dict(passthrough)
+        state.intensity = 0.0
+        # Schedule re-rise after 2s GL recompile buffer
+        import time as _time
+        state._rerise_after = _time.monotonic() + 2.0
         self._recently_used.append(old_type)
-        log.info("SlotDrift inline recycle: slot %d %s → %s (history=%d)",
+        log.info("SlotDrift inline recycle: slot %d %s → %s (rerise in 2s, history=%d)",
                  idx, old_type, new_type, len(self._recently_used))
 
     def _maybe_recycle(self, sp: SlotPipeline, now: float) -> None:
