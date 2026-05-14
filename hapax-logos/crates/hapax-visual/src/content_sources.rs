@@ -290,6 +290,32 @@ impl ContentSourceManager {
         &self.placeholder_view
     }
 
+    /// Phase 1 3D scene: return source info tuples for dynamic scene building.
+    /// Returns (source_id, current_opacity, z_order, width, height) for each
+    /// active source. The scene builder uses this to position textured quads.
+    pub fn active_source_info(&self) -> Vec<(&str, f32, i32, u32, u32)> {
+        let mut result: Vec<_> = self.sources.iter()
+            .filter(|(_, s)| s.current_opacity > 0.001)
+            .map(|(id, s)| {
+                (
+                    id.as_str(),
+                    s.current_opacity,
+                    s.manifest.z_order,
+                    s.manifest.width,
+                    s.manifest.height,
+                )
+            })
+            .collect();
+        result.sort_by_key(|&(_, _, z, _, _)| z);
+        result
+    }
+
+    /// Phase 1 3D scene: look up a content source's texture view by source_id.
+    /// Returns None if the source doesn't exist or has no texture.
+    pub fn source_view(&self, source_id: &str) -> Option<&wgpu::TextureView> {
+        self.sources.get(source_id).map(|s| &s.view)
+    }
+
     /// Classify a source_id into a slot-family per the
     /// yt-content-reverie-sierpinski-separation contract (2026-04-21).
     /// `yt-slot-*` directories carry YouTube frames and route to the

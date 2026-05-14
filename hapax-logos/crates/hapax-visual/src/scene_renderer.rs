@@ -1,8 +1,8 @@
-//! 3D scene renderer for compositor Phase 0 proof of concept.
+//! 3D scene renderer for compositor Phase 1.
 //!
-//! Renders `SceneNode` quads in 3D space using a perspective camera,
-//! outputs to an intermediate texture that can be used as input to the
-//! existing 2D post-process chain (DynamicPipeline).
+//! Renders dynamically-built scene nodes (from `ContentSourceManager`
+//! state) in 3D space using a perspective camera. Each content source
+//! becomes a textured quad at its z-plane depth.
 //!
 //! Gated behind `HAPAX_IMAGINATION_3D_PROOF=1`. When disabled, this
 //! module is compiled but never instantiated — zero runtime cost.
@@ -11,7 +11,8 @@ use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
 use wgpu::util::DeviceExt;
 
-use crate::scene::{build_proof_scene, Camera3D, SceneNode};
+use crate::content_sources::ContentSourceManager;
+use crate::scene::{build_proof_scene, build_scene_from_sources, Camera3D};
 
 const SCENE_QUAD_WGSL: &str = include_str!("shaders/scene_quad.wgsl");
 
@@ -28,7 +29,6 @@ struct SceneUniformData {
 }
 
 pub struct SceneRenderer {
-    scene: Vec<SceneNode>,
     camera: Camera3D,
     render_pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
@@ -49,7 +49,6 @@ pub struct SceneRenderer {
 
 impl SceneRenderer {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32) -> Self {
-        let scene = build_proof_scene();
         let camera = Camera3D::new(width, height);
 
         // Uniform buffer (per-quad, updated each draw call)
@@ -208,7 +207,7 @@ impl SceneRenderer {
             cache: None,
         });
 
-        // Placeholder texture (1x1 white)
+        // Placeholder texture (1x1 semi-transparent white)
         let placeholder_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("scene placeholder"),
             size: wgpu::Extent3d {
@@ -230,7 +229,7 @@ impl SceneRenderer {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &[255u8, 255, 255, 128], // Semi-transparent white
+            &[255u8, 255, 255, 128],
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(4),
@@ -245,15 +244,13 @@ impl SceneRenderer {
         let placeholder_view = placeholder_texture.create_view(&Default::default());
 
         log::info!(
-            "SceneRenderer initialized: {}x{}, {} nodes, fov={:.0}°",
+            "SceneRenderer initialized: {}x{}, fov={:.0}°",
             width,
             height,
-            scene.len(),
             camera.fov_y_radians.to_degrees()
         );
 
         Self {
-            scene,
             camera,
             render_pipeline,
             uniform_buffer,
@@ -272,15 +269,27 @@ impl SceneRenderer {
         }
     }
 
-    /// Render the 3D scene. Returns a reference to the output texture view
-    /// for downstream consumption (ShmOutput or DynamicPipeline input).
+    /// Render the 3D scene. Builds the scene graph dynamically from
+    /// ContentSourceManager state each frame.
     pub fn render(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         time: f32,
-        content_source_mgr: Option<&crate::content_sources::ContentSourceManager>,
+        content_source_mgr: Option<&ContentSourceManager>,
     ) -> &wgpu::TextureView {
+        // Build scene from live content sources
+        let scene = if let Some(mgr) = content_source_mgr {
+            let active = mgr.active_source_info();
+            if active.is_empty() {
+                build_proof_scene()
+            } else {
+                build_scene_from_sources(&active)
+            }
+        } else {
+            build_proof_scene()
+        };
+
         // Update camera with orbital drift
         self.camera.apply_orbital_drift(time);
         let view = self.camera.view_matrix();
@@ -320,17 +329,17 @@ impl SceneRenderer {
             pass.set_pipeline(&self.render_pipeline);
 
             // Sort nodes back-to-front for proper alpha blending
-            let mut sorted_indices: Vec<usize> = (0..self.scene.len()).collect();
+            let mut sorted_indices: Vec<usize> = (0..scene.len()).collect();
             sorted_indices.sort_by(|a, b| {
-                self.scene[*a]
+                scene[*a]
                     .position
                     .z
-                    .partial_cmp(&self.scene[*b].position.z)
+                    .partial_cmp(&scene[*b].position.z)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
 
             for &idx in &sorted_indices {
-                let node = &self.scene[idx];
+                let node = &scene[idx];
                 if node.opacity < 0.001 {
                     continue;
                 }
@@ -345,10 +354,11 @@ impl SceneRenderer {
                 };
                 queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform_data));
 
-                // Get texture for this node
-                let tex_view = if let Some(src_idx) = node.content_source_index {
+                // Get texture for this node — resolve by source ID
+                let tex_view = if let Some(ref source_id) = node.content_source_id {
                     if let Some(mgr) = content_source_mgr {
-                        mgr.slot_view(src_idx)
+                        mgr.source_view(source_id)
+                            .unwrap_or(&self.placeholder_view)
                     } else {
                         &self.placeholder_view
                     }
@@ -374,7 +384,7 @@ impl SceneRenderer {
 
                 pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 pass.set_bind_group(1, &tex_bind_group, &[]);
-                pass.draw(0..6, 0..1); // 6 vertices = 2 triangles = 1 quad
+                pass.draw(0..6, 0..1);
             }
         }
 
@@ -383,17 +393,14 @@ impl SceneRenderer {
         &self.output_view
     }
 
-    /// Width of the output texture.
     pub fn width(&self) -> u32 {
         self.width
     }
 
-    /// Height of the output texture.
     pub fn height(&self) -> u32 {
         self.height
     }
 
-    /// Direct access to the output texture for GPU readback.
     pub fn output_texture(&self) -> &wgpu::Texture {
         &self.output_texture
     }
