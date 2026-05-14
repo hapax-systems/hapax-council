@@ -25,6 +25,19 @@ DECOMMISSIONED_UNITS=(
     # Command-R-only via hapax-segment-prep.{service,timer}.
     hapax-break-prep.service
     hapax-break-prep.timer
+    # Retired 2026-05-14: unit files removed from repo but stale symlinks
+    # remained in ~/.config/systemd/user/. Scripts and agent modules were
+    # deleted; no runtime consumers remain.
+    hapax-environmental-emphasis.service
+    hapax-environmental-emphasis.timer
+    hapax-visual-pool-snapshot-harvester.service
+    hapax-visual-pool-snapshot-harvester.timer
+    # Retired 2026-05-14: unit files removed from repo, stale symlinks found
+    # by hapax-stale-unit-audit after canonical checkout restore.
+    hapax-broadcast-boundary-public-event-producer.service
+    hapax-hailo-frame-feeder.service
+    hapax-triage-officer.service
+    hapax-youtube-viewer-count.timer
     # Superseded 2026-05-02 by hapax-parametric-modulation-heartbeat.service.
     # Per memory `feedback_no_presets_use_parametric_modulation`: preset-pulse
     # heartbeats (PR #2239) are the wrong unit. Parametric modulation at the
