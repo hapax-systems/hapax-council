@@ -1,12 +1,13 @@
 [Unit]
 Description=Infrastructure manifest snapshot — save current system state
-After=network.target
+After=network.target hapax-secrets.service
 OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
 WorkingDirectory=/home/hapax/projects/hapax-council
-ExecStart=/bin/bash -c 'set -a && source .envrc && set +a && /home/hapax/.local/bin/uv run python -m agents.introspect --save'
+EnvironmentFile=/run/user/1000/hapax-secrets.env
+ExecStart=/home/hapax/.local/bin/uv run python -m agents.introspect --save
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=GNUPGHOME=/home/hapax/.gnupg
