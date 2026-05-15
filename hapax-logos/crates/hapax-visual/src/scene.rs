@@ -303,6 +303,7 @@ pub fn build_scene_from_sources(
     time: f32,
 ) -> Vec<SceneNode> {
     let mut nodes = Vec::new();
+    let forward = 0.55;
 
     let mut used_indices = Vec::new();
 
@@ -310,7 +311,7 @@ pub fn build_scene_from_sources(
         &mut nodes,
         active_sources,
         "sierpinski-lines",
-        Vec3::new(0.0, 0.35, ZPlane::SurfaceScrim.z_position() - 0.4),
+        Vec3::new(0.0, 0.35, ZPlane::SurfaceScrim.z_position() - 0.4 + forward),
         3.35,
         0.92,
         0.0,
@@ -333,7 +334,11 @@ pub fn build_scene_from_sources(
             &mut nodes,
             active_sources,
             ticker_id,
-            Vec3::new(0.0, -1.62, ZPlane::SurfaceScrim.z_position() - 0.18),
+            Vec3::new(
+                0.0,
+                -1.62,
+                ZPlane::SurfaceScrim.z_position() - 0.18 + forward,
+            ),
             if ticker_id == "grounding_provenance_ticker" {
                 0.36
             } else {
@@ -365,7 +370,7 @@ pub fn build_scene_from_sources(
         &mut nodes,
         active_sources,
         &hls_indices,
-        Vec3::new(-3.55, -0.05, ZPlane::OnScrim.z_position() + 0.18),
+        Vec3::new(-2.72, -0.05, ZPlane::OnScrim.z_position() + 0.18 + forward),
         1.15,
         1.55,
     );
@@ -373,7 +378,7 @@ pub fn build_scene_from_sources(
         &mut nodes,
         active_sources,
         &ir_indices,
-        Vec3::new(-3.45, 1.62, ZPlane::MidScrim.z_position() + 1.18),
+        Vec3::new(-2.86, 1.55, ZPlane::MidScrim.z_position() + 1.18 + forward),
         0.82,
         1.15,
     );
@@ -391,17 +396,17 @@ pub fn build_scene_from_sources(
         &mut nodes,
         active_sources,
         &right_cube,
-        Vec3::new(3.55, -0.03, ZPlane::OnScrim.z_position() + 0.14),
+        Vec3::new(2.78, -0.03, ZPlane::OnScrim.z_position() + 0.14 + forward),
         0.92,
         1.35,
     );
 
     let mid_band = source_indices_except(active_sources, &used_indices);
-    let mid_z = ZPlane::MidScrim.z_position() - 0.25;
+    let mid_z = ZPlane::MidScrim.z_position() - 0.25 + forward;
     for (local_idx, src_idx) in mid_band.iter().take(10).enumerate() {
         let col = local_idx % 5;
         let row = local_idx / 5;
-        let x = (col as f32 - 2.0) * 1.25;
+        let x = (col as f32 - 2.0) * 1.05;
         let y = 1.08 - row as f32 * 0.88;
         nodes.push(make_node(
             active_sources,
@@ -424,7 +429,7 @@ pub fn build_scene_from_sources(
         nodes.push(make_node(
             active_sources,
             *src_idx,
-            Vec3::new(x, y, ZPlane::BeyondScrim.z_position() + 1.1),
+            Vec3::new(x, y, ZPlane::BeyondScrim.z_position() + 1.1 + forward),
             0.42,
             0.26,
             0.0,
@@ -625,7 +630,7 @@ mod tests {
             .find(|n| n.label == "content-episodic_recall")
             .unwrap();
         assert!(
-            content.position.x > 3.0,
+            content.position.x > 2.0,
             "content should start the right cube"
         );
     }
@@ -709,19 +714,19 @@ mod tests {
             .iter()
             .find(|n| n.label == "camera-brio-operator")
             .unwrap();
-        assert!(hls.position.x < -3.0, "HLS cube should sit left");
+        assert!(hls.position.x < -2.0, "HLS cube should sit left");
 
         let ir = scene
             .iter()
             .find(|n| n.label == "camera-pi-noir-desk")
             .unwrap();
-        assert!(ir.position.x < -3.0 && ir.position.y > hls.position.y);
+        assert!(ir.position.x < -2.0 && ir.position.y > hls.position.y);
 
         let ward = scene
             .iter()
             .find(|n| n.label == "programme_history")
             .unwrap();
-        assert!(ward.position.x > 3.0, "ward cube should sit right");
+        assert!(ward.position.x > 2.0, "ward cube should sit right");
     }
 
     #[test]
@@ -740,7 +745,7 @@ mod tests {
         let scene = build_scene_from_sources(&sources, 0.0);
         let overflow = scene.iter().find(|n| n.label == "ward-g").unwrap();
         assert!(
-            (overflow.position.z - (ZPlane::MidScrim.z_position() + 0.21)).abs() < 0.01,
+            (overflow.position.z - (ZPlane::MidScrim.z_position() + 0.76)).abs() < 0.01,
             "overflow wards should enter the shifted-forward mid-level band"
         );
     }

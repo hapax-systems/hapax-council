@@ -77,7 +77,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let ly = abs(fract(gc.y / sp.y + 0.5) - 0.5) * sp.y;
     let major_x = smoothstep(0.055, 0.009, lx);
     let major_y = smoothstep(0.055, 0.009, ly);
-    let major = max(major_x, major_y);
+    let is_mid_field = abs(wp.y - 0.35) < 0.02;
+    let major = select(
+        max(major_x, major_y),
+        max(major_x * 0.72, major_y * 0.16),
+        is_mid_field,
+    );
 
     if major < 0.01 {
         discard;
@@ -106,9 +111,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     color = color * 0.24 * glow * dist_fade * pulse;
     var alpha = major * 0.22 * dist_fade;
-    if abs(wp.y - 0.35) < 0.02 {
-        alpha = alpha * 0.22;
-        color = color * 0.50;
+    if is_mid_field {
+        alpha = alpha * 0.16;
+        color = color * 0.38;
     } else if abs(in.normal.y) > 0.5 {
         alpha = alpha * 0.56;
         color = color * 0.66;
