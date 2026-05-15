@@ -9,3 +9,5 @@ pub mod output;
 pub mod state;
 pub mod transient_pool;
 pub mod uniform_buffer;
+pub mod scene;
+pub mod scene_renderer;
