@@ -8,6 +8,7 @@ Prometheus observability.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from agents.studio_compositor.homage.choreographer import (
     CoupledPayload,
     PendingTransition,
 )
+from shared.action_receipt import ActionReceipt, ActionReceiptStatus
 
 
 @pytest.fixture
@@ -49,6 +51,7 @@ def choreographer(tmp_path: Path) -> Choreographer:
         # invariant test below gets empty planned + empty rejections.
         structural_intent_file=tmp_path / "structural-intent.json",
         narrative_structural_intent_file=tmp_path / "narrative-structural-intent.json",
+        action_receipts_file=tmp_path / "action-receipts.jsonl",
     )
 
 
@@ -58,6 +61,14 @@ def _write_pending(path: Path, transitions: list[dict]) -> None:
         json.dumps({"transitions": transitions}),
         encoding="utf-8",
     )
+
+
+def _read_action_receipts(path: Path) -> list[ActionReceipt]:
+    return [
+        ActionReceipt.model_validate_json(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 class TestFeatureFlagGate:
@@ -103,12 +114,41 @@ class TestEntryConcurrency:
         assert len(result.planned) == 2
         assert result.rejections == ()
 
+    def test_planned_entry_with_request_id_emits_applied_action_receipt(
+        self,
+        homage_on,
+        choreographer,
+        tmp_path,
+    ):
+        _write_pending(
+            tmp_path / "homage-pending.json",
+            [
+                {
+                    "source_id": "a",
+                    "transition": "ticker-scroll-in",
+                    "enqueued_at": 0.0,
+                    "request_id": "homage:req:planned",
+                }
+            ],
+        )
+
+        result = choreographer.reconcile(BITCHX_PACKAGE, now=1.0)
+
+        assert len(result.planned) == 1
+        receipt = ActionReceipt.model_validate_json(
+            (tmp_path / "action-receipts.jsonl").read_text().splitlines()[0]
+        )
+        assert receipt.request_id == "homage:req:planned"
+        assert receipt.status is ActionReceiptStatus.APPLIED
+        assert receipt.learning_update_allowed is False
+
     def test_over_limit_excess_entries_rejected(self, homage_on, choreographer, tmp_path):
         entries = [
             {
                 "source_id": f"w{i}",
                 "transition": "ticker-scroll-in",
                 "enqueued_at": 0.0,
+                "request_id": f"homage:req:over-limit:{i}",
             }
             for i in range(5)
         ]
@@ -118,6 +158,10 @@ class TestEntryConcurrency:
         assert len(result.planned) == 2
         assert len(result.rejections) == 3
         assert all(r.reason == "concurrency-limit" for r in result.rejections)
+        receipts = _read_action_receipts(tmp_path / "action-receipts.jsonl")
+        blocked = [r for r in receipts if r.status is ActionReceiptStatus.BLOCKED]
+        assert len(blocked) == 3
+        assert all(r.blocked_reasons == ["concurrency-limit"] for r in blocked)
 
 
 class TestExitConcurrency:
@@ -145,6 +189,124 @@ class TestUnknownTransition:
         result = choreographer.reconcile(BITCHX_PACKAGE, now=1.0)
         assert len(result.rejections) == 1
         assert result.rejections[0].reason == "unknown-transition"
+
+    def test_unknown_transition_with_request_id_emits_blocked_action_receipt(
+        self,
+        homage_on,
+        choreographer,
+        tmp_path,
+    ):
+        _write_pending(
+            tmp_path / "homage-pending.json",
+            [
+                {
+                    "source_id": "a",
+                    "transition": "not-a-transition",
+                    "enqueued_at": 0.0,
+                    "request_id": "homage:req:unknown",
+                }
+            ],
+        )
+
+        result = choreographer.reconcile(BITCHX_PACKAGE, now=1.0)
+
+        assert len(result.rejections) == 1
+        receipt = ActionReceipt.model_validate_json(
+            (tmp_path / "action-receipts.jsonl").read_text().splitlines()[0]
+        )
+        assert receipt.request_id == "homage:req:unknown"
+        assert receipt.status is ActionReceiptStatus.BLOCKED
+        assert receipt.blocked_reasons == ["unknown-transition"]
+
+    def test_malformed_pending_with_request_id_emits_blocked_action_receipt(
+        self,
+        homage_on,
+        choreographer,
+        tmp_path,
+    ):
+        _write_pending(
+            tmp_path / "homage-pending.json",
+            [
+                {
+                    "source_id": "a",
+                    "enqueued_at": 0.0,
+                    "request_id": "homage:req:malformed",
+                }
+            ],
+        )
+
+        result = choreographer.reconcile(BITCHX_PACKAGE, now=1.0)
+
+        assert result.planned == ()
+        assert result.rejections == ()
+        receipt = ActionReceipt.model_validate_json(
+            (tmp_path / "action-receipts.jsonl").read_text().splitlines()[0]
+        )
+        assert receipt.request_id == "homage:req:malformed"
+        assert receipt.status is ActionReceiptStatus.BLOCKED
+        assert receipt.blocked_reasons == ["malformed-entry"]
+
+
+class TestBlockedActionReceipts:
+    def test_paused_rotation_with_request_id_emits_blocked_action_receipt(
+        self,
+        homage_on,
+        choreographer,
+        tmp_path,
+    ):
+        (tmp_path / "narrative-structural-intent.json").write_text(
+            json.dumps({"homage_rotation_mode": "paused", "updated_at": time.time()}),
+            encoding="utf-8",
+        )
+        _write_pending(
+            tmp_path / "homage-pending.json",
+            [
+                {
+                    "source_id": "a",
+                    "transition": "ticker-scroll-in",
+                    "enqueued_at": 0.0,
+                    "request_id": "homage:req:paused",
+                }
+            ],
+        )
+
+        result = choreographer.reconcile(BITCHX_PACKAGE, now=1.0)
+
+        assert result.planned == ()
+        receipt = ActionReceipt.model_validate_json(
+            (tmp_path / "action-receipts.jsonl").read_text().splitlines()[0]
+        )
+        assert receipt.request_id == "homage:req:paused"
+        assert receipt.status is ActionReceiptStatus.BLOCKED
+        assert receipt.blocked_reasons == ["paused_rotation"]
+
+    def test_substrate_skip_with_request_id_emits_blocked_action_receipt(
+        self,
+        homage_on,
+        choreographer,
+        tmp_path,
+    ):
+        _write_pending(
+            tmp_path / "homage-pending.json",
+            [
+                {
+                    "source_id": "reverie",
+                    "transition": "ticker-scroll-in",
+                    "enqueued_at": 0.0,
+                    "request_id": "homage:req:substrate",
+                }
+            ],
+        )
+
+        result = choreographer.reconcile(BITCHX_PACKAGE, now=1.0)
+
+        assert result.planned == ()
+        receipt = ActionReceipt.model_validate_json(
+            (tmp_path / "action-receipts.jsonl").read_text().splitlines()[0]
+        )
+        assert receipt.request_id == "homage:req:substrate"
+        assert receipt.status is ActionReceiptStatus.BLOCKED
+        assert receipt.blocked_reasons == ["substrate_source_skip"]
 
 
 class TestNetsplitBurstGating:

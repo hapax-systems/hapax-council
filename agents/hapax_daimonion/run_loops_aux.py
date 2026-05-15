@@ -48,6 +48,7 @@ def _write_livestream_control(imp: Impingement, candidate: Any) -> bool:
     payload = {
         "activate": activate,
         "reason": reason,
+        "request_id": str(imp.content.get("condition_id") or imp.id),
         "requested_at": time.time(),
         "score": float(getattr(candidate, "combined", 0.0)),
         "source": imp.source,
@@ -67,6 +68,34 @@ def _write_livestream_control(imp: Impingement, candidate: Any) -> bool:
         reason[:60],
     )
     return True
+
+
+def _record_commanded_no_witness(
+    pipeline: Any,
+    capability_name: str,
+    *,
+    source: str,
+    command_ref: str,
+    route_ref: str,
+    public_claim_bearing: bool = False,
+    reason: str | None = None,
+) -> None:
+    """Record command acceptance without granting success learning."""
+
+    from shared.affordance_outcome_adapter import build_commanded_no_witness_outcome
+
+    outcome = build_commanded_no_witness_outcome(
+        capability_name,
+        command_ref=command_ref,
+        route_ref=route_ref,
+        source_ref=source,
+        public_claim_bearing=public_claim_bearing,
+        reason=reason,
+    )
+    pipeline.record_capability_outcome(
+        outcome,
+        context={"source": source, "command_ref": command_ref, "route_ref": route_ref},
+    )
 
 
 async def proactive_delivery_loop(daemon: VoiceDaemon) -> None:
@@ -306,8 +335,8 @@ def _dispatch_compositional(candidate, imp, daemon) -> None:
 
     Writes the SHM control file matching the capability family so the
     compositor layer (cam.hero → hero-camera-override.json, etc.) picks
-    it up on next tick. Records the Thompson outcome based on whether
-    dispatch succeeded.
+    it up on next tick. The compositor consumer emits action receipts;
+    this caller records only command acceptance until readback exists.
     """
     try:
         from agents.studio_compositor.compositional_consumer import (
@@ -320,6 +349,7 @@ def _dispatch_compositional(candidate, imp, daemon) -> None:
             score=float(candidate.combined),
             impingement_narrative=str(imp.content.get("narrative", "")),
             ttl_s=30.0,
+            request_id=str(imp.content.get("condition_id") or imp.id),
         )
         family = dispatch(record)
         succeeded = family != "unknown"
@@ -329,11 +359,22 @@ def _dispatch_compositional(candidate, imp, daemon) -> None:
             family,
             candidate.combined,
         )
-        daemon._affordance_pipeline.record_outcome(
-            candidate.capability_name,
-            success=succeeded,
-            context={"source": imp.source, "family": family},
-        )
+        if succeeded:
+            _record_commanded_no_witness(
+                daemon._affordance_pipeline,
+                candidate.capability_name,
+                source=imp.source,
+                command_ref=f"compositional-dispatch:{family}",
+                route_ref="route:studio-compositional-consumer",
+                public_claim_bearing=True,
+                reason="Compositional dispatch accepted a control write, but no compositor readback witness exists yet.",
+            )
+        else:
+            daemon._affordance_pipeline.record_outcome(
+                candidate.capability_name,
+                success=False,
+                context={"source": imp.source, "family": family},
+            )
     except Exception:
         log.warning("Compositional dispatch failed", exc_info=True)
 
@@ -1264,10 +1305,13 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                 narrative = imp.content.get("narrative", imp.source)
                                 material = imp.content.get("material", "void")
                                 activate_notification(narrative, c.combined, material)
-                                daemon._affordance_pipeline.record_outcome(
+                                _record_commanded_no_witness(
+                                    daemon._affordance_pipeline,
                                     c.capability_name,
-                                    success=True,
-                                    context={"source": imp.source},
+                                    source=imp.source,
+                                    command_ref="notification:activate",
+                                    route_ref="route:notification-capability",
+                                    reason="Notification dispatch was requested, but no delivery/readback witness exists yet.",
                                 )
                             continue
 
@@ -1292,12 +1336,22 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                         # polls. Consent gating is upstream in the pipeline.
                         if c.capability_name == "studio.toggle_livestream":
                             if c.combined >= 0.3:
-                                _write_livestream_control(imp, c)
-                                daemon._affordance_pipeline.record_outcome(
-                                    c.capability_name,
-                                    success=True,
-                                    context={"source": imp.source},
-                                )
+                                if _write_livestream_control(imp, c):
+                                    _record_commanded_no_witness(
+                                        daemon._affordance_pipeline,
+                                        c.capability_name,
+                                        source=imp.source,
+                                        command_ref="shm:hapax-compositor/livestream-control.json",
+                                        route_ref="route:studio-livestream-control",
+                                        public_claim_bearing=True,
+                                        reason="Livestream control file was staged, but egress/readback has not confirmed application.",
+                                    )
+                                else:
+                                    daemon._affordance_pipeline.record_outcome(
+                                        c.capability_name,
+                                        success=False,
+                                        context={"source": imp.source, "reason": "write_failed"},
+                                    )
                             continue
 
                         # --- Autonomous narration dispatch (de-expert-system) ---
@@ -1341,10 +1395,14 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                     imp.source,
                                     str(imp.content.get("narrative", "")),
                                 )
-                                daemon._affordance_pipeline.record_outcome(
+                                _record_commanded_no_witness(
+                                    daemon._affordance_pipeline,
                                     c.capability_name,
-                                    success=True,
-                                    context={"source": imp.source},
+                                    source=imp.source,
+                                    command_ref=f"recruitment-log:studio:{c.capability_name}",
+                                    route_ref="route:studio-recruitment-log",
+                                    public_claim_bearing=True,
+                                    reason="Studio affordance was logged as recruited, but no action/readback receipt exists yet.",
                                 )
                             continue
 
@@ -1367,10 +1425,14 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                                     imp.source,
                                     str(imp.content.get("narrative", "")),
                                 )
-                                daemon._affordance_pipeline.record_outcome(
+                                _record_commanded_no_witness(
+                                    daemon._affordance_pipeline,
                                     c.capability_name,
-                                    success=True,
-                                    context={"source": imp.source},
+                                    source=imp.source,
+                                    command_ref=f"recruitment-log:world:{c.capability_name}",
+                                    route_ref="route:world-domain-recruitment-log",
+                                    public_claim_bearing=True,
+                                    reason="World-domain affordance was logged as recruited, but no WCS/source/readback witness exists yet.",
                                 )
                             continue
 

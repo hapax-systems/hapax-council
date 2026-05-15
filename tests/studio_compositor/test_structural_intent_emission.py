@@ -233,6 +233,8 @@ class TestDispatchStructuralIntentShmWrite:
         import agents.studio_compositor.ward_properties as wp
 
         monkeypatch.setattr(wp, "WARD_PROPERTIES_PATH", tmp_path / "ward-properties.json")
+        monkeypatch.setattr(cc, "_SEGMENT_CUE_HOLD", tmp_path / "segment-cue-hold.json")
+        monkeypatch.setattr(cc, "_ACTION_RECEIPTS_JSONL", tmp_path / "action-receipts.jsonl")
         return path
 
     def test_shm_written_when_rotation_mode_set(self, shm_path: Path) -> None:
@@ -308,6 +310,8 @@ class TestEndToEndEmission:
             original_atomic(target, payload)
 
         monkeypatch.setattr(cc, "_atomic_write_json", _capture_write)
+        monkeypatch.setattr(cc, "_SEGMENT_CUE_HOLD", tmp_path / "segment-cue-hold.json")
+        monkeypatch.setattr(cc, "_ACTION_RECEIPTS_JSONL", tmp_path / "action-receipts.jsonl")
         return {"jsonl": jsonl, "shm": shm}
 
     def test_full_round_trip(self, wired: dict[str, Path]) -> None:

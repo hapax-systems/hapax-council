@@ -701,7 +701,7 @@ def _emit_intent_artifacts(intent: DirectorIntent, condition_id: str) -> None:
                 dispatch_structural_intent,
             )
 
-            dispatch_structural_intent(intent.structural_intent)
+            dispatch_structural_intent(intent.structural_intent, request_id=condition_id)
         except Exception:
             log.debug("dispatch_structural_intent failed", exc_info=True)
 

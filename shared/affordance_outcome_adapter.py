@@ -257,6 +257,107 @@ def build_tool_recruitment_no_witness_outcome(
     )
 
 
+def build_commanded_no_witness_outcome(
+    capability_name: str,
+    *,
+    created_at: str | None = None,
+    command_ref: str | None = None,
+    route_ref: str | None = None,
+    source_ref: str | None = None,
+    attempt_kind: AttemptKind = AttemptKind.ACT,
+    action_bearing: bool = True,
+    public_claim_bearing: bool = False,
+    reason: str | None = None,
+) -> CapabilityOutcomeEnvelope:
+    """Build a no-update envelope for accepted commands without readback.
+
+    File writes, recruitment logs, and handler return values prove command
+    acceptance at most. Until an action receipt provides witness/readback refs,
+    they must not update positive affordance learning.
+    """
+
+    checked_at = created_at or _utc_now()
+    slug = _slug(capability_name)
+    missing_ref = f"action-receipt:{slug}:readback"
+    summary = reason or "Command was accepted, but no applied/readback witness exists."
+    return CapabilityOutcomeEnvelope(
+        outcome_id=f"coe:{slug}:commanded-no-witness",
+        created_at=checked_at,
+        capability_id=f"capability:{slug}",
+        capability_name=capability_name,
+        attempt_kind=attempt_kind,
+        selection_ref=f"selection:{slug}:recruited",
+        selection_state=SelectionState.SELECTED,
+        command_ref=command_ref or f"command:{slug}:accepted",
+        route_ref=route_ref,
+        substrate_refs=[],
+        programme_refs=[],
+        director_move_ref=None,
+        evidence_envelope_refs=[],
+        witness_refs=[],
+        expected_effect=ExpectedEffect(
+            effect_id=f"effect:{slug}:applied-readback",
+            description="The requested action is applied and witnessed by a readback surface.",
+            witness_class="action_receipt_readback",
+            public_claim_bearing=public_claim_bearing,
+            action_bearing=action_bearing,
+        ),
+        outcome_status=OutcomeStatus.NEUTRAL_DEFER,
+        execution_status=ExecutionStatus.ACCEPTED,
+        manifestation_status=ManifestationStatus.NOT_OBSERVED,
+        claim_status=ClaimStatus.POSTERIOR_NOT_ALLOWED,
+        public_event_status=PublicEventStatus.NOT_PUBLIC,
+        learning_update=LearningUpdate(
+            policy=LearningPolicy.DEFER,
+            allowed=False,
+            target=LearningTarget.NONE,
+            reason=summary,
+            required_witness_refs=[],
+            missing_witness_refs=[missing_ref],
+            thompson_delta=None,
+            context_association_delta=None,
+        ),
+        claim_posterior_update=ClaimPosteriorUpdate(
+            allowed=False,
+            claim_ids=[],
+            evidence_envelope_refs=[],
+            gate_refs=[],
+            claim_engine_refs=[],
+            reason="Command acceptance without readback cannot update claim posterior state.",
+        ),
+        blocked_reasons=["commanded_only_no_action_readback"],
+        refusal_or_correction_refs=[],
+        health_refs=[],
+        privacy_state=PrivacyState.UNKNOWN,
+        rights_state=RightsState.UNKNOWN,
+        freshness=Freshness(
+            state=FreshnessState.UNKNOWN,
+            ttl_s=None,
+            observed_age_s=None,
+            source_ref=source_ref,
+            checked_at=checked_at,
+        ),
+        authority_ceiling=AuthorityCeiling.NO_CLAIM,
+        witness_policy=WitnessPolicy.COMMANDED_ONLY,
+        verified_success=VerifiedSuccess(
+            capability=False,
+            action=False,
+            public=False,
+            claim_posterior=False,
+        ),
+        public_claim_evidence=PublicClaimEvidence(
+            required=False,
+            present=False,
+            evidence_envelope_refs=[],
+            public_event_refs=[],
+            gate_refs=[],
+            note="No public claim evidence exists for command acceptance without readback.",
+        ),
+        operator_visible_summary=summary,
+        fixture_case=FixtureCase.COMMANDED_ONLY,
+    )
+
+
 def _decide_success_update(outcome: CapabilityOutcomeEnvelope) -> AffordanceOutcomeDecision:
     if outcome.fixture_case.value in REQUIRED_NO_UPDATE_CASES:
         return _no_update(
@@ -298,6 +399,7 @@ def _decide_failure_update(outcome: CapabilityOutcomeEnvelope) -> AffordanceOutc
 __all__ = [
     "AffordanceOutcomeDecision",
     "AffordanceOutcomeUpdateKind",
+    "build_commanded_no_witness_outcome",
     "build_tool_recruitment_no_witness_outcome",
     "decide_affordance_outcome_update",
 ]

@@ -22,6 +22,8 @@ def tmp_shm(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cc, "_HOMAGE_PENDING_TRANSITIONS", tmp_path / "homage-pending-transitions.json"
     )
+    monkeypatch.setattr(cc, "_SEGMENT_CUE_HOLD", tmp_path / "segment-cue-hold.json")
+    monkeypatch.setattr(cc, "_ACTION_RECEIPTS_JSONL", tmp_path / "action-receipts.jsonl")
     return tmp_path
 
 

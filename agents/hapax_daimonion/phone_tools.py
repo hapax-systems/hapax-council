@@ -27,6 +27,9 @@ def _cli(*args: str) -> str:
             text=True,
             timeout=5,
         )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+            return f"Failed: {detail}"
         return result.stdout.strip() or "Done"
     except Exception as e:
         return f"Failed: {e}"

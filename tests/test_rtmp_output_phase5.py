@@ -364,6 +364,7 @@ class TestLivestreamControlPoll:
                     "activate": True,
                     "reason": "test recruitment",
                     "requested_at": 1700000000.0,
+                    "request_id": "rtmp:req:activate",
                 }
             )
         )
@@ -384,6 +385,14 @@ class TestLivestreamControlPoll:
         assert status["message"] == "rtmp bin attached"
         assert status["requested_at"] == 1700000000.0
         assert "processed_at" in status
+        from shared.action_receipt import ActionReceipt, ActionReceiptStatus
+
+        receipt = ActionReceipt.model_validate_json(
+            (tmp_path / "action-receipts.jsonl").read_text().splitlines()[0]
+        )
+        assert receipt.request_id == "rtmp:req:activate"
+        assert receipt.status is ActionReceiptStatus.APPLIED
+        assert receipt.learning_update_allowed is False
 
     def test_deactivate_dispatches_via_glib_idle_add(self, tmp_path) -> None:
         import json as _json
@@ -419,7 +428,15 @@ class TestLivestreamControlPoll:
         from agents.studio_compositor.state import process_livestream_control
 
         control = tmp_path / "livestream-control.json"
-        control.write_text(_json.dumps({"activate": True, "reason": "boom"}))
+        control.write_text(
+            _json.dumps(
+                {
+                    "activate": True,
+                    "reason": "boom",
+                    "request_id": "rtmp:req:exception",
+                }
+            )
+        )
 
         fake = mock.Mock()
         fake._GLib = None
@@ -432,6 +449,14 @@ class TestLivestreamControlPoll:
         status = _json.loads((tmp_path / "livestream-status.json").read_text())
         assert status["success"] is False
         assert "raised" in status["message"]
+        from shared.action_receipt import ActionReceipt, ActionReceiptStatus
+
+        receipt = ActionReceipt.model_validate_json(
+            (tmp_path / "action-receipts.jsonl").read_text().splitlines()[0]
+        )
+        assert receipt.request_id == "rtmp:req:exception"
+        assert receipt.status is ActionReceiptStatus.BLOCKED
+        assert receipt.blocked_reasons == ["toggle_livestream_failed"]
 
     def test_malformed_control_file_is_deleted_and_no_dispatch(self, tmp_path) -> None:
         from agents.studio_compositor.state import process_livestream_control

@@ -7,12 +7,14 @@ import json
 import pytest
 
 from agents.studio_compositor import structural_director as sd
+from shared.action_receipt import ActionReceipt, ActionReceiptStatus
 
 
 @pytest.fixture(autouse=True)
 def _redirect_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(sd, "_STRUCTURAL_INTENT_PATH", tmp_path / "intent.json")
     monkeypatch.setattr(sd, "_STRUCTURAL_INTENT_JSONL", tmp_path / "structural-intent.jsonl")
+    monkeypatch.setattr(sd, "_ACTION_RECEIPTS_JSONL", tmp_path / "action-receipts.jsonl")
     return tmp_path
 
 
@@ -72,6 +74,55 @@ class TestTickOnce:
         # JSONL also appended
         jsonl_lines = (tmp_path / "structural-intent.jsonl").read_text().splitlines()
         assert len(jsonl_lines) == 1
+        receipt = ActionReceipt.model_validate_json(
+            (tmp_path / "action-receipts.jsonl").read_text().splitlines()[0]
+        )
+        assert receipt.request_id.startswith("structural-director:")
+        assert receipt.status is ActionReceiptStatus.APPLIED
+        assert receipt.structural_reflex is True
+        assert receipt.learning_update_allowed is False
+        assert receipt.can_support_affordance_success() is False
+
+    def test_publish_failure_emits_error_receipt(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sd, "_STRUCTURAL_INTENT_PATH", tmp_path)
+
+        def stub_llm(prompt: str) -> str:
+            return json.dumps(
+                {
+                    "scene_mode": "hardware-play",
+                    "preset_family_hint": "audio-reactive",
+                    "long_horizon_direction": "vinyl session",
+                }
+            )
+
+        d = sd.StructuralDirector(llm_fn=stub_llm)
+        assert d.tick_once() is not None
+        receipt = ActionReceipt.model_validate_json(
+            (tmp_path / "action-receipts.jsonl").read_text().splitlines()[0]
+        )
+        assert receipt.status is ActionReceiptStatus.ERROR
+        assert "structural_intent_publish_failed" in receipt.error_refs
+        assert receipt.applied_refs == []
+
+    def test_fallback_structural_request_ids_are_distinct(self, tmp_path):
+        def stub_llm(prompt: str) -> str:
+            return json.dumps(
+                {
+                    "scene_mode": "hardware-play",
+                    "preset_family_hint": "audio-reactive",
+                    "long_horizon_direction": "vinyl session",
+                }
+            )
+
+        d = sd.StructuralDirector(llm_fn=stub_llm)
+        d.tick_once()
+        d.tick_once()
+        receipts = [
+            ActionReceipt.model_validate_json(line)
+            for line in (tmp_path / "action-receipts.jsonl").read_text().splitlines()
+        ]
+        assert len({receipt.request_id for receipt in receipts}) == 2
+        assert len({receipt.receipt_id for receipt in receipts}) == 2
 
     def test_llm_failure_returns_none_and_keeps_prior(self, tmp_path):
         def failing_llm(prompt: str) -> str:

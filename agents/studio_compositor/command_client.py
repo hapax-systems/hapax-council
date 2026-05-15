@@ -63,7 +63,13 @@ class CompositorCommandClient:
         self.socket_path = socket_path
         self.timeout_s = timeout_s
 
-    def execute(self, command: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
+    def execute(
+        self,
+        command: str,
+        args: dict[str, Any] | None = None,
+        *,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
         """Send one command and return the parsed ``status=ok`` payload.
 
         Raises ``CommandClientError`` on any failure mode:
@@ -79,6 +85,8 @@ class CompositorCommandClient:
           error dict (``error``, ``hint``, ``surface_id``, etc.).
         """
         request = {"command": command, "args": args or {}}
+        if request_id:
+            request["request_id"] = request_id
         line = (json.dumps(request) + "\n").encode("utf-8")
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
