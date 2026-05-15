@@ -2,6 +2,8 @@
 
 All production services run as systemd user units under `user@1000.service` with lingering enabled. No process supervisors (process-compose, supervisord) in the boot chain.
 
+**Topology:** <!-- topology-inventory:services -->224<!-- /topology-inventory:services --> services, <!-- topology-inventory:timers -->114<!-- /topology-inventory:timers --> timers, 4 paths, 3 targets. Verify with `uv run python scripts/hapax_topology_inventory.py --check`.
+
 ## Directory Structure
 
 ```
@@ -29,7 +31,7 @@ n8n, open-webui, minio, ntfy       visual-layer-agg  → perception pipeline
                                     studio-compositor → camera tiling (GPU)
 Managed by:                         studio-fx-output  → ffmpeg /dev/video50
   llm-stack.service (oneshot)       hapax-watch-recv  → Wear OS biometrics
-  llm-stack-analytics.service       31 timers         → sync, health, backups
+  llm-stack-analytics.service       114 timers        → sync, health, backups
 ```
 
 ## Grouping Targets
