@@ -419,6 +419,9 @@ class PipelineManager:
         def _notify(old: CameraState, new: CameraState, reason: str) -> None:
             # Phase 4: update Prometheus state + transition metrics first
             metrics.on_state_transition(role, old.value, new.value)
+            sm = self._state_machines.get(role)
+            if sm is not None:
+                metrics.on_consecutive_failures_changed(role, sm.consecutive_failures)
 
             # Map CameraState to the compositor's existing active/offline
             # convention so callers that touch compositor._camera_status
@@ -496,9 +499,12 @@ class PipelineManager:
     def _frame_flow_loop(self) -> None:
         """Periodic per-camera frame-flow staleness check.
 
-        For every HEALTHY camera, dispatch FRAME_FLOW_STALE if the
+        For every HEALTHY or DEGRADED camera, dispatch FRAME_FLOW_STALE if the
         pad-probe-observed last_frame_age has exceeded the threshold,
         unless the camera is still in its post-recovery grace window.
+        DEGRADED cameras with sustained fresh frames are promoted back to
+        HEALTHY; otherwise DEGRADED can become a sink after transient bus
+        errors whose pipeline resumes before fallback swap completion.
         """
         while not self._frame_flow_stop.wait(_FRAME_FLOW_TICK_S):
             try:
@@ -515,7 +521,11 @@ class PipelineManager:
 
         for role in roles:
             sm = self._state_machines.get(role)
-            if sm is None or sm.state not in (CameraState.HEALTHY, CameraState.RECOVERING):
+            if sm is None or sm.state not in (
+                CameraState.HEALTHY,
+                CameraState.DEGRADED,
+                CameraState.RECOVERING,
+            ):
                 continue
             recovered_at = recovery_snapshot.get(role)
             age = self.get_last_frame_age(role)
