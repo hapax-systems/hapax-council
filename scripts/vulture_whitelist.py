@@ -3050,6 +3050,16 @@ try:
         RenderedReadback,
         validate_layout_identity,
     )
+
+    _ = (
+        ActiveMetricsSnapshot,
+        LayerDisagreement,
+        LayoutIdentityReport,
+        LayoutIdentitySnapshot,
+        PersistenceSnapshot,
+        RenderedReadback,
+        validate_layout_identity,
+    )
 except ImportError:
     pass
 try:
@@ -3066,10 +3076,34 @@ try:
         form_capability_contract_sha256,
         validate_form_capability_contract,
     )
+
+    _ = (
+        ActionPrimitive,
+        AuthorityHypothesis,
+        ClaimShape,
+        FormCapabilityContract,
+        FormOrigin,
+        LiveEventObject,
+        PublicPrivateCeiling,
+        ReadbackRequirement,
+        RefusalMode,
+        form_capability_contract_sha256,
+        validate_form_capability_contract,
+    )
 except ImportError:
     pass
 
 from shared.segment_prep_contract import (  # noqa: F401, E402
+    _is_nonempty_list,
+    _is_nonempty_string,
+    _is_number,
+    _refusal_source_gap_valid,
+    _review_gap_detail_valid,
+    _source_gap_valid,
+    validate_enriched_outcome,
+)
+
+_ = (
     _is_nonempty_list,
     _is_nonempty_string,
     _is_number,
