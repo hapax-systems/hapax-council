@@ -144,11 +144,7 @@ class TestMetricsDisagreeWithSelection:
     def test_detects_metrics_mismatch(self) -> None:
         report = validate_layout_identity(_metrics_disagree_with_selection())
         assert report.unanimous is False
-        metrics_d = [
-            d
-            for d in report.disagreements
-            if "active_metrics" in (d.layer_a, d.layer_b)
-        ]
+        metrics_d = [d for d in report.disagreements if "active_metrics" in (d.layer_a, d.layer_b)]
         assert len(metrics_d) >= 1
         assert all(d.severity == "error" for d in metrics_d)
 

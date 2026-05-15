@@ -134,9 +134,7 @@ def validate_layout_identity(
     layer_values = _extract_layer_values(snapshot)
 
     absent: list[LayerName] = [n for n, v in layer_values.items() if v is None]
-    participating: dict[LayerName, str] = {
-        n: v for n, v in layer_values.items() if v is not None
-    }
+    participating: dict[LayerName, str] = {n: v for n, v in layer_values.items() if v is not None}
 
     if not participating:
         return LayoutIdentityReport(
