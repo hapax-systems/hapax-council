@@ -173,7 +173,9 @@ class CameraSourcePublisher:
             if self._error_count % 20 == 1:
                 log.exception("Failed to publish camera %s", source_id)
 
-    def _publish_camera_nv12(self, cached: frame_cache.CachedFrame, source_id: str, cache_id: int) -> None:
+    def _publish_camera_nv12(
+        self, cached: frame_cache.CachedFrame, source_id: str, cache_id: int
+    ) -> None:
         try:
             import numpy as np
 
@@ -189,7 +191,9 @@ class CameraSourcePublisher:
                 return
 
             y = np.frombuffer(data, dtype=np.uint8, count=y_size).reshape(h, w).astype(np.float32)
-            uv = np.frombuffer(data, dtype=np.uint8, offset=y_size, count=uv_size).reshape(h // 2, w)
+            uv = np.frombuffer(data, dtype=np.uint8, offset=y_size, count=uv_size).reshape(
+                h // 2, w
+            )
 
             # Upsample UV to full resolution
             u = uv[:, 0::2].astype(np.float32)

@@ -276,7 +276,10 @@ def start_compositor(compositor: Any) -> None:
     try:
         from .shmsink_output_pipeline import is_bridge_enabled, is_v4l2_output_disabled
 
-        if not is_v4l2_output_disabled() and getattr(compositor, "_v4l2_output_pipeline", None) is not None:
+        if (
+            not is_v4l2_output_disabled()
+            and getattr(compositor, "_v4l2_output_pipeline", None) is not None
+        ):
             grace_s = float(os.environ.get("HAPAX_COMPOSITOR_STARTUP_EGRESS_GRACE_S", "6.0"))
             deadline = time.monotonic() + max(0.5, grace_s)
             while time.monotonic() < deadline:

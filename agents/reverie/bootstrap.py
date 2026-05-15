@@ -37,6 +37,7 @@ def write_vocabulary_plan() -> bool:
     renderer output flows through the shader chain.
     """
     import os
+
     if os.environ.get("HAPAX_3D_COMPOSITOR") == "1":
         return _write_3d_vocabulary_plan()
 
@@ -72,6 +73,7 @@ def _write_3d_vocabulary_plan() -> bool:
     drift, and post-processing effects.
     """
     import os
+
     plan = {
         "version": 2,
         "targets": {
@@ -95,8 +97,11 @@ def _write_3d_vocabulary_plan() -> bool:
                             "slice_amplitude": 0.0,
                         },
                         "param_order": [
-                            "saturation", "brightness", "contrast",
-                            "sepia", "hue_rotate",
+                            "saturation",
+                            "brightness",
+                            "contrast",
+                            "sepia",
+                            "hue_rotate",
                         ],
                     },
                     {
@@ -116,7 +121,10 @@ def _write_3d_vocabulary_plan() -> bool:
                             "height": float(os.environ.get("HAPAX_IMAGINATION_HEIGHT", "720")),
                         },
                         "param_order": [
-                            "speed", "amplitude", "frequency", "coherence",
+                            "speed",
+                            "amplitude",
+                            "frequency",
+                            "coherence",
                         ],
                     },
                     {
@@ -138,9 +146,15 @@ def _write_3d_vocabulary_plan() -> bool:
                             "trace_strength": 0.0,
                         },
                         "param_order": [
-                            "decay", "zoom", "rotate", "blend_mode", "hue_shift",
-                            "trace_center_x", "trace_center_y",
-                            "trace_radius", "trace_strength",
+                            "decay",
+                            "zoom",
+                            "rotate",
+                            "blend_mode",
+                            "hue_shift",
+                            "trace_center_x",
+                            "trace_center_y",
+                            "trace_radius",
+                            "trace_strength",
                         ],
                         "temporal": True,
                     },
@@ -158,7 +172,9 @@ def _write_3d_vocabulary_plan() -> bool:
                             "anonymize": 0.0,
                         },
                         "param_order": [
-                            "vignette_strength", "sediment_strength", "master_opacity",
+                            "vignette_strength",
+                            "sediment_strength",
+                            "master_opacity",
                         ],
                     },
                 ],

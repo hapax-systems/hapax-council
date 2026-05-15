@@ -676,15 +676,15 @@ class CairoSourceRunner:
             w = surface.get_width()
             h = surface.get_height()
             buf = np.frombuffer(surface.get_data(), dtype=np.uint8).copy()
-            buf = buf[:w * h * 4].reshape(-1, 4)
+            buf = buf[: w * h * 4].reshape(-1, 4)
             buf[:, [0, 2]] = buf[:, [2, 0]]  # swap B↔R
             inject_rgba(
                 self._source_id,
                 buf.tobytes(),
                 w,
                 h,
-                opacity=getattr(self, '_publish_opacity', 0.6),
-                z_order=getattr(self, '_publish_z_order', 3),
+                opacity=getattr(self, "_publish_opacity", 0.6),
+                z_order=getattr(self, "_publish_z_order", 3),
                 tags=["ward", "cairo"],
             )
         except ImportError:

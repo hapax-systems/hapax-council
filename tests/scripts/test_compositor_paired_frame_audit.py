@@ -75,9 +75,7 @@ def test_compositor_paired_frame_audit_writes_diff_and_region_metrics(tmp_path: 
     assert (capture_dir / "capture_times.tsv").is_file()
     assert (capture_dir / "README.md").is_file()
 
-    capture_rows = (capture_dir / "capture_times.tsv").read_text(
-        encoding="utf-8"
-    ).splitlines()
+    capture_rows = (capture_dir / "capture_times.tsv").read_text(encoding="utf-8").splitlines()
     assert capture_rows[0] == "sample\tcaptured_at_utc"
     assert [row.split("\t")[0] for row in capture_rows[1:]] == ["01", "02"]
 
@@ -93,9 +91,9 @@ def test_compositor_paired_frame_audit_writes_diff_and_region_metrics(tmp_path: 
         "center",
     }
 
-    transition_rows = (capture_dir / "transition_metrics.tsv").read_text(
-        encoding="utf-8"
-    ).splitlines()
+    transition_rows = (
+        (capture_dir / "transition_metrics.tsv").read_text(encoding="utf-8").splitlines()
+    )
     assert (
         transition_rows[0]
         == "sample\tscope\tfinal_delta_mean\tfinal_delta_max\tfinal_delta_sd\tprev_final_mean\tfinal_mean"
