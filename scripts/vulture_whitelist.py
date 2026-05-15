@@ -168,6 +168,9 @@ from shared.layout_identity_contract import (
     LayoutIdentityReport as _LayoutIdentityReport,
 )
 from shared.layout_identity_contract import (
+    hosting_gate as _layout_identity_hosting_gate,
+)
+from shared.layout_identity_contract import (
     validate_layout_identity as _validate_layout_identity,
 )
 from shared.live_surface_truth import (
@@ -271,6 +274,7 @@ _validate_form_capability_contract
 # consumers import them dynamically from the contract module.
 _LayoutIdentityReport.agreement_count
 _LayoutIdentityReport.participating_count
+_layout_identity_hosting_gate
 _validate_layout_identity
 
 # Public-API context manager. Called by the five per-outcome smoke tests
@@ -307,6 +311,9 @@ from shared.segment_live_event_quality import (
 from shared.segment_prep_contract import (
     programme_source_readiness as _programme_source_readiness,
 )
+from shared.segment_prep_contract import (
+    validate_return_to_prep as _validate_return_to_prep,
+)
 from shared.segment_source_inquiry import (
     build_source_packet_inquiry_blackboard as _build_source_packet_inquiry_blackboard,
 )
@@ -321,6 +328,7 @@ _ControlLoopCard._tuple_items_non_empty
 _ControlLoopCard._admissibility_has_required_operational_surface
 _compare_live_event_quality
 _programme_source_readiness
+_validate_return_to_prep
 _build_source_packet_inquiry_blackboard
 _source_packet_inquiry_summary
 _render_source_packet_inquiry_seed
