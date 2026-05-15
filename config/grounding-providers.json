@@ -287,12 +287,29 @@
       "can_satisfy_open_world_claims": true,
       "egress_preflight_required": true,
       "director_default_allowed": false,
+      "available_models": [
+        {"model_id": "sonar", "alias": "web-scout", "role": "fast_scouting"},
+        {"model_id": "sonar-pro", "alias": "web-research", "role": "multi_source_research"},
+        {"model_id": "sonar-reasoning-pro", "alias": "web-reason", "role": "claim_verification"},
+        {"model_id": "sonar-deep-research", "alias": "web-deep", "role": "systematic_review"}
+      ],
+      "search_parameters": {
+        "search_domain_filter": {"type": "string[]", "max": 20},
+        "search_recency_filter": {"type": "enum", "values": ["hour", "day", "week", "month"]},
+        "return_citations": {"type": "bool", "default": true},
+        "search_context_size": {"type": "enum", "values": ["low", "medium", "high"], "default": "medium"},
+        "return_images": {"type": "bool", "default": false}
+      },
       "capabilities": [
         "web_grounded_responses",
         "openai_compatible_client",
         "streaming",
         "search_options",
-        "fast_current_web_scouting"
+        "fast_current_web_scouting",
+        "search_domain_filtering",
+        "search_recency_filtering",
+        "per_response_cost_transparency",
+        "deep_multi_step_research"
       ],
       "evidence_contract": {
         "required_fields": [
