@@ -40,9 +40,7 @@ class TestSearchWeb:
             from agents.research import search_web
 
             ctx = MagicMock()
-            result = asyncio.get_event_loop().run_until_complete(
-                search_web(ctx, "test query")
-            )
+            result = asyncio.get_event_loop().run_until_complete(search_web(ctx, "test query"))
             assert "unavailable" in result.lower()
 
     def test_search_web_accepts_recency_filter(self):

@@ -81,9 +81,7 @@ def build_envelope_from_response(
     now = datetime.now(UTC).isoformat()
     model_id = _MODEL_ALIAS_TO_ID.get(request.model_alias, request.model_alias)
 
-    raw_hashes = [
-        hashlib.sha256(url.encode("utf-8")).hexdigest() for url in citation_urls
-    ]
+    raw_hashes = [hashlib.sha256(url.encode("utf-8")).hexdigest() for url in citation_urls]
     source_items = [
         {"url": url, "index": i, "hash": h}
         for i, (url, h) in enumerate(zip(citation_urls, raw_hashes, strict=True))
