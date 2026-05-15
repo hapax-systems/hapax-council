@@ -79,6 +79,8 @@ fn main_1() {
     var color: vec3<f32> = vec3(1f);
     var dot_size: f32;
     var halftone_strength: f32;
+    var source_luma: f32;
+    var surface_presence: f32;
     var mixed: vec3<f32>;
 
     let _e14 = v_texcoord_1;
@@ -96,6 +98,13 @@ fn main_1() {
     let _e21 = uv;
     let _e22 = textureSample(tex, tex_sampler, _e21);
     src = _e22;
+    source_luma = dot(src.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    surface_presence = smoothstep(0.07f, 0.24f, source_luma);
+    halftone_strength = halftone_strength * surface_presence;
+    if (halftone_strength <= 0.001f) {
+        fragColor = src;
+        return;
+    }
     let _e25 = gl_FragCoord_1;
     pixel_2 = _e25.xy;
     let _e28 = global.u_color_mode;

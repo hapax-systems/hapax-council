@@ -103,6 +103,9 @@ fn main_1() {
     var c: vec3<f32>;
     var lum: f32;
     var dither_strength: f32;
+    var source_luma: f32;
+    var surface_presence: f32;
+    var effective_strength: f32;
     var mixed: vec3<f32>;
 
     let _e10 = v_texcoord_1;
@@ -110,7 +113,10 @@ fn main_1() {
     color = _e11;
     levels = clamp(global.u_color_levels, 2f, 256f);
     dither_strength = clamp(((256f - levels) / 252f), 0f, 1f) * 0.38f;
-    if (dither_strength <= 0.001f) {
+    source_luma = dot(color.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    surface_presence = smoothstep(0.055f, 0.22f, source_luma);
+    effective_strength = dither_strength * surface_presence;
+    if (effective_strength <= 0.001f) {
         fragColor = color;
         return;
     }
@@ -132,7 +138,7 @@ fn main_1() {
             let _e41 = threshold;
             let _e44 = levels;
             lum = (floor(((_e38 * _e39) + _e41)) / _e44);
-            mixed = mix(color.xyz, vec3(lum), vec3(dither_strength));
+            mixed = mix(color.xyz, vec3(lum), vec3(effective_strength));
             fragColor = vec4<f32>(mixed.x, mixed.y, mixed.z, color.w);
             return;
         }
@@ -143,7 +149,7 @@ fn main_1() {
             let _e57 = threshold;
             let _e61 = levels;
             c = (floor(((_e54 * _e55) + vec3(_e57))) / vec3(_e61));
-            mixed = mix(color.xyz, c, vec3(dither_strength));
+            mixed = mix(color.xyz, c, vec3(effective_strength));
             fragColor = vec4<f32>(mixed.x, mixed.y, mixed.z, color.w);
             return;
         }

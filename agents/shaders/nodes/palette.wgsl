@@ -26,10 +26,12 @@ fn main_1() {
     }
 
     let lum = dot(c.rgb, vec3<f32>(0.299, 0.587, 0.114));
+    let surface_presence = smoothstep(0.045, 0.18, lum);
     var col = mix(vec3(lum), c.rgb, global.u_saturation);
     col = (col - 0.5) * global.u_contrast + 0.5;
     col = col * global.u_brightness;
-    fragColor = vec4<f32>(clamp(col, vec3(0.0), vec3(1.0)), c.a);
+    let bounded = clamp(col, vec3(0.0), vec3(1.0));
+    fragColor = vec4<f32>(mix(c.rgb, bounded, vec3(surface_presence)), c.a);
 }
 
 @fragment

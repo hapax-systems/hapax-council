@@ -220,6 +220,22 @@ fn push_optional_node(
     true
 }
 
+fn mark_source_used(
+    used_indices: &mut Vec<usize>,
+    active_sources: &[(&str, f32, i32, u32, u32)],
+    source_id: &str,
+) {
+    if let Some((idx, _)) = active_sources
+        .iter()
+        .enumerate()
+        .find(|(_, (id, _, _, _, _))| *id == source_id)
+    {
+        if !used_indices.contains(&idx) {
+            used_indices.push(idx);
+        }
+    }
+}
+
 fn push_cube_face(
     nodes: &mut Vec<SceneNode>,
     active_sources: &[(&str, f32, i32, u32, u32)],
@@ -350,13 +366,23 @@ pub fn build_scene_from_sources(
         0.92,
         0.0,
     ) {
-        if let Some((idx, _)) = active_sources
-            .iter()
-            .enumerate()
-            .find(|(_, (id, _, _, _, _))| *id == "sierpinski-lines")
-        {
-            used_indices.push(idx);
-        }
+        mark_source_used(&mut used_indices, active_sources, "sierpinski-lines");
+        // The base Sierpinski source is published separately for legacy
+        // consumers. Do not let the default 3D scene place it again as a
+        // residual low-band object when the primary Sierpinski-lines object
+        // is already present. Transient re-projection belongs to explicit
+        // effects, not the baseline layout.
+        mark_source_used(&mut used_indices, active_sources, "sierpinski");
+    } else if push_optional_node(
+        &mut nodes,
+        active_sources,
+        "sierpinski",
+        Vec3::new(0.0, 0.35, ZPlane::SurfaceScrim.z_position() - 0.4 + forward),
+        3.05,
+        0.74,
+        0.0,
+    ) {
+        mark_source_used(&mut used_indices, active_sources, "sierpinski");
     }
 
     for ticker_id in [
@@ -381,13 +407,7 @@ pub fn build_scene_from_sources(
             0.86,
             0.0,
         ) {
-            if let Some((idx, _)) = active_sources
-                .iter()
-                .enumerate()
-                .find(|(_, (id, _, _, _, _))| *id == ticker_id)
-            {
-                used_indices.push(idx);
-            }
+            mark_source_used(&mut used_indices, active_sources, ticker_id);
             break;
         }
     }
@@ -452,32 +472,34 @@ pub fn build_scene_from_sources(
         &mut nodes,
         active_sources,
         &mid_band.iter().take(10).copied().collect::<Vec<_>>(),
-        Vec3::new(0.0, -2.02, ZPlane::MidScrim.z_position() + 0.34 + forward),
-        5,
-        0.30,
-        1.05,
-        0.38,
-        0.22,
-        0.52,
+        Vec3::new(2.72, -0.70, ZPlane::MidScrim.z_position() + 0.42 + forward),
+        2,
+        0.24,
+        0.86,
+        0.31,
+        0.20,
+        0.32,
     );
 
     let mut far_excluded = used_indices.clone();
     far_excluded.extend(mid_band.iter().take(10).copied());
     let far_band = source_indices_except(active_sources, &far_excluded);
-    for (local_idx, src_idx) in far_band.iter().take(12).enumerate() {
-        let col = local_idx % 6;
-        let row = local_idx / 6;
-        let x = (col as f32 - 2.5) * 1.35;
-        let y = -2.0 - row as f32 * 0.52;
-        nodes.push(make_node(
-            active_sources,
-            *src_idx,
-            Vec3::new(x, y, ZPlane::BeyondScrim.z_position() + 1.1 + forward),
-            0.42,
-            0.26,
-            0.0,
-        ));
-    }
+    push_deoccluded_grid(
+        &mut nodes,
+        active_sources,
+        &far_band.iter().take(12).copied().collect::<Vec<_>>(),
+        Vec3::new(
+            -2.74,
+            -0.74,
+            ZPlane::BeyondScrim.z_position() + 1.18 + forward,
+        ),
+        3,
+        0.20,
+        0.70,
+        0.28,
+        0.17,
+        0.16,
+    );
 
     apply_spatial_drift(&mut nodes, time);
     nodes
@@ -730,6 +752,7 @@ mod tests {
     fn requested_geometric_layout_places_primary_elements() {
         let sources = vec![
             ("sierpinski-lines", 0.9f32, 4i32, 1280u32, 720u32),
+            ("sierpinski", 0.8f32, 3i32, 840u32, 840u32),
             ("grounding_provenance_ticker", 0.8, 3, 480, 40),
             ("camera-brio-operator", 0.8, 5, 1280, 720),
             ("camera-c920-overhead", 0.8, 5, 1280, 720),
@@ -746,6 +769,10 @@ mod tests {
             .unwrap();
         assert!(sierpinski.position.x.abs() < 0.01);
         assert!(sierpinski.position.y > 0.0);
+        assert!(
+            scene.iter().all(|n| n.label != "sierpinski"),
+            "baseline layout must not re-project base Sierpinski as a residual object"
+        );
 
         let ticker = scene
             .iter()
@@ -817,7 +844,7 @@ mod tests {
     }
 
     #[test]
-    fn mid_band_accepts_overflow_without_occlusion() {
+    fn overflow_sources_stay_in_side_shelves_not_floor_band() {
         let sources = vec![
             ("camera-brio-operator", 0.8f32, 5i32, 1280u32, 720u32),
             ("camera-c920-overhead", 0.8, 5, 1280, 720),
@@ -832,8 +859,12 @@ mod tests {
         let scene = build_scene_from_sources(&sources, 0.0);
         let overflow = scene.iter().find(|n| n.label == "ward-g").unwrap();
         assert!(
-            (overflow.position.z - (ZPlane::MidScrim.z_position() + 0.79)).abs() < 0.01,
-            "overflow wards should enter the shifted-forward mid-level band"
+            overflow.position.y > -1.45,
+            "overflow wards must not become a low floor/reflection-like band"
+        );
+        assert!(
+            overflow.position.x.abs() > 1.6,
+            "overflow wards should remain in side shelves rather than a centered ghost layout"
         );
     }
 

@@ -34,6 +34,7 @@ fn main_1() {
     let mediation = clamp(global.u_anonymize, 0.0, 0.65);
     if mediation > 0.001 {
         let luminance = dot(c.xyz, vec3<f32>(0.299, 0.587, 0.114));
+        let surface_presence = smoothstep(0.045, 0.18, luminance);
         let poster_levels = mix(14.0, 7.0, mediation);
         let poster = floor(c.xyz * poster_levels + vec3<f32>(0.5)) / poster_levels;
         let n = hash(v_texcoord_1 * vec2<f32>(270.0, 180.0) + c.rg * 3.0 + vec2<f32>(uniforms.time * 0.06, 0.0));
@@ -43,8 +44,8 @@ fn main_1() {
             hash(v_texcoord_1 * 330.0 + vec2<f32>(11.7, uniforms.time * 0.04)) - 0.5,
             scan - 0.5,
         );
-        let mediated = poster + veil * (0.10 + 0.12 * mediation) + vec3<f32>(luminance * 0.04 * mediation);
-        c = vec4<f32>(mix(c.xyz, mediated, vec3<f32>(0.36 + 0.34 * mediation)), c.w);
+        let mediated = poster + veil * (0.10 + 0.12 * mediation) * surface_presence + vec3<f32>(luminance * 0.04 * mediation);
+        c = vec4<f32>(mix(c.xyz, mediated, vec3<f32>((0.36 + 0.34 * mediation) * surface_presence)), c.w);
     }
 
     // Elliptical vignette: UV mapped to centered -1..1 on both axes.

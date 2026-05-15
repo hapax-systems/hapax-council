@@ -932,6 +932,35 @@ mod tests {
                 source.contains("strength") || source.contains("_strength"),
                 "{shader} must derive a bounded effect strength"
             );
+            assert!(
+                source.contains("surface_presence"),
+                "{shader} must gate quantization by source presence so it cannot paint the empty field"
+            );
+        }
+    }
+
+    #[test]
+    fn fourth_wall_sensitive_shaders_do_not_paint_empty_field() {
+        for shader in [
+            "color_map.wgsl",
+            "colorgrade.wgsl",
+            "kuwahara.wgsl",
+            "noise_overlay.wgsl",
+            "palette.wgsl",
+            "postprocess.wgsl",
+            "thermal.wgsl",
+        ] {
+            let source = std::fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../agents/shaders/nodes")
+                    .join(shader),
+            )
+            .unwrap_or_else(|err| panic!("read {shader}: {err}"));
+
+            assert!(
+                source.contains("surface_presence"),
+                "{shader} must gate screen-space generated pressure by existing scene energy"
+            );
         }
     }
 

@@ -64,18 +64,26 @@ fn main_1() {
     var color: vec4<f32>;
     var lum: f32;
     var mapped: vec3<f32>;
+    var surface_presence: f32;
+    var effective_blend: f32;
 
     let _e6 = v_texcoord_1;
     let _e7 = textureSample(tex, tex_sampler, _e6);
     color = _e7;
     let _e9 = color;
     lum = dot(_e9.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    surface_presence = smoothstep(0.055f, 0.22f, lum);
+    effective_blend = clamp(global.u_blend, 0f, 0.48f) * surface_presence;
+    if (effective_blend <= 0.001f) {
+        fragColor = color;
+        return;
+    }
     let _e17 = lum;
     let _e18 = irPalette(_e17);
     mapped = _e18;
     let _e20 = color;
     let _e22 = mapped;
-    let _e23 = global.u_blend;
+    let _e23 = effective_blend;
     let _e25 = mix(_e20.xyz, _e22, vec3(_e23));
     let _e26 = color;
     fragColor = vec4<f32>(_e25.x, _e25.y, _e25.z, _e26.w);

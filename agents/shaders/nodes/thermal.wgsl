@@ -75,12 +75,17 @@ fn main_1() {
     var bloom: f32;
     var noise: f32;
     var thermal_strength: f32;
+    var source_luma: f32;
+    var surface_presence: f32;
 
     let _e14 = v_texcoord_1;
     uv = _e14;
     source_color = textureSample(tex, tex_sampler, uv);
 
     thermal_strength = smoothstep(-1f, 0.35f, global.u_edge_glow) * 0.42f;
+    source_luma = dot(source_color.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    surface_presence = smoothstep(0.055f, 0.22f, source_luma);
+    thermal_strength = thermal_strength * surface_presence;
     if (thermal_strength <= 0.001f) {
         fragColor = source_color;
         return;

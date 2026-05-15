@@ -87,10 +87,15 @@ fn main_1() {
     var gray: f32;
     var sep: vec3<f32>;
     var hsv: vec3<f32>;
+    var source_luma: f32;
+    var surface_presence: f32;
+    var graded: vec3<f32>;
 
     let _e14 = v_texcoord_1;
     let _e15 = textureSample(tex, tex_sampler, _e14);
     color = _e15;
+    source_luma = dot(color.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    surface_presence = smoothstep(0.045f, 0.18f, source_luma);
     let _e17 = color;
     let _e19 = color;
     let _e24 = global.u_contrast;
@@ -142,7 +147,8 @@ fn main_1() {
     let _e110 = color;
     let _e116 = clamp(_e110.xyz, vec3(0f), vec3(1f));
     let _e117 = color;
-    fragColor = vec4<f32>(_e116.x, _e116.y, _e116.z, _e117.w);
+    graded = mix(_e117.xyz, _e116, vec3(surface_presence));
+    fragColor = vec4<f32>(graded.x, graded.y, graded.z, _e117.w);
     return;
 }
 

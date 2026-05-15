@@ -22,6 +22,9 @@ fn main_1() {
     var levels: f32;
     var gamma: f32;
     var posterize_strength: f32;
+    var source_luma: f32;
+    var surface_presence: f32;
+    var effective_strength: f32;
     var mixed: vec3<f32>;
 
     let _e8 = v_texcoord_1;
@@ -30,7 +33,10 @@ fn main_1() {
     levels = clamp(global.u_levels, 2f, 256f);
     gamma = max(global.u_gamma, 0.01f);
     posterize_strength = clamp(((256f - levels) / 252f), 0f, 1f) * 0.35f;
-    if (posterize_strength <= 0.001f) {
+    source_luma = dot(color.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    surface_presence = smoothstep(0.055f, 0.22f, source_luma);
+    effective_strength = posterize_strength * surface_presence;
+    if (effective_strength <= 0.001f) {
         fragColor = color;
         return;
     }
@@ -41,7 +47,7 @@ fn main_1() {
     let _e27 = c;
     c = pow(_e27, vec3((1f / gamma)));
     let _e33 = c;
-    mixed = mix(color.xyz, _e33, vec3(posterize_strength));
+    mixed = mix(color.xyz, _e33, vec3(effective_strength));
     fragColor = vec4<f32>(mixed.x, mixed.y, mixed.z, color.w);
     return;
 }
