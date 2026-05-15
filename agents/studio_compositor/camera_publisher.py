@@ -21,7 +21,6 @@ import json
 import logging
 import os
 import threading
-import time
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -174,7 +173,7 @@ class CameraSourcePublisher:
             if self._error_count % 20 == 1:
                 log.exception("Failed to publish camera %s", source_id)
 
-    def _publish_camera_nv12(self, cached: "frame_cache.CachedFrame", source_id: str, cache_id: int) -> None:
+    def _publish_camera_nv12(self, cached: frame_cache.CachedFrame, source_id: str, cache_id: int) -> None:
         try:
             import numpy as np
 

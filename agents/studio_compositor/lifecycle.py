@@ -576,7 +576,6 @@ def start_compositor(compositor: Any) -> None:
                         time.monotonic() - gl_ts,
                     )
                     sd_notify_status("FATAL — GL chain dead, restarting")
-                    import os
 
                     os._exit(1)
 

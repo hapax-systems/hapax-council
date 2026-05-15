@@ -667,8 +667,9 @@ class CairoSourceRunner:
         displays them as textured quads at their z-plane depths.
         """
         try:
-            from agents.reverie.content_injector import inject_rgba
             import numpy as np
+
+            from agents.reverie.content_injector import inject_rgba
 
             # Cairo FORMAT_ARGB32 is BGRA in memory on little-endian.
             # Swap B↔R channels using numpy (vectorized, ~100x faster).
