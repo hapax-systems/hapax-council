@@ -66,6 +66,8 @@ fn main_1() {
     var localBright: f32;
     var gapFill: f32;
     var scanMult: f32;
+    var surfacePresence: f32;
+    var dropStrength: f32;
 
     let _e16 = v_texcoord_1;
     uv = _e16;
@@ -210,6 +212,7 @@ fn main_1() {
     color.x = _e309.x;
     color.y = _e309.y;
     color.z = _e309.z;
+    surfacePresence = smoothstep(0.025f, 0.20f, luma);
     let _e316 = uv;
     let _e318 = global.u_noise_band_y;
     bandDist = abs((_e316.y - _e318));
@@ -239,7 +242,7 @@ fn main_1() {
             let _e371 = displaced;
             let _e372 = noise;
             let _e378 = bandIntensity;
-            let _e381 = mix(_e369.xyz, mix(_e371, vec3(_e372), vec3(0.5f)), vec3((0.6f * _e378)));
+            let _e381 = mix(_e369.xyz, mix(_e371, vec3(_e372), vec3(0.35f)), vec3((0.22f * _e378 * surfacePresence)));
             color.x = _e381.x;
             color.y = _e381.y;
             color.z = _e381.z;
@@ -267,7 +270,7 @@ fn main_1() {
             let _e423 = color;
             let _e425 = noise2_;
             let _e428 = band2Intensity;
-            let _e431 = mix(_e423.xyz, vec3(_e425), vec3((0.3f * _e428)));
+            let _e431 = mix(_e423.xyz, vec3(_e425), vec3((0.14f * _e428 * surfacePresence)));
             color.x = _e431.x;
             color.y = _e431.y;
             color.z = _e431.z;
@@ -282,7 +285,8 @@ fn main_1() {
         {
             let _e453 = color;
             let _e455 = color;
-            let _e461 = mix(_e455.xyz, vec3(1f), vec3(0.8f));
+            dropStrength = 0.16f * surfacePresence;
+            let _e461 = mix(_e455.xyz, min((_e455.xyz + vec3(0.16f)), vec3(1f)), vec3(dropStrength));
             color.x = _e461.x;
             color.y = _e461.y;
             color.z = _e461.z;
@@ -291,7 +295,7 @@ fn main_1() {
     let _e468 = uv;
 
     let _e479 = hash(vec2<f32>(floor(((_e468.y * uniforms.resolution.y) * 0.5f)), (uniforms.time * 3f)));
-    lineJitter = ((_e479 - 0.5f) * 0.03f);
+    lineJitter = (((_e479 - 0.5f) * 0.012f) * surfacePresence);
     let _e485 = color;
     let _e487 = color;
     let _e489 = lineJitter;
@@ -309,7 +313,7 @@ fn main_1() {
     gapFill = (_e526 * 0.3f);
     let _e531 = gapFill;
     let _e534 = scanBright;
-    scanMult = mix((0.82f + _e531), 1f, _e534);
+    scanMult = mix((0.92f + (_e531 * 0.15f)), 1f, _e534);
     let _e537 = color;
     let _e539 = color;
     let _e541 = scanMult;

@@ -1634,7 +1634,12 @@ impl DynamicPipeline {
             let _ = std::fs::create_dir_all(parent);
         }
         let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, serde_json::to_vec_pretty(&payload).unwrap_or_default()).is_ok() {
+        if std::fs::write(
+            &tmp,
+            serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+        )
+        .is_ok()
+        {
             let _ = std::fs::rename(tmp, path);
         }
     }

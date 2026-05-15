@@ -733,6 +733,21 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn vhs_dropout_does_not_paint_empty_space_bars() {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../agents/shaders/nodes/vhs.wgsl"),
+        )
+        .expect("read vhs shader");
+
+        assert!(
+            source.contains("surfacePresence")
+                && source.contains("dropStrength = 0.16f * surfacePresence")
+                && !source.contains("mix(_e455.xyz, vec3(1f), vec3(0.8f))"),
+            "vhs dropout must be bounded and content-gated, not full-width white bars"
+        );
+    }
 }
 
 // ── Lifecycle ──────────────────────────────────────────────────
