@@ -164,6 +164,12 @@ from shared.grounding_provider_router import (
     validate_eval_suite,
     validate_provider_registry,
 )
+from shared.layout_identity_contract import (
+    LayoutIdentityReport as _LayoutIdentityReport,
+)
+from shared.layout_identity_contract import (
+    validate_layout_identity as _validate_layout_identity,
+)
 from shared.live_surface_truth import (
     assess_live_surface as _assess_live_surface,
 )
@@ -260,6 +266,12 @@ _FormCapabilityContract._action_primitives_have_unique_ids
 _FormCapabilityContract._readback_ids_unique
 _form_capability_contract_sha256
 _validate_form_capability_contract
+
+# Layout identity contract entrypoints are public SDLC/reporting surfaces; current
+# consumers import them dynamically from the contract module.
+_LayoutIdentityReport.agreement_count
+_LayoutIdentityReport.participating_count
+_validate_layout_identity
 
 # Public-API context manager. Called by the five per-outcome smoke tests
 # (vocal / programme_authoring / director_moves / chat_reactivity /
