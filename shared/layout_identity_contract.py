@@ -11,9 +11,13 @@ per-layer disagreements.
 from __future__ import annotations
 
 import time
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+STATIC_DEFAULT_LAYOUTS: frozenset[str] = frozenset(
+    {"balanced", "default", "default.json", "garage-door", "garage_door", "static"}
+)
 
 
 class RenderedReadback(BaseModel):
@@ -196,6 +200,31 @@ def validate_layout_identity(
         layer_values=dict(layer_values),
         absent_layers=tuple(absent),
     )
+
+
+def hosting_gate(report: LayoutIdentityReport) -> dict[str, Any]:
+    """Block responsible hosting when identity disagrees or legacy layout active.
+
+    Returns {"ok": bool, "reason": str, "error_disagreements": list}.
+    """
+    error_disagreements = [d for d in report.disagreements if d.severity == "error"]
+    if error_disagreements:
+        return {
+            "ok": False,
+            "reason": "identity_disagreement",
+            "error_disagreements": error_disagreements,
+        }
+    if report.canonical_name is not None and report.canonical_name in STATIC_DEFAULT_LAYOUTS:
+        return {
+            "ok": False,
+            "reason": "legacy_layout_active",
+            "error_disagreements": [],
+        }
+    return {
+        "ok": True,
+        "reason": "",
+        "error_disagreements": [],
+    }
 
 
 def _disagreement_detail(layer_a: str, val_a: str, layer_b: str, val_b: str) -> str:
