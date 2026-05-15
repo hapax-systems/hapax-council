@@ -155,6 +155,12 @@ from shared.grounding_provider_router import (
     validate_eval_suite,
     validate_provider_registry,
 )
+from shared.layout_identity_contract import (
+    LayoutIdentityReport as _LayoutIdentityReport,
+)
+from shared.layout_identity_contract import (
+    validate_layout_identity as _validate_layout_identity,
+)
 from shared.live_surface_truth import (
     assess_live_surface as _assess_live_surface,
 )
@@ -239,6 +245,12 @@ from shared.scrim_wcs_claim_posture import (
 _LivestreamRoleActionTendencyImpingement._terminal_impulses_keep_fulfillment_visible
 _LivestreamRoleSpeechAct.resolved_impulse_id
 _LivestreamRoleScrimWCSClaimPostureInput._role_state_must_match_scrim_posture
+
+# Layout identity contract entrypoints are public SDLC/reporting surfaces; current
+# consumers import them dynamically from the contract module.
+_LayoutIdentityReport.agreement_count
+_LayoutIdentityReport.participating_count
+_validate_layout_identity
 
 # Public-API context manager. Called by the five per-outcome smoke tests
 # (vocal / programme_authoring / director_moves / chat_reactivity /
