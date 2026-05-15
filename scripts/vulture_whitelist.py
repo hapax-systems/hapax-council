@@ -3049,6 +3049,7 @@ build_envelope_from_response
 build_error_envelope
 
 # Research agent Perplexity tools — registered via @agent.tool decorator
-from agents.research import deep_research  # noqa: F401, E402
+from agents.research import deep_research, search_web  # noqa: F401, E402
 
 deep_research
+search_web
