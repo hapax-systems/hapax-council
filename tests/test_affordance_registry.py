@@ -39,18 +39,41 @@ def test_no_duplicate_names():
     assert len(names) == len(set(names)), f"Duplicate affordance names: {dupes}"
 
 
-def test_consent_required_on_world_affordances():
+def test_world_affordances_do_not_use_interpersonal_consent_for_network_access():
     world = [r for r in ALL_AFFORDANCES if r.name.startswith("world.")]
     for r in world:
-        assert r.operational.consent_required, f"{r.name} should require consent"
+        assert r.operational.requires_network, f"{r.name} should require network"
+        assert not r.operational.consent_required, (
+            f"{r.name} should not conflate network authorization with interpersonal consent"
+        )
 
 
-def test_consent_required_on_web_knowledge():
+def test_web_knowledge_does_not_use_interpersonal_consent_for_network_access():
     web = [
         r
         for r in ALL_AFFORDANCES
         if r.name in ("knowledge.web_search", "knowledge.wikipedia", "knowledge.image_search")
     ]
     for r in web:
-        assert r.operational.consent_required, f"{r.name} should require consent"
         assert r.operational.requires_network, f"{r.name} should require network"
+        assert not r.operational.consent_required, (
+            f"{r.name} should not conflate network authorization with interpersonal consent"
+        )
+
+
+def test_unscoped_consent_affordances_are_deliberate_fail_closed_catalog_entries():
+    # Static registry rows do not know which non-operator subject is present.
+    # Until a runtime surface enriches a candidate with concrete consent scope,
+    # AffordancePipeline must block these consent_required rows fail-closed.
+    expected_unscoped = {
+        "studio.toggle_livestream",
+        "lore_ward.interactive_lore_query",
+    }
+    unscoped = {
+        r.name
+        for r in ALL_AFFORDANCES
+        if r.operational.consent_required
+        and (not r.operational.consent_person_id or not r.operational.consent_data_category)
+    }
+
+    assert unscoped == expected_unscoped

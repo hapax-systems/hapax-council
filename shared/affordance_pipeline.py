@@ -264,11 +264,12 @@ class AffordancePipeline:
             sigma_explore=0.10,
         )
         self._prev_source_hash: float = 0.0
-        # Consent gate cache (see _consent_allows): True iff at least one
-        # active consent contract exists. Refreshed every _CONSENT_CACHE_TTL_S
-        # seconds. Starts as None so the first consent_required candidate
-        # forces an immediate load.
-        self._consent_has_active: bool | None = None
+        # Consent gate cache (see _consent_allows): keyed by concrete
+        # (person_id, data_category) requirement so one unrelated active
+        # contract cannot authorize every consent_required capability.
+        self._consent_scope_cache: dict[tuple[str, str], bool] = {}
+        self._consent_refusal_keys: set[tuple[str, str, str]] = set()
+        self._consent_registry: Any = None
         self._consent_loaded_at: float = 0.0
         # D-26: active-programme cache for the monetization gate. Loaded on
         # first gate-passing select() call and refreshed every
@@ -318,6 +319,8 @@ class AffordancePipeline:
                             "requires_gpu": record.operational.requires_gpu,
                             "latency_class": record.operational.latency_class,
                             "consent_required": record.operational.consent_required,
+                            "consent_person_id": record.operational.consent_person_id,
+                            "consent_data_category": record.operational.consent_data_category,
                             "priority_floor": record.operational.priority_floor,
                             "medium": record.operational.medium,
                             "public_capable": record.operational.public_capable,
@@ -398,6 +401,8 @@ class AffordancePipeline:
                         "requires_gpu": record.operational.requires_gpu,
                         "latency_class": record.operational.latency_class,
                         "consent_required": record.operational.consent_required,
+                        "consent_person_id": record.operational.consent_person_id,
+                        "consent_data_category": record.operational.consent_data_category,
                         "priority_floor": record.operational.priority_floor,
                         "medium": record.operational.medium,
                         "public_capable": record.operational.public_capable,
@@ -446,66 +451,87 @@ class AffordancePipeline:
         self._seeking = seeking
 
     def _consent_allows(self, candidate: SelectionCandidate) -> bool:
-        """Gate ``consent_required`` candidates on the active contract registry.
-
-        Closes a systemic axiom-enforcement gap surfaced by the 2026-04-12
-        beta audit: ``shared/affordance_registry.py`` declares
-        ``consent_required=True`` on 7 capabilities (knowledge search, web
-        search, send message, livestream toggle, etc.), and the recruitment
-        pipeline propagates that flag into the Qdrant payload, but until
-        this method existed nothing actually read it back. Result: every
-        capability marked "needs consent" was being recruited as if no
-        consent gate existed.
-
-        Behaviour:
-
-        - Candidates without ``consent_required`` in the payload always
-          pass — no contract load incurred.
-        - Candidates with ``consent_required=True`` pass iff
-          :func:`shared.governance.consent.load_contracts` reports at least
-          one active contract. The result is cached for
-          ``_CONSENT_CACHE_TTL_S`` seconds because select() is hot-pathed
-          (per-frame in the reverie mixer, per-impingement in the run
-          loops).
-        - Any exception during contract loading **fails closed** —
-          consent_required candidates are blocked and a warning is logged.
-          This matches the legacy gate's safety stance and the wider
-          consent-engine fail-closed control law in
-          :class:`shared.governance.consent.ConsentRegistry`.
-        """
+        """Gate ``consent_required`` candidates by explicit contract scope."""
         if not candidate.payload.get("consent_required"):
             return True
+
         now = time.time()
-        if self._consent_has_active is None or now - self._consent_loaded_at > _CONSENT_CACHE_TTL_S:
+        if now - self._consent_loaded_at > _CONSENT_CACHE_TTL_S:
+            self._consent_scope_cache.clear()
+            self._consent_refusal_keys.clear()
+            self._consent_registry = None
+            self._consent_loaded_at = now
+
+        def _emit_once(reason_key: tuple[str, str, str], reason: str) -> None:
+            if reason_key in self._consent_refusal_keys:
+                return
+            self._consent_refusal_keys.add(reason_key)
+            _emit_consent_refusal(
+                axiom="interpersonal_transparency",
+                surface="affordance_pipeline:consent_gate",
+                reason=reason,
+            )
+
+        person_id = candidate.payload.get("consent_person_id")
+        data_category = candidate.payload.get("consent_data_category")
+        if not isinstance(person_id, str) or not person_id.strip():
+            _emit_once(
+                ("missing_person_id", candidate.capability_name, ""),
+                reason="missing consent_person_id — consent_required candidate blocked",
+            )
+            return False
+        person_id = person_id.strip()
+        if person_id == "operator":
+            _emit_once(
+                ("operator_scope", candidate.capability_name, str(data_category)),
+                reason="operator/network authorization is not interpersonal consent",
+            )
+            return False
+        if not isinstance(data_category, str) or not data_category.strip():
+            _emit_once(
+                ("missing_data_category", candidate.capability_name, person_id),
+                reason="missing consent_data_category — consent_required candidate blocked",
+            )
+            return False
+        data_category = data_category.strip()
+
+        requirement = (person_id, data_category)
+        if requirement not in self._consent_scope_cache:
             try:
                 from shared.governance.consent import load_contracts
 
-                registry = load_contracts()
-                # Iterate via __iter__ — the legacy gate in
-                # shared/capability_registry.py:162 reaches for a
-                # non-existent .contracts attribute and accidentally
-                # AttributeError-blocks every consent_required capability.
-                self._consent_has_active = any(c.active for c in registry)
+                if self._consent_registry is None:
+                    self._consent_registry = load_contracts(strict=True)
+                    self._consent_loaded_at = now
+                allowed = bool(
+                    self._consent_registry.contract_check(
+                        requirement[0],
+                        requirement[1],
+                    )
+                )
+                self._consent_scope_cache[requirement] = allowed
                 self._consent_loaded_at = now
-                if not self._consent_has_active:
-                    _emit_consent_refusal(
-                        axiom="interpersonal_transparency",
-                        surface="affordance_pipeline:consent_gate",
-                        reason="no active consent contract — consent_required candidates blocked",
+                if not allowed:
+                    _emit_once(
+                        ("no_match", requirement[0], requirement[1]),
+                        reason=(
+                            "no matching active consent contract for "
+                            f"{requirement[0]}:{requirement[1]} — candidate blocked"
+                        ),
                     )
             except Exception:
                 log.warning(
                     "Consent gate failed for %s — blocking (fail-closed)",
                     candidate.capability_name,
                 )
-                self._consent_has_active = False
+                self._consent_scope_cache[requirement] = False
+                self._consent_registry = None
                 self._consent_loaded_at = now
-                _emit_consent_refusal(
-                    axiom="interpersonal_transparency",
-                    surface="affordance_pipeline:consent_gate",
+                _emit_once(
+                    ("loader_exception", requirement[0], requirement[1]),
                     reason="contract loader exception — gate failed closed",
                 )
-        return bool(self._consent_has_active)
+        return self._consent_scope_cache[requirement]
 
     def _apply_programme_bias(
         self, candidates: list[SelectionCandidate], programme: Any

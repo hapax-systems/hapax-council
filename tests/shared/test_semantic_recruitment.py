@@ -237,10 +237,31 @@ def test_single_projection_to_capability_record_carries_risk_metadata() -> None:
     assert record.description == row.primary_description
     assert record.operational.public_capable is True
     assert record.operational.requires_network is True
-    assert record.operational.consent_required is True
+    assert record.operational.consent_required is False
+    assert record.operational.consent_person_id is None
+    assert record.operational.consent_data_category is None
     assert record.operational.content_risk == "tier_1_platform_cleared"
     assert record.operational.monetization_risk == "low"
     assert record.operational.rights_ref == "rights:provider-public-source-terms"
+
+
+def test_interpersonal_consent_projection_requires_explicit_scope() -> None:
+    payload = _row("capability.camera.raw_workspace_observation").model_dump(mode="json")
+    payload["privacy_label"] = "person_adjacent"
+    payload["consent_label"] = "identifiable_person"
+    payload["required_clearance"] = "identifiable_person"
+
+    with pytest.raises(ValidationError, match="interpersonal consent projections"):
+        SemanticRecruitmentRow.model_validate(payload)
+
+    payload["projection"]["consent_person_id"] = "guest"
+    payload["projection"]["consent_data_category"] = "video"
+    row = SemanticRecruitmentRow.model_validate(payload)
+    record = row.to_capability_record()
+
+    assert record.operational.consent_required is True
+    assert record.operational.consent_person_id == "guest"
+    assert record.operational.consent_data_category == "video"
 
 
 def test_semantic_rows_by_id_helper_is_fail_closed() -> None:

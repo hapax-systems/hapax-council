@@ -405,6 +405,8 @@
         "persistence": "none",
         "priority_floor": false,
         "public_capable": false,
+        "consent_person_id": "guest",
+        "consent_data_category": "presence",
         "rights_ref": "rights:tool_schema:query_person_details",
         "provenance_ref": "provenance:tool_schema:query_person_details"
       },
@@ -1890,6 +1892,8 @@
         "persistence": "none",
         "priority_floor": false,
         "public_capable": false,
+        "consent_person_id": "guest",
+        "consent_data_category": "video",
         "rights_ref": "rights:device:camera.overhead_brio",
         "provenance_ref": "provenance:device:camera.overhead_brio"
       },

@@ -338,6 +338,9 @@ class TestBatchIndexing:
                     latency_class="fast",
                     medium="visual",
                     public_capable=True,
+                    consent_required=True,
+                    consent_person_id="guest",
+                    consent_data_category="video",
                     monetization_risk="low",
                     risk_reason="test monetization reason",
                     content_risk="tier_1_platform_cleared",
@@ -361,6 +364,9 @@ class TestBatchIndexing:
             assert pipeline.index_capabilities_batch(records) == 1
 
         point = mock_client.upsert.call_args.kwargs["points"][0]
+        assert point.payload["consent_required"] is True
+        assert point.payload["consent_person_id"] == "guest"
+        assert point.payload["consent_data_category"] == "video"
         assert point.payload["public_capable"] is True
         assert point.payload["monetization_risk"] == "low"
         assert point.payload["risk_reason"] == "test monetization reason"
@@ -415,20 +421,38 @@ class TestEmbeddingCacheTextKey:
 
 
 class TestConsentGate:
-    def _candidate(self, *, consent_required: bool):
+    def _candidate(
+        self,
+        *,
+        consent_required: bool,
+        person_id: str | None = "guest",
+        data_category: str | None = "video",
+    ):
         from shared.affordance import SelectionCandidate
 
         name = "studio.toggle_livestream" if consent_required else "studio.activate_preset"
+        payload = {"consent_required": consent_required}
+        if person_id is not None:
+            payload["consent_person_id"] = person_id
+        if data_category is not None:
+            payload["consent_data_category"] = data_category
         return SelectionCandidate(
             capability_name=name,
             similarity=0.9,
-            payload={"consent_required": consent_required},
+            payload=payload,
         )
 
     def _pipeline(self):
         from shared.affordance_pipeline import AffordancePipeline
 
         return AffordancePipeline()
+
+    def _registry(self, person_id: str, scope: frozenset[str]):
+        from shared.governance.consent import ConsentRegistry
+
+        registry = ConsentRegistry(_contracts_dir=None)
+        registry.create_contract(person_id, scope, contract_id=f"contract-{person_id}")
+        return registry
 
     def test_candidate_without_consent_flag_passes_unconditionally(self):
         # Fast path: consent_required absent or False short-circuits
@@ -450,23 +474,69 @@ class TestConsentGate:
         p = self._pipeline()
         cand = self._candidate(consent_required=True)
         empty_registry = MagicMock()
-        empty_registry.__iter__ = lambda self: iter([])
-        with patch("shared.governance.consent.load_contracts", return_value=empty_registry):
+        empty_registry.contract_check.return_value = False
+        with patch(
+            "shared.governance.consent.load_contracts",
+            return_value=empty_registry,
+        ) as mock_load:
             assert p._consent_allows(cand) is False
+        mock_load.assert_called_once_with(strict=True)
+        empty_registry.contract_check.assert_called_once_with("guest", "video")
 
-    def test_consent_required_allowed_when_at_least_one_active_contract(self):
-        # Happy path: with active contracts, consent_required candidates
-        # flow through. Verifies the gate is not over-eager.
-        from unittest.mock import MagicMock, patch
+    def test_consent_required_allowed_when_matching_scoped_contract_exists(self):
+        # Happy path: the active contract must match the candidate's
+        # person/category requirement, not merely exist.
+        from unittest.mock import patch
 
         p = self._pipeline()
         cand = self._candidate(consent_required=True)
-        active_contract = MagicMock()
-        active_contract.active = True
-        registry = MagicMock()
-        registry.__iter__ = lambda self: iter([active_contract])
+        registry = self._registry("guest", frozenset({"video"}))
         with patch("shared.governance.consent.load_contracts", return_value=registry):
             assert p._consent_allows(cand) is True
+
+    def test_audio_contract_does_not_authorize_video_candidate(self):
+        from unittest.mock import patch
+
+        p = self._pipeline()
+        cand = self._candidate(consent_required=True, person_id="guest", data_category="video")
+        registry = self._registry("guest", frozenset({"audio"}))
+        with patch("shared.governance.consent.load_contracts", return_value=registry):
+            assert p._consent_allows(cand) is False
+
+    def test_unrelated_active_contract_does_not_authorize_all_candidates(self):
+        from unittest.mock import patch
+
+        p = self._pipeline()
+        cand = self._candidate(consent_required=True, person_id="guest", data_category="video")
+        registry = self._registry("jason_kleeberger", frozenset({"video"}))
+        with patch("shared.governance.consent.load_contracts", return_value=registry):
+            assert p._consent_allows(cand) is False
+
+    def test_missing_consent_scope_fails_closed(self):
+        from unittest.mock import patch
+
+        p = self._pipeline()
+        cand = self._candidate(
+            consent_required=True,
+            person_id=None,
+            data_category=None,
+        )
+        with patch("shared.governance.consent.load_contracts") as mock_load:
+            assert p._consent_allows(cand) is False
+            mock_load.assert_not_called()
+
+    def test_operator_network_authorization_is_not_interpersonal_consent(self):
+        from unittest.mock import patch
+
+        p = self._pipeline()
+        cand = self._candidate(
+            consent_required=True,
+            person_id="operator",
+            data_category="network",
+        )
+        with patch("shared.governance.consent.load_contracts") as mock_load:
+            assert p._consent_allows(cand) is False
+            mock_load.assert_not_called()
 
     def test_consent_load_failure_fails_closed(self):
         # If contract loading raises (consent infra broken), the gate
@@ -489,14 +559,37 @@ class TestConsentGate:
 
         p = self._pipeline()
         cand = self._candidate(consent_required=True)
-        active_contract = MagicMock()
-        active_contract.active = True
         registry = MagicMock()
-        registry.__iter__ = lambda self: iter([active_contract])
+        registry.contract_check.return_value = True
         with patch("shared.governance.consent.load_contracts", return_value=registry) as mock_load:
             assert p._consent_allows(cand) is True
             assert p._consent_allows(cand) is True
             assert mock_load.call_count == 1
+            assert registry.contract_check.call_count == 1
+
+    def test_consent_cache_is_keyed_by_scope_signature(self):
+        from unittest.mock import MagicMock, patch
+
+        p = self._pipeline()
+        video = self._candidate(
+            consent_required=True,
+            person_id="guest",
+            data_category="video",
+        )
+        audio = self._candidate(
+            consent_required=True,
+            person_id="guest",
+            data_category="audio",
+        )
+        registry = MagicMock()
+        registry.contract_check.side_effect = lambda person_id, data_category: (
+            person_id == "guest" and data_category == "audio"
+        )
+        with patch("shared.governance.consent.load_contracts", return_value=registry) as mock_load:
+            assert p._consent_allows(video) is False
+            assert p._consent_allows(audio) is True
+            assert mock_load.call_count == 1
+            assert registry.contract_check.call_count == 2
 
     def test_consent_cache_refreshes_after_ttl(self):
         # After the TTL window expires, the next consent-required check
@@ -508,10 +601,8 @@ class TestConsentGate:
 
         p = self._pipeline()
         cand = self._candidate(consent_required=True)
-        active_contract = MagicMock()
-        active_contract.active = True
         registry = MagicMock()
-        registry.__iter__ = lambda self: iter([active_contract])
+        registry.contract_check.return_value = True
         with patch("shared.governance.consent.load_contracts", return_value=registry) as mock_load:
             assert p._consent_allows(cand) is True
             # Force the cache stamp into the past so the next call
@@ -519,6 +610,7 @@ class TestConsentGate:
             p._consent_loaded_at -= ap_mod._CONSENT_CACHE_TTL_S + 1.0
             assert p._consent_allows(cand) is True
             assert mock_load.call_count == 2
+            assert registry.contract_check.call_count == 2
 
 
 class TestConsentRefusalBriefEmission:
@@ -533,7 +625,11 @@ class TestConsentRefusalBriefEmission:
         return SelectionCandidate(
             capability_name="studio.toggle_livestream",
             similarity=0.9,
-            payload={"consent_required": True},
+            payload={
+                "consent_required": True,
+                "consent_person_id": "guest",
+                "consent_data_category": "video",
+            },
         )
 
     def test_emits_on_no_active_contracts(self, monkeypatch):
@@ -547,14 +643,14 @@ class TestConsentRefusalBriefEmission:
         monkeypatch.setattr(_pkg, "append", lambda ev, **_: captured.append(ev) or True)
 
         empty_registry = MagicMock()
-        empty_registry.__iter__ = lambda self: iter([])
+        empty_registry.contract_check.return_value = False
         with patch("shared.governance.consent.load_contracts", return_value=empty_registry):
             assert AffordancePipeline()._consent_allows(self._candidate()) is False
 
         assert len(captured) == 1
         assert captured[0].surface == "affordance_pipeline:consent_gate"
         assert captured[0].axiom == "interpersonal_transparency"
-        assert "no active consent contract" in captured[0].reason
+        assert "no matching active consent contract" in captured[0].reason
 
     def test_emits_on_loader_exception(self, monkeypatch):
         from unittest.mock import patch
@@ -584,10 +680,8 @@ class TestConsentRefusalBriefEmission:
 
         monkeypatch.setattr(_pkg, "append", lambda ev, **_: captured.append(ev) or True)
 
-        active_contract = MagicMock()
-        active_contract.active = True
         registry = MagicMock()
-        registry.__iter__ = lambda self: iter([active_contract])
+        registry.contract_check.return_value = True
         with patch("shared.governance.consent.load_contracts", return_value=registry):
             assert AffordancePipeline()._consent_allows(self._candidate()) is True
 
@@ -605,12 +699,33 @@ class TestConsentRefusalBriefEmission:
         monkeypatch.setattr(_pkg, "append", lambda ev, **_: captured.append(ev) or True)
 
         empty_registry = MagicMock()
-        empty_registry.__iter__ = lambda self: iter([])
+        empty_registry.contract_check.return_value = False
         p = AffordancePipeline()
         cand = self._candidate()
         with patch("shared.governance.consent.load_contracts", return_value=empty_registry):
             for _ in range(20):
                 p._consent_allows(cand)
+
+        assert len(captured) == 1
+
+    def test_missing_scope_emit_bounded_by_cache_ttl(self, monkeypatch):
+        """Missing scoped metadata also stays bounded on hot paths."""
+        from shared.affordance import SelectionCandidate
+        from shared.affordance_pipeline import AffordancePipeline
+
+        captured = []
+        import agents.refusal_brief as _pkg
+
+        monkeypatch.setattr(_pkg, "append", lambda ev, **_: captured.append(ev) or True)
+
+        p = AffordancePipeline()
+        cand = SelectionCandidate(
+            capability_name="studio.toggle_livestream",
+            similarity=0.9,
+            payload={"consent_required": True},
+        )
+        for _ in range(20):
+            p._consent_allows(cand)
 
         assert len(captured) == 1
 
@@ -626,7 +741,7 @@ class TestConsentRefusalBriefEmission:
         monkeypatch.setattr(_pkg, "append", _boom)
 
         empty_registry = MagicMock()
-        empty_registry.__iter__ = lambda self: iter([])
+        empty_registry.contract_check.return_value = False
         with patch("shared.governance.consent.load_contracts", return_value=empty_registry):
             # Must not raise — gate decision still returned.
             assert AffordancePipeline()._consent_allows(self._candidate()) is False
@@ -638,6 +753,8 @@ class TestFallbackHardGates:
 
         base_payload = {
             "consent_required": False,
+            "consent_person_id": "guest",
+            "consent_data_category": "video",
             "public_capable": False,
             "monetization_risk": "none",
             "content_risk": "tier_0_owned",
@@ -682,7 +799,7 @@ class TestFallbackHardGates:
         from shared.affordance_pipeline import AffordancePipeline
 
         empty_registry = MagicMock()
-        empty_registry.__iter__ = lambda self: iter([])
+        empty_registry.contract_check.return_value = False
         p = AffordancePipeline()
         candidate = self._candidate(consent_required=True)
 

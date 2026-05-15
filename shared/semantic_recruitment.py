@@ -256,6 +256,12 @@ CONSENT_ORDER: Mapping[ConsentLabel, int] = {
     ConsentLabel.IDENTIFIABLE_PERSON: 3,
     ConsentLabel.PUBLIC_BROADCAST: 4,
 }
+INTERPERSONAL_CONSENT_LABELS = frozenset(
+    {
+        ConsentLabel.PERSON_ADJACENT,
+        ConsentLabel.IDENTIFIABLE_PERSON,
+    }
+)
 CONTENT_RISK_ORDER: Mapping[ContentRisk, int] = {
     ContentRisk.TIER_0_OWNED: 0,
     ContentRisk.TIER_1_PLATFORM_CLEARED: 1,
@@ -375,6 +381,8 @@ class CapabilityProjection(BaseModel):
     persistence: str = "none"
     priority_floor: bool = False
     public_capable: bool = False
+    consent_person_id: str | None = None
+    consent_data_category: str | None = None
     rights_ref: str | None = None
     provenance_ref: str | None = None
 
@@ -481,12 +489,9 @@ class SemanticRecruitmentRow(BaseModel):
                 latency_class=self.projection.latency_class.value,
                 persistence=self.projection.persistence,
                 medium=self.medium.value,
-                consent_required=self.consent_label
-                in {
-                    ConsentLabel.PERSON_ADJACENT,
-                    ConsentLabel.IDENTIFIABLE_PERSON,
-                    ConsentLabel.PUBLIC_BROADCAST,
-                },
+                consent_required=self.consent_label in INTERPERSONAL_CONSENT_LABELS,
+                consent_person_id=self.projection.consent_person_id,
+                consent_data_category=self.projection.consent_data_category,
                 priority_floor=self.projection.priority_floor,
                 public_capable=self.projection.public_capable,
                 monetization_risk=cast("AffordanceMonetizationRisk", self.monetization_risk.value),
@@ -513,6 +518,8 @@ class SemanticRecruitmentRow(BaseModel):
             "requires_gpu": operational.requires_gpu,
             "latency_class": operational.latency_class,
             "consent_required": operational.consent_required,
+            "consent_person_id": operational.consent_person_id,
+            "consent_data_category": operational.consent_data_category,
             "priority_floor": operational.priority_floor,
             "medium": operational.medium,
             "public_capable": operational.public_capable,
@@ -642,6 +649,17 @@ class SemanticRecruitmentRow(BaseModel):
                 not self.projection.rights_ref or not self.projection.provenance_ref
             ):
                 raise ValueError("public-capable projection requires rights and provenance refs")
+            if self.projects_recruitable_capability and (
+                self.consent_label in INTERPERSONAL_CONSENT_LABELS
+            ):
+                if (
+                    not self.projection.consent_person_id
+                    or not self.projection.consent_data_category
+                ):
+                    raise ValueError(
+                        "interpersonal consent projections require consent_person_id "
+                        "and consent_data_category"
+                    )
         if self.dispatch_contract.route_by_family_only:
             if not any(tag.dispatch_required for tag in self.family_tags):
                 raise ValueError("family-only routing requires a structured dispatch family tag")
@@ -779,6 +797,7 @@ __all__ = [
     "AUTHORITY_ORDER",
     "CONSENT_ORDER",
     "CONTENT_RISK_ORDER",
+    "INTERPERSONAL_CONSENT_LABELS",
     "MONETIZATION_RISK_ORDER",
     "AliasMigration",
     "AuthorityCeiling",
