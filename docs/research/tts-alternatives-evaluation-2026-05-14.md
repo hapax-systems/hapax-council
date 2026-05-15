@@ -105,9 +105,46 @@ Hapax's voice commitments require non-anthropomorphic personage fidelity. Key co
 - Speed is important but not at the cost of the voice's distinctive character
 - Any engine change must be A/B tested against operator perception of voice identity
 
+## Authority-Lattice Compatibility Assessment
+
+**Added**: 2026-05-15 (audit remediation, CASE-SEGPREP-AUDIT-REMEDIATION-20260515)
+**References**: `2026-05-06-autonomous-segment-prep-authority-transition-doctrine.md`, `2026-05-07-autonomous-segment-prep-implementation-research-synthesis.md`
+
+Any TTS engine change interacts with the segment prep authority architecture at three points.
+
+### Provenance Hash Chain
+
+The segment prep pipeline binds `prepared_script_sha256` to tie text artifacts to their model, prompt, seed, source packets, and review receipts. The current hash chain does not include TTS engine identity.
+
+**Constraint**: If a TTS engine change materially alters delivery fidelity (prosody, pacing, intelligibility), the `prepared_script_sha256` alone is insufficient as a provenance anchor for public-live artifacts.
+
+**Recommendation**: Extend the runtime-readback contract to include a `tts_engine_id` field (engine name + version + voice preset) in the `runtime_attempted` to `runtime_readback_matched` transition.
+
+### Authority Transition Gates
+
+A TTS engine swap affects `runtime_pool` to `runtime_attempted` to `runtime_readback_matched`:
+
+1. **runtime_pool to runtime_attempted**: New TTS engine must satisfy a residency check (loaded, responsive, returning 24kHz int16 mono PCM) before attempting delivery.
+2. **runtime_attempted to runtime_readback_matched**: Readback currently witnesses text delivery. A new engine may pass text-matching but fail perceptual fidelity. Readback should include an acoustic identity assertion.
+3. **public_live gate**: A TTS engine change affecting all public emissions must earn `public_live` through canary evidence, not just text-matching readback.
+
+**Recommendation**: Before any engine swap reaches `public_live`, run a canary cycle: synthesize the same prepared script with both engines, compare perceptual quality and speaker identity, record as a canary review receipt bound to the engine transition.
+
+### Prerequisites for Adoption
+
+1. Engine residency check (analogous to `resident_command_r --check`)
+2. Format compatibility proof (24kHz int16 mono PCM)
+3. Canary A/B comparison with review receipt
+4. Runtime readback extension (`tts_engine_id` field)
+5. Operator perceptual sign-off (acoustic identity assertion)
+6. VRAM budget verification for GPU engines (24GB coexistence)
+
+No engine in this evaluation is blocked by the authority architecture — these are additive requirements defining the work needed to earn `runtime_readback_matched` and `public_live` transitions.
+
 ## Next Actions
 
 1. Benchmark Chatterbox-Turbo as drop-in upgrade
 2. GPU benchmark Qwen3-TTS-0.6B streaming latency
 3. Record Supertonic 3 expression tag samples for personage evaluation
 4. Update this document with benchmark results
+5. Before any adoption: implement the authority-lattice prerequisites above
