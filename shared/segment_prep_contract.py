@@ -268,6 +268,39 @@ def validate_enriched_outcome(payload: Mapping[str, Any]) -> dict[str, Any]:
     return {"ok": not thin, "thin_fields": thin}
 
 
+_RETURN_TO_PREP_REQUIRED_FIELDS = (
+    "identified_gap",
+    "bounded_work_item",
+    "budget_authority",
+    "expected_observable",
+    "falsification_criterion",
+)
+
+
+def validate_return_to_prep(dossier: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate that a return-to-prep request has a bounded dossier.
+
+    Failed review, no_release, runtime fallback, or readback mismatch
+    may return to prep ONLY when the dossier identifies:
+    1. Exact source/script/contract/review/personage/runtime-readback gap
+    2. Bounded work item closing it
+    3. Budget and egress authority for work
+    4. Expected observable change
+    5. Falsification criterion
+
+    Without these, the correct result is terminal diagnostic outcome.
+    """
+    missing: list[str] = []
+    for field in _RETURN_TO_PREP_REQUIRED_FIELDS:
+        if not _is_nonempty_string(dossier.get(field)):
+            missing.append(field)
+    return {
+        "ok": not missing,
+        "missing_fields": missing,
+        "terminal_recommended": len(missing) > 0,
+    }
+
+
 def is_content_evidence_ref(value: Any) -> bool:
     """Return whether a ref looks like content/source evidence, not parser provenance."""
     if not isinstance(value, str):
