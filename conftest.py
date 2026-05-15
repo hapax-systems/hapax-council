@@ -12,10 +12,17 @@ precedence over these session-scoped patches.
 
 from __future__ import annotations
 
+import os
 import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+# Tests should not create live OpenTelemetry exporter threads. GitHub Actions
+# sets this explicitly; keep the same default locally so full-suite runs do not
+# hang on Langfuse/OTLP background workers after pytest reaches 100%.
+os.environ.setdefault("OTEL_SDK_DISABLED", "true")
+os.environ.setdefault("OTEL_TRACES_EXPORTER", "none")
 
 
 def _stub_gpu_modules():
@@ -152,6 +159,43 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
     """
     import contextlib
     import gc
+
+    # Audio: some tests instantiate persistent PipeWire playback helpers. If a
+    # test forgets to close them, their reaper/subprocess state can keep xdist
+    # workers alive after all tests pass.
+    with contextlib.suppress(Exception):
+        from agents.hapax_daimonion.pw_audio_output import PwAudioOutput
+
+        for obj in list(gc.get_objects()):
+            if isinstance(obj, PwAudioOutput):
+                with contextlib.suppress(Exception):
+                    obj.close()
+
+    # OpenTelemetry/Langfuse: shut down any provider a side-effect import may
+    # have installed despite test disables. Provider shutdown joins batch
+    # exporter workers instead of letting xdist wait for stuck subprocesses.
+    with contextlib.suppress(Exception):
+        from opentelemetry import trace
+
+        provider = trace.get_tracer_provider()
+        shutdown = getattr(provider, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+
+    with contextlib.suppress(Exception):
+        for module_name in ("shared.telemetry", "agents._telemetry"):
+            module = sys.modules.get(module_name)
+            if module is None:
+                continue
+            client = getattr(module, "_langfuse", None)
+            if client is not None:
+                for method_name in ("flush", "shutdown", "close"):
+                    method = getattr(client, method_name, None)
+                    if callable(method):
+                        with contextlib.suppress(Exception):
+                            method()
+                with contextlib.suppress(Exception):
+                    module._langfuse = None
 
     # Qdrant: clear ``shared.config`` lru_caches + close raw clients.
     with contextlib.suppress(Exception):
