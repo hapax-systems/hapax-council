@@ -57,22 +57,16 @@ def _force(value: Any) -> ParamBound:
 # bounded spatial coverage, or valid auxiliary texture bindings.
 LIVE_SURFACE_BLOCKED_NODE_TYPES = frozenset(
     {
-        "ascii",
         "blend",
         "chroma_key",
         "circular_mask",
         "crossfade",
         "diff",
-        "displacement_map",
         "droste",
-        "edge_detect",
-        "kaleidoscope",
         "luma_key",
-        "mirror",
         "nightvision_tint",
         "noise_gen",
         "particle_system",
-        "rutt_etra",
         "solid",
         "strobe",
         "threshold",
@@ -88,6 +82,10 @@ STRUCTURAL_NODE_TYPES = frozenset({"output"})
 
 
 LIVE_SURFACE_PARAM_BOUNDS: dict[str, dict[str, ParamBound]] = {
+    "ascii": {
+        "cell_size": _range(6.0, 24.0),
+        "color_mode": _range(0.0, 1.0),
+    },
     "bloom": {
         "alpha": _max(0.35),
         "radius": _max(12.0),
@@ -116,6 +114,10 @@ LIVE_SURFACE_PARAM_BOUNDS: dict[str, dict[str, ParamBound]] = {
         "matrix_size": _max(4.0),
         "monochrome": _max(0.0),
     },
+    "displacement_map": {
+        "strength_x": _range(-0.055, 0.055),
+        "strength_y": _range(-0.055, 0.055),
+    },
     "drift": {
         "amplitude": _max(0.70),
         "coherence": _max(0.70),
@@ -129,6 +131,10 @@ LIVE_SURFACE_PARAM_BOUNDS: dict[str, dict[str, ParamBound]] = {
     "emboss": {
         "blend": _max(0.35),
         "strength": _max(0.35),
+    },
+    "edge_detect": {
+        "color_mode": _range(0.0, 0.35),
+        "threshold": _range(0.08, 0.45),
     },
     "feedback": {
         "blend_mode": _max(1.0),
@@ -157,7 +163,17 @@ LIVE_SURFACE_PARAM_BOUNDS: dict[str, dict[str, ParamBound]] = {
         "dot_size": _max(8.0),
     },
     "invert": {"strength": _max(0.35)},
+    "kaleidoscope": {
+        "center_x": _range(0.47, 0.53),
+        "center_y": _range(0.47, 0.53),
+        "rotation": _range(-0.45, 0.45),
+        "segments": _range(1.5, 4.0),
+    },
     "kuwahara": {"radius": _max(3.0)},
+    "mirror": {
+        "axis": _range(0.0, 1.0),
+        "position": _range(0.40, 0.75),
+    },
     "noise_overlay": {
         "animated": _force(False),
         "intensity": _max(0.10),
@@ -196,6 +212,12 @@ LIVE_SURFACE_PARAM_BOUNDS: dict[str, dict[str, ParamBound]] = {
     "reaction_diffusion": {
         "amount": _max(0.15),
         "speed": _max(1.0),
+    },
+    "rutt_etra": {
+        "color_mode": _range(0.0, 1.0),
+        "displacement": _range(-32.0, 32.0),
+        "line_density": _range(3.0, 16.0),
+        "line_width": _range(1.0, 3.0),
     },
     "scanlines": {
         "opacity": _max(0.18),

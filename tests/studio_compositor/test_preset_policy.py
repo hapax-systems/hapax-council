@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from agents.effect_graph.registry import ShaderRegistry
@@ -11,10 +12,24 @@ from agents.studio_compositor.preset_policy import (
     evaluate_preset_graph_policy,
     evaluate_preset_policy,
 )
-from shared.live_surface_effect_policy import live_surface_unclassified_node_types
+from shared.live_surface_effect_policy import (
+    apply_live_surface_param_bounds as apply_shared_live_surface_param_bounds,
+)
+from shared.live_surface_effect_policy import (
+    live_surface_policy_kind,
+    live_surface_unclassified_node_types,
+)
 
 NODES_DIR = Path(__file__).parent.parent.parent / "agents" / "shaders" / "nodes"
 PRESETS_DIR = Path(__file__).parent.parent.parent / "presets"
+EFFECT_DRIFT_RS = (
+    Path(__file__).parent.parent.parent
+    / "hapax-logos"
+    / "crates"
+    / "hapax-visual"
+    / "src"
+    / "effect_drift.rs"
+)
 
 
 def _registry() -> ShaderRegistry:
@@ -259,3 +274,35 @@ def test_live_surface_policy_classifies_every_shader_node() -> None:
     registry = _registry()
 
     assert live_surface_unclassified_node_types(set(registry.node_types)) == set()
+
+
+def test_source_preserving_repaired_nodes_are_bounded_not_blocked() -> None:
+    repaired_nodes = {
+        "ascii",
+        "displacement_map",
+        "edge_detect",
+        "kaleidoscope",
+        "mirror",
+        "rutt_etra",
+    }
+
+    assert {node for node in repaired_nodes if live_surface_policy_kind(node) != "bounded"} == set()
+    assert apply_shared_live_surface_param_bounds(
+        "displacement_map", {"strength_x": 0.2, "strength_y": -0.2}
+    ) == {"strength_x": 0.055, "strength_y": -0.055}
+    assert apply_shared_live_surface_param_bounds("mirror", {"axis": 2.0, "position": 0.9}) == {
+        "axis": 1.0,
+        "position": 0.75,
+    }
+
+
+def test_rust_autonomous_drift_only_schedules_live_surface_bounded_nodes() -> None:
+    source = EFFECT_DRIFT_RS.read_text()
+    shader_table = source.split("pub static SHADERS:", 1)[1].split("pub static FEEDBACK_DEF", 1)[0]
+    drift_nodes = set(re.findall(r'name: "([^"]+)"', shader_table))
+
+    assert drift_nodes
+    blocked = {
+        node for node in drift_nodes if live_surface_policy_kind(node) == "blocked_pending_repair"
+    }
+    assert blocked == set()
