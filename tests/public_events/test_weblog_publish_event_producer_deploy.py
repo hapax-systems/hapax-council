@@ -10,6 +10,7 @@ Verifies:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -52,6 +53,11 @@ def _systemctl_is_active() -> bool:
 requires_live_deployment = pytest.mark.skipif(
     not _systemctl_is_active(),
     reason=f"{UNIT_NAME} is not active; live deployment verification requires the host unit",
+)
+
+requires_live_rss = pytest.mark.skipif(
+    os.environ.get("HAPAX_WEBLOG_PUBLISH_LIVE_RSS_TESTS") != "1",
+    reason="live weblog RSS verification requires HAPAX_WEBLOG_PUBLISH_LIVE_RSS_TESTS=1",
 )
 
 
@@ -130,6 +136,7 @@ class TestLiveEventsJSONL:
             assert sp["requires_provenance"] is True
 
 
+@requires_live_rss
 class TestProducerRunOnce:
     def test_run_once_against_live_rss(self, tmp_path: Path) -> None:
         public = tmp_path / "events.jsonl"
