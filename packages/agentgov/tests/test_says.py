@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import unittest
 
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
 from agentgov.consent_label import ConsentLabel
 from agentgov.principal import Principal, PrincipalKind
 from agentgov.says import Says
+from tests.strategies import st_sovereign
 
 
 class TestSaysMonad(unittest.TestCase):
@@ -84,3 +88,49 @@ class TestSaysMonad(unittest.TestCase):
         )
         s = Says.unit(p, "data")
         assert s.speaks_for(child) is True
+
+
+# ---------------------------------------------------------------------------
+# Monad law property tests (Hypothesis)
+# ---------------------------------------------------------------------------
+
+
+class TestSaysMonadLaws:
+    """Verify the three monad laws for Says."""
+
+    @given(p=st_sovereign(), a=st.integers())
+    @settings(max_examples=100)
+    def test_left_identity(self, p, a):
+        """unit(p, a).bind(f) should have same value as f(a)."""
+
+        def f(x):
+            return Says.unit(p, x * 2)
+
+        lhs = Says.unit(p, a).bind(f)
+        rhs = f(a)
+        assert lhs.value == rhs.value
+
+    @given(p=st_sovereign(), a=st.integers())
+    @settings(max_examples=100)
+    def test_right_identity(self, p, a):
+        """m.bind(unit) should preserve value."""
+        m = Says.unit(p, a)
+        result = m.bind(lambda x: Says.unit(m.principal, x))
+        assert result.value == m.value
+        assert result.principal == m.principal
+
+    @given(p=st_sovereign(), a=st.integers())
+    @settings(max_examples=100)
+    def test_associativity(self, p, a):
+        """m.bind(f).bind(g) == m.bind(lambda x: f(x).bind(g))."""
+
+        def f(x):
+            return Says.unit(p, x + 1)
+
+        def g(x):
+            return Says.unit(p, x * 3)
+
+        m = Says.unit(p, a)
+        lhs = m.bind(f).bind(g)
+        rhs = m.bind(lambda x: f(x).bind(g))
+        assert lhs.value == rhs.value
