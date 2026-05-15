@@ -527,6 +527,10 @@ def start_compositor(compositor: Any) -> None:
                 # known and must not make the compositor self-kill. The
                 # live-surface preflight still refuses to call this restored.
                 v4l2_alive = True
+            elif os.environ.get("HAPAX_3D_COMPOSITOR") == "1":
+                # 3D compositor mode: wgpu imagination pipeline owns /dev/video42,
+                # not GStreamer. There is no v4l2sink to stall. Always alive.
+                v4l2_alive = True
             elif bridge_enabled:
                 # The compositor watchdog may use render-to-SHM freshness for
                 # the shmsink bridge path, but this is not v4l2/OBS egress

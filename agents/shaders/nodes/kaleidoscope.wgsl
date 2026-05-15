@@ -19,13 +19,17 @@ var tex_sampler: sampler;
 var<uniform> global: Params;
 
 fn main_1() {
+    var original: vec4<f32>;
     var center: vec2<f32>;
     var uv: vec2<f32>;
     var angle: f32;
     var r: f32;
     var segAngle: f32;
     var newUV: vec2<f32>;
+    var warped: vec4<f32>;
+    var blend: f32;
 
+    original = textureSample(tex, tex_sampler, v_texcoord_1);
     let _e12 = global.u_center_x;
     let _e13 = global.u_center_y;
     center = vec2<f32>(_e12, _e13);
@@ -61,7 +65,9 @@ fn main_1() {
     newUV = clamp(_e61, vec2(0f), vec2(1f));
     let _e67 = newUV;
     let _e68 = textureSample(tex, tex_sampler, _e67);
-    fragColor = _e68;
+    warped = _e68;
+    blend = clamp(((global.u_segments - 1.0f) * 0.06f) + (abs(global.u_rotation) * 0.18f), 0.0f, 0.28f);
+    fragColor = vec4<f32>(mix(original.xyz, warped.xyz, vec3(blend)), original.w);
     return;
 }
 

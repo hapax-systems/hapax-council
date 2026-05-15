@@ -22,11 +22,15 @@ var<uniform> global: Params;
 
 fn main_1() {
     var uv: vec2<f32>;
+    var original: vec4<f32>;
     var disp: vec4<f32>;
     var offset: vec2<f32>;
+    var warped: vec4<f32>;
+    var blend: f32;
 
     let _e10 = v_texcoord_1;
     uv = _e10;
+    original = textureSample(tex, tex_sampler, uv);
     let _e12 = uv;
     let _e13 = textureSample(tex_b, tex_b_sampler, _e12);
     disp = _e13;
@@ -36,8 +40,11 @@ fn main_1() {
     offset = ((((_e15.xy - vec2(0.5f)) * 2f) * vec2<f32>(_e22, _e23)) * 0.1f);
     let _e29 = uv;
     let _e30 = offset;
-    let _e32 = textureSample(tex, tex_sampler, (_e29 + _e30));
-    fragColor = _e32;
+    let sample_uv = clamp((_e29 + _e30), vec2(0.001f), vec2(0.999f));
+    let _e32 = textureSample(tex, tex_sampler, sample_uv);
+    warped = _e32;
+    blend = clamp((abs(global.u_strength_x) + abs(global.u_strength_y)) * 2.0f, 0.0f, 0.22f);
+    fragColor = vec4<f32>(mix(original.xyz, warped.xyz, vec3(blend)), original.w);
     return;
 }
 

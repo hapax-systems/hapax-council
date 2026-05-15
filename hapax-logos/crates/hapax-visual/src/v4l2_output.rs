@@ -30,8 +30,8 @@ pub struct V4l2Output {
 
 impl V4l2Output {
     pub fn new(width: u32, height: u32) -> Self {
-        let device = std::env::var("HAPAX_V4L2_DEVICE")
-            .unwrap_or_else(|_| DEFAULT_DEVICE.to_string());
+        let device =
+            std::env::var("HAPAX_V4L2_DEVICE").unwrap_or_else(|_| DEFAULT_DEVICE.to_string());
         let enabled = std::env::var("HAPAX_IMAGINATION_V4L2_OUTPUT")
             .map(|v| v == "1")
             .unwrap_or(false);
@@ -72,9 +72,7 @@ impl V4l2Output {
         }
 
         let path = std::ffi::CString::new(self.device_path.as_str()).unwrap();
-        let fd = unsafe {
-            libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_NONBLOCK)
-        };
+        let fd = unsafe { libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_NONBLOCK) };
 
         if fd < 0 {
             let err = std::io::Error::last_os_error();
@@ -86,14 +84,20 @@ impl V4l2Output {
         self.reopen_count += 1;
         info!(
             "v4l2: opened {} (fd={}) — NV12 {}×{} ({} bytes/frame, reopen #{})",
-            self.device_path, fd, self.width, self.height,
-            self.nv12_buf.len(), self.reopen_count
+            self.device_path,
+            fd,
+            self.width,
+            self.height,
+            self.nv12_buf.len(),
+            self.reopen_count
         );
     }
 
     fn close_device(&mut self) {
         if self.fd >= 0 {
-            unsafe { libc::close(self.fd); }
+            unsafe {
+                libc::close(self.fd);
+            }
             self.fd = -1;
         }
     }
@@ -149,15 +153,18 @@ impl V4l2Output {
                     let r = (rgba_row[col * 4] as f32
                         + rgba_row[(col + 1) * 4] as f32
                         + rgba_row_next[col * 4] as f32
-                        + rgba_row_next[(col + 1) * 4] as f32) * 0.25;
+                        + rgba_row_next[(col + 1) * 4] as f32)
+                        * 0.25;
                     let g = (rgba_row[col * 4 + 1] as f32
                         + rgba_row[(col + 1) * 4 + 1] as f32
                         + rgba_row_next[col * 4 + 1] as f32
-                        + rgba_row_next[(col + 1) * 4 + 1] as f32) * 0.25;
+                        + rgba_row_next[(col + 1) * 4 + 1] as f32)
+                        * 0.25;
                     let b = (rgba_row[col * 4 + 2] as f32
                         + rgba_row[(col + 1) * 4 + 2] as f32
                         + rgba_row_next[col * 4 + 2] as f32
-                        + rgba_row_next[(col + 1) * 4 + 2] as f32) * 0.25;
+                        + rgba_row_next[(col + 1) * 4 + 2] as f32)
+                        * 0.25;
 
                     let cb = (128.0 - 0.148 * r - 0.291 * g + 0.439 * b).clamp(16.0, 240.0) as u8;
                     let cr = (128.0 + 0.439 * r - 0.368 * g - 0.071 * b).clamp(16.0, 240.0) as u8;
@@ -181,13 +188,17 @@ impl V4l2Output {
             let err = std::io::Error::last_os_error();
             let errno = err.raw_os_error().unwrap_or(0);
 
-            if errno == libc::EAGAIN || errno == libc::EIO
-                || errno == libc::ENODEV || errno == libc::ENXIO
+            if errno == libc::EAGAIN
+                || errno == libc::EIO
+                || errno == libc::ENODEV
+                || errno == libc::ENXIO
             {
                 self.error_count += 1;
                 if self.error_count % 100 == 1 {
-                    warn!("v4l2: write error #{} (errno={}), closing for reopen",
-                        self.error_count, errno);
+                    warn!(
+                        "v4l2: write error #{} (errno={}), closing for reopen",
+                        self.error_count, errno
+                    );
                 }
                 self.close_device();
                 return false;
@@ -203,8 +214,10 @@ impl V4l2Output {
         self.last_write = Instant::now();
 
         if self.write_count % 900 == 0 {
-            info!("v4l2: {} frames written to {} (errors: {}, reopens: {})",
-                self.write_count, self.device_path, self.error_count, self.reopen_count);
+            info!(
+                "v4l2: {} frames written to {} (errors: {}, reopens: {})",
+                self.write_count, self.device_path, self.error_count, self.reopen_count
+            );
         }
 
         true

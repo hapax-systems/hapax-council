@@ -8,7 +8,7 @@ use std::time::Instant;
 
 const SOURCES_DIR: &str = "/dev/shm/hapax-imagination/sources";
 const DEFAULT_TTL_MS: u64 = 5000;
-const MAX_SOURCES: usize = 16;
+const MAX_SOURCES: usize = 64;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SourceManifest {
@@ -36,13 +36,39 @@ pub struct SourceManifest {
     pub tags: Vec<String>,
 }
 
-fn default_width() -> u32 { 1920 }
-fn default_height() -> u32 { 1080 }
-fn default_font_weight() -> u32 { 400 }
-fn default_layer() -> u32 { 1 }
-fn default_blend_mode() -> String { "screen".to_string() }
-fn default_opacity() -> f32 { 1.0 }
-fn default_ttl() -> u64 { DEFAULT_TTL_MS }
+fn default_width() -> u32 {
+    1920
+}
+fn default_height() -> u32 {
+    1080
+}
+fn default_font_weight() -> u32 {
+    400
+}
+fn default_layer() -> u32 {
+    1
+}
+fn default_blend_mode() -> String {
+    "screen".to_string()
+}
+fn default_opacity() -> f32 {
+    1.0
+}
+fn default_ttl() -> u64 {
+    DEFAULT_TTL_MS
+}
+
+fn expected_rgba_size(width: u32, height: u32) -> Option<usize> {
+    width
+        .checked_mul(height)?
+        .checked_mul(4)
+        .map(|bytes| bytes as usize)
+}
+
+fn rgba_frame_matches_manifest(pixels: &[u8], manifest: &SourceManifest) -> bool {
+    expected_rgba_size(manifest.width, manifest.height)
+        .is_some_and(|expected_size| pixels.len() == expected_size)
+}
 
 #[derive(Debug)]
 struct ContentSource {
@@ -77,10 +103,17 @@ impl ContentSourceManager {
         }
     }
 
-    fn create_placeholder(device: &wgpu::Device, queue: &wgpu::Queue) -> (wgpu::Texture, wgpu::TextureView) {
+    fn create_placeholder(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("content_source_placeholder"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -90,12 +123,22 @@ impl ContentSourceManager {
         });
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &texture, mip_level: 0,
-                origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All,
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
             },
             &[0u8, 0, 0, 0],
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) },
-            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
         );
         let view = texture.create_view(&Default::default());
         (texture, view)
@@ -115,7 +158,9 @@ impl ContentSourceManager {
         let mut seen = Vec::new();
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_dir() { continue; }
+            if !path.is_dir() {
+                continue;
+            }
             let source_id = match path.file_name().and_then(|n| n.to_str()) {
                 Some(n) => n.to_string(),
                 None => continue,
@@ -166,7 +211,9 @@ impl ContentSourceManager {
                         // Check file age as proxy for staleness
                         if let Ok(metadata) = std::fs::metadata(&manifest_path) {
                             if let Ok(modified) = metadata.modified() {
-                                if modified.elapsed().unwrap_or_default().as_millis() > manifest.ttl_ms as u128 {
+                                if modified.elapsed().unwrap_or_default().as_millis()
+                                    > manifest.ttl_ms as u128
+                                {
                                     let dir = self.sources_dir.join(id);
                                     let _ = std::fs::remove_dir_all(&dir);
                                 }
@@ -191,50 +238,67 @@ impl ContentSourceManager {
         manifest: SourceManifest,
         frame_path: &Path,
     ) {
-        let expected_size = (manifest.width * manifest.height * 4) as u64;
-        let metadata = match std::fs::metadata(frame_path) {
-            Ok(m) => m,
-            Err(_) => return,
-        };
-        if metadata.len() != expected_size { return; }
-
         let pixels = match std::fs::read(frame_path) {
             Ok(p) => p,
             Err(_) => return,
         };
+        if !rgba_frame_matches_manifest(&pixels, &manifest) {
+            return;
+        }
 
         let target_opacity = manifest.opacity;
 
         if let Some(source) = self.sources.get_mut(source_id) {
-            if source.manifest.width != manifest.width || source.manifest.height != manifest.height {
-                let (tex, view) = Self::create_source_texture(device, manifest.width, manifest.height, source_id);
+            if source.manifest.width != manifest.width || source.manifest.height != manifest.height
+            {
+                let (tex, view) =
+                    Self::create_source_texture(device, manifest.width, manifest.height, source_id);
                 source.texture = tex;
                 source.view = view;
             }
-            Self::upload_rgba(queue, &source.texture, &pixels, manifest.width, manifest.height);
+            Self::upload_rgba(
+                queue,
+                &source.texture,
+                &pixels,
+                manifest.width,
+                manifest.height,
+            );
             source.manifest = manifest;
             source.target_opacity = target_opacity;
             source.last_refresh = Instant::now();
             source.frame_path = frame_path.to_path_buf();
         } else {
-            let (texture, view) = Self::create_source_texture(device, manifest.width, manifest.height, source_id);
+            let (texture, view) =
+                Self::create_source_texture(device, manifest.width, manifest.height, source_id);
             Self::upload_rgba(queue, &texture, &pixels, manifest.width, manifest.height);
-            self.sources.insert(source_id.to_string(), ContentSource {
-                manifest,
-                texture,
-                view,
-                current_opacity: 0.0,
-                target_opacity,
-                last_refresh: Instant::now(),
-                frame_path: frame_path.to_path_buf(),
-            });
+            self.sources.insert(
+                source_id.to_string(),
+                ContentSource {
+                    manifest,
+                    texture,
+                    view,
+                    current_opacity: 0.0,
+                    target_opacity,
+                    last_refresh: Instant::now(),
+                    frame_path: frame_path.to_path_buf(),
+                },
+            );
         }
     }
 
-    fn create_source_texture(device: &wgpu::Device, width: u32, height: u32, label: &str) -> (wgpu::Texture, wgpu::TextureView) {
+    fn create_source_texture(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        label: &str,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -246,11 +310,19 @@ impl ContentSourceManager {
         (texture, view)
     }
 
-    fn upload_rgba(queue: &wgpu::Queue, texture: &wgpu::Texture, pixels: &[u8], width: u32, height: u32) {
+    fn upload_rgba(
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+    ) {
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture, mip_level: 0,
-                origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All,
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
             },
             pixels,
             wgpu::TexelCopyBufferLayout {
@@ -258,7 +330,11 @@ impl ContentSourceManager {
                 bytes_per_row: Some(4 * width),
                 rows_per_image: Some(height),
             },
-            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
         );
     }
 
@@ -276,12 +352,17 @@ impl ContentSourceManager {
     }
 
     pub fn active_sources(&self) -> Vec<(&str, &wgpu::TextureView, f32)> {
-        let mut result: Vec<_> = self.sources.iter()
+        let mut result: Vec<_> = self
+            .sources
+            .iter()
             .filter(|(_, s)| s.current_opacity > 0.001)
             .map(|(id, s)| (id.as_str(), &s.view, s.current_opacity))
             .collect();
         result.sort_by_key(|(id, _, _)| {
-            self.sources.get(*id).map(|s| s.manifest.z_order).unwrap_or(0)
+            self.sources
+                .get(*id)
+                .map(|s| s.manifest.z_order)
+                .unwrap_or(0)
         });
         result
     }
@@ -294,7 +375,9 @@ impl ContentSourceManager {
     /// Returns (source_id, current_opacity, z_order, width, height) for each
     /// active source. The scene builder uses this to position textured quads.
     pub fn active_source_info(&self) -> Vec<(&str, f32, i32, u32, u32)> {
-        let mut result: Vec<_> = self.sources.iter()
+        let mut result: Vec<_> = self
+            .sources
+            .iter()
             .filter(|(_, s)| s.current_opacity > 0.001)
             .map(|(id, s)| {
                 (
@@ -338,10 +421,10 @@ impl ContentSourceManager {
     /// sources. Returns the placeholder view when no source matches —
     /// callers never see cross-family bleed.
     pub fn slot_view_for_family(&self, index: usize, family: &str) -> &wgpu::TextureView {
-        let mut sorted: Vec<&ContentSource> = self.sources.iter()
-            .filter(|(id, s)| {
-                s.current_opacity > 0.001 && Self::classify_family(id) == family
-            })
+        let mut sorted: Vec<&ContentSource> = self
+            .sources
+            .iter()
+            .filter(|(id, s)| s.current_opacity > 0.001 && Self::classify_family(id) == family)
             .map(|(_, s)| s)
             .collect();
         sorted.sort_by_key(|s| s.manifest.z_order);
@@ -356,10 +439,10 @@ impl ContentSourceManager {
     /// `slot_view_for_family` so a pass's slot uniforms reflect the
     /// same source set as its bound textures.
     pub fn slot_opacities_for_family(&self, family: &str) -> [f32; 4] {
-        let mut sorted: Vec<&ContentSource> = self.sources.iter()
-            .filter(|(id, s)| {
-                s.current_opacity > 0.001 && Self::classify_family(id) == family
-            })
+        let mut sorted: Vec<&ContentSource> = self
+            .sources
+            .iter()
+            .filter(|(id, s)| s.current_opacity > 0.001 && Self::classify_family(id) == family)
             .map(|(_, s)| s)
             .collect();
         sorted.sort_by_key(|s| s.manifest.z_order);
@@ -380,7 +463,9 @@ impl ContentSourceManager {
 
     /// Get texture view for a content slot (maps active sources to slot indices by z_order).
     pub fn slot_view(&self, index: usize) -> &wgpu::TextureView {
-        let mut sorted: Vec<&ContentSource> = self.sources.values()
+        let mut sorted: Vec<&ContentSource> = self
+            .sources
+            .values()
             .filter(|s| s.current_opacity > 0.001)
             .collect();
         sorted.sort_by_key(|s| s.manifest.z_order);
@@ -393,7 +478,9 @@ impl ContentSourceManager {
 
     /// Get opacities for up to 4 content slots.
     pub fn slot_opacities(&self) -> [f32; 4] {
-        let mut sorted: Vec<&ContentSource> = self.sources.values()
+        let mut sorted: Vec<&ContentSource> = self
+            .sources
+            .values()
             .filter(|s| s.current_opacity > 0.001)
             .collect();
         sorted.sort_by_key(|s| s.manifest.z_order);
@@ -407,19 +494,58 @@ impl ContentSourceManager {
 
 #[cfg(test)]
 mod family_classification_tests {
-    use super::ContentSourceManager;
+    use super::{
+        expected_rgba_size, rgba_frame_matches_manifest, ContentSourceManager, SourceManifest,
+    };
+
+    fn manifest(width: u32, height: u32) -> SourceManifest {
+        SourceManifest {
+            source_id: "test-source".to_string(),
+            content_type: "rgba".to_string(),
+            width,
+            height,
+            text: String::new(),
+            font_weight: 400,
+            layer: 1,
+            blend_mode: "screen".to_string(),
+            opacity: 1.0,
+            z_order: 0,
+            ttl_ms: 0,
+            tags: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn expected_rgba_size_rejects_overflow() {
+        assert_eq!(expected_rgba_size(640, 360), Some(921_600));
+        assert_eq!(expected_rgba_size(u32::MAX, u32::MAX), None);
+    }
+
+    #[test]
+    fn rgba_frame_must_match_manifest_after_read() {
+        let manifest = manifest(4, 3);
+        assert!(rgba_frame_matches_manifest(&vec![0; 48], &manifest));
+        assert!(!rgba_frame_matches_manifest(&vec![0; 47], &manifest));
+        assert!(!rgba_frame_matches_manifest(&vec![0; 49], &manifest));
+    }
 
     /// yt-content-reverie-sierpinski-separation 2026-04-21:
     /// `yt-slot-*` directories MUST classify as `youtube_pip` so the
     /// Rust runtime routes YT frames into Sierpinski only.
     #[test]
     fn yt_slot_zero_classifies_as_youtube_pip() {
-        assert_eq!(ContentSourceManager::classify_family("yt-slot-0"), "youtube_pip");
+        assert_eq!(
+            ContentSourceManager::classify_family("yt-slot-0"),
+            "youtube_pip"
+        );
     }
 
     #[test]
     fn yt_slot_double_digit_classifies_as_youtube_pip() {
-        assert_eq!(ContentSourceManager::classify_family("yt-slot-15"), "youtube_pip");
+        assert_eq!(
+            ContentSourceManager::classify_family("yt-slot-15"),
+            "youtube_pip"
+        );
     }
 
     /// `content-*` directories (narrative_text, episodic_recall,

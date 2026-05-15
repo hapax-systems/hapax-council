@@ -296,6 +296,7 @@ impl Renderer {
             // Write 3D proof frame to shm every 30 frames (~1 Hz)
             if self.frame_count.is_multiple_of(30) {
                 self.write_proof_frame(&scene);
+                log::info!("3D scene: {} active sources, {} total loaded", self.content_source_mgr.active_source_info().len(), self.content_source_mgr.source_count());
             }
             self.scene_renderer = Some(scene);
         }

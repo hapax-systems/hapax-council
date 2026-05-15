@@ -344,13 +344,21 @@ mod tests {
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .filter(|n| n.ends_with(".tmp"))
             .collect();
-        assert!(leftovers.is_empty(), "tmp files should be renamed: {:?}", leftovers);
+        assert!(
+            leftovers.is_empty(),
+            "tmp files should be renamed: {:?}",
+            leftovers
+        );
     }
 
     #[test]
     fn write_side_output_creates_parent_dir() {
         let dir = tempdir().unwrap();
-        let nested = dir.path().join("nested").join("deeper").join("reverie.rgba");
+        let nested = dir
+            .path()
+            .join("nested")
+            .join("deeper")
+            .join("reverie.rgba");
         let pixels = vec![0u8; 16];
 
         write_side_output(&nested, &pixels, 2, 2, 8, 7).unwrap();

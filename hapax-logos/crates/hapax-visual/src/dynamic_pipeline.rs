@@ -3,8 +3,8 @@
 //! Replaces hardcoded techniques + compositor + postprocess with a generic pipeline
 //! that reads execution plans from `/dev/shm/hapax-imagination/pipeline/plan.json`.
 
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -15,6 +15,7 @@ use serde::Deserialize;
 use wgpu::util::DeviceExt;
 
 use crate::content_sources::ContentSourceManager;
+use crate::effect_drift::SlotDriftEngine;
 use crate::output::ShmOutput;
 use crate::state::StateReader;
 use crate::transient_pool::TransientTexturePool;
@@ -41,6 +42,7 @@ const UNIFORMS_JSON: &str = "/dev/shm/hapax-imagination/uniforms.json";
 const SHARED_UNIFORMS_WGSL: &str = include_str!("shaders/uniforms.wgsl");
 const SHARED_VERTEX_WGSL: &str = include_str!("shaders/fullscreen_quad.wgsl");
 const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+const EFFECT_DRIFT_STATE_FILE: &str = "/dev/shm/hapax-visual/effect-drift-state.json";
 
 // --- Plan JSON schema ---
 
@@ -203,6 +205,7 @@ struct DynamicPass {
     params_buffer: Option<wgpu::Buffer>,
     params_bind_group: Option<wgpu::BindGroup>,
     param_order: Vec<String>,
+    neutral_params: Vec<f32>,
     current_params: Vec<f32>,
     inputs: Vec<String>,
     output: String,
@@ -266,10 +269,7 @@ fn compute_manifest_hash(plan_data: &str) -> String {
 ///
 /// This function is pure (no `self`, no `&mut`, no `&wgpu::Device`) so it
 /// is unit-testable without a GPU adapter.
-fn validate_plan_shaders(
-    plan_dir: &Path,
-    active_passes: &[(String, PlanPass)],
-) -> Vec<String> {
+fn validate_plan_shaders(plan_dir: &Path, active_passes: &[(String, PlanPass)]) -> Vec<String> {
     let mut failures: Vec<String> = Vec::new();
     for (target_name, plan_pass) in active_passes {
         let shader_path = plan_dir.join(&plan_pass.shader);
@@ -412,6 +412,7 @@ pub struct DynamicPipeline {
     width: u32,
     height: u32,
     frame_count: u64,
+    drift_engine: Option<SlotDriftEngine>,
     /// Phase 3 3D: true when an external texture was injected as @live
     /// this frame; suppresses the procedural noise fallback.
     live_texture_overridden: bool,
@@ -436,7 +437,13 @@ pub struct DynamicPipeline {
 }
 
 impl DynamicPipeline {
-    pub fn new(device: &wgpu::Device, _queue: &wgpu::Queue, width: u32, height: u32, surface_format: wgpu::TextureFormat) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        surface_format: wgpu::TextureFormat,
+    ) -> Self {
         let uniform_buffer = UniformBuffer::new(device);
         let shm_output = ShmOutput::new(device, width, height);
 
@@ -483,12 +490,11 @@ impl DynamicPipeline {
             source: wgpu::ShaderSource::Wgsl(BLIT_WGSL.into()),
         });
 
-        let blit_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("blit pipeline layout"),
-                bind_group_layouts: &[&blit_bind_group_layout],
-                push_constant_ranges: &[],
-            });
+        let blit_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("blit pipeline layout"),
+            bind_group_layouts: &[&blit_bind_group_layout],
+            push_constant_ranges: &[],
+        });
 
         let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("blit pipeline"),
@@ -523,15 +529,14 @@ impl DynamicPipeline {
         let pending = Arc::new(AtomicBool::new(false));
         let pending_clone = pending.clone();
 
-        let mut watcher =
-            notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-                if let Ok(event) = res {
-                    if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
-                        pending_clone.store(true, Ordering::Relaxed);
-                    }
+        let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+            if let Ok(event) = res {
+                if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                    pending_clone.store(true, Ordering::Relaxed);
                 }
-            })
-            .expect("failed to create file watcher");
+            }
+        })
+        .expect("failed to create file watcher");
 
         // Watch plan directory (may not exist yet)
         let plan_dir = PathBuf::from(PLAN_DIR);
@@ -592,6 +597,10 @@ impl DynamicPipeline {
             width,
             height,
             frame_count: 0,
+            drift_engine: Some(SlotDriftEngine::new(
+                "/dev/shm/hapax-imagination/pipeline/plan.json",
+                42,
+            )),
             live_texture_overridden: false,
             shader_rollback_total: Arc::new(AtomicU64::new(0)),
         };
@@ -749,13 +758,17 @@ impl DynamicPipeline {
             if plan_pass.pass_type == "compute" {
                 // Compute pass
                 let compute_source = format!("{}\n{}", SHARED_UNIFORMS_WGSL, fragment_source);
-                let compute_module =
-                    device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                        label: Some(&plan_pass.node_id),
-                        source: wgpu::ShaderSource::Wgsl(compute_source.into()),
-                    });
+                let compute_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some(&plan_pass.node_id),
+                    source: wgpu::ShaderSource::Wgsl(compute_source.into()),
+                });
 
-                let input_bgl = Self::get_or_create_input_layout(device, input_count, &plan_pass.inputs, &mut input_layouts);
+                let input_bgl = Self::get_or_create_input_layout(
+                    device,
+                    input_count,
+                    &plan_pass.inputs,
+                    &mut input_layouts,
+                );
                 let storage_bgl = Self::create_storage_texture_layout(device);
 
                 let pipeline_layout =
@@ -788,12 +801,32 @@ impl DynamicPipeline {
                     params_buffer: None,
                     params_bind_group: None,
                     param_order: plan_pass.param_order.clone(),
-                    current_params: {
-                        let mut v: Vec<f32> = plan_pass.param_order.iter()
+                    neutral_params: {
+                        let mut v: Vec<f32> = plan_pass
+                            .param_order
+                            .iter()
                             .map(|name| plan_pass.uniforms.get(name).copied().unwrap_or(0.0) as f32)
                             .collect();
-                        while v.len() < 4 { v.push(0.0); }
-                        while !(v.len() * 4).is_multiple_of(16) { v.push(0.0); }
+                        while v.len() < 4 {
+                            v.push(0.0);
+                        }
+                        while !(v.len() * 4).is_multiple_of(16) {
+                            v.push(0.0);
+                        }
+                        v
+                    },
+                    current_params: {
+                        let mut v: Vec<f32> = plan_pass
+                            .param_order
+                            .iter()
+                            .map(|name| plan_pass.uniforms.get(name).copied().unwrap_or(0.0) as f32)
+                            .collect();
+                        while v.len() < 4 {
+                            v.push(0.0);
+                        }
+                        while !(v.len() * 4).is_multiple_of(16) {
+                            v.push(0.0);
+                        }
                         v
                     },
                     inputs: plan_pass.inputs.clone(),
@@ -807,13 +840,17 @@ impl DynamicPipeline {
             } else {
                 // Render pass
                 let combined_source = format!("{}\n{}", SHARED_UNIFORMS_WGSL, fragment_source);
-                let fragment_module =
-                    device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                        label: Some(&plan_pass.node_id),
-                        source: wgpu::ShaderSource::Wgsl(combined_source.into()),
-                    });
+                let fragment_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some(&plan_pass.node_id),
+                    source: wgpu::ShaderSource::Wgsl(combined_source.into()),
+                });
 
-                let input_bgl = Self::get_or_create_input_layout(device, input_count, &plan_pass.inputs, &mut input_layouts);
+                let input_bgl = Self::get_or_create_input_layout(
+                    device,
+                    input_count,
+                    &plan_pass.inputs,
+                    &mut input_layouts,
+                );
 
                 // Conditionally include group 2 (per-node params) only if shader has scalar uniforms
                 let has_params = !plan_pass.param_order.is_empty();
@@ -830,10 +867,7 @@ impl DynamicPipeline {
                 } else {
                     device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                         label: Some(&format!("{} layout", plan_pass.node_id)),
-                        bind_group_layouts: &[
-                            &self.uniform_buffer.bind_group_layout,
-                            &input_bgl,
-                        ],
+                        bind_group_layouts: &[&self.uniform_buffer.bind_group_layout, &input_bgl],
                         push_constant_ranges: &[],
                     })
                 };
@@ -874,8 +908,12 @@ impl DynamicPipeline {
                         let val = plan_pass.uniforms.get(name).copied().unwrap_or(0.0) as f32;
                         data.push(val);
                     }
-                    while data.len() < 4 { data.push(0.0); }
-                    while !(data.len() * 4).is_multiple_of(16) { data.push(0.0); }
+                    while data.len() < 4 {
+                        data.push(0.0);
+                    }
+                    while !(data.len() * 4).is_multiple_of(16) {
+                        data.push(0.0);
+                    }
 
                     let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some(&format!("{} params", plan_pass.node_id)),
@@ -904,12 +942,32 @@ impl DynamicPipeline {
                     params_buffer: pbuf,
                     params_bind_group: pbg,
                     param_order: plan_pass.param_order.clone(),
-                    current_params: {
-                        let mut v: Vec<f32> = plan_pass.param_order.iter()
+                    neutral_params: {
+                        let mut v: Vec<f32> = plan_pass
+                            .param_order
+                            .iter()
                             .map(|name| plan_pass.uniforms.get(name).copied().unwrap_or(0.0) as f32)
                             .collect();
-                        while v.len() < 4 { v.push(0.0); }
-                        while !(v.len() * 4).is_multiple_of(16) { v.push(0.0); }
+                        while v.len() < 4 {
+                            v.push(0.0);
+                        }
+                        while !(v.len() * 4).is_multiple_of(16) {
+                            v.push(0.0);
+                        }
+                        v
+                    },
+                    current_params: {
+                        let mut v: Vec<f32> = plan_pass
+                            .param_order
+                            .iter()
+                            .map(|name| plan_pass.uniforms.get(name).copied().unwrap_or(0.0) as f32)
+                            .collect();
+                        while v.len() < 4 {
+                            v.push(0.0);
+                        }
+                        while !(v.len() * 4).is_multiple_of(16) {
+                            v.push(0.0);
+                        }
                         v
                     },
                     inputs: plan_pass.inputs.clone(),
@@ -1027,8 +1085,26 @@ impl DynamicPipeline {
                 }
 
                 // Apply per-node param overrides from uniforms.json
+                // Skip passes managed by drift engine — it has full authority
+                let drift_managed: std::collections::HashSet<&str> = if self.drift_engine.is_some()
+                {
+                    let mut set: std::collections::HashSet<&str> = crate::effect_drift::SHADERS
+                        .iter()
+                        .map(|s| s.name)
+                        .collect();
+                    set.insert("fb"); // feedback bookend — drift engine owns
+                    set.insert("post"); // postprocess bookend — drift engine owns
+                    set.insert("colorgrade"); // colorgrade — drift engine owns
+                    set
+                } else {
+                    std::collections::HashSet::new()
+                };
                 for pass in &mut self.passes {
                     if pass.params_buffer.is_none() || pass.param_order.is_empty() {
+                        continue;
+                    }
+                    // Drift engine owns these passes — skip uniforms.json overrides
+                    if drift_managed.contains(pass.node_id.as_str()) {
                         continue;
                     }
                     let mut updated = false;
@@ -1054,6 +1130,39 @@ impl DynamicPipeline {
             }
         }
 
+        // ── Drift engine tick ──────────────────────────────────────
+        if let Some(ref mut drift) = self.drift_engine {
+            let dt = 1.0 / 30.0; // approximate frame time
+            let drift_uniforms = drift.tick(time, dt);
+            if !drift_uniforms.is_empty() {
+                // Apply drift uniforms to passes
+                for pass in &mut self.passes {
+                    if pass.params_buffer.is_none() || pass.param_order.is_empty() {
+                        continue;
+                    }
+                    let mut updated = false;
+                    for (i, name) in pass.param_order.iter().enumerate() {
+                        if i >= pass.current_params.len() {
+                            break;
+                        }
+                        let key = format!("{}.{}", pass.node_id, name);
+                        if let Some((_, val)) = drift_uniforms.iter().find(|(k, _)| k == &key) {
+                            if (pass.current_params[i] - val).abs() > 0.0001 {
+                                pass.current_params[i] = *val;
+                                updated = true;
+                            }
+                        }
+                    }
+                    if updated {
+                        if let Some(ref buf) = pass.params_buffer {
+                            queue.write_buffer(buf, 0, bytemuck::cast_slice(&pass.current_params));
+                        }
+                    }
+                }
+            }
+        }
+        self.publish_effect_state();
+
         self.uniform_buffer.update(queue, &uniform_data);
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1069,7 +1178,12 @@ impl DynamicPipeline {
                         view: surface_view,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.0,
+                                g: 0.0,
+                                b: 0.0,
+                                a: 0.0,
+                            }),
                             store: wgpu::StoreOp::Store,
                         },
                     })],
@@ -1087,7 +1201,10 @@ impl DynamicPipeline {
         // pipeline produces near-black output.
         // Phase 3 3D: skip noise if set_live_texture_override() was called
         // this frame — the 3D scene output is already in @live.
-        let needs_live = self.passes.iter().any(|p| p.inputs.iter().any(|i| i == "@live"));
+        let needs_live = self
+            .passes
+            .iter()
+            .any(|p| p.inputs.iter().any(|i| i == "@live"));
         if needs_live && !self.live_texture_overridden {
             self.ensure_texture(device, "@live");
             if let Some(live_tex) = self.intermediate("@live") {
@@ -1139,7 +1256,11 @@ impl DynamicPipeline {
                         // to produce rich, non-diagonal noise patterns
                         let n1 = fbm(u * 3.0 + t * 0.08 + 17.3, v * 2.5 - t * 0.05 + 41.7, 5);
                         let n2 = fbm(v * 2.0 + t * 0.03 + 89.1, u * 3.5 - t * 0.07 + 63.2, 4);
-                        let n3 = fbm(u * 1.5 + v * 1.5 + t * 0.04 + 137.0, u * 1.0 - v * 2.0 + t * 0.02 + 211.0, 4);
+                        let n3 = fbm(
+                            u * 1.5 + v * 1.5 + t * 0.04 + 137.0,
+                            u * 1.0 - v * 2.0 + t * 0.02 + 211.0,
+                            4,
+                        );
                         let r = (n1 * 0.8 + n2 * 0.4 + 0.3).clamp(0.0, 1.0);
                         let g = (n2 * 0.7 + n3 * 0.3 + 0.25).clamp(0.0, 1.0);
                         let b_val = (n3 * 0.6 + n1 * 0.3 + 0.3).clamp(0.0, 1.0);
@@ -1173,6 +1294,24 @@ impl DynamicPipeline {
         }
 
         // Execute each pass
+        if self.frame_count < 5 {
+            log::warn!(
+                "CHAIN DIAGNOSTIC: {} passes, intermediates: {:?}",
+                self.passes.len(),
+                self.intermediate_names().collect::<Vec<_>>()
+            );
+            for (i, p) in self.passes.iter().enumerate() {
+                log::warn!(
+                    "  pass[{}] node_id={} inputs={:?} output={} has_pipeline={} has_params={}",
+                    i,
+                    p.node_id,
+                    p.inputs,
+                    p.output,
+                    p.render_pipeline.is_some(),
+                    p.params_buffer.is_some()
+                );
+            }
+        }
         for pass in &self.passes {
             // Backend dispatch (Phase 3a/3b). Today wgsl_render falls through
             // to the existing render/compute path below; cairo content is
@@ -1231,7 +1370,16 @@ impl DynamicPipeline {
                 // Resolve output texture view
                 let output_view = match self.intermediate(&pass.output) {
                     Some(tex) => &tex.view,
-                    None => continue,
+                    None => {
+                        if self.frame_count < 10 {
+                            log::warn!(
+                                "CHAIN SKIP: pass '{}' output '{}' NOT in intermediates",
+                                pass.node_id,
+                                pass.output
+                            );
+                        }
+                        continue;
+                    }
                 };
 
                 {
@@ -1241,7 +1389,12 @@ impl DynamicPipeline {
                             view: output_view,
                             resolve_target: None,
                             ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                load: wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: 0.0,
+                                    g: 0.0,
+                                    b: 0.0,
+                                    a: 0.0,
+                                }),
                                 store: wgpu::StoreOp::Store,
                             },
                         })],
@@ -1286,18 +1439,16 @@ impl DynamicPipeline {
                     &pass.node_id,
                     content_sources,
                 );
-                let storage_bind_group =
-                    self.create_storage_bind_group(device, &pass.output);
+                let storage_bind_group = self.create_storage_bind_group(device, &pass.output);
 
                 let workgroups_x = self.width.div_ceil(8);
                 let workgroups_y = self.height.div_ceil(8);
 
                 for _ in 0..pass.steps_per_frame {
-                    let mut cpass =
-                        encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                            label: Some(&pass.node_id),
-                            timestamp_writes: None,
-                        });
+                    let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some(&pass.node_id),
+                        timestamp_writes: None,
+                    });
 
                     cpass.set_pipeline(compute_pipeline);
                     cpass.set_bind_group(0, &self.uniform_buffer.bind_group, &[]);
@@ -1338,7 +1489,12 @@ impl DynamicPipeline {
                     view: surface_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 0.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -1419,6 +1575,70 @@ impl DynamicPipeline {
         }
     }
 
+    fn publish_effect_state(&self) {
+        if !self.frame_count.is_multiple_of(30) {
+            return;
+        }
+
+        let mut non_neutral_pass_count = 0usize;
+        let passes: Vec<serde_json::Value> = self
+            .passes
+            .iter()
+            .map(|pass| {
+                let mut max_delta = 0.0f32;
+                let params: Vec<serde_json::Value> = pass
+                    .param_order
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, name)| {
+                        let value = pass.current_params.get(idx).copied().unwrap_or(0.0);
+                        let neutral = pass.neutral_params.get(idx).copied().unwrap_or(0.0);
+                        let delta = (value - neutral).abs();
+                        max_delta = max_delta.max(delta);
+                        serde_json::json!({
+                            "name": name,
+                            "value": value,
+                            "neutral": neutral,
+                            "delta": delta,
+                        })
+                    })
+                    .collect();
+                if max_delta > 0.0001 {
+                    non_neutral_pass_count += 1;
+                }
+                serde_json::json!({
+                    "node_id": pass.node_id,
+                    "inputs": pass.inputs,
+                    "output": pass.output,
+                    "max_delta": max_delta,
+                    "non_neutral": max_delta > 0.0001,
+                    "params": params,
+                })
+            })
+            .collect();
+
+        let timestamp_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let payload = serde_json::json!({
+            "timestamp_unix_ms": timestamp_unix_ms,
+            "frame_count": self.frame_count,
+            "non_neutral_pass_count": non_neutral_pass_count,
+            "pass_count": self.passes.len(),
+            "passes": passes,
+        });
+
+        let path = Path::new(EFFECT_DRIFT_STATE_FILE);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, serde_json::to_vec_pretty(&payload).unwrap_or_default()).is_ok() {
+            let _ = std::fs::rename(tmp, path);
+        }
+    }
+
     /// Phase 3 3D compositor: inject an external texture as the `@live`
     /// pseudo-texture. When set, the noise-generator fallback in
     /// `render()` is skipped and the provided texture view is used
@@ -1440,11 +1660,9 @@ impl DynamicPipeline {
                 depth_or_array_layers: 1,
             };
             // GPU-side copy from the 3D scene output into @live
-            let mut encoder = device.create_command_encoder(
-                &wgpu::CommandEncoderDescriptor {
-                    label: Some("inject @live from 3D scene"),
-                },
-            );
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("inject @live from 3D scene"),
+            });
             encoder.copy_texture_to_texture(
                 source_texture.as_image_copy(),
                 live_tex.texture.as_image_copy(),
@@ -1591,12 +1809,12 @@ impl DynamicPipeline {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: TEXTURE_FORMAT,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_DST,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
-        self.temporal_textures.insert(node_id.to_string(), PoolTexture { texture, view });
+        self.temporal_textures
+            .insert(node_id.to_string(), PoolTexture { texture, view });
     }
 
     fn get_or_create_input_layout(
@@ -1607,7 +1825,9 @@ impl DynamicPipeline {
     ) -> wgpu::BindGroupLayout {
         let has_content_slots = input_names.iter().any(|n| n.starts_with("content_slot_"));
         if !has_content_slots {
-            layouts.entry(input_count).or_insert_with(|| Self::create_input_layout(device, input_count));
+            layouts
+                .entry(input_count)
+                .or_insert_with(|| Self::create_input_layout(device, input_count));
         }
         // Always create a fresh one to return — wgpu layouts are not Clone,
         // but two layouts created with the same descriptor are compatible.
@@ -1650,7 +1870,10 @@ impl DynamicPipeline {
                     count: None,
                 },
             ];
-            let slot_count = input_names.iter().filter(|n| n.starts_with("content_slot_")).count();
+            let slot_count = input_names
+                .iter()
+                .filter(|n| n.starts_with("content_slot_"))
+                .count();
             for i in 0..slot_count {
                 entries.push(wgpu::BindGroupLayoutEntry {
                     binding: (2 + i) as u32,
@@ -1725,8 +1948,8 @@ impl DynamicPipeline {
         let input_count = inputs.len();
         // Prefer the explicit declarative flag from the plan; fall back to
         // name-based detection for backward compatibility with older plans.
-        let has_content_slots = requires_content_slots
-            || inputs.iter().any(|n| n.starts_with("content_slot_"));
+        let has_content_slots =
+            requires_content_slots || inputs.iter().any(|n| n.starts_with("content_slot_"));
         // Per yt-content-reverie-sierpinski-separation (2026-04-21):
         // ``slot_family`` is forwarded from the plan and used below to
         // filter ``ContentSourceManager`` sources before binding. The
@@ -1755,8 +1978,14 @@ impl DynamicPipeline {
         if has_content_slots {
             // content_layer layout: binding 0=tex, 1=sampler, 2..N=bare content textures
             // First input is the pipeline texture (non-content-slot)
-            let pipeline_inputs: Vec<_> = inputs.iter().filter(|n| !n.starts_with("content_slot_")).collect();
-            let content_inputs: Vec<_> = inputs.iter().filter(|n| n.starts_with("content_slot_")).collect();
+            let pipeline_inputs: Vec<_> = inputs
+                .iter()
+                .filter(|n| !n.starts_with("content_slot_"))
+                .collect();
+            let content_inputs: Vec<_> = inputs
+                .iter()
+                .filter(|n| n.starts_with("content_slot_"))
+                .collect();
 
             // Binding 0: pipeline input texture
             let view = if let Some(name) = pipeline_inputs.first() {
@@ -1808,7 +2037,8 @@ impl DynamicPipeline {
             // ContentSourceManager's transparent placeholder, NOT a
             // cross-family fallback.
             for (i, name) in content_inputs.iter().enumerate() {
-                let idx: usize = name.strip_prefix("content_slot_")
+                let idx: usize = name
+                    .strip_prefix("content_slot_")
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(0);
                 let slot_view = content_sources
@@ -2083,7 +2313,10 @@ mod tests {
     fn namespace_already_namespaced_unchanged() {
         // Idempotent: a name that already contains ":" is left alone.
         assert_eq!(namespace_texture_name("main:final", "hud"), "main:final");
-        assert_eq!(namespace_texture_name("main:layer_3", "hud"), "main:layer_3");
+        assert_eq!(
+            namespace_texture_name("main:layer_3", "hud"),
+            "main:layer_3"
+        );
     }
 
     #[test]
@@ -2094,14 +2327,23 @@ mod tests {
         assert_eq!(namespace_texture_name("@smooth", "hud"), "@smooth");
         assert_eq!(namespace_texture_name("@hls", "main"), "@hls");
         assert_eq!(namespace_texture_name("@accum_rd", "main"), "@accum_rd");
-        assert_eq!(namespace_texture_name("@accum_feedback", "preview"), "@accum_feedback");
+        assert_eq!(
+            namespace_texture_name("@accum_feedback", "preview"),
+            "@accum_feedback"
+        );
     }
 
     #[test]
     fn namespace_content_slots_unchanged() {
         // Content slots are global, populated by ContentSourceManager.
-        assert_eq!(namespace_texture_name("content_slot_0", "main"), "content_slot_0");
-        assert_eq!(namespace_texture_name("content_slot_3", "hud"), "content_slot_3");
+        assert_eq!(
+            namespace_texture_name("content_slot_0", "main"),
+            "content_slot_0"
+        );
+        assert_eq!(
+            namespace_texture_name("content_slot_3", "hud"),
+            "content_slot_3"
+        );
     }
 
     #[test]
@@ -2322,13 +2564,20 @@ fn main(@location(0) v_texcoord: vec2<f32>) -> @location(0) vec4<f32> {
         std::fs::write(dir.path().join("ok.wgsl"), shader_src).unwrap();
         let passes = vec![("main".to_string(), make_pass("ok_node", "ok.wgsl"))];
         let failures = validate_plan_shaders(dir.path(), &passes);
-        assert!(failures.is_empty(), "expected no failures, got {:?}", failures);
+        assert!(
+            failures.is_empty(),
+            "expected no failures, got {:?}",
+            failures
+        );
     }
 
     #[test]
     fn validate_plan_shaders_fails_on_missing_file() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let passes = vec![("main".to_string(), make_pass("missing_node", "does-not-exist.wgsl"))];
+        let passes = vec![(
+            "main".to_string(),
+            make_pass("missing_node", "does-not-exist.wgsl"),
+        )];
         let failures = validate_plan_shaders(dir.path(), &passes);
         assert_eq!(failures.len(), 1);
         assert!(failures[0].contains("main/missing_node"));
@@ -2426,7 +2675,11 @@ fn main(@location(0) v_texcoord: vec2<f32>) -> @location(0) vec4<f32> {
 
         let mut uniform_data = UniformData::default();
 
-        for key in &["signal.homage_custom_8_0", "signal.homage_custom_4_4", "signal.homage_custom_99_0"] {
+        for key in &[
+            "signal.homage_custom_8_0",
+            "signal.homage_custom_4_4",
+            "signal.homage_custom_99_0",
+        ] {
             if let Some(signal) = key.strip_prefix("signal.") {
                 let v: f32 = 999.0;
                 if let Some(rest) = signal.strip_prefix("homage_custom_") {
@@ -2445,7 +2698,10 @@ fn main(@location(0) v_texcoord: vec2<f32>) -> @location(0) vec4<f32> {
         }
 
         for s in 0..8 {
-            assert_eq!(uniform_data.custom[s], [0.0; 4], "slot {s} should be untouched");
+            assert_eq!(
+                uniform_data.custom[s], [0.0; 4],
+                "slot {s} should be untouched"
+            );
         }
     }
 }

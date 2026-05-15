@@ -77,11 +77,15 @@ fn main_1() {
     var y_dot: f32;
     var k_dot: f32;
     var color: vec3<f32> = vec3(1f);
+    var dot_size: f32;
+    var halftone_strength: f32;
+    var mixed: vec3<f32>;
 
     let _e14 = v_texcoord_1;
     uv = _e14;
-    let _e16 = global.u_dot_size;
-    if (_e16 < 1f) {
+    dot_size = global.u_dot_size;
+    halftone_strength = smoothstep(0.8f, 3.4f, dot_size) * 0.45f;
+    if (halftone_strength <= 0.001f) {
         {
             let _e19 = uv;
             let _e20 = textureSample(tex, tex_sampler, _e19);
@@ -105,9 +109,8 @@ fn main_1() {
             let _e45 = ink_2;
             let _e46 = halftone_dot(_e43, 45f, _e45);
             d = _e46;
-            let _e49 = d;
-            let _e51 = vec3((1f - _e49));
-            fragColor = vec4<f32>(_e51.x, _e51.y, _e51.z, 1f);
+            mixed = mix(src.xyz, vec3((1f - d)), vec3(halftone_strength));
+            fragColor = vec4<f32>(mixed.x, mixed.y, mixed.z, src.w);
             return;
         }
     } else {
@@ -164,7 +167,8 @@ fn main_1() {
             color = (_e143 - vec3(_e144));
             let _e147 = color;
             let _e152 = clamp(_e147, vec3(0f), vec3(1f));
-            fragColor = vec4<f32>(_e152.x, _e152.y, _e152.z, 1f);
+            mixed = mix(src.xyz, _e152, vec3(halftone_strength));
+            fragColor = vec4<f32>(mixed.x, mixed.y, mixed.z, src.w);
             return;
         }
     }

@@ -102,18 +102,24 @@ fn main_1() {
     var levels: f32;
     var c: vec3<f32>;
     var lum: f32;
+    var dither_strength: f32;
+    var mixed: vec3<f32>;
 
     let _e10 = v_texcoord_1;
     let _e11 = textureSample(tex, tex_sampler, _e10);
     color = _e11;
+    levels = clamp(global.u_color_levels, 2f, 256f);
+    dither_strength = clamp(((256f - levels) / 252f), 0f, 1f) * 0.38f;
+    if (dither_strength <= 0.001f) {
+        fragColor = color;
+        return;
+    }
     let _e14 = gl_FragCoord_1;
     let _e16 = global.u_matrix_size;
-    pixPos = (_e14.xy / vec2(_e16));
+    pixPos = (_e14.xy / vec2(max(_e16, 1f)));
     let _e20 = pixPos;
     let _e21 = bayer4x4_(_e20);
     threshold = _e21;
-    let _e23 = global.u_color_levels;
-    levels = _e23;
     let _e25 = color;
     c = _e25.xyz;
     let _e28 = global.u_monochrome;
@@ -126,10 +132,8 @@ fn main_1() {
             let _e41 = threshold;
             let _e44 = levels;
             lum = (floor(((_e38 * _e39) + _e41)) / _e44);
-            let _e46 = lum;
-            let _e47 = vec3(_e46);
-            let _e48 = color;
-            fragColor = vec4<f32>(_e47.x, _e47.y, _e47.z, _e48.w);
+            mixed = mix(color.xyz, vec3(lum), vec3(dither_strength));
+            fragColor = vec4<f32>(mixed.x, mixed.y, mixed.z, color.w);
             return;
         }
     } else {
@@ -139,9 +143,8 @@ fn main_1() {
             let _e57 = threshold;
             let _e61 = levels;
             c = (floor(((_e54 * _e55) + vec3(_e57))) / vec3(_e61));
-            let _e64 = c;
-            let _e65 = color;
-            fragColor = vec4<f32>(_e64.x, _e64.y, _e64.z, _e65.w);
+            mixed = mix(color.xyz, c, vec3(dither_strength));
+            fragColor = vec4<f32>(mixed.x, mixed.y, mixed.z, color.w);
             return;
         }
     }

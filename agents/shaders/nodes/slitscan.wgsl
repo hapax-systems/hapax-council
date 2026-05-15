@@ -35,12 +35,18 @@ var<uniform> global: Params;
 
 fn main_1() {
     let uv = v_texcoord_1;
+    let current = textureSample(tex, tex_sampler, uv);
+    if (global.u_speed <= 0.0001) {
+        fragColor = current;
+        return;
+    }
+
     let dim = textureDimensions(tex);
     let w = f32(dim.x);
     let h = f32(dim.y);
 
     // The scan slit position cycles across the frame
-    let slit_pos: f32;
+    var slit_pos: f32;
     if (global.u_direction < 0.5) {
         // Horizontal: slit is a vertical line sweeping left-to-right
         slit_pos = fract(uniforms.time * global.u_speed * 0.02);
@@ -51,7 +57,7 @@ fn main_1() {
         // Columns near the slit get the current frame; far columns keep the accumulator
         if (wrap_dist < (global.u_speed * 0.02)) {
             // This column is at the slit — sample current frame
-            fragColor = textureSample(tex, tex_sampler, uv);
+            fragColor = current;
         } else {
             // This column retains its historical value from the accumulator
             fragColor = textureSample(tex_accum, tex_accum_sampler, uv);
@@ -63,7 +69,7 @@ fn main_1() {
         let dist = abs(row - slit_pos);
         let wrap_dist = min(dist, 1.0 - dist);
         if (wrap_dist < (global.u_speed * 0.02)) {
-            fragColor = textureSample(tex, tex_sampler, uv);
+            fragColor = current;
         } else {
             fragColor = textureSample(tex_accum, tex_accum_sampler, uv);
         }

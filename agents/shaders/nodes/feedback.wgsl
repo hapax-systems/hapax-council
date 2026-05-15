@@ -41,6 +41,18 @@ fn main_1() {
     var r: vec3<f32>;
 
     let _e19 = v_texcoord_1;
+    let current = textureSample(tex, tex_sampler, v_texcoord_1);
+    if (
+        global.u_decay <= 0.0001 &&
+        abs(global.u_zoom - 1.0) <= 0.0001 &&
+        abs(global.u_rotate) <= 0.0001 &&
+        abs(global.u_hue_shift) <= 0.0001 &&
+        global.u_trace_strength <= 0.0001
+    ) {
+        fragColor = current;
+        return;
+    }
+
     let _e20 = center;
     uv = (_e19 - _e20);
     let _e23 = global.u_rotate;
@@ -112,9 +124,7 @@ fn main_1() {
             acc.z = _e169.z;
         }
     }
-    let _e176 = v_texcoord_1;
-    let _e177 = textureSample(tex, tex_sampler, _e176);
-    cur = _e177;
+    cur = current;
     let _e180 = global.u_blend_mode;
     if (_e180 < 0.5f) {
         let _e183 = acc;

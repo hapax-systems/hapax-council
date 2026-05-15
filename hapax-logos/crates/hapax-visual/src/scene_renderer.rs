@@ -8,13 +8,13 @@
 //! module is compiled but never instantiated — zero runtime cost.
 
 use bytemuck::{Pod, Zeroable};
-use glam::Mat4;
-use wgpu::util::DeviceExt;
 
 use crate::content_sources::ContentSourceManager;
 use crate::scene::{build_proof_scene, build_scene_from_sources, Camera3D};
 
 const SCENE_QUAD_WGSL: &str = include_str!("shaders/scene_quad.wgsl");
+// GRID_SHADER_VERSION: 1778809245
+const SCENE_GRID_WGSL: &str = include_str!("shaders/scene_grid.wgsl");
 
 /// GPU-side uniform data for a single quad draw call.
 /// Must match the `SceneUniforms` struct in `scene_quad.wgsl`.
@@ -28,10 +28,25 @@ struct SceneUniformData {
     _pad: [f32; 3],
 }
 
+/// GPU-side uniform data for the grid.
+/// Must match `GridUniforms` in `scene_grid.wgsl`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct GridUniformData {
+    view: [[f32; 4]; 4],
+    projection: [[f32; 4]; 4],
+    time: f32,
+    _pad: [f32; 3],
+}
+
+/// Maximum number of scene nodes we can render per frame.
+const MAX_SCENE_NODES: usize = 128;
+
 pub struct SceneRenderer {
     camera: Camera3D,
     render_pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
+    uniform_align: u32,
     uniform_bind_group_layout: wgpu::BindGroupLayout,
     uniform_bind_group: wgpu::BindGroup,
     texture_bind_group_layout: wgpu::BindGroupLayout,
@@ -45,6 +60,10 @@ pub struct SceneRenderer {
     placeholder_view: wgpu::TextureView,
     width: u32,
     height: u32,
+    // Grid rendering
+    grid_pipeline: wgpu::RenderPipeline,
+    grid_uniform_buffer: wgpu::Buffer,
+    grid_uniform_bind_group: wgpu::BindGroup,
 }
 
 impl SceneRenderer {
@@ -52,19 +71,17 @@ impl SceneRenderer {
         let camera = Camera3D::new(width, height);
 
         // Uniform buffer (per-quad, updated each draw call)
-        let uniform_data = SceneUniformData {
-            model: Mat4::IDENTITY.to_cols_array_2d(),
-            view: camera.view_matrix().to_cols_array_2d(),
-            projection: camera.projection_matrix().to_cols_array_2d(),
-            opacity: 1.0,
-            _pad: [0.0; 3],
-        };
-
-        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let min_align = device.limits().min_uniform_buffer_offset_alignment as usize;
+        let uniform_stride =
+            ((std::mem::size_of::<SceneUniformData>() + min_align - 1) / min_align) * min_align;
+        let total_buffer_size = uniform_stride * MAX_SCENE_NODES;
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("scene uniform buffer"),
-            contents: bytemuck::bytes_of(&uniform_data),
+            size: total_buffer_size as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
+        let uniform_align = uniform_stride as u32;
 
         let uniform_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -74,8 +91,10 @@ impl SceneRenderer {
                     visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                        has_dynamic_offset: true,
+                        min_binding_size: wgpu::BufferSize::new(
+                            std::mem::size_of::<SceneUniformData>() as u64,
+                        ),
                     },
                     count: None,
                 }],
@@ -86,7 +105,11 @@ impl SceneRenderer {
             layout: &uniform_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &uniform_buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(std::mem::size_of::<SceneUniformData>() as u64),
+                }),
             }],
         });
 
@@ -229,7 +252,7 @@ impl SceneRenderer {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &[255u8, 255, 255, 128],
+            &[255u8, 255, 255, 255],
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(4),
@@ -243,6 +266,85 @@ impl SceneRenderer {
         );
         let placeholder_view = placeholder_texture.create_view(&Default::default());
 
+        // ── Grid pipeline ──────────────────────────────────────────
+        let grid_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("scene_grid"),
+            source: wgpu::ShaderSource::Wgsl(SCENE_GRID_WGSL.into()),
+        });
+
+        let grid_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("grid uniform buffer"),
+            size: std::mem::size_of::<GridUniformData>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let grid_uniform_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("grid uniform bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(
+                        std::mem::size_of::<GridUniformData>() as u64
+                    ),
+                },
+                count: None,
+            }],
+        });
+
+        let grid_uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("grid uniform bg"),
+            layout: &grid_uniform_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: grid_uniform_buffer.as_entire_binding(),
+            }],
+        });
+
+        let grid_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("grid pipeline layout"),
+            bind_group_layouts: &[&grid_uniform_bgl],
+            push_constant_ranges: &[],
+        });
+
+        let grid_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("grid render pipeline"),
+            layout: Some(&grid_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &grid_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &grid_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: output_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
         log::info!(
             "SceneRenderer initialized: {}x{}, fov={:.0}°",
             width,
@@ -254,6 +356,7 @@ impl SceneRenderer {
             camera,
             render_pipeline,
             uniform_buffer,
+            uniform_align,
             uniform_bind_group_layout,
             uniform_bind_group,
             texture_bind_group_layout,
@@ -266,6 +369,9 @@ impl SceneRenderer {
             placeholder_view,
             width,
             height,
+            grid_pipeline,
+            grid_uniform_buffer,
+            grid_uniform_bind_group,
         }
     }
 
@@ -284,7 +390,7 @@ impl SceneRenderer {
             if active.is_empty() {
                 build_proof_scene()
             } else {
-                build_scene_from_sources(&active)
+                build_scene_from_sources(&active, time)
             }
         } else {
             build_proof_scene()
@@ -307,10 +413,10 @@ impl SceneRenderer {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.02,
-                            g: 0.02,
-                            b: 0.04,
-                            a: 1.0,
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 0.0,
                         }),
                         store: wgpu::StoreOp::Store,
                     },
@@ -326,6 +432,21 @@ impl SceneRenderer {
                 ..Default::default()
             });
 
+            // ── Draw 3D perspective grid ──────────────────────────
+            {
+                let grid_data = GridUniformData {
+                    view: view.to_cols_array_2d(),
+                    projection: proj.to_cols_array_2d(),
+                    time,
+                    _pad: [0.0; 3],
+                };
+                queue.write_buffer(&self.grid_uniform_buffer, 0, bytemuck::bytes_of(&grid_data));
+                pass.set_pipeline(&self.grid_pipeline);
+                pass.set_bind_group(0, &self.grid_uniform_bind_group, &[]);
+                pass.draw(0..24, 0..1); // Floor + back wall + ceiling + mid-field grids
+            }
+
+            // ── Draw content quads ───────────────────────────────────
             pass.set_pipeline(&self.render_pipeline);
 
             // Sort nodes back-to-front for proper alpha blending
@@ -338,13 +459,17 @@ impl SceneRenderer {
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
 
-            for &idx in &sorted_indices {
+            // Pre-upload ALL node uniforms before the render pass draws
+            let mut draw_list: Vec<(u32, wgpu::BindGroup)> = Vec::new();
+            for (slot, &idx) in sorted_indices.iter().enumerate() {
                 let node = &scene[idx];
                 if node.opacity < 0.001 {
                     continue;
                 }
+                if slot >= MAX_SCENE_NODES {
+                    break;
+                }
 
-                // Update uniform buffer with this node's matrices
                 let uniform_data = SceneUniformData {
                     model: node.model_matrix().to_cols_array_2d(),
                     view: view.to_cols_array_2d(),
@@ -352,13 +477,16 @@ impl SceneRenderer {
                     opacity: node.opacity,
                     _pad: [0.0; 3],
                 };
-                queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform_data));
+                let offset = (slot as u64) * (self.uniform_align as u64);
+                queue.write_buffer(
+                    &self.uniform_buffer,
+                    offset,
+                    bytemuck::bytes_of(&uniform_data),
+                );
 
-                // Get texture for this node — resolve by source ID
                 let tex_view = if let Some(ref source_id) = node.content_source_id {
                     if let Some(mgr) = content_source_mgr {
-                        mgr.source_view(source_id)
-                            .unwrap_or(&self.placeholder_view)
+                        mgr.source_view(source_id).unwrap_or(&self.placeholder_view)
                     } else {
                         &self.placeholder_view
                     }
@@ -366,7 +494,6 @@ impl SceneRenderer {
                     &self.placeholder_view
                 };
 
-                // Create per-node texture bind group
                 let tex_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some(&format!("scene tex bg {}", node.label)),
                     layout: &self.texture_bind_group_layout,
@@ -382,8 +509,13 @@ impl SceneRenderer {
                     ],
                 });
 
-                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                pass.set_bind_group(1, &tex_bind_group, &[]);
+                draw_list.push((slot as u32 * self.uniform_align, tex_bind_group));
+            }
+
+            // Now draw with dynamic offsets — each draw uses its own uniform slice
+            for (dyn_offset, tex_bg) in &draw_list {
+                pass.set_bind_group(0, &self.uniform_bind_group, &[*dyn_offset]);
+                pass.set_bind_group(1, tex_bg, &[]);
                 pass.draw(0..6, 0..1);
             }
         }

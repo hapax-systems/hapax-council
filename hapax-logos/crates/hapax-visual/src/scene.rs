@@ -65,6 +65,7 @@ pub struct SceneNode {
     pub label: String,
     pub position: Vec3,
     pub scale: Vec3,
+    pub rotation_y: f32,
     pub opacity: f32,
     /// Index into ContentSourceManager's ordered source list.
     /// When None, the renderer uses a placeholder texture.
@@ -77,14 +78,17 @@ impl SceneNode {
             label: label.to_string(),
             position: Vec3::ZERO,
             scale: Vec3::ONE,
+            rotation_y: 0.0,
             opacity: 1.0,
             content_source_id: None,
         }
     }
 
-    /// 4x4 model matrix: translate + scale (no rotation for quads).
+    /// 4x4 model matrix for textured scene planes.
     pub fn model_matrix(&self) -> Mat4 {
-        Mat4::from_translation(self.position) * Mat4::from_scale(self.scale)
+        Mat4::from_translation(self.position)
+            * Mat4::from_rotation_y(self.rotation_y)
+            * Mat4::from_scale(self.scale)
     }
 }
 
@@ -114,7 +118,7 @@ impl Camera3D {
             aspect: width as f32 / height as f32,
             near: 0.1,
             far: 50.0,
-            orbit_radius: 0.3,
+            orbit_radius: 0.8,
         }
     }
 
@@ -126,10 +130,10 @@ impl Camera3D {
         Mat4::perspective_rh(self.fov_y_radians, self.aspect, self.near, self.far)
     }
 
-    /// Gentle orbital drift — camera traces an ellipse over 30s.
+    /// Gentle orbital drift — camera traces an ellipse over 45s.
     /// Called once per frame with wall-clock time.
     pub fn apply_orbital_drift(&mut self, time: f32) {
-        let period = 30.0;
+        let period = 45.0;
         let angle = (time / period) * std::f32::consts::TAU;
         let dx = self.orbit_radius * angle.cos();
         let dy = self.orbit_radius * 0.5 * (angle * 0.7).sin();
@@ -140,96 +144,294 @@ impl Camera3D {
 
 // ─── Dynamic scene builders ───────────────────────────────────────
 
+fn source_indices_by_prefix(
+    active_sources: &[(&str, f32, i32, u32, u32)],
+    prefixes: &[&str],
+) -> Vec<usize> {
+    active_sources
+        .iter()
+        .enumerate()
+        .filter(|(_, (id, opacity, _, _, _))| {
+            *opacity > 0.001 && prefixes.iter().any(|prefix| id.starts_with(prefix))
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+fn source_indices_except(
+    active_sources: &[(&str, f32, i32, u32, u32)],
+    excluded: &[usize],
+) -> Vec<usize> {
+    active_sources
+        .iter()
+        .enumerate()
+        .filter(|(i, (_, opacity, _, _, _))| *opacity > 0.001 && !excluded.contains(i))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+fn quad_width(height: f32, width: u32, source_height: u32, max_aspect: f32) -> f32 {
+    let aspect = width as f32 / source_height.max(1) as f32;
+    height * aspect.min(max_aspect)
+}
+
+fn make_node(
+    active_sources: &[(&str, f32, i32, u32, u32)],
+    src_idx: usize,
+    position: Vec3,
+    height: f32,
+    opacity_multiplier: f32,
+    rotation_y: f32,
+) -> SceneNode {
+    let (id, opacity, _, width, source_height) = active_sources[src_idx];
+    let mut node = SceneNode::new(id);
+    node.position = position;
+    node.scale = Vec3::new(quad_width(height, width, source_height, 2.15), height, 1.0);
+    node.rotation_y = rotation_y;
+    node.opacity = (opacity * opacity_multiplier).clamp(0.0, 1.0);
+    node.content_source_id = Some(id.to_string());
+    node
+}
+
+fn push_optional_node(
+    nodes: &mut Vec<SceneNode>,
+    active_sources: &[(&str, f32, i32, u32, u32)],
+    source_id: &str,
+    position: Vec3,
+    height: f32,
+    opacity_multiplier: f32,
+    rotation_y: f32,
+) -> bool {
+    let Some((src_idx, _)) = active_sources
+        .iter()
+        .enumerate()
+        .find(|(_, (id, opacity, _, _, _))| *opacity > 0.001 && *id == source_id)
+    else {
+        return false;
+    };
+    nodes.push(make_node(
+        active_sources,
+        src_idx,
+        position,
+        height,
+        opacity_multiplier,
+        rotation_y,
+    ));
+    true
+}
+
+fn push_cube_face(
+    nodes: &mut Vec<SceneNode>,
+    active_sources: &[(&str, f32, i32, u32, u32)],
+    src_idx: usize,
+    center: Vec3,
+    face: usize,
+    height: f32,
+    side: f32,
+) {
+    let (offset, rotation_y, opacity_multiplier) = match face {
+        0 => (Vec3::new(0.0, 0.45, 0.0), 0.0, 0.92),
+        1 => (Vec3::new(0.0, -0.45, 0.0), 0.0, 0.86),
+        2 => (Vec3::new(-side, 0.0, -0.25), 0.46, 0.74),
+        3 => (Vec3::new(side, 0.0, -0.25), -0.46, 0.74),
+        4 => (Vec3::new(0.0, 0.0, -side * 0.72), 0.0, 0.64),
+        _ => (Vec3::new(0.0, 0.0, side * 0.35), 0.0, 0.70),
+    };
+    nodes.push(make_node(
+        active_sources,
+        src_idx,
+        center + offset,
+        height,
+        opacity_multiplier,
+        rotation_y,
+    ));
+}
+
+fn push_exploded_cube(
+    nodes: &mut Vec<SceneNode>,
+    active_sources: &[(&str, f32, i32, u32, u32)],
+    source_indices: &[usize],
+    center: Vec3,
+    face_height: f32,
+    side: f32,
+) {
+    for (face, &src_idx) in source_indices.iter().take(6).enumerate() {
+        push_cube_face(
+            nodes,
+            active_sources,
+            src_idx,
+            center,
+            face,
+            face_height,
+            side,
+        );
+    }
+}
+
+fn apply_spatial_drift(nodes: &mut [SceneNode], time: f32) {
+    for (i, node) in nodes.iter_mut().enumerate() {
+        let phase = (i as f32) * 0.73;
+        let is_primary = matches!(
+            node.label.as_str(),
+            "sierpinski-lines" | "grounding_provenance_ticker"
+        );
+
+        if is_primary {
+            continue;
+        }
+
+        let drift_x = 0.035 * ((time * 0.09 + phase).sin() - phase.sin());
+        let drift_y = 0.025 * ((time * 0.07 + phase * 0.9).cos() - (phase * 0.9).cos());
+        let drift_z = 0.055 * ((time * 0.06 + phase * 1.4).sin() - (phase * 1.4).sin());
+        node.position += Vec3::new(drift_x, drift_y, drift_z);
+
+        if !node.label.starts_with("camera-") {
+            node.rotation_y += 0.018 * ((time * 0.05 + phase).sin() - phase.sin());
+        }
+    }
+}
+
 /// Build scene nodes dynamically from active content sources.
 ///
-/// Sources are grouped by z-plane and laid out in a centered grid at
-/// each depth. Cameras get the foreground; wards fill the mid and
-/// background layers. The camera FOV at each z-plane determines the
-/// visible width, and quads are scaled and spaced to fill it without
-/// overflowing off-screen.
+/// The layout is intentionally concrete: Sierpinski occupies the central
+/// foreground, camera feeds form an exploded cube on the left, IR/CBIP feeds
+/// extend that cube upward, and system wards form a matching cube on the
+/// right. Secondary panels occupy a middle-depth band. Drift is spatial only:
+/// it never modulates source opacity or scale.
 pub fn build_scene_from_sources(
     active_sources: &[(&str, f32, i32, u32, u32)], // (id, opacity, z_order, width, height)
+    time: f32,
 ) -> Vec<SceneNode> {
     let mut nodes = Vec::new();
 
-    // Group sources by z-plane
-    let mut by_plane: [Vec<usize>; 4] = [vec![], vec![], vec![], vec![]];
-    for (i, &(_, opacity, z_order, _, _)) in active_sources.iter().enumerate() {
-        if opacity < 0.001 {
-            continue;
-        }
-        let plane_idx = match ZPlane::from_z_order(z_order) {
-            ZPlane::BeyondScrim => 0,
-            ZPlane::MidScrim => 1,
-            ZPlane::OnScrim => 2,
-            ZPlane::SurfaceScrim => 3,
-        };
-        by_plane[plane_idx].push(i);
-    }
+    let mut used_indices = Vec::new();
 
-    let planes = [
-        ZPlane::BeyondScrim,
-        ZPlane::MidScrim,
-        ZPlane::OnScrim,
-        ZPlane::SurfaceScrim,
-    ];
-
-    for (plane_idx, plane) in planes.iter().enumerate() {
-        let indices = &by_plane[plane_idx];
-        if indices.is_empty() {
-            continue;
-        }
-
-        let z = plane.z_position();
-        let count = indices.len();
-
-        // Visible width at this z-depth for a 60° FOV camera at z=2.0:
-        // half_width ≈ tan(30°) * |z_camera - z_plane| = 0.577 * dist
-        let camera_z = 2.0_f32;
-        let dist = (camera_z - z).abs();
-        let visible_half_w = 0.577 * dist;
-        let visible_w = visible_half_w * 2.0;
-
-        // Quad size — scale to fit the plane, smaller when more sources
-        let max_quad_h = match plane {
-            ZPlane::SurfaceScrim => 2.2f32,
-            ZPlane::OnScrim => 1.8f32,
-            ZPlane::MidScrim => 1.5f32,
-            ZPlane::BeyondScrim => 1.2f32,
-        };
-
-        // Grid layout: determine columns and rows
-        let cols = ((count as f32).sqrt().ceil() as usize).max(1);
-        let rows = ((count + cols - 1) / cols).max(1);
-
-        // Spacing to fit within visible width with margin
-        let margin = 0.85; // use 85% of visible width
-        let cell_w = (visible_w * margin) / cols as f32;
-        let cell_h = max_quad_h * 1.2;
-
-        for (local_idx, &src_idx) in indices.iter().enumerate() {
-            let (source_id, opacity, _, width, height) = active_sources[src_idx];
-
-            let aspect = width as f32 / height.max(1) as f32;
-            let quad_h = max_quad_h.min(cell_w / aspect) as f32; // fit in cell
-            let quad_w = quad_h * aspect;
-
-            let col = local_idx % cols;
-            let row = local_idx / cols;
-
-            // Center the grid
-            let x = (col as f32 - (cols as f32 - 1.0) / 2.0) * cell_w;
-            let y = -((row as f32 - (rows as f32 - 1.0) / 2.0) * cell_h);
-
-            let mut node = SceneNode::new(source_id);
-            node.position = Vec3::new(x, y, z);
-            node.scale = Vec3::new(quad_w, quad_h, 1.0);
-            node.opacity = opacity;
-            node.content_source_id = Some(source_id.to_string());
-            nodes.push(node);
+    if push_optional_node(
+        &mut nodes,
+        active_sources,
+        "sierpinski-lines",
+        Vec3::new(0.0, 0.35, ZPlane::SurfaceScrim.z_position() - 0.4),
+        3.35,
+        0.92,
+        0.0,
+    ) {
+        if let Some((idx, _)) = active_sources
+            .iter()
+            .enumerate()
+            .find(|(_, (id, _, _, _, _))| *id == "sierpinski-lines")
+        {
+            used_indices.push(idx);
         }
     }
 
+    for ticker_id in [
+        "grounding_provenance_ticker",
+        "precedent_ticker",
+        "chronicle_ticker",
+    ] {
+        if push_optional_node(
+            &mut nodes,
+            active_sources,
+            ticker_id,
+            Vec3::new(0.0, -1.62, ZPlane::SurfaceScrim.z_position() - 0.18),
+            if ticker_id == "grounding_provenance_ticker" {
+                0.36
+            } else {
+                0.48
+            },
+            0.86,
+            0.0,
+        ) {
+            if let Some((idx, _)) = active_sources
+                .iter()
+                .enumerate()
+                .find(|(_, (id, _, _, _, _))| *id == ticker_id)
+            {
+                used_indices.push(idx);
+            }
+            break;
+        }
+    }
+
+    let hls_indices = source_indices_by_prefix(active_sources, &["camera-"])
+        .into_iter()
+        .filter(|&i| !active_sources[i].0.contains("pi-noir"))
+        .collect::<Vec<_>>();
+    let ir_indices = source_indices_by_prefix(active_sources, &["camera-pi-noir", "cbip_"]);
+    used_indices.extend(hls_indices.iter().copied());
+    used_indices.extend(ir_indices.iter().copied());
+
+    push_exploded_cube(
+        &mut nodes,
+        active_sources,
+        &hls_indices,
+        Vec3::new(-3.55, -0.05, ZPlane::OnScrim.z_position() + 0.18),
+        1.15,
+        1.55,
+    );
+    push_exploded_cube(
+        &mut nodes,
+        active_sources,
+        &ir_indices,
+        Vec3::new(-3.45, 1.62, ZPlane::MidScrim.z_position() + 1.18),
+        0.82,
+        1.15,
+    );
+
+    let mut remaining = source_indices_except(active_sources, &used_indices);
+    remaining.sort_by(|&a, &b| {
+        active_sources[b]
+            .2
+            .cmp(&active_sources[a].2)
+            .then(a.cmp(&b))
+    });
+    let right_cube: Vec<usize> = remaining.iter().take(6).copied().collect();
+    used_indices.extend(right_cube.iter().copied());
+    push_exploded_cube(
+        &mut nodes,
+        active_sources,
+        &right_cube,
+        Vec3::new(3.55, -0.03, ZPlane::OnScrim.z_position() + 0.14),
+        0.92,
+        1.35,
+    );
+
+    let mid_band = source_indices_except(active_sources, &used_indices);
+    let mid_z = ZPlane::MidScrim.z_position() - 0.25;
+    for (local_idx, src_idx) in mid_band.iter().take(10).enumerate() {
+        let col = local_idx % 5;
+        let row = local_idx / 5;
+        let x = (col as f32 - 2.0) * 1.25;
+        let y = 1.08 - row as f32 * 0.88;
+        nodes.push(make_node(
+            active_sources,
+            *src_idx,
+            Vec3::new(x, y, mid_z + 0.46 - row as f32 * 0.22),
+            0.58,
+            0.42,
+            0.0,
+        ));
+    }
+
+    let mut far_excluded = used_indices.clone();
+    far_excluded.extend(mid_band.iter().take(10).copied());
+    let far_band = source_indices_except(active_sources, &far_excluded);
+    for (local_idx, src_idx) in far_band.iter().take(12).enumerate() {
+        let col = local_idx % 6;
+        let row = local_idx / 6;
+        let x = (col as f32 - 2.5) * 1.35;
+        let y = -2.0 - row as f32 * 0.52;
+        nodes.push(make_node(
+            active_sources,
+            *src_idx,
+            Vec3::new(x, y, ZPlane::BeyondScrim.z_position() + 1.1),
+            0.42,
+            0.26,
+            0.0,
+        ));
+    }
+
+    apply_spatial_drift(&mut nodes, time);
     nodes
 }
 
@@ -255,11 +457,7 @@ pub fn build_proof_scene() -> Vec<SceneNode> {
     .enumerate()
     {
         let mut ward = SceneNode::new(label);
-        ward.position = Vec3::new(
-            (i as f32 - 1.0) * 2.0,
-            0.0,
-            z_plane.z_position(),
-        );
+        ward.position = Vec3::new((i as f32 - 1.0) * 2.0, 0.0, z_plane.z_position());
         ward.scale = Vec3::new(1.5, 1.5, 1.0);
         ward.opacity = *opacity;
         nodes.push(ward);
@@ -403,22 +601,32 @@ mod tests {
             .iter()
             .map(|&(id, op, z, w, h)| (id, op, z, w, h))
             .collect();
-        let scene = build_scene_from_sources(&refs);
+        let scene = build_scene_from_sources(&refs, 0.0);
 
         assert_eq!(scene.len(), 3, "should have 3 nodes");
 
-        // Sources are now grouped by z-plane: MidScrim (z_order=3) first,
-        // then OnScrim (z_order=5). Verify all are present.
         let ids: Vec<&str> = scene.iter().map(|n| n.label.as_str()).collect();
-        assert!(ids.contains(&"content-episodic_recall"), "content should be present");
-        assert!(ids.contains(&"camera-brio-operator"), "camera brio should be present");
-        assert!(ids.contains(&"camera-c920-overhead"), "camera c920 should be present");
-
-        // Content node is on MidScrim
-        let content = scene.iter().find(|n| n.label == "content-episodic_recall").unwrap();
         assert!(
-            (content.position.z - ZPlane::MidScrim.z_position()).abs() < 0.01,
-            "content should be on MidScrim"
+            ids.contains(&"content-episodic_recall"),
+            "content should be present"
+        );
+        assert!(
+            ids.contains(&"camera-brio-operator"),
+            "camera brio should be present"
+        );
+        assert!(
+            ids.contains(&"camera-c920-overhead"),
+            "camera c920 should be present"
+        );
+
+        // With only two cameras, the remaining content starts the right-hand cube.
+        let content = scene
+            .iter()
+            .find(|n| n.label == "content-episodic_recall")
+            .unwrap();
+        assert!(
+            content.position.x > 3.0,
+            "content should start the right cube"
         );
     }
 
@@ -432,7 +640,7 @@ mod tests {
             .iter()
             .map(|&(id, op, z, w, h)| (id, op, z, w, h))
             .collect();
-        let scene = build_scene_from_sources(&refs);
+        let scene = build_scene_from_sources(&refs, 0.0);
         assert_eq!(scene.len(), 1, "invisible source should be skipped");
     }
 
@@ -443,7 +651,7 @@ mod tests {
             .iter()
             .map(|&(id, op, z, w, h)| (id, op, z, w, h))
             .collect();
-        let scene = build_scene_from_sources(&refs);
+        let scene = build_scene_from_sources(&refs, 0.0);
         let aspect = scene[0].scale.x / scene[0].scale.y;
         assert!(
             (aspect - 1920.0 / 1080.0).abs() < 0.01,
@@ -461,15 +669,100 @@ mod tests {
             .iter()
             .map(|&(id, op, z, w, h)| (id, op, z, w, h))
             .collect();
-        let scene = build_scene_from_sources(&refs);
-        // Sources grouped by z-plane: content-recall (z=3 MidScrim) before camera (z=5 OnScrim)
-        assert_eq!(
-            scene[0].content_source_id.as_deref(),
-            Some("content-recall")
+        let scene = build_scene_from_sources(&refs, 0.0);
+        let ids: Vec<&str> = scene
+            .iter()
+            .filter_map(|n| n.content_source_id.as_deref())
+            .collect();
+        assert!(ids.contains(&"content-recall"));
+        assert!(ids.contains(&"camera-brio"));
+    }
+
+    #[test]
+    fn requested_geometric_layout_places_primary_elements() {
+        let sources = vec![
+            ("sierpinski-lines", 0.9f32, 4i32, 1280u32, 720u32),
+            ("grounding_provenance_ticker", 0.8, 3, 480, 40),
+            ("camera-brio-operator", 0.8, 5, 1280, 720),
+            ("camera-c920-overhead", 0.8, 5, 1280, 720),
+            ("camera-pi-noir-desk", 0.8, 5, 640, 360),
+            ("cbip_dual_ir_displacement", 0.8, 5, 640, 480),
+            ("programme_history", 0.7, 3, 440, 140),
+            ("m8_oscilloscope", 0.7, 3, 512, 320),
+        ];
+        let scene = build_scene_from_sources(&sources, 0.0);
+
+        let sierpinski = scene
+            .iter()
+            .find(|n| n.label == "sierpinski-lines")
+            .unwrap();
+        assert!(sierpinski.position.x.abs() < 0.01);
+        assert!(sierpinski.position.y > 0.0);
+
+        let ticker = scene
+            .iter()
+            .find(|n| n.label == "grounding_provenance_ticker")
+            .unwrap();
+        assert!(ticker.position.y < sierpinski.position.y);
+
+        let hls = scene
+            .iter()
+            .find(|n| n.label == "camera-brio-operator")
+            .unwrap();
+        assert!(hls.position.x < -3.0, "HLS cube should sit left");
+
+        let ir = scene
+            .iter()
+            .find(|n| n.label == "camera-pi-noir-desk")
+            .unwrap();
+        assert!(ir.position.x < -3.0 && ir.position.y > hls.position.y);
+
+        let ward = scene
+            .iter()
+            .find(|n| n.label == "programme_history")
+            .unwrap();
+        assert!(ward.position.x > 3.0, "ward cube should sit right");
+    }
+
+    #[test]
+    fn mid_band_accepts_overflow_without_occlusion() {
+        let sources = vec![
+            ("camera-brio-operator", 0.8f32, 5i32, 1280u32, 720u32),
+            ("camera-c920-overhead", 0.8, 5, 1280, 720),
+            ("ward-a", 0.7, 3, 420, 140),
+            ("ward-b", 0.7, 3, 420, 140),
+            ("ward-c", 0.7, 3, 420, 140),
+            ("ward-d", 0.7, 3, 420, 140),
+            ("ward-e", 0.7, 3, 420, 140),
+            ("ward-f", 0.7, 3, 420, 140),
+            ("ward-g", 0.7, 3, 420, 140),
+        ];
+        let scene = build_scene_from_sources(&sources, 0.0);
+        let overflow = scene.iter().find(|n| n.label == "ward-g").unwrap();
+        assert!(
+            (overflow.position.z - (ZPlane::MidScrim.z_position() + 0.21)).abs() < 0.01,
+            "overflow wards should enter the shifted-forward mid-level band"
         );
-        assert_eq!(
-            scene[1].content_source_id.as_deref(),
-            Some("camera-brio")
-        );
+    }
+
+    #[test]
+    fn node_drift_never_modulates_opacity_or_scale() {
+        let sources = vec![
+            ("camera-brio-operator", 0.8f32, 5i32, 1280u32, 720u32),
+            ("camera-c920-overhead", 0.8, 5, 1280, 720),
+            ("programme_history", 0.7, 3, 440, 140),
+        ];
+        let at_start = build_scene_from_sources(&sources, 0.0);
+        let later = build_scene_from_sources(&sources, 240.0);
+
+        for start in at_start {
+            let after = later.iter().find(|n| n.label == start.label).unwrap();
+            assert_eq!(
+                after.opacity, start.opacity,
+                "opacity drift on {}",
+                start.label
+            );
+            assert_eq!(after.scale, start.scale, "scale drift on {}", start.label);
+        }
     }
 }

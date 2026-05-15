@@ -11,124 +11,69 @@ struct FragmentOutput {
 
 var<private> fragColor: vec4<f32>;
 var<private> v_texcoord_1: vec2<f32>;
-@group(1) @binding(0) 
+@group(1) @binding(0)
 var tex: texture_2d<f32>;
-@group(1) @binding(1) 
+@group(1) @binding(1)
 var tex_sampler: sampler;
-@group(2) @binding(0) 
+@group(2) @binding(0)
 var<uniform> global: Params;
 
-fn hash2_(p: vec2<f32>) -> vec2<f32> {
-    var p_1: vec2<f32>;
-
-    p_1 = p;
-    let _e16 = p_1;
-    let _e21 = p_1;
-    p_1 = vec2<f32>(dot(_e16, vec2<f32>(127.1f, 311.7f)), dot(_e21, vec2<f32>(269.5f, 183.3f)));
-    let _e27 = p_1;
-    return fract((sin(_e27) * 43758.547f));
+fn hash2(p: vec2<f32>) -> vec2<f32> {
+    return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453);
 }
 
 fn main_1() {
-    var color: vec4<f32>;
-    var uv: vec2<f32>;
-    var cell: vec2<f32>;
-    var frac_uv: vec2<f32>;
-    var minDist: f32 = 10f;
-    var secondDist: f32 = 10f;
-    var y: i32 = -1i;
-    var x: i32;
-    var neighbor: vec2<f32>;
-    var point: vec2<f32>;
-    var d: f32;
-    var edge: f32;
+    let uv = v_texcoord_1;
+    let src = textureSample(tex, tex_sampler, uv);
+    let edge_width = max(global.u_edge_width, 0.0);
+    if src.a < 0.01 || edge_width <= 0.0001 {
+        fragColor = src;
+        return;
+    }
 
-    let _e14 = v_texcoord_1;
-    let _e15 = textureSample(tex, tex_sampler, _e14);
-    color = _e15;
-    let _e17 = v_texcoord_1;
-    let _e18 = global.u_cell_count;
-    uv = (_e17 * _e18);
-    let _e21 = uv;
-    cell = floor(_e21);
-    let _e24 = uv;
-    frac_uv = fract(_e24);
-    loop {
-        let _e34 = y;
-        if !((_e34 <= 1i)) {
-            break;
-        }
-        {
-            x = -1i;
-            loop {
-                let _e44 = x;
-                if !((_e44 <= 1i)) {
-                    break;
-                }
-                {
-                    let _e51 = x;
-                    let _e53 = y;
-                    neighbor = vec2<f32>(f32(_e51), f32(_e53));
-                    let _e57 = cell;
-                    let _e58 = neighbor;
-                    let _e60 = hash2_((_e57 + _e58));
-                    point = _e60;
-                    let _e63 = global.u_jitter;
+    let sc = max(global.u_cell_count, 1.0);
+    let p = uv * sc;
+    let ip = floor(p);
+    let fp = fract(p);
+    let jitter = clamp(global.u_jitter, 0.0, 1.0);
+    let speed = max(global.u_animation_speed, 0.0);
 
-                    let _e67 = global.u_animation_speed;
-                    let _e70 = point;
-                    point = (vec2(0.5f) + ((_e63 * 0.5f) * sin((vec2((uniforms.time * _e67)) + (6.2831f * _e70)))));
-                    let _e78 = neighbor;
-                    let _e79 = point;
-                    let _e81 = frac_uv;
-                    d = length(((_e78 + _e79) - _e81));
-                    let _e85 = d;
-                    let _e86 = minDist;
-                    if (_e85 < _e86) {
-                        {
-                            let _e88 = minDist;
-                            secondDist = _e88;
-                            let _e89 = d;
-                            minDist = _e89;
-                        }
-                    } else {
-                        let _e90 = d;
-                        let _e91 = secondDist;
-                        if (_e90 < _e91) {
-                            {
-                                let _e93 = d;
-                                secondDist = _e93;
-                            }
-                        }
-                    }
-                }
-                continuing {
-                    let _e48 = x;
-                    x = (_e48 + 1i);
-                }
+    var md = 8.0;
+    var md2 = 8.0;
+    for (var j = -1; j <= 1; j++) {
+        for (var i = -1; i <= 1; i++) {
+            let g = vec2<f32>(f32(i), f32(j));
+            let seed = hash2(ip + g);
+            let still = seed * 0.5 + vec2(0.25);
+            let animated =
+                vec2(0.5) + ((seed - vec2(0.5)) * sin(vec2(uniforms.time * speed) + 6.2831 * seed));
+            let o = mix(still, animated, vec2(jitter));
+            let d = length(g + o - fp);
+            if d < md {
+                md2 = md;
+                md = d;
+            } else if d < md2 {
+                md2 = d;
             }
         }
-        continuing {
-            let _e38 = y;
-            y = (_e38 + 1i);
-        }
     }
-    let _e95 = global.u_edge_width;
-    let _e96 = secondDist;
-    let _e97 = minDist;
-    edge = smoothstep(0f, _e95, (_e96 - _e97));
-    let _e101 = color;
-    let _e103 = edge;
-    let _e104 = (_e101.xyz * _e103);
-    let _e105 = color;
-    fragColor = vec4<f32>(_e104.x, _e104.y, _e104.z, _e105.w);
-    return;
+
+    let interior = smoothstep(0.0, max(edge_width, 0.0001), md2 - md);
+    let line = 1.0 - interior;
+
+    // Keep the cell structure inside already-visible scene energy. A
+    // uniform full-frame crack mask reads as a detached pane over the
+    // livestream instead of a material modulation of the scene.
+    let luma = dot(src.rgb, vec3<f32>(0.299, 0.587, 0.114));
+    let surface_presence = smoothstep(0.04, 0.28, luma);
+    let strength = min(0.055, edge_width * 4.0) * line * surface_presence;
+    let integrated = mix(src.rgb, src.rgb * 0.88 + vec3(0.012, 0.018, 0.024), vec3(strength));
+    fragColor = vec4<f32>(integrated, src.a);
 }
 
-@fragment 
+@fragment
 fn main(@location(0) v_texcoord: vec2<f32>) -> FragmentOutput {
     v_texcoord_1 = v_texcoord;
     main_1();
-    let _e21 = fragColor;
-    return FragmentOutput(_e21);
+    return FragmentOutput(fragColor);
 }

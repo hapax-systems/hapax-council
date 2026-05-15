@@ -19,13 +19,17 @@ var tex_sampler: sampler;
 var<uniform> global: Params;
 
 fn main_1() {
+    var original: vec4<f32>;
     var center: vec2<f32>;
     var uv: vec2<f32>;
     var r: f32;
     var theta: f32;
     var rd: f32;
     var distorted: vec2<f32>;
+    var warped: vec4<f32>;
+    var blend: f32;
 
+    original = textureSample(tex, tex_sampler, v_texcoord_1);
     let _e12 = global.u_center_x;
     let _e13 = global.u_center_y;
     center = vec2<f32>(_e12, _e13);
@@ -48,23 +52,13 @@ fn main_1() {
     let _e43 = theta;
     let _e47 = global.u_zoom;
     distorted = (_e39 + ((_e40 * vec2<f32>(cos(_e41), sin(_e43))) / vec2(_e47)));
-    let _e52 = distorted;
-    let _e56 = distorted;
-    let _e61 = distorted;
-    let _e66 = distorted;
-    if ((((_e52.x < 0f) || (_e56.x > 1f)) || (_e61.y < 0f)) || (_e66.y > 1f)) {
-        {
-            fragColor = vec4<f32>(0f, 0f, 0f, 1f);
-            return;
-        }
-    } else {
-        {
-            let _e76 = distorted;
-            let _e77 = textureSample(tex, tex_sampler, _e76);
-            fragColor = _e77;
-            return;
-        }
-    }
+    distorted = clamp(distorted, vec2(0.001f), vec2(0.999f));
+    let _e76 = distorted;
+    let _e77 = textureSample(tex, tex_sampler, _e76);
+    warped = _e77;
+    blend = clamp(abs(global.u_strength) * 1.1f, 0.0f, 0.22f);
+    fragColor = vec4<f32>(mix(original.xyz, warped.xyz, vec3(blend)), original.w);
+    return;
 }
 
 @fragment 
