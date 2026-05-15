@@ -268,6 +268,40 @@ fn push_exploded_cube(
     }
 }
 
+fn push_deoccluded_grid(
+    nodes: &mut Vec<SceneNode>,
+    active_sources: &[(&str, f32, i32, u32, u32)],
+    source_indices: &[usize],
+    center: Vec3,
+    columns: usize,
+    height: f32,
+    x_spacing: f32,
+    y_spacing: f32,
+    z_spacing: f32,
+    opacity_multiplier: f32,
+) {
+    if columns == 0 {
+        return;
+    }
+
+    for (local_idx, &src_idx) in source_indices.iter().enumerate() {
+        let col = local_idx % columns;
+        let row = local_idx / columns;
+        let x = (col as f32 - (columns.saturating_sub(1) as f32 * 0.5)) * x_spacing;
+        let y = -(row as f32) * y_spacing;
+        let z = -(row as f32) * z_spacing + (col as f32 - columns as f32 * 0.5) * 0.04;
+        let rotation_y = (col as f32 - (columns.saturating_sub(1) as f32 * 0.5)) * -0.08;
+        nodes.push(make_node(
+            active_sources,
+            src_idx,
+            center + Vec3::new(x, y, z),
+            height,
+            opacity_multiplier,
+            rotation_y,
+        ));
+    }
+}
+
 fn apply_spatial_drift(nodes: &mut [SceneNode], time: f32) {
     for (i, node) in nodes.iter_mut().enumerate() {
         let phase = (i as f32) * 0.73;
@@ -293,11 +327,11 @@ fn apply_spatial_drift(nodes: &mut [SceneNode], time: f32) {
 
 /// Build scene nodes dynamically from active content sources.
 ///
-/// The layout is intentionally concrete: Sierpinski occupies the central
-/// foreground, camera feeds form an exploded cube on the left, IR/CBIP feeds
-/// extend that cube upward, and system wards form a matching cube on the
-/// right. Secondary panels occupy a middle-depth band. Drift is spatial only:
-/// it never modulates source opacity or scale.
+/// The layout is intentionally concrete but temporary: Sierpinski occupies
+/// the central foreground, while cameras, IR feeds, and wards sit on separated
+/// shelves around it. The point is to exercise x/y/z depth without letting
+/// any source cluster become the composition. Drift is spatial only: it never
+/// modulates source opacity or scale.
 pub fn build_scene_from_sources(
     active_sources: &[(&str, f32, i32, u32, u32)], // (id, opacity, z_order, width, height)
     time: f32,
@@ -366,21 +400,29 @@ pub fn build_scene_from_sources(
     used_indices.extend(hls_indices.iter().copied());
     used_indices.extend(ir_indices.iter().copied());
 
-    push_exploded_cube(
+    push_deoccluded_grid(
         &mut nodes,
         active_sources,
         &hls_indices,
-        Vec3::new(-2.72, -0.05, ZPlane::OnScrim.z_position() + 0.18 + forward),
-        1.15,
-        1.55,
+        Vec3::new(-2.78, 0.62, ZPlane::OnScrim.z_position() + 0.05 + forward),
+        2,
+        0.50,
+        1.25,
+        0.68,
+        0.34,
+        1.12,
     );
-    push_exploded_cube(
+    push_deoccluded_grid(
         &mut nodes,
         active_sources,
         &ir_indices,
-        Vec3::new(-2.86, 1.55, ZPlane::MidScrim.z_position() + 1.18 + forward),
-        0.82,
-        1.15,
+        Vec3::new(-2.86, 1.66, ZPlane::MidScrim.z_position() + 0.76 + forward),
+        3,
+        0.36,
+        0.98,
+        0.43,
+        0.24,
+        0.98,
     );
 
     let mut remaining = source_indices_except(active_sources, &used_indices);
@@ -392,31 +434,32 @@ pub fn build_scene_from_sources(
     });
     let right_cube: Vec<usize> = remaining.iter().take(6).copied().collect();
     used_indices.extend(right_cube.iter().copied());
-    push_exploded_cube(
+    push_deoccluded_grid(
         &mut nodes,
         active_sources,
         &right_cube,
-        Vec3::new(2.78, -0.03, ZPlane::OnScrim.z_position() + 0.14 + forward),
-        0.92,
-        1.35,
+        Vec3::new(2.80, 0.62, ZPlane::OnScrim.z_position() + 0.02 + forward),
+        2,
+        0.44,
+        1.18,
+        0.54,
+        0.30,
+        0.96,
     );
 
     let mid_band = source_indices_except(active_sources, &used_indices);
-    let mid_z = ZPlane::MidScrim.z_position() - 0.25 + forward;
-    for (local_idx, src_idx) in mid_band.iter().take(10).enumerate() {
-        let col = local_idx % 5;
-        let row = local_idx / 5;
-        let x = (col as f32 - 2.0) * 1.05;
-        let y = 1.08 - row as f32 * 0.88;
-        nodes.push(make_node(
-            active_sources,
-            *src_idx,
-            Vec3::new(x, y, mid_z + 0.46 - row as f32 * 0.22),
-            0.58,
-            0.42,
-            0.0,
-        ));
-    }
+    push_deoccluded_grid(
+        &mut nodes,
+        active_sources,
+        &mid_band.iter().take(10).copied().collect::<Vec<_>>(),
+        Vec3::new(0.0, -2.02, ZPlane::MidScrim.z_position() + 0.34 + forward),
+        5,
+        0.30,
+        1.05,
+        0.38,
+        0.22,
+        0.52,
+    );
 
     let mut far_excluded = used_indices.clone();
     far_excluded.extend(mid_band.iter().take(10).copied());
@@ -624,14 +667,14 @@ mod tests {
             "camera c920 should be present"
         );
 
-        // With only two cameras, the remaining content starts the right-hand cube.
+        // With only two cameras, the remaining content starts the right-hand shelf.
         let content = scene
             .iter()
             .find(|n| n.label == "content-episodic_recall")
             .unwrap();
         assert!(
             content.position.x > 2.0,
-            "content should start the right cube"
+            "content should start the right shelf"
         );
     }
 
@@ -714,7 +757,7 @@ mod tests {
             .iter()
             .find(|n| n.label == "camera-brio-operator")
             .unwrap();
-        assert!(hls.position.x < -2.0, "HLS cube should sit left");
+        assert!(hls.position.x < -2.0, "HLS shelf should sit left");
 
         let ir = scene
             .iter()
@@ -726,7 +769,51 @@ mod tests {
             .iter()
             .find(|n| n.label == "programme_history")
             .unwrap();
-        assert!(ward.position.x > 2.0, "ward cube should sit right");
+        assert!(ward.position.x > 2.0, "ward shelf should sit right");
+    }
+
+    #[test]
+    fn deoccluded_baseline_spreads_sources_within_each_layer() {
+        let sources = vec![
+            ("sierpinski-lines", 0.9f32, 4i32, 1280u32, 720u32),
+            ("grounding_provenance_ticker", 0.8, 3, 480, 40),
+            ("camera-brio-operator", 0.8, 5, 1280, 720),
+            ("camera-c920-overhead", 0.8, 5, 1280, 720),
+            ("camera-side", 0.8, 5, 1280, 720),
+            ("camera-mpc", 0.8, 5, 1280, 720),
+            ("camera-pi-noir-desk", 0.8, 5, 640, 360),
+            ("camera-pi-noir-chessboard", 0.8, 5, 640, 360),
+            ("cbip_dual_ir_displacement", 0.8, 5, 640, 480),
+            ("ward-a", 0.7, 3, 420, 140),
+            ("ward-b", 0.7, 3, 420, 140),
+            ("ward-c", 0.7, 3, 420, 140),
+            ("ward-d", 0.7, 3, 420, 140),
+            ("ward-e", 0.7, 3, 420, 140),
+            ("ward-f", 0.7, 3, 420, 140),
+            ("ward-g", 0.7, 3, 420, 140),
+            ("ward-h", 0.7, 3, 420, 140),
+        ];
+        let scene = build_scene_from_sources(&sources, 0.0);
+        let non_primary = scene
+            .iter()
+            .filter(|n| n.label != "sierpinski-lines" && !n.label.contains("ticker"))
+            .collect::<Vec<_>>();
+
+        for (i, a) in non_primary.iter().enumerate() {
+            for b in non_primary.iter().skip(i + 1) {
+                if (a.position.z - b.position.z).abs() > 0.16 {
+                    continue;
+                }
+                let x_overlap = (a.scale.x + b.scale.x) * 0.5 - (a.position.x - b.position.x).abs();
+                let y_overlap = (a.scale.y + b.scale.y) * 0.5 - (a.position.y - b.position.y).abs();
+                assert!(
+                    x_overlap <= 0.02 || y_overlap <= 0.02,
+                    "{} and {} are clustered in the same z-layer",
+                    a.label,
+                    b.label
+                );
+            }
+        }
     }
 
     #[test]
@@ -745,7 +832,7 @@ mod tests {
         let scene = build_scene_from_sources(&sources, 0.0);
         let overflow = scene.iter().find(|n| n.label == "ward-g").unwrap();
         assert!(
-            (overflow.position.z - (ZPlane::MidScrim.z_position() + 0.76)).abs() < 0.01,
+            (overflow.position.z - (ZPlane::MidScrim.z_position() + 0.79)).abs() < 0.01,
             "overflow wards should enter the shifted-forward mid-level band"
         );
     }

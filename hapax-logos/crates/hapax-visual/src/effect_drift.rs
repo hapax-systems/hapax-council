@@ -7,15 +7,16 @@ use std::collections::VecDeque;
 use std::path::Path;
 
 // ── Lifecycle timing (matching 2D) ─────────────────────────────
-const FADE_IN_S: f32 = 40.0;
-const PEAK_HOLD_S: f32 = 15.0;
-const FADE_OUT_S: f32 = 40.0;
-const STAGGER_S: f32 = 19.0;
-const POOL_SIZE: usize = 6; // Active chain size — rotate through full library at zero-crossings
+const FADE_IN_S: f32 = 18.0;
+const PEAK_HOLD_S: f32 = 9.0;
+const FADE_OUT_S: f32 = 18.0;
+const STAGGER_S: f32 = 9.0;
+const POOL_SIZE: usize = 5; // Five visible slots: four active, one rotating/recruiting.
+const ACTIVE_SLOT_TARGET: usize = 4;
 const PARAM_DRIFT_RATE: f32 = 0.015;
 const TICK_DIVISOR: u64 = 5; // ~6Hz at 30fps
-const SPATIAL_PEAK_RANGE: (f32, f32) = (0.45, 0.75);
-const NONSPATIAL_PEAK_RANGE: (f32, f32) = (0.75, 1.0);
+const SPATIAL_PEAK_RANGE: (f32, f32) = (0.55, 0.82);
+const NONSPATIAL_PEAK_RANGE: (f32, f32) = (0.82, 1.0);
 
 // ── Shader definitions ─────────────────────────────────────────
 
@@ -530,13 +531,20 @@ pub static POSTPROCESS_DEF: ShaderDef = ShaderDef {
         ("vignette_strength", 0.0),
         ("sediment_strength", 0.0),
         ("master_opacity", 1.0),
+        ("anonymize", 0.34),
     ],
     active_ranges: &[
         ("vignette_strength", 0.04, 0.18),
         ("sediment_strength", 0.008, 0.028),
         ("master_opacity", 1.0, 1.0),
+        ("anonymize", 0.34, 0.34),
     ],
-    param_order: &["vignette_strength", "sediment_strength", "master_opacity"],
+    param_order: &[
+        "vignette_strength",
+        "sediment_strength",
+        "master_opacity",
+        "anonymize",
+    ],
 };
 
 // Family affinity
@@ -667,6 +675,104 @@ mod tests {
         }
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn postprocess_bookend_keeps_stable_mediation() {
+        let path = std::env::temp_dir().join(format!(
+            "hapax-effect-drift-test-plan-{}.json",
+            std::process::id()
+        ));
+        let mut engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+
+        let first = engine.interpolate_all(0.0);
+        let later = engine.interpolate_all(1800.0);
+        let first_anonymize = first
+            .iter()
+            .find(|(uniform, _)| uniform == "post.anonymize")
+            .map(|(_, value)| *value)
+            .expect("post.anonymize present");
+        let later_anonymize = later
+            .iter()
+            .find(|(uniform, _)| uniform == "post.anonymize")
+            .map(|(_, value)| *value)
+            .expect("post.anonymize present later");
+
+        assert!(
+            first_anonymize >= 0.25,
+            "livestream must not expose a clean transparent postprocess surface"
+        );
+        assert_eq!(
+            first_anonymize, later_anonymize,
+            "mediation is stable; no time-driven pumping"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn autonomous_drift_uses_five_slots_with_four_active_initially() {
+        let path = std::env::temp_dir().join(format!(
+            "hapax-effect-drift-test-plan-{}.json",
+            std::process::id()
+        ));
+        let engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+        let active = engine
+            .slots
+            .iter()
+            .filter(|slot| slot.phase != Phase::Idle)
+            .count();
+
+        assert_eq!(engine.slots.len(), POOL_SIZE);
+        assert_eq!(
+            active, ACTIVE_SLOT_TARGET,
+            "initial conditions should have four active effects and one rotating/recruiting slot"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn autonomous_drift_refills_under_target_without_waiting_for_stagger() {
+        let path = std::env::temp_dir().join(format!(
+            "hapax-effect-drift-test-plan-{}.json",
+            std::process::id()
+        ));
+        let mut engine = SlotDriftEngine::new(path.to_str().unwrap(), 42);
+
+        engine.tick_count = TICK_DIVISOR - 1;
+        engine.last_activation = 999.0;
+        engine.next_stagger = 999.0;
+        for slot in engine.slots.iter_mut().take(2) {
+            slot.phase = Phase::Idle;
+            slot.intensity = 0.0;
+        }
+
+        engine.tick(1000.0, 1.0 / 30.0);
+        let active = engine
+            .slots
+            .iter()
+            .filter(|slot| slot.phase != Phase::Idle)
+            .count();
+
+        assert!(
+            active >= ACTIVE_SLOT_TARGET,
+            "drift must refill below-target active slots immediately"
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn autonomous_drift_library_keeps_all_effect_families_eligible() {
+        let families: std::collections::HashSet<&str> =
+            SHADERS.iter().map(|def| def.family).collect();
+        for family in ["tonal", "texture", "edge", "atmospheric"] {
+            assert!(
+                families.contains(family),
+                "effect family {family} must remain in the autonomous drift library"
+            );
+        }
     }
 
     #[test]
@@ -894,14 +1000,17 @@ impl SlotDriftEngine {
             slots.push(state);
         }
 
-        // Activate 5 random slots at staggered lifecycle phases
+        // Activate four random slots at staggered lifecycle phases; the
+        // fifth slot remains available for continuous zero-crossing
+        // recruitment. This keeps the surface mediated without turning
+        // the graph into a static all-on stack.
         {
             let mut activate_indices: Vec<usize> = (0..slots.len()).collect();
             for i in (1..activate_indices.len()).rev() {
                 let j = (rng.next_f32() * (i + 1) as f32) as usize % (i + 1);
                 activate_indices.swap(i, j);
             }
-            for (ai, &slot_i) in activate_indices.iter().take(5).enumerate() {
+            for (ai, &slot_i) in activate_indices.iter().take(ACTIVE_SLOT_TARGET).enumerate() {
                 let def = &SHADERS[slots[slot_i].shader_idx];
                 slots[slot_i].peak_intensity = random_peak_intensity(&mut rng, def);
                 slots[slot_i].active_target = Self::random_target(&mut rng, def);
@@ -913,7 +1022,7 @@ impl SlotDriftEngine {
                         slots[slot_i].phase_start =
                             now - slots[slot_i].phase_duration * rng.range(0.2, 0.6);
                         slots[slot_i].intensity =
-                            slots[slot_i].peak_intensity * rng.range(0.2, 0.5);
+                            slots[slot_i].peak_intensity * rng.range(0.4, 0.7);
                     }
                     1 => {
                         slots[slot_i].phase = Phase::Peak;
@@ -928,7 +1037,7 @@ impl SlotDriftEngine {
                         slots[slot_i].phase_start =
                             now - slots[slot_i].phase_duration * rng.range(0.1, 0.5);
                         slots[slot_i].intensity =
-                            slots[slot_i].peak_intensity * rng.range(0.3, 0.7);
+                            slots[slot_i].peak_intensity * rng.range(0.45, 0.8);
                     }
                     _ => {
                         slots[slot_i].phase = Phase::Rising;
@@ -936,7 +1045,7 @@ impl SlotDriftEngine {
                         slots[slot_i].phase_start =
                             now - slots[slot_i].phase_duration * rng.range(0.05, 0.3);
                         slots[slot_i].intensity =
-                            slots[slot_i].peak_intensity * rng.range(0.05, 0.2);
+                            slots[slot_i].peak_intensity * rng.range(0.25, 0.5);
                     }
                 }
                 slots[slot_i].idle_since = 0.0;
@@ -1005,10 +1114,13 @@ impl SlotDriftEngine {
                     // Immediately begin rising with the new shader
                     let def = &SHADERS[self.slots[i].shader_idx];
                     self.slots[i].phase = Phase::Rising;
-                    self.slots[i].phase_start = time;
                     self.slots[i].phase_duration = FADE_IN_S * self.rng.range(0.8, 1.2);
                     self.slots[i].active_target = Self::random_target(&mut self.rng, def);
                     self.slots[i].peak_intensity = random_peak_intensity(&mut self.rng, def);
+                    let warm_progress = 0.12;
+                    let warm_smooth = warm_progress * warm_progress * (3.0 - 2.0 * warm_progress);
+                    self.slots[i].phase_start = time - self.slots[i].phase_duration * warm_progress;
+                    self.slots[i].intensity = self.slots[i].peak_intensity * warm_smooth;
                     log::info!(
                         "SlotDrift: zero-crossing → slot {} now {} (fading in)",
                         i,
@@ -1080,86 +1192,92 @@ impl SlotDriftEngine {
     }
 
     fn maybe_activate_next(&mut self, now: f32) {
-        if now - self.last_activation < self.next_stagger {
-            return;
-        }
-        let active_count = self.slots.iter().filter(|s| s.phase != Phase::Idle).count();
-        if active_count >= 5 {
-            return;
-        }
+        loop {
+            let active_count = self.slots.iter().filter(|s| s.phase != Phase::Idle).count();
+            if active_count >= ACTIVE_SLOT_TARGET {
+                return;
+            }
 
-        // Find idle slots
-        let idle: Vec<usize> = self
-            .slots
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.phase == Phase::Idle)
-            .map(|(i, _)| i)
-            .collect();
-        if idle.is_empty() {
-            return;
-        }
-
-        // Enforce max 1 spatial effect at a time (serial chain compounds spatials)
-        let active_spatial = self
-            .slots
-            .iter()
-            .any(|s| s.phase != Phase::Idle && SHADERS[s.shader_idx].is_spatial);
-
-        // Filter idle slots: if a spatial is already active, exclude spatial idles
-        let idle: Vec<usize> = if active_spatial {
-            idle.into_iter()
-                .filter(|&i| !SHADERS[self.slots[i].shader_idx].is_spatial)
-                .collect()
-        } else {
-            idle
-        };
-        if idle.is_empty() {
-            return;
-        }
-
-        // Pick family-affine slot
-        let active_families: Vec<&str> = self
-            .slots
-            .iter()
-            .filter(|s| s.phase != Phase::Idle)
-            .map(|s| SHADERS[s.shader_idx].family)
-            .collect();
-
-        let chosen_idx = if !active_families.is_empty() && self.rng.next_f32() < 0.7 {
-            let affine: Vec<usize> = idle
+            // Find idle slots
+            let idle: Vec<usize> = self
+                .slots
                 .iter()
-                .copied()
-                .filter(|&i| {
-                    active_families
-                        .iter()
-                        .any(|af| families_affine(af, SHADERS[self.slots[i].shader_idx].family))
-                })
+                .enumerate()
+                .filter(|(_, s)| s.phase == Phase::Idle)
+                .map(|(i, _)| i)
                 .collect();
-            if !affine.is_empty() {
-                affine[(self.rng.next_f32() * affine.len() as f32) as usize % affine.len()]
+            if idle.is_empty() {
+                return;
+            }
+
+            // Spatial effects are eligible, but serially compounding too many
+            // geometry transforms destroys the readable scene. Permit two so
+            // the atmospheric family is not artificially sidelined while still
+            // preserving recognizable geometry.
+            let active_spatial_count = self
+                .slots
+                .iter()
+                .filter(|s| s.phase != Phase::Idle && SHADERS[s.shader_idx].is_spatial)
+                .count();
+
+            // Filter idle slots: if two spatials are already active, exclude spatial idles.
+            let idle: Vec<usize> = if active_spatial_count >= 2 {
+                idle.into_iter()
+                    .filter(|&i| !SHADERS[self.slots[i].shader_idx].is_spatial)
+                    .collect()
+            } else {
+                idle
+            };
+            if idle.is_empty() {
+                return;
+            }
+
+            // Pick family-affine slot
+            let active_families: Vec<&str> = self
+                .slots
+                .iter()
+                .filter(|s| s.phase != Phase::Idle)
+                .map(|s| SHADERS[s.shader_idx].family)
+                .collect();
+
+            let chosen_idx = if !active_families.is_empty() && self.rng.next_f32() < 0.7 {
+                let affine: Vec<usize> = idle
+                    .iter()
+                    .copied()
+                    .filter(|&i| {
+                        active_families
+                            .iter()
+                            .any(|af| families_affine(af, SHADERS[self.slots[i].shader_idx].family))
+                    })
+                    .collect();
+                if !affine.is_empty() {
+                    affine[(self.rng.next_f32() * affine.len() as f32) as usize % affine.len()]
+                } else {
+                    idle[(self.rng.next_f32() * idle.len() as f32) as usize % idle.len()]
+                }
             } else {
                 idle[(self.rng.next_f32() * idle.len() as f32) as usize % idle.len()]
-            }
-        } else {
-            idle[(self.rng.next_f32() * idle.len() as f32) as usize % idle.len()]
-        };
+            };
 
-        let slot = &mut self.slots[chosen_idx];
-        let def = &SHADERS[slot.shader_idx];
-        slot.phase = Phase::Rising;
-        slot.phase_start = now;
-        slot.phase_duration = FADE_IN_S * self.rng.range(0.8, 1.2);
-        slot.active_target = Self::random_target(&mut self.rng, def);
-        slot.peak_intensity = random_peak_intensity(&mut self.rng, def);
-        self.last_activation = now;
-        self.next_stagger = STAGGER_S * self.rng.range(0.7, 1.3);
-        log::info!(
-            "SlotDrift: activating slot {} ({}), {} now active",
-            chosen_idx,
-            def.name,
-            active_count + 1
-        );
+            let slot = &mut self.slots[chosen_idx];
+            let def = &SHADERS[slot.shader_idx];
+            slot.phase = Phase::Rising;
+            slot.phase_duration = FADE_IN_S * self.rng.range(0.8, 1.2);
+            slot.active_target = Self::random_target(&mut self.rng, def);
+            slot.peak_intensity = random_peak_intensity(&mut self.rng, def);
+            let warm_progress = 0.12;
+            let warm_smooth = warm_progress * warm_progress * (3.0 - 2.0 * warm_progress);
+            slot.phase_start = now - slot.phase_duration * warm_progress;
+            slot.intensity = slot.peak_intensity * warm_smooth;
+            self.last_activation = now;
+            self.next_stagger = STAGGER_S * self.rng.range(0.7, 1.3);
+            log::info!(
+                "SlotDrift: activating slot {} ({}), {} now active",
+                chosen_idx,
+                def.name,
+                active_count + 1
+            );
+        }
     }
 
     fn recycle_slot(&mut self, idx: usize) {
@@ -1272,9 +1390,13 @@ impl SlotDriftEngine {
     fn write_plan(&self) {
         let mut passes = Vec::new();
         let mut prev_output = "@live".to_string();
+        let plan_dir = Path::new(&self.plan_path)
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
 
         for (i, slot) in self.slots.iter().enumerate() {
             let def = &SHADERS[slot.shader_idx];
+            copy_shader_to_plan_dir(def, plan_dir);
             let layer = format!("layer_{}", i);
             let mut uniforms_map = serde_json::Map::new();
             let param_order: Vec<String> = def.param_order.iter().map(|s| s.to_string()).collect();
@@ -1305,6 +1427,7 @@ impl SlotDriftEngine {
 
         // Feedback bookend
         {
+            copy_shader_to_plan_dir(&FEEDBACK_DEF, plan_dir);
             let layer = format!("layer_{}", self.slots.len());
             let mut u = serde_json::Map::new();
             for &(name, val) in FEEDBACK_DEF.passthrough.iter() {
@@ -1329,6 +1452,7 @@ impl SlotDriftEngine {
 
         // Postprocess bookend
         {
+            copy_shader_to_plan_dir(&POSTPROCESS_DEF, plan_dir);
             let mut u = serde_json::Map::new();
             for &(name, val) in POSTPROCESS_DEF.passthrough.iter() {
                 u.insert(name.to_string(), serde_json::Value::from(val as f64));
@@ -1365,5 +1489,28 @@ impl SlotDriftEngine {
         ) {
             log::warn!("SlotDrift: plan write failed: {}", e);
         }
+    }
+}
+
+fn copy_shader_to_plan_dir(def: &ShaderDef, plan_dir: &Path) {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../agents/shaders/nodes")
+        .join(def.shader_file);
+    let dst = plan_dir.join(def.shader_file);
+    if let Err(e) = std::fs::create_dir_all(plan_dir) {
+        log::warn!(
+            "SlotDrift: failed to create shader plan dir {}: {}",
+            plan_dir.display(),
+            e
+        );
+        return;
+    }
+    if let Err(e) = std::fs::copy(&src, &dst) {
+        log::warn!(
+            "SlotDrift: failed to copy shader {} → {}: {}",
+            src.display(),
+            dst.display(),
+            e
+        );
     }
 }

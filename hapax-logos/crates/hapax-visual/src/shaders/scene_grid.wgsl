@@ -75,14 +75,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let sp = vec2<f32>(2.5, 1.8);
     let lx = abs(fract(gc.x / sp.x + 0.5) - 0.5) * sp.x;
     let ly = abs(fract(gc.y / sp.y + 0.5) - 0.5) * sp.y;
-    let major_x = smoothstep(0.055, 0.009, lx);
-    let major_y = smoothstep(0.055, 0.009, ly);
+    let major_x = smoothstep(0.072, 0.011, lx);
+    let major_y = smoothstep(0.072, 0.011, ly);
     let is_mid_field = abs(wp.y - 0.35) < 0.02;
-    let major = select(
-        max(major_x, major_y),
-        max(major_x * 0.72, major_y * 0.16),
-        is_mid_field,
-    );
+    let major = select(max(major_x, major_y), max(major_x * 0.90, major_y * 0.55), is_mid_field);
 
     if major < 0.01 {
         discard;
@@ -109,17 +105,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Luminescence
     let pulse = 0.96 + 0.04 * sin(t * 0.18 + gc.y * 0.2);
 
-    color = color * 0.24 * glow * dist_fade * pulse;
-    var alpha = major * 0.22 * dist_fade;
+    color = color * 0.46 * glow * dist_fade * pulse;
+    var alpha = major * 0.32 * dist_fade;
     if is_mid_field {
-        alpha = alpha * 0.16;
-        color = color * 0.38;
-    } else if abs(in.normal.y) > 0.5 {
         alpha = alpha * 0.56;
-        color = color * 0.66;
+        color = color * 1.00;
+    } else if abs(in.normal.y) > 0.5 {
+        alpha = alpha * 0.88;
+        color = color * 1.05;
     } else {
-        alpha = alpha * 0.08;
-        color = color * 0.16;
+        alpha = alpha * 0.24;
+        color = color * 0.46;
     }
 
     return vec4<f32>(color, alpha);
