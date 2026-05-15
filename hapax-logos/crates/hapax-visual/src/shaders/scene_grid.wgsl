@@ -104,17 +104,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Luminescence
     let pulse = 0.96 + 0.04 * sin(t * 0.18 + gc.y * 0.2);
 
-    color = color * 0.32 * glow * dist_fade * pulse;
-    var alpha = major * 0.30 * dist_fade;
+    color = color * 0.24 * glow * dist_fade * pulse;
+    var alpha = major * 0.22 * dist_fade;
     if abs(wp.y - 0.35) < 0.02 {
         alpha = alpha * 0.22;
         color = color * 0.50;
     } else if abs(in.normal.y) > 0.5 {
-        alpha = alpha * 0.62;
-        color = color * 0.74;
+        alpha = alpha * 0.56;
+        color = color * 0.66;
     } else {
-        alpha = alpha * 0.34;
-        color = color * 0.48;
+        alpha = alpha * 0.08;
+        color = color * 0.16;
     }
 
     return vec4<f32>(color, alpha);
