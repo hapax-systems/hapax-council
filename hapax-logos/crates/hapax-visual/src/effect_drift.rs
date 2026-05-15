@@ -858,6 +858,47 @@ mod tests {
     }
 
     #[test]
+    fn dormant_effect_nodes_keep_source_bound_floor() {
+        let shader_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../agents/shaders/nodes");
+        let ascii =
+            std::fs::read_to_string(shader_root.join("ascii.wgsl")).expect("read ascii shader");
+        let glitch = std::fs::read_to_string(shader_root.join("glitch_block.wgsl"))
+            .expect("read glitch_block shader");
+        let trail =
+            std::fs::read_to_string(shader_root.join("trail.wgsl")).expect("read trail shader");
+        let echo =
+            std::fs::read_to_string(shader_root.join("echo.wgsl")).expect("read echo shader");
+        let vhs = std::fs::read_to_string(shader_root.join("vhs.wgsl")).expect("read vhs shader");
+
+        assert!(
+            ascii.contains("sourceColor")
+                && ascii.contains("glyph_signal")
+                && ascii.contains("surface_presence")
+                && !ascii.contains("bgColor"),
+            "ascii must blend glyph pressure over source instead of replacing the frame with a terminal pane"
+        );
+        assert!(
+            glitch.contains("var source")
+                && glitch.contains("mix(source, glitch_signal")
+                && !glitch.contains("fragColor = vec4<f32>(_e268"),
+            "glitch_block must keep a source floor, including generated pattern branches"
+        );
+        assert!(
+            trail.contains("temporal_strength")
+                && trail.contains("mix(cur.xyz")
+                && echo.contains("echo_strength")
+                && echo.contains("mix(cur.xyz"),
+            "temporal trail/echo nodes must blend history into current content"
+        );
+        assert!(
+            vhs.contains("head_switch_y = clamp(global.u_head_switch_y")
+                && !vhs.contains("uv.y > 0.93f"),
+            "vhs head-switch disturbance must use the drifted parameter, not a hardcoded viewport band"
+        );
+    }
+
+    #[test]
     fn thermal_shader_blends_instead_of_snapping_full_frame() {
         let source = std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR"))

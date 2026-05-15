@@ -97,7 +97,13 @@ fn main_1() {
     }
     let _e154 = r;
     let _e159 = clamp(_e154, vec3(0f), vec3(1f));
-    fragColor = vec4<f32>(_e159.x, _e159.y, _e159.z, 1f);
+    let cur_luma = dot(cur.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    let surface_presence = smoothstep(0.025f, 0.18f, cur_luma);
+    let temporal_strength = surface_presence
+        * clamp(global.u_opacity, 0f, 0.34f)
+        * clamp((1f - global.u_fade), 0f, 0.80f);
+    let live_bound = mix(cur.xyz, _e159, vec3<f32>(temporal_strength));
+    fragColor = vec4<f32>(live_bound.x, live_bound.y, live_bound.z, cur.a);
     return;
 }
 

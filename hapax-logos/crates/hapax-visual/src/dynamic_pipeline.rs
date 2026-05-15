@@ -2580,10 +2580,20 @@ fn main(@location(0) v_texcoord: vec2<f32>) -> @location(0) vec4<f32> {
     fn repaired_live_surface_shaders_parse_with_shared_uniforms() {
         let shader_root =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../agents/shaders/nodes");
-        let passes = ["slitscan", "stutter", "palette_extract", "rutt_etra"]
-            .into_iter()
-            .map(|node| ("main".to_string(), make_pass(node, &format!("{node}.wgsl"))))
-            .collect::<Vec<_>>();
+        let passes = [
+            "slitscan",
+            "stutter",
+            "palette_extract",
+            "rutt_etra",
+            "ascii",
+            "glitch_block",
+            "trail",
+            "echo",
+            "vhs",
+        ]
+        .into_iter()
+        .map(|node| ("main".to_string(), make_pass(node, &format!("{node}.wgsl"))))
+        .collect::<Vec<_>>();
 
         let failures = validate_plan_shaders(&shader_root, &passes);
         assert!(

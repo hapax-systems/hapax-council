@@ -197,17 +197,16 @@ fn main_1() {
     var posInCell: vec2<f32>;
     var bit: f32;
     var fgColor: vec3<f32>;
-    var bgColor: vec3<f32> = vec3<f32>(0.02f, 0.02f, 0.02f);
     var color: vec3<f32>;
+    var sourceColor: vec4<f32>;
 
     let _e14 = v_texcoord_1;
     uv = _e14;
+    sourceColor = textureSample(tex, tex_sampler, uv);
     let _e16 = global.u_cell_size;
     if (_e16 < 2f) {
         {
-            let _e19 = uv;
-            let _e20 = textureSample(tex, tex_sampler, _e19);
-            fragColor = _e20;
+            fragColor = sourceColor;
             return;
         }
     }
@@ -270,12 +269,14 @@ fn main_1() {
             fgColor = _e137;
         }
     }
-    let _e143 = bgColor;
+    let _e143 = sourceColor;
     let _e144 = fgColor;
     let _e145 = bit;
-    color = mix(_e143, _e144, vec3(_e145));
+    let surface_presence = smoothstep(0.025f, 0.18f, lum_2);
+    let glyph_signal = mix(_e143.xyz, _e144, vec3(_e145 * 0.72f));
+    color = mix(_e143.xyz, glyph_signal, vec3(surface_presence * 0.36f));
     let _e149 = color;
-    fragColor = vec4<f32>(_e149.x, _e149.y, _e149.z, 1f);
+    fragColor = vec4<f32>(_e149.x, _e149.y, _e149.z, sourceColor.a);
     return;
 }
 

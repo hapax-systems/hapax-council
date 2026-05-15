@@ -82,8 +82,9 @@ fn main_1() {
     }
 
     px = (1f / uniforms.resolution.x);
+    let head_switch_y = clamp(global.u_head_switch_y, 0.88f, 0.995f);
     let _e27 = uv;
-    if (_e27.y > 0.93f) {
+    if (_e27.y > head_switch_y) {
         {
             let _e31 = uv;
 
@@ -91,7 +92,8 @@ fn main_1() {
             lineNoise = _e38;
             let _e40 = lineNoise;
             let _e45 = px;
-            jitter = (((_e40 - 0.5f) * 20f) * _e45);
+            let head_gate = smoothstep(head_switch_y, 1f, uv.y);
+            jitter = (((_e40 - 0.5f) * 12f) * _e45 * head_gate);
             let _e49 = uv;
             let _e51 = jitter;
             uv.x = (_e49.x + _e51);
@@ -163,13 +165,15 @@ fn main_1() {
     let _e202 = crosstalk;
     color.z = (_e200.z - _e202);
     let _e204 = uv;
-    if (_e204.y > 0.93f) {
+    if (_e204.y > head_switch_y) {
         {
 
             let _e209 = uv;
 
             let _e215 = hash(vec2<f32>(uniforms.time, floor((_e209.y * uniforms.resolution.y))));
-            brightShift = ((_e215 * 0.3f) - 0.15f);
+            let head_surface_presence = smoothstep(0.025f, 0.20f, luma);
+            let head_gate = smoothstep(head_switch_y, 1f, uv.y);
+            brightShift = (((_e215 * 0.18f) - 0.09f) * head_surface_presence * head_gate);
             let _e221 = color;
             let _e223 = color;
             let _e225 = brightShift;
