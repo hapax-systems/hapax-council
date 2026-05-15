@@ -15,7 +15,7 @@ log = logging.getLogger("research")
 from pydantic_ai import Agent
 from qdrant_client import QdrantClient
 
-from agents._config import EMBEDDING_MODEL, embed, get_model, get_qdrant
+from agents._config import EMBEDDING_MODEL, LITELLM_BASE, LITELLM_KEY, embed, get_model, get_qdrant
 from agents._operator import get_goals, get_system_prompt_fragment
 
 # Import Langfuse OTel config (side-effect: configures exporter)
@@ -130,6 +130,82 @@ async def search_knowledge_base(ctx, query: str) -> str:
 
 
 # search_samples removed — 'samples' Qdrant collection was never populated
+
+
+@agent.tool
+async def search_web(
+    ctx,
+    query: str,
+    recency: str | None = None,
+    domains: list[str] | None = None,
+) -> str:
+    """Search the live web for current information using Perplexity Sonar.
+
+    Args:
+        query: Natural language search query.
+        recency: Time filter — "hour", "day", "week", or "month".
+        domains: Restrict to these domains (max 20), e.g. ["arxiv.org"].
+    """
+    with _tracer.start_as_current_span(
+        "research.search_web",
+        attributes={"query.text": query[:100], "search.recency": recency or "none"},
+    ):
+        try:
+            from pydantic_ai.models.openai import OpenAIChatModel
+            from pydantic_ai.providers.litellm import LiteLLMProvider
+
+            web_model = OpenAIChatModel(
+                "web-scout",
+                provider=LiteLLMProvider(api_base=LITELLM_BASE, api_key=LITELLM_KEY),
+            )
+            web_agent = Agent(web_model)
+            result = await web_agent.run(query)
+            return result.output
+        except Exception as exc:
+            log.warning("Web search failed: %s", exc)
+            return f"Web search unavailable: {exc}"
+
+
+@agent.tool
+async def deep_research(
+    ctx,
+    question: str,
+    domains: list[str] | None = None,
+) -> str:
+    """Run deep multi-source web research using Perplexity Sonar Deep Research.
+
+    Higher cost than search_web. Skipped in fortress working mode.
+
+    Args:
+        question: Research question requiring comprehensive investigation.
+        domains: Restrict to these domains (max 20).
+    """
+    with _tracer.start_as_current_span(
+        "research.deep_research",
+        attributes={"query.text": question[:100]},
+    ):
+        try:
+            from shared.working_mode import is_fortress
+
+            if is_fortress():
+                return "Deep research unavailable in fortress mode."
+        except Exception:
+            pass
+
+        try:
+            from pydantic_ai.models.openai import OpenAIChatModel
+            from pydantic_ai.providers.litellm import LiteLLMProvider
+
+            web_model = OpenAIChatModel(
+                "web-deep",
+                provider=LiteLLMProvider(api_base=LITELLM_BASE, api_key=LITELLM_KEY),
+            )
+            web_agent = Agent(web_model)
+            result = await web_agent.run(question)
+            return result.output
+        except Exception as exc:
+            log.warning("Deep research failed: %s", exc)
+            return f"Deep research unavailable: {exc}"
 
 
 # ── Entry points ─────────────────────────────────────────────────────────────

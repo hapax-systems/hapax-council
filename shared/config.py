@@ -111,6 +111,12 @@ MODELS: dict[str, str] = {
     # 280-token mode). Callers MUST pass `media_resolution: "low"` in
     # extra_body alongside the existing `budget_tokens: 0` invariant.
     "vision-fast": "gemini-3-flash-preview",
+    # Perplexity Sonar family — search-grounded web models. ADD-ONLY.
+    # Per docs/superpowers/specs/2026-05-15-perplexity-api-integration-design.md.
+    "web-scout": "web-scout",
+    "web-research": "web-research",
+    "web-reason": "web-reason",
+    "web-deep": "web-deep",
 }
 
 EMBEDDING_MODEL: str = "nomic-embed-cpu"
@@ -175,6 +181,10 @@ def get_model_adaptive(alias: str = "balanced") -> OpenAIChatModel:
                 "long-context-3": "long-context",
                 "extraction": "fast-3",
                 "scouting": "fast-3",
+                "web-deep": "web-research",
+                "web-research": "web-scout",
+                "web-reason": "web-scout",
+                "web-scout": "balanced",
             }
             if alias in downgraded:
                 _log.debug(
@@ -186,7 +196,12 @@ def get_model_adaptive(alias: str = "balanced") -> OpenAIChatModel:
                 return get_model(downgraded[alias])
 
         if cost > 0.6:
-            downgraded = {"balanced": "fast", "reasoning": "fast"}
+            downgraded = {
+                "balanced": "fast",
+                "reasoning": "fast",
+                "web-deep": "web-scout",
+                "web-research": "web-scout",
+            }
             if alias in downgraded:
                 _log.debug(
                     "Cost pressure %.2f → %s downgraded to %s", cost, alias, downgraded[alias]
