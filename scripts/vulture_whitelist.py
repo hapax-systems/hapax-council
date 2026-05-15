@@ -3037,3 +3037,19 @@ inspect_message
 list_messages
 purge_expired
 RelayMQEnvelope._validate_envelope
+
+# Perplexity grounding adapter — library API consumed by grounding eval harness
+# and future agent callers. Agent tools are dynamically registered via @agent.tool.
+from shared.grounding_adapters.perplexity import (  # noqa: F401, E402
+    build_envelope_from_response,
+    build_error_envelope,
+)
+
+build_envelope_from_response
+build_error_envelope
+
+# Research agent Perplexity tools — registered via @agent.tool decorator
+from agents.research import deep_research, search_web  # noqa: F401, E402
+
+deep_research
+search_web
