@@ -603,6 +603,53 @@ class AffordancePipeline:
             self._programme_loaded_at = now
         return self._active_programme
 
+    def _apply_hard_gates(
+        self,
+        candidates: list[SelectionCandidate],
+        trace: dict[str, Any],
+    ) -> tuple[list[SelectionCandidate], Any]:
+        """Apply authorization gates shared by semantic and fallback retrieval."""
+        # Consent gate — closes the audit-surfaced enforcement gap. See
+        # _consent_allows() for the rationale and fail-closed semantics.
+        candidates = [c for c in candidates if self._consent_allows(c)]
+        trace["stages"]["after_consent"] = len(candidates)
+        if not candidates:
+            trace["dropout_at"] = "consent_filter_empty"
+            return [], None
+
+        # Monetization-risk gate (task #165, plan Phase 1). High-risk always
+        # blocked; medium-risk requires a programme opt-in. D-26 (plan
+        # Phase 5) wires the active-programme lookup so opt-ins set on the
+        # current Programme actually reach the gate. Low/none pass unchanged.
+        # D-17: quiet_frame subscriber install. install() is no-op unless
+        # HAPAX_QUIET_FRAME_AUTO=1 in env — keeps test imports from
+        # accidentally enabling the wire. Idempotent (register_assess_listener
+        # dedupes), so calling on every select() is cheap and avoids module-
+        # import-time side effects.
+        from shared.governance import quiet_frame_subscriber
+        from shared.governance.content_risk import GATE as _CONTENT_RISK_GATE
+        from shared.governance.monetization_safety import GATE as _MONET_GATE
+
+        quiet_frame_subscriber.install()
+        active_programme = self._active_programme_cached()
+        candidates = _MONET_GATE.candidate_filter(candidates, programme=active_programme)
+        trace["stages"]["after_monetization"] = len(candidates)
+        if not candidates:
+            trace["dropout_at"] = "monetization_filter_empty"
+            return [], active_programme
+
+        # Content-source registry Phase 1 (PR for plan §1): filter on
+        # provenance/ContentID risk independently of monetization_risk.
+        # tier_4 unconditionally blocked; tier_3 requires session unlock;
+        # tier_2 requires programme opt-in; tier_0/tier_1 pass.
+        candidates = _CONTENT_RISK_GATE.candidate_filter(candidates, programme=active_programme)
+        trace["stages"]["after_content_risk"] = len(candidates)
+        if not candidates:
+            trace["dropout_at"] = "content_risk_filter_empty"
+            return [], active_programme
+
+        return candidates, active_programme
+
     def register_interrupt(self, token: str, capability_name: str, daemon: str) -> None:
         self._interrupt_handlers.setdefault(token, []).append(
             InterruptHandler(capability_name=capability_name, daemon=daemon)
@@ -669,8 +716,12 @@ class AffordancePipeline:
         embedding = self._get_embedding(impingement)
         if embedding is None:
             fallback = self._fallback_keyword_match(impingement)
-            trace["dropout_at"] = "no_embedding_fallback" if not fallback else None
             trace["stages"]["fallback_keyword_match"] = len(fallback)
+            if not fallback:
+                trace["dropout_at"] = "no_embedding_fallback"
+                self._emit_dispatch_trace(trace)
+                return []
+            fallback, _ = self._apply_hard_gates(fallback, trace)
             self._emit_dispatch_trace(trace)
             return fallback
         # Stage 1 routing fix (2026-04-18): if the impingement carries an
@@ -695,43 +746,8 @@ class AffordancePipeline:
             )
             self._emit_dispatch_trace(trace)
             return []
-        # Consent gate — closes the audit-surfaced enforcement gap. See
-        # _consent_allows() for the rationale and fail-closed semantics.
-        candidates = [c for c in candidates if self._consent_allows(c)]
-        trace["stages"]["after_consent"] = len(candidates)
+        candidates, active_programme = self._apply_hard_gates(candidates, trace)
         if not candidates:
-            trace["dropout_at"] = "consent_filter_empty"
-            self._emit_dispatch_trace(trace)
-            return []
-        # Monetization-risk gate (task #165, plan Phase 1). High-risk always
-        # blocked; medium-risk requires a programme opt-in. D-26 (plan
-        # Phase 5) wires the active-programme lookup so opt-ins set on the
-        # current Programme actually reach the gate. Low/none pass unchanged.
-        # D-17: quiet_frame subscriber install. install() is no-op unless
-        # HAPAX_QUIET_FRAME_AUTO=1 in env — keeps test imports from
-        # accidentally enabling the wire. Idempotent (register_assess_listener
-        # dedupes), so calling on every select() is cheap and avoids module-
-        # import-time side effects.
-        from shared.governance import quiet_frame_subscriber
-        from shared.governance.content_risk import GATE as _CONTENT_RISK_GATE
-        from shared.governance.monetization_safety import GATE as _MONET_GATE
-
-        quiet_frame_subscriber.install()
-        active_programme = self._active_programme_cached()
-        candidates = _MONET_GATE.candidate_filter(candidates, programme=active_programme)
-        trace["stages"]["after_monetization"] = len(candidates)
-        if not candidates:
-            trace["dropout_at"] = "monetization_filter_empty"
-            self._emit_dispatch_trace(trace)
-            return []
-        # Content-source registry Phase 1 (PR for plan §1): filter on
-        # provenance/ContentID risk independently of monetization_risk.
-        # tier_4 unconditionally blocked; tier_3 requires session unlock;
-        # tier_2 requires programme opt-in; tier_0/tier_1 pass.
-        candidates = _CONTENT_RISK_GATE.candidate_filter(candidates, programme=active_programme)
-        trace["stages"]["after_content_risk"] = len(candidates)
-        if not candidates:
-            trace["dropout_at"] = "content_risk_filter_empty"
             self._emit_dispatch_trace(trace)
             return []
         now = time.time()

@@ -47,6 +47,21 @@ def _patch_trace_file(monkeypatch, tmp_path):
     monkeypatch.setenv(DISPATCH_TRACE_ENV, "1")
 
 
+def _fallback_candidate(**payload) -> SelectionCandidate:
+    base_payload = {
+        "consent_required": False,
+        "public_capable": False,
+        "monetization_risk": "none",
+        "content_risk": "tier_0_owned",
+    }
+    base_payload.update(payload)
+    return SelectionCandidate(
+        capability_name="fallback.capability",
+        similarity=0.9,
+        payload=base_payload,
+    )
+
+
 def test_disabled_env_writes_nothing(monkeypatch, tmp_path):
     _patch_trace_file(monkeypatch, tmp_path)
     monkeypatch.setenv(DISPATCH_TRACE_ENV, "0")
@@ -117,6 +132,59 @@ def test_no_embedding_empty_fallback_drops(monkeypatch, tmp_path):
     row = _read_trace(tmp_path)[-1]
     assert row["dropout_at"] == "no_embedding_fallback"
     assert row["stages"]["fallback_keyword_match"] == 0
+
+
+def test_no_embedding_fallback_consent_drop_records_gate(monkeypatch, tmp_path):
+    _patch_trace_file(monkeypatch, tmp_path)
+    p = AffordancePipeline()
+    candidate = _fallback_candidate(consent_required=True)
+    empty_registry = mock.MagicMock()
+    empty_registry.__iter__ = lambda self: iter([])
+    with (
+        mock.patch.object(p, "_get_embedding", return_value=None),
+        mock.patch.object(p, "_fallback_keyword_match", return_value=[candidate]),
+        mock.patch("shared.governance.consent.load_contracts", return_value=empty_registry),
+    ):
+        p.select(_make_imp())
+    row = _read_trace(tmp_path)[-1]
+    assert row["dropout_at"] == "consent_filter_empty"
+    assert row["stages"]["fallback_keyword_match"] == 1
+    assert row["stages"]["after_consent"] == 0
+
+
+def test_no_embedding_fallback_monetization_drop_records_gate(monkeypatch, tmp_path):
+    _patch_trace_file(monkeypatch, tmp_path)
+    p = AffordancePipeline()
+    candidate = _fallback_candidate(monetization_risk="high")
+    with (
+        mock.patch.object(p, "_get_embedding", return_value=None),
+        mock.patch.object(p, "_fallback_keyword_match", return_value=[candidate]),
+        mock.patch.object(p, "_active_programme_cached", return_value=None),
+        mock.patch("shared.governance.monetization_safety._AUDIT_ENABLED", False),
+    ):
+        p.select(_make_imp())
+    row = _read_trace(tmp_path)[-1]
+    assert row["dropout_at"] == "monetization_filter_empty"
+    assert row["stages"]["fallback_keyword_match"] == 1
+    assert row["stages"]["after_consent"] == 1
+    assert row["stages"]["after_monetization"] == 0
+
+
+def test_no_embedding_fallback_content_risk_drop_records_gate(monkeypatch, tmp_path):
+    _patch_trace_file(monkeypatch, tmp_path)
+    p = AffordancePipeline()
+    candidate = _fallback_candidate(content_risk="tier_4_risky")
+    with (
+        mock.patch.object(p, "_get_embedding", return_value=None),
+        mock.patch.object(p, "_fallback_keyword_match", return_value=[candidate]),
+        mock.patch.object(p, "_active_programme_cached", return_value=None),
+    ):
+        p.select(_make_imp())
+    row = _read_trace(tmp_path)[-1]
+    assert row["dropout_at"] == "content_risk_filter_empty"
+    assert row["stages"]["fallback_keyword_match"] == 1
+    assert row["stages"]["after_monetization"] == 1
+    assert row["stages"]["after_content_risk"] == 0
 
 
 def test_family_filter_empty_drops(monkeypatch, tmp_path):
