@@ -59,18 +59,21 @@ fn main_1() {
     if (_e70 > 0.5f) {
         {
             let _e73 = dispColor;
-            let _e75 = line;
-            result = (_e73.xyz * _e75);
+            result = _e73.xyz;
         }
     } else {
         {
             let _e77 = dispLum;
-            let _e78 = line;
-            result = vec3((_e77 * _e78));
+            result = vec3(_e77);
         }
     }
-    let _e81 = result;
-    fragColor = vec4<f32>(_e81.x, _e81.y, _e81.z, 1f);
+
+    let surface_presence = smoothstep(0.025f, 0.18f, lum);
+    let displacement_strength = clamp(abs(global.u_displacement) * 0.012f, 0f, 0.38f);
+    let line_strength = line * surface_presence * displacement_strength;
+    let rutt_signal = mix(color.xyz, result, vec3<f32>(0.72f));
+    let blended = mix(color.xyz, rutt_signal, vec3<f32>(line_strength));
+    fragColor = vec4<f32>(blended, color.a);
     return;
 }
 

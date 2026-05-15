@@ -804,6 +804,60 @@ mod tests {
     }
 
     #[test]
+    fn slitscan_temporal_state_does_not_replace_live_surface() {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../agents/shaders/nodes/slitscan.wgsl"),
+        )
+        .expect("read slitscan shader");
+
+        assert!(
+            source.contains("surface_presence")
+                && source.contains("temporal_strength")
+                && source.contains("mix(current, temporal"),
+            "slitscan must blend temporal history into live content instead of freezing the surface"
+        );
+        assert!(
+            !source.contains("fragColor = textureSample(tex_accum"),
+            "slitscan must not replace most pixels with the temporal accumulator"
+        );
+    }
+
+    #[test]
+    fn temporal_and_palette_nodes_do_not_create_foreground_panes_or_freezes() {
+        let shader_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../agents/shaders/nodes");
+        let stutter =
+            std::fs::read_to_string(shader_root.join("stutter.wgsl")).expect("read stutter shader");
+        let palette_extract = std::fs::read_to_string(shader_root.join("palette_extract.wgsl"))
+            .expect("read palette_extract shader");
+        let rutt_etra = std::fs::read_to_string(shader_root.join("rutt_etra.wgsl"))
+            .expect("read rutt_etra shader");
+
+        assert!(
+            stutter.contains("surface_presence")
+                && stutter.contains("base_strength")
+                && !stutter.contains("fragColor = held")
+                && !stutter.contains("fragColor = held_slip"),
+            "stutter must keep a live-current floor instead of freezing to tex_accum"
+        );
+        assert!(
+            palette_extract.contains("no viewport banner")
+                && palette_extract.contains("surface_presence")
+                && !palette_extract.contains("if (_e21 > _e22)")
+                && !palette_extract.contains("fragColor = vec4<f32>(_e63"),
+            "palette_extract must not paint an autonomous top-of-frame swatch strip"
+        );
+        assert!(
+            rutt_etra.contains("line_strength")
+                && rutt_etra.contains("mix(color.xyz")
+                && !rutt_etra.contains("result = (_e73.xyz * _e75)")
+                && !rutt_etra.contains("result = vec3((_e77 * _e78))"),
+            "rutt_etra must blend line displacement over source instead of blacking non-line rows"
+        );
+    }
+
+    #[test]
     fn thermal_shader_blends_instead_of_snapping_full_frame() {
         let source = std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR"))
