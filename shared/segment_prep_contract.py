@@ -130,6 +130,144 @@ def validate_segment_prep_outcome(payload: Mapping[str, Any]) -> list[str]:
     return failures
 
 
+# ---------------------------------------------------------------------------
+# Enriched outcome dossier fields
+# ---------------------------------------------------------------------------
+
+_ENRICHED_COMMON_FIELDS = (
+    "investigated_leads",
+    "source_gaps",
+    "confidence_per_gap",
+    "budget_spent",
+    "budget_remaining",
+    "authority_ceiling_reached",
+    "falsification_criterion",
+)
+
+_ENRICHED_NO_RELEASE_FIELDS = (
+    "review_gap_details",
+    "script_contract_state",
+    "return_to_prep_eligible",
+    "return_to_prep_bounded_action",
+)
+
+_ENRICHED_REFUSAL_FIELDS = (
+    "refusal_source_gaps",
+    "operator_re_aim_affordance",
+)
+
+_OUTCOME_ENRICHMENT_MAP: dict[str, tuple[tuple[str, ...], ...]] = {
+    "no_candidate": (_ENRICHED_COMMON_FIELDS,),
+    "no_release": (_ENRICHED_COMMON_FIELDS, _ENRICHED_NO_RELEASE_FIELDS),
+    "refusal": (_ENRICHED_REFUSAL_FIELDS,),
+    "refusal_brief_candidate": (_ENRICHED_REFUSAL_FIELDS,),
+}
+
+
+def _is_nonempty_list(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and len(value) > 0
+
+
+def _is_nonempty_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, int | float)
+
+
+def _source_gap_valid(gap: Any) -> bool:
+    if not isinstance(gap, Mapping):
+        return False
+    return all(_is_nonempty_string(gap.get(field)) for field in ("gap_id", "description"))
+
+
+def _review_gap_detail_valid(detail: Any) -> bool:
+    if not isinstance(detail, Mapping):
+        return False
+    return all(
+        _is_nonempty_string(detail.get(field))
+        for field in ("gap_id", "reviewer", "notes", "severity")
+    )
+
+
+def _refusal_source_gap_valid(gap: Any) -> bool:
+    if not isinstance(gap, Mapping):
+        return False
+    return all(_is_nonempty_string(gap.get(field)) for field in ("gap_id", "why_refusal_warranted"))
+
+
+def validate_enriched_outcome(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Check enriched dossier fields on an outcome payload.
+
+    Returns ``{"ok": bool, "thin_fields": [...]}`` where *thin_fields* lists
+    enrichment fields that are missing or structurally inadequate for the
+    given ``outcome_type``.
+    """
+    outcome_type = str(payload.get("outcome_type") or "")
+    field_groups = _OUTCOME_ENRICHMENT_MAP.get(outcome_type)
+    if field_groups is None:
+        return {"ok": False, "thin_fields": ["outcome_type"]}
+
+    thin: list[str] = []
+
+    for group in field_groups:
+        for field in group:
+            value = payload.get(field)
+
+            # --- common fields ---
+            if field == "investigated_leads":
+                if not _is_nonempty_list(value):
+                    thin.append(field)
+            elif field == "source_gaps":
+                if not _is_nonempty_list(value) or not all(_source_gap_valid(gap) for gap in value):
+                    thin.append(field)
+            elif field == "confidence_per_gap":
+                if (
+                    not isinstance(value, Mapping)
+                    or not value
+                    or not all(isinstance(v, int | float) for v in value.values())
+                ):
+                    thin.append(field)
+            elif field in ("budget_spent", "budget_remaining"):
+                if not _is_number(value):
+                    thin.append(field)
+            elif field in ("authority_ceiling_reached", "falsification_criterion"):
+                if not _is_nonempty_string(value):
+                    thin.append(field)
+
+            # --- no_release extras ---
+            elif field == "review_gap_details":
+                if not _is_nonempty_list(value) or not all(
+                    _review_gap_detail_valid(d) for d in value
+                ):
+                    thin.append(field)
+            elif field == "script_contract_state":
+                if not _is_nonempty_string(value):
+                    thin.append(field)
+            elif field == "return_to_prep_eligible":
+                if not isinstance(value, bool):
+                    thin.append(field)
+            elif field == "return_to_prep_bounded_action":
+                # None is acceptable when return_to_prep_eligible is False
+                if payload.get("return_to_prep_eligible") is True and not _is_nonempty_string(
+                    value
+                ):
+                    thin.append(field)
+
+            # --- refusal extras ---
+            elif field == "refusal_source_gaps":
+                if not _is_nonempty_list(value) or not all(
+                    _refusal_source_gap_valid(gap) for gap in value
+                ):
+                    thin.append(field)
+            elif field == "operator_re_aim_affordance":
+                if not _is_nonempty_string(value):
+                    thin.append(field)
+
+    return {"ok": not thin, "thin_fields": thin}
+
+
 def is_content_evidence_ref(value: Any) -> bool:
     """Return whether a ref looks like content/source evidence, not parser provenance."""
     if not isinstance(value, str):

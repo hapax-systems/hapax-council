@@ -3050,6 +3050,81 @@ list_messages
 purge_expired
 RelayMQEnvelope._validate_envelope
 
+# --- Interview prep prerequisites (new contracts, integration follows) ---
+# Guarded: layout_identity_contract and form_capability_contract land via sibling PRs.
+try:
+    from shared.layout_identity_contract import (  # noqa: F401, E402
+        ActiveMetricsSnapshot,
+        LayerDisagreement,
+        LayoutIdentityReport,
+        LayoutIdentitySnapshot,
+        PersistenceSnapshot,
+        RenderedReadback,
+        validate_layout_identity,
+    )
+
+    _ = (
+        ActiveMetricsSnapshot,
+        LayerDisagreement,
+        LayoutIdentityReport,
+        LayoutIdentitySnapshot,
+        PersistenceSnapshot,
+        RenderedReadback,
+        validate_layout_identity,
+    )
+except ImportError:
+    pass
+try:
+    from shared.form_capability_contract import (  # noqa: F401, E402
+        ActionPrimitive,
+        AuthorityHypothesis,
+        ClaimShape,
+        FormCapabilityContract,
+        FormOrigin,
+        LiveEventObject,
+        PublicPrivateCeiling,
+        ReadbackRequirement,
+        RefusalMode,
+        form_capability_contract_sha256,
+        validate_form_capability_contract,
+    )
+
+    _ = (
+        ActionPrimitive,
+        AuthorityHypothesis,
+        ClaimShape,
+        FormCapabilityContract,
+        FormOrigin,
+        LiveEventObject,
+        PublicPrivateCeiling,
+        ReadbackRequirement,
+        RefusalMode,
+        form_capability_contract_sha256,
+        validate_form_capability_contract,
+    )
+except ImportError:
+    pass
+
+from shared.segment_prep_contract import (  # noqa: F401, E402
+    _is_nonempty_list,
+    _is_nonempty_string,
+    _is_number,
+    _refusal_source_gap_valid,
+    _review_gap_detail_valid,
+    _source_gap_valid,
+    validate_enriched_outcome,
+)
+
+_ = (
+    _is_nonempty_list,
+    _is_nonempty_string,
+    _is_number,
+    _refusal_source_gap_valid,
+    _review_gap_detail_valid,
+    _source_gap_valid,
+    validate_enriched_outcome,
+)
+
 # Perplexity grounding adapter — library API consumed by grounding eval harness
 # and future agent callers. Agent tools are dynamically registered via @agent.tool.
 from shared.grounding_adapters.perplexity import (  # noqa: F401, E402
