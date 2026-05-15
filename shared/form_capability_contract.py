@@ -123,9 +123,7 @@ class FormCapabilityContract(BaseModel):
     def _exemplar_refs_look_like_refs(cls, v: tuple[str, ...]) -> tuple[str, ...]:
         for ref in v:
             if not ref.strip() or ":" not in ref:
-                raise ValueError(
-                    f"exemplar_refs must be colon-separated ref strings, got {ref!r}"
-                )
+                raise ValueError(f"exemplar_refs must be colon-separated ref strings, got {ref!r}")
         return v
 
     @field_validator("source_classes")
@@ -155,13 +153,9 @@ class FormCapabilityContract(BaseModel):
                     "refusal/no-candidate forms must not claim public or higher ceiling"
                 )
             if self.action_primitives:
-                raise ValueError(
-                    "refusal/no-candidate forms must not have action primitives"
-                )
+                raise ValueError("refusal/no-candidate forms must not have action primitives")
             if self.live_event_object is not None:
-                raise ValueError(
-                    "refusal/no-candidate forms must not claim a live event object"
-                )
+                raise ValueError("refusal/no-candidate forms must not claim a live event object")
         return self
 
     @model_validator(mode="after")
@@ -172,17 +166,11 @@ class FormCapabilityContract(BaseModel):
             PublicPrivateCeiling.MONETIZABLE,
         }:
             if self.live_event_object is None:
-                raise ValueError(
-                    "forms claiming public ceiling must declare a live_event_object"
-                )
+                raise ValueError("forms claiming public ceiling must declare a live_event_object")
             if not self.readback_requirements:
-                raise ValueError(
-                    "forms claiming public ceiling must declare readback_requirements"
-                )
+                raise ValueError("forms claiming public ceiling must declare readback_requirements")
             if not self.action_primitives:
-                raise ValueError(
-                    "forms claiming public ceiling must declare action_primitives"
-                )
+                raise ValueError("forms claiming public ceiling must declare action_primitives")
         return self
 
     @model_validator(mode="after")
@@ -242,8 +230,7 @@ def _has_source_consequence(contract: FormCapabilityContract) -> bool:
         return False
     change_verbs = ("change", "narrow", "block", "contradict", "weaken", "strengthen", "alter")
     has_change_verb = any(
-        any(verb in req.lower() for verb in change_verbs)
-        for req in contract.evidence_requirements
+        any(verb in req.lower() for verb in change_verbs) for req in contract.evidence_requirements
     )
     if not has_change_verb:
         return False
@@ -253,13 +240,15 @@ def _has_source_consequence(contract: FormCapabilityContract) -> bool:
 
 def _is_rubric_recitation(contract: FormCapabilityContract) -> list[str]:
     violations: list[str] = []
-    all_text = " ".join([
-        contract.grounding_question,
-        contract.claim_shape.scope,
-        contract.claim_shape.uncertainty_posture,
-        contract.authority_hypothesis.falsification_criterion,
-        *(req for req in contract.evidence_requirements),
-    ])
+    all_text = " ".join(
+        [
+            contract.grounding_question,
+            contract.claim_shape.scope,
+            contract.claim_shape.uncertainty_posture,
+            contract.authority_hypothesis.falsification_criterion,
+            *(req for req in contract.evidence_requirements),
+        ]
+    )
     framework_hits = _RUBRIC_RECITATION_RE.findall(all_text)
     if len(framework_hits) >= 2 and not _has_source_consequence(contract):
         violations.append(
@@ -271,11 +260,13 @@ def _is_rubric_recitation(contract: FormCapabilityContract) -> list[str]:
 
 def _is_regex_theater(contract: FormCapabilityContract) -> list[str]:
     violations: list[str] = []
-    all_text = " ".join([
-        contract.grounding_question,
-        *(a.operation for a in contract.action_primitives),
-        *(a.object_ref for a in contract.action_primitives),
-    ])
+    all_text = " ".join(
+        [
+            contract.grounding_question,
+            *(a.operation for a in contract.action_primitives),
+            *(a.object_ref for a in contract.action_primitives),
+        ]
+    )
     template_hits = _REGEX_THEATER_RE.findall(all_text)
     if template_hits:
         violations.append(
@@ -293,9 +284,7 @@ def _is_regex_theater(contract: FormCapabilityContract) -> list[str]:
         PublicPrivateCeiling.PRIVATE,
         PublicPrivateCeiling.DRY_RUN,
     }:
-        ungrounded = [
-            a.action_id for a in contract.action_primitives if not a.evidence_refs
-        ]
+        ungrounded = [a.action_id for a in contract.action_primitives if not a.evidence_refs]
         if ungrounded and len(ungrounded) == len(contract.action_primitives):
             violations.append(
                 f"regex_theater: all {len(ungrounded)} action primitives lack "
@@ -318,45 +307,57 @@ def validate_form_capability_contract(
     gq = contract.grounding_question.strip()
     if gq and "?" not in gq and len(gq) < 20:
         if not _has_source_consequence(contract):
-            violations.append({
-                "reason": "grounding_question_not_testable",
-                "detail": (
-                    f"grounding_question is {len(gq)} chars with no '?' and no "
-                    f"source consequence in evidence_requirements"
-                ),
-            })
+            violations.append(
+                {
+                    "reason": "grounding_question_not_testable",
+                    "detail": (
+                        f"grounding_question is {len(gq)} chars with no '?' and no "
+                        f"source consequence in evidence_requirements"
+                    ),
+                }
+            )
 
     hyp = contract.authority_hypothesis
     if hyp.current_state == hyp.requested_transition:
-        violations.append({
-            "reason": "authority_hypothesis_no_transition",
-            "detail": (
-                f"current_state and requested_transition are both "
-                f"{hyp.current_state!r} — hypothesis must request a transition"
-            ),
-        })
+        violations.append(
+            {
+                "reason": "authority_hypothesis_no_transition",
+                "detail": (
+                    f"current_state and requested_transition are both "
+                    f"{hyp.current_state!r} — hypothesis must request a transition"
+                ),
+            }
+        )
 
     generic_verbs = {"do", "make", "perform", "execute", "create", "generate"}
     real_verbs = [
         v for v in contract.claim_shape.allowed_claim_verbs if v.lower() not in generic_verbs
     ]
     if not real_verbs:
-        violations.append({
-            "reason": "claim_shape_generic_verbs_only",
-            "detail": (
-                f"all claim verbs are generic "
-                f"({', '.join(contract.claim_shape.allowed_claim_verbs)})"
-            ),
-        })
+        violations.append(
+            {
+                "reason": "claim_shape_generic_verbs_only",
+                "detail": (
+                    f"all claim verbs are generic "
+                    f"({', '.join(contract.claim_shape.allowed_claim_verbs)})"
+                ),
+            }
+        )
 
-    if contract.public_private_ceiling in {
-        PublicPrivateCeiling.PUBLIC_LIVE,
-        PublicPrivateCeiling.PUBLIC_ARCHIVE,
-        PublicPrivateCeiling.MONETIZABLE,
-    } and not contract.layout_need_classes:
-        violations.append({
-            "reason": "public_form_missing_layout_needs",
-            "detail": "forms claiming public ceiling must declare layout_need_classes",
-        })
+    if (
+        contract.public_private_ceiling
+        in {
+            PublicPrivateCeiling.PUBLIC_LIVE,
+            PublicPrivateCeiling.PUBLIC_ARCHIVE,
+            PublicPrivateCeiling.MONETIZABLE,
+        }
+        and not contract.layout_need_classes
+    ):
+        violations.append(
+            {
+                "reason": "public_form_missing_layout_needs",
+                "detail": "forms claiming public ceiling must declare layout_need_classes",
+            }
+        )
 
     return {"ok": not violations, "violations": violations}

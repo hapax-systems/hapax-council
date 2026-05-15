@@ -157,9 +157,7 @@ def _regex_theater_form() -> FormCapabilityContract:
             current_state="scratch",
         ),
         source_classes=("source:ranking_data",),
-        evidence_requirements=(
-            "If ranking criteria change, all placements must be re-evaluated",
-        ),
+        evidence_requirements=("If ranking criteria change, all placements must be re-evaluated",),
         live_event_object=LiveEventObject(
             object_id="tier-chart-display",
             object_kind="tier_chart",
@@ -251,17 +249,13 @@ class TestRegexTheater:
     def test_bracket_templates_flagged(self) -> None:
         contract = _regex_theater_form()
         result = validate_form_capability_contract(contract)
-        theater_violations = [
-            v for v in result["violations"] if v["reason"] == "regex_theater"
-        ]
+        theater_violations = [v for v in result["violations"] if v["reason"] == "regex_theater"]
         assert any("bracket-template" in v["detail"] for v in theater_violations)
 
     def test_exact_phrases_flagged(self) -> None:
         contract = _regex_theater_form()
         result = validate_form_capability_contract(contract)
-        theater_violations = [
-            v for v in result["violations"] if v["reason"] == "regex_theater"
-        ]
+        theater_violations = [v for v in result["violations"] if v["reason"] == "regex_theater"]
         assert any("trigger phrase" in v["detail"] for v in theater_violations)
 
 
