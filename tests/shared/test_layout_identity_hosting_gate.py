@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from shared.layout_identity_contract import (
     ActiveMetricsSnapshot,
-    LayoutIdentityReport,
     LayoutIdentitySnapshot,
-    LayerDisagreement,
     PersistenceSnapshot,
     RenderedReadback,
     hosting_gate,
