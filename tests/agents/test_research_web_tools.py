@@ -26,7 +26,7 @@ class TestSearchWeb:
             from agents.research import search_web
 
             ctx = MagicMock()
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 search_web(ctx, "stigmergic coordination")
             )
             assert "Stigmergic" in result
@@ -40,7 +40,7 @@ class TestSearchWeb:
             from agents.research import search_web
 
             ctx = MagicMock()
-            result = asyncio.get_event_loop().run_until_complete(search_web(ctx, "test query"))
+            result = asyncio.run(search_web(ctx, "test query"))
             assert "unavailable" in result.lower()
 
     def test_search_web_accepts_recency_filter(self):
@@ -54,7 +54,7 @@ class TestSearchWeb:
             from agents.research import search_web
 
             ctx = MagicMock()
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 search_web(ctx, "test", recency="week")
             )
             assert "unavailable" not in result.lower()
@@ -70,7 +70,7 @@ class TestSearchWeb:
             from agents.research import search_web
 
             ctx = MagicMock()
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 search_web(ctx, "test", domains=["arxiv.org"])
             )
             assert "unavailable" not in result.lower()
@@ -92,7 +92,7 @@ class TestDeepResearch:
             from agents.research import deep_research
 
             ctx = MagicMock()
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 deep_research(ctx, "state of human-AI collaboration")
             )
             assert "Comprehensive" in result
@@ -102,7 +102,7 @@ class TestDeepResearch:
             from agents.research import deep_research
 
             ctx = MagicMock()
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 deep_research(ctx, "test question")
             )
             assert "fortress" in result.lower()
@@ -118,7 +118,7 @@ class TestDeepResearch:
             from agents.research import deep_research
 
             ctx = MagicMock()
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 deep_research(ctx, "test question")
             )
             assert "unavailable" in result.lower()
