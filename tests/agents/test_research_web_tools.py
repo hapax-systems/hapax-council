@@ -26,9 +26,7 @@ class TestSearchWeb:
             from agents.research import search_web
 
             ctx = MagicMock()
-            result = asyncio.run(
-                search_web(ctx, "stigmergic coordination")
-            )
+            result = asyncio.run(search_web(ctx, "stigmergic coordination"))
             assert "Stigmergic" in result
             assert "unavailable" not in result.lower()
 
@@ -54,9 +52,7 @@ class TestSearchWeb:
             from agents.research import search_web
 
             ctx = MagicMock()
-            result = asyncio.run(
-                search_web(ctx, "test", recency="week")
-            )
+            result = asyncio.run(search_web(ctx, "test", recency="week"))
             assert "unavailable" not in result.lower()
 
     def test_search_web_accepts_domain_filter(self):
@@ -70,9 +66,7 @@ class TestSearchWeb:
             from agents.research import search_web
 
             ctx = MagicMock()
-            result = asyncio.run(
-                search_web(ctx, "test", domains=["arxiv.org"])
-            )
+            result = asyncio.run(search_web(ctx, "test", domains=["arxiv.org"]))
             assert "unavailable" not in result.lower()
 
 
@@ -92,9 +86,7 @@ class TestDeepResearch:
             from agents.research import deep_research
 
             ctx = MagicMock()
-            result = asyncio.run(
-                deep_research(ctx, "state of human-AI collaboration")
-            )
+            result = asyncio.run(deep_research(ctx, "state of human-AI collaboration"))
             assert "Comprehensive" in result
 
     def test_deep_research_skipped_in_fortress_mode(self):
@@ -102,9 +94,7 @@ class TestDeepResearch:
             from agents.research import deep_research
 
             ctx = MagicMock()
-            result = asyncio.run(
-                deep_research(ctx, "test question")
-            )
+            result = asyncio.run(deep_research(ctx, "test question"))
             assert "fortress" in result.lower()
 
     def test_deep_research_handles_failure(self):
@@ -118,7 +108,5 @@ class TestDeepResearch:
             from agents.research import deep_research
 
             ctx = MagicMock()
-            result = asyncio.run(
-                deep_research(ctx, "test question")
-            )
+            result = asyncio.run(deep_research(ctx, "test question"))
             assert "unavailable" in result.lower()
