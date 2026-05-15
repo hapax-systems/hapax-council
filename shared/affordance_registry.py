@@ -37,6 +37,8 @@ def _public_operational(
     persistence: str = "none",
     medium: str | None = None,
     consent_required: bool = False,
+    consent_person_id: str | None = None,
+    consent_data_category: str | None = None,
     priority_floor: bool = False,
     monetization_risk: MonetizationRisk = "none",
     risk_reason: str | None = _PUBLIC_MONETIZATION_REASON,
@@ -53,6 +55,8 @@ def _public_operational(
         persistence=persistence,
         medium=medium,
         consent_required=consent_required,
+        consent_person_id=consent_person_id,
+        consent_data_category=consent_data_category,
         priority_floor=priority_floor,
         public_capable=True,
         monetization_risk=monetization_risk,
@@ -726,7 +730,6 @@ KNOWLEDGE_AFFORDANCES = [
         operational=OperationalProperties(
             latency_class="slow",
             requires_network=True,
-            consent_required=True,
             monetization_risk="medium",
             risk_reason="Third-party web content; may contain brand-name / trademarked / copyrighted text. Requires Programme opt-in for broadcast surfaces.",
         ),
@@ -738,7 +741,6 @@ KNOWLEDGE_AFFORDANCES = [
         operational=OperationalProperties(
             latency_class="slow",
             requires_network=True,
-            consent_required=True,
             monetization_risk="low",
             risk_reason="Wikipedia text is CC-BY-SA licensed; monetization-safe for short excerpts but flag low for prudence.",
         ),
@@ -750,7 +752,6 @@ KNOWLEDGE_AFFORDANCES = [
         operational=_public_operational(
             latency_class="slow",
             requires_network=True,
-            consent_required=True,
             medium="visual",
             monetization_risk="high",
             risk_reason="Open-web image search returns arbitrary third-party imagery; Content-ID fingerprint risk + potential graphic content. Blocked unconditionally from broadcast; operator must resolve images via a curated pipeline instead.",
@@ -878,7 +879,6 @@ WORLD_AFFORDANCES = [
         operational=OperationalProperties(
             latency_class="slow",
             requires_network=True,
-            consent_required=True,
             monetization_risk="medium",
             risk_reason="Third-party headlines may include brand-name / political / graphic content. Programme opt-in required for any broadcast surface.",
         ),
@@ -887,25 +887,19 @@ WORLD_AFFORDANCES = [
         name="world.weather_elsewhere",
         description=("Sense weather in another location the operator is thinking about"),
         daemon="discovery",
-        operational=OperationalProperties(
-            latency_class="slow", requires_network=True, consent_required=True
-        ),
+        operational=OperationalProperties(latency_class="slow", requires_network=True),
     ),
     CapabilityRecord(
         name="world.music_metadata",
         description=("Look up metadata about a track or artist from music databases"),
         daemon="discovery",
-        operational=OperationalProperties(
-            latency_class="slow", requires_network=True, consent_required=True
-        ),
+        operational=OperationalProperties(latency_class="slow", requires_network=True),
     ),
     CapabilityRecord(
         name="world.astronomy",
         description=("Sense current celestial events including moon phase and planet visibility"),
         daemon="discovery",
-        operational=OperationalProperties(
-            latency_class="slow", requires_network=True, consent_required=True
-        ),
+        operational=OperationalProperties(latency_class="slow", requires_network=True),
     ),
 ]
 

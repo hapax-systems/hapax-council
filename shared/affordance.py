@@ -59,6 +59,11 @@ class OperationalProperties(BaseModel, frozen=True):
     persistence: str = "none"
     medium: str | None = None
     consent_required: bool = False
+    # Explicit interpersonal consent requirement. Operator/network permission
+    # is not modeled here; candidates with consent_required=True and missing
+    # scoped metadata fail closed in AffordancePipeline.
+    consent_person_id: str | None = None
+    consent_data_category: str | None = None
     priority_floor: bool = False
 
     # Monetization-safety classification (task #165, demonet plan Phase 1).

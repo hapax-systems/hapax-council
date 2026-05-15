@@ -606,6 +606,8 @@ def build_seed_inventory() -> CapabilityClassificationInventory:
             missing_record_action=MissingRecordAction.ADD_TOOL_AFFORDANCE,
             witness_contract_id="witness.tool.query_person_details.scene_snapshot",
             projection_name="tool.query_person_details",
+            consent_person_id="guest",
+            consent_data_category="presence",
         ),
         _row(
             classification_id="classification.tool.query_object_motion",
@@ -937,6 +939,8 @@ def build_seed_inventory() -> CapabilityClassificationInventory:
             existing_record_refs=["device:overhead-brio"],
             witness_contract_id="witness.device.camera_frame_current",
             projection_name="device.camera_overhead_brio",
+            consent_person_id="guest",
+            consent_data_category="video",
         ),
         _row(
             classification_id="classification.audio.l12_raw_hardware",
@@ -1849,6 +1853,8 @@ def _row(
     witness_contract_id: str | None = None,
     projection_name: str | None = None,
     projection_daemon: str = "capability_classification_inventory",
+    consent_person_id: str | None = None,
+    consent_data_category: str | None = None,
     replacement_row_id: str | None = None,
     blocked_reason: str | None = None,
     aliases: list[dict[str, str]] | None = None,
@@ -1869,6 +1875,8 @@ def _row(
             persistence="state" if surface_family is SurfaceFamily.STATE_FILE else "none",
             priority_floor=False,
             public_capable=public_claim_policy is PublicClaimPolicy.PUBLIC_GATE_REQUIRED,
+            consent_person_id=consent_person_id,
+            consent_data_category=consent_data_category,
             rights_ref=f"rights:{surface_id}",
             provenance_ref=f"provenance:{surface_id}",
         )

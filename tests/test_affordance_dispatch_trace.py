@@ -50,6 +50,8 @@ def _patch_trace_file(monkeypatch, tmp_path):
 def _fallback_candidate(**payload) -> SelectionCandidate:
     base_payload = {
         "consent_required": False,
+        "consent_person_id": "guest",
+        "consent_data_category": "video",
         "public_capable": False,
         "monetization_risk": "none",
         "content_risk": "tier_0_owned",
@@ -139,7 +141,7 @@ def test_no_embedding_fallback_consent_drop_records_gate(monkeypatch, tmp_path):
     p = AffordancePipeline()
     candidate = _fallback_candidate(consent_required=True)
     empty_registry = mock.MagicMock()
-    empty_registry.__iter__ = lambda self: iter([])
+    empty_registry.contract_check.return_value = False
     with (
         mock.patch.object(p, "_get_embedding", return_value=None),
         mock.patch.object(p, "_fallback_keyword_match", return_value=[candidate]),

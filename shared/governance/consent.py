@@ -91,10 +91,10 @@ def is_child_principal(person_id: str, registry: ConsentRegistry | None = None) 
     return False
 
 
-def load_contracts(contracts_dir: Path | None = None) -> ConsentRegistry:
+def load_contracts(contracts_dir: Path | None = None, *, strict: bool = False) -> ConsentRegistry:
     """Create and load a ConsentRegistry with hapax defaults."""
     registry = ConsentRegistry()
-    registry.load(contracts_dir)
+    registry.load(contracts_dir, strict=strict)
     return registry
 
 

@@ -92,6 +92,14 @@ def test_schema_pins_requested_surface_families() -> None:
     }
 
 
+def test_schema_pins_projection_consent_scope_fields() -> None:
+    schema = _json(SCHEMA)
+    projection_fields = set(schema["$defs"]["CapabilityProjection"]["properties"])
+
+    assert "consent_person_id" in projection_fields
+    assert "consent_data_category" in projection_fields
+
+
 def test_fixture_contract_avoids_absolute_local_paths_and_user_abstractions() -> None:
     fixture_text = FIXTURES.read_text(encoding="utf-8")
 

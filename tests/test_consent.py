@@ -203,6 +203,15 @@ class TestConsentRegistryLoad(unittest.TestCase):
             reg = load_contracts(Path(tmpdir))
             self.assertEqual(len(reg.active_contracts), 0)
 
+    def test_load_malformed_yaml_strict_raises(self):
+        from shared.governance.consent import ConsentContractLoadError
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "bad.yaml"
+            path.write_text("id: bad\nparties: [only_one]\n")
+            with self.assertRaises(ConsentContractLoadError):
+                load_contracts(Path(tmpdir), strict=True)
+
     def test_load_revoked_contract(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "revoked.yaml"

@@ -630,6 +630,30 @@
           "title": "Public Capable",
           "type": "boolean"
         },
+        "consent_person_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Person Id"
+        },
+        "consent_data_category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consent Data Category"
+        },
         "rights_ref": {
           "anyOf": [
             {
