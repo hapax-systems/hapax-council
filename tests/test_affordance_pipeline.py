@@ -630,3 +630,80 @@ class TestConsentRefusalBriefEmission:
         with patch("shared.governance.consent.load_contracts", return_value=empty_registry):
             # Must not raise — gate decision still returned.
             assert AffordancePipeline()._consent_allows(self._candidate()) is False
+
+
+class TestFallbackHardGates:
+    def _candidate(self, **payload):
+        from shared.affordance import SelectionCandidate
+
+        base_payload = {
+            "consent_required": False,
+            "public_capable": False,
+            "monetization_risk": "none",
+            "content_risk": "tier_0_owned",
+        }
+        base_payload.update(payload)
+        return SelectionCandidate(
+            capability_name="fallback.capability",
+            similarity=0.9,
+            payload=base_payload,
+        )
+
+    def _impingement(self):
+        return Impingement(
+            timestamp=time.time(),
+            source="dmn",
+            type=ImpingementType.STATISTICAL_DEVIATION,
+            strength=0.5,
+            content={"metric": "fallback keyword"},
+        )
+
+    def _select_fallback(self, pipeline, candidate):
+        from unittest.mock import patch
+
+        with (
+            patch.object(pipeline, "_get_embedding", return_value=None),
+            patch.object(pipeline, "_fallback_keyword_match", return_value=[candidate]),
+            patch.object(pipeline, "_active_programme_cached", return_value=None),
+        ):
+            return pipeline.select(self._impingement())
+
+    def test_safe_fallback_candidate_survives_hard_gates(self):
+        from shared.affordance_pipeline import AffordancePipeline
+
+        p = AffordancePipeline()
+        candidate = self._candidate()
+
+        assert self._select_fallback(p, candidate) == [candidate]
+
+    def test_fallback_runs_consent_gate(self):
+        from unittest.mock import MagicMock, patch
+
+        from shared.affordance_pipeline import AffordancePipeline
+
+        empty_registry = MagicMock()
+        empty_registry.__iter__ = lambda self: iter([])
+        p = AffordancePipeline()
+        candidate = self._candidate(consent_required=True)
+
+        with patch("shared.governance.consent.load_contracts", return_value=empty_registry):
+            assert self._select_fallback(p, candidate) == []
+
+    def test_fallback_runs_monetization_gate(self):
+        from unittest.mock import patch
+
+        from shared.affordance_pipeline import AffordancePipeline
+
+        p = AffordancePipeline()
+        candidate = self._candidate(monetization_risk="high")
+
+        with patch("shared.governance.monetization_safety._AUDIT_ENABLED", False):
+            assert self._select_fallback(p, candidate) == []
+
+    def test_fallback_runs_content_risk_gate(self):
+        from shared.affordance_pipeline import AffordancePipeline
+
+        p = AffordancePipeline()
+        candidate = self._candidate(content_risk="tier_4_risky")
+
+        assert self._select_fallback(p, candidate) == []
