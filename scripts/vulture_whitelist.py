@@ -139,6 +139,15 @@ from shared.director_world_surface_snapshot import (
 from shared.director_world_surface_snapshot import (
     Freshness as DirectorWorldSurfaceFreshness,
 )
+from shared.form_capability_contract import (
+    FormCapabilityContract as _FormCapabilityContract,
+)
+from shared.form_capability_contract import (
+    form_capability_contract_sha256 as _form_capability_contract_sha256,
+)
+from shared.form_capability_contract import (
+    validate_form_capability_contract as _validate_form_capability_contract,
+)
 from shared.format_wcs_requirement_matrix import (
     FormatWCSRequirementMatrix,
     FormatWCSRequirementRow,
@@ -239,6 +248,18 @@ from shared.scrim_wcs_claim_posture import (
 _LivestreamRoleActionTendencyImpingement._terminal_impulses_keep_fulfillment_visible
 _LivestreamRoleSpeechAct.resolved_impulse_id
 _LivestreamRoleScrimWCSClaimPostureInput._role_state_must_match_scrim_posture
+
+# Form capability contract validators are Pydantic dynamic entrypoints; the
+# hash/validator helpers are public generated-contract surfaces.
+_FormCapabilityContract._exemplar_refs_look_like_refs
+_FormCapabilityContract._source_classes_non_empty_items
+_FormCapabilityContract._evidence_requirements_non_empty_items
+_FormCapabilityContract._refusal_forms_must_not_claim_public
+_FormCapabilityContract._public_forms_need_live_event_and_readback
+_FormCapabilityContract._action_primitives_have_unique_ids
+_FormCapabilityContract._readback_ids_unique
+_form_capability_contract_sha256
+_validate_form_capability_contract
 
 # Public-API context manager. Called by the five per-outcome smoke tests
 # (vocal / programme_authoring / director_moves / chat_reactivity /
