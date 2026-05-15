@@ -236,6 +236,21 @@ fn mark_source_used(
     }
 }
 
+fn is_projection_capable_source(source_id: &str) -> bool {
+    matches!(source_id, "imagination-r2" | "overlay-zones")
+}
+
+fn mark_projection_capable_sources(
+    used_indices: &mut Vec<usize>,
+    active_sources: &[(&str, f32, i32, u32, u32)],
+) {
+    for (idx, (source_id, _, _, _, _)) in active_sources.iter().enumerate() {
+        if is_projection_capable_source(source_id) && !used_indices.contains(&idx) {
+            used_indices.push(idx);
+        }
+    }
+}
+
 fn push_cube_face(
     nodes: &mut Vec<SceneNode>,
     active_sources: &[(&str, f32, i32, u32, u32)],
@@ -356,6 +371,11 @@ pub fn build_scene_from_sources(
     let forward = 0.55;
 
     let mut used_indices = Vec::new();
+    // Full-frame/projection-capable sources can represent prior layouts or
+    // broad overlays. They require an explicit role before the baseline 3D
+    // layout may place them as ordinary residual quads; otherwise they read as
+    // rogue scene reprojections or fake reflections.
+    mark_projection_capable_sources(&mut used_indices, active_sources);
 
     if push_optional_node(
         &mut nodes,
@@ -753,6 +773,8 @@ mod tests {
         let sources = vec![
             ("sierpinski-lines", 0.9f32, 4i32, 1280u32, 720u32),
             ("sierpinski", 0.8f32, 3i32, 840u32, 840u32),
+            ("imagination-r2", 0.3f32, 10i32, 1920u32, 1080u32),
+            ("overlay-zones", 0.5f32, 2i32, 1280u32, 720u32),
             ("grounding_provenance_ticker", 0.8, 3, 480, 40),
             ("camera-brio-operator", 0.8, 5, 1280, 720),
             ("camera-c920-overhead", 0.8, 5, 1280, 720),
@@ -772,6 +794,12 @@ mod tests {
         assert!(
             scene.iter().all(|n| n.label != "sierpinski"),
             "baseline layout must not re-project base Sierpinski as a residual object"
+        );
+        assert!(
+            scene
+                .iter()
+                .all(|n| n.label != "imagination-r2" && n.label != "overlay-zones"),
+            "projection-capable sources need explicit roles, not default residual quads"
         );
 
         let ticker = scene
