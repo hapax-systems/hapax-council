@@ -75,11 +75,14 @@ fn main_1() {
     var intensity: f32;
     var n: f32;
     var time_offset: f32;
-    var col: f32;
+    var tone: f32;
+    var tone_jitter: f32;
     var idx: f32;
     var palette_color: vec3<f32>;
     var mapped: vec3<f32>;
     var final_rgb: vec3<f32>;
+    var surface_presence: f32;
+    var effective_blend: f32;
 
     let _e14 = v_texcoord_1;
     let _e15 = textureSample(tex, tex_sampler, _e14);
@@ -93,10 +96,17 @@ fn main_1() {
     let _e28 = global.u_time;
     let _e29 = global.u_cycle_rate;
     time_offset = floor((_e28 * _e29));
-    let _e33 = v_texcoord_1;
-    let _e35 = n;
-    col = floor((_e33.x * _e35));
-    let _e39 = col;
+    surface_presence = smoothstep(0.035f, 0.18f, intensity);
+
+    // Palette remap must attach to the scene's own signal, not to a
+    // fourth-wall screen lattice. The prior implementation quantized
+    // v_texcoord.x, producing vertical glass-pane columns over empty space.
+    // Use tone/color with a faint diagonal dither so the effect belongs to
+    // entities and grid energy already present in the rendered 3D surface.
+    let uv = v_texcoord_1;
+    tone_jitter = 0.035f * sin(((uv.x + uv.y) * 17.0f) + (global.u_time * 0.07f));
+    tone = clamp(intensity + ((color.x - color.z) * 0.08f) + tone_jitter, 0.0f, 0.999f);
+    let _e39 = floor(tone * n);
     let _e40 = time_offset;
     let _e41 = (_e39 + _e40);
     let _e42 = n;
@@ -110,7 +120,8 @@ fn main_1() {
     let _e55 = color;
     let _e57 = mapped;
     let _e58 = global.u_blend;
-    final_rgb = mix(_e55.xyz, _e57, vec3(_e58));
+    effective_blend = clamp(_e58, 0.0f, 0.16f) * surface_presence;
+    final_rgb = mix(_e55.xyz, _e57, vec3(effective_blend));
     let _e62 = final_rgb;
     let _e63 = color;
     fragColor = vec4<f32>(_e62.x, _e62.y, _e62.z, _e63.w);

@@ -374,9 +374,9 @@ pub static SHADERS: &[ShaderDef] = &[
         ],
         active_ranges: &[
             ("palette_id", 0.0, 0.0),
-            ("cycle_rate", 0.02, 0.08),
-            ("n_bands", 4.0, 10.0),
-            ("blend", 0.12, 0.35),
+            ("cycle_rate", 0.015, 0.055),
+            ("n_bands", 5.0, 12.0),
+            ("blend", 0.06, 0.16),
             ("time", 0.0, 120.0),
         ],
         param_order: &["palette_id", "cycle_rate", "n_bands", "blend", "time"],
@@ -838,6 +838,25 @@ mod tests {
                 "{shader} must derive a bounded effect strength"
             );
         }
+    }
+
+    #[test]
+    fn palette_remap_is_content_gated_not_viewport_pane() {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../agents/shaders/nodes/palette_remap.wgsl"),
+        )
+        .expect("read palette_remap shader");
+
+        assert!(
+            source.contains("surface_presence") && source.contains("effective_blend"),
+            "palette remap must gate recoloring by existing scene/content energy"
+        );
+        assert!(
+            !source.contains("floor((_e33.x * _e35))")
+                && !source.contains("floor((v_texcoord_1.x *"),
+            "palette remap must not create vertical viewport-column panes"
+        );
     }
 
     #[test]
