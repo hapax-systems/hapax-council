@@ -16,9 +16,7 @@ class DiffContext:
     pr_title: str = ""
 
     @classmethod
-    def from_diff(
-        cls, diff: str, changed_files: list[str], pr_title: str = ""
-    ) -> DiffContext:
+    def from_diff(cls, diff: str, changed_files: list[str], pr_title: str = "") -> DiffContext:
         added: list[str] = []
         removed: list[str] = []
         for line in diff.splitlines():
@@ -108,10 +106,13 @@ def check_multi_user_vocabulary(ctx: DiffContext) -> PredicateResult:
 def check_protected_module_deps(ctx: DiffContext) -> PredicateResult:
     """T0: Detect new imports of protected governance modules in non-governance files."""
     matches: list[str] = []
-    governance_dirs = ("shared/governance/", "shared/axiom_", "agents/_axiom_", "agents/_governance")
-    is_governance_change = any(
-        f.startswith(governance_dirs) for f in ctx.changed_files
+    governance_dirs = (
+        "shared/governance/",
+        "shared/axiom_",
+        "agents/_axiom_",
+        "agents/_governance",
     )
+    is_governance_change = any(f.startswith(governance_dirs) for f in ctx.changed_files)
     if not is_governance_change:
         for line in ctx.added_lines:
             stripped = line.strip()
@@ -131,8 +132,12 @@ def check_protected_module_deps(ctx: DiffContext) -> PredicateResult:
 
 def check_multi_tenant_security(ctx: DiffContext) -> PredicateResult:
     """T0: Detect rate-limiting-per-user or multi-tenant security patterns (su-security-001)."""
-    rate_limit_pat = re.compile(r"(?<![a-z])rate[_\-]?limit.*(?:user|tenant|per[_\-]?user)", re.IGNORECASE)
-    tenant_isolation_pat = re.compile(r"(?<![a-z])tenant[_\-]?isolat(?:ion|e|ed|ing)", re.IGNORECASE)
+    rate_limit_pat = re.compile(
+        r"(?<![a-z])rate[_\-]?limit.*(?:user|tenant|per[_\-]?user)", re.IGNORECASE
+    )
+    tenant_isolation_pat = re.compile(
+        r"(?<![a-z])tenant[_\-]?isolat(?:ion|e|ed|ing)", re.IGNORECASE
+    )
     matches: list[str] = []
     for line in ctx.added_lines:
         for pat in (rate_limit_pat, tenant_isolation_pat):
