@@ -96,3 +96,62 @@ class DisconfirmationRubric(Rubric):
             weak_example="Claim is unfalsifiable or tautological.",
         ),
     )
+
+
+class CoherenceRubric(Rubric):
+    name: str = "coherence"
+    version: int = 1
+    instructions: str = (
+        "Score the FULL segment script as a composed narrative. "
+        "Evaluate whether it works as a broadcast segment that an audience "
+        "would want to listen to. Score what it DOES, not what it CLAIMS."
+    )
+    axes: tuple[RubricAxis, ...] = (
+        RubricAxis(
+            name="opening_pressure",
+            description="Does the opening create genuine narrative tension or curiosity?",
+            strong_example=(
+                "Opens with a specific paradox, failure case, or provocation that "
+                "demands resolution. Names a concrete system, event, or contradiction."
+            ),
+            weak_example=(
+                "Opens with generic context-setting: 'In the realm of X, Y is important...'"
+            ),
+        ),
+        RubricAxis(
+            name="thematic_progression",
+            description="Do beats build on each other logically and thematically?",
+            strong_example=(
+                "Each beat advances the argument: premise → evidence → complication → "
+                "resolution. Later beats reference and deepen earlier ones."
+            ),
+            weak_example=(
+                "Beats are parallel repetitions of the same point with different words. "
+                "Removing any beat wouldn't change the argument."
+            ),
+        ),
+        RubricAxis(
+            name="argumentative_specificity",
+            description="Are claims grounded in named sources, not generic universals?",
+            strong_example=(
+                "Every claim names a specific system, paper, incident, or framework. "
+                "Sources have consequences — removing one changes the argument."
+            ),
+            weak_example=(
+                "'Mechanical governance is crucial for agent-based systems' — "
+                "a universal truth that needs no sources and teaches nothing."
+            ),
+        ),
+        RubricAxis(
+            name="payoff_resolution",
+            description="Does the ending satisfy the opening's promise?",
+            strong_example=(
+                "The closing reframes the opening hook so the audience sees it differently. "
+                "The tension established in beat 0 is resolved with earned insight."
+            ),
+            weak_example=(
+                "The closing recaps what was said or adds a generic 'in conclusion' paragraph. "
+                "No transformation of understanding."
+            ),
+        ),
+    )

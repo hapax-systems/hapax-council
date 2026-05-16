@@ -1538,6 +1538,21 @@ def prep_segment(
         avg_chars,
     )
 
+    # Pass 1.5: Council coherence check — reject segments with no narrative force
+    coherence_passed = True
+    try:
+        coherence_passed, coherence_feedback = _council_coherence_check(
+            "\n\n".join(script), prog_id
+        )
+        if not coherence_passed and coherence_feedback:
+            log.warning(
+                "prep_segment: coherence check failed for %s, injecting feedback into refinement",
+                prog_id,
+            )
+            seed = f"{seed}\n\n## Council Coherence Feedback\n{coherence_feedback}"
+    except Exception:
+        log.warning("prep_segment: coherence check failed", exc_info=True)
+
     # Pass 2: Iterative refinement
     refine_result = _refine_script(
         script,
@@ -2530,6 +2545,52 @@ def _council_topic_substance_gate(topic: str, programme_id: str) -> bool:
     except Exception:
         log.warning("council_topic_substance_gate: council unavailable, fail-open", exc_info=True)
         return True
+
+
+def _council_coherence_check(full_script: str, programme_id: str) -> tuple[bool, str]:
+    """Run the council coherence rubric on a composed script.
+
+    Returns (passed, feedback_string). Feedback is a summary of the
+    council's scoring across the 4 coherence axes. When mean < 3.0,
+    passed=False and feedback contains specific axis-level critique.
+    """
+    try:
+        import asyncio
+
+        from agents.deliberative_council.engine import deliberate
+        from agents.deliberative_council.models import CouncilConfig, CouncilInput, CouncilMode
+        from agents.deliberative_council.rubrics import CoherenceRubric
+
+        council_input = CouncilInput(
+            text=full_script[:4000],
+            source_ref=f"coherence_check:{programme_id}",
+            metadata={"check_type": "coherence", "programme_id": programme_id},
+        )
+        config = CouncilConfig(max_models=3, phase3_rounds=1)
+        verdict = asyncio.run(
+            deliberate(council_input, CouncilMode.DISCONFIRMATION, CoherenceRubric(), config)
+        )
+        scores = verdict.scores
+        mean_score = sum(s for s in scores.values() if s is not None) / max(1, len(scores))
+        feedback_lines = [f"Council coherence scores (mean={mean_score:.1f}):"]
+        for axis, score in scores.items():
+            feedback_lines.append(f"  - {axis}: {score}")
+        for note in verdict.disagreement_log[:3]:
+            feedback_lines.append(f"  Council note: {note[:200]}")
+        feedback = "\n".join(feedback_lines)
+
+        if mean_score < 3.0:
+            log.warning(
+                "_council_coherence_check: FAILED (mean=%.1f) for %s",
+                mean_score,
+                programme_id,
+            )
+            return False, feedback
+        log.info("_council_coherence_check: passed (mean=%.1f) for %s", mean_score, programme_id)
+        return True, feedback
+    except Exception:
+        log.warning("_council_coherence_check: council unavailable, fail-open", exc_info=True)
+        return True, ""
 
 
 def _research_enrich_angle(angle_ctx: str, topic: str) -> str:
