@@ -2272,9 +2272,18 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
         for p in plan.programmes:
             pid = getattr(p, "programme_id", "")
             role_val = getattr(getattr(p, "role", None), "value", "")
-            if role_val in SEGMENTED_CONTENT_ROLES and pid not in seen_ids:
-                segmented.append(p)
-                seen_ids.add(pid)
+            if role_val not in SEGMENTED_CONTENT_ROLES or pid in seen_ids:
+                continue
+            topic = _extract_topic_string(p)
+            if topic and not _council_topic_substance_gate(topic, pid):
+                log.warning(
+                    "daily_segment_prep: council rejected topic substance for %s: %s",
+                    pid,
+                    topic[:80],
+                )
+                continue
+            segmented.append(p)
+            seen_ids.add(pid)
 
         log.info(
             "daily_segment_prep: round %d → %d total segmented (%d new this round)",
@@ -2436,6 +2445,61 @@ def run_prep(prep_dir: Path | None = None) -> list[Path]:
         time.monotonic() - start,
     )
     return saved
+
+
+def _extract_topic_string(programme: Any) -> str | None:
+    """Pull the topic/narrative_beat from a planned programme for substance checking."""
+    content = getattr(programme, "content", None)
+    if content is None:
+        return None
+    topic = getattr(content, "declared_topic", None) or getattr(content, "narrative_beat", None)
+    if isinstance(topic, str) and topic.strip():
+        return topic.strip()
+    return None
+
+
+def _council_topic_substance_gate(topic: str, programme_id: str) -> bool:
+    """Run the deliberative council on a topic to check argumentative substance.
+
+    Returns True if the topic has enough substance for a full segment.
+    Returns True (fail-open) if the council is unavailable.
+    """
+    try:
+        import asyncio
+
+        from agents.deliberative_council.engine import deliberate
+        from agents.deliberative_council.models import CouncilConfig, CouncilInput, CouncilMode
+        from agents.deliberative_council.rubrics import DisconfirmationRubric
+
+        council_input = CouncilInput(
+            text=topic,
+            source_ref=f"topic_substance_check:{programme_id}",
+            metadata={"check_type": "anterior_substance", "programme_id": programme_id},
+        )
+        config = CouncilConfig(max_models=3, phase3_rounds=1)
+        verdict = asyncio.run(
+            deliberate(council_input, CouncilMode.DISCONFIRMATION, DisconfirmationRubric(), config)
+        )
+        mean_score = sum(s for s in verdict.scores.values() if s is not None) / max(
+            1, len(verdict.scores)
+        )
+        if mean_score <= 2.0:
+            log.warning(
+                "council_topic_substance_gate: topic rejected (mean=%.1f, scores=%s): %s",
+                mean_score,
+                verdict.scores,
+                topic[:80],
+            )
+            return False
+        log.info(
+            "council_topic_substance_gate: topic accepted (mean=%.1f): %s",
+            mean_score,
+            topic[:80],
+        )
+        return True
+    except Exception:
+        log.warning("council_topic_substance_gate: council unavailable, fail-open", exc_info=True)
+        return True
 
 
 _PROGRAMME_ID_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")

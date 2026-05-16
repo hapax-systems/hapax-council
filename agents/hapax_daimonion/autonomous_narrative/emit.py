@@ -26,6 +26,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from shared.chronicle import ChronicleEvent, current_otel_ids
 from shared.chronicle import record as chronicle_record
@@ -99,6 +100,27 @@ def emit_narrative(
     ts = now if now is not None else time.time()
     impingement_id = speech_event_id or uuid.uuid4().hex[:12]
 
+    content: dict[str, Any] = {
+        "narrative": text,
+        "programme_id": programme_id,
+        "operator_referent": operator_referent,
+        "impulse_id": impulse_id,
+        "speech_event_id": impingement_id,
+        "triad_ids": list(triad_ids),
+    }
+    if programme_id:
+        content["public_broadcast_intent"] = True
+        content["channel"] = "broadcast"
+        content["bridge_outcome"] = "public_action_proposal"
+        content["route_posture"] = "broadcast_authorized"
+        content["claim_ceiling"] = "evidence_bound"
+        content["programme_authorization"] = {
+            "authorized": True,
+            "authorized_at": ts,
+            "evidence_ref": f"programme:{programme_id}",
+        }
+        content["programme_authorization_ref"] = f"programme:{programme_id}"
+
     impingement = {
         "id": impingement_id,
         "ts": ts,
@@ -106,14 +128,7 @@ def emit_narrative(
         "source": "autonomous_narrative",
         "type": "absolute_threshold",
         "strength": 0.6,
-        "content": {
-            "narrative": text,
-            "programme_id": programme_id,
-            "operator_referent": operator_referent,
-            "impulse_id": impulse_id,
-            "speech_event_id": impingement_id,
-            "triad_ids": list(triad_ids),
-        },
+        "content": content,
         "intent_family": "narrative.autonomous_speech",
     }
     chronicle_event = {
