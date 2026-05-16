@@ -295,8 +295,7 @@ def _probe_pair(
             elif (now - state.breach_start) >= config.breach_sustain_s:
                 state.breach_count += 1
                 log.warning(
-                    "Inter-stage correlation breach between %s: corr=%.3f "
-                    "(rms_a=%.6f, rms_b=%.6f)",
+                    "Inter-stage correlation breach between %s: corr=%.3f (rms_a=%.6f, rms_b=%.6f)",
                     key,
                     corr,
                     rms_a,
