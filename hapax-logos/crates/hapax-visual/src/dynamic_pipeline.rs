@@ -1311,13 +1311,13 @@ impl DynamicPipeline {
 
         // Execute each pass
         if self.frame_count < 5 {
-            log::warn!(
+            log::debug!(
                 "CHAIN DIAGNOSTIC: {} passes, intermediates: {:?}",
                 self.passes.len(),
                 self.intermediate_names().collect::<Vec<_>>()
             );
             for (i, p) in self.passes.iter().enumerate() {
-                log::warn!(
+                log::debug!(
                     "  pass[{}] node_id={} inputs={:?} output={} has_pipeline={} has_params={}",
                     i,
                     p.node_id,
