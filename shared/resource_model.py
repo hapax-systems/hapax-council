@@ -435,11 +435,16 @@ DEFAULT_SERVICE_PROFILES: dict[str, ServiceResourceProfile] = {
         allocations={
             ResourceType.RAM: ResourceAllocation(
                 resource_type=ResourceType.RAM,
-                steady_state=0.84,
+                steady_state=0.90,
                 peak=1.03,
-                limit=1.0,
+                limit=8.0,
                 unit="GB",
                 enforcement=Enforcement.HARD,
+                notes=(
+                    "2026-05-16 live incident: logos-api ran near 0.93G while "
+                    "the old 1G hard cap caused false local pressure risk on a "
+                    "128G host. Source unit now uses MemoryHigh=6G, MemoryMax=8G."
+                ),
             ),
         },
         contention_groups=["CG-CPU-GENERAL", "CG-RAM"],
