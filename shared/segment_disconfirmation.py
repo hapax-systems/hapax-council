@@ -226,6 +226,48 @@ def apply_council_verdicts(
     }
 
 
+def build_substance_gap_report(
+    verdicts: list[tuple[CouncilInput, CouncilVerdict]],
+    claim_map: list[dict[str, Any]],
+) -> str:
+    """Build a human-readable substance gap report from council verdicts.
+
+    Identifies which claims were refuted, what sources were weak, and
+    suggests search terms for replacement sources. Feeds back into the
+    composer for a repair pass.
+    """
+    lines = ["## Substance Gap Report (Council Disconfirmation)"]
+    refuted_claims: list[str] = []
+    weak_sources: set[str] = set()
+
+    for claim_input, verdict in verdicts:
+        claim_id = claim_input.metadata.get("claim_id", "unknown")
+        if verdict.receipt.get("council_unavailable"):
+            continue
+        scores = verdict.scores
+        mean = sum(s for s in scores.values() if s is not None) / max(1, len(scores))
+        if mean <= 2.0:
+            claim_text = claim_input.text[:200]
+            refuted_claims.append(claim_id)
+            lines.append(f"\n### REFUTED: {claim_id}")
+            lines.append(f"Claim: {claim_text}")
+            lines.append(f"Scores: {scores}")
+            if verdict.disagreement_log:
+                lines.append(f"Council notes: {verdict.disagreement_log[0][:200]}")
+            if verdict.research_findings:
+                lines.append(f"Research: {verdict.research_findings[0][:200]}")
+            for cm in claim_map:
+                if cm.get("claim_id") == claim_id:
+                    for g in cm.get("grounds", []):
+                        weak_sources.add(str(g))
+
+    if weak_sources:
+        lines.append(f"\n### Weak sources: {', '.join(weak_sources)}")
+    lines.append(f"\n### Summary: {len(refuted_claims)} claims refuted.")
+    lines.append("The composer should find stronger evidence or reframe these claims.")
+    return "\n".join(lines)
+
+
 def _is_structural_claim(claim_id: str, claim_map: list[dict[str, Any]]) -> bool:
     for claim in claim_map:
         if claim.get("claim_id") == claim_id:

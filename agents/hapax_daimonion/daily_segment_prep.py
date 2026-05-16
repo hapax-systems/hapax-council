@@ -1639,13 +1639,40 @@ def prep_segment(
                     _write_json_atomic(diagnostic_path, diagnostic)
                     _append_to_candidate_ledger(prep_dir, prog_id, diagnostic_name, "no_candidate")
                     return None
+                refuted = council_disconfirmation_result.get("refuted_claims", [])
                 log.info(
                     "prep_segment: council pass for %s — %d survived, %d contested, %d refuted",
                     prog_id,
                     len(council_disconfirmation_result.get("survived_claims", [])),
                     len(council_disconfirmation_result.get("contested_claims", [])),
-                    len(council_disconfirmation_result.get("refuted_claims", [])),
+                    len(refuted),
                 )
+                if len(refuted) > 2 and not getattr(programme, "_recomposed", False):
+                    from shared.segment_disconfirmation import build_substance_gap_report
+
+                    gap_report = build_substance_gap_report(council_verdicts, list(claim_map))
+                    log.warning(
+                        "prep_segment: %d claims refuted — triggering recomposition for %s",
+                        len(refuted),
+                        prog_id,
+                    )
+                    repair_seed = f"{seed}\n\n{gap_report}" if seed else gap_report
+                    repair_prompt = _build_full_segment_prompt(programme, repair_seed)
+                    repair_raw = _call_llm(
+                        repair_prompt,
+                        prep_session=prep_session,
+                        phase="recompose",
+                        programme_id=prog_id,
+                    )
+                    repair_script, _ = _parse_segment_generation(repair_raw)
+                    if repair_script and len(repair_script) >= len(script):
+                        script = repair_script[: len(beats)]
+                        log.info(
+                            "prep_segment: recomposition produced %d blocks for %s",
+                            len(script),
+                            prog_id,
+                        )
+                        object.__setattr__(programme, "_recomposed", True)
     except ImportError:
         log.debug("prep_segment: council disconfirmation module not available — skipping")
     except Exception as exc:
