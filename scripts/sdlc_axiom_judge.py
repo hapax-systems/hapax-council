@@ -38,6 +38,7 @@ from sdlc.github import (
     post_pr_comment,
 )
 from sdlc.trace_export import TraceContext, is_file_export
+from shared.diff_context import DiffContext, evaluate_deterministic
 
 # ---------------------------------------------------------------------------
 # Structured output
@@ -250,18 +251,42 @@ def run_axiom_gate(pr_number: int, *, dry_run: bool = False) -> AxiomGateResult:
     # 1. Structural checks.
     structural = _check_structural(changed_files, diff, pr_title, complexity)
 
-    # 2. Semantic checks (LLM judge).
-    implications_by_axiom = {}
-    for axiom in axioms:
-        implications_by_axiom[axiom.id] = load_implications(axiom.id)
+    # 2a. Deterministic predicates (T0/T1 — no LLM call).
+    diff_ctx = DiffContext.from_diff(diff, changed_files, pr_title)
+    predicate_results = evaluate_deterministic(diff_ctx)
+    deterministic_verdicts = [
+        SemanticVerdict(
+            axiom_id=pr.axiom_id,
+            compliant=pr.passed,
+            tier_violated=pr.tier if not pr.passed else None,
+            reasoning=f"[deterministic] {pr.description}: {', '.join(pr.matches[:5])}"
+            if not pr.passed
+            else "[deterministic] passed",
+        )
+        for pr in predicate_results
+    ]
+    has_deterministic_block = any(
+        not pr.passed and pr.tier in ("T0", "T1") for pr in predicate_results
+    )
 
-    judge_prompt = _build_judge_prompt(axioms, implications_by_axiom)
+    # 2b. Semantic checks (LLM judge) — only for T2/T3 or when predicates are inconclusive.
+    semantic: list[SemanticVerdict] = []
+    if not has_deterministic_block:
+        implications_by_axiom = {}
+        for axiom in axioms:
+            implications_by_axiom[axiom.id] = load_implications(axiom.id)
 
-    trace_id = f"sdlc-axiom-gate-{pr_number}"
-    with TraceContext("axiom-gate", trace_id, pr_number=pr_number) as span:
-        semantic = _call_judge(judge_prompt, diff, dry_run=dry_run)
-        span.model = model
-        span.output_text = json.dumps([v.model_dump() for v in semantic])
+        judge_prompt = _build_judge_prompt(axioms, implications_by_axiom)
+
+        trace_id = f"sdlc-axiom-gate-{pr_number}"
+        with TraceContext("axiom-gate", trace_id, pr_number=pr_number) as span:
+            semantic = _call_judge(judge_prompt, diff, dry_run=dry_run)
+            span.model = model
+            span.output_text = json.dumps([v.model_dump() for v in semantic])
+    else:
+        log.info("Deterministic predicates blocked — skipping LLM judge")
+
+    semantic = deterministic_verdicts + semantic
 
     # 3. Precedent check via existing enforcement module.
     precedent_violations = []
