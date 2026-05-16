@@ -1,6 +1,6 @@
 {
-  "name": "Sierpinski Line Overlay",
-  "description": "Sierpinski lineage (2/2): sierpinski_lines + edge_detect creates a wireframe-sierpinski overlay aesthetic \u2014 geometric line architecture composited on the content. Lineage: sierpinski.",
+  "name": "AoA Line Overlay",
+  "description": "AoA lineage (2/2): legacy sierpinski_lines + edge_detect creates a wireframe Aperture of Apertures overlay aesthetic - geometric line architecture composited on the content. Lineage key remains sierpinski until preset IDs migrate safely.",
   "lineage": "sierpinski",
   "transition_ms": 2000,
   "nodes": {

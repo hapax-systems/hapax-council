@@ -298,7 +298,7 @@ def test_compositor_visual_surface_ignores_consumed_layout_mode_mailbox(tmp_path
     assert "current_layout_state" in compositor.evidence["files"]
 
 
-def test_compositor_visual_surface_accepts_forcefield_when_sierpinski_ward_active(
+def test_compositor_visual_surface_accepts_forcefield_when_aoa_ward_active(
     tmp_path: Path,
 ) -> None:
     config = _ready_fixture(tmp_path)
@@ -325,6 +325,7 @@ def test_compositor_visual_surface_accepts_forcefield_when_sierpinski_ward_activ
     compositor = checks["compositor_visual_surface"]
     assert compositor.status.value == "pass"
     assert compositor.evidence["layout_mode"] == "forcefield"
+    assert compositor.evidence["aoa_ward_active"] is True
     assert compositor.evidence["sierpinski_ward_active"] is True
 
 

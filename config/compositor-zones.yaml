@@ -76,10 +76,12 @@ zones:
 
   - name: sierpinski_slot
     description: |
-      Sierpinski fractal + YouTube frame composite surface. Currently
-      unassigned to a default PiP position in the fallback layout, but
-      the source class exists and is registered here so HSEA Phase 1
-      can place it into a zone via layout assignment.
+      Aperture of Apertures (AoA) fractal anchor + YouTube frame
+      composite surface. The source class/module retain legacy
+      Sierpinski names until the protocol IDs can be migrated safely.
+      Currently unassigned to a default PiP position in the fallback
+      layout, but the source class exists and is registered here so
+      HSEA Phase 1 can place it into a zone via layout assignment.
     default_source: SierpinskiCairoSource
     default_source_module: agents.studio_compositor.sierpinski_renderer
     default_priority: 10

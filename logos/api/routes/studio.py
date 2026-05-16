@@ -259,6 +259,27 @@ def _search_moments_sync(query: str, limit: int) -> list[dict]:
 
 FX_SNAPSHOT_PATH = Path("/dev/shm/hapax-compositor/fx-snapshot.jpg")
 
+_AOA_LAYOUT_MODE = "aoa"
+_AOA_LAYOUT_ALIASES = frozenset(
+    {_AOA_LAYOUT_MODE, "aperture-of-apertures", "aperture_of_apertures"}
+)
+_LEGACY_AOA_LAYOUT_ALIASES = frozenset({"sierpinski"})
+
+
+def _normalize_layout_mode(mode: str) -> tuple[str, str | None] | None:
+    """Return canonical layout mode and optional legacy alias."""
+
+    stripped = mode.strip()
+    lowered = stripped.lower()
+    if lowered in _AOA_LAYOUT_ALIASES:
+        return _AOA_LAYOUT_MODE, None
+    if lowered in _LEGACY_AOA_LAYOUT_ALIASES:
+        return _AOA_LAYOUT_MODE, stripped
+    if stripped == "balanced" or stripped.startswith("hero/"):
+        return stripped, None
+    return None
+
+
 MJPEG_BOUNDARY = "hapax-frame"
 
 
@@ -590,7 +611,7 @@ async def get_vinyl_mode():
 
 
 class LayoutModeRequest(BaseModel):
-    mode: str  # "balanced" | "hero/{role}" | "sierpinski"
+    mode: str  # "balanced" | "hero/{role}" | "aoa" ("sierpinski" legacy alias)
 
 
 @router.post("/studio/layout")
@@ -600,7 +621,8 @@ async def set_layout_mode(req: LayoutModeRequest):
     Valid modes:
     - "balanced": default grid layout
     - "hero/{role}": one camera dominant (e.g. "hero/brio-room")
-    - "sierpinski": 3 cameras in Sierpinski triangle corners, rest hidden
+    - "aoa": 3 cameras in Aperture of Apertures corner apertures, rest hidden
+    - "sierpinski": legacy alias for "aoa"
 
     Writes to /dev/shm/hapax-compositor/layout-mode.txt. The compositor's
     state_reader_loop picks up the change within 100ms and applies it
@@ -609,16 +631,21 @@ async def set_layout_mode(req: LayoutModeRequest):
     mode = req.mode.strip()
     if not mode:
         return JSONResponse({"error": "mode is required"}, status_code=400)
-    if mode != "balanced" and mode != "sierpinski" and not mode.startswith("hero/"):
+    normalized = _normalize_layout_mode(mode)
+    if normalized is None:
         return JSONResponse(
-            {"error": "mode must be 'balanced', 'sierpinski', or 'hero/{role}'"},
+            {"error": "mode must be 'balanced', 'aoa', 'sierpinski', or 'hero/{role}'"},
             status_code=400,
         )
+    canonical_mode, legacy_alias = normalized
     layout_path = Path("/dev/shm/hapax-compositor/layout-mode.txt")
     try:
         layout_path.parent.mkdir(parents=True, exist_ok=True)
-        layout_path.write_text(mode)
-        return {"mode": mode}
+        layout_path.write_text(canonical_mode)
+        payload = {"mode": canonical_mode}
+        if legacy_alias is not None:
+            payload["legacy_alias"] = legacy_alias
+        return payload
     except OSError as e:
         return JSONResponse({"error": f"write failed: {e}"}, status_code=503)
 

@@ -1,18 +1,19 @@
 """2026-04-23 Gemini-reapproach Plan B Phase B2 regression pin.
 
 Scale values live in two files and MUST stay synchronized. Gemini's
-d4a4b0113 changed ``sierpinski_renderer.py`` scale 0.75 → 0.675 but
-left ``layout.py`` at 0.75 — that parity break is what operator caught
-as "sierpinski is cropped wrong" at 08:23 session 2.
+d4a4b0113 changed the legacy ``sierpinski_renderer.py`` transport scale
+0.75 → 0.675 but left ``layout.py`` at 0.75 — that parity break is what
+operator caught as "sierpinski is cropped wrong" at 08:23 session 2.
 
 This test pins the current values as invariants. Any future atomic
 reduction (e.g. the 10% "reduce reverie sierp and cbip" directive)
 must update BOTH files; this test fires if only one side changes.
 
 Constants checked:
-- ``agents/studio_compositor/layout.py::_sierpinski_layout`` scale
+- ``agents/studio_compositor/layout.py::_aoa_layout`` scale
 - ``agents/studio_compositor/sierpinski_renderer.py::render_content``
-  _get_triangle scale
+  _get_triangle scale. The renderer module name remains a legacy
+  compatibility transport while the layout/API surface is AoA.
 - ``agents/studio_compositor/token_pole.py::NATURAL_SIZE`` vs the
   ``pip-ul`` surface w/h in ``default.json``
 - ``agents/studio_compositor/album_overlay.py::SIZE``
@@ -52,21 +53,21 @@ def _find_sierpinski_renderer_scale() -> float:
     return float(match.group(1))
 
 
-def _find_layout_sierpinski_scale() -> float:
-    """Extract the ``scale = <float>`` assignment inside ``_sierpinski_layout``."""
+def _find_layout_aoa_scale() -> float:
+    """Extract the ``scale = <float>`` assignment inside ``_aoa_layout``."""
     text = (_COMPOSITOR / "layout.py").read_text()
-    match = re.search(r"def\s+_sierpinski_layout.*?scale\s*=\s*([0-9]*\.[0-9]+)", text, re.DOTALL)
-    assert match, "layout.py: _sierpinski_layout scale = <float> not found"
+    match = re.search(r"def\s+_aoa_layout.*?scale\s*=\s*([0-9]*\.[0-9]+)", text, re.DOTALL)
+    assert match, "layout.py: _aoa_layout scale = <float> not found"
     return float(match.group(1))
 
 
-def test_sierpinski_scale_parity() -> None:
-    """The two sierpinski scale constants must be equal."""
-    layout_scale = _find_layout_sierpinski_scale()
+def test_aoa_scale_parity() -> None:
+    """The AoA layout and legacy renderer transport scales must be equal."""
+    layout_scale = _find_layout_aoa_scale()
     renderer_scale = _find_sierpinski_renderer_scale()
     assert layout_scale == renderer_scale, (
-        f"sierpinski scale parity broken: "
-        f"layout.py::_sierpinski_layout scale={layout_scale!r}, "
+        f"AoA scale parity broken: "
+        f"layout.py::_aoa_layout scale={layout_scale!r}, "
         f"sierpinski_renderer.py::render_content scale={renderer_scale!r}. "
         "Both must change atomically. Gemini's d4a4b0113 caught on this "
         "(operator: 'sierpinski is cropped wrong')."

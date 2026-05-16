@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from .layout import AOA_LAYOUT_ALIASES, AOA_LAYOUT_MODE, LEGACY_AOA_LAYOUT_ALIASES
 from .models import CameraSpec, TileRect
 
 BASE_COMPOSITOR_MATERIAL = "matte_black_studio_depth"
@@ -128,9 +129,9 @@ _NEGATIVE_SPACE_BY_FAMILY: dict[str, NegativeSpaceContract] = {
         expected_visual_signature="stable matte black spatial field with distributed live tiles",
         max_fraction=0.90,
     ),
-    "sierpinski": NegativeSpaceContract(
-        intent="fractal-mask camera constellation",
-        region="triangle exterior and recursive voids",
+    AOA_LAYOUT_MODE: NegativeSpaceContract(
+        intent="Aperture of Apertures camera constellation",
+        region="AoA exterior and recursive aperture voids",
         material=BASE_COMPOSITOR_MATERIAL,
         expected_visual_signature="stable matte black field around three live fitted tiles",
         max_fraction=0.96,
@@ -140,15 +141,27 @@ _NEGATIVE_SPACE_BY_FAMILY: dict[str, NegativeSpaceContract] = {
 
 def mode_family(mode: str) -> str:
     normalized = mode.strip()
+    lowered = normalized.lower()
     if normalized.startswith("hero/"):
         return "hero"
     if normalized.startswith("packed/"):
         return "packed"
     if normalized.startswith("follow/"):
         return "follow"
-    if normalized in {"balanced", "packed", "forcefield", "sierpinski"}:
+    if lowered in AOA_LAYOUT_ALIASES | LEGACY_AOA_LAYOUT_ALIASES:
+        return AOA_LAYOUT_MODE
+    if normalized in {"balanced", "packed", "forcefield"}:
         return normalized
     return "unknown"
+
+
+def canonical_layout_mode(mode: str) -> str:
+    """Return the preferred live layout mode name for a selectable mode."""
+
+    normalized = mode.strip()
+    if normalized.lower() in AOA_LAYOUT_ALIASES | LEGACY_AOA_LAYOUT_ALIASES:
+        return AOA_LAYOUT_MODE
+    return normalized
 
 
 def negative_space_contract_for_mode(mode: str) -> NegativeSpaceContract | None:
@@ -184,7 +197,7 @@ def resolve_startup_layout_mode(
     values = os.environ if env is None else env
     explicit = values.get(STARTUP_LAYOUT_MODE_ENV)
     if explicit is not None:
-        mode = explicit.strip()
+        mode = canonical_layout_mode(explicit)
         if not is_known_layout_mode(mode):
             raise LayoutSafetyError(
                 f"{STARTUP_LAYOUT_MODE_ENV}={mode!r} is not a selectable layout mode"
@@ -201,9 +214,13 @@ def resolve_startup_layout_mode(
     except OSError:
         persisted = ""
     if persisted and is_known_layout_mode(persisted):
-        return StartupLayoutMode(mode=persisted, source="persisted", path=resolved_persist)
+        return StartupLayoutMode(
+            mode=canonical_layout_mode(persisted), source="persisted", path=resolved_persist
+        )
 
-    default = values.get(STARTUP_DEFAULT_MODE_ENV, DEFAULT_STARTUP_LAYOUT_MODE).strip()
+    default = canonical_layout_mode(
+        values.get(STARTUP_DEFAULT_MODE_ENV, DEFAULT_STARTUP_LAYOUT_MODE)
+    )
     if not is_known_layout_mode(default):
         raise LayoutSafetyError(
             f"{STARTUP_DEFAULT_MODE_ENV}={default!r} is not a selectable layout mode"

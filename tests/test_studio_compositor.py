@@ -246,7 +246,7 @@ class TestTileLayout:
 
 
 class TestLayoutModes:
-    """Dynamic layout modes: balanced / hero/{role} / sierpinski."""
+    """Dynamic layout modes: balanced / hero/{role} / aoa."""
 
     def _six_cameras(self) -> list[CameraSpec]:
         return [
@@ -290,25 +290,25 @@ class TestLayoutModes:
         # Missing hero → fall back to balanced
         assert layout == balanced
 
-    def test_sierpinski_mode_three_cameras_visible(self) -> None:
+    def test_aoa_mode_three_cameras_visible(self) -> None:
         cams = self._six_cameras()
-        layout = compute_tile_layout(cams, 1920, 1080, mode="sierpinski")
-        # First 3 cameras get triangle corners (positive dimensions)
+        layout = compute_tile_layout(cams, 1920, 1080, mode="aoa")
+        # First 3 cameras get AoA corner apertures (positive dimensions)
         visible = [tile for tile in layout.values() if tile.w > 10 and tile.h > 10]
         assert len(visible) == 3
 
-    def test_sierpinski_mode_hides_extras(self) -> None:
+    def test_aoa_mode_hides_extras(self) -> None:
         cams = self._six_cameras()
-        layout = compute_tile_layout(cams, 1920, 1080, mode="sierpinski")
+        layout = compute_tile_layout(cams, 1920, 1080, mode="aoa")
         # Cameras 4-6 should be hidden (negative x, 1x1 size)
         hidden = [tile for tile in layout.values() if tile.w <= 10 or tile.h <= 10]
         assert len(hidden) == 3
         for tile in hidden:
             assert tile.x < 0 or tile.w <= 10
 
-    def test_sierpinski_mode_corners_within_canvas(self) -> None:
+    def test_aoa_mode_corners_within_canvas(self) -> None:
         cams = self._six_cameras()
-        layout = compute_tile_layout(cams, 1920, 1080, mode="sierpinski")
+        layout = compute_tile_layout(cams, 1920, 1080, mode="aoa")
         visible = [t for t in layout.values() if t.w > 10]
         for tile in visible:
             assert 0 <= tile.x < 1920
@@ -316,9 +316,15 @@ class TestLayoutModes:
             assert tile.x + tile.w <= 1920
             assert tile.y + tile.h <= 1080
 
-    def test_sierpinski_empty_cameras(self) -> None:
-        layout = compute_tile_layout([], 1920, 1080, mode="sierpinski")
+    def test_aoa_empty_cameras(self) -> None:
+        layout = compute_tile_layout([], 1920, 1080, mode="aoa")
         assert layout == {}
+
+    def test_sierpinski_mode_remains_legacy_alias_for_aoa(self) -> None:
+        cams = self._six_cameras()
+        assert compute_tile_layout(cams, 1920, 1080, mode="sierpinski") == compute_tile_layout(
+            cams, 1920, 1080, mode="aoa"
+        )
 
     def test_unknown_mode_falls_back_to_balanced(self) -> None:
         cams = self._six_cameras()

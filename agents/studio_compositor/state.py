@@ -16,6 +16,7 @@ from .config import PERCEPTION_STATE_PATH, SNAPSHOT_DIR
 from .effects import try_graph_preset
 from .follow_mode import FollowModeController, read_follow_mode_recommendation
 from .layout import compute_safe_tile_layout
+from .layout_safety import canonical_layout_mode
 from .models import OverlayData
 from .profiles import apply_camera_profile, evaluate_active_profile
 
@@ -133,7 +134,7 @@ def apply_layout_mode(compositor: Any, mode: str) -> None:
     """Recompute the tile layout and update compositor branch geometry.
 
     Runtime layout switch must update both the compositor sink pad and the
-    upstream scale caps. Modes such as ``sierpinski`` intentionally assign
+    upstream scale caps. Modes such as ``aoa`` intentionally assign
     camera branches a 1x1 tile; leaving those caps pinned while the pad moves
     back to a visible layout creates a "live but visually hidden" camera grid.
 
@@ -142,6 +143,8 @@ def apply_layout_mode(compositor: Any, mode: str) -> None:
     placement via the PackedCamerasCairoSource overlay, not cudacompositor
     pad geometry.
     """
+    mode = canonical_layout_mode(mode)
+
     # Guard: packed mode is not overridable by hero switches
     initial_mode = getattr(compositor, "_initial_layout_mode", None)
     if initial_mode == "packed" and mode != "packed":
@@ -821,11 +824,11 @@ def state_reader_loop(compositor: Any) -> None:
                 log.warning("preset load failed: %s — %s", preset_name, exc, exc_info=True)
                 _metrics.record_preset_load_failed(preset=preset_name, reason=type(exc).__name__)
                 fx_request_path.unlink(missing_ok=True)
-        # Layout mode switch (balanced / hero/{role} / sierpinski)
+        # Layout mode switch (balanced / hero/{role} / aoa)
         layout_path = SNAPSHOT_DIR / "layout-mode.txt"
         if layout_path.exists():
             try:
-                requested = layout_path.read_text().strip() or "balanced"
+                requested = canonical_layout_mode(layout_path.read_text().strip() or "balanced")
                 layout_path.unlink(missing_ok=True)
                 current = getattr(compositor, "_layout_mode", "balanced")
                 if requested != current:

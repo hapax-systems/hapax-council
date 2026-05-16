@@ -300,7 +300,7 @@ def _check_compositor_visual_surface(context: _CheckContext) -> CheckResult:
     layout_ward_ids = (
         layout_state.get("active_ward_ids") if isinstance(layout_state, Mapping) else None
     )
-    has_sierpinski_ward = _sequence_contains(ward_ids, "sierpinski") or _sequence_contains(
+    has_aoa_ward = _sequence_contains(ward_ids, "sierpinski") or _sequence_contains(
         layout_ward_ids,
         "sierpinski",
     )
@@ -316,13 +316,13 @@ def _check_compositor_visual_surface(context: _CheckContext) -> CheckResult:
         )
     if not has_wards:
         failed_reasons.append("active ward list is empty or malformed")
-    if not has_sierpinski_ward:
-        failed_reasons.append("sierpinski ward is not active")
+    if not has_aoa_ward:
+        failed_reasons.append("AoA ward is not active")
 
     status = ReadinessStatus.FAIL if failed_reasons else ReadinessStatus.PASS
     return CheckResult(
         id="compositor_visual_surface",
-        label="Compositor cameras, Sierpinski, wards",
+        label="Compositor cameras, AoA, wards",
         status=status,
         summary="; ".join(failed_reasons) if failed_reasons else "compositor surface is live",
         evidence={
@@ -330,7 +330,8 @@ def _check_compositor_visual_surface(context: _CheckContext) -> CheckResult:
             "files": file_results,
             "active_cameras": active_cameras,
             "layout_mode": layout_mode or None,
-            "sierpinski_ward_active": has_sierpinski_ward,
+            "aoa_ward_active": has_aoa_ward,
+            "sierpinski_ward_active": has_aoa_ward,
             "current_layout_state": layout_state if isinstance(layout_state, Mapping) else None,
             "ward_count": len(ward_ids) if isinstance(ward_ids, Sequence) else 0,
             "egress_compositor": compositor_evidence,

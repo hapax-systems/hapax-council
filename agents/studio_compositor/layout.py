@@ -3,8 +3,9 @@
 Layout modes:
 - "balanced" (default): grid layout, all cameras equal-sized, honoring any hero flag
 - "hero/{role}": one camera takes left 2/3 (or 1/2 if many cameras), others stack right
-- "sierpinski": 3 specific cameras fitted to the inscribed rectangles of a Sierpinski
-  triangle's 3 corners; other cameras hidden (width=0, height=0, off-canvas).
+- "aoa": 3 specific cameras fitted to the corner apertures of the Aperture of
+  Apertures anchor; other cameras hidden (width=0, height=0, off-canvas).
+  "sierpinski" remains a legacy alias for this mode.
 """
 
 from __future__ import annotations
@@ -13,6 +14,16 @@ import math
 
 from .config import OUTPUT_HEIGHT, OUTPUT_WIDTH
 from .models import CameraSpec, TileRect
+
+AOA_LAYOUT_MODE = "aoa"
+AOA_LAYOUT_ALIASES = frozenset({AOA_LAYOUT_MODE, "aperture-of-apertures", "aperture_of_apertures"})
+LEGACY_AOA_LAYOUT_ALIASES = frozenset({"sierpinski"})
+
+
+def is_aoa_layout_mode(mode: str) -> bool:
+    """Return whether a layout mode selects the AoA camera aperture layout."""
+
+    return mode.strip().lower() in AOA_LAYOUT_ALIASES | LEGACY_AOA_LAYOUT_ALIASES
 
 
 def _fit_16x9(w: int, h: int) -> tuple[int, int, int, int]:
@@ -184,20 +195,19 @@ def _follow_layout(
     return layout
 
 
-def _sierpinski_layout(
-    cameras: list[CameraSpec], canvas_w: int, canvas_h: int
-) -> dict[str, TileRect]:
-    """Three cameras fitted into the 3 corner inscribed rectangles.
+def _aoa_layout(cameras: list[CameraSpec], canvas_w: int, canvas_h: int) -> dict[str, TileRect]:
+    """Three cameras fitted into the AoA anchor's corner apertures.
 
-    Uses the same geometry as SierpinskiRenderer._inscribed_rect(). Cameras
-    beyond the first 3 are hidden. The triangle scale is 0.75 of canvas
-    height, centered slightly above center (same as the renderer).
+    The geometry remains the same inscribed-triangle construction used by the
+    legacy renderer so older source IDs still line up. Cameras beyond the
+    first 3 are hidden. The triangle scale is 0.75 of canvas height, centered
+    slightly above center.
     """
     layout: dict[str, TileRect] = {}
     if not cameras:
         return layout
 
-    # Triangle vertices (matches sierpinski_renderer._get_triangle(scale=0.75, y_off=-0.02))
+    # Triangle vertices match the legacy renderer's anchored aperture geometry.
     scale = 0.75
     y_offset = -0.02
     tri_h = scale * canvas_h * 0.866
@@ -356,7 +366,7 @@ def _forcefield_layout(
 
     All cameras equal-sized. Placed at 6 structural tension points that
     create cross-canvas perceptual forces (3 semantic axes: watching,
-    activity, equipment). Sierpinski center remains open. No hero.
+    activity, equipment). AoA center remains open. No hero.
     """
     layout: dict[str, TileRect] = {}
     if not cameras:
@@ -413,7 +423,8 @@ def compute_tile_layout(
             - "hero/{role}" — named camera dominant, others stacked right
             - "packed/{role}" — named camera as hero in packed constellation
             - "follow/{role}" — named camera as salience inside balanced posture
-            - "sierpinski" — 3 cameras in triangle corners, rest hidden
+            - "aoa" — 3 cameras in AoA corner apertures, rest hidden
+              ("sierpinski" remains a legacy alias)
             - "packed" — hero upper-left + 2x2 grid + stacked right column
             - "forcefield" — Arnheim force-field, cameras as mass-points
     """
@@ -428,8 +439,8 @@ def compute_tile_layout(
     if mode.startswith("follow/"):
         hero_role = mode[len("follow/") :]
         return _follow_layout(cameras, hero_role, canvas_w, canvas_h)
-    if mode == "sierpinski":
-        return _sierpinski_layout(cameras, canvas_w, canvas_h)
+    if is_aoa_layout_mode(mode):
+        return _aoa_layout(cameras, canvas_w, canvas_h)
     if mode.startswith("hero/"):
         hero_role = mode[len("hero/") :]
         return _hero_layout(cameras, hero_role, canvas_w, canvas_h)

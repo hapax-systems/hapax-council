@@ -1,6 +1,6 @@
 {
-  "name": "Sierpinski Recursive",
-  "description": "Sierpinski lineage (1/2): sierpinski_content + droste creates a recursive sierpinski-triangle composition where the sierpinski form contains itself. Lineage: sierpinski.",
+  "name": "AoA Recursive",
+  "description": "AoA lineage (1/2): legacy sierpinski_content + droste creates a recursive Aperture of Apertures composition where the aperture form contains itself. Lineage key remains sierpinski until preset IDs migrate safely.",
   "lineage": "sierpinski",
   "transition_ms": 2500,
   "nodes": {
