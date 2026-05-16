@@ -3279,6 +3279,25 @@ detect_quiescence
 detect_source_theater
 resolve_gap
 
+# Segment action contracts — tier-list + interview action kinds
+from shared.segment_action_contracts import (  # noqa: F401, E402
+    ActionContract,
+    InterviewActionContract,
+    InterviewActionKind,
+    TierListActionContract,
+    TierListActionKind,
+    validate_interview_actions,
+    validate_tier_list_actions,
+)
+
+ActionContract
+InterviewActionContract
+InterviewActionKind
+TierListActionContract
+TierListActionKind
+validate_interview_actions
+validate_tier_list_actions
+
 # Source packet and layout receipt freshness helpers — public segment-prep API
 # consumed by operator/audit wiring outside the current static diff.
 from shared.layout_receipt_freshness import validate_receipt_freshness  # noqa: F401, E402

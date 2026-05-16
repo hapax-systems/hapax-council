@@ -20,6 +20,25 @@ from agents.studio_compositor.gem_substrate import (
 )
 
 
+class _MetricValue:
+    def __init__(self, value: float = 0.0) -> None:
+        self._current = value
+        self._value = self
+
+    def get(self) -> float:
+        return self._current
+
+
+class _CounterProbe(_MetricValue):
+    def inc(self, amount: float = 1.0) -> None:
+        self._current += amount
+
+
+class _GaugeProbe(_MetricValue):
+    def set(self, value: float) -> None:
+        self._current = float(value)
+
+
 def test_default_dimensions_match_canvas_aspect() -> None:
     """Default 230×30 grid upscales evenly into the 1840×240 GEM canvas."""
     s = GemSubstrate()
@@ -130,16 +149,23 @@ def test_gem_source_emits_substrate_paint_metrics(monkeypatch: pytest.MonkeyPatc
     from agents.studio_compositor import metrics
     from agents.studio_compositor.gem_source import GemCairoSource
 
+    active_gauge = _GaugeProbe()
+    paint_counter = _CounterProbe()
+    brightness_gauge = _GaugeProbe()
+    monkeypatch.setattr(metrics, "GEM_SUBSTRATE_ACTIVE", active_gauge)
+    monkeypatch.setattr(metrics, "GEM_SUBSTRATE_PAINT_TOTAL", paint_counter)
+    monkeypatch.setattr(metrics, "GEM_SUBSTRATE_MAX_BRIGHTNESS", brightness_gauge)
+
     src = GemCairoSource()
     monkeypatch.setattr(src, "_paint_substrate_grid", lambda *args, **kwargs: None)
     metrics.set_gem_substrate_active(False)
-    before = metrics.GEM_SUBSTRATE_PAINT_TOTAL._value.get()
+    before = paint_counter._value.get()
 
     src._render_substrate(object(), 1840, 240)
 
-    assert metrics.GEM_SUBSTRATE_ACTIVE._value.get() == 1.0
-    assert metrics.GEM_SUBSTRATE_PAINT_TOTAL._value.get() == before + 1.0
-    assert 0.0 <= metrics.GEM_SUBSTRATE_MAX_BRIGHTNESS._value.get() <= src._substrate.ceiling
+    assert active_gauge._value.get() == 1.0
+    assert paint_counter._value.get() == before + 1.0
+    assert 0.0 <= brightness_gauge._value.get() <= src._substrate.ceiling
 
 
 def test_gem_source_emits_substrate_error_metric(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -147,15 +173,20 @@ def test_gem_source_emits_substrate_error_metric(monkeypatch: pytest.MonkeyPatch
     from agents.studio_compositor import metrics
     from agents.studio_compositor.gem_source import GemCairoSource
 
+    active_gauge = _GaugeProbe()
+    error_counter = _CounterProbe()
+    monkeypatch.setattr(metrics, "GEM_SUBSTRATE_ACTIVE", active_gauge)
+    monkeypatch.setattr(metrics, "GEM_SUBSTRATE_STEP_ERRORS_TOTAL", error_counter)
+
     src = GemCairoSource()
 
     def _fail_paint(*args, **kwargs) -> None:
         raise RuntimeError("forced paint failure")
 
     monkeypatch.setattr(src, "_paint_substrate_grid", _fail_paint)
-    before = metrics.GEM_SUBSTRATE_STEP_ERRORS_TOTAL._value.get()
+    before = error_counter._value.get()
 
     src._render_substrate(object(), 1840, 240)
 
-    assert metrics.GEM_SUBSTRATE_ACTIVE._value.get() == 0.0
-    assert metrics.GEM_SUBSTRATE_STEP_ERRORS_TOTAL._value.get() == before + 1.0
+    assert active_gauge._value.get() == 0.0
+    assert error_counter._value.get() == before + 1.0
