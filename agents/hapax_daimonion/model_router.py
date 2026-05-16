@@ -62,6 +62,24 @@ TIER_ROUTES: dict[ModelTier, str] = {
 }
 
 
+@dataclass(frozen=True)
+class RoutingProvenance:
+    """Provenance metadata for a single LLM routing decision."""
+
+    tier: str
+    model: str
+    reason: str
+    egress_to_cloud: bool
+
+    def to_dict(self) -> dict[str, str | bool]:
+        return {
+            "tier": self.tier,
+            "model": self.model,
+            "reason": self.reason,
+            "egress_to_cloud": self.egress_to_cloud,
+        }
+
+
 @dataclass
 class RoutingDecision:
     tier: ModelTier
@@ -69,6 +87,15 @@ class RoutingDecision:
     reason: str
     canned_response: str  # non-empty only for CANNED tier
     egress_to_cloud: bool = False  # True when routed to cloud provider
+
+    @property
+    def provenance(self) -> RoutingProvenance:
+        return RoutingProvenance(
+            tier=self.tier.name,
+            model=self.model,
+            reason=self.reason,
+            egress_to_cloud=self.egress_to_cloud,
+        )
 
 
 # ── Phatic / canned response patterns ────────────────────────────────

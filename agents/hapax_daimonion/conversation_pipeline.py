@@ -893,11 +893,7 @@ class ConversationPipeline:
         hapax_event(
             "voice",
             "routed",
-            metadata={
-                "tier": routing.tier.name,
-                "model": routing.model or "canned",
-                "reason": routing.reason,
-            },
+            metadata=routing.provenance.to_dict(),
         )
 
         # Record activation breakdown for diagnostics
