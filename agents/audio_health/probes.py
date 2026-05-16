@@ -7,9 +7,11 @@ produces near-silent reads regardless of real signal (verified
 2026-05-02 in ``config/pipewire/hapax-broadcast-master.conf`` lines
 86–96).
 
-Each probe captures a short PCM window (default 2s) from a target
-sink's ``.monitor`` device, decodes the s16le bytes into a numpy
-``int16`` array, and hands off to :mod:`agents.audio_signal_assertion.classifier`.
+Each probe captures a short PCM window (default 2s) from a PipeWire
+source. For legacy null sinks that means the sink's ``.monitor`` source;
+for remap-source stages that already exist as sources, it means the
+stage name itself. The decoded s16le bytes become a numpy ``int16``
+array and then hand off to :mod:`agents.audio_signal_assertion.classifier`.
 
 Discovery: callers that want dynamic stage selection can use
 :func:`discover_broadcast_stages` which calls ``pactl list sinks short``
@@ -192,15 +194,75 @@ def discover_broadcast_stages(
     return tuple(ordered)
 
 
+def _pactl_short_names(kind: str, config: ProbeConfig) -> set[str]:
+    """Return PipeWire node names from ``pactl list short <kind>``."""
+
+    if shutil.which(config.pactl_path) is None:
+        return set()
+
+    try:
+        result = subprocess.run(
+            [config.pactl_path, "list", kind, "short"],
+            capture_output=True,
+            text=True,
+            timeout=4.0,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return set()
+
+    if result.returncode != 0:
+        return set()
+
+    names: set[str] = set()
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[1].strip():
+            names.add(parts[1].strip())
+    return names
+
+
+def resolve_parecord_target(target: str, config: ProbeConfig) -> str:
+    """Resolve a logical audio stage to the actual ``parecord`` device.
+
+    Historical broadcast stages were null sinks, so callers passed
+    ``hapax-broadcast-master`` and the probe appended ``.monitor``. The
+    current broadcast graph also contains remap-source stages named
+    ``hapax-broadcast-master`` / ``hapax-obs-broadcast-remap`` directly
+    in ``pactl list short sources``. Appending ``.monitor`` to those
+    source names samples the wrong thing or silence. Prefer an exact
+    source, use ``sink.monitor`` only for actual sinks, and preserve the
+    old monitor fallback when discovery is unavailable.
+    """
+
+    sources = _pactl_short_names("sources", config)
+    sinks = _pactl_short_names("sinks", config)
+
+    if target in sources:
+        return target
+
+    if target.endswith(".monitor"):
+        base = target.removesuffix(".monitor")
+        if base in sources:
+            return base
+        if base in sinks or target in sources:
+            return target
+        return target
+
+    if target in sinks:
+        return f"{target}.monitor"
+
+    return f"{target}.monitor"
+
+
 def _capture_parecord(
     target: str,
     config: ProbeConfig,
 ) -> bytes:
-    """Run parecord against a monitor target, return raw s16le bytes.
+    """Run parecord against a resolved source target, return raw s16le bytes.
 
-    Uses ``parecord --device=<target>.monitor --raw --rate=...
-    --channels=... --format=s16le`` per the source research's
-    explicit guidance. The capture is bounded by both the
+    Uses ``parecord --device=<resolved-source> --raw --rate=...
+    --channels=... --format=s16le``. The capture is bounded by both the
     ``--latency-msec`` ceiling (so the kernel buffer doesn't accumulate
     noise) AND a subprocess timeout that includes ``timeout_extra_s``
     headroom, so a hung parecord cannot stall the daemon's 30s probe
@@ -210,7 +272,7 @@ def _capture_parecord(
     if shutil.which(config.parecord_path) is None:
         raise ProbeError(f"parecord binary not found at {config.parecord_path!r}")
 
-    monitor_target = target if target.endswith(".monitor") else f"{target}.monitor"
+    monitor_target = resolve_parecord_target(target, config)
     cmd = [
         config.parecord_path,
         f"--device={monitor_target}",
