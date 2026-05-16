@@ -298,9 +298,8 @@ def evaluate_preset_graph_policy(
             )
 
         node_def = registry.get(node_type) if registry is not None else None
-        if (
-            node_type in LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES
-            and getattr(node_def, "glsl_source", None)
+        if node_type in LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES and getattr(
+            node_def, "glsl_source", None
         ):
             return PresetPolicyDecision(
                 allowed=False,
