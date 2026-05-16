@@ -66,6 +66,73 @@ studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapsh
     assert row["payload"]["restored"] is True
 
 
+def test_guard_once_accepts_imagination_direct_egress_extra_metrics(tmp_path: Path) -> None:
+    metrics = tmp_path / "metrics.prom"
+    metrics.write_text(
+        """
+studio_compositor_cameras_total 9
+studio_compositor_cameras_healthy 9
+studio_compositor_v4l2sink_frames_total 0
+studio_compositor_v4l2sink_last_frame_seconds_ago 9999
+""",
+        encoding="utf-8",
+    )
+    imagination_metrics = tmp_path / "imagination-egress.prom"
+    imagination_metrics.write_text(
+        """
+hapax_imagination_output_frames_total 44
+hapax_imagination_output_last_frame_seconds_ago 0
+hapax_imagination_v4l2_output_enabled 1
+hapax_imagination_v4l2_write_frames_total 43
+hapax_imagination_v4l2_last_frame_seconds_ago 0
+""",
+        encoding="utf-8",
+    )
+    obs_state = tmp_path / "obs.json"
+    obs_state.write_text(
+        json.dumps(
+            {
+                "source_active": True,
+                "playing": True,
+                "screenshot_changed": True,
+                "screenshot_flat": False,
+                "screenshot_age_seconds": 0.1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    playlist = tmp_path / "stream.m3u8"
+    playlist.write_text("#EXTM3U\n", encoding="utf-8")
+    textfile = tmp_path / "live_surface.prom"
+    ledger = tmp_path / "ledger.jsonl"
+
+    rc = main(
+        [
+            "--once",
+            "--metrics-file",
+            str(metrics),
+            "--extra-metrics-file",
+            str(imagination_metrics),
+            "--obs-state-file",
+            str(obs_state),
+            "--require-hls",
+            "--hls-playlist",
+            str(playlist),
+            "--textfile-path",
+            str(textfile),
+            "--ledger-path",
+            str(ledger),
+        ]
+    )
+
+    assert rc == 0
+    text = textfile.read_text(encoding="utf-8")
+    assert 'hapax_live_surface_state{state="healthy"} 1' in text
+    row = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+    assert row["payload"]["v4l2_egress_mode"] == "direct_v4l2"
+    assert row["payload"]["restored"] is True
+
+
 def test_guard_default_textfile_path_is_user_writable(
     tmp_path: Path,
     monkeypatch,
