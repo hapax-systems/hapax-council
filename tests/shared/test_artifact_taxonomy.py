@@ -6,7 +6,6 @@ from pathlib import Path
 
 from shared.artifact_taxonomy import (
     ArtifactClass,
-    ValidationResult,
     infer_artifact_class,
     validate_artifact,
 )
