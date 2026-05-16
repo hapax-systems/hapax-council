@@ -5,8 +5,8 @@
 
 ## The Question
 
-Are the four conversational continuity components (thread, message drop,
-cross-session memory, sentinel) additive (each contributes independently)
+Are the conversational continuity treatment components (thread, message drop,
+cross-session memory) additive (each contributes independently)
 or threshold-dependent (they must combine to produce the effect)?
 
 ## Literature Findings
@@ -25,15 +25,20 @@ or threshold-dependent (they must combine to produce the effect)?
 - Hybrid dropout design: ABCDE → BCD → BDE → BCE → CDE confirms
   which components are necessary.
 - Package first, dismantle second is the orthodox approach.
-- 45-72 sessions for full dropout with 4 components.
+- 45-72 sessions for full dropout in a 4-factor design. A 3-treatment
+  dismantling design is smaller; sentinel may be probed alongside it as a
+  diagnostic, not as a treatment factor.
 
 ### Emergence Theory (Agent 3)
-- Grounding maps to Clark's prerequisites: presentation (thread),
-  acceptance (memory), signal quality (drop), verification (sentinel).
+- Context anchoring maps to prerequisites for later grounding: presentation
+  (thread), session-to-session continuity (memory), and signal preservation
+  under bounded context (drop). Sentinel is only a diagnostic for prompt
+  integrity.
 - Phase transition model: below threshold, no grounding emerges.
 - "Each contributing factor is individually insufficient but jointly
   necessary" — Cook's complex systems principle.
-- Prediction: qualitative difference with all four, not just quantitative.
+- Prediction: qualitative difference with the treatment components together,
+  not just quantitative addition.
 - JetBrains research: context management techniques are superadditive.
 
 ### Pilot Data Analysis (Agent 4)

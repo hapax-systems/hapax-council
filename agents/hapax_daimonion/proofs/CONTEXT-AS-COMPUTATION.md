@@ -43,15 +43,19 @@
 | Component | Position | Mechanistic Role | Head Type |
 |-----------|----------|-----------------|-----------|
 | Thread (STABLE) | Early (primacy) | Optimization data for in-context learning. Entrainment heads elevate preserved terms. | Retrieval heads, entrainment heads |
-| Sentinel (STABLE) | Early (primacy) | Computational anchor in attention sink zone. | Retrieval heads |
 | Directive (VOLATILE) | Late (recency) | Feature activator configuring computational mode. | Instruction/coherence heads |
 | Effort level (VOLATILE) | Latest | Meta-state signal triggering metacognitive modulation. | Expression preparation heads |
 | Acceptance signals (in thread) | Distributed | Reward signal for implicit in-context RL. | Context-parsing heads |
 | Conceptual pacts (in thread) | Distributed | Exploits mechanistically inevitable entrainment. | Entrainment heads (3-10%) |
 
+Sentinel facts are excluded from this treatment-component table. They are useful
+as prompt-integrity probes for whether injected material survives prompt
+rebuilds, but retrieval of an injected number is not a mechanistic grounding
+pathway.
+
 ### STABLE-First, VOLATILE-Last Is Mechanistically Optimal
 
-- STABLE band (thread + sentinel) at start → primacy tail + attention sinks + prefix caching
+- STABLE band (thread) at start → primacy tail + attention sinks + prefix caching
 - VOLATILE band (directive + effort) near generation → recency delta + immediate influence
 - Middle avoided for critical content → confirmed by closed-form proof (2026)
 - Reversal (VOLATILE before STABLE) would lose primacy for governance and recency for directives

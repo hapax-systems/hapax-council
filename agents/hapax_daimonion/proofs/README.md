@@ -20,7 +20,7 @@ claim-N-<slug>/
 | 1 | Stable frame improves context_anchor_success | pre-registered |
 | 2 | Simple message drop maintains reference_accuracy | pre-registered |
 | 3 | Cross-session memory enables recall of prior sessions | pre-registered |
-| 4 | Sentinel fact survives system prompt rebuilds | pre-registered |
+| 4 | Sentinel fact verifies prompt integrity | pre-registered diagnostic |
 | 5 | Salience activation correlates with response depth | pre-registered |
 | 6 | Bayesian mode/tool selection improves tool-assisted grounding | draft (pending claim 1 completion) |
 
@@ -28,11 +28,16 @@ claim-N-<slug>/
 
 Bayesian SCED with sequential stopping and per-component feature flags.
 
-Each claim specifies:
+Each treatment claim specifies:
 - **Prior** — Beta or Normal distribution encoding pre-experiment belief
 - **ROPE** — Region of Practical Equivalence (null zone)
 - **Sequential Stopping Rule** — BF > 10 or max sessions
-- **Component flag** — individual feature toggle for A-B-A phases
+- **Component flag** — individual treatment toggle for A-B-A phases
+
+Claim 4 is not a grounding treatment claim. It is a diagnostic probe for
+whether injected prompt material survives prompt rebuilds. Sentinel retrieval
+can falsify prompt integrity, but it cannot by itself establish conversational
+grounding.
 
 Primary success metric across all claims: **frustration composite**
 (`frustration_rolling_avg` from `FrustrationDetector`), adapted from

@@ -52,11 +52,15 @@ A-B-A (baseline → intervention → reversal).
 
 | Phase | Label | Condition | Treatment Flags |
 |-------|-------|-----------|----------------|
-| A | Baseline | No grounding | stable_frame=false, grounding_directive=false, effort_modulation=false, cross_session=false, sentinel=false |
-| B | Intervention | Full package | stable_frame=true, grounding_directive=true, effort_modulation=true, cross_session=true, sentinel=true |
+| A | Baseline | No grounding treatment | stable_frame=false, grounding_directive=false, effort_modulation=false, cross_session=false |
+| B | Intervention | Full treatment package | stable_frame=true, grounding_directive=true, effort_modulation=true, cross_session=true |
 | A' | Reversal | No grounding | Same as Phase A |
 
 All phases share: `experiment_mode=true`, `phenomenal_stimmung_only=true`, `salience_context=false`, `screen_context=false`.
+
+`sentinel` is not a treatment flag. If enabled during a probe window, it is
+analyzed only as prompt-integrity instrumentation and not as evidence that the
+grounding package worked.
 
 ### 2.4 Phase Change Decision Rules
 Minimum 10 sessions per phase. Transition when minimum reached AND last 3 session means are within 20% of phase mean (stability criterion). Maximum 20 sessions per phase.

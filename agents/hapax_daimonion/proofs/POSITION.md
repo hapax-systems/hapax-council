@@ -98,12 +98,15 @@ scoring. The conversation thread is injected into the system prompt and
 grows turn by turn. The model participates in grounding because it can
 see the thread — it knows what was established and what wasn't.
 
-Measurement is continuous, not gated:
+Grounding measurement is continuous, not gated:
 - `context_anchor_success`: does the response connect to thread context?
 - `reference_accuracy`: are back-references factually correct?
 - `acceptance_type`: ACCEPT / CLARIFY / REJECT / IGNORE per turn
 - `frustration_rolling_avg`: 8-signal composite detecting breakdown
-- `sentinel_retrieval`: can injected facts survive prompt rebuilds?
+
+One diagnostic is kept separate from the grounding claim:
+`sentinel_retrieval` checks whether injected prompt material survives prompt
+rebuilds. It is prompt-integrity evidence, not grounding evidence.
 
 ## The Five Failure Modes
 
@@ -298,11 +301,12 @@ probing for elaboration, accepting, and committing to act:
    itself is telling us that the retrieval/notification machinery
    competes with the conversation.
 
-4. **This happened in baseline (all components OFF).** The context
+4. **This happened in baseline (all treatment components OFF).** The context
    anchoring architecture — where the model sees workspace state as
    continuous environment rather than a retrieval index — enables
    emergent self-reflection WITHOUT the conversation thread, WITHOUT
-   cross-session memory, WITHOUT sentinel injection. The architecture
+   cross-session memory, WITHOUT sentinel injection. Sentinel absence matters
+   here only as a prompt-integrity diagnostic being unavailable; the architecture
    itself, not just the specific features, creates the conditions
    for grounding that profile retrieval cannot replicate.
 
