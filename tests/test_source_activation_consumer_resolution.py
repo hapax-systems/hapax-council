@@ -182,6 +182,23 @@ class TestOptionalAudioDeviceStateSourceResolution:
         assert os.stat(path).st_mode & stat.S_IXUSR
 
 
+class TestImaginationSourceResolution:
+    def test_imagination_shader_nodes_use_activation_worktree(self) -> None:
+        text = (UNITS_DIR / "hapax-imagination.service").read_text()
+        execution_lines = [
+            line
+            for line in text.splitlines()
+            if line.startswith("Environment=HAPAX_SHADER_NODES_DIR=")
+        ]
+        assert execution_lines == [
+            f"Environment=HAPAX_SHADER_NODES_DIR={ACTIVATION_WORKTREE}/agents/shaders/nodes"
+        ]
+
+    def test_imagination_shader_nodes_do_not_use_session_worktree(self) -> None:
+        text = (UNITS_DIR / "hapax-imagination.service").read_text()
+        assert "hapax-council--cx-" not in text
+
+
 class TestPrivateMonitorRecoverSourceResolution:
     def test_private_monitor_recover_unit_uses_activation_worktree_repo_root(self) -> None:
         text = (UNITS_DIR / "hapax-private-monitor-recover.service").read_text()

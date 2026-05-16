@@ -26,6 +26,11 @@ Environment=RUST_BACKTRACE=1
 # Tauri/WebKit frame-server preview is decommissioned and is not a production
 # consumer.
 Environment=HAPAX_IMAGINATION_HEADLESS=1
+# Shader nodes are runtime assets, so live imagination must resolve them
+# through the activated source worktree rather than any session-specific
+# Codex/Claude worktree. A stale lane path can silently keep old effect
+# behavior alive after source activation.
+Environment=HAPAX_SHADER_NODES_DIR=%h/.cache/hapax/source-activation/worktree/agents/shaders/nodes
 # 2026-04-26 visual-quality remediation Tier-A item 9: shader render
 # target 640x360 → 960x540 (1.5× per axis = 2.25× shader cost). Composited
 # as PiP into 1280×720 canvas → upscaled to 4K TV. Net shader-source
