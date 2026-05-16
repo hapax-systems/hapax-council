@@ -2309,6 +2309,7 @@ mod tests {
         for shader in [
             "nightvision_tint.wgsl",
             "reaction_diffusion.wgsl",
+            "threshold.wgsl",
             "vhs.wgsl",
         ] {
             let source = std::fs::read_to_string(shader_root.join(shader))
