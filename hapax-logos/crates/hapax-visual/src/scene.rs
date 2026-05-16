@@ -104,6 +104,17 @@ impl SceneNodeShader {
             SceneNodeShader::ApertureOfApertures => 1.0,
         }
     }
+
+    pub fn vertex_count(self) -> u32 {
+        match self {
+            SceneNodeShader::Textured => 6,
+            // Parent tetrahedron plus four depth-1 child tetrahedra:
+            // 5 tetrahedra * 4 triangular panes * 3 vertices.
+            SceneNodeShader::ApertureOfApertures => {
+                aoa_raw_triangular_pane_count(AOA_TETRIX_RENDER_DEPTH) as u32 * 3
+            }
+        }
+    }
 }
 
 /// A quad in 3D space, optionally bound to a content source texture.
@@ -296,7 +307,7 @@ fn push_optional_node(
 fn push_authored_aoa(nodes: &mut Vec<SceneNode>) {
     let mut node = SceneNode::new(AOA_NODE_LABEL);
     node.position = Vec3::new(0.0, 0.35, ZPlane::SurfaceScrim.z_position() - 0.4 + 0.55);
-    node.scale = Vec3::new(AOA_BASE_GRID_UNITS, AOA_BASE_GRID_UNITS, 1.0);
+    node.scale = Vec3::splat(AOA_BASE_GRID_UNITS);
     node.opacity = 0.92;
     node.shader = SceneNodeShader::ApertureOfApertures;
     node.content_source_id = None;
@@ -797,6 +808,15 @@ mod tests {
     }
 
     #[test]
+    fn aoa_shader_family_draws_volumetric_triangle_panes() {
+        assert_eq!(SceneNodeShader::Textured.vertex_count(), 6);
+        assert_eq!(
+            SceneNodeShader::ApertureOfApertures.vertex_count(),
+            aoa_raw_triangular_pane_count(AOA_TETRIX_RENDER_DEPTH) as u32 * 3
+        );
+    }
+
+    #[test]
     fn aoa_tetrix_geometry_counts_are_pinned() {
         assert_eq!(AOA_TETRIX_RENDER_DEPTH, 1);
         assert_eq!(aoa_leaf_tetrahedron_count(AOA_TETRIX_RENDER_DEPTH), 4);
@@ -813,8 +833,10 @@ mod tests {
             "the authored 3D anchor shader must use AoA/tetrix naming only"
         );
         assert!(
-            shader.contains("child_tetra_vertex") && shader.contains("authored_aoa"),
-            "AoA shader entry points should remain explicit"
+            shader.contains("child_tetra_vertex")
+                && shader.contains("aoa_vertex")
+                && shader.contains("aoa_fragment"),
+            "AoA mesh shader entry points should remain explicit"
         );
     }
 
@@ -824,12 +846,12 @@ mod tests {
         for required in [
             "AOA_OUTER_PANE_COUNT",
             "AOA_INNER_PANE_COUNT_DEPTH_1",
-            "aoa_project_pane_preserving",
+            "aoa_vertex",
+            "aoa_face_vertex",
             "triangle_barycentric",
-            "aoa_pane_lattice_distance",
             "pane_information_uv_from_barycentric",
             "pane_information_grid",
-            "tetra_pane_sample",
+            "aoa_fragment",
             "inner_pane",
         ] {
             assert!(
@@ -1001,6 +1023,7 @@ mod tests {
         assert_eq!(aoa.shader, SceneNodeShader::ApertureOfApertures);
         assert_eq!(aoa.scale.x, AOA_BASE_GRID_UNITS);
         assert_eq!(aoa.scale.y, AOA_BASE_GRID_UNITS);
+        assert_eq!(aoa.scale.z, AOA_BASE_GRID_UNITS);
         assert!(
             aoa.content_source_id.is_none(),
             "central AoA must be authored geometry, not a sampled source texture"

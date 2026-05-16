@@ -556,7 +556,7 @@ impl SceneRenderer {
             });
 
             // Pre-upload ALL node uniforms before the render pass draws
-            let mut draw_list: Vec<(u32, wgpu::BindGroup)> = Vec::new();
+            let mut draw_list: Vec<(u32, wgpu::BindGroup, u32)> = Vec::new();
             for (slot, &idx) in sorted_indices.iter().enumerate() {
                 let node = &scene[idx];
                 if node.opacity < 0.001 {
@@ -606,14 +606,18 @@ impl SceneRenderer {
                     ],
                 });
 
-                draw_list.push((slot as u32 * self.uniform_align, tex_bind_group));
+                draw_list.push((
+                    slot as u32 * self.uniform_align,
+                    tex_bind_group,
+                    node.shader.vertex_count(),
+                ));
             }
 
             // Now draw with dynamic offsets — each draw uses its own uniform slice
-            for (dyn_offset, tex_bg) in &draw_list {
+            for (dyn_offset, tex_bg, vertex_count) in &draw_list {
                 pass.set_bind_group(0, &self.uniform_bind_group, &[*dyn_offset]);
                 pass.set_bind_group(1, tex_bg, &[]);
-                pass.draw(0..6, 0..1);
+                pass.draw(0..*vertex_count, 0..1);
             }
         }
 

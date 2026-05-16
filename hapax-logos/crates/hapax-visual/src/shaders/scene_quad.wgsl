@@ -24,10 +24,17 @@ var quad_sampler: sampler;
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
+    @location(1) barycentric: vec3<f32>,
+    @location(2) pane_info: vec4<f32>,
+    @location(3) local_pos: vec3<f32>,
 };
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
+    if scene.shader_kind > 0.5 {
+        return aoa_vertex(vi);
+    }
+
     // Unit quad: two triangles covering [-0.5, 0.5] in XY.
     var positions = array<vec2<f32>, 6>(
         vec2<f32>(-0.5, -0.5),
@@ -46,6 +53,9 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
     out.position = clip_pos;
     // UV: map [-0.5, 0.5] to [0, 1], flip Y for texture convention
     out.uv = vec2<f32>(pos.x + 0.5, 1.0 - (pos.y + 0.5));
+    out.barycentric = vec3<f32>(0.0, 0.0, 0.0);
+    out.pane_info = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    out.local_pos = vec3<f32>(pos.x, pos.y, 0.0);
     return out;
 }
 
@@ -84,15 +94,16 @@ fn child_tetra_vertex(
 
 const AOA_OUTER_PANE_COUNT: u32 = 4u;
 const AOA_INNER_PANE_COUNT_DEPTH_1: u32 = 16u;
+const AOA_TOTAL_PANE_COUNT: u32 = AOA_OUTER_PANE_COUNT + AOA_INNER_PANE_COUNT_DEPTH_1;
 
-fn aoa_project_pane_preserving(v: vec3<f32>) -> vec2<f32> {
-    // A stable isometric-like projection, not a camera-perspective squeeze.
-    // The rear base vertex remains displaced from the front face so every
-    // tetrahedral face can read as a usable triangular information pane.
-    return vec2<f32>(
-        0.5 + v.x * 0.50 + v.z * 0.24,
-        0.25 + v.y * 0.72 + v.z * 0.27,
-    );
+fn aoa_barycentric(corner_idx: u32) -> vec3<f32> {
+    if corner_idx == 0u {
+        return vec3<f32>(1.0, 0.0, 0.0);
+    }
+    if corner_idx == 1u {
+        return vec3<f32>(0.0, 1.0, 0.0);
+    }
+    return vec3<f32>(0.0, 0.0, 1.0);
 }
 
 fn triangle_edge_distance(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, c: vec2<f32>) -> f32 {
@@ -133,117 +144,110 @@ fn pane_information_grid(local_uv: vec2<f32>, inside: f32) -> f32 {
     return inside * (1.0 - smoothstep(0.010, 0.026, edge_dist));
 }
 
-fn central_aperture_distance(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, c: vec2<f32>) -> f32 {
-    let ab = (a + b) * 0.5;
-    let bc = (b + c) * 0.5;
-    let ca = (c + a) * 0.5;
-    return triangle_edge_distance(p, ab, bc, ca);
-}
-
-fn aoa_pane_lattice_distance(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, c: vec2<f32>) -> f32 {
-    let ab = (a + b) * 0.5;
-    let bc = (b + c) * 0.5;
-    let ca = (c + a) * 0.5;
-
-    var dist = triangle_edge_distance(p, a, b, c);
-    dist = min(dist, central_aperture_distance(p, a, b, c));
-    dist = min(dist, central_aperture_distance(p, a, ab, ca));
-    dist = min(dist, central_aperture_distance(p, ab, b, bc));
-    dist = min(dist, central_aperture_distance(p, ca, bc, c));
-    return dist;
-}
-
 fn line_mask(dist: f32, width: f32, feather: f32) -> f32 {
     return 1.0 - smoothstep(width, width + feather, dist);
 }
 
-fn compose_pane(acc: vec4<f32>, pane: vec4<f32>) -> vec4<f32> {
-    let alpha = clamp(acc.a + pane.a * (1.0 - acc.a * 0.22), 0.0, 0.98);
-    let rgb = min(acc.rgb + pane.rgb * pane.a, vec3<f32>(3.0, 3.0, 3.0));
-    return vec4<f32>(rgb, alpha);
-}
-
-fn pane_sample(
-    p: vec2<f32>,
-    a: vec2<f32>,
-    b: vec2<f32>,
-    c: vec2<f32>,
-    tint: vec3<f32>,
-    fill_strength: f32,
-    line_strength: f32,
-    inner_pane: f32,
-) -> vec4<f32> {
-    let bary = triangle_barycentric(p, a, b, c);
-    let inside = triangle_inside_mask_from_barycentric(bary);
-    let info_uv = pane_information_uv_from_barycentric(bary);
-    let info_grid = pane_information_grid(info_uv, inside);
-    let edge_dist = triangle_edge_distance(p, a, b, c);
-    let edge = line_mask(edge_dist, 0.0048, 0.010);
-    var lattice = 0.0;
-    if inner_pane < 0.5 {
-        let lattice_dist = aoa_pane_lattice_distance(p, a, b, c);
-        lattice = line_mask(lattice_dist, 0.0027, 0.007);
-    } else {
-        let aperture_dist = central_aperture_distance(p, a, b, c);
-        lattice = line_mask(aperture_dist, 0.0024, 0.006) * 0.36;
+fn aoa_face_vertex(a: vec3<f32>, b: vec3<f32>, c: vec3<f32>, d: vec3<f32>, face_idx: u32, corner_idx: u32) -> vec3<f32> {
+    if face_idx == 0u {
+        return pick_tetra_vertex(a, b, d, c, corner_idx);
     }
-    let fill = inside * fill_strength;
-    let address_energy = info_grid * (0.070 + inner_pane * 0.040);
-    let pane_energy = fill * 0.42 + edge * line_strength + lattice * (0.50 + inner_pane * 0.18) + address_energy;
-    let alpha = clamp(fill + edge * 0.70 + lattice * (0.42 + inner_pane * 0.12) + address_energy * 0.45, 0.0, 0.92);
-    return vec4<f32>(tint * pane_energy, alpha);
+    if face_idx == 1u {
+        return pick_tetra_vertex(b, c, d, a, corner_idx);
+    }
+    if face_idx == 2u {
+        return pick_tetra_vertex(c, a, d, b, corner_idx);
+    }
+    return pick_tetra_vertex(a, c, b, d, corner_idx);
 }
 
-fn tetra_pane_sample(
-    p: vec2<f32>,
+fn aoa_pane_vertex(
     a: vec3<f32>,
     b: vec3<f32>,
     c: vec3<f32>,
     d: vec3<f32>,
-    opacity_scale: f32,
-    inner_pane: f32,
-) -> vec4<f32> {
-    let pa = aoa_project_pane_preserving(a);
-    let pb = aoa_project_pane_preserving(b);
-    let pc = aoa_project_pane_preserving(c);
-    let pd = aoa_project_pane_preserving(d);
+    pane_idx: u32,
+    corner_idx: u32,
+) -> vec3<f32> {
+    if pane_idx < AOA_OUTER_PANE_COUNT {
+        return aoa_face_vertex(a, b, c, d, pane_idx, corner_idx);
+    }
 
-    let fill = 0.060 * opacity_scale;
-    let line = 0.88 * opacity_scale;
-    var acc = vec4<f32>(0.0, 0.0, 0.0, 0.0);
-    acc = compose_pane(acc, pane_sample(p, pa, pb, pd, vec3<f32>(1.0, 0.28, 0.74), fill, line, inner_pane));
-    acc = compose_pane(acc, pane_sample(p, pb, pc, pd, vec3<f32>(0.30, 0.84, 1.0), fill, line, inner_pane));
-    acc = compose_pane(acc, pane_sample(p, pc, pa, pd, vec3<f32>(0.74, 0.42, 1.0), fill, line, inner_pane));
-    acc = compose_pane(acc, pane_sample(p, pa, pc, pb, vec3<f32>(1.0, 0.58, 0.20), fill * 0.72, line * 0.72, inner_pane));
-    return acc;
+    let inner_idx = pane_idx - AOA_OUTER_PANE_COUNT;
+    let child_idx = inner_idx / 4u;
+    let face_idx = inner_idx % 4u;
+    let ca = child_tetra_vertex(a, b, c, d, child_idx, 0u);
+    let cb = child_tetra_vertex(a, b, c, d, child_idx, 1u);
+    let cc = child_tetra_vertex(a, b, c, d, child_idx, 2u);
+    let cd = child_tetra_vertex(a, b, c, d, child_idx, 3u);
+    return aoa_face_vertex(ca, cb, cc, cd, face_idx, corner_idx);
 }
 
-fn authored_aoa(uv_in: vec2<f32>) -> vec4<f32> {
-    let p = vec2<f32>(uv_in.x, 1.0 - uv_in.y);
+fn aoa_vertex(vi: u32) -> VertexOutput {
     let a = vec3<f32>(-0.58, 0.00, -0.34);
     let b = vec3<f32>( 0.58, 0.00, -0.34);
     let c = vec3<f32>( 0.00, 0.00,  0.58);
     let d = vec3<f32>( 0.00, 0.92,  0.00);
 
-    var acc = tetra_pane_sample(p, a, b, c, d, 1.0, 0.0);
-    for (var child: u32 = 0u; child < 4u; child = child + 1u) {
-        let ca = child_tetra_vertex(a, b, c, d, child, 0u);
-        let cb = child_tetra_vertex(a, b, c, d, child, 1u);
-        let cc = child_tetra_vertex(a, b, c, d, child, 2u);
-        let cd = child_tetra_vertex(a, b, c, d, child, 3u);
-        acc = compose_pane(acc, tetra_pane_sample(p, ca, cb, cc, cd, 0.54, 1.0));
-    }
+    let pane_idx = (vi / 3u) % AOA_TOTAL_PANE_COUNT;
+    let corner_idx = vi % 3u;
+    let local = aoa_pane_vertex(a, b, c, d, pane_idx, corner_idx);
+    let world_pos = scene.model * vec4<f32>(local, 1.0);
 
-    let aura = smoothstep(0.01, 0.68, acc.a);
-    let color = acc.rgb + vec3<f32>(0.72, 0.38, 1.0) * aura * 0.22;
-    let alpha = clamp(acc.a + aura * 0.18, 0.0, 0.96) * scene.opacity;
+    var out: VertexOutput;
+    out.position = scene.projection * scene.view * world_pos;
+    out.uv = vec2<f32>(0.0, 0.0);
+    out.barycentric = aoa_barycentric(corner_idx);
+    out.pane_info = vec4<f32>(
+        f32(pane_idx % 4u),
+        select(0.0, 1.0, pane_idx >= AOA_OUTER_PANE_COUNT),
+        f32(pane_idx),
+        1.0,
+    );
+    out.local_pos = local;
+    return out;
+}
+
+fn aoa_face_tint(face: f32, inner_pane: f32, local_pos: vec3<f32>) -> vec3<f32> {
+    var tint = vec3<f32>(1.0, 0.28, 0.74);
+    if face > 0.5 && face < 1.5 {
+        tint = vec3<f32>(0.30, 0.84, 1.0);
+    } else if face > 1.5 && face < 2.5 {
+        tint = vec3<f32>(0.74, 0.42, 1.0);
+    } else if face > 2.5 {
+        tint = vec3<f32>(1.0, 0.58, 0.20);
+    }
+    let depth_signal = clamp((local_pos.z + 0.58) / 1.16, 0.0, 1.0);
+    let height_signal = clamp((local_pos.y + 0.05) / 0.92, 0.0, 1.0);
+    return tint * (0.72 + depth_signal * 0.20 + height_signal * 0.18) * (1.0 - inner_pane * 0.12);
+}
+
+fn aoa_fragment(in: VertexOutput) -> vec4<f32> {
+    let bary = in.barycentric;
+    let edge_dist = min(min(bary.x, bary.y), bary.z);
+    let edge = 1.0 - smoothstep(0.012, 0.045, edge_dist);
+    let inner_pane = in.pane_info.y;
+    let info_uv = pane_information_uv_from_barycentric(bary);
+    let info_grid = pane_information_grid(info_uv, 1.0);
+    let local_lattice = (1.0 - smoothstep(0.018, 0.042, abs(bary.x - bary.y)))
+        * (1.0 - smoothstep(0.018, 0.042, bary.z));
+    let tint = aoa_face_tint(in.pane_info.x, inner_pane, in.local_pos);
+    let fill = 0.055 + inner_pane * 0.020;
+    let line = edge * (0.74 - inner_pane * 0.16);
+    let address = info_grid * (0.12 + inner_pane * 0.05);
+    let lattice = local_lattice * (0.11 + inner_pane * 0.07);
+    let pane_energy = fill + line + address + lattice;
+    let aura = smoothstep(0.0, 0.9, line + address);
+    let color = tint * pane_energy + vec3<f32>(0.72, 0.38, 1.0) * aura * 0.12;
+    let alpha = clamp(fill * 0.70 + line * 0.62 + address * 0.42 + lattice * 0.36, 0.0, 0.88)
+        * scene.opacity;
     return vec4<f32>(color, alpha);
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if scene.shader_kind > 0.5 {
-        return authored_aoa(in.uv);
+        return aoa_fragment(in);
     }
 
     let tex_color = textureSample(quad_texture, quad_sampler, in.uv);
