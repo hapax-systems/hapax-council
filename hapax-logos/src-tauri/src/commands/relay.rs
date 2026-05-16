@@ -190,15 +190,9 @@ async fn handle_connection(
 
         match msg_type {
             "subscribe" => {
-                let pattern_str = msg
-                    .get("pattern")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("*");
+                let pattern_str = msg.get("pattern").and_then(|v| v.as_str()).unwrap_or("*");
                 // Convert glob to regex: escape dots, * → .*
-                let regex_str = format!(
-                    "^{}$",
-                    regex::escape(pattern_str).replace(r"\*", ".*")
-                );
+                let regex_str = format!("^{}$", regex::escape(pattern_str).replace(r"\*", ".*"));
                 if let Ok(re) = regex::Regex::new(&regex_str) {
                     subscriptions.write().await.push(Subscription {
                         id: msg_id,
@@ -207,10 +201,7 @@ async fn handle_connection(
                 }
             }
             "unsubscribe" => {
-                subscriptions
-                    .write()
-                    .await
-                    .retain(|s| s.id != msg_id);
+                subscriptions.write().await.retain(|s| s.id != msg_id);
             }
             "execute" | "query" | "list" => {
                 let (tx, rx) = oneshot::channel();
@@ -242,8 +233,7 @@ async fn handle_connection(
                         Err(_) => {
                             // Timeout
                             state_c.pending.lock().await.remove(&id_c);
-                            send_error(&sink_c, &id_c, "timeout: no response from frontend")
-                                .await;
+                            send_error(&sink_c, &id_c, "timeout: no response from frontend").await;
                         }
                     }
                 });

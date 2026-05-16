@@ -19,9 +19,7 @@ pub fn get_working_mode() -> WorkingModeResponse {
                 .ok()
                 .and_then(|m| m.modified().ok())
                 .map(|t| {
-                    let d = t
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default();
+                    let d = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
                     format_timestamp(d.as_secs())
                 });
             WorkingModeResponse { mode, switched_at }
@@ -142,9 +140,7 @@ pub fn get_manual() -> ManualResponse {
                 .ok()
                 .and_then(|m| m.modified().ok())
                 .map(|t| {
-                    let d = t
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default();
+                    let d = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
                     format_timestamp(d.as_secs())
                 });
             return ManualResponse {
@@ -634,10 +630,7 @@ fn hours_since(iso_ts: &str) -> Option<f64> {
     }
     let time_str = parts[1].split('+').next().unwrap_or(parts[1]);
     let time_str = time_str.split('-').next().unwrap_or(time_str);
-    let time_parts: Vec<u32> = time_str
-        .split(':')
-        .filter_map(|s| s.parse().ok())
-        .collect();
+    let time_parts: Vec<u32> = time_str.split(':').filter_map(|s| s.parse().ok()).collect();
 
     let (y, m, d) = (date_parts[0], date_parts[1], date_parts[2]);
     let (h, min, s) = (

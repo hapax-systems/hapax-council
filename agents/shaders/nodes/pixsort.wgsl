@@ -329,7 +329,7 @@ fn main_1() {
     let _e350 = frac;
     sorted = mix(_e348, _e349, vec3(_e350));
     let _e354 = sorted;
-    fragColor = vec4<f32>(_e354.x, _e354.y, _e354.z, 1f);
+    fragColor = vec4<f32>(_e354.x, _e354.y, _e354.z, orig.a);
     return;
 }
 

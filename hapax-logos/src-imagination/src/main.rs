@@ -208,8 +208,11 @@ impl ImaginationApp {
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         if let Some(pipeline) = &mut self.dynamic_pipeline {
-            let opacities = self.content_source_mgr.as_ref()
-                .map(|cs| cs.slot_opacities()).unwrap_or([0.0; 4]);
+            let opacities = self
+                .content_source_mgr
+                .as_ref()
+                .map(|cs| cs.slot_opacities())
+                .unwrap_or([0.0; 4]);
 
             // HOMAGE Phase 6 - Ward↔Shader bidirectional coupling
             crate::homage_feedback::emit_shader_feedback(
@@ -293,8 +296,7 @@ impl ApplicationHandler for ImaginationApp {
                 window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(target)));
             }
             WindowMode::Windowed => {
-                window
-                    .set_outer_position(winit::dpi::LogicalPosition::new(ws.x, ws.y));
+                window.set_outer_position(winit::dpi::LogicalPosition::new(ws.x, ws.y));
             }
         }
         if ws.always_on_top {
@@ -412,8 +414,8 @@ async fn handle_connection(
         }
 
         // Read next command with a short timeout so we can interleave stats relay
-        let line = tokio::time::timeout(std::time::Duration::from_millis(50), lines.next_line())
-            .await;
+        let line =
+            tokio::time::timeout(std::time::Duration::from_millis(50), lines.next_line()).await;
 
         match line {
             Ok(Ok(Some(text))) => {
@@ -542,10 +544,7 @@ fn main() {
 
     // Run winit event loop on the main thread
     use winit::platform::wayland::EventLoopBuilderExtWayland;
-    let event_loop = EventLoop::builder()
-        .with_any_thread(true)
-        .build()
-        .unwrap();
+    let event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
 
     let mut app = ImaginationApp::new(cmd_rx, stats_tx);

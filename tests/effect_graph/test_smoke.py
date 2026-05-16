@@ -320,12 +320,16 @@ class TestRegistryNodeCategories:
         "invert",
         "kaleidoscope",
         "mirror",
+        "nightvision_tint",
+        "noise_gen",
         "noise_overlay",
+        "particle_system",
         "pixsort",
         "posterize",
         "rutt_etra",
         "scanlines",
         "sharpen",
+        "solid",
         "strobe",
         "syrup",
         "thermal",
@@ -337,10 +341,20 @@ class TestRegistryNodeCategories:
         "vignette",
         "voronoi_overlay",
         "warp",
+        "waveform_render",
     ]
-    EXPECTED_TEMPORAL = ["diff", "echo", "feedback", "slitscan", "stutter", "trail"]
+    EXPECTED_TEMPORAL = [
+        "diff",
+        "echo",
+        "feedback",
+        "fluid_sim",
+        "reaction_diffusion",
+        "slitscan",
+        "stutter",
+        "trail",
+    ]
     EXPECTED_COMPOSITING = ["blend", "chroma_key", "crossfade", "displacement_map", "luma_key"]
-    EXPECTED_GENERATIVE = ["noise_gen", "solid", "waveform_render"]
+    EXPECTED_GENERATIVE = []
     EXPECTED_META = ["output", "palette"]
 
     def test_all_processing_nodes_exist(self, registry: ShaderRegistry):

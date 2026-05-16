@@ -1,5 +1,10 @@
 // Grain bump shader. Modulates intensity via uniforms.custom[4].x (Homage coupling payload).
 
+@group(1) @binding(0)
+var tex: texture_2d<f32>;
+@group(1) @binding(1)
+var tex_sampler: sampler;
+
 @fragment
 fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let source_color = textureSample(tex, tex_sampler, uv);

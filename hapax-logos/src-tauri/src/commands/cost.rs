@@ -108,7 +108,11 @@ async fn fetch_cost(app: &AppHandle) -> Result<CostSnapshot, String> {
         .into_iter()
         .map(|(model, cost)| ModelCost { model, cost })
         .collect();
-    top_models.sort_by(|a, b| b.cost.partial_cmp(&a.cost).unwrap_or(std::cmp::Ordering::Equal));
+    top_models.sort_by(|a, b| {
+        b.cost
+            .partial_cmp(&a.cost)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     top_models.truncate(5);
 
     Ok(CostSnapshot {
@@ -135,7 +139,9 @@ fn format_iso(epoch_secs: u64) -> String {
     let y = if m <= 2 { y + 1 } else { y };
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        y, m, d,
+        y,
+        m,
+        d,
         remaining / 3600,
         (remaining % 3600) / 60,
         remaining % 60

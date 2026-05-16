@@ -30,12 +30,16 @@ fn main_1() {
 
     let _e21 = (_e18.y * uniforms.resolution.y);
     let _e22 = global.u_spacing;
-    line = step((_e15 - _e16), (_e21 - (floor((_e21 / _e22)) * _e22)));
+    let spacing = max(_e15, 3.0);
+    let thickness = clamp(_e16, 0.25, 1.1);
+    let phase = _e21 - (floor(_e21 / spacing) * spacing);
+    line = 1.0 - smoothstep(thickness * 0.35, thickness, phase);
     let _e29 = c;
     let _e31 = c;
     let _e34 = line;
-    let _e35 = global.u_opacity;
-    let _e38 = (_e31.xyz * (1f - (_e34 * _e35)));
+    let _e35 = min(global.u_opacity, 0.055);
+    let surface_presence = smoothstep(0.025, 0.20, dot(_e31.xyz, vec3<f32>(0.299, 0.587, 0.114)));
+    let _e38 = (_e31.xyz * (1f - (_e34 * _e35 * surface_presence)));
     c.x = _e38.x;
     c.y = _e38.y;
     c.z = _e38.z;

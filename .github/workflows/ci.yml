@@ -316,10 +316,11 @@ jobs:
           # §2 #2). Monitor first 3 PRs for OOM or socket-conflict regressions;
           # if a flake surfaces, fall back to -n 3.
           #
-          # Timeout reduced 25m → 15m after socket-hang fix + xdist (real
-          # tests: ~6-8 min parallel; was 11-15 min serial).
+          # Timeout reduced 25m → 20m after socket-hang fix + xdist. Recent
+          # compositor/runtime PRs exercise enough slow end-band tests that
+          # the prior 15m wrapper killed otherwise-successful runs at 99%.
           set +e
-          timeout -s KILL 900 \
+          timeout -s KILL 1200 \
             uv run pytest tests/ -q --tb=line --durations=25 \
               --benchmark-disable \
               -n 4 --dist loadfile \

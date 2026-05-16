@@ -52,15 +52,15 @@ fn main_1() {
     var pixel_1: vec2<f32>;
     var pattern: f32;
     var patternR: f32;
+    var source: vec4<f32>;
 
     let _e16 = v_texcoord_1;
     uv = _e16;
+    source = textureSample(tex, tex_sampler, uv);
     let _e18 = global.u_intensity;
     if (_e18 < 0.01f) {
         {
-            let _e21 = uv;
-            let _e22 = textureSample(tex, tex_sampler, _e21);
-            fragColor = _e22;
+            fragColor = source;
             return;
         }
     }
@@ -123,7 +123,8 @@ fn main_1() {
                     let _e122 = r;
                     let _e123 = g;
                     let _e124 = b;
-                    fragColor = vec4<f32>(_e122, _e123, _e124, 1f);
+                    let glitch_signal = vec4<f32>(_e122, _e123, _e124, source.a);
+                    fragColor = mix(source, glitch_signal, vec4<f32>(min(global.u_intensity * 0.55f, 0.42f)));
                     return;
                 }
             } else {
@@ -151,7 +152,8 @@ fn main_1() {
                         color.y = _e162.y;
                         color.z = _e162.z;
                         let _e169 = color;
-                        fragColor = clamp(_e169, vec4(0f), vec4(1f));
+                        let glitch_signal = clamp(_e169, vec4(0f), vec4(1f));
+                        fragColor = mix(source, glitch_signal, vec4<f32>(min(global.u_intensity * 0.45f, 0.34f)));
                         return;
                     }
                 } else {
@@ -170,7 +172,8 @@ fn main_1() {
                                 let _e190 = color_1;
                                 let _e192 = color_1;
                                 let _e194 = color_1;
-                                fragColor = vec4<f32>(_e190.z, _e192.x, _e194.y, 1f);
+                                let glitch_signal = vec4<f32>(_e190.z, _e192.x, _e194.y, source.a);
+                                fragColor = mix(source, glitch_signal, vec4<f32>(min(global.u_intensity * 0.40f, 0.32f)));
                                 return;
                             } else {
                                 let _e198 = swapSeed;
@@ -178,13 +181,15 @@ fn main_1() {
                                     let _e201 = color_1;
                                     let _e203 = color_1;
                                     let _e205 = color_1;
-                                    fragColor = vec4<f32>(_e201.y, _e203.z, _e205.x, 1f);
+                                    let glitch_signal = vec4<f32>(_e201.y, _e203.z, _e205.x, source.a);
+                                    fragColor = mix(source, glitch_signal, vec4<f32>(min(global.u_intensity * 0.40f, 0.32f)));
                                     return;
                                 } else {
                                     let _e209 = color_1;
                                     let _e211 = color_1;
                                     let _e213 = color_1;
-                                    fragColor = vec4<f32>(_e209.x, _e211.z, _e213.y, 1f);
+                                    let glitch_signal = vec4<f32>(_e209.x, _e211.z, _e213.y, source.a);
+                                    fragColor = mix(source, glitch_signal, vec4<f32>(min(global.u_intensity * 0.40f, 0.32f)));
                                     return;
                                 }
                             }
@@ -199,7 +204,8 @@ fn main_1() {
                                 v = _e224;
                                 let _e226 = v;
                                 let _e229 = vec3((_e226 * 0.3f));
-                                fragColor = vec4<f32>(_e229.x, _e229.y, _e229.z, 1f);
+                                let glitch_signal = vec4<f32>(_e229.x, _e229.y, _e229.z, source.a);
+                                fragColor = mix(source, glitch_signal, vec4<f32>(min(global.u_intensity * 0.22f, 0.16f)));
                                 return;
                             }
                         } else {
@@ -217,7 +223,8 @@ fn main_1() {
                                 let _e268 = pattern;
                                 let _e269 = patternR;
                                 let _e272 = pattern;
-                                fragColor = vec4<f32>(_e268, (_e269 * 0.7f), (_e272 * 0.5f), 1f);
+                                let glitch_signal = vec4<f32>(_e268, (_e269 * 0.7f), (_e272 * 0.5f), source.a);
+                                fragColor = mix(source, glitch_signal, vec4<f32>(min(global.u_intensity * 0.20f, 0.14f)));
                                 return;
                             }
                         }
@@ -227,9 +234,7 @@ fn main_1() {
         }
     } else {
         {
-            let _e277 = uv;
-            let _e278 = textureSample(tex, tex_sampler, _e277);
-            fragColor = _e278;
+            fragColor = source;
             return;
         }
     }

@@ -44,7 +44,10 @@ impl FxFrameRelay {
                     return;
                 }
             };
-            log::info!("FX relay: listening for compositor frames on TCP :{}", RELAY_PORT);
+            log::info!(
+                "FX relay: listening for compositor frames on TCP :{}",
+                RELAY_PORT
+            );
 
             loop {
                 match listener.accept().await {

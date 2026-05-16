@@ -118,7 +118,10 @@ pub fn start_frame_server() {
             .with_state(relay_ws);
 
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
-        log::info!("Visual frame server listening on http://{} (WS at /ws/fx)", addr);
+        log::info!(
+            "Visual frame server listening on http://{} (WS at /ws/fx)",
+            addr
+        );
 
         let listener = match tokio::net::TcpListener::bind(addr).await {
             Ok(l) => l,

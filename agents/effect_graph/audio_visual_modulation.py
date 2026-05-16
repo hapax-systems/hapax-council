@@ -31,6 +31,22 @@ class AudioVisualSourceRole(StrEnum):
     UNKNOWN_AUDIO = "unknown_audio"
 
 
+class AudioSignalClass(StrEnum):
+    """Signal-shape class used to keep audio reactivity legible."""
+
+    NON_AUDIO = "non_audio"
+    LOW_SUSTAINED = "low_sustained"
+    MID_SUSTAINED = "mid_sustained"
+    HIGH_SUSTAINED = "high_sustained"
+    BROADBAND_SUSTAINED = "broadband_sustained"
+    LOW_TRANSIENT = "low_transient"
+    MID_TRANSIENT = "mid_transient"
+    HIGH_TRANSIENT = "high_transient"
+    SPECTRAL_CENTROID = "spectral_centroid"
+    ONSET_RATE = "onset_rate"
+    UNKNOWN_AUDIO = "unknown_audio"
+
+
 class VisualModulationAxis(StrEnum):
     """Visual axis a binding can influence."""
 
@@ -75,6 +91,35 @@ FORBIDDEN_VISUALIZER_REGISTERS = frozenset(
 )
 
 AUDIO_GEOMETRY_AXES = frozenset({VisualModulationAxis.DEPTH, VisualModulationAxis.GEOMETRY})
+
+AUDIO_REACTIVE_BANNED_PARAMS = frozenset(
+    {
+        # Global luma/alpha controls. Audio may add color/detail/motion, not
+        # dim, flash, pulse, or pump the entire frame.
+        "brightness",
+        "intensity",
+        "opacity",
+        "alpha",
+        "master_opacity",
+        "strength",
+        "flash",
+        "dim",
+        "pulse",
+        # Static/fade/threshold controls that turn programme audio into a
+        # visualizer gate instead of a bounded scene modulation.
+        "active",
+        "enabled",
+        "fade",
+        "freeze_chance",
+        "freeze_min",
+        "freeze_max",
+        "replay_frames",
+        "check_interval",
+        "threshold",
+        "threshold_low",
+        "threshold_high",
+    }
+)
 
 NAMESPACED_AUDIO_SOURCE_ALIASES: Mapping[str, tuple[str, ...]] = {
     "music.rms": ("mixer_energy", "audio_rms"),
@@ -252,6 +297,7 @@ class ModulationDecision:
     source: str
     resolved_source: str
     source_role: AudioVisualSourceRole
+    signal_class: AudioSignalClass
     visual_axis: VisualModulationAxis
     register: AudioVisualizerRegister
     raw_value: float
@@ -274,6 +320,7 @@ class ModulationDecision:
             "source": self.source,
             "resolved_source": self.resolved_source,
             "source_role": self.source_role.value,
+            "signal_class": self.signal_class.value,
             "visual_axis": self.visual_axis.value,
             "register": self.register.value,
             "raw_value": self.raw_value,
@@ -396,6 +443,7 @@ class AudioVisualModulationGovernor:
         """Return the governed target for one binding and signal value."""
 
         role = infer_source_role(signal.requested_source)
+        signal_class = infer_audio_signal_class(signal.requested_source)
         axis = infer_visual_axis(binding.node, binding.param)
         register = infer_visualizer_register(binding.node, binding.param, signal.requested_source)
         policy = SOURCE_ROLE_POLICIES.get(role)
@@ -419,10 +467,21 @@ class AudioVisualModulationGovernor:
         if register in FORBIDDEN_VISUALIZER_REGISTERS:
             reason_codes.append("forbidden_visualizer_register")
 
+        if role is not AudioVisualSourceRole.NON_AUDIO and binding.scale < 0.0:
+            reason_codes.append("audio_reactivity_negative_scale_not_amplification")
+
+        if (
+            role is not AudioVisualSourceRole.NON_AUDIO
+            and binding.param.lower() in AUDIO_REACTIVE_BANNED_PARAMS
+        ):
+            reason_codes.append("audio_reactivity_param_banned")
+
         allowed = role is AudioVisualSourceRole.NON_AUDIO or (
             policy is not None
             and axis in policy.allowed_axes
             and register not in FORBIDDEN_VISUALIZER_REGISTERS
+            and binding.scale >= 0.0
+            and binding.param.lower() not in AUDIO_REACTIVE_BANNED_PARAMS
         )
         gain = self.state.coupling_gain if _is_audio_geometry(role, axis) else 1.0
         if gain < 1.0 and _is_audio_geometry(role, axis):
@@ -437,6 +496,7 @@ class AudioVisualModulationGovernor:
             source=signal.requested_source,
             resolved_source=signal.resolved_source,
             source_role=role,
+            signal_class=signal_class,
             visual_axis=axis,
             register=register,
             raw_value=signal.value,
@@ -503,17 +563,112 @@ def infer_source_role(source: str) -> AudioVisualSourceRole:
     return AudioVisualSourceRole.NON_AUDIO
 
 
+def infer_audio_signal_class(source: str) -> AudioSignalClass:
+    """Classify audio source names by band and temporal shape."""
+
+    role = infer_source_role(source)
+    if role is AudioVisualSourceRole.NON_AUDIO:
+        return AudioSignalClass.NON_AUDIO
+
+    token = source.lower()
+    if "centroid" in token:
+        return AudioSignalClass.SPECTRAL_CENTROID
+    if "onset_rate" in token:
+        return AudioSignalClass.ONSET_RATE
+    if any(name in token for name in ("kick", "bass_onset", "low_onset")):
+        return AudioSignalClass.LOW_TRANSIENT
+    if "snare" in token:
+        return AudioSignalClass.MID_TRANSIENT
+    if any(name in token for name in ("hat", "treble_onset", "high_onset")):
+        return AudioSignalClass.HIGH_TRANSIENT
+    if any(name in token for name in ("bass", "low")):
+        return AudioSignalClass.LOW_SUSTAINED
+    if any(name in token for name in ("mid", "voice")):
+        return AudioSignalClass.MID_SUSTAINED
+    if any(name in token for name in ("treble", "high")):
+        return AudioSignalClass.HIGH_SUSTAINED
+    if any(name in token for name in ("rms", "energy", "master")):
+        return AudioSignalClass.BROADBAND_SUSTAINED
+    if any(name in token for name in ("onset", "beat")):
+        return AudioSignalClass.LOW_TRANSIENT
+    return AudioSignalClass.UNKNOWN_AUDIO
+
+
 def infer_visual_axis(node: str, param: str) -> VisualModulationAxis:
     """Classify a node/param binding into a bounded visual axis."""
 
     token = f"{node}.{param}".lower()
-    if any(name in token for name in ("hue", "color", "saturation", "brightness", "contrast")):
+    if any(
+        name in token
+        for name in (
+            "hue",
+            "color",
+            "saturation",
+            "brightness",
+            "contrast",
+            "palette",
+            "gamma",
+            "sepia",
+            "rgb_split",
+            "chromatic",
+            "edge_glow",
+            "blend",
+        )
+    ):
         return VisualModulationAxis.COLOR
-    if any(name in token for name in ("noise", "texture", "grain", "pixel_sort")):
+    if any(
+        name in token
+        for name in (
+            "noise",
+            "texture",
+            "grain",
+            "pixel_sort",
+            "sort_length",
+            "cell_size",
+            "dot_size",
+            "color_levels",
+            "levels",
+            "feed_rate",
+            "kill_rate",
+            "n_bands",
+        )
+    ):
         return VisualModulationAxis.TEXTURE
-    if any(name in token for name in ("bloom", "vignette", "trail.opacity", "refraction")):
+    if any(
+        name in token
+        for name in (
+            "bloom",
+            "vignette",
+            "trail.opacity",
+            "refraction",
+            "decay",
+            "decay_curve",
+            "frame_count",
+            "feedback",
+            "trace",
+        )
+    ):
         return VisualModulationAxis.DEPTH
-    if any(name in token for name in ("drift", "amplitude", "radius", "offset", "warp")):
+    if any(
+        name in token
+        for name in (
+            "drift",
+            "amplitude",
+            "radius",
+            "offset",
+            "warp",
+            "speed",
+            "rotation",
+            "position",
+            "displacement",
+            "strength_x",
+            "strength_y",
+            "twist",
+            "tri_scale",
+            "line_width",
+            "scale",
+        )
+    ):
         return VisualModulationAxis.GEOMETRY
     if any(name in token for name in ("cut", "transition", "crossfade", "strobe")):
         return VisualModulationAxis.TRANSITION
@@ -559,10 +714,12 @@ def _is_audio_geometry(role: AudioVisualSourceRole, axis: VisualModulationAxis) 
 
 __all__ = [
     "AUDIO_GEOMETRY_AXES",
+    "AUDIO_REACTIVE_BANNED_PARAMS",
     "FORBIDDEN_VISUALIZER_REGISTERS",
     "NAMESPACED_AUDIO_SOURCE_ALIASES",
     "SOURCE_ROLE_POLICIES",
     "AntiVisualizerObservation",
+    "AudioSignalClass",
     "AudioVisualGovernorState",
     "AudioVisualModulationGovernor",
     "AudioVisualSourceRole",
@@ -572,6 +729,7 @@ __all__ = [
     "ResolvedSignal",
     "SourceRolePolicy",
     "VisualModulationAxis",
+    "infer_audio_signal_class",
     "infer_source_role",
     "infer_visual_axis",
     "infer_visualizer_register",

@@ -37,7 +37,20 @@ fn main_1() {
     var q_2: i32 = 1i;
     var totalV: f32;
     var minTotalV: f32;
+    var source: vec4<f32>;
+    var source_luma: f32;
+    var surface_presence: f32;
+    var kuwahara_strength: f32;
+    var mixed: vec3<f32>;
 
+    source = textureSample(tex, tex_sampler, v_texcoord_1);
+    source_luma = dot(source.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    surface_presence = smoothstep(0.045f, 0.18f, source_luma);
+    kuwahara_strength = clamp((global.u_radius / 3.0f) * 0.42f, 0f, 0.42f) * surface_presence;
+    if (kuwahara_strength <= 0.001f) {
+        fragColor = source;
+        return;
+    }
     let _e11 = global.u_width;
     let _e14 = global.u_height;
     texel = vec2<f32>((1f / _e11), (1f / _e14));
@@ -189,9 +202,8 @@ fn main_1() {
         }
     }
     let _e208 = outColor;
-    let _e209 = v_texcoord_1;
-    let _e210 = textureSample(tex, tex_sampler, _e209);
-    fragColor = vec4<f32>(_e208.x, _e208.y, _e208.z, _e210.w);
+    mixed = mix(source.xyz, _e208, vec3(kuwahara_strength));
+    fragColor = vec4<f32>(mixed.x, mixed.y, mixed.z, source.w);
     return;
 }
 

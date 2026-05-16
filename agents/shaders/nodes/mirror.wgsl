@@ -18,9 +18,13 @@ var<uniform> global: Params;
 
 fn main_1() {
     var uv: vec2<f32>;
+    var original: vec4<f32>;
+    var mirrored: vec4<f32>;
+    var blend: f32;
 
     let _e8 = v_texcoord_1;
     uv = _e8;
+    original = textureSample(tex, tex_sampler, uv);
     let _e10 = global.u_axis;
     let _e13 = global.u_axis;
     if ((_e10 < 0.5f) || (_e13 > 1.5f)) {
@@ -50,9 +54,12 @@ fn main_1() {
             }
         }
     }
+    uv = clamp(uv, vec2(0.001f), vec2(0.999f));
     let _e42 = uv;
     let _e43 = textureSample(tex, tex_sampler, _e42);
-    fragColor = _e43;
+    mirrored = _e43;
+    blend = clamp((1.0f - global.u_position) * 0.80f, 0.0f, 0.54f);
+    fragColor = vec4<f32>(mix(original.xyz, mirrored.xyz, vec3(blend)), original.w);
     return;
 }
 

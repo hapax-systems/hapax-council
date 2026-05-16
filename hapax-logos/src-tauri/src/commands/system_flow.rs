@@ -38,16 +38,26 @@ fn age_s(val: &serde_json::Value) -> f64 {
 }
 
 fn status_str(age: f64, stale: f64) -> &'static str {
-    if age < stale { "active" } else if age < 30.0 { "stale" } else { "offline" }
+    if age < stale {
+        "active"
+    } else if age < 30.0 {
+        "stale"
+    } else {
+        "offline"
+    }
 }
 
 /// Extract stimmung dimensions: keys that are objects with a "value" field.
 fn stimmung_dimensions(s: &serde_json::Value) -> serde_json::Value {
-    let Some(obj) = s.as_object() else { return serde_json::json!({}) };
+    let Some(obj) = s.as_object() else {
+        return serde_json::json!({});
+    };
     let skip = ["overall_stance", "timestamp", "non_nominal_dimensions"];
     let mut dims = serde_json::Map::new();
     for (key, val) in obj {
-        if skip.contains(&key.as_str()) { continue; }
+        if skip.contains(&key.as_str()) {
+            continue;
+        }
         if let Some(inner) = val.as_object() {
             if inner.contains_key("value") {
                 dims.insert(key.clone(), serde_json::json!({
@@ -65,11 +75,14 @@ fn stimmung_dimensions(s: &serde_json::Value) -> serde_json::Value {
 fn fetch_engine_status() -> serde_json::Value {
     let Ok(client) = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(1))
-        .build() else { return serde_json::json!({}) };
+        .build()
+    else {
+        return serde_json::json!({});
+    };
     match client.get("http://127.0.0.1:8051/api/engine/status").send() {
-        Ok(r) if r.status().is_success() => {
-            r.json::<serde_json::Value>().unwrap_or(serde_json::json!({}))
-        }
+        Ok(r) if r.status().is_success() => r
+            .json::<serde_json::Value>()
+            .unwrap_or(serde_json::json!({})),
         _ => serde_json::json!({}),
     }
 }
@@ -80,8 +93,8 @@ fn fetch_engine_status() -> serde_json::Value {
 pub struct NodeState {
     pub id: String,
     pub label: String,
-    pub status: String,        // "active" | "stale" | "offline"
-    pub age_s: f64,            // seconds since last update
+    pub status: String,             // "active" | "stale" | "offline"
+    pub age_s: f64,                 // seconds since last update
     pub metrics: serde_json::Value, // subsystem-specific key metrics
 }
 
@@ -137,10 +150,18 @@ pub fn get_system_flow() -> SystemFlowState {
     // ── Stimmung ────────────────────────────────────────────────
     let stimmung = read_json("/dev/shm/hapax-stimmung/state.json");
     let stim_age = stimmung.as_ref().map(age_s).unwrap_or(999.0);
-    let dims = stimmung.as_ref().map(stimmung_dimensions).unwrap_or(serde_json::json!({}));
+    let dims = stimmung
+        .as_ref()
+        .map(stimmung_dimensions)
+        .unwrap_or(serde_json::json!({}));
     let non_nominal: Vec<String> = if let Some(obj) = dims.as_object() {
-        obj.iter().filter(|(_, v)| v.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0) > 0.4).map(|(k, _)| k.clone()).collect()
-    } else { vec![] };
+        obj.iter()
+            .filter(|(_, v)| v.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0) > 0.4)
+            .map(|(k, _)| k.clone())
+            .collect()
+    } else {
+        vec![]
+    };
     nodes.push(NodeState {
         id: "stimmung".into(),
         label: "Stimmung".into(),
@@ -158,7 +179,11 @@ pub fn get_system_flow() -> SystemFlowState {
     // ── Temporal Bands ──────────────────────────────────────────
     let temporal = read_json("/dev/shm/hapax-temporal/bands.json");
     let temp_age = temporal.as_ref().map(age_s).unwrap_or(999.0);
-    let impression = temporal.as_ref().and_then(|t| t.get("impression")).cloned().unwrap_or(serde_json::json!({}));
+    let impression = temporal
+        .as_ref()
+        .and_then(|t| t.get("impression"))
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
     nodes.push(NodeState {
         id: "temporal".into(),
         label: "Temporal Bands".into(),
@@ -182,8 +207,15 @@ pub fn get_system_flow() -> SystemFlowState {
     // ── Apperception ────────────────────────────────────────────
     let apperception = read_json("/dev/shm/hapax-apperception/self-band.json");
     let apper_age = apperception.as_ref().map(age_s).unwrap_or(999.0);
-    let model = apperception.as_ref().and_then(|a| a.get("self_model")).cloned().unwrap_or(serde_json::json!({}));
-    let raw_dims = model.get("dimensions").cloned().unwrap_or(serde_json::json!({}));
+    let model = apperception
+        .as_ref()
+        .and_then(|a| a.get("self_model"))
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
+    let raw_dims = model
+        .get("dimensions")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
     let mut apper_dims = serde_json::Map::new();
     if let Some(obj) = raw_dims.as_object() {
         for (name, dim) in obj {
@@ -214,7 +246,10 @@ pub fn get_system_flow() -> SystemFlowState {
     let compositor = read_json("/dev/shm/hapax-compositor/visual-layer-state.json");
     let comp_age = compositor.as_ref().map(age_s).unwrap_or(999.0);
     let c = compositor.as_ref();
-    let zone_opacities = c.and_then(|c| c.get("zone_opacities")).cloned().unwrap_or(serde_json::json!({}));
+    let zone_opacities = c
+        .and_then(|c| c.get("zone_opacities"))
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
     let mut signal_count: usize = 0;
     let mut max_severity: f64 = 0.0;
     if let Some(sigs) = c.and_then(|c| c.get("signals")).and_then(|s| s.as_object()) {
@@ -223,7 +258,9 @@ pub fn get_system_flow() -> SystemFlowState {
                 signal_count += arr.len();
                 for sig in arr {
                     if let Some(sev) = sig.get("severity").and_then(|v| v.as_f64()) {
-                        if sev > max_severity { max_severity = sev; }
+                        if sev > max_severity {
+                            max_severity = sev;
+                        }
                     }
                 }
             }
@@ -247,7 +284,10 @@ pub fn get_system_flow() -> SystemFlowState {
 
     // ── Voice Pipeline ──────────────────────────────────────────
     let voice_session = c.and_then(|c| c.get("voice_session"));
-    let voice_active = voice_session.and_then(|v| v.get("active")).and_then(|v| v.as_bool()).unwrap_or(false);
+    let voice_active = voice_session
+        .and_then(|v| v.get("active"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     nodes.push(NodeState {
         id: "voice".into(),
         label: "Voice Pipeline".into(),
@@ -278,7 +318,9 @@ pub fn get_system_flow() -> SystemFlowState {
     if let Some(rd) = raw_dims.as_object() {
         for dim in rd.values() {
             if let Some(shift) = dim.get("last_shift_time").and_then(|v| v.as_f64()) {
-                if (now - shift) < 300.0 { active_dims += 1; }
+                if (now - shift) < 300.0 {
+                    active_dims += 1;
+                }
             }
         }
     }
@@ -297,7 +339,11 @@ pub fn get_system_flow() -> SystemFlowState {
 
     // ── Reactive Engine ─────────────────────────────────────────
     let engine_data = fetch_engine_status();
-    let engine_running = engine_data.get("uptime_s").and_then(|v| v.as_f64()).unwrap_or(0.0) > 0.0;
+    let engine_running = engine_data
+        .get("uptime_s")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0)
+        > 0.0;
     nodes.push(NodeState {
         id: "engine".into(),
         label: "Reactive Engine".into(),
@@ -322,7 +368,12 @@ pub fn get_system_flow() -> SystemFlowState {
     nodes.push(NodeState {
         id: "consent".into(),
         label: "Consent".into(),
-        status: if consent_phase != "none" { "active" } else { "offline" }.into(),
+        status: if consent_phase != "none" {
+            "active"
+        } else {
+            "offline"
+        }
+        .into(),
         age_s: perc_age,
         metrics: serde_json::json!({
             "phase": consent_phase,
@@ -334,83 +385,115 @@ pub fn get_system_flow() -> SystemFlowState {
     // ── Edges (data flow topology) ──────────────────────────────
     // Perception → Stimmung (perception confidence feeds stimmung)
     edges.push(EdgeState {
-        source: "perception".into(), target: "stimmung".into(),
-        active: perc_age < 10.0, label: "perception confidence".into(),
+        source: "perception".into(),
+        target: "stimmung".into(),
+        active: perc_age < 10.0,
+        label: "perception confidence".into(),
     });
     // Perception → Temporal Bands (perception ring feeds formatter)
     edges.push(EdgeState {
-        source: "perception".into(), target: "temporal".into(),
-        active: perc_age < 10.0, label: "perception ring".into(),
+        source: "perception".into(),
+        target: "temporal".into(),
+        active: perc_age < 10.0,
+        label: "perception ring".into(),
     });
     // Perception → Consent (face count, speaker ID)
     edges.push(EdgeState {
-        source: "perception".into(), target: "consent".into(),
-        active: perc_age < 10.0, label: "faces + speaker".into(),
+        source: "perception".into(),
+        target: "consent".into(),
+        active: perc_age < 10.0,
+        label: "faces + speaker".into(),
     });
     // Stimmung → Apperception (stance modulates cascade)
     edges.push(EdgeState {
-        source: "stimmung".into(), target: "apperception".into(),
-        active: stim_age < 120.0, label: "stance".into(),
+        source: "stimmung".into(),
+        target: "apperception".into(),
+        active: stim_age < 120.0,
+        label: "stance".into(),
     });
     // Temporal → Apperception (surprise → prediction_error events)
     edges.push(EdgeState {
-        source: "temporal".into(), target: "apperception".into(),
-        active: temp_age < 10.0, label: "surprise".into(),
+        source: "temporal".into(),
+        target: "apperception".into(),
+        active: temp_age < 10.0,
+        label: "surprise".into(),
     });
     // Temporal → Phenomenal Context
     edges.push(EdgeState {
-        source: "temporal".into(), target: "phenomenal".into(),
-        active: temp_age < 30.0, label: "bands".into(),
+        source: "temporal".into(),
+        target: "phenomenal".into(),
+        active: temp_age < 30.0,
+        label: "bands".into(),
     });
     // Apperception → Phenomenal Context
     edges.push(EdgeState {
-        source: "apperception".into(), target: "phenomenal".into(),
-        active: apper_age < 30.0, label: "self-band".into(),
+        source: "apperception".into(),
+        target: "phenomenal".into(),
+        active: apper_age < 30.0,
+        label: "self-band".into(),
     });
     // Stimmung → Phenomenal Context
     edges.push(EdgeState {
-        source: "stimmung".into(), target: "phenomenal".into(),
-        active: stim_age < 120.0, label: "attunement".into(),
+        source: "stimmung".into(),
+        target: "phenomenal".into(),
+        active: stim_age < 120.0,
+        label: "attunement".into(),
     });
     // Phenomenal Context → Voice Pipeline
     edges.push(EdgeState {
-        source: "phenomenal".into(), target: "voice".into(),
-        active: voice_active, label: "orientation".into(),
+        source: "phenomenal".into(),
+        target: "voice".into(),
+        active: voice_active,
+        label: "orientation".into(),
     });
     // Perception → Voice Pipeline (salience routing)
     edges.push(EdgeState {
-        source: "perception".into(), target: "voice".into(),
-        active: voice_active, label: "salience".into(),
+        source: "perception".into(),
+        target: "voice".into(),
+        active: voice_active,
+        label: "salience".into(),
     });
     // Voice → Compositor (voice session state)
     edges.push(EdgeState {
-        source: "voice".into(), target: "compositor".into(),
-        active: voice_active, label: "voice state".into(),
+        source: "voice".into(),
+        target: "compositor".into(),
+        active: voice_active,
+        label: "voice state".into(),
     });
     // Stimmung → Compositor (stance drives visual feel)
     edges.push(EdgeState {
-        source: "stimmung".into(), target: "compositor".into(),
-        active: stim_age < 120.0, label: "visual mood".into(),
+        source: "stimmung".into(),
+        target: "compositor".into(),
+        active: stim_age < 120.0,
+        label: "visual mood".into(),
     });
     // Perception → Compositor (signals, biometrics)
     edges.push(EdgeState {
-        source: "perception".into(), target: "compositor".into(),
-        active: perc_age < 10.0, label: "signals".into(),
+        source: "perception".into(),
+        target: "compositor".into(),
+        active: perc_age < 10.0,
+        label: "signals".into(),
     });
     // Engine → Compositor (engine status)
     edges.push(EdgeState {
-        source: "engine".into(), target: "compositor".into(),
-        active: engine_running, label: "engine state".into(),
+        source: "engine".into(),
+        target: "compositor".into(),
+        active: engine_running,
+        label: "engine state".into(),
     });
     // Stimmung → Engine (stance gates phases)
     edges.push(EdgeState {
-        source: "stimmung".into(), target: "engine".into(),
-        active: stim_age < 120.0, label: "phase gating".into(),
+        source: "stimmung".into(),
+        target: "engine".into(),
+        active: stim_age < 120.0,
+        label: "phase gating".into(),
     });
     // Consent → Voice Pipeline (consent phase gates behavior)
     edges.push(EdgeState {
-        source: "consent".into(), target: "voice".into(),
-        active: consent_phase != "none", label: "consent gate".into(),
+        source: "consent".into(),
+        target: "voice".into(),
+        active: consent_phase != "none",
+        label: "consent gate".into(),
     });
 
     SystemFlowState {

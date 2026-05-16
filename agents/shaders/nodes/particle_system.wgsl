@@ -14,120 +14,54 @@ struct FragmentOutput {
 
 var<private> fragColor: vec4<f32>;
 var<private> v_texcoord_1: vec2<f32>;
-@group(1) @binding(0) 
+@group(1) @binding(0)
 var tex: texture_2d<f32>;
-@group(1) @binding(1) 
+@group(1) @binding(1)
 var tex_sampler: sampler;
-@group(2) @binding(0) 
+@group(2) @binding(0)
 var<uniform> global: Params;
 
 fn hash(n: f32) -> f32 {
-    var n_1: f32;
-
-    n_1 = n;
-    let _e26 = n_1;
-    return fract((sin(_e26) * 43758.547f));
+    return fract(sin(n) * 43758.547);
 }
 
 fn main_1() {
-    var base: vec4<f32>;
-    var pixel: vec2<f32>;
-    var particle_count: f32;
-    var glow: f32 = 0f;
-    var i: f32 = 0f;
-    var age: f32;
-    var spawn_x: f32;
-    var spawn_y: f32;
-    var vel_x: f32;
-    var vel_y: f32;
-    var px: f32;
-    var py: f32;
-    var dist: f32;
-    var fade: f32;
-    var particle_color: vec3<f32>;
+    let uv = v_texcoord_1;
+    let base = textureSample(tex, tex_sampler, uv);
+    let pixel = uv * vec2<f32>(uniforms.resolution.x, uniforms.resolution.y);
+    let particle_count = min(global.u_emit_rate, 96.0);
+    var glow = 0.0;
 
-    let _e24 = v_texcoord_1;
-    let _e25 = textureSample(tex, tex_sampler, _e24);
-    base = _e25;
-    let _e27 = v_texcoord_1;
-
-    pixel = (_e27 * vec2<f32>(uniforms.resolution.x, uniforms.resolution.y));
-    let _e33 = global.u_emit_rate;
-    particle_count = min(_e33, 2000f);
-    loop {
-        let _e41 = i;
-        if !((_e41 < 200f)) {
+    for (var i = 0; i < 96; i = i + 1) {
+        let fi = f32(i);
+        if fi >= particle_count {
             break;
         }
-        {
-            let _e48 = i;
-            let _e49 = particle_count;
-            if (_e48 >= _e49) {
-                break;
-            }
-
-            let _e52 = global.u_lifetime;
-            let _e54 = i;
-            let _e57 = hash((_e54 * 7.31f));
-            age = fract(((uniforms.time / _e52) + _e57));
-            let _e61 = i;
-            let _e64 = hash((_e61 * 13.7f));
-
-            spawn_x = (_e64 * uniforms.resolution.x);
-            let _e68 = i;
-            let _e71 = hash((_e68 * 23.1f));
-
-            spawn_y = (_e71 * uniforms.resolution.y);
-            let _e75 = i;
-            let _e78 = hash((_e75 * 37.3f));
-            vel_x = ((_e78 - 0.5f) * 100f);
-            let _e84 = i;
-            let _e87 = hash((_e84 * 41.7f));
-            vel_y = ((_e87 - 0.5f) * 100f);
-            let _e93 = spawn_x;
-            let _e94 = vel_x;
-            let _e95 = age;
-            px = (_e93 + (_e94 * _e95));
-            let _e99 = spawn_y;
-            let _e100 = vel_y;
-            let _e101 = age;
-            let _e105 = global.u_gravity_y;
-            let _e107 = age;
-            let _e109 = age;
-            py = ((_e99 + (_e100 * _e101)) + (((0.5f * _e105) * _e107) * _e109));
-            let _e113 = pixel;
-            let _e114 = px;
-            let _e115 = py;
-            dist = length((_e113 - vec2<f32>(_e114, _e115)));
-            let _e121 = age;
-            fade = (1f - _e121);
-            let _e124 = glow;
-            let _e125 = fade;
-            let _e126 = global.u_size;
-            let _e128 = dist;
-            glow = (_e124 + (_e125 * smoothstep(_e126, 0f, _e128)));
-        }
-        continuing {
-            let _e45 = i;
-            i = (_e45 + 1f);
-        }
+        let lifetime = clamp(global.u_lifetime, 1.0, 4.0);
+        let age = fract((uniforms.time / lifetime) + hash(fi * 7.31));
+        let spawn_x = hash(fi * 13.7) * uniforms.resolution.x;
+        let spawn_y = hash(fi * 23.1) * uniforms.resolution.y;
+        let vel_x = (hash(fi * 37.3) - 0.5) * 64.0;
+        let vel_y = (hash(fi * 41.7) - 0.5) * 64.0;
+        let px = spawn_x + (vel_x * age);
+        let py = spawn_y + (vel_y * age) + ((0.5 * clamp(global.u_gravity_y, 0.0, 60.0)) * age * age);
+        let dist = length(pixel - vec2<f32>(px, py));
+        let fade = 1.0 - age;
+        glow = glow + (fade * smoothstep(clamp(global.u_size, 1.0, 3.0), 0.0, dist));
     }
-    let _e132 = global.u_color_r;
-    let _e133 = global.u_color_g;
-    let _e134 = global.u_color_b;
-    let _e136 = glow;
-    particle_color = (vec3<f32>(_e132, _e133, _e134) * min(_e136, 3f));
-    let _e141 = base;
-    let _e143 = particle_color;
-    let _e144 = (_e141.xyz + _e143);
-    fragColor = vec4<f32>(_e144.x, _e144.y, _e144.z, 1f);
+
+    let particle_color = vec3<f32>(global.u_color_r, global.u_color_g, global.u_color_b) * min(glow, 1.4);
+    let base_luma = dot(base.xyz, vec3<f32>(0.299, 0.587, 0.114));
+    let surface_presence =         smoothstep(0.008, 0.09, base_luma);
+    let strength = surface_presence * clamp(global.u_emit_rate / 600.0, 0.0, 0.16);
+    let out_rgb = clamp(base.xyz + (particle_color * strength), vec3(0.0), vec3(1.0));
+    fragColor = vec4<f32>(out_rgb, base.a);
     return;
 }
 
-@fragment 
+@fragment
 fn main(@location(0) v_texcoord: vec2<f32>) -> FragmentOutput {
     v_texcoord_1 = v_texcoord;
     main_1();
-    let _e31 = fragColor;
-    return FragmentOutput(_e31);
+    return FragmentOutput(fragColor);
 }

@@ -1,5 +1,5 @@
 {
-    "_directive": "2026-05-05: no brightness/intensity flashing. Audio reactivity must be spatial (warp, drift, rotation, chromatic) or tonal (hue, saturation). Brightness/opacity/strobe modulation is prohibited.",
+    "_directive": "2026-05-15: audio reactivity is amplification-only. It may add color diversity, detail, separation, duplication, vibration, edge emphasis, and bounded spatial motion. It may not globally dim, flash, pump, freeze, fade, or collapse the scene into a fourth-wall visualizer.",
     "default_modulations": [
         {
             "_comment": "\u2550\u2550\u2550 COLORGRADE \u2014 tonal color reactivity only (no brightness) \u2550\u2550\u2550"
@@ -80,7 +80,7 @@
             "decay": 0.4
         },
         {
-            "_comment": "\u2550\u2550\u2550 TRAIL \u2014 bass drift + RMS opacity \u2550\u2550\u2550"
+            "_comment": "\u2550\u2550\u2550 TRAIL \u2014 bass/kick moves temporal residue without opacity or fade pumping \u2550\u2550\u2550"
         },
         {
             "node": "trail",
@@ -102,12 +102,12 @@
         },
         {
             "node": "trail",
-            "param": "fade",
+            "param": "drift_y",
             "source": "music.kick_onset",
-            "scale": 0.3,
+            "scale": 5.0,
             "offset": 0.0,
             "attack": 0.0,
-            "decay": 0.8
+            "decay": 0.65
         },
         {
             "_comment": "\u2550\u2550\u2550 DRIFT \u2014 bass drives spatial warping \u2550\u2550\u2550"
@@ -203,7 +203,7 @@
             "decay": 0.8
         },
         {
-            "_comment": "\u2550\u2550\u2550 DITHER \u2014 treble drives amount \u2550\u2550\u2550"
+            "_comment": "\u2550\u2550\u2550 DITHER \u2014 treble adds color-detail separation \u2550\u2550\u2550"
         },
         {
             "node": "dither",
@@ -213,6 +213,27 @@
             "offset": 0.0,
             "attack": 0.1,
             "decay": 0.8
+        },
+        {
+            "_comment": "\u2550\u2550\u2550 PALETTE REMAP \u2014 centroid/treble counter monochrome collapse \u2550\u2550\u2550"
+        },
+        {
+            "node": "palette_remap",
+            "param": "blend",
+            "source": "music.centroid",
+            "scale": 0.08,
+            "offset": 0.08,
+            "attack": 0.15,
+            "decay": 0.9
+        },
+        {
+            "node": "palette_remap",
+            "param": "cycle_rate",
+            "source": "music.treble",
+            "scale": 0.4,
+            "offset": 0.3,
+            "attack": 0.12,
+            "decay": 0.85
         },
         {
             "_comment": "\u2550\u2550\u2550 HALFTONE \u2014 kick scales dots \u2550\u2550\u2550"
@@ -260,28 +281,19 @@
             "decay": 0.6
         },
         {
-            "_comment": "\u2550\u2550\u2550 EDGE DETECT \u2014 RMS reveals edges \u2550\u2550\u2550"
+            "_comment": "\u2550\u2550\u2550 EDGE DETECT \u2014 RMS shifts edge color mode without threshold gating \u2550\u2550\u2550"
         },
         {
             "node": "edge_detect",
-            "param": "threshold",
+            "param": "color_mode",
             "source": "music.rms",
-            "scale": 0.5,
+            "scale": 0.35,
             "offset": 0.0,
             "attack": 0.05,
             "decay": 0.75
         },
         {
-            "_comment": "\u2550\u2550\u2550 STUTTER \u2014 kick freezes frame \u2550\u2550\u2550"
-        },
-        {
-            "node": "stutter",
-            "param": "freeze_chance",
-            "source": "music.kick_onset",
-            "scale": 0.3,
-            "offset": 0.0,
-            "attack": 0.0,
-            "decay": 0.5
+            "_comment": "\u2550\u2550\u2550 STUTTER \u2014 removed from audio defaults: audio-triggered freeze is static visualizer behavior \u2550\u2550\u2550"
         },
         {
             "_comment": "\u2550\u2550\u2550 DISPLACEMENT MAP \u2014 bass warps \u2550\u2550\u2550"
@@ -401,13 +413,13 @@
             "decay": 0.75
         },
         {
-            "_comment": "\u2550\u2550\u2550 POSTERIZE \u2014 kick snaps levels \u2550\u2550\u2550"
+            "_comment": "\u2550\u2550\u2550 POSTERIZE \u2014 kick warms quantization curve without negative level snapping \u2550\u2550\u2550"
         },
         {
             "node": "posterize",
-            "param": "levels",
+            "param": "gamma",
             "source": "music.kick_onset",
-            "scale": -6.0,
+            "scale": 0.12,
             "offset": 0.0,
             "attack": 0.0,
             "decay": 0.6
@@ -419,25 +431,16 @@
             "_comment": "\u2550\u2550\u2550 STROBE \u2014 removed: literal strobe flash \u2550\u2550\u2550"
         },
         {
-            "_comment": "\u2550\u2550\u2550 CIRCULAR MASK \u2014 kick tightens \u2550\u2550\u2550"
+            "_comment": "\u2550\u2550\u2550 CIRCULAR MASK \u2014 removed from audio defaults: radius tightening is occlusive/dimming behavior \u2550\u2550\u2550"
         },
         {
-            "node": "circular_mask",
-            "param": "radius",
-            "source": "music.kick_onset",
-            "scale": -0.3,
-            "offset": 0.0,
-            "attack": 0.0,
-            "decay": 0.65
-        },
-        {
-            "_comment": "\u2550\u2550\u2550 THERMAL \u2014 RMS drives intensity \u2550\u2550\u2550"
+            "_comment": "\u2550\u2550\u2550 THERMAL \u2014 RMS/treble shifts palette and edge glow, never global intensity \u2550\u2550\u2550"
         },
         {
             "node": "thermal",
-            "param": "hue_rotate",
+            "param": "palette_shift",
             "source": "music.rms",
-            "scale": 30.0,
+            "scale": 0.35,
             "offset": 0.0,
             "attack": 0.05,
             "decay": 0.75
@@ -509,13 +512,13 @@
             "decay": 0.8
         },
         {
-            "_comment": "\u2550\u2550\u2550 DIFF \u2014 kick drives amount \u2550\u2550\u2550"
+            "_comment": "\u2550\u2550\u2550 DIFF \u2014 kick changes temporal color mode without threshold gating \u2550\u2550\u2550"
         },
         {
             "node": "diff",
-            "param": "threshold",
+            "param": "color_mode",
             "source": "music.kick_onset",
-            "scale": 0.5,
+            "scale": 0.8,
             "offset": 0.0,
             "attack": 0.0,
             "decay": 0.6

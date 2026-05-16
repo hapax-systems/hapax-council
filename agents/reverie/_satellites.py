@@ -157,6 +157,10 @@ class SatelliteManager:
 
     def maybe_rebuild(self) -> bool:
         """Rebuild the shader graph if the recruited set changed. Returns True if rebuilt."""
+        import os
+
+        if os.environ.get("HAPAX_3D_COMPOSITOR") == "1":
+            return False  # 3D mode: plan is @live-based, skip satellite rebuilds
         current_set = frozenset(self._recruited.keys())
         if current_set == self._active_set:
             return False

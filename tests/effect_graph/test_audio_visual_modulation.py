@@ -8,11 +8,14 @@ from pathlib import Path
 import pytest
 
 from agents.effect_graph.audio_visual_modulation import (
+    AUDIO_REACTIVE_BANNED_PARAMS,
     AntiVisualizerObservation,
+    AudioSignalClass,
     AudioVisualModulationGovernor,
     AudioVisualSourceRole,
     PublicClaimPolicy,
     VisualModulationAxis,
+    infer_audio_signal_class,
     infer_source_role,
 )
 from agents.effect_graph.modulator import UniformModulator
@@ -42,6 +45,20 @@ def test_source_roles_classify_required_namespaces() -> None:
     assert infer_source_role("time") is AudioVisualSourceRole.NON_AUDIO
 
 
+def test_audio_signal_classes_distinguish_band_and_temporal_shape() -> None:
+    assert infer_audio_signal_class("music.bass") is AudioSignalClass.LOW_SUSTAINED
+    assert infer_audio_signal_class("music.mid") is AudioSignalClass.MID_SUSTAINED
+    assert infer_audio_signal_class("music.treble") is AudioSignalClass.HIGH_SUSTAINED
+    assert infer_audio_signal_class("music.rms") is AudioSignalClass.BROADBAND_SUSTAINED
+    assert infer_audio_signal_class("music.energy") is AudioSignalClass.BROADBAND_SUSTAINED
+    assert infer_audio_signal_class("music.centroid") is AudioSignalClass.SPECTRAL_CENTROID
+    assert infer_audio_signal_class("music.kick_onset") is AudioSignalClass.LOW_TRANSIENT
+    assert infer_audio_signal_class("music.snare_onset") is AudioSignalClass.MID_TRANSIENT
+    assert infer_audio_signal_class("music.hat_onset") is AudioSignalClass.HIGH_TRANSIENT
+    assert infer_audio_signal_class("desk.onset_rate") is AudioSignalClass.ONSET_RATE
+    assert infer_audio_signal_class("time") is AudioSignalClass.NON_AUDIO
+
+
 def test_legacy_alias_keeps_namespaced_music_binding_live() -> None:
     modulator = UniformModulator()
     modulator.add_binding(
@@ -61,6 +78,7 @@ def test_legacy_alias_keeps_namespaced_music_binding_live() -> None:
     assert decision.fallback_used is True
     assert decision.resolved_source == "mixer_energy"
     assert decision.source_role is AudioVisualSourceRole.PROGRAMME_MUSIC
+    assert decision.signal_class is AudioSignalClass.BROADBAND_SUSTAINED
     assert decision.visual_axis is VisualModulationAxis.GEOMETRY
     assert decision.public_claim_policy is PublicClaimPolicy.NO_CLAIM_AUTHORITY
     assert "source:audio-reactivity:programme_music" in decision.source_refs
@@ -205,6 +223,49 @@ def test_forbidden_waveform_binding_neutralizes_without_claim_authority() -> Non
     assert decision.public_claim_policy is PublicClaimPolicy.NO_CLAIM_AUTHORITY
 
 
+def test_negative_audio_scale_is_not_allowed_as_reactivity() -> None:
+    modulator = UniformModulator()
+    modulator.add_binding(
+        ModulationBinding(
+            node="posterize",
+            param="levels",
+            source="music.kick_onset",
+            scale=-6.0,
+            offset=4.0,
+            smoothing=0.0,
+        )
+    )
+
+    updates = modulator.tick({"music.kick_onset": 1.0})
+    decision = modulator.last_modulation_decisions[0]
+
+    assert updates[("posterize", "levels")] == pytest.approx(4.0)
+    assert decision.allowed is False
+    assert decision.signal_class is AudioSignalClass.LOW_TRANSIENT
+    assert "audio_reactivity_negative_scale_not_amplification" in decision.reason_codes
+
+
+def test_audio_binding_to_static_or_global_param_is_not_allowed() -> None:
+    modulator = UniformModulator()
+    modulator.add_binding(
+        ModulationBinding(
+            node="stutter",
+            param="freeze_chance",
+            source="music.kick_onset",
+            scale=0.3,
+            offset=0.0,
+            smoothing=0.0,
+        )
+    )
+
+    updates = modulator.tick({"music.kick_onset": 1.0})
+    decision = modulator.last_modulation_decisions[0]
+
+    assert updates[("stutter", "freeze_chance")] == pytest.approx(0.0)
+    assert decision.allowed is False
+    assert "audio_reactivity_param_banned" in decision.reason_codes
+
+
 # ── No global flash/dim/pulse ban (operator directive 2026-05-06) ──────────
 #
 # `~/.claude/projects/-home-hapax-projects/memory/feedback_no_global_flash_dim_pulse.md`
@@ -239,6 +300,7 @@ AUDIO_SOURCE_PREFIXES: tuple[str, ...] = (
     "audio_",
     "music.",
     "audio.",
+    "broadcast.",
 )
 
 
@@ -327,6 +389,83 @@ def test_default_modulations_template_obeys_global_luma_ban() -> None:
         "_default_modulations.json contains banned global-luma audio bindings:\n  "
         + "\n  ".join(violations)
     )
+
+
+def test_default_modulations_template_obeys_amplification_only_audio_grammar() -> None:
+    payload = json.loads((REPO_ROOT / "presets" / "_default_modulations.json").read_text())
+    violations: list[str] = []
+    for row in payload.get("default_modulations", []) or []:
+        if not isinstance(row, dict):
+            continue
+        source = row.get("source", "")
+        param = row.get("param", "")
+        node = row.get("node", "")
+        scale = row.get("scale", 0.0)
+        if not isinstance(source, str) or not _is_audio_source(source):
+            continue
+        if not isinstance(param, str) or not isinstance(node, str):
+            continue
+        if param in AUDIO_REACTIVE_BANNED_PARAMS:
+            violations.append(f"{source} -> {node}.{param} targets banned audio param")
+        if isinstance(scale, (int, float)) and scale < 0.0:
+            violations.append(f"{source} -> {node}.{param} uses negative scale {scale}")
+    assert not violations, (
+        "_default_modulations.json violates amplification-only audio grammar:\n  "
+        + "\n  ".join(violations)
+    )
+
+
+def test_default_modulations_template_covers_full_audio_signal_grammar() -> None:
+    payload = json.loads((REPO_ROOT / "presets" / "_default_modulations.json").read_text())
+    classes = {
+        infer_audio_signal_class(row["source"])
+        for row in payload.get("default_modulations", [])
+        if isinstance(row, dict) and isinstance(row.get("source"), str)
+    }
+
+    assert {
+        AudioSignalClass.LOW_SUSTAINED,
+        AudioSignalClass.HIGH_SUSTAINED,
+        AudioSignalClass.BROADBAND_SUSTAINED,
+        AudioSignalClass.LOW_TRANSIENT,
+        AudioSignalClass.MID_TRANSIENT,
+        AudioSignalClass.HIGH_TRANSIENT,
+        AudioSignalClass.SPECTRAL_CENTROID,
+    }.issubset(classes)
+
+
+def test_default_modulations_include_counter_monochrome_routes() -> None:
+    payload = json.loads((REPO_ROOT / "presets" / "_default_modulations.json").read_text())
+    counter_monochrome_params = {
+        "blend",
+        "chromatic_aberration",
+        "color_levels",
+        "color_mode",
+        "cycle_rate",
+        "edge_glow",
+        "hue_rotate",
+        "palette_shift",
+        "rgb_split",
+        "saturation",
+    }
+    useful_sources = {
+        AudioSignalClass.BROADBAND_SUSTAINED,
+        AudioSignalClass.HIGH_SUSTAINED,
+        AudioSignalClass.HIGH_TRANSIENT,
+        AudioSignalClass.MID_TRANSIENT,
+        AudioSignalClass.SPECTRAL_CENTROID,
+    }
+    routes = [
+        f"{row['source']} -> {row['node']}.{row['param']}"
+        for row in payload.get("default_modulations", [])
+        if isinstance(row, dict)
+        and isinstance(row.get("source"), str)
+        and isinstance(row.get("param"), str)
+        and row["param"] in counter_monochrome_params
+        and infer_audio_signal_class(row["source"]) in useful_sources
+    ]
+
+    assert len(routes) >= 8, routes
 
 
 def test_known_banned_violations_set_does_not_regrow() -> None:

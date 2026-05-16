@@ -19,23 +19,36 @@ var<uniform> global: Params;
 fn main_1() {
     var color: vec4<f32>;
     var c: vec3<f32>;
+    var levels: f32;
+    var gamma: f32;
+    var posterize_strength: f32;
+    var source_luma: f32;
+    var surface_presence: f32;
+    var effective_strength: f32;
+    var mixed: vec3<f32>;
 
     let _e8 = v_texcoord_1;
     let _e9 = textureSample(tex, tex_sampler, _e8);
     color = _e9;
+    levels = clamp(global.u_levels, 2f, 256f);
+    gamma = max(global.u_gamma, 0.01f);
+    posterize_strength = clamp(((256f - levels) / 252f), 0f, 1f) * 0.35f;
+    source_luma = dot(color.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    surface_presence = smoothstep(0.055f, 0.22f, source_luma);
+    effective_strength = posterize_strength * surface_presence;
+    if (effective_strength <= 0.001f) {
+        fragColor = color;
+        return;
+    }
     let _e11 = color;
-    let _e13 = global.u_gamma;
-    c = pow(_e11.xyz, vec3(_e13));
+    c = pow(_e11.xyz, vec3(gamma));
     let _e17 = c;
-    let _e18 = global.u_levels;
-    let _e24 = global.u_levels;
-    c = (floor(((_e17 * _e18) + vec3(0.5f))) / vec3(_e24));
+    c = (floor(((_e17 * levels) + vec3(0.5f))) / vec3(levels));
     let _e27 = c;
-    let _e29 = global.u_gamma;
-    c = pow(_e27, vec3((1f / _e29)));
+    c = pow(_e27, vec3((1f / gamma)));
     let _e33 = c;
-    let _e34 = color;
-    fragColor = vec4<f32>(_e33.x, _e33.y, _e33.z, _e34.w);
+    mixed = mix(color.xyz, _e33, vec3(effective_strength));
+    fragColor = vec4<f32>(mixed.x, mixed.y, mixed.z, color.w);
     return;
 }
 

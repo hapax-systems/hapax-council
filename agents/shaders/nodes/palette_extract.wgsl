@@ -77,53 +77,38 @@ fn sample_column_mean(col_u0_: f32, col_u1_: f32) -> vec3<f32> {
 }
 
 fn main_1() {
-    var source: vec4<f32>;
-    var y: f32;
-    var count_1: f32;
-    var idx: f32;
-    var u0_: f32;
-    var u1_: f32;
-    var swatch: vec3<f32>;
-    var blended: vec3<f32>;
-
-    let _e15 = v_texcoord_1;
-    let _e16 = textureSample(tex, tex_sampler, _e15);
-    source = _e16;
-    let _e18 = v_texcoord_1;
-    y = _e18.y;
-    let _e21 = y;
-    let _e22 = global.u_strip_height;
-    if (_e21 > _e22) {
-        {
-            let _e24 = source;
-            fragColor = _e24;
-            return;
-        }
+    let uv = v_texcoord_1;
+    let source = textureSample(tex, tex_sampler, uv);
+    if (global.u_strip_opacity <= 0.0001f) {
+        fragColor = source;
+        return;
     }
-    let _e26 = global.u_swatch_count;
-    count_1 = max(3f, floor(_e26));
-    let _e30 = v_texcoord_1;
-    let _e32 = count_1;
-    idx = floor((_e30.x * _e32));
-    let _e36 = idx;
-    let _e38 = count_1;
-    idx = clamp(_e36, 0f, (_e38 - 1f));
-    let _e42 = idx;
-    let _e43 = count_1;
-    u0_ = (_e42 / _e43);
-    let _e46 = idx;
-    let _e49 = count_1;
-    u1_ = ((_e46 + 1f) / _e49);
-    let _e52 = u0_;
-    let _e53 = u1_;
-    let _e54 = sample_column_mean(_e52, _e53);
-    swatch = _e54;
-    let _e56 = source;
-    let _e58 = swatch;
-    let _e59 = global.u_strip_opacity;
-    blended = mix(_e56.xyz, _e58, vec3(_e59));
-    let _e63 = blended;
-    fragColor = vec4<f32>(_e63.x, _e63.y, _e63.z, 1f);
+
+    // This node used to paint a top-of-frame palette strip. In live autonomous
+    // drift that reads as a foreground diagnostic pane. It now projects palette
+    // pressure back into source-bearing pixels: no viewport banner, no independent
+    // swatch surface.
+    let count = clamp(floor(global.u_swatch_count), 3f, 12f);
+    let diagonal = fract((uv.x * 0.73f + uv.y * 0.41f) * count);
+    let idx = clamp(floor(diagonal * count), 0f, count - 1f);
+    let u0 = idx / count;
+    let u1 = (idx + 1f) / count;
+    let swatch = sample_column_mean(u0, u1);
+
+    let luma = dot(source.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    let hi = max(max(source.r, source.g), source.b);
+    let lo = min(min(source.r, source.g), source.b);
+    let saturation = clamp(hi - lo, 0f, 1f);
+    let surface_presence = smoothstep(0.035f, 0.18f, luma);
+    let chroma_gate = smoothstep(0.02f, 0.20f, saturation);
+    let weave = 0.55f + 0.45f * smoothstep(0.18f, 0.82f, diagonal);
+    let strength = clamp(global.u_strip_opacity, 0f, 0.22f)
+        * surface_presence
+        * (0.35f + 0.65f * chroma_gate)
+        * weave;
+
+    let blended = mix(source.xyz, swatch, vec3<f32>(strength));
+    fragColor = vec4<f32>(blended, source.a);
     return;
 }
 

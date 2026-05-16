@@ -22,8 +22,8 @@ use std::time::{Duration, Instant};
 
 use hapax_visual::content_sources::ContentSourceManager;
 use hapax_visual::dynamic_pipeline::{DynamicPipeline, PoolMetrics};
-use hapax_visual::state::StateReader;
 use hapax_visual::scene_renderer::SceneRenderer;
+use hapax_visual::state::StateReader;
 
 /// Path the Python compositor's ``metrics._poll_loop`` reads to
 /// populate the ``reverie_pool_*`` Prometheus gauges. JSON shape is
@@ -49,9 +49,11 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
-        let mut encoder = self.device.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("proof readback") },
-        );
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("proof readback"),
+            });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: scene.output_texture(),
@@ -67,7 +69,11 @@ impl Renderer {
                     rows_per_image: Some(height),
                 },
             },
-            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
         );
         self.queue.submit(std::iter::once(encoder.finish()));
 
@@ -96,10 +102,7 @@ impl Renderer {
                 format: turbojpeg::PixelFormat::RGBA,
             };
             if let Ok(jpeg_data) = compressor.compress_to_vec(image) {
-                if let Err(e) = write_atomic(
-                    Path::new(PROOF_3D_FRAME_PATH),
-                    &jpeg_data,
-                ) {
+                if let Err(e) = write_atomic(Path::new(PROOF_3D_FRAME_PATH), &jpeg_data) {
                     log::warn!("3D proof frame write failed: {e}");
                 }
             }
@@ -178,8 +181,7 @@ impl Renderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let offscreen_view =
-            offscreen_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let offscreen_view = offscreen_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let pipeline = DynamicPipeline::new(&device, &queue, width, height, OFFSCREEN_FORMAT);
         let content_source_mgr = ContentSourceManager::new(&device, &queue);
@@ -194,7 +196,10 @@ impl Renderer {
 
         // 3D proof of concept — gated behind env var
         let scene_renderer = if std::env::var("HAPAX_IMAGINATION_3D_PROOF").as_deref() == Ok("1") {
-            log::info!("3D proof mode ENABLED — rendering to {}", PROOF_3D_OUTPUT_DIR);
+            log::info!(
+                "3D proof mode ENABLED — rendering to {}",
+                PROOF_3D_OUTPUT_DIR
+            );
             std::fs::create_dir_all(PROOF_3D_OUTPUT_DIR).ok();
             Some(SceneRenderer::new(&device, &queue, width, height))
         } else {
@@ -273,6 +278,39 @@ impl Renderer {
             true, // is_fresh
         );
 
+        // 3D scene render → inject into DynamicPipeline as @live
+        // Phase 3: the 3D scene output becomes the shader vocabulary's
+        // input texture. Shaders process the 3D scene exactly as they
+        // process the noise-generated fallback, but now with real
+        // perspective-rendered content sources.
+        if let Some(mut scene) = self.scene_renderer.take() {
+            scene.render(
+                &self.device,
+                &self.queue,
+                time,
+                Some(&self.content_source_mgr),
+            );
+
+            // Inject 3D scene output as @live for the shader chain
+            self.pipeline.set_live_texture_override(
+                &self.device,
+                &self.queue,
+                scene.output_texture(),
+            );
+
+            // Write 3D proof frame to shm every 30 frames (~1 Hz)
+            if self.frame_count.is_multiple_of(30) {
+                self.write_proof_frame(&scene);
+                log::info!(
+                    "3D scene: {} active sources, {} total loaded",
+                    self.content_source_mgr.active_source_info().len(),
+                    self.content_source_mgr.source_count()
+                );
+            }
+            self.scene_renderer = Some(scene);
+        }
+
+        // Run shader vocabulary pipeline (now with 3D scene as @live if active)
         self.pipeline.render(
             &self.device,
             &self.queue,
@@ -284,22 +322,6 @@ impl Renderer {
             opacities,
             Some(&self.content_source_mgr),
         );
-
-        // 3D proof render (parallel output — does not affect 2D pipeline)
-        if let Some(mut scene) = self.scene_renderer.take() {
-            scene.render(
-                &self.device,
-                &self.queue,
-                time,
-                Some(&self.content_source_mgr),
-            );
-
-            // Write 3D proof frame to shm every 30 frames (~1 Hz)
-            if self.frame_count.is_multiple_of(30) {
-                self.write_proof_frame(&scene);
-            }
-            self.scene_renderer = Some(scene);
-        }
 
         self.frame_count = self.frame_count.wrapping_add(1);
         if self.frame_count.is_multiple_of(600) {
@@ -315,7 +337,10 @@ impl Renderer {
         // so the compositor's Python Prometheus exporter on :9482 can
         // surface reverie_pool_* gauges. One JSON write per second at
         // the 60fps render interval.
-        if self.frame_count.is_multiple_of(POOL_METRICS_PUBLISH_EVERY_FRAMES) {
+        if self
+            .frame_count
+            .is_multiple_of(POOL_METRICS_PUBLISH_EVERY_FRAMES)
+        {
             publish_pool_metrics(&self.pipeline.pool_metrics());
         }
 
@@ -324,7 +349,10 @@ impl Renderer {
         // re-publishes it as `hapax_imagination_shader_rollback_total`.
         // Lower cadence than pool metrics (~10 s) because rollback events
         // are rare and the counter only changes when one fires.
-        if self.frame_count.is_multiple_of(SHADER_HEALTH_PUBLISH_EVERY_FRAMES) {
+        if self
+            .frame_count
+            .is_multiple_of(SHADER_HEALTH_PUBLISH_EVERY_FRAMES)
+        {
             publish_shader_health(self.pipeline.shader_rollback_total());
         }
     }
@@ -339,10 +367,7 @@ impl Renderer {
 /// swallowed with a ``log::warn`` — the render loop must not block on
 /// observability writes.
 fn publish_shader_health(rollback_total: u64) {
-    let payload = format!(
-        "{{\"shader_rollback_total\":{}}}\n",
-        rollback_total,
-    );
+    let payload = format!("{{\"shader_rollback_total\":{}}}\n", rollback_total,);
     if let Err(e) = write_atomic(Path::new(SHADER_HEALTH_SHM_PATH), payload.as_bytes()) {
         log::warn!("publish_shader_health: write failed: {e}");
     }

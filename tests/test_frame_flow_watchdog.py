@@ -63,6 +63,30 @@ class TestFrameFlowWatchdog:
         # FRAME_FLOW_STALE → DEGRADED
         assert pm._state_machines["brio-operator"].state == CameraState.DEGRADED
 
+    def test_degraded_fresh_frames_promote_healthy(self) -> None:
+        pm = _make_pm(["brio-operator"])
+        sm = pm._state_machines["brio-operator"]
+        sm._state = CameraState.DEGRADED
+        sm._consecutive_failures = 1
+        pm._last_recovery_at["brio-operator"] = time.monotonic() - _FRAME_FLOW_GRACE_S - 1.0
+        _set_age(pm, "brio-operator", 0.05)
+
+        pm._frame_flow_tick_once()
+
+        assert sm.state == CameraState.HEALTHY
+        assert sm.consecutive_failures == 0
+
+    def test_degraded_stale_frames_go_offline(self) -> None:
+        pm = _make_pm(["brio-operator"])
+        sm = pm._state_machines["brio-operator"]
+        sm._state = CameraState.DEGRADED
+        pm._last_recovery_at["brio-operator"] = time.monotonic() - _FRAME_FLOW_GRACE_S - 1.0
+        _set_age(pm, "brio-operator", STALENESS_THRESHOLD_S + 1.0)
+
+        pm._frame_flow_tick_once()
+
+        assert sm.state == CameraState.OFFLINE
+
     def test_post_recovery_grace_suppresses_dispatch(self) -> None:
         pm = _make_pm(["brio-operator"])
         _set_age(pm, "brio-operator", STALENESS_THRESHOLD_S + 1.0)

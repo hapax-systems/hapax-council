@@ -50,7 +50,7 @@ SourceKind = Literal[
     "cairo",  # Python Cairo surface (Sierpinski, AlbumOverlay, TokenPole)
     "external_rgba",  # Raw RGBA from /dev/shm source protocol
     "ndi",  # NDI input (Phase 5)
-    "generative",  # noise_gen, solid, waveform_render
+    "generative",  # legacy/offline generative sources; live shaders stay source-bound.
 ]
 
 UpdateCadence = Literal["always", "on_change", "manual", "rate"]

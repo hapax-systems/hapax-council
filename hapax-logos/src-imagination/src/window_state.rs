@@ -96,7 +96,6 @@ impl WindowState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn default_values_correct() {

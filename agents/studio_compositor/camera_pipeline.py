@@ -101,6 +101,8 @@ class CameraPipeline:
         self._http_appsrc: Any = None
         self._http_stop_event = threading.Event()
         self._http_thread: threading.Thread | None = None
+        source_fps = self._effective_http_fps() if self._is_http_jpeg_source() else float(fps)
+        self._frame_cache_sample_every_n = self._frame_cache_sample_stride_for_fps(source_fps)
 
     @property
     def role(self) -> str:
@@ -113,6 +115,27 @@ class CameraPipeline:
     @property
     def rebuild_count(self) -> int:
         return self._rebuild_count
+
+    @staticmethod
+    def _frame_cache_sample_stride_for_fps(fps: float) -> int:
+        """Return a stride for the 3D compositor frame-cache bridge.
+
+        The incident baseline requires camera tiles to read as live, not as
+        periodically refreshed stills. The target defaults to 30 Hz and can be
+        lowered by environment only when resource pressure has been measured.
+        """
+        source_fps = max(fps, 1.0)
+        raw_target = os.environ.get("HAPAX_CAMERA_FRAME_CACHE_TARGET_FPS", "30")
+        try:
+            target_fps = float(raw_target)
+        except ValueError:
+            log.warning(
+                "Invalid HAPAX_CAMERA_FRAME_CACHE_TARGET_FPS=%r; using 30",
+                raw_target,
+            )
+            target_fps = 30.0
+        target_fps = max(1.0, min(source_fps, target_fps))
+        return max(1, int(round(source_fps / target_fps)))
 
     @property
     def last_frame_age_seconds(self) -> float:
@@ -416,12 +439,12 @@ class CameraPipeline:
         )
 
     def _effective_http_fps(self) -> float:
-        raw = os.environ.get("HAPAX_HTTP_JPEG_CAMERA_FPS", "10")
+        raw = os.environ.get("HAPAX_HTTP_JPEG_CAMERA_FPS", "30")
         try:
             value = float(raw)
         except ValueError:
-            log.warning("Invalid HAPAX_HTTP_JPEG_CAMERA_FPS=%r; using 10", raw)
-            value = 10.0
+            log.warning("Invalid HAPAX_HTTP_JPEG_CAMERA_FPS=%r; using 30", raw)
+            value = 30.0
         return max(1.0, min(float(self._fps), value))
 
     def _http_timeout_s(self) -> float:
@@ -728,13 +751,13 @@ class CameraPipeline:
     # frame instead of a black card when the primary drops.
     #
     # 2026-05-05: reduced from 15 (2 Hz at 30fps) to 3 (10 Hz at 30fps).
-    # The PackedCamerasCairoSource renders at 6fps and reuses cached
-    # surfaces when id(frame.data) hasn't changed. At 2 Hz, 4 out of 6
-    # render ticks showed stale content; the glfeedback shader chain's
-    # temporal feedback accumulated the slow-updating tiles into visible
-    # horizontal banding on the livestream. 10 Hz keeps the cache fresh
-    # relative to the 6fps runner cadence. Cost: ~1.4 MiB NV12 copy
-    # ×10/sec/camera = ~14 MiB/s/camera bandwidth — negligible on tmpfs.
+    # 2026-05-15: made stride fps-aware. Fixed stride=3 was correct for
+    # 30fps color cameras but capped 10fps IR sources at ~3.3fps in the
+    # 3D compositor source bridge.
+    # 2026-05-15 incident follow-up: 10 Hz still reads as stale on the
+    # 3D livestream surface. Default the bridge to full source cadence
+    # (usually 30 Hz) and require explicit measured resource pressure to
+    # lower HAPAX_CAMERA_FRAME_CACHE_TARGET_FPS.
     _FRAME_CACHE_SAMPLE_EVERY_N = 3
 
     def _on_buffer_probe(self, pad: Any, info: Any) -> Any:
@@ -750,7 +773,10 @@ class CameraPipeline:
         # A+ Stage 3: freeze-frame snapshot. Sampling counter lives on
         # the instance so the cost is per-camera (no dict contention).
         self._frame_cache_tick = getattr(self, "_frame_cache_tick", 0) + 1
-        if self._frame_cache_tick >= self._FRAME_CACHE_SAMPLE_EVERY_N:
+        sample_every_n = getattr(
+            self, "_frame_cache_sample_every_n", self._FRAME_CACHE_SAMPLE_EVERY_N
+        )
+        if self._frame_cache_tick >= sample_every_n:
             self._frame_cache_tick = 0
             try:
                 self._snapshot_into_frame_cache(info)

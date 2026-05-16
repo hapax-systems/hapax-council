@@ -19,7 +19,8 @@ pub fn navigate<R: Runtime>(app: AppHandle<R>, route: String) {
 /// Open or close a sidebar panel by id.
 #[tauri::command]
 pub fn toggle_panel<R: Runtime>(app: AppHandle<R>, panel: String, open: bool) {
-    app.emit("hapax:toggle-panel", PanelEvent { panel, open }).ok();
+    app.emit("hapax:toggle-panel", PanelEvent { panel, open })
+        .ok();
 }
 
 #[derive(Clone, Serialize)]
@@ -271,8 +272,11 @@ pub fn visual_ping<R: Runtime>(app: AppHandle<R>, x: f64, y: f64, energy: f64) {
         writeln!(f, "{}", event).ok();
     }
 
-    app.emit("hapax:visual-ping", serde_json::json!({"x": x, "y": y, "energy": energy}))
-        .ok();
+    app.emit(
+        "hapax:visual-ping",
+        serde_json::json!({"x": x, "y": y, "energy": energy}),
+    )
+    .ok();
 }
 
 // ─── Composite: multi-action directives ──────────────────────────────────────
@@ -288,7 +292,10 @@ pub fn ui_directive<R: Runtime>(app: AppHandle<R>, directive: UiDirective) {
             "hapax:toast",
             ToastEvent {
                 message: toast.clone(),
-                level: directive.toast_level.clone().unwrap_or_else(|| "info".into()),
+                level: directive
+                    .toast_level
+                    .clone()
+                    .unwrap_or_else(|| "info".into()),
                 duration_ms: directive.toast_duration_ms.unwrap_or(5000),
             },
         )

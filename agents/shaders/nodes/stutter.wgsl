@@ -1,8 +1,9 @@
-// Stutter — VHS-style temporal freeze / hold / replay.
+// Stutter — VHS-style temporal hesitation / hold / replay.
 //
-// Uses tex_accum (previous output via temporal buffer) as the "held" frame.
-// A deterministic hash on quantized time decides whether to freeze, pass through,
-// or replay (rapid alternation) — giving a stuttering, tape-dropout feel.
+// Uses tex_accum (previous output via temporal buffer) as a held signal, but
+// never replaces the live scene with that buffer. Full-frame freezes reify a
+// screen pane and break the livestream surface; stutter must remain a bounded
+// temporal disturbance inside live content.
 //
 // Shared uniforms (group 0) are prepended automatically by DynamicPipeline.
 // We use uniforms.time from group(0) so time doesn't need to be in param_order.
@@ -76,6 +77,13 @@ fn main_1() {
     let replay_start = max(freeze_dur - global.u_replay_frames, 0.0);
     let in_replay = in_freeze && (pos >= replay_start) && (global.u_replay_frames > 0.0);
 
+    let luma = dot(current.xyz, vec3<f32>(0.299, 0.587, 0.114));
+    let held_delta = length(current.xyz - held.xyz);
+    let surface_presence =         smoothstep(0.008, 0.09, luma);
+    let motion_gate = smoothstep(0.015, 0.18, held_delta);
+    let freeze_gate = surface_presence * (0.45 + 0.55 * motion_gate);
+    let base_strength = clamp(global.u_freeze_chance * 0.70, 0.0, 0.34) * freeze_gate;
+
     if in_replay {
         // Stutter: alternate between held and current every other frame
         // for a VHS fast-forward / rewind jitter feel
@@ -85,13 +93,15 @@ fn main_1() {
         let slip_uv = vec2<f32>(uv.x, clamp(uv.y + slip, 0.0, 1.0));
         let held_slip = textureSample(tex_accum, tex_accum_sampler, slip_uv);
         if flicker {
-            fragColor = held_slip;
+            let replay_signal = mix(current, held_slip, vec4<f32>(0.62));
+            fragColor = mix(current, replay_signal, vec4<f32>(min(base_strength + 0.10, 0.42)));
         } else {
             fragColor = current;
         }
     } else if in_freeze {
-        // Full freeze: hold the accumulated (previous) frame
-        fragColor = held;
+        // Temporal hold: retain live motion with a bounded held-frame pressure.
+        let held_signal = mix(current, held, vec4<f32>(0.70));
+        fragColor = mix(current, held_signal, vec4<f32>(base_strength));
     } else {
         // Pass through: no stutter active
         fragColor = current;
