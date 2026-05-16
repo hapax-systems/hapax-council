@@ -3217,3 +3217,14 @@ qdrant_lookup
 read_source
 vault_read
 web_verify
+
+# Engine + prompts — called by CLI (__main__.py) and future SDLC integration
+from agents.deliberative_council.engine import deliberate  # noqa: F401, E402
+from agents.deliberative_council.prompts import (  # noqa: F401, E402
+    phase3_adversarial_prompt,
+    phase4_revision_prompt,
+)
+
+deliberate
+phase3_adversarial_prompt
+phase4_revision_prompt
