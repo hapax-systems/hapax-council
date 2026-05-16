@@ -3263,6 +3263,15 @@ TierListActionKind
 validate_interview_actions
 validate_tier_list_actions
 
+# Source packet and layout receipt freshness helpers — public segment-prep API
+# consumed by operator/audit wiring outside the current static diff.
+from shared.layout_receipt_freshness import validate_receipt_freshness  # noqa: F401, E402
+from shared.source_packet import bind_source_hashes, validate_source_set  # noqa: F401, E402
+
+validate_receipt_freshness
+bind_source_hashes
+validate_source_set
+
 # Segment disconfirmation — called by daily_segment_prep Pass 3 (wiring PR follows)
 from shared.segment_disconfirmation import (  # noqa: F401, E402
     apply_council_verdicts,
