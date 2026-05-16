@@ -1145,7 +1145,7 @@ def draw_hero_prefx_effect(compositor: Any, cr: Any) -> None:
     if hero_prefx is None:
         return
     try:
-        hero_prefx.draw(cr)
+        hero_prefx.draw(compositor, cr)
     except Exception:
         log.debug("hero_prefx_effect.draw raised", exc_info=True)
 
