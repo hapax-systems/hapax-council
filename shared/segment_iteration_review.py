@@ -682,7 +682,7 @@ def _team_critique_loop(
             "Review the single canary artifact before any next-nine generation.",
             "Each reviewer records a receipt with role, verdict, reviewer, checked_at, receipt_id, artifact_sha256, programme_id, iteration_id, and substantive notes.",
             "Approvals must cover script quality, actionability/layout fit, and layout-responsibility doctrine.",
-            "Approvals must include bound positive-excellence evidence for live bit viability, source consequence, role-standard fit, personage honesty, detector-theater absence, and framework-vocabulary leakage.",
+            "Approvals must include bound positive-excellence evidence for live bit viability, source consequence, role-standard fit, personage honesty, detector-theater absence, framework-vocabulary leakage, and council disconfirmation.",
             "Any revise/block verdict sends the method back to one-segment iteration.",
         ],
     }
@@ -1169,7 +1169,8 @@ def _receipt(
             "meaning": (
                 "canary release requires live-bit viability, source consequence, "
                 "role-standard calibration, non-anthropomorphic force, detector-theater "
-                "rejection, framework-vocabulary hygiene, and bound team evidence"
+                "rejection, framework-vocabulary hygiene, council disconfirmation, "
+                "and bound team evidence"
             ),
         },
         "script_quality": quality_report,
