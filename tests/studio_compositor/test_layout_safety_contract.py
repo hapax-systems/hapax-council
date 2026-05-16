@@ -82,6 +82,7 @@ def test_follow_mode_uses_bounded_salience_not_packed_repin() -> None:
 
 def test_negative_space_contract_lookup_uses_mode_family() -> None:
     assert negative_space_contract_for_mode("forcefield").max_fraction == 0.90
+    assert negative_space_contract_for_mode("3d").max_fraction == 0.90
     assert negative_space_contract_for_mode("follow/c920-room").max_fraction == 0.65
     assert negative_space_contract_for_mode("aoa").intent.startswith("Aperture")
     assert negative_space_contract_for_mode("sierpinski") == negative_space_contract_for_mode("aoa")

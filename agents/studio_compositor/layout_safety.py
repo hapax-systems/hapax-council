@@ -129,6 +129,16 @@ _NEGATIVE_SPACE_BY_FAMILY: dict[str, NegativeSpaceContract] = {
         expected_visual_signature="stable matte black spatial field with distributed live tiles",
         max_fraction=0.90,
     ),
+    "3d": NegativeSpaceContract(
+        intent="3D livestream volume with visible spatial grid and object depth",
+        region="air volume between AoA, camera panes, wards, floor, ceiling, and back wall",
+        material=BASE_COMPOSITOR_MATERIAL,
+        expected_visual_signature=(
+            "dark spatial volume with persistent floor/ceiling/back-wall grid cues, "
+            "not a flat opaque fallback pane"
+        ),
+        max_fraction=0.90,
+    ),
     AOA_LAYOUT_MODE: NegativeSpaceContract(
         intent="Aperture of Apertures camera constellation",
         region="AoA exterior and recursive aperture voids",
@@ -150,7 +160,7 @@ def mode_family(mode: str) -> str:
         return "follow"
     if lowered in AOA_LAYOUT_ALIASES | LEGACY_AOA_LAYOUT_ALIASES:
         return AOA_LAYOUT_MODE
-    if normalized in {"balanced", "packed", "forcefield"}:
+    if normalized in {"balanced", "packed", "forcefield", "3d"}:
         return normalized
     return "unknown"
 
