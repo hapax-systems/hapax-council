@@ -35,7 +35,6 @@ CONTAINMENT_ENV = (
     "HAPAX_COMPOSITOR_FORCE_CPU",
     "HAPAX_COMPOSITOR_DISABLE_V4L2_OUTPUT",
     "HAPAX_COMPOSITOR_DISABLE_INLINE_FX",
-    "HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT",
     "HAPAX_FOLLOW_MODE_ACTIVE",
 )
 EGRESS_ENV = ("HAPAX_V4L2_BRIDGE_ENABLED",)
@@ -925,7 +924,6 @@ def main() -> int:
         "force_cpu": env.get("HAPAX_COMPOSITOR_FORCE_CPU") == "1",
         "disable_v4l2_output": env.get("HAPAX_COMPOSITOR_DISABLE_V4L2_OUTPUT") == "1",
         "disable_inline_fx": env.get("HAPAX_COMPOSITOR_DISABLE_INLINE_FX") == "1",
-        "disable_hero_effect": env.get("HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT") == "1",
         "follow_mode_disabled": env.get("HAPAX_FOLLOW_MODE_ACTIVE") == "0",
     }
 

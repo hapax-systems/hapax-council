@@ -94,6 +94,30 @@ studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapsh
     assert "containment_flag:force_cpu" in payload["reasons"]
 
 
+def test_preflight_accepts_disabled_legacy_hero_effect_pass(tmp_path: Path) -> None:
+    result = _run(
+        """
+studio_compositor_cameras_total 6
+studio_compositor_cameras_healthy 6
+studio_compositor_v4l2sink_frames_total 10
+studio_compositor_v4l2sink_last_frame_seconds_ago 0.1
+studio_compositor_render_stage_frames_total{stage="final_egress_snapshot"} 4
+studio_compositor_render_stage_last_frame_seconds_ago{stage="final_egress_snapshot"} 0.2
+""",
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "true",
+        "--env",
+        "HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT=1",
+        tmp_path=tmp_path,
+    )
+
+    payload = json.loads(result.stdout)
+    assert result.returncode == 0
+    assert "containment_flag:disable_hero_effect" not in payload["reasons"]
+
+
 def test_preflight_full_surface_blocks_active_suppressors(tmp_path: Path) -> None:
     result = _run(
         """
