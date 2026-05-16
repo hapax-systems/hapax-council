@@ -4,13 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripts.hapax_source_activation_audit import (
-    ConsumerEntry,
-    _classify_unit_usage,
-    scan_hooks,
-    scan_systemd_units,
-)
-
+from scripts.hapax_source_activation_audit import _classify_unit_usage, scan_hooks
 
 CANONICAL = "/home/hapax/projects/hapax-council"
 
