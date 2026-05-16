@@ -16,7 +16,12 @@ RestartSec=5
 SuccessExitStatus=SIGTERM
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
-MemoryMax=1G
+# Critical API surface. Live evidence on 2026-05-16 showed normal
+# operation at ~0.93G under the old 1G cap while the host still had
+# ~79G RAM available. Keep a hard ceiling for runaway protection, but
+# do not let a stale small cap page or kill the API.
+MemoryHigh=6G
+MemoryMax=8G
 SyslogIdentifier=logos-api
 StandardOutput=journal
 StandardError=journal

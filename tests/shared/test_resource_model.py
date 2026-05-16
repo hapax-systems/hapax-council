@@ -240,6 +240,15 @@ class TestServiceProfileCompleteness:
         for name, profile in DEFAULT_SERVICE_PROFILES.items():
             assert len(profile.contention_groups) >= 1, f"{name} has no contention groups"
 
+    def test_logos_api_profile_reflects_128gb_host_headroom(self):
+        profile = DEFAULT_SERVICE_PROFILES["logos-api"]
+        allocation = profile.allocations[ResourceType.RAM]
+
+        assert profile.yield_tier == YieldTier.CRITICAL_PATH
+        assert allocation.limit == 8.0
+        assert allocation.enforcement == Enforcement.HARD
+        assert "MemoryMax=8G" in allocation.notes
+
 
 class TestContentionGroupConsistency:
     def test_all_contention_group_members_exist_in_profiles(self):
