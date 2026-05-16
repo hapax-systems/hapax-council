@@ -35,7 +35,6 @@ CONTAINMENT_ENV = (
     "HAPAX_COMPOSITOR_FORCE_CPU",
     "HAPAX_COMPOSITOR_DISABLE_V4L2_OUTPUT",
     "HAPAX_COMPOSITOR_DISABLE_INLINE_FX",
-    "HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT",
     "HAPAX_FOLLOW_MODE_ACTIVE",
 )
 EGRESS_ENV = ("HAPAX_V4L2_BRIDGE_ENABLED",)
@@ -53,6 +52,7 @@ FULL_SURFACE_ENV = (
     "HAPAX_VISUAL_PUMPING_ENABLED",
     "HAPAX_CAMERA_LEGIBLE_FX_ONLY",
     "HAPAX_CAMERA_LEGIBLE_PRESET_ALLOWLIST",
+    "HAPAX_LIVE_SURFACE_EFFECT_POLICY",
     "HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED",
     "HAPAX_HERO_SMALL_OVERLAY_ENABLED",
     "HAPAX_PRE_FX_LAYOUT_BACKGROUND_COMPOSITE_ENABLED",
@@ -91,10 +91,14 @@ FULL_SURFACE_MAX_V4L2_FD_REOPEN_DELTA = 0
 FULL_SURFACE_MAX_GLFEEDBACK_RECOMPILE_DELTA = 8
 DEFAULT_FINAL_FRAME_IMAGE = Path("/dev/shm/hapax-compositor/fx-snapshot.jpg")
 DEFAULT_UPSTREAM_FRAME_IMAGE = Path("/dev/shm/hapax-compositor/snapshot.jpg")
+DEFAULT_VISUAL_FRAME_IMAGE = Path("/dev/shm/hapax-visual/frame.jpg")
+DEFAULT_VISUAL_EFFECT_STATE_JSON = Path("/dev/shm/hapax-visual/effect-drift-state.json")
+DEFAULT_IMAGINATION_SOURCES_DIR = Path("/dev/shm/hapax-imagination/sources")
 DEFAULT_LAYOUT_STATE_JSON = Path("/dev/shm/hapax-compositor/current-layout-state.json")
 DEFAULT_EXTRA_METRICS_FILES = (
     Path.home() / ".local/share/node_exporter/textfile_collector/hapax-live-surface-guard.prom",
     Path("/dev/shm/hapax-compositor/v4l2-bridge.prom"),
+    Path("/dev/shm/hapax-visual/egress.prom"),
 )
 FINAL_PIXEL_PROOF_MIN_FRAMES = 6
 DEFAULT_MAX_UNCLASSIFIED_BLACK_FRACTION = 0.08
@@ -142,6 +146,12 @@ FULL_SURFACE_BLOCKING_ENV = (
         "preset_allowlist_clean",
     ),
     (
+        "HAPAX_LIVE_SURFACE_EFFECT_POLICY",
+        "0",
+        "LSC-FX-001",
+        "live_surface_effect_policy_disabled",
+    ),
+    (
         "HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED",
         "0",
         "LSC-LAYOUT-001",
@@ -170,7 +180,6 @@ FULL_SURFACE_BLOCKING_ENV = (
 FULL_SURFACE_REQUIRED_FEATURES = (
     ("shader_fx", "LSC-FX-001"),
     ("inline_fx", "LSC-FX-001"),
-    ("hero_effect", "LSC-FX-001"),
     ("follow_mode", "LSC-FOLLOW-001"),
     ("ward_modulator", "LSC-WARD-002"),
 )
@@ -378,11 +387,41 @@ def _full_surface_metric_failures(
     metrics: dict[str, float],
     *,
     layout_mode: str | None = None,
+    layout_name: str | None = None,
+    env: dict[str, str] | None = None,
+    visual_effect_state: dict[str, object] | None = None,
+    visual_effect_state_path: Path | None = None,
+    imagination_sources: dict[str, object] | None = None,
 ) -> list[str]:
     failures: list[str] = []
+    visual_active = _imagination_egress_active(metrics)
+    effect_state_active = _effect_state_active(
+        visual_effect_state or {},
+        path=visual_effect_state_path,
+    )
+    source_ids = (
+        imagination_sources.get("fresh_source_ids", set())
+        if imagination_sources is not None
+        else set()
+    )
+    fresh_ward_count = (
+        int(imagination_sources.get("fresh_ward_count", 0))
+        if imagination_sources is not None
+        else 0
+    )
     for feature, criterion_id in FULL_SURFACE_REQUIRED_FEATURES:
         key = f"studio_compositor_runtime_feature_active:feature:{feature}"
         if key not in metrics:
+            if visual_active:
+                if feature in {"shader_fx", "inline_fx"} and effect_state_active:
+                    continue
+                if feature == "follow_mode" and (env or {}).get("HAPAX_FOLLOW_MODE_ACTIVE") != "0":
+                    continue
+                if (
+                    feature == "ward_modulator"
+                    and (env or {}).get("HAPAX_WARD_MODULATOR_ACTIVE") == "1"
+                ):
+                    continue
             failures.append(_full_surface_reason(criterion_id, f"feature_unknown:{feature}"))
         elif metrics[key] <= 0:
             failures.append(_full_surface_reason(criterion_id, f"feature_inactive:{feature}"))
@@ -397,6 +436,8 @@ def _full_surface_metric_failures(
         if key.startswith("studio_compositor_ward_blit_total:ward:")
     }
     visible_wards = sum(1 for value in ward_blits.values() if value > 0)
+    if visible_wards == 0 and visual_active:
+        visible_wards = fresh_ward_count
     if visible_wards < FULL_SURFACE_MIN_VISIBLE_WARDS:
         failures.append(
             _full_surface_reason(
@@ -408,9 +449,10 @@ def _full_surface_metric_failures(
     if metrics.get("hapax_ward_modulator_tick_total", 0) <= 0:
         failures.append(_full_surface_reason("LSC-WARD-002", "ward_modulator_no_ticks"))
 
-    if metrics.get("studio_compositor_gem_substrate_active", 0) <= 0:
+    gem_source_active = visual_active and "gem" in source_ids
+    if metrics.get("studio_compositor_gem_substrate_active", 0) <= 0 and not gem_source_active:
         failures.append(_full_surface_reason("LSC-SCRIM-001", "gem_substrate_not_active"))
-    if metrics.get("studio_compositor_gem_substrate_paint_total", 0) <= 0:
+    if metrics.get("studio_compositor_gem_substrate_paint_total", 0) <= 0 and not gem_source_active:
         failures.append(_full_surface_reason("LSC-SCRIM-001", "gem_substrate_not_painting"))
 
     active_layouts = {
@@ -419,6 +461,11 @@ def _full_surface_metric_failures(
         if key.startswith("hapax_compositor_layout_active:layout:")
     }
     active_names = [name for name, value in active_layouts.items() if value > 0]
+    if layout_mode == "3d" and visual_active:
+        active_name = layout_name or "3d"
+        if active_name in FULL_SURFACE_LEGACY_STATIC_LAYOUTS:
+            active_name = "3d"
+        active_names = [active_name]
     if not active_names:
         failures.append(_full_surface_reason("LSC-LAYOUT-003", "active_layout_unknown"))
     for layout_name in sorted(active_names):
@@ -469,6 +516,18 @@ def _metric_delta(
     return after - before
 
 
+def _first_metric_delta(
+    before_metrics: dict[str, float],
+    after_metrics: dict[str, float],
+    *names: str,
+) -> float | None:
+    for name in names:
+        delta = _metric_delta(before_metrics, after_metrics, name)
+        if delta is not None:
+            return delta
+    return None
+
+
 def _full_surface_resource_delta_failures(
     before_metrics: dict[str, float],
     after_metrics: dict[str, float],
@@ -489,15 +548,17 @@ def _full_surface_resource_delta_failures(
             after_metrics,
             "studio_compositor_process_fd_count",
         ),
-        "v4l2_write_error_delta": _metric_delta(
+        "v4l2_write_error_delta": _first_metric_delta(
             before_metrics,
             after_metrics,
             "hapax_compositor_v4l2_write_errors_total",
+            "hapax_imagination_v4l2_write_errors_total",
         ),
-        "v4l2_fd_reopen_delta": _metric_delta(
+        "v4l2_fd_reopen_delta": _first_metric_delta(
             before_metrics,
             after_metrics,
             "hapax_compositor_v4l2_fd_reopens_total",
+            "hapax_imagination_v4l2_reconnects_total",
         ),
         "glfeedback_recompile_delta": _metric_delta(
             before_metrics,
@@ -594,24 +655,57 @@ def _full_surface_performance_sample(
 
     failures: list[str] = []
     rates: dict[str, float | None] = {}
-    for stage, floor_fps, criterion_id in FULL_SURFACE_STAGE_FPS_FLOORS:
-        before = _render_stage_count(before_metrics, stage)
-        after = _render_stage_count(after_metrics, stage)
-        if before is None or after is None:
-            rates[stage] = None
-            failures.append(_full_surface_reason(criterion_id, f"stage_fps_unknown:{stage}"))
-            continue
-        fps = max(0.0, (after - before) / elapsed)
-        rates[stage] = fps
-        if fps < floor_fps:
-            failures.append(
-                _full_surface_reason(
-                    criterion_id,
-                    f"stage_fps_below_floor:{stage}:{fps:.2f}<{floor_fps:.2f}",
+    visual_egress_active = _imagination_egress_active(before_metrics) or _imagination_egress_active(
+        after_metrics
+    )
+    if visual_egress_active:
+        for label, metric_name, floor_fps, criterion_id in (
+            (
+                "imagination_output",
+                "hapax_imagination_output_frames_total",
+                29.0,
+                "LSC-VIEWER-001",
+            ),
+            (
+                "imagination_v4l2_writer",
+                "hapax_imagination_v4l2_write_frames_total",
+                29.0,
+                "LSC-EGRESS-001",
+            ),
+        ):
+            fps = _counter_rate(before_metrics, after_metrics, metric_name, elapsed)
+            rates[label] = fps
+            if fps is None:
+                failures.append(_full_surface_reason(criterion_id, f"stage_fps_unknown:{label}"))
+                continue
+            if fps < floor_fps:
+                failures.append(
+                    _full_surface_reason(
+                        criterion_id,
+                        f"stage_fps_below_floor:{label}:{fps:.2f}<{floor_fps:.2f}",
+                    )
                 )
-            )
+    else:
+        for stage, floor_fps, criterion_id in FULL_SURFACE_STAGE_FPS_FLOORS:
+            before = _render_stage_count(before_metrics, stage)
+            after = _render_stage_count(after_metrics, stage)
+            if before is None or after is None:
+                rates[stage] = None
+                failures.append(_full_surface_reason(criterion_id, f"stage_fps_unknown:{stage}"))
+                continue
+            fps = max(0.0, (after - before) / elapsed)
+            rates[stage] = fps
+            if fps < floor_fps:
+                failures.append(
+                    _full_surface_reason(
+                        criterion_id,
+                        f"stage_fps_below_floor:{stage}:{fps:.2f}<{floor_fps:.2f}",
+                    )
+                )
 
-    if _bridge_mode_active(before_metrics) or _bridge_mode_active(after_metrics):
+    if visual_egress_active:
+        pass
+    elif _bridge_mode_active(before_metrics) or _bridge_mode_active(after_metrics):
         for label, metric_name, floor_fps, criterion_id in FULL_SURFACE_BRIDGE_COUNTER_FPS_FLOORS:
             fps = _counter_rate(before_metrics, after_metrics, metric_name, elapsed)
             rates[label] = fps
@@ -778,6 +872,92 @@ def _layout_mode_from_state(path: Path) -> str | None:
     return None
 
 
+def _layout_name_from_state(path: Path) -> str | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    raw = payload.get("layout_name")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    raw = payload.get("active_layout")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    raw = payload.get("name")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
+def _json_payload(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _imagination_egress_active(metrics: dict[str, float]) -> bool:
+    return (
+        metrics.get("hapax_imagination_output_frames_total", 0) > 0
+        or metrics.get("hapax_imagination_v4l2_output_enabled", 0) > 0
+        or metrics.get("hapax_imagination_v4l2_write_frames_total", 0) > 0
+    )
+
+
+def _effect_state_active(
+    payload: dict[str, object],
+    *,
+    path: Path | None = None,
+    max_age_seconds: float = 15.0,
+) -> bool:
+    try:
+        pass_count = int(payload.get("pass_count", 0))
+        non_neutral = int(payload.get("non_neutral_pass_count", 0))
+    except (TypeError, ValueError):
+        return False
+    path_age = _file_age_seconds(path) if path is not None else None
+    if path_age is not None and path_age > max_age_seconds:
+        return False
+    return pass_count > 0 and non_neutral > 0
+
+
+def _fresh_imagination_sources(
+    sources_dir: Path,
+    *,
+    max_age_seconds: float = 20.0,
+) -> dict[str, object]:
+    result: dict[str, object] = {
+        "fresh_ward_count": 0,
+        "fresh_source_count": 0,
+        "fresh_source_ids": set(),
+        "fresh_ward_ids": set(),
+    }
+    if not sources_dir.exists():
+        return result
+    now = time.time()
+    for manifest_path in sources_dir.glob("*/manifest.json"):
+        frame_path = manifest_path.with_name("frame.rgba")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            age = now - frame_path.stat().st_mtime
+        except (OSError, json.JSONDecodeError):
+            continue
+        if age < 0 or age > max_age_seconds:
+            continue
+        source_id = manifest.get("source_id")
+        if not isinstance(source_id, str) or not source_id:
+            source_id = manifest_path.parent.name
+        tags = manifest.get("tags")
+        tag_set = {str(tag) for tag in tags} if isinstance(tags, list) else set()
+        result["fresh_source_count"] = int(result["fresh_source_count"]) + 1
+        result["fresh_source_ids"].add(source_id)  # type: ignore[union-attr]
+        if "ward" in tag_set:
+            result["fresh_ward_count"] = int(result["fresh_ward_count"]) + 1
+            result["fresh_ward_ids"].add(source_id)  # type: ignore[union-attr]
+    return result
+
+
 def _final_frame_black_fraction_limit(layout_mode: str | None) -> float:
     if not layout_mode:
         return DEFAULT_MAX_UNCLASSIFIED_BLACK_FRACTION
@@ -860,6 +1040,21 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--visual-frame-image",
+        default=str(DEFAULT_VISUAL_FRAME_IMAGE),
+        help="3D compositor final frame image used when imagination egress is active",
+    )
+    parser.add_argument(
+        "--visual-effect-state-json",
+        default=str(DEFAULT_VISUAL_EFFECT_STATE_JSON),
+        help="3D compositor effect-drift state used for full-surface feature proof",
+    )
+    parser.add_argument(
+        "--imagination-sources-dir",
+        default=str(DEFAULT_IMAGINATION_SOURCES_DIR),
+        help="3D compositor source manifests used for ward/source proof",
+    )
+    parser.add_argument(
         "--final-frame-window-seconds",
         type=float,
         default=8.0,
@@ -919,7 +1114,6 @@ def main() -> int:
         "force_cpu": env.get("HAPAX_COMPOSITOR_FORCE_CPU") == "1",
         "disable_v4l2_output": env.get("HAPAX_COMPOSITOR_DISABLE_V4L2_OUTPUT") == "1",
         "disable_inline_fx": env.get("HAPAX_COMPOSITOR_DISABLE_INLINE_FX") == "1",
-        "disable_hero_effect": env.get("HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT") == "1",
         "follow_mode_disabled": env.get("HAPAX_FOLLOW_MODE_ACTIVE") == "0",
     }
 
@@ -989,16 +1183,37 @@ def main() -> int:
     )
     full_surface_failures: list[str] = []
     full_surface_performance: dict[str, object] = {"sampled": False}
-    layout_mode_for_proof = _layout_mode_from_state(Path(args.layout_state_json))
+    layout_state_path = Path(args.layout_state_json)
+    layout_mode_for_proof = _layout_mode_from_state(layout_state_path)
+    layout_name_for_proof = _layout_name_from_state(layout_state_path)
+    visual_egress_active = _imagination_egress_active(metrics)
+    performance_pid = main_pid
+    if visual_egress_active and not args.no_systemd:
+        performance_pid = _main_pid("hapax-imagination.service") or main_pid
+    visual_effect_state_path = Path(args.visual_effect_state_json)
+    visual_effect_state = _json_payload(visual_effect_state_path) if visual_egress_active else {}
+    imagination_sources = (
+        _fresh_imagination_sources(Path(args.imagination_sources_dir))
+        if visual_egress_active
+        else {}
+    )
     if args.require_full_surface:
         performance_failures, full_surface_performance = _full_surface_performance_sample(
             args,
             metrics,
-            pid=main_pid,
+            pid=performance_pid,
         )
         full_surface_failures = [
             *_full_surface_env_failures(env),
-            *_full_surface_metric_failures(metrics, layout_mode=layout_mode_for_proof),
+            *_full_surface_metric_failures(
+                metrics,
+                layout_mode=layout_mode_for_proof,
+                layout_name=layout_name_for_proof,
+                env=env,
+                visual_effect_state=visual_effect_state,
+                visual_effect_state_path=visual_effect_state_path,
+                imagination_sources=imagination_sources,
+            ),
             *performance_failures,
         ]
         state, reasons = _with_extra_degraded_reasons(
@@ -1009,6 +1224,8 @@ def main() -> int:
     max_final_black_fraction = _final_frame_black_fraction_limit(layout_mode_for_proof)
     final_frame_payload: dict[str, object] | None = None
     final_frame_image_arg = args.final_frame_image
+    if final_frame_image_arg is None and visual_egress_active and args.metrics_file is None:
+        final_frame_image_arg = args.visual_frame_image
     if final_frame_image_arg is None and args.require_full_surface and args.metrics_file is None:
         final_frame_image_arg = str(DEFAULT_FINAL_FRAME_IMAGE)
     if final_frame_image_arg:
@@ -1016,7 +1233,7 @@ def main() -> int:
             upstream_frame_image = None
             if args.upstream_frame_image:
                 upstream_frame_image = Path(args.upstream_frame_image)
-            elif args.metrics_file is None:
+            elif args.metrics_file is None and not visual_egress_active:
                 upstream_frame_image = DEFAULT_UPSTREAM_FRAME_IMAGE
             classification = classify_final_frame(
                 Path(final_frame_image_arg),

@@ -13,11 +13,12 @@ from agents.studio_compositor.preset_policy import (
     evaluate_preset_policy,
 )
 from shared.live_surface_effect_policy import (
-    apply_live_surface_param_bounds as apply_shared_live_surface_param_bounds,
-)
-from shared.live_surface_effect_policy import (
+    LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES,
     live_surface_policy_kind,
     live_surface_unclassified_node_types,
+)
+from shared.live_surface_effect_policy import (
+    apply_live_surface_param_bounds as apply_shared_live_surface_param_bounds,
 )
 
 NODES_DIR = Path(__file__).parent.parent.parent / "agents" / "shaders" / "nodes"
@@ -109,13 +110,13 @@ def test_live_surface_bounds_clamp_postprocess_anonymize() -> None:
     assert bounded["anonymize"] == 0.5
 
 
-def test_camera_legible_graph_policy_allows_bounded_noise_overlay() -> None:
+def test_camera_legible_graph_policy_allows_bounded_bloom() -> None:
     graph = _graph(
         {
-            "noise": NodeInstance(type="noise_overlay", params={"intensity": 0.5}),
+            "bloom": NodeInstance(type="bloom", params={"alpha": 0.5}),
             "out": NodeInstance(type="output"),
         },
-        [["@live", "noise"], ["noise", "out"]],
+        [["@live", "bloom"], ["bloom", "out"]],
     )
 
     decision = evaluate_preset_graph_policy(
@@ -125,6 +126,28 @@ def test_camera_legible_graph_policy_allows_bounded_noise_overlay() -> None:
     )
 
     assert decision.allowed is True
+    bounded = apply_live_surface_param_bounds("bloom", {"alpha": 0.5})
+    assert bounded["alpha"] == 0.35
+
+
+def test_camera_legible_graph_policy_blocks_unrepaired_glsl_pane_nodes() -> None:
+    graph = _graph(
+        {
+            "halftone": NodeInstance(type="halftone", params={"dot_size": 6.0}),
+            "out": NodeInstance(type="output"),
+        },
+        [["@live", "halftone"], ["halftone", "out"]],
+    )
+
+    decision = evaluate_preset_graph_policy(
+        graph,
+        registry=_registry(),
+        env=_camera_legible_env(),
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "camera_legible_glsl_pending_source_bound_repair"
+    assert decision.matched == ("halftone", "halftone")
     bounded = apply_live_surface_param_bounds(
         "noise_overlay",
         {"intensity": 0.5, "animated": True},
@@ -135,10 +158,10 @@ def test_camera_legible_graph_policy_allows_bounded_noise_overlay() -> None:
 def test_live_surface_graph_policy_allows_repaired_source_bound_nodes_by_default() -> None:
     graph = _graph(
         {
-            "noise": NodeInstance(type="noise_gen", params={"amplitude": 0.20}),
+            "nightvision": NodeInstance(type="nightvision_tint", params={"green_intensity": 0.8}),
             "out": NodeInstance(type="output"),
         },
-        [["@live", "noise"], ["noise", "out"]],
+        [["@live", "nightvision"], ["nightvision", "out"]],
     )
 
     decision = evaluate_preset_graph_policy(
@@ -148,8 +171,8 @@ def test_live_surface_graph_policy_allows_repaired_source_bound_nodes_by_default
     )
 
     assert decision.allowed is True
-    bounded = apply_live_surface_param_bounds("noise_gen", {"amplitude": 0.20})
-    assert bounded["amplitude"] == 0.08
+    bounded = apply_live_surface_param_bounds("nightvision_tint", {"green_intensity": 0.8})
+    assert bounded["green_intensity"] == 0.7
 
 
 def test_live_surface_graph_policy_can_be_disabled_for_offline_tools() -> None:
@@ -284,6 +307,15 @@ def test_live_surface_policy_classifies_every_shader_node() -> None:
     registry = _registry()
 
     assert live_surface_unclassified_node_types(set(registry.node_types)) == set()
+
+
+def test_glsl_pending_repair_nodes_still_have_live_surface_bounds() -> None:
+    assert LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES
+    assert {
+        node
+        for node in LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES
+        if live_surface_policy_kind(node) != "bounded"
+    } == set()
 
 
 def test_source_preserving_repaired_nodes_are_bounded_not_blocked() -> None:

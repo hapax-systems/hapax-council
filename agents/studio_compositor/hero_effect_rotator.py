@@ -1,8 +1,10 @@
-"""Hero effect rotator — cycles spatial effects on the hero camera tile.
+"""Hero effect rotator — legacy opt-in effects on the hero camera tile.
 
 Manages a dedicated glfeedback element that applies region-masked effects
-to the hero tile only.  Rotates through available hero effect shaders on
-a configurable timer, independent of the global preset rotation.
+to the hero tile only. This path is explicit opt-in because it sits outside
+the global slot-pipeline treatment path and can otherwise read as a detached
+output-plane layer. Rotates through available hero effect shaders on a
+configurable timer, independent of the global preset rotation.
 
 The hero region is defined by normalized coordinates (0..1) matching the
 hero tile's position on the 1920×1080 canvas.

@@ -334,6 +334,15 @@ pub static SHADERS: &[ShaderDef] = &[
         param_order: &["intensity", "animated"],
     },
     ShaderDef {
+        name: "grain_bump",
+        shader_file: "grain_bump.wgsl",
+        family: "texture",
+        is_spatial: false,
+        passthrough: &[("strength", 0.0)],
+        active_ranges: &[("strength", 0.12, 0.42)],
+        param_order: &["strength"],
+    },
+    ShaderDef {
         name: "fisheye",
         shader_file: "fisheye.wgsl",
         family: "atmospheric",
@@ -1093,22 +1102,31 @@ fn eviction_cadence(def: &ShaderDef) -> EvictionCadence {
         // not long-dwell atmospheres.
         "ascii"
         | "chromatic_aberration"
+        | "color_map"
+        | "dither"
         | "displacement_map"
         | "droste"
+        | "edge_detect"
         | "fisheye"
         | "fluid_sim"
         | "glitch_block"
+        | "halftone"
         | "kaleidoscope"
         | "mirror"
         | "noise_gen"
         | "palette_extract"
+        | "palette_remap"
         | "particle_system"
         | "pixsort"
+        | "posterize"
         | "reaction_diffusion"
         | "rutt_etra"
+        | "scanlines"
         | "slitscan"
         | "strobe"
         | "stutter"
+        | "thermal"
+        | "threshold"
         | "tile"
         | "transform"
         | "tunnel"
@@ -1311,22 +1329,31 @@ mod tests {
         let fast_names = [
             "ascii",
             "chromatic_aberration",
+            "color_map",
+            "dither",
             "displacement_map",
             "droste",
+            "edge_detect",
             "fisheye",
             "fluid_sim",
             "glitch_block",
+            "halftone",
             "kaleidoscope",
             "mirror",
             "noise_gen",
             "palette_extract",
+            "palette_remap",
             "particle_system",
             "pixsort",
+            "posterize",
             "reaction_diffusion",
             "rutt_etra",
+            "scanlines",
             "slitscan",
             "strobe",
             "stutter",
+            "thermal",
+            "threshold",
             "tile",
             "transform",
             "tunnel",
@@ -1409,7 +1436,7 @@ mod tests {
     #[test]
     fn fast_evict_duration_window_is_shorter_than_slow_window() {
         let fast = SHADERS.iter().find(|def| def.name == "tunnel").unwrap();
-        let slow = SHADERS.iter().find(|def| def.name == "posterize").unwrap();
+        let slow = SHADERS.iter().find(|def| def.name == "colorgrade").unwrap();
         let mut fast_rng = SimpleRng::new(7);
         let mut slow_rng = SimpleRng::new(7);
 
@@ -1842,6 +1869,7 @@ mod tests {
             "diff",
             "droste",
             "fluid_sim",
+            "grain_bump",
             "luma_key",
             "nightvision_tint",
             "noise_gen",
@@ -1911,6 +1939,7 @@ mod tests {
             "droste.wgsl",
             "echo.wgsl",
             "fluid_sim.wgsl",
+            "grain_bump.wgsl",
             "halftone.wgsl",
             "kuwahara.wgsl",
             "luma_key.wgsl",
@@ -2072,6 +2101,29 @@ mod tests {
             source.contains("current.a") && !source.contains("_e215.z, 1f"),
             "feedback must preserve current alpha; forcing alpha=1 turns empty space into a fourth-wall surface"
         );
+    }
+
+    #[test]
+    fn content_bookend_shaders_preserve_input_alpha() {
+        let shader_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../agents/shaders/nodes");
+        for shader in [
+            "content_layer.wgsl",
+            "sierpinski_content.wgsl",
+            "sierpinski_lines.wgsl",
+        ] {
+            let source = std::fs::read_to_string(shader_root.join(shader))
+                .unwrap_or_else(|err| panic!("read {shader}: {err}"));
+            assert!(
+                source.contains("base_sample.a"),
+                "{shader} must pass through input alpha instead of creating a full-frame pane"
+            );
+            assert!(
+                !source.contains("fragColor = vec4<f32>(result, 1.0)")
+                    && !source.contains("fragColor = vec4<f32>(base, 1.0)"),
+                "{shader} must not force alpha=1 on the full output"
+            );
+        }
     }
 
     #[test]
@@ -2637,6 +2689,7 @@ fn is_baseline_visible(def: &ShaderDef) -> bool {
             | "rutt_etra"
             | "scanlines"
             | "dither"
+            | "grain_bump"
             | "halftone"
             | "noise_gen"
             | "particle_system"

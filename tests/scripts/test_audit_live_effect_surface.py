@@ -89,7 +89,14 @@ def test_audit_live_effect_surface_covers_non_preset_surfaces() -> None:
     assert not payload["surfaces"]["legacy_studio_fx_registry"]["missing_effect_modules"]
     assert "ghost" in payload["surfaces"]["legacy_studio_fx_registry"]["registered_effect_names"]
     assert "datamosh" in payload["surfaces"]["legacy_studio_fx_registry"]["registered_effect_names"]
-    assert "grain_bump.wgsl" in payload["surfaces"]["shader_nodes"]["standalone_wgsl_files"]
+    assert "grain_bump" in payload["surfaces"]["shader_nodes"]["node_types"]
+    grain_bump_manifest = next(
+        row
+        for row in payload["surfaces"]["shader_nodes"]["manifests"]
+        if row["node_type"] == "grain_bump"
+    )
+    assert grain_bump_manifest["has_wgsl_file"] is True
+    assert grain_bump_manifest["live_surface_policy"] == "bounded"
     assert not payload["surfaces"]["live_surface_policy"]["unclassified_node_types"]
     assert "noise_overlay" in payload["surfaces"]["presets"]["high_risk_node_usage"]
     assert "glitch_block" in payload["surfaces"]["presets"]["high_risk_node_usage"]

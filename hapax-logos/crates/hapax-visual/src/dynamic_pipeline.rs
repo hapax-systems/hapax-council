@@ -36,6 +36,21 @@ fn compute_pool_key(width: u32, height: u32, format: wgpu::TextureFormat) -> u64
     hasher.finish()
 }
 
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn should_write_consumer_output(frame_count: u64, half_rate: bool) -> bool {
+    !half_rate || frame_count.is_multiple_of(2)
+}
+
 const PLAN_DIR: &str = "/dev/shm/hapax-imagination/pipeline";
 const PLAN_FILE: &str = "/dev/shm/hapax-imagination/pipeline/plan.json";
 const UNIFORMS_JSON: &str = "/dev/shm/hapax-imagination/uniforms.json";
@@ -342,6 +357,23 @@ fn pick_slot_excluding(slots: &HashMap<String, usize>, exclude: &str) -> Option<
         .map(|(_, slot)| *slot)
 }
 
+fn pass_uses_content_slots(pass: &DynamicPass) -> bool {
+    pass.requires_content_slots || pass.inputs.iter().any(|n| n.starts_with("content_slot_"))
+}
+
+fn slot_opacities_for_pass(
+    pass: &DynamicPass,
+    content_sources: Option<&ContentSourceManager>,
+    fallback: [f32; 4],
+) -> [f32; 4] {
+    if pass_uses_content_slots(pass) {
+        if let Some(content_sources) = content_sources {
+            return content_sources.slot_opacities_for_family(&pass.slot_family);
+        }
+    }
+    fallback
+}
+
 /// Snapshot of intermediate texture pool state for external observability.
 ///
 /// Returned by [`DynamicPipeline::pool_metrics`]. Closes the §4.7 follow-up
@@ -416,6 +448,11 @@ pub struct DynamicPipeline {
     width: u32,
     height: u32,
     frame_count: u64,
+    /// Consumer-boundary output cadence. The active 3D/direct-v4l2 surface
+    /// must publish every rendered frame so the OBS-facing loopback reaches
+    /// the 30fps contract; set HAPAX_IMAGINATION_OUTPUT_HALF_RATE=1 only for
+    /// legacy low-bandwidth compatibility.
+    output_half_rate: bool,
     drift_engine: Option<SlotDriftEngine>,
     /// Phase 3 3D: true when an external texture was injected as @live
     /// this frame; suppresses the procedural noise fallback.
@@ -450,6 +487,7 @@ impl DynamicPipeline {
     ) -> Self {
         let uniform_buffer = UniformBuffer::new(device);
         let shm_output = ShmOutput::new(device, width, height);
+        let output_half_rate = env_flag_enabled("HAPAX_IMAGINATION_OUTPUT_HALF_RATE");
 
         // Compile shared vertex module (vertex + uniforms combined)
         let vertex_source = format!("{}\n{}", SHARED_UNIFORMS_WGSL, SHARED_VERTEX_WGSL);
@@ -602,6 +640,7 @@ impl DynamicPipeline {
             width,
             height,
             frame_count: 0,
+            output_half_rate,
             drift_engine: Some(SlotDriftEngine::new(
                 "/dev/shm/hapax-imagination/pipeline/plan.json",
                 42,
@@ -1373,6 +1412,11 @@ impl DynamicPipeline {
             let is_temporal = pass.inputs.iter().any(|n| n.starts_with("@accum_"));
 
             if let Some(ref render_pipeline) = pass.render_pipeline {
+                let mut pass_uniform_data = uniform_data;
+                pass_uniform_data.slot_opacities =
+                    slot_opacities_for_pass(pass, content_sources, content_slot_opacities);
+                self.uniform_buffer.update(queue, &pass_uniform_data);
+
                 let input_bind_group = self.create_input_bind_group(
                     device,
                     &pass.inputs,
@@ -1446,6 +1490,11 @@ impl DynamicPipeline {
                     }
                 }
             } else if let Some(ref compute_pipeline) = pass.compute_pipeline {
+                let mut pass_uniform_data = uniform_data;
+                pass_uniform_data.slot_opacities =
+                    slot_opacities_for_pass(pass, content_sources, content_slot_opacities);
+                self.uniform_buffer.update(queue, &pass_uniform_data);
+
                 let input_bind_group = self.create_input_bind_group(
                     device,
                     &pass.inputs,
@@ -1524,11 +1573,12 @@ impl DynamicPipeline {
             rpass.draw(0..3, 0..1);
         }
 
-        // Copy the main target's final texture to SHM output every
-        // other frame to save bandwidth. Phase 5b1: SHM consumers
-        // (the visual surface frame.jpg path) always read the main
-        // target — additional targets aren't routed through SHM.
-        if self.frame_count.is_multiple_of(2) {
+        // Copy the main target's final texture to the consumer-boundary output.
+        // Phase 5b1: SHM/v4l2 consumers always read the main target —
+        // additional targets aren't routed through this path.
+        let write_consumer_output =
+            should_write_consumer_output(self.frame_count, self.output_half_rate);
+        if write_consumer_output {
             if let Some(final_tex) = self.intermediate(MAIN_FINAL_TEXTURE) {
                 self.shm_output
                     .copy_to_staging(&mut encoder, &final_tex.texture);
@@ -1537,8 +1587,8 @@ impl DynamicPipeline {
 
         queue.submit(std::iter::once(encoder.finish()));
 
-        // Write SHM frame (every other frame)
-        if self.frame_count.is_multiple_of(2) {
+        // Write the SHM/JPEG/direct-v4l2 consumer output after submit.
+        if write_consumer_output {
             self.shm_output.write_frame(device);
         }
 
@@ -2261,6 +2311,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn consumer_output_writes_every_frame_by_default() {
+        for frame in 0..8 {
+            assert!(should_write_consumer_output(frame, false));
+        }
+    }
+
+    #[test]
+    fn consumer_output_half_rate_is_explicit_compatibility_mode() {
+        assert!(should_write_consumer_output(0, true));
+        assert!(!should_write_consumer_output(1, true));
+        assert!(should_write_consumer_output(2, true));
+        assert!(!should_write_consumer_output(3, true));
+    }
+
+    #[test]
     fn parses_v1_flat_passes_format() {
         // v1 plans have a flat `passes` list and no `targets` field.
         // The executor wraps them into a synthetic "main" target so the
@@ -2587,6 +2652,54 @@ mod tests {
             backend: "wgsl_render".to_string(),
             slot_family: "narrative".to_string(),
         }
+    }
+
+    fn make_dynamic_pass_for_slot_test(
+        requires_content_slots: bool,
+        slot_family: &str,
+        inputs: &[&str],
+    ) -> DynamicPass {
+        DynamicPass {
+            node_id: "test".to_string(),
+            render_pipeline: None,
+            compute_pipeline: None,
+            uniform_bind_group: None,
+            input_bind_group_layout: None,
+            params_buffer: None,
+            params_bind_group: None,
+            param_order: Vec::new(),
+            neutral_params: Vec::new(),
+            current_params: Vec::new(),
+            inputs: inputs.iter().map(|input| input.to_string()).collect(),
+            output: "out".to_string(),
+            steps_per_frame: 1,
+            requires_content_slots,
+            slot_family: slot_family.to_string(),
+            backend: "wgsl_render".to_string(),
+            target: "main".to_string(),
+        }
+    }
+
+    #[test]
+    fn pass_uses_content_slots_honors_declarative_flag() {
+        let pass = make_dynamic_pass_for_slot_test(true, "youtube_pip", &["@live"]);
+        assert!(pass_uses_content_slots(&pass));
+    }
+
+    #[test]
+    fn pass_uses_content_slots_honors_legacy_input_prefix() {
+        let pass =
+            make_dynamic_pass_for_slot_test(false, "narrative", &["@live", "content_slot_0"]);
+        assert!(pass_uses_content_slots(&pass));
+    }
+
+    #[test]
+    fn slot_opacities_for_non_content_pass_uses_fallback() {
+        let pass = make_dynamic_pass_for_slot_test(false, "narrative", &["@live"]);
+        assert_eq!(
+            slot_opacities_for_pass(&pass, None, [0.1, 0.2, 0.3, 0.4]),
+            [0.1, 0.2, 0.3, 0.4]
+        );
     }
 
     #[test]

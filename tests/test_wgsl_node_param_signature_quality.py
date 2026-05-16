@@ -40,15 +40,14 @@ NODE_DIR = REPO_ROOT / "agents" / "shaders" / "nodes"
 # Floor pinned 2026-05-03 by cc-task u7-per-node-parametrize-signature-
 # quality-audit (this PR). Bump in the same PR that adds new shader
 # node spec files; the bump is the contract that the new specs are real.
-MIN_NODE_SPECS = 62
+MIN_NODE_SPECS = 63
 
 # Some specs are intentionally not 1:1 WGSL shader nodes:
 # - output is a graph-level pseudo node.
-# - grain_bump.wgsl exists as a live WGSL node but does not yet have a JSON
-#   param spec. Keep these exceptions explicit so future drift cannot hide
-#   inside the raw count floor.
+# Keep these exceptions explicit so future drift cannot hide inside the raw
+# count floor.
 JSON_SPECS_WITHOUT_WGSL = frozenset({"output"})
-WGSL_NODES_WITHOUT_JSON_SPEC = frozenset({"grain_bump"})
+WGSL_NODES_WITHOUT_JSON_SPEC = frozenset()
 
 
 def _spec_files() -> list[Path]:

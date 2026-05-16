@@ -150,8 +150,9 @@ impl ShmOutput {
             tx.send(result).ok();
         });
 
-        // Block until GPU readback completes. This runs every other frame
-        // (~60ms cadence) so the stall is acceptable — typical readback is <2ms.
+        // Block until GPU readback completes. The active direct-v4l2 3D
+        // surface calls this every rendered frame to satisfy the 30fps
+        // consumer-boundary contract; typical readback is <2ms.
         device.poll(wgpu::Maintain::Wait);
 
         match rx.recv_timeout(std::time::Duration::from_millis(5)) {

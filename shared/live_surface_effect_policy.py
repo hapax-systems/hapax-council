@@ -58,6 +58,20 @@ def _force(value: Any) -> ParamBound:
 # incident containment or be repaired before merge.
 LIVE_SURFACE_BLOCKED_NODE_TYPES = frozenset()
 
+# These nodes have source-bound WGSL repairs, but their legacy GLSL fragments
+# can still render viewport/fourth-wall panes when loaded through the
+# GStreamer graph-preset path. They remain eligible for WGSL autonomous drift;
+# the graph-policy gate blocks only GLSL-backed live-surface activation until
+# fragment parity is proven.
+LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES = frozenset(
+    {
+        "ascii",
+        "halftone",
+        "noise_gen",
+        "palette_extract",
+    }
+)
+
 
 CONTENT_SLOT_GUARDED_NODE_TYPES = frozenset({"content_layer", "sierpinski_content"})
 STRUCTURAL_NODE_TYPES = frozenset({"output"})
@@ -170,6 +184,9 @@ LIVE_SURFACE_PARAM_BOUNDS: dict[str, dict[str, ParamBound]] = {
         "block_size": _min(8.0),
         "intensity": _max(0.25),
         "rgb_split": _max(0.25),
+    },
+    "grain_bump": {
+        "strength": _max(0.35),
     },
     "halftone": {
         "dot_size": _max(8.0),
@@ -422,6 +439,7 @@ def live_surface_unclassified_node_types(node_types: set[str] | frozenset[str]) 
 __all__ = [
     "CONTENT_SLOT_GUARDED_NODE_TYPES",
     "LIVE_SURFACE_BLOCKED_NODE_TYPES",
+    "LIVE_SURFACE_GLSL_PENDING_SOURCE_BOUND_REPAIR_NODE_TYPES",
     "LIVE_SURFACE_PARAM_BOUNDS",
     "ParamBound",
     "STRUCTURAL_NODE_TYPES",

@@ -54,7 +54,8 @@ fn dist_tri(p: vec2<f32>, ax: f32, ay: f32, bx: f32, by: f32, cx: f32, cy: f32) 
 fn main_1() {
     let uv = v_texcoord_1;
     let time = global.u_time;
-    let base = textureSample(tex, tex_sampler, uv).rgb;
+    let base_sample = textureSample(tex, tex_sampler, uv);
+    let base = base_sample.rgb;
 
     let pixel = 1.0 / 1080.0;
     let line_w = global.u_line_width * pixel * (1.0 + global.u_intensity * 0.5);
@@ -119,7 +120,7 @@ fn main_1() {
     let line_color = synthwave_color(color_t, time);
 
     let result = base + line_color * total_alpha;
-    fragColor = vec4<f32>(result, 1.0);
+    fragColor = vec4<f32>(result, base_sample.a);
     return;
 }
 
