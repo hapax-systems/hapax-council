@@ -22,7 +22,7 @@ fn main_1() {
     let dist = distance(uv, vec2<f32>(0.5, 0.5));
     let focus = 1.0 - smoothstep(global.u_radius - global.u_softness, global.u_radius, dist);
     let luma = dot(color.xyz, vec3<f32>(0.299, 0.587, 0.114));
-    let surface_presence =         smoothstep(0.008, 0.09, luma);
+    let surface_presence =         smoothstep(0.025, 0.14, luma);
     let edge_signal = clamp(color.xyz + vec3<f32>(0.12, 0.04, 0.18) * (1.0 - focus), vec3(0.0), vec3(1.0));
     let edge_tint = mix(edge_signal, color.xyz, vec3<f32>(focus));
     let strength = surface_presence * clamp((1.0 - global.u_radius) * 0.55, 0.0, 0.28);

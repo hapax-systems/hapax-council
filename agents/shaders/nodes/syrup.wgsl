@@ -25,7 +25,7 @@ fn main_1() {
     let raw_alpha = mix(clamp(global.u_bottom_alpha, 0.0, 0.20), clamp(global.u_top_alpha, 0.0, 0.20), uv.y);
     let overlay = vec3<f32>(global.u_color_r, global.u_color_g, global.u_color_b);
     let luma = dot(color.xyz, vec3<f32>(0.299, 0.587, 0.114));
-    let surface_presence =         smoothstep(0.008, 0.09, luma);
+    let surface_presence =         smoothstep(0.025, 0.14, luma);
     let alpha = raw_alpha * surface_presence;
     fragColor = vec4<f32>(mix(color.xyz, overlay, vec3<f32>(alpha)), color.a);
     return;

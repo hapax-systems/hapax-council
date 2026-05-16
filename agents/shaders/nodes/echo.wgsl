@@ -75,7 +75,7 @@ fn main_1() {
     let _e71 = r;
     let _e76 = clamp(_e71, vec3(0f), vec3(1f));
     let cur_luma = dot(cur.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
-    let surface_presence =         smoothstep(0.008f, 0.09f, cur_luma);
+    let surface_presence =         smoothstep(0.025f, 0.14f, cur_luma);
     let echo_strength = surface_presence * clamp((1f - w) * 0.46f, 0f, 0.38f);
     let live_bound = mix(cur.xyz, _e76, vec3<f32>(echo_strength));
     fragColor = vec4<f32>(live_bound.x, live_bound.y, live_bound.z, cur.a);

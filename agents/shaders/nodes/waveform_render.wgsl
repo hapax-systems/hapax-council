@@ -40,7 +40,7 @@ fn main_1() {
     let alpha = clamp((1.0 - smoothstep(0.0, px, ring)) + (exp((-ring * 80.0) / max(global.u_thickness, 0.7)) * 0.22), 0.0, 1.0);
     let color = vec3<f32>(global.u_color_r, global.u_color_g, global.u_color_b);
     let source_luma = dot(source.xyz, vec3<f32>(0.299, 0.587, 0.114));
-    let surface_presence =         smoothstep(0.008, 0.09, source_luma);
+    let surface_presence =         smoothstep(0.025, 0.14, source_luma);
     let strength = alpha * surface_presence * clamp(global.u_color_a, 0.0, 0.16);
     fragColor = vec4<f32>(mix(source.xyz, color, vec3<f32>(strength)), source.a);
     return;

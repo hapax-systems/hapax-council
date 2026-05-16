@@ -22,7 +22,7 @@ fn main_1() {
     let source = textureSample(tex, tex_sampler, v_texcoord_1);
     let wash = vec3<f32>(global.u_color_r, global.u_color_g, global.u_color_b);
     let luma = dot(source.xyz, vec3<f32>(0.299, 0.587, 0.114));
-    let surface_presence =         smoothstep(0.008, 0.09, luma);
+    let surface_presence =         smoothstep(0.025, 0.14, luma);
     let alpha = surface_presence * clamp(global.u_color_a, 0.0, 0.10);
     fragColor = vec4<f32>(mix(source.xyz, wash, vec3<f32>(alpha)), source.a);
     return;

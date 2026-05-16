@@ -68,7 +68,7 @@ fn main_1() {
         }
     }
 
-    let surface_presence =         smoothstep(0.008f, 0.09f, lum);
+    let surface_presence =         smoothstep(0.025f, 0.14f, lum);
     let displacement_strength = clamp(abs(global.u_displacement) * 0.035f, 0f, 0.65f);
     let line_strength = line * surface_presence * displacement_strength;
     let rutt_signal = mix(color.xyz, result, vec3<f32>(0.72f));

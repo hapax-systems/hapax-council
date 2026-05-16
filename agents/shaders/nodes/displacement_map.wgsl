@@ -26,7 +26,7 @@ fn main_1() {
     var disp: vec4<f32>;
     var offset: vec2<f32>;
     var warped: vec4<f32>;
-    var blend: f32;
+    var strength: f32;
 
     let _e10 = v_texcoord_1;
     uv = _e10;
@@ -43,8 +43,19 @@ fn main_1() {
     let sample_uv = clamp((_e29 + _e30), vec2(0.001f), vec2(0.999f));
     let _e32 = textureSample(tex, tex_sampler, sample_uv);
     warped = _e32;
-    blend = clamp((abs(global.u_strength_x) + abs(global.u_strength_y)) * 3.0f, 0.0f, 0.55f);
-    fragColor = vec4<f32>(mix(original.xyz, warped.xyz, vec3(blend)), original.w);
+    strength = clamp((abs(global.u_strength_x) + abs(global.u_strength_y)) * 3.0f, 0.0f, 0.55f);
+    // Displacement may reveal pressure/offset detail, but it must not replace
+    // the source with a whole shifted scene copy.
+    let original_luma = dot(original.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    let surface_presence = smoothstep(0.025f, 0.14f, original_luma);
+    let geometry_presence = max(surface_presence, 0.22f);
+    let delta = warped.xyz - original.xyz;
+    let edge_presence = smoothstep(0.05f, 0.38f, length(delta));
+    let offset_energy = smoothstep(0.002f, 0.045f, length(offset));
+    let spectral_tint = vec3<f32>(0.95f, 0.36f, 0.14f);
+    let detail_lift = max(delta, vec3<f32>(0.0f)) * edge_presence * 0.72f;
+    let lifted = original.xyz + (detail_lift + spectral_tint * offset_energy * 0.035f) * strength * geometry_presence;
+    fragColor = vec4<f32>(max(original.xyz, lifted), original.w);
     return;
 }
 

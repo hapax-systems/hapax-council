@@ -1393,7 +1393,7 @@ mod tests {
             ("displacement_map.wgsl", "0.55f"),
             ("fisheye.wgsl", "0.58f"),
             ("kaleidoscope.wgsl", "0.60f"),
-            ("mirror.wgsl", "0.54f"),
+            ("mirror.wgsl", "0.26f"),
             ("transform.wgsl", "0.55f"),
             ("warp.wgsl", "0.62f"),
         ] {
@@ -1952,6 +1952,11 @@ mod tests {
                 "{shader} must not use alpha as a source-presence proxy; post-FX full-frame \
                  alpha turns empty space into a paintable fourth-wall surface"
             );
+            assert!(
+                !source.contains("smoothstep(0.008"),
+                "{shader} uses the old permissive source gate; faint background/grid energy \
+                 can become a fourth-wall pane"
+            );
         }
     }
 
@@ -1993,6 +1998,61 @@ mod tests {
                 "{shader} uses the old permissive source gate; faint background/grid energy \
                  can become a fourth-wall pane"
             );
+        }
+    }
+
+    #[test]
+    fn reprojection_effects_do_not_clone_the_livestream_scene() {
+        let shader_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../agents/shaders/nodes");
+        let mirror =
+            std::fs::read_to_string(shader_root.join("mirror.wgsl")).expect("read mirror shader");
+        let tile =
+            std::fs::read_to_string(shader_root.join("tile.wgsl")).expect("read tile shader");
+
+        assert!(
+            mirror.contains("fold_glint") && mirror.contains("detail_lift"),
+            "mirror must be a bounded fold/detail operator, not a second scene projection"
+        );
+        assert!(
+            !mirror.contains("mix(original.xyz, mirrored.xyz"),
+            "mirror must not directly blend a full mirrored frame over the livestream surface"
+        );
+        assert!(
+            tile.contains("detail_lift") && tile.contains("cell_edge"),
+            "tile must extract bounded detail/cell energy, not reproject tiled copies"
+        );
+        assert!(
+            !tile.contains("mix(source.xyz, tiled_bound"),
+            "tile must not blend a cloned tiled frame over the livestream surface"
+        );
+
+        for shader in [
+            "displacement_map.wgsl",
+            "droste.wgsl",
+            "fisheye.wgsl",
+            "kaleidoscope.wgsl",
+            "transform.wgsl",
+            "tunnel.wgsl",
+            "warp.wgsl",
+        ] {
+            let source = std::fs::read_to_string(shader_root.join(shader))
+                .unwrap_or_else(|err| panic!("read {shader}: {err}"));
+            assert!(
+                source.contains("detail_lift") && source.contains("max("),
+                "{shader} must lift bounded detail from warped samples instead of replacing the source"
+            );
+            for banned in [
+                "mix(original.xyz, warped.xyz",
+                "mix(original.xyz, transformed.xyz",
+                "mix(source.xyz, warped.xyz",
+                "mix(source.xyz, tunnel.xyz",
+            ] {
+                assert!(
+                    !source.contains(banned),
+                    "{shader} must not directly blend a full warped scene via {banned}"
+                );
+            }
         }
     }
 
@@ -2282,6 +2342,7 @@ mod tests {
         for shader in [
             "nightvision_tint.wgsl",
             "reaction_diffusion.wgsl",
+            "threshold.wgsl",
             "vhs.wgsl",
         ] {
             let source = std::fs::read_to_string(shader_root.join(shader))

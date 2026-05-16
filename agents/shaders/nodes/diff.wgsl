@@ -38,7 +38,7 @@ fn main_1() {
     }
 
     let cur_luma = dot(cur.xyz, vec3<f32>(0.299, 0.587, 0.114));
-    let surface_presence =         smoothstep(0.008, 0.09, cur_luma);
+    let surface_presence =         smoothstep(0.025, 0.14, cur_luma);
     let strength = gate * surface_presence * 0.34;
     let out_rgb = mix(cur.xyz, clamp(diff_signal, vec3(0.0), vec3(1.0)), vec3<f32>(strength));
     fragColor = vec4<f32>(out_rgb, cur.a);

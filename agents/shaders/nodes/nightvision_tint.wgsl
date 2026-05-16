@@ -23,7 +23,7 @@ fn main_1() {
     let lum = clamp(((dot(source.xyz, vec3<f32>(0.299, 0.587, 0.114)) - 0.5) * clamp(global.u_contrast, 0.85, 1.15) + 0.5) * clamp(global.u_brightness, 0.95, 1.20), 0.0, 1.0);
     let green = vec3<f32>(lum * 0.18, lum * clamp(global.u_green_intensity, 0.35, 0.70), lum * 0.12);
     let source_luma = dot(source.xyz, vec3<f32>(0.299, 0.587, 0.114));
-    let surface_presence =         smoothstep(0.008, 0.09, source_luma);
+    let surface_presence =         smoothstep(0.025, 0.14, source_luma);
     let strength = surface_presence * 0.14;
     let mediated = mix(source.xyz, green, vec3<f32>(strength));
     let mediated_luma = dot(mediated, vec3<f32>(0.299, 0.587, 0.114));

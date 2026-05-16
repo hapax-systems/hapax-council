@@ -24,7 +24,7 @@ fn main_1() {
     let a = textureSample(tex, tex_sampler, uv);
     let b = textureSample(tex_b, tex_b_sampler, uv);
     let luma = dot(a.xyz, vec3<f32>(0.299, 0.587, 0.114));
-    let surface_presence =         smoothstep(0.008, 0.09, luma);
+    let surface_presence =         smoothstep(0.025, 0.14, luma);
     let strength = surface_presence * clamp(global.u_mix, 0.0, 0.22);
     fragColor = vec4<f32>(mix(a.xyz, b.xyz, vec3<f32>(strength)), a.a);
     return;

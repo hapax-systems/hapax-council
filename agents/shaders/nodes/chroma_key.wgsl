@@ -31,7 +31,7 @@ fn main_1() {
     let dist = distance(b.xyz, key_color);
     let mask = smoothstep(global.u_tolerance - global.u_softness, global.u_tolerance + global.u_softness, dist);
     let luma = dot(a.xyz, vec3<f32>(0.299, 0.587, 0.114));
-    let surface_presence =         smoothstep(0.008, 0.09, luma);
+    let surface_presence =         smoothstep(0.025, 0.14, luma);
     let strength = mask * surface_presence * clamp(global.u_tolerance, 0.0, 0.28);
     let out_rgb = mix(a.xyz, b.xyz, vec3<f32>(strength));
     fragColor = vec4<f32>(out_rgb, a.a);

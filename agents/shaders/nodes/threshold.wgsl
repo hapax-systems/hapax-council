@@ -21,10 +21,13 @@ fn main_1() {
     let lum = dot(source.xyz, vec3<f32>(0.299, 0.587, 0.114));
     let edge = max(global.u_softness * 0.5, 0.04);
     let t = smoothstep(global.u_level - edge, global.u_level + edge, lum);
-    let threshold_signal = mix(source.xyz * 0.78, max(source.xyz, vec3<f32>(t)), vec3<f32>(0.65));
-    let surface_presence =         smoothstep(0.008, 0.09, lum);
+    let threshold_signal = mix(source.xyz, max(source.xyz, vec3<f32>(t) * 0.92), vec3<f32>(0.65));
+    let surface_presence =         smoothstep(0.025, 0.14, lum);
     let strength = surface_presence * clamp(global.u_softness, 0.0, 0.18);
-    fragColor = vec4<f32>(mix(source.xyz, threshold_signal, vec3<f32>(strength)), source.a);
+    let candidate = mix(source.xyz, threshold_signal, vec3<f32>(strength));
+    let candidate_luma = dot(candidate.xyz, vec3<f32>(0.299, 0.587, 0.114));
+    let luma_deficit = max(lum - candidate_luma, 0.0);
+    fragColor = vec4<f32>(max(source.xyz, candidate + vec3<f32>(luma_deficit)), source.a);
     return;
 }
 
