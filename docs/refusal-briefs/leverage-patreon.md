@@ -10,11 +10,14 @@
 
 ## What was refused
 
-- Patreon account creation
-- Patreon webhook integration for subscriber events
+- Patreon account creation and management
+- Patreon SDK adoption (`patreon` / `patreon_python`)
 - Patron-Discord role-sync (compounds with `leverage-REFUSED-discord-community`)
 - Tier-specific content delivery (early access, behind-the-paywall posts)
-- `patreon` / `patreon_python` Python SDK adoption
+- Outbound Patreon API calls, CRM surfaces, per-supporter relationship stores
+
+Note: receive-only inbound webhook telemetry is allowed under the
+Receive-Only Exception below.
 
 ## Why this is refused
 
@@ -72,10 +75,40 @@ operator-physical intervention.
 
 CI fails on any match.
 
+## Receive-Only Exception
+
+The full Patreon account, tiers, SDK, CRM, and community management
+remain permanently refused. However, a **receive-only inbound webhook
+rail** is explicitly allowed under the following constraints:
+
+- NO `patreon` or `patreon_python` SDK imports (CI guard enforced)
+- NO outbound HTTP calls to Patreon APIs
+- NO PII persistence (email, full_name, billing address discarded)
+- NO supporter obligations, perks, tiers, or access control
+- NO per-supporter relationship store or CRM surface
+
+The receive-only rail (`shared/patreon_receive_only_rail.py`) accepts
+inbound webhook deliveries, normalizes them to aggregate
+`PledgeEvent` records, and dispatches to the publication bus as
+refusal-artifact telemetry. Pledge-delete events auto-link to the
+canonical refusal log.
+
+This exception applies to `patreon-receiver` in the publication bus
+surface registry (classified `FULL_AUTO`) and is distinct from the
+refused `patreon` entry in the support surface registry (classified
+`REFUSAL_CONVERSION`).
+
+This decision establishes precedent: other payment rails may implement
+receive-only webhook receivers under the same no-SDK/no-outbound/no-PII
+constraints without requiring a new refusal brief.
+
+**Tests:** `tests/shared/test_patreon_receive_only_rail.py`,
+`tests/test_payment_rails_routes.py`
+
 ## Refused implementation
 
 - NO `agents/payment_processors/patreon.py` (or any flavor)
-- NO Patreon webhook receivers
+- NO Patreon account creation or management
 - NO Patreon-to-Discord role-sync (also refused via discord)
 - License-request auto-reply does NOT mention Patreon as a sponsorship
   channel
