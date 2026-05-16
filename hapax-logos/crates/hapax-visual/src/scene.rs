@@ -70,7 +70,7 @@ pub const AOA_COMPAT_SOURCE_IDS: &[&str] = &[
     "sierpinski-lines",
 ];
 pub const AOA_BASE_GRID_UNITS: f32 = 2.0;
-pub const AOA_TETRIX_RENDER_DEPTH: u32 = 1;
+pub const AOA_TETRIX_RENDER_DEPTH: u32 = 2;
 
 pub fn aoa_leaf_tetrahedron_count(depth: u32) -> usize {
     4usize.pow(depth)
@@ -108,8 +108,8 @@ impl SceneNodeShader {
     pub fn vertex_count(self) -> u32 {
         match self {
             SceneNodeShader::Textured => 6,
-            // Parent tetrahedron plus four depth-1 child tetrahedra:
-            // 5 tetrahedra * 4 triangular panes * 3 vertices.
+            // Parent tetrahedron plus depth-1 and depth-2 child tetrahedra:
+            // 21 tetrahedra * 4 triangular panes * 3 vertices.
             SceneNodeShader::ApertureOfApertures => {
                 aoa_raw_triangular_pane_count(AOA_TETRIX_RENDER_DEPTH) as u32 * 3
             }
@@ -306,8 +306,9 @@ fn push_optional_node(
 
 fn push_authored_aoa(nodes: &mut Vec<SceneNode>) {
     let mut node = SceneNode::new(AOA_NODE_LABEL);
-    node.position = Vec3::new(0.0, 0.35, ZPlane::SurfaceScrim.z_position() - 0.4 + 0.55);
+    node.position = Vec3::new(0.0, -0.08, ZPlane::SurfaceScrim.z_position() - 0.4 + 0.55);
     node.scale = Vec3::splat(AOA_BASE_GRID_UNITS);
+    node.rotation_y = 0.0;
     node.opacity = 0.92;
     node.shader = SceneNodeShader::ApertureOfApertures;
     node.content_source_id = None;
@@ -818,11 +819,11 @@ mod tests {
 
     #[test]
     fn aoa_tetrix_geometry_counts_are_pinned() {
-        assert_eq!(AOA_TETRIX_RENDER_DEPTH, 1);
-        assert_eq!(aoa_leaf_tetrahedron_count(AOA_TETRIX_RENDER_DEPTH), 4);
-        assert_eq!(aoa_total_tetrahedron_count(AOA_TETRIX_RENDER_DEPTH), 5);
-        assert_eq!(aoa_raw_edge_segment_count(AOA_TETRIX_RENDER_DEPTH), 30);
-        assert_eq!(aoa_raw_triangular_pane_count(AOA_TETRIX_RENDER_DEPTH), 20);
+        assert_eq!(AOA_TETRIX_RENDER_DEPTH, 2);
+        assert_eq!(aoa_leaf_tetrahedron_count(AOA_TETRIX_RENDER_DEPTH), 16);
+        assert_eq!(aoa_total_tetrahedron_count(AOA_TETRIX_RENDER_DEPTH), 21);
+        assert_eq!(aoa_raw_edge_segment_count(AOA_TETRIX_RENDER_DEPTH), 126);
+        assert_eq!(aoa_raw_triangular_pane_count(AOA_TETRIX_RENDER_DEPTH), 84);
     }
 
     #[test]
@@ -846,8 +847,11 @@ mod tests {
         for required in [
             "AOA_OUTER_PANE_COUNT",
             "AOA_INNER_PANE_COUNT_DEPTH_1",
+            "AOA_INNER_PANE_COUNT_DEPTH_2",
+            "AOA_DEPTH_2_PANES_PER_CHILD",
             "aoa_vertex",
             "aoa_face_vertex",
+            "grandchild_idx",
             "triangle_barycentric",
             "pane_information_uv_from_barycentric",
             "pane_information_grid",
@@ -1019,7 +1023,9 @@ mod tests {
 
         let aoa = scene.iter().find(|n| n.label == AOA_NODE_LABEL).unwrap();
         assert!(aoa.position.x.abs() < 0.01);
-        assert!(aoa.position.y > 0.0);
+        assert!(aoa.position.y < 0.0);
+        assert!(aoa.position.y > -0.2);
+        assert_eq!(aoa.rotation_y, 0.0);
         assert_eq!(aoa.shader, SceneNodeShader::ApertureOfApertures);
         assert_eq!(aoa.scale.x, AOA_BASE_GRID_UNITS);
         assert_eq!(aoa.scale.y, AOA_BASE_GRID_UNITS);
