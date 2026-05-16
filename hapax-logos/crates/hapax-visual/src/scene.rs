@@ -59,20 +59,45 @@ impl ZPlane {
 
 // ─── Scene node ────────────────────────────────────────────────────
 
+pub const AOA_NODE_LABEL: &str = "aoa-pyramid";
+pub const AOA_COMPAT_SOURCE_IDS: &[&str] = &[
+    "aoa",
+    "aoa-pyramid",
+    "aperture-of-apertures",
+    // Legacy source IDs. These remain as compatibility aliases only; the
+    // authored AoA anchor supplies its own geometry and never samples them.
+    "sierpinski",
+    "sierpinski-lines",
+];
+pub const AOA_BASE_GRID_UNITS: f32 = 2.0;
+pub const AOA_TETRIX_RENDER_DEPTH: u32 = 2;
+
+pub fn aoa_leaf_tetrahedron_count(depth: u32) -> usize {
+    4usize.pow(depth)
+}
+
+pub fn aoa_total_tetrahedron_count(depth: u32) -> usize {
+    (0..=depth).map(aoa_leaf_tetrahedron_count).sum()
+}
+
+pub fn aoa_raw_edge_segment_count(depth: u32) -> usize {
+    aoa_total_tetrahedron_count(depth) * 6
+}
+
 /// GPU shader family used by a scene node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SceneNodeShader {
     /// Sample the node's content-source texture.
     Textured,
-    /// Draw the Sierpinski anchor as authored geometry, never as a stale source texture.
-    SierpinskiLines,
+    /// Draw Aperture of Apertures as authored tetrahedral geometry.
+    ApertureOfApertures,
 }
 
 impl SceneNodeShader {
     pub fn as_f32(self) -> f32 {
         match self {
             SceneNodeShader::Textured => 0.0,
-            SceneNodeShader::SierpinskiLines => 1.0,
+            SceneNodeShader::ApertureOfApertures => 1.0,
         }
     }
 }
@@ -264,13 +289,12 @@ fn push_optional_node(
     true
 }
 
-fn push_authored_sierpinski(nodes: &mut Vec<SceneNode>) {
-    let height = 3.35;
-    let mut node = SceneNode::new("sierpinski-lines");
+fn push_authored_aoa(nodes: &mut Vec<SceneNode>) {
+    let mut node = SceneNode::new(AOA_NODE_LABEL);
     node.position = Vec3::new(0.0, 0.35, ZPlane::SurfaceScrim.z_position() - 0.4 + 0.55);
-    node.scale = Vec3::new(height * 1.14, height, 1.0);
+    node.scale = Vec3::new(AOA_BASE_GRID_UNITS, AOA_BASE_GRID_UNITS, 1.0);
     node.opacity = 0.92;
-    node.shader = SceneNodeShader::SierpinskiLines;
+    node.shader = SceneNodeShader::ApertureOfApertures;
     node.content_source_id = None;
     nodes.push(node);
 }
@@ -393,7 +417,7 @@ fn apply_spatial_drift(nodes: &mut [SceneNode], time: f32) {
         let phase = (i as f32) * 0.73;
         let is_primary = matches!(
             node.label.as_str(),
-            "sierpinski-lines" | "grounding_provenance_ticker"
+            AOA_NODE_LABEL | "grounding_provenance_ticker"
         );
 
         if is_primary {
@@ -413,7 +437,7 @@ fn apply_spatial_drift(nodes: &mut [SceneNode], time: f32) {
 
 /// Build scene nodes dynamically from active content sources.
 ///
-/// The layout is intentionally concrete but temporary: Sierpinski occupies
+/// The layout is intentionally concrete but temporary: AoA occupies
 /// the central foreground, while cameras, IR feeds, and wards sit on separated
 /// shelves around it. The point is to exercise x/y/z depth without letting
 /// any source cluster become the composition. Drift is spatial only: it never
@@ -439,13 +463,14 @@ pub fn build_scene_from_sources(
         .iter()
         .any(|(_, opacity, _, _, _)| *opacity > 0.001)
     {
-        push_authored_sierpinski(&mut nodes);
-        // Legacy Sierpinski sources have historically carried pre-composited
-        // camera imagery. The 3D baseline consumes those source IDs so they
-        // cannot appear as stale residual quads; the visible anchor is the
-        // authored shader node above.
-        mark_source_used(&mut used_indices, active_sources, "sierpinski-lines");
-        mark_source_used(&mut used_indices, active_sources, "sierpinski");
+        push_authored_aoa(&mut nodes);
+        // Legacy AoA source aliases have historically carried
+        // pre-composited camera imagery. The 3D baseline consumes those source
+        // IDs so they cannot appear as stale residual quads; the visible anchor
+        // is the authored AoA geometry above.
+        for source_id in AOA_COMPAT_SOURCE_IDS {
+            mark_source_used(&mut used_indices, active_sources, source_id);
+        }
     }
 
     for ticker_id in [
@@ -632,12 +657,13 @@ pub fn build_proof_scene() -> Vec<SceneNode> {
         nodes.push(ward);
     }
 
-    // Sierpinski placeholder (mid-scrim, centered)
-    let mut sierp = SceneNode::new("proof-sierpinski");
-    sierp.position = Vec3::new(0.0, 0.5, ZPlane::MidScrim.z_position() - 0.5);
-    sierp.scale = Vec3::new(2.0, 2.0, 1.0);
-    sierp.opacity = 0.5;
-    nodes.push(sierp);
+    // AoA placeholder (mid-scrim, centered)
+    let mut aoa = SceneNode::new("proof-aoa");
+    aoa.position = Vec3::new(0.0, 0.5, ZPlane::MidScrim.z_position() - 0.5);
+    aoa.scale = Vec3::new(AOA_BASE_GRID_UNITS, AOA_BASE_GRID_UNITS, 1.0);
+    aoa.opacity = 0.5;
+    aoa.shader = SceneNodeShader::ApertureOfApertures;
+    nodes.push(aoa);
 
     nodes
 }
@@ -758,6 +784,42 @@ mod tests {
     }
 
     #[test]
+    fn proof_scene_uses_authored_aoa_shader() {
+        let scene = build_proof_scene();
+        let aoa = scene.iter().find(|node| node.label == "proof-aoa").unwrap();
+        assert_eq!(aoa.shader, SceneNodeShader::ApertureOfApertures);
+        assert_eq!(aoa.scale.x, AOA_BASE_GRID_UNITS);
+        assert_eq!(aoa.scale.y, AOA_BASE_GRID_UNITS);
+    }
+
+    #[test]
+    fn aoa_tetrix_geometry_counts_are_pinned() {
+        assert_eq!(AOA_TETRIX_RENDER_DEPTH, 2);
+        assert_eq!(aoa_leaf_tetrahedron_count(AOA_TETRIX_RENDER_DEPTH), 16);
+        assert_eq!(aoa_total_tetrahedron_count(AOA_TETRIX_RENDER_DEPTH), 21);
+        assert_eq!(aoa_raw_edge_segment_count(AOA_TETRIX_RENDER_DEPTH), 126);
+    }
+
+    #[test]
+    fn aoa_shader_uses_current_identity_not_legacy_names() {
+        let shader = include_str!("shaders/scene_quad.wgsl");
+        assert!(
+            !shader.to_ascii_lowercase().contains("sierpinski"),
+            "the authored 3D anchor shader must use AoA/tetrix naming only"
+        );
+        assert!(
+            shader.contains("aoa_tetrix_distances") && shader.contains("authored_aoa"),
+            "AoA shader entry points should remain explicit"
+        );
+    }
+
+    #[test]
+    fn aoa_scene_shader_parses_with_naga() {
+        let shader = include_str!("shaders/scene_quad.wgsl");
+        naga::front::wgsl::parse_str(shader).expect("scene quad WGSL should parse");
+    }
+
+    #[test]
     fn ndc_depth_ordering() {
         let cam = Camera3D::new(960, 540);
         let vp = cam.projection_matrix() * cam.view_matrix();
@@ -806,11 +868,11 @@ mod tests {
         assert_eq!(
             scene.len(),
             4,
-            "should have 3 source nodes plus the authored Sierpinski anchor"
+            "should have 3 source nodes plus the authored AoA anchor"
         );
 
         let ids: Vec<&str> = scene.iter().map(|n| n.label.as_str()).collect();
-        assert!(ids.contains(&"sierpinski-lines"));
+        assert!(ids.contains(&AOA_NODE_LABEL));
         assert!(
             ids.contains(&"content-episodic_recall"),
             "content should be present"
@@ -849,7 +911,7 @@ mod tests {
         assert_eq!(
             scene.len(),
             2,
-            "invisible source should be skipped, with authored Sierpinski retained"
+            "invisible source should be skipped, with authored AoA retained"
         );
         assert!(scene.iter().all(|n| n.label != "camera-brio"));
         assert!(scene.iter().any(|n| n.label == "camera-c920"));
@@ -893,7 +955,7 @@ mod tests {
     #[test]
     fn requested_geometric_layout_places_primary_elements() {
         let sources = vec![
-            ("sierpinski-lines", 0.9f32, 4i32, 1280u32, 720u32),
+            (AOA_NODE_LABEL, 0.9f32, 4i32, 1280u32, 720u32),
             ("sierpinski", 0.8f32, 3i32, 840u32, 840u32),
             ("imagination-r2", 0.3f32, 10i32, 1920u32, 1080u32),
             ("overlay-zones", 0.5f32, 2i32, 1280u32, 720u32),
@@ -907,20 +969,19 @@ mod tests {
         ];
         let scene = build_scene_from_sources(&sources, 0.0);
 
-        let sierpinski = scene
-            .iter()
-            .find(|n| n.label == "sierpinski-lines")
-            .unwrap();
-        assert!(sierpinski.position.x.abs() < 0.01);
-        assert!(sierpinski.position.y > 0.0);
-        assert_eq!(sierpinski.shader, SceneNodeShader::SierpinskiLines);
+        let aoa = scene.iter().find(|n| n.label == AOA_NODE_LABEL).unwrap();
+        assert!(aoa.position.x.abs() < 0.01);
+        assert!(aoa.position.y > 0.0);
+        assert_eq!(aoa.shader, SceneNodeShader::ApertureOfApertures);
+        assert_eq!(aoa.scale.x, AOA_BASE_GRID_UNITS);
+        assert_eq!(aoa.scale.y, AOA_BASE_GRID_UNITS);
         assert!(
-            sierpinski.content_source_id.is_none(),
-            "central Sierpinski must be authored geometry, not a sampled source texture"
+            aoa.content_source_id.is_none(),
+            "central AoA must be authored geometry, not a sampled source texture"
         );
         assert!(
             scene.iter().all(|n| n.label != "sierpinski"),
-            "baseline layout must not re-project base Sierpinski as a residual object"
+            "baseline layout must not re-project the legacy AoA alias as a residual object"
         );
         assert!(
             scene
@@ -933,7 +994,7 @@ mod tests {
             .iter()
             .find(|n| n.label == "grounding_provenance_ticker")
             .unwrap();
-        assert!(ticker.position.y < sierpinski.position.y);
+        assert!(ticker.position.y < aoa.position.y);
 
         let hls = scene
             .iter()
@@ -955,33 +1016,30 @@ mod tests {
     }
 
     #[test]
-    fn legacy_sierpinski_source_cannot_project_stale_texture() {
+    fn legacy_aoa_alias_source_cannot_project_stale_texture() {
         let sources = vec![
             ("sierpinski", 0.8f32, 3i32, 840u32, 840u32),
             ("camera-brio-operator", 0.8, 5, 1280, 720),
             ("programme_history", 0.7, 3, 440, 140),
         ];
         let scene = build_scene_from_sources(&sources, 0.0);
-        let sierpinski = scene
-            .iter()
-            .find(|n| n.label == "sierpinski-lines")
-            .unwrap();
+        let aoa = scene.iter().find(|n| n.label == AOA_NODE_LABEL).unwrap();
 
-        assert_eq!(sierpinski.shader, SceneNodeShader::SierpinskiLines);
+        assert_eq!(aoa.shader, SceneNodeShader::ApertureOfApertures);
         assert!(
-            sierpinski.content_source_id.is_none(),
-            "legacy Sierpinski source may request the anchor, but must not supply its pixels"
+            aoa.content_source_id.is_none(),
+            "legacy AoA alias source may request AoA, but must not supply its pixels"
         );
         assert!(
             scene.iter().all(|n| n.label != "sierpinski"),
-            "legacy Sierpinski texture must be consumed, not placed as a residual tile"
+            "legacy AoA alias texture must be consumed, not placed as a residual tile"
         );
     }
 
     #[test]
-    fn surrounding_content_uses_depth_without_passing_sierpinski() {
+    fn surrounding_content_uses_depth_without_passing_legacy_aoa_alias() {
         let sources = vec![
-            ("sierpinski-lines", 0.9f32, 4i32, 1280u32, 720u32),
+            (AOA_NODE_LABEL, 0.9f32, 4i32, 1280u32, 720u32),
             ("grounding_provenance_ticker", 0.8, 3, 480, 40),
             ("camera-brio-operator", 0.8, 5, 1280, 720),
             ("camera-c920-overhead", 0.8, 5, 1280, 720),
@@ -995,9 +1053,9 @@ mod tests {
             ("ward-f", 0.7, 3, 420, 140),
         ];
         let scene = build_scene_from_sources(&sources, 0.0);
-        let sierpinski_z = scene
+        let aoa_z = scene
             .iter()
-            .find(|n| n.label == "sierpinski-lines")
+            .find(|n| n.label == AOA_NODE_LABEL)
             .unwrap()
             .position
             .z;
@@ -1007,8 +1065,8 @@ mod tests {
             .find(|n| n.label == "camera-brio-operator")
             .unwrap();
         assert!(
-            hls.position.z < sierpinski_z && hls.position.z > -2.65,
-            "HLS cameras should be near Sierpinski but not on the same front layer"
+            hls.position.z < aoa_z && hls.position.z > -2.65,
+            "HLS cameras should be near AoA but not on the same front layer"
         );
 
         let ir = scene
@@ -1025,15 +1083,15 @@ mod tests {
             .find(|n| n.label == "programme_history")
             .unwrap();
         assert!(
-            ward.position.z < sierpinski_z && ward.position.z > -2.75,
-            "primary wards should be near but still behind the Sierpinski anchor"
+            ward.position.z < aoa_z && ward.position.z > -2.75,
+            "primary wards should be near but still behind the AoA anchor"
         );
     }
 
     #[test]
     fn static_camera_artifacts_do_not_read_as_live_camera_tiles() {
         let sources = vec![
-            ("sierpinski-lines", 0.9f32, 4i32, 1280u32, 720u32),
+            (AOA_NODE_LABEL, 0.9f32, 4i32, 1280u32, 720u32),
             ("grounding_provenance_ticker", 0.8, 3, 480, 40),
             ("camera-brio-operator", 0.8, 5, 1280, 720),
             ("camera-c920-overhead", 0.8, 5, 1280, 720),
@@ -1074,7 +1132,7 @@ mod tests {
     #[test]
     fn deoccluded_baseline_spreads_sources_within_each_layer() {
         let sources = vec![
-            ("sierpinski-lines", 0.9f32, 4i32, 1280u32, 720u32),
+            (AOA_NODE_LABEL, 0.9f32, 4i32, 1280u32, 720u32),
             ("grounding_provenance_ticker", 0.8, 3, 480, 40),
             ("camera-brio-operator", 0.8, 5, 1280, 720),
             ("camera-c920-overhead", 0.8, 5, 1280, 720),
@@ -1095,7 +1153,7 @@ mod tests {
         let scene = build_scene_from_sources(&sources, 0.0);
         let non_primary = scene
             .iter()
-            .filter(|n| n.label != "sierpinski-lines" && !n.label.contains("ticker"))
+            .filter(|n| n.label != AOA_NODE_LABEL && !n.label.contains("ticker"))
             .collect::<Vec<_>>();
 
         for (i, a) in non_primary.iter().enumerate() {
