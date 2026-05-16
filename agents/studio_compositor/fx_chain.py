@@ -1905,12 +1905,32 @@ def _teardown_camera_branch(compositor: Any, Gst: Any) -> None:
     compositor._fx_camera_sel_pad = None
 
 
+def _tick_ward_stimmung_modulator(compositor: Any) -> bool:
+    """Tick the ward modulator even when the legacy GL slot chain is absent."""
+
+    modulator = getattr(compositor, "_ward_stimmung_modulator", None)
+    if modulator is None:
+        return False
+    try:
+        modulator.maybe_tick()
+    except Exception:
+        log.debug("ward stimmung modulator tick failed", exc_info=True)
+    return True
+
+
 def fx_tick_callback(compositor: Any) -> bool:
     """GLib timeout: update graph shader uniforms at ~30fps."""
     if not compositor._running:
         return False
     if not hasattr(compositor, "_slot_pipeline") or compositor._slot_pipeline is None:
-        return False
+        # In 3D compositor mode the GStreamer slot pipeline is intentionally
+        # bypassed, but the ward modulator still owns live depth/ward metadata.
+        # Keep the timer alive so this source-bound state surface does not go
+        # stale simply because the old GL chain is absent.
+        return (
+            _tick_ward_stimmung_modulator(compositor)
+            or os.environ.get("HAPAX_3D_COMPOSITOR") == "1"
+        )
 
     from .fx_tick import tick_governance, tick_modulator, tick_slot_pipeline
 
@@ -1959,9 +1979,7 @@ def fx_tick_callback(compositor: Any) -> bool:
     # Ward stimmung modulator (z-axis spec Phase 2). Default-off behind
     # ``HAPAX_WARD_MODULATOR_ACTIVE``; ``maybe_tick`` early-returns and
     # never raises into the fx tick path.
-    modulator = getattr(compositor, "_ward_stimmung_modulator", None)
-    if modulator is not None:
-        modulator.maybe_tick()
+    _tick_ward_stimmung_modulator(compositor)
     tick_slot_pipeline(compositor, t)
 
     # Flash scheduler: animate glvideomixer flash pad alpha
