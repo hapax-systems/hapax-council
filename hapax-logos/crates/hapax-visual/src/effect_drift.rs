@@ -1952,6 +1952,11 @@ mod tests {
                 "{shader} must not use alpha as a source-presence proxy; post-FX full-frame \
                  alpha turns empty space into a paintable fourth-wall surface"
             );
+            assert!(
+                !source.contains("smoothstep(0.008"),
+                "{shader} uses the old permissive source gate; faint background/grid energy \
+                 can become a fourth-wall pane"
+            );
         }
     }
 

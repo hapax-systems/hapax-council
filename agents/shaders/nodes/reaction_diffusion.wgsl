@@ -47,7 +47,7 @@ fn main_1() {
     let seed = smoothstep(0.20, 0.55, source_luma);
     b = max(b, seed * 0.10);
     let pattern = vec3<f32>(a - b, b * 0.65, b);
-    let surface_presence =         smoothstep(0.008, 0.09, source_luma);
+    let surface_presence =         smoothstep(0.025, 0.14, source_luma);
     let strength = surface_presence * clamp(global.u_amount, 0.0, 0.15);
     let mediated = mix(source.xyz, clamp(source.xyz + pattern, vec3(0.0), vec3(1.0)), vec3<f32>(strength));
     let mediated_luma = dot(mediated, vec3<f32>(0.299, 0.587, 0.114));

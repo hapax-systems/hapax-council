@@ -272,7 +272,7 @@ fn main_1() {
     let _e143 = sourceColor;
     let _e144 = fgColor;
     let _e145 = bit;
-    let surface_presence =         smoothstep(0.008f, 0.09f, lum_2);
+    let surface_presence =         smoothstep(0.025f, 0.14f, lum_2);
     let glyph_signal = mix(_e143.xyz, _e144, vec3(_e145 * 0.82f));
     color = mix(_e143.xyz, glyph_signal, vec3(surface_presence * 0.62f));
     let _e149 = color;

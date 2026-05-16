@@ -31,7 +31,7 @@ fn main_1() {
         key = 1.0 - key;
     }
     let a_luma = dot(a.xyz, vec3<f32>(0.299, 0.587, 0.114));
-    let surface_presence =         smoothstep(0.008, 0.09, a_luma);
+    let surface_presence =         smoothstep(0.025, 0.14, a_luma);
     let strength = key * surface_presence * 0.24;
     fragColor = vec4<f32>(mix(a.xyz, b.xyz, vec3<f32>(strength)), a.a);
     return;

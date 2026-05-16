@@ -79,7 +79,7 @@ fn main_1() {
 
     let luma = dot(current.xyz, vec3<f32>(0.299, 0.587, 0.114));
     let held_delta = length(current.xyz - held.xyz);
-    let surface_presence =         smoothstep(0.008, 0.09, luma);
+    let surface_presence =         smoothstep(0.025, 0.14, luma);
     let motion_gate = smoothstep(0.015, 0.18, held_delta);
     let freeze_gate = surface_presence * (0.45 + 0.55 * motion_gate);
     let base_strength = clamp(global.u_freeze_chance * 0.70, 0.0, 0.34) * freeze_gate;

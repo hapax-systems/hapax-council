@@ -43,7 +43,7 @@ fn main_1() {
     let flow_uv = clamp(uv - (new_vel * texel * 10.0), vec2(0.0), vec2(1.0));
     let flowed = textureSample(tex, tex_sampler, flow_uv);
     let source_luma = dot(source.xyz, vec3<f32>(0.299, 0.587, 0.114));
-    let surface_presence =         smoothstep(0.008, 0.09, source_luma);
+    let surface_presence =         smoothstep(0.025, 0.14, source_luma);
     let strength = surface_presence * clamp(global.u_amount, 0.0, 0.15);
     fragColor = vec4<f32>(mix(source.xyz, flowed.xyz, vec3<f32>(strength)), source.a);
     return;

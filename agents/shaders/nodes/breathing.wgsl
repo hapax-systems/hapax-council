@@ -24,7 +24,7 @@ fn main_1() {
     let source = textureSample(tex, tex_sampler, v_texcoord_1);
     let warped = textureSample(tex, tex_sampler, clamp(uv, vec2(0.0), vec2(1.0)));
     let luma = dot(source.xyz, vec3<f32>(0.299, 0.587, 0.114));
-    let surface_presence =         smoothstep(0.008, 0.09, luma);
+    let surface_presence =         smoothstep(0.025, 0.14, luma);
     let strength = surface_presence * clamp(abs(phase) * global.u_amplitude * 9.5, 0.0, 0.18);
     fragColor = vec4<f32>(mix(source.xyz, warped.xyz, vec3<f32>(strength)), source.a);
     return;

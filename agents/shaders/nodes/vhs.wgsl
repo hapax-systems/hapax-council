@@ -173,7 +173,7 @@ fn main_1() {
             let _e209 = uv;
 
             let _e215 = hash(vec2<f32>(uniforms.time, floor((_e209.y * uniforms.resolution.y))));
-            let head_surface_presence =                 smoothstep(0.008f, 0.09f, luma);
+            let head_surface_presence =                 smoothstep(0.025f, 0.14f, luma);
             let head_gate = smoothstep(head_switch_y, 1f, uv.y);
             brightShift = (((_e215 * 0.18f) - 0.09f) * head_surface_presence * head_gate);
             let _e221 = color;
@@ -218,7 +218,7 @@ fn main_1() {
     color.x = _e309.x;
     color.y = _e309.y;
     color.z = _e309.z;
-    surfacePresence =         smoothstep(0.008f, 0.09f, luma);
+    surfacePresence =         smoothstep(0.025f, 0.14f, luma);
     let _e316 = uv;
     let _e318 = global.u_noise_band_y;
     bandDist = abs((_e316.y - _e318));
