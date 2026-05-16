@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import re
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agents.hapax_daimonion.governance import VetoChain
+from shared.capabilities import circuit_breaker as circuit_breaker_mod
 from shared.capabilities.circuit_breaker import (
     CircuitBreaker,
     CircuitBreakerConfig,
@@ -105,14 +107,21 @@ class TestCircuitBreaker:
         assert status.healthy is True
         assert cb.state == CircuitState.CLOSED
 
-    def test_half_open_failure_reopens(self):
+    def test_half_open_failure_reopens(self, monkeypatch):
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(
+            circuit_breaker_mod,
+            "time",
+            SimpleNamespace(monotonic=lambda: clock["now"]),
+        )
         adapter = _unhealthy_adapter()
         cb = CircuitBreaker(
             adapter,
             config=CircuitBreakerConfig(failure_threshold=1, reset_timeout_s=0.01),
         )
         cb.health()  # → open
-        time.sleep(0.02)
+        clock["now"] += 0.02
+        assert cb.state == CircuitState.HALF_OPEN
         # Half-open; adapter still unhealthy
         cb.health()
         assert cb.state == CircuitState.OPEN
