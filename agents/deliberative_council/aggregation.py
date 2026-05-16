@@ -39,6 +39,54 @@ class AxisAggregate:
     confidence_band: tuple[int, int]
 
 
+def family_correlation_penalty(
+    results: list[PhaseOneResult],
+    families: dict[str, str],
+    threshold: float = 0.90,
+) -> dict[str, float]:
+    """Halve combined weight of same-family models that correlate above threshold."""
+    import logging
+
+    _log = logging.getLogger(__name__)
+    weights: dict[str, float] = {r.model_alias: 1.0 for r in results}
+    family_groups: dict[str, list[str]] = {}
+    for alias, family in families.items():
+        family_groups.setdefault(family, []).append(alias)
+
+    for members in family_groups.values():
+        if len(members) < 2:
+            continue
+        participating = [r for r in results if r.model_alias in members]
+        if len(participating) < 2:
+            continue
+        r1, r2 = participating[0], participating[1]
+        shared_axes = set(r1.scores.keys()) & set(r2.scores.keys())
+        if not shared_axes:
+            continue
+        diffs = [abs(r1.scores[a] - r2.scores[a]) for a in shared_axes]
+        avg_diff = sum(diffs) / len(diffs)
+        similarity = 1.0 - (avg_diff / 4.0)
+        if similarity >= threshold:
+            _log.info(
+                "Family penalty: %s/%s similarity=%.2f >= %.2f, halving weights",
+                r1.model_alias,
+                r2.model_alias,
+                similarity,
+                threshold,
+            )
+            weights[r1.model_alias] *= 0.5
+            weights[r2.model_alias] *= 0.5
+        else:
+            _log.debug(
+                "Family penalty: %s/%s similarity=%.2f < %.2f, no penalty",
+                r1.model_alias,
+                r2.model_alias,
+                similarity,
+                threshold,
+            )
+    return weights
+
+
 def aggregate_scores(
     results: list[PhaseOneResult],
     contested_threshold: float = 2.0,

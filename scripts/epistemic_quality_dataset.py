@@ -43,6 +43,7 @@ AXES = (
     "source_grounding",
 )
 HUMAN_LABEL_ORIGINS = {"human", "operator", "human_operator", "human_reviewer"}
+SILVER_LABEL_ORIGINS = {"deliberative_council_ratified"}
 MODEL_LABEL_ORIGINS = {"model", "llm", "ai", "agent", "codex", "claude", "gemini", "synthetic"}
 ROUND_ONE_LABEL_ROUND = "round1"
 RELABEL_LABEL_ROUND = "relabel"
