@@ -139,15 +139,6 @@ from shared.director_world_surface_snapshot import (
 from shared.director_world_surface_snapshot import (
     Freshness as DirectorWorldSurfaceFreshness,
 )
-from shared.form_capability_contract import (
-    FormCapabilityContract as _FormCapabilityContract,
-)
-from shared.form_capability_contract import (
-    form_capability_contract_sha256 as _form_capability_contract_sha256,
-)
-from shared.form_capability_contract import (
-    validate_form_capability_contract as _validate_form_capability_contract,
-)
 from shared.format_wcs_requirement_matrix import (
     FormatWCSRequirementMatrix,
     FormatWCSRequirementRow,
@@ -166,9 +157,6 @@ from shared.grounding_provider_router import (
 )
 from shared.layout_identity_contract import (
     LayoutIdentityReport as _LayoutIdentityReport,
-)
-from shared.layout_identity_contract import (
-    hosting_gate as _layout_identity_hosting_gate,
 )
 from shared.layout_identity_contract import (
     validate_layout_identity as _validate_layout_identity,
@@ -258,23 +246,10 @@ _LivestreamRoleActionTendencyImpingement._terminal_impulses_keep_fulfillment_vis
 _LivestreamRoleSpeechAct.resolved_impulse_id
 _LivestreamRoleScrimWCSClaimPostureInput._role_state_must_match_scrim_posture
 
-# Form capability contract validators are Pydantic dynamic entrypoints; the
-# hash/validator helpers are public generated-contract surfaces.
-_FormCapabilityContract._exemplar_refs_look_like_refs
-_FormCapabilityContract._source_classes_non_empty_items
-_FormCapabilityContract._evidence_requirements_non_empty_items
-_FormCapabilityContract._refusal_forms_must_not_claim_public
-_FormCapabilityContract._public_forms_need_live_event_and_readback
-_FormCapabilityContract._action_primitives_have_unique_ids
-_FormCapabilityContract._readback_ids_unique
-_form_capability_contract_sha256
-_validate_form_capability_contract
-
 # Layout identity contract entrypoints are public SDLC/reporting surfaces; current
 # consumers import them dynamically from the contract module.
 _LayoutIdentityReport.agreement_count
 _LayoutIdentityReport.participating_count
-_layout_identity_hosting_gate
 _validate_layout_identity
 
 # Public-API context manager. Called by the five per-outcome smoke tests
@@ -311,9 +286,6 @@ from shared.segment_live_event_quality import (
 from shared.segment_prep_contract import (
     programme_source_readiness as _programme_source_readiness,
 )
-from shared.segment_prep_contract import (
-    validate_return_to_prep as _validate_return_to_prep,
-)
 from shared.segment_source_inquiry import (
     build_source_packet_inquiry_blackboard as _build_source_packet_inquiry_blackboard,
 )
@@ -328,7 +300,6 @@ _ControlLoopCard._tuple_items_non_empty
 _ControlLoopCard._admissibility_has_required_operational_surface
 _compare_live_event_quality
 _programme_source_readiness
-_validate_return_to_prep
 _build_source_packet_inquiry_blackboard
 _source_packet_inquiry_summary
 _render_source_packet_inquiry_seed
@@ -3169,3 +3140,80 @@ from agents.research import deep_research, search_web  # noqa: F401, E402
 
 deep_research
 search_web
+
+# Deliberative council engine — new module, integration follows in Layer 3-4.
+from agents.deliberative_council.aggregation import (  # noqa: F401, E402
+    AxisAggregate,
+    aggregate_scores,
+    compute_confidence_band,
+    compute_iqr,
+    should_shortcircuit,
+)
+from agents.deliberative_council.members import (  # noqa: F401, E402
+    MODEL_FAMILIES,
+    MODEL_TOOL_LEVELS,
+    ToolLevel,
+    build_member,
+)
+from agents.deliberative_council.models import (  # noqa: F401, E402
+    AdversarialExchange,
+    ConvergenceStatus,
+    CouncilConfig,
+    CouncilInput,
+    CouncilMode,
+    CouncilVerdict,
+    EvidenceClassification,
+    EvidenceMatrix,
+    EvidenceMatrixAxis,
+    PhaseFourResult,
+    PhaseOneResult,
+)
+from agents.deliberative_council.rubrics import (  # noqa: F401, E402
+    DisconfirmationRubric,
+    EpistemicQualityRubric,
+    Rubric,
+    RubricAxis,
+)
+from agents.deliberative_council.tools import (  # noqa: F401, E402
+    FULL_TOOLS,
+    RESTRICTED_TOOLS,
+    git_provenance,
+    grep_evidence,
+    qdrant_lookup,
+    read_source,
+    vault_read,
+    web_verify,
+)
+
+AxisAggregate
+aggregate_scores
+compute_confidence_band
+compute_iqr
+should_shortcircuit
+MODEL_FAMILIES
+MODEL_TOOL_LEVELS
+ToolLevel
+build_member
+AdversarialExchange
+ConvergenceStatus
+CouncilConfig
+CouncilInput
+CouncilMode
+CouncilVerdict
+EvidenceClassification
+EvidenceMatrix
+EvidenceMatrixAxis
+PhaseFourResult
+PhaseOneResult
+DisconfirmationRubric
+EpistemicQualityRubric
+Rubric
+RubricAxis
+FULL_TOOLS
+RESTRICTED_TOOLS
+git_provenance
+grep_evidence
+qdrant_lookup
+read_source
+vault_read
+web_verify
