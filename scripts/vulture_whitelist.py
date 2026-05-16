@@ -3262,3 +3262,14 @@ TierListActionContract
 TierListActionKind
 validate_interview_actions
 validate_tier_list_actions
+
+# Segment disconfirmation — called by daily_segment_prep Pass 3 (wiring PR follows)
+from shared.segment_disconfirmation import (  # noqa: F401, E402
+    apply_council_verdicts,
+    extract_claims,
+    run_council_disconfirmation,
+)
+
+apply_council_verdicts
+extract_claims
+run_council_disconfirmation
