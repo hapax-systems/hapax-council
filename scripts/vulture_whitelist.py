@@ -31,6 +31,7 @@ from shared.archive_replay_sidecar_index import (
     ArchiveReplaySidecarIndexEntry,
     ArchiveReplaySidecarIndexMetrics,
 )
+from shared.artifact_taxonomy import DispositionState, validate_artifact
 from shared.audio_topology_inspector import check_l12_forward_invariant
 from shared.audio_world_surface_fixtures import AudioSurfaceFixture, AudioWorldSurfaceFixtureSet
 from shared.bayesian_camera_salience_world_surface import (
@@ -3134,6 +3135,12 @@ from shared.grounding_adapters.perplexity import (  # noqa: F401, E402
 
 build_envelope_from_response
 build_error_envelope
+
+# Research artifact taxonomy — public document-pipeline API. The validator is
+# called by audit tooling outside the current static diff, and disposition
+# states are a schema surface for normalized artifact frontmatter.
+DispositionState
+validate_artifact
 
 # Action receipt grounding contract — Pydantic invokes the validator by
 # reflection, and the success predicate is the public policy API readback
