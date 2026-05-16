@@ -21,12 +21,21 @@ import json
 import logging
 import os
 import time
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from agents.studio_compositor.action_receipts import emit_action_receipt, receipt_token
+from shared.action_receipt import ActionReceiptStatus
+
 log = logging.getLogger(__name__)
+
+_CURRENT_DISPATCH_REQUEST_ID: ContextVar[str | None] = ContextVar(
+    "hapax_compositor_dispatch_request_id",
+    default=None,
+)
 
 
 # ── Pattern-1 observability counters ─────────────────────────────────────
@@ -115,6 +124,7 @@ _STREAM_MODE_INTENT = Path("/dev/shm/hapax-compositor/stream-mode-intent.json")
 _GEM_FRAMES = Path("/dev/shm/hapax-gem/gem-frames.json")
 _GEM_RECRUITMENT = Path("/dev/shm/hapax-gem/recruitment.json")
 _GEM_LEGACY_FRAMES = Path("/dev/shm/hapax-compositor/gem-frames.json")
+_ACTION_RECEIPTS_JSONL = Path("/dev/shm/hapax-compositor/action-receipts.jsonl")
 
 # Vision Phase 3 (#150): per_camera_person_count hero-gate. Read the
 # daimonion perception-state snapshot (1 Hz writer) so we can reject a
@@ -141,6 +151,10 @@ class RecruitmentRecord(BaseModel):
     score: float = Field(default=1.0, ge=0.0, le=1.0)
     impingement_narrative: str = Field(default="")
     ttl_s: float = Field(default=30.0, gt=0.0)
+    request_id: str | None = Field(
+        default=None,
+        description="Upstream impingement/request id that this compositor dispatch answers.",
+    )
 
 
 # ── Atomic writers ─────────────────────────────────────────────────────────
@@ -163,6 +177,54 @@ def _safe_load_json(path: Path) -> dict:
     except Exception:
         log.debug("read %s failed", path, exc_info=True)
     return {}
+
+
+def _record_request_id(record: RecruitmentRecord) -> str:
+    if record.request_id:
+        return record.request_id
+    return f"compositor:{receipt_token(record.name)}:{int(time.time() * 1000)}"
+
+
+def _emit_compositor_action_receipt(
+    record: RecruitmentRecord,
+    *,
+    family: str,
+    status: ActionReceiptStatus,
+    blocked_reasons: list[str] | None = None,
+    error_refs: list[str] | None = None,
+    applied_refs: list[str] | None = None,
+    structural_reflex: bool = False,
+    requested_action: str | None = None,
+    operator_visible_summary: str | None = None,
+) -> None:
+    applied = list(applied_refs or [])
+    if status is ActionReceiptStatus.APPLIED and not applied:
+        applied = [f"compositional-consumer:{family}:{record.name}"]
+    summary = operator_visible_summary
+    if summary is None:
+        if status is ActionReceiptStatus.APPLIED:
+            summary = (
+                f"Compositor command {record.name} applied to {family}; "
+                "readback is still required before learning or speech can call it done."
+            )
+        elif status is ActionReceiptStatus.BLOCKED:
+            summary = f"Compositor command {record.name} blocked before application."
+        else:
+            summary = f"Compositor command {record.name} errored before application."
+    emit_action_receipt(
+        request_id=_record_request_id(record),
+        capability_name=record.name,
+        requested_action=requested_action or record.impingement_narrative or record.name,
+        status=status,
+        family=family,
+        command_ref=f"compositional-consumer:{record.name}",
+        applied_refs=applied,
+        blocked_reasons=blocked_reasons,
+        error_refs=error_refs,
+        structural_reflex=structural_reflex,
+        operator_visible_summary=summary,
+        path=_ACTION_RECEIPTS_JSONL,
+    )
 
 
 # ── Segment cue hold ──────────────────────────────────────────────────────
@@ -300,6 +362,7 @@ def dispatch_camera_hero(capability_name: str, ttl_s: float) -> bool:
             "ttl_s": ttl_s,
             "set_at": now,
             "source_capability": capability_name,
+            "request_id": _CURRENT_DISPATCH_REQUEST_ID.get(),
         },
     )
     _mark_recruitment("camera.hero")
@@ -932,7 +995,13 @@ def _write_ward_property(ward_id: str, ttl_s: float, **fields_) -> None:
 
     current = get_specific_ward_properties(ward_id) or WardProperties()
     update = WardProperties(**{**current.__dict__, **fields_})
-    set_ward_properties(ward_id, update, ttl_s)
+    set_ward_properties(
+        ward_id,
+        update,
+        ttl_s,
+        request_id=_CURRENT_DISPATCH_REQUEST_ID.get(),
+        capability_name=f"ward.properties.{ward_id}",
+    )
 
 
 @observe_dispatch("stream_mode.transition")
@@ -951,6 +1020,7 @@ def dispatch_stream_mode_transition(capability_name: str) -> bool:
             "target_mode": target_mode,
             "set_at": time.time(),
             "source_capability": capability_name,
+            "request_id": _CURRENT_DISPATCH_REQUEST_ID.get(),
         },
     )
     _mark_recruitment("stream_mode.transition")
@@ -1002,7 +1072,11 @@ def _append_pending_transition(source_id: str, transition: str) -> None:
     transitions = current.get("transitions") if isinstance(current, dict) else None
     if not isinstance(transitions, list):
         transitions = []
-    transitions.append({"source_id": source_id, "transition": transition, "enqueued_at": now})
+    entry = {"source_id": source_id, "transition": transition, "enqueued_at": now}
+    request_id = _CURRENT_DISPATCH_REQUEST_ID.get()
+    if request_id:
+        entry["request_id"] = request_id
+    transitions.append(entry)
     payload = {"transitions": transitions, "updated_at": now}
     _atomic_write_json(_HOMAGE_PENDING_TRANSITIONS, payload)
 
@@ -1593,7 +1667,7 @@ def dispatch_attention_refocus(capability_name: str, ttl_s: float) -> bool:
     return True
 
 
-def dispatch(
+def _dispatch_without_receipt(
     record: RecruitmentRecord,
 ) -> Literal[
     "camera.hero",
@@ -1737,6 +1811,42 @@ def dispatch(
         return "node.patch" if dispatch_node_patch(name, record.ttl_s) else "unknown"
     log.warning("unknown compositional capability family: %s", name)
     return "unknown"
+
+
+def dispatch(record: RecruitmentRecord) -> str:
+    """Route a recruitment record and emit an applied/blocked action receipt."""
+
+    request_token = _CURRENT_DISPATCH_REQUEST_ID.set(_record_request_id(record))
+    try:
+        family = _dispatch_without_receipt(record)
+    except Exception as exc:
+        _emit_compositor_action_receipt(
+            record,
+            family="unknown",
+            status=ActionReceiptStatus.ERROR,
+            error_refs=[f"{type(exc).__name__}:{exc}"],
+            operator_visible_summary=(
+                f"Compositor command {record.name} errored before application; "
+                "no success learning is allowed."
+            ),
+        )
+        raise
+    finally:
+        _CURRENT_DISPATCH_REQUEST_ID.reset(request_token)
+    if family == "unknown":
+        _emit_compositor_action_receipt(
+            record,
+            family=family,
+            status=ActionReceiptStatus.BLOCKED,
+            blocked_reasons=["dispatcher_unknown_or_vetoed"],
+        )
+        return family
+    _emit_compositor_action_receipt(
+        record,
+        family=family,
+        status=ActionReceiptStatus.APPLIED,
+    )
+    return family
 
 
 # ── Narrative-tier structural intent dispatch ──────────────────────────────
@@ -2002,7 +2112,13 @@ def _apply_emphasis(ward_id: str, salience: float = 1.0) -> None:
         "border_color_rgba": domain_accent_rgba(ward_id),
     }
     merged = WardProperties(**{**current.__dict__, **props})
-    set_ward_properties(ward_id, merged, ttl_s)
+    set_ward_properties(
+        ward_id,
+        merged,
+        ttl_s,
+        request_id=_CURRENT_DISPATCH_REQUEST_ID.get(),
+        capability_name=f"structural.emphasis.{ward_id}",
+    )
     _mark_recruitment("structural.emphasis", extra={"ward_id": ward_id, "ttl_s": ttl_s})
     # Phase C1 (homage-completion-plan §2): count every structural
     # emphasis write so ``rate(hapax_homage_emphasis_applied_total[5m])``
@@ -2031,7 +2147,13 @@ def _apply_placement(ward_id: str, hint: str) -> None:
         return
     current = get_specific_ward_properties(ward_id) or WardProperties()
     merged = WardProperties(**{**current.__dict__, **spec})
-    set_ward_properties(ward_id, merged, _STRUCTURAL_PLACEMENT_TTL_S)
+    set_ward_properties(
+        ward_id,
+        merged,
+        _STRUCTURAL_PLACEMENT_TTL_S,
+        request_id=_CURRENT_DISPATCH_REQUEST_ID.get(),
+        capability_name=f"structural.placement.{ward_id}",
+    )
     _mark_recruitment("structural.placement", extra={"ward_id": ward_id, "hint": hint})
 
 
@@ -2052,19 +2174,33 @@ def _enqueue_homage_pending(source_id: str, transition: str, salience: float) ->
     transitions = current.get("transitions") if isinstance(current, dict) else None
     if not isinstance(transitions, list):
         transitions = []
-    transitions.append(
-        {
-            "source_id": source_id,
-            "transition": transition,
-            "enqueued_at": now,
-            "salience": max(0.0, min(1.0, float(salience))),
-        }
-    )
+    entry = {
+        "source_id": source_id,
+        "transition": transition,
+        "enqueued_at": now,
+        "salience": max(0.0, min(1.0, float(salience))),
+    }
+    request_id = _CURRENT_DISPATCH_REQUEST_ID.get()
+    if request_id:
+        entry["request_id"] = request_id
+    transitions.append(entry)
     payload = {"transitions": transitions, "updated_at": now}
     _atomic_write_json(_HOMAGE_PENDING, payload)
 
 
-def dispatch_structural_intent(intent) -> dict[str, int]:
+def _structural_reflex_record(request_id: str | None) -> RecruitmentRecord:
+    return RecruitmentRecord(
+        name="structural.intent",
+        request_id=request_id,
+        impingement_narrative="narrative-tier structural intent reflex",
+    )
+
+
+def dispatch_structural_intent(
+    intent,
+    *,
+    request_id: str | None = None,
+) -> dict[str, int]:
     """Fan a ``NarrativeStructuralIntent`` out to ward-properties + homage queue.
 
     Accepts either a ``NarrativeStructuralIntent`` instance or a plain
@@ -2084,8 +2220,21 @@ def dispatch_structural_intent(intent) -> dict[str, int]:
     overwriting the structural director's long-horizon choice.
     """
     tally = {"emphasized": 0, "dispatched": 0, "retired": 0, "placed": 0}
+    receipt_record = _structural_reflex_record(request_id)
     # Segment cue hold: suppress structural intent during segment beats
     if _segment_cue_hold_active():
+        _emit_compositor_action_receipt(
+            receipt_record,
+            family="structural.intent",
+            status=ActionReceiptStatus.BLOCKED,
+            blocked_reasons=["segment_cue_hold_active"],
+            structural_reflex=True,
+            requested_action="structural intent reflex",
+            operator_visible_summary=(
+                "Structural intent was blocked by active segment cue hold; "
+                "no success learning is allowed."
+            ),
+        )
         return tally
     try:
         if hasattr(intent, "model_dump"):
@@ -2093,67 +2242,113 @@ def dispatch_structural_intent(intent) -> dict[str, int]:
         elif isinstance(intent, dict):
             data = intent
         else:
+            _emit_compositor_action_receipt(
+                receipt_record,
+                family="structural.intent",
+                status=ActionReceiptStatus.BLOCKED,
+                blocked_reasons=["invalid_structural_intent"],
+                structural_reflex=True,
+                requested_action="structural intent reflex",
+                operator_visible_summary=(
+                    "Structural intent was not a supported model or mapping; "
+                    "no success learning is allowed."
+                ),
+            )
             return tally
     except Exception:
         log.debug("structural_intent: model_dump failed", exc_info=True)
+        _emit_compositor_action_receipt(
+            receipt_record,
+            family="structural.intent",
+            status=ActionReceiptStatus.ERROR,
+            error_refs=["structural_intent:model_dump_failed"],
+            structural_reflex=True,
+            requested_action="structural intent reflex",
+            operator_visible_summary=(
+                "Structural intent parsing failed before application; "
+                "no success learning is allowed."
+            ),
+        )
         return tally
 
-    # Publish the rotation-mode override for the choreographer. Atomic
-    # so the choreographer never sees a half-written override.
-    #
-    # Write on EVERY call — even when ``homage_rotation_mode`` is None —
-    # so the file's mtime + ``updated_at`` reflect actual director
-    # cadence. The choreographer's ``_read_rotation_mode_from`` already
-    # treats missing / unknown mode values as "no narrative override"
-    # and falls through to the slow structural tier. Previously this
-    # write was gated on a valid rotation_mode, which left the file
-    # hours stale whenever the LLM emitted structural_intent without an
-    # explicit rotation choice — operators reading file mtime could not
-    # distinguish "director is silent" from "director ran but did not
-    # override rotation this tick" (blinding-defaults-audit §3
-    # ceremonial-defaults-2, expert-system-blinding-audit §5.1).
-    rotation_mode = data.get("homage_rotation_mode")
-    if not (
-        isinstance(rotation_mode, str)
-        and rotation_mode in ("sequential", "random", "weighted_by_salience", "paused")
-    ):
-        rotation_mode = None
-    _atomic_write_json(
-        Path("/dev/shm/hapax-compositor/narrative-structural-intent.json"),
-        {
-            "homage_rotation_mode": rotation_mode,
-            "updated_at": time.time(),
-        },
-    )
+    request_token = _CURRENT_DISPATCH_REQUEST_ID.set(_record_request_id(receipt_record))
 
-    for ward_id in data.get("ward_emphasis") or []:
-        if not isinstance(ward_id, str):
-            continue
-        _apply_emphasis(ward_id, salience=1.0)
-        tally["emphasized"] += 1
+    try:
+        # Publish the rotation-mode override for the choreographer. Atomic
+        # so the choreographer never sees a half-written override.
+        #
+        # Write on EVERY call — even when ``homage_rotation_mode`` is None —
+        # so the file's mtime + ``updated_at`` reflect actual director
+        # cadence. The choreographer's ``_read_rotation_mode_from`` already
+        # treats missing / unknown mode values as "no narrative override"
+        # and falls through to the slow structural tier. Previously this
+        # write was gated on a valid rotation_mode, which left the file
+        # hours stale whenever the LLM emitted structural_intent without an
+        # explicit rotation choice — operators reading file mtime could not
+        # distinguish "director is silent" from "director ran but did not
+        # override rotation this tick" (blinding-defaults-audit §3
+        # ceremonial-defaults-2, expert-system-blinding-audit §5.1).
+        rotation_mode = data.get("homage_rotation_mode")
+        if not (
+            isinstance(rotation_mode, str)
+            and rotation_mode in ("sequential", "random", "weighted_by_salience", "paused")
+        ):
+            rotation_mode = None
+        _atomic_write_json(
+            Path("/dev/shm/hapax-compositor/narrative-structural-intent.json"),
+            {
+                "homage_rotation_mode": rotation_mode,
+                "updated_at": time.time(),
+            },
+        )
 
-    for ward_id in data.get("ward_dispatch") or []:
-        if not isinstance(ward_id, str) or ward_id not in _VALID_WARD_IDS:
-            continue
-        # Default package entry transition — ticker-scroll-in under BitchX.
-        _enqueue_homage_pending(ward_id, "ticker-scroll-in", salience=1.0)
-        tally["dispatched"] += 1
-
-    for ward_id in data.get("ward_retire") or []:
-        if not isinstance(ward_id, str) or ward_id not in _VALID_WARD_IDS:
-            continue
-        _enqueue_homage_pending(ward_id, "ticker-scroll-out", salience=1.0)
-        tally["retired"] += 1
-
-    placement = data.get("placement_bias") or {}
-    if isinstance(placement, dict):
-        for ward_id, hint in placement.items():
-            if not isinstance(ward_id, str) or not isinstance(hint, str):
+        for ward_id in data.get("ward_emphasis") or []:
+            if not isinstance(ward_id, str):
                 continue
-            _apply_placement(ward_id, hint)
-            tally["placed"] += 1
+            _apply_emphasis(ward_id, salience=1.0)
+            tally["emphasized"] += 1
+
+        for ward_id in data.get("ward_dispatch") or []:
+            if not isinstance(ward_id, str) or ward_id not in _VALID_WARD_IDS:
+                continue
+            # Default package entry transition — ticker-scroll-in under BitchX.
+            _enqueue_homage_pending(ward_id, "ticker-scroll-in", salience=1.0)
+            tally["dispatched"] += 1
+
+        for ward_id in data.get("ward_retire") or []:
+            if not isinstance(ward_id, str) or ward_id not in _VALID_WARD_IDS:
+                continue
+            _enqueue_homage_pending(ward_id, "ticker-scroll-out", salience=1.0)
+            tally["retired"] += 1
+
+        placement = data.get("placement_bias") or {}
+        if isinstance(placement, dict):
+            for ward_id, hint in placement.items():
+                if not isinstance(ward_id, str) or not isinstance(hint, str):
+                    continue
+                _apply_placement(ward_id, hint)
+                tally["placed"] += 1
+    finally:
+        _CURRENT_DISPATCH_REQUEST_ID.reset(request_token)
 
     _mark_recruitment("structural.intent", extra=tally)
+    applied_refs = ["shm:hapax-compositor/narrative-structural-intent.json"]
+    if tally["emphasized"] or tally["placed"]:
+        applied_refs.append("shm:hapax-compositor/ward-properties.json")
+    if tally["dispatched"] or tally["retired"]:
+        applied_refs.append("shm:hapax-compositor/homage-pending-transitions.json")
+    _emit_compositor_action_receipt(
+        receipt_record,
+        family="structural.intent",
+        status=ActionReceiptStatus.APPLIED,
+        applied_refs=applied_refs,
+        structural_reflex=True,
+        requested_action="structural intent reflex",
+        operator_visible_summary=(
+            "Structural intent applied as a structural reflex; compositor "
+            "readback is mandatory before learning or speech can call it done."
+        ),
+    )
     return tally
 
 

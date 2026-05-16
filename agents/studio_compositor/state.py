@@ -8,6 +8,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+from agents.studio_compositor.action_receipts import emit_action_receipt
+from shared.action_receipt import ActionReceiptStatus
+
 from . import metrics as _metrics
 from .config import PERCEPTION_STATE_PATH, SNAPSHOT_DIR
 from .effects import try_graph_preset
@@ -23,6 +26,9 @@ log = logging.getLogger(__name__)
 # controller keeps a 30-s rolling hero-history in memory so the
 # repetition penalty works across ticks.
 _FOLLOW_MODE_CONTROLLER: FollowModeController | None = None
+_STREAM_MODE_INTENT_PATH = Path("/dev/shm/hapax-compositor/stream-mode-intent.json")
+_HERO_CAMERA_OVERRIDE_PATH = Path("/dev/shm/hapax-compositor/hero-camera-override.json")
+_ACTION_RECEIPTS_JSONL = Path("/dev/shm/hapax-compositor/action-receipts.jsonl")
 
 
 def _get_follow_mode_controller() -> FollowModeController:
@@ -46,6 +52,7 @@ def process_livestream_control(compositor: Any, snapshot_dir: Path | None = None
     """
     control_path = (snapshot_dir or SNAPSHOT_DIR) / "livestream-control.json"
     status_path = (snapshot_dir or SNAPSHOT_DIR) / "livestream-status.json"
+    receipt_path = (snapshot_dir or SNAPSHOT_DIR) / "action-receipts.jsonl"
     if not control_path.exists():
         return False
 
@@ -60,6 +67,7 @@ def process_livestream_control(compositor: Any, snapshot_dir: Path | None = None
 
     activate = bool(payload.get("activate", False))
     reason = str(payload.get("reason") or "").strip() or "unspecified"
+    request_id = str(payload.get("request_id") or "").strip() or None
     requested_at = payload.get("requested_at")
 
     def _dispatch() -> bool:
@@ -80,6 +88,18 @@ def process_livestream_control(compositor: Any, snapshot_dir: Path | None = None
             status_path.write_text(json.dumps(status))
         except OSError:
             log.exception("Failed to write livestream-status.json")
+        if request_id:
+            emit_action_receipt(
+                request_id=request_id,
+                capability_name="studio.toggle_livestream",
+                requested_action=f"toggle livestream {'on' if activate else 'off'}",
+                status=ActionReceiptStatus.APPLIED if success else ActionReceiptStatus.BLOCKED,
+                family="livestream.control",
+                command_ref="livestream-control:process",
+                applied_refs=["shm:hapax-compositor/livestream-status.json"] if success else [],
+                blocked_reasons=[] if success else ["toggle_livestream_failed"],
+                path=receipt_path,
+            )
         return False  # GLib.idle_add one-shot
 
     glib = getattr(compositor, "_GLib", None)
@@ -300,6 +320,238 @@ def try_reconnect_camera(compositor: Any, role: str) -> bool:
     log.info("Camera %s reconnected", role)
     compositor._write_status("running")
     return True
+
+
+def process_stream_mode_intent(
+    compositor: Any,
+    *,
+    intent_path: Path | None = None,
+    receipt_path: Path | None = None,
+) -> bool:
+    """Consume a recruited stream-mode transition and emit an action receipt."""
+
+    sm_intent_path = intent_path or _STREAM_MODE_INTENT_PATH
+    if not sm_intent_path.exists():
+        return False
+    try:
+        sm_payload = json.loads(sm_intent_path.read_text(encoding="utf-8"))
+        sm_set_at = float(sm_payload.get("set_at", 0.0))
+        target_mode_raw = str(sm_payload.get("target_mode") or "").strip()
+        request_id = str(sm_payload.get("request_id") or "").strip() or None
+        sm_last_applied = getattr(compositor, "_stream_mode_last_applied_set_at", 0.0)
+        if not target_mode_raw:
+            if request_id:
+                emit_action_receipt(
+                    request_id=request_id,
+                    capability_name=str(
+                        sm_payload.get("source_capability") or "stream.mode.transition"
+                    ),
+                    requested_action="stream mode transition",
+                    status=ActionReceiptStatus.BLOCKED,
+                    family="stream-mode-intent",
+                    command_ref="stream-mode-intent:consume",
+                    blocked_reasons=["empty_target_mode"],
+                    path=receipt_path or _ACTION_RECEIPTS_JSONL,
+                )
+            return True
+        if sm_set_at <= sm_last_applied:
+            if request_id:
+                emit_action_receipt(
+                    request_id=request_id,
+                    capability_name=str(
+                        sm_payload.get("source_capability") or "stream.mode.transition"
+                    ),
+                    requested_action=f"stream mode transition {target_mode_raw}",
+                    status=ActionReceiptStatus.BLOCKED,
+                    family="stream-mode-intent",
+                    command_ref="stream-mode-intent:consume",
+                    blocked_reasons=["stale_or_duplicate"],
+                    path=receipt_path or _ACTION_RECEIPTS_JSONL,
+                )
+            return True
+        normalized = target_mode_raw.replace("-", "_").lower()
+        try:
+            from shared.stream_mode import StreamMode, set_stream_mode
+
+            mode = StreamMode(normalized)
+        except ValueError:
+            mode = None
+        if mode is not None:
+            compositor._stream_mode_last_applied_set_at = sm_set_at
+            set_stream_mode(mode)
+            if request_id:
+                emit_action_receipt(
+                    request_id=request_id,
+                    capability_name=str(
+                        sm_payload.get("source_capability") or "stream.mode.transition"
+                    ),
+                    requested_action=f"stream mode transition {target_mode_raw}",
+                    status=ActionReceiptStatus.APPLIED,
+                    family="stream-mode-intent",
+                    command_ref="stream-mode-intent:consume",
+                    applied_refs=["shared.stream_mode:set_stream_mode"],
+                    path=receipt_path or _ACTION_RECEIPTS_JSONL,
+                )
+            log.info(
+                "stream-mode-intent applied: target=%s (%s)",
+                target_mode_raw,
+                mode.value,
+            )
+            return True
+        if request_id:
+            emit_action_receipt(
+                request_id=request_id,
+                capability_name=str(
+                    sm_payload.get("source_capability") or "stream.mode.transition"
+                ),
+                requested_action=f"stream mode transition {target_mode_raw}",
+                status=ActionReceiptStatus.BLOCKED,
+                family="stream-mode-intent",
+                command_ref="stream-mode-intent:consume",
+                blocked_reasons=["invalid_stream_mode"],
+                path=receipt_path or _ACTION_RECEIPTS_JSONL,
+            )
+        return True
+    except Exception:
+        log.debug("stream-mode-intent consumer failed", exc_info=True)
+        return False
+
+
+def process_hero_camera_override(
+    compositor: Any,
+    *,
+    override_path: Path | None = None,
+    receipt_path: Path | None = None,
+) -> bool:
+    """Consume a recruited hero-camera override and emit an action receipt."""
+
+    hero_override_path = override_path or _HERO_CAMERA_OVERRIDE_PATH
+    override_camera_role: str | None = None
+    override_set_at = 0.0
+    override_source = ""
+    override_request_id: str | None = None
+    override_source_capability = "cam.hero"
+    if hero_override_path.exists():
+        try:
+            payload = json.loads(hero_override_path.read_text(encoding="utf-8"))
+            set_at = float(payload.get("set_at", 0.0))
+            ttl_s = float(payload.get("ttl_s", 30.0))
+            camera_role = payload.get("camera_role")
+            request_id = str(payload.get("request_id") or "").strip() or None
+            expired = (time.time() - set_at) > ttl_s
+            if isinstance(camera_role, str) and camera_role and not expired:
+                override_camera_role = camera_role
+                override_set_at = set_at
+                override_source = "manual"
+                override_request_id = request_id
+                override_source_capability = str(payload.get("source_capability") or "cam.hero")
+            elif request_id:
+                emit_action_receipt(
+                    request_id=request_id,
+                    capability_name=str(payload.get("source_capability") or "cam.hero"),
+                    requested_action=f"hero camera override {camera_role or 'unknown'}",
+                    status=ActionReceiptStatus.BLOCKED,
+                    family="hero-camera-override",
+                    command_ref="hero-camera-override:consume",
+                    blocked_reasons=["expired_hero_override" if expired else "invalid_camera_role"],
+                    path=receipt_path or _ACTION_RECEIPTS_JSONL,
+                )
+                return True
+        except Exception:
+            log.debug("hero-camera-override consumer failed", exc_info=True)
+    if override_camera_role is None:
+        fm_rec = read_follow_mode_recommendation()
+        if fm_rec is not None:
+            override_camera_role = fm_rec.camera_role
+            override_set_at = fm_rec.ts
+            override_source = "follow_mode"
+    if override_camera_role is None:
+        return False
+    try:
+        requested_mode = (
+            f"packed/{override_camera_role}"
+            if override_source == "manual"
+            else f"follow/{override_camera_role}"
+        )
+        current_mode = getattr(compositor, "_layout_mode", "balanced")
+        last_applied = getattr(compositor, "_hero_override_last_applied_set_at", 0.0)
+        _MIN_FOLLOW_HOLD_S = 30.0
+        now_ts = time.time()
+        role_first_seen = getattr(compositor, "_hero_override_role_first_seen", {})
+        seen_role = role_first_seen.get("role")
+        if seen_role != override_camera_role:
+            role_first_seen = {"role": override_camera_role, "ts": now_ts}
+            compositor._hero_override_role_first_seen = role_first_seen
+        role_age = now_ts - role_first_seen.get("ts", now_ts)
+        debounce_ok = (now_ts - last_applied) >= _MIN_FOLLOW_HOLD_S
+        role_stable = override_source != "follow_mode" or role_age >= _MIN_FOLLOW_HOLD_S
+        if not (
+            requested_mode != current_mode
+            and override_set_at > last_applied
+            and debounce_ok
+            and role_stable
+        ):
+            if override_request_id:
+                reason = "hero_override_not_applicable"
+                if requested_mode == current_mode:
+                    reason = "already_active"
+                elif override_set_at <= last_applied:
+                    reason = "stale_or_duplicate"
+                elif not debounce_ok:
+                    reason = "debounce_active"
+                elif not role_stable:
+                    reason = "role_not_stable"
+                emit_action_receipt(
+                    request_id=override_request_id,
+                    capability_name=override_source_capability,
+                    requested_action=f"hero camera override {override_camera_role}",
+                    status=ActionReceiptStatus.BLOCKED,
+                    family="hero-camera-override",
+                    command_ref="hero-camera-override:consume",
+                    blocked_reasons=[reason],
+                    path=receipt_path or _ACTION_RECEIPTS_JSONL,
+                )
+                return True
+            return False
+        previous_role = ""
+        if isinstance(current_mode, str) and (
+            current_mode.startswith("packed/")
+            or current_mode.startswith("hero/")
+            or current_mode.startswith("follow/")
+        ):
+            previous_role = current_mode.split("/", 1)[1]
+        compositor._hero_override_last_applied_set_at = override_set_at
+        GLib = compositor._GLib
+        if GLib:
+            GLib.idle_add(lambda m=requested_mode: apply_layout_mode(compositor, m) or False)
+        else:
+            apply_layout_mode(compositor, requested_mode)
+        if override_source == "follow_mode":
+            try:
+                _metrics.record_follow_mode_cut(previous_role, override_camera_role)
+            except Exception:
+                log.debug("record_follow_mode_cut failed", exc_info=True)
+        if override_request_id:
+            emit_action_receipt(
+                request_id=override_request_id,
+                capability_name=override_source_capability,
+                requested_action=f"hero camera override {override_camera_role}",
+                status=ActionReceiptStatus.APPLIED,
+                family="hero-camera-override",
+                command_ref="hero-camera-override:consume",
+                applied_refs=[f"layout-mode:{requested_mode}"],
+                path=receipt_path or _ACTION_RECEIPTS_JSONL,
+            )
+        log.info(
+            "hero-camera-override applied: role=%s mode=%s source=%s",
+            override_camera_role,
+            requested_mode,
+            override_source,
+        )
+        return True
+    except Exception:
+        log.debug("hero-camera-override apply failed", exc_info=True)
+        return False
 
 
 def state_reader_loop(compositor: Any) -> None:
@@ -592,31 +844,7 @@ def state_reader_loop(compositor: Any) -> None:
         # the new mode is honoured by every get_stream_mode() consumer
         # (chat-reactor cooldowns, stimmung redaction, fortress gate,
         # captions style, etc.). Same idempotency guard via set_at.
-        sm_intent_path = Path("/dev/shm/hapax-compositor/stream-mode-intent.json")
-        if sm_intent_path.exists():
-            try:
-                sm_payload = json.loads(sm_intent_path.read_text(encoding="utf-8"))
-                sm_set_at = float(sm_payload.get("set_at", 0.0))
-                target_mode_raw = str(sm_payload.get("target_mode") or "").strip()
-                sm_last_applied = getattr(compositor, "_stream_mode_last_applied_set_at", 0.0)
-                if target_mode_raw and sm_set_at > sm_last_applied:
-                    normalized = target_mode_raw.replace("-", "_").lower()
-                    try:
-                        from shared.stream_mode import StreamMode, set_stream_mode
-
-                        mode = StreamMode(normalized)
-                    except ValueError:
-                        mode = None
-                    if mode is not None:
-                        compositor._stream_mode_last_applied_set_at = sm_set_at
-                        set_stream_mode(mode)
-                        log.info(
-                            "stream-mode-intent applied: target=%s (%s)",
-                            target_mode_raw,
-                            mode.value,
-                        )
-            except Exception:
-                log.debug("stream-mode-intent consumer failed", exc_info=True)
+        process_stream_mode_intent(compositor)
 
         # Task #136 — follow-mode tick at ~2 Hz (every 5th 100 ms loop iter).
         # The controller reads IR fleet + camera classifications and
@@ -647,95 +875,7 @@ def state_reader_loop(compositor: Any) -> None:
         # recommendation exists, use the recommended role instead of
         # leaving the hero untouched. Manual override always wins when
         # present — follow-mode is only the fallback source.
-        hero_override_path = Path("/dev/shm/hapax-compositor/hero-camera-override.json")
-        override_camera_role: str | None = None
-        override_set_at = 0.0
-        override_source = ""
-        if hero_override_path.exists():
-            try:
-                payload = json.loads(hero_override_path.read_text(encoding="utf-8"))
-                set_at = float(payload.get("set_at", 0.0))
-                ttl_s = float(payload.get("ttl_s", 30.0))
-                camera_role = payload.get("camera_role")
-                if isinstance(camera_role, str) and camera_role and (time.time() - set_at) <= ttl_s:
-                    override_camera_role = camera_role
-                    override_set_at = set_at
-                    override_source = "manual"
-            except Exception:
-                log.debug("hero-camera-override consumer failed", exc_info=True)
-        if override_camera_role is None:
-            # Follow-mode fallback. ``read_follow_mode_recommendation``
-            # returns None when the flag is off, the file is missing,
-            # expired, or active=False — all of which mean "leave the
-            # hero as-is".
-            fm_rec = read_follow_mode_recommendation()
-            if fm_rec is not None:
-                override_camera_role = fm_rec.camera_role
-                override_set_at = fm_rec.ts
-                override_source = "follow_mode"
-        if override_camera_role is not None:
-            try:
-                requested_mode = (
-                    f"packed/{override_camera_role}"
-                    if override_source == "manual"
-                    else f"follow/{override_camera_role}"
-                )
-                current_mode = getattr(compositor, "_layout_mode", "balanced")
-                last_applied = getattr(compositor, "_hero_override_last_applied_set_at", 0.0)
-                # Min-hold debounce: only swap if (a) it's been ≥30s since the last
-                # follow_mode swap, and (b) the proposed role has been the
-                # recommendation for ≥30s. The cudacompositor reconfigure for a
-                # 6-camera packed layout is expensive enough that anything more
-                # frequent than 30s wedges the v4l2sink (verified in production
-                # 2026-05-06: 3s debounce still produced 4–15s swap cadence and
-                # the sink never recovered between reconfigures, leading to
-                # continuous v4l2-stall recovery loop and OBS source loss).
-                # Manual overrides bypass the role-stability gate; they're operator
-                # intent, not noise.
-                _MIN_FOLLOW_HOLD_S = 30.0
-                now_ts = time.time()
-                role_first_seen = getattr(compositor, "_hero_override_role_first_seen", {})
-                seen_role = role_first_seen.get("role")
-                if seen_role != override_camera_role:
-                    role_first_seen = {"role": override_camera_role, "ts": now_ts}
-                    compositor._hero_override_role_first_seen = role_first_seen
-                role_age = now_ts - role_first_seen.get("ts", now_ts)
-                debounce_ok = (now_ts - last_applied) >= _MIN_FOLLOW_HOLD_S
-                role_stable = override_source != "follow_mode" or role_age >= _MIN_FOLLOW_HOLD_S
-                if (
-                    requested_mode != current_mode
-                    and override_set_at > last_applied
-                    and debounce_ok
-                    and role_stable
-                ):
-                    previous_role = ""
-                    if isinstance(current_mode, str) and (
-                        current_mode.startswith("packed/")
-                        or current_mode.startswith("hero/")
-                        or current_mode.startswith("follow/")
-                    ):
-                        previous_role = current_mode.split("/", 1)[1]
-                    compositor._hero_override_last_applied_set_at = override_set_at
-                    GLib = compositor._GLib
-                    if GLib:
-                        GLib.idle_add(
-                            lambda m=requested_mode: apply_layout_mode(compositor, m) or False
-                        )
-                    else:
-                        apply_layout_mode(compositor, requested_mode)
-                    if override_source == "follow_mode":
-                        try:
-                            _metrics.record_follow_mode_cut(previous_role, override_camera_role)
-                        except Exception:
-                            log.debug("record_follow_mode_cut failed", exc_info=True)
-                    log.info(
-                        "hero-camera-override applied: role=%s mode=%s source=%s",
-                        override_camera_role,
-                        requested_mode,
-                        override_source,
-                    )
-            except Exception:
-                log.debug("hero-camera-override apply failed", exc_info=True)
+        process_hero_camera_override(compositor)
 
         # Livestream control (from daimonion affordance dispatch)
         try:

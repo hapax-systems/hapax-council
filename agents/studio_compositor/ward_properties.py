@@ -42,10 +42,12 @@ from itertools import count
 from pathlib import Path
 from typing import Any, Literal
 
+from agents.studio_compositor.action_receipts import emit_action_receipt
 from agents.studio_compositor.z_plane_constants import (
     DEFAULT_Z_INDEX_FLOAT,
     DEFAULT_Z_PLANE,
 )
+from shared.action_receipt import ActionReceiptStatus
 
 log = logging.getLogger(__name__)
 
@@ -276,7 +278,10 @@ def set_ward_properties(
     ward_id: str,
     properties: WardProperties,
     ttl_s: float,
-) -> None:
+    *,
+    request_id: str | None = None,
+    capability_name: str | None = None,
+) -> bool:
     """Atomic upsert of one ward's override entry.
 
     The override expires at ``time.time() + ttl_s``; expired entries are
@@ -290,13 +295,21 @@ def set_ward_properties(
     operate on a stale cached snapshot and silently drop the first
     write's fields.
     """
-    set_many_ward_properties({ward_id: properties}, ttl_s=ttl_s)
+    return set_many_ward_properties(
+        {ward_id: properties},
+        ttl_s=ttl_s,
+        request_id=request_id,
+        capability_name=capability_name or f"ward.properties.{ward_id}",
+    )
 
 
 def set_many_ward_properties(
     properties_by_ward: Mapping[str, WardProperties],
     ttl_s: float,
-) -> None:
+    *,
+    request_id: str | None = None,
+    capability_name: str = "ward.properties.batch",
+) -> bool:
     """Atomic upsert of multiple ward override entries with one expiry.
 
     Multi-ward producers, especially FX preset-family pulses, need all
@@ -309,14 +322,34 @@ def set_many_ward_properties(
     """
     if ttl_s <= 0:
         log.warning("set_many_ward_properties: ttl_s must be > 0, got %.3f", ttl_s)
-        return
+        if request_id:
+            emit_action_receipt(
+                request_id=request_id,
+                capability_name=capability_name,
+                requested_action="set ward properties",
+                status=ActionReceiptStatus.BLOCKED,
+                family="ward.properties",
+                command_ref="ward-properties:set-many",
+                blocked_reasons=["invalid_ttl"],
+            )
+        return False
     filtered = {
         ward_id: properties
         for ward_id, properties in properties_by_ward.items()
         if ward_id not in ORPHAN_WARD_IDS
     }
     if not filtered:
-        return
+        if request_id:
+            emit_action_receipt(
+                request_id=request_id,
+                capability_name=capability_name,
+                requested_action="set ward properties",
+                status=ActionReceiptStatus.BLOCKED,
+                family="ward.properties",
+                command_ref="ward-properties:set-many",
+                blocked_reasons=["no_non_orphan_ward_properties"],
+            )
+        return False
     with _WRITE_LOCK:
         try:
             WARD_PROPERTIES_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -383,8 +416,30 @@ def set_many_ward_properties(
             tmp = WARD_PROPERTIES_PATH.with_suffix(WARD_PROPERTIES_PATH.suffix + tmp_suffix)
             tmp.write_text(json.dumps(out), encoding="utf-8")
             tmp.replace(WARD_PROPERTIES_PATH)
+            if request_id:
+                emit_action_receipt(
+                    request_id=request_id,
+                    capability_name=capability_name,
+                    requested_action="set ward properties",
+                    status=ActionReceiptStatus.APPLIED,
+                    family="ward.properties",
+                    command_ref="ward-properties:set-many",
+                    applied_refs=[f"shm:{WARD_PROPERTIES_PATH.name}"],
+                )
+            return True
         except Exception:
             log.warning("set_many_ward_properties write failed", exc_info=True)
+            if request_id:
+                emit_action_receipt(
+                    request_id=request_id,
+                    capability_name=capability_name,
+                    requested_action="set ward properties",
+                    status=ActionReceiptStatus.ERROR,
+                    family="ward.properties",
+                    command_ref="ward-properties:set-many",
+                    error_refs=["ward_properties_write_failed"],
+                )
+            return False
         finally:
             clear_ward_properties_cache()
 

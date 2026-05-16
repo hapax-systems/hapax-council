@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
 from agents.studio_compositor import compositional_consumer as cc
+from shared.action_receipt import ActionReceipt, ActionReceiptStatus
 
 
 @pytest.fixture
@@ -32,7 +34,19 @@ def tmp_shm(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(cc, "_PARAMETRIC_ENVELOPES", tmp_path / "parametric-envelopes.json")
     monkeypatch.setattr(cc, "_SEGMENT_CUE_HOLD", tmp_path / "segment-cue-hold.json")
+    monkeypatch.setattr(cc, "_ACTION_RECEIPTS_JSONL", tmp_path / "action-receipts.jsonl")
     return tmp_path
+
+
+def _read_action_receipts(tmp_path) -> list[ActionReceipt]:
+    path = tmp_path / "action-receipts.jsonl"
+    if not path.exists():
+        return []
+    return [
+        ActionReceipt.model_validate_json(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 class TestCameraHero:
@@ -170,6 +184,42 @@ class TestTopLevelDispatch:
         rec = cc.RecruitmentRecord(name="bogus.family.foo")
         assert cc.dispatch(rec) == "unknown"
 
+    def test_dispatch_emits_applied_action_receipt_for_request_id(self, tmp_shm):
+        rec = cc.RecruitmentRecord(
+            name="fx.family.audio-reactive",
+            request_id="request:compositor:1",
+        )
+
+        assert cc.dispatch(rec) == "preset.bias"
+
+        receipt = _read_action_receipts(tmp_shm)[-1]
+        assert receipt.request_id == "request:compositor:1"
+        assert receipt.capability_name == "fx.family.audio-reactive"
+        assert receipt.status is ActionReceiptStatus.APPLIED
+        assert receipt.target_aperture == "aperture:compositor:preset.bias"
+        assert receipt.wcs_refs == ["wcs:compositor:preset.bias"]
+        assert receipt.applied_refs == [
+            "compositional-consumer:preset.bias:fx.family.audio-reactive"
+        ]
+        assert receipt.learning_update_allowed is False
+        assert receipt.readback_required is True
+        assert receipt.can_support_affordance_success() is False
+
+    def test_dispatch_unknown_emits_blocked_action_receipt(self, tmp_shm):
+        rec = cc.RecruitmentRecord(
+            name="bogus.family.foo",
+            request_id="request:compositor:blocked",
+        )
+
+        assert cc.dispatch(rec) == "unknown"
+
+        receipt = _read_action_receipts(tmp_shm)[-1]
+        assert receipt.request_id == "request:compositor:blocked"
+        assert receipt.status is ActionReceiptStatus.BLOCKED
+        assert receipt.blocked_reasons == ["dispatcher_unknown_or_vetoed"]
+        assert receipt.learning_update_allowed is False
+        assert receipt.can_support_affordance_success() is False
+
 
 class TestRecruitmentHistory:
     def test_age_s_returns_none_when_never_recruited(self, tmp_shm):
@@ -223,6 +273,7 @@ class TestStructuralIntentAggressiveEmphasis:
 
         monkeypatch.setattr(wp, "WARD_PROPERTIES_PATH", tmp_path / "ward-properties.json")
         monkeypatch.setattr(cc, "_SEGMENT_CUE_HOLD", tmp_path / "segment-cue-hold.json")
+        monkeypatch.setattr(cc, "_ACTION_RECEIPTS_JSONL", tmp_path / "action-receipts.jsonl")
         wp.clear_ward_properties_cache()
 
         original_atomic = cc._atomic_write_json
@@ -256,6 +307,68 @@ class TestStructuralIntentAggressiveEmphasis:
         props = self._read_ward(wired, "album_overlay")
         assert props is not None
         assert props.glow_radius_px >= 12.0
+
+    def test_structural_intent_emits_applied_reflex_receipt(self, wired):
+        from shared.director_intent import NarrativeStructuralIntent
+
+        si = NarrativeStructuralIntent(
+            ward_emphasis=["album_overlay"],
+            ward_dispatch=["activity_header"],
+            placement_bias={"album_overlay": "foreground"},
+        )
+        tally = cc.dispatch_structural_intent(si, request_id="condition:structural:1")
+
+        assert tally == {"emphasized": 1, "dispatched": 1, "retired": 0, "placed": 1}
+        receipt = _read_action_receipts(wired)[-1]
+        assert receipt.request_id == "condition:structural:1"
+        assert receipt.capability_name == "structural.intent"
+        assert receipt.status is ActionReceiptStatus.APPLIED
+        assert receipt.structural_reflex is True
+        assert receipt.readback_required is True
+        assert receipt.learning_update_allowed is False
+        assert receipt.target_aperture == "aperture:compositor:structural.intent"
+        assert receipt.wcs_refs == ["wcs:compositor:structural.intent"]
+        assert "shm:hapax-compositor/narrative-structural-intent.json" in receipt.applied_refs
+        assert "shm:hapax-compositor/ward-properties.json" in receipt.applied_refs
+        assert "shm:hapax-compositor/homage-pending-transitions.json" in receipt.applied_refs
+        assert receipt.can_support_affordance_success() is False
+
+    def test_structural_intent_segment_hold_emits_blocked_reflex_receipt(self, wired):
+        from shared.director_intent import NarrativeStructuralIntent
+
+        (wired / "segment-cue-hold.json").write_text(
+            json.dumps({"set_at": time.time(), "ttl_s": 30.0}),
+            encoding="utf-8",
+        )
+
+        tally = cc.dispatch_structural_intent(
+            NarrativeStructuralIntent(ward_emphasis=["album_overlay"]),
+            request_id="condition:structural:blocked",
+        )
+
+        assert tally == {"emphasized": 0, "dispatched": 0, "retired": 0, "placed": 0}
+        receipt = _read_action_receipts(wired)[-1]
+        assert receipt.request_id == "condition:structural:blocked"
+        assert receipt.status is ActionReceiptStatus.BLOCKED
+        assert receipt.structural_reflex is True
+        assert receipt.blocked_reasons == ["segment_cue_hold_active"]
+        assert receipt.learning_update_allowed is False
+
+    def test_structural_intent_write_error_resets_request_context(self, wired, monkeypatch):
+        from shared.director_intent import NarrativeStructuralIntent
+
+        def _raise_placement(*_args, **_kwargs):
+            raise RuntimeError("placement failed")
+
+        monkeypatch.setattr(cc, "_apply_placement", _raise_placement)
+
+        with pytest.raises(RuntimeError, match="placement failed"):
+            cc.dispatch_structural_intent(
+                NarrativeStructuralIntent(placement_bias={"album_overlay": "foreground"}),
+                request_id="condition:structural:error",
+            )
+
+        assert cc._CURRENT_DISPATCH_REQUEST_ID.get() is None
 
     def test_emphasis_sets_full_b1_envelope(self, wired):
         """Border pulse at 2.0 Hz, scale bump > 0.04, alpha = 1.0 — the

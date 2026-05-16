@@ -27,6 +27,7 @@ import pytest
 
 from agents._impingement import Impingement
 from agents.hapax_daimonion import run_loops_aux
+from shared.capability_outcome import FixtureCase, WitnessPolicy
 
 
 def _make_daemon() -> MagicMock:
@@ -36,6 +37,7 @@ def _make_daemon() -> MagicMock:
     daemon._affordance_pipeline = MagicMock()
     daemon._affordance_pipeline.select.return_value = []
     daemon._affordance_pipeline.record_outcome = MagicMock()
+    daemon._affordance_pipeline.record_capability_outcome = MagicMock()
     daemon._expression_coordinator = MagicMock()
     daemon._expression_coordinator.coordinate.return_value = []
     daemon._system_awareness = MagicMock()
@@ -66,6 +68,25 @@ def _make_impingement(source: str = "imagination", strength: float = 0.8, **cont
     )
 
 
+def _assert_commanded_no_witness_recorded(
+    daemon: MagicMock,
+    *,
+    capability_name: str,
+    command_ref: str,
+    route_ref: str,
+) -> None:
+    daemon._affordance_pipeline.record_capability_outcome.assert_called_once()
+    outcome = daemon._affordance_pipeline.record_capability_outcome.call_args.args[0]
+    context = daemon._affordance_pipeline.record_capability_outcome.call_args.kwargs["context"]
+    assert outcome.capability_name == capability_name
+    assert outcome.fixture_case is FixtureCase.COMMANDED_ONLY
+    assert outcome.witness_policy is WitnessPolicy.COMMANDED_ONLY
+    assert outcome.learning_update.allowed is False
+    assert outcome.witness_refs == []
+    assert context["command_ref"] == command_ref
+    assert context["route_ref"] == route_ref
+
+
 async def _drive_one_iteration(daemon, candidates, imp) -> None:
     """Run the dispatch body of the loop once against a given candidate set.
 
@@ -84,20 +105,37 @@ async def _drive_one_iteration(daemon, candidates, imp) -> None:
                 narrative = imp.content.get("narrative", imp.source)
                 material = imp.content.get("material", "void")
                 activate_notification(narrative, c.combined, material)
-                daemon._affordance_pipeline.record_outcome(
+                run_loops_aux._record_commanded_no_witness(
+                    daemon._affordance_pipeline,
                     c.capability_name,
-                    success=True,
-                    context={"source": imp.source},
+                    source=imp.source,
+                    command_ref="notification:activate",
+                    route_ref="route:notification-capability",
+                    reason="Notification dispatch was requested, but no delivery/readback witness exists yet.",
                 )
+            continue
+        if run_loops_aux._is_compositional_capability(c.capability_name):
+            if c.combined >= 0.3:
+                run_loops_aux._dispatch_compositional(c, imp, daemon)
             continue
         if c.capability_name == "studio.toggle_livestream":
             if c.combined >= 0.3:
-                run_loops_aux._write_livestream_control(imp, c)
-                daemon._affordance_pipeline.record_outcome(
-                    c.capability_name,
-                    success=True,
-                    context={"source": imp.source},
-                )
+                if run_loops_aux._write_livestream_control(imp, c):
+                    run_loops_aux._record_commanded_no_witness(
+                        daemon._affordance_pipeline,
+                        c.capability_name,
+                        source=imp.source,
+                        command_ref="shm:hapax-compositor/livestream-control.json",
+                        route_ref="route:studio-livestream-control",
+                        public_claim_bearing=True,
+                        reason="Livestream control file was staged, but egress/readback has not confirmed application.",
+                    )
+                else:
+                    daemon._affordance_pipeline.record_outcome(
+                        c.capability_name,
+                        success=False,
+                        context={"source": imp.source, "reason": "write_failed"},
+                    )
             continue
         if c.capability_name.startswith("studio.") and c.capability_name not in (
             "studio.midi_beat",
@@ -115,10 +153,14 @@ async def _drive_one_iteration(daemon, candidates, imp) -> None:
             "studio.ambient_noise",
         ):
             if c.combined >= 0.3:
-                daemon._affordance_pipeline.record_outcome(
+                run_loops_aux._record_commanded_no_witness(
+                    daemon._affordance_pipeline,
                     c.capability_name,
-                    success=True,
-                    context={"source": imp.source},
+                    source=imp.source,
+                    command_ref=f"recruitment-log:studio:{c.capability_name}",
+                    route_ref="route:studio-recruitment-log",
+                    public_claim_bearing=True,
+                    reason="Studio affordance was logged as recruited, but no action/readback receipt exists yet.",
                 )
             continue
         if (
@@ -126,10 +168,14 @@ async def _drive_one_iteration(daemon, candidates, imp) -> None:
             and _world_enabled
         ):
             if c.combined >= 0.3:
-                daemon._affordance_pipeline.record_outcome(
+                run_loops_aux._record_commanded_no_witness(
+                    daemon._affordance_pipeline,
                     c.capability_name,
-                    success=True,
-                    context={"source": imp.source},
+                    source=imp.source,
+                    command_ref=f"recruitment-log:world:{c.capability_name}",
+                    route_ref="route:world-domain-recruitment-log",
+                    public_claim_bearing=True,
+                    reason="World-domain affordance was logged as recruited, but no WCS/source/readback witness exists yet.",
                 )
             continue
         if c.capability_name == "speech_production":
@@ -242,6 +288,43 @@ def _world_routing_off(monkeypatch, tmp_path):
 class TestDispatchBehaviour:
     """Exercise each dispatch branch with mocked candidates."""
 
+    def test_compositional_dispatch_success_records_no_witness_outcome(self) -> None:
+        daemon = _make_daemon()
+        imp = _make_impingement(source="studio_compositor.director.compositional")
+        candidate = _make_candidate("fx.family.audio-reactive", combined=0.7)
+
+        with patch(
+            "agents.studio_compositor.compositional_consumer.dispatch",
+            return_value="fx.family",
+        ):
+            run_loops_aux._dispatch_compositional(candidate, imp, daemon)
+
+        daemon._affordance_pipeline.record_outcome.assert_not_called()
+        _assert_commanded_no_witness_recorded(
+            daemon,
+            capability_name="fx.family.audio-reactive",
+            command_ref="compositional-dispatch:fx.family",
+            route_ref="route:studio-compositional-consumer",
+        )
+
+    def test_compositional_dispatch_unknown_records_failure_only(self) -> None:
+        daemon = _make_daemon()
+        imp = _make_impingement(source="studio_compositor.director.compositional")
+        candidate = _make_candidate("unknown.capability", combined=0.7)
+
+        with patch(
+            "agents.studio_compositor.compositional_consumer.dispatch",
+            return_value="unknown",
+        ):
+            run_loops_aux._dispatch_compositional(candidate, imp, daemon)
+
+        daemon._affordance_pipeline.record_capability_outcome.assert_not_called()
+        daemon._affordance_pipeline.record_outcome.assert_called_once_with(
+            "unknown.capability",
+            success=False,
+            context={"source": "studio_compositor.director.compositional", "family": "unknown"},
+        )
+
     @pytest.mark.asyncio
     async def test_notification_dispatch_fires_activate_notification(self) -> None:
         daemon = _make_daemon()
@@ -259,10 +342,12 @@ class TestDispatchBehaviour:
         assert call_args.args[0] == "please tell me"
         assert call_args.args[1] == 0.6
         assert call_args.args[2] == "water"
-        daemon._affordance_pipeline.record_outcome.assert_called_once_with(
-            "system.notify_operator",
-            success=True,
-            context={"source": "imagination"},
+        daemon._affordance_pipeline.record_outcome.assert_not_called()
+        _assert_commanded_no_witness_recorded(
+            daemon,
+            capability_name="system.notify_operator",
+            command_ref="notification:activate",
+            route_ref="route:notification-capability",
         )
 
     @pytest.mark.asyncio
@@ -288,10 +373,12 @@ class TestDispatchBehaviour:
 
         await _drive_one_iteration(daemon, [candidate], imp)
 
-        daemon._affordance_pipeline.record_outcome.assert_called_once_with(
-            "studio.focus_camera",
-            success=True,
-            context={"source": "imagination"},
+        daemon._affordance_pipeline.record_outcome.assert_not_called()
+        _assert_commanded_no_witness_recorded(
+            daemon,
+            capability_name="studio.focus_camera",
+            command_ref="recruitment-log:studio:studio.focus_camera",
+            route_ref="route:studio-recruitment-log",
         )
 
     @pytest.mark.asyncio
@@ -328,10 +415,12 @@ class TestDispatchBehaviour:
         assert "let's go live" in payload["reason"]
         assert payload["score"] == pytest.approx(0.7)
         assert payload["source"] == "imagination"
-        daemon._affordance_pipeline.record_outcome.assert_called_once_with(
-            "studio.toggle_livestream",
-            success=True,
-            context={"source": "imagination"},
+        daemon._affordance_pipeline.record_outcome.assert_not_called()
+        _assert_commanded_no_witness_recorded(
+            daemon,
+            capability_name="studio.toggle_livestream",
+            command_ref="shm:hapax-compositor/livestream-control.json",
+            route_ref="route:studio-livestream-control",
         )
 
     @pytest.mark.asyncio
@@ -383,14 +472,17 @@ class TestDispatchBehaviour:
         # Flag absent → no routing
         await _drive_one_iteration(daemon, [candidate], imp)
         daemon._affordance_pipeline.record_outcome.assert_not_called()
+        daemon._affordance_pipeline.record_capability_outcome.assert_not_called()
 
         # Flag present → routes
         (tmp_path / "world-routing-enabled").write_text("", encoding="utf-8")
         await _drive_one_iteration(daemon, [candidate], imp)
-        daemon._affordance_pipeline.record_outcome.assert_called_once_with(
-            "world.web_search",
-            success=True,
-            context={"source": "imagination"},
+        daemon._affordance_pipeline.record_outcome.assert_not_called()
+        _assert_commanded_no_witness_recorded(
+            daemon,
+            capability_name="world.web_search",
+            command_ref="recruitment-log:world:world.web_search",
+            route_ref="route:world-domain-recruitment-log",
         )
 
     @pytest.mark.asyncio
@@ -481,8 +573,10 @@ class TestDispatchBodyLockstep:
         # Key landmarks the test helper mirrors
         for landmark in (
             "system.notify_operator",
+            "_is_compositional_capability",
             "studio.toggle_livestream",
             "_write_livestream_control",
+            "_record_commanded_no_witness",
             "studio.midi_beat",
             "_WORLD_DOMAIN_PREFIXES",
             "speech_production",

@@ -9,8 +9,10 @@ from pathlib import Path
 
 import pytest
 
+from agents.studio_compositor import command_server as cs
 from agents.studio_compositor.command_server import CommandServer
 from agents.studio_compositor.layout_state import LayoutState
+from shared.action_receipt import ActionReceipt, ActionReceiptStatus
 from shared.compositor_model import (
     Assignment,
     Layout,
@@ -113,6 +115,33 @@ def test_set_geometry_mutates_layout(server_and_state) -> None:
     assert surface.geometry.y == 300
     assert surface.geometry.w == 200
     assert surface.geometry.h == 200
+
+
+def test_command_with_request_id_emits_applied_action_receipt(
+    server_and_state,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _server, state, sock_path = server_and_state
+    receipts_path = tmp_path / "action-receipts.jsonl"
+    monkeypatch.setattr(cs, "_ACTION_RECEIPTS_JSONL", receipts_path)
+
+    resp = _call(
+        sock_path,
+        {
+            "request_id": "cmd:req:set-geometry",
+            "command": "compositor.surface.set_geometry",
+            "args": {"surface_id": "pip-ul", "x": 500, "y": 300, "w": 200, "h": 200},
+        },
+    )
+
+    assert resp == {"status": "ok", "request_id": "cmd:req:set-geometry"}
+    assert state.get().surface_by_id("pip-ul").geometry.x == 500
+    receipt = ActionReceipt.model_validate_json(receipts_path.read_text().splitlines()[0])
+    assert receipt.request_id == "cmd:req:set-geometry"
+    assert receipt.status is ActionReceiptStatus.APPLIED
+    assert receipt.capability_name == "compositor.surface.set_geometry"
+    assert receipt.learning_update_allowed is False
 
 
 def test_unknown_surface_returns_error_with_hint(server_and_state) -> None:
@@ -324,6 +353,32 @@ def test_unknown_command_reports_error(server_and_state) -> None:
     assert resp["status"] == "error"
     assert resp["error"] == "unknown_command"
     assert resp["command"] == "compositor.nope"
+
+
+def test_command_with_request_id_emits_blocked_action_receipt(
+    server_and_state,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _server, _state, sock_path = server_and_state
+    receipts_path = tmp_path / "action-receipts.jsonl"
+    monkeypatch.setattr(cs, "_ACTION_RECEIPTS_JSONL", receipts_path)
+
+    resp = _call(
+        sock_path,
+        {
+            "request_id": "cmd:req:nope",
+            "command": "compositor.nope",
+            "args": {},
+        },
+    )
+
+    assert resp["status"] == "error"
+    assert resp["request_id"] == "cmd:req:nope"
+    receipt = ActionReceipt.model_validate_json(receipts_path.read_text().splitlines()[0])
+    assert receipt.request_id == "cmd:req:nope"
+    assert receipt.status is ActionReceiptStatus.BLOCKED
+    assert receipt.blocked_reasons == ["unknown_command"]
 
 
 def test_invalid_json_reports_error(tmp_path: Path) -> None:
