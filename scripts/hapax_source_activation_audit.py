@@ -109,10 +109,10 @@ def _count_by(entries: list[ConsumerEntry]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
-def _classify_unit_usage(content: str) -> str:
-    has_workdir = bool(re.search(rf"WorkingDirectory\s*=\s*{re.escape(CANONICAL_PATH)}", content))
-    has_execstart = bool(re.search(rf"ExecStart.*{re.escape(CANONICAL_PATH)}", content))
-    has_doc_only = bool(re.search(rf"Documentation.*{re.escape(CANONICAL_PATH)}", content))
+def _classify_unit_usage(content: str, canonical: str = CANONICAL_PATH) -> str:
+    has_workdir = bool(re.search(rf"WorkingDirectory\s*=\s*{re.escape(canonical)}", content))
+    has_execstart = bool(re.search(rf"ExecStart.*{re.escape(canonical)}", content))
+    has_doc_only = bool(re.search(rf"Documentation.*{re.escape(canonical)}", content))
 
     if has_workdir and has_execstart:
         return "workdir+exec"
@@ -189,7 +189,7 @@ def scan_symlinks(bin_dir: Path) -> list[ConsumerEntry]:
     return entries
 
 
-def scan_hooks(hooks_dir: Path) -> list[ConsumerEntry]:
+def scan_hooks(hooks_dir: Path, canonical: str = CANONICAL_PATH) -> list[ConsumerEntry]:
     entries: list[ConsumerEntry] = []
     if not hooks_dir.is_dir():
         return entries
@@ -202,7 +202,7 @@ def scan_hooks(hooks_dir: Path) -> list[ConsumerEntry]:
         except (OSError, UnicodeDecodeError):
             continue
 
-        if CANONICAL_PATH not in content:
+        if canonical not in content:
             continue
 
         classification = (
