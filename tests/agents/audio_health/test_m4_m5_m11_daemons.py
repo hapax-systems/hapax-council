@@ -193,7 +193,7 @@ class TestM4RawSampleContract:
         assert state.last_correlation is not None
         assert state.last_correlation > 0.9
 
-    def test_low_correlation_with_two_live_stages_does_not_page_operator(self) -> None:
+    def test_low_correlation_with_two_live_stages_is_diagnostic_only(self) -> None:
         rng = np.random.default_rng(42)
         samples_a = (0.25 * rng.standard_normal(48000) * 32767).astype(np.int16)
         samples_b = (0.25 * rng.standard_normal(48000) * 32767).astype(np.int16)
@@ -224,7 +224,8 @@ class TestM4RawSampleContract:
         assert state.last_error is None
         assert state.last_correlation is not None
         assert state.last_correlation < cfg.correlation_min
-        assert state.breach_count == 1
+        assert state.breach_count == 0
+        assert state.low_correlation_count == 1
         send_ntfy.assert_not_called()
 
     def test_downstream_silence_after_upstream_signal_pages_operator(self) -> None:
