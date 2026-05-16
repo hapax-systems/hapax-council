@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ from agents.audio_health.m1_dimensions import compute_envelope_correlation
 from agents.audio_health.m4_inter_stage_corr_daemon import (
     M4DaemonConfig,
     PairState,
+    _is_downstream_signal_loss,
     _pair_key,
     _probe_pair,
 )
@@ -71,6 +73,14 @@ class TestM4Config:
             cfg = M4DaemonConfig.from_env()
             assert cfg.correlation_min == 0.8
 
+    def test_from_env_can_disable_ntfy(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {"HAPAX_AUDIO_HEALTH_INTER_STAGE_CORR_ENABLE_NTFY": "0"},
+        ):
+            cfg = M4DaemonConfig.from_env()
+            assert cfg.enable_ntfy is False
+
 
 class TestM4Correlation:
     def test_identical_signals_correlation_1(self) -> None:
@@ -122,11 +132,45 @@ class TestM4Emission:
 
 
 class TestM4RawSampleContract:
+    def test_pair_probe_captures_both_stages_concurrently(self) -> None:
+        t = np.linspace(0, 1, 48000, endpoint=False)
+        samples = (0.25 * np.sin(2 * np.pi * 440 * t) * 32767).astype(np.int16)
+        results = {
+            "a.monitor": _probe_result("a", samples),
+            "b.monitor": _probe_result("b", samples.copy()),
+        }
+        started: set[str] = set()
+        lock = threading.Lock()
+        both_started = threading.Event()
+
+        def fake_capture(target: str, *, config: object) -> ProbeResult:
+            with lock:
+                started.add(target)
+                if len(started) == 2:
+                    both_started.set()
+            if not both_started.wait(timeout=1.0):
+                raise AssertionError("second stage capture did not start concurrently")
+            return results[target]
+
+        state = PairState()
+        cfg = M4DaemonConfig(stage_pairs=[("a", "b")], enable_ntfy=False)
+
+        with patch(
+            "agents.audio_health.m4_inter_stage_corr_daemon.capture_and_measure",
+            side_effect=fake_capture,
+        ):
+            _probe_pair("a", "b", state, cfg, now=1000.0)
+
+        assert state.last_error is None
+        assert started == {"a.monitor", "b.monitor"}
+
     def test_pair_probe_uses_result_samples_without_dynamic_measurement_attr(self) -> None:
         t = np.linspace(0, 1, 48000, endpoint=False)
         samples = (0.25 * np.sin(2 * np.pi * 440 * t) * 32767).astype(np.int16)
-        result_a = _probe_result("a", samples)
-        result_b = _probe_result("b", samples.copy())
+        results = {
+            "a.monitor": _probe_result("a", samples),
+            "b.monitor": _probe_result("b", samples.copy()),
+        }
         state = PairState()
         cfg = M4DaemonConfig(
             stage_pairs=[("a", "b")],
@@ -134,17 +178,121 @@ class TestM4RawSampleContract:
             silence_floor_rms=1e-6,
         )
 
+        def fake_capture(target: str, *, config: object) -> ProbeResult:
+            return results[target]
+
         with patch(
             "agents.audio_health.m4_inter_stage_corr_daemon.capture_and_measure",
-            side_effect=[result_a, result_b],
+            side_effect=fake_capture,
         ):
             _probe_pair("a", "b", state, cfg, now=1000.0)
 
-        assert not hasattr(result_a.measurement, "samples_mono")
+        assert not hasattr(results["a.monitor"].measurement, "samples_mono")
         assert state.last_error is None
         assert state.both_silent is False
         assert state.last_correlation is not None
         assert state.last_correlation > 0.9
+
+    def test_low_correlation_with_two_live_stages_does_not_page_operator(self) -> None:
+        rng = np.random.default_rng(42)
+        samples_a = (0.25 * rng.standard_normal(48000) * 32767).astype(np.int16)
+        samples_b = (0.25 * rng.standard_normal(48000) * 32767).astype(np.int16)
+        results = {
+            "a.monitor": _probe_result("a", samples_a),
+            "b.monitor": _probe_result("b", samples_b),
+        }
+        state = PairState(breach_start=1000.0)
+        cfg = M4DaemonConfig(
+            stage_pairs=[("a", "b")],
+            enable_ntfy=True,
+            silence_floor_rms=1e-6,
+            breach_sustain_s=1.0,
+        )
+
+        def fake_capture(target: str, *, config: object) -> ProbeResult:
+            return results[target]
+
+        with (
+            patch(
+                "agents.audio_health.m4_inter_stage_corr_daemon.capture_and_measure",
+                side_effect=fake_capture,
+            ),
+            patch("agents.audio_health.m4_inter_stage_corr_daemon._send_ntfy") as send_ntfy,
+        ):
+            _probe_pair("a", "b", state, cfg, now=1002.0)
+
+        assert state.last_error is None
+        assert state.last_correlation is not None
+        assert state.last_correlation < cfg.correlation_min
+        assert state.breach_count == 1
+        send_ntfy.assert_not_called()
+
+    def test_downstream_silence_after_upstream_signal_pages_operator(self) -> None:
+        t = np.linspace(0, 1, 48000, endpoint=False)
+        samples_a = (0.25 * np.sin(2 * np.pi * 440 * t) * 32767).astype(np.int16)
+        samples_b = np.zeros(48000, dtype=np.int16)
+        results = {
+            "a.monitor": _probe_result("a", samples_a),
+            "b.monitor": _probe_result("b", samples_b),
+        }
+        state = PairState(breach_start=1000.0)
+        cfg = M4DaemonConfig(
+            stage_pairs=[("a", "b")],
+            enable_ntfy=True,
+            silence_floor_rms=1e-6,
+            breach_sustain_s=1.0,
+        )
+
+        def fake_capture(target: str, *, config: object) -> ProbeResult:
+            return results[target]
+
+        with (
+            patch(
+                "agents.audio_health.m4_inter_stage_corr_daemon.capture_and_measure",
+                side_effect=fake_capture,
+            ),
+            patch("agents.audio_health.m4_inter_stage_corr_daemon._send_ntfy") as send_ntfy,
+        ):
+            _probe_pair("a", "b", state, cfg, now=1002.0)
+
+        assert state.last_error is None
+        assert state.last_correlation is not None
+        assert state.last_correlation < cfg.correlation_min
+        assert state.breach_count == 1
+        send_ntfy.assert_called_once()
+
+    def test_both_silent_pair_does_not_page_or_start_breach(self) -> None:
+        silence = np.zeros(48000, dtype=np.int16)
+        results = {
+            "a.monitor": _probe_result("a", silence),
+            "b.monitor": _probe_result("b", silence.copy()),
+        }
+        state = PairState(breach_start=1000.0)
+        cfg = M4DaemonConfig(stage_pairs=[("a", "b")], enable_ntfy=True)
+
+        def fake_capture(target: str, *, config: object) -> ProbeResult:
+            return results[target]
+
+        with (
+            patch(
+                "agents.audio_health.m4_inter_stage_corr_daemon.capture_and_measure",
+                side_effect=fake_capture,
+            ),
+            patch("agents.audio_health.m4_inter_stage_corr_daemon._send_ntfy") as send_ntfy,
+        ):
+            _probe_pair("a", "b", state, cfg, now=1002.0)
+
+        assert state.both_silent is True
+        assert state.last_correlation is None
+        assert state.breach_start is None
+        send_ntfy.assert_not_called()
+
+    def test_downstream_signal_loss_predicate_requires_upstream_signal(self) -> None:
+        cfg = M4DaemonConfig(silence_floor_rms=1e-4)
+
+        assert _is_downstream_signal_loss(0.01, 0.0, cfg) is True
+        assert _is_downstream_signal_loss(0.01, 0.01, cfg) is False
+        assert _is_downstream_signal_loss(0.0, 0.0, cfg) is False
 
     def test_pair_probe_records_capture_error_as_health_evidence(self, tmp_path: Path) -> None:
         good = _probe_result("a", np.zeros(48000, dtype=np.int16))
@@ -160,9 +308,12 @@ class TestM4RawSampleContract:
         state = PairState()
         cfg = M4DaemonConfig(stage_pairs=[("a", "b")], snapshot_path=tmp_path / "corr.json")
 
+        def fake_capture(target: str, *, config: object) -> ProbeResult:
+            return {"a.monitor": good, "b.monitor": bad}[target]
+
         with patch(
             "agents.audio_health.m4_inter_stage_corr_daemon.capture_and_measure",
-            side_effect=[good, bad],
+            side_effect=fake_capture,
         ):
             _probe_pair("a", "b", state, cfg, now=1000.0)
 
@@ -178,11 +329,18 @@ class TestM4RawSampleContract:
         samples = (0.25 * np.sin(2 * np.pi * 440 * t) * 32767).astype(np.int16)
         state = PairState()
         cfg = M4DaemonConfig(stage_pairs=[("a", "b")])
+        results = {
+            "a.monitor": _probe_result("a", samples),
+            "b.monitor": _probe_result("b", samples),
+        }
+
+        def fake_capture(target: str, *, config: object) -> ProbeResult:
+            return results[target]
 
         with (
             patch(
                 "agents.audio_health.m4_inter_stage_corr_daemon.capture_and_measure",
-                side_effect=[_probe_result("a", samples), _probe_result("b", samples)],
+                side_effect=fake_capture,
             ),
             patch(
                 "agents.audio_health.m4_inter_stage_corr_daemon.compute_envelope_correlation",

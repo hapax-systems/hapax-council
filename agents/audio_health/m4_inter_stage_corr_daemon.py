@@ -23,6 +23,7 @@ import os
 import signal
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -86,12 +87,19 @@ class M4DaemonConfig:
             except ValueError:
                 return default
 
+        def _benv(key: str, default: bool) -> bool:
+            raw = os.environ.get(f"HAPAX_AUDIO_HEALTH_INTER_STAGE_CORR_{key}")
+            if raw is None:
+                return default
+            return raw.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+
         return cls(
             probe_interval_s=_fenv("PROBE_INTERVAL_S", DEFAULT_PROBE_INTERVAL_S),
             capture_duration_s=_fenv("CAPTURE_DURATION_S", DEFAULT_CAPTURE_DURATION_S),
             correlation_min=_fenv("CORRELATION_MIN", DEFAULT_CORRELATION_MIN),
             silence_floor_rms=_fenv("SILENCE_FLOOR_RMS", DEFAULT_SILENCE_FLOOR_RMS),
             breach_sustain_s=_fenv("BREACH_SUSTAIN_S", DEFAULT_BREACH_SUSTAIN_S),
+            enable_ntfy=_benv("ENABLE_NTFY", True),
         )
 
 
@@ -225,6 +233,12 @@ def _mark_error(state: PairState, exc: BaseException | str | None) -> None:
     state.analyzer_error_count += 1
 
 
+def _is_downstream_signal_loss(rms_a: float, rms_b: float, config: M4DaemonConfig) -> bool:
+    """Return whether the downstream stage is silent while upstream carries signal."""
+
+    return rms_a >= config.silence_floor_rms and rms_b < config.silence_floor_rms
+
+
 def _probe_pair(
     stage_a: str,
     stage_b: str,
@@ -241,8 +255,11 @@ def _probe_pair(
 
     try:
         probe_cfg = ProbeConfig(duration_s=config.capture_duration_s)
-        result_a = capture_and_measure(f"{stage_a}.monitor", config=probe_cfg)
-        result_b = capture_and_measure(f"{stage_b}.monitor", config=probe_cfg)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            future_a = pool.submit(capture_and_measure, f"{stage_a}.monitor", config=probe_cfg)
+            future_b = pool.submit(capture_and_measure, f"{stage_b}.monitor", config=probe_cfg)
+            result_a = future_a.result()
+            result_b = future_b.result()
 
         if result_a is None or result_b is None:
             _mark_error(state, "probe returned None")
@@ -277,8 +294,15 @@ def _probe_pair(
                 state.breach_start = now
             elif (now - state.breach_start) >= config.breach_sustain_s:
                 state.breach_count += 1
-                log.warning("Signal lost between %s: corr=%.3f", key, corr)
-                if config.enable_ntfy:
+                log.warning(
+                    "Inter-stage correlation breach between %s: corr=%.3f "
+                    "(rms_a=%.6f, rms_b=%.6f)",
+                    key,
+                    corr,
+                    rms_a,
+                    rms_b,
+                )
+                if config.enable_ntfy and _is_downstream_signal_loss(rms_a, rms_b, config):
                     _send_ntfy(key, corr)
                 state.breach_start = now
         else:
