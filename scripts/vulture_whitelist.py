@@ -3317,3 +3317,17 @@ from shared.segment_disconfirmation import (  # noqa: F401, E402
 apply_council_verdicts
 extract_claims
 run_council_disconfirmation
+
+# Angle resolver — multi-source angle resolution for segment prep
+try:
+    from agents.hapax_daimonion.angle_resolver import (  # noqa: F401, E402
+        AngleHypothesis,
+        format_angle_for_composer,
+        resolve_angle,
+    )
+
+    AngleHypothesis
+    format_angle_for_composer
+    resolve_angle
+except ImportError:
+    pass

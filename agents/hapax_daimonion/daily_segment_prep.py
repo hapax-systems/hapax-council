@@ -1442,8 +1442,28 @@ def prep_segment(
 
     log.info("prep_segment: composing %s (%s, %d beats)", prog_id, role, len(beats))
 
+    # Pass 0: Angle resolution — gather competing sources, identify thesis + tension
+    angle_ctx = ""
+    try:
+        from agents.hapax_daimonion.angle_resolver import format_angle_for_composer, resolve_angle
+
+        topic = _extract_topic_string(programme)
+        if topic:
+            angle = resolve_angle(topic)
+            if angle and angle.source_count > 0:
+                angle_ctx = format_angle_for_composer(angle)
+                log.info(
+                    "prep_segment: angle resolved — %d supporting, %d challenging sources",
+                    len(angle.supporting_sources),
+                    len(angle.challenging_sources),
+                )
+    except Exception:
+        log.warning("prep_segment: angle resolution failed, proceeding without", exc_info=True)
+
     # Pass 1: Initial composition
     seed = _build_seed(programme)
+    if angle_ctx:
+        seed = f"{seed}\n\n{angle_ctx}" if seed else angle_ctx
     prompt = _build_full_segment_prompt(programme, seed)
     source_hashes = _source_hashes(programme, seed=seed, prompt=prompt)
     raw = _call_llm(
