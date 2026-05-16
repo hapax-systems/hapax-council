@@ -3,10 +3,10 @@
 //! Extracts the full A11y tree from the active page, serializes to a flat
 //! text format, and writes to shm for agents to read + compress via LLMLingua-2.
 
-use chromiumoxide::Page;
 use chromiumoxide::cdp::browser_protocol::accessibility::{
     AxNode, GetFullAxTreeParams, GetFullAxTreeReturns,
 };
+use chromiumoxide::Page;
 use tauri::{AppHandle, Manager, Runtime};
 
 use super::commands::BrowserState;
@@ -14,9 +14,7 @@ use super::commands::BrowserState;
 /// Extract the full accessibility tree and write to shm.
 #[tauri::command]
 pub async fn browser_a11y_tree<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
-    let state = app
-        .try_state::<BrowserState>()
-        .ok_or("Browser not ready")?;
+    let state = app.try_state::<BrowserState>().ok_or("Browser not ready")?;
     let page = state.0.active_page().await?;
     let tree = extract_a11y_tree(&page).await?;
 
@@ -106,9 +104,18 @@ fn serialize_ax_nodes(nodes: &[AxNode]) -> String {
         // Include node ID for interactive elements (for click/fill targeting)
         let interactive = matches!(
             role_str,
-            "button" | "link" | "textbox" | "searchbox" | "combobox"
-                | "checkbox" | "radio" | "tab" | "menuitem" | "option"
-                | "switch" | "slider"
+            "button"
+                | "link"
+                | "textbox"
+                | "searchbox"
+                | "combobox"
+                | "checkbox"
+                | "radio"
+                | "tab"
+                | "menuitem"
+                | "option"
+                | "switch"
+                | "slider"
         );
         if interactive {
             line.push_str(&format!(" {{id:{}}}", node_id.as_ref()));

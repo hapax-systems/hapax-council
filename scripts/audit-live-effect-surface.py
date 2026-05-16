@@ -161,6 +161,55 @@ BANNED_GLOBAL_LUMA_PARAMS = frozenset(
     }
 )
 AUDIO_SOURCE_PREFIXES = ("audio_", "music.", "audio.", "broadcast.")
+BANNED_AUDIO_REACTIVE_PARAMS = BANNED_GLOBAL_LUMA_PARAMS | frozenset(
+    {
+        "active",
+        "enabled",
+        "fade",
+        "freeze_chance",
+        "freeze_min",
+        "freeze_max",
+        "replay_frames",
+        "check_interval",
+        "threshold",
+        "threshold_low",
+        "threshold_high",
+    }
+)
+REQUIRED_AUDIO_SIGNAL_CLASSES = frozenset(
+    {
+        "low_sustained",
+        "high_sustained",
+        "broadband_sustained",
+        "low_transient",
+        "mid_transient",
+        "high_transient",
+        "spectral_centroid",
+    }
+)
+COUNTER_MONOCHROME_PARAMS = frozenset(
+    {
+        "blend",
+        "chromatic_aberration",
+        "color_levels",
+        "color_mode",
+        "cycle_rate",
+        "edge_glow",
+        "hue_rotate",
+        "palette_shift",
+        "rgb_split",
+        "saturation",
+    }
+)
+COUNTER_MONOCHROME_SIGNAL_CLASSES = frozenset(
+    {
+        "broadband_sustained",
+        "high_sustained",
+        "high_transient",
+        "mid_transient",
+        "spectral_centroid",
+    }
+)
 
 RISK_NODE_CATEGORIES: dict[str, tuple[str, ...]] = {
     "noise_gen": ("full_frame_replacement", "static_entropy"),
@@ -213,6 +262,37 @@ def _read_json(path: Path) -> tuple[Any | None, str | None]:
         return None, f"{type(exc).__name__}:{exc}"
     except json.JSONDecodeError as exc:
         return None, f"JSONDecodeError:{exc}"
+
+
+def _is_audio_source(source: str) -> bool:
+    return source.startswith(AUDIO_SOURCE_PREFIXES)
+
+
+def _infer_audio_signal_class(source: str) -> str:
+    token = source.lower()
+    if not _is_audio_source(source):
+        return "non_audio"
+    if "centroid" in token:
+        return "spectral_centroid"
+    if "onset_rate" in token:
+        return "onset_rate"
+    if any(name in token for name in ("kick", "bass_onset", "low_onset")):
+        return "low_transient"
+    if "snare" in token:
+        return "mid_transient"
+    if any(name in token for name in ("hat", "treble_onset", "high_onset")):
+        return "high_transient"
+    if any(name in token for name in ("bass", "low")):
+        return "low_sustained"
+    if any(name in token for name in ("mid", "voice")):
+        return "mid_sustained"
+    if any(name in token for name in ("treble", "high")):
+        return "high_sustained"
+    if any(name in token for name in ("rms", "energy", "master")):
+        return "broadband_sustained"
+    if any(name in token for name in ("onset", "beat")):
+        return "low_transient"
+    return "unknown_audio"
 
 
 def _rel(path: Path, repo_root: Path) -> str:
@@ -941,6 +1021,11 @@ def _scan_default_modulations(
         "bindings": [],
         "unknown_node_types": [],
         "banned_global_luma_bindings": [],
+        "banned_audio_reactive_bindings": [],
+        "negative_audio_scale_bindings": [],
+        "audio_signal_class_counts": {},
+        "missing_audio_signal_classes": [],
+        "counter_monochrome_bindings": [],
     }
     failures: list[str] = []
     raw, error = _read_json(path)
@@ -948,24 +1033,54 @@ def _scan_default_modulations(
         failures.append(f"default_modulations_json_invalid:{error}")
         return payload, failures
     node_types: set[str] = set()
+    signal_class_counts: dict[str, int] = {}
     for row in raw.get("default_modulations", []) or []:
         if not isinstance(row, dict) or "node" not in row or "param" not in row:
             continue
         node = str(row.get("node", ""))
         param = str(row.get("param", ""))
         source = str(row.get("source", ""))
+        scale = row.get("scale", 0.0)
         node_types.add(node)
-        binding = {"node": node, "param": param, "source": source}
+        signal_class = _infer_audio_signal_class(source)
+        binding = {"node": node, "param": param, "source": source, "signal_class": signal_class}
         payload["bindings"].append(binding)
         if node not in shader_node_types:
             payload["unknown_node_types"].append(node)
             failures.append(f"default_modulation_unknown_node_type:{node}")
-        if source.startswith(AUDIO_SOURCE_PREFIXES) and param in BANNED_GLOBAL_LUMA_PARAMS:
-            payload["banned_global_luma_bindings"].append(binding)
-            failures.append(f"default_modulation_banned_global_luma:{source}:{node}.{param}")
+        if _is_audio_source(source):
+            signal_class_counts[signal_class] = signal_class_counts.get(signal_class, 0) + 1
+            if param in BANNED_GLOBAL_LUMA_PARAMS:
+                payload["banned_global_luma_bindings"].append(binding)
+                failures.append(f"default_modulation_banned_global_luma:{source}:{node}.{param}")
+            if param in BANNED_AUDIO_REACTIVE_PARAMS:
+                payload["banned_audio_reactive_bindings"].append(binding)
+                failures.append(
+                    f"default_modulation_banned_audio_reactive_param:{source}:{node}.{param}"
+                )
+            if isinstance(scale, (int, float)) and scale < 0.0:
+                payload["negative_audio_scale_bindings"].append({**binding, "scale": float(scale)})
+                failures.append(f"default_modulation_negative_audio_scale:{source}:{node}.{param}")
+            if (
+                param in COUNTER_MONOCHROME_PARAMS
+                and signal_class in COUNTER_MONOCHROME_SIGNAL_CLASSES
+            ):
+                payload["counter_monochrome_bindings"].append(binding)
     payload["count"] = len(payload["bindings"])
     payload["node_types"] = sorted(node_types)
     payload["unknown_node_types"] = sorted(set(payload["unknown_node_types"]))
+    payload["audio_signal_class_counts"] = dict(sorted(signal_class_counts.items()))
+    missing_signal_classes = sorted(REQUIRED_AUDIO_SIGNAL_CLASSES - set(signal_class_counts))
+    payload["missing_audio_signal_classes"] = missing_signal_classes
+    failures.extend(
+        f"default_modulation_missing_audio_signal_class:{signal_class}"
+        for signal_class in missing_signal_classes
+    )
+    if len(payload["counter_monochrome_bindings"]) < 8:
+        failures.append(
+            "default_modulation_counter_monochrome_routes_insufficient:"
+            f"{len(payload['counter_monochrome_bindings'])}"
+        )
     return payload, failures
 
 

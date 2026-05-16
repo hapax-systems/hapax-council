@@ -46,7 +46,10 @@ impl BrowserEngine {
             }
         });
 
-        log::info!("Browser engine launched (headless, profile: {:?})", profile_dir);
+        log::info!(
+            "Browser engine launched (headless, profile: {:?})",
+            profile_dir
+        );
 
         Ok(Arc::new(Self {
             browser,
@@ -98,8 +101,8 @@ impl BrowserEngine {
     /// Take a screenshot of the active page, returns base64-encoded PNG.
     pub async fn screenshot(&self) -> Result<String, String> {
         use base64::Engine;
-        use chromiumoxide::page::ScreenshotParams;
         use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
+        use chromiumoxide::page::ScreenshotParams;
 
         let page = self.active_page().await?;
         let bytes = page

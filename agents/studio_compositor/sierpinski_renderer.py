@@ -878,7 +878,11 @@ class SierpinskiRenderer:
             canvas_h=OUTPUT_HEIGHT,
             target_fps=RENDER_FPS,
             budget_tracker=budget_tracker,
+            publish_to_source_protocol=True,
         )
+        # Phase 2 3D: Sierpinski is the mid-depth visual anchor
+        self._runner._publish_opacity = 0.6
+        self._runner._publish_z_order = 4  # MidScrim
 
     def start(self) -> None:
         """Start the background render thread."""

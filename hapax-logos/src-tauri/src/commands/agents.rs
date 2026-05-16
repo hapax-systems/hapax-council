@@ -109,7 +109,11 @@ pub fn get_demos() -> Vec<Demo> {
                 .collect();
 
             demo.has_video = Some(demo.files.iter().any(|f| f.ends_with(".mp4")));
-            demo.has_audio = Some(demo.files.iter().any(|f| f.ends_with(".mp3") || f.ends_with(".wav")));
+            demo.has_audio = Some(
+                demo.files
+                    .iter()
+                    .any(|f| f.ends_with(".mp3") || f.ends_with(".wav")),
+            );
 
             Some(demo)
         })
@@ -148,7 +152,11 @@ pub fn get_demo(id: String) -> Option<Demo> {
         .collect();
 
     demo.has_video = Some(demo.files.iter().any(|f| f.ends_with(".mp4")));
-    demo.has_audio = Some(demo.files.iter().any(|f| f.ends_with(".mp3") || f.ends_with(".wav")));
+    demo.has_audio = Some(
+        demo.files
+            .iter()
+            .any(|f| f.ends_with(".mp3") || f.ends_with(".wav")),
+    );
 
     Some(demo)
 }

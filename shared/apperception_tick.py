@@ -68,7 +68,7 @@ class ApperceptionTick:
         self._store = ApperceptionStore()
         try:
             self._store.ensure_collection()
-        except (OSError, RuntimeError):
+        except Exception:
             log.debug("Failed to ensure apperception collection", exc_info=True)
 
         # Exploration tracker — publishes the apperception writer's

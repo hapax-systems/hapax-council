@@ -12,76 +12,44 @@ struct FragmentOutput {
 
 var<private> fragColor: vec4<f32>;
 var<private> v_texcoord_1: vec2<f32>;
-@group(1) @binding(0) 
+@group(1) @binding(0)
 var tex: texture_2d<f32>;
-@group(1) @binding(1) 
+@group(1) @binding(1)
 var tex_sampler: sampler;
-@group(2) @binding(0) 
+@group(2) @binding(0)
 var<uniform> global: Params;
 
 fn main_1() {
-    var center: vec2<f32>;
-    var uv: vec2<f32>;
-    var r: f32;
-    var theta: f32;
-    var logr: f32;
-    var n: f32;
-    var p: f32;
-    var t: f32;
-    var angle: f32;
-    var scale: f32;
-    var nuv: vec2<f32>;
+    let uv0 = v_texcoord_1;
+    let source = textureSample(tex, tex_sampler, uv0);
+    let center = vec2<f32>(clamp(global.u_center_x, 0.45, 0.55), clamp(global.u_center_y, 0.45, 0.55));
+    let uv = uv0 - center;
+    let radius = length(uv);
+    let theta = atan2(uv.y, uv.x);
+    let logr = log(max(radius, 0.0001));
+    let branches = clamp(global.u_branches, 1.0, 4.0);
+    let spiral = clamp(global.u_spiral, 0.0, 0.90);
+    let t = uniforms.time * clamp(global.u_zoom_speed, 0.0, 0.42);
+    var angle = theta + (spiral * logr) - t;
+    let scale_phase = logr - (t * 0.5);
+    var scale = exp((scale_phase - (floor(scale_phase / 0.6931472) * 0.6931472)) - 0.6931472);
+    let sector = 6.28318 / branches;
+    angle = angle - (floor(angle / sector) * sector);
+    let nuv = fract((vec2<f32>(cos(angle), sin(angle)) * scale) + center);
+    let warped = textureSample(tex, tex_sampler, nuv);
 
-    let _e16 = global.u_center_x;
-    let _e17 = global.u_center_y;
-    center = vec2<f32>(_e16, _e17);
-    let _e20 = v_texcoord_1;
-    let _e21 = center;
-    uv = (_e20 - _e21);
-    let _e24 = uv;
-    r = length(_e24);
-    let _e27 = uv;
-    let _e29 = uv;
-    theta = atan2(_e27.y, _e29.x);
-    let _e33 = r;
-    logr = log(max(_e33, 0.0001f));
-    let _e38 = global.u_branches;
-    n = _e38;
-    let _e40 = global.u_spiral;
-    p = _e40;
-
-    let _e43 = global.u_zoom_speed;
-    t = (uniforms.time * _e43);
-    let _e46 = theta;
-    let _e47 = p;
-    let _e48 = logr;
-    let _e51 = t;
-    angle = ((_e46 + (_e47 * _e48)) - _e51);
-    let _e54 = logr;
-    let _e55 = t;
-    let _e58 = (_e54 - (_e55 * 0.5f));
-    scale = exp(((_e58 - (floor((_e58 / 0.6931472f)) * 0.6931472f)) - 0.6931472f));
-    let _e70 = angle;
-    let _e72 = n;
-    let _e73 = (6.28318f / _e72);
-    angle = (_e70 - (floor((_e70 / _e73)) * _e73));
-    let _e78 = angle;
-    let _e80 = angle;
-    let _e83 = scale;
-    let _e85 = center;
-    nuv = ((vec2<f32>(cos(_e78), sin(_e80)) * _e83) + _e85);
-    let _e88 = nuv;
-    nuv = fract(_e88);
-    let _e90 = nuv;
-    let _e91 = textureSample(tex, tex_sampler, _e90);
-    fragColor = _e91;
+    let source_luma = dot(source.xyz, vec3<f32>(0.299, 0.587, 0.114));
+    let surface_presence = smoothstep(0.025, 0.14, source_luma);
+    let geometry_presence = max(surface_presence, 0.22);
+    let outer_ring = smoothstep(0.12, 0.48, radius);
+    let strength = geometry_presence * outer_ring * clamp((global.u_zoom_speed * 0.90) + (spiral * 0.35), 0.0, 0.56);
+    fragColor = vec4<f32>(mix(source.xyz, warped.xyz, vec3<f32>(strength)), source.a);
     return;
 }
 
-@fragment 
+@fragment
 fn main(@location(0) v_texcoord: vec2<f32>) -> FragmentOutput {
     v_texcoord_1 = v_texcoord;
     main_1();
-    let _e23 = fragColor;
-    return FragmentOutput(_e23);
+    return FragmentOutput(fragColor);
 }

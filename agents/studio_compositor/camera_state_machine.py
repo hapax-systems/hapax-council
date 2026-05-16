@@ -170,11 +170,21 @@ class CameraStateMachine:
             return None
 
         if s == CameraState.DEGRADED:
+            if e == EventKind.FRAME_FLOW_OBSERVED:
+                # A transient bus/watchdog fault can leave the pipeline in
+                # DEGRADED even while pad-probe frames continue to flow. Treat
+                # sustained fresh frames as the recovery proof.
+                self._consecutive_failures = 0
+                return CameraState.HEALTHY
             if e == EventKind.SWAP_COMPLETED:
                 return CameraState.OFFLINE
             if e == EventKind.DEVICE_REMOVED:
                 return CameraState.OFFLINE
-            if e == EventKind.PIPELINE_ERROR:
+            if e in (
+                EventKind.FRAME_FLOW_STALE,
+                EventKind.WATCHDOG_FIRED,
+                EventKind.PIPELINE_ERROR,
+            ):
                 return CameraState.OFFLINE
             return None
 

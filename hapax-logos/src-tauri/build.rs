@@ -20,10 +20,7 @@ fn main() {
     }
 
     // Build timestamp (no vergen needed)
-    println!(
-        "cargo:rustc-env=VERGEN_BUILD_TIMESTAMP={}",
-        chrono_now()
-    );
+    println!("cargo:rustc-env=VERGEN_BUILD_TIMESTAMP={}", chrono_now());
 
     tauri_build::build();
 }

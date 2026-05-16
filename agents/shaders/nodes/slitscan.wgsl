@@ -35,38 +35,38 @@ var<uniform> global: Params;
 
 fn main_1() {
     let uv = v_texcoord_1;
-    let dim = textureDimensions(tex);
-    let w = f32(dim.x);
-    let h = f32(dim.y);
+    let current = textureSample(tex, tex_sampler, uv);
+    if (global.u_speed <= 0.0001) {
+        fragColor = current;
+        return;
+    }
 
-    // The scan slit position cycles across the frame
-    let slit_pos: f32;
+    let luma = dot(current.xyz, vec3<f32>(0.299, 0.587, 0.114));
+    let surface_presence = smoothstep(0.025, 0.14, luma);
+    let geometry_presence = max(surface_presence, 0.20);
+    let speed = clamp(global.u_speed, 0.0, 0.85);
+
+    // The scan slit position cycles across the frame. Slitscan must not
+    // replace the scene with the accumulator: that freezes the livestream
+    // and reads as a screen pane. The accumulator is now a bounded temporal
+    // smear blended back into the live surface.
+    let slit_pos = fract(uniforms.time * (0.10 + speed * 0.65));
+    let scan_coord = select(uv.x, uv.y, global.u_direction >= 0.5);
+    let dist = abs(scan_coord - slit_pos);
+    let wrap_dist = min(dist, 1.0 - dist);
+    let slit_width = max(0.035, speed * 0.28);
+    let slit_mask = 1.0 - smoothstep(slit_width * 0.35, slit_width, wrap_dist);
+
+    let accumulated = textureSample(tex_accum, tex_accum_sampler, uv);
+    let temporal = mix(accumulated, current, vec4<f32>(slit_mask));
+    let temporal_strength = geometry_presence * clamp(0.18 + speed * 0.75, 0.0, 0.62);
+
     if (global.u_direction < 0.5) {
-        // Horizontal: slit is a vertical line sweeping left-to-right
-        slit_pos = fract(uniforms.time * global.u_speed * 0.02);
-        let col = uv.x;
-        // How far is this column from the current slit?
-        let dist = abs(col - slit_pos);
-        let wrap_dist = min(dist, 1.0 - dist);
-        // Columns near the slit get the current frame; far columns keep the accumulator
-        if (wrap_dist < (global.u_speed * 0.02)) {
-            // This column is at the slit — sample current frame
-            fragColor = textureSample(tex, tex_sampler, uv);
-        } else {
-            // This column retains its historical value from the accumulator
-            fragColor = textureSample(tex_accum, tex_accum_sampler, uv);
-        }
+        // Horizontal scan: vertical temporal smear, but live motion remains.
+        fragColor = mix(current, temporal, vec4<f32>(temporal_strength));
     } else {
-        // Vertical: slit is a horizontal line sweeping top-to-bottom
-        slit_pos = fract(uniforms.time * global.u_speed * 0.02);
-        let row = uv.y;
-        let dist = abs(row - slit_pos);
-        let wrap_dist = min(dist, 1.0 - dist);
-        if (wrap_dist < (global.u_speed * 0.02)) {
-            fragColor = textureSample(tex, tex_sampler, uv);
-        } else {
-            fragColor = textureSample(tex_accum, tex_accum_sampler, uv);
-        }
+        // Vertical scan: horizontal temporal smear, but live motion remains.
+        fragColor = mix(current, temporal, vec4<f32>(temporal_strength));
     }
 
     fragColor = clamp(fragColor, vec4(0.0), vec4(1.0));

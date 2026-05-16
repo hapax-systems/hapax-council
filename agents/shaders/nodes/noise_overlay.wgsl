@@ -39,10 +39,20 @@ fn main_1() {
     var local: f32;
     var n: f32;
     var r: vec3<f32>;
+    var source_luma: f32;
+    var surface_presence: f32;
+    var effective_intensity: f32;
 
     let _e14 = v_texcoord_1;
     let _e15 = textureSample(tex, tex_sampler, _e14);
     c = _e15;
+    source_luma = dot(c.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    surface_presence = smoothstep(0.045f, 0.18f, source_luma);
+    effective_intensity = clamp(global.u_intensity, 0f, 0.045f) * surface_presence;
+    if (effective_intensity <= 0.001f) {
+        fragColor = c;
+        return;
+    }
     let _e17 = v_texcoord_1;
 
     uv = floor(((_e17 * vec2<f32>(uniforms.resolution.x, uniforms.resolution.y)) / vec2(8f)));
@@ -66,7 +76,7 @@ fn main_1() {
     let _e72 = c;
     let _e74 = c;
     let _e76 = r;
-    let _e77 = global.u_intensity;
+    let _e77 = effective_intensity;
     let _e79 = mix(_e74.xyz, _e76, vec3(_e77));
     c.x = _e79.x;
     c.y = _e79.y;

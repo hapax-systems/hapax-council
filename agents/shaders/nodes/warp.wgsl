@@ -23,6 +23,9 @@ var<uniform> global: Params;
 
 fn main_1() {
     var uv: vec2<f32>;
+    var original: vec4<f32>;
+    var warped: vec4<f32>;
+    var blend: f32;
     var t: f32;
     var panX: f32;
     var panY: f32;
@@ -36,6 +39,7 @@ fn main_1() {
 
     let _e24 = v_texcoord_1;
     uv = _e24;
+    original = textureSample(tex, tex_sampler, uv);
 
     t = uniforms.time;
     let _e28 = t;
@@ -97,9 +101,19 @@ fn main_1() {
             uv.x = (_e128.x + _e130);
         }
     }
+    uv = clamp(uv, vec2(0.001f), vec2(0.999f));
     let _e132 = uv;
     let _e133 = textureSample(tex, tex_sampler, _e132);
-    fragColor = _e133;
+    warped = _e133;
+    blend = clamp(
+        (abs(global.u_slice_amplitude) * 4.0f) +
+        (abs(global.u_rotation) * 4.0f) +
+        (abs(global.u_zoom - 1.0f) * 8.0f) +
+        (abs(global.u_zoom_breath) * 8.0f),
+        0.0f,
+        0.62f,
+    );
+    fragColor = vec4<f32>(mix(original.xyz, warped.xyz, vec3(blend)), original.w);
     return;
 }
 

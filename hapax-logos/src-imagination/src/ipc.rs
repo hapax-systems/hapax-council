@@ -113,7 +113,8 @@ mod tests {
 
     #[test]
     fn parse_windowed() {
-        let input = r#"{"type":"window","action":{"action":"windowed","x":100,"y":200,"w":800,"h":600}}"#;
+        let input =
+            r#"{"type":"window","action":{"action":"windowed","x":100,"y":200,"w":800,"h":600}}"#;
         let cmd = parse_command(input).unwrap();
         assert_eq!(
             cmd,

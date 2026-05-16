@@ -35,7 +35,11 @@ fn main_1() {
     let _e16 = textureSample(tex_accum, tex_accum_sampler, _e15);
     acc = _e16;
     let _e19 = global.u_frame_count;
-    w = (1f / _e19);
+    if (_e19 <= 1.0f) {
+        fragColor = cur;
+        return;
+    }
+    w = max((1f / clamp(_e19, 2f, 18f)), 0.12f);
     let _e23 = w;
     let _e25 = global.u_decay_curve;
     decay = pow((1f - _e23), _e25);
@@ -70,7 +74,11 @@ fn main_1() {
     }
     let _e71 = r;
     let _e76 = clamp(_e71, vec3(0f), vec3(1f));
-    fragColor = vec4<f32>(_e76.x, _e76.y, _e76.z, 1f);
+    let cur_luma = dot(cur.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    let surface_presence =         smoothstep(0.008f, 0.09f, cur_luma);
+    let echo_strength = surface_presence * clamp((1f - w) * 0.46f, 0f, 0.38f);
+    let live_bound = mix(cur.xyz, _e76, vec3<f32>(echo_strength));
+    fragColor = vec4<f32>(live_bound.x, live_bound.y, live_bound.z, cur.a);
     return;
 }
 

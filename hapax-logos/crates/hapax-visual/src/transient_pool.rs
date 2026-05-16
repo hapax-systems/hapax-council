@@ -327,7 +327,7 @@ mod tests {
         assert_eq!(pool.in_use_count(42), 3);
         pool.begin_frame();
         assert_eq!(pool.in_use_count(42), 0);
-        assert_eq!(pool.bucket_size(42), 3);  // textures still cached
+        assert_eq!(pool.bucket_size(42), 3); // textures still cached
     }
 
     #[test]
@@ -340,7 +340,7 @@ mod tests {
         assert_eq!(pool.bucket_size(42), 2);
         pool.begin_frame();
         assert_eq!(pool.bucket_size(42), 2);
-        pool.acquire_tracked(42, || 999);  // recycles slot 0
+        pool.acquire_tracked(42, || 999); // recycles slot 0
         assert_eq!(pool.bucket_size(42), 2);
     }
 
@@ -438,5 +438,4 @@ mod tests {
         assert_eq!(a.bucket_count(), b.bucket_count());
         assert_eq!(a.total_acquires(), b.total_acquires());
     }
-
 }

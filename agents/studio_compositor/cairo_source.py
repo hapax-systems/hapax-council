@@ -661,32 +661,36 @@ class CairoSourceRunner:
     def _publish_to_source_protocol(self, surface: cairo.ImageSurface) -> None:
         """Write the surface bytes to the shared-memory source protocol.
 
-        Imported lazily so tests don't need the imagination_source_protocol
-        module installed and the source protocol writer can be replaced
-        in future phases without churning every CairoSource.
+        Phase 2 3D migration: uses content_injector.inject_rgba which
+        writes frame.rgba + manifest.json to /dev/shm/hapax-imagination/sources/.
+        The Rust ContentSourceManager picks these up and the 3D SceneRenderer
+        displays them as textured quads at their z-plane depths.
         """
         try:
-            from agents.imagination_source_protocol import inject_rgba
+            import numpy as np
 
-            rgba_bytes = bytes(surface.get_data())
+            from agents.reverie.content_injector import inject_rgba
+
+            # Cairo FORMAT_ARGB32 is BGRA in memory on little-endian.
+            # Swap B↔R channels using numpy (vectorized, ~100x faster).
+            w = surface.get_width()
+            h = surface.get_height()
+            buf = np.frombuffer(surface.get_data(), dtype=np.uint8).copy()
+            buf = buf[: w * h * 4].reshape(-1, 4)
+            buf[:, [0, 2]] = buf[:, [2, 0]]  # swap B↔R
             inject_rgba(
                 self._source_id,
-                rgba_bytes,
-                self._canvas_w,
-                self._canvas_h,
+                buf.tobytes(),
+                w,
+                h,
+                opacity=getattr(self, "_publish_opacity", 0.6),
+                z_order=getattr(self, "_publish_z_order", 3),
+                tags=["ward", "cairo"],
             )
         except ImportError:
-            # First-call soft import failure is an expected degradation
-            # path — the module may be deliberately absent on hosts that
-            # don't run the wgpu visual surface. Logging at debug keeps
-            # the signal out of the normal ops log.
             log.debug(
-                "imagination_source_protocol unavailable; CairoSource %s output not published",
+                "content_injector unavailable; CairoSource %s output not published",
                 self._source_id,
             )
         except Exception:
-            # Audit follow-up: was log.debug, which hid actual publish
-            # failures (socket path changed, permissions, malformed
-            # buffer). Promoted to warning so the operator sees a
-            # broken publish instead of a stalled wgpu consumer.
             log.warning("CairoSource %s publish failed", self._source_id, exc_info=True)

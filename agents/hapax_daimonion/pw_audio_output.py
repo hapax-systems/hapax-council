@@ -338,6 +338,13 @@ class PwAudioOutput:
                 except Exception:
                     pass
                 self._processes.pop(key, None)
+            self._last_write_times.clear()
+        if (
+            self._reaper_thread is not None
+            and self._reaper_thread.is_alive()
+            and self._reaper_thread is not threading.current_thread()
+        ):
+            self._reaper_thread.join(timeout=1.0)
 
 
 def play_pcm(

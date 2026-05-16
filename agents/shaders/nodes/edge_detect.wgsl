@@ -106,27 +106,14 @@ fn main_1() {
     let _e153 = global.u_threshold;
     let _e154 = edge;
     edge = step(_e153, _e154);
-    let _e156 = global.u_color_mode;
-    if (_e156 > 0.5f) {
-        {
-            let _e159 = v_texcoord_1;
-            let _e160 = textureSample(tex, tex_sampler, _e159);
-            color = _e160;
-            let _e162 = color;
-            let _e164 = edge;
-            let _e165 = (_e162.xyz * _e164);
-            let _e166 = color;
-            fragColor = vec4<f32>(_e165.x, _e165.y, _e165.z, _e166.w);
-            return;
-        }
-    } else {
-        {
-            let _e172 = edge;
-            let _e173 = vec3(_e172);
-            fragColor = vec4<f32>(_e173.x, _e173.y, _e173.z, 1f);
-            return;
-        }
-    }
+    let _e159 = v_texcoord_1;
+    let _e160 = textureSample(tex, tex_sampler, _e159);
+    color = _e160;
+    let strength = clamp(global.u_color_mode, 0.0f, 1.0f) * edge;
+    let edged = max(color.xyz, vec3(edge));
+    let mixed = mix(color.xyz, edged, vec3(strength * 0.65f));
+    fragColor = vec4<f32>(mixed.x, mixed.y, mixed.z, color.w);
+    return;
 }
 
 @fragment 

@@ -157,6 +157,33 @@ def build_pipeline(compositor: Any) -> Any:
     Gst = compositor._Gst
 
     pipeline = Gst.Pipeline.new("studio-compositor")
+
+    # 3D compositor bypass — when the wgpu imagination pipeline owns
+    # rendering and v4l2 output, skip glvideomixer/FX/v4l2sink entirely.
+    # Camera capture sub-pipelines still run for JPEG snapshots.
+    if os.environ.get("HAPAX_3D_COMPOSITOR") == "1":
+        log.info(
+            "HAPAX_3D_COMPOSITOR=1 — skipping GStreamer compositing/FX/v4l2 output. "
+            "Camera capture pipelines will start independently."
+        )
+        fps = compositor.config.framerate
+        compositor._pipeline_manager = PipelineManager(
+            specs=list(compositor.config.cameras),
+            gst=Gst,
+            glib=compositor._GLib,
+            fps=fps,
+            on_transition=_on_pipeline_manager_transition_factory(compositor),
+        )
+        compositor._pipeline_manager.build()
+        with compositor._camera_status_lock:
+            for role, status in compositor._pipeline_manager.status_all().items():
+                compositor._camera_status[role] = status
+        compositor._v4l2_output_pipeline = None
+        compositor._use_cuda = False
+        compositor._tile_layout = {}
+        compositor._initial_layout_mode = "3d"
+        compositor._layout_mode = "3d"
+        return pipeline
     startup_mode = resolve_startup_layout_mode()
     if compositor.config.cameras:
         layout = compute_safe_tile_layout(

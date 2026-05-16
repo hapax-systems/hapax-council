@@ -102,12 +102,7 @@ fn parse_briefing(content: &str) -> Option<BriefingData> {
                 };
 
                 // Extract action text after **...**
-                let action_text = line
-                    .split("**")
-                    .nth(2)
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
+                let action_text = line.split("**").nth(2).unwrap_or("").trim().to_string();
                 current_action = Some((priority.to_string(), action_text));
             } else if line.starts_with("  - ") && current_action.is_some() {
                 // Sub-bullet: reason or command

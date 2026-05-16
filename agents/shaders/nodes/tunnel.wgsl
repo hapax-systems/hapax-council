@@ -11,69 +11,36 @@ struct FragmentOutput {
 
 var<private> fragColor: vec4<f32>;
 var<private> v_texcoord_1: vec2<f32>;
-@group(1) @binding(0) 
+@group(1) @binding(0)
 var tex: texture_2d<f32>;
-@group(1) @binding(1) 
+@group(1) @binding(1)
 var tex_sampler: sampler;
-@group(2) @binding(0) 
+@group(2) @binding(0)
 var<uniform> global: Params;
 
 fn main_1() {
-    var uv: vec2<f32>;
-    var r: f32;
-    var angle: f32;
-    var tunnel_r: f32;
-    var tunnel_a: f32;
-    var tunnelUV: vec2<f32>;
-    var color: vec4<f32>;
-    var fade: f32;
-
-    let _e14 = v_texcoord_1;
-    uv = (_e14 - vec2(0.5f));
-    let _e19 = uv;
-    r = length(_e19);
-    let _e22 = uv;
-    let _e24 = uv;
-    angle = atan2(_e22.y, _e24.x);
-    let _e28 = global.u_radius;
-    let _e29 = r;
-    tunnel_r = (_e28 / (_e29 + 0.001f));
-    let _e34 = angle;
-    tunnel_a = (_e34 / 3.1415927f);
-    let _e38 = tunnel_r;
-
-    let _e40 = global.u_speed;
-    tunnel_r = (_e38 + (uniforms.time * _e40));
-    let _e43 = tunnel_a;
-    let _e44 = global.u_twist;
-    let _e45 = tunnel_r;
-    tunnel_a = (_e43 + ((_e44 * _e45) * 0.1f));
-    let _e50 = tunnel_a;
-    let _e51 = tunnel_r;
-    let _e52 = global.u_distortion;
-    tunnel_a = (_e50 + (sin((_e51 * _e52)) * 0.1f));
-    let _e58 = tunnel_a;
-    let _e59 = tunnel_r;
-    tunnelUV = vec2<f32>(_e58, fract(_e59));
-    let _e63 = tunnelUV;
-    tunnelUV = fract(_e63);
-    let _e65 = tunnelUV;
-    let _e66 = textureSample(tex, tex_sampler, _e65);
-    color = _e66;
-    let _e70 = r;
-    fade = smoothstep(0f, 0.1f, _e70);
-    let _e73 = color;
-    let _e75 = fade;
-    let _e76 = (_e73.xyz * _e75);
-    let _e77 = color;
-    fragColor = vec4<f32>(_e76.x, _e76.y, _e76.z, _e77.w);
+    let uv0 = v_texcoord_1;
+    let source = textureSample(tex, tex_sampler, uv0);
+    let centered = uv0 - vec2<f32>(0.5);
+    let radius = length(centered);
+    let angle = atan2(centered.y, centered.x);
+    let tunnel_r = (clamp(global.u_radius, 0.08, 0.24) / (radius + 0.001)) + (uniforms.time * clamp(global.u_speed, 0.0, 0.62));
+    var tunnel_a = (angle / 3.1415927) + (clamp(global.u_twist, 0.0, 1.15) * tunnel_r * 0.1);
+    tunnel_a = tunnel_a + (sin(tunnel_r * clamp(global.u_distortion, 0.0, 4.8)) * 0.075);
+    let tunnel_uv = fract(vec2<f32>(tunnel_a, tunnel_r));
+    let tunnel = textureSample(tex, tex_sampler, tunnel_uv);
+    let source_luma = dot(source.xyz, vec3<f32>(0.299, 0.587, 0.114));
+    let surface_presence = smoothstep(0.025, 0.14, source_luma);
+    let geometry_presence = max(surface_presence, 0.22);
+    let edge_weight = smoothstep(0.08, 0.44, radius);
+    let strength = geometry_presence * edge_weight * clamp(global.u_speed + (global.u_twist * 0.30), 0.0, 0.58);
+    fragColor = vec4<f32>(mix(source.xyz, tunnel.xyz, vec3<f32>(strength)), source.a);
     return;
 }
 
-@fragment 
+@fragment
 fn main(@location(0) v_texcoord: vec2<f32>) -> FragmentOutput {
     v_texcoord_1 = v_texcoord;
     main_1();
-    let _e21 = fragColor;
-    return FragmentOutput(_e21);
+    return FragmentOutput(fragColor);
 }

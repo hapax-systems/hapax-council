@@ -11,77 +11,52 @@ struct FragmentOutput {
 
 var<private> fragColor: vec4<f32>;
 var<private> v_texcoord_1: vec2<f32>;
-@group(1) @binding(0) 
+@group(1) @binding(0)
 var tex: texture_2d<f32>;
-@group(1) @binding(1) 
+@group(1) @binding(1)
 var tex_sampler: sampler;
-@group(2) @binding(0) 
+@group(2) @binding(0)
 var<uniform> global: Params;
 
 fn main_1() {
-    var uv: vec2<f32>;
-    var cell: vec2<f32>;
-    var f: vec2<f32>;
-    var half_gap: f32;
+    let source = textureSample(tex, tex_sampler, v_texcoord_1);
+    let counts = vec2<f32>(clamp(global.u_count_x, 1.0, 5.5), clamp(global.u_count_y, 1.0, 5.5));
+    let uv = v_texcoord_1 * counts;
+    let cell = floor(uv);
+    var f = fract(uv);
+    if global.u_mirror > 0.5 {
+        if (cell.x - (floor(cell.x / 2.0) * 2.0)) > 0.5 {
+            f.x = 1.0 - f.x;
+        }
+        if (cell.y - (floor(cell.y / 2.0) * 2.0)) > 0.5 {
+            f.y = 1.0 - f.y;
+        }
+    }
 
-    let _e12 = v_texcoord_1;
-    let _e13 = global.u_count_x;
-    let _e14 = global.u_count_y;
-    uv = (_e12 * vec2<f32>(_e13, _e14));
-    let _e18 = uv;
-    cell = floor(_e18);
-    let _e21 = uv;
-    f = fract(_e21);
-    let _e24 = global.u_mirror;
-    if (_e24 > 0.5f) {
-        {
-            let _e27 = cell;
-            if ((_e27.x - (floor((_e27.x / 2f)) * 2f)) > 0.5f) {
-                let _e38 = f;
-                f.x = (1f - _e38.x);
-            }
-            let _e41 = cell;
-            if ((_e41.y - (floor((_e41.y / 2f)) * 2f)) > 0.5f) {
-                let _e52 = f;
-                f.y = (1f - _e52.y);
-            }
+    let gap = clamp(global.u_gap, 0.0, 0.050);
+    var gap_gate = 1.0;
+    if gap > 0.0 {
+        let half_gap = gap * 0.5;
+        let in_gap = f.x < half_gap || f.x > (1.0 - half_gap) || f.y < half_gap || f.y > (1.0 - half_gap);
+        if in_gap {
+            gap_gate = 0.74;
         }
+        f = clamp((f - vec2<f32>(half_gap)) / vec2<f32>(max(1.0 - gap, 0.001)), vec2(0.0), vec2(1.0));
     }
-    let _e55 = global.u_gap;
-    if (_e55 > 0f) {
-        {
-            let _e58 = global.u_gap;
-            half_gap = (_e58 * 0.5f);
-            let _e62 = f;
-            let _e64 = half_gap;
-            let _e66 = f;
-            let _e69 = half_gap;
-            let _e73 = f;
-            let _e75 = half_gap;
-            let _e78 = f;
-            let _e81 = half_gap;
-            if ((((_e62.x < _e64) || (_e66.x > (1f - _e69))) || (_e73.y < _e75)) || (_e78.y > (1f - _e81))) {
-                {
-                    fragColor = vec4<f32>(0f, 0f, 0f, 1f);
-                    return;
-                }
-            }
-            let _e90 = f;
-            let _e91 = half_gap;
-            let _e95 = global.u_gap;
-            f = ((_e90 - vec2(_e91)) / vec2((1f - _e95)));
-        }
-    }
-    let _e99 = f;
-    let _e100 = textureSample(tex, tex_sampler, _e99);
-    fragColor = _e100;
+
+    let tiled = textureSample(tex, tex_sampler, f);
+    let source_luma = dot(source.xyz, vec3<f32>(0.299, 0.587, 0.114));
+    let surface_presence = smoothstep(0.025, 0.14, source_luma);
+    let geometry_presence = max(surface_presence, 0.26);
+    let strength = geometry_presence * clamp((counts.x + counts.y - 2.0) * 0.10, 0.0, 0.48);
+    let tiled_bound = mix(source.xyz * gap_gate, tiled.xyz, vec3<f32>(0.72));
+    fragColor = vec4<f32>(mix(source.xyz, tiled_bound, vec3<f32>(strength)), source.a);
     return;
 }
 
-@fragment 
+@fragment
 fn main(@location(0) v_texcoord: vec2<f32>) -> FragmentOutput {
     v_texcoord_1 = v_texcoord;
     main_1();
-    let _e19 = fragColor;
-    return FragmentOutput(_e19);
+    return FragmentOutput(fragColor);
 }

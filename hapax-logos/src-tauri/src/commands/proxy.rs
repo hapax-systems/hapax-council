@@ -33,7 +33,11 @@ async fn proxy_get(app: &AppHandle, path: &str) -> Result<Value, String> {
         .map_err(|e| format!("proxy GET {} json: {}", path, e))
 }
 
-async fn proxy_post_json(app: &AppHandle, path: &str, body: Option<Value>) -> Result<Value, String> {
+async fn proxy_post_json(
+    app: &AppHandle,
+    path: &str,
+    body: Option<Value>,
+) -> Result<Value, String> {
     let url = format!("{}{}", LOGOS_BASE, path);
     let c = client(app);
     let req = if let Some(b) = body {
@@ -53,7 +57,11 @@ async fn proxy_post_json(app: &AppHandle, path: &str, body: Option<Value>) -> Re
         .map_err(|e| format!("proxy POST {} json: {}", path, e))
 }
 
-async fn proxy_patch_json(app: &AppHandle, path: &str, body: Option<Value>) -> Result<Value, String> {
+async fn proxy_patch_json(
+    app: &AppHandle,
+    path: &str,
+    body: Option<Value>,
+) -> Result<Value, String> {
     let url = format!("{}{}", LOGOS_BASE, path);
     let c = client(app);
     let req = if let Some(b) = body {
@@ -96,7 +104,11 @@ pub async fn proxy_get_generic(app: AppHandle, path: String) -> Result<Value, St
 }
 
 #[tauri::command]
-pub async fn proxy_post(app: AppHandle, path: String, body: Option<Value>) -> Result<Value, String> {
+pub async fn proxy_post(
+    app: AppHandle,
+    path: String,
+    body: Option<Value>,
+) -> Result<Value, String> {
     proxy_post_json(&app, &path, body).await
 }
 
@@ -109,16 +121,29 @@ pub async fn proxy_delete(app: AppHandle, path: String) -> Result<Value, String>
 pub async fn proxy_put(app: AppHandle, path: String, body: Option<Value>) -> Result<Value, String> {
     let url = format!("{}{}", LOGOS_BASE, &path);
     let c = client(&app);
-    let req = if let Some(b) = body { c.put(&url).json(&b) } else { c.put(&url) };
-    let resp = req.send().await.map_err(|e| format!("proxy PUT {}: {}", path, e))?;
+    let req = if let Some(b) = body {
+        c.put(&url).json(&b)
+    } else {
+        c.put(&url)
+    };
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("proxy PUT {}: {}", path, e))?;
     if !resp.status().is_success() {
         return Err(format!("proxy PUT {} returned {}", path, resp.status()));
     }
-    resp.json::<Value>().await.map_err(|e| format!("proxy PUT {} json: {}", path, e))
+    resp.json::<Value>()
+        .await
+        .map_err(|e| format!("proxy PUT {} json: {}", path, e))
 }
 
 #[tauri::command]
-pub async fn proxy_patch(app: AppHandle, path: String, body: Option<Value>) -> Result<Value, String> {
+pub async fn proxy_patch(
+    app: AppHandle,
+    path: String,
+    body: Option<Value>,
+) -> Result<Value, String> {
     proxy_patch_json(&app, &path, body).await
 }
 
@@ -161,12 +186,7 @@ pub async fn proxy_scout_decide(
     notes: String,
 ) -> Result<Value, String> {
     let body = serde_json::json!({ "decision": decision, "notes": notes });
-    proxy_post_json(
-        &app,
-        &format!("/scout/{}/decide", component),
-        Some(body),
-    )
-    .await
+    proxy_post_json(&app, &format!("/scout/{}/decide", component), Some(body)).await
 }
 
 // ── Demo mutations ────────────────────────────────────────────────────────────
@@ -272,7 +292,12 @@ pub async fn proxy_insight_query(app: AppHandle, id: String) -> Result<Value, St
 
 #[tauri::command]
 pub async fn proxy_run_insight_query(app: AppHandle, query: String) -> Result<Value, String> {
-    proxy_post_json(&app, "/query/run", Some(serde_json::json!({ "query": query }))).await
+    proxy_post_json(
+        &app,
+        "/query/run",
+        Some(serde_json::json!({ "query": query })),
+    )
+    .await
 }
 
 #[tauri::command]

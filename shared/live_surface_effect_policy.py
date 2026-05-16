@@ -52,35 +52,11 @@ def _force(value: Any) -> ParamBound:
     return ParamBound(force=value, has_force=True)
 
 
-# Nodes in this set are not discarded permanently. They are blocked from the
-# live camera surface until their shaders expose a source-preserving blend,
-# bounded spatial coverage, or valid auxiliary texture bindings.
-LIVE_SURFACE_BLOCKED_NODE_TYPES = frozenset(
-    {
-        "ascii",
-        "blend",
-        "chroma_key",
-        "circular_mask",
-        "crossfade",
-        "diff",
-        "displacement_map",
-        "droste",
-        "edge_detect",
-        "kaleidoscope",
-        "luma_key",
-        "mirror",
-        "nightvision_tint",
-        "noise_gen",
-        "particle_system",
-        "rutt_etra",
-        "solid",
-        "strobe",
-        "threshold",
-        "tile",
-        "tunnel",
-        "waveform_render",
-    }
-)
+# Live-surface policy has no permanent blocklist. Nodes that once replaced the
+# frame or painted a fourth-wall pane have been repaired into source-bound,
+# bounded effects; new unsafe nodes must either enter this set as temporary
+# incident containment or be repaired before merge.
+LIVE_SURFACE_BLOCKED_NODE_TYPES = frozenset()
 
 
 CONTENT_SLOT_GUARDED_NODE_TYPES = frozenset({"content_layer", "sierpinski_content"})
@@ -88,20 +64,40 @@ STRUCTURAL_NODE_TYPES = frozenset({"output"})
 
 
 LIVE_SURFACE_PARAM_BOUNDS: dict[str, dict[str, ParamBound]] = {
+    "ascii": {
+        "cell_size": _range(6.0, 24.0),
+        "color_mode": _range(0.0, 1.0),
+    },
     "bloom": {
         "alpha": _max(0.35),
         "radius": _max(12.0),
         "threshold": _min(0.25),
     },
-    # Full-frame brightness pulsing is disallowed on the live surface.
+    "blend": {
+        "alpha": _max(0.24),
+        "mode": _range(0.0, 4.0),
+    },
+    # Full-frame brightness pulsing remains disallowed; this node is repaired
+    # as bounded geometric breathing with a tiny source-preserving warp.
     "breathing": {
-        "amplitude": _force(0.0),
-        "rate": _max(1.0),
+        "amplitude": _range(0.0, 0.012),
+        "rate": _range(0.05, 0.65),
+    },
+    "chroma_key": {
+        "key_b": _range(0.0, 1.0),
+        "key_g": _range(0.0, 1.0),
+        "key_r": _range(0.0, 1.0),
+        "softness": _range(0.04, 0.12),
+        "tolerance": _range(0.18, 0.35),
     },
     "chromatic_aberration": {
         "intensity": _max(1.0),
         "offset_x": _range(-4.0, 4.0),
         "offset_y": _range(-4.0, 4.0),
+    },
+    "circular_mask": {
+        "radius": _range(0.62, 0.92),
+        "softness": _range(0.08, 0.22),
     },
     "color_map": {"blend": _max(0.35)},
     "colorgrade": {
@@ -116,10 +112,26 @@ LIVE_SURFACE_PARAM_BOUNDS: dict[str, dict[str, ParamBound]] = {
         "matrix_size": _max(4.0),
         "monochrome": _max(0.0),
     },
+    "crossfade": {"mix": _max(0.18)},
+    "diff": {
+        "color_mode": _range(0.0, 2.0),
+        "threshold": _range(0.04, 0.14),
+    },
+    "displacement_map": {
+        "strength_x": _range(-0.055, 0.055),
+        "strength_y": _range(-0.055, 0.055),
+    },
     "drift": {
         "amplitude": _max(0.70),
         "coherence": _max(0.70),
         "speed": _max(1.0),
+    },
+    "droste": {
+        "branches": _range(1.0, 2.5),
+        "center_x": _range(0.45, 0.55),
+        "center_y": _range(0.45, 0.55),
+        "spiral": _range(0.0, 0.45),
+        "zoom_speed": _range(0.0, 0.16),
     },
     "echo": {
         "frame_count": _max(4.0),
@@ -129,6 +141,10 @@ LIVE_SURFACE_PARAM_BOUNDS: dict[str, dict[str, ParamBound]] = {
     "emboss": {
         "blend": _max(0.35),
         "strength": _max(0.35),
+    },
+    "edge_detect": {
+        "color_mode": _range(0.0, 0.35),
+        "threshold": _range(0.08, 0.45),
     },
     "feedback": {
         "blend_mode": _max(1.0),
@@ -144,9 +160,11 @@ LIVE_SURFACE_PARAM_BOUNDS: dict[str, dict[str, ParamBound]] = {
         "zoom": _range(0.75, 1.25),
     },
     "fluid_sim": {
-        "amount": _max(0.15),
-        "speed": _max(1.0),
-        "vorticity": _max(1.0),
+        "amount": _range(0.0, 0.14),
+        "dissipation": _range(0.94, 0.995),
+        "speed": _range(0.0, 1.0),
+        "viscosity": _range(0.001, 0.006),
+        "vorticity": _range(0.0, 1.0),
     },
     "glitch_block": {
         "block_size": _min(8.0),
@@ -157,7 +175,34 @@ LIVE_SURFACE_PARAM_BOUNDS: dict[str, dict[str, ParamBound]] = {
         "dot_size": _max(8.0),
     },
     "invert": {"strength": _max(0.35)},
+    "kaleidoscope": {
+        "center_x": _range(0.47, 0.53),
+        "center_y": _range(0.47, 0.53),
+        "rotation": _range(-0.45, 0.45),
+        "segments": _range(1.5, 4.0),
+    },
     "kuwahara": {"radius": _max(3.0)},
+    "luma_key": {
+        "invert": _force(0.0),
+        "softness": _range(0.04, 0.12),
+        "threshold": _range(0.42, 0.68),
+    },
+    "mirror": {
+        "axis": _range(0.0, 1.0),
+        "position": _range(0.40, 0.75),
+    },
+    "nightvision_tint": {
+        "brightness": _range(0.95, 1.20),
+        "contrast": _range(0.85, 1.15),
+        "green_intensity": _range(0.35, 0.70),
+    },
+    "noise_gen": {
+        "amplitude": _max(0.08),
+        "frequency_x": _range(0.5, 8.0),
+        "frequency_y": _range(0.5, 8.0),
+        "octaves": _range(1.0, 4.0),
+        "speed": _max(0.35),
+    },
     "noise_overlay": {
         "animated": _force(False),
         "intensity": _max(0.10),
@@ -178,6 +223,15 @@ LIVE_SURFACE_PARAM_BOUNDS: dict[str, dict[str, ParamBound]] = {
         "blend": _max(0.35),
         "cycle_rate": _max(1.0),
     },
+    "particle_system": {
+        "color_b": _range(0.0, 1.0),
+        "color_g": _range(0.0, 1.0),
+        "color_r": _range(0.0, 1.0),
+        "emit_rate": _range(24.0, 96.0),
+        "gravity_y": _range(0.0, 60.0),
+        "lifetime": _range(1.5, 4.0),
+        "size": _range(1.0, 3.0),
+    },
     "pixsort": {
         "sort_length": _range(10.0, 100.0),
         "threshold_low": _range(0.35, 0.70),
@@ -194,8 +248,18 @@ LIVE_SURFACE_PARAM_BOUNDS: dict[str, dict[str, ParamBound]] = {
         "vignette_strength": _max(0.25),
     },
     "reaction_diffusion": {
-        "amount": _max(0.15),
-        "speed": _max(1.0),
+        "amount": _range(0.0, 0.13),
+        "diffusion_a": _range(0.8, 1.2),
+        "diffusion_b": _range(0.35, 0.65),
+        "feed_rate": _range(0.035, 0.070),
+        "kill_rate": _range(0.045, 0.066),
+        "speed": _range(0.0, 1.0),
+    },
+    "rutt_etra": {
+        "color_mode": _range(0.0, 1.0),
+        "displacement": _range(-32.0, 32.0),
+        "line_density": _range(3.0, 16.0),
+        "line_width": _range(1.0, 3.0),
     },
     "scanlines": {
         "opacity": _max(0.18),
@@ -213,6 +277,19 @@ LIVE_SURFACE_PARAM_BOUNDS: dict[str, dict[str, ParamBound]] = {
         "opacity": _max(0.45),
     },
     "slitscan": {"speed": _range(0.2, 0.6)},
+    "solid": {
+        "color_a": _range(0.02, 0.10),
+        "color_b": _range(0.0, 1.0),
+        "color_g": _range(0.0, 1.0),
+        "color_r": _range(0.0, 1.0),
+    },
+    "strobe": {
+        "active": _range(0.0, 0.35),
+        "color_a": _max(0.08),
+        "color_b": _range(0.0, 1.0),
+        "color_g": _range(0.0, 1.0),
+        "color_r": _range(0.0, 1.0),
+    },
     "stutter": {
         "check_interval": _min(20.0),
         "freeze_chance": _max(0.08),
@@ -222,6 +299,9 @@ LIVE_SURFACE_PARAM_BOUNDS: dict[str, dict[str, ParamBound]] = {
     },
     "syrup": {
         "bottom_alpha": _max(0.20),
+        "color_b": _range(0.0, 1.0),
+        "color_g": _range(0.0, 1.0),
+        "color_r": _range(0.0, 1.0),
         "top_alpha": _max(0.20),
     },
     "thermal": {
@@ -229,8 +309,18 @@ LIVE_SURFACE_PARAM_BOUNDS: dict[str, dict[str, ParamBound]] = {
         "intensity": _max(0.40),
         "palette_shift": _max(0.35),
     },
+    "threshold": {
+        "level": _range(0.35, 0.65),
+        "softness": _range(0.10, 0.30),
+    },
+    "tile": {
+        "count_x": _range(1.0, 3.0),
+        "count_y": _range(1.0, 3.0),
+        "gap": _range(0.0, 0.035),
+        "mirror": _range(0.0, 1.0),
+    },
     "trail": {
-        "blend_mode": _force("screen"),
+        "blend_mode": _force(1.0),
         "drift_x": _range(-4.0, 4.0),
         "drift_y": _range(-4.0, 4.0),
         "fade": _min(0.12),
@@ -242,6 +332,12 @@ LIVE_SURFACE_PARAM_BOUNDS: dict[str, dict[str, ParamBound]] = {
         "rotation": _range(-0.03, 0.03),
         "scale_x": _range(0.98, 1.02),
         "scale_y": _range(0.98, 1.02),
+    },
+    "tunnel": {
+        "distortion": _range(0.0, 2.0),
+        "radius": _range(0.08, 0.24),
+        "speed": _range(0.0, 0.18),
+        "twist": _range(0.0, 0.40),
     },
     "vhs": {
         "chroma_shift": _max(4.0),
@@ -265,6 +361,12 @@ LIVE_SURFACE_PARAM_BOUNDS: dict[str, dict[str, ParamBound]] = {
         "rotate": _range(-0.03, 0.03),
         "slice_amplitude": _range(-4.0, 4.0),
         "zoom": _range(0.98, 1.02),
+    },
+    "waveform_render": {
+        "color_a": _max(0.16),
+        "scale": _range(0.35, 0.80),
+        "shape": _range(0.0, 2.0),
+        "thickness": _range(0.7, 2.5),
     },
 }
 

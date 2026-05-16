@@ -66,6 +66,9 @@ fn main_1() {
     var localBright: f32;
     var gapFill: f32;
     var scanMult: f32;
+    var surfacePresence: f32;
+    var dropStrength: f32;
+    var sourceAlpha: f32;
 
     let _e16 = v_texcoord_1;
     uv = _e16;
@@ -80,8 +83,9 @@ fn main_1() {
     }
 
     px = (1f / uniforms.resolution.x);
+    let head_switch_y = clamp(global.u_head_switch_y, 0.88f, 0.995f);
     let _e27 = uv;
-    if (_e27.y > 0.93f) {
+    if (_e27.y > head_switch_y) {
         {
             let _e31 = uv;
 
@@ -89,7 +93,8 @@ fn main_1() {
             lineNoise = _e38;
             let _e40 = lineNoise;
             let _e45 = px;
-            jitter = (((_e40 - 0.5f) * 20f) * _e45);
+            let head_gate = smoothstep(head_switch_y, 1f, uv.y);
+            jitter = (((_e40 - 0.5f) * 12f) * _e45 * head_gate);
             let _e49 = uv;
             let _e51 = jitter;
             uv.x = (_e49.x + _e51);
@@ -97,6 +102,7 @@ fn main_1() {
     }
     let _e53 = uv;
     let _e54 = textureSample(tex, tex_sampler, _e53);
+    sourceAlpha = _e54.w;
     luma = dot(_e54.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
     loop {
         let _e70 = i;
@@ -138,7 +144,7 @@ fn main_1() {
     let _e128 = luma;
     let _e130 = chroma;
     let _e131 = (vec3(_e128) + _e130);
-    color = vec4<f32>(_e131.x, _e131.y, _e131.z, 1f);
+    color = vec4<f32>(_e131.x, _e131.y, _e131.z, sourceAlpha);
     let _e138 = uv;
 
     let _e148 = uv;
@@ -161,13 +167,15 @@ fn main_1() {
     let _e202 = crosstalk;
     color.z = (_e200.z - _e202);
     let _e204 = uv;
-    if (_e204.y > 0.93f) {
+    if (_e204.y > head_switch_y) {
         {
 
             let _e209 = uv;
 
             let _e215 = hash(vec2<f32>(uniforms.time, floor((_e209.y * uniforms.resolution.y))));
-            brightShift = ((_e215 * 0.3f) - 0.15f);
+            let head_surface_presence =                 smoothstep(0.008f, 0.09f, luma);
+            let head_gate = smoothstep(head_switch_y, 1f, uv.y);
+            brightShift = (((_e215 * 0.18f) - 0.09f) * head_surface_presence * head_gate);
             let _e221 = color;
             let _e223 = color;
             let _e225 = brightShift;
@@ -210,6 +218,7 @@ fn main_1() {
     color.x = _e309.x;
     color.y = _e309.y;
     color.z = _e309.z;
+    surfacePresence =         smoothstep(0.008f, 0.09f, luma);
     let _e316 = uv;
     let _e318 = global.u_noise_band_y;
     bandDist = abs((_e316.y - _e318));
@@ -239,7 +248,7 @@ fn main_1() {
             let _e371 = displaced;
             let _e372 = noise;
             let _e378 = bandIntensity;
-            let _e381 = mix(_e369.xyz, mix(_e371, vec3(_e372), vec3(0.5f)), vec3((0.6f * _e378)));
+            let _e381 = mix(_e369.xyz, mix(_e371, vec3(_e372), vec3(0.35f)), vec3((0.22f * _e378 * surfacePresence)));
             color.x = _e381.x;
             color.y = _e381.y;
             color.z = _e381.z;
@@ -267,7 +276,7 @@ fn main_1() {
             let _e423 = color;
             let _e425 = noise2_;
             let _e428 = band2Intensity;
-            let _e431 = mix(_e423.xyz, vec3(_e425), vec3((0.3f * _e428)));
+            let _e431 = mix(_e423.xyz, vec3(_e425), vec3((0.14f * _e428 * surfacePresence)));
             color.x = _e431.x;
             color.y = _e431.y;
             color.z = _e431.z;
@@ -282,7 +291,8 @@ fn main_1() {
         {
             let _e453 = color;
             let _e455 = color;
-            let _e461 = mix(_e455.xyz, vec3(1f), vec3(0.8f));
+            dropStrength = 0.16f * surfacePresence;
+            let _e461 = mix(_e455.xyz, min((_e455.xyz + vec3(0.16f)), vec3(1f)), vec3(dropStrength));
             color.x = _e461.x;
             color.y = _e461.y;
             color.z = _e461.z;
@@ -291,7 +301,7 @@ fn main_1() {
     let _e468 = uv;
 
     let _e479 = hash(vec2<f32>(floor(((_e468.y * uniforms.resolution.y) * 0.5f)), (uniforms.time * 3f)));
-    lineJitter = ((_e479 - 0.5f) * 0.03f);
+    lineJitter = (((_e479 - 0.5f) * 0.012f) * surfacePresence);
     let _e485 = color;
     let _e487 = color;
     let _e489 = lineJitter;
@@ -309,7 +319,7 @@ fn main_1() {
     gapFill = (_e526 * 0.3f);
     let _e531 = gapFill;
     let _e534 = scanBright;
-    scanMult = mix((0.82f + _e531), 1f, _e534);
+    scanMult = mix((0.92f + (_e531 * 0.15f)), 1f, _e534);
     let _e537 = color;
     let _e539 = color;
     let _e541 = scanMult;
@@ -317,6 +327,11 @@ fn main_1() {
     color.x = _e542.x;
     color.y = _e542.y;
     color.z = _e542.z;
+    let final_luma = dot(color.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    let luma_deficit = max(0.0f, luma - final_luma);
+    color.x = min(color.x + (luma_deficit * 0.85f), 1.0f);
+    color.y = min(color.y + luma_deficit, 1.0f);
+    color.z = min(color.z + (luma_deficit * 0.75f), 1.0f);
     let _e549 = color;
     fragColor = clamp(_e549, vec4(0f), vec4(1f));
     return;

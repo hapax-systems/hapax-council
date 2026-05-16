@@ -219,21 +219,12 @@ def start_compositor(compositor: Any) -> None:
     # Hero pre-FX effect: software-based hero effect applied on the pre_fx
     # Cairo layer so it goes through the shader chain. Replaces the GL-pipeline
     # hero-effect-slot when HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT=1.
+    # Resolves hero tile position dynamically at draw time.
     compositor._hero_prefx_effect = None
     try:
         from .hero_prefx_effect import HeroPreFxEffect
 
-        heroes = [c for c in compositor.config.cameras if c.hero]
-        target = _hero_effect_target_for_prefx(compositor)
-        if target is not None:
-            role, tile = target
-            compositor._hero_prefx_effect = HeroPreFxEffect(
-                role,
-                tile.x,
-                tile.y,
-                tile.w,
-                tile.h,
-            )
+        compositor._hero_prefx_effect = HeroPreFxEffect()
     except Exception:
         log.exception("HeroPreFxEffect init failed (non-fatal)")
 
@@ -259,7 +250,7 @@ def start_compositor(compositor: Any) -> None:
 
     compositor._write_status("starting")
 
-    if hasattr(compositor, "_v4l2_output_pipeline"):
+    if getattr(compositor, "_v4l2_output_pipeline", None) is not None:
         compositor._v4l2_output_pipeline.start()
         log.info("V4l2OutputPipeline started (interpipeline isolation active)")
         import time as _time
@@ -285,7 +276,10 @@ def start_compositor(compositor: Any) -> None:
     try:
         from .shmsink_output_pipeline import is_bridge_enabled, is_v4l2_output_disabled
 
-        if not is_v4l2_output_disabled() and hasattr(compositor, "_v4l2_output_pipeline"):
+        if (
+            not is_v4l2_output_disabled()
+            and getattr(compositor, "_v4l2_output_pipeline", None) is not None
+        ):
             grace_s = float(os.environ.get("HAPAX_COMPOSITOR_STARTUP_EGRESS_GRACE_S", "6.0"))
             deadline = time.monotonic() + max(0.5, grace_s)
             while time.monotonic() < deadline:
@@ -349,7 +343,13 @@ def start_compositor(compositor: Any) -> None:
 
     compositor._write_status("running")
 
-    apply_startup_preset(compositor)
+    # Startup preset disabled: SlotDriftEngine owns all shader slots
+    # exclusively. Preset plan activation (sierpinski_line_overlay) was
+    # loading edge_detect/sierpinski_lines into slots 0-2 then getting
+    # immediately overwritten by drift boot — creating a visible flash
+    # and competing fragment set_property calls.
+    # apply_startup_preset(compositor)
+    log.info("Startup preset skipped — SlotDriftEngine is sole shader owner")
     log_consent_event(compositor, "pipeline_start", allowed=compositor._consent_recording_allowed)
 
     with compositor._camera_status_lock:
@@ -419,6 +419,18 @@ def start_compositor(compositor: Any) -> None:
         log.info("ward↔FX bidirectional reactor connected")
     except Exception:
         log.warning("ward_fx_reactor connect failed", exc_info=True)
+
+    # 3D compositor Phase 4 — continuous camera publisher.
+    # Publishes all camera JPEG snapshots as RGBA to the source protocol
+    # so the 3D SceneRenderer can display them as textured quads.
+    # Independent of GStreamer pipeline state.
+    try:
+        from agents.studio_compositor.camera_publisher import CameraSourcePublisher
+
+        compositor._camera_publisher = CameraSourcePublisher()
+        compositor._camera_publisher.start()
+    except Exception:
+        log.warning("CameraSourcePublisher start failed", exc_info=True)
 
     # Phase 10 observability polish — publish BudgetTracker snapshots + the
     # degraded signal every second. Closes the dead-path finding from delta's
@@ -518,6 +530,10 @@ def start_compositor(compositor: Any) -> None:
                 # known and must not make the compositor self-kill. The
                 # live-surface preflight still refuses to call this restored.
                 v4l2_alive = True
+            elif os.environ.get("HAPAX_3D_COMPOSITOR") == "1":
+                # 3D compositor mode: wgpu imagination pipeline owns /dev/video42,
+                # not GStreamer. There is no v4l2sink to stall. Always alive.
+                v4l2_alive = True
             elif bridge_enabled:
                 # The compositor watchdog may use render-to-SHM freshness for
                 # the shmsink bridge path, but this is not v4l2/OBS egress
@@ -563,7 +579,6 @@ def start_compositor(compositor: Any) -> None:
                         time.monotonic() - gl_ts,
                     )
                     sd_notify_status("FATAL — GL chain dead, restarting")
-                    import os
 
                     os._exit(1)
 

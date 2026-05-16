@@ -77,7 +77,8 @@ pub async fn start_stream(
     let evt = event_name.clone();
 
     tokio::spawn(async move {
-        let result = run_sse_stream(&app_handle, &evt, stream_id, &path, method, body, cancel_rx).await;
+        let result =
+            run_sse_stream(&app_handle, &evt, stream_id, &path, method, body, cancel_rx).await;
         if let Err(e) = result {
             let _ = app_handle.emit(
                 &evt,
@@ -127,10 +128,7 @@ pub async fn cancel_stream_and_server(app: AppHandle, stream_id: u64) -> Result<
 #[tauri::command]
 pub async fn subscribe_flow_events(app: AppHandle) -> Result<(), String> {
     let registry = app.state::<StreamRegistry>();
-    if registry
-        .flow_events_subscribed
-        .swap(true, Ordering::AcqRel)
-    {
+    if registry.flow_events_subscribed.swap(true, Ordering::AcqRel) {
         return Ok(());
     }
 
@@ -170,7 +168,10 @@ pub async fn subscribe_flow_events(app: AppHandle) -> Result<(), String> {
                         buffer = buffer[newline_pos + 1..].to_string();
                         let line = line.trim_end_matches('\r');
 
-                        if let Some(data) = line.strip_prefix("data: ").or_else(|| line.strip_prefix("data:")) {
+                        if let Some(data) = line
+                            .strip_prefix("data: ")
+                            .or_else(|| line.strip_prefix("data:"))
+                        {
                             let _ = app_handle.emit("flow-event", data.to_string());
                         }
                     }
@@ -282,7 +283,10 @@ pub async fn subscribe_awareness(app: AppHandle) -> Result<(), String> {
             // reconnect on network/server disconnect with exponential
             // backoff" — `backoff_ms` resets to 1s on next successful
             // connect.
-            log::info!("awareness SSE disconnected; reconnecting in {}ms", backoff_ms);
+            log::info!(
+                "awareness SSE disconnected; reconnecting in {}ms",
+                backoff_ms
+            );
             tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
             backoff_ms = (backoff_ms * 2).min(BACKOFF_CAP_MS);
         }

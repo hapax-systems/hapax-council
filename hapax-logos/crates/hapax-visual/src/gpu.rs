@@ -31,12 +31,15 @@ impl GpuContext {
         log::info!("Using adapter: {:?}", adapter.get_info().name);
 
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("hapax-visual"),
-                required_features: wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
-                required_limits: wgpu::Limits::default(),
-                ..Default::default()
-            }, None)
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("hapax-visual"),
+                    required_features: wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+                    required_limits: wgpu::Limits::default(),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .expect("Failed to create device");
 

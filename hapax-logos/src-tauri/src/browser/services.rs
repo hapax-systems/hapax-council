@@ -33,10 +33,7 @@ impl ServiceRegistry {
                 Self::default()
             }),
             Err(_) => {
-                log::info!(
-                    "No browser-services.json at {:?}, creating default",
-                    path
-                );
+                log::info!("No browser-services.json at {:?}, creating default", path);
                 let registry = Self::create_default();
                 if let Ok(json) = serde_json::to_string_pretty(&registry) {
                     std::fs::create_dir_all(path.parent().unwrap()).ok();

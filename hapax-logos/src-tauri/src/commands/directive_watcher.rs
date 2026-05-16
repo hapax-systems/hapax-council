@@ -324,7 +324,11 @@ fn dispatch_directive<R: Runtime>(app: &AppHandle<R>, json_line: &str) {
         {
             Ok(mut f) => {
                 if let Err(e) = writeln!(f, "{}", event) {
-                    log::warn!("Failed to write visual ping event to {}: {}", events_path, e);
+                    log::warn!(
+                        "Failed to write visual ping event to {}: {}",
+                        events_path,
+                        e
+                    );
                 }
             }
             Err(e) => log::warn!("Failed to open visual events file {}: {}", events_path, e),
@@ -358,7 +362,10 @@ fn dispatch_browser_directives<R: Runtime>(app: &AppHandle<R>, directive: &serde
         // Enforce service registry allowlist
         let registry = ServiceRegistry::load();
         if !registry.is_allowed(url) {
-            log::warn!("Browser navigate blocked — URL not in service registry: {}", url);
+            log::warn!(
+                "Browser navigate blocked — URL not in service registry: {}",
+                url
+            );
             return;
         }
         let url = url.to_string();
@@ -383,7 +390,11 @@ fn dispatch_browser_directives<R: Runtime>(app: &AppHandle<R>, directive: &serde
                     if let Err(e) = fs::create_dir_all("/dev/shm/hapax-logos") {
                         log::error!("Failed to create logos directory: {}", e);
                     } else if let Err(e) = fs::write(resp_path, response.to_string()) {
-                        log::error!("Failed to write browser eval response to {}: {}", resp_path, e);
+                        log::error!(
+                            "Failed to write browser eval response to {}: {}",
+                            resp_path,
+                            e
+                        );
                     }
                 }
                 Err(e) => log::error!("Browser eval failed: {}", e),
@@ -407,7 +418,11 @@ fn dispatch_browser_directives<R: Runtime>(app: &AppHandle<R>, directive: &serde
                         if let Err(e) = fs::create_dir_all("/dev/shm/hapax-logos") {
                             log::error!("Failed to create logos directory: {}", e);
                         } else if let Err(e) = fs::write(shot_path, bytes) {
-                            log::error!("Failed to write browser screenshot to {}: {}", shot_path, e);
+                            log::error!(
+                                "Failed to write browser screenshot to {}: {}",
+                                shot_path,
+                                e
+                            );
                         } else {
                             log::info!("Browser screenshot saved to shm");
                         }
@@ -427,7 +442,9 @@ fn dispatch_browser_directives<R: Runtime>(app: &AppHandle<R>, directive: &serde
         tokio::spawn(async move {
             match eng.active_page().await {
                 Ok(page) => {
-                    use chromiumoxide::cdp::browser_protocol::accessibility::{GetFullAxTreeParams, GetFullAxTreeReturns};
+                    use chromiumoxide::cdp::browser_protocol::accessibility::{
+                        GetFullAxTreeParams, GetFullAxTreeReturns,
+                    };
                     let params = GetFullAxTreeParams::default();
                     match page.execute(params).await {
                         Ok(cdp_response) => {
@@ -438,12 +455,13 @@ fn dispatch_browser_directives<R: Runtime>(app: &AppHandle<R>, directive: &serde
                             if let Err(e) = fs::create_dir_all("/dev/shm/hapax-logos") {
                                 log::error!("Failed to create logos directory: {}", e);
                             } else if let Err(e) = fs::write(a11y_path, &tree) {
-                                log::error!("Failed to write browser A11y tree to {}: {}", a11y_path, e);
-                            } else {
-                                log::info!(
-                                    "Browser A11y tree extracted ({} bytes)",
-                                    tree.len()
+                                log::error!(
+                                    "Failed to write browser A11y tree to {}: {}",
+                                    a11y_path,
+                                    e
                                 );
+                            } else {
+                                log::info!("Browser A11y tree extracted ({} bytes)", tree.len());
                             }
                         }
                         Err(e) => log::error!("A11y tree extraction failed: {}", e),
@@ -465,7 +483,10 @@ fn dispatch_browser_directives<R: Runtime>(app: &AppHandle<R>, directive: &serde
         });
     }
 
-    if let Some(selector) = directive.get("browser_fill_selector").and_then(|v| v.as_str()) {
+    if let Some(selector) = directive
+        .get("browser_fill_selector")
+        .and_then(|v| v.as_str())
+    {
         if let Some(text) = directive.get("browser_fill_text").and_then(|v| v.as_str()) {
             let selector = selector.to_string();
             let text = text.to_string();
@@ -511,11 +532,7 @@ fn dispatch_browser_directives<R: Runtime>(app: &AppHandle<R>, directive: &serde
                 }
             });
         } else {
-            log::warn!(
-                "Browser service resolution failed: {}/{}",
-                service,
-                pattern
-            );
+            log::warn!("Browser service resolution failed: {}/{}", service, pattern);
         }
     }
 }

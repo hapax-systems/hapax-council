@@ -76,14 +76,17 @@ def test_graph_runtime_enforces_live_surface_policy_by_default() -> None:
     graph = EffectGraph(
         name="Ambient",
         nodes={
-            "noise": NodeInstance(type="noise_gen", params={"amplitude": 0.02}),
+            "content": NodeInstance(
+                type="content_layer",
+                params={"salience": 0.25, "intensity": 0.25},
+            ),
             "o": NodeInstance(type="output"),
         },
-        edges=[["@live", "noise"], ["noise", "o"]],
+        edges=[["@live", "content"], ["content", "o"]],
     )
 
     with pytest.raises(PresetPolicyError) as exc:
         runtime.load_graph(graph)
 
-    assert exc.value.decision.reason == "camera_legible_blocked_node"
+    assert exc.value.decision.reason == "camera_legible_unbound_content_slots"
     assert runtime.current_graph is None

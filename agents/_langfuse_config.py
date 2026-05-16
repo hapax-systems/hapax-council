@@ -14,8 +14,17 @@ import os
 HOST = os.environ.get("LANGFUSE_HOST", "http://localhost:3000")
 PUBLIC_KEY = os.environ.get("LANGFUSE_PUBLIC_KEY", "")
 SECRET_KEY = os.environ.get("LANGFUSE_SECRET_KEY", "")
+OTEL_DISABLED = (
+    os.environ.get("OTEL_SDK_DISABLED", "").lower()
+    in {
+        "1",
+        "true",
+        "yes",
+    }
+    or os.environ.get("OTEL_TRACES_EXPORTER", "").lower() == "none"
+)
 
-if PUBLIC_KEY and SECRET_KEY:
+if not OTEL_DISABLED and PUBLIC_KEY and SECRET_KEY:
     import base64
 
     _basic_auth = base64.b64encode(f"{PUBLIC_KEY}:{SECRET_KEY}".encode()).decode()

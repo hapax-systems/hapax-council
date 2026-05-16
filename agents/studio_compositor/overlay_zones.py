@@ -711,7 +711,11 @@ class OverlayZoneManager:
             canvas_h=OUTPUT_HEIGHT,
             target_fps=RENDER_FPS,
             budget_tracker=budget_tracker,
+            publish_to_source_protocol=True,
         )
+        # Phase 2 3D: configure source protocol metadata
+        self._runner._publish_opacity = 0.5
+        self._runner._publish_z_order = 2  # BeyondScrim — wards behind cameras
         self._runner.start()
         log.info("OverlayZoneManager background thread started at %dfps", RENDER_FPS)
 

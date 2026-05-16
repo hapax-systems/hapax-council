@@ -66,7 +66,10 @@ pub fn get_visual_surface_state() -> VisualSurfaceState {
                     .and_then(|v| v.as_str())
                     .unwrap_or("nominal")
                     .to_string(),
-                speed: ambient.get("speed").and_then(|v| v.as_f64()).unwrap_or(0.08),
+                speed: ambient
+                    .get("speed")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.08),
                 turbulence: ambient
                     .get("turbulence")
                     .and_then(|v| v.as_f64())

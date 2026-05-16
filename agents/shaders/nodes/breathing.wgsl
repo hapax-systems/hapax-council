@@ -9,49 +9,30 @@ struct FragmentOutput {
 
 var<private> fragColor: vec4<f32>;
 var<private> v_texcoord_1: vec2<f32>;
-@group(1) @binding(0) 
+@group(1) @binding(0)
 var tex: texture_2d<f32>;
-@group(1) @binding(1) 
+@group(1) @binding(1)
 var tex_sampler: sampler;
-@group(2) @binding(0) 
+@group(2) @binding(0)
 var<uniform> global: Params;
 
 fn main_1() {
-    var scale: f32;
-    var center: vec2<f32> = vec2<f32>(0.5f, 0.5f);
-    var uv: vec2<f32>;
-
-    let _e12 = global.u_rate;
-    let _e19 = global.u_amplitude;
-    scale = (1f + (sin((((uniforms.time * _e12) * 2f) * 3.1415927f)) * _e19));
-    let _e27 = v_texcoord_1;
-    let _e28 = center;
-    let _e30 = scale;
-    let _e33 = center;
-    uv = (((_e27 - _e28) / vec2(_e30)) + _e33);
-    let _e36 = uv;
-    let _e40 = uv;
-    let _e45 = uv;
-    let _e50 = uv;
-    if ((((_e36.x < 0f) || (_e40.x > 1f)) || (_e45.y < 0f)) || (_e50.y > 1f)) {
-        {
-            fragColor = vec4<f32>(0f, 0f, 0f, 1f);
-            return;
-        }
-    } else {
-        {
-            let _e60 = uv;
-            let _e61 = textureSample(tex, tex_sampler, _e60);
-            fragColor = _e61;
-            return;
-        }
-    }
+    let center = vec2<f32>(0.5, 0.5);
+    let phase = sin(uniforms.time * clamp(global.u_rate, 0.05, 0.75) * 6.2831853);
+    let scale = 1.0 + (phase * clamp(global.u_amplitude, 0.0, 0.026));
+    let uv = ((v_texcoord_1 - center) / vec2<f32>(scale)) + center;
+    let source = textureSample(tex, tex_sampler, v_texcoord_1);
+    let warped = textureSample(tex, tex_sampler, clamp(uv, vec2(0.0), vec2(1.0)));
+    let luma = dot(source.xyz, vec3<f32>(0.299, 0.587, 0.114));
+    let surface_presence =         smoothstep(0.008, 0.09, luma);
+    let strength = surface_presence * clamp(abs(phase) * global.u_amplitude * 9.5, 0.0, 0.18);
+    fragColor = vec4<f32>(mix(source.xyz, warped.xyz, vec3<f32>(strength)), source.a);
+    return;
 }
 
-@fragment 
+@fragment
 fn main(@location(0) v_texcoord: vec2<f32>) -> FragmentOutput {
     v_texcoord_1 = v_texcoord;
     main_1();
-    let _e17 = fragColor;
-    return FragmentOutput(_e17);
+    return FragmentOutput(fragColor);
 }

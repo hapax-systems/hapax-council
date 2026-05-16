@@ -32,6 +32,9 @@ pub struct ShmOutput {
     /// sidecar so the compositor's `ShmRgbaReader` can cache-by-id and
     /// skip reprocessing duplicate frames.
     frame_count: u64,
+    /// Direct v4l2 output — writes RGBA frames to a loopback device.
+    /// Initialized when HAPAX_IMAGINATION_V4L2_OUTPUT=1.
+    v4l2: crate::v4l2_output::V4l2Output,
 }
 
 impl ShmOutput {
@@ -54,6 +57,8 @@ impl ShmOutput {
             c
         });
 
+        let v4l2 = crate::v4l2_output::V4l2Output::new(width, height);
+
         Self {
             staging_buffer,
             width,
@@ -63,6 +68,7 @@ impl ShmOutput {
             enabled: true,
             jpeg_compressor,
             frame_count: 0,
+            v4l2,
         }
     }
 
@@ -183,6 +189,9 @@ impl ShmOutput {
 
         // Write JPEG
         self.write_jpeg(&clean_data);
+
+        // Write to v4l2 loopback (if enabled)
+        self.v4l2.write_frame(&clean_data);
 
         // Write the source-registry side output. Non-fatal on error —
         // reverie keeps rendering and the compositor's
@@ -335,13 +344,21 @@ mod tests {
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .filter(|n| n.ends_with(".tmp"))
             .collect();
-        assert!(leftovers.is_empty(), "tmp files should be renamed: {:?}", leftovers);
+        assert!(
+            leftovers.is_empty(),
+            "tmp files should be renamed: {:?}",
+            leftovers
+        );
     }
 
     #[test]
     fn write_side_output_creates_parent_dir() {
         let dir = tempdir().unwrap();
-        let nested = dir.path().join("nested").join("deeper").join("reverie.rgba");
+        let nested = dir
+            .path()
+            .join("nested")
+            .join("deeper")
+            .join("reverie.rgba");
         let pixels = vec![0u8; 16];
 
         write_side_output(&nested, &pixels, 2, 2, 8, 7).unwrap();

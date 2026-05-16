@@ -231,7 +231,10 @@ pub fn get_health_history(days: Option<u32>) -> HealthHistory {
         .collect();
 
     let total_runs = entries.len() as u32;
-    let healthy_runs = entries.iter().filter(|e| e.overall_status == "healthy").count() as f64;
+    let healthy_runs = entries
+        .iter()
+        .filter(|e| e.overall_status == "healthy")
+        .count() as f64;
     let uptime_pct = if total_runs > 0 {
         (healthy_runs / total_runs as f64) * 100.0
     } else {
@@ -293,8 +296,24 @@ fn chrono_days_ago(days: u32) -> String {
         d -= days_in_year;
         y += 1;
     }
-    let months = [31, 28 + if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 1 } else { 0 },
-        31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let months = [
+        31,
+        28 + if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            1
+        } else {
+            0
+        },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut m = 0;
     for days_in_month in months {
         if d < days_in_month {

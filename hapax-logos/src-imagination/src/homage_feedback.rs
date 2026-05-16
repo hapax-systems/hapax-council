@@ -1,7 +1,7 @@
+use serde::Serialize;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const SHADER_READING_PATH: &str = "/dev/shm/hapax-compositor/homage-shader-reading.json";
@@ -32,7 +32,7 @@ pub fn emit_shader_feedback(energy: f64, drift: f64, is_fresh: bool) {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        
+
         let tmp_path = path.with_extension("tmp");
         if let Ok(mut file) = File::create(&tmp_path) {
             if file.write_all(json.as_bytes()).is_ok() {

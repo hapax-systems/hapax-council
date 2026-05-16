@@ -30,9 +30,11 @@ class CachedFrame(NamedTuple):
     width: int
     height: int
     format: str  # "NV12" | "BGRA"
+    sequence: int
 
 
 _cache: dict[str, CachedFrame] = {}
+_sequence_by_role: dict[str, int] = {}
 _lock = threading.Lock()
 
 
@@ -46,11 +48,14 @@ def update(role: str, data: bytes, width: int, height: int, fmt: str = "NV12") -
     free to recycle.
     """
     with _lock:
+        sequence = _sequence_by_role.get(role, 0) + 1
+        _sequence_by_role[role] = sequence
         _cache[role] = CachedFrame(
             data=bytes(data),
             width=width,
             height=height,
             format=fmt,
+            sequence=sequence,
         )
 
 
@@ -65,8 +70,10 @@ def clear(role: str | None = None) -> None:
     with _lock:
         if role is None:
             _cache.clear()
+            _sequence_by_role.clear()
         else:
             _cache.pop(role, None)
+            _sequence_by_role.pop(role, None)
 
 
 def roles() -> list[str]:

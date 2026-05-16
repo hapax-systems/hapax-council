@@ -65,6 +65,7 @@ _DEFAULT_CAMERAS: list[dict[str, Any]] = [
         "width": 1280,
         "height": 720,
         "input_format": "mjpeg",
+        "watchdog_timeout_ms": 5000,
         "hero": True,
         "semantic_role": "operator-face",
         "subject_ontology": ["person"],

@@ -137,7 +137,9 @@ fn main() {
             if visual::client::is_connected() {
                 log::info!("Imagination surface connected via UDS");
             } else {
-                log::warn!("Imagination surface not available — visual commands will fail gracefully");
+                log::warn!(
+                    "Imagination surface not available — visual commands will fail gracefully"
+                );
             }
             // Spawn the HTTP frame server (GET /frame, GET /stats on :8053)
             visual::http_server::start_frame_server();

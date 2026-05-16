@@ -61,6 +61,7 @@ fn thermal_palette(t: f32) -> vec3<f32> {
 
 fn main_1() {
     var uv: vec2<f32>;
+    var source_color: vec4<f32>;
     var quantRes: vec2<f32>;
     var texel: vec2<f32>;
     var lum: f32 = 0f;
@@ -73,17 +74,21 @@ fn main_1() {
     var color: vec3<f32>;
     var bloom: f32;
     var noise: f32;
+    var thermal_strength: f32;
+    var source_luma: f32;
+    var surface_presence: f32;
 
     let _e14 = v_texcoord_1;
     uv = _e14;
-    let _e16 = global.u_edge_glow;
-    if (_e16 < -0.5f) {
-        {
-            let _e20 = uv;
-            let _e21 = textureSample(tex, tex_sampler, _e20);
-            fragColor = _e21;
-            return;
-        }
+    source_color = textureSample(tex, tex_sampler, uv);
+
+    thermal_strength = smoothstep(-1f, 0.35f, global.u_edge_glow) * 0.42f;
+    source_luma = dot(source_color.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    surface_presence = smoothstep(0.055f, 0.22f, source_luma);
+    thermal_strength = thermal_strength * surface_presence;
+    if (thermal_strength <= 0.001f) {
+        fragColor = source_color;
+        return;
     }
 
     quantRes = (vec2<f32>(uniforms.resolution.x, uniforms.resolution.y) * 0.25f);
@@ -147,7 +152,7 @@ fn main_1() {
     color = _e112;
     let _e116 = lum;
     let _e118 = global.u_edge_glow;
-    bloom = ((smoothstep(0.7f, 1f, _e116) * _e118) * 0.4f);
+    bloom = ((smoothstep(0.7f, 1f, _e116) * max(_e118, 0f)) * 0.2f);
     let _e123 = color;
     let _e124 = bloom;
     color = (_e123 + (_e124 * vec3<f32>(1f, 0.9f, 0.7f)));
@@ -162,7 +167,8 @@ fn main_1() {
     color = (_e149 + vec3(_e150));
     let _e153 = color;
     let _e158 = clamp(_e153, vec3(0f), vec3(1f));
-    fragColor = vec4<f32>(_e158.x, _e158.y, _e158.z, 1f);
+    let mixed = mix(source_color.xyz, _e158, vec3(thermal_strength));
+    fragColor = vec4<f32>(mixed.x, mixed.y, mixed.z, source_color.w);
     return;
 }
 

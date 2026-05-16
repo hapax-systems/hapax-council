@@ -229,6 +229,7 @@ class TestDispatchStructuralIntentShmWrite:
             original_atomic(target, payload)
 
         monkeypatch.setattr(cc, "_atomic_write_json", _capture_write)
+        monkeypatch.setattr(cc, "_SEGMENT_CUE_HOLD", tmp_path / "segment-cue-hold.json")
         # Also block the ward_properties writer to keep test side-effect-free.
         import agents.studio_compositor.ward_properties as wp
 
@@ -299,6 +300,7 @@ class TestEndToEndEmission:
         import agents.studio_compositor.ward_properties as wp
 
         monkeypatch.setattr(wp, "WARD_PROPERTIES_PATH", tmp_path / "ward-properties.json")
+        monkeypatch.setattr(cc, "_SEGMENT_CUE_HOLD", tmp_path / "segment-cue-hold.json")
 
         original_atomic = cc._atomic_write_json
 
