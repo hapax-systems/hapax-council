@@ -1678,6 +1678,61 @@ def prep_segment(
     except Exception as exc:
         log.warning("prep_segment: council disconfirmation failed for %s: %s", prog_id, exc)
 
+    # Pass 4: Narrative quality council — structural/rhetorical critique
+    narrative_verdict_data: dict[str, Any] | None = None
+    try:
+        from shared.segment_narrative_critique import (
+            format_narrative_verdict_for_composer,
+            run_narrative_critique,
+        )
+
+        full_script_text = "\n\n".join(f"[Beat {i}]\n{b}" for i, b in enumerate(script))
+        narrative_verdict = run_narrative_critique(full_script_text, prog_id)
+        narrative_verdict_data = narrative_verdict.receipt
+        narrative_verdict_data["scores"] = narrative_verdict.scores
+        narrative_verdict_data["verdict_status"] = narrative_verdict.verdict_status.value
+        narrative_verdict_data["revision_directives"] = narrative_verdict.revision_directives
+
+        from agents.deliberative_council.models import NarrativeVerdictStatus
+
+        if narrative_verdict.verdict_status in (
+            NarrativeVerdictStatus.STRUCTURAL_REWORK,
+            NarrativeVerdictStatus.GENERIC_DETECTED,
+        ):
+            log.warning(
+                "prep_segment: narrative council verdict=%s for %s — injecting directives",
+                narrative_verdict.verdict_status.value,
+                prog_id,
+            )
+            feedback = format_narrative_verdict_for_composer(narrative_verdict)
+            repair_seed = f"{seed}\n\n{feedback}" if seed else feedback
+            repair_prompt = _build_full_segment_prompt(programme, repair_seed)
+            repair_raw = _call_llm(
+                repair_prompt,
+                prep_session=prep_session,
+                phase="narrative_recompose",
+                programme_id=prog_id,
+            )
+            repair_script, _ = _parse_segment_generation(repair_raw)
+            if repair_script and len(repair_script) >= len(script):
+                script = repair_script[: len(beats)]
+                log.info(
+                    "prep_segment: narrative recomposition produced %d blocks for %s",
+                    len(script),
+                    prog_id,
+                )
+        else:
+            log.info(
+                "prep_segment: narrative council verdict=%s (mean=%.1f) for %s",
+                narrative_verdict.verdict_status.value,
+                narrative_verdict.receipt.get("mean_score", 0),
+                prog_id,
+            )
+    except ImportError:
+        log.debug("prep_segment: narrative critique module not available — skipping")
+    except Exception as exc:
+        log.warning("prep_segment: narrative critique failed for %s: %s", prog_id, exc)
+
     actionability = validate_segment_actionability(
         script,
         [str(item) for item in beats],
@@ -2033,6 +2088,8 @@ def prep_segment(
         source_hashes["council_verdict_sha256"] = council_disconfirmation_result.get(
             "council_verdict_sha256", ""
         )
+    if narrative_verdict_data is not None:
+        payload["narrative_quality_verdict"] = narrative_verdict_data
     payload["artifact_sha256"] = _artifact_hash(payload)
     tmp = out_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")

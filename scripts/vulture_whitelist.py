@@ -3331,3 +3331,31 @@ try:
     resolve_angle
 except ImportError:
     pass
+
+# segment_narrative_critique
+try:
+    from shared.segment_narrative_critique import (  # noqa: F401, E402
+        format_narrative_verdict_for_composer,
+        run_narrative_critique,
+    )
+
+    format_narrative_verdict_for_composer
+    run_narrative_critique
+except ImportError:
+    pass
+
+# NarrativeQualityRubric + NarrativeVerdict
+try:
+    from agents.deliberative_council.models import (  # noqa: F401, E402
+        NarrativeVerdict,
+        NarrativeVerdictStatus,
+    )
+    from agents.deliberative_council.rubrics import (  # noqa: F401, E402
+        NarrativeQualityRubric,
+    )
+
+    NarrativeVerdict
+    NarrativeVerdictStatus
+    NarrativeQualityRubric
+except ImportError:
+    pass
