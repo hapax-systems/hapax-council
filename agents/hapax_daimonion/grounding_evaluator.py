@@ -72,30 +72,99 @@ _CLARIFY_PATTERNS: list[str] = [
 ]
 
 
-def classify_acceptance(utterance: str) -> tuple[str, float]:
-    """Classify an operator utterance into acceptance type.
-
-    Returns (label, score) where score maps:
-      ACCEPT=1.0, CLARIFY=0.7, IGNORE=0.3, REJECT=0.0
-    """
+def _classify_acceptance_keywords(utterance: str) -> tuple[str, float]:
+    """Keyword-based acceptance classification (fallback)."""
     lower = utterance.lower().strip()
     if not lower:
         return "IGNORE", 0.3
-
     for pat in _REJECT_PATTERNS:
         if pat in lower:
             return "REJECT", 0.0
-
     for pat in _CLARIFY_PATTERNS:
         if pat in lower:
             return "CLARIFY", 0.7
-
     for pat in _ACCEPT_PATTERNS:
         if pat in lower:
             return "ACCEPT", 1.0
-
-    # Default: no clear signal → IGNORE (neutral)
     return "IGNORE", 0.3
+
+
+_ACCEPTANCE_PROTOTYPES: dict[str, list[str]] = {
+    "ACCEPT": [
+        "yeah exactly",
+        "right, that makes sense",
+        "okay good",
+        "yes that's correct",
+        "got it, thanks",
+        "perfect",
+    ],
+    "REJECT": [
+        "no that's wrong",
+        "I disagree with that",
+        "that's not what I meant",
+        "you're completely off",
+        "no, stop",
+    ],
+    "CLARIFY": [
+        "wait, what do you mean by that",
+        "can you explain that differently",
+        "I'm not sure I follow",
+        "yeah but what about the other part",
+    ],
+}
+_prototype_embeddings: dict[str, list[list[float]]] | None = None
+
+
+def _get_prototype_embeddings() -> dict[str, list[list[float]]] | None:
+    global _prototype_embeddings  # noqa: PLW0603
+    if _prototype_embeddings is not None:
+        return _prototype_embeddings
+    try:
+        from shared.config import embed
+
+        result: dict[str, list[list[float]]] = {}
+        for label, texts in _ACCEPTANCE_PROTOTYPES.items():
+            result[label] = [embed(t) for t in texts]
+        _prototype_embeddings = result
+        return result
+    except Exception:
+        return None
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def classify_acceptance(utterance: str) -> tuple[str, float]:
+    """Classify operator utterance using embedding similarity with keyword fallback."""
+    lower = utterance.lower().strip()
+    if not lower:
+        return "IGNORE", 0.3
+    protos = _get_prototype_embeddings()
+    if protos is None:
+        return _classify_acceptance_keywords(utterance)
+    try:
+        from shared.config import embed
+
+        utt_vec = embed(utterance)
+        best_label, best_sim = "IGNORE", -1.0
+        for label, proto_vecs in protos.items():
+            for pvec in proto_vecs:
+                sim = _cosine_similarity(utt_vec, pvec)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_label = label
+        if best_sim < 0.4:
+            return _classify_acceptance_keywords(utterance)
+        score_map = {"ACCEPT": 1.0, "CLARIFY": 0.7, "IGNORE": 0.3, "REJECT": 0.0}
+        return best_label, score_map.get(best_label, 0.3)
+    except Exception:
+        return _classify_acceptance_keywords(utterance)
 
 
 def score_context_anchor(

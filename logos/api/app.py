@@ -1000,6 +1000,7 @@ from logos.api.routes.chat import router as chat_router
 from logos.api.routes.chronicle import router as chronicle_router
 from logos.api.routes.consent import router as consent_router
 from logos.api.routes.copilot import router as copilot_router
+from logos.api.routes.correspondence import router as correspondence_router
 from logos.api.routes.data import router as data_router
 from logos.api.routes.demos import router as demos_router
 from logos.api.routes.dmn import router as dmn_router
@@ -1066,6 +1067,7 @@ app.include_router(awareness_router)
 app.include_router(watch_router)
 app.include_router(vault_router)
 app.include_router(chronicle_router)
+app.include_router(correspondence_router)
 app.include_router(predictions_router)
 app.include_router(x402_router)
 app.include_router(payment_rails_router)
