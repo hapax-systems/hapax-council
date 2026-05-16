@@ -56,47 +56,110 @@ fn segment_distance(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
     return length(pa - ba * h);
 }
 
-fn min_sierpinski_distance(p: vec2<f32>) -> f32 {
-    let a = vec2<f32>(0.50, 0.94);
-    let b = vec2<f32>(0.06, 0.08);
-    let c = vec2<f32>(0.94, 0.08);
-    let ab = (a + b) * 0.5;
-    let ac = (a + c) * 0.5;
-    let bc = (b + c) * 0.5;
-
-    var d = 1.0;
-    d = min(d, segment_distance(p, a, b));
-    d = min(d, segment_distance(p, a, c));
-    d = min(d, segment_distance(p, b, c));
-    d = min(d, segment_distance(p, ab, ac));
-    d = min(d, segment_distance(p, ab, bc));
-    d = min(d, segment_distance(p, ac, bc));
-
-    let tab = (a + ab) * 0.5;
-    let tac = (a + ac) * 0.5;
-    let tbase = (ab + ac) * 0.5;
-    d = min(d, segment_distance(p, tab, tac));
-    d = min(d, segment_distance(p, tab, tbase));
-    d = min(d, segment_distance(p, tac, tbase));
-
-    let lab = (b + ab) * 0.5;
-    let lbc = (b + bc) * 0.5;
-    let lmid = (ab + bc) * 0.5;
-    d = min(d, segment_distance(p, lab, lbc));
-    d = min(d, segment_distance(p, lab, lmid));
-    d = min(d, segment_distance(p, lbc, lmid));
-
-    let rac = (c + ac) * 0.5;
-    let rbc = (c + bc) * 0.5;
-    let rmid = (ac + bc) * 0.5;
-    d = min(d, segment_distance(p, rac, rbc));
-    d = min(d, segment_distance(p, rac, rmid));
-    d = min(d, segment_distance(p, rbc, rmid));
-
+fn pick_tetra_vertex(a: vec3<f32>, b: vec3<f32>, c: vec3<f32>, d: vec3<f32>, idx: u32) -> vec3<f32> {
+    if idx == 0u {
+        return a;
+    }
+    if idx == 1u {
+        return b;
+    }
+    if idx == 2u {
+        return c;
+    }
     return d;
 }
 
-fn sierpinski_color(uv: vec2<f32>) -> vec3<f32> {
+fn child_tetra_vertex(
+    a: vec3<f32>,
+    b: vec3<f32>,
+    c: vec3<f32>,
+    d: vec3<f32>,
+    child_idx: u32,
+    vertex_idx: u32,
+) -> vec3<f32> {
+    let anchor = pick_tetra_vertex(a, b, c, d, child_idx);
+    let corner = pick_tetra_vertex(a, b, c, d, vertex_idx);
+    return mix(anchor, corner, 0.5);
+}
+
+fn aoa_orient(v: vec3<f32>) -> vec3<f32> {
+    let cy = cos(0.47);
+    let sy = sin(0.47);
+    let y_rot = vec3<f32>(
+        v.x * cy + v.z * sy,
+        v.y,
+        -v.x * sy + v.z * cy,
+    );
+    let cx = cos(-0.18);
+    let sx = sin(-0.18);
+    return vec3<f32>(
+        y_rot.x,
+        y_rot.y * cx - y_rot.z * sx,
+        y_rot.y * sx + y_rot.z * cx,
+    );
+}
+
+fn aoa_project(v: vec3<f32>) -> vec2<f32> {
+    let oriented = aoa_orient(v);
+    let perspective = 1.48 / (1.48 + oriented.z * 0.54);
+    return vec2<f32>(
+        0.5 + oriented.x * 0.68 * perspective,
+        0.47 + oriented.y * 0.76 * perspective,
+    );
+}
+
+fn tetra_edge_distance(
+    p: vec2<f32>,
+    a: vec3<f32>,
+    b: vec3<f32>,
+    c: vec3<f32>,
+    d: vec3<f32>,
+) -> f32 {
+    let pa = aoa_project(a);
+    let pb = aoa_project(b);
+    let pc = aoa_project(c);
+    let pd = aoa_project(d);
+
+    var dist = 1.0;
+    dist = min(dist, segment_distance(p, pa, pb));
+    dist = min(dist, segment_distance(p, pa, pc));
+    dist = min(dist, segment_distance(p, pa, pd));
+    dist = min(dist, segment_distance(p, pb, pc));
+    dist = min(dist, segment_distance(p, pb, pd));
+    dist = min(dist, segment_distance(p, pc, pd));
+    return dist;
+}
+
+fn aoa_tetrix_distances(p: vec2<f32>) -> vec3<f32> {
+    let a = vec3<f32>(-0.58, -0.42, -0.38);
+    let b = vec3<f32>( 0.58, -0.42, -0.38);
+    let c = vec3<f32>( 0.00, -0.42,  0.66);
+    let d = vec3<f32>( 0.00,  0.66,  0.02);
+
+    let root = tetra_edge_distance(p, a, b, c, d);
+    var level1 = 1.0;
+    var level2 = 1.0;
+
+    for (var child: u32 = 0u; child < 4u; child = child + 1u) {
+        let ca = child_tetra_vertex(a, b, c, d, child, 0u);
+        let cb = child_tetra_vertex(a, b, c, d, child, 1u);
+        let cc = child_tetra_vertex(a, b, c, d, child, 2u);
+        let cd = child_tetra_vertex(a, b, c, d, child, 3u);
+        level1 = min(level1, tetra_edge_distance(p, ca, cb, cc, cd));
+
+        for (var grandchild: u32 = 0u; grandchild < 4u; grandchild = grandchild + 1u) {
+            let ga = child_tetra_vertex(ca, cb, cc, cd, grandchild, 0u);
+            let gb = child_tetra_vertex(ca, cb, cc, cd, grandchild, 1u);
+            let gc = child_tetra_vertex(ca, cb, cc, cd, grandchild, 2u);
+            let gd = child_tetra_vertex(ca, cb, cc, cd, grandchild, 3u);
+            level2 = min(level2, tetra_edge_distance(p, ga, gb, gc, gd));
+        }
+    }
+
+    return vec3<f32>(root, level1, level2);
+}
+
+fn aoa_color(uv: vec2<f32>) -> vec3<f32> {
     let cyan = vec3<f32>(0.26, 0.82, 1.0);
     let magenta = vec3<f32>(1.0, 0.24, 0.78);
     let violet = vec3<f32>(0.68, 0.38, 1.0);
@@ -104,20 +167,22 @@ fn sierpinski_color(uv: vec2<f32>) -> vec3<f32> {
     return mix(mix(magenta, violet, smoothstep(0.0, 0.55, sweep)), cyan, smoothstep(0.45, 1.0, sweep));
 }
 
-fn authored_sierpinski(uv_in: vec2<f32>) -> vec4<f32> {
+fn authored_aoa(uv_in: vec2<f32>) -> vec4<f32> {
     let p = vec2<f32>(uv_in.x, 1.0 - uv_in.y);
-    let d = min_sierpinski_distance(p);
-    let core = smoothstep(0.018, 0.003, d);
-    let glow = smoothstep(0.070, 0.006, d);
-    let alpha = clamp(core * 0.92 + glow * 0.34, 0.0, 0.96) * scene.opacity;
-    let color = sierpinski_color(p) * (0.42 + glow * 0.66 + core * 0.44);
+    let distances = aoa_tetrix_distances(p);
+    let root_core = smoothstep(0.014, 0.003, distances.x);
+    let inner_core = smoothstep(0.011, 0.002, distances.y);
+    let deep_core = smoothstep(0.008, 0.0015, distances.z);
+    let glow = smoothstep(0.075, 0.004, min(distances.x, min(distances.y, distances.z)));
+    let alpha = clamp(root_core * 0.58 + inner_core * 0.62 + deep_core * 0.76 + glow * 0.30, 0.0, 0.96) * scene.opacity;
+    let color = aoa_color(p) * (0.36 + glow * 0.58 + root_core * 0.30 + inner_core * 0.42 + deep_core * 0.54);
     return vec4<f32>(color, alpha);
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if scene.shader_kind > 0.5 {
-        return authored_sierpinski(in.uv);
+        return authored_aoa(in.uv);
     }
 
     let tex_color = textureSample(quad_texture, quad_sampler, in.uv);
