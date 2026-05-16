@@ -8,7 +8,7 @@ import logging
 from pydantic_ai import Agent  # noqa: TC002 — used at runtime in _call_member
 
 from .aggregation import aggregate_scores, should_shortcircuit
-from .members import build_member
+from .members import MODEL_FAMILIES, build_member
 from .models import (
     AdversarialExchange,
     ConvergenceStatus,
@@ -98,7 +98,12 @@ async def deliberate(
         )
 
     if should_shortcircuit(phase1_results, config.shortcircuit_iqr_threshold):
-        agg = aggregate_scores(phase1_results, config.contested_iqr_threshold)
+        agg = aggregate_scores(
+            phase1_results,
+            config.contested_iqr_threshold,
+            families=MODEL_FAMILIES,
+            family_penalty_threshold=config.family_correlation_penalty_threshold,
+        )
         return CouncilVerdict(
             scores={k: v.score for k, v in agg.items()},
             confidence_bands={k: v.confidence_band for k, v in agg.items()},

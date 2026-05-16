@@ -39,24 +39,81 @@ class AxisAggregate:
     confidence_band: tuple[int, int]
 
 
+def family_correlation_penalty(
+    results: list[PhaseOneResult],
+    families: dict[str, str],
+    threshold: float = 0.90,
+) -> dict[str, float]:
+    """Halve combined weight of same-family models that correlate above threshold."""
+    weights: dict[str, float] = {r.model_alias: 1.0 for r in results}
+    family_groups: dict[str, list[str]] = {}
+    for alias, family in families.items():
+        family_groups.setdefault(family, []).append(alias)
+
+    for members in family_groups.values():
+        if len(members) < 2:
+            continue
+        participating = [r for r in results if r.model_alias in members]
+        if len(participating) < 2:
+            continue
+        r1, r2 = participating[0], participating[1]
+        shared_axes = set(r1.scores.keys()) & set(r2.scores.keys())
+        if not shared_axes:
+            continue
+        diffs = [abs(r1.scores[a] - r2.scores[a]) for a in shared_axes]
+        avg_diff = sum(diffs) / len(diffs)
+        similarity = 1.0 - (avg_diff / 4.0)
+        if similarity >= threshold:
+            weights[r1.model_alias] = weights.get(r1.model_alias, 1.0) * 0.5
+            weights[r2.model_alias] = weights.get(r2.model_alias, 1.0) * 0.5
+    return weights
+
+
 def aggregate_scores(
     results: list[PhaseOneResult],
     contested_threshold: float = 2.0,
     weights: dict[str, float] | None = None,
+    families: dict[str, str] | None = None,
+    family_penalty_threshold: float = 0.90,
 ) -> dict[str, AxisAggregate]:
+    if families and weights is None:
+        weights = family_correlation_penalty(results, families, family_penalty_threshold)
+
     axes: set[str] = set()
     for r in results:
         axes.update(r.scores.keys())
 
     output: dict[str, AxisAggregate] = {}
     for axis in sorted(axes):
-        values = [r.scores[axis] for r in results if axis in r.scores]
+        if weights:
+            weighted_values = [
+                (r.scores[axis], weights.get(r.model_alias, 1.0))
+                for r in results
+                if axis in r.scores
+            ]
+            values = [v for v, _ in weighted_values]
+        else:
+            values = [r.scores[axis] for r in results if axis in r.scores]
+
         iqr = compute_iqr(values)
         band = compute_confidence_band(values)
 
         if iqr <= 1.0:
             status = ConvergenceStatus.CONVERGED
-            score = round(statistics.median(values))
+            if weights:
+                total_w = sum(weights.get(r.model_alias, 1.0) for r in results if axis in r.scores)
+                weighted_sum = sum(
+                    r.scores[axis] * weights.get(r.model_alias, 1.0)
+                    for r in results
+                    if axis in r.scores
+                )
+                score = (
+                    round(weighted_sum / total_w)
+                    if total_w > 0
+                    else round(statistics.median(values))
+                )
+            else:
+                score = round(statistics.median(values))
         elif iqr <= contested_threshold:
             status = ConvergenceStatus.CONTESTED
             score = round(statistics.median(values))
