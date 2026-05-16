@@ -1539,6 +1539,72 @@ def prep_segment(
     script = _repair_comparison_beats(script, [str(item) for item in beats])
     script = _repair_live_event_payoff(script)
 
+    # Pass 3: Council disconfirmation — adversarially test material claims
+    council_disconfirmation_result: dict[str, Any] | None = None
+    try:
+        from shared.segment_disconfirmation import (
+            apply_council_verdicts,
+            extract_claims,
+            run_council_disconfirmation,
+        )
+
+        contract_for_claims = build_segment_prep_contract(
+            programme_id=prog_id,
+            role=role,
+            topic=programme.content.topic if hasattr(programme.content, "topic") else "",
+            segment_beats=[str(b) for b in beats],
+            script=script,
+            actionability={},
+            layout_responsibility={},
+            source_refs=[],
+            model_contract=model_contract,
+        )
+        claim_map = contract_for_claims.get("claim_map", [])
+        sc_map = contract_for_claims.get("source_consequence_map", [])
+
+        council_claims = extract_claims(
+            claim_map=claim_map,
+            source_consequence_map=sc_map,
+        )
+        if council_claims:
+            council_verdicts = run_council_disconfirmation(council_claims)
+            if council_verdicts:
+                council_disconfirmation_result = apply_council_verdicts(
+                    council_verdicts,
+                    source_consequence_map=list(sc_map),
+                    claim_map=list(claim_map),
+                )
+                if council_disconfirmation_result.get("no_candidate_triggered"):
+                    log.warning(
+                        "prep_segment: council refuted structural claim in %s — no candidate",
+                        prog_id,
+                    )
+                    diagnostic_path = prep_dir / diagnostic_name
+                    boundary = _diagnostic_boundary_contract()
+                    diagnostic = {
+                        "schema_version": PREP_DIAGNOSTIC_SCHEMA_VERSION,
+                        "authority": "diagnostic_only",
+                        "programme_id": prog_id,
+                        "outcome_type": "no_candidate",
+                        "reason": "council_refuted_structural_claim",
+                        "council_verdict": council_disconfirmation_result,
+                        **boundary,
+                    }
+                    _write_json_atomic(diagnostic_path, diagnostic)
+                    _append_to_candidate_ledger(prep_dir, prog_id, diagnostic_name, "no_candidate")
+                    return None
+                log.info(
+                    "prep_segment: council pass for %s — %d survived, %d contested, %d refuted",
+                    prog_id,
+                    len(council_disconfirmation_result.get("survived_claims", [])),
+                    len(council_disconfirmation_result.get("contested_claims", [])),
+                    len(council_disconfirmation_result.get("refuted_claims", [])),
+                )
+    except ImportError:
+        log.debug("prep_segment: council disconfirmation module not available — skipping")
+    except Exception as exc:
+        log.warning("prep_segment: council disconfirmation failed for %s: %s", prog_id, exc)
+
     actionability = validate_segment_actionability(
         script,
         [str(item) for item in beats],
@@ -1889,6 +1955,11 @@ def prep_segment(
         "avg_chars_per_beat": round(final_avg),
         "refinement_applied": True,
     }
+    if council_disconfirmation_result is not None:
+        payload["disconfirmation_council_verdict"] = council_disconfirmation_result
+        source_hashes["council_verdict_sha256"] = council_disconfirmation_result.get(
+            "council_verdict_sha256", ""
+        )
     payload["artifact_sha256"] = _artifact_hash(payload)
     tmp = out_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
