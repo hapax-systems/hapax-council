@@ -335,8 +335,8 @@ impl Renderer {
         // Delta post-epic retirement handoff item #3 / AC-13: publish
         // DynamicPipeline::pool_metrics() over the shared-memory bridge
         // so the compositor's Python Prometheus exporter on :9482 can
-        // surface reverie_pool_* gauges. One JSON write per second at
-        // the 60fps render interval.
+        // surface reverie_pool_* gauges. The cadence is frame-count based
+        // and follows HAPAX_IMAGINATION_INTERVAL_MS.
         if self
             .frame_count
             .is_multiple_of(POOL_METRICS_PUBLISH_EVERY_FRAMES)

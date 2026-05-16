@@ -36,6 +36,21 @@ fn compute_pool_key(width: u32, height: u32, format: wgpu::TextureFormat) -> u64
     hasher.finish()
 }
 
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn should_write_consumer_output(frame_count: u64, half_rate: bool) -> bool {
+    !half_rate || frame_count.is_multiple_of(2)
+}
+
 const PLAN_DIR: &str = "/dev/shm/hapax-imagination/pipeline";
 const PLAN_FILE: &str = "/dev/shm/hapax-imagination/pipeline/plan.json";
 const UNIFORMS_JSON: &str = "/dev/shm/hapax-imagination/uniforms.json";
@@ -433,6 +448,11 @@ pub struct DynamicPipeline {
     width: u32,
     height: u32,
     frame_count: u64,
+    /// Consumer-boundary output cadence. The active 3D/direct-v4l2 surface
+    /// must publish every rendered frame so the OBS-facing loopback reaches
+    /// the 30fps contract; set HAPAX_IMAGINATION_OUTPUT_HALF_RATE=1 only for
+    /// legacy low-bandwidth compatibility.
+    output_half_rate: bool,
     drift_engine: Option<SlotDriftEngine>,
     /// Phase 3 3D: true when an external texture was injected as @live
     /// this frame; suppresses the procedural noise fallback.
@@ -467,6 +487,7 @@ impl DynamicPipeline {
     ) -> Self {
         let uniform_buffer = UniformBuffer::new(device);
         let shm_output = ShmOutput::new(device, width, height);
+        let output_half_rate = env_flag_enabled("HAPAX_IMAGINATION_OUTPUT_HALF_RATE");
 
         // Compile shared vertex module (vertex + uniforms combined)
         let vertex_source = format!("{}\n{}", SHARED_UNIFORMS_WGSL, SHARED_VERTEX_WGSL);
@@ -619,6 +640,7 @@ impl DynamicPipeline {
             width,
             height,
             frame_count: 0,
+            output_half_rate,
             drift_engine: Some(SlotDriftEngine::new(
                 "/dev/shm/hapax-imagination/pipeline/plan.json",
                 42,
@@ -1551,11 +1573,12 @@ impl DynamicPipeline {
             rpass.draw(0..3, 0..1);
         }
 
-        // Copy the main target's final texture to SHM output every
-        // other frame to save bandwidth. Phase 5b1: SHM consumers
-        // (the visual surface frame.jpg path) always read the main
-        // target — additional targets aren't routed through SHM.
-        if self.frame_count.is_multiple_of(2) {
+        // Copy the main target's final texture to the consumer-boundary output.
+        // Phase 5b1: SHM/v4l2 consumers always read the main target —
+        // additional targets aren't routed through this path.
+        let write_consumer_output =
+            should_write_consumer_output(self.frame_count, self.output_half_rate);
+        if write_consumer_output {
             if let Some(final_tex) = self.intermediate(MAIN_FINAL_TEXTURE) {
                 self.shm_output
                     .copy_to_staging(&mut encoder, &final_tex.texture);
@@ -1564,8 +1587,8 @@ impl DynamicPipeline {
 
         queue.submit(std::iter::once(encoder.finish()));
 
-        // Write SHM frame (every other frame)
-        if self.frame_count.is_multiple_of(2) {
+        // Write the SHM/JPEG/direct-v4l2 consumer output after submit.
+        if write_consumer_output {
             self.shm_output.write_frame(device);
         }
 
@@ -2286,6 +2309,21 @@ fn main(in: VertexOutput) -> @location(0) vec4<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn consumer_output_writes_every_frame_by_default() {
+        for frame in 0..8 {
+            assert!(should_write_consumer_output(frame, false));
+        }
+    }
+
+    #[test]
+    fn consumer_output_half_rate_is_explicit_compatibility_mode() {
+        assert!(should_write_consumer_output(0, true));
+        assert!(!should_write_consumer_output(1, true));
+        assert!(should_write_consumer_output(2, true));
+        assert!(!should_write_consumer_output(3, true));
+    }
 
     #[test]
     fn parses_v1_flat_passes_format() {

@@ -462,7 +462,10 @@ def _full_surface_metric_failures(
     }
     active_names = [name for name, value in active_layouts.items() if value > 0]
     if layout_mode == "3d" and visual_active:
-        active_names = [layout_name or "3d"]
+        active_name = layout_name or "3d"
+        if active_name in FULL_SURFACE_LEGACY_STATIC_LAYOUTS:
+            active_name = "3d"
+        active_names = [active_name]
     if not active_names:
         failures.append(_full_surface_reason("LSC-LAYOUT-003", "active_layout_unknown"))
     for layout_name in sorted(active_names):
@@ -1184,6 +1187,9 @@ def main() -> int:
     layout_mode_for_proof = _layout_mode_from_state(layout_state_path)
     layout_name_for_proof = _layout_name_from_state(layout_state_path)
     visual_egress_active = _imagination_egress_active(metrics)
+    performance_pid = main_pid
+    if visual_egress_active and not args.no_systemd:
+        performance_pid = _main_pid("hapax-imagination.service") or main_pid
     visual_effect_state_path = Path(args.visual_effect_state_json)
     visual_effect_state = _json_payload(visual_effect_state_path) if visual_egress_active else {}
     imagination_sources = (
@@ -1195,7 +1201,7 @@ def main() -> int:
         performance_failures, full_surface_performance = _full_surface_performance_sample(
             args,
             metrics,
-            pid=main_pid,
+            pid=performance_pid,
         )
         full_surface_failures = [
             *_full_surface_env_failures(env),
@@ -1227,7 +1233,7 @@ def main() -> int:
             upstream_frame_image = None
             if args.upstream_frame_image:
                 upstream_frame_image = Path(args.upstream_frame_image)
-            elif args.metrics_file is None:
+            elif args.metrics_file is None and not visual_egress_active:
                 upstream_frame_image = DEFAULT_UPSTREAM_FRAME_IMAGE
             classification = classify_final_frame(
                 Path(final_frame_image_arg),
