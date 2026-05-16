@@ -263,28 +263,19 @@ def _emit_snapshot(
 
 
 def _send_ntfy(stage: str, alert_type: str, detail: str) -> None:
-    """Send ntfy notification (best-effort)."""
+    """Send desktop notification (best-effort)."""
     try:
         import subprocess
 
-        priority = "high" if stage == OBS_BOUND_STAGE else "default"
+        urgency = "critical" if stage == OBS_BOUND_STAGE else "normal"
         subprocess.run(
-            [
-                "curl",
-                "-s",
-                "-d",
-                f"{alert_type} at {stage}: {detail}",
-                "-H",
-                f"Priority: {priority}",
-                "-H",
-                "Tags: audio,crest-flatness",
-                "https://ntfy.sh/audio-health-crest-flatness-breach",
-            ],
+            ["notify-send", f"--urgency={urgency}", "--app-name=LLM Stack",
+             f"Audio: {alert_type}", f"{alert_type} at {stage}: {detail}"],
             capture_output=True,
             timeout=5,
         )
     except Exception:
-        log.debug("ntfy send failed", exc_info=True)
+        log.debug("notify-send failed", exc_info=True)
 
 
 def _format_error(exc: BaseException | str | None) -> str:

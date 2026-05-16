@@ -197,25 +197,17 @@ def _emit_snapshot(states: dict[str, NodeState], *, now: float, path: Path) -> N
 
 
 def _send_ntfy(node: str, delta: int) -> None:
-    """Send ntfy xrun storm notification."""
+    """Send desktop xrun storm notification."""
     try:
         subprocess.run(
-            [
-                "curl",
-                "-s",
-                "-d",
-                f"{node} xrun storm: {delta} xruns in probe window",
-                "-H",
-                "Priority: high",
-                "-H",
-                "Tags: audio,xrun",
-                "https://ntfy.sh/audio-health-pipewire-xrun-breach",
-            ],
+            ["notify-send", "--urgency=critical", "--app-name=LLM Stack",
+             "Audio: Xrun Storm",
+             f"{node} xrun storm: {delta} xruns in probe window"],
             capture_output=True,
             timeout=5,
         )
     except Exception:
-        log.debug("ntfy send failed", exc_info=True)
+        log.debug("notify-send failed", exc_info=True)
 
 
 def run_daemon(config: M5DaemonConfig | None = None) -> None:

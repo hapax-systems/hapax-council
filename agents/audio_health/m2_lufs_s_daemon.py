@@ -217,30 +217,21 @@ def _emit_snapshot(
 
 
 def _send_ntfy(stage: str, lufs: float, band: LufsBand) -> None:
-    """Send ntfy breach notification (best-effort)."""
+    """Send desktop breach notification (best-effort)."""
     try:
         import subprocess
 
         direction = "above" if lufs > band.high else "below"
         msg = f"LUFS-S breach at {stage}: {lufs:.1f} dBFS ({direction} [{band.low}, {band.high}])"
-        priority = "high" if stage == OBS_BOUND_STAGE else "default"
+        urgency = "critical" if stage == OBS_BOUND_STAGE else "normal"
         subprocess.run(
-            [
-                "curl",
-                "-s",
-                "-d",
-                msg,
-                "-H",
-                f"Priority: {priority}",
-                "-H",
-                "Tags: audio,lufs",
-                "https://ntfy.sh/audio-health-lufs-s-breach",
-            ],
+            ["notify-send", f"--urgency={urgency}", "--app-name=LLM Stack",
+             "Audio: LUFS Breach", msg],
             capture_output=True,
             timeout=5,
         )
     except Exception:
-        log.debug("ntfy send failed", exc_info=True)
+        log.debug("notify-send failed", exc_info=True)
 
 
 def _format_error(exc: BaseException | str | None) -> str:

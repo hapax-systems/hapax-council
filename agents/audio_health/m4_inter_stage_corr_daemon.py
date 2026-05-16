@@ -193,27 +193,19 @@ def _emit_snapshot(pairs: dict[str, PairState], *, now: float, path: Path) -> No
 
 
 def _send_ntfy(pair: str, correlation: float) -> None:
-    """Send ntfy signal-loss notification."""
+    """Send desktop signal-loss notification."""
     try:
         import subprocess
 
         subprocess.run(
-            [
-                "curl",
-                "-s",
-                "-d",
-                f"Signal lost between {pair}: correlation={correlation:.3f}",
-                "-H",
-                "Priority: high",
-                "-H",
-                "Tags: audio,correlation",
-                "https://ntfy.sh/audio-health-inter-stage-corr-breach",
-            ],
+            ["notify-send", "--urgency=critical", "--app-name=LLM Stack",
+             "Audio: Signal Loss",
+             f"Signal lost between {pair}: correlation={correlation:.3f}"],
             capture_output=True,
             timeout=5,
         )
     except Exception:
-        log.debug("ntfy send failed", exc_info=True)
+        log.debug("notify-send failed", exc_info=True)
 
 
 def _format_error(exc: BaseException | str | None) -> str:

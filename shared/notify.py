@@ -1,11 +1,7 @@
 """shared/notify.py — Unified notification dispatch.
 
-Sends push notifications via ntfy (preferred) with automatic fallback
-to desktop notify-send. All egress paths in the system converge here.
-
-Configuration:
-    NTFY_BASE_URL: ntfy server URL (default: http://localhost:8090)
-    NTFY_TOPIC:    default topic (default: cockpit)
+Sends desktop notifications via notify-send (KDE Plasma native D-Bus).
+All egress paths in the system converge here.
 
 Usage:
     from shared.notify import send_notification
@@ -22,7 +18,6 @@ import os
 import subprocess
 import time
 from pathlib import Path
-from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
@@ -38,12 +33,12 @@ _log = logging.getLogger(__name__)
 
 # ── Watershed event emission ────────────────────────────────────────────────
 # When logos is running, notifications also appear as ephemeral ripples in the
-# watershed region. Routine events suppress ntfy/desktop when logos is active.
+# watershed region. Routine events suppress desktop when logos is active.
 
 _WATERSHED_FILE = Path("/dev/shm/hapax-compositor/watershed-events.json")
 _VL_STATE_FILE = Path("/dev/shm/hapax-compositor/visual-layer-state.json")
 
-# ntfy tag → (signal category, base severity, ttl_s)
+# tag → (signal category, base severity, ttl_s)
 _TAG_ROUTING: dict[str, tuple[str, float, float]] = {
     # Sync completions — routine, short ripple
     "git": ("system_state", 0.15, 30.0),
@@ -102,7 +97,6 @@ def _emit_watershed_event(
                 category, severity, ttl = _TAG_ROUTING[tag]
                 break
 
-    # Override severity for high/urgent priorities
     if priority in ("high", "urgent"):
         severity = max(severity, 0.70)
         ttl = max(ttl, 60.0)
@@ -132,11 +126,9 @@ def _emit_watershed_event(
 
 
 # ── Deduplication ────────────────────────────────────────────────────────────
-# Suppress identical notifications within a cooldown window.
-# State is stored in a small JSON file keyed by hash(title+message).
 
 _DEDUP_FILE = Path(os.environ.get("NTFY_DEDUP_FILE", Path.home() / ".cache" / "ntfy-dedup.json"))
-_DEDUP_COOLDOWN = int(os.environ.get("NTFY_DEDUP_COOLDOWN_SECONDS", "3600"))  # 1 hour default
+_DEDUP_COOLDOWN = int(os.environ.get("NTFY_DEDUP_COOLDOWN_SECONDS", "3600"))
 
 
 def _dedup_key(title: str, message: str) -> str:
@@ -156,7 +148,6 @@ def _is_duplicate(title: str, message: str) -> bool:
     last_sent = state.get(key, 0)
     if now - last_sent < _DEDUP_COOLDOWN:
         return True
-    # Record this send and prune old entries
     state[key] = now
     state = {k: v for k, v in state.items() if now - v < _DEDUP_COOLDOWN * 4}
     try:
@@ -169,19 +160,6 @@ def _is_duplicate(title: str, message: str) -> bool:
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-NTFY_BASE_URL: str = os.environ.get("NTFY_BASE_URL", "http://localhost:8090")
-NTFY_TOPIC: str = os.environ.get("NTFY_TOPIC", "cockpit")
-
-# Priority mapping: ntfy uses 1-5 scale
-_NTFY_PRIORITIES = {
-    "min": "1",
-    "low": "2",
-    "default": "3",
-    "high": "4",
-    "urgent": "5",
-}
-
-# Map notify-send urgency from our priority levels
 _DESKTOP_URGENCY = {
     "min": "low",
     "low": "low",
@@ -204,30 +182,7 @@ def send_notification(
     click_url: str | None = None,
     consent_label: ConsentLabel | None = None,
 ) -> bool:
-    """Send a push notification. Tries ntfy first, falls back to notify-send.
-
-    Args:
-        title: Notification title.
-        message: Notification body text.
-        priority: One of min, low, default, high, urgent.
-        tags: ntfy tags/emojis (e.g. ["warning", "robot"]).
-        topic: Override default topic.
-        click_url: URL to open when notification is clicked (ntfy only).
-        consent_label: IFC gate — suppress notification if non-bottom (person-adjacent
-            data present without consent). None means no label check (default, safe).
-
-    Returns:
-        True if notification was delivered via at least one channel.
-
-    **Speech-safety defence-in-depth**: notifications are operator-visible
-    surfaces that can end up screenshotted / shared. Route title + message
-    through :func:`shared.speech_safety.censor` so the same
-    substitution pool protects them as the TTS path. Zero cost when
-    content is clean; substitution on the rare hit.
-    """
-    # Speech-safety gate: operator-visible surfaces share the
-    # monetization-safety invariant with TTS. See
-    # docs/research/2026-04-20-audit-synthesis-final.md §4.
+    """Send a desktop notification via notify-send (KDE Plasma native D-Bus)."""
     try:
         from shared.speech_safety import censor as _censor_speech
 
@@ -244,48 +199,29 @@ def send_notification(
     except Exception:
         _log.debug("notify: speech_safety censor import/call failed", exc_info=True)
 
-    # IFC boundary gate: suppress notifications carrying person-adjacent data
-    # when consent has not been granted. Currently all callers pass None (no label),
-    # so no notifications are suppressed. Gate is structural for future use.
     if consent_label is not None and consent_label != ConsentLabel.bottom():
         _log.info("Notification suppressed: consent label non-public (%s)", title)
-        return True  # pretend success — caller should not retry
+        return True
 
-    # Dedup: suppress identical notifications within cooldown window
     if _is_duplicate(title, message):
         _log.debug("Suppressed duplicate notification: %s", title)
-        return True  # Pretend delivered — caller shouldn't retry
+        return True
 
-    # Emit watershed event (always, when logos might be running)
     _emit_watershed_event(title, message, tags, priority)
 
-    # When logos is active and operator is present, suppress ntfy/desktop
-    # for routine notifications (severity < 0.4). The visual layer handles it.
     logos_active = _logos_is_active()
     if logos_active and priority in ("min", "low", "default"):
         _log.debug("Logos active, watershed-only for routine: %s", title)
         return True
 
-    delivered = False
-
-    # Try ntfy first
     try:
-        delivered = _send_ntfy(
-            title, message, priority=priority, tags=tags, topic=topic, click_url=click_url
-        )
+        delivered = _send_desktop(title, message, priority=priority)
     except Exception as exc:
-        _log.debug("ntfy failed: %s", exc)
-
-    # Desktop notification (skip if logos is handling it visually)
-    if not logos_active:
-        try:
-            if _send_desktop(title, message, priority=priority):
-                delivered = True
-        except Exception as exc:
-            _log.debug("notify-send failed: %s", exc)
+        _log.debug("notify-send failed: %s", exc)
+        delivered = False
 
     if not delivered and not logos_active:
-        _log.warning("All notification channels failed for: %s", title)
+        _log.warning("Notification delivery failed for: %s", title)
 
     return delivered or logos_active
 
@@ -296,16 +232,7 @@ def send_webhook(
     *,
     timeout: float = 10.0,
 ) -> bool:
-    """POST JSON to a webhook URL (e.g. n8n workflow trigger).
-
-    Args:
-        url: Webhook URL.
-        payload: JSON-serializable dict.
-        timeout: Request timeout in seconds.
-
-    Returns:
-        True if webhook returned 2xx.
-    """
+    """POST JSON to a webhook URL (e.g. n8n workflow trigger)."""
     import json
 
     data = json.dumps(payload).encode()
@@ -326,27 +253,14 @@ OBSIDIAN_VAULT_NAME: str = os.environ.get("OBSIDIAN_VAULT_NAME", "Personal")
 
 
 def obsidian_uri(vault_path: str) -> str:
-    """Generate an obsidian:// URI to open a note in Obsidian.
-
-    Args:
-        vault_path: Path relative to vault root (e.g. "30-system/briefings/2026-03-04.md").
-                    The .md extension is optional — Obsidian handles both.
-
-    Returns:
-        obsidian://open URL string.
-    """
-    # Strip .md suffix — Obsidian open action uses note name without extension
+    """Generate an obsidian:// URI to open a note in Obsidian."""
     if vault_path.endswith(".md"):
         vault_path = vault_path[:-3]
     return f"obsidian://open?vault={quote(OBSIDIAN_VAULT_NAME)}&file={quote(vault_path)}"
 
 
 def briefing_uri(date_str: str) -> str:
-    """Generate an Obsidian URI for a specific briefing note.
-
-    Args:
-        date_str: Date in YYYY-MM-DD format.
-    """
+    """Generate an Obsidian URI for a specific briefing note."""
     return obsidian_uri(f"30-system/briefings/{date_str}")
 
 
@@ -357,7 +271,6 @@ def nudges_uri() -> str:
 
 # ── LLM-Enriched Notifications ──────────────────────────────────────────────
 
-# LiteLLM configuration for enrichment calls
 from shared.config import LITELLM_BASE as _LITELLM_BASE_RAW
 
 _LITELLM_BASE: str = _LITELLM_BASE_RAW.rstrip("/")
@@ -377,10 +290,7 @@ _ENRICHMENT_SYSTEM_PROMPT = (
 
 
 def _enrich_message(subject: str, raw_context: str) -> str:
-    """Call claude-haiku via LiteLLM to produce an actionable summary.
-
-    Falls back to raw_context if the LLM call fails for any reason.
-    """
+    """Call claude-haiku via LiteLLM to produce an actionable summary."""
     try:
         from openai import OpenAI
 
@@ -417,23 +327,7 @@ def send_enriched_notification(
     topic: str | None = None,
     click_url: str | None = None,
 ) -> bool:
-    """Enrich a raw diagnostic message via LLM, then send as notification.
-
-    Calls claude-haiku through LiteLLM to produce a concise actionable summary
-    from raw diagnostic output. Falls back to the raw message if the LLM call
-    fails (timeout, network error, etc.).
-
-    Args:
-        title: Notification title (also used as LLM subject context).
-        raw_context: Raw diagnostic text to summarize.
-        priority: One of min, low, default, high, urgent.
-        tags: ntfy tags/emojis.
-        topic: Override default topic.
-        click_url: URL to open when notification is clicked.
-
-    Returns:
-        True if notification was delivered via at least one channel.
-    """
+    """Enrich a raw diagnostic message via LLM, then send as desktop notification."""
     enriched = _enrich_message(title, raw_context)
     return send_notification(
         title,
@@ -448,41 +342,8 @@ def send_enriched_notification(
 # ── Private helpers ──────────────────────────────────────────────────────────
 
 
-def _send_ntfy(
-    title: str,
-    message: str,
-    *,
-    priority: str = "default",
-    tags: list[str] | None = None,
-    topic: str | None = None,
-    click_url: str | None = None,
-) -> bool:
-    """Send notification via ntfy HTTP API."""
-    target_topic = topic or NTFY_TOPIC
-    url = f"{NTFY_BASE_URL.rstrip('/')}/{target_topic}"
-
-    req = Request(url, data=message.encode("utf-8"), method="POST")
-    req.add_header("Title", title)
-    req.add_header("Priority", _NTFY_PRIORITIES.get(priority, "3"))
-
-    if tags:
-        req.add_header("Tags", ",".join(tags))
-    if click_url:
-        req.add_header("Click", click_url)
-
-    try:
-        with urlopen(req, timeout=5) as resp:
-            ok = 200 <= resp.status < 300
-            if ok:
-                _log.debug("ntfy: sent to %s (HTTP %d)", target_topic, resp.status)
-            return ok
-    except (URLError, OSError) as exc:
-        _log.debug("ntfy unreachable at %s: %s", url, exc)
-        return False
-
-
 def _send_desktop(title: str, message: str, *, priority: str = "default") -> bool:
-    """Send notification via notify-send (desktop only)."""
+    """Send notification via notify-send (KDE Plasma native D-Bus)."""
     urgency = _DESKTOP_URGENCY.get(priority, "normal")
     cmd = [
         "notify-send",
