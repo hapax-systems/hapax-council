@@ -9,7 +9,6 @@ import os
 import subprocess
 import time
 from pathlib import Path
-from urllib.request import Request, urlopen
 
 from .watershed import emit_watershed_event, logos_is_active
 
