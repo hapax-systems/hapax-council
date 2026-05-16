@@ -3252,3 +3252,14 @@ from shared.source_packet import bind_source_hashes, validate_source_set  # noqa
 validate_receipt_freshness
 bind_source_hashes
 validate_source_set
+
+# Segment disconfirmation — called by daily_segment_prep Pass 3 (wiring PR follows)
+from shared.segment_disconfirmation import (  # noqa: F401, E402
+    apply_council_verdicts,
+    extract_claims,
+    run_council_disconfirmation,
+)
+
+apply_council_verdicts
+extract_claims
+run_council_disconfirmation

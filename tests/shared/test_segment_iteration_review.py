@@ -323,6 +323,11 @@ def _team_receipts_for(artifact: dict[str, Any]) -> list[dict[str, Any]]:
             "evidence_refs": ["prepared_script", "consultation_manifest"],
             "notes": "Review vocabulary stays in metadata and does not appear in spoken prose.",
         },
+        "council_disconfirmation_passed": {
+            "passed": True,
+            "evidence_refs": ["council_disconfirmation", "excellence_gate_verdict"],
+            "notes": "Council disconfirmation found no blocking unsupported claims or evidence gaps.",
+        },
     }
     return [
         {
