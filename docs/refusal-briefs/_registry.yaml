@@ -66,3 +66,9 @@ refusals:
     cc_task: leverage-REFUSED-wikipedia-auto-edit
     publisher_class: agents.publication_bus.publisher_kit.refused.WikipediaAutoEditRefusedPublisher
     lifecycle_probe: wikipedia-bot-policy-changes
+  patreon-account:
+    brief: docs/refusal-briefs/leverage-patreon.md
+    cc_task: leverage-REFUSED-patreon-sponsorship
+    publisher_class: null
+    lifecycle_probe: patreon-full-automation-compatibility
+    receive_only_exception: patreon-receiver

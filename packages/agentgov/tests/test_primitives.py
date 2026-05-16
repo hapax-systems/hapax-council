@@ -71,3 +71,29 @@ class TestFallbackChain(unittest.TestCase):
         a = FallbackChain([Candidate("a", lambda x: False, "nope")], default="default_a")
         b = FallbackChain([Candidate("b", lambda x: True, "yes")], default="default_b")
         assert (a | b).select("ctx").action == "yes"
+
+
+class TestVetoChainMonotonicity:
+    """Adding a veto can only restrict, never permit."""
+
+    def test_adding_veto_to_allowing_chain_can_only_deny(self):
+        allow_all = VetoChain([Veto("allow", lambda ctx: True)])
+        assert allow_all.evaluate("test").allowed is True
+
+        deny_one = Veto("deny", lambda ctx: False)
+        allow_all.add(deny_one)
+        assert allow_all.evaluate("test").allowed is False
+
+    def test_adding_veto_to_denying_chain_stays_denied(self):
+        chain = VetoChain([Veto("deny", lambda ctx: False)])
+        assert chain.evaluate("test").allowed is False
+
+        chain.add(Veto("allow", lambda ctx: True))
+        assert chain.evaluate("test").allowed is False
+
+    def test_composition_preserves_denial(self):
+        allowing = VetoChain([Veto("ok", lambda ctx: True)])
+        denying = VetoChain([Veto("no", lambda ctx: False)])
+
+        combined = allowing | denying
+        assert combined.evaluate("test").allowed is False

@@ -114,8 +114,9 @@ class TestImageEffects:
     def test_synced_frame_pair_renders_paired_status(self, tmp_path: Path) -> None:
         primary = tmp_path / "cam_primary.json"
         secondary = tmp_path / "cam_secondary.json"
-        _write_report(primary, brightness=40, frame_b64=_png_bytes(40))
-        _write_report(secondary, brightness=220, frame_b64=_png_bytes(220))
+        synced_mtime = time.time()
+        _write_report(primary, brightness=40, frame_b64=_png_bytes(40), mtime=synced_mtime)
+        _write_report(secondary, brightness=220, frame_b64=_png_bytes(220), mtime=synced_mtime)
 
         source = CBIPDualIrDisplacementCairoSource(
             primary_path=primary,
@@ -133,8 +134,9 @@ class TestImageEffects:
     def test_synced_telemetry_pair_renders_without_frames(self, tmp_path: Path) -> None:
         primary = tmp_path / "cam_primary.json"
         secondary = tmp_path / "cam_secondary.json"
-        _write_report(primary, brightness=70, motion_delta=0.02)
-        _write_report(secondary, brightness=200, motion_delta=0.10)
+        synced_mtime = time.time()
+        _write_report(primary, brightness=70, motion_delta=0.02, mtime=synced_mtime)
+        _write_report(secondary, brightness=200, motion_delta=0.10, mtime=synced_mtime)
 
         source = CBIPDualIrDisplacementCairoSource(
             primary_path=primary,

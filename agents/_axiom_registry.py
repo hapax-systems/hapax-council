@@ -164,46 +164,64 @@ def get_axiom(axiom_id: str, *, path: Path = AXIOMS_PATH) -> Axiom | None:
     return None
 
 
-def load_implications(axiom_id: str, *, path: Path = AXIOMS_PATH) -> list[Implication]:
-    """Load derived implications for a specific axiom."""
-    impl_file = path / "implications" / f"{axiom_id.replace('_', '-')}.yaml"
-    if not impl_file.exists():
-        # Try with underscores
-        impl_file = path / "implications" / f"{axiom_id}.yaml"
-        if not impl_file.exists():
-            return []
+def _parse_implication_entry(entry: dict, fallback_axiom_id: str) -> Implication:
+    """Parse a single implication dict into an Implication dataclass."""
+    scope_data = entry.get("scope")
+    scope = None
+    if scope_data and isinstance(scope_data, dict):
+        items_raw = scope_data.get("items")
+        items = list(items_raw) if items_raw and isinstance(items_raw, list) else None
+        scope = ImplicationScope(
+            type=scope_data.get("type", ""),
+            rule=scope_data.get("rule", ""),
+            items=items,
+        )
+    return Implication(
+        id=entry.get("id", entry.get("implication_id", "")),
+        axiom_id=entry.get("axiom_id", fallback_axiom_id),
+        tier=entry.get("tier", "T2"),
+        text=entry.get("text", ""),
+        enforcement=entry.get("enforcement", "warn"),
+        canon=entry.get("canon", ""),
+        mode=entry.get("mode", "compatibility"),
+        level=entry.get("level", "component"),
+        scope=scope,
+    )
 
-    try:
-        data = yaml.safe_load(impl_file.read_text())
-    except Exception as e:
-        log.error("Failed to parse implications for %s: %s", axiom_id, e)
+
+def load_implications(axiom_id: str, *, path: Path = AXIOMS_PATH) -> list[Implication]:
+    """Load derived implications for a specific axiom.
+
+    Scans ALL .yaml files in the implications directory and includes any
+    whose axiom_id field matches. Handles both array-format files (with
+    implications: list) and standalone-format files (flat YAML with
+    implication_id at top level).
+    """
+    impl_dir = path / "implications"
+    if not impl_dir.is_dir():
         return []
 
-    impls = []
-    for entry in data.get("implications", []):
-        scope_data = entry.get("scope")
-        scope = None
-        if scope_data and isinstance(scope_data, dict):
-            items_raw = scope_data.get("items")
-            items = list(items_raw) if items_raw and isinstance(items_raw, list) else None
-            scope = ImplicationScope(
-                type=scope_data.get("type", ""),
-                rule=scope_data.get("rule", ""),
-                items=items,
-            )
-        impls.append(
-            Implication(
-                id=entry["id"],
-                axiom_id=data.get("axiom_id", axiom_id),
-                tier=entry.get("tier", "T2"),
-                text=entry.get("text", ""),
-                enforcement=entry.get("enforcement", "warn"),
-                canon=entry.get("canon", ""),
-                mode=entry.get("mode", "compatibility"),
-                level=entry.get("level", "component"),
-                scope=scope,
-            )
-        )
+    impls: list[Implication] = []
+    for impl_file in sorted(impl_dir.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(impl_file.read_text())
+        except Exception as e:
+            log.error("Failed to parse implications from %s: %s", impl_file.name, e)
+            continue
+
+        if not isinstance(data, dict):
+            continue
+
+        file_axiom_id = data.get("axiom_id", "")
+        if file_axiom_id != axiom_id:
+            continue
+
+        entries = data.get("implications", [])
+        if not entries and "implication_id" in data:
+            entries = [data]
+
+        for entry in entries:
+            impls.append(_parse_implication_entry(entry, axiom_id))
 
     return impls
 

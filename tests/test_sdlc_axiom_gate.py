@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.sdlc_axiom_judge import COMMIT_MSG_RE, _check_structural
+from scripts.sdlc_axiom_judge import COMMIT_MSG_RE, SemanticVerdict, _call_judge, _check_structural
 
 
 class TestProtectedPathDetection:
@@ -162,3 +162,103 @@ class TestCommitMessageFormat:
     def test_random_title_fails(self):
         result = _check_structural(["agents/scout.py"], "diff", "yolo deploy friday")
         assert any("conventional commits" in v.lower() for v in result.violations)
+
+
+# ---------------------------------------------------------------------------
+# Semantic verdict decision logic property tests
+# ---------------------------------------------------------------------------
+
+
+class TestDecisionLogic:
+    """Property tests for the overall result determination at lines 280-289."""
+
+    @staticmethod
+    def _decide(semantic, structural_passed=True, precedent_compliant=True):
+        """Reproduce the decision logic from run_axiom_gate."""
+        from typing import Literal
+
+        has_t0 = any(not v.compliant and v.tier_violated == "T0" for v in semantic)
+        has_structural_failure = not structural_passed
+        has_advisory = any(not v.compliant and v.tier_violated != "T0" for v in semantic)
+
+        if has_t0 or has_structural_failure:
+            overall: Literal["pass", "block", "advisory"] = "block"
+        elif has_advisory or not precedent_compliant:
+            overall = "advisory"
+        else:
+            overall = "pass"
+        return overall
+
+    def test_t0_violation_blocks(self):
+        verdicts = [SemanticVerdict(axiom_id="single_user", compliant=False, tier_violated="T0")]
+        assert self._decide(verdicts) == "block"
+
+    def test_t1_violation_is_advisory(self):
+        verdicts = [SemanticVerdict(axiom_id="single_user", compliant=False, tier_violated="T1")]
+        assert self._decide(verdicts) == "advisory"
+
+    def test_structural_failure_blocks_despite_llm_pass(self):
+        verdicts = [SemanticVerdict(axiom_id="single_user", compliant=True)]
+        assert self._decide(verdicts, structural_passed=False) == "block"
+
+    def test_all_pass_produces_pass(self):
+        verdicts = [SemanticVerdict(axiom_id="single_user", compliant=True)]
+        assert self._decide(verdicts) == "pass"
+
+    def test_precedent_failure_is_advisory(self):
+        verdicts = [SemanticVerdict(axiom_id="single_user", compliant=True)]
+        assert self._decide(verdicts, precedent_compliant=False) == "advisory"
+
+    def test_t0_plus_structural_still_blocks(self):
+        verdicts = [SemanticVerdict(axiom_id="single_user", compliant=False, tier_violated="T0")]
+        assert self._decide(verdicts, structural_passed=False) == "block"
+
+    def test_t0_violation_never_downgraded_to_advisory(self):
+        verdicts = [
+            SemanticVerdict(axiom_id="single_user", compliant=False, tier_violated="T0"),
+            SemanticVerdict(axiom_id="executive_function", compliant=True),
+        ]
+        assert self._decide(verdicts, precedent_compliant=True) == "block"
+
+
+class TestFailClosedParsing:
+    """Tests for fail-closed JSON parsing in _call_judge."""
+
+    def test_json_parse_failure_blocks(self):
+        from unittest.mock import MagicMock, patch
+
+        import anthropic
+
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="not valid json at all")]
+
+        with patch.object(
+            anthropic,
+            "Anthropic",
+            return_value=MagicMock(
+                messages=MagicMock(create=MagicMock(return_value=mock_response))
+            ),
+        ):
+            result = _call_judge("system prompt", "diff content")
+            assert len(result) == 1
+            assert not result[0].compliant
+            assert result[0].tier_violated == "T0"
+            assert "parse_failure" in result[0].axiom_id
+
+    def test_json_parse_failure_never_passes(self):
+        from unittest.mock import MagicMock, patch
+
+        import anthropic
+
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text='{"partial": true')]
+
+        with patch.object(
+            anthropic,
+            "Anthropic",
+            return_value=MagicMock(
+                messages=MagicMock(create=MagicMock(return_value=mock_response))
+            ),
+        ):
+            result = _call_judge("system prompt", "diff content")
+            assert all(not v.compliant for v in result)

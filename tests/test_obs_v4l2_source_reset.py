@@ -350,13 +350,16 @@ class TestMonitorLoop:
         prom_path = tmp_path / "reset.prom"
         status_path = tmp_path / "status.json"
         sleep_calls = 0
+        real_time = reset_mod.time
         monotonic_values = iter([100.0, 110.0])
         monkeypatch.setattr(reset_mod, "_connect", lambda _host, _port: client)
         monkeypatch.setattr(reset_mod, "_send_ntfy", lambda _reason: None)
         monkeypatch.setattr(reset_mod, "STATUS_PATH", status_path)
         monkeypatch.setattr(reset_mod, "STATUS_DIR", tmp_path)
         monkeypatch.setattr(reset_mod, "_shutdown", False)
-        monkeypatch.setattr(reset_mod.time, "monotonic", lambda: next(monotonic_values))
+
+        def fake_monotonic() -> float:
+            return next(monotonic_values)
 
         def fake_toggle(toggle_client, scene_name: str, item_id: int) -> bool:
             toggle_client.set_scene_item_enabled(
@@ -379,7 +382,16 @@ class TestMonitorLoop:
             if sleep_calls >= 2:
                 monkeypatch.setattr(reset_mod, "_shutdown", True)
 
-        monkeypatch.setattr(reset_mod.time, "sleep", stop_after_two_loop_sleeps)
+        monkeypatch.setattr(
+            reset_mod,
+            "time",
+            types.SimpleNamespace(
+                monotonic=fake_monotonic,
+                sleep=stop_after_two_loop_sleeps,
+                strftime=real_time.strftime,
+                gmtime=real_time.gmtime,
+            ),
+        )
 
         try:
             reset_mod.monitor_loop(

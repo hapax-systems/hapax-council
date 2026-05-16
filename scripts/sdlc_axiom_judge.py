@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import sys
 import time
+
+log = logging.getLogger(__name__)
 from pathlib import Path
 from typing import Literal
 
@@ -123,14 +126,31 @@ def _check_structural(
 # ---------------------------------------------------------------------------
 
 
+_TIER_ORDER = {"T0": 0, "T1": 1, "T2": 2, "T3": 3}
+JUDGE_IMPL_LIMIT = 5
+
+
 def _build_judge_prompt(axioms: list, implications_by_axiom: dict) -> str:
+    total_loaded = 0
+    total_prompted = 0
     sections = []
     for axiom in axioms:
         impls = implications_by_axiom.get(axiom.id, [])
-        impl_text = "\n".join(f"  - [{i.tier}] {i.text}" for i in impls[:5])
+        total_loaded += len(impls)
+        sorted_impls = sorted(impls, key=lambda i: _TIER_ORDER.get(i.tier, 9))
+        prompted = sorted_impls[:JUDGE_IMPL_LIMIT]
+        total_prompted += len(prompted)
+        impl_text = "\n".join(f"  - [{i.tier}] {i.text}" for i in prompted)
         sections.append(
             f"### Axiom: {axiom.id}\n{axiom.text.strip()}\n\nKey implications:\n{impl_text}"
         )
+
+    log.info(
+        "Axiom judge coverage: loaded=%d prompted=%d excluded=%d",
+        total_loaded,
+        total_prompted,
+        total_loaded - total_prompted,
+    )
 
     return f"""\
 You are the axiom compliance judge for hapax-council.
@@ -187,8 +207,19 @@ def _call_judge(system: str, diff: str, *, dry_run: bool = False) -> list[Semant
     elif "```" in text:
         text = text.split("```")[1].split("```")[0]
 
-    raw = json.loads(text.strip())
-    return [SemanticVerdict.model_validate(v) for v in raw]
+    try:
+        raw = json.loads(text.strip())
+        return [SemanticVerdict.model_validate(v) for v in raw]
+    except (json.JSONDecodeError, Exception) as exc:
+        log.error("LLM returned unparseable response: %s — failing closed", exc)
+        return [
+            SemanticVerdict(
+                axiom_id="parse_failure",
+                compliant=False,
+                tier_violated="T0",
+                reasoning=f"LLM response parse failure (fail-closed): {exc}",
+            )
+        ]
 
 
 # ---------------------------------------------------------------------------

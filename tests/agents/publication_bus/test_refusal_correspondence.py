@@ -31,7 +31,8 @@ def _resolve_class(dotted: str) -> type:
 
 def test_refusal_registry_covers_every_refused_surface() -> None:
     registry = _load_refusal_registry()
-    assert set(registry) == set(refused_surfaces())
+    pure_refusals = {k for k, v in registry.items() if not v.get("receive_only_exception")}
+    assert pure_refusals == set(refused_surfaces())
 
 
 def test_every_refused_surface_link_points_to_existing_brief() -> None:
