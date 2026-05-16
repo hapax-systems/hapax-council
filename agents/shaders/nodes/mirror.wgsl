@@ -20,7 +20,10 @@ fn main_1() {
     var uv: vec2<f32>;
     var original: vec4<f32>;
     var mirrored: vec4<f32>;
-    var blend: f32;
+    var fold_dist: f32;
+    var fold_glint: f32;
+    var edge_presence: f32;
+    var strength: f32;
 
     let _e8 = v_texcoord_1;
     uv = _e8;
@@ -58,8 +61,17 @@ fn main_1() {
     let _e42 = uv;
     let _e43 = textureSample(tex, tex_sampler, _e42);
     mirrored = _e43;
-    blend = clamp((1.0f - global.u_position) * 0.80f, 0.0f, 0.54f);
-    fragColor = vec4<f32>(mix(original.xyz, mirrored.xyz, vec3(blend)), original.w);
+    fold_dist = abs(select(v_texcoord_1.x, v_texcoord_1.y, global.u_axis > 0.5f) - global.u_position);
+    fold_glint = 1.0f - smoothstep(0.0f, 0.14f, fold_dist);
+    edge_presence = smoothstep(0.08f, 0.42f, length(mirrored.xyz - original.xyz));
+    strength = clamp((1.0f - global.u_position) * 0.26f, 0.0f, 0.26f);
+    // Mirror is repaired as a fold/glint operator, not a full-frame scene
+    // clone. It can add local light and edge tension, but it must not project
+    // a second livestream layout onto the viewer plane.
+    let fold_tint = vec3<f32>(0.20f, 0.62f, 0.95f);
+    let detail_lift = max(mirrored.xyz - original.xyz, vec3<f32>(0.0f)) * edge_presence;
+    let lifted = original.xyz + (detail_lift * 0.55f + fold_tint * fold_glint * 0.18f) * strength;
+    fragColor = vec4<f32>(max(original.xyz, lifted), original.w);
     return;
 }
 
