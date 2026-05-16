@@ -22,6 +22,7 @@ def test_narrative_text_produces_source(tmp_path):
     manifest = json.loads((source_dir / "manifest.json").read_text())
     assert 0.5 <= manifest["opacity"] <= 0.7
     assert "recruited" in manifest["tags"]
+    assert manifest["ttl_ms"] > 0
 
 
 def test_unknown_content_returns_false(tmp_path):

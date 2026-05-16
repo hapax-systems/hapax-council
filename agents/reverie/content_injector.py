@@ -31,6 +31,7 @@ def inject_image(
     z_order: int = 10,
     blend_mode: str = "screen",
     tags: list[str] | None = None,
+    ttl_ms: int = 0,
 ) -> bool:
     """Inject any image file (PNG, JPEG, BMP, etc.) into the visual surface."""
     try:
@@ -46,6 +47,7 @@ def inject_image(
             z_order=z_order,
             blend_mode=blend_mode,
             tags=tags,
+            ttl_ms=ttl_ms,
         )
     except Exception:
         log.debug("Failed to inject image %s from %s", source_id, image_path, exc_info=True)
@@ -59,9 +61,10 @@ def inject_jpeg(
     z_order: int = 10,
     blend_mode: str = "screen",
     tags: list[str] | None = None,
+    ttl_ms: int = 0,
 ) -> bool:
     """Inject a JPEG file into the visual surface."""
-    return inject_image(source_id, jpeg_path, opacity, z_order, blend_mode, tags)
+    return inject_image(source_id, jpeg_path, opacity, z_order, blend_mode, tags, ttl_ms)
 
 
 def inject_text(
@@ -72,13 +75,23 @@ def inject_text(
     width: int = 640,
     height: int = 360,
     tags: list[str] | None = None,
+    ttl_ms: int = 0,
 ) -> bool:
     """Inject rendered text into the visual surface."""
     try:
         from agents.imagination_source_protocol import _render_text_to_rgba
 
         rgba, w, h = _render_text_to_rgba(text, width, height)
-        return inject_rgba(source_id, rgba, w, h, opacity=opacity, z_order=z_order, tags=tags)
+        return inject_rgba(
+            source_id,
+            rgba,
+            w,
+            h,
+            opacity=opacity,
+            z_order=z_order,
+            tags=tags,
+            ttl_ms=ttl_ms,
+        )
     except Exception:
         log.debug("Failed to inject text %s", source_id, exc_info=True)
         return False
@@ -93,6 +106,7 @@ def inject_rgba(
     z_order: int = 10,
     blend_mode: str = "screen",
     tags: list[str] | None = None,
+    ttl_ms: int = 0,
 ) -> bool:
     """Inject raw RGBA bytes into the visual surface. Lowest-level API."""
     source_dir = SOURCES_DIR / source_id
@@ -112,7 +126,7 @@ def inject_rgba(
             "layer": 1,
             "blend_mode": blend_mode,
             "z_order": z_order,
-            "ttl_ms": 0,
+            "ttl_ms": max(0, int(ttl_ms)),
             "tags": tags or [],
         }
 
@@ -131,6 +145,7 @@ def inject_url(
     opacity: float = 0.6,
     z_order: int = 10,
     tags: list[str] | None = None,
+    ttl_ms: int = 0,
 ) -> bool:
     """Fetch content from a URL and inject into the visual surface.
 
@@ -158,6 +173,7 @@ def inject_url(
                 opacity=opacity,
                 z_order=z_order,
                 tags=tags or ["web", "image"],
+                ttl_ms=ttl_ms,
             )
 
         # Non-image: extract text and render
@@ -169,6 +185,7 @@ def inject_url(
                 opacity=opacity,
                 z_order=z_order,
                 tags=tags or ["web", "text"],
+                ttl_ms=ttl_ms,
             )
         return False
     except Exception:

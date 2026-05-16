@@ -16,6 +16,8 @@ from shared.config import embed_safe, get_qdrant
 log = logging.getLogger("reverie.content_resolvers")
 
 SOURCES_DIR = Path("/dev/shm/hapax-imagination/sources")
+RECRUITED_CONTENT_TTL_MS = 30_000
+WAVEFORM_CONTENT_TTL_MS = 8_000
 
 
 def resolve_narrative_text(
@@ -33,6 +35,7 @@ def resolve_narrative_text(
         opacity=level,
         z_order=20,
         tags=["content", "recruited", "narrative"],
+        ttl_ms=RECRUITED_CONTENT_TTL_MS,
     )
 
 
@@ -172,13 +175,23 @@ def resolve_waveform_viz(
         bars = int(energy * 20) + 5
         viz = "▁▂▃▄▅▆▇█"
         waveform = "".join(viz[min(int(energy * 8 + i * 0.5) % 9, 8)] for i in range(bars))
-        return _inject_recalled_text("waveform_viz", f"Audio: {waveform}", level * 0.5)
+        return _inject_recalled_text(
+            "waveform_viz",
+            f"Audio: {waveform}",
+            level * 0.5,
+            WAVEFORM_CONTENT_TTL_MS,
+        )
     except Exception:
         log.debug("Waveform viz failed", exc_info=True)
         return False
 
 
-def _inject_recalled_text(source_suffix: str, text: str, level: float) -> bool:
+def _inject_recalled_text(
+    source_suffix: str,
+    text: str,
+    level: float,
+    ttl_ms: int = RECRUITED_CONTENT_TTL_MS,
+) -> bool:
     """Write recalled text to the sources protocol."""
     from agents.reverie.content_injector import inject_text
 
@@ -188,6 +201,7 @@ def _inject_recalled_text(source_suffix: str, text: str, level: float) -> bool:
         opacity=level,
         z_order=15,
         tags=["content", "recruited", "recall"],
+        ttl_ms=ttl_ms,
     )
 
 
@@ -201,6 +215,7 @@ def _fallback_text(source_suffix: str, text: str, level: float) -> bool:
         opacity=level * 0.3,
         z_order=15,
         tags=["content", "recruited", "fallback"],
+        ttl_ms=RECRUITED_CONTENT_TTL_MS,
     )
 
 

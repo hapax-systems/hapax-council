@@ -80,3 +80,15 @@ def test_write_source_protocol_has_required_fields():
         ]
         for field in required_fields:
             assert field in manifest, f"Missing required field: {field}"
+
+
+def test_inject_rgba_writes_requested_ttl(monkeypatch, tmp_path):
+    """Source-protocol callers can make live surfaces expire instead of stale."""
+    from agents.reverie import content_injector
+
+    monkeypatch.setattr(content_injector, "SOURCES_DIR", tmp_path / "sources")
+
+    assert content_injector.inject_rgba("ttl-test", b"\0" * 16, 2, 2, ttl_ms=7000)
+    manifest = json.loads((tmp_path / "sources" / "ttl-test" / "manifest.json").read_text())
+
+    assert manifest["ttl_ms"] == 7000
