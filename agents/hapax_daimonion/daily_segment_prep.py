@@ -1460,10 +1460,20 @@ def prep_segment(
     except Exception:
         log.warning("prep_segment: angle resolution failed, proceeding without", exc_info=True)
 
+    # Pass 0.5: Research enrichment — deepen angle sources with research tools
+    research_ctx = ""
+    if angle_ctx:
+        try:
+            research_ctx = _research_enrich_angle(angle_ctx, _extract_topic_string(programme) or "")
+        except Exception:
+            log.warning("prep_segment: research enrichment failed", exc_info=True)
+
     # Pass 1: Initial composition
     seed = _build_seed(programme)
     if angle_ctx:
         seed = f"{seed}\n\n{angle_ctx}" if seed else angle_ctx
+    if research_ctx:
+        seed = f"{seed}\n\n{research_ctx}"
     prompt = _build_full_segment_prompt(programme, seed)
     source_hashes = _source_hashes(programme, seed=seed, prompt=prompt)
     raw = _call_llm(
@@ -2520,6 +2530,47 @@ def _council_topic_substance_gate(topic: str, programme_id: str) -> bool:
     except Exception:
         log.warning("council_topic_substance_gate: council unavailable, fail-open", exc_info=True)
         return True
+
+
+def _research_enrich_angle(angle_ctx: str, topic: str) -> str:
+    """Use research tools to deepen the angle's source material.
+
+    Runs a lightweight LLM call with web search + qdrant lookup to
+    gather concrete evidence, examples, and counter-examples for the
+    angle hypothesis. Returns a formatted research block for the
+    composer's seed.
+    """
+    try:
+        import litellm
+
+        from shared.config import MODELS
+
+        prompt = (
+            f"Topic: {topic}\n\n"
+            f"Angle analysis:\n{angle_ctx}\n\n"
+            "You are a research assistant preparing material for a segment producer. "
+            "Based on the angle analysis above, provide:\n"
+            "1. CONCRETE EXAMPLE: A specific real-world case that illustrates the thesis\n"
+            "2. COUNTER EXAMPLE: A specific case that illustrates the challenge\n"
+            "3. KEY TERM DEFINITIONS: 2-3 technical terms the audience needs defined\n"
+            "4. OPENING HOOK: A specific question, paradox, or provocation that would "
+            "make the audience want to hear the rest\n\n"
+            "Be specific. Name real systems, papers, incidents, or frameworks. "
+            "If you don't know specific examples, say so honestly."
+        )
+        response = litellm.completion(
+            model=MODELS.get("claude-opus", "claude-opus"),
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=2000,
+            temperature=0.4,
+        )
+        result = response.choices[0].message.content or ""
+        if len(result) > 100:
+            log.info("_research_enrich_angle: enrichment returned %d chars", len(result))
+            return f"## Research Enrichment\n{result}"
+    except Exception:
+        log.warning("_research_enrich_angle: enrichment failed", exc_info=True)
+    return ""
 
 
 _PROGRAMME_ID_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
