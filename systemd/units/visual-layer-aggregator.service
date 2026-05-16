@@ -13,7 +13,8 @@ Restart=on-failure
 RestartSec=10
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
-MemoryMax=1G
+MemoryHigh=2G
+MemoryMax=4G
 SyslogIdentifier=visual-layer-aggregator
 
 [Install]

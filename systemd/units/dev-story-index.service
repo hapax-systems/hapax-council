@@ -11,5 +11,6 @@ Environment=HOME=/home/hapax
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=dev-story-index
-MemoryMax=512M
+MemoryHigh=2G
+MemoryMax=4G
 CPUQuota=50%

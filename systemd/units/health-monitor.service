@@ -15,5 +15,6 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=health-monitor
 TimeoutStartSec=300
-MemoryMax=1G
+MemoryHigh=2G
+MemoryMax=4G
 CPUQuota=50%
