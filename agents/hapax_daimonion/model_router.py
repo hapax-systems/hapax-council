@@ -7,12 +7,14 @@ well. Latency is the primary cost: a 100ms local response beats a
 
 Tiers (ascending latency + intelligence):
   CANNED  — no LLM at all, pre-synthesized response (~0ms)
-  LOCAL   — gemma3:4b via Ollama on RTX 3090 (~300ms TTFT)
+  LOCAL   — Command-R 35B EXL3 via TabbyAPI on RTX 3090 (~300ms TTFT)
   FAST    — gemini-flash via LiteLLM (~500-1400ms TTFT, tools)
   STRONG  — claude-sonnet via LiteLLM (~800-2000ms TTFT)
   CAPABLE — claude-opus via LiteLLM (~1500-3000ms TTFT)
 
-LOCAL handles greetings and simple multi-turn conversation on-device.
+LOCAL handles greetings, source-conditioned responses, and simple
+multi-turn conversation on-device. All tiers use preference-optimized
+models; LOCAL requires supplied evidence, cloud tiers make open-world claims.
 STRONG uses natural dysfluency fillers ("um", "so", "let's see")
 that signal a normal thinking cadence.
 
