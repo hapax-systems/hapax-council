@@ -70,7 +70,7 @@ pub const AOA_COMPAT_SOURCE_IDS: &[&str] = &[
     "sierpinski-lines",
 ];
 pub const AOA_BASE_GRID_UNITS: f32 = 2.0;
-pub const AOA_TETRIX_RENDER_DEPTH: u32 = 2;
+pub const AOA_TETRIX_RENDER_DEPTH: u32 = 1;
 
 pub fn aoa_leaf_tetrahedron_count(depth: u32) -> usize {
     4usize.pow(depth)
@@ -82,6 +82,10 @@ pub fn aoa_total_tetrahedron_count(depth: u32) -> usize {
 
 pub fn aoa_raw_edge_segment_count(depth: u32) -> usize {
     aoa_total_tetrahedron_count(depth) * 6
+}
+
+pub fn aoa_raw_triangular_pane_count(depth: u32) -> usize {
+    aoa_total_tetrahedron_count(depth) * 4
 }
 
 /// GPU shader family used by a scene node.
@@ -794,10 +798,11 @@ mod tests {
 
     #[test]
     fn aoa_tetrix_geometry_counts_are_pinned() {
-        assert_eq!(AOA_TETRIX_RENDER_DEPTH, 2);
-        assert_eq!(aoa_leaf_tetrahedron_count(AOA_TETRIX_RENDER_DEPTH), 16);
-        assert_eq!(aoa_total_tetrahedron_count(AOA_TETRIX_RENDER_DEPTH), 21);
-        assert_eq!(aoa_raw_edge_segment_count(AOA_TETRIX_RENDER_DEPTH), 126);
+        assert_eq!(AOA_TETRIX_RENDER_DEPTH, 1);
+        assert_eq!(aoa_leaf_tetrahedron_count(AOA_TETRIX_RENDER_DEPTH), 4);
+        assert_eq!(aoa_total_tetrahedron_count(AOA_TETRIX_RENDER_DEPTH), 5);
+        assert_eq!(aoa_raw_edge_segment_count(AOA_TETRIX_RENDER_DEPTH), 30);
+        assert_eq!(aoa_raw_triangular_pane_count(AOA_TETRIX_RENDER_DEPTH), 20);
     }
 
     #[test]
@@ -808,9 +813,30 @@ mod tests {
             "the authored 3D anchor shader must use AoA/tetrix naming only"
         );
         assert!(
-            shader.contains("aoa_tetrix_distances") && shader.contains("authored_aoa"),
+            shader.contains("child_tetra_vertex") && shader.contains("authored_aoa"),
             "AoA shader entry points should remain explicit"
         );
+    }
+
+    #[test]
+    fn aoa_shader_declares_usable_triangular_pane_topology() {
+        let shader = include_str!("shaders/scene_quad.wgsl");
+        for required in [
+            "AOA_OUTER_PANE_COUNT",
+            "AOA_INNER_PANE_COUNT_DEPTH_1",
+            "aoa_project_pane_preserving",
+            "triangle_barycentric",
+            "aoa_pane_lattice_distance",
+            "pane_information_uv_from_barycentric",
+            "pane_information_grid",
+            "tetra_pane_sample",
+            "inner_pane",
+        ] {
+            assert!(
+                shader.contains(required),
+                "AoA shader should keep pane affordance vocabulary: missing {required}"
+            );
+        }
     }
 
     #[test]
