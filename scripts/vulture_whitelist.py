@@ -3236,3 +3236,22 @@ from agents.deliberative_council.prompts import (  # noqa: F401, E402
 deliberate
 phase3_adversarial_prompt
 phase4_revision_prompt
+
+# Segment action contracts — tier-list + interview action kinds
+from shared.segment_action_contracts import (  # noqa: F401, E402
+    ActionContract,
+    InterviewActionContract,
+    InterviewActionKind,
+    TierListActionContract,
+    TierListActionKind,
+    validate_interview_actions,
+    validate_tier_list_actions,
+)
+
+ActionContract
+InterviewActionContract
+InterviewActionKind
+TierListActionContract
+TierListActionKind
+validate_interview_actions
+validate_tier_list_actions
