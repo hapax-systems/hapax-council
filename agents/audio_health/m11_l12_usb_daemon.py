@@ -202,25 +202,16 @@ def _emit_snapshot(state: L12State, *, now: float, path: Path) -> None:
 
 
 def _send_ntfy(msg: str, priority: str = "high") -> None:
-    """Send ntfy notification."""
+    """Send desktop notification."""
     try:
+        urgency = "critical" if priority == "high" else "normal"
         subprocess.run(
-            [
-                "curl",
-                "-s",
-                "-d",
-                msg,
-                "-H",
-                f"Priority: {priority}",
-                "-H",
-                "Tags: audio,usb,l12",
-                "https://ntfy.sh/audio-health-l12-usb-breach",
-            ],
+            ["notify-send", f"--urgency={urgency}", "--app-name=LLM Stack", "Audio: L-12 USB", msg],
             capture_output=True,
             timeout=5,
         )
     except Exception:
-        log.debug("ntfy send failed", exc_info=True)
+        log.debug("notify-send failed", exc_info=True)
 
 
 def run_daemon(config: M11DaemonConfig | None = None) -> None:

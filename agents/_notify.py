@@ -1,7 +1,7 @@
 """Vendored notification dispatch for the agents package.
 
-Full copy of shared/notify.py -- unified notification via ntfy + desktop +
-watershed visual layer.
+Full copy of shared/notify.py -- unified notification via KDE Plasma
+notify-send + watershed visual layer.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import os
 import subprocess
 import time
 from pathlib import Path
-from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
@@ -153,16 +152,6 @@ def _is_duplicate(title: str, message: str) -> bool:
 
 # -- Configuration -------------------------------------------------------------
 
-NTFY_BASE_URL: str = os.environ.get("NTFY_BASE_URL", "http://localhost:8090")
-NTFY_TOPIC: str = os.environ.get("NTFY_TOPIC", "cockpit")
-
-_NTFY_PRIORITIES = {
-    "min": "1",
-    "low": "2",
-    "default": "3",
-    "high": "4",
-    "urgent": "5",
-}
 
 _DESKTOP_URGENCY = {
     "min": "low",
@@ -185,7 +174,7 @@ def send_notification(
     topic: str | None = None,
     click_url: str | None = None,
 ) -> bool:
-    """Send a push notification. Tries ntfy first, falls back to notify-send."""
+    """Send a push notification. KDE Plasma native D-Bus via notify-send."""
     if _is_duplicate(title, message):
         _log.debug("Suppressed duplicate notification: %s", title)
         return True
@@ -197,24 +186,14 @@ def send_notification(
         _log.debug("Logos active, watershed-only for routine: %s", title)
         return True
 
-    delivered = False
-
     try:
-        delivered = _send_ntfy(
-            title, message, priority=priority, tags=tags, topic=topic, click_url=click_url
-        )
+        delivered = _send_desktop(title, message, priority=priority)
     except Exception as exc:
-        _log.debug("ntfy failed: %s", exc)
-
-    if not logos_active:
-        try:
-            if _send_desktop(title, message, priority=priority):
-                delivered = True
-        except Exception as exc:
-            _log.debug("notify-send failed: %s", exc)
+        _log.debug("notify-send failed: %s", exc)
+        delivered = False
 
     if not delivered and not logos_active:
-        _log.warning("All notification channels failed for: %s", title)
+        _log.warning("Notification delivery failed for: %s", title)
 
     return delivered or logos_active
 
@@ -333,39 +312,6 @@ def send_enriched_notification(
 
 
 # -- Private helpers -----------------------------------------------------------
-
-
-def _send_ntfy(
-    title: str,
-    message: str,
-    *,
-    priority: str = "default",
-    tags: list[str] | None = None,
-    topic: str | None = None,
-    click_url: str | None = None,
-) -> bool:
-    """Send notification via ntfy HTTP API."""
-    target_topic = topic or NTFY_TOPIC
-    url = f"{NTFY_BASE_URL.rstrip('/')}/{target_topic}"
-
-    req = Request(url, data=message.encode("utf-8"), method="POST")
-    req.add_header("Title", title)
-    req.add_header("Priority", _NTFY_PRIORITIES.get(priority, "3"))
-
-    if tags:
-        req.add_header("Tags", ",".join(tags))
-    if click_url:
-        req.add_header("Click", click_url)
-
-    try:
-        with urlopen(req, timeout=5) as resp:
-            ok = 200 <= resp.status < 300
-            if ok:
-                _log.debug("ntfy: sent to %s (HTTP %d)", target_topic, resp.status)
-            return ok
-    except (URLError, OSError) as exc:
-        _log.debug("ntfy unreachable at %s: %s", url, exc)
-        return False
 
 
 def _send_desktop(title: str, message: str, *, priority: str = "default") -> bool:

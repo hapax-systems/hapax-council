@@ -223,25 +223,21 @@ def _emit_snapshot(checks: list[NodeCheck], *, now: float, path: Path) -> None:
 
 
 def _send_ntfy(node: str, declared: int, observed: int) -> None:
-    """Send ntfy mismatch notification."""
+    """Send desktop mismatch notification."""
     try:
         subprocess.run(
             [
-                "curl",
-                "-s",
-                "-d",
+                "notify-send",
+                "--urgency=critical",
+                "--app-name=LLM Stack",
+                "Audio: Channel Mismatch",
                 f"Channel mismatch at {node}: declared={declared}, observed={observed}",
-                "-H",
-                "Priority: high",
-                "-H",
-                "Tags: audio,channels",
-                "https://ntfy.sh/audio-health-channel-position-breach",
             ],
             capture_output=True,
             timeout=5,
         )
     except Exception:
-        log.debug("ntfy send failed", exc_info=True)
+        log.debug("notify-send failed", exc_info=True)
 
 
 def run_daemon(config: M8DaemonConfig | None = None) -> None:

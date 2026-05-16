@@ -238,25 +238,21 @@ def _emit_snapshot(state: DriftState, modules: list[ModuleInfo], *, now: float, 
 
 
 def _send_ntfy(direction: str, detail: str) -> None:
-    """Send ntfy notification."""
+    """Send desktop notification."""
     try:
         subprocess.run(
             [
-                "curl",
-                "-s",
-                "-d",
+                "notify-send",
+                "--urgency=normal",
+                "--app-name=LLM Stack",
+                "Audio: Topology Drift",
                 f"Topology drift: module {direction} — {detail}",
-                "-H",
-                "Priority: default",
-                "-H",
-                "Tags: audio,topology",
-                "https://ntfy.sh/audio-health-topology-drift-breach",
             ],
             capture_output=True,
             timeout=5,
         )
     except Exception:
-        log.debug("ntfy send failed", exc_info=True)
+        log.debug("notify-send failed", exc_info=True)
 
 
 def run_daemon(config: M6DaemonConfig | None = None) -> None:
