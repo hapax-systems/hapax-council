@@ -81,7 +81,18 @@ def test_hero_effect_target_uses_configured_hero_tile_not_virtual_small() -> Non
     assert fx_chain._hero_effect_target(comp) == ("brio-operator", hero_tile)
 
 
-def test_make_hero_effect_slot_seeds_passthrough() -> None:
+def test_make_hero_effect_slot_is_explicit_opt_in(monkeypatch) -> None:
+    monkeypatch.delenv("HAPAX_HERO_EFFECT_ROTATOR_ENABLED", raising=False)
+    monkeypatch.delenv("HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT", raising=False)
+
+    gst = SimpleNamespace(ElementFactory=SimpleNamespace(find=lambda _name: object()))
+
+    assert fx_chain._make_hero_effect_slot(gst) is None
+
+
+def test_make_hero_effect_slot_seeds_passthrough_when_enabled(monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_HERO_EFFECT_ROTATOR_ENABLED", "1")
+    monkeypatch.delenv("HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT", raising=False)
     slot = _RecordingSlot()
 
     class _Factory:
@@ -99,6 +110,15 @@ def test_make_hero_effect_slot_seeds_passthrough() -> None:
 
     assert fx_chain._make_hero_effect_slot(gst) is slot
     assert ("fragment", HERO_EFFECT_PASSTHROUGH) in slot.properties
+
+
+def test_legacy_disable_env_overrides_hero_effect_opt_in(monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_HERO_EFFECT_ROTATOR_ENABLED", "1")
+    monkeypatch.setenv("HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT", "1")
+
+    gst = SimpleNamespace(ElementFactory=SimpleNamespace(find=lambda _name: object()))
+
+    assert fx_chain._make_hero_effect_slot(gst) is None
 
 
 def test_install_hero_effect_rotator_reuses_lifecycle_rotator_and_binds_slot(monkeypatch) -> None:

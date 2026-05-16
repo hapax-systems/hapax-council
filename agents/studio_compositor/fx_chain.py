@@ -219,6 +219,19 @@ def _hero_small_overlay_stage() -> Literal["pre_fx", "post_fx"]:
     return "pre_fx" if raw == "pre_fx" else "post_fx"
 
 
+def _hero_effect_rotator_enabled() -> bool:
+    """Return true only when the legacy dedicated hero GL pass is explicit.
+
+    The global slot pipeline is the live-surface treatment path. A dedicated
+    post-pipeline hero-region pass can read as a separate output-plane pane, so
+    it is kept opt-in for controlled experiments only.
+    """
+
+    if _env_enabled("HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT", default=False):
+        return False
+    return _env_enabled("HAPAX_HERO_EFFECT_ROTATOR_ENABLED", default=False)
+
+
 def _visual_pumping_enabled() -> bool:
     """Whether the glvideomixer flash overlay follows audio kicks.
 
@@ -1645,8 +1658,8 @@ def build_inline_fx_chain(
 
 def _make_hero_effect_slot(Gst: Any) -> Any | None:
     """Create the optional dedicated hero-effect GL pass."""
-    if os.environ.get("HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT") == "1":
-        log.info("HeroEffectRotator disabled by HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT=1")
+    if not _hero_effect_rotator_enabled():
+        log.info("HeroEffectRotator disabled: dedicated hero GL pass is explicit opt-in")
         return None
     if Gst.ElementFactory.find("glfeedback") is None:
         log.info("HeroEffectRotator disabled: glfeedback factory unavailable")

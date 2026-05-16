@@ -126,11 +126,16 @@ def _publish_runtime_features(*, force_cpu: bool, use_cuda: bool) -> None:
         from . import metrics
         from .shmsink_output_pipeline import is_bridge_enabled, is_v4l2_output_disabled
 
+        hero_effect_enabled = os.environ.get(
+            "HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT", ""
+        ).strip().lower() not in {"1", "true", "yes", "on", "enabled"} and os.environ.get(
+            "HAPAX_HERO_EFFECT_ROTATOR_ENABLED", ""
+        ).strip().lower() in {"1", "true", "yes", "on", "enabled"}
         feature_states = {
             "force_cpu": force_cpu,
             "cuda_aggregator": use_cuda,
             "inline_fx": os.environ.get("HAPAX_COMPOSITOR_DISABLE_INLINE_FX") != "1",
-            "hero_effect": os.environ.get("HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT") != "1",
+            "hero_effect": hero_effect_enabled,
             "follow_mode": os.environ.get("HAPAX_FOLLOW_MODE_ACTIVE", "1") != "0",
             "ward_modulator": os.environ.get("HAPAX_WARD_MODULATOR_ACTIVE", "1") != "0",
             "direct_v4l2": not is_bridge_enabled() and not is_v4l2_output_disabled(),
