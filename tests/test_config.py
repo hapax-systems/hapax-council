@@ -46,6 +46,21 @@ def test_get_model_alias_fallthrough():
     assert model.model_name == "anthropic/claude-opus-4"
 
 
+def test_get_model_opus_returns_valid():
+    model = get_model("opus")
+    assert model.model_name == "claude-opus"
+
+
+def test_get_model_gemini_3_pro_returns_valid():
+    model = get_model("gemini-3-pro")
+    assert model.model_name == "gemini-pro"
+
+
+def test_get_model_mistral_large_returns_valid():
+    model = get_model("mistral-large")
+    assert model.model_name == "mistral-large"
+
+
 def test_get_qdrant_returns_client(_mock_qdrant_if_unavailable):
     """LRR Phase 6 FINDING-R: get_qdrant() returns a consent-gated wrapper.
 

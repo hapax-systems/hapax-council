@@ -117,6 +117,10 @@ MODELS: dict[str, str] = {
     "web-research": "web-research",
     "web-reason": "web-reason",
     "web-deep": "web-deep",
+    # Deliberative council — multi-family diversity routes.
+    "opus": "claude-opus",
+    "gemini-3-pro": "gemini-pro",
+    "mistral-large": "mistral-large",
 }
 
 EMBEDDING_MODEL: str = "nomic-embed-cpu"
