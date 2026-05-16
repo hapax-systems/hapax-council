@@ -11,6 +11,7 @@ Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=GNUPGHOME=/home/hapax/.gnupg
 Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
-MemoryMax=1G
+MemoryHigh=1G
+MemoryMax=2G
 CPUQuota=50%
 SyslogIdentifier=llm-backup

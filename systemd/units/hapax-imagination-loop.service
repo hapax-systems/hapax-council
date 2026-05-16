@@ -14,7 +14,8 @@ Environment=OMP_NUM_THREADS=2
 Environment=MKL_NUM_THREADS=2
 ExecStart=%h/.local/bin/uv run python -m agents.imagination_daemon
 WorkingDirectory=%h/projects/hapax-council
-MemoryMax=1G
+MemoryHigh=2G
+MemoryMax=4G
 Restart=on-failure
 RestartSec=10
 

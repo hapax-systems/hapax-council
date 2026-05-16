@@ -12,7 +12,8 @@ Restart=on-failure
 RestartSec=10
 EnvironmentFile=/run/user/1000/hapax-secrets.env
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin
-MemoryMax=1G
+MemoryHigh=2G
+MemoryMax=4G
 
 [Install]
 WantedBy=default.target

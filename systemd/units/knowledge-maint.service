@@ -11,7 +11,8 @@ Environment=PATH=/home/hapax/.local/bin:/home/hapax/.cargo/bin:/usr/local/bin:/u
 Environment=HOME=/home/hapax
 Environment=GNUPGHOME=/home/hapax/.gnupg
 Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
-MemoryMax=1G
+MemoryHigh=1G
+MemoryMax=2G
 CPUQuota=30%
 StandardOutput=journal
 StandardError=journal

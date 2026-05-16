@@ -39,7 +39,9 @@ StandardError=journal
 SyslogIdentifier=hapax-post-merge-deploy
 
 # Guard rails — the deploy script itself manages systemctl --user restarts
-# and writes small text files; no GPU/big-memory resident state. 512M is
-# the conservative ceiling consistent with deliberation-eval.service.
-MemoryMax=1G
+# and writes small text files; no GPU/big-memory resident state. Keep bounded
+# but do not let the deploy rail fail solely because a 128G host inherited an
+# old 1G hard ceiling.
+MemoryHigh=1G
+MemoryMax=2G
 TimeoutStartSec=180

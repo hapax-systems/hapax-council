@@ -249,6 +249,27 @@ class TestServiceProfileCompleteness:
         assert allocation.enforcement == Enforcement.HARD
         assert "MemoryMax=8G" in allocation.notes
 
+    def test_core_service_profiles_do_not_model_one_gib_hard_caps(self):
+        expected_limits = {
+            "hapax-dmn": 4.0,
+            "hapax-imagination-loop": 4.0,
+            "hapax-audio-router": 2.0,
+            "hapax-audio-perception": 2.0,
+            "visual-layer-aggregator": 4.0,
+            "reverie": 4.0,
+            "health-monitor": 4.0,
+            "dev-story-index": 4.0,
+            "stimmung-sync": 2.0,
+            "knowledge-maint": 2.0,
+            "llm-backup": 2.0,
+            "hapax-post-merge-deploy": 2.0,
+        }
+
+        for name, expected_limit in expected_limits.items():
+            allocation = DEFAULT_SERVICE_PROFILES[name].allocations[ResourceType.RAM]
+            assert allocation.limit == expected_limit
+            assert allocation.enforcement == Enforcement.HARD
+
 
 class TestContentionGroupConsistency:
     def test_all_contention_group_members_exist_in_profiles(self):

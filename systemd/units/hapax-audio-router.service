@@ -11,11 +11,10 @@ EnvironmentFile=-%h/.cache/hapax/secrets.env
 ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.audio_router.dynamic_router
 Restart=on-failure
 RestartSec=2s
-# Audio router is small and pure-Python — generous bound vs the
-# kernel-tuning baseline (vm.min_free_kbytes 512MB) so a single tick
-# stays well under the global OOM watermark.
-MemoryHigh=512M
-MemoryMax=1G
+# Audio routing is critical-path even when the resident set is normally small:
+# keep a soft pressure signal while avoiding a 1G hard ceiling on a 128G host.
+MemoryHigh=1G
+MemoryMax=2G
 
 # Pure software; no GPU. Isolate from CUDA so a stray import cannot
 # acquire VRAM the compositor / TabbyAPI rely on.
