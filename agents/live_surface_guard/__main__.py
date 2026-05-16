@@ -31,7 +31,10 @@ from .model import (
     surface_evidence,
 )
 
-DEFAULT_EXTRA_METRICS_FILES = (Path("/dev/shm/hapax-compositor/v4l2-bridge.prom"),)
+DEFAULT_EXTRA_METRICS_FILES = (
+    Path("/dev/shm/hapax-compositor/v4l2-bridge.prom"),
+    Path("/dev/shm/hapax-visual/egress.prom"),
+)
 
 
 @dataclass
@@ -137,6 +140,12 @@ def _merge_metrics_file(metrics: dict[str, float], path: Path) -> None:
     heartbeat = extra.get("hapax_v4l2_bridge_heartbeat_seconds_ago")
     if heartbeat is not None:
         extra["hapax_v4l2_bridge_heartbeat_seconds_ago"] = max(heartbeat, age_seconds)
+    for name in (
+        "hapax_imagination_output_last_frame_seconds_ago",
+        "hapax_imagination_v4l2_last_frame_seconds_ago",
+    ):
+        if name in extra:
+            extra[name] = max(extra[name], age_seconds)
     metrics.update(extra)
 
 

@@ -7,6 +7,8 @@ const OUTPUT_FILE: &str = "/dev/shm/hapax-visual/frame.rgba";
 const JPEG_FILE: &str = "/dev/shm/hapax-visual/frame.jpg";
 const JPEG_TMP_FILE: &str = "/dev/shm/hapax-visual/frame.jpg.tmp";
 const JPEG_QUALITY: i32 = 80;
+const EGRESS_METRICS_FILE: &str = "/dev/shm/hapax-visual/egress.prom";
+const EGRESS_METRICS_TMP_FILE: &str = "/dev/shm/hapax-visual/egress.prom.tmp";
 
 /// Second RGBA output path, consumed by the studio compositor's
 /// `ShmRgbaReader` as an `external_rgba` source. A sidecar JSON file at
@@ -190,14 +192,15 @@ impl ShmOutput {
         // Write JPEG
         self.write_jpeg(&clean_data);
 
-        // Write to v4l2 loopback (if enabled)
-        self.v4l2.write_frame(&clean_data);
-
         // Write the source-registry side output. Non-fatal on error —
         // reverie keeps rendering and the compositor's
         // compositor_source_frame_age_seconds metric catches chronic
         // staleness. Dormant in main until Phase D wires ShmRgbaReader.
         self.frame_count = self.frame_count.wrapping_add(1);
+
+        // Write to v4l2 loopback (if enabled)
+        self.v4l2.write_frame(&clean_data);
+
         let _ = write_side_output(
             Path::new(SIDE_OUTPUT_FILE),
             &clean_data,
@@ -206,6 +209,58 @@ impl ShmOutput {
             self.bytes_per_row,
             self.frame_count,
         );
+        self.write_egress_metrics();
+    }
+
+    fn write_egress_metrics(&self) {
+        let v4l2 = self.v4l2.metrics();
+        let mut lines = vec![
+            "# HELP hapax_imagination_output_frames_total 3D compositor frames written to the consumer-boundary SHM/JPEG output".to_string(),
+            "# TYPE hapax_imagination_output_frames_total counter".to_string(),
+            format!("hapax_imagination_output_frames_total {}", self.frame_count),
+            "# HELP hapax_imagination_output_last_frame_seconds_ago Seconds since the 3D compositor last wrote the consumer-boundary output file".to_string(),
+            "# TYPE hapax_imagination_output_last_frame_seconds_ago gauge".to_string(),
+            "hapax_imagination_output_last_frame_seconds_ago 0".to_string(),
+            "# HELP hapax_imagination_v4l2_output_enabled Whether direct v4l2 output is enabled in hapax-imagination".to_string(),
+            "# TYPE hapax_imagination_v4l2_output_enabled gauge".to_string(),
+            format!(
+                "hapax_imagination_v4l2_output_enabled {}",
+                if v4l2.enabled { 1 } else { 0 }
+            ),
+            "# HELP hapax_imagination_v4l2_write_frames_total Direct v4l2 frames written by hapax-imagination".to_string(),
+            "# TYPE hapax_imagination_v4l2_write_frames_total counter".to_string(),
+            format!("hapax_imagination_v4l2_write_frames_total {}", v4l2.write_count),
+            "# HELP hapax_imagination_v4l2_write_bytes_total Direct v4l2 bytes written by hapax-imagination".to_string(),
+            "# TYPE hapax_imagination_v4l2_write_bytes_total counter".to_string(),
+            format!(
+                "hapax_imagination_v4l2_write_bytes_total {}",
+                v4l2.write_bytes_total
+            ),
+            "# HELP hapax_imagination_v4l2_write_errors_total Direct v4l2 write errors observed by hapax-imagination".to_string(),
+            "# TYPE hapax_imagination_v4l2_write_errors_total counter".to_string(),
+            format!("hapax_imagination_v4l2_write_errors_total {}", v4l2.error_count),
+            "# HELP hapax_imagination_v4l2_reconnects_total Direct v4l2 reopen attempts by hapax-imagination".to_string(),
+            "# TYPE hapax_imagination_v4l2_reconnects_total counter".to_string(),
+            format!(
+                "hapax_imagination_v4l2_reconnects_total {}",
+                v4l2.reopen_count
+            ),
+        ];
+        if let Some(age) = v4l2.last_write_age_seconds {
+            lines.push(
+                "# HELP hapax_imagination_v4l2_last_frame_seconds_ago Seconds since hapax-imagination last wrote a direct v4l2 frame".to_string(),
+            );
+            lines.push("# TYPE hapax_imagination_v4l2_last_frame_seconds_ago gauge".to_string());
+            lines.push(format!(
+                "hapax_imagination_v4l2_last_frame_seconds_ago {}",
+                age
+            ));
+        }
+        lines.push(String::new());
+
+        if fs::write(EGRESS_METRICS_TMP_FILE, lines.join("\n")).is_ok() {
+            let _ = fs::rename(EGRESS_METRICS_TMP_FILE, EGRESS_METRICS_FILE);
+        }
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {

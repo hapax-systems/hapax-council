@@ -382,6 +382,8 @@ def _egress_mode_from_metrics(
     *,
     bridge_expected: bool,
 ) -> V4l2EgressMode:
+    if bool(metrics.get("hapax_imagination_v4l2_output_enabled", 0)):
+        return V4l2EgressMode.DIRECT
     if bool(metrics.get("studio_compositor_runtime_feature_active:feature:v4l2_output", 1)):
         if bool(metrics.get("studio_compositor_runtime_feature_active:feature:shmsink_bridge", 0)):
             return V4l2EgressMode.BRIDGE
@@ -448,9 +450,15 @@ def snapshot_from_prometheus(
             bridge_expected=bridge_expected_value,
         ),
         bridge_expected=bridge_expected_value,
-        v4l2_frames_total=metrics.get("studio_compositor_v4l2sink_frames_total"),
-        v4l2_last_frame_age_seconds=metrics.get(
-            "studio_compositor_v4l2sink_last_frame_seconds_ago"
+        v4l2_frames_total=(
+            metrics.get("hapax_imagination_v4l2_write_frames_total")
+            if "hapax_imagination_v4l2_write_frames_total" in metrics
+            else metrics.get("studio_compositor_v4l2sink_frames_total")
+        ),
+        v4l2_last_frame_age_seconds=(
+            metrics.get("hapax_imagination_v4l2_last_frame_seconds_ago")
+            if "hapax_imagination_v4l2_last_frame_seconds_ago" in metrics
+            else metrics.get("studio_compositor_v4l2sink_last_frame_seconds_ago")
         ),
         shmsink_frames_total=metrics.get("studio_compositor_shmsink_frames_total"),
         shmsink_last_frame_age_seconds=metrics.get(
@@ -484,11 +492,19 @@ def snapshot_from_prometheus(
             metrics,
             "hapax_video42_decoded_last_frame_seconds_ago",
         ),
-        final_egress_snapshot_frames_total=metrics.get(
-            "studio_compositor_render_stage_frames_total:stage:final_egress_snapshot"
+        final_egress_snapshot_frames_total=(
+            metrics.get("hapax_imagination_output_frames_total")
+            if "hapax_imagination_output_frames_total" in metrics
+            else metrics.get(
+                "studio_compositor_render_stage_frames_total:stage:final_egress_snapshot"
+            )
         ),
-        final_egress_snapshot_last_frame_age_seconds=metrics.get(
-            "studio_compositor_render_stage_last_frame_seconds_ago:stage:final_egress_snapshot"
+        final_egress_snapshot_last_frame_age_seconds=(
+            metrics.get("hapax_imagination_output_last_frame_seconds_ago")
+            if "hapax_imagination_output_last_frame_seconds_ago" in metrics
+            else metrics.get(
+                "studio_compositor_render_stage_last_frame_seconds_ago:stage:final_egress_snapshot"
+            )
         ),
         containment_flags=containment_flags or {},
         hls_active=hls_active or bool(metrics.get("studio_compositor_hls_playlist_active", 0)),

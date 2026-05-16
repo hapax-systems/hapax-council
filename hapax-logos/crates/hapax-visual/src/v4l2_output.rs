@@ -22,10 +22,22 @@ pub struct V4l2Output {
     /// NV12 frame buffer: Y plane (w*h) + UV plane (w*h/2)
     nv12_buf: Vec<u8>,
     write_count: u64,
+    write_bytes_total: u64,
     error_count: u64,
     reopen_count: u64,
     last_write: Instant,
     enabled: bool,
+}
+
+/// Snapshot counters for the direct v4l2 egress path.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct V4l2Metrics {
+    pub enabled: bool,
+    pub write_count: u64,
+    pub write_bytes_total: u64,
+    pub error_count: u64,
+    pub reopen_count: u64,
+    pub last_write_age_seconds: Option<f64>,
 }
 
 impl V4l2Output {
@@ -46,6 +58,7 @@ impl V4l2Output {
             height,
             nv12_buf,
             write_count: 0,
+            write_bytes_total: 0,
             error_count: 0,
             reopen_count: 0,
             last_write: Instant::now(),
@@ -64,6 +77,18 @@ impl V4l2Output {
     #[allow(dead_code)]
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    pub fn metrics(&self) -> V4l2Metrics {
+        V4l2Metrics {
+            enabled: self.enabled,
+            write_count: self.write_count,
+            write_bytes_total: self.write_bytes_total,
+            error_count: self.error_count,
+            reopen_count: self.reopen_count,
+            last_write_age_seconds: (self.write_count > 0)
+                .then(|| self.last_write.elapsed().as_secs_f64()),
+        }
     }
 
     fn open_device(&mut self) {
@@ -211,6 +236,7 @@ impl V4l2Output {
         }
 
         self.write_count += 1;
+        self.write_bytes_total += written as u64;
         self.last_write = Instant::now();
 
         if self.write_count % 900 == 0 {
@@ -238,6 +264,17 @@ mod tests {
     fn disabled_by_default() {
         let out = V4l2Output::new(1280, 720);
         assert!(!out.is_enabled());
+        assert_eq!(
+            out.metrics(),
+            V4l2Metrics {
+                enabled: false,
+                write_count: 0,
+                write_bytes_total: 0,
+                error_count: 0,
+                reopen_count: 0,
+                last_write_age_seconds: None,
+            }
+        );
     }
 
     #[test]
