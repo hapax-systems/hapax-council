@@ -73,7 +73,7 @@ emit_progress() {
 
 prep_restart_blocked_by_authority_gate() {
   (
-    cd /home/hapax/projects/hapax-council
+    cd "${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
     uv run python -m shared.segment_prep_pause --check --activity pool_generation
   ) >/dev/null 2>&1
 }

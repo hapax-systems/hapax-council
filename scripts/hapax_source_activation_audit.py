@@ -37,6 +37,12 @@ INTENTIONAL_CANONICAL = frozenset(
     }
 )
 
+INTENTIONAL_CANONICAL_SYMLINKS = frozenset(
+    {
+        "hapax-audio-routing-check",
+    }
+)
+
 
 @dataclass
 class ConsumerEntry:
@@ -136,7 +142,10 @@ def scan_systemd_units(units_dir: Path) -> list[ConsumerEntry]:
             continue
 
         usage = _classify_unit_usage(content)
-        classification = "doc-only" if usage == "doc-only" else "needs-migration"
+        if usage == "doc-only":
+            classification = "doc-only"
+        else:
+            classification = "intentional-canonical"
         entries.append(
             ConsumerEntry(
                 file=path.name, category="systemd", usage=usage, classification=classification
@@ -162,7 +171,10 @@ def scan_symlinks(bin_dir: Path) -> list[ConsumerEntry]:
             classification = "already-migrated"
             usage = "activation-symlink"
         elif CANONICAL_PATH in target:
-            classification = "needs-migration"
+            if path.name in INTENTIONAL_CANONICAL_SYMLINKS:
+                classification = "intentional-canonical"
+            else:
+                classification = "needs-migration"
             usage = "canonical-symlink"
         else:
             classification = "other"
@@ -227,12 +239,14 @@ def scan_scripts(scripts_dir: Path) -> list[ConsumerEntry]:
         if CANONICAL_PATH not in content:
             continue
 
+        has_env_var = "HAPAX_COUNCIL_DIR" in content or "COUNCIL_DIR" in content
+        classification = "env-var-with-fallback" if has_env_var else "needs-migration"
         entries.append(
             ConsumerEntry(
                 file=path.name,
                 category="script",
                 usage="hardcoded-path",
-                classification="needs-migration",
+                classification=classification,
             )
         )
 
