@@ -2711,7 +2711,7 @@ fn configured_shader_indices_from_env() -> Option<Vec<usize>> {
         return None;
     }
 
-    log::warn!(
+    log::info!(
         "SlotDrift: constrained to {} sampled node(s): {:?}",
         indices.len(),
         indices
@@ -3515,7 +3515,7 @@ impl SlotDriftEngine {
             .iter()
             .map(|s| SHADERS[s.shader_idx].name)
             .collect();
-        log::warn!("SlotDrift: writing plan chain={:?}", chain);
+        log::info!("SlotDrift: writing plan chain={:?}", chain);
 
         if let Err(e) = std::fs::write(
             Path::new(&self.plan_path),
