@@ -142,6 +142,40 @@ def test_runner_frame_count_and_render_ms():
     assert runner.last_render_ms >= 0.0
 
 
+def test_runner_source_protocol_publish_uses_finite_ttl(monkeypatch):
+    """Continuous Cairo surfaces must not survive forever after a runner stalls."""
+    from agents.reverie import content_injector
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_inject_rgba(
+        _source_id: str,
+        _rgba_data: bytes,
+        _width: int,
+        _height: int,
+        **kwargs: Any,
+    ) -> bool:
+        calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(content_injector, "inject_rgba", fake_inject_rgba)
+    src = _RecordingSource()
+    runner = CairoSourceRunner(
+        source_id="ttl-ward",
+        source=src,
+        canvas_w=8,
+        canvas_h=8,
+        target_fps=10,
+        publish_to_source_protocol=True,
+        publish_ttl_ms=7000,
+    )
+
+    runner.tick_once()
+
+    assert calls
+    assert calls[-1]["ttl_ms"] == 7000
+
+
 # ---------------------------------------------------------------------------
 # Threaded loop
 # ---------------------------------------------------------------------------

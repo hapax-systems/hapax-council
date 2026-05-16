@@ -9,6 +9,9 @@ use std::time::Instant;
 const SOURCES_DIR: &str = "/dev/shm/hapax-imagination/sources";
 const DEFAULT_TTL_MS: u64 = 5000;
 const CAMERA_SNAPSHOT_IMPLICIT_TTL_MS: u64 = 30_000;
+const LEGACY_CAIRO_IMPLICIT_TTL_MS: u64 = 10_000;
+const RECRUITED_CONTENT_IMPLICIT_TTL_MS: u64 = 30_000;
+const IMAGINATION_IMPLICIT_TTL_MS: u64 = 60_000;
 const MAX_SOURCES: usize = 64;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -78,6 +81,21 @@ fn has_manifest_tag(manifest: &SourceManifest, tag: &str) -> bool {
 fn effective_ttl_ms(manifest: &SourceManifest) -> u64 {
     let implicit_ttl = if has_manifest_tag(manifest, "camera-snapshot") {
         Some(CAMERA_SNAPSHOT_IMPLICIT_TTL_MS)
+    } else if manifest.ttl_ms == 0
+        && has_manifest_tag(manifest, "ward")
+        && has_manifest_tag(manifest, "cairo")
+    {
+        Some(LEGACY_CAIRO_IMPLICIT_TTL_MS)
+    } else if manifest.ttl_ms == 0
+        && manifest.source_id.starts_with("content-")
+        && has_manifest_tag(manifest, "recruited")
+    {
+        Some(RECRUITED_CONTENT_IMPLICIT_TTL_MS)
+    } else if manifest.ttl_ms == 0
+        && manifest.source_id.starts_with("imagination-")
+        && has_manifest_tag(manifest, "imagination")
+    {
+        Some(IMAGINATION_IMPLICIT_TTL_MS)
     } else {
         None
     };
@@ -284,10 +302,10 @@ impl ContentSourceManager {
         let now = Instant::now();
         let sources_dir = self.sources_dir.clone();
         self.sources.retain(|id, src| {
+            let ttl_ms = effective_ttl_ms(&src.manifest);
             let keep = seen.contains(id)
-                && (src.manifest.ttl_ms == 0
-                    || now.duration_since(src.last_refresh).as_millis()
-                        <= src.manifest.ttl_ms as u128);
+                && (ttl_ms == 0
+                    || now.duration_since(src.last_refresh).as_millis() <= ttl_ms as u128);
             if !keep {
                 let dir = sources_dir.join(id);
                 if dir.exists() {
@@ -776,6 +794,45 @@ mod family_classification_tests {
         let manifest = manifest(640, 360);
 
         assert_eq!(effective_ttl_ms(&manifest), 0);
+    }
+
+    #[test]
+    fn legacy_cairo_zero_ttl_gets_implicit_expiry() {
+        let mut manifest = manifest(640, 360);
+        manifest.tags = vec!["ward".to_string(), "cairo".to_string()];
+
+        assert_eq!(
+            effective_ttl_ms(&manifest),
+            super::LEGACY_CAIRO_IMPLICIT_TTL_MS
+        );
+    }
+
+    #[test]
+    fn recruited_content_zero_ttl_gets_implicit_expiry() {
+        let mut manifest = manifest(640, 360);
+        manifest.source_id = "content-episodic_recall".to_string();
+        manifest.tags = vec![
+            "content".to_string(),
+            "recruited".to_string(),
+            "recall".to_string(),
+        ];
+
+        assert_eq!(
+            effective_ttl_ms(&manifest),
+            super::RECRUITED_CONTENT_IMPLICIT_TTL_MS
+        );
+    }
+
+    #[test]
+    fn imagination_zero_ttl_gets_implicit_expiry() {
+        let mut manifest = manifest(640, 360);
+        manifest.source_id = "imagination-r2".to_string();
+        manifest.tags = vec!["imagination".to_string()];
+
+        assert_eq!(
+            effective_ttl_ms(&manifest),
+            super::IMAGINATION_IMPLICIT_TTL_MS
+        );
     }
 
     #[test]

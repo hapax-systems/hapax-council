@@ -59,6 +59,24 @@ impl ZPlane {
 
 // ─── Scene node ────────────────────────────────────────────────────
 
+/// GPU shader family used by a scene node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SceneNodeShader {
+    /// Sample the node's content-source texture.
+    Textured,
+    /// Draw the Sierpinski anchor as authored geometry, never as a stale source texture.
+    SierpinskiLines,
+}
+
+impl SceneNodeShader {
+    pub fn as_f32(self) -> f32 {
+        match self {
+            SceneNodeShader::Textured => 0.0,
+            SceneNodeShader::SierpinskiLines => 1.0,
+        }
+    }
+}
+
 /// A quad in 3D space, optionally bound to a content source texture.
 #[derive(Debug, Clone)]
 pub struct SceneNode {
@@ -67,6 +85,7 @@ pub struct SceneNode {
     pub scale: Vec3,
     pub rotation_y: f32,
     pub opacity: f32,
+    pub shader: SceneNodeShader,
     /// Index into ContentSourceManager's ordered source list.
     /// When None, the renderer uses a placeholder texture.
     pub content_source_id: Option<String>,
@@ -80,6 +99,7 @@ impl SceneNode {
             scale: Vec3::ONE,
             rotation_y: 0.0,
             opacity: 1.0,
+            shader: SceneNodeShader::Textured,
             content_source_id: None,
         }
     }
@@ -244,6 +264,17 @@ fn push_optional_node(
     true
 }
 
+fn push_authored_sierpinski(nodes: &mut Vec<SceneNode>) {
+    let height = 3.35;
+    let mut node = SceneNode::new("sierpinski-lines");
+    node.position = Vec3::new(0.0, 0.35, ZPlane::SurfaceScrim.z_position() - 0.4 + 0.55);
+    node.scale = Vec3::new(height * 1.14, height, 1.0);
+    node.opacity = 0.92;
+    node.shader = SceneNodeShader::SierpinskiLines;
+    node.content_source_id = None;
+    nodes.push(node);
+}
+
 fn mark_source_used(
     used_indices: &mut Vec<usize>,
     active_sources: &[(&str, f32, i32, u32, u32)],
@@ -404,39 +435,16 @@ pub fn build_scene_from_sources(
     // rogue scene reprojections or fake reflections.
     mark_projection_capable_sources(&mut used_indices, active_sources);
 
-    if push_optional_node(
-        &mut nodes,
-        active_sources,
-        "sierpinski-lines",
-        Vec3::new(
-            0.0,
-            0.35,
-            ZPlane::SurfaceScrim.z_position() - 0.4 + primary_forward,
-        ),
-        3.35,
-        0.92,
-        0.0,
-    ) {
+    if active_sources
+        .iter()
+        .any(|(_, opacity, _, _, _)| *opacity > 0.001)
+    {
+        push_authored_sierpinski(&mut nodes);
+        // Legacy Sierpinski sources have historically carried pre-composited
+        // camera imagery. The 3D baseline consumes those source IDs so they
+        // cannot appear as stale residual quads; the visible anchor is the
+        // authored shader node above.
         mark_source_used(&mut used_indices, active_sources, "sierpinski-lines");
-        // The base Sierpinski source is published separately for legacy
-        // consumers. Do not let the default 3D scene place it again as a
-        // residual low-band object when the primary Sierpinski-lines object
-        // is already present. Transient re-projection belongs to explicit
-        // effects, not the baseline layout.
-        mark_source_used(&mut used_indices, active_sources, "sierpinski");
-    } else if push_optional_node(
-        &mut nodes,
-        active_sources,
-        "sierpinski",
-        Vec3::new(
-            0.0,
-            0.35,
-            ZPlane::SurfaceScrim.z_position() - 0.4 + primary_forward,
-        ),
-        3.05,
-        0.74,
-        0.0,
-    ) {
         mark_source_used(&mut used_indices, active_sources, "sierpinski");
     }
 
@@ -795,9 +803,14 @@ mod tests {
             .collect();
         let scene = build_scene_from_sources(&refs, 0.0);
 
-        assert_eq!(scene.len(), 3, "should have 3 nodes");
+        assert_eq!(
+            scene.len(),
+            4,
+            "should have 3 source nodes plus the authored Sierpinski anchor"
+        );
 
         let ids: Vec<&str> = scene.iter().map(|n| n.label.as_str()).collect();
+        assert!(ids.contains(&"sierpinski-lines"));
         assert!(
             ids.contains(&"content-episodic_recall"),
             "content should be present"
@@ -833,7 +846,13 @@ mod tests {
             .map(|&(id, op, z, w, h)| (id, op, z, w, h))
             .collect();
         let scene = build_scene_from_sources(&refs, 0.0);
-        assert_eq!(scene.len(), 1, "invisible source should be skipped");
+        assert_eq!(
+            scene.len(),
+            2,
+            "invisible source should be skipped, with authored Sierpinski retained"
+        );
+        assert!(scene.iter().all(|n| n.label != "camera-brio"));
+        assert!(scene.iter().any(|n| n.label == "camera-c920"));
     }
 
     #[test]
@@ -844,7 +863,8 @@ mod tests {
             .map(|&(id, op, z, w, h)| (id, op, z, w, h))
             .collect();
         let scene = build_scene_from_sources(&refs, 0.0);
-        let aspect = scene[0].scale.x / scene[0].scale.y;
+        let cam = scene.iter().find(|n| n.label == "cam").unwrap();
+        let aspect = cam.scale.x / cam.scale.y;
         assert!(
             (aspect - 1920.0 / 1080.0).abs() < 0.01,
             "aspect ratio should be preserved"
@@ -893,6 +913,11 @@ mod tests {
             .unwrap();
         assert!(sierpinski.position.x.abs() < 0.01);
         assert!(sierpinski.position.y > 0.0);
+        assert_eq!(sierpinski.shader, SceneNodeShader::SierpinskiLines);
+        assert!(
+            sierpinski.content_source_id.is_none(),
+            "central Sierpinski must be authored geometry, not a sampled source texture"
+        );
         assert!(
             scene.iter().all(|n| n.label != "sierpinski"),
             "baseline layout must not re-project base Sierpinski as a residual object"
@@ -927,6 +952,30 @@ mod tests {
             .find(|n| n.label == "programme_history")
             .unwrap();
         assert!(ward.position.x > 1.5, "ward shelf should sit right");
+    }
+
+    #[test]
+    fn legacy_sierpinski_source_cannot_project_stale_texture() {
+        let sources = vec![
+            ("sierpinski", 0.8f32, 3i32, 840u32, 840u32),
+            ("camera-brio-operator", 0.8, 5, 1280, 720),
+            ("programme_history", 0.7, 3, 440, 140),
+        ];
+        let scene = build_scene_from_sources(&sources, 0.0);
+        let sierpinski = scene
+            .iter()
+            .find(|n| n.label == "sierpinski-lines")
+            .unwrap();
+
+        assert_eq!(sierpinski.shader, SceneNodeShader::SierpinskiLines);
+        assert!(
+            sierpinski.content_source_id.is_none(),
+            "legacy Sierpinski source may request the anchor, but must not supply its pixels"
+        );
+        assert!(
+            scene.iter().all(|n| n.label != "sierpinski"),
+            "legacy Sierpinski texture must be consumed, not placed as a residual tile"
+        );
     }
 
     #[test]

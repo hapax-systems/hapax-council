@@ -120,6 +120,7 @@ class CairoSourceRunner:
         budget_ms: float | None = None,
         natural_w: int | None = None,
         natural_h: int | None = None,
+        publish_ttl_ms: int | None = None,
     ) -> None:
         if target_fps <= 0:
             raise ValueError(f"target_fps must be > 0, got {target_fps}")
@@ -143,6 +144,15 @@ class CairoSourceRunner:
         self._natural_h = natural_h if natural_h is not None else canvas_h
         self._period = 1.0 / target_fps
         self._publish = publish_to_source_protocol
+        # Continuous Cairo publishers must not leave immortal last-good
+        # frames in the 3D source protocol when their runner stops. One-off
+        # content injection remains opt-in at ttl_ms=0; runner-owned live
+        # surfaces get a finite TTL sized to their cadence.
+        self._publish_ttl_ms = (
+            max(1, int(publish_ttl_ms))
+            if publish_ttl_ms is not None
+            else max(3000, int(self._period * 5000))
+        )
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._output_surface: cairo.ImageSurface | None = None
@@ -686,6 +696,7 @@ class CairoSourceRunner:
                 opacity=getattr(self, "_publish_opacity", 0.6),
                 z_order=getattr(self, "_publish_z_order", 3),
                 tags=["ward", "cairo"],
+                ttl_ms=self._publish_ttl_ms,
             )
         except ImportError:
             log.debug(
