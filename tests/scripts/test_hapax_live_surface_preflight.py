@@ -823,10 +823,7 @@ def test_preflight_full_surface_accepts_3d_imagination_egress(
     tmp_path: Path,
 ) -> None:
     layout_state = tmp_path / "current-layout-state.json"
-    layout_state.write_text(
-        json.dumps({"layout_mode": "3d", "layout_name": "segment-detail"}),
-        encoding="utf-8",
-    )
+    layout_state.write_text(json.dumps({"layout_mode": "3d"}), encoding="utf-8")
     effect_state = tmp_path / "effect-drift-state.json"
     effect_state.write_text(
         json.dumps({"pass_count": 7, "non_neutral_pass_count": 4}),

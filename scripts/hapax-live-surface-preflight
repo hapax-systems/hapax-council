@@ -461,8 +461,8 @@ def _full_surface_metric_failures(
         if key.startswith("hapax_compositor_layout_active:layout:")
     }
     active_names = [name for name, value in active_layouts.items() if value > 0]
-    if layout_mode == "3d" and layout_name:
-        active_names = [layout_name]
+    if layout_mode == "3d" and visual_active:
+        active_names = [layout_name or "3d"]
     if not active_names:
         failures.append(_full_surface_reason("LSC-LAYOUT-003", "active_layout_unknown"))
     for layout_name in sorted(active_names):
