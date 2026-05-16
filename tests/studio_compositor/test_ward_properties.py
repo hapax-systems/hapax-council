@@ -11,6 +11,15 @@ import pytest
 from agents.studio_compositor import ward_properties as wp
 
 
+def _capture_action_receipts(monkeypatch, receipt_path):
+    from agents.studio_compositor.action_receipts import emit_action_receipt as real_emit
+
+    def _emit(**kwargs):
+        return real_emit(**kwargs, path=receipt_path)
+
+    monkeypatch.setattr(wp, "emit_action_receipt", _emit)
+
+
 @pytest.fixture(autouse=True)
 def _redirect_path(monkeypatch, tmp_path):
     monkeypatch.setattr(wp, "WARD_PROPERTIES_PATH", tmp_path / "ward-properties.json")
@@ -106,6 +115,82 @@ class TestSetAndResolve:
         wp.clear_ward_properties_cache()
         assert wp.get_specific_ward_properties("chat_ambient") is not None
         assert wp.get_specific_ward_properties("token_pole") is not None
+
+    def test_request_id_success_emits_applied_action_receipt(self, monkeypatch, tmp_path):
+        from shared.action_receipt import ActionReceipt, ActionReceiptStatus
+
+        receipts_path = tmp_path / "action-receipts.jsonl"
+        _capture_action_receipts(monkeypatch, receipts_path)
+
+        assert wp.set_ward_properties(
+            "album",
+            wp.WardProperties(alpha=0.4),
+            ttl_s=10.0,
+            request_id="ward:req:album",
+            capability_name="ward.album.emphasis",
+        )
+
+        receipt = ActionReceipt.model_validate_json(receipts_path.read_text().splitlines()[0])
+        assert receipt.request_id == "ward:req:album"
+        assert receipt.status is ActionReceiptStatus.APPLIED
+        assert receipt.capability_name == "ward.album.emphasis"
+        assert receipt.readback_required is True
+        assert receipt.learning_update_allowed is False
+        assert receipt.can_support_affordance_success() is False
+
+    @pytest.mark.parametrize(
+        ("ward_id", "ttl_s", "reason"),
+        [
+            ("album", 0.0, "invalid_ttl"),
+            ("vinyl_platter", 10.0, "no_non_orphan_ward_properties"),
+        ],
+    )
+    def test_request_id_blocked_write_emits_blocked_action_receipt(
+        self,
+        monkeypatch,
+        tmp_path,
+        ward_id,
+        ttl_s,
+        reason,
+    ):
+        from shared.action_receipt import ActionReceipt, ActionReceiptStatus
+
+        receipts_path = tmp_path / "action-receipts.jsonl"
+        _capture_action_receipts(monkeypatch, receipts_path)
+
+        assert not wp.set_ward_properties(
+            ward_id,
+            wp.WardProperties(alpha=0.4),
+            ttl_s=ttl_s,
+            request_id=f"ward:req:{reason}",
+        )
+
+        receipt = ActionReceipt.model_validate_json(receipts_path.read_text().splitlines()[0])
+        assert receipt.status is ActionReceiptStatus.BLOCKED
+        assert receipt.blocked_reasons == [reason]
+
+    def test_request_id_write_exception_emits_error_action_receipt(self, monkeypatch, tmp_path):
+        from shared.action_receipt import ActionReceipt, ActionReceiptStatus
+
+        receipts_path = tmp_path / "action-receipts.jsonl"
+        _capture_action_receipts(monkeypatch, receipts_path)
+
+        def _raise(_props):
+            raise RuntimeError("serialize failed")
+
+        monkeypatch.setattr(wp, "_dataclass_to_jsonable", _raise)
+
+        assert not wp.set_ward_properties(
+            "album",
+            wp.WardProperties(alpha=0.4),
+            ttl_s=10.0,
+            request_id="ward:req:error",
+        )
+
+        receipt = ActionReceipt.model_validate_json(receipts_path.read_text().splitlines()[0])
+        assert receipt.request_id == "ward:req:error"
+        assert receipt.status is ActionReceiptStatus.ERROR
+        assert receipt.error_refs == ["ward_properties_write_failed"]
 
 
 class TestExpiry:

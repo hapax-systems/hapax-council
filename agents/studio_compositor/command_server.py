@@ -35,13 +35,17 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from agents.studio_compositor.action_receipts import emit_action_receipt
 from agents.studio_compositor.layout_fragment_guard import (
     segment_fragment_layout_error,
 )
 from agents.studio_compositor.layout_state import LayoutState
+from shared.action_receipt import ActionReceiptStatus
 from shared.compositor_model import Layout
 
 log = logging.getLogger(__name__)
+
+_ACTION_RECEIPTS_JSONL = Path("/dev/shm/hapax-compositor/action-receipts.jsonl")
 
 
 class _CommandError(Exception):
@@ -165,22 +169,53 @@ class CommandServer:
 
         command = request.get("command")
         args = request.get("args") or {}
+        request_id = _request_id_from_request(request, args)
         handler = _COMMANDS.get(command)
         if handler is None:
+            if request_id:
+                _emit_command_receipt(
+                    request_id=request_id,
+                    command=str(command),
+                    status=ActionReceiptStatus.BLOCKED,
+                    blocked_reasons=["unknown_command"],
+                )
             self._reply(
                 conn,
                 {
                     "status": "error",
                     "error": "unknown_command",
                     "command": command,
+                    **({"request_id": request_id} if request_id else {}),
                 },
             )
             return
         try:
             result = handler(self, args) or {}
-            self._reply(conn, {"status": "ok", **result})
+            _emit_command_receipt(
+                request_id=request_id,
+                command=str(command),
+                status=ActionReceiptStatus.APPLIED,
+                applied_refs=[f"command-server:{command}"],
+            )
+            self._reply(
+                conn,
+                {"status": "ok", **result, **({"request_id": request_id} if request_id else {})},
+            )
         except _CommandError as e:
-            self._reply(conn, {"status": "error", **e.payload})
+            _emit_command_receipt(
+                request_id=request_id,
+                command=str(command),
+                status=ActionReceiptStatus.BLOCKED,
+                blocked_reasons=[str(e.payload.get("error") or "command_error")],
+            )
+            self._reply(
+                conn,
+                {
+                    "status": "error",
+                    **e.payload,
+                    **({"request_id": request_id} if request_id else {}),
+                },
+            )
 
     @staticmethod
     def _reply(conn: socket.socket, payload: dict[str, Any]) -> None:
@@ -193,6 +228,38 @@ class CommandServer:
 def _did_you_mean(needle: str, haystack: list[str]) -> str:
     matches = difflib.get_close_matches(needle, haystack, n=3, cutoff=0.6)
     return ", ".join(matches)
+
+
+def _request_id_from_request(request: dict[str, Any], args: Any) -> str | None:
+    value = request.get("request_id")
+    if not value and isinstance(args, dict):
+        value = args.get("request_id")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _emit_command_receipt(
+    *,
+    request_id: str | None,
+    command: str,
+    status: ActionReceiptStatus,
+    applied_refs: list[str] | None = None,
+    blocked_reasons: list[str] | None = None,
+) -> None:
+    if not request_id:
+        return
+    emit_action_receipt(
+        request_id=request_id,
+        capability_name=command,
+        requested_action=command,
+        status=status,
+        family="command-server",
+        command_ref=f"uds:{command}",
+        applied_refs=applied_refs,
+        blocked_reasons=blocked_reasons,
+        path=_ACTION_RECEIPTS_JSONL,
+    )
 
 
 def _validate_geometry_field(name: str, value: Any) -> float:

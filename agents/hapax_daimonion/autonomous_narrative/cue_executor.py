@@ -35,12 +35,16 @@ import tempfile
 import time
 from pathlib import Path
 
+from agents.studio_compositor.action_receipts import emit_action_receipt
+from shared.action_receipt import ActionReceiptStatus
+
 log = logging.getLogger(__name__)
 
 _SHM_DIR = Path("/dev/shm/hapax-compositor")
+_ACTION_RECEIPTS_JSONL = _SHM_DIR / "action-receipts.jsonl"
 
 
-def _atomic_write_json(path: Path, payload: dict) -> None:
+def _atomic_write_json(path: Path, payload: dict) -> bool:
     """Atomic tmp+rename write to SHM."""
     try:
         fd = tempfile.NamedTemporaryFile(
@@ -54,11 +58,13 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
         fd.flush()
         fd.close()
         Path(fd.name).rename(path)
+        return True
     except Exception:
         log.debug("atomic write failed for %s", path, exc_info=True)
+        return False
 
 
-def _atomic_write_text(path: Path, text: str) -> None:
+def _atomic_write_text(path: Path, text: str) -> bool:
     """Atomic tmp+rename write of plain text."""
     try:
         fd = tempfile.NamedTemporaryFile(
@@ -72,8 +78,10 @@ def _atomic_write_text(path: Path, text: str) -> None:
         fd.flush()
         fd.close()
         Path(fd.name).rename(path)
+        return True
     except Exception:
         log.debug("atomic write failed for %s", path, exc_info=True)
+        return False
 
 
 # ── Camera control ───────────────────────────────────────────────────────
@@ -130,10 +138,10 @@ def _exec_front_youtube(args: str) -> None:
     log.info("cue_executor: front.youtube → %s", video_id)
 
 
-def _exec_front_homage(args: str) -> None:
+def _exec_front_homage(args: str, *, request_id: str | None = None) -> None:
     """front.homage <name> — bring a named homage to foreground."""
     name = args.strip()
-    _atomic_write_json(
+    active_written = _atomic_write_json(
         _HOMAGE_ACTIVE_ARTEFACT,
         {
             "package": name,
@@ -144,12 +152,30 @@ def _exec_front_homage(args: str) -> None:
         },
     )
     # Also write structural intent to bring homage to foreground
-    _atomic_write_json(
+    structural_written = _atomic_write_json(
         _NARRATIVE_STRUCTURAL_INTENT,
         {
-            "homage_rotation_mode": "hold_current",
+            "homage_rotation_mode": "paused",
             "updated_at": time.time(),
         },
+    )
+    applied = active_written and structural_written
+    emit_action_receipt(
+        request_id=request_id,
+        capability_name="segment_cue.front.homage",
+        requested_action=f"front.homage {name}",
+        status=ActionReceiptStatus.APPLIED if applied else ActionReceiptStatus.ERROR,
+        family="structural.intent",
+        command_ref="segment-cue:front.homage",
+        applied_refs=[
+            "shm:hapax-compositor/homage-active-artefact.json",
+            "shm:hapax-compositor/narrative-structural-intent.json",
+        ]
+        if applied
+        else [],
+        error_refs=[] if applied else ["front_homage_write_failed"],
+        structural_reflex=True,
+        path=_ACTION_RECEIPTS_JSONL,
     )
     log.info("cue_executor: front.homage → %s", name)
 
@@ -322,7 +348,7 @@ def _exec_gem_spawn() -> None:
 # ── Main dispatcher ──────────────────────────────────────────────────────
 
 
-def execute_cue(cue_string: str) -> None:
+def execute_cue(cue_string: str, *, request_id: str | None = None) -> None:
     """Parse and execute a segment_cue string.
 
     A cue string may contain multiple comma-separated directives:
@@ -349,12 +375,12 @@ def execute_cue(cue_string: str) -> None:
         if not directive:
             continue
         try:
-            _dispatch_single(directive)
+            _dispatch_single(directive, request_id=request_id)
         except Exception:
             log.warning("cue_executor: failed directive: %s", directive, exc_info=True)
 
 
-def _dispatch_single(directive: str) -> None:
+def _dispatch_single(directive: str, *, request_id: str | None = None) -> None:
     """Dispatch a single cue directive.
 
     Cue format: ``dotted.command args...``
@@ -375,7 +401,7 @@ def _dispatch_single(directive: str) -> None:
         case "front.youtube":
             _exec_front_youtube(args)
         case "front.homage":
-            _exec_front_homage(args)
+            _exec_front_homage(args, request_id=request_id)
         case "front.image":
             _exec_front_image(args)
         case "front.glyph":

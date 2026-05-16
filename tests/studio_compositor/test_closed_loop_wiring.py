@@ -29,6 +29,7 @@ def isolate_runtime_hold(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cc, "_SEGMENT_CUE_HOLD", tmp_path / "segment-cue-hold.json")
     monkeypatch.setattr(cc, "_PARAMETRIC_ENVELOPES", tmp_path / "parametric-envelopes.json")
+    monkeypatch.setattr(cc, "_ACTION_RECEIPTS_JSONL", tmp_path / "action-receipts.jsonl")
 
 
 class TestCompositionalPrefixes:

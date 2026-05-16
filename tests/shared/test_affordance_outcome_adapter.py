@@ -6,6 +6,7 @@ import pytest
 
 from shared.affordance_outcome_adapter import (
     AffordanceOutcomeUpdateKind,
+    build_commanded_no_witness_outcome,
     decide_affordance_outcome_update,
 )
 from shared.affordance_pipeline import AffordancePipeline
@@ -177,3 +178,25 @@ def test_governance_refusal_success_updates_gate_without_validating_refused_clai
     assert outcome.verified_success.claim_posterior is False
     assert state.use_count == 1
     assert ("no_expert_system", "No-expert gate refusal") in pipe._context_associations
+
+
+def test_commanded_no_witness_outcome_does_not_update_success_learning() -> None:
+    pipe = AffordancePipeline()
+    outcome = build_commanded_no_witness_outcome(
+        "studio.toggle_livestream",
+        command_ref="shm:hapax-compositor/livestream-control.json",
+        route_ref="route:studio-livestream-control",
+        public_claim_bearing=True,
+    )
+
+    decision = pipe.record_capability_outcome(outcome, context={"source": "test"})
+
+    state = pipe.get_activation_state("studio.toggle_livestream")
+    assert outcome.fixture_case is FixtureCase.COMMANDED_ONLY
+    assert outcome.witness_policy is WitnessPolicy.COMMANDED_ONLY
+    assert outcome.learning_update.allowed is False
+    assert outcome.witness_refs == []
+    assert decision.kind is AffordanceOutcomeUpdateKind.NO_UPDATE
+    assert decision.should_update is False
+    assert state.use_count == 0
+    assert ("test", "studio.toggle_livestream") not in pipe._context_associations

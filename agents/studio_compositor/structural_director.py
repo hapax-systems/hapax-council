@@ -31,12 +31,16 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from agents.studio_compositor.action_receipts import emit_action_receipt
+from shared.action_receipt import ActionReceiptStatus
+
 log = logging.getLogger(__name__)
 
 _STRUCTURAL_INTENT_PATH = Path("/dev/shm/hapax-structural/intent.json")
 _STRUCTURAL_INTENT_JSONL = Path(
     os.path.expanduser("~/hapax-state/stream-experiment/structural-intent.jsonl")
 )
+_ACTION_RECEIPTS_JSONL = Path("/dev/shm/hapax-compositor/action-receipts.jsonl")
 
 SceneMode = Literal[
     "desk-work",
@@ -136,19 +140,25 @@ def _read_condition_id() -> str:
 
 def _publish(intent: StructuralIntent) -> None:
     """Atomic publish to /dev/shm + append to JSONL for research observability."""
+    applied_refs: list[str] = []
+    error_refs: list[str] = []
     try:
         _STRUCTURAL_INTENT_PATH.parent.mkdir(parents=True, exist_ok=True)
         tmp = _STRUCTURAL_INTENT_PATH.with_suffix(".json.tmp")
         tmp.write_text(intent.model_dump_json(), encoding="utf-8")
         tmp.replace(_STRUCTURAL_INTENT_PATH)
+        applied_refs.append("shm:hapax-structural/intent.json")
     except Exception:
         log.warning("structural-intent publish failed", exc_info=True)
+        error_refs.append("structural_intent_publish_failed")
     try:
         _STRUCTURAL_INTENT_JSONL.parent.mkdir(parents=True, exist_ok=True)
         with _STRUCTURAL_INTENT_JSONL.open("a", encoding="utf-8") as fh:
             fh.write(intent.model_dump_json() + "\n")
+        applied_refs.append("jsonl:stream-experiment/structural-intent.jsonl")
     except Exception:
         log.warning("structural-intent jsonl write failed", exc_info=True)
+        error_refs.append("structural_intent_jsonl_write_failed")
     try:
         from shared.director_observability import emit_structural_intent
 
@@ -159,6 +169,23 @@ def _publish(intent: StructuralIntent) -> None:
         )
     except Exception:
         log.debug("prometheus emit_structural_intent failed", exc_info=True)
+    receipt_request_id = (
+        intent.condition_id
+        if intent.condition_id and intent.condition_id != "none"
+        else f"structural-director:{time.time_ns()}"
+    )
+    emit_action_receipt(
+        request_id=receipt_request_id,
+        capability_name="structural.director.intent",
+        requested_action=intent.long_horizon_direction,
+        status=ActionReceiptStatus.ERROR if error_refs else ActionReceiptStatus.APPLIED,
+        family="structural.director",
+        command_ref="structural-director:publish",
+        applied_refs=applied_refs if not error_refs else [],
+        error_refs=error_refs,
+        structural_reflex=True,
+        path=_ACTION_RECEIPTS_JSONL,
+    )
 
 
 def parse_structural_intent(raw: str) -> StructuralIntent | None:

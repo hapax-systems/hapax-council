@@ -29,10 +29,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from agents.studio_compositor.action_receipts import (
+    DEFAULT_ACTION_RECEIPTS_JSONL,
+    emit_action_receipt,
+)
 from agents.studio_compositor.homage.substrate_source import (
     SUBSTRATE_SOURCE_REGISTRY,
     HomageSubstrateSource,
 )
+from shared.action_receipt import ActionReceiptStatus
 from shared.homage_coupling import (
     SHADER_READING_PATH,
     ShaderCouplingReading,
@@ -129,6 +134,7 @@ class PendingTransition:
     transition: TransitionName
     enqueued_at: float
     salience: float = 0.0
+    request_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +145,7 @@ class PlannedTransition:
     transition: TransitionName
     phase: Literal["entry", "exit", "modify"]
     start_at: float
+    request_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +155,7 @@ class Rejection:
     source_id: str
     transition: TransitionName
     reason: RejectionReason
+    request_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +209,7 @@ class Choreographer:
         voice_register_file: Path = _VOICE_REGISTER_FILE,
         structural_intent_file: Path = _STRUCTURAL_INTENT_FILE,
         narrative_structural_intent_file: Path = _NARRATIVE_STRUCTURAL_INTENT_FILE,
+        action_receipts_file: Path = DEFAULT_ACTION_RECEIPTS_JSONL,
         source_registry: object | None = None,
         rng: random.Random | None = None,
         programme_provider=None,
@@ -213,6 +222,7 @@ class Choreographer:
         self._voice_register_file = voice_register_file
         self._structural_intent_file = structural_intent_file
         self._narrative_structural_intent_file = narrative_structural_intent_file
+        self._action_receipts_file = action_receipts_file
         # Phase 11 of the programme-layer plan: programme priors act as a
         # SOFT default rotation-mode source — slotted between structural
         # intent (which Phase 5 already feeds programme context into) and
@@ -329,6 +339,11 @@ class Choreographer:
         pending = [p for p in pending if p.source_id not in substrate_ids]
         for p in skipped_substrate:
             self._emit_substrate_skip(p.source_id)
+            self._emit_homage_action_receipt(
+                p,
+                status=ActionReceiptStatus.BLOCKED,
+                blocked_reasons=["substrate_source_skip"],
+            )
 
         # Package-palette broadcast to substrate sources. Always runs —
         # even on empty plans — so Reverie picks up hue shifts on every
@@ -350,6 +365,12 @@ class Choreographer:
         # broadcast + coupling payload still publish below so Reverie
         # keeps its palette and shader energy decays cleanly.
         if rotation_mode == "paused":
+            for p in pending:
+                self._emit_homage_action_receipt(
+                    p,
+                    status=ActionReceiptStatus.BLOCKED,
+                    blocked_reasons=["paused_rotation"],
+                )
             payload = self._compute_payload(package, planned, clock)
             self._publish_payload(package, payload)
             self._emit_metrics(package, planned, rejections, rotation_mode=rotation_mode)
@@ -367,7 +388,9 @@ class Choreographer:
         ]
 
         for p in unknown:
-            rejections.append(Rejection(p.source_id, p.transition, "unknown-transition"))
+            rejections.append(
+                Rejection(p.source_id, p.transition, "unknown-transition", p.request_id)
+            )
 
         # Phase 8: ``weighted_by_salience`` sorts entries/exits (highest
         # salience first) before the concurrency slice so the most-
@@ -383,15 +406,23 @@ class Choreographer:
 
         for i, p in enumerate(entries):
             if i < max_entries:
-                planned.append(PlannedTransition(p.source_id, p.transition, "entry", clock))
+                planned.append(
+                    PlannedTransition(p.source_id, p.transition, "entry", clock, p.request_id)
+                )
             else:
-                rejections.append(Rejection(p.source_id, p.transition, "concurrency-limit"))
+                rejections.append(
+                    Rejection(p.source_id, p.transition, "concurrency-limit", p.request_id)
+                )
 
         for i, p in enumerate(exits):
             if i < max_exits:
-                planned.append(PlannedTransition(p.source_id, p.transition, "exit", clock))
+                planned.append(
+                    PlannedTransition(p.source_id, p.transition, "exit", clock, p.request_id)
+                )
             else:
-                rejections.append(Rejection(p.source_id, p.transition, "concurrency-limit"))
+                rejections.append(
+                    Rejection(p.source_id, p.transition, "concurrency-limit", p.request_id)
+                )
 
         # Netsplit-burst gate: only one burst per ``netsplit_burst_min_interval_s``.
         for p in modifies:
@@ -399,10 +430,14 @@ class Choreographer:
                 last = self._last_netsplit_burst_ts
                 min_interval = package.transition_vocabulary.netsplit_burst_min_interval_s
                 if last is not None and (clock - last) < min_interval:
-                    rejections.append(Rejection(p.source_id, p.transition, "concurrency-limit"))
+                    rejections.append(
+                        Rejection(p.source_id, p.transition, "concurrency-limit", p.request_id)
+                    )
                     continue
                 self._last_netsplit_burst_ts = clock
-            planned.append(PlannedTransition(p.source_id, p.transition, "modify", clock))
+            planned.append(
+                PlannedTransition(p.source_id, p.transition, "modify", clock, p.request_id)
+            )
 
         # Metrics (spec §6) — best-effort, non-fatal.
         self._emit_metrics(package, planned, rejections, rotation_mode=rotation_mode)
@@ -419,10 +454,44 @@ class Choreographer:
         # non-zero value.
         payload = self._compute_payload(package, planned, clock)
         self._publish_payload(package, payload)
+        for plan in planned:
+            self._emit_homage_action_receipt(plan, status=ActionReceiptStatus.APPLIED)
+        for rejection in rejections:
+            self._emit_homage_action_receipt(
+                rejection,
+                status=ActionReceiptStatus.BLOCKED,
+                blocked_reasons=[rejection.reason],
+            )
 
         return ReconcileResult(tuple(planned), tuple(rejections), payload)
 
     # ── Phase 6 Layer 5: ward-event pubsub ─────────────────────────────
+
+    def _emit_homage_action_receipt(
+        self,
+        item: PendingTransition | PlannedTransition | Rejection,
+        *,
+        status: ActionReceiptStatus,
+        blocked_reasons: list[str] | None = None,
+    ) -> None:
+        request_id = getattr(item, "request_id", None)
+        if not request_id:
+            return
+        source_id = item.source_id
+        transition = item.transition
+        emit_action_receipt(
+            request_id=request_id,
+            capability_name=f"homage.{transition}",
+            requested_action=f"{transition}:{source_id}",
+            status=status,
+            family="homage.choreographer",
+            command_ref="homage-choreographer:reconcile",
+            applied_refs=[f"homage-plan:{source_id}:{transition}"]
+            if status is ActionReceiptStatus.APPLIED
+            else [],
+            blocked_reasons=blocked_reasons,
+            path=self._action_receipts_file,
+        )
 
     def _publish_ward_events(self, planned: list[PlannedTransition]) -> None:
         """Publish one ``WardEvent`` per planned transition to the ward↔FX bus.
@@ -502,14 +571,29 @@ class Choreographer:
                     salience = max(0.0, min(1.0, float(raw_salience)))
                 else:
                     salience = 0.0
+                request_id = entry.get("request_id")
                 out.append(
                     PendingTransition(
                         source_id=source_id,
                         transition=transition,  # type: ignore[arg-type]
                         enqueued_at=float(enqueued_at),
                         salience=salience,
+                        request_id=request_id if isinstance(request_id, str) else None,
                     )
                 )
+            else:
+                request_id = entry.get("request_id")
+                if isinstance(request_id, str) and request_id.strip():
+                    emit_action_receipt(
+                        request_id=request_id.strip(),
+                        capability_name="homage.pending.malformed",
+                        requested_action="homage pending transition",
+                        status=ActionReceiptStatus.BLOCKED,
+                        family="homage.choreographer",
+                        command_ref="homage-choreographer:read-pending",
+                        blocked_reasons=["malformed-entry"],
+                        path=self._action_receipts_file,
+                    )
         return out
 
     def _clear_pending(self) -> None:
