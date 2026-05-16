@@ -7,12 +7,16 @@ well. Latency is the primary cost: a 100ms local response beats a
 
 Tiers (ascending latency + intelligence):
   CANNED  — no LLM at all, pre-synthesized response (~0ms)
-  LOCAL   — gemma3:4b via Ollama on RTX 3090 (~300ms TTFT)
+  LOCAL   — Command-R 35B via TabbyAPI, source-conditioned (~200ms TTFT)
   FAST    — gemini-flash via LiteLLM (~500-1400ms TTFT, tools)
   STRONG  — claude-sonnet via LiteLLM (~800-2000ms TTFT)
   CAPABLE — claude-opus via LiteLLM (~1500-3000ms TTFT)
 
-LOCAL handles greetings and simple multi-turn conversation on-device.
+LOCAL is the source-conditioned tier: Command-R processes supplied
+evidence with citation fidelity, generating from sources rather than
+from RLHF-shaped priors. This makes it the grounding-native default
+for private, on-device generation.
+
 STRONG uses natural dysfluency fillers ("um", "so", "let's see")
 that signal a normal thinking cadence.
 
@@ -42,7 +46,7 @@ class ModelTier(IntEnum):
     """Model tiers ordered by latency (low→high) and capability (low→high)."""
 
     CANNED = 0
-    LOCAL = 1  # gemma3:4b — greetings, simple multi-turn
+    LOCAL = 1  # Command-R 35B — source-conditioned generation
     FAST = 2  # gemini-flash — tools, general conversation
     STRONG = 3  # claude-sonnet — ramping complexity
     CAPABLE = 4  # claude-opus — full intelligence
@@ -64,6 +68,7 @@ class RoutingDecision:
     model: str  # LiteLLM route name
     reason: str
     canned_response: str  # non-empty only for CANNED tier
+    egress_to_cloud: bool = False  # True when routed to cloud provider
 
 
 # ── Phatic / canned response patterns ────────────────────────────────
@@ -168,6 +173,7 @@ def route(
             model=TIER_ROUTES[ModelTier.CAPABLE],
             reason=f"consent_{consent_phase}",
             canned_response="",
+            egress_to_cloud=True,
         )
 
     if guest_mode:
@@ -176,6 +182,7 @@ def route(
             model=TIER_ROUTES[ModelTier.CAPABLE],
             reason="guest_or_multiface",
             canned_response="",
+            egress_to_cloud=True,
         )
 
     # ── Layer 2: Canned responses (zero latency) ────────────────
@@ -281,6 +288,7 @@ def route(
             tier, needs_tools, local_suitable, soft_escalated, hard_escalated, activity_mode
         ),
         canned_response="",
+        egress_to_cloud=tier >= ModelTier.FAST,
     )
 
 
@@ -304,3 +312,27 @@ def _reason(
     if activity_mode in ("coding", "production"):
         parts.append(activity_mode)
     return "+".join(parts) if parts else "default"
+
+
+def fallback_on_local_unavailable(original: RoutingDecision) -> RoutingDecision:
+    """Produce a cloud fallback when the LOCAL (source-conditioned) tier is unavailable.
+
+    Call this when a LOCAL-tier LLM call fails due to TabbyAPI being down.
+    Emits an observable warning so silent cloud egress is detectable.
+    """
+    if original.tier != ModelTier.LOCAL:
+        raise ValueError(
+            f"fallback_on_local_unavailable requires LOCAL tier, got {original.tier.name}"
+        )
+    log.warning(
+        "source_conditioned_fallback: LOCAL unavailable, falling back to cloud FAST (%s → %s)",
+        TIER_ROUTES[ModelTier.LOCAL],
+        TIER_ROUTES[ModelTier.FAST],
+    )
+    return RoutingDecision(
+        tier=ModelTier.FAST,
+        model=TIER_ROUTES[ModelTier.FAST],
+        reason=f"source_conditioned_fallback:{original.reason}",
+        canned_response="",
+        egress_to_cloud=True,
+    )

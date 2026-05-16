@@ -853,11 +853,11 @@ class ConversationPipeline:
         #
         # Previous intelligence_first override (PR #1334, 2026-04-24)
         # removed: it predated the grounding commitment framework and
-        # routed all voice to claude-opus, whose RLHF optimizes for
-        # fluent helpfulness rather than the evidence-citing, uncertainty-
-        # surfacing behavior that grounding-native models (Command-R)
-        # preserve. See: capability-grounding-contract-envelope.md §Model
-        # And Provider Policy, line 275.
+        # routed all voice to claude-opus. The LOCAL tier now uses
+        # source-conditioned generation (Command-R) which processes
+        # supplied evidence with citation fidelity. See:
+        # capability-grounding-contract-envelope.md §Model And Provider
+        # Policy, line 275.
         from agents.hapax_daimonion.model_router import TIER_ROUTES, ModelTier
 
         if self._salience_router is not None:
