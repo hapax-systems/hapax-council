@@ -3236,3 +3236,14 @@ from agents.deliberative_council.prompts import (  # noqa: F401, E402
 deliberate
 phase3_adversarial_prompt
 phase4_revision_prompt
+
+# Segment disconfirmation — called by daily_segment_prep Pass 3 (wiring PR follows)
+from shared.segment_disconfirmation import (  # noqa: F401, E402
+    apply_council_verdicts,
+    extract_claims,
+    run_council_disconfirmation,
+)
+
+apply_council_verdicts
+extract_claims
+run_council_disconfirmation

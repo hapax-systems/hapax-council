@@ -77,6 +77,7 @@ REQUIRED_POSITIVE_EXCELLENCE_EVIDENCE = (
     "non_anthropomorphic_force",
     "no_detector_trigger_theater",
     "framework_vocabulary_leakage",
+    "council_disconfirmation_passed",
 )
 PASSING_TEAM_VERDICTS = frozenset({"approved", "pass", "passed"})
 FORBIDDEN_VALIDATOR_REWRITE_PHASES = frozenset(
