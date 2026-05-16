@@ -121,6 +121,8 @@ hapax_ward_modulator_tick_total 0
         "--env",
         "HAPAX_COMPOSITOR_DISABLE_SHADER_FX=1",
         "--env",
+        "HAPAX_LIVE_SURFACE_EFFECT_POLICY=0",
+        "--env",
         "HAPAX_FOLLOW_MODE_ACTIVE=0",
         "--env",
         "HAPAX_WARD_MODULATOR_ACTIVE=0",
@@ -135,6 +137,7 @@ hapax_ward_modulator_tick_total 0
     assert payload["restored"] is False
     assert payload["full_surface_required"] is True
     assert "full_surface:LSC-FX-001:shader_fx_disabled" in payload["reasons"]
+    assert "full_surface:LSC-FX-001:live_surface_effect_policy_disabled" in payload["reasons"]
     assert "full_surface:LSC-FX-001:fx_slots_below_min:2<8" in payload["reasons"]
     assert "full_surface:LSC-WARD-001:visible_ward_count_below_min:1<3" in payload["reasons"]
     assert "full_surface:LSC-LAYOUT-003:legacy_static_layout_active:default" in payload["reasons"]

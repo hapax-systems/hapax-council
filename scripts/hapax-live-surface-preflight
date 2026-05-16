@@ -53,6 +53,7 @@ FULL_SURFACE_ENV = (
     "HAPAX_VISUAL_PUMPING_ENABLED",
     "HAPAX_CAMERA_LEGIBLE_FX_ONLY",
     "HAPAX_CAMERA_LEGIBLE_PRESET_ALLOWLIST",
+    "HAPAX_LIVE_SURFACE_EFFECT_POLICY",
     "HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED",
     "HAPAX_HERO_SMALL_OVERLAY_ENABLED",
     "HAPAX_PRE_FX_LAYOUT_BACKGROUND_COMPOSITE_ENABLED",
@@ -142,6 +143,12 @@ FULL_SURFACE_BLOCKING_ENV = (
         "preset_allowlist_clean",
     ),
     (
+        "HAPAX_LIVE_SURFACE_EFFECT_POLICY",
+        "0",
+        "LSC-FX-001",
+        "live_surface_effect_policy_disabled",
+    ),
+    (
         "HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED",
         "0",
         "LSC-LAYOUT-001",
@@ -170,7 +177,6 @@ FULL_SURFACE_BLOCKING_ENV = (
 FULL_SURFACE_REQUIRED_FEATURES = (
     ("shader_fx", "LSC-FX-001"),
     ("inline_fx", "LSC-FX-001"),
-    ("hero_effect", "LSC-FX-001"),
     ("follow_mode", "LSC-FOLLOW-001"),
     ("ward_modulator", "LSC-WARD-002"),
 )
