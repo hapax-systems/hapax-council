@@ -7,7 +7,7 @@
 
 ## Executive Summary
 
-**Yes, with caveats.** The 4-component package (thread, message drop, cross-session memory, sentinel) forms a theoretically coherent gestalt with strong structural symmetry across cognitive science, database systems, and communication theory. All 4 components are built and functional. However, the package implements *context anchoring*, not *grounding* per Clark — a distinction the EPISTEMIC-AUDIT already acknowledges. Two components have scope limitations that should be addressed before Cycle 2.
+**Yes, with caveats.** The treatment package is three components: thread, message drop, and cross-session memory. Those components form a theoretically coherent context-anchoring package with structural symmetry across cognitive science, database systems, and communication theory. The sentinel remains useful, but only as a cross-cutting prompt-integrity diagnostic. It is not a grounding treatment component. The package implements *context anchoring*, not *grounding* per Clark — a distinction the EPISTEMIC-AUDIT already acknowledges. Two treatment components have scope limitations that should be addressed before Cycle 2.
 
 ## Component Status
 
@@ -16,7 +16,7 @@
 | Thread (stable_frame) | 100% | Yes | Yes | Within-session context provision |
 | Message Drop | 100% | Yes | Yes | Within-session context maintenance |
 | Cross-Session Memory | 100% | Yes | Yes | Cross-session context provision |
-| Sentinel Fact | 75% | Partially | Yes | Cross-session context verification |
+| Sentinel Fact | 75% | Partially | Probe-only | Prompt-integrity diagnostic, not treatment |
 
 ### Thread (stable_frame) — FULLY BUILT
 
@@ -67,52 +67,70 @@
 
 ### The 2x2 Matrix
 
-The 4 components map to a clean decomposition:
+The 3 treatment components map to a clean decomposition:
 
 |  | Within-Session | Cross-Session |
 |---|---|---|
 | **Context Provision** | Thread | Memory |
-| **Context Maintenance** | Drop | Sentinel |
+| **Context Maintenance** | Drop | — |
 
-No cell is empty. No cell is duplicated. Each component has high cohesion (does one thing) and moderate coupling (interact through shared state, not internal dependencies).
+The empty cross-session maintenance cell is an implementation gap, not a
+sentinel-shaped slot. Sentinel verifies whether injected prompt material remains
+available; it does not maintain conversational grounding across sessions.
+
+The old 2x2 symmetry was useful for noticing a missing cross-session
+maintenance problem, but it was misleading when it treated sentinel as the
+solution. Each treatment component still has high cohesion (does one thing) and
+moderate coupling (interacts through shared state, not internal dependencies).
 
 ### Formal Composition
 
-Components are state transformations on `S = (M, T, K, V)`:
+Treatment components are state transformations on `S = (M, T, K)`:
 
 - `C_thread`: Append turn summary to T
 - `C_drop`: Prune M to fit window
 - `C_memory`: Query Qdrant, inject facts into K
-- `C_sentinel`: Verify injected fact in output, update V
+
+The sentinel diagnostic observes the assembled prompt after treatment
+composition. It may update a prompt-integrity metric, but it does not transform
+the conversational state used as the treatment.
 
 **Non-commutative ordering matters:**
 - Thread before Drop (summarize before pruning, or you lose content)
 - Thread before Memory (thread enriches the retrieval query)
-- Sentinel last (verify the assembled context)
+- Sentinel diagnostic after assembly (verify prompt integrity without joining the treatment)
 
-Recommended composition: `C_sentinel ∘ C_drop ∘ C_memory ∘ C_thread`
+Recommended treatment composition: `C_drop ∘ C_memory ∘ C_thread`
 
 ### Multiple Structural Analogies
 
-| Component | Cognitive (Baddeley) | Database | Communication (Shannon) |
+| Treatment component | Cognitive (Baddeley) | Database | Communication (Shannon) |
 |-----------|---------------------|----------|------------------------|
 | Thread | Episodic Buffer | Write-Ahead Log | Channel State |
 | Drop | Attentional Filtering | Log Compaction / GC | Bandwidth Limit |
 | Memory | Long-Term Retrieval | Indexed Snapshot Query | Shared Codebook |
-| Sentinel | Metacognitive Monitoring | Checksum / Integrity | Error Detection Code |
 
-Three independent domains arrive at the same 4-function decomposition: **any system maintaining shared state over time under bounded resources needs accumulate, prune, recall, verify.**
+The sentinel belongs beside the package as a diagnostic instrument:
+metacognitive monitoring / checksum / error detection code. That analogy
+supports its use as a probe; it does not make it a grounding mechanism.
+
+Three independent domains arrive at the same operating pressures: **any system
+maintaining shared state over time under bounded resources needs accumulation,
+pruning, recall, and verification.** The first three are treatment machinery
+here; verification is handled by diagnostics.
 
 ## Does the Package Hang Together?
 
 ### Functionally: YES
 
-Each component addresses a distinct concern. Thread provides within-session continuity. Drop prevents context overflow. Memory bridges sessions. Sentinel verifies integrity. Removing any one creates a specific gap:
+Each treatment component addresses a distinct concern. Thread provides within-session continuity. Drop prevents context overflow. Memory bridges sessions. Removing any treatment component creates a specific gap:
 
 - Without Thread: no accumulated narrative. Each turn is independent within session.
 - Without Drop: long sessions overflow context window.
 - Without Memory: every session starts cold.
-- Without Sentinel: no way to detect silent context corruption.
+
+Without Sentinel: no prompt-integrity probe. That is an observability loss, not
+a grounding-treatment loss.
 
 ### Theoretically: PARTIALLY
 
@@ -130,12 +148,11 @@ Components compose as a transformation monoid with well-defined non-commutative 
 
 ### As a Gestalt: YES, with the right framing
 
-The full package produces an emergent property no subset provides: **bounded, verified, cross-session conversational continuity.** Any 3-component subset has a specific gap:
+The full treatment package produces an emergent property no smaller treatment subset provides: **bounded cross-session conversational continuity.** Verification is supplied by diagnostics, not by the treatment itself. Any 2-component subset has a specific gap:
 
-- Thread + Memory + Drop without Sentinel: no failure detection
-- Thread + Memory + Sentinel without Drop: long session overflow
-- Thread + Drop + Sentinel without Memory: no cross-session continuity
-- Memory + Drop + Sentinel without Thread: no within-session narrative (this is profile-retrieval with guardrails)
+- Thread + Memory without Drop: long session overflow
+- Thread + Drop without Memory: no cross-session continuity
+- Memory + Drop without Thread: no within-session narrative (this is profile-retrieval with guardrails)
 
 ## Pairwise Interaction Predictions
 
@@ -144,9 +161,9 @@ The full package produces an emergent property no subset provides: **bounded, ve
 | Thread + Memory | **Synergistic** | Memory seeds early-turn context → thread summaries richer from turn 1. First-turn anchor > 0.5 (vs 0.5 neutral baseline). |
 | Thread + Drop | **Complementary** | Thread preserves meaning that Drop removes. Reference accuracy maintained even in long sessions (>10 turns). |
 | Memory + Drop | **Weakly synergistic** | Memory provides stable anchors surviving Drop's pruning. |
-| Memory + Sentinel | **Independent** | No interaction expected. |
-| Thread + Sentinel | **Weakly synergistic** | Better thread → more reliable sentinel verification (model attends to full STABLE band). |
-| Drop + Sentinel | **Diagnostic** | If sentinel fails after Drop, indicates too-aggressive pruning. |
+| Memory + Sentinel diagnostic | **Independent** | No grounding interaction expected. |
+| Thread + Sentinel diagnostic | **Diagnostic coupling** | Better thread placement may improve prompt-integrity probe reliability, but that is not treatment evidence. |
+| Drop + Sentinel diagnostic | **Diagnostic coupling** | If sentinel fails after Drop, it indicates prompt assembly/pruning risk. |
 
 ## Recommendations for Cycle 2
 
@@ -154,9 +171,10 @@ The full package produces an emergent property no subset provides: **bounded, ve
 
 1. **Reduce thread cap from 15 to 10.** Entries 4-12 at 15 sit in the attention dead zone. Variable-length entries: recent 3 at ~20 tokens, older entries at ~10 tokens (keyword-only). Total budget: ~130 tokens (down from ~225).
 
-2. **Decide sentinel's role.** Two options:
-   - **Keep as measurement instrument** (current): Accept it tests retrieval, not grounding. Rename claim to "system prompt integrity verification." Don't include in the "grounding package" — treat as cross-cutting diagnostic.
-   - **Upgrade to natural fact probe**: Replace 2-digit number with operator-provided facts emerging from conversation ("I'm working on the timing fix"). More ecologically valid, better theoretical alignment. Higher implementation cost.
+2. **Treat sentinel as measurement only.** Accept that it tests retrieval/prompt
+   integrity, not grounding. Rename the claim to "system prompt integrity
+   verification." Do not include it in the grounding package; treat it as a
+   cross-cutting diagnostic.
 
 3. **Document the anchoring/grounding distinction explicitly in pre-registration.** The package provides *context anchoring*. Grounding is the hypothesis — does anchoring lead to grounding? Don't claim the package *is* grounding.
 
@@ -178,13 +196,13 @@ The full package produces an emergent property no subset provides: **bounded, ve
 
 Kazdin (2011, *Single-Case Research Designs*, Oxford) defines three sequential strategies:
 
-1. **Treatment Package Strategy** — demonstrate the full package works (A-B-A reversal). "The logical first step."
+1. **Treatment Package Strategy** — demonstrate the full treatment package works (A-B-A reversal). "The logical first step."
 2. **Dismantling Strategy** — remove components one at a time to identify active ingredients. Only after package effect is established.
 3. **Parametric Strategy** — optimize parameters of active components.
 
 Ward-Horner & Sturmey (2010, JABA 43(4)) formalize dropout vs add-in designs: present full package, systematically remove one component. When removal degrades performance, the removed component is *necessary*. Their review of 30 component analyses found most studies identify necessary components but fail to evaluate sufficiency.
 
-**Our A-B-A reversal testing the full package is standard practice per this literature.**
+**Our A-B-A reversal testing the full treatment package is standard practice per this literature.**
 
 ### Clark & Brennan Alignment
 
@@ -223,9 +241,9 @@ A coherent package has components that are all necessary but individually not su
 | Question | Answer |
 |----------|--------|
 | Does it hang together? | **Yes** — structurally, formally, and functionally coherent |
-| Is it correctly partitioned? | **Yes** — 2×2 matrix with no gaps or redundancies |
+| Is it correctly partitioned? | **Mostly** — three treatment components plus an explicit diagnostic; the former 2x2 matrix exposed a cross-session maintenance gap rather than proving sentinel belonged in the treatment |
 | Is it sufficient for grounding? | **No** — it provides anchoring infrastructure. Grounding requires closing the acceptance loop |
-| Is it overstuffed? | **Slightly** — sentinel is a measurement instrument, not a treatment component. Reframe as 3+1 (3 treatment + 1 diagnostic) |
+| Is it overstuffed? | **No, after reframing** — sentinel is a measurement instrument outside the treatment package. The package is 3+1: 3 treatment components + 1 diagnostic |
 | Is it the right thing to test? | **Yes** — test the architecture first, add interaction quality mechanisms second |
 | Should we test as package or individually? | **Package first** (Kazdin 2011). Dismantle in Cycle 3+ only if package effect is established |
 | Is sentinel a grounding component or a measurement instrument? | **Measurement instrument.** Treat as dependent measure, not independent variable |

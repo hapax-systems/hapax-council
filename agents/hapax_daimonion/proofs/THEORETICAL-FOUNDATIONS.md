@@ -243,7 +243,7 @@ A property is *merely aggregative* (non-emergent) if ALL four hold:
 **Any failure = some form of emergence.**
 
 For our system:
-- **IS**: Reorder thread, memory, sentinel in the prompt. Does output change? Almost certainly yes → IS fails → emergence.
+- **IS**: Reorder thread, memory, directive, and effort signals in the prompt. Does output change? Almost certainly yes → IS fails → emergence.
 - **QS**: Add a 5th component. Does quality scale linearly? Unknown.
 - **DR**: Split package, measure parts, recombine. Does recombined = original? Requires ablation data.
 - **CI**: Measure each alone, then together. Sum ≠ combination? Requires ablation data.
@@ -252,7 +252,7 @@ For our system:
 
 ### Kohler's Correction
 
-"The whole is *different* from the sum of its parts." Not greater — **different**. The question is not whether four components produce "more grounding" than one, but whether they produce a *qualitatively different kind* of grounding.
+"The whole is *different* from the sum of its parts." Not greater — **different**. The question is not whether the treatment components produce "more grounding" than one, but whether they produce a *qualitatively different kind* of grounding.
 
 ### Formal Tools for Testing
 
@@ -298,7 +298,7 @@ Cycle 1 pilot found +0.029 on word overlap (known-poor metric). Embedding cohere
 ### The Complete Decision Tree
 
 ```
-CYCLE 2 (full package, ABA):
+CYCLE 2 (full treatment package, ABA):
 
 A→B transition:
 ├── BF > 10 for H1 → EFFECT DETECTED
