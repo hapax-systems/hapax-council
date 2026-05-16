@@ -244,6 +244,20 @@ def _vault_notes_for_topic(
     return hits
 
 
+def _web_search_fallback(topic: str, *, max_results: int = 3) -> list[str]:
+    """Fallback web search when vault + Qdrant are sparse."""
+    try:
+        from agents.deliberative_council.tools import web_verify
+
+        result = web_verify(None, topic)
+        if result and isinstance(result, str) and len(result) > 50:
+            log.info("asset_resolver: web search fallback returned %d chars", len(result))
+            return [result[:800]]
+    except Exception:
+        log.debug("asset_resolver: web search fallback failed", exc_info=True)
+    return []
+
+
 # --- Per-role resolvers -----------------------------------------------------
 
 
@@ -466,6 +480,12 @@ def resolve_lecture(
     ]
     episode_hits = [text for text, _, _ in _qdrant_search("operator-episodes", topic, limit=3)]
     rag_hits = doc_hits + apperception_hits + episode_hits
+
+    total_sources = len(notes) + len(rag_hits)
+    if total_sources < 3:
+        web_hits = _web_search_fallback(topic, max_results=3 - total_sources)
+        rag_hits.extend(web_hits)
+
     return LectureAssets(
         topic=topic,
         outline_notes=tuple(notes),
