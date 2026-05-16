@@ -168,7 +168,8 @@ fn main_1() {
     let material_id = u32(round(uniforms.custom[0][0]));
 
     // Sample procedural field at original UV (background unaffected by content distortion)
-    var base = textureSample(tex, tex_sampler, uv_raw).rgb;
+    let base_sample = textureSample(tex, tex_sampler, uv_raw);
+    var base = base_sample.rgb;
 
     // Screen-blend each content slot — per-slot UV with distinct immensity direction
     base = sample_and_blend_slot(content_slot_0, tex_sampler, uv_raw,
@@ -186,7 +187,7 @@ fn main_1() {
     let trace_boost = dwelling_trace_boost(max_salience);
     base *= trace_boost;
 
-    fragColor = vec4<f32>(base, 1.0);
+    fragColor = vec4<f32>(base, base_sample.a);
     return;
 }
 

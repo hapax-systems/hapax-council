@@ -77,12 +77,13 @@ fn main_1() {
     let m12x = (bx_l + bx_r) * 0.5; let m12y = (by_l + by_r) * 0.5;
     let m02x = (tx + bx_r) * 0.5;   let m02y = (ty + by_r) * 0.5;
 
-    let base = textureSample(tex, tex_sampler, uv).rgb;
+    let base_sample = textureSample(tex, tex_sampler, uv);
+    let base = base_sample.rgb;
     var result = base;
 
     // Check if inside main triangle at all
     if !point_in_tri(uv, tx, ty, bx_l, by_l, bx_r, by_r) {
-        fragColor = vec4<f32>(result, 1.0);
+        fragColor = vec4<f32>(result, base_sample.a);
         return;
     }
 
@@ -118,7 +119,7 @@ fn main_1() {
         result = result + vec3<f32>(0.0, 0.9, 1.0) * wf * 1.5;
     }
 
-    fragColor = vec4<f32>(result, 1.0);
+    fragColor = vec4<f32>(result, base_sample.a);
     return;
 }
 

@@ -1,0 +1,1 @@
+{"node_type": "grain_bump", "backend": "wgsl_render", "glsl_fragment": "grain_bump.frag", "inputs": {"in": "frame"}, "outputs": {"out": "frame"}, "params": {"strength": {"type": "float", "default": 0.0, "min": 0.0, "max": 1.0}}, "temporal": false}

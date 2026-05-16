@@ -342,6 +342,23 @@ fn pick_slot_excluding(slots: &HashMap<String, usize>, exclude: &str) -> Option<
         .map(|(_, slot)| *slot)
 }
 
+fn pass_uses_content_slots(pass: &DynamicPass) -> bool {
+    pass.requires_content_slots || pass.inputs.iter().any(|n| n.starts_with("content_slot_"))
+}
+
+fn slot_opacities_for_pass(
+    pass: &DynamicPass,
+    content_sources: Option<&ContentSourceManager>,
+    fallback: [f32; 4],
+) -> [f32; 4] {
+    if pass_uses_content_slots(pass) {
+        if let Some(content_sources) = content_sources {
+            return content_sources.slot_opacities_for_family(&pass.slot_family);
+        }
+    }
+    fallback
+}
+
 /// Snapshot of intermediate texture pool state for external observability.
 ///
 /// Returned by [`DynamicPipeline::pool_metrics`]. Closes the §4.7 follow-up
@@ -1373,6 +1390,11 @@ impl DynamicPipeline {
             let is_temporal = pass.inputs.iter().any(|n| n.starts_with("@accum_"));
 
             if let Some(ref render_pipeline) = pass.render_pipeline {
+                let mut pass_uniform_data = uniform_data;
+                pass_uniform_data.slot_opacities =
+                    slot_opacities_for_pass(pass, content_sources, content_slot_opacities);
+                self.uniform_buffer.update(queue, &pass_uniform_data);
+
                 let input_bind_group = self.create_input_bind_group(
                     device,
                     &pass.inputs,
@@ -1446,6 +1468,11 @@ impl DynamicPipeline {
                     }
                 }
             } else if let Some(ref compute_pipeline) = pass.compute_pipeline {
+                let mut pass_uniform_data = uniform_data;
+                pass_uniform_data.slot_opacities =
+                    slot_opacities_for_pass(pass, content_sources, content_slot_opacities);
+                self.uniform_buffer.update(queue, &pass_uniform_data);
+
                 let input_bind_group = self.create_input_bind_group(
                     device,
                     &pass.inputs,
@@ -2587,6 +2614,54 @@ mod tests {
             backend: "wgsl_render".to_string(),
             slot_family: "narrative".to_string(),
         }
+    }
+
+    fn make_dynamic_pass_for_slot_test(
+        requires_content_slots: bool,
+        slot_family: &str,
+        inputs: &[&str],
+    ) -> DynamicPass {
+        DynamicPass {
+            node_id: "test".to_string(),
+            render_pipeline: None,
+            compute_pipeline: None,
+            uniform_bind_group: None,
+            input_bind_group_layout: None,
+            params_buffer: None,
+            params_bind_group: None,
+            param_order: Vec::new(),
+            neutral_params: Vec::new(),
+            current_params: Vec::new(),
+            inputs: inputs.iter().map(|input| input.to_string()).collect(),
+            output: "out".to_string(),
+            steps_per_frame: 1,
+            requires_content_slots,
+            slot_family: slot_family.to_string(),
+            backend: "wgsl_render".to_string(),
+            target: "main".to_string(),
+        }
+    }
+
+    #[test]
+    fn pass_uses_content_slots_honors_declarative_flag() {
+        let pass = make_dynamic_pass_for_slot_test(true, "youtube_pip", &["@live"]);
+        assert!(pass_uses_content_slots(&pass));
+    }
+
+    #[test]
+    fn pass_uses_content_slots_honors_legacy_input_prefix() {
+        let pass =
+            make_dynamic_pass_for_slot_test(false, "narrative", &["@live", "content_slot_0"]);
+        assert!(pass_uses_content_slots(&pass));
+    }
+
+    #[test]
+    fn slot_opacities_for_non_content_pass_uses_fallback() {
+        let pass = make_dynamic_pass_for_slot_test(false, "narrative", &["@live"]);
+        assert_eq!(
+            slot_opacities_for_pass(&pass, None, [0.1, 0.2, 0.3, 0.4]),
+            [0.1, 0.2, 0.3, 0.4]
+        );
     }
 
     #[test]
