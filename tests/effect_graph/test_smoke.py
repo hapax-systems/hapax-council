@@ -259,13 +259,13 @@ class TestGraphPatch:
 
 
 # ============================================================================
-# 2. SHADER REGISTRY — manifest loading, all 62 node types
+# 2. SHADER REGISTRY — manifest loading, all 63 node types
 # ============================================================================
 
 
 class TestRegistryLoading:
     def test_loads_all_nodes(self, registry: ShaderRegistry):
-        assert len(registry.node_types) == 62
+        assert len(registry.node_types) == 63
 
     def test_sorted(self, registry: ShaderRegistry):
         types = registry.node_types
@@ -316,6 +316,7 @@ class TestRegistryNodeCategories:
         "emboss",
         "fisheye",
         "glitch_block",
+        "grain_bump",
         "halftone",
         "invert",
         "kaleidoscope",
@@ -400,7 +401,7 @@ class TestRegistryShaderContent:
     """Verify shader source code is loaded for nodes that need it."""
 
     # Nodes that only have WGSL shaders (wgpu pipeline), no GLSL (glfeedback pipeline)
-    WGSL_ONLY = {"sierpinski_content", "sierpinski_lines"}
+    WGSL_ONLY = {"grain_bump", "sierpinski_content", "sierpinski_lines"}
 
     def test_processing_nodes_have_shaders(self, registry: ShaderRegistry):
         for nt in registry.node_types:
@@ -439,7 +440,7 @@ class TestRegistrySchemaExport:
 
     def test_all_schemas(self, registry: ShaderRegistry):
         schemas = registry.all_schemas()
-        assert len(schemas) == 62
+        assert len(schemas) == 63
 
     def test_schema_params_are_serializable(self, registry: ShaderRegistry):
         """Ensure all schemas can be JSON-serialized (for API)."""
@@ -447,7 +448,7 @@ class TestRegistrySchemaExport:
         serialized = json.dumps(schemas)
         assert len(serialized) > 0
         roundtrip = json.loads(serialized)
-        assert len(roundtrip) == 62
+        assert len(roundtrip) == 63
 
 
 class TestRegistryParamCompleteness:

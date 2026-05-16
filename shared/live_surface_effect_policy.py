@@ -171,6 +171,9 @@ LIVE_SURFACE_PARAM_BOUNDS: dict[str, dict[str, ParamBound]] = {
         "intensity": _max(0.25),
         "rgb_split": _max(0.25),
     },
+    "grain_bump": {
+        "strength": _max(0.35),
+    },
     "halftone": {
         "dot_size": _max(8.0),
     },
