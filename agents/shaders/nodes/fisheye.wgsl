@@ -27,7 +27,7 @@ fn main_1() {
     var rd: f32;
     var distorted: vec2<f32>;
     var warped: vec4<f32>;
-    var blend: f32;
+    var strength: f32;
 
     original = textureSample(tex, tex_sampler, v_texcoord_1);
     let _e12 = global.u_center_x;
@@ -56,8 +56,19 @@ fn main_1() {
     let _e76 = distorted;
     let _e77 = textureSample(tex, tex_sampler, _e76);
     warped = _e77;
-    blend = clamp(abs(global.u_strength) * 1.1f, 0.0f, 0.58f);
-    fragColor = vec4<f32>(mix(original.xyz, warped.xyz, vec3(blend)), original.w);
+    strength = clamp(abs(global.u_strength) * 1.1f, 0.0f, 0.58f);
+    // Fisheye bends local detail but does not paint a displaced copy of the
+    // whole composed scene onto the fourth wall.
+    let original_luma = dot(original.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    let surface_presence = smoothstep(0.025f, 0.14f, original_luma);
+    let geometry_presence = max(surface_presence, 0.22f);
+    let delta = warped.xyz - original.xyz;
+    let edge_presence = smoothstep(0.06f, 0.40f, length(delta));
+    let radial_glint = smoothstep(0.08f, 0.42f, r) * (1.0f - smoothstep(0.42f, 0.76f, r));
+    let spectral_tint = vec3<f32>(0.20f, 0.62f, 0.95f);
+    let detail_lift = max(delta, vec3<f32>(0.0f)) * edge_presence * 0.64f;
+    let lifted = original.xyz + (detail_lift + spectral_tint * radial_glint * 0.045f) * strength * geometry_presence;
+    fragColor = vec4<f32>(max(original.xyz, lifted), original.w);
     return;
 }
 

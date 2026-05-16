@@ -34,7 +34,15 @@ fn main_1() {
     let geometry_presence = max(surface_presence, 0.22);
     let edge_weight = smoothstep(0.08, 0.44, radius);
     let strength = geometry_presence * edge_weight * clamp(global.u_speed + (global.u_twist * 0.30), 0.0, 0.58);
-    fragColor = vec4<f32>(mix(source.xyz, tunnel.xyz, vec3<f32>(strength)), source.a);
+    // Tunnel adds radial pressure and glints over existing geometry. It must
+    // not become a whole-frame tunnelized replacement image.
+    let delta = tunnel.xyz - source.xyz;
+    let edge_presence = smoothstep(0.06, 0.42, length(delta));
+    let ray = pow(max(0.0, sin(tunnel_a * 18.0) * 0.5 + 0.5), 5.0);
+    let spectral_tint = vec3<f32>(0.10, 0.78, 0.72);
+    let detail_lift = max(delta, vec3<f32>(0.0)) * edge_presence * 0.64;
+    let lifted = source.xyz + (detail_lift + spectral_tint * ray * 0.028) * strength;
+    fragColor = vec4<f32>(max(source.xyz, lifted), source.a);
     return;
 }
 

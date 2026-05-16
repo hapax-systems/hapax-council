@@ -2021,6 +2021,34 @@ mod tests {
             !tile.contains("mix(source.xyz, tiled_bound"),
             "tile must not blend a cloned tiled frame over the livestream surface"
         );
+
+        for shader in [
+            "displacement_map.wgsl",
+            "droste.wgsl",
+            "fisheye.wgsl",
+            "kaleidoscope.wgsl",
+            "transform.wgsl",
+            "tunnel.wgsl",
+            "warp.wgsl",
+        ] {
+            let source = std::fs::read_to_string(shader_root.join(shader))
+                .unwrap_or_else(|err| panic!("read {shader}: {err}"));
+            assert!(
+                source.contains("detail_lift") && source.contains("max("),
+                "{shader} must lift bounded detail from warped samples instead of replacing the source"
+            );
+            for banned in [
+                "mix(original.xyz, warped.xyz",
+                "mix(original.xyz, transformed.xyz",
+                "mix(source.xyz, warped.xyz",
+                "mix(source.xyz, tunnel.xyz",
+            ] {
+                assert!(
+                    !source.contains(banned),
+                    "{shader} must not directly blend a full warped scene via {banned}"
+                );
+            }
+        }
     }
 
     #[test]

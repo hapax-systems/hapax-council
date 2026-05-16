@@ -25,7 +25,7 @@ fn main_1() {
     var uv: vec2<f32>;
     var original: vec4<f32>;
     var warped: vec4<f32>;
-    var blend: f32;
+    var strength: f32;
     var t: f32;
     var panX: f32;
     var panY: f32;
@@ -105,7 +105,7 @@ fn main_1() {
     let _e132 = uv;
     let _e133 = textureSample(tex, tex_sampler, _e132);
     warped = _e133;
-    blend = clamp(
+    strength = clamp(
         (abs(global.u_slice_amplitude) * 4.0f) +
         (abs(global.u_rotation) * 4.0f) +
         (abs(global.u_zoom - 1.0f) * 8.0f) +
@@ -113,7 +113,18 @@ fn main_1() {
         0.0f,
         0.62f,
     );
-    fragColor = vec4<f32>(mix(original.xyz, warped.xyz, vec3(blend)), original.w);
+    // Warp is a bounded shear/slice pressure over existing geometry, not a
+    // full-frame transformed copy of the livestream surface.
+    let original_luma = dot(original.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    let surface_presence = smoothstep(0.025f, 0.14f, original_luma);
+    let geometry_presence = max(surface_presence, 0.22f);
+    let delta = warped.xyz - original.xyz;
+    let edge_presence = smoothstep(0.06f, 0.42f, length(delta));
+    let slice_line = smoothstep(0.965f, 1.0f, fract(v_texcoord_1.y * max(global.u_slice_count, 1.0f)));
+    let spectral_tint = vec3<f32>(0.12f, 0.72f, 0.68f);
+    let detail_lift = max(delta, vec3<f32>(0.0f)) * edge_presence * 0.68f;
+    let lifted = original.xyz + (detail_lift + spectral_tint * slice_line * 0.040f) * strength * geometry_presence;
+    fragColor = vec4<f32>(max(original.xyz, lifted), original.w);
     return;
 }
 

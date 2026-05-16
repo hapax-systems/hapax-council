@@ -27,7 +27,7 @@ fn main_1() {
     var segAngle: f32;
     var newUV: vec2<f32>;
     var warped: vec4<f32>;
-    var blend: f32;
+    var strength: f32;
 
     original = textureSample(tex, tex_sampler, v_texcoord_1);
     let _e12 = global.u_center_x;
@@ -66,8 +66,20 @@ fn main_1() {
     let _e67 = newUV;
     let _e68 = textureSample(tex, tex_sampler, _e67);
     warped = _e68;
-    blend = clamp(((global.u_segments - 1.0f) * 0.09f) + (abs(global.u_rotation) * 0.22f), 0.0f, 0.60f);
-    fragColor = vec4<f32>(mix(original.xyz, warped.xyz, vec3(blend)), original.w);
+    strength = clamp(((global.u_segments - 1.0f) * 0.09f) + (abs(global.u_rotation) * 0.22f), 0.0f, 0.60f);
+    // Kaleidoscope is a source-bound refraction/detail operator. It must not
+    // project a second full livestream scene onto the viewer plane.
+    let original_luma = dot(original.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    let surface_presence = smoothstep(0.025f, 0.14f, original_luma);
+    let geometry_presence = max(surface_presence, 0.22f);
+    let delta = warped.xyz - original.xyz;
+    let edge_presence = smoothstep(0.08f, 0.44f, length(delta));
+    let segment_line = 1.0f - smoothstep(0.0f, 0.055f, abs(angle - (segAngle * 0.5f)));
+    let spectral_tint = vec3<f32>(0.78f, 0.18f, 0.95f);
+    let detail_lift = max(delta, vec3<f32>(0.0f)) * edge_presence * 0.62f;
+    let line_lift = spectral_tint * segment_line * 0.075f;
+    let lifted = original.xyz + (detail_lift + line_lift) * strength * geometry_presence;
+    fragColor = vec4<f32>(max(original.xyz, lifted), original.w);
     return;
 }
 

@@ -43,7 +43,15 @@ fn main_1() {
     let geometry_presence = max(surface_presence, 0.22);
     let outer_ring = smoothstep(0.12, 0.48, radius);
     let strength = geometry_presence * outer_ring * clamp((global.u_zoom_speed * 0.90) + (spiral * 0.35), 0.0, 0.56);
-    fragColor = vec4<f32>(mix(source.xyz, warped.xyz, vec3<f32>(strength)), source.a);
+    // Droste remains a transient recursive cue, not a full-screen recursive
+    // clone of the current livestream layout.
+    let delta = warped.xyz - source.xyz;
+    let edge_presence = smoothstep(0.06, 0.42, length(delta));
+    let ring_glint = 1.0 - smoothstep(0.0, 0.055, abs(fract(logr / 0.6931472) - 0.5));
+    let spectral_tint = vec3<f32>(0.88, 0.20, 0.58);
+    let detail_lift = max(delta, vec3<f32>(0.0)) * edge_presence * 0.62;
+    let lifted = source.xyz + (detail_lift + spectral_tint * ring_glint * 0.035) * strength;
+    fragColor = vec4<f32>(max(source.xyz, lifted), source.a);
     return;
 }
 

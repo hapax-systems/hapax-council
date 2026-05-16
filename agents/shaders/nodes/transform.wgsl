@@ -26,7 +26,7 @@ fn main_1() {
     var uv: vec2<f32>;
     var original: vec4<f32>;
     var transformed: vec4<f32>;
-    var blend: f32;
+    var strength: f32;
     var c: f32;
     var s: f32;
 
@@ -62,7 +62,7 @@ fn main_1() {
     let _e79 = uv;
     let _e80 = textureSample(tex, tex_sampler, _e79);
     transformed = _e80;
-    blend = clamp(
+    strength = clamp(
         (abs(global.u_pos_x) * 12.0f) +
         (abs(global.u_pos_y) * 12.0f) +
         (abs(global.u_scale_x - 1.0f) * 5.0f) +
@@ -71,7 +71,19 @@ fn main_1() {
         0.0f,
         0.55f,
     );
-    fragColor = vec4<f32>(mix(original.xyz, transformed.xyz, vec3(blend)), original.w);
+    // Transform contributes registration tension/detail without turning the
+    // whole output into a displaced duplicate layer.
+    let original_luma = dot(original.xyz, vec3<f32>(0.299f, 0.587f, 0.114f));
+    let surface_presence = smoothstep(0.025f, 0.14f, original_luma);
+    let geometry_presence = max(surface_presence, 0.22f);
+    let delta = transformed.xyz - original.xyz;
+    let edge_presence = smoothstep(0.06f, 0.42f, length(delta));
+    let pivot_dist = length(v_texcoord_1 - pivot);
+    let pivot_glint = 1.0f - smoothstep(0.0f, 0.36f, pivot_dist);
+    let spectral_tint = vec3<f32>(0.52f, 0.30f, 0.95f);
+    let detail_lift = max(delta, vec3<f32>(0.0f)) * edge_presence * 0.64f;
+    let lifted = original.xyz + (detail_lift + spectral_tint * pivot_glint * 0.030f) * strength * geometry_presence;
+    fragColor = vec4<f32>(max(original.xyz, lifted), original.w);
     return;
 }
 
