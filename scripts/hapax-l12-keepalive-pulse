@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Send an inaudible keepalive pulse to the active ZOOM L-12 USB sink.
+
+This is not an audio routing fallback. It only exercises the already-present
+L-12 USB playback device so the mixer/USB path does not go cold between live
+audio events. Absence is recorded as state but exits successfully; topology
+witnesses own the critical assertion that the L-12 must be present.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+DEFAULT_PULSE_PATH = Path.home() / ".local" / "share" / "mixer-keepalive.wav"
+DEFAULT_STATE_PATH = Path("/dev/shm/hapax-usb/l12-keepalive.json")
+L12_SINK_MARKERS = ("ZOOM_Corporation_L-12", "LiveTrak_L-12", "L-12")
+
+
+def list_pipewire_sinks(*, pactl: str = "pactl") -> list[str]:
+    result = subprocess.run(
+        [pactl, "list", "short", "sinks"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "pactl list short sinks failed")
+    return parse_sink_names(result.stdout)
+
+
+def parse_sink_names(output: str) -> list[str]:
+    names: list[str] = []
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) >= 2:
+            names.append(fields[1])
+    return names
+
+
+def choose_l12_sink(sinks: list[str], explicit_target: str | None = None) -> str | None:
+    if explicit_target:
+        return explicit_target
+
+    candidates = [
+        sink for sink in sinks if any(marker.lower() in sink.lower() for marker in L12_SINK_MARKERS)
+    ]
+    if not candidates:
+        return None
+
+    def score(name: str) -> tuple[int, str]:
+        preferred_shape = "analog-surround-40" in name
+        exact_zoom = "ZOOM_Corporation_L-12" in name
+        return (0 if exact_zoom and preferred_shape else 1, name)
+
+    return sorted(candidates, key=score)[0]
+
+
+def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def run_keepalive(
+    *,
+    pulse_path: Path,
+    state_path: Path,
+    target: str | None = None,
+    pactl: str = "pactl",
+    pw_play: str = "pw-play",
+) -> int:
+    now = datetime.now(UTC).isoformat()
+    payload: dict[str, Any] = {
+        "generated_at": now,
+        "pulse_path": str(pulse_path),
+        "requested_target": target,
+        "selected_target": None,
+        "status": "unknown",
+        "returncode": None,
+        "stderr": "",
+    }
+
+    if not pulse_path.exists():
+        payload.update(status="pulse_missing", stderr=f"pulse file missing: {pulse_path}")
+        atomic_write_json(state_path, payload)
+        print(payload["stderr"], file=sys.stderr)
+        return 1
+
+    try:
+        sinks = list_pipewire_sinks(pactl=pactl)
+    except Exception as exc:
+        payload.update(status="sink_probe_failed", stderr=str(exc))
+        atomic_write_json(state_path, payload)
+        print(f"hapax-l12-keepalive-pulse: {exc}", file=sys.stderr)
+        return 1
+
+    selected = choose_l12_sink(sinks, explicit_target=target)
+    payload["selected_target"] = selected
+    if not selected:
+        payload.update(status="l12_absent")
+        atomic_write_json(state_path, payload)
+        print("hapax-l12-keepalive-pulse: L-12 sink absent; no pulse sent")
+        return 0
+
+    result = subprocess.run(
+        [pw_play, f"--target={selected}", str(pulse_path)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    payload.update(
+        status="sent" if result.returncode == 0 else "send_failed",
+        returncode=result.returncode,
+        stderr=result.stderr.strip(),
+    )
+    atomic_write_json(state_path, payload)
+    if result.returncode != 0:
+        print(
+            f"hapax-l12-keepalive-pulse: pw-play failed for {selected}: {result.stderr.strip()}",
+            file=sys.stderr,
+        )
+    else:
+        print(f"hapax-l12-keepalive-pulse: sent pulse to {selected}")
+    return result.returncode
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--pulse-path",
+        type=Path,
+        default=Path(os.environ.get("HAPAX_L12_KEEPALIVE_PULSE", DEFAULT_PULSE_PATH)),
+    )
+    parser.add_argument(
+        "--state-path",
+        type=Path,
+        default=Path(os.environ.get("HAPAX_L12_KEEPALIVE_STATE", DEFAULT_STATE_PATH)),
+    )
+    parser.add_argument("--target", default=os.environ.get("HAPAX_L12_KEEPALIVE_TARGET"))
+    parser.add_argument("--pactl", default=os.environ.get("HAPAX_L12_KEEPALIVE_PACTL", "pactl"))
+    parser.add_argument(
+        "--pw-play", default=os.environ.get("HAPAX_L12_KEEPALIVE_PW_PLAY", "pw-play")
+    )
+    args = parser.parse_args(argv)
+    return run_keepalive(
+        pulse_path=args.pulse_path,
+        state_path=args.state_path,
+        target=args.target,
+        pactl=args.pactl,
+        pw_play=args.pw_play,
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
