@@ -3135,6 +3135,14 @@ from shared.grounding_adapters.perplexity import (  # noqa: F401, E402
 build_envelope_from_response
 build_error_envelope
 
+# Action receipt grounding contract — Pydantic invokes the validator by
+# reflection, and the success predicate is the public policy API readback
+# consumers will call once the health-witness loop lands.
+from shared.action_receipt import ActionReceipt  # noqa: F401, E402
+
+ActionReceipt._status_requires_state_specific_refs
+ActionReceipt.can_support_affordance_success
+
 # Research agent Perplexity tools — registered via @agent.tool decorator
 from agents.research import deep_research, search_web  # noqa: F401, E402
 
