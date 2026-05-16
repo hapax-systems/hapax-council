@@ -81,7 +81,7 @@ async def qdrant_lookup(ctx: Any, query: str, collection: str = "affordances") -
         vector = embed(query)
         from qdrant_client import QdrantClient
 
-        client = QdrantClient(host="localhost", port=6333)
+        client = QdrantClient(host="localhost", port=6333, timeout=5)
         results = client.search(collection_name=collection, query_vector=vector, limit=3)
         if not results:
             return f"No results in {collection} for: {query}"
