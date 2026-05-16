@@ -3244,6 +3244,41 @@ deliberate
 phase3_adversarial_prompt
 phase4_revision_prompt
 
+# Inquiry blackboard — integration into daily_segment_prep follows
+from shared.inquiry_blackboard import (  # noqa: F401, E402
+    ActionGap,
+    AuthorityGap,
+    Bid,
+    BlackboardState,
+    ClaimGap,
+    FormProposal,
+    LayoutGap,
+    Lead,
+    NoCandidateReason,
+    PersonageGap,
+    ReviewGap,
+    SourceGap,
+    detect_quiescence,
+    detect_source_theater,
+    resolve_gap,
+)
+
+Lead
+SourceGap
+ClaimGap
+FormProposal
+ActionGap
+LayoutGap
+PersonageGap
+AuthorityGap
+ReviewGap
+NoCandidateReason
+Bid
+BlackboardState
+detect_quiescence
+detect_source_theater
+resolve_gap
+
 # Segment action contracts — tier-list + interview action kinds
 from shared.segment_action_contracts import (  # noqa: F401, E402
     ActionContract,
