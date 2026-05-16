@@ -206,8 +206,7 @@ def _send_ntfy(msg: str, priority: str = "high") -> None:
     try:
         urgency = "critical" if priority == "high" else "normal"
         subprocess.run(
-            ["notify-send", f"--urgency={urgency}", "--app-name=LLM Stack",
-             "Audio: L-12 USB", msg],
+            ["notify-send", f"--urgency={urgency}", "--app-name=LLM Stack", "Audio: L-12 USB", msg],
             capture_output=True,
             timeout=5,
         )

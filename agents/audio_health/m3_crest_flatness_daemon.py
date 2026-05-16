@@ -269,8 +269,13 @@ def _send_ntfy(stage: str, alert_type: str, detail: str) -> None:
 
         urgency = "critical" if stage == OBS_BOUND_STAGE else "normal"
         subprocess.run(
-            ["notify-send", f"--urgency={urgency}", "--app-name=LLM Stack",
-             f"Audio: {alert_type}", f"{alert_type} at {stage}: {detail}"],
+            [
+                "notify-send",
+                f"--urgency={urgency}",
+                "--app-name=LLM Stack",
+                f"Audio: {alert_type}",
+                f"{alert_type} at {stage}: {detail}",
+            ],
             capture_output=True,
             timeout=5,
         )

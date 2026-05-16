@@ -241,9 +241,13 @@ def _send_ntfy(direction: str, detail: str) -> None:
     """Send desktop notification."""
     try:
         subprocess.run(
-            ["notify-send", "--urgency=normal", "--app-name=LLM Stack",
-             "Audio: Topology Drift",
-             f"Topology drift: module {direction} — {detail}"],
+            [
+                "notify-send",
+                "--urgency=normal",
+                "--app-name=LLM Stack",
+                "Audio: Topology Drift",
+                f"Topology drift: module {direction} — {detail}",
+            ],
             capture_output=True,
             timeout=5,
         )

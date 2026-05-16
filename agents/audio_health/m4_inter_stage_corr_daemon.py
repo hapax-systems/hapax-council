@@ -198,9 +198,13 @@ def _send_ntfy(pair: str, correlation: float) -> None:
         import subprocess
 
         subprocess.run(
-            ["notify-send", "--urgency=critical", "--app-name=LLM Stack",
-             "Audio: Signal Loss",
-             f"Signal lost between {pair}: correlation={correlation:.3f}"],
+            [
+                "notify-send",
+                "--urgency=critical",
+                "--app-name=LLM Stack",
+                "Audio: Signal Loss",
+                f"Signal lost between {pair}: correlation={correlation:.3f}",
+            ],
             capture_output=True,
             timeout=5,
         )

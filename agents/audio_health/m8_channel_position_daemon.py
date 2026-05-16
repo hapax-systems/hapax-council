@@ -226,9 +226,13 @@ def _send_ntfy(node: str, declared: int, observed: int) -> None:
     """Send desktop mismatch notification."""
     try:
         subprocess.run(
-            ["notify-send", "--urgency=critical", "--app-name=LLM Stack",
-             "Audio: Channel Mismatch",
-             f"Channel mismatch at {node}: declared={declared}, observed={observed}"],
+            [
+                "notify-send",
+                "--urgency=critical",
+                "--app-name=LLM Stack",
+                "Audio: Channel Mismatch",
+                f"Channel mismatch at {node}: declared={declared}, observed={observed}",
+            ],
             capture_output=True,
             timeout=5,
         )

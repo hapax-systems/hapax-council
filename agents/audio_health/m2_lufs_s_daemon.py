@@ -225,8 +225,13 @@ def _send_ntfy(stage: str, lufs: float, band: LufsBand) -> None:
         msg = f"LUFS-S breach at {stage}: {lufs:.1f} dBFS ({direction} [{band.low}, {band.high}])"
         urgency = "critical" if stage == OBS_BOUND_STAGE else "normal"
         subprocess.run(
-            ["notify-send", f"--urgency={urgency}", "--app-name=LLM Stack",
-             "Audio: LUFS Breach", msg],
+            [
+                "notify-send",
+                f"--urgency={urgency}",
+                "--app-name=LLM Stack",
+                "Audio: LUFS Breach",
+                msg,
+            ],
             capture_output=True,
             timeout=5,
         )

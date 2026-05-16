@@ -200,9 +200,13 @@ def _send_ntfy(node: str, delta: int) -> None:
     """Send desktop xrun storm notification."""
     try:
         subprocess.run(
-            ["notify-send", "--urgency=critical", "--app-name=LLM Stack",
-             "Audio: Xrun Storm",
-             f"{node} xrun storm: {delta} xruns in probe window"],
+            [
+                "notify-send",
+                "--urgency=critical",
+                "--app-name=LLM Stack",
+                "Audio: Xrun Storm",
+                f"{node} xrun storm: {delta} xruns in probe window",
+            ],
             capture_output=True,
             timeout=5,
         )

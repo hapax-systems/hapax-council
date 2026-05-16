@@ -109,8 +109,6 @@ def send_notification(
 # ── Private helpers ──────────────────────────────────────────────────────────
 
 
-
-
 def _send_desktop(title: str, message: str, *, priority: str = "default") -> bool:
     """Send notification via notify-send (desktop only)."""
     urgency = _DESKTOP_URGENCY.get(priority, "normal")
