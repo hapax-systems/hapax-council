@@ -40,6 +40,8 @@ def extract_claims(
     *,
     claim_map: Sequence[Mapping[str, Any]],
     source_consequence_map: Sequence[Mapping[str, Any]],
+    script: Sequence[str] | None = None,
+    max_script_claims: int = 3,
 ) -> list[CouncilInput]:
     consequence_by_claim: dict[str, str] = {}
     for entry in source_consequence_map:
@@ -77,6 +79,39 @@ def extract_claims(
                 },
             )
         )
+
+    if script and len(inputs) < 2:
+        import re
+
+        assertion_re = re.compile(
+            r"\b(?:demonstrates?|proves?|shows? that|establishes?|eliminates?|ensures?|guarantees?)\b",
+            re.IGNORECASE,
+        )
+        for beat_text in script:
+            if len(inputs) >= len(claim_map) + max_script_claims:
+                break
+            for sentence in re.split(r"[.!?]+", beat_text):
+                sentence = sentence.strip()
+                if (
+                    assertion_re.search(sentence)
+                    and len(sentence) > 30
+                    and sentence not in seen_texts
+                ):
+                    seen_texts.add(sentence)
+                    inputs.append(
+                        CouncilInput(
+                            text=sentence,
+                            source_ref="script",
+                            metadata={
+                                "claim_id": f"script-assertion-{len(inputs)}",
+                                "source_consequence": "",
+                                "consequence_kind": "script_extracted",
+                                "all_grounds": [],
+                            },
+                        )
+                    )
+                    if len(inputs) >= len(claim_map) + max_script_claims:
+                        break
 
     return inputs
 

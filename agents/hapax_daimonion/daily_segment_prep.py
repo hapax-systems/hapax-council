@@ -1565,6 +1565,7 @@ def prep_segment(
         council_claims = extract_claims(
             claim_map=claim_map,
             source_consequence_map=sc_map,
+            script=script,
         )
         if council_claims:
             council_verdicts = run_council_disconfirmation(council_claims)
