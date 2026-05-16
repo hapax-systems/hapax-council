@@ -59,6 +59,10 @@ struct GridUniformData {
 
 /// Maximum number of scene nodes we can render per frame.
 const MAX_SCENE_NODES: usize = 128;
+/// Content quads are translucent compositing surfaces. They must be drawn
+/// back-to-front without writing depth, otherwise alpha-transparent regions
+/// become invisible occluding panes.
+const CONTENT_QUAD_DEPTH_WRITE_ENABLED: bool = false;
 
 fn build_live_scene_from_active(
     active: &[(&str, f32, i32, u32, u32)],
@@ -311,7 +315,7 @@ impl SceneRenderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
+                depth_write_enabled: CONTENT_QUAD_DEPTH_WRITE_ENABLED,
                 depth_compare: wgpu::CompareFunction::Less,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
@@ -650,6 +654,14 @@ mod tests {
         assert!(
             !build_proof_scene().is_empty(),
             "proof scene remains available for explicit non-live renderer tests"
+        );
+    }
+
+    #[test]
+    fn translucent_content_quads_do_not_write_depth() {
+        assert!(
+            !CONTENT_QUAD_DEPTH_WRITE_ENABLED,
+            "alpha-blended livestream quads must not turn transparent regions into occluding panes"
         );
     }
 }
