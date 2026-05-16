@@ -9,6 +9,7 @@ from agents.studio_compositor.layout import compute_tile_layout
 from agents.studio_compositor.layout_safety import (
     BASE_COMPOSITOR_MATERIAL,
     LayoutSafetyError,
+    canonical_layout_mode,
     negative_space_contract_for_mode,
     resolve_startup_layout_mode,
     validate_tile_layout,
@@ -29,7 +30,7 @@ def _report(mode: str, *, canvas_w: int = OUTPUT_WIDTH, canvas_h: int = OUTPUT_H
     )
 
 
-@pytest.mark.parametrize("mode", ["balanced", "packed", "forcefield", "sierpinski"])
+@pytest.mark.parametrize("mode", ["balanced", "packed", "forcefield", "aoa", "sierpinski"])
 def test_selectable_layout_modes_declare_dark_space(mode: str) -> None:
     report = _report(mode)
 
@@ -82,7 +83,15 @@ def test_follow_mode_uses_bounded_salience_not_packed_repin() -> None:
 def test_negative_space_contract_lookup_uses_mode_family() -> None:
     assert negative_space_contract_for_mode("forcefield").max_fraction == 0.90
     assert negative_space_contract_for_mode("follow/c920-room").max_fraction == 0.65
+    assert negative_space_contract_for_mode("aoa").intent.startswith("Aperture")
+    assert negative_space_contract_for_mode("sierpinski") == negative_space_contract_for_mode("aoa")
     assert negative_space_contract_for_mode("segment-compare") is None
+
+
+def test_canonical_layout_mode_prefers_aoa_over_legacy_sierpinski() -> None:
+    assert canonical_layout_mode("aoa") == "aoa"
+    assert canonical_layout_mode("aperture-of-apertures") == "aoa"
+    assert canonical_layout_mode("sierpinski") == "aoa"
 
 
 def test_follow_mode_caps_low_resolution_hero_without_waiver() -> None:
@@ -165,6 +174,16 @@ def test_startup_layout_mode_uses_explicit_env_before_persisted_file(tmp_path: P
 
     assert resolved.mode == "forcefield"
     assert resolved.source == "env"
+
+
+def test_startup_layout_mode_normalizes_legacy_sierpinski_to_aoa(tmp_path: Path) -> None:
+    persist = tmp_path / "layout-mode-persist.txt"
+    persist.write_text("sierpinski\n", encoding="utf-8")
+
+    resolved = resolve_startup_layout_mode(env={}, persist_path=persist)
+
+    assert resolved.mode == "aoa"
+    assert resolved.source == "persisted"
 
 
 def test_startup_layout_mode_ignores_invalid_persisted_state(tmp_path: Path) -> None:

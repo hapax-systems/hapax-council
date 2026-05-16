@@ -1,6 +1,6 @@
 {
   "name": "garage-door",
-  "description": "Current Garage Door Open layout \u2014 Sierpinski + 6 cameras + overlays + 24 shader slots. Validates the Source/Surface/Assignment model against the live system. Phase 2 of compositor unification epic.",
+  "description": "Current Garage Door Open layout - AoA + 6 cameras + overlays + 24 shader slots. Validates the Source/Surface/Assignment model against the live system. Phase 2 of compositor unification epic. Legacy Sierpinski source IDs are retained for protocol compatibility.",
   "sources": [
     {
       "id": "cam-brio-operator",
@@ -114,7 +114,8 @@
       "tags": [
         "video",
         "youtube",
-        "sierpinski"
+        "aoa",
+        "sierpinski-legacy"
       ]
     },
     {
@@ -130,7 +131,8 @@
       "tags": [
         "video",
         "youtube",
-        "sierpinski"
+        "aoa",
+        "sierpinski-legacy"
       ]
     },
     {
@@ -146,7 +148,8 @@
       "tags": [
         "video",
         "youtube",
-        "sierpinski"
+        "aoa",
+        "sierpinski-legacy"
       ]
     },
     {
@@ -159,7 +162,8 @@
       },
       "tags": [
         "cairo",
-        "sierpinski",
+        "aoa",
+        "sierpinski-legacy",
         "pre-fx"
       ]
     },
