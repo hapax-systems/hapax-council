@@ -25,6 +25,19 @@ def _startup_preset_name() -> str | None:
     return raw
 
 
+def _hero_prefx_effect_enabled() -> bool:
+    """Return true only when the legacy hero-only pre-FX path is explicit.
+
+    The live 3D surface now applies visual treatment through the global
+    shader/drift path. A separate hero-only pre-FX path can reintroduce the
+    detached-region failure mode that prompted the hero effect drop-in disable,
+    so it must not auto-enable just because the GL hero slot is disabled.
+    """
+
+    raw = os.environ.get("HAPAX_HERO_PREFX_EFFECT_ENABLED", "").strip().lower()
+    return raw in {"1", "true", "yes", "on", "enabled"}
+
+
 def apply_startup_preset(compositor: Any) -> str | None:
     preset_name = _startup_preset_name()
     if preset_name is None:
@@ -216,17 +229,20 @@ def start_compositor(compositor: Any) -> None:
     except Exception:
         log.exception("HeroEffectRotator init failed (non-fatal)")
 
-    # Hero pre-FX effect: software-based hero effect applied on the pre_fx
-    # Cairo layer so it goes through the shader chain. Replaces the GL-pipeline
-    # hero-effect-slot when HAPAX_COMPOSITOR_DISABLE_HERO_EFFECT=1.
-    # Resolves hero tile position dynamically at draw time.
+    # Legacy hero pre-FX effect. Keep this path explicit-only: the baseline
+    # livestream surface should be treated through the global shader/drift
+    # path, not by a hero-only region that reads as a detached fourth-wall
+    # pane.
     compositor._hero_prefx_effect = None
-    try:
-        from .hero_prefx_effect import HeroPreFxEffect
+    if _hero_prefx_effect_enabled():
+        try:
+            from .hero_prefx_effect import HeroPreFxEffect
 
-        compositor._hero_prefx_effect = HeroPreFxEffect()
-    except Exception:
-        log.exception("HeroPreFxEffect init failed (non-fatal)")
+            compositor._hero_prefx_effect = HeroPreFxEffect()
+        except Exception:
+            log.exception("HeroPreFxEffect init failed (non-fatal)")
+    else:
+        log.info("HeroPreFxEffect disabled: legacy hero-only path is explicit opt-in")
 
     # Read initial consent state
     try:
