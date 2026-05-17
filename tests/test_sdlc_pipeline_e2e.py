@@ -19,6 +19,58 @@ from scripts.sdlc_review import ReviewResult, run_review
 from scripts.sdlc_triage import TriageResult, run_triage
 
 
+class TestTriageModelRouting:
+    def test_default_triage_model_uses_litellm_alias(self, monkeypatch):
+        from scripts import sdlc_triage
+
+        monkeypatch.delenv("SDLC_TRIAGE_MODEL", raising=False)
+
+        assert sdlc_triage._configured_triage_model() == "balanced"
+
+    def test_legacy_anthropic_provider_prefix_maps_to_proxy_route(self, monkeypatch):
+        from scripts import sdlc_triage
+
+        monkeypatch.setenv("SDLC_TRIAGE_MODEL", "anthropic:claude-sonnet-4-6")
+
+        assert sdlc_triage._configured_triage_model() == "claude-sonnet-4-6"
+
+    def test_call_llm_uses_pydantic_agent_not_direct_anthropic(self, monkeypatch):
+        from scripts import sdlc_triage
+
+        class FakeRunResult:
+            output = TriageResult(
+                type="chore",
+                complexity="S",
+                axiom_relevance=[],
+                reject_reason=None,
+                file_hints=["scripts/sdlc_triage.py"],
+            )
+
+        class FakeAgent:
+            def run_sync(self, user: str) -> FakeRunResult:
+                assert user == "user prompt"
+                return FakeRunResult()
+
+        captured: dict[str, str] = {}
+
+        def fake_build_agent(model_name: str, system: str) -> FakeAgent:
+            captured["model_name"] = model_name
+            captured["system"] = system
+            return FakeAgent()
+
+        monkeypatch.setenv("SDLC_TRIAGE_MODEL", "anthropic/claude-opus-4-7")
+        monkeypatch.setitem(sys.modules, "anthropic", object())
+        monkeypatch.setattr(sdlc_triage, "_build_triage_agent", fake_build_agent)
+
+        result = sdlc_triage._call_llm("system prompt", "user prompt")
+
+        assert result.file_hints == ["scripts/sdlc_triage.py"]
+        assert captured == {
+            "model_name": "claude-opus-4-7",
+            "system": "system prompt",
+        }
+
+
 class TestDryRunOutputFormats:
     """Verify dry-run produces valid structured output."""
 

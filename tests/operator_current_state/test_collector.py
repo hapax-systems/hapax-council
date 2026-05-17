@@ -124,6 +124,34 @@ def test_relay_operator_action_without_governed_ref_is_watch(tmp_path: Path) -> 
     assert state.counts.do == 0
 
 
+def test_conflicting_relay_task_operator_evidence_blocks_no_action(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    _mk_required(paths)
+    _task(
+        paths.active_tasks_dir / "task.md",
+        "task_id: relay-task-conflict\n"
+        "title: Relay task conflict\n"
+        "status: offered\n"
+        "operator_required: false\n",
+    )
+    (paths.relay_dir / "note.md").write_text(
+        "task_id: relay-task-conflict\noperator_required: true\noperator action needed soon\n",
+        encoding="utf-8",
+    )
+
+    state = collect_operator_current_state(paths, now=NOW)
+
+    assert state.readiness.value == "unknown"
+    assert any(
+        item.summary == "Relay/task operator obligation conflict" and item.conflicts
+        for item in state.items
+    )
+    assert not any(item.summary == "No verified operator action" for item in state.items)
+    assert state.counts.do == 0
+
+
 def test_historical_operator_blocking_cannot_create_do_item(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     _mk_required(paths)

@@ -97,3 +97,11 @@ def test_uses_gh_cli():
     assert '"gh"' in py_code
     assert '"pr"' in py_code
     assert '"view"' in py_code
+
+
+def test_pr_gate_uses_current_gh_merge_field():
+    """GitHub CLI exposes mergedAt for PR view; merged is not available."""
+    py_code = _extract_python(SCRIPT)
+    assert '"state,mergedAt"' in py_code
+    assert '"state,merged"' not in py_code
+    assert ".mergedAt != null" in py_code
