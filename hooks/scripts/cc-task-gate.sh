@@ -72,6 +72,30 @@ if [[ "${HAPAX_METHODOLOGY_EMERGENCY:-0}" == "1" ]]; then
   exit 0
 fi
 
+# --- 3b. Unclaimed governance-intake bootstrap allowance ---
+# The task gate must not deadlock the lifecycle it enforces. A session without
+# a claim may create a new request or offered cc-task note, but only through a
+# path-scoped, content-validated Write event. Ordinary source/runtime/system
+# mutation and manual claim-file writes still fail closed below.
+set +e
+_bootstrap_output="$(
+  printf '%s' "$input" | python3 "$SCRIPT_DIR/cc-task-gate-bootstrap.py" 2>&1
+)"
+_bootstrap_rc=$?
+set -e
+case "$_bootstrap_rc" in
+  0)
+    [[ -n "$_bootstrap_output" ]] && printf '%s\n' "$_bootstrap_output" >&2
+    exit 0
+    ;;
+  10)
+    ;;
+  *)
+    [[ -n "$_bootstrap_output" ]] && printf '%s\n' "$_bootstrap_output" >&2
+    exit 2
+    ;;
+esac
+
 # --- 4. Determine session role ---
 role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
 if [[ -z "$role" ]] && declare -F hapax_agent_role >/dev/null 2>&1; then
@@ -115,6 +139,14 @@ cc-task-gate: BLOCKED — no claimed task for role '$role'.
 
   Claim a task before mutating files:
     cc-claim <task_id>
+
+  To start new work without bypassing the gate, use the Write tool to create
+  one of these validated, audited bootstrap notes:
+    20-projects/hapax-requests/active/REQ-<timestamp>-<slug>.md
+    20-projects/hapax-cc-tasks/active/<task_id>.md
+
+  Then run request-intake-consumer / cc-claim through the normal lifecycle.
+  Do not write ~/.cache/hapax/cc-active-task-* by hand.
 
   Browse the offered queue in Obsidian:
     20-projects/hapax-cc-tasks/_dashboard/cc-offered.md
