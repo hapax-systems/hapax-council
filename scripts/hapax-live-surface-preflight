@@ -504,6 +504,33 @@ def _counter_rate(
     return max(0.0, (after - before) / elapsed)
 
 
+def _metric_positive(metrics: dict[str, float], name: str) -> bool:
+    return metrics.get(name, 0) > 0
+
+
+def _imagination_v4l2_output_disabled_failures(
+    before_metrics: dict[str, float],
+    after_metrics: dict[str, float],
+    *,
+    require_v4l2: bool,
+) -> list[str]:
+    if not require_v4l2:
+        return []
+    enabled_key = "hapax_imagination_v4l2_output_enabled"
+    if enabled_key not in before_metrics and enabled_key not in after_metrics:
+        return []
+    enabled = max(before_metrics.get(enabled_key, 0), after_metrics.get(enabled_key, 0))
+    if enabled > 0:
+        return []
+    producer_active = _metric_positive(
+        before_metrics,
+        "hapax_imagination_output_frames_total",
+    ) or _metric_positive(after_metrics, "hapax_imagination_output_frames_total")
+    if not producer_active:
+        return []
+    return [_full_surface_reason("LSC-EGRESS-001", "imagination_v4l2_output_disabled")]
+
+
 def _metric_delta(
     before_metrics: dict[str, float],
     after_metrics: dict[str, float],
@@ -657,6 +684,13 @@ def _full_surface_performance_sample(
     rates: dict[str, float | None] = {}
     visual_egress_active = _imagination_egress_active(before_metrics) or _imagination_egress_active(
         after_metrics
+    )
+    failures.extend(
+        _imagination_v4l2_output_disabled_failures(
+            before_metrics,
+            after_metrics,
+            require_v4l2=not args.no_require_v4l2,
+        )
     )
     if visual_egress_active:
         for label, metric_name, floor_fps, criterion_id in (

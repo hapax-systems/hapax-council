@@ -819,9 +819,7 @@ hapax_compositor_layout_active{layout="forcefield"} 1
     assert "final_egress_snapshot" not in stage_fps
 
 
-def test_preflight_full_surface_accepts_3d_imagination_egress(
-    tmp_path: Path,
-) -> None:
+def _write_3d_imagination_evidence(tmp_path: Path) -> tuple[Path, Path, Path]:
     layout_state = tmp_path / "current-layout-state.json"
     layout_state.write_text(
         json.dumps({"layout_mode": "3d", "layout_name": "default"}),
@@ -842,7 +840,13 @@ def test_preflight_full_surface_accepts_3d_imagination_egress(
             encoding="utf-8",
         )
         (source_dir / "frame.rgba").write_bytes(b"\0")
+    return layout_state, effect_state, sources_dir
 
+
+def test_preflight_full_surface_accepts_3d_imagination_egress(
+    tmp_path: Path,
+) -> None:
+    layout_state, effect_state, sources_dir = _write_3d_imagination_evidence(tmp_path)
     before = """
 studio_compositor_cameras_total 9
 studio_compositor_cameras_healthy 9
@@ -896,6 +900,123 @@ hapax_compositor_layout_active{layout="default"} 1
     assert stage_fps["imagination_output"] >= 29.0
     assert stage_fps["imagination_v4l2_writer"] >= 29.0
     assert "legacy_static_layout_active:default" not in " ".join(payload["reasons"])
+
+
+def test_preflight_full_surface_blocks_disabled_3d_v4l2_output(
+    tmp_path: Path,
+) -> None:
+    layout_state, effect_state, sources_dir = _write_3d_imagination_evidence(tmp_path)
+    before = """
+studio_compositor_cameras_total 9
+studio_compositor_cameras_healthy 9
+studio_compositor_v4l2sink_frames_total 0
+studio_compositor_v4l2sink_last_frame_seconds_ago 9999
+hapax_imagination_output_frames_total 100
+hapax_imagination_output_last_frame_seconds_ago 0
+hapax_imagination_v4l2_output_enabled 0
+hapax_imagination_v4l2_write_frames_total 100
+hapax_imagination_v4l2_write_errors_total 0
+hapax_imagination_v4l2_reconnects_total 0
+hapax_imagination_v4l2_last_frame_seconds_ago 0
+hapax_ward_modulator_tick_total 10
+hapax_compositor_layout_active{layout="default"} 1
+"""
+    after = before.replace(
+        "hapax_imagination_output_frames_total 100",
+        "hapax_imagination_output_frames_total 130",
+    ).replace(
+        "hapax_imagination_v4l2_write_frames_total 100",
+        "hapax_imagination_v4l2_write_frames_total 130",
+    )
+
+    result = _run(
+        before,
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "false",
+        "--require-full-surface",
+        "--full-surface-sample-seconds",
+        "1",
+        "--layout-state-json",
+        str(layout_state),
+        "--visual-effect-state-json",
+        str(effect_state),
+        "--imagination-sources-dir",
+        str(sources_dir),
+        "--env",
+        "HAPAX_FOLLOW_MODE_ACTIVE=1",
+        "--env",
+        "HAPAX_WARD_MODULATOR_ACTIVE=1",
+        tmp_path=tmp_path,
+        after_metrics=after,
+    )
+
+    payload = json.loads(result.stdout)
+    assert result.returncode == 10
+    assert payload["v4l2_egress_mode"] == "disabled"
+    assert "v4l2_output_disabled" in payload["reasons"]
+    assert (
+        "full_surface:LSC-EGRESS-001:imagination_v4l2_output_disabled"
+        in payload["full_surface_failures"]
+    )
+
+
+def test_preflight_full_surface_blocks_nonadvancing_3d_v4l2_writer(
+    tmp_path: Path,
+) -> None:
+    layout_state, effect_state, sources_dir = _write_3d_imagination_evidence(tmp_path)
+    before = """
+studio_compositor_cameras_total 9
+studio_compositor_cameras_healthy 9
+studio_compositor_v4l2sink_frames_total 0
+studio_compositor_v4l2sink_last_frame_seconds_ago 9999
+hapax_imagination_output_frames_total 100
+hapax_imagination_output_last_frame_seconds_ago 0
+hapax_imagination_v4l2_output_enabled 1
+hapax_imagination_v4l2_write_frames_total 100
+hapax_imagination_v4l2_write_errors_total 0
+hapax_imagination_v4l2_reconnects_total 0
+hapax_imagination_v4l2_last_frame_seconds_ago 0
+hapax_ward_modulator_tick_total 10
+hapax_compositor_layout_active{layout="default"} 1
+"""
+    after = before.replace(
+        "hapax_imagination_output_frames_total 100",
+        "hapax_imagination_output_frames_total 130",
+    )
+
+    result = _run(
+        before,
+        "--service-active",
+        "true",
+        "--bridge-active",
+        "false",
+        "--require-full-surface",
+        "--full-surface-sample-seconds",
+        "1",
+        "--layout-state-json",
+        str(layout_state),
+        "--visual-effect-state-json",
+        str(effect_state),
+        "--imagination-sources-dir",
+        str(sources_dir),
+        "--env",
+        "HAPAX_FOLLOW_MODE_ACTIVE=1",
+        "--env",
+        "HAPAX_WARD_MODULATOR_ACTIVE=1",
+        tmp_path=tmp_path,
+        after_metrics=after,
+    )
+
+    payload = json.loads(result.stdout)
+    assert result.returncode == 10
+    stage_fps = payload["full_surface_performance"]["stage_fps"]
+    assert stage_fps["imagination_output"] >= 29.0
+    assert stage_fps["imagination_v4l2_writer"] == 0.0
+    assert (
+        "full_surface:LSC-EGRESS-001:stage_fps_below_floor:imagination_v4l2_writer:0.00<29.00"
+    ) in payload["full_surface_failures"]
 
 
 def test_preflight_requires_obs_decoder_motion_when_requested(tmp_path: Path) -> None:
