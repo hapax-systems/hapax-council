@@ -173,6 +173,23 @@ struct PlanPass {
     /// the substrate node (`content_layer`).
     #[serde(default = "default_slot_family")]
     slot_family: String,
+    /// SlotDrift live-surface verification metadata. Older plans omit these
+    /// fields; default values keep compatibility while allowing the 3D
+    /// compositor path to publish machine-checkable scope/family/cadence.
+    #[serde(default)]
+    effect_scope: String,
+    #[serde(default)]
+    effect_family: String,
+    #[serde(default)]
+    visibility_group: String,
+    #[serde(default)]
+    eviction_cadence: String,
+    #[serde(default)]
+    source_bound: bool,
+    #[serde(default)]
+    full_surface: bool,
+    #[serde(default)]
+    effect_aliases: Vec<String>,
 }
 
 fn default_output() -> String {
@@ -269,6 +286,13 @@ struct DynamicPass {
     /// the render hot path reads namespaced texture names directly.
     #[allow(dead_code)]
     target: String,
+    effect_scope: String,
+    effect_family: String,
+    visibility_group: String,
+    eviction_cadence: String,
+    source_bound: bool,
+    full_surface: bool,
+    effect_aliases: Vec<String>,
 }
 
 /// Rewrite a texture name to be target-namespaced when appropriate.
@@ -338,6 +362,26 @@ fn validate_plan_shaders(plan_dir: &Path, active_passes: &[(String, PlanPass)]) 
         }
     }
     failures
+}
+
+fn plan_pass_uses_content_slots(pass: &PlanPass) -> bool {
+    pass.requires_content_slots || pass.inputs.iter().any(|n| n.starts_with("content_slot_"))
+}
+
+fn validate_3d_livestream_surface_scope(active_passes: &[(String, PlanPass)]) -> Vec<String> {
+    active_passes
+        .iter()
+        .filter_map(|(target_name, plan_pass)| {
+            if target_name == "main" && plan_pass_uses_content_slots(plan_pass) {
+                Some(format!(
+                    "{}/{}: content_slot_* inputs are pre-composition entity inputs; 3D livestream effects must start from composed @live",
+                    target_name, plan_pass.node_id
+                ))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn namespace_texture_name(name: &str, target: &str) -> String {
@@ -763,7 +807,14 @@ impl DynamicPipeline {
         // plan_data so the operator can grep the journal for repeat
         // failures.
         let manifest_hash = compute_manifest_hash(&plan_data);
-        let validation_failures = validate_plan_shaders(&self.plan_dir, &active_passes);
+        let mut validation_failures = Vec::new();
+        if std::env::var("HAPAX_3D_COMPOSITOR")
+            .map(|raw| raw == "1")
+            .unwrap_or(false)
+        {
+            validation_failures.extend(validate_3d_livestream_surface_scope(&active_passes));
+        }
+        validation_failures.extend(validate_plan_shaders(&self.plan_dir, &active_passes));
         if !validation_failures.is_empty() {
             self.shader_rollback_total.fetch_add(1, Ordering::Relaxed);
             log::warn!(
@@ -916,6 +967,13 @@ impl DynamicPipeline {
                     slot_family: plan_pass.slot_family.clone(),
                     backend: plan_pass.backend.clone(),
                     target: target_name.clone(),
+                    effect_scope: plan_pass.effect_scope.clone(),
+                    effect_family: plan_pass.effect_family.clone(),
+                    visibility_group: plan_pass.visibility_group.clone(),
+                    eviction_cadence: plan_pass.eviction_cadence.clone(),
+                    source_bound: plan_pass.source_bound,
+                    full_surface: plan_pass.full_surface,
+                    effect_aliases: plan_pass.effect_aliases.clone(),
                 });
             } else {
                 // Render pass
@@ -1057,6 +1115,13 @@ impl DynamicPipeline {
                     slot_family: plan_pass.slot_family.clone(),
                     backend: plan_pass.backend.clone(),
                     target: target_name.clone(),
+                    effect_scope: plan_pass.effect_scope.clone(),
+                    effect_family: plan_pass.effect_family.clone(),
+                    visibility_group: plan_pass.visibility_group.clone(),
+                    eviction_cadence: plan_pass.eviction_cadence.clone(),
+                    source_bound: plan_pass.source_bound,
+                    full_surface: plan_pass.full_surface,
+                    effect_aliases: plan_pass.effect_aliases.clone(),
                 });
             }
         }
@@ -1743,6 +1808,13 @@ impl DynamicPipeline {
                     "node_id": pass.node_id,
                     "inputs": pass.inputs,
                     "output": pass.output,
+                    "effect_scope": pass.effect_scope,
+                    "effect_family": pass.effect_family,
+                    "visibility_group": pass.visibility_group,
+                    "eviction_cadence": pass.eviction_cadence,
+                    "source_bound": pass.source_bound,
+                    "full_surface": pass.full_surface,
+                    "effect_aliases": pass.effect_aliases,
                     "max_delta": max_delta,
                     "non_neutral": max_delta > 0.0001,
                     "params": params,
@@ -2435,6 +2507,40 @@ mod tests {
     }
 
     #[test]
+    fn parses_live_surface_effect_metadata_fields() {
+        let json = r#"{
+            "version": 2,
+            "targets": {
+                "main": {
+                    "passes": [
+                        {
+                            "node_id": "slitscan",
+                            "shader": "slitscan.wgsl",
+                            "effect_scope": "composed_live_surface",
+                            "effect_family": "temporal",
+                            "visibility_group": "temporal",
+                            "eviction_cadence": "fast",
+                            "source_bound": true,
+                            "full_surface": true,
+                            "effect_aliases": ["slicing"]
+                        }
+                    ]
+                }
+            }
+        }"#;
+        let plan: PlanFile = serde_json::from_str(json).expect("metadata plan parses");
+        let main = plan.main_passes();
+        assert_eq!(main.len(), 1);
+        assert_eq!(main[0].effect_scope, "composed_live_surface");
+        assert_eq!(main[0].effect_family, "temporal");
+        assert_eq!(main[0].visibility_group, "temporal");
+        assert_eq!(main[0].eviction_cadence, "fast");
+        assert!(main[0].source_bound);
+        assert!(main[0].full_surface);
+        assert_eq!(main[0].effect_aliases, vec!["slicing"]);
+    }
+
+    #[test]
     fn parses_v2_with_multiple_targets_returns_main() {
         // Phase 5a: when multiple targets are present, main_passes()
         // selects "main". The other targets are loaded into the
@@ -2735,6 +2841,13 @@ mod tests {
             requires_content_slots: false,
             backend: "wgsl_render".to_string(),
             slot_family: "narrative".to_string(),
+            effect_scope: String::new(),
+            effect_family: String::new(),
+            visibility_group: String::new(),
+            eviction_cadence: String::new(),
+            source_bound: false,
+            full_surface: false,
+            effect_aliases: Vec::new(),
         }
     }
 
@@ -2761,6 +2874,13 @@ mod tests {
             slot_family: slot_family.to_string(),
             backend: "wgsl_render".to_string(),
             target: "main".to_string(),
+            effect_scope: String::new(),
+            effect_family: String::new(),
+            visibility_group: String::new(),
+            eviction_cadence: String::new(),
+            source_bound: false,
+            full_surface: false,
+            effect_aliases: Vec::new(),
         }
     }
 
@@ -2775,6 +2895,33 @@ mod tests {
         let pass =
             make_dynamic_pass_for_slot_test(false, "narrative", &["@live", "content_slot_0"]);
         assert!(pass_uses_content_slots(&pass));
+    }
+
+    #[test]
+    fn three_d_livestream_scope_rejects_main_content_slot_effects() {
+        let mut pass = make_pass("content_layer", "content_layer.wgsl");
+        pass.requires_content_slots = true;
+        pass.inputs = vec!["@live".to_string(), "content_slot_0".to_string()];
+
+        let failures = validate_3d_livestream_surface_scope(&[("main".to_string(), pass)]);
+
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].contains("main/content_layer"));
+        assert!(failures[0].contains("composed @live"));
+    }
+
+    #[test]
+    fn three_d_livestream_scope_allows_non_main_content_slot_targets() {
+        let mut pass = make_pass("content_layer", "content_layer.wgsl");
+        pass.requires_content_slots = true;
+        pass.inputs = vec!["@live".to_string(), "content_slot_0".to_string()];
+
+        let failures = validate_3d_livestream_surface_scope(&[("preview".to_string(), pass)]);
+
+        assert!(
+            failures.is_empty(),
+            "non-main targets are not the livestream egress surface"
+        );
     }
 
     #[test]
