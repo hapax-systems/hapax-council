@@ -1024,6 +1024,56 @@ def test_gemini_mutation_task_fails_platform_fit(tmp_path: Path) -> None:
     assert "read_only_mutation_route" in result.stderr
 
 
+def test_gemini_worker_profile_sets_auto_edit_mode(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    _task(
+        tmp_path / "tasks",
+        "research-only",
+        """
+        kind: research
+        task_type: read-only
+        parent_spec: null
+        tags:
+          - research
+          - read-only
+        """,
+    )
+    launcher_args = tmp_path / "gemini-worker-args.txt"
+    launcher_env = tmp_path / "gemini-worker-env.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-gemini"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\n' "$HAPAX_GEMINI_APPROVAL_MODE" > {launcher_env}
+printf '%s\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "research-only",
+        "--lane",
+        "iota",
+        "--platform",
+        "gemini",
+        "--mode",
+        "headless",
+        "--profile",
+        "worker",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_GEMINI_LAUNCHER": str(fake_launcher)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert launcher_env.read_text(encoding="utf-8").strip() == "auto_edit"
+    args = launcher_args.read_text(encoding="utf-8").splitlines()
+    assert "--model" not in args
+    assert "-p" in args
+
+
 def test_lists_platform_profile_paths(tmp_path: Path) -> None:
     result = _run(tmp_path, "--list-platform-paths")
 
@@ -1033,6 +1083,7 @@ def test_lists_platform_profile_paths(tmp_path: Path) -> None:
     assert "codex/headless/spark" in result.stdout
     assert "claude/headless/sonnet" in result.stdout
     assert "gemini/headless/flash" in result.stdout
+    assert "gemini/headless/worker" in result.stdout
     assert "antigrav/interactive/full" in result.stdout
 
 

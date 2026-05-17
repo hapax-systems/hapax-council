@@ -53,7 +53,8 @@
         "lite",
         "opus",
         "sonnet",
-        "spark"
+        "spark",
+        "worker"
       ]
     },
     "route_state": {
@@ -97,6 +98,35 @@
     },
     "resource_source": {
       "enum": ["infra_observation_spine", "local_probe", "none", "unknown"]
+    },
+    "approval_posture": {
+      "enum": [
+        "auto_edit_policy_firewalled",
+        "default_deny_enable_latch",
+        "ide_terminal_auto_approve",
+        "no_ask_hooks_enforced",
+        "plan_mode_read_only",
+        "programmatic_auto_approve_task_scoped",
+        "unknown"
+      ]
+    },
+    "capability_tier": {
+      "enum": [
+        "audited_full_worker",
+        "frontier_fallback",
+        "frontier_full",
+        "jr_plus",
+        "read_only_support"
+      ]
+    },
+    "worker_tier": {
+      "enum": [
+        "audited_full_worker",
+        "bounded_worker",
+        "fallback_worker",
+        "full_worker",
+        "read_only_sidecar"
+      ]
     },
     "timestamp_or_null": {
       "anyOf": [
@@ -312,11 +342,15 @@
         "mode",
         "profile",
         "launcher",
+        "sanctioned_wrapper",
         "summary",
         "notes",
         "route_state",
         "blocked_reasons",
         "model_or_engine",
+        "approval_posture",
+        "capability_tier",
+        "worker_tier",
         "auth_surface",
         "capacity_pool",
         "mutability",
@@ -338,6 +372,7 @@
         "mode": {"$ref": "#/$defs/mode"},
         "profile": {"$ref": "#/$defs/profile"},
         "launcher": {"type": "string", "minLength": 1},
+        "sanctioned_wrapper": {"type": "string", "minLength": 1},
         "summary": {"type": "string", "minLength": 1},
         "notes": {"type": "string", "minLength": 1},
         "route_state": {"$ref": "#/$defs/route_state"},
@@ -348,6 +383,9 @@
         "model_or_engine": {
           "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
         },
+        "approval_posture": {"$ref": "#/$defs/approval_posture"},
+        "capability_tier": {"$ref": "#/$defs/capability_tier"},
+        "worker_tier": {"$ref": "#/$defs/worker_tier"},
         "auth_surface": {"$ref": "#/$defs/auth_surface"},
         "capacity_pool": {"$ref": "#/$defs/capacity_pool"},
         "mutability": {"$ref": "#/$defs/mutability"},

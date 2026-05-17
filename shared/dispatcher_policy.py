@@ -106,6 +106,10 @@ class RouteCapabilityState(_PolicyModel):
     blocked_reasons: tuple[str, ...] = Field(default=())
     capacity_pool: str | None = None
     authority_ceiling: str | None = None
+    approval_posture: str | None = None
+    capability_tier: str | None = None
+    worker_tier: str | None = None
+    sanctioned_wrapper: str | None = None
     privacy_posture: str | None = None
     eligible_quality_floors: tuple[str, ...] = Field(default=())
     explicit_equivalence_records: tuple[str, ...] = Field(default=())
@@ -1363,6 +1367,10 @@ def _route_capability_state(
         blocked_reasons=tuple(route.blocked_reasons),
         capacity_pool=route.capacity_pool.value,
         authority_ceiling=route.authority_ceiling.value,
+        approval_posture=route.approval_posture.value,
+        capability_tier=route.capability_tier.value,
+        worker_tier=route.worker_tier.value,
+        sanctioned_wrapper=route.sanctioned_wrapper,
         privacy_posture=route.privacy_posture.value,
         eligible_quality_floors=tuple(
             quality_floor.value for quality_floor in route.quality_envelope.eligible_quality_floors

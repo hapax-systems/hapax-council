@@ -40,6 +40,7 @@ REQUIRED_ROUTE_IDS = frozenset(
         "gemini.headless.flash",
         "gemini.headless.full",
         "gemini.headless.lite",
+        "gemini.headless.worker",
         "gemini.interactive.full",
         "vibe.headless.full",
     }
@@ -85,6 +86,7 @@ class Profile(StrEnum):
     OPUS = "opus"
     SONNET = "sonnet"
     SPARK = "spark"
+    WORKER = "worker"
 
 
 class RouteState(StrEnum):
@@ -174,6 +176,32 @@ class ResourceSource(StrEnum):
     LOCAL_PROBE = "local_probe"
     NONE = "none"
     UNKNOWN = "unknown"
+
+
+class ApprovalPosture(StrEnum):
+    AUTO_EDIT_POLICY_FIREWALLED = "auto_edit_policy_firewalled"
+    DEFAULT_DENY_ENABLE_LATCH = "default_deny_enable_latch"
+    IDE_TERMINAL_AUTO_APPROVE = "ide_terminal_auto_approve"
+    NO_ASK_HOOKS_ENFORCED = "no_ask_hooks_enforced"
+    PLAN_MODE_READ_ONLY = "plan_mode_read_only"
+    PROGRAMMATIC_AUTO_APPROVE_TASK_SCOPED = "programmatic_auto_approve_task_scoped"
+    UNKNOWN = "unknown"
+
+
+class CapabilityTier(StrEnum):
+    AUDITED_FULL_WORKER = "audited_full_worker"
+    FRONTIER_FALLBACK = "frontier_fallback"
+    FRONTIER_FULL = "frontier_full"
+    JR_PLUS = "jr_plus"
+    READ_ONLY_SUPPORT = "read_only_support"
+
+
+class WorkerTier(StrEnum):
+    AUDITED_FULL_WORKER = "audited_full_worker"
+    BOUNDED_WORKER = "bounded_worker"
+    FALLBACK_WORKER = "fallback_worker"
+    FULL_WORKER = "full_worker"
+    READ_ONLY_SIDECAR = "read_only_sidecar"
 
 
 class Mutability(StrictModel):
@@ -349,6 +377,10 @@ class SupplyRoute(StrictModel):
     profile: Profile
     model_fingerprint: str | None = None
     launcher_contract: str | None = None
+    sanctioned_wrapper: str
+    approval_posture: ApprovalPosture
+    capability_tier: CapabilityTier
+    worker_tier: WorkerTier
 
 
 class SupplyAuthority(StrictModel):
@@ -412,11 +444,15 @@ class PlatformCapabilityRoute(StrictModel):
     mode: Mode
     profile: Profile
     launcher: str
+    sanctioned_wrapper: str
     summary: str
     notes: str
     route_state: RouteState
     blocked_reasons: list[str] = Field(default_factory=list)
     model_or_engine: str | None
+    approval_posture: ApprovalPosture
+    capability_tier: CapabilityTier
+    worker_tier: WorkerTier
     auth_surface: AuthSurface
     capacity_pool: CapacityPool
     mutability: Mutability
@@ -453,6 +489,24 @@ class PlatformCapabilityRoute(StrictModel):
                 raise ValueError("read-only routes cannot declare read-write filesystem access")
             if self.tool_access.shell is ShellAccess.FULL:
                 raise ValueError("read-only routes cannot declare full shell access")
+            if self.worker_tier is not WorkerTier.READ_ONLY_SIDECAR:
+                raise ValueError("read-only routes must declare read_only_sidecar worker_tier")
+
+        if (
+            self.approval_posture is ApprovalPosture.PLAN_MODE_READ_ONLY
+            and self.authority_ceiling is not AuthorityCeiling.READ_ONLY
+        ):
+            raise ValueError("plan-mode read-only routes must have read_only authority ceiling")
+
+        if (
+            self.approval_posture
+            in {
+                ApprovalPosture.IDE_TERMINAL_AUTO_APPROVE,
+                ApprovalPosture.PROGRAMMATIC_AUTO_APPROVE_TASK_SCOPED,
+            }
+            and self.authority_ceiling is AuthorityCeiling.AUTHORITATIVE
+        ):
+            raise ValueError("auto-approval posture cannot be unrestricted authoritative")
 
         if (
             self.mutability.source
@@ -819,6 +873,10 @@ def build_supply_vector(
             profile=route.profile,
             model_fingerprint=route.model_or_engine,
             launcher_contract=route.launcher,
+            sanctioned_wrapper=route.sanctioned_wrapper,
+            approval_posture=route.approval_posture,
+            capability_tier=route.capability_tier,
+            worker_tier=route.worker_tier,
         ),
         authority=SupplyAuthority(
             ceiling=route.authority_ceiling.value,

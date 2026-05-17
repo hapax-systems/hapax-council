@@ -138,6 +138,15 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         False,
         "Read-only/plan-mode only; mutation tasks must route elsewhere.",
     ),
+    ("gemini", "headless", "worker"): PlatformPath(
+        "gemini",
+        "headless",
+        "worker",
+        "HAPAX_GEMINI_APPROVAL_MODE=auto_edit scripts/hapax-gemini --role <lane> --terminal tmux -- -p <governed-prompt>",
+        "Gemini governed auto-edit worker lane",
+        True,
+        "Full-worker wrapper profile; route only when task fit, policy firewall, and review gates allow it.",
+    ),
     ("gemini", "headless", "flash"): PlatformPath(
         "gemini",
         "headless",
@@ -860,7 +869,10 @@ def launch_gemini_headless(lane: str, prompt: str, route: PlatformPath) -> int:
     elif route.profile == "lite":
         args.extend(["--model", "gemini-3.1-flash-lite-preview"])
     args.extend(["-p", prompt])
-    return subprocess.call(args)
+    env = os.environ.copy()
+    if route.profile == "worker":
+        env["HAPAX_GEMINI_APPROVAL_MODE"] = "auto_edit"
+    return subprocess.call(args, env=env)
 
 
 def launch_antigrav_interactive(task_id: str, lane: str, validation: Validation) -> int:
@@ -899,7 +911,8 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Capability profile. Use full by default; quota-fallback maps to "
             "the platform's constrained analogue when one exists. Codex also "
-            "supports spark; Gemini supports flash/lite for read-only work."
+            "supports spark; Gemini supports flash/lite for read-only work and "
+            "worker for governed auto-edit work."
         ),
     )
     parser.add_argument("--launch", action="store_true", help="Launch after validation")
