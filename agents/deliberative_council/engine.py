@@ -32,9 +32,25 @@ from .rubrics import Rubric
 _log = logging.getLogger(__name__)
 
 
-async def _call_member(member: Agent[None, str], prompt: str) -> str:
+async def _call_member(member: Agent[None, str], prompt: str) -> tuple[str, list[str]]:
     result = await member.run(prompt)
-    return result.output
+    tool_calls: list[str] = []
+    try:
+        for msg in result.all_messages():
+            parts = getattr(msg, "parts", [])
+            for part in parts:
+                kind = getattr(part, "part_kind", "")
+                if kind == "tool-call":
+                    name = getattr(part, "tool_name", "?")
+                    args = str(getattr(part, "args", ""))[:200]
+                    tool_calls.append(f"{name}({args})")
+                elif kind == "tool-return":
+                    name = getattr(part, "tool_name", "?")
+                    content = str(getattr(part, "content", ""))[:200]
+                    tool_calls.append(f"{name} → {content}")
+    except Exception:
+        pass
+    return result.output, tool_calls
 
 
 def _parse_phase1_output(model_alias: str, raw: str) -> PhaseOneResult:
@@ -65,8 +81,15 @@ async def run_phase1(
         try:
             member = build_member(alias)
             prompt = phase1_prompt(rubric, inp.text, inp.source_ref, seed=seed)
-            raw = await _call_member(member, prompt)
-            return _parse_phase1_output(alias, raw)
+            raw, tool_calls = await _call_member(member, prompt)
+            result = _parse_phase1_output(alias, raw)
+            return PhaseOneResult(
+                model_alias=result.model_alias,
+                scores=result.scores,
+                rationale=result.rationale,
+                research_findings=result.research_findings,
+                tool_calls_log=tool_calls,
+            )
         except Exception as e:
             _log.error("Phase 1 failure for %s: %s", alias, e)
             return None
@@ -215,7 +238,7 @@ async def _run_phase2(
 
     try:
         member = build_member(config.model_aliases[0])
-        raw = await _call_member(member, prompt)
+        raw, _ = await _call_member(member, prompt)
         text = raw.strip()
         if "```json" in text:
             text = text.split("```json", 1)[1].split("```", 1)[0].strip()
@@ -299,7 +322,7 @@ async def _run_phase3(
 
         try:
             member = build_member(high_alias)
-            raw = await _call_member(member, prompt)
+            raw, _ = await _call_member(member, prompt)
             exchanges.append(
                 AdversarialExchange(
                     axis=axis,
@@ -354,7 +377,7 @@ async def _run_phase4(
         )
         try:
             member = build_member(original.model_alias)
-            raw = await _call_member(member, prompt)
+            raw, _ = await _call_member(member, prompt)
             text = raw.strip()
             if "```json" in text:
                 text = text.split("```json", 1)[1].split("```", 1)[0].strip()
