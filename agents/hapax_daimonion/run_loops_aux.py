@@ -1276,22 +1276,6 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                         log.warning("Vocal chain decay failed", exc_info=True)
 
             for imp in consumer.read_new():
-                # Vocal chain activation — drives Evil Pet + S-4 CC params
-                # from impingement narratives. Reads the capability's 9-dim
-                # table (vocal_chain.DIMENSIONS) and emits MIDI CCs via the
-                # MIDI port configured in DaimonionConfig.
-                # Fail-open: capability may be absent if init_pipeline is
-                # exercising a partial daemon (tests, etc.).
-                _vocal_chain = getattr(daemon, "_vocal_chain", None)
-                if (
-                    _vocal_chain is not None
-                    and getattr(_vocal_chain._midi, "is_open", lambda: True)()
-                ):
-                    try:
-                        _vocal_chain.activate_from_impingement(imp)
-                    except Exception:
-                        log.warning("Vocal chain activation failed", exc_info=True)
-
                 try:
                     candidates = await asyncio.to_thread(daemon._affordance_pipeline.select, imp)
                     for c in candidates:
@@ -1450,6 +1434,40 @@ async def impingement_consumer_loop(daemon: VoiceDaemon) -> None:
                         if c.capability_name == "speech_production" and not hasattr(
                             daemon, "_speech_production"
                         ):
+                            continue
+
+                        if c.capability_name.startswith("vocal_chain."):
+                            _vocal_chain = getattr(daemon, "_vocal_chain", None)
+                            if (
+                                _vocal_chain is not None
+                                and c.combined >= 0.3
+                                and getattr(_vocal_chain._midi, "is_open", lambda: True)()
+                            ):
+                                try:
+                                    from agents.hapax_daimonion.engine_gate import (
+                                        activate_from_impingement_gated,
+                                    )
+
+                                    gate_result = activate_from_impingement_gated(
+                                        _vocal_chain,
+                                        imp,
+                                        c.combined,
+                                        writer="director",
+                                    )
+                                    daemon._affordance_pipeline.record_outcome(
+                                        c.capability_name,
+                                        success=gate_result.accepted,
+                                        context={
+                                            "source": imp.source,
+                                            "reason": gate_result.reason,
+                                            "score": c.combined,
+                                        },
+                                    )
+                                except Exception:
+                                    log.warning(
+                                        "Vocal chain recruitment dispatch failed",
+                                        exc_info=True,
+                                    )
                             continue
 
                         if c.capability_name == "system_awareness":
