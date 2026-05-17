@@ -328,6 +328,11 @@ def _team_receipts_for(artifact: dict[str, Any]) -> list[dict[str, Any]]:
             "evidence_refs": ["council_disconfirmation", "excellence_gate_verdict"],
             "notes": "Council disconfirmation found no blocking unsupported claims or evidence gaps.",
         },
+        "council_coherence_passed": {
+            "passed": True,
+            "evidence_refs": ["council_coherence", "coherence_rubric_verdict"],
+            "notes": "Council coherence check passed on opening, progression, specificity, payoff.",
+        },
     }
     return [
         {
