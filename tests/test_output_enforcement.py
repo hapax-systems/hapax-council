@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,9 +22,9 @@ from shared.axiom_pattern_checker import (
 # ── Helpers ────────────────────────────────────────────────────────────
 
 
-def _make_patterns_yaml(patterns: list[dict]) -> Path:
+def _make_patterns_yaml(patterns: list[dict], tmp_path: Path) -> Path:
     """Write a temporary enforcement-patterns.yaml."""
-    p = Path(tempfile.mktemp(suffix=".yaml"))
+    p = tmp_path / "enforcement-patterns.yaml"
     p.write_text(yaml.dump({"patterns": patterns}))
     return p
 
@@ -81,8 +79,8 @@ class TestLoadPatterns:
     def setup_method(self):
         reload_patterns()
 
-    def test_loads_valid_patterns(self):
-        path = _make_patterns_yaml([_SAMPLE_T0, _SAMPLE_T1])
+    def test_loads_valid_patterns(self, tmp_path: Path):
+        path = _make_patterns_yaml([_SAMPLE_T0, _SAMPLE_T1], tmp_path)
         try:
             patterns = load_patterns(path=path)
             assert len(patterns) == 2
@@ -91,8 +89,8 @@ class TestLoadPatterns:
             path.unlink()
             reload_patterns()
 
-    def test_caches_after_first_load(self):
-        path = _make_patterns_yaml([_SAMPLE_T0])
+    def test_caches_after_first_load(self, tmp_path: Path):
+        path = _make_patterns_yaml([_SAMPLE_T0], tmp_path)
         try:
             p1 = load_patterns(path=path)
             p2 = load_patterns(path=path)
@@ -101,8 +99,8 @@ class TestLoadPatterns:
             path.unlink()
             reload_patterns()
 
-    def test_reload_clears_cache(self):
-        path = _make_patterns_yaml([_SAMPLE_T0])
+    def test_reload_clears_cache(self, tmp_path: Path):
+        path = _make_patterns_yaml([_SAMPLE_T0], tmp_path)
         try:
             p1 = load_patterns(path=path)
             reload_patterns()
@@ -116,9 +114,9 @@ class TestLoadPatterns:
         patterns = load_patterns(path=Path("/nonexistent/path.yaml"))
         assert patterns == []
 
-    def test_invalid_regex_skipped(self):
+    def test_invalid_regex_skipped(self, tmp_path: Path):
         bad_pattern = {**_SAMPLE_T0, "id": "bad-regex", "regex": "[invalid("}
-        path = _make_patterns_yaml([bad_pattern, _SAMPLE_T1])
+        path = _make_patterns_yaml([bad_pattern, _SAMPLE_T1], tmp_path)
         try:
             patterns = load_patterns(path=path)
             assert len(patterns) == 1
@@ -127,8 +125,8 @@ class TestLoadPatterns:
             path.unlink()
             reload_patterns()
 
-    def test_empty_yaml_returns_empty(self):
-        path = Path(tempfile.mktemp(suffix=".yaml"))
+    def test_empty_yaml_returns_empty(self, tmp_path: Path):
+        path = tmp_path / "empty.yaml"
         path.write_text("{}")
         try:
             patterns = load_patterns(path=path)
@@ -235,13 +233,13 @@ class TestEnforceOutput:
         assert result.allowed is True
         assert len(result.violations) >= 1
 
-    def test_exception_bypasses_check(self):
+    def test_exception_bypasses_check(self, tmp_path: Path):
         from shared.axiom_enforcer import enforce_output
 
         exceptions_yaml = yaml.dump(
             {"exceptions": [{"component": "test-agent", "reason": "test bypass"}]}
         )
-        exc_path = Path(tempfile.mktemp(suffix=".yaml"))
+        exc_path = tmp_path / "exceptions.yaml"
         exc_path.write_text(exceptions_yaml)
         try:
             with (
@@ -259,14 +257,14 @@ class TestEnforceOutput:
         finally:
             exc_path.unlink()
 
-    def test_quarantine_writes_file(self):
+    def test_quarantine_writes_file(self, tmp_path: Path):
         from shared.axiom_enforcer import enforce_output
 
-        tmpdir = tempfile.mkdtemp()
+        quarantine_dir = tmp_path / "quarantine"
         try:
             with (
                 _patch_patterns([_SAMPLE_T0]),
-                patch("shared.axiom_enforcer.QUARANTINE_DIR", Path(tmpdir)),
+                patch("shared.axiom_enforcer.QUARANTINE_DIR", quarantine_dir),
             ):
                 result = enforce_output(
                     "feedback for Alex on leadership",
@@ -280,17 +278,18 @@ class TestEnforceOutput:
             assert "Quarantined Output" in content
             assert "feedback for Alex" in content
         finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
+            reload_patterns()
 
-    def test_audit_log_written(self):
+    def test_audit_log_written(self, tmp_path: Path):
         from shared.axiom_enforcer import enforce_output
 
-        tmpdir = tempfile.mkdtemp()
+        audit_path = tmp_path / "audit.jsonl"
+        quarantine_dir = tmp_path / "quarantine"
         try:
             with (
                 _patch_patterns([_SAMPLE_T0]),
-                patch("shared.axiom_enforcer.AUDIT_LOG", Path(tmpdir) / "audit.jsonl"),
-                patch("shared.axiom_enforcer.QUARANTINE_DIR", Path(tmpdir)),
+                patch("shared.axiom_enforcer.AUDIT_LOG", audit_path),
+                patch("shared.axiom_enforcer.QUARANTINE_DIR", quarantine_dir),
             ):
                 enforce_output(
                     "feedback for Alex",
@@ -298,13 +297,12 @@ class TestEnforceOutput:
                     "/tmp/test.md",
                     block_enabled=True,
                 )
-                audit_path = Path(tmpdir) / "audit.jsonl"
                 assert audit_path.exists()
                 entry = json.loads(audit_path.read_text().strip())
                 assert entry["agent_id"] == "test-agent"
                 assert len(entry["violations"]) >= 1
         finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
+            reload_patterns()
 
 
 # ── Real Patterns Integration ─────────────────────────────────────────
@@ -359,3 +357,34 @@ class TestRealPatterns:
         text = "Track visitor faces and remember guest presence patterns."
         violations = check_output(text, tier_filter="T0")
         assert any(v.axiom_id == "interpersonal_transparency" for v in violations)
+
+
+# ── CodeQL Security Regression Tests ─────────────────────────────────
+
+
+class TestCodeQLSecurityRegressions:
+    def test_uv_remediation_parser_accepts_safe_module_command(self):
+        from shared.fix_capabilities.pipeline import _is_safe_remediation
+
+        assert _is_safe_remediation(
+            "cd ~/projects/hapax-council && uv run python -m agents.obsidian_sync --auto"
+        )
+
+    def test_uv_remediation_parser_rejects_redos_probe(self):
+        from shared.fix_capabilities.pipeline import _is_safe_remediation
+
+        probe = "cd - && uv run python -m . " + " ".join(["---"] * 2000)
+        assert _is_safe_remediation(probe) is False
+
+    def test_html_text_extractor_ignores_uppercase_script_and_style_tags(self):
+        from agents.reverie.content_injector import _extract_web_text
+
+        html = (
+            "<html><body>visible"
+            "<SCRIPT>secret()</SCRIPT \t ignored>"
+            "<Style>.hidden { display: none; }</Style\n ignored>"
+            "<p>text</p></body></html>"
+        )
+        text = _extract_web_text(html, "text/html; charset=utf-8")
+
+        assert text == "visible text"
