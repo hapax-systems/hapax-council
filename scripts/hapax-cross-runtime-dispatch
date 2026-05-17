@@ -34,6 +34,8 @@ Options:
   --platform PLATFORM  Target platform (claude, codex, gemini)
   --task TASK_ID       cc-task to dispatch
   --case CASE_ID       AuthorityCase reference (optional)
+  --mq-message-id ID   Durable relay MQ dispatch message id
+  --advisory-only      Label terminal dispatch as non-authoritative
   --mode MODE          Workstream mode: single_lane|shared_coordinated|parallel_separate
   --reason REASON      Dispatch reason
   --dry-run            Show what would be dispatched without acting
@@ -45,7 +47,8 @@ USAGE
 }
 
 # Parse arguments
-LANE="" PLATFORM="" TASK="" CASE_ID="" MODE="single_lane" REASON="" DRY_RUN=false
+LANE="" PLATFORM="" TASK="" CASE_ID="" MQ_MESSAGE_ID="" MODE="single_lane" REASON="" DRY_RUN=false
+ADVISORY_ONLY=false
 LIST_ELIGIBLE=false CHECK_LANE=""
 
 while [[ $# -gt 0 ]]; do
@@ -54,6 +57,8 @@ while [[ $# -gt 0 ]]; do
         --platform)   PLATFORM="$2"; shift 2 ;;
         --task)       TASK="$2"; shift 2 ;;
         --case)       CASE_ID="$2"; shift 2 ;;
+        --mq-message-id) MQ_MESSAGE_ID="$2"; shift 2 ;;
+        --advisory-only) ADVISORY_ONLY=true; shift ;;
         --mode)       MODE="$2"; shift 2 ;;
         --reason)     REASON="$2"; shift 2 ;;
         --dry-run)    DRY_RUN=true; shift ;;
@@ -124,6 +129,93 @@ check_duplicate() {
     return 0
 }
 
+check_durable_mq_binding() {
+    local lane="$1" task="$2" case_id="$3" message_id="$4"
+    local db_path="${HAPAX_RELAY_MQ_DB:-$HOME/.cache/hapax/relay/messages.db}"
+    python3 - "$db_path" "$lane" "$task" "$case_id" "$message_id" <<'PY'
+import sqlite3
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+db_path = Path(sys.argv[1]).expanduser()
+lane = sys.argv[2].strip().lower().replace("_", "-")
+task = sys.argv[3]
+case_id = sys.argv[4]
+message_id = sys.argv[5]
+
+if not db_path.exists():
+    print("durable_mq_database_missing")
+    raise SystemExit(3)
+
+params = {
+    "recipient": lane,
+    "task": task,
+    "case_id": case_id,
+}
+message_clause = ""
+if message_id:
+    message_clause = "AND m.message_id = :message_id"
+    params["message_id"] = message_id
+
+try:
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only = ON")
+        conn.execute("PRAGMA busy_timeout = 1000")
+        rows = conn.execute(
+            f"""
+            SELECT m.message_id, m.stale_after, m.expires_at
+            FROM messages m
+            JOIN recipients r ON r.message_id = m.message_id
+            WHERE m.message_type = 'dispatch'
+              AND m.authority_case = :case_id
+              AND r.recipient = :recipient
+              {message_clause}
+              AND (
+                  m.authority_item = :task
+                  OR m.subject = :task
+              )
+            ORDER BY m.id DESC
+            LIMIT 5
+            """,
+            params,
+        ).fetchall()
+except sqlite3.Error as exc:
+    print(f"durable_mq_unreadable:{exc}")
+    raise SystemExit(3)
+
+if not rows:
+    print("durable_mq_authority_binding_missing")
+    raise SystemExit(3)
+
+now = datetime.now(UTC)
+reason = "durable_mq_freshness_unknown"
+for row in rows:
+    try:
+        stale_after = datetime.fromisoformat(str(row["stale_after"]).replace("Z", "+00:00"))
+        expires_at = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
+    except ValueError:
+        reason = "durable_mq_freshness_unknown"
+        continue
+    if stale_after.tzinfo is None:
+        stale_after = stale_after.replace(tzinfo=UTC)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if expires_at < now:
+        reason = "durable_mq_dispatch_expired"
+        continue
+    if stale_after < now:
+        reason = "durable_mq_dispatch_stale"
+        continue
+    print(f"durable_mq_dispatch_bound:{row['message_id']}")
+    raise SystemExit(0)
+
+print(reason)
+raise SystemExit(3)
+PY
+}
+
 # --- List eligible lanes ---
 if $LIST_ELIGIBLE; then
     echo "=== Eligible dispatch lanes ==="
@@ -176,6 +268,28 @@ if ! check_duplicate "$LANE" "$PLATFORM"; then
     exit 1
 fi
 
+# Gate 4: durable authority binding. Terminal/tmux sends can still wake a lane,
+# but without a fresh MQ dispatch row they are advisory only.
+DURABLE_MQ_BOUND=false
+DURABLE_MQ_REASON="not_authority_bearing"
+if [[ -n "$CASE_ID" && "$ADVISORY_ONLY" != "true" ]]; then
+    MQ_CHECK_OUTPUT="$(check_durable_mq_binding "$LANE" "$TASK" "$CASE_ID" "$MQ_MESSAGE_ID")" || {
+        echo "BLOCKED: authority-bearing dispatch lacks durable MQ binding ($MQ_CHECK_OUTPUT)" >&2
+        exit 1
+    }
+    DURABLE_MQ_BOUND=true
+    DURABLE_MQ_REASON="$MQ_CHECK_OUTPUT"
+    echo "OK: $MQ_CHECK_OUTPUT"
+else
+    ADVISORY_ONLY=true
+    if [[ -n "$CASE_ID" ]]; then
+        DURABLE_MQ_REASON="advisory_only_operator_requested"
+    else
+        DURABLE_MQ_REASON="advisory_only_no_authority_case"
+    fi
+    echo "ADVISORY_ONLY: $DURABLE_MQ_REASON"
+fi
+
 # Build dispatch ID
 DISPATCH_ID="DISPATCH-${DISPATCHER}-$(date -u +%Y%m%dT%H%M%SZ)"
 TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -185,6 +299,8 @@ echo "  dispatch_id: $DISPATCH_ID"
 echo "  target:      $LANE ($PLATFORM)"
 echo "  task:        ${TASK:-<none>}"
 echo "  case:        ${CASE_ID:-<none>}"
+echo "  mq:          ${DURABLE_MQ_REASON}"
+echo "  advisory:    ${ADVISORY_ONLY}"
 echo "  mode:        $MODE"
 echo "  reason:      ${REASON:-<none>}"
 
@@ -205,6 +321,9 @@ receipt = {
     'target_platform': '$PLATFORM',
     'task_id': '${TASK}' or None,
     'authority_case_id': '${CASE_ID}' or None,
+    'durable_mq_dispatch_bound': '${DURABLE_MQ_BOUND}' == 'true',
+    'advisory_only': '${ADVISORY_ONLY}' == 'true',
+    'durable_mq_reason': '${DURABLE_MQ_REASON}',
     'workstream_mode': '$MODE',
     'reason': '${REASON}',
     'outcome': 'dispatched',

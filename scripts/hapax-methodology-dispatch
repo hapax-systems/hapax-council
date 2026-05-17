@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -191,6 +192,14 @@ class Validation:
     exempt_read_only: bool = False
 
 
+@dataclass(frozen=True)
+class DurableDispatchBinding:
+    ok: bool
+    advisory_only: bool
+    reason: str
+    message_id: str | None = None
+
+
 def now_utc() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -318,6 +327,117 @@ def check_worktree_cc_task_tool_guards(worktree: Path) -> tuple[bool, str]:
     if not close_ok:
         return False, close_reason
     return True, f"{claim_reason}; {close_reason}"
+
+
+def _relay_mq_db_path() -> Path:
+    return Path(
+        os.environ.get(
+            "HAPAX_RELAY_MQ_DB",
+            str(Path.home() / ".cache" / "hapax" / "relay" / "messages.db"),
+        )
+    ).expanduser()
+
+
+def _parse_mq_datetime(raw: object) -> datetime | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+def check_durable_dispatch_binding(
+    *,
+    task_id: str,
+    lane: str,
+    validation: Validation,
+    message_id: str | None = None,
+    db_path: Path | None = None,
+) -> DurableDispatchBinding:
+    if validation.exempt_read_only:
+        return DurableDispatchBinding(True, False, "read_only_exempt")
+    if validation.task is None:
+        return DurableDispatchBinding(False, True, "task_missing")
+
+    authority_case = strip_scalar(str(validation.task.fields.get("authority_case", "")))
+    authority_item = strip_scalar(str(validation.task.fields.get("authority_item", "")))
+    if is_nullish(authority_case):
+        return DurableDispatchBinding(False, True, "authority_case_missing")
+
+    db_path = db_path or _relay_mq_db_path()
+    if not db_path.exists():
+        return DurableDispatchBinding(False, True, "durable_mq_database_missing")
+
+    recipient = lane.strip().lower().replace("_", "-")
+    now = datetime.now(UTC)
+    params: dict[str, object] = {
+        "authority_case": authority_case,
+        "recipient": recipient,
+        "task_id": task_id,
+        "authority_item": authority_item,
+    }
+    message_clause = ""
+    if message_id:
+        message_clause = "AND m.message_id = :message_id"
+        params["message_id"] = message_id
+
+    try:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only = ON")
+            conn.execute("PRAGMA busy_timeout = 1000")
+            rows = conn.execute(
+                f"""
+                SELECT m.message_id, m.authority_case, m.authority_item, m.subject,
+                       m.stale_after, m.expires_at, r.recipient, r.state
+                FROM messages m
+                JOIN recipients r ON r.message_id = m.message_id
+                WHERE m.message_type = 'dispatch'
+                  AND m.authority_case = :authority_case
+                  AND r.recipient = :recipient
+                  {message_clause}
+                  AND (
+                      m.authority_item = :task_id
+                      OR m.authority_item = :authority_item
+                      OR m.subject = :task_id
+                  )
+                ORDER BY m.id DESC
+                LIMIT 5
+                """,
+                params,
+            ).fetchall()
+    except sqlite3.Error as exc:
+        return DurableDispatchBinding(False, True, f"durable_mq_unreadable:{exc}")
+
+    if not rows:
+        return DurableDispatchBinding(False, True, "durable_mq_authority_binding_missing")
+
+    fallback_reason = "durable_mq_freshness_unknown"
+    for row in rows:
+        stale_after = _parse_mq_datetime(row["stale_after"])
+        expires_at = _parse_mq_datetime(row["expires_at"])
+        if stale_after is None or expires_at is None:
+            fallback_reason = "durable_mq_freshness_unknown"
+            continue
+        if expires_at < now:
+            fallback_reason = "durable_mq_dispatch_expired"
+            continue
+        if stale_after < now:
+            fallback_reason = "durable_mq_dispatch_stale"
+            continue
+        return DurableDispatchBinding(
+            True,
+            False,
+            "durable_mq_dispatch_bound",
+            message_id=str(row["message_id"]),
+        )
+    return DurableDispatchBinding(False, True, fallback_reason)
 
 
 def validate_task(
@@ -470,6 +590,7 @@ def write_receipt(
     launch_returncode: int | None = None,
     route_decision: RouteDecision | None = None,
     route_decision_receipt_path: Path | None = None,
+    durable_binding: DurableDispatchBinding | None = None,
 ) -> Path:
     ledger_dir = orchestration_ledger_dir()
     ledger_dir.mkdir(parents=True, exist_ok=True)
@@ -497,6 +618,11 @@ def write_receipt(
         "launch_returncode": launch_returncode,
         "prompt": prompt,
     }
+    if durable_binding is not None:
+        record["durable_mq_dispatch_bound"] = durable_binding.ok
+        record["advisory_only"] = durable_binding.advisory_only
+        record["durable_mq_reason"] = durable_binding.reason
+        record["durable_mq_message_id"] = durable_binding.message_id
     if route_decision is not None:
         record.update(route_decision_receipt_payload(route_decision))
         record["route_decision_receipt_path"] = (
@@ -801,6 +927,10 @@ def main(argv: list[str] | None = None) -> int:
             "non-full routes hold."
         ),
     )
+    parser.add_argument(
+        "--mq-message-id",
+        help="Durable relay MQ dispatch message id to bind this governed dispatch to",
+    )
     args = parser.parse_args(argv)
     args.profile = normalize_profile(args.platform, args.profile)
 
@@ -898,6 +1028,39 @@ def main(argv: list[str] | None = None) -> int:
         return 10
 
     assert route is not None
+    durable_binding = check_durable_dispatch_binding(
+        task_id=args.task,
+        lane=args.lane,
+        validation=validation,
+        message_id=args.mq_message_id,
+    )
+    if not durable_binding.ok and args.launch:
+        reason = f"durable MQ authority binding required: {durable_binding.reason}"
+        blocked = Validation(
+            False,
+            reason,
+            validation.task,
+            validation.parent_spec_path,
+            validation.exempt_read_only,
+        )
+        if not args.no_receipt:
+            write_receipt(
+                task_id=args.task,
+                lane=args.lane,
+                platform=args.platform,
+                mode=args.mode,
+                profile=args.profile,
+                route=route,
+                validation=blocked,
+                prompt=None,
+                launched=False,
+                route_decision=route_decision,
+                route_decision_receipt_path=route_decision_receipt_path,
+                durable_binding=durable_binding,
+            )
+        print(f"BLOCKED: {reason}", file=sys.stderr)
+        return 10
+
     prompt = build_prompt(
         args.task,
         args.lane,
@@ -909,6 +1072,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.print_prompt:
+        if durable_binding.advisory_only:
+            print(f"ADVISORY_ONLY: {durable_binding.reason}")
         print(prompt)
 
     if args.launch:
@@ -946,6 +1111,7 @@ def main(argv: list[str] | None = None) -> int:
                 launch_returncode=rc,
                 route_decision=route_decision,
                 route_decision_receipt_path=route_decision_receipt_path,
+                durable_binding=durable_binding,
             )
         return rc
 
@@ -962,8 +1128,11 @@ def main(argv: list[str] | None = None) -> int:
             launched=False,
             route_decision=route_decision,
             route_decision_receipt_path=route_decision_receipt_path,
+            durable_binding=durable_binding,
         )
 
+    if durable_binding.advisory_only:
+        print(f"advisory_only: {durable_binding.reason}")
     print(f"eligible: {args.task} -> {args.platform}/{args.mode}/{args.profile}/{args.lane}")
     return 0
 
