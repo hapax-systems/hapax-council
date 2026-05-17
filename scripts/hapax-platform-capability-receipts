@@ -1,0 +1,409 @@
+#!/usr/bin/env python3
+"""Refresh local platform capability receipts without persisting secrets."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.platform_capability_receipts import (  # noqa: E402
+    DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
+    PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
+    CliEvidence,
+    ConfigEvidence,
+    EvidenceStatus,
+    PlatformCapabilityReceipt,
+    ProviderDocsEvidence,
+    SurfaceEvidence,
+    ToolEvidence,
+    WrapperEvidence,
+    receipt_reference,
+)
+from shared.platform_capability_registry import (  # noqa: E402
+    PLATFORM_CAPABILITY_REGISTRY,
+    PlatformCapabilityRoute,
+    load_platform_capability_registry,
+)
+
+BINARY_BY_PLATFORM = {
+    "antigrav": "antigravity",
+    "claude": "claude",
+    "codex": "codex",
+    "gemini": "gemini",
+    "vibe": "vibe",
+}
+VERSION_ARGS_BY_PLATFORM = {
+    "antigrav": ["--version"],
+    "claude": ["--version"],
+    "codex": ["--version"],
+    "gemini": ["--version"],
+    "vibe": ["--version"],
+}
+CONFIG_REFS_BY_PLATFORM = {
+    "antigrav": [
+        "~/.cache/hapax/relay/onboarding-antigrav.md",
+        ".agents/rules",
+        ".agents/workflows",
+        ".agent",
+    ],
+    "claude": ["~/.claude/settings.json", "~/.claude.json", "CLAUDE.md"],
+    "codex": ["~/.codex/config.toml", "~/.codex/AGENTS.md", "AGENTS.md"],
+    "gemini": ["~/.gemini/settings.json", "~/.gemini/GEMINI.md", "GEMINI.md"],
+    "vibe": [
+        "~/.vibe/config.toml",
+        "~/.vibe/.env",
+        "~/.cache/hapax/relay/onboarding-vbe.md",
+    ],
+}
+SECRETISH_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|credential)([=:])(\S+)")
+
+
+def parse_utc(value: str) -> datetime:
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(raw)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def iso_z(value: datetime) -> str:
+    return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def safe_text(value: str | None, *, limit: int = 500) -> str | None:
+    if value is None:
+        return None
+    home = str(Path.home())
+    sanitized = value.replace("\x00", "").replace(home, "~")
+    sanitized = SECRETISH_RE.sub(r"\1\2<redacted>", sanitized)
+    sanitized = " ".join(sanitized.split())
+    if len(sanitized) > limit:
+        return sanitized[: limit - 3] + "..."
+    return sanitized
+
+
+def display_path(path: Path) -> str:
+    try:
+        return str(path.expanduser().resolve()).replace(str(Path.home()), "~")
+    except OSError:
+        return str(path.expanduser()).replace(str(Path.home()), "~")
+
+
+def resolve_ref(path_ref: str) -> Path:
+    expanded = Path(path_ref).expanduser()
+    if expanded.is_absolute():
+        return expanded
+    return REPO_ROOT / expanded
+
+
+def launcher_command_path(route: PlatformCapabilityRoute) -> Path:
+    try:
+        command = shlex.split(route.sanctioned_wrapper)[0]
+    except (IndexError, ValueError):
+        command = route.sanctioned_wrapper.split()[0]
+    return resolve_ref(command)
+
+
+def sha256_file(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def observe_cli(platform: str, *, timeout: float) -> CliEvidence:
+    binary = BINARY_BY_PLATFORM[platform]
+    resolved = shutil.which(binary)
+    if resolved is None:
+        return CliEvidence(
+            binary=binary,
+            available=False,
+            error=f"{binary} not found on PATH",
+        )
+    command = [resolved, *VERSION_ARGS_BY_PLATFORM[platform]]
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            env={**os.environ, "NO_COLOR": "1"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return CliEvidence(binary=binary, available=False, error=safe_text(str(exc)))
+    output = safe_text(result.stdout or result.stderr)
+    if result.returncode != 0:
+        return CliEvidence(
+            binary=binary,
+            available=False,
+            version=output,
+            error=safe_text(result.stderr or result.stdout or f"exit {result.returncode}"),
+        )
+    return CliEvidence(binary=binary, available=True, version=output)
+
+
+def observe_wrapper(route: PlatformCapabilityRoute) -> WrapperEvidence:
+    path = launcher_command_path(route)
+    return WrapperEvidence(
+        path=display_path(path),
+        exists=path.exists(),
+        executable=os.access(path, os.X_OK),
+        sha256=sha256_file(path),
+    )
+
+
+def config_refs(platform: str) -> list[ConfigEvidence]:
+    refs: list[ConfigEvidence] = []
+    for path_ref in CONFIG_REFS_BY_PLATFORM[platform]:
+        path = resolve_ref(path_ref)
+        refs.append(ConfigEvidence(path=display_path(path), exists=path.exists()))
+    return refs
+
+
+def provider_doc_refs(routes: list[PlatformCapabilityRoute]) -> list[str]:
+    refs: list[str] = []
+    for route in routes:
+        refs.extend(route.freshness.evidence.provider_docs.evidence_refs)
+    return list(dict.fromkeys(refs))
+
+
+def tool_state(routes: list[PlatformCapabilityRoute]) -> list[ToolEvidence]:
+    by_tool: dict[str, ToolEvidence] = {}
+    for route in routes:
+        for tool in route.tool_state:
+            by_tool.setdefault(
+                tool.tool_id,
+                ToolEvidence(
+                    tool_id=tool.tool_id,
+                    available=tool.available,
+                    authority_use=[item.value for item in tool.authority_use],
+                    evidence_ref=f"platform-capability-registry:{route.route_id}:tool:{tool.tool_id}",
+                ),
+            )
+    return [by_tool[tool_id] for tool_id in sorted(by_tool)]
+
+
+def surface_evidence(
+    *,
+    status: EvidenceStatus,
+    source: str,
+    observed_at: datetime,
+    stale_after: str,
+    evidence_refs: list[str] | None = None,
+    reason_codes: list[str] | None = None,
+) -> SurfaceEvidence:
+    return SurfaceEvidence(
+        status=status,
+        source=source,
+        observed_at=observed_at,
+        stale_after=stale_after,
+        evidence_refs=evidence_refs or [],
+        reason_codes=reason_codes or [],
+    )
+
+
+def build_receipt(
+    *,
+    platform: str,
+    routes: list[PlatformCapabilityRoute],
+    observed_at: datetime,
+    stale_after: str,
+    provider_docs_stale_after: str,
+    timeout: float,
+) -> PlatformCapabilityReceipt:
+    primary_route = routes[0]
+    cli = observe_cli(platform, timeout=timeout)
+    wrapper = observe_wrapper(primary_route)
+    route_ids = sorted(route.route_id for route in routes)
+    receipt_id = f"{platform}-{observed_at.strftime('%Y%m%dT%H%M%SZ')}"
+    capability_reasons: list[str] = []
+    capability_refs: list[str] = []
+    if cli.available:
+        capability_refs.append(f"local:{platform}:cli-version:{cli.version or 'available'}")
+    else:
+        capability_reasons.append("cli_missing_or_unusable")
+    if wrapper.exists and wrapper.sha256:
+        capability_refs.append(f"local:{wrapper.path}:sha256:{wrapper.sha256}")
+    else:
+        capability_reasons.append("sanctioned_wrapper_missing_or_unreadable")
+    capability_status = (
+        EvidenceStatus.OBSERVED if not capability_reasons else EvidenceStatus.BLOCKED
+    )
+    resource_status = EvidenceStatus.OBSERVED if wrapper.exists else EvidenceStatus.MISSING
+    resource_refs = [f"local:{wrapper.path}:exists:{str(wrapper.exists).lower()}"]
+    quota_reason = (
+        "quota_telemetry_unknown" if platform == "antigrav" else "account_live_quota_receipt_absent"
+    )
+    quota = surface_evidence(
+        status=EvidenceStatus.UNOBSERVABLE,
+        source="local_receipt_probe",
+        observed_at=observed_at,
+        stale_after="15m",
+        evidence_refs=[f"local:{platform}:quota-probe:unobservable"],
+        reason_codes=[quota_reason],
+    )
+    provider_refs = provider_doc_refs(routes)
+    if not provider_refs:
+        provider_refs = [f"platform-capability-registry:{platform}:provider-docs:absent"]
+    receipt = PlatformCapabilityReceipt(
+        receipt_id=receipt_id,
+        platform=platform,
+        routes=route_ids,
+        observed_at=observed_at,
+        stale_after=stale_after,
+        cli=cli,
+        wrapper=wrapper,
+        config_refs=config_refs(platform),
+        tool_state=tool_state(routes),
+        mcp_status=sorted({mcp for route in routes for mcp in route.tool_access.mcp}),
+        capability=surface_evidence(
+            status=capability_status,
+            source="local_receipt_probe",
+            observed_at=observed_at,
+            stale_after=stale_after,
+            evidence_refs=capability_refs,
+            reason_codes=capability_reasons,
+        ),
+        resource=surface_evidence(
+            status=resource_status,
+            source="local_receipt_probe",
+            observed_at=observed_at,
+            stale_after=stale_after,
+            evidence_refs=resource_refs,
+            reason_codes=[] if resource_status is EvidenceStatus.OBSERVED else ["wrapper_missing"],
+        ),
+        quota=quota,
+        provider_docs=ProviderDocsEvidence(
+            refs=provider_refs,
+            fetched_at=observed_at,
+            stale_after=provider_docs_stale_after,
+            fetch_status=EvidenceStatus.OBSERVED,
+        ),
+        known_unknowns=[
+            "Account-live subscription quota is not exposed by the local receipt probe.",
+            "Receipt command records config paths and existence only; it never reads secret values.",
+        ],
+    )
+    receipt.capability.evidence_refs.append(receipt_reference(receipt))
+    receipt.resource.evidence_refs.append(receipt_reference(receipt))
+    receipt.quota.evidence_refs.append(receipt_reference(receipt))
+    return receipt
+
+
+def platform_routes(
+    registry_routes: list[PlatformCapabilityRoute],
+) -> dict[str, list[PlatformCapabilityRoute]]:
+    routes: dict[str, list[PlatformCapabilityRoute]] = {}
+    for route in registry_routes:
+        platform = route.platform.value
+        if platform in BINARY_BY_PLATFORM:
+            routes.setdefault(platform, []).append(route)
+    return routes
+
+
+def write_receipt(receipt: PlatformCapabilityReceipt, receipt_dir: Path) -> Path:
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    path = receipt_dir / f"{receipt.platform}.json"
+    path.write_text(
+        json.dumps(receipt.model_dump(mode="json"), indent=2, sort_keys=True), encoding="utf-8"
+    )
+    return path
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--registry", type=Path, default=PLATFORM_CAPABILITY_REGISTRY)
+    parser.add_argument(
+        "--receipt-dir",
+        type=Path,
+        default=Path(
+            os.environ.get(
+                PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
+                str(DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR),
+            )
+        ),
+    )
+    parser.add_argument("--platform", action="append", default=[])
+    parser.add_argument("--all", action="store_true", help="Refresh every known coding platform")
+    parser.add_argument("--now", help="Override observation time as ISO-8601 UTC")
+    parser.add_argument("--stale-after", default="24h")
+    parser.add_argument("--provider-docs-stale-after", default="30d")
+    parser.add_argument("--timeout", type=float, default=5.0)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+
+    observed_at = parse_utc(args.now) if args.now else datetime.now(UTC).replace(microsecond=0)
+    registry = load_platform_capability_registry(args.registry)
+    routes_by_platform = platform_routes(registry.routes)
+    selected = sorted(routes_by_platform) if args.all or not args.platform else args.platform
+    unknown = sorted(set(selected) - set(routes_by_platform))
+    if unknown:
+        print(f"unknown platform(s): {', '.join(unknown)}", file=sys.stderr)
+        return 2
+
+    outputs: list[dict[str, Any]] = []
+    for platform in selected:
+        receipt = build_receipt(
+            platform=platform,
+            routes=routes_by_platform[platform],
+            observed_at=observed_at,
+            stale_after=args.stale_after,
+            provider_docs_stale_after=args.provider_docs_stale_after,
+            timeout=args.timeout,
+        )
+        path = None if args.dry_run else write_receipt(receipt, args.receipt_dir)
+        outputs.append(
+            {
+                "platform": platform,
+                "receipt_id": receipt.receipt_id,
+                "path": str(path) if path else None,
+                "cli_available": receipt.cli.available,
+                "wrapper_exists": receipt.wrapper.exists,
+                "quota_status": receipt.quota.status.value,
+                "quota_reason_codes": receipt.quota.reason_codes,
+            }
+        )
+
+    payload = {
+        "ok": True,
+        "observed_at": iso_z(observed_at),
+        "receipt_dir": str(args.receipt_dir),
+        "dry_run": args.dry_run,
+        "receipts": outputs,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        for item in outputs:
+            target = item["path"] or "<dry-run>"
+            print(
+                f"{item['platform']}: wrote {target} "
+                f"cli={item['cli_available']} wrapper={item['wrapper_exists']} "
+                f"quota={item['quota_status']}"
+            )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
