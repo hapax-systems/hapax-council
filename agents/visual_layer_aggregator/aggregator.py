@@ -1177,7 +1177,29 @@ class VisualLayerAggregator:
         except Exception:
             pass  # eigenform logging is observational — never block the VLA
 
+        try:
+            self._write_density_field(stimmung_stance)
+        except Exception:
+            pass  # density field is observational — never block the VLA
+
         return state
+
+    def _write_density_field(self, stimmung_stance: str) -> None:
+        """Write density field state to /dev/shm for downstream consumers."""
+        from agents.density_field import compute_density_state
+
+        state = compute_density_state(
+            perception_data=self._last_perception_data,
+            stimmung_stance=stimmung_stance,
+            audio_energy=self._audio_energy,
+            epoch=self._epoch,
+        )
+        out_dir = Path("/dev/shm/hapax-density-field")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file = out_dir / "state.json"
+        tmp = out_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        tmp.rename(out_file)
 
     def _read_watershed_events(self) -> list[WatershedEvent]:
         """Read and prune watershed events from shared file."""
