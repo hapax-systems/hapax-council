@@ -288,6 +288,13 @@ def write_perception_state(
         elif desk_act == "tapping":
             flow_modifier += 0.05
 
+    # Non-vision flow floor: keyboard/desk prove engagement even without cameras
+    if bool(_bval("real_keyboard_active", False)):
+        flow_modifier = max(flow_modifier, 0.15)
+    _desk_flow = str(_bval("desk_activity", ""))
+    if _desk_flow and _desk_flow not in ("idle", ""):
+        flow_modifier = max(flow_modifier, 0.10)
+
     flow_score = min(1.0, base_flow + flow_modifier)
     if flow_score >= 0.6:
         flow_state = "active"

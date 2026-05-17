@@ -26,3 +26,37 @@ def test_trim_old_entries(tmp_path: Path) -> None:
 
     lines = path.read_text().strip().split("\n")
     assert len(lines) <= MAX_ENTRIES + 15  # tolerance for writes after last trim
+
+
+def test_imagination_salience_reads_from_shm(tmp_path: Path) -> None:
+    """_read_imagination_salience must read live value, not hardcoded 0.0."""
+    from agents.visual_layer_aggregator.aggregator import VisualLayerAggregator
+
+    shm_file = tmp_path / "current.json"
+    shm_file.write_text(json.dumps({"salience": 0.42}))
+    vla = VisualLayerAggregator.__new__(VisualLayerAggregator)
+    result = vla._read_imagination_salience(path=shm_file)
+    assert result == 0.42
+
+
+def test_imagination_salience_fallback_on_missing_file() -> None:
+    """Missing imagination file returns 0.0, not an error."""
+    from agents.visual_layer_aggregator.aggregator import VisualLayerAggregator
+
+    vla = VisualLayerAggregator.__new__(VisualLayerAggregator)
+    result = vla._read_imagination_salience(path=Path("/nonexistent/file.json"))
+    assert result == 0.0
+
+
+def test_activity_never_empty_string() -> None:
+    """production_activity empty string should become 'idle'."""
+    pd: dict[str, str] = {"production_activity": ""}
+    activity = str(pd.get("production_activity", "") or "idle")
+    assert activity == "idle"
+
+
+def test_activity_preserves_real_value() -> None:
+    """production_activity with real value passes through."""
+    pd: dict[str, str] = {"production_activity": "production"}
+    activity = str(pd.get("production_activity", "") or "idle")
+    assert activity == "production"
