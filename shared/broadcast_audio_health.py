@@ -344,6 +344,15 @@ def resolve_broadcast_audio_health(
         service_status_probe=service_probe,
     )
 
+    # Demote loudness_out_of_band to warning when ducker is also failing —
+    # the ducker failure is the root cause; loudness is a downstream symptom.
+    ducker_blocking = any(r.code.startswith("audio_ducker_") for r in blocking)
+    if ducker_blocking:
+        demoted = [r for r in blocking if r.code == "loudness_out_of_band"]
+        if demoted:
+            blocking = [r for r in blocking if r.code != "loudness_out_of_band"]
+            warnings.extend(demoted)
+
     safe = not blocking
     status = _status_for(safe=safe, blocking=blocking, warnings=warnings)
     return BroadcastAudioHealth(
@@ -986,10 +995,20 @@ def _evaluate_audio_ducker_state(
         [] if isinstance(blockers_raw, list) else ["audio_ducker_blockers_malformed"]
     )
     all_blockers = [*blockers, *malformed_blockers]
-    commanded_music = _number_or_none(data.get("commanded_music_duck_gain"))
-    actual_music = _number_or_none(data.get("actual_music_duck_gain"))
-    commanded_tts = _number_or_none(data.get("commanded_tts_duck_gain"))
-    actual_tts = _number_or_none(data.get("actual_tts_duck_gain"))
+    music_duck_state = data.get("music_duck") if isinstance(data.get("music_duck"), dict) else {}
+    tts_duck_state = data.get("tts_duck") if isinstance(data.get("tts_duck"), dict) else {}
+    commanded_music = _number_or_none(
+        data.get("commanded_music_duck_gain") or music_duck_state.get("commanded_gain")
+    )
+    actual_music = _number_or_none(
+        data.get("actual_music_duck_gain") or music_duck_state.get("actual_gain")
+    )
+    commanded_tts = _number_or_none(
+        data.get("commanded_tts_duck_gain") or tts_duck_state.get("commanded_gain")
+    )
+    actual_tts = _number_or_none(
+        data.get("actual_tts_duck_gain") or tts_duck_state.get("actual_gain")
+    )
     idle_retired_readback = (
         data.get("trigger_cause") in (None, "none")
         and commanded_music == 1.0
@@ -1190,7 +1209,11 @@ def _evaluate_voice_output_witness(
         # gate closed creates an infinite loop.  Only block on
         # genuinely independent failure signals.
         drop_reason = data.get("blocker_drop_reason") if isinstance(data, dict) else None
-        if drop_reason == "audio_safe_for_broadcast_false":
+        _NON_BLOCKING_DROP_REASONS = (
+            "audio_safe_for_broadcast_false",
+            "broadcast_intent_missing",
+        )
+        if drop_reason in _NON_BLOCKING_DROP_REASONS:
             record["self_referential_drop"] = True
         else:
             _block(
