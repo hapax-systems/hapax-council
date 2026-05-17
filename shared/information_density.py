@@ -318,6 +318,20 @@ class InformationDensityField:
             return None
 
 
+def _digamma(x: float) -> float:
+    """Digamma function approximation (Bernardo 1976)."""
+    if x <= 0:
+        return 0.0
+    result = 0.0
+    while x < 6:
+        result -= 1.0 / x
+        x += 1.0
+    result += math.log(x) - 0.5 / x
+    x2 = 1.0 / (x * x)
+    result -= x2 * (1.0 / 12 - x2 * (1.0 / 120 - x2 / 252))
+    return result
+
+
 def _kl_nig(
     mu1: float,
     kappa1: float,
@@ -337,7 +351,7 @@ def _kl_nig(
         t1 = 0.5 * math.log(kappa0 / kappa1)
         t2 = alpha1 * math.log(beta0 / beta1) if beta0 > 0 and beta1 > 0 else 0.0
         t3 = math.lgamma(alpha1) - math.lgamma(alpha0)
-        t4 = (alpha0 - alpha1) * (math.digamma(alpha0) if hasattr(math, "digamma") else 0.0)
+        t4 = (alpha0 - alpha1) * _digamma(alpha0)
         t5 = alpha0 * (beta1 - beta0) / beta0
         t6 = alpha0 * kappa1 * (mu1 - mu0) ** 2 / (2 * beta0)
         t7 = 0.5 * (kappa1 / kappa0 - 1)
