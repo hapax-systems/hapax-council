@@ -315,6 +315,13 @@ fn compute_manifest_hash(plan_data: &str) -> String {
     format!("{:016x}", h.finish())
 }
 
+fn retain_temporal_priming_for_required_names(
+    primed: &mut HashSet<String>,
+    required_temporal_names: &HashSet<String>,
+) {
+    primed.retain(|name| required_temporal_names.contains(name));
+}
+
 /// LRR Phase 0 item 4 / FINDING-Q step 2 — validate every pass's shader
 /// against naga BEFORE the wgpu hot-reload swap.
 ///
@@ -859,11 +866,12 @@ impl DynamicPipeline {
 
         self.temporal_textures
             .retain(|name, _| required_temporal_names.contains(name));
-        self.temporal_textures_primed
-            .retain(|name| required_temporal_names.contains(name));
+        retain_temporal_priming_for_required_names(
+            &mut self.temporal_textures_primed,
+            &required_temporal_names,
+        );
         for name in &required_temporal_names {
             self.ensure_temporal_texture(device, name);
-            self.temporal_textures_primed.remove(name);
         }
 
         // Build passes
@@ -2946,6 +2954,39 @@ mod tests {
         let a = compute_manifest_hash("hello world");
         let b = compute_manifest_hash("hello world!");
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn temporal_accumulator_priming_survives_reused_hot_reload_nodes() {
+        let required_temporal_names = HashSet::from([
+            "fb".to_string(),
+            "slitscan".to_string(),
+            "fluid_sim".to_string(),
+        ]);
+        let mut primed = HashSet::from([
+            "fb".to_string(),
+            "slitscan".to_string(),
+            "retired_effect".to_string(),
+        ]);
+
+        retain_temporal_priming_for_required_names(&mut primed, &required_temporal_names);
+
+        assert!(
+            primed.contains("fb"),
+            "reused feedback accumulator must not be cleared on every plan hot reload"
+        );
+        assert!(
+            primed.contains("slitscan"),
+            "reused temporal effect accumulator must remain continuous across plan hot reload"
+        );
+        assert!(
+            !primed.contains("retired_effect"),
+            "retired accumulator priming should not survive after the node leaves the plan"
+        );
+        assert!(
+            !primed.contains("fluid_sim"),
+            "new temporal nodes start unprimed and get explicitly initialized"
+        );
     }
 
     #[test]
