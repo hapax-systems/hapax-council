@@ -65,7 +65,7 @@ def call_resident_command_r(
     chat_url: str | None = None,
     max_tokens: int = 8192,
     temperature: float = 0.7,
-    timeout_s: float = 300.0,
+    timeout_s: float = 30.0,
 ) -> str:
     """Call TabbyAPI only after verifying resident Command-R.
 
