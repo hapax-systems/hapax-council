@@ -148,6 +148,7 @@ def route(
     elaboration_requested: bool = False,
     has_tools: bool = True,
     prev_tier: int = -1,
+    interview_mode: bool = False,
 ) -> RoutingDecision:
     """Classify an utterance to a model tier.
 
@@ -205,6 +206,16 @@ def route(
                     reason="phatic",
                     canned_response=response,
                 )
+
+    # ── Layer 2.5: Interview mode — bias LOCAL for <2s response ──
+    if interview_mode and not guest_mode and consent_phase == "none":
+        if not any(p.search(text) for p in _ESCALATION_PATTERNS):
+            return RoutingDecision(
+                tier=ModelTier.LOCAL,
+                model=TIER_ROUTES[ModelTier.LOCAL],
+                reason="interview_mode_local_bias",
+                canned_response="",
+            )
 
     # ── Layer 3: Escalation signals (push tier up) ──────────────
 
