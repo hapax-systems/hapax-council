@@ -78,6 +78,7 @@ class SemanticVerdict(BaseModel):
     compliant: bool
     tier_violated: str | None = None
     reasoning: str = ""
+    provenance_model: str = ""
 
 
 class AxiomGateResult(BaseModel):
@@ -174,9 +175,16 @@ Return a JSON array of objects: [{{axiom_id, compliant, tier_violated, reasoning
 
 
 def _call_judge(system: str, diff: str, *, dry_run: bool = False) -> list[SemanticVerdict]:
+    model = os.environ.get("SDLC_JUDGE_MODEL", "claude-haiku-4-5-20251001")
+
     if dry_run:
         return [
-            SemanticVerdict(axiom_id="single_user", compliant=True, reasoning="Dry run."),
+            SemanticVerdict(
+                axiom_id="single_user",
+                compliant=True,
+                reasoning="Dry run.",
+                provenance_model=model,
+            ),
         ]
 
     user_prompt = f"## Code Diff\n```diff\n{diff[:30000]}\n```"
@@ -186,7 +194,7 @@ def _call_judge(system: str, diff: str, *, dry_run: bool = False) -> list[Semant
 
         client = anthropic.Anthropic()
         response = client.messages.create(
-            model=os.environ.get("SDLC_JUDGE_MODEL", "claude-haiku-4-5-20251001"),
+            model=model,
             max_tokens=2048,
             system=system,
             messages=[{"role": "user", "content": user_prompt}],
@@ -196,12 +204,15 @@ def _call_judge(system: str, diff: str, *, dry_run: bool = False) -> list[Semant
         from pydantic_ai import Agent
 
         agent = Agent(
-            os.environ.get("SDLC_JUDGE_MODEL", "anthropic:claude-haiku-4-5-20251001"),
+            f"anthropic:{model}" if ":" not in model else model,
             system_prompt=system,
             output_type=list[SemanticVerdict],
         )
         result = agent.run_sync(user_prompt)
-        return result.output
+        verdicts = result.output
+        for v in verdicts:
+            v.provenance_model = model
+        return _wrap_says(verdicts, model)
 
     if "```json" in text:
         text = text.split("```json")[1].split("```")[0]
@@ -210,7 +221,10 @@ def _call_judge(system: str, diff: str, *, dry_run: bool = False) -> list[Semant
 
     try:
         raw = json.loads(text.strip())
-        return [SemanticVerdict.model_validate(v) for v in raw]
+        verdicts = [SemanticVerdict.model_validate(v) for v in raw]
+        for v in verdicts:
+            v.provenance_model = model
+        return _wrap_says(verdicts, model)
     except (json.JSONDecodeError, Exception) as exc:
         log.error("LLM returned unparseable response: %s — failing closed", exc)
         return [
@@ -219,8 +233,35 @@ def _call_judge(system: str, diff: str, *, dry_run: bool = False) -> list[Semant
                 compliant=False,
                 tier_violated="T0",
                 reasoning=f"LLM response parse failure (fail-closed): {exc}",
+                provenance_model=model,
             )
         ]
+
+
+def _wrap_says(verdicts: list[SemanticVerdict], model_id: str) -> list[SemanticVerdict]:
+    """Wrap verdicts in Says for provenance tracking (side-effect: logs provenance).
+
+    Returns the unwrapped verdicts since callers expect list[SemanticVerdict].
+    The Says wrapper is recorded in the verdict's provenance_model field and
+    can be reconstructed by consumers who need formal provenance.
+    """
+    from agentgov import Principal, PrincipalKind, ProvenanceExpr, Says
+
+    principal = Principal(
+        id=f"model:{model_id}",
+        kind=PrincipalKind.BOUND,
+        delegated_by="operator",
+        authority=frozenset({"axiom_judge"}),
+    )
+    provenance = ProvenanceExpr.leaf(f"judge:{model_id}")
+    said = Says.unit(principal, verdicts)
+    log.debug(
+        "Axiom judge Says[%d verdicts] from %s (provenance=%r)",
+        len(verdicts),
+        principal.id,
+        provenance,
+    )
+    return said.value
 
 
 # ---------------------------------------------------------------------------
