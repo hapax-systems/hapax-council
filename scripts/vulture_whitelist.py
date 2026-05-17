@@ -140,6 +140,21 @@ from shared.director_world_surface_snapshot import (
 from shared.director_world_surface_snapshot import (
     Freshness as DirectorWorldSurfaceFreshness,
 )
+from shared.formal_governance_runtime import (
+    FormalConstraint as _FormalGovernanceFormalConstraint,
+)
+from shared.formal_governance_runtime import (
+    OperationRecord as _FormalGovernanceOperationRecord,
+)
+from shared.formal_governance_runtime import (
+    RuntimeSource as _FormalGovernanceRuntimeSource,
+)
+from shared.formal_governance_runtime import (
+    export_runtime as _export_formal_governance_runtime,
+)
+from shared.formal_governance_runtime import (
+    template_frontmatter as _formal_constraint_template_frontmatter,
+)
 from shared.format_wcs_requirement_matrix import (
     FormatWCSRequirementMatrix,
     FormatWCSRequirementRow,
@@ -252,6 +267,14 @@ _LivestreamRoleScrimWCSClaimPostureInput._role_state_must_match_scrim_posture
 _LayoutIdentityReport.agreement_count
 _LayoutIdentityReport.participating_count
 _validate_layout_identity
+
+# Formal governance runtime export is invoked by extensionless CLI scripts and
+# Pydantic validator discovery; vulture does not follow those dynamic paths.
+_FormalGovernanceRuntimeSource._aware
+_FormalGovernanceFormalConstraint._contract
+_FormalGovernanceOperationRecord._aware
+_export_formal_governance_runtime
+_formal_constraint_template_frontmatter
 
 # Public-API context manager. Called by the five per-outcome smoke tests
 # (vocal / programme_authoring / director_moves / chat_reactivity /
