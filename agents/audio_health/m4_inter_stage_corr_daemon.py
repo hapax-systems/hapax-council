@@ -44,7 +44,7 @@ DEFAULT_STAGE_PAIRS: list[tuple[str, str]] = [
 
 DEFAULT_PROBE_INTERVAL_S: float = 5.0
 DEFAULT_CAPTURE_DURATION_S: float = 3.0
-DEFAULT_CORRELATION_MIN: float = 0.7
+DEFAULT_CORRELATION_MIN: float = 0.3
 DEFAULT_SILENCE_FLOOR_RMS: float = 1e-4  # skip correlation if both below this
 DEFAULT_BREACH_SUSTAIN_S: float = 10.0
 DEFAULT_SNAPSHOT_PATH: Path = Path("/dev/shm/hapax-audio-health/inter-stage-corr.json")
