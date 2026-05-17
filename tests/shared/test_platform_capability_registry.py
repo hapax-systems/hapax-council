@@ -18,6 +18,7 @@ from shared.platform_capability_registry import (
     PlatformCapabilityRegistry,
     PlatformCapabilityRoute,
     RouteState,
+    build_supply_vector,
     check_registry_freshness,
     load_platform_capability_registry,
 )
@@ -54,6 +55,10 @@ def _mark_fresh(route: dict) -> None:
     route["freshness"]["quota_checked_at"] = "2026-05-09T20:55:00Z"
     route["freshness"]["resource_checked_at"] = "2026-05-09T20:55:00Z"
     route["freshness"]["provider_docs_checked_at"] = "2026-05-09T20:55:00Z"
+    for score in route["capability_scores"].values():
+        score["observed_at"] = "2026-05-09T20:55:00Z"
+    for tool in route["tool_state"]:
+        tool["observed_at"] = "2026-05-09T20:55:00Z"
 
 
 def test_seed_registry_loads_sanctioned_platform_routes() -> None:
@@ -187,3 +192,32 @@ def test_provider_doc_expiry_blocks_route() -> None:
     assert result.ok is False
     assert result.routes[0].errors
     assert "provider_docs stale" in result.routes[0].errors[0]
+
+
+def test_supply_vector_projects_dimensional_scores_and_tool_state() -> None:
+    registry = load_platform_capability_registry()
+    route = registry.require("codex.headless.full")
+
+    supply = build_supply_vector(route, lane_id="cx-green", now=FRESH_NOW)
+
+    assert supply.supply_vector_schema == 1
+    assert supply.route.route_id == "codex.headless.full"
+    assert supply.route.lane_id == "cx-green"
+    assert supply.capability_scores.source_editing.score == 5
+    assert any(tool.tool_id == "local_shell" for tool in supply.tool_state)
+    assert "source" in supply.authority.supported_mutation_surfaces
+
+
+def test_stale_capability_score_field_fails_closed() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route)
+    route["capability_scores"]["source_editing"]["observed_at"] = "2026-05-01T00:00:00Z"
+
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    result = check_registry_freshness(registry, route_ids=["codex.headless.full"], now=FRESH_NOW)
+
+    assert result.ok is False
+    assert any(
+        "capability_scores.source_editing stale" in error for error in result.routes[0].errors
+    )

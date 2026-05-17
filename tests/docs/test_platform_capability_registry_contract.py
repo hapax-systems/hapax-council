@@ -46,6 +46,8 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
         "tool_access",
         "privacy_posture",
         "quality_envelope",
+        "capability_scores",
+        "tool_state",
         "context_limits",
         "telemetry",
         "freshness",
@@ -98,3 +100,17 @@ def test_seed_registry_names_no_dispatcher_policy_integration() -> None:
     forbidden = ("route_choice_enabled", "auto_dispatch_policy", "paid_spend_authorized")
     for token in forbidden:
         assert token not in registry_text
+
+
+def test_seed_registry_records_dimensional_scores_with_evidence() -> None:
+    registry = _json(REGISTRY)
+
+    for route in registry["routes"]:
+        scores = route["capability_scores"]
+        assert set(scores) >= {"grounding", "source_editing", "test_authoring"}
+        for score in scores.values():
+            assert 0 <= score["score"] <= 5
+            assert 0 <= score["confidence"] <= 5
+            assert score["evidence_refs"]
+            assert score["stale_after"]
+        assert route["tool_state"]

@@ -108,6 +108,76 @@
       "type": "string",
       "pattern": "^[1-9][0-9]*[smhd]$"
     },
+    "score_confidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "confidence", "evidence_refs", "observed_at", "stale_after"],
+      "properties": {
+        "score": {"type": "integer", "minimum": 0, "maximum": 5},
+        "confidence": {"type": "integer", "minimum": 0, "maximum": 5},
+        "evidence_refs": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "observed_at": {"$ref": "#/$defs/timestamp_or_null"},
+        "stale_after": {"$ref": "#/$defs/duration"}
+      }
+    },
+    "capability_scores": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grounding",
+        "governance_reasoning",
+        "source_editing",
+        "architecture",
+        "ambiguity_resolution",
+        "long_context",
+        "current_docs_grounding",
+        "multimodal_verification",
+        "runtime_debugging",
+        "test_authoring",
+        "coordination_reliability",
+        "privacy_safety",
+        "public_claim_safety",
+        "local_calibration"
+      ],
+      "properties": {
+        "grounding": {"$ref": "#/$defs/score_confidence"},
+        "governance_reasoning": {"$ref": "#/$defs/score_confidence"},
+        "source_editing": {"$ref": "#/$defs/score_confidence"},
+        "architecture": {"$ref": "#/$defs/score_confidence"},
+        "ambiguity_resolution": {"$ref": "#/$defs/score_confidence"},
+        "long_context": {"$ref": "#/$defs/score_confidence"},
+        "current_docs_grounding": {"$ref": "#/$defs/score_confidence"},
+        "multimodal_verification": {"$ref": "#/$defs/score_confidence"},
+        "runtime_debugging": {"$ref": "#/$defs/score_confidence"},
+        "test_authoring": {"$ref": "#/$defs/score_confidence"},
+        "coordination_reliability": {"$ref": "#/$defs/score_confidence"},
+        "privacy_safety": {"$ref": "#/$defs/score_confidence"},
+        "public_claim_safety": {"$ref": "#/$defs/score_confidence"},
+        "local_calibration": {"$ref": "#/$defs/score_confidence"}
+      }
+    },
+    "tool_authority_use": {
+      "enum": ["read", "write", "execute", "verify"]
+    },
+    "tool_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool_id", "available", "authority_use", "observed_at", "stale_after", "evidence_ref"],
+      "properties": {
+        "tool_id": {"type": "string", "minLength": 1},
+        "available": {"type": "boolean"},
+        "authority_use": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/tool_authority_use"}
+        },
+        "observed_at": {"$ref": "#/$defs/timestamp_or_null"},
+        "stale_after": {"$ref": "#/$defs/duration"},
+        "evidence_ref": {"type": "string", "minLength": 1}
+      }
+    },
     "mutability": {
       "type": "object",
       "additionalProperties": false,
@@ -222,6 +292,8 @@
         "tool_access",
         "privacy_posture",
         "quality_envelope",
+        "capability_scores",
+        "tool_state",
         "context_limits",
         "telemetry",
         "freshness",
@@ -251,6 +323,11 @@
         "tool_access": {"$ref": "#/$defs/tool_access"},
         "privacy_posture": {"$ref": "#/$defs/privacy_posture"},
         "quality_envelope": {"$ref": "#/$defs/quality_envelope"},
+        "capability_scores": {"$ref": "#/$defs/capability_scores"},
+        "tool_state": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/tool_state"}
+        },
         "context_limits": {"$ref": "#/$defs/context_limits"},
         "telemetry": {"$ref": "#/$defs/telemetry"},
         "freshness": {"$ref": "#/$defs/freshness"},

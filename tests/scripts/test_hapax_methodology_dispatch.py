@@ -20,6 +20,10 @@ def _fresh_registry(tmp_path: Path) -> Path:
         route["freshness"]["quota_checked_at"] = checked_at
         route["freshness"]["resource_checked_at"] = checked_at
         route["freshness"]["provider_docs_checked_at"] = checked_at
+        for score in route["capability_scores"].values():
+            score["observed_at"] = checked_at
+        for tool in route["tool_state"]:
+            tool["observed_at"] = checked_at
     path = tmp_path / "fixtures" / "fresh-platform-capability-registry.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -450,6 +454,8 @@ def test_receipt_contains_task_and_authority(tmp_path: Path) -> None:
     assert receipt["parent_spec_path"] == str(spec)
     assert receipt["route_decision_id"].startswith("rd-")
     assert receipt["route_policy_action"] == "launch"
+    assert receipt["dimensional_route_receipt_schema"] == 1
+    assert receipt["dimensional_selected_route_id"] == "claude.headless.full"
 
 
 def test_policy_hold_writes_route_decision_before_prompt_or_launch(tmp_path: Path) -> None:

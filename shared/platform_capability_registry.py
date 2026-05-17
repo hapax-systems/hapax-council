@@ -18,6 +18,8 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from shared.route_metadata_schema import ToolAuthorityUse
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLATFORM_CAPABILITY_REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 
@@ -230,6 +232,137 @@ class Freshness(StrictModel):
         return self
 
 
+class ScoreConfidence(StrictModel):
+    score: int = Field(ge=0, le=5)
+    confidence: int = Field(ge=0, le=5)
+    evidence_refs: list[str] = Field(default_factory=list)
+    observed_at: datetime | None
+    stale_after: str
+
+    @model_validator(mode="after")
+    def _score_evidence_is_freshness_typed(self) -> Self:
+        parse_duration_spec(self.stale_after)
+        if self.confidence > 0 and not self.evidence_refs:
+            raise ValueError("score confidence requires at least one evidence_ref")
+        return self
+
+
+class CapabilityScores(StrictModel):
+    grounding: ScoreConfidence
+    governance_reasoning: ScoreConfidence
+    source_editing: ScoreConfidence
+    architecture: ScoreConfidence
+    ambiguity_resolution: ScoreConfidence
+    long_context: ScoreConfidence
+    current_docs_grounding: ScoreConfidence
+    multimodal_verification: ScoreConfidence
+    runtime_debugging: ScoreConfidence
+    test_authoring: ScoreConfidence
+    coordination_reliability: ScoreConfidence
+    privacy_safety: ScoreConfidence
+    public_claim_safety: ScoreConfidence
+    local_calibration: ScoreConfidence
+
+
+class ToolState(StrictModel):
+    tool_id: str
+    available: bool
+    authority_use: list[ToolAuthorityUse] = Field(default_factory=list)
+    observed_at: datetime | None
+    stale_after: str
+    evidence_ref: str
+
+    @model_validator(mode="after")
+    def _tool_freshness_duration_is_valid(self) -> Self:
+        parse_duration_spec(self.stale_after)
+        return self
+
+
+class ExecutionAccess(StrictModel):
+    local_shell: bool = False
+    browser: bool = False
+    android: bool = False
+    wearos: bool = False
+    gpu: bool = False
+    audio: bool = False
+    video: bool = False
+    docker: bool = False
+    systemd: bool = False
+    network: bool = False
+
+
+class VerificationCapacity(StrictModel):
+    deterministic_tests: bool = False
+    static_checks: bool = False
+    runtime_observation: bool = False
+    screenshot_or_media: bool = False
+    operator_only_handoff: bool = False
+
+
+class SupplyRoute(StrictModel):
+    route_id: str
+    platform: Platform
+    lane_id: str | None = None
+    mode: Mode
+    profile: Profile
+    model_fingerprint: str | None = None
+    launcher_contract: str | None = None
+
+
+class SupplyAuthority(StrictModel):
+    ceiling: str
+    supported_quality_floors: list[QualityFloor] = Field(default_factory=list)
+    supported_mutation_surfaces: list[str] = Field(default_factory=list)
+
+
+class SupplyState(StrictModel):
+    session_state: str = "unknown"
+    worktree_state: str = "unknown"
+    claim_state: str = "unknown"
+    quota_state: str = "unknown"
+    rate_limit_state: str = "unknown"
+    resource_pressure: str = "unknown"
+    model_version_state: str = "unknown"
+
+
+class HistoricalPerformance(StrictModel):
+    calibration_window: str = "unscored"
+    evidence_refs: list[str] = Field(default_factory=list)
+    class_posteriors: dict[str, ScoreConfidence] = Field(default_factory=dict)
+
+
+class OperatorConstraints(StrictModel):
+    allowed: bool = True
+    vetoes: list[str] = Field(default_factory=list)
+    preferences: list[str] = Field(default_factory=list)
+
+
+class SupplyFreshness(StrictModel):
+    observed_at: datetime | None
+    stale_after: str
+    source_refs: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _freshness_duration_is_valid(self) -> Self:
+        parse_duration_spec(self.stale_after)
+        return self
+
+
+class SupplyVector(StrictModel):
+    supply_vector_schema: Literal[1] = 1
+    routing_model_version: Literal["capacity-dimensional-v1"] = "capacity-dimensional-v1"
+    route: SupplyRoute
+    authority: SupplyAuthority
+    capability_scores: CapabilityScores
+    tool_state: list[ToolState] = Field(default_factory=list)
+    execution_access: ExecutionAccess = Field(default_factory=ExecutionAccess)
+    verification_capacity: VerificationCapacity = Field(default_factory=VerificationCapacity)
+    state: SupplyState = Field(default_factory=SupplyState)
+    historical_performance: HistoricalPerformance = Field(default_factory=HistoricalPerformance)
+    operator_constraints: OperatorConstraints = Field(default_factory=OperatorConstraints)
+    freshness: SupplyFreshness
+
+
 class PlatformCapabilityRoute(StrictModel):
     registry_schema: Literal[1] = 1
     route_id: str
@@ -249,6 +382,8 @@ class PlatformCapabilityRoute(StrictModel):
     tool_access: ToolAccess
     privacy_posture: PrivacyPosture
     quality_envelope: QualityEnvelope
+    capability_scores: CapabilityScores
+    tool_state: list[ToolState] = Field(default_factory=list)
     context_limits: ContextLimits
     telemetry: Telemetry
     freshness: Freshness
@@ -482,6 +617,9 @@ def check_route_freshness(
             f"{route.route_id}: resource telemetry source is {route.telemetry.resource_source}"
         )
 
+    errors.extend(_capability_score_errors(route, now=checked_now))
+    errors.extend(_tool_state_errors(route, now=checked_now))
+
     return RouteFreshnessCheck(
         route_id=route.route_id,
         ok=not errors,
@@ -523,6 +661,147 @@ def check_registry_freshness(
     )
 
 
+def _capability_score_errors(route: PlatformCapabilityRoute, *, now: datetime) -> list[str]:
+    errors: list[str] = []
+    score_payload = route.capability_scores.model_dump()
+    for dimension, payload in score_payload.items():
+        observed_at = payload.get("observed_at")
+        stale_after = str(payload.get("stale_after") or "")
+        evidence_refs = payload.get("evidence_refs") or []
+        if not evidence_refs:
+            errors.append(f"{route.route_id}: capability_scores.{dimension} evidence missing")
+        if observed_at is None:
+            errors.append(f"{route.route_id}: capability_scores.{dimension} observed_at missing")
+            continue
+        errors.extend(
+            _timestamp_errors(
+                route_id=route.route_id,
+                surface=f"capability_scores.{dimension}",
+                checked_at=ensure_utc(observed_at)
+                if isinstance(observed_at, datetime)
+                else observed_at,
+                stale_after=stale_after,
+                now=now,
+            )
+        )
+    return errors
+
+
+def _tool_state_errors(route: PlatformCapabilityRoute, *, now: datetime) -> list[str]:
+    errors: list[str] = []
+    for tool in route.tool_state:
+        if tool.observed_at is None:
+            errors.append(f"{route.route_id}: tool_state.{tool.tool_id} observed_at missing")
+            continue
+        errors.extend(
+            _timestamp_errors(
+                route_id=route.route_id,
+                surface=f"tool_state.{tool.tool_id}",
+                checked_at=tool.observed_at,
+                stale_after=tool.stale_after,
+                now=now,
+            )
+        )
+    return errors
+
+
+def _supported_mutation_surfaces(mutability: Mutability) -> list[str]:
+    surfaces = ["none"]
+    for surface in ("vault_docs", "source", "runtime", "public", "provider_spend"):
+        if getattr(mutability, surface):
+            surfaces.append(surface)
+    return surfaces
+
+
+def _execution_access(route: PlatformCapabilityRoute) -> ExecutionAccess:
+    return ExecutionAccess(
+        local_shell=route.tool_access.shell is ShellAccess.FULL,
+        browser=route.tool_access.browser,
+        network=route.tool_access.browser or bool(route.tool_access.mcp),
+    )
+
+
+def _verification_capacity(
+    route: PlatformCapabilityRoute, execution_access: ExecutionAccess
+) -> VerificationCapacity:
+    can_run_shell = route.tool_access.shell is ShellAccess.FULL
+    can_read_shell = route.tool_access.shell in {ShellAccess.FULL, ShellAccess.READ_ONLY}
+    return VerificationCapacity(
+        deterministic_tests=can_run_shell,
+        static_checks=can_run_shell,
+        runtime_observation=can_read_shell,
+        screenshot_or_media=execution_access.browser,
+        operator_only_handoff=route.authority_ceiling
+        in {
+            AuthorityCeiling.FRONTIER_REVIEW_REQUIRED,
+            AuthorityCeiling.READ_ONLY,
+            AuthorityCeiling.SUPPORT_ONLY,
+        },
+    )
+
+
+def _telemetry_state(source: str) -> str:
+    return "unknown" if source in UNKNOWN_TELEMETRY_SOURCES else "available"
+
+
+def _resource_pressure_state(source: str) -> str:
+    return "unknown" if source in UNKNOWN_TELEMETRY_SOURCES else "green"
+
+
+def build_supply_vector(
+    route: PlatformCapabilityRoute,
+    *,
+    lane_id: str | None = None,
+    now: datetime | None = None,
+) -> SupplyVector:
+    """Project an inert registry route into the typed dimensional supply vector."""
+
+    checked_now = ensure_utc(now or datetime.now(UTC))
+    freshness_observed_at = route.freshness.capability_checked_at
+    execution_access = _execution_access(route)
+    return SupplyVector(
+        route=SupplyRoute(
+            route_id=route.route_id,
+            platform=route.platform,
+            lane_id=lane_id,
+            mode=route.mode,
+            profile=route.profile,
+            model_fingerprint=route.model_or_engine,
+            launcher_contract=route.launcher,
+        ),
+        authority=SupplyAuthority(
+            ceiling=route.authority_ceiling.value,
+            supported_quality_floors=route.quality_envelope.eligible_quality_floors,
+            supported_mutation_surfaces=_supported_mutation_surfaces(route.mutability),
+        ),
+        capability_scores=route.capability_scores,
+        tool_state=route.tool_state,
+        execution_access=execution_access,
+        verification_capacity=_verification_capacity(route, execution_access),
+        state=SupplyState(
+            session_state="unknown",
+            worktree_state="unknown",
+            claim_state="unknown",
+            quota_state=_telemetry_state(route.telemetry.quota_source.value),
+            rate_limit_state="unknown",
+            resource_pressure=_resource_pressure_state(route.telemetry.resource_source.value),
+            model_version_state="current"
+            if route.freshness.provider_docs_checked_at is not None
+            else "unknown",
+        ),
+        freshness=SupplyFreshness(
+            observed_at=ensure_utc(freshness_observed_at)
+            if freshness_observed_at is not None
+            else checked_now,
+            stale_after=route.freshness.capability_stale_after,
+            source_refs=[
+                f"platform-capability-registry:{route.route_id}",
+                *route.quality_envelope.explicit_equivalence_records,
+            ],
+        ),
+    )
+
+
 def _load_json_object(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -544,9 +823,13 @@ def load_platform_capability_registry(
 
 
 _DYNAMIC_ENTRYPOINTS = (
+    ScoreConfidence._score_evidence_is_freshness_typed,
+    ToolState._tool_freshness_duration_is_valid,
+    SupplyFreshness._freshness_duration_is_valid,
     Freshness._duration_specs_are_valid,
     PlatformCapabilityRoute._route_contract_fails_closed,
     PlatformCapabilityRegistry._route_set_matches_contract,
+    build_supply_vector,
     check_registry_freshness,
     load_platform_capability_registry,
 )
