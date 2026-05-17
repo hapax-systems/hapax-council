@@ -152,6 +152,7 @@ class ConversationPipeline:
         bridge_engine=None,  # BridgeEngine | None
         experiment_flags: dict[str, bool] | None = None,
         tool_recruitment_gate=None,  # ToolRecruitmentGate | None
+        max_turns: int = _MAX_TURNS,
     ) -> None:
         self.stt = stt
         self.tts = tts_manager
@@ -162,6 +163,7 @@ class ConversationPipeline:
         self.event_log = event_log
         self.buffer = conversation_buffer
         self.timeout_s = timeout_s
+        self._max_turns = max_turns
         self._consent_reader = consent_reader
         self._env_context_fn = env_context_fn
         self._ambient_fn = ambient_fn
@@ -972,8 +974,8 @@ class ConversationPipeline:
             self.state = ConvState.LISTENING
 
         # Check limits
-        if self.turn_count >= _MAX_TURNS:
-            log.info("Max turns reached, ending conversation")
+        if self.turn_count >= self._max_turns:
+            log.info("Max turns (%d) reached, ending conversation", self._max_turns)
             await self.stop()
             return
 
