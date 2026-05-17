@@ -9,12 +9,11 @@ Proves the density computation can distinguish:
 
 from __future__ import annotations
 
-import math
 import unittest
 
 from shared.information_density import (
-    BOCPDModel,
     BayesianSurpriseModel,
+    BOCPDModel,
     EntropyModel,
     InformationDensityField,
     SourceModel,
