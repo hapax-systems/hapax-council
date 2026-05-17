@@ -46,6 +46,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from agents.hapax_daimonion.cpal.tts_permission import (
+    DEFAULT_STIMMUNG_STATE_PATH,
+    resolve_broadcast_tts_permission,
+)
 from shared.broadcast_audio_health import (
     DEFAULT_STATE_PATH as DEFAULT_BROADCAST_AUDIO_HEALTH_PATH,
 )
@@ -232,6 +236,7 @@ def resolve_playback_decision(
     voice_register: VoiceRegister | None = None,
     private_monitor_status_path: Path = DEFAULT_PRIVATE_MONITOR_STATUS_PATH,
     broadcast_audio_health_path: Path = DEFAULT_BROADCAST_AUDIO_HEALTH_PATH,
+    stimmung_state_path: Path = DEFAULT_STIMMUNG_STATE_PATH,
     now: float | None = None,
 ) -> VoicePlaybackDecision:
     """Resolve an impingement-like utterance to an allowed or blocked route.
@@ -292,12 +297,20 @@ def resolve_playback_decision(
         broadcast_audio_health_path,
         now=now,
     )
+    tts_permission = resolve_broadcast_tts_permission(
+        content=content,
+        programme_auth=programme_auth,
+        audio_health=audio_health,
+        stimmung_state_path=stimmung_state_path,
+        eligible_roles=_BROADCAST_ELIGIBLE_ROLES,
+    )
     safety_gate = {
         "context_default": "private_or_drop",
         "explicit_broadcast_intent": intent["present"],
         "broadcast_intent": intent,
         "programme_authorization": programme_auth,
         "private_to_public_bridge": bridge_metadata,
+        "tts_permission": tts_permission.to_json(),
         "audio_safe_for_broadcast": {
             "safe": audio_health.safe,
             "status": str(audio_health.status),
@@ -347,6 +360,17 @@ def resolve_playback_decision(
             reason_code="audio_safe_for_broadcast_false",
             operator_visible_reason=(
                 "Broadcast voice requires audio_safe_for_broadcast.safe=true; playback is blocked."
+            ),
+            safety_gate=safety_gate,
+        )
+    if not tts_permission.allowed:
+        return _blocked_decision(
+            destination=destination,
+            route=route,
+            reason_code=tts_permission.reason_code,
+            operator_visible_reason=(
+                "Broadcast voice permission is below the dynamic audio threshold; "
+                "playback is blocked."
             ),
             safety_gate=safety_gate,
         )
