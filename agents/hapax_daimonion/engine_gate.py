@@ -128,6 +128,63 @@ def apply_tier_gated(
     return result
 
 
+def activate_from_impingement_gated(
+    vocal_chain: Any,
+    impingement: Any,
+    pipeline_score: float,
+    *,
+    writer: str = "director",
+    state_path: Path = DEFAULT_STATE_PATH,
+    now: float | None = None,
+) -> ArbitrationResult:
+    """Gate per-dimension CC emission behind engine ownership.
+
+    Unlike ``apply_tier_gated`` (which transitions the full tier), this
+    gates the fine-grained per-dimension activation that the pipeline
+    recruits. If the engine is held by Mode D (or any higher-priority
+    writer), CCs are suppressed — the vocal chain must not thrash CCs
+    against a vinyl regime.
+
+    Acquires the engine in its CURRENT voice-tier mode (heartbeat
+    refresh) so ownership doesn't lapse during sustained vocal activity.
+    If the engine is in bypass, acquires voice_tier_0 as the baseline.
+    """
+    import time as _time
+
+    from shared.evil_pet_state import EvilPetMode, read_state
+
+    ts = now if now is not None else _time.time()
+    current = read_state(path=state_path, now=ts)
+
+    if current.mode == EvilPetMode.MODE_D and not current.is_stale(ts):
+        log.debug(
+            "activate_from_impingement_gated: blocked by mode_d (writer=%s)",
+            current.writer,
+        )
+        return ArbitrationResult(
+            accepted=False,
+            state=current,
+            reason="blocked_by_mode_d",
+        )
+
+    target = current.mode if current.mode.value.startswith("voice_tier_") else EvilPetMode.VOICE_TIER_0
+    result = acquire_engine(
+        target_mode=target,
+        writer=writer,
+        path=state_path,
+        now=ts,
+    )
+    if not result.accepted:
+        log.debug(
+            "activate_from_impingement_gated: blocked (reason=%s)",
+            result.reason,
+        )
+        return result
+
+    vocal_chain.activate_from_impingement(impingement)
+    return result
+
+
 def activate_mode_d_gated(
     vinyl_chain: Any,
     *,
