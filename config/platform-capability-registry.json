@@ -33,7 +33,10 @@
       "notes": "IDE-bound JR+ path; no headless lane contract exists.",
       "route_state": "blocked",
       "blocked_reasons": [
-        "fresh_capability_evidence_absent"
+        "fresh_capability_evidence_absent",
+        "privacy_posture_unknown",
+        "quota_telemetry_unknown",
+        "fresh_provider_docs_receipt_absent"
       ],
       "model_or_engine": "anthropic-antigravity-ide",
       "auth_surface": "operator_session",
@@ -79,10 +82,37 @@
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
         "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_capability_evidence_absent",
+              "privacy_posture_unknown"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quota_telemetry_unknown"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:~/.local/bin/hapax-antigrav --help:available:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_provider_docs_receipt_absent"
+            ]
+          }
+        }
       },
       "known_unknowns": [
         "Antigrav limits and telemetry are unknown."
@@ -223,7 +253,7 @@
             "read",
             "write"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:antigrav.interactive.full:tool_access.filesystem"
         },
@@ -235,7 +265,7 @@
             "execute",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:antigrav.interactive.full:tool_access.shell"
         },
@@ -246,7 +276,7 @@
             "read",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:antigrav.interactive.full:tool_access.browser"
         }
@@ -261,8 +291,10 @@
       "launcher": "~/.local/bin/hapax-claude-headless <lane> <governed-prompt>",
       "summary": "Claude Code headless stream-json lane",
       "notes": "Default frontier Claude path; requires governed headless enable latch and a validated task.",
-      "route_state": "active",
-      "blocked_reasons": [],
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "account_live_quota_receipt_absent"
+      ],
       "model_or_engine": "claude-code-default",
       "auth_surface": "subscription",
       "capacity_pool": "subscription_quota",
@@ -308,14 +340,43 @@
         "resource_source": "local_probe"
       },
       "freshness": {
-        "capability_checked_at": "2026-05-11T01:56:10Z",
+        "capability_checked_at": "2026-05-17T08:14:11Z",
         "capability_stale_after": "24h",
-        "quota_checked_at": "2026-05-11T01:56:10Z",
+        "quota_checked_at": null,
         "quota_stale_after": "24h",
-        "resource_checked_at": "2026-05-11T01:56:10Z",
+        "resource_checked_at": "2026-05-17T08:14:11Z",
         "resource_stale_after": "24h",
-        "provider_docs_checked_at": "2026-05-11T01:56:10Z",
-        "provider_docs_stale_after": "30d"
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [
+              "local:claude --version:2.1.143:2026-05-17T08:07Z",
+              "local:~/.cache/hapax/enable-claude-headless:present:2026-05-17T08:07Z",
+              "local:scripts/hapax-claude-headless:launcher-contract-reviewed:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:hapax-claude-headless:executable-and-enable-latch-present:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://code.claude.com/docs/en/cli-usage",
+              "official:https://docs.anthropic.com/en/docs/claude-code/mcp"
+            ],
+            "blocked_reasons": []
+          }
+        }
       },
       "known_unknowns": [
         "Subscription quota remains manually refreshed until telemetry adapter exists."
@@ -327,7 +388,7 @@
           "evidence_refs": [
             "platform-capability-registry:claude.headless.full:dimensional-score:grounding"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "governance_reasoning": {
@@ -336,7 +397,7 @@
           "evidence_refs": [
             "platform-capability-registry:claude.headless.full:dimensional-score:governance_reasoning"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "source_editing": {
@@ -345,7 +406,7 @@
           "evidence_refs": [
             "platform-capability-registry:claude.headless.full:dimensional-score:source_editing"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "architecture": {
@@ -354,7 +415,7 @@
           "evidence_refs": [
             "platform-capability-registry:claude.headless.full:dimensional-score:architecture"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "ambiguity_resolution": {
@@ -363,7 +424,7 @@
           "evidence_refs": [
             "platform-capability-registry:claude.headless.full:dimensional-score:ambiguity_resolution"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "long_context": {
@@ -372,7 +433,7 @@
           "evidence_refs": [
             "platform-capability-registry:claude.headless.full:dimensional-score:long_context"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "current_docs_grounding": {
@@ -381,7 +442,7 @@
           "evidence_refs": [
             "platform-capability-registry:claude.headless.full:dimensional-score:current_docs_grounding"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "multimodal_verification": {
@@ -390,7 +451,7 @@
           "evidence_refs": [
             "platform-capability-registry:claude.headless.full:dimensional-score:multimodal_verification"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "runtime_debugging": {
@@ -399,7 +460,7 @@
           "evidence_refs": [
             "platform-capability-registry:claude.headless.full:dimensional-score:runtime_debugging"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "test_authoring": {
@@ -408,7 +469,7 @@
           "evidence_refs": [
             "platform-capability-registry:claude.headless.full:dimensional-score:test_authoring"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "coordination_reliability": {
@@ -417,7 +478,7 @@
           "evidence_refs": [
             "platform-capability-registry:claude.headless.full:dimensional-score:coordination_reliability"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "privacy_safety": {
@@ -426,7 +487,7 @@
           "evidence_refs": [
             "platform-capability-registry:claude.headless.full:dimensional-score:privacy_safety"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "public_claim_safety": {
@@ -435,7 +496,7 @@
           "evidence_refs": [
             "platform-capability-registry:claude.headless.full:dimensional-score:public_claim_safety"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "local_calibration": {
@@ -444,7 +505,7 @@
           "evidence_refs": [
             "platform-capability-registry:claude.headless.full:dimensional-score:local_calibration"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         }
       },
@@ -456,7 +517,7 @@
             "read",
             "write"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.full:tool_access.filesystem"
         },
@@ -468,7 +529,7 @@
             "execute",
             "verify"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.full:tool_access.shell"
         },
@@ -479,7 +540,7 @@
             "read",
             "verify"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.full:tool_access.browser"
         },
@@ -489,7 +550,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.full:tool_access.mcp.context7"
         },
@@ -499,7 +560,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.full:tool_access.mcp.github"
         },
@@ -509,7 +570,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.full:tool_access.mcp.hapax-mcp"
         },
@@ -519,7 +580,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-11T01:56:10Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.full:tool_access.mcp.playwright"
         }
@@ -536,7 +597,9 @@
       "notes": "Use when architecture, governance, theory, or high-ambiguity work requires the strongest Claude profile.",
       "route_state": "blocked",
       "blocked_reasons": [
-        "fresh_capability_evidence_absent"
+        "opus_model_entitlement_receipt_absent",
+        "fresh_capability_evidence_absent",
+        "account_live_quota_receipt_absent"
       ],
       "model_or_engine": "claude-opus",
       "auth_surface": "subscription",
@@ -587,10 +650,38 @@
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
-        "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "opus_model_entitlement_receipt_absent",
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:hapax-claude-headless:executable-and-enable-latch-present:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://code.claude.com/docs/en/cli-usage",
+              "official:https://docs.anthropic.com/en/docs/claude-code/mcp"
+            ],
+            "blocked_reasons": []
+          }
+        }
       },
       "known_unknowns": [
         "Account-live subscription quota remains manually refreshed until telemetry adapter exists."
@@ -731,7 +822,7 @@
             "read",
             "write"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.opus:tool_access.filesystem"
         },
@@ -743,7 +834,7 @@
             "execute",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.opus:tool_access.shell"
         },
@@ -754,7 +845,7 @@
             "read",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.opus:tool_access.browser"
         },
@@ -764,7 +855,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.opus:tool_access.mcp.context7"
         },
@@ -774,7 +865,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.opus:tool_access.mcp.github"
         },
@@ -784,7 +875,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.opus:tool_access.mcp.hapax-mcp"
         },
@@ -794,7 +885,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.opus:tool_access.mcp.playwright"
         }
@@ -811,8 +902,9 @@
       "notes": "Use only when Sonnet is quality-equivalent for the bounded task or Opus capacity is blocked.",
       "route_state": "blocked",
       "blocked_reasons": [
+        "quality_equivalence_record_absent",
         "fresh_capability_evidence_absent",
-        "quality_equivalence_record_absent"
+        "account_live_quota_receipt_absent"
       ],
       "model_or_engine": "claude-sonnet",
       "auth_surface": "subscription",
@@ -864,10 +956,38 @@
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
-        "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quality_equivalence_record_absent",
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:hapax-claude-headless:executable-and-enable-latch-present:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://code.claude.com/docs/en/cli-usage",
+              "official:https://docs.anthropic.com/en/docs/claude-code/mcp"
+            ],
+            "blocked_reasons": []
+          }
+        }
       },
       "known_unknowns": [
         "Quality-equivalence records are task-class-specific and absent from this seed row."
@@ -1008,7 +1128,7 @@
             "read",
             "write"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.sonnet:tool_access.filesystem"
         },
@@ -1020,7 +1140,7 @@
             "execute",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.sonnet:tool_access.shell"
         },
@@ -1031,7 +1151,7 @@
             "read",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.sonnet:tool_access.browser"
         },
@@ -1041,7 +1161,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.sonnet:tool_access.mcp.context7"
         },
@@ -1051,7 +1171,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.sonnet:tool_access.mcp.github"
         },
@@ -1061,7 +1181,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.sonnet:tool_access.mcp.hapax-mcp"
         },
@@ -1071,7 +1191,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:claude.headless.sonnet:tool_access.mcp.playwright"
         }
@@ -1088,7 +1208,7 @@
       "notes": "Default Codex SOP: GPT-5.5 xhigh from the Codex launcher.",
       "route_state": "blocked",
       "blocked_reasons": [
-        "fresh_capability_evidence_absent"
+        "account_live_quota_receipt_absent"
       ],
       "model_or_engine": "gpt-5.5-xhigh",
       "auth_surface": "subscription",
@@ -1135,14 +1255,45 @@
         "resource_source": "local_probe"
       },
       "freshness": {
-        "capability_checked_at": null,
+        "capability_checked_at": "2026-05-17T08:14:11Z",
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
-        "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [
+              "local:codex --version:codex-cli 0.130.0:2026-05-17T08:06Z",
+              "local:codex mcp list:configured-servers-enabled:2026-05-17T08:06Z",
+              "local:scripts/hapax-codex:methodology-launcher-reviewed:2026-05-17T08:05Z"
+            ],
+            "blocked_reasons": []
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:current-codex-session:filesystem-shell-browser-usable:2026-05-17T08:14Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://developers.openai.com/codex/cli",
+              "official:https://developers.openai.com/codex/noninteractive",
+              "official:https://developers.openai.com/codex/mcp",
+              "official:https://github.com/openai/codex"
+            ],
+            "blocked_reasons": []
+          }
+        }
       },
       "known_unknowns": [
         "OpenAI/Codex subscription quota is partly opaque; fallback selection needs a separate quota receipt."
@@ -1154,7 +1305,7 @@
           "evidence_refs": [
             "platform-capability-registry:codex.headless.full:dimensional-score:grounding"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "governance_reasoning": {
@@ -1163,7 +1314,7 @@
           "evidence_refs": [
             "platform-capability-registry:codex.headless.full:dimensional-score:governance_reasoning"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "source_editing": {
@@ -1172,7 +1323,7 @@
           "evidence_refs": [
             "platform-capability-registry:codex.headless.full:dimensional-score:source_editing"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "architecture": {
@@ -1181,7 +1332,7 @@
           "evidence_refs": [
             "platform-capability-registry:codex.headless.full:dimensional-score:architecture"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "ambiguity_resolution": {
@@ -1190,7 +1341,7 @@
           "evidence_refs": [
             "platform-capability-registry:codex.headless.full:dimensional-score:ambiguity_resolution"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "long_context": {
@@ -1199,7 +1350,7 @@
           "evidence_refs": [
             "platform-capability-registry:codex.headless.full:dimensional-score:long_context"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "current_docs_grounding": {
@@ -1208,7 +1359,7 @@
           "evidence_refs": [
             "platform-capability-registry:codex.headless.full:dimensional-score:current_docs_grounding"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "multimodal_verification": {
@@ -1217,7 +1368,7 @@
           "evidence_refs": [
             "platform-capability-registry:codex.headless.full:dimensional-score:multimodal_verification"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "runtime_debugging": {
@@ -1226,7 +1377,7 @@
           "evidence_refs": [
             "platform-capability-registry:codex.headless.full:dimensional-score:runtime_debugging"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "test_authoring": {
@@ -1235,7 +1386,7 @@
           "evidence_refs": [
             "platform-capability-registry:codex.headless.full:dimensional-score:test_authoring"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "coordination_reliability": {
@@ -1244,7 +1395,7 @@
           "evidence_refs": [
             "platform-capability-registry:codex.headless.full:dimensional-score:coordination_reliability"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "privacy_safety": {
@@ -1253,7 +1404,7 @@
           "evidence_refs": [
             "platform-capability-registry:codex.headless.full:dimensional-score:privacy_safety"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "public_claim_safety": {
@@ -1262,7 +1413,7 @@
           "evidence_refs": [
             "platform-capability-registry:codex.headless.full:dimensional-score:public_claim_safety"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         },
         "local_calibration": {
@@ -1271,7 +1422,7 @@
           "evidence_refs": [
             "platform-capability-registry:codex.headless.full:dimensional-score:local_calibration"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h"
         }
       },
@@ -1283,7 +1434,7 @@
             "read",
             "write"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:codex.headless.full:tool_access.filesystem"
         },
@@ -1295,7 +1446,7 @@
             "execute",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:codex.headless.full:tool_access.shell"
         },
@@ -1306,7 +1457,7 @@
             "read",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:codex.headless.full:tool_access.browser"
         },
@@ -1316,7 +1467,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:codex.headless.full:tool_access.mcp.context7"
         },
@@ -1326,7 +1477,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:codex.headless.full:tool_access.mcp.github"
         },
@@ -1336,7 +1487,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:codex.headless.full:tool_access.mcp.playwright"
         },
@@ -1346,7 +1497,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:codex.headless.full:tool_access.mcp.tavily"
         }
@@ -1363,8 +1514,9 @@
       "notes": "Use only when full Codex quota is blocked and Spark is quality-equivalent for the bounded task.",
       "route_state": "blocked",
       "blocked_reasons": [
+        "quality_equivalence_record_absent",
         "fresh_capability_evidence_absent",
-        "quality_equivalence_record_absent"
+        "account_live_quota_receipt_absent"
       ],
       "model_or_engine": "gpt-5.3-codex-spark",
       "auth_surface": "subscription",
@@ -1416,10 +1568,40 @@
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
-        "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quality_equivalence_record_absent",
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:codex-cli-present-but-spark-profile-not-route-verified:2026-05-17T08:06Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://developers.openai.com/codex/cli",
+              "official:https://developers.openai.com/codex/noninteractive",
+              "official:https://developers.openai.com/codex/mcp",
+              "official:https://github.com/openai/codex"
+            ],
+            "blocked_reasons": []
+          }
+        }
       },
       "known_unknowns": [
         "Quality-equivalence records are task-class-specific and absent from this seed row.",
@@ -1561,7 +1743,7 @@
             "read",
             "write"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:codex.headless.spark:tool_access.filesystem"
         },
@@ -1573,7 +1755,7 @@
             "execute",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:codex.headless.spark:tool_access.shell"
         },
@@ -1584,7 +1766,7 @@
             "read",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:codex.headless.spark:tool_access.browser"
         },
@@ -1594,7 +1776,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:codex.headless.spark:tool_access.mcp.context7"
         },
@@ -1604,7 +1786,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:codex.headless.spark:tool_access.mcp.github"
         },
@@ -1614,7 +1796,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:codex.headless.spark:tool_access.mcp.playwright"
         },
@@ -1624,7 +1806,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:codex.headless.spark:tool_access.mcp.tavily"
         }
@@ -1641,8 +1823,9 @@
       "notes": "Spark analogue for quality-equivalent read-only research/review/extraction; mutation tasks must route elsewhere.",
       "route_state": "blocked",
       "blocked_reasons": [
-        "fresh_capability_evidence_absent",
-        "read_only_support_route"
+        "read_only_support_route",
+        "frontier_equivalence_record_absent",
+        "account_live_quota_receipt_absent"
       ],
       "model_or_engine": "gemini-3-flash-preview",
       "auth_surface": "subscription",
@@ -1684,14 +1867,46 @@
         "resource_source": "local_probe"
       },
       "freshness": {
-        "capability_checked_at": null,
+        "capability_checked_at": "2026-05-17T08:14:11Z",
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
-        "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [
+              "local:gemini --version:0.42.0:2026-05-17T08:07Z",
+              "local:scripts/hapax-gemini:plan-mode-read-only-reviewed:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": [
+              "read_only_support_route",
+              "frontier_equivalence_record_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:scripts/hapax-gemini:read-only-plan-mode-wrapper-reviewed:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/tools.md",
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/configuration.md",
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/quota-and-pricing.md"
+            ],
+            "blocked_reasons": []
+          }
+        }
       },
       "known_unknowns": [
         "Gemini CLI subscription ceilings are labels only, not account-live telemetry."
@@ -1831,7 +2046,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:gemini.headless.flash:tool_access.filesystem"
         },
@@ -1842,7 +2057,7 @@
             "read",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:gemini.headless.flash:tool_access.shell"
         },
@@ -1853,7 +2068,7 @@
             "read",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:gemini.headless.flash:tool_access.browser"
         }
@@ -1870,8 +2085,9 @@
       "notes": "Read-only/plan-mode only; mutation tasks must route elsewhere.",
       "route_state": "blocked",
       "blocked_reasons": [
-        "fresh_capability_evidence_absent",
-        "read_only_support_route"
+        "read_only_support_route",
+        "frontier_equivalence_record_absent",
+        "account_live_quota_receipt_absent"
       ],
       "model_or_engine": "gemini-pro-cli-default",
       "auth_surface": "subscription",
@@ -1913,14 +2129,46 @@
         "resource_source": "local_probe"
       },
       "freshness": {
-        "capability_checked_at": null,
+        "capability_checked_at": "2026-05-17T08:14:11Z",
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
-        "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [
+              "local:gemini --version:0.42.0:2026-05-17T08:07Z",
+              "local:scripts/hapax-gemini:plan-mode-read-only-reviewed:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": [
+              "read_only_support_route",
+              "frontier_equivalence_record_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:scripts/hapax-gemini:read-only-plan-mode-wrapper-reviewed:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/tools.md",
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/configuration.md",
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/quota-and-pricing.md"
+            ],
+            "blocked_reasons": []
+          }
+        }
       },
       "known_unknowns": [
         "Gemini CLI subscription ceilings are labels only, not account-live telemetry."
@@ -2060,7 +2308,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:gemini.headless.full:tool_access.filesystem"
         },
@@ -2071,7 +2319,7 @@
             "read",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:gemini.headless.full:tool_access.shell"
         },
@@ -2082,7 +2330,7 @@
             "read",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:gemini.headless.full:tool_access.browser"
         }
@@ -2099,8 +2347,9 @@
       "notes": "Use only for quality-equivalent low-risk extraction/currentness packets; mutation tasks must route elsewhere.",
       "route_state": "blocked",
       "blocked_reasons": [
-        "fresh_capability_evidence_absent",
-        "read_only_support_route"
+        "read_only_support_route",
+        "frontier_equivalence_record_absent",
+        "account_live_quota_receipt_absent"
       ],
       "model_or_engine": "gemini-3.1-flash-lite-preview",
       "auth_surface": "subscription",
@@ -2142,14 +2391,46 @@
         "resource_source": "local_probe"
       },
       "freshness": {
-        "capability_checked_at": null,
+        "capability_checked_at": "2026-05-17T08:14:11Z",
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
-        "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [
+              "local:gemini --version:0.42.0:2026-05-17T08:07Z",
+              "local:scripts/hapax-gemini:plan-mode-read-only-reviewed:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": [
+              "read_only_support_route",
+              "frontier_equivalence_record_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:scripts/hapax-gemini:read-only-plan-mode-wrapper-reviewed:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/tools.md",
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/configuration.md",
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/quota-and-pricing.md"
+            ],
+            "blocked_reasons": []
+          }
+        }
       },
       "known_unknowns": [
         "Gemini CLI subscription ceilings are labels only, not account-live telemetry."
@@ -2289,7 +2570,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:gemini.headless.lite:tool_access.filesystem"
         },
@@ -2300,7 +2581,7 @@
             "read",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:gemini.headless.lite:tool_access.shell"
         },
@@ -2311,7 +2592,7 @@
             "read",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:gemini.headless.lite:tool_access.browser"
         }
@@ -2328,8 +2609,9 @@
       "notes": "Read-only/plan-mode only; mutation tasks must route elsewhere.",
       "route_state": "blocked",
       "blocked_reasons": [
-        "fresh_capability_evidence_absent",
-        "read_only_support_route"
+        "read_only_support_route",
+        "frontier_equivalence_record_absent",
+        "account_live_quota_receipt_absent"
       ],
       "model_or_engine": "gemini-cli-default",
       "auth_surface": "subscription",
@@ -2371,14 +2653,46 @@
         "resource_source": "local_probe"
       },
       "freshness": {
-        "capability_checked_at": null,
+        "capability_checked_at": "2026-05-17T08:14:11Z",
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
-        "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-05-17T08:14:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [
+              "local:gemini --version:0.42.0:2026-05-17T08:07Z",
+              "local:scripts/hapax-gemini:plan-mode-read-only-reviewed:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": [
+              "read_only_support_route",
+              "frontier_equivalence_record_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:scripts/hapax-gemini:read-only-plan-mode-wrapper-reviewed:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/tools.md",
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/configuration.md",
+              "official:https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/quota-and-pricing.md"
+            ],
+            "blocked_reasons": []
+          }
+        }
       },
       "known_unknowns": [
         "Gemini CLI subscription ceilings are labels only, not account-live telemetry."
@@ -2518,7 +2832,7 @@
           "authority_use": [
             "read"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:gemini.interactive.full:tool_access.filesystem"
         },
@@ -2529,7 +2843,7 @@
             "read",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:gemini.interactive.full:tool_access.shell"
         },
@@ -2540,7 +2854,7 @@
             "read",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:gemini.interactive.full:tool_access.browser"
         }
@@ -2557,8 +2871,10 @@
       "notes": "JR+ bounded worker path; task fit must exclude governance-critical or off-limits work.",
       "route_state": "blocked",
       "blocked_reasons": [
+        "quality_equivalence_record_absent",
         "fresh_capability_evidence_absent",
-        "quality_equivalence_record_absent"
+        "account_live_quota_receipt_absent",
+        "fresh_provider_docs_receipt_absent"
       ],
       "model_or_engine": "mistral-vibe",
       "auth_surface": "subscription",
@@ -2605,10 +2921,37 @@
         "capability_stale_after": "24h",
         "quota_checked_at": null,
         "quota_stale_after": "15m",
-        "resource_checked_at": null,
-        "resource_stale_after": "5m",
+        "resource_checked_at": "2026-05-17T08:14:11Z",
+        "resource_stale_after": "24h",
         "provider_docs_checked_at": null,
-        "provider_docs_stale_after": "30d"
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quality_equivalence_record_absent",
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "account_live_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:~/.local/bin/hapax-vibe --help:available:2026-05-17T08:07Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_provider_docs_receipt_absent"
+            ]
+          }
+        }
       },
       "known_unknowns": [
         "JR+ bounded worker path; governance-critical task fit must be excluded by policy layer."
@@ -2749,7 +3092,7 @@
             "read",
             "write"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:vibe.headless.full:tool_access.filesystem"
         },
@@ -2761,7 +3104,7 @@
             "execute",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:vibe.headless.full:tool_access.shell"
         },
@@ -2772,7 +3115,7 @@
             "read",
             "verify"
           ],
-          "observed_at": "2026-05-09T20:50:00Z",
+          "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
           "evidence_ref": "platform-capability-registry:vibe.headless.full:tool_access.browser"
         }

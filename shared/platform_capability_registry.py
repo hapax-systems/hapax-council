@@ -210,6 +210,42 @@ class Telemetry(StrictModel):
     resource_source: ResourceSource
 
 
+FRESHNESS_SURFACES = ("capability", "quota", "resource", "provider_docs")
+
+
+class FreshnessSurfaceEvidence(StrictModel):
+    evidence_refs: list[str] = Field(default_factory=list)
+    blocked_reasons: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _has_evidence_or_blocker(self) -> Self:
+        if not self.evidence_refs and not self.blocked_reasons:
+            raise ValueError("freshness surface requires evidence_refs or blocked_reasons")
+        return self
+
+
+class FreshnessEvidence(StrictModel):
+    capability: FreshnessSurfaceEvidence
+    quota: FreshnessSurfaceEvidence
+    resource: FreshnessSurfaceEvidence
+    provider_docs: FreshnessSurfaceEvidence
+
+    def surface(self, surface: str) -> FreshnessSurfaceEvidence:
+        return getattr(self, surface)
+
+    def all_evidence_refs(self) -> tuple[str, ...]:
+        refs: list[str] = []
+        for surface in FRESHNESS_SURFACES:
+            refs.extend(self.surface(surface).evidence_refs)
+        return tuple(dict.fromkeys(refs))
+
+    def all_blocked_reasons(self) -> tuple[str, ...]:
+        reasons: list[str] = []
+        for surface in FRESHNESS_SURFACES:
+            reasons.extend(self.surface(surface).blocked_reasons)
+        return tuple(dict.fromkeys(reasons))
+
+
 class Freshness(StrictModel):
     capability_checked_at: datetime | None
     capability_stale_after: str
@@ -219,16 +255,22 @@ class Freshness(StrictModel):
     resource_stale_after: str
     provider_docs_checked_at: datetime | None
     provider_docs_stale_after: str
+    evidence: FreshnessEvidence
 
     @model_validator(mode="after")
     def _duration_specs_are_valid(self) -> Self:
-        for field_name in (
-            "capability_stale_after",
-            "quota_stale_after",
-            "resource_stale_after",
-            "provider_docs_stale_after",
-        ):
-            parse_duration_spec(getattr(self, field_name))
+        for surface in FRESHNESS_SURFACES:
+            parse_duration_spec(getattr(self, f"{surface}_stale_after"))
+            checked_at = getattr(self, f"{surface}_checked_at")
+            surface_evidence = self.evidence.surface(surface)
+            if checked_at is None and not surface_evidence.blocked_reasons:
+                raise ValueError(
+                    f"{surface} freshness requires blocked_reasons when checked_at is null"
+                )
+            if checked_at is not None and not surface_evidence.evidence_refs:
+                raise ValueError(
+                    f"{surface} freshness requires evidence_refs when checked_at is set"
+                )
         return self
 
 
@@ -401,6 +443,9 @@ class PlatformCapabilityRoute(StrictModel):
         if self.route_state is RouteState.ACTIVE and self.blocked_reasons:
             raise ValueError("active routes cannot carry blocked_reasons")
 
+        if self.route_state is RouteState.ACTIVE and self.freshness.evidence.all_blocked_reasons():
+            raise ValueError("active routes cannot carry freshness blocked_reasons")
+
         if self.authority_ceiling is AuthorityCeiling.READ_ONLY:
             if self.mutability.any_mutation():
                 raise ValueError("read-only routes cannot declare mutation surfaces")
@@ -481,6 +526,8 @@ class RouteFreshnessCheck:
     ok: bool
     supported: bool
     errors: tuple[str, ...]
+    blocked_reasons: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -489,6 +536,8 @@ class RouteFreshnessCheck:
             "ok": self.ok,
             "supported": self.supported,
             "errors": list(self.errors),
+            "blocked_reasons": list(self.blocked_reasons),
+            "evidence_refs": list(self.evidence_refs),
             "warnings": list(self.warnings),
         }
 
@@ -540,21 +589,31 @@ def _timestamp_errors(
     surface: str,
     checked_at: datetime | None,
     stale_after: str,
+    surface_evidence: FreshnessSurfaceEvidence,
     now: datetime,
 ) -> list[str]:
+    errors = [
+        f"{route_id}: {surface} blocked: {reason}" for reason in surface_evidence.blocked_reasons
+    ]
+
     if checked_at is None:
-        return [f"{route_id}: {surface} freshness is unknown"]
+        if surface_evidence.blocked_reasons:
+            return errors
+        return [*errors, f"{route_id}: {surface} freshness is unknown"]
+
+    if not surface_evidence.evidence_refs:
+        errors.append(f"{route_id}: {surface} evidence refs missing")
 
     checked = ensure_utc(checked_at)
     ttl = parse_duration_spec(stale_after)
     if checked > now + timedelta(minutes=1):
-        return [f"{route_id}: {surface} checked_at is in the future"]
+        return [*errors, f"{route_id}: {surface} checked_at is in the future"]
     if now - checked > ttl:
-        return [
+        errors.append(
             f"{route_id}: {surface} stale; checked_at={checked.isoformat()} "
             f"stale_after={stale_after}"
-        ]
-    return []
+        )
+    return errors
 
 
 def check_route_freshness(
@@ -565,46 +624,26 @@ def check_route_freshness(
     checked_now = ensure_utc(now or datetime.now(UTC))
     errors: list[str] = []
     freshness = route.freshness
+    blocked_reasons = [
+        *route.blocked_reasons,
+        *freshness.evidence.all_blocked_reasons(),
+    ]
+    evidence_refs = list(freshness.evidence.all_evidence_refs())
 
     if route.route_state is RouteState.BLOCKED:
         errors.extend(f"{route.route_id}: blocked: {reason}" for reason in route.blocked_reasons)
 
-    errors.extend(
-        _timestamp_errors(
-            route_id=route.route_id,
-            surface="capability",
-            checked_at=freshness.capability_checked_at,
-            stale_after=freshness.capability_stale_after,
-            now=checked_now,
+    for surface in FRESHNESS_SURFACES:
+        errors.extend(
+            _timestamp_errors(
+                route_id=route.route_id,
+                surface=surface,
+                checked_at=getattr(freshness, f"{surface}_checked_at"),
+                stale_after=getattr(freshness, f"{surface}_stale_after"),
+                surface_evidence=freshness.evidence.surface(surface),
+                now=checked_now,
+            )
         )
-    )
-    errors.extend(
-        _timestamp_errors(
-            route_id=route.route_id,
-            surface="quota",
-            checked_at=freshness.quota_checked_at,
-            stale_after=freshness.quota_stale_after,
-            now=checked_now,
-        )
-    )
-    errors.extend(
-        _timestamp_errors(
-            route_id=route.route_id,
-            surface="resource",
-            checked_at=freshness.resource_checked_at,
-            stale_after=freshness.resource_stale_after,
-            now=checked_now,
-        )
-    )
-    errors.extend(
-        _timestamp_errors(
-            route_id=route.route_id,
-            surface="provider_docs",
-            checked_at=freshness.provider_docs_checked_at,
-            stale_after=freshness.provider_docs_stale_after,
-            now=checked_now,
-        )
-    )
 
     if route.privacy_posture.value in UNKNOWN_PRIVACY_POSTURES:
         errors.append(f"{route.route_id}: privacy posture is {route.privacy_posture.value}")
@@ -617,14 +656,18 @@ def check_route_freshness(
             f"{route.route_id}: resource telemetry source is {route.telemetry.resource_source}"
         )
 
-    errors.extend(_capability_score_errors(route, now=checked_now))
-    errors.extend(_tool_state_errors(route, now=checked_now))
+    if not freshness.evidence.capability.blocked_reasons:
+        errors.extend(_capability_score_errors(route, now=checked_now))
+    if not freshness.evidence.resource.blocked_reasons:
+        errors.extend(_tool_state_errors(route, now=checked_now))
 
     return RouteFreshnessCheck(
         route_id=route.route_id,
         ok=not errors,
         supported=True,
         errors=tuple(errors),
+        blocked_reasons=tuple(dict.fromkeys(blocked_reasons)),
+        evidence_refs=tuple(dict.fromkeys(evidence_refs)),
     )
 
 
@@ -681,6 +724,10 @@ def _capability_score_errors(route: PlatformCapabilityRoute, *, now: datetime) -
                 if isinstance(observed_at, datetime)
                 else observed_at,
                 stale_after=stale_after,
+                surface_evidence=FreshnessSurfaceEvidence(
+                    evidence_refs=list(evidence_refs),
+                    blocked_reasons=[],
+                ),
                 now=now,
             )
         )
@@ -699,6 +746,10 @@ def _tool_state_errors(route: PlatformCapabilityRoute, *, now: datetime) -> list
                 surface=f"tool_state.{tool.tool_id}",
                 checked_at=tool.observed_at,
                 stale_after=tool.stale_after,
+                surface_evidence=FreshnessSurfaceEvidence(
+                    evidence_refs=[tool.evidence_ref],
+                    blocked_reasons=[],
+                ),
                 now=now,
             )
         )
@@ -796,6 +847,7 @@ def build_supply_vector(
             stale_after=route.freshness.capability_stale_after,
             source_refs=[
                 f"platform-capability-registry:{route.route_id}",
+                *route.freshness.evidence.all_evidence_refs(),
                 *route.quality_envelope.explicit_equivalence_records,
             ],
         ),
@@ -826,6 +878,7 @@ _DYNAMIC_ENTRYPOINTS = (
     ScoreConfidence._score_evidence_is_freshness_typed,
     ToolState._tool_freshness_duration_is_valid,
     SupplyFreshness._freshness_duration_is_valid,
+    FreshnessSurfaceEvidence._has_evidence_or_blocker,
     Freshness._duration_specs_are_valid,
     PlatformCapabilityRoute._route_contract_fails_closed,
     PlatformCapabilityRegistry._route_set_matches_contract,
