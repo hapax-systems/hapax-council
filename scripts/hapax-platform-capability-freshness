@@ -46,6 +46,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Registry JSON path",
     )
     parser.add_argument(
+        "--receipt-dir",
+        type=Path,
+        help="Overlay fresh platform capability receipts from this directory",
+    )
+    parser.add_argument(
         "--route",
         action="append",
         default=[],
@@ -56,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        registry = load_platform_capability_registry(args.registry)
+        registry = load_platform_capability_registry(args.registry, receipt_dir=args.receipt_dir)
     except PlatformCapabilityRegistryError as exc:
         if args.json:
             print_json({"ok": False, "error": str(exc)})

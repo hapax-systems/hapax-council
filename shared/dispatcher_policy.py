@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -19,6 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
+from shared.platform_capability_receipts import PLATFORM_CAPABILITY_RECEIPT_DIR_ENV
 from shared.platform_capability_registry import (
     PLATFORM_CAPABILITY_REGISTRY,
     PlatformCapabilityRegistry,
@@ -304,6 +306,7 @@ def load_dispatch_policy_sources(
     *,
     registry_path: Path | None = None,
     quota_ledger_path: Path | None = None,
+    receipt_dir: Path | None = None,
 ) -> DispatchPolicySources:
     """Load inert policy sources, turning failures into request evidence."""
 
@@ -313,7 +316,11 @@ def load_dispatch_policy_sources(
     quota_error: str | None = None
 
     try:
-        registry = load_platform_capability_registry(registry_path or PLATFORM_CAPABILITY_REGISTRY)
+        effective_receipt_dir = receipt_dir or _receipt_dir_from_env()
+        registry = load_platform_capability_registry(
+            registry_path or PLATFORM_CAPABILITY_REGISTRY,
+            receipt_dir=effective_receipt_dir,
+        )
     except (IndexError, PlatformCapabilityRegistryError, OSError, ValueError) as exc:
         registry_error = str(exc)
 
@@ -328,6 +335,15 @@ def load_dispatch_policy_sources(
         quota_ledger=quota_ledger,
         quota_error=quota_error,
     )
+
+
+def _receipt_dir_from_env() -> Path | None:
+    configured = os.environ.get(PLATFORM_CAPABILITY_RECEIPT_DIR_ENV)
+    if not configured:
+        return None
+    if configured.strip() in {"0", "none", "None", "false", "False"}:
+        return None
+    return Path(configured).expanduser()
 
 
 def build_dispatch_request(

@@ -8,6 +8,7 @@ routes.
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -18,6 +19,14 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from shared.platform_capability_receipts import (
+    DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
+    PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
+    EvidenceStatus,
+    PlatformCapabilityReceipt,
+    load_platform_capability_receipts,
+    receipt_reference,
+)
 from shared.route_metadata_schema import ToolAuthorityUse
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -921,15 +930,156 @@ def _load_json_object(path: Path) -> dict[str, Any]:
 
 def load_platform_capability_registry(
     path: Path = PLATFORM_CAPABILITY_REGISTRY,
+    *,
+    receipt_dir: Path | None = None,
+    now: datetime | None = None,
 ) -> PlatformCapabilityRegistry:
     """Load the platform capability registry, failing closed on malformed data."""
 
     try:
-        return PlatformCapabilityRegistry.model_validate(_load_json_object(path))
+        registry = PlatformCapabilityRegistry.model_validate(_load_json_object(path))
+        effective_receipt_dir = receipt_dir or _receipt_dir_from_env()
+        if effective_receipt_dir is None:
+            return registry
+        return apply_platform_capability_receipts(
+            registry,
+            receipt_dir=effective_receipt_dir,
+            now=now,
+        )
     except (OSError, json.JSONDecodeError, ValidationError, ValueError) as exc:
         raise PlatformCapabilityRegistryError(
             f"invalid platform capability registry at {path}: {exc}"
         ) from exc
+
+
+def _receipt_dir_from_env() -> Path | None:
+    configured = os.environ.get(PLATFORM_CAPABILITY_RECEIPT_DIR_ENV)
+    if not configured:
+        return None
+    if configured.strip() in {"0", "none", "None", "false", "False"}:
+        return None
+    return Path(configured).expanduser()
+
+
+def apply_platform_capability_receipts(
+    registry: PlatformCapabilityRegistry,
+    *,
+    receipt_dir: Path = DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
+    now: datetime | None = None,
+) -> PlatformCapabilityRegistry:
+    """Overlay fresh local receipts onto inert registry rows."""
+
+    receipts = load_platform_capability_receipts(receipt_dir, now=now)
+    if not receipts:
+        return registry
+
+    payload = registry.model_dump(mode="json")
+    for route_payload in payload["routes"]:
+        receipt = receipts.get(route_payload["platform"])
+        if receipt is None:
+            continue
+        if route_payload["route_id"] not in receipt.routes:
+            continue
+        _apply_receipt_to_route_payload(route_payload, receipt)
+    return PlatformCapabilityRegistry.model_validate(payload)
+
+
+def _apply_receipt_to_route_payload(
+    route_payload: dict[str, Any],
+    receipt: PlatformCapabilityReceipt,
+) -> None:
+    receipt_ref = receipt_reference(receipt)
+    freshness = route_payload["freshness"]
+    observed_at = receipt.observed_at.isoformat().replace("+00:00", "Z")
+    provider_docs_at = receipt.provider_docs.fetched_at.isoformat().replace("+00:00", "Z")
+    top_blockers = list(route_payload.get("blocked_reasons") or [])
+
+    _apply_surface(
+        freshness,
+        "capability",
+        checked_at=observed_at,
+        stale_after=receipt.capability.stale_after,
+        evidence_refs=[*receipt.capability.evidence_refs, receipt_ref],
+        reason_codes=receipt.capability.reason_codes,
+        removable_reasons={"fresh_capability_evidence_absent"},
+    )
+    _apply_surface(
+        freshness,
+        "resource",
+        checked_at=observed_at,
+        stale_after=receipt.resource.stale_after,
+        evidence_refs=[*receipt.resource.evidence_refs, receipt_ref],
+        reason_codes=receipt.resource.reason_codes,
+        removable_reasons={"fresh_resource_evidence_absent"},
+    )
+    _apply_surface(
+        freshness,
+        "quota",
+        checked_at=observed_at,
+        stale_after=receipt.quota.stale_after,
+        evidence_refs=[*receipt.quota.evidence_refs, receipt_ref],
+        reason_codes=receipt.quota.reason_codes
+        if receipt.quota.status is not EvidenceStatus.OBSERVED
+        else [],
+        removable_reasons={"account_live_quota_receipt_absent", "quota_telemetry_unknown"},
+    )
+    _apply_surface(
+        freshness,
+        "provider_docs",
+        checked_at=provider_docs_at,
+        stale_after=receipt.provider_docs.stale_after,
+        evidence_refs=[*receipt.provider_docs.refs, receipt_ref],
+        reason_codes=[],
+        removable_reasons={"provider_docs_evidence_absent"},
+    )
+
+    for tool in route_payload.get("tool_state", []):
+        tool["observed_at"] = observed_at
+        tool["evidence_ref"] = receipt_ref
+
+    if receipt.capability.status is not EvidenceStatus.OBSERVED:
+        top_blockers.extend(receipt.capability.reason_codes)
+    if receipt.resource.status is not EvidenceStatus.OBSERVED:
+        top_blockers.extend(receipt.resource.reason_codes)
+    if receipt.quota.status is not EvidenceStatus.OBSERVED:
+        top_blockers.extend(receipt.quota.reason_codes)
+
+    top_blockers = [
+        reason
+        for reason in top_blockers
+        if reason
+        not in {
+            "fresh_capability_evidence_absent",
+            "fresh_resource_evidence_absent",
+            "provider_docs_evidence_absent",
+        }
+    ]
+    route_payload["blocked_reasons"] = list(dict.fromkeys(top_blockers))
+    route_payload["route_state"] = "blocked" if route_payload["blocked_reasons"] else "active"
+
+
+def _apply_surface(
+    freshness: dict[str, Any],
+    surface: str,
+    *,
+    checked_at: str,
+    stale_after: str,
+    evidence_refs: list[str],
+    reason_codes: list[str],
+    removable_reasons: set[str],
+) -> None:
+    surface_payload = freshness["evidence"][surface]
+    prior_reasons = [
+        reason
+        for reason in surface_payload.get("blocked_reasons", [])
+        if reason not in removable_reasons
+    ]
+    surface_payload["blocked_reasons"] = list(dict.fromkeys([*prior_reasons, *reason_codes]))
+    surface_payload["evidence_refs"] = list(
+        dict.fromkeys([*surface_payload.get("evidence_refs", []), *evidence_refs])
+    )
+    freshness[f"{surface}_checked_at"] = checked_at
+    freshness[f"{surface}_stale_after"] = stale_after
 
 
 _DYNAMIC_ENTRYPOINTS = (
